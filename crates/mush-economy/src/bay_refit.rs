@@ -7,11 +7,7 @@
 mod authority;
 pub(crate) mod bridge;
 mod consent;
-mod fold;
-pub(crate) mod install;
-pub(crate) mod money;
-mod plans;
-pub(crate) mod receipt;
+mod leg;
 mod subject;
 #[cfg(test)]
 mod tests;
@@ -21,9 +17,43 @@ pub(crate) use install::{BayMoneyPatch, BoundBayMoney};
 pub(crate) use money::ClosedBayPlan;
 pub use money::{BayFundingOutput, BayTerminalOutput};
 use mush_core::CommitToken;
-use mush_core::participant::ParticipantError;
 pub use receipt::{BayFundingReceipt, BayPaymentHistory, BayTerminalReceipt, BayTerminalResult};
 pub use subject::{BayPaymentPolicy, BaySite, BaySubject};
+
+// The five owner files are `crate::refit_twin`'s, written once for both refits; these are
+// their old paths, the bay's instantiation.
+pub(crate) mod install {
+    pub(crate) use crate::refit_twin::install::prepare;
+    pub type BayMoneyPatch = crate::refit_twin::install::MoneyPatch<crate::refit_twin::Bay>;
+    pub type BoundBayMoney<'a> = crate::refit_twin::install::BoundMoney<'a, crate::refit_twin::Bay>;
+}
+pub(crate) mod money {
+    pub type Request = crate::refit_twin::money::Request<crate::refit_twin::Bay>;
+    pub type Output = crate::refit_twin::money::Output<crate::refit_twin::Bay>;
+    pub type ClosedBayPlan = crate::refit_twin::money::ClosedPlan<crate::refit_twin::Bay>;
+    pub type BayFundingOutput = crate::refit_twin::money::FundingOutput<crate::refit_twin::Bay>;
+    pub type BayTerminalOutput = crate::refit_twin::money::TerminalOutput<crate::refit_twin::Bay>;
+}
+mod plans {
+    #[cfg(test)]
+    pub(crate) use crate::refit_twin::plans::{CORRELATION_BYTES, funding, terminal};
+    #[cfg(test)]
+    pub(crate) fn decode_correlation(
+        text: &str,
+    ) -> Result<super::leg::Proof, super::BayRefitError> {
+        crate::refit_twin::plans::decode_correlation::<crate::refit_twin::Bay>(text)
+    }
+    pub(crate) type FundingIntent = crate::refit_twin::plans::FundingIntent<crate::refit_twin::Bay>;
+}
+pub(crate) mod receipt {
+    pub use super::leg::BayTerminalResult;
+    pub use crate::refit_twin::receipt::FundingReceipt as BayFundingReceipt;
+    pub type BayTerminalReceipt =
+        crate::refit_twin::receipt::TerminalReceipt<crate::refit_twin::Bay>;
+    pub type BayPaymentHistory = crate::refit_twin::receipt::PaymentHistory<crate::refit_twin::Bay>;
+    pub(crate) type BayReceiptAudit =
+        crate::refit_twin::receipt::ReceiptAudit<crate::refit_twin::Bay>;
+}
 pub const OFFER_ACTION: &str = "offer_bay_refit";
 pub const ACCEPT_ACTION: &str = "accept_bay_refit";
 pub const INSTALL_ACTION: &str = "install_bay_refit";
@@ -39,17 +69,17 @@ pub const RESERVATION_SECONDS: i64 = mush_core::player_wait::REFIT_RESERVATION_S
 pub(crate) const MAX_ORDERS: usize = 8192;
 pub(crate) const SUBJECT_BYTES: usize = 8192;
 pub(crate) const HISTORY_BYTES: usize = 16_384;
-pub struct BayFundingRequest {
-    pub subject: BaySubject,
-}
+pub type BayFundingRequest = crate::refit_twin::FundingRequest<crate::refit_twin::Bay>;
 pub struct BayInstallationRequest {
     pub acceptance: CommitToken,
 }
 pub struct BayCancellationRequest {
     pub acceptance: CommitToken,
 }
-pub(crate) fn refused() -> ParticipantError {
-    ParticipantError::Refused("bay refit money or accepted authority disagrees".into())
+/// The owner's refusal (`Leg::REFUSED`), which the CT.0 snapshot pins.
+#[cfg(test)]
+pub(crate) fn refused() -> mush_core::participant::ParticipantError {
+    crate::refit_twin::refused::<crate::refit_twin::Bay>()
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BayRefitError {

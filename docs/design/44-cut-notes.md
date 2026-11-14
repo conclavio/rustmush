@@ -3051,6 +3051,8 @@ what it does when the contact dies, are different, and `ALL ENGAGE BK` already m
 thing. Renaming the word is one match arm in `field_commands.rs`, one in `directive_text` and
 the help text; the stored variant is `concentrate`, which a rename would leave alone.
 
+*Renamed to `FOCUS` by R-47-1 (doc 47 unit CO.1); `CONCENTRATE` is still accepted as an alias and the stored variant is unchanged.*
+
 **The plan's stored format. The one piece here that is expensive to reverse.** `Plan` gained
 `work_point: Option<(u16, u16)>`, written as `"work_point": [x, y]`. The key is optional on read
 and is not written when no point is named, so every plan stored before this unit loads, reads as

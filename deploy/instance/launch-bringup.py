@@ -1204,79 +1204,53 @@ def seed_listing(box, staff, document):
     return row.group(0).strip()
 
 
-def programme_hull_names(box):
-    """The names the lane packs give the programme ports' hulls, read from the
-    tree: the Trust holds titles to other things than hulls, and only a port
-    map's hull counts toward a House's cap."""
-    names, lane = set(), os.path.join(box.repo, "crates", "tacsim", "content", "lane")
-
-    def walk(node):
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key == "hull_names" and isinstance(value, list):
-                    names.update(value)
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    for file in sorted(os.listdir(lane)) if os.path.isdir(lane) else []:
-        if file.endswith(".json"):
-            with open(os.path.join(lane, file), encoding="utf-8") as handle:
-                walk(json.load(handle))
-    return names
+def house_marks(name, count):
+    """A House's seeded hulls' registry marks: `MER-01`, `MER-02`, ..."""
+    return [f"{name[:3].upper()}-{n:02d}" for n in range(1, count + 1)]
 
 
-def pool_hulls(box, staff, trust):
-    rows = re.findall(r"^#(\d+) (.+?) — org:.* \(#(\d+)\) \[Active\]\s*$",
-                      staff.s.ask(f"@asset/list owner=org:{trust}"), re.M)
-    names = programme_hull_names(box)
-    return [(int(obj), name) for obj, name, owner in rows if int(owner) == trust and name in names]
+def house_ships(staff, org):
+    """The House's titled hulls, as `@asset/list` shows them."""
+    return re.findall(rf"^#(\d+) (.+?) — org:.* \(#{org}\) \[Active\]\s*$",
+                      staff.s.ask(f"@asset/list owner=org:{org}"), re.M)
 
 
-def lend_hulls(box, staff, document):
-    """A House buys nothing with no hull: its cap is the floor of 400 per mille
-    of its titled hulls. The only hulls a fresh world has spare are the Ceres
-    Co-op's pool Drays, and a Dray titled to a House closes the Co-op's
-    enrolment for everybody (its readiness line wants every Dray with the Trust
-    or a graduate). So the Drays are LENT: titled to the House for the
-    purchase, and handed back by `return_hulls`. What is lent is written down
-    before the first transfer, so an interrupted run hands back what it took."""
-    lent = box.state.get("lent")
-    if lent:
-        # A run that stopped between writing this down and the transfers.
-        for hull in lent["hulls"]:
-            shown = staff.s.ask(f"@asset/show #{hull['hull']}")
-            if not re.search(rf"title org:.* \(#{lent['org']}\) ", shown):
-                staff.s.do(f"@asset/transfer #{hull['hull']}=org:{lent['org']} scope={lent['root']}",
-                           r"Title transferred \(transaction #\d+\)")
+def seed_house_hulls(box, staff, document):
+    """Every House's own hulls (doc 47 cut CO.9). A House buys nothing with no
+    hull: its cap is the floor of 400 per mille of its titled hulls. So #1
+    seeds each House `--house-hulls` ships of `--house-design` at Ceres
+    Freeport with `@tacsim/port seed`, each under a mark of its own, and the
+    port's next fires lay them up and title them to the House on its root
+    scope. A mark seeds once, so a second run seeds nothing new. Nothing of the
+    Co-op's pool moves, so enrolment stays open. Who may fly them is the
+    House's to grant: `@org/grant #<member>=<House> unit.deploy`."""
+    if box.args.house_hulls <= 0:
         return
-    trust = staff.orgs().get(TRUST)
-    if trust is None:
-        raise Stop(f"the world has no organisation named {TRUST}: no hull to lend a House")
-    house = next(h for h in HOUSES if h[0] == box.args.purchase_house)
-    org = document["houses"][house[0]]["organization"]
-    root = next(p["scope"] for p in document["procurement"] if p["org"] == org)
-    lent = []
-    for obj, name in pool_hulls(box, staff, trust):
-        shown = staff.s.ask(f"@asset/show #{obj}")
-        scope = re.search(r"^  scope #(\d+)$", shown, re.M)
-        if re.search(r"^  encumbrances: 0$", shown, re.M) and scope:
-            lent.append({"hull": obj, "name": name, "scope": int(scope.group(1))})
-        if len(lent) == box.args.house_hulls:
+    for key, name, _, _ in HOUSES:
+        org = document["houses"][key]["organization"]
+        for mark in house_marks(name, box.args.house_hulls):
+            staff.s.do(f"@tacsim/port seed ceres_port {box.args.house_design} {mark}=org:{org}",
+                       r"Seeded order \d+|already a hull's")
+    end = time.monotonic() + box.args.boot_timeout
+    while True:
+        short = [(name, len(house_ships(staff, document["houses"][key]["organization"])))
+                 for key, name, _, _ in HOUSES]
+        short = [(name, held) for name, held in short if held < box.args.house_hulls]
+        if not short:
             break
-    if len(lent) < box.args.house_hulls:
-        raise Stop(f"the {TRUST} has only {len(lent)} free hulls to lend, {box.args.house_hulls} wanted")
-    box.state["lent"] = {"trust": trust, "house": house[1], "org": org, "root": root, "hulls": lent}
-    box.save_state()
-    for hull in lent:
-        staff.s.do(f"@asset/transfer #{hull['hull']}=org:{org} scope={root}",
-                   r"Title transferred \(transaction #\d+\)")
-    say(f"lent {house[1]} {len(lent)} of the Co-op's Drays ({', '.join(h['name'] for h in lent)}); "
-        "Co-op enrolment is closed until they go back")
+        if time.monotonic() >= end:
+            raise Stop("the seeded hulls were not titled in time: "
+                       + "; ".join(f"{name} holds {held}" for name, held in short))
+        time.sleep(3)
+    say(f"each House holds {box.args.house_hulls} hulls of its own "
+        f"({box.args.house_design}, docked at Ceres Freeport)")
 
 
 def return_hulls(box, staff):
+    """Hulls an older bring-up LENT a House from the Co-op's pool (before doc 47
+    cut CO.9 gave the Houses their own) go back to the Trust: a Dray titled to
+    a House closes `+coop/enrol` for every player. A no-op unless the state
+    file says something is lent."""
     lent = box.state.get("lent")
     if not lent:
         return
@@ -1340,8 +1314,7 @@ def await_purchase(box, staff, document):
         if time.monotonic() - started > box.args.purchase_timeout:
             raise Stop(f"{house[1]} bought nothing in {box.args.purchase_timeout}s. The world's log "
                        "says why, in its tacsim.procurement.refused and "
-                       "tacsim.procurement.month_closed lines. The lent hulls are still with the "
-                       "House: run again with --seed-only to hand them back")
+                       "tacsim.procurement.month_closed lines; run again with --seed-only")
         time.sleep(5)
 
 
@@ -1513,12 +1486,13 @@ def bring_up(box, password):
         ready = readiness(staff, document)
         if not args.no_npcs:
             enable_npcs(box, staff)
-        # A run that stopped while a House held lent hulls: they go back before
+        # A store an older run lent the Co-op's Drays on: they go back before
         # anybody is let in, so enrolment is never left closed.
-        if not args.keep_house_hulls:
-            return_hulls(box, staff)
+        return_hulls(box, staff)
+        # Doc 47 cut CO.9: the Houses' own hulls.
+        seed_house_hulls(box, staff, document)
         # Last, so that a world with no desk to hang the door on stops here with
-        # the NPCs enabled and every lent hull back.
+        # the NPCs enabled, every lent hull back and the Houses' hulls laid up.
         counter_door(staff, document)
     finally:
         staff.close()
@@ -1580,7 +1554,10 @@ def seed_and_purchase(box, password):
     try:
         seed_listing(box, staff, document)
         if not args.no_purchase and not purchases(box, org):
-            lend_hulls(box, staff, document)
+            # The House's own hulls, seeded in the Active boot (doc 47 cut CO.9);
+            # a store brought up before them gets them here.
+            return_hulls(box, staff)
+            seed_house_hulls(box, staff, document)
             # A House shops once an IC month, and a month it found nothing in
             # stays closed until the next one or a restart of the world. The
             # gateway holds every connection across a server restart.
@@ -1594,8 +1571,6 @@ def seed_and_purchase(box, password):
             time.sleep(5)
             staff = staff_on_the_unit(box, password)
             await_purchase(box, staff, document)
-        if not args.keep_house_hulls:
-            return_hulls(box, staff)
     finally:
         staff.close()
 
@@ -1621,10 +1596,10 @@ def main():
     parser.add_argument("--purchase-house", default="meridiani", choices=[h[0] for h in HOUSES],
                         help="the House whose purchase is waited for")
     parser.add_argument("--house-hulls", type=int, default=3,
-                        help="the Co-op Drays lent to that House for the purchase (3)")
-    parser.add_argument("--keep-house-hulls", action="store_true",
-                        help="leave the lent Drays with the House: it keeps buying, and Co-op "
-                             "enrolment stays CLOSED for every player")
+                        help="the hulls of its own each House is seeded at Ceres Freeport (3; 0 "
+                             "seeds none)")
+    parser.add_argument("--house-design", default="dray",
+                        help="the design each House's hulls are seeded as (dray)")
     parser.add_argument("--procurement-budget", type=int, default=200_000,
                         help="each House's monthly budget and its treasury's funding, minor credits")
     parser.add_argument("--no-npcs", action="store_true", help="leave the major NPCs parked")

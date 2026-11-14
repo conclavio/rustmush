@@ -109,6 +109,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each subsystem's                    declared policy for it. It is one attributed act on the kernel's own                    timeline: no second timeline is created and no earlier fact is reinterpreted.
                    @tacsim/port status                 (staff) the port readiness report: every binding the port entries made — rooms, domains, orgs, accounts and capital — with the lane, the sky and the world rate.
                    @tacsim/port clear #<hull>          (staff) stand down a programme hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told.\n\
+                   @tacsim/port seed <port> <design> <mark>=org:<organization>\n\
+                   \x20                                 (staff) commission one ship of <design> for an organization (a House) at <port> under the fresh <mark>: the port's next fires lay her up, dock her and title her to it on its root scope. A member granted unit.deploy there may take her out.\n\
                    @tacsim/tv close #<rig>             (staff) stop a rig's work and clear its plan and queued unload in place.\n\
                    @tacsim/tv home #<rig>              (staff) stop work and bring a stranded rig into its assigned hull's bay, preserving its hopper.\n\
                    @tacsim/tv home #<rig> #<hull>      (staff) bring a rig whose excursion staff closed with it out into another hull settled on its site, preserving its hopper and its lease.\n\
@@ -965,7 +967,8 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
 // ---- Doc 18 cut IC3 — `@tacsim/port status`, the readiness report ----------
 
 /// The one usage line of `@tacsim/port`.
-pub const PORT_USAGE: &str = "Usage: @tacsim/port status | @tacsim/port clear #<hull>";
+pub const PORT_USAGE: &str = "Usage: @tacsim/port status | @tacsim/port clear #<hull> | \
+     @tacsim/port seed <port> <design> <mark>=org:<organization>";
 
 /// `@tacsim/port [status]` (doc 18 §4.7; staff): the port readiness report
 /// ([`crate::port::readiness()`]), a pure read of the port maps, the economy, org
@@ -998,11 +1001,57 @@ fn port_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, reply);
         return Ok(());
     }
+    if lhs
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("seed"))
+    {
+        return port_seed(ctx, &lhs);
+    }
     if !(lhs.is_empty() || lhs.eq_ignore_ascii_case("status")) {
         return Err(CmdError::msg(PORT_USAGE));
     }
     let rows = crate::port::readiness_in(ctx).render();
     lines(ctx, rows);
+    Ok(())
+}
+
+/// `@tacsim/port seed <port> <design> <mark>=org:<organization>` (doc 47 cut CO.9; staff): one
+/// hull of `<design>` (a ship) commissioned for the organization at `<port>` under the fresh
+/// `<mark>` (`crate::port::commission::seed`). The port's next fires lay her up, dock her and
+/// title her to the organization on its root scope; `@asset/list owner=org:<organization>`
+/// lists her once titled. A design is named with or without `tacsim.unit.`.
+fn port_seed(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
+    let mut words = lhs.split_whitespace().skip(1);
+    let (Some(port), Some(design), Some(mark), None) =
+        (words.next(), words.next(), words.next(), words.next())
+    else {
+        return Err(CmdError::msg(PORT_USAGE));
+    };
+    let rhs = ctx.args.rhs().unwrap_or_default().trim().to_owned();
+    if rhs.is_empty() {
+        return Err(CmdError::msg(PORT_USAGE));
+    }
+    let owner = mush_economy::parse_principal(ctx, &rhs)
+        .filter(|owner| matches!(owner, mush_org::PrincipalId::Organization(_)))
+        .ok_or_else(|| CmdError::msg("No such organization."))?;
+    let home = CanonicalId::new(port).map_err(|_| CmdError::msg(PORT_USAGE))?;
+    let design = if design.starts_with(crate::port::commission::UNIT_PREFIX) {
+        design.to_owned()
+    } else {
+        format!("{}{design}", crate::port::commission::UNIT_PREFIX)
+    };
+    let design = CanonicalId::new(design).map_err(|_| CmdError::msg(PORT_USAGE))?;
+    let record =
+        crate::port::commission::seed(ctx, &home, &design, mark, owner).map_err(CmdError::msg)?;
+    info(
+        ctx,
+        format!(
+            "Seeded order {}: {} {} for {rhs} at {home}; the port's next fires lay her up and \
+             title her.",
+            record.order, design, record.mark
+        ),
+    );
     Ok(())
 }
 

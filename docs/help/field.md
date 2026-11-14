@@ -170,7 +170,7 @@ A roster's leader orders hired NPC escorts with the same fenced lines as any
 detachment order (`help detachments`). `+sortie/orders` prints the prefill.
 
   ORDER DT:<detachment>:<revision>:<term> <slot>|ALL ENGAGE [<target>]
-  ORDER DT:<detachment>:<revision>:<term> <slot>|ALL CONCENTRATE <contact>
+  ORDER DT:<detachment>:<revision>:<term> <slot>|ALL FOCUS <contact>
   ORDER DT:<detachment>:<revision>:<term> <slot>|ALL HOLD HOLD FIRE
   ORDER DT:<detachment>:<revision>:<term> <slot>|ALL WITHDRAW [HOLD FIRE]
 
@@ -178,7 +178,7 @@ detachment order (`help detachments`). `+sortie/orders` prints the prefill.
   its designator. On open ground, `ENGAGE NE` or `ENGAGE NE-near` names a flight
   on the presence picture. That order is your Hostile mark on its party and opens
   the field.
-- **CONCENTRATE** is the focus-fire order. `ALL CONCENTRATE BK` names one contact
+- **FOCUS** is the focus-fire order. `ALL FOCUS BK` names one contact
   you have identified in your own cockpit, and every hired unit that holds that
   contact itself engages it. A unit that does not hold it answers `NEGATIVE` and
   keeps the order it had. When the contact is destroyed, or a unit loses it, that
@@ -212,7 +212,7 @@ holding where it stands. You see a reply only once it arrives.
 A hired pilot's doctrine fires on the parties its party holds Hostile, and only
 on them. Your marks are its targets.
 
-If you go away, an ENGAGE, a CONCENTRATE or an ADVANCE you gave lapses when your own unit
+If you go away, an ENGAGE, a FOCUS or an ADVANCE you gave lapses when your own unit
 passes to its mind (see *If you lose your link, or quit*). The hired unit stops
 where it is, holds its fire, and answers from where it stands only once it is
 hit. Any other order you left stands. `help detachments` has the whole rule.

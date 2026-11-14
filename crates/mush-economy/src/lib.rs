@@ -113,6 +113,7 @@ mod managed_title;
 pub use managed_title::CoreProvenanceNote;
 mod plan;
 mod record;
+pub(crate) mod refit_twin;
 pub mod registry_filing;
 pub(crate) mod renewal_twin;
 mod snapshot;

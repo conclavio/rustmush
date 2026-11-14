@@ -37,6 +37,8 @@ mod vertex;
 
 #[path = "domain_economy/claims.rs"]
 mod claims;
+#[path = "domain_economy/co9_house_hulls.rs"]
+mod co9_house_hulls;
 #[path = "domain_economy/commerce.rs"]
 mod commerce;
 #[path = "domain_economy/consent_rs10.rs"]

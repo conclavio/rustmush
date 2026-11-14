@@ -2284,7 +2284,338 @@ Not built.
 
 ## CT.7
 
-Not built.
+The refit pair (Q-46-5). Built 2026-11-14 on main `114c03694` (CT.0 to CT.4 in; CT.5 running
+beside it in `mush-roll`, CT.0b's open pull request in `tacsim`, neither touching a refit file).
+
+**The survey, before the cut.** Economy's five shared files, `bay_refit/` against `core_refit/`:
+`diff` gives 117 hunks, 323 changed lines; everything else is the same text.
+
+| File | Lines, bay and core | Hunks | (a) a rename | (b) an identity string or field name | (c) real logic |
+|---|---|---|---|---|---|
+| `fold.rs` | 168, 165 | 6 | 6 | | |
+| `install.rs` | 305, 305 | 13 | 13 | | |
+| `money.rs` | 445, 446 | 31 | 30 | 1 | |
+| `plans.rs` | 204, 212 | 15 | 7 | 4 | 4 |
+| `receipt.rs` | 632, 635 | 52 | 42 | 6 | 4 |
+| **All** | 1,754, 1,763 | 117 | 98 | 11 | 8 |
+
+- *(a) A rename, 98 hunks.* Each family's type names (`BayPaymentHistory` against
+  `RefitPaymentHistory` and the rest), which of the fold's two fields (`bay_refit_receipts`,
+  boxed, against `refit_receipts`), the configuration's type, the engine's two plan guards
+  (`validate_bay_refit`, `validate_core_refit`), local names (`refit` against `replacement`),
+  `use` order, formatting and comments.
+- *(b) 11 hunks: six identity strings and three field names.* The plan's description (`Bay
+  refit`, `Certified core fitting`), the line memo (`bay refit`, `core fitting`, twice), the
+  replayed histories' decoder (`expecting` and its three refusals: limit, duplicate, key); the
+  serialized field of the correlation's Install phase and of the terminal result (`refit`
+  against `replacement`, with the result's accessor named after it), and the same name on each
+  family's ready-order attribution, which is not serialized.
+- *(c) Real logic, 8 hunks, 32 lines, five differences:* the fee (the bay's quote; the core
+  recipe's own fee, `price_for(kind)`); the payee (the quoted bay's provider; the recipe's
+  site's); the core refit's manufacture acceptance is a spent commit at Accept and at Install or
+  Cancel (two sites); what no two replayed histories share (the bay's hull while its order is
+  open; the core's incoming core once installed; two hunks); and the core refit's Accept replay
+  refusing an incoming core already taken by an order not cancelled. One more hunk is the bay's
+  alone because its fold field is boxed (`uninitialized_box`, for serde's `skip_serializing_if`).
+
+The real logic is narrow, so the five files are one, over one trait. The rest of each family
+(`subject.rs` 33% alike, `bridge.rs` 67%, `authority.rs` 78%, `consent.rs` 77%) holds the
+records and checks each family owns and stays two, as Q-46-5 says.
+
+*The kernel's pair is not a clone, and stays two.* `terminal_capacity/bay_refit*` against
+`core_refit*` is 48% to 72% alike line for line (`history.rs` 49%, `protocol.rs` 48%, `wire.rs`
+57%, `transition.rs` 72%), 53% to 81% with the family words folded to one token. The yardstick
+finds 915 cloned lines in their 4,716, against Economy's 3,725 in 6,098. The differences are
+the physical images each validator joins: the bay's part, part lot, returned lot and stores
+census against the core refit's incoming asset, its displaced core and the component exchange
+receipt; the bay's own admission preimages (a hull in no bay nor pending a core refit), the core
+refit's (an incoming core released, a hull mounting what the subject says); the drive cause,
+parsed by the bay's wire and inline in the core's transition; the deployment family named by
+constant or by literal. A merge would be a trait of a dozen hooks around each validator's
+every step and would make the kernel's least tested family's checks harder to read, not fewer.
+Doc 46 §7.1 names "the kernel's two" in the row; this unit leaves them as they are and gives the
+core refit's validator the bay's scenarios where it has the same mechanism (below).
+
+**Built.** In `crates/mush-economy/src/`:
+
+| File | Lines | What it is |
+|---|---|---|
+| `refit_twin.rs` | 51 | the module: `FundingRequest<M>`, `CurrentFacts<M>` and the one `refused::<M>()` |
+| `refit_twin/leg.rs` | 200 | the sealed trait `Leg`, the members `Bay` and `Core`, the record traits `Subject`, `Policy`, `Supplier` |
+| `refit_twin/{fold,install,money,plans,receipt}.rs` | 1,754 | the five owner files, written once: the bay's text with every family name a trait item |
+| `bay_refit/leg.rs`, `core_refit/leg.rs` | 319, 326 | `impl Leg`, the family's `Proof` and terminal result records (their field names are its own) and its record traits |
+| `bay_refit.rs`, `core_refit.rs` | 96, 100 | the family's face: the old `install`, `money`, `plans` and `receipt` paths as aliases |
+
+The ten deleted files were 3,517 lines; their replacement and the two `leg.rs` files are 2,650.
+`authority.rs` of each family lost its `CurrentFacts` struct to an alias of the generic one and
+five unused imports; no other production file changed but `lib.rs` (one `mod` line). Outside
+`mush-economy` only `mush-core`'s tests changed.
+
+*The trait as built.* `Leg: members::Member + Copy + Debug + Default + Eq + Send + Sync +
+'static`, visible in the crate and nowhere else (`refit_twin` is `pub(crate)`). Fourteen identity
+constants, four error variants, ten associated types, twenty-four functions:
+
+| Items | What they carry | Survey |
+|---|---|---|
+| `ACCEPT_ACTION`, `INSTALL_ACTION`, `CANCEL_ACTION`, `NAMESPACE`, `HOLD_PURPOSE`, `MAX_ORDERS`, `HISTORY_BYTES` | the family's module constants, by reference (each family's `pub const`s stay where callers read them) | — |
+| `REFUSED`, `PLAN_DESCRIPTION`, `LINE_MEMO`, `HISTORIES_EXPECTING`, `HISTORY_LIMIT`, `HISTORY_DUPLICATE`, `HISTORY_KEY` | the seven sentences that were literals in the five files and the family file | (b) |
+| `Error` with `INVALID`, `INTEGRITY`, `INCOMPLETE`, `CAPACITY` | the family's own error enum and the four variants the owner answers | (a) |
+| `Subject`, `Policy`, `Supplier`, `Order`, `Config`, `Installation`, `Cancellation` | the family's own records, read through accessor traits | (a) |
+| `Proof`, `Result` with `seal`, `open`, `installed`, `cancelled`, `result_part`, `part` | the two serialized records whose field is `refit` or `replacement`, each the family's own type, and the ready order's field | (b) |
+| `receipts`, `receipts_mut`, `validate`, `funding`, `installation`, `policy`, `cleanup_ready`, `matches_policy`, `supplier_validate`, `action_ref`, `bytes`, `installation_acceptance`, `cancellation_acceptance` | which closed-list entry is the family's (the fold's field, the engine's guard), and its own checks in `authority.rs`, `subject.rs`, `consent.rs`, forwarded | (a) |
+| `price`, `provider_account`, `commit_reused`, `exclusive`, `conflicts` | the five differences of (c), each called where its check was | (c) |
+
+Every constant holds the value its file held, byte for byte: the two identity tests hold each to
+a literal, and the snapshots hold the bytes they produce.
+
+*What stayed two, and why.*
+
+- **The two records with a different field name.** `Proof` (`refit`, `replacement`) and
+  `BayTerminalResult` / `RefitTerminalResult` are serialized: the correlation every plan carries
+  and every terminal receipt. Serde takes a field's name from the source, so a generic record
+  cannot name its field per member without a hand-written serializer; each family keeps its
+  record, verbatim, in its `leg.rs`. The owner works on `refit_twin::plans::Phase<M>`, the
+  correlation as it reads it, and `seal` / `open` convert (two plain matches a family). The
+  terminal result is the receipt's own field (`TerminalReceipt<M>::result: M::Result`), and
+  Industry still matches `BayTerminalResult::Cancelled {}`.
+- **The two Install and Cancel requests.** Industry builds `BayInstallationRequest {
+  acceptance }` by literal; a generic struct would need a marker field. They stay each family's
+  struct, and `Leg` reads their one field. `FundingRequest<M>` is generic: its one field names
+  the subject's type, so `BayFundingRequest { subject }` still builds.
+- **The funding receipt became one type.** `BayFundingReceipt` and `RefitFundingReceipt` were
+  the same record field for field with no family type in it; both names are now
+  `refit_twin::receipt::FundingReceipt`. No caller relied on their being two.
+- **Where a check sat is kept.** `commit_reused` is asked after the offer comparison both legs
+  had, at both sites; `conflicts` sits inside the Accept replay's disjunction where the core
+  refit's incoming-core clause was, before the open-hull rule both legs have; `exclusive`
+  replaces the one clause of `valid_shape` that differed. Every clause of each of those chains
+  is a pure comparison answering the same error, so the order cannot change which refusal a
+  record with two faults answers; it is kept anyway.
+
+*What did not move.* No snapshot file: `git diff --stat 114c03694 -- '*.snap'` is empty, and
+`refit_bay.snap` and `refit_core.snap` of `mush-core`, `mush-economy` and `mush-industry` were
+never re-blessed. Every string literal of each family's production files was listed before (the
+five files and the family file) and after (the twin's files, the family file and its `leg.rs`):
+the bay's 33 and the core refit's 32, all present after, and one new one, the empty string of
+`#[serde(bound = "")]`. Every serialized record keeps its fields in their order with their
+attributes (`deny_unknown_fields`, `deserialize_with = "required_option"` and `"rows"`, `skip`).
+The fold's two fields, the engine's `EnginePlan::{CoreRefit, BayRefit}`, `EconomyRequest` and
+`EconomyOutput` and the boot's two flags are as they were (the closed lists, §4.6). No `dyn`, no
+function pointer, no callback.
+
+**Tests.** `cargo test -p <crate> -- --list`, all targets, before (main `114c03694`) and after:
+
+| | Before | After |
+|---|---|---|
+| `mush-core` | 1,104 | 1,106 |
+| `mush-economy` | 881 | 900 |
+| under `mush-economy`'s `bay_refit::tests::` | 4 | 11 |
+| under `mush-economy`'s `core_refit::tests::` | 0 | 10 |
+| under `mush-economy`'s `refit_twin::tests::` | 0 | 1 |
+| under `mush-core`'s `terminal_capacity::core_refit::tests::` | 0 | 2 |
+
+No name disappeared and none changed: the diff of the two sorted lists (doc-tests' line numbers
+stripped) is 21 additions, the tests named below and the `compile_fail` doc-test on `Leg`.
+
+- **One body, run twice (the row).** The bay's three Economy tests are generic functions over a
+  test-side `Rig: Leg` in `refit_twin/tests.rs`; `instantiate!` names each as a `#[test]` of the
+  leg's own module, so `bay_refit::tests::<name>` is the path it was and `core_refit::tests::`
+  holds the same scenarios. What differs is the rig's: the bay's rig is `bay_refit/tests.rs` (its
+  fixture and helpers unchanged, the CT.0 snapshot still reads them), the core refit's is the new
+  `core_refit/tests.rs` on CT.0's fixture (`ct0_snapshot.rs`'s builders made `pub(super)`). The
+  policy and subject faults each family refuses are the rig's lists: for the core refit, the
+  ungoverning recipe as the governed one, the ungoverning site as the governed one, a fee of
+  nothing, a coreless base of no family; an incoming core that is the hull, a displaced core
+  that is the incoming one, the site paying itself, a target outside the class's family, the
+  ungoverning recipe on a governed target.
+- **No scenario failed for the core refit.** Every body passed for the core refit at its first
+  run, so there is no finding of that kind.
+- **Added, six bodies run for both legs, twelve names, each asked for by a mutation that passed
+  (below):** `ct7_a_spent_commit_posts_no_plan`,
+  `ct7_a_replayed_history_keeps_the_legs_exclusive_object`,
+  `ct7_the_supplier_attributes_the_offer_taken`, `ct7_an_uncomposed_leg_is_not_ready`,
+  `ct7_the_fee_and_its_payee_follow_the_site`, `ct7_a_second_accept_waits_for_the_first`. The two
+  replay tests build histories, and the Accept transaction that funded each, from the leg's own
+  plans (`refit_twin::tests::history`) and replay them through `ReceiptAudit` (its `histories`
+  field made `pub(super)` for the test).
+- **Identity:** `bay_refit::tests::bay_identity_strings_hold_todays_bytes` and
+  `core_refit::tests::core_identity_strings_hold_todays_bytes` hold every constant, the four
+  error sentences and the two records' JSON (`refit` / `replacement`) to literals.
+- **The kernel's core refit**, whose validator is not merged, gains the two of the bay's six
+  scenarios it has the mechanism for, on CT.0's rig:
+  `ud4b_the_protocol_pins_its_participants_and_actions` and
+  `ud4b_a_cold_boot_audits_the_order_and_its_counterparts` (each counterpart row missing, the
+  reservation missing, an exchange receipt of no order). The bay's other four are its part, lot
+  and census, which the core refit does not have; CT.0's core walk already covers the core's
+  Accept refusals, its displaced core and its Cancel.
+
+**The seal.** `Leg`'s supertrait is `members::Member`, a public trait in a module private to
+`refit_twin/leg.rs`, implemented there for `Bay` and `Core`. It is not named `sealed`:
+`renewal_twin`'s census test counts every `mod sealed` line of the crate and failed on the first
+cut (on every mutation of the first pass, below).
+
+- *From outside the crate:* the `compile_fail` example on `Leg` (`use
+  mush_economy::refit_twin::Leg;`), run with the doc-tests.
+- *From inside*, each alone on a throwaway clone, `cargo check -p mush-economy`:
+
+  | Attempt | The compiler's answer |
+  |---|---|
+  | `struct Guild; impl crate::refit_twin::Leg for Guild {}` | `error[E0277]: the trait bound `Guild: Member` is not satisfied` (beside E0046 and the other supertraits) |
+  | `impl crate::refit_twin::leg::members::Member for Guild {}` | `error[E0603]: module `leg` is private` |
+  | a second `impl crate::refit_twin::Leg for crate::refit_twin::Bay {}` | `error[E0119]: conflicting implementations of trait `Leg` for type `Bay`` |
+
+- `refit_twin::tests::the_leg_seal_admits_exactly_two` is the census: two `impl Member for`, both
+  in `refit_twin/leg.rs`; two `impl Leg for`, one in each family's `leg.rs`; one `mod members {`,
+  not `pub`; no `dyn Leg`.
+
+**The mutations.** Each alone on a throwaway clone on conclav.dev, the branch's files committed
+there, `cargo test -p mush-economy -p mush-industry --lib --no-fail-fast` (the kernel's with
+`-p mush-core -p mush-industry --lib -- refit`), the file put back. The first pass ran on the
+cut before any new test; the second on the branch as it stands. (Every mutation of the first
+pass also failed `renewal_twin::tests::the_issuer_seal_admits_exactly_two`, the seal-name
+collision above; it is left out of the table.)
+
+| # | The mutation | First pass (the cut, no new test) | Second pass (as built) |
+|---|---|---|---|
+| H1 | the bay's fee: the policy's ceiling, not the quote | 4 tests, both bay `ct0_` among them | 5 tests, both bay `ct0_` and `ct7_the_fee_and_its_payee_follow_the_site` among them |
+| H2 | the core refit's fee: the governed fee whatever the recipe | `ct0_refit_core_snapshot` | the same and `ct7_the_fee_and_its_payee_follow_the_site` |
+| H3 | the bay's payee: the first bay's provider | **nothing** (every fixture's bays paid one account) | `ct7_the_fee_and_its_payee_follow_the_site` |
+| H4 | the core refit's payee: the governed site's whatever the recipe | `ct0_refit_core_snapshot` | the same and `ct7_the_fee_and_its_payee_follow_the_site` |
+| H5 | `Core::commit_reused` answers false | **nothing** | `ct7_a_spent_commit_posts_no_plan` |
+| H6 | `Bay::exclusive` answers None | **nothing** | `ct7_a_replayed_history_keeps_the_legs_exclusive_object` |
+| H7 | `Core::exclusive` answers None | **nothing** | the same |
+| H8 | `Core::conflicts` answers false | **nothing** | `ct7_a_second_accept_waits_for_the_first` |
+| H9, H10 | `matches_policy` answers Ok, each leg | **nothing** | `ud4b_the_quote_is_bounded_and_paid_to_its_bay`, the leg's |
+| H11, H12 | `supplier_validate` answers Ok, each leg | **nothing** | `ct7_the_supplier_attributes_the_offer_taken`, the leg's |
+| H13, H14 | `cleanup_ready` answers Ok, each leg | **nothing** | `ct7_an_uncomposed_leg_is_not_ready`, the leg's (the hook; its call site is owed, below) |
+| H15 | `Bay::part` answers a fixed digest | 2 Industry tests, its `ct0_` walk among them | the same |
+| H16 | `Core::part` answers a fixed digest | 7 Industry tests, its `ct0_` walk among them | the same |
+| T1, T2 | Accept, then Install or Cancel, no longer ask `commit_reused` | **nothing** | `ct7_a_spent_commit_posts_no_plan`, the core refit's |
+| T3 | replay no longer asks `exclusive` | (the first pass's text did not compile) | `ct7_a_replayed_history_keeps_the_legs_exclusive_object`, both legs' |
+| T4 | Accept replay no longer asks `conflicts` | **nothing** | `ct7_a_second_accept_waits_for_the_first`, the core refit's |
+| T5 | Accept replay drops the open-hull rule both legs have | **nothing** | `ct7_a_second_accept_waits_for_the_first`, the bay's |
+| C1 | an action id, bay (`accept_bay_refit`) | 4 tests, `ct0_` among them | 12 tests, the identity test and `ct0_` among them |
+| C2 | the namespace, core | both core `ct0_` | the same and the identity test |
+| C3 | the hold purpose, bay | both bay `ct0_` | the same and the identity test |
+| C4 | the refusal sentence, core | `ct0_refit_core_snapshot` | the same and the identity test |
+| C5 | the plan description, bay | both bay `ct0_` | the same and the identity test |
+| C6 | the line memo, core | both core `ct0_` | the same and the identity test |
+| C7 to C10 | the decoder's four messages (key, expecting, limit, duplicate) | **nothing** | the leg's identity test only |
+| C11 | `MAX_ORDERS`, core | `ct0_refit_core_snapshot` | the same and the identity test |
+| C12 | `HISTORY_BYTES`, bay | `ct0_refit_bay_snapshot` | the same and the identity test |
+| F1 | `FundingIntent`'s `supplier` moved first | 4 `ct0_`: both legs, Economy and Industry | the same |
+| F2 | `TerminalReceipt`'s `at` after `plan_hash` | 4 `ct0_` | the same |
+| F3 | the bay's `Proof`: Install's `refit` before `at` | `ct0_refit_bay_snapshot` | the same |
+| W1 | the kernel bay row's fingerprint `json!` written in another key order | — | **nothing, and equivalent**: `serde_json`'s map sorts its keys (no `preserve_order` in the workspace), so the bytes are the same |
+| W2 | the kernel bay row's fingerprint no longer covers `capacity` | — | the kernel's and Industry's bay `ct0_` walks |
+| W3 | the kernel core hull head's `mounted` moved under `pending` | — | 17 tests, the kernel's core `ct0_` walk among them |
+
+Against the brief: every "answers Ok" mutation of a trait function (H5 to H14) passed at first
+and fails a test now; a constant of each kind (action id, namespace, hold purpose, sentence,
+description, memo, decoder message, bound) fails its identity test, and every one but the four
+decoder messages fails a `ct0_` test too (those messages are reached only by a decode that
+fails, which no walk makes); a field moved (F1 to F3) fails the snapshots; a wire parser's field
+order (W1) is equivalent by construction, and a real change to the same parser's output (W2, W3)
+fails the walks. The constants are caught by the identity tests and the snapshots only, as CT.3
+and CT.4 found: the shared rig reads the trait.
+
+**Divergences.**
+
+- **The kernel's pair is not merged** (the survey). The row's "the kernel's two" is answered by
+  the two tests above, not by a twin.
+- **Two records stay each family's** although the files are one (*what stayed two*). A generic
+  record with a per-member field name needs a hand-written serializer, which would be the
+  riskiest code in the unit for two names.
+- **The funding receipt is one type under two names.**
+- **Visibility.** Inside a `pub(crate)` module, so nothing is reachable from outside the crate:
+  `Request`, `Output`, `ClosedPlan`, `ReceiptAudit`, `FundingIntent` and the members' `Proof` are
+  nominally `pub` (a crate-visible trait's signatures name them, the `private_interfaces` lint);
+  `PaymentHistory::intent` is `pub(crate)` (was `pub(super)`: the CT.0 snapshot tests build it by
+  literal from the family's module); `ReceiptAudit::histories` is `pub(super)` for the replay
+  tests. `uninitialized_box` now exists for both legs; only the bay's boxed fold field uses it.
+- **Debug output.** Derived `Debug` prints the generic names (`PaymentHistory`, `ReceiptAudit`,
+  `TerminalReceipt`, `FundingReceipt`) for both families. Nothing reads it: no snapshot and no
+  persisted value formats these types with `{:?}`.
+- **Each family's `refused()`** is now `#[cfg(test)]`: production calls
+  `refit_twin::refused::<M>()`; the CT.0 snapshots pin the sentence through the old function.
+- **`decode_correlation`** of each family is a `#[cfg(test)]` wrapper with the leg named, for
+  CT.0's snapshot, which reads the decoded proof: the generic one cannot infer its leg from a
+  string.
+
+**Not built.**
+
+- The kernel's refit twin (above), and its bay-only scenarios for the core refit.
+- `cleanup_ready`'s call site at a Cancel is not reached by any test: the hook's answer is
+  tested directly (`ct7_an_uncomposed_leg_is_not_ready`), but refusing a Cancel because the
+  composition is not ready needs a frozen Economy or an unready owner inside Industry's composed
+  rig, which this unit does not edit. Owed to whoever next edits the Industry refit rigs.
+- What CT.0's walks do not reach is still not reached: the core refit policies `ungovern`,
+  `coreless` and `families` and a `restart` drive cause on the real path. The Economy rig now
+  holds the core refit's ungoverning fee and payee (`ct7_the_fee_and_its_payee_follow_the_site`),
+  but not through Industry.
+- `core_integration` is left alone (Q-46-5). The yardstick's remaining clones of the twin's
+  `install.rs` and `fold.rs` are with `core_integration`'s.
+
+**Compile time** (§7.4). conclav.dev, `cargo check -q -p <crate>` with the crate's `lib.rs`
+touched, one warm run then five timed, `CARGO_INCREMENTAL=0`. The box was shared (load 10 to 46
+over the session), so main and the branch were timed in two interleaved rounds, each round a
+clone of main then the branch's, under the same load; medians of five.
+
+| | Main, round 1 | Branch, round 1 | Main, round 2 | Branch, round 2 |
+|---|---|---|---|---|
+| `cargo check -p mush-core` | 9.33 s | 9.54 s | 9.70 s | 9.43 s |
+| `cargo check -p mush-economy` | 9.17 s | 8.85 s | 9.25 s | 9.37 s |
+
+Flat within the noise, both crates. `mush-core`'s production code did not change; Economy's
+checks one generic owner instead of two copies, instantiated twice in the same crate. No generic
+item crosses the crate boundary (the trait and the module are `pub(crate)`), so a dependant reads
+what it read before.
+
+**On Linux** (conclav.dev, a throwaway clone of `114c03694` with the branch's files over it):
+`cargo test -p mush-core -p mush-economy -p mush-industry --no-fail-fast` passes every test of
+the three crates (the libraries' 848, 368 and 73 among them) with none failed, and `cargo test
+-p tacsim --lib ct0_` passes the composed registration snapshot; no `.snap` file differs after
+the runs. On Windows the Economy library's refit and `ct0_` tests pass. Clippy with `-D warnings`
+over all targets of `mush-economy`, `mush-core` and `mush-industry`, CI's M7 memory-size pass,
+rustdoc with `-D warnings` and `--document-private-items`, the doc-tests and `cargo test -p
+mush-contract-tests` are clean. The branch's CI dispatch (run 43626561607, at the code commit
+`cffb7bb78`): 53 jobs green and two dispatch-only stories still running when this note was
+written (the M7 player market commands and the M6 author story), none failed.
+
+**The yardstick, before and after.** Before is main `114c03694`.
+
+| Root | Before: cloned of lines | Rate | After: cloned of lines | Rate |
+|---|---|---|---|---|
+| `crates/mush-market/src` | 10,522 of 45,090 | 23.3% | 10,522 of 45,090 | 23.3% |
+| `crates/mush-economy/src` | 13,466 of 97,211 | 13.9% | 11,004 of 97,310 | 11.3% |
+| `crates/mush-roll/src/commerce` | 16,802 of 91,607 | 18.3% | 16,802 of 91,607 | 18.3% |
+| `crates/mush-core/src/action_state/terminal_capacity` | 6,610 of 38,725 | 17.1% | 6,646 of 38,810 | 17.1% |
+
+Economy lost 2,462 cloned lines. With `--stems`, `bay_refit` and `core_refit` were 1,850 of
+2,961 and 1,891 of 3,269; they are 557 of 1,634 and 582 of 2,147, and `refit_twin` is 594 of
+2,547. What is left between the families is their `authority.rs` (196 lines each, 59% to 63%),
+the `seal`/`open` and accessor shape of the two `leg.rs` files (127 lines), and `bridge.rs`;
+the twin's `install.rs` and `fold.rs` share windows with `core_integration`'s. The kernel's layer
+gained 36 cloned lines, the core refit's new tests sharing their rig calls with the bay's.
+
+**Found on the way.**
+
+- **Eleven checks of the shared files had no test anywhere** (the first pass): the bay's payee
+  site (every fixture's bays paid one account), the core refit's spent manufacture acceptance
+  at both sites, both legs' exclusive-object rule at replay, the core refit's incoming-core rule
+  at Accept replay, the open-hull rule at Accept replay, both legs' subject-policy and supplier
+  checks as the owner calls them, and both legs' readiness hook. None was found by Industry's
+  composed rigs either. They are older than this unit; the twin made each a named trait
+  function, and "this one answers neutral" one line to try. All are closed but the readiness
+  hook's call site (*Not built*).
+- **No difference the survey did not list**, and none in behaviour: a second read, given the old
+  ten files and the new ones and told to substitute each leg into the twin, found no change in
+  any check, its order or its error, no serialized byte and no literal; it named the visibility,
+  `Debug` and `uninitialized_box` points above as harmless.
+- **A census test can be tripped by a name.** CT.4's seal census counts `mod sealed` across the
+  crate; a second twin with its own seal named so fails it. Named apart here; CT.5 and CT.6 are
+  in other crates.
+- No defect in production code was found, and no production behaviour was changed.
 
 ## CT.8
 

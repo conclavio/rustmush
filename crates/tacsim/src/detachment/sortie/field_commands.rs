@@ -161,26 +161,26 @@ fn issue(
             },
         );
     }
-    // Doc 44 unit MW.14c: `<slot|ALL> CONCENTRATE <contact>`, the focus-fire order. An order
+    // Doc 44 unit MW.14c: `<slot|ALL> FOCUS <contact>`, the focus-fire order. An order
     // like any other (the leader's authority, each unit's command right, the relay, a jam).
     // `ALL` reaches every hull that can take it now and is not refused for one that cannot.
     let mut concentrate = text.split_whitespace();
     if let (Some(target), Some(verb)) = (concentrate.next(), concentrate.next())
-        && verb.eq_ignore_ascii_case("CONCENTRATE")
+        && (verb.eq_ignore_ascii_case("FOCUS") || verb.eq_ignore_ascii_case("CONCENTRATE"))
     {
         let target = if target.eq_ignore_ascii_case("ALL") {
             OrderTarget::Able
         } else {
             OrderTarget::Slot(
-                Slot::new(target.parse().map_err(|_| super::CONCENTRATE_USAGE)?)
+                Slot::new(target.parse().map_err(|_| super::FOCUS_USAGE)?)
                     .map_err(|e| e.to_string())?,
             )
         };
         let (Some(contact), None) = (concentrate.next(), concentrate.next()) else {
-            return Err(super::CONCENTRATE_USAGE.into());
+            return Err(super::FOCUS_USAGE.into());
         };
         if expires_at_ms.is_some() {
-            return Err(super::CONCENTRATE_NO_EXPIRY.into());
+            return Err(super::FOCUS_NO_EXPIRY.into());
         }
         let objective = concentrate_on(ctx, op, contact)?;
         return submit(
@@ -285,7 +285,7 @@ fn concentrate_on(
             designator,
         }) => {
             if !crate::field::orders::identified(ctx.w, ctx.actor, unit, id) {
-                return Err(super::CONCENTRATE_UNIDENTIFIED.into());
+                return Err(super::FOCUS_UNIDENTIFIED.into());
             }
             Ok(FieldObjective::Concentrate {
                 ordinal,
@@ -293,7 +293,7 @@ fn concentrate_on(
                 designator,
             })
         }
-        _ => Err(super::CONCENTRATE_NO_CONTACT.into()),
+        _ => Err(super::FOCUS_NO_CONTACT.into()),
     }
 }
 /// **What an `ENGAGE <word>` names** (doc 32 cut CF.6): inside a field a contact of the leader's
@@ -511,7 +511,7 @@ pub(super) fn directive_text(directive: &Directive<FieldPayload>) -> String {
             family.map_or_else(|| "MINE".into(), |family| format!("MINE {}", family.id()))
         }
         FieldObjective::Posture { posture } => format!("POSTURE {}", posture.label()),
-        FieldObjective::Concentrate { designator, .. } => format!("CONCENTRATE {designator}"),
+        FieldObjective::Concentrate { designator, .. } => format!("FOCUS {designator}"),
     };
     if payload.hold_fire {
         text.push_str(" HOLD FIRE");
@@ -684,10 +684,10 @@ mod tests {
         }
         assert!(super::super::NPC_ORDERS_HEAD.chars().count() <= 120);
         for line in [
-            super::super::CONCENTRATE_USAGE,
-            super::super::CONCENTRATE_UNIDENTIFIED,
-            super::super::CONCENTRATE_NO_CONTACT,
-            super::super::CONCENTRATE_NO_EXPIRY,
+            super::super::FOCUS_USAGE,
+            super::super::FOCUS_UNIDENTIFIED,
+            super::super::FOCUS_NO_CONTACT,
+            super::super::FOCUS_NO_EXPIRY,
         ] {
             assert!(line.chars().count() <= 120, "{line}");
         }
@@ -700,7 +700,24 @@ mod tests {
                 },
                 hold_fire: false,
             })),
-            "CONCENTRATE BK"
+            "FOCUS BK"
         );
+    }
+
+    /// **Doc 47 unit CO.1: the typed word is `FOCUS`, the stored variant stays `concentrate`.**
+    /// A stored order reads back and re-encodes byte for byte.
+    #[test]
+    fn co1_the_stored_variant_stays_concentrate() {
+        let stored = r#"{"kind":"concentrate","ordinal":1,"id":70,"designator":"BK"}"#;
+        let read: FieldObjective = serde_json::from_str(stored).expect("a stored order reads");
+        assert_eq!(
+            read,
+            FieldObjective::Concentrate {
+                ordinal: 1,
+                id: 70,
+                designator: smol_str::SmolStr::new("BK"),
+            }
+        );
+        assert_eq!(serde_json::to_string(&read).expect("encodes"), stored);
     }
 }

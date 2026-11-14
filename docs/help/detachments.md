@@ -316,7 +316,7 @@ to one slot at a time and can be delayed or stopped by interference like any
 other order.
 
 While it holds, the commander also names one contact for the roster's armed
-units to concentrate on (CONCENTRATE, below): the nearest Hostile in its own
+units to concentrate on (FOCUS, below): the nearest Hostile in its own
 sight. A unit that carries nothing to fire, a mining rig, is left holding. It
 keeps to that contact until the contact is destroyed or out of its sight, then
 names the next. It concentrates only on a contact of a party the roster already
@@ -336,7 +336,7 @@ takes the lead back after the usual settling, and the NPC gives no further order
 A roster with no nominated commander is never led by an NPC. On open ground an
 NPC leader gives no orders.
 
-If the leader goes away inside a running field, an ENGAGE, a CONCENTRATE or an
+If the leader goes away inside a running field, an ENGAGE, a FOCUS or an
 ADVANCE they gave a hired crew lapses when their own unit passes to its mind: five minutes
 after a lost link, at once on a quit or a knock-out. A hired crew is not flown
 for you while you are away and keeps its own doctrine, but the attack you
@@ -366,7 +366,7 @@ numbered slot or `ALL`, using the same line vocabulary as practice:
 ORDER DT:12:1:3 ALL HOLD
 ORDER DT:12:1:3 2 ADVANCE 40,50
 ORDER DT:12:1:3 2 ENGAGE
-ORDER DT:12:1:3 ALL CONCENTRATE BK
+ORDER DT:12:1:3 ALL FOCUS BK
 ORDER DT:12:1:3 2 SCREEN 90 HOLD FIRE
 ORDER DT:12:1:3 2 SUPPORT 1
 ORDER DT:12:1:3 2 WITHDRAW EXPIRES 60
@@ -381,8 +381,8 @@ include a contact prefix from your own observation; a hint grants its recipient
 no contact knowledge or targeting permission. Orders stand until replaced,
 released or completed; an optional expiry suffix limits them in IC seconds.
 
-CONCENTRATE is the focus-fire order: you name one contact, and every unit
-ordered concentrates on it. `ALL CONCENTRATE BK` goes to the whole roster in one
+FOCUS is the focus-fire order: you name one contact, and every unit
+ordered concentrates on it. `ALL FOCUS BK` goes to the whole roster in one
 line, and a numbered slot takes it too. The contact is one in your own cockpit
 inside a running field, by its designator, and you must have identified it: a
 provisional number such as X2 is yours alone, and no other unit could find it.
@@ -396,9 +396,9 @@ a unit that was holding holds again. The order hands nobody a contact: each unit
 finds the named contact in what it sees itself. It takes no HOLD FIRE and no
 EXPIRES: it ends with its contact, or when you order otherwise. If the leader
 who gave the order a unit goes back to has since gone away, the unit goes back
-to a HOLD instead. The word
-is CONCENTRATE and not FOCUS because `+focus` is the command that takes a
-console.
+to a HOLD instead. `+focus` is
+a different thing, the command that takes a console; FOCUS here is only ever
+the second word of an ORDER line.
 
 POSTURE sets the standing word of another player's unit on the roster: RETURN,
 GUARD or HOLD, what the unit's mind does when its player is not at its controls
@@ -417,7 +417,7 @@ given from an OOC room.
 
 Sending requires current leadership, physical station control and command rights
 for every selected unit. Admission checks the entire `ALL` set before sending;
-`ALL CONCENTRATE` alone is sent to the units that pass and refused only when none
+`ALL FOCUS` alone is sent to the units that pass and refused only when none
 does.
 For the usual mission lending arrangement, use `+sortie/command-grants` after
 activation. Each printed `@unitgrant/json` command lends command permission for

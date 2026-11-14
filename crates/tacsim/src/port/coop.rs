@@ -716,6 +716,10 @@ pub fn helm_holder(w: &World, hull: ObjId) -> Option<ObjId> {
         PrincipalId::Object(owner) if asset.lifecycle == mush_economy::AssetLifecycle::Active => {
             Some(*owner)
         }
+        // Doc 47 cut CO.9: an organization's commissioned ship is commanded by the member
+        // flying her, while they still may.
+        PrincipalId::Organization(_) => crate::port::owned::org_flyer(w, hull)
+            .filter(|flyer| crate::port::owned::may_take_out(w, hull, *flyer)),
         _ => None,
     }
 }

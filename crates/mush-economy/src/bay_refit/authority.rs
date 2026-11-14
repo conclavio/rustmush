@@ -2,16 +2,12 @@
 //! is required for fresh acceptance, never inherited as the requester's
 //! identity and never re-required for already accepted fixed work.
 use super::plans::FundingIntent;
-use super::{
-    BayOfferAttribution, BayOrderAttribution, BayOwnerAuthority, BayPaymentPolicy,
-    BayRefitError as Error, BaySubject,
-};
+use super::{BayOwnerAuthority, BayPaymentPolicy, BayRefitError as Error, BaySubject};
 use crate::core_integration::ScopedCoreAccount;
 use crate::{
-    Account, AccountStatus, AssetLifecycle, EconomicAsset, EconomyStore, InstrumentDef,
-    InstrumentKind, InstrumentStatus,
+    AccountStatus, AssetLifecycle, EconomicAsset, EconomyStore, InstrumentKind, InstrumentStatus,
 };
-use mush_core::{ClockStamp, CommitToken, DefinitionRef, Flags, ObjId, ObjKind, World};
+use mush_core::{CommitToken, DefinitionRef, Flags, ObjId, ObjKind, World};
 use mush_org::{AuthRequest, CapabilityId, OrgStatus, OrgStore, PrincipalId, ScopeStatus};
 use std::{
     any::TypeId,
@@ -88,16 +84,8 @@ impl BayRefitConfig {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct CurrentFacts {
-    pub accounts: Vec<Account>,
-    pub instruments: Vec<InstrumentDef>,
-    pub titles: Vec<EconomicAsset>,
-    pub supplier: Option<BayOfferAttribution>,
-    pub order: Option<BayOrderAttribution>,
-    pub at: ClockStamp,
-    pub utc: i64,
-}
+/// The live facts, `crate::refit_twin::CurrentFacts` for this leg.
+pub(super) type CurrentFacts = crate::refit_twin::CurrentFacts<crate::refit_twin::Bay>;
 fn owned<T: 'static>(w: &World, owner: &str) -> Result<(), Error> {
     if w.module_state_owner(TypeId::of::<T>())
         .is_none_or(|o| o.as_str() != owner)

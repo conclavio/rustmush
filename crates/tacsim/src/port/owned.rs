@@ -15,6 +15,9 @@
 //! - **Who reaches the helm** (§4.13): a hull titled to the pilot, or to an organization the pilot
 //!   `acts_for` (`mush_economy::acts_for`), lowest id first (`helm_hulls`). A delegate without
 //!   office waits on doc 27 Q-A1; until then an organization's hulls are its officers'.
+//!   Doc 47 cut CO.9 adds the pilot without office: a holder of `unit.deploy` on the title's
+//!   scope (`may_take_out`), and one member at a time flies an organization's ship
+//!   (`org_flyer`).
 //!
 //! Each document is written whole through `put_owned` / `put_provenance`, the works
 //! contract's shape; an unreadable one is held (its hull reads as no register row) until staff
@@ -408,12 +411,84 @@ pub fn titled_for(w: &World, obj: ObjId, pilot: ObjId) -> bool {
     }
 }
 
-/// **The commissioned ships `pilot` may helm** (§4.13), lowest id first.
+/// **Whether `pilot` may take `hull` out** (doc 47 cut CO.9): [`titled_for`], or, for a hull
+/// titled to an organization, a holder of `unit.deploy` by the organization path — a grant of
+/// that word, on a scope holding the title's, by the organization that holds the title
+/// (`mush_org::unit_authority::reader::authorize_in_world`, the bay's `unit.maintain_refit`
+/// precedent). So a House can let a member fly its hull without letting them spend its
+/// treasury. The asset must stand (`Active`, its owner and scope live).
+#[must_use]
+pub fn may_take_out(w: &World, hull: ObjId, pilot: ObjId) -> bool {
+    if titled_for(w, hull, pilot) {
+        return true;
+    }
+    let organization = w
+        .module_state::<EconomyStore>()
+        .and_then(|economy| economy.snapshot().asset(hull))
+        .is_some_and(|asset| matches!(asset.title_owner, PrincipalId::Organization(_)));
+    organization
+        && mush_org::unit_authority::reader::authorize_in_world(
+            w,
+            &mush_economy::unit_authority::EconomyUnitAuthorityFacts::new(w),
+            pilot,
+            hull,
+            mush_org::unit_authority::UnitCapability::Deploy,
+        )
+}
+
+/// **Whether `actor` may trade `hull`'s hold** (doc 47 cut CO.9): a commissioned ship titled
+/// to an organization trades only for one who holds her title ([`titled_for`]: an officer), not
+/// for a pilot who [`may_take_out`] her by `unit.deploy` alone. Any other hull: yes (the caller's
+/// helm check decides).
+#[must_use]
+pub fn may_trade_hold(w: &World, hull: ObjId, actor: ObjId) -> bool {
+    let organization = ship_row(w, hull).is_some()
+        && w.module_state::<EconomyStore>()
+            .and_then(|economy| economy.snapshot().asset(hull))
+            .is_some_and(|asset| matches!(asset.title_owner, PrincipalId::Organization(_)));
+    !organization || titled_for(w, hull, actor)
+}
+
+/// **Who is flying an organization's commissioned ship** (doc 47 cut CO.9): the pilot of her
+/// filed passage, else, while she is not docked, the pilot of the passage she left under — read
+/// from her sailing plan (`tacsim:voyage:{hull}`), never stored apart. `None` for a ship that is
+/// not titled to an organization, and for one docked with nothing filed: then any member who
+/// [`may_take_out`] her may.
+#[must_use]
+pub fn org_flyer(w: &World, hull: ObjId) -> Option<ObjId> {
+    ship_row(w, hull)?;
+    let economy = w.module_state::<EconomyStore>()?;
+    let asset = economy.snapshot().asset(hull)?;
+    if !matches!(asset.title_owner, PrincipalId::Organization(_)) {
+        return None;
+    }
+    let crate::port::voyage::VoyageState::Present(voyage) =
+        w.module_state::<TacsimStore>()?.voyage_state(hull)
+    else {
+        return None;
+    };
+    if let Some(pending) = &voyage.pending {
+        return Some(pending.pilot);
+    }
+    let docked = matches!(
+        crate::port::ship::berth_of(w, hull),
+        crate::port::ship::Berth::Docked { .. }
+    );
+    voyage
+        .departed
+        .as_ref()
+        .filter(|_| !docked)
+        .map(|departed| departed.pilot)
+}
+
+/// **The commissioned ships `pilot` may helm** (§4.13), lowest id first: those they
+/// [`may_take_out`], less an organization's ship another member is flying ([`org_flyer`]).
 #[must_use]
 pub fn helm_hulls(w: &World, pilot: ObjId) -> Vec<ObjId> {
     ships(w)
         .into_iter()
-        .filter(|hull| titled_for(w, *hull, pilot))
+        .filter(|hull| may_take_out(w, *hull, pilot))
+        .filter(|hull| org_flyer(w, *hull).is_none_or(|flyer| flyer == pilot))
         .collect()
 }
 

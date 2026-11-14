@@ -29,7 +29,7 @@ fn stamp(at: i64) -> ClockStamp {
         at,
     }
 }
-fn reference(o: &str, k: &str, id: &str, version: u32) -> TestResult<DefinitionRef> {
+pub(super) fn reference(o: &str, k: &str, id: &str, version: u32) -> TestResult<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new(o)?,
         DefinitionDescriptor::new(
@@ -41,14 +41,14 @@ fn reference(o: &str, k: &str, id: &str, version: u32) -> TestResult<DefinitionR
     )?)
 }
 
-struct Defs {
-    participants: [DefinitionRef; 3],
-    actions: [DefinitionRef; 4],
+pub(super) struct Defs {
+    pub(super) participants: [DefinitionRef; 3],
+    pub(super) actions: [DefinitionRef; 4],
     policy: Value,
     component: Value,
 }
 
-fn defs() -> TestResult<Defs> {
+pub(super) fn defs() -> TestResult<Defs> {
     let participants = [
         reference("industry", "owner_participant", "core_production", 3)?,
         reference("economy", "owner_participant", "initial_filing", 1)?,
@@ -135,14 +135,14 @@ fn identity(d: &Defs, index: usize, commit: CommitToken) -> RegisteredTxnIdentit
 }
 
 /// One order of the walk: its number, admission time, journal sequence, commits and parts.
-struct Order {
-    n: u64,
-    at: i64,
-    journal: u64,
-    byte: u8,
-    revision: u64,
-    incoming: u32,
-    displaced: Option<u32>,
+pub(super) struct Order {
+    pub(super) n: u64,
+    pub(super) at: i64,
+    pub(super) journal: u64,
+    pub(super) byte: u8,
+    pub(super) revision: u64,
+    pub(super) incoming: u32,
+    pub(super) displaced: Option<u32>,
 }
 
 impl Order {
@@ -218,7 +218,7 @@ fn row_lines(snap: &mut Snapshot, r: &Row) -> TestResult {
     Ok(())
 }
 
-fn accept(
+pub(super) fn accept(
     snap: &mut Snapshot,
     rig: &mut kit::Rig,
     d: &Defs,
@@ -609,7 +609,7 @@ fn identity_section(snap: &mut Snapshot, d: &Defs) -> TestResult {
     )
 }
 
-fn rig(d: &Defs) -> TestResult<kit::Rig> {
+pub(super) fn rig(d: &Defs) -> TestResult<kit::Rig> {
     kit::Rig::new(registry(d)?, validate_changes, "core refit", Vec::new())
 }
 

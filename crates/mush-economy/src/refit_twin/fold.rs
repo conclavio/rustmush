@@ -1,5 +1,5 @@
-//! Exact sparse native fitting fold delta; this purpose never mutates assets.
-use super::refused;
+//! Exact sparse native fee fold delta; this purpose never mutates assets.
+use super::{Leg, refused};
 use crate::fold::FoldState;
 use crate::record::HoldEffectKind;
 use crate::{AccountId, EconomicTransaction, Hold};
@@ -7,9 +7,9 @@ use mush_core::participant::ParticipantError;
 use std::collections::BTreeSet;
 /// Only affected fold entries are copied. A large retained journal is never
 /// cloned merely to preflight one bounded purchase.
-pub(super) struct RefitMoneyFold {
+pub(super) struct MoneyFold<M: Leg> {
     before: FoldBefore,
-    history: super::receipt::PreparedHistory,
+    history: super::receipt::PreparedHistory<M>,
     accounts: Vec<FoldAccount>,
     hold: Hold,
     terminal_at: Option<i64>,
@@ -33,13 +33,13 @@ struct FoldAccount {
     running: Option<i128>,
     touches: u64,
 }
-impl RefitMoneyFold {
+impl<M: Leg> MoneyFold<M> {
     pub(super) fn prepare(
         state: &FoldState,
         tx: &EconomicTransaction,
     ) -> Result<Self, ParticipantError> {
         let [effect] = tx.hold_effects.as_slice() else {
-            return Err(refused());
+            return Err(refused::<M>());
         };
         if tx.lines.len() > 2
             || !tx.asset_effects.is_empty()
@@ -47,12 +47,12 @@ impl RefitMoneyFold {
             || tx.consumed_approval.is_some()
             || tx.reverses.is_some()
         {
-            return Err(refused());
+            return Err(refused::<M>());
         }
         let mut touched = BTreeSet::from([effect.hold.account]);
         for line in &tx.lines {
             if !touched.insert(line.account) && line.account != effect.hold.account {
-                return Err(refused());
+                return Err(refused::<M>());
             }
         }
         let mut before_accounts = Vec::with_capacity(touched.len());
@@ -62,22 +62,31 @@ impl RefitMoneyFold {
             let last = state.last_touch.get(&id).copied();
             let touches = state.touches.get(&id).copied();
             before_accounts.push((id, running, last, touches));
-            let delta = tx
-                .lines
-                .iter()
-                .filter(|line| line.account == id)
-                .try_fold(0_i128, |total, line| {
-                    total.checked_add(line.delta.widen()).ok_or_else(refused)
-                })?;
+            let delta = tx.lines.iter().filter(|line| line.account == id).try_fold(
+                0_i128,
+                |total, line| {
+                    total
+                        .checked_add(line.delta.widen())
+                        .ok_or_else(refused::<M>)
+                },
+            )?;
             accounts.push(FoldAccount {
                 id,
                 running: tx
                     .lines
                     .iter()
                     .any(|line| line.account == id)
-                    .then(|| running.unwrap_or(0).checked_add(delta).ok_or_else(refused))
+                    .then(|| {
+                        running
+                            .unwrap_or(0)
+                            .checked_add(delta)
+                            .ok_or_else(refused::<M>)
+                    })
                     .transpose()?,
-                touches: touches.unwrap_or(0).checked_add(1).ok_or_else(refused)?,
+                touches: touches
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or_else(refused::<M>)?,
             });
         }
         let before = FoldBefore {
@@ -100,9 +109,9 @@ impl RefitMoneyFold {
             .held
             .unwrap_or(0)
             .checked_add(signed)
-            .ok_or_else(refused)?;
+            .ok_or_else(refused::<M>)?;
         Ok(Self {
-            history: state.refit_receipts.prepare(tx).map_err(|_| refused())?,
+            history: M::receipts(state).prepare(tx).map_err(|_| refused::<M>())?,
             max_hold_id: Some(
                 state
                     .max_hold_id
@@ -118,7 +127,7 @@ impl RefitMoneyFold {
         })
     }
     pub(super) fn matches(&self, state: &FoldState) -> bool {
-        self.history.matches(&state.refit_receipts)
+        self.history.matches(M::receipts(state))
             && self.before.max_hold_id == state.max_hold_id
             && self.before.max_txid == state.max_txid
             && self.before.covered == state.covered_seq
@@ -137,7 +146,7 @@ impl RefitMoneyFold {
                 })
     }
     pub(super) fn apply(self, state: &mut FoldState) {
-        self.history.apply(&mut state.refit_receipts);
+        self.history.apply(M::receipts_mut(state));
         // Store the already checked result, not fresh post-publication arithmetic.
         for account in self.accounts {
             if let Some(running) = account.running {

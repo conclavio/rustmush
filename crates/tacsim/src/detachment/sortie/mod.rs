@@ -35,16 +35,16 @@ pub use surface::SurfaceCrew;
 pub use work::{FieldStep, FieldWork};
 
 /// **The focus-fire order's usage** (doc 44 unit MW.14c).
-pub const CONCENTRATE_USAGE: &str =
-    "Use <slot|ALL> CONCENTRATE <contact>: one contact of your own scope, by its designator.";
-/// A `CONCENTRATE` naming a contact its leader has not identified (doc 44 unit MW.14c).
-pub const CONCENTRATE_UNIDENTIFIED: &str = "CONCENTRATE needs a contact you have identified: a provisional number is yours alone, and no other unit could find it.";
-/// A `CONCENTRATE` naming nothing in its leader's own scope, or given off a running field (doc
+pub const FOCUS_USAGE: &str =
+    "Use <slot|ALL> FOCUS <contact>: one contact of your own scope, by its designator.";
+/// A `FOCUS` naming a contact its leader has not identified (doc 44 unit MW.14c).
+pub const FOCUS_UNIDENTIFIED: &str = "FOCUS needs a contact you have identified: a provisional number is yours alone, and no other unit could find it.";
+/// A `FOCUS` naming nothing in its leader's own scope, or given off a running field (doc
 /// 44 unit MW.14c).
-pub const CONCENTRATE_NO_CONTACT: &str =
-    "No such contact in your own scope. CONCENTRATE names a contact inside a running field.";
-/// A `CONCENTRATE` given an `EXPIRES` (doc 44 unit MW.14c).
-pub const CONCENTRATE_NO_EXPIRY: &str = "CONCENTRATE takes no EXPIRES: it ends when its contact is destroyed or lost, or when you order otherwise.";
+pub const FOCUS_NO_CONTACT: &str =
+    "No such contact in your own scope. FOCUS names a contact inside a running field.";
+/// A `FOCUS` given an `EXPIRES` (doc 44 unit MW.14c).
+pub const FOCUS_NO_EXPIRY: &str = "FOCUS takes no EXPIRES: it ends when its contact is destroyed or lost, or when you order otherwise.";
 /// **`+sortie/orders`' head line over an NPC leader's orders** (doc 44 unit MW.14c).
 pub const NPC_ORDERS_HEAD: &str =
     "Orders your NPC leader gave, oldest first (a reply shows once it has reached the leader):";

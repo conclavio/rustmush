@@ -1,12 +1,15 @@
 #![cfg(test)]
 
 //! Doc 31 cut UD.4b: the bay fee's terms and its fixed plan alphabet. The
+//! bodies are in `crate::refit_twin::tests`, run for the bay here and for the core
+//! refit in `core_refit::tests` (doc 46 CT.7); this file is the bay's rig. The
 //! live hold, capture and release run through the Industry bay provider's
 //! integration rig, which composes this leg with the kernel protocol.
-use super::plans::{self, FundingIntent};
+use super::plans::FundingIntent;
 use super::*;
 use crate::core_integration::ScopedCoreAccount;
-use crate::plan::HoldOp;
+use crate::refit_twin::Bay;
+use crate::refit_twin::tests::{Check, Rig};
 use mush_core::{
     DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef,
     DefinitionRegistryBuilder, ObjId, OwnerId,
@@ -84,169 +87,263 @@ fn intent() -> FundingIntent {
     }
 }
 
-/// The paid actions are the kernel's own: Economy reads the one definition
-/// Industry and the kernel read, under the Industry policy of its bays.
-#[test]
-fn ud4b_the_fee_policy_names_the_kernels_actions() {
-    let p = policy();
-    let industry = p.industry_policy();
-    for (i, action) in mush_core::bay_refit_protocol::ACTIONS.iter().enumerate() {
-        let ours = p.action_descriptor(action).expect("a descriptor");
-        let kernel =
-            mush_core::bay_refit_protocol::action_descriptor(&industry, i).expect("the kernel's");
-        assert_eq!(ours, kernel, "{action}");
+impl Rig for Bay {
+    const OFFER_ACTION: &'static str = OFFER_ACTION;
+    const RESERVATION_SECONDS: i64 = RESERVATION_SECONDS;
+    const PAYER: crate::AccountId = crate::AccountId(9);
+    const FEE: i64 = 12_500;
+    const PROVIDER: crate::AccountId = crate::AccountId(1);
+    const EXCLUSIVE_WHILE_OPEN: bool = true;
+    fn intent() -> FundingIntent {
+        intent()
     }
-    p.action_ref(OFFER_ACTION).expect("Industry's offer");
-    let mut unsorted = policy();
-    unsorted.bays.reverse();
-    assert!(unsorted.validate().is_err(), "bays ascend by facility");
-    let mut free = policy();
-    free.max_fee_minor = 0;
-    assert!(free.validate().is_err());
-    let mut wrong = policy();
-    wrong.recipe = reference("industry", "recipe", "core_refit");
-    assert!(wrong.validate().is_err());
-}
-
-/// The subject's fee is a quote under the policy's ceiling, at one of its
-/// bays, paid by someone other than the bay.
-#[test]
-fn ud4b_the_quote_is_bounded_and_paid_to_its_bay() {
-    let p = policy();
-    let s = subject(&p);
-    s.matches_policy(&p).expect("matches");
-    let over = BaySubject {
-        fee_minor: 50_001,
-        ..s.clone()
-    };
-    assert!(over.matches_policy(&p).is_err());
-    let elsewhere = BaySubject {
-        facility: ObjId(42),
-        ..s.clone()
-    };
-    assert!(elsewhere.matches_policy(&p).is_err());
-    let own = BaySubject {
-        payer: crate::AccountId(1),
-        ..s.clone()
-    };
-    assert!(own.matches_policy(&p).is_err(), "the bay cannot pay itself");
-    let same = BaySubject {
-        target: s.before.clone(),
-        ..s.clone()
-    };
-    assert!(same.validate().is_err(), "a refit changes the root");
-    let encoded = serde_json::to_value(&s).expect("encodes");
-    assert_eq!(
-        serde_json::from_value::<BaySubject>(encoded).expect("decodes"),
-        s
-    );
-    let mut bad = serde_json::to_value(&s).expect("encodes");
-    bad["fee_minor"] = serde_json::json!(0);
-    assert!(
-        serde_json::from_value::<BaySubject>(bad).is_err(),
-        "decoding validates"
-    );
-}
-
-/// Accept holds the quoted fee for the order; Install captures exactly it to
-/// the bay's provider; Cancel releases it; each under its own key.
-#[test]
-fn ud4b_the_plans_hold_capture_and_release_the_quote() {
-    let intent = intent();
-    let p = &intent.policy;
-    let accept = CommitToken::from_bytes([10; 16]);
-    let funding = plans::funding(
-        &intent,
-        accept,
-        &p.action_ref(ACCEPT_ACTION).expect("accept"),
-    )
-    .expect("a funding plan");
-    assert_eq!(funding.idempotency.namespace, NAMESPACE);
-    assert!(funding.requested_lines.is_empty());
-    let [
-        HoldOp::Place {
-            account,
-            amount,
-            purpose,
-            ..
-        },
-    ] = funding.hold_ops.as_slice()
-    else {
-        panic!("one hold placed");
-    };
-    assert_eq!((*account, amount.minor()), (crate::AccountId(9), 12_500));
-    assert_eq!(
-        purpose,
-        &crate::HoldPurpose::Reservation {
-            kind: HOLD_PURPOSE.into(),
-            id: 1
+    fn kernel_agrees(p: &BayPaymentPolicy) {
+        let industry = p.industry_policy();
+        for (i, action) in mush_core::bay_refit_protocol::ACTIONS.iter().enumerate() {
+            let ours = p.action_descriptor(action).expect("a descriptor");
+            let kernel = mush_core::bay_refit_protocol::action_descriptor(&industry, i)
+                .expect("the kernel's");
+            assert_eq!(ours, kernel, "{action}");
         }
-    );
-    assert!(
-        plans::funding(
-            &intent,
-            accept,
-            &p.action_ref(CANCEL_ACTION).expect("cancel")
+        p.action_ref(OFFER_ACTION).expect("Industry's offer");
+    }
+    fn validate_policy(p: &BayPaymentPolicy) -> Result<(), BayRefitError> {
+        p.validate()
+    }
+    fn validate_subject(s: &BaySubject) -> Result<(), BayRefitError> {
+        s.validate()
+    }
+    fn bad_policies(p: &BayPaymentPolicy) -> Vec<(&'static str, BayPaymentPolicy)> {
+        let mut unsorted = p.clone();
+        unsorted.bays.reverse();
+        let mut free = p.clone();
+        free.max_fee_minor = 0;
+        let mut wrong = p.clone();
+        wrong.recipe = reference("industry", "recipe", "core_refit");
+        vec![
+            ("bays ascend by facility", unsorted),
+            ("a fee ceiling of nothing", free),
+            ("the core refit's recipe", wrong),
+        ]
+    }
+    fn bad_subjects(s: &BaySubject) -> Vec<(&'static str, Check, BaySubject)> {
+        vec![
+            (
+                "over the ceiling",
+                Check::Policy,
+                BaySubject {
+                    fee_minor: 50_001,
+                    ..s.clone()
+                },
+            ),
+            (
+                "a bay the policy does not have",
+                Check::Policy,
+                BaySubject {
+                    facility: ObjId(42),
+                    ..s.clone()
+                },
+            ),
+            (
+                "the bay cannot pay itself",
+                Check::Policy,
+                BaySubject {
+                    payer: crate::AccountId(1),
+                    ..s.clone()
+                },
+            ),
+            (
+                "a refit changes the root",
+                Check::Validate,
+                BaySubject {
+                    target: s.before.clone(),
+                    ..s.clone()
+                },
+            ),
+        ]
+    }
+    fn bad_wire(wire: &mut serde_json::Value) {
+        wire["fee_minor"] = serde_json::json!(0);
+    }
+    fn spent(s: &BaySubject) -> Vec<CommitToken> {
+        vec![s.offer]
+    }
+    fn rival(i: &FundingIntent) -> FundingIntent {
+        let mut r = i.clone();
+        r.subject.order = 2;
+        r.subject.offer = CommitToken::from_bytes([5; 16]);
+        r.supplier.operation = r.subject.offer;
+        r
+    }
+    fn elsewhere(i: &FundingIntent) -> FundingIntent {
+        let mut r = i.clone();
+        r.subject.hull = ObjId(98);
+        r
+    }
+    fn bad_suppliers(i: &FundingIntent) -> Vec<(&'static str, BayOfferAttribution)> {
+        let s = &i.supplier;
+        vec![
+            (
+                "another offer",
+                BayOfferAttribution {
+                    operation: CommitToken::from_bytes([6; 16]),
+                    ..s.clone()
+                },
+            ),
+            (
+                "another offer's digest",
+                BayOfferAttribution {
+                    digest: DefinitionDigest::from_bytes([6; 32]),
+                    ..s.clone()
+                },
+            ),
+            (
+                "observed after the acceptance",
+                BayOfferAttribution {
+                    observed_ic: stamp(1),
+                    ..s.clone()
+                },
+            ),
+            (
+                "a window other than five minutes",
+                BayOfferAttribution {
+                    expires_utc: s.observed_utc + 301,
+                    ..s.clone()
+                },
+            ),
+        ]
+    }
+    fn other_site() -> (FundingIntent, crate::AccountId, i64) {
+        let mut i = intent();
+        i.policy.bays = vec![site(40, 1), site(41, 2)];
+        i.subject.facility = ObjId(41);
+        i.subject.fee_minor = 20_000;
+        i.subject.policy = i.policy.digest().expect("a digest");
+        i.supplier.action = i.policy.action_ref(OFFER_ACTION).expect("the offer");
+        (i, crate::AccountId(2), 20_000)
+    }
+    fn config(i: &FundingIntent) -> BayRefitConfig {
+        BayRefitConfig::new(
+            i.policy.clone(),
+            reference("industry", "owner_participant", "bay_refit"),
+            std::sync::Arc::new(Nothing),
         )
-        .is_err(),
-        "funding is Accept's alone"
+        .expect("a config")
+    }
+}
+
+/// An Industry that has acknowledged nothing.
+struct Nothing;
+impl BayOwnerAuthority for Nothing {
+    fn acknowledged_offer(
+        &self,
+        _: &mush_core::World,
+        _: &BaySubject,
+    ) -> Result<BayOfferAttribution, BayRefitError> {
+        Err(BayRefitError::Unavailable)
+    }
+    fn acknowledged_ready_order(
+        &self,
+        _: &mush_core::World,
+        _: &BaySubject,
+    ) -> Result<BayOrderAttribution, BayRefitError> {
+        Err(BayRefitError::Unavailable)
+    }
+}
+
+crate::refit_twin::tests::instantiate!(Bay);
+
+/// Every identity constant of the bay leg against a literal. The shared rig and owner read
+/// the constants, so a moved constant moves both sides of an ordinary test; this, and the CT.0
+/// snapshot, is where the second copy of each string lives. The two records whose field names
+/// are the leg's own are held to their JSON here as well.
+#[test]
+fn bay_identity_strings_hold_todays_bytes() {
+    use crate::refit_twin::Leg;
+    use crate::refit_twin::plans::Phase;
+    assert_eq!(<Bay as Leg>::ACCEPT_ACTION, "accept_bay_refit");
+    assert_eq!(<Bay as Leg>::INSTALL_ACTION, "install_bay_refit");
+    assert_eq!(<Bay as Leg>::CANCEL_ACTION, "cancel_bay_refit");
+    assert_eq!(<Bay as Leg>::NAMESPACE, "industry.bay_refit.v1");
+    assert_eq!(<Bay as Leg>::HOLD_PURPOSE, "industry.bay_refit");
+    assert_eq!(<Bay as Leg>::MAX_ORDERS, 8192);
+    assert_eq!(<Bay as Leg>::HISTORY_BYTES, 16_384);
+    assert_eq!(
+        <Bay as Leg>::REFUSED,
+        "bay refit money or accepted authority disagrees"
     );
-    let hold = crate::HoldId(5);
-    let install = CommitToken::from_bytes([11; 16]);
-    let refit = DefinitionDigest::from_bytes([12; 32]);
-    let captured = plans::terminal(
-        &intent,
-        accept,
-        hold,
-        install,
-        &p.action_ref(INSTALL_ACTION).expect("install"),
-        &stamp(7200),
-        Some(refit),
-    )
-    .expect("an install plan");
-    let lines: Vec<_> = captured
-        .requested_lines
-        .iter()
-        .map(|l| (l.account, l.delta.minor()))
+    assert_eq!(<Bay as Leg>::PLAN_DESCRIPTION, "Bay refit");
+    assert_eq!(<Bay as Leg>::LINE_MEMO, "bay refit");
+    assert_eq!(
+        <Bay as Leg>::HISTORIES_EXPECTING,
+        "bounded distinct bay refit histories"
+    );
+    assert_eq!(<Bay as Leg>::HISTORY_LIMIT, "bay history limit");
+    assert_eq!(
+        <Bay as Leg>::HISTORY_DUPLICATE,
+        "bay history duplicate or limit"
+    );
+    assert_eq!(<Bay as Leg>::HISTORY_KEY, "bay history key");
+    assert_eq!(
+        <Bay as Leg>::INVALID.to_string(),
+        "bay refit evidence is malformed"
+    );
+    assert_eq!(
+        <Bay as Leg>::INTEGRITY.to_string(),
+        "bay refit evidence disagrees"
+    );
+    assert_eq!(
+        <Bay as Leg>::INCOMPLETE.to_string(),
+        "bay refit history is incomplete"
+    );
+    assert_eq!(
+        <Bay as Leg>::CAPACITY.to_string(),
+        "bay refit capacity is exhausted"
+    );
+    assert_eq!(crate::refit_twin::plans::CORRELATION_BYTES, 16_384);
+    let d = DefinitionDigest::from_bytes([1; 32]);
+    assert_eq!(
+        serde_json::to_value(<Bay as Leg>::installed(d)).expect("encodes"),
+        serde_json::json!({"outcome": "installed", "refit": d})
+    );
+    assert_eq!(
+        serde_json::to_value(<Bay as Leg>::cancelled()).expect("encodes"),
+        serde_json::json!({"outcome": "cancelled"})
+    );
+    let at = stamp(7200);
+    let proof = <Bay as Leg>::seal(Phase::Install {
+        format: 1,
+        acceptance: CommitToken::from_bytes([1; 16]),
+        commit: CommitToken::from_bytes([2; 16]),
+        action: <Bay as Leg>::action_ref(
+            &<Bay as Rig>::intent().policy,
+            <Bay as Leg>::INSTALL_ACTION,
+        )
+        .expect("install"),
+        at: at.clone(),
+        part: d,
+    });
+    let wire = serde_json::to_value(&proof).expect("encodes");
+    let keys: Vec<_> = wire
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
         .collect();
     assert_eq!(
-        lines,
+        keys,
         [
-            (crate::AccountId(9), -12_500),
-            (crate::AccountId(1), 12_500)
+            "acceptance",
+            "action",
+            "at",
+            "commit",
+            "format",
+            "phase",
+            "refit"
         ]
     );
-    assert!(matches!(
-        captured.hold_ops.as_slice(),
-        [HoldOp::Capture { hold: h, amount }] if *h == hold && amount.minor() == 12_500
-    ));
-    let released = plans::terminal(
-        &intent,
-        accept,
-        hold,
-        install,
-        &p.action_ref(CANCEL_ACTION).expect("cancel"),
-        &stamp(7200),
-        None,
-    )
-    .expect("a cancel plan");
-    assert!(released.requested_lines.is_empty());
-    assert!(matches!(released.hold_ops.as_slice(), [HoldOp::Release { hold: h }] if *h == hold));
-    assert_ne!(funding.idempotency, captured.idempotency);
-    assert_ne!(captured.idempotency, released.idempotency);
-    assert!(
-        plans::terminal(
-            &intent,
-            accept,
-            hold,
-            install,
-            &p.action_ref(INSTALL_ACTION).expect("install"),
-            &stamp(RESERVATION_SECONDS),
-            Some(refit),
-        )
-        .is_err(),
-        "no install after the reservation lapses"
-    );
+    assert_eq!(wire["phase"], "install");
+    assert_eq!(wire["refit"], serde_json::json!(d));
 }
 
 mod ct0_snapshot;

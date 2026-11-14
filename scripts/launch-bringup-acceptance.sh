@@ -249,6 +249,8 @@ full_run() {
 }
 expect_ready() {
   grep -q 'Registry operators: #[0-9]* ready\.' "$1" || { echo "acceptance: $1 names no operator ready" >&2; return 1; }
+  # Doc 47 cut CO.9: the Active boot seeds every House its own hulls.
+  grep -q 'each House holds 3 hulls of its own' "$1" || { echo "acceptance: $1 seeded the Houses no hulls" >&2; return 1; }
 }
 llm_args=(--no-llm-check)
 if [ "${LLM:-}" = stub ]; then
@@ -311,7 +313,7 @@ if [ "${SEED:-1}" != 0 ]; then
   bringup --seed-only > "$work/bringup-seed.log" 2>&1 || { tail -30 "$work/bringup-seed.log" >&2; exit 1; }
   cat "$work/bringup-seed.log"
   grep -q 'bought licence' "$work/bringup-seed.log" || { echo "acceptance: no House purchase" >&2; exit 1; }
-  grep -q 'handed the 3 Drays back' "$work/bringup-seed.log" || { echo "acceptance: the hulls did not go back" >&2; exit 1; }
+  grep -q 'each House holds 3 hulls of its own' "$work/bringup-seed.log" || { echo "acceptance: the Houses hold no hulls of their own" >&2; exit 1; }
 fi
 
 # --- 6: the switch off.
