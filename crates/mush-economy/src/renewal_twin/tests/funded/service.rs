@@ -1,48 +1,51 @@
 //! Real isolated owner images and complete book reconstruction. These tests do
 //! not substitute data for the Market service intent or paired Roll evidence.
 use super::*;
-use crate::managed_renewal::{
+use crate::renewal_twin::{
     RenewalServiceCloseReason as Reason,
     service::{self as service_proof, ServiceRecord},
 };
 
-fn rows(r: &Rig) -> TestResult<Vec<(String, Vec<u8>)>> {
+fn rows<I: Rig>(r: &Fixture<I>) -> TestResult<Vec<(String, Vec<u8>)>> {
     let mut rows = Vec::new();
-    for operation in r.state.renewal_offers.operations() {
+    for operation in I::book(&r.state).operations() {
         rows.push((
-            history::key(operation),
-            serde_json::to_vec(r.state.renewal_offers.get(operation).ok_or("origin")?)?,
+            history::key::<I>(operation),
+            serde_json::to_vec(I::book(&r.state).get(operation).ok_or("origin")?)?,
         ));
-        if let Some(record) = r.state.renewal_offers.service(operation) {
-            rows.push((service_proof::key(operation), serde_json::to_vec(record)?));
+        if let Some(record) = I::book(&r.state).service(operation) {
+            rows.push((
+                service_proof::key::<I>(operation),
+                serde_json::to_vec(record)?,
+            ));
         }
     }
     Ok(rows)
 }
-fn cold(r: &mut Rig) -> TestResult {
+fn cold<I: Rig>(r: &mut Fixture<I>) -> TestResult {
     let mut documents = rows(r)?;
     documents.reverse();
-    r.state.renewal_offers = OfferBook::from_documents_with_renewals(
+    *I::book_mut(&mut r.state) = OfferBook::<I>::from_documents_with_renewals(
         &r.state.snapshot,
         &documents,
-        &r.state.fold.renewal_receipts,
+        I::receipts(&r.state.fold),
     )?;
     Ok(())
 }
-fn ready() -> TestResult<Box<Rig>> {
-    let mut r = Rig::new()?;
+fn ready<I: Rig>() -> TestResult<Box<Fixture<I>>> {
+    let mut r = Fixture::<I>::new()?;
     r.publish()?;
-    r.state.fold.renewal_receipts.finish_replay()?;
+    I::receipts_mut(&mut r.state.fold).finish_replay()?;
     cold(&mut r)?;
     Ok(r)
 }
-fn changed_clock(r: &mut Rig) -> TestResult {
+fn changed_clock<I: Rig>(r: &mut Fixture<I>) -> TestResult {
     let next = r.world.next_world_timeline_epoch(2)?;
     r.world.append_world_timeline_epoch(next)?;
     Ok(())
 }
-fn service_context<'a>(
-    r: &'a Rig,
+fn service_context<'a, I: Rig>(
+    r: &'a Fixture<I>,
     action: &'a DefinitionRef,
     principal: &'a mush_core::PrincipalId,
     commit: u64,
@@ -55,17 +58,17 @@ fn service_context<'a>(
         commit: token(commit),
     }
 }
-fn prepare(r: &Rig, reason: Reason) -> TestResult<Prepared> {
-    let action = action(SERVICE_CLOSE_ACTION, 1)?;
+fn prepare<I: Rig>(r: &Fixture<I>, reason: Reason) -> TestResult<Prepared<I>> {
+    let action = action(I::SERVICE_CLOSE_ACTION, 1)?;
     let principal = mush_core::PrincipalId::Object { id: GOD };
-    Ok(install::service_close(
+    Ok(install::service_close::<I>(
         &r.state,
         &service_context(r, &action, &principal, 4),
         token(3),
         reason,
     )?)
 }
-fn publish(r: &mut Rig, reason: Reason) -> TestResult<Vec<ReplayWrite>> {
+fn publish<I: Rig>(r: &mut Fixture<I>, reason: Reason) -> TestResult<Vec<ReplayWrite>> {
     let (output, patch, writes) = prepare(r, reason)?;
     check_eq!(output.closed(), None);
     check_eq!(
@@ -73,21 +76,22 @@ fn publish(r: &mut Rig, reason: Reason) -> TestResult<Vec<ReplayWrite>> {
         reason
     );
     check_eq!(output.commit(), token(4));
-    let action = action(SERVICE_CLOSE_ACTION, 1)?;
+    let action = action(I::SERVICE_CLOSE_ACTION, 1)?;
     let principal = mush_core::PrincipalId::Object { id: GOD };
     patch.recheck_in(&r.state, &service_context(r, &action, &principal, 4))?;
     patch.bind(&mut r.state)?.apply();
     Ok(writes)
 }
 
-#[test]
-fn service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay() -> TestResult {
+pub(crate) fn service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay<
+    I: Rig,
+>() -> TestResult {
     for reason in [Reason::DeadlineReached, Reason::ClockInvalidated] {
-        let mut r = ready()?;
-        let origin = serde_json::to_vec(r.state.renewal_offers.get(token(3)).ok_or("origin")?)?;
+        let mut r = ready::<I>()?;
+        let origin = serde_json::to_vec(I::book(&r.state).get(token(3)).ok_or("origin")?)?;
         let before = r.state.clone();
         match reason {
-            Reason::DeadlineReached => r.world.set_now(r.offer.terms.expires_at.at),
+            Reason::DeadlineReached => r.world.set_now(r.offer.terms().expires_at().at),
             Reason::ClockInvalidated => changed_clock(&mut r)?,
         }
         let writes = publish(&mut r, reason)?;
@@ -95,10 +99,10 @@ fn service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay()
         check_eq!(r.state.next_contract, before.next_contract);
         check_eq!(
             origin,
-            serde_json::to_vec(r.state.renewal_offers.get(token(3)).ok_or("origin")?)?
+            serde_json::to_vec(I::book(&r.state).get(token(3)).ok_or("origin")?)?
         );
         check_eq!(writes.len(), 2);
-        check!(!writes.iter().any(|w|matches!(w,ReplayWrite::ModuleJsonSet{key,..} if key.as_str().starts_with(history::PREFIX))));
+        check!(!writes.iter().any(|w|matches!(w,ReplayWrite::ModuleJsonSet{key,..} if key.as_str().starts_with(I::OFFER_PREFIX))));
         let contract = r
             .state
             .snapshot
@@ -115,7 +119,7 @@ fn service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay()
             }
         );
         cold(&mut r)?;
-        let view = r.state.renewal_audit()?.get(token(3))?;
+        let view = audit::read::<I>(&r.state)?.get(token(3))?;
         check!(view.history().is_none() && view.closure().is_none());
         check_eq!(
             view.service_closed().ok_or("service history")?.reason(),
@@ -126,34 +130,39 @@ fn service_both_causes_preserve_origin_bytes_and_all_money_through_cold_replay()
     Ok(())
 }
 
-#[test]
-fn service_cleans_unavailable_buyer_but_never_borrows_buyer_or_funded_authority() -> TestResult {
-    let mut r = ready()?;
+pub(crate) fn service_cleans_unavailable_buyer_but_never_borrows_buyer_or_funded_authority<
+    I: Rig,
+>() -> TestResult {
+    let mut r = ready::<I>()?;
     r.world
-        .get_mut(r.offer.terms.buyer.acting_character())
+        .get_mut(r.offer.terms().buyer().acting_character())
         .ok_or("buyer")?
         .flags
         .insert(mush_core::Flags::GOING);
-    r.world.set_now(r.offer.terms.expires_at.at);
-    let action = action(SERVICE_CLOSE_ACTION, 1)?;
+    r.world.set_now(r.offer.terms().expires_at().at);
+    let action = action(I::SERVICE_CLOSE_ACTION, 1)?;
     let principal = mush_core::PrincipalId::Object { id: GOD };
     let mut context = service_context(&r, &action, &principal, 4);
-    context.actor = r.offer.terms.buyer.acting_character();
-    check!(install::service_close(&r.state, &context, token(3), Reason::DeadlineReached).is_err());
+    context.actor = r.offer.terms().buyer().acting_character();
+    check!(
+        install::service_close::<I>(&r.state, &context, token(3), Reason::DeadlineReached).is_err()
+    );
     context.actor = GOD;
     context.principal = &r.principal;
-    check!(install::service_close(&r.state, &context, token(3), Reason::DeadlineReached).is_err());
+    check!(
+        install::service_close::<I>(&r.state, &context, token(3), Reason::DeadlineReached).is_err()
+    );
     publish(&mut r, Reason::DeadlineReached)?;
-    let (mut funded, _, _) = funded(true)?;
+    let (mut funded, _, _) = funded::<I>(true)?;
     cold(&mut funded)?;
-    funded.world.set_now(funded.offer.terms.expires_at.at);
+    funded.world.set_now(funded.offer.terms().expires_at().at);
     check!(prepare(&funded, Reason::DeadlineReached).is_err());
     Ok(())
 }
 
-#[test]
-fn service_clocks_and_prepared_owner_fences_refuse_wrong_or_changed_evidence() -> TestResult {
-    let mut r = ready()?;
+pub(crate) fn service_clocks_and_prepared_owner_fences_refuse_wrong_or_changed_evidence<I: Rig>()
+-> TestResult {
+    let mut r = ready::<I>()?;
     check!(prepare(&r, Reason::DeadlineReached).is_err());
     check!(prepare(&r, Reason::ClockInvalidated).is_err());
     changed_clock(&mut r)?;
@@ -163,7 +172,7 @@ fn service_clocks_and_prepared_owner_fences_refuse_wrong_or_changed_evidence() -
     );
     check!(prepare(&r, Reason::DeadlineReached).is_err());
     let (_, patch, _) = prepare(&r, Reason::ClockInvalidated)?;
-    let action = action(SERVICE_CLOSE_ACTION, 1)?;
+    let action = action(I::SERVICE_CLOSE_ACTION, 1)?;
     let principal = mush_core::PrincipalId::Object { id: GOD };
     r.world.set_now(999);
     check!(
@@ -196,20 +205,20 @@ fn service_clocks_and_prepared_owner_fences_refuse_wrong_or_changed_evidence() -
     Ok(())
 }
 
-#[test]
-fn service_history_rejects_missing_orphan_duplicate_crossed_and_funded_proofs() -> TestResult {
-    let mut r = ready()?;
+pub(crate) fn service_history_rejects_missing_orphan_duplicate_crossed_and_funded_proofs<I: Rig>()
+-> TestResult {
+    let mut r = ready::<I>()?;
     changed_clock(&mut r)?;
     publish(&mut r, Reason::ClockInvalidated)?;
     let good = rows(&r)?;
     let origin = good
         .iter()
-        .find(|(k, _)| k.starts_with(history::PREFIX))
+        .find(|(k, _)| k.starts_with(I::OFFER_PREFIX))
         .ok_or("origin")?
         .clone();
     let proof = good
         .iter()
-        .find(|(k, _)| k.starts_with(service_proof::PREFIX))
+        .find(|(k, _)| k.starts_with(I::SERVICE_PREFIX))
         .ok_or("proof")?
         .clone();
     for docs in [
@@ -218,10 +227,10 @@ fn service_history_rejects_missing_orphan_duplicate_crossed_and_funded_proofs() 
         vec![origin.clone(), proof.clone(), proof.clone()],
     ] {
         check!(
-            OfferBook::from_documents_with_renewals(
+            OfferBook::<I>::from_documents_with_renewals(
                 &r.state.snapshot,
                 &docs,
-                &r.state.fold.renewal_receipts
+                I::receipts(&r.state.fold)
             )
             .is_err()
         );
@@ -229,7 +238,7 @@ fn service_history_rejects_missing_orphan_duplicate_crossed_and_funded_proofs() 
     for (pointer, value) in [
         ("/format", json!(2)),
         ("/operation", json!(token(88))),
-        ("/closure/actor", json!(r.offer.terms.buyer)),
+        ("/closure/actor", json!(r.offer.terms().buyer())),
         ("/closure/reason", json!("expired")),
         ("/closure/at_ic/clock/generation", json!(1)),
         ("/closure/posted_at_utc", json!(999)),
@@ -240,46 +249,49 @@ fn service_history_rejects_missing_orphan_duplicate_crossed_and_funded_proofs() 
         *v.pointer_mut(pointer).ok_or("field")? = value;
         let docs = vec![origin.clone(), (proof.0.clone(), serde_json::to_vec(&v)?)];
         check!(
-            OfferBook::from_documents_with_renewals(
+            OfferBook::<I>::from_documents_with_renewals(
                 &r.state.snapshot,
                 &docs,
-                &r.state.fold.renewal_receipts
+                I::receipts(&r.state.fold)
             )
             .is_err()
         );
     }
-    let (mut paid, _, _) = funded(true)?;
+    let (mut paid, _, _) = funded::<I>(true)?;
     cold(&mut paid)?;
     let mut docs = rows(&paid)?;
     docs.push(proof);
     check!(
-        OfferBook::from_documents_with_renewals(
+        OfferBook::<I>::from_documents_with_renewals(
             &paid.state.snapshot,
             &docs,
-            &paid.state.fold.renewal_receipts
+            I::receipts(&paid.state.fold)
         )
         .is_err()
     );
     Ok(())
 }
 
-#[test]
-fn service_closed_offer_allows_only_fresh_explicit_retry_and_retains_old_proof() -> TestResult {
+pub(crate) fn service_closed_offer_allows_only_fresh_explicit_retry_and_retains_old_proof<
+    I: Rig,
+>() -> TestResult {
     for reason in [Reason::DeadlineReached, Reason::ClockInvalidated] {
-        let mut r = ready()?;
+        let mut r = ready::<I>()?;
         match reason {
-            Reason::DeadlineReached => r.world.set_now(r.offer.terms.expires_at.at),
+            Reason::DeadlineReached => r.world.set_now(r.offer.terms().expires_at().at),
             Reason::ClockInvalidated => changed_clock(&mut r)?,
         }
         publish(&mut r, reason)?;
         let old = rows(&r)?;
-        r.offer.terms.not_before = r.world.world_ic_now();
-        r.offer.terms.expires_at = ClockStamp {
-            clock: r.offer.terms.not_before.clock.clone(),
-            at: r.offer.terms.not_before.at + 100,
+        *I::terms(&mut r.offer).not_before = r.world.world_ic_now();
+        *I::terms(&mut r.offer).expires_at = ClockStamp {
+            clock: r.offer.terms().not_before().clock.clone(),
+            at: r.offer.terms().not_before().at + 100,
         };
-        check!(install::offer(&r.state, &r.context(false, token(6)), r.offer.clone()).is_err());
-        let (_, patch, _) = install::retry(
+        check!(
+            install::offer::<I>(&r.state, &r.context(false, token(6)), r.offer.clone()).is_err()
+        );
+        let (_, patch, _) = install::retry::<I>(
             &r.state,
             &r.context(false, token(6)),
             r.offer.clone(),
@@ -291,9 +303,9 @@ fn service_closed_offer_allows_only_fresh_explicit_retry_and_retains_old_proof()
             check!(rows(&r)?.iter().any(|(k, b)| *k == key && *b == bytes));
         }
         cold(&mut r)?;
-        check_eq!(r.state.renewal_audit()?.len(), 2);
+        check_eq!(audit::read::<I>(&r.state)?.len(), 2);
         check!(
-            install::retry(
+            install::retry::<I>(
                 &r.state,
                 &r.context(false, token(7)),
                 r.offer.clone(),
@@ -305,17 +317,12 @@ fn service_closed_offer_allows_only_fresh_explicit_retry_and_retains_old_proof()
     Ok(())
 }
 
-#[test]
-fn service_complete_boundary_images_do_not_expand_existing_offer_records() -> TestResult {
-    let mut r = Rig::new()?;
-    r.six_roles()?;
+pub(crate) fn service_complete_boundary_images_do_not_expand_existing_offer_records<I: Rig>()
+-> TestResult {
+    let mut r = Fixture::<I>::new()?;
+    I::widen(&mut r)?;
     r.publish()?;
-    let mut origin = r
-        .state
-        .renewal_offers
-        .get(token(3))
-        .ok_or("origin")?
-        .clone();
+    let mut origin = I::book(&r.state).get(token(3)).ok_or("origin")?.clone();
     origin.format = 2;
     origin.operation = token(6);
     origin.attempt = Some(RenewalAttemptV1::BuyerRetry {
@@ -326,7 +333,7 @@ fn service_complete_boundary_images_do_not_expand_existing_offer_records() -> Te
     while low < high {
         let mid = low + (high - low).div_ceil(2);
         let mut candidate = origin.clone();
-        candidate.offer.terms.instrument =
+        *I::terms(&mut candidate.offer).instrument =
             InstrumentId::new(format!("cr{}", "a".repeat(mid))).ok_or("instrument")?;
         candidate.consent_hash = contract(&candidate)?.consent_hash;
         if candidate.validate().is_ok() {
@@ -335,14 +342,14 @@ fn service_complete_boundary_images_do_not_expand_existing_offer_records() -> Te
             high = mid - 1
         }
     }
-    origin.offer.terms.instrument =
+    *I::terms(&mut origin.offer).instrument =
         InstrumentId::new(format!("cr{}", "a".repeat(low))).ok_or("instrument")?;
     origin.consent_hash = contract(&origin)?.consent_hash;
     origin.validate()?;
     let before = serde_json::to_vec(&origin)?;
     let mut over = origin.clone();
-    over.offer.terms.instrument =
-        InstrumentId::new(format!("{}a", origin.offer.terms.instrument)).ok_or("instrument")?;
+    *I::terms(&mut over.offer).instrument =
+        InstrumentId::new(format!("{}a", origin.offer.terms().instrument())).ok_or("instrument")?;
     over.consent_hash = contract(&over)?.consent_hash;
     check!(over.validate().is_err(), "actual prior format2 boundary");
     for reason in [Reason::DeadlineReached, Reason::ClockInvalidated] {
@@ -353,10 +360,10 @@ fn service_complete_boundary_images_do_not_expand_existing_offer_records() -> Te
                 generation: u64::MAX,
             }
         };
-        let closure: RenewalServiceClosureV1 = serde_json::from_value(
-            json!({"format":1,"commit":token(7),"action":action(SERVICE_CLOSE_ACTION,1)?,"actor":GOD,"at_ic":ClockStamp{clock,at:i64::MAX},"posted_at_utc":i64::MAX,"reason":reason}),
+        let closure: RenewalServiceClosureV1<I> = serde_json::from_value(
+            json!({"format":1,"commit":token(7),"action":action(I::SERVICE_CLOSE_ACTION,1)?,"actor":GOD,"at_ic":ClockStamp{clock,at:i64::MAX},"posted_at_utc":i64::MAX,"reason":reason}),
         )?;
-        let record = ServiceRecord {
+        let record = ServiceRecord::<I> {
             format: 1,
             operation: origin.operation,
             closure,
@@ -364,7 +371,7 @@ fn service_complete_boundary_images_do_not_expand_existing_offer_records() -> Te
         let terminal = service_proof::contract(&origin, &record)?;
         let writes = vec![
             crate::registry_filing::json_write(
-                service_proof::key(origin.operation).into(),
+                service_proof::key::<I>(origin.operation).into(),
                 &record,
             )?,
             crate::registry_filing::json_write(

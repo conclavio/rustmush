@@ -20,6 +20,8 @@ use mush_core::participant::ParticipantError;
 use mush_org::OrgScopeId;
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+mod bridge_registration_tests;
 mod subject;
 pub use subject::{RenewalBasisV1, RenewalOffer, RenewalOfferTermsV1};
 
@@ -103,3 +105,5 @@ renewal_twin::entry_points!(crate::renewal_twin::House, ClosedHouseRenewalPlan);
 
 #[cfg(test)]
 mod ct0_snapshot;
+#[cfg(test)]
+mod tests;

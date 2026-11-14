@@ -20,20 +20,10 @@ use mush_core::participant::ParticipantError;
 use mush_org::OrgScopeId;
 use std::collections::BTreeSet;
 
-// What the family's old tests read from this module through `use super::*`.
-#[cfg(test)]
-use crate::contract::{ContractState, EconomicContract};
-#[cfg(test)]
-use crate::{ContractId, EconomicClock, EconomicDeadline};
-#[cfg(test)]
-use mush_core::{ClockStamp, CommitToken, DefinitionDigest, DefinitionRef};
-#[cfg(test)]
-use serde::{Deserialize, Serialize};
-
-mod subject;
-pub use subject::{RenewalBasisV1, RenewalLineageV1, RenewalOffer, RenewalOfferTermsV1};
 #[cfg(test)]
 mod bridge_registration_tests;
+mod subject;
+pub use subject::{RenewalBasisV1, RenewalLineageV1, RenewalOffer, RenewalOfferTermsV1};
 
 impl Issuer for Personal {
     const DRAFT_ACTION: &'static str = "draft_mind_renewal";

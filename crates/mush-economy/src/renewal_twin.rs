@@ -34,8 +34,12 @@ pub(crate) mod history;
 pub(crate) mod install;
 pub(crate) mod service;
 pub use service::{RenewalServiceCloseReason, RenewalServiceClosureV1};
+#[cfg(test)]
+pub(crate) mod bridge_registration_tests;
 pub(crate) mod money_install;
 pub(crate) mod receipt;
+#[cfg(test)]
+pub(crate) mod tests;
 pub(crate) mod wire;
 pub(crate) use funding::ClosedPlan;
 pub use funding::{RenewalFundingOutput, RenewalMoneyRequest, RenewalTerminalOutput};
@@ -512,8 +516,6 @@ macro_rules! entry_points {
         pub type RenewalTerminalReceiptV1 = $crate::renewal_twin::RenewalTerminalReceiptV1<$issuer>;
         pub type RenewalHistory = $crate::renewal_twin::RenewalHistory<$issuer>;
         pub(crate) type $plan = $crate::renewal_twin::ClosedPlan<$issuer>;
-        #[cfg(test)]
-        pub(crate) use $crate::renewal_twin::{action_matches, contract, refused};
 
         pub const SERVICE_CLOSE_ACTION: &str =
             <$issuer as $crate::renewal_twin::Issuer>::SERVICE_CLOSE_ACTION;
@@ -644,128 +646,25 @@ macro_rules! entry_points {
             }
         }
         pub(crate) mod history {
-            #[cfg(test)]
-            pub(crate) use $crate::renewal_twin::history::*;
             pub(crate) type OfferBook = $crate::renewal_twin::history::OfferBook<$issuer>;
-            #[cfg(test)]
-            pub(crate) type OfferRecord = $crate::renewal_twin::history::OfferRecord<$issuer>;
-            #[cfg(test)]
-            pub(crate) const PREFIX: &str = <$issuer as $crate::renewal_twin::Issuer>::OFFER_PREFIX;
-            #[cfg(test)]
-            pub(crate) fn key(operation: mush_core::CommitToken) -> String {
-                $crate::renewal_twin::history::key::<$issuer>(operation)
-            }
         }
         pub(crate) mod install {
-            #[cfg(test)]
-            pub(crate) use $crate::renewal_twin::install::*;
             pub type OfferPatch = $crate::renewal_twin::install::OfferPatch<$issuer>;
             pub type BoundOffer<'a> = $crate::renewal_twin::install::BoundOffer<'a, $issuer>;
-            #[cfg(test)]
-            pub(crate) fn offer(
-                state: &$crate::module::EconomyStore,
-                context: &OfferContext<'_>,
-                request: super::RenewalOffer,
-            ) -> $crate::renewal_twin::OfferPrepared<$issuer> {
-                $crate::renewal_twin::install::offer::<$issuer>(state, context, request)
-            }
-            #[cfg(test)]
-            pub(crate) fn retry(
-                state: &$crate::module::EconomyStore,
-                context: &OfferContext<'_>,
-                request: super::RenewalOffer,
-                previous_operation: mush_core::CommitToken,
-            ) -> $crate::renewal_twin::OfferPrepared<$issuer> {
-                $crate::renewal_twin::install::retry::<$issuer>(
-                    state,
-                    context,
-                    request,
-                    previous_operation,
-                )
-            }
-            #[cfg(test)]
-            pub(crate) fn holder_offer(
-                state: &$crate::module::EconomyStore,
-                context: &OfferContext<'_>,
-                request: super::RenewalOffer,
-                basis: $crate::managed_paid_resale::RenewalHolderBasisV1,
-                previous_operation: Option<mush_core::CommitToken>,
-            ) -> $crate::renewal_twin::OfferPrepared<$issuer> {
-                $crate::renewal_twin::install::holder_offer::<$issuer>(
-                    state,
-                    context,
-                    request,
-                    basis,
-                    previous_operation,
-                )
-            }
-            #[cfg(test)]
-            pub(crate) fn close(
-                state: &$crate::module::EconomyStore,
-                context: &OfferContext<'_>,
-                operation: mush_core::CommitToken,
-                reason: super::UnfundedCloseReason,
-            ) -> $crate::renewal_twin::OfferPrepared<$issuer> {
-                $crate::renewal_twin::install::close::<$issuer>(state, context, operation, reason)
-            }
-            #[cfg(test)]
-            pub(crate) fn service_close(
-                state: &$crate::module::EconomyStore,
-                context: &OfferContext<'_>,
-                operation: mush_core::CommitToken,
-                reason: super::RenewalServiceCloseReason,
-            ) -> $crate::renewal_twin::OfferPrepared<$issuer> {
-                $crate::renewal_twin::install::service_close::<$issuer>(
-                    state, context, operation, reason,
-                )
-            }
         }
         pub(crate) mod money_install {
-            #[cfg(test)]
-            pub(crate) use $crate::renewal_twin::money_install::*;
             pub type RenewalMoneyPatch =
                 $crate::renewal_twin::money_install::RenewalMoneyPatch<$issuer>;
             pub type BoundRenewalMoney<'a> =
                 $crate::renewal_twin::money_install::BoundRenewalMoney<'a, $issuer>;
         }
         pub(crate) mod receipt {
-            #[cfg(test)]
-            pub(crate) use $crate::renewal_twin::receipt::*;
             pub type RenewalReceiptAudit =
                 $crate::renewal_twin::receipt::RenewalReceiptAudit<$issuer>;
-            #[cfg(test)]
-            pub(crate) type RenewalFundingReceiptV1 = super::RenewalFundingReceiptV1;
-            #[cfg(test)]
-            pub(crate) type RenewalTerminalReceiptV1 = super::RenewalTerminalReceiptV1;
         }
         pub(crate) mod service {
-            #[cfg(test)]
-            pub(crate) use $crate::renewal_twin::service::*;
             pub(crate) const PREFIX: &str =
                 <$issuer as $crate::renewal_twin::Issuer>::SERVICE_PREFIX;
-            #[cfg(test)]
-            pub(crate) type ServiceRecord = $crate::renewal_twin::service::ServiceRecord<$issuer>;
-            #[cfg(test)]
-            pub(crate) fn key(operation: mush_core::CommitToken) -> String {
-                $crate::renewal_twin::service::key::<$issuer>(operation)
-            }
-        }
-        #[cfg(test)]
-        pub(crate) mod funding {
-            pub(crate) use $crate::renewal_twin::funding::*;
-            pub(crate) type MoneyOutput = $crate::renewal_twin::funding::MoneyOutput<$issuer>;
-            pub(crate) type MoneyPreparation =
-                $crate::renewal_twin::funding::MoneyPreparation<$issuer>;
-            pub(crate) fn prepare_in(
-                state: &$crate::module::EconomyStore,
-                context: &super::install::OfferContext<'_>,
-                request: RenewalMoneyRequest,
-                transition: Transition,
-            ) -> Result<Box<MoneyPreparation>, mush_core::participant::ParticipantError> {
-                $crate::renewal_twin::funding::prepare_in::<$issuer>(
-                    state, context, request, transition,
-                )
-            }
         }
     };
 }
