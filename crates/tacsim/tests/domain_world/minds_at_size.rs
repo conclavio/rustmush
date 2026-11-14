@@ -54,9 +54,11 @@
 //! entry put back alone), so the space tick's cost on the world thread is timed apart from
 //! the port's and the rest. `MW20_PACE_MS=0` runs the ticks back to back, which is where a
 //! pool that is too small shows as held steps. The lane also counts the store writes a
-//! second leaves, and sizes one bubble's record and times a copy and an encoding of it on
-//! this thread, outside the tick: the space tick copies the book and encodes every bubble
-//! that stepped, every second, and the figure says how much of the tick that is.
+//! second leaves, the space book's among them with their bytes, and sizes one bubble's whole
+//! record and times a copy and an encoding of it on this thread, outside the tick. Before doc
+//! 47 unit CO.12 the space tick copied the book and encoded every bubble that stepped, whole,
+//! every second; since, it encodes a stepped bubble's record without its snapshots and the
+//! one snapshot the step took, and the figure is what that saves.
 //!
 //! **3. `mw20_a_field_and_eight_bubbles_on_one_server`: both.** One world, one pool (the
 //! store's, which a match and the space host share in production): lane 2's eight bubbles
@@ -985,8 +987,9 @@ fn label_of(kind: &ScheduledKind) -> String {
 /// itself. What a tick makes due at once is fired after it under its own name. Answers
 /// each entry's name and milliseconds, in firing order, and how many store writes the
 /// second left (drained, as the server folds them into its next batch, so a long lane does
-/// not keep them).
-fn second_by_tick(rig: &mut Rig) -> (Vec<(String, f64)>, usize) {
+/// not keep them): all of them, and the space book's (`tacsim:space:*`) with their encoded
+/// bytes (doc 47 unit CO.12).
+fn second_by_tick(rig: &mut Rig) -> (Vec<(String, f64)>, Writes) {
     let t = rig.tw.world().now().saturating_add(1);
     rig.tw.set_now(t);
     let now_ms = t.saturating_mul(1_000);
@@ -1009,8 +1012,36 @@ fn second_by_tick(rig: &mut Rig) -> (Vec<(String, f64)>, usize) {
     assert!(due.is_empty(), "the second's entries were all fired");
     let queued = drain_space_and_industry(&mut rig.tw);
     land_quietly(rig, &queued);
-    let writes = rig.tw.take_module_ops().len();
+    let ops = rig.tw.take_module_ops();
+    let mut writes = Writes {
+        all: ops.len(),
+        ..Writes::default()
+    };
+    for op in &ops {
+        let (key, bytes) = match &op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => {
+                (key, serde_json::to_vec(value).map_or(0, |v| v.len()))
+            }
+            mush_core::ModuleWrite::Del { key } => (key, 0),
+            mush_core::ModuleWrite::StreamAppend { key, .. } => (key, 0),
+        };
+        if key.starts_with(tacsim::space::SPACE_KEY_PREFIX) {
+            writes.space += 1;
+            writes.space_bytes += bytes;
+        }
+    }
     (fired, writes)
+}
+
+/// The store writes one second left ([`second_by_tick`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct Writes {
+    /// Every module write.
+    all: usize,
+    /// The space book's (`tacsim:space:*`), sets and deletes.
+    space: usize,
+    /// The encoded bytes of the space book's sets.
+    space_bytes: usize,
 }
 
 /// One wall second fired whole, timed.
@@ -1184,6 +1215,9 @@ struct SpaceRun {
     queued_peak: usize,
     /// Store writes the full ticks left.
     writes: usize,
+    /// The space book's writes the full ticks left, and their bytes (doc 47 unit CO.12).
+    space_writes: usize,
+    space_bytes: usize,
     /// One bubble's record at the end ([`record_cost`]).
     record: Option<RecordCost>,
 }
@@ -1247,6 +1281,8 @@ fn tick_bubbles(
         stats: tacsim::space::thinks::ThinkStats::default(),
         queued_peak: 0,
         writes: 0,
+        space_writes: 0,
+        space_bytes: 0,
         record: None,
     };
     let mut steps_last = steps_before;
@@ -1272,7 +1308,9 @@ fn tick_bubbles(
         if open == count {
             run.full_ticks += 1;
             run.steps += stepped;
-            run.writes += writes;
+            run.writes += writes.all;
+            run.space_writes += writes.space;
+            run.space_bytes += writes.space_bytes;
             let space_ms: f64 = fired
                 .iter()
                 .filter(|(label, _)| is_space_tick(label))
@@ -1317,8 +1355,8 @@ fn print_space(label: &str, count: usize, run: &SpaceRun) {
          open; the space tick on the world thread ms p50/p95/p99/max {}; the rest of the \
          second's ticks ms {}; steps taken in those ticks {} of {due} due; thinks {} in {} \
          batches over every tick = {:.1} a tick; held steps {} = {:.2} per cent of steps due; \
-         runners built {}; pool queue peak {}; store writes {:.1} a tick; one bubble's record \
-         {}",
+         runners built {}; pool queue peak {}; store writes {:.1} a tick, of them the space \
+         book's {:.1} a tick of {:.0} B; one bubble's record {}",
         run.ticks,
         run.full_ticks,
         Spread::of(run.space_ms.iter().copied()),
@@ -1332,6 +1370,8 @@ fn print_space(label: &str, count: usize, run: &SpaceRun) {
         run.stats.runners_built,
         run.queued_peak,
         run.writes as f64 / run.full_ticks.max(1) as f64,
+        run.space_writes as f64 / run.full_ticks.max(1) as f64,
+        run.space_bytes as f64 / run.full_ticks.max(1) as f64,
         run.record.map_or_else(
             || "na".to_owned(),
             |record| format!(

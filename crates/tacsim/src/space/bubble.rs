@@ -3424,6 +3424,8 @@ pub struct BubbleInputEntry {
 /// the exact [`LocalSpaceBubble::state_hash`] and [`SpaceCombatEvent`] stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BubbleInputTape {
+    /// Saved apart from an open bubble's record (doc 47 unit CO.12, [`super::save`]).
+    #[serde(skip_serializing_if = "super::save::kept_apart")]
     pub initial_snapshot: BubbleSnapshot,
     pub entries: Vec<BubbleInputEntry>,
 }

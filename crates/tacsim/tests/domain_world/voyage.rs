@@ -15324,3 +15324,255 @@ fn mw12_a_drone_whose_doctrine_stops_short_brings_back_less_and_no_sortie_stays_
     assert_eq!(pool(&mut rig.tw, rock, ore), in_rock - 5);
     no_refused_writes(&rig.tw);
 }
+
+// ---------------------------------------------------------------------------
+// Doc 47 unit CO.12: saving an open bubble costs what changed
+// ---------------------------------------------------------------------------
+
+/// The bubble `hull` is in, whole, as the world holds it.
+fn co12_record(rig: &Rig, hull: ObjId) -> tacsim::space::ActiveInterdictionBubble {
+    rig.tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|book| book.active_for_hull(hull))
+        .cloned()
+        .expect("she is in a bubble")
+}
+
+/// The `tacsim:space:*` documents the rig's store holds, by key.
+fn co12_space_docs(rig: &Rig) -> BTreeMap<String, serde_json::Value> {
+    rig.store
+        .get(tacsim::NS)
+        .map(|data| {
+            data.kv
+                .iter()
+                .filter(|(key, _)| key.starts_with(tacsim::space::SPACE_KEY_PREFIX))
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The bubble documents among `ops`: sets and their bytes, and deletes of snapshots.
+fn co12_bubble_writes(ops: &[mush_core::ModuleOp]) -> (usize, usize, usize) {
+    let (mut sets, mut dels, mut bytes) = (0, 0, 0);
+    for op in ops {
+        match &op.op {
+            mush_core::ModuleWrite::JsonSet { key, value }
+                if key.starts_with(tacsim::space::SPACE_BUBBLE_PREFIX)
+                    || key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX) =>
+            {
+                sets += 1;
+                bytes += serde_json::to_vec(value).map_or(0, |b| b.len());
+            }
+            mush_core::ModuleWrite::Del { key }
+                if key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX) =>
+            {
+                dels += 1;
+            }
+            _ => {}
+        }
+    }
+    (sets, dels, bytes)
+}
+
+/// Two pilots flown into two customs pickets at once ([`flown_into_pickets`]), the roster to
+/// boot their world again, and the first pilot and her hull. A picket waits for its hull to
+/// heave to, so both bubbles stay open while the crews give no order.
+fn co12_in_the_bubble() -> (Rig, Roster, ObjId, ObjId) {
+    let roster = Roster {
+        seed_lane: Some(lane_with_pickets(2)),
+        mind_workers: Some(1),
+        ..Roster::default()
+    };
+    let (rig, crews) = flown_into_pickets(1, 2);
+    let (pilot, hull) = crews[0];
+    (rig, roster, pilot, hull)
+}
+
+/// **Doc 47 unit CO.12: a restart between two steps brings back the bubble the last save
+/// left, thinks owed included, from a record saved apart from its snapshots.**
+///
+/// Two pickets' bubbles step a second at a time until their rings of snapshots are full and
+/// sliding, and the server restarts over the store the saves left; the bubble read back is
+/// the one the world held, field for field. It steps on, its crew gives an order between
+/// two steps, and it restarts again; once more after a step. Each
+/// step's save writes the record without its snapshots, the one snapshot that step took,
+/// and deletes the one the ring let go: the record names each snapshot's slot, and every
+/// slot it names is in the store and nothing else is. A save that dropped any of those
+/// writes, or that missed a change to the record, reads back as a different bubble here.
+#[test]
+fn co12_a_restart_between_two_steps_restores_the_saved_bubble() {
+    let (mut rig, roster, pilot, _) = co12_in_the_bubble();
+    let bubbles = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .map(|book| book.by_domain.clone())
+            .unwrap_or_default()
+    };
+    for (round, seconds, ordered) in [(1, 8, false), (2, 3, true), (3, 1, false)] {
+        for _ in 0..seconds {
+            let (_, submitted) = one_second(&mut rig, pilot);
+            land_quietly(&mut rig, &submitted);
+        }
+        if ordered {
+            // An order between two steps changes the record and takes no snapshot, so its
+            // save is the record's alone.
+            let stepped = bubbles(&rig);
+            let heading = run(&mut rig.tw, pilot, "+helm/heading 90 0");
+            assert!(heading.contains("Helm heading set"), "{heading}");
+            let submits = drain(&mut rig.tw);
+            land_all(&mut rig, &submits);
+            let ordered = bubbles(&rig);
+            assert_ne!(ordered, stepped, "the order is on her bubble's record");
+            assert!(
+                ordered
+                    .iter()
+                    .all(|(domain, active)| stepped[domain].steps == active.steps
+                        && stepped[domain].snapshots == active.snapshots),
+                "no step was taken"
+            );
+        }
+        let before = bubbles(&rig);
+        assert_eq!(before.len(), 2, "round {round}: both pickets are open");
+        for active in before.values() {
+            assert!(
+                active.thinks_owed.is_some(),
+                "round {round}: the step left its minds' thinks owed"
+            );
+            assert!(
+                active.snapshots.len() >= 2,
+                "round {round}: the ring holds the steps' snapshots"
+            );
+        }
+        rig = reboot_with(rig, roster);
+        let after = bubbles(&rig);
+        for (domain, active) in &before {
+            let back = after.get(domain).expect("each bubble comes back");
+            assert_eq!(
+                back.thinks_owed, active.thinks_owed,
+                "round {round}: the thinks owed come back"
+            );
+            assert_eq!(
+                back.snapshots, active.snapshots,
+                "round {round}: every snapshot comes back, in order"
+            );
+            assert_eq!(
+                back.tape, active.tape,
+                "round {round}: the tape comes back, its opening snapshot with it"
+            );
+        }
+        assert_eq!(after, before, "round {round}: the same bubbles come back");
+
+        // The layout: each record without its snapshots, and each of them once, apart.
+        let docs = co12_space_docs(&rig);
+        let mut named = std::collections::BTreeSet::new();
+        for (&domain, active) in &before {
+            let key = tacsim::space::space_bubble_key(domain);
+            let doc = docs.get(&key).expect("the record is saved under its key");
+            assert!(
+                doc["bubble"].get("snapshots").is_none()
+                    && doc["bubble"]["tape"].get("initial_snapshot").is_none(),
+                "round {round}: the record is saved without its snapshots"
+            );
+            let parts: tacsim::space::save::BubbleParts =
+                serde_json::from_value(doc["parts"].clone()).expect("the record names its parts");
+            assert_eq!(parts.snapshots.len(), active.snapshots.len());
+            named.extend(
+                std::iter::once(parts.initial)
+                    .chain(parts.snapshots.iter().copied())
+                    .map(|slot| tacsim::space::save::space_bubble_snapshot_key(domain, slot)),
+            );
+        }
+        let held: std::collections::BTreeSet<String> = docs
+            .keys()
+            .filter(|key| key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX))
+            .cloned()
+            .collect();
+        assert_eq!(
+            held, named,
+            "round {round}: the store holds the snapshots the records name, and no others"
+        );
+    }
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 47 unit CO.12: a store written before the cut reads as it did.** The bubble's record
+/// is put back in the store whole, under its one key with no `parts`, as every save before
+/// the cut wrote it, and its snapshot documents are taken away. The server restarts over it
+/// and the same bubble comes back; its next save writes it apart, and a restart after that
+/// brings it back again. A step's save from then on is two sets and a delete, and a fraction
+/// of the whole record's bytes.
+#[test]
+fn co12_a_store_written_before_the_cut_reads_and_is_written_apart() {
+    let (mut rig, roster, pilot, hull) = co12_in_the_bubble();
+    for _ in 0..7 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
+    let before = co12_record(&rig, hull);
+    let domain = before.domain;
+    let whole = serde_json::json!({
+        "format": tacsim::space::SPACE_STATE_FORMAT,
+        "domain": domain.0,
+        "bubble": serde_json::to_value(&before).expect("the record encodes"),
+    });
+    let whole_bytes = serde_json::to_vec(&whole).map_or(0, |bytes| bytes.len());
+    rig = reboot_editing(rig, roster, |store| {
+        let data = store.get_mut(tacsim::NS).expect("the documents of tacsim");
+        data.kv
+            .retain(|(key, _)| !key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX));
+        let key = tacsim::space::space_bubble_key(domain);
+        let slot = data
+            .kv
+            .iter_mut()
+            .find(|(k, _)| k.as_str() == key)
+            .expect("the key of the record");
+        slot.1 = whole.clone();
+    });
+    assert_eq!(
+        co12_record(&rig, hull),
+        before,
+        "a record written whole reads as it did"
+    );
+
+    // The first step after: the record is written apart, every snapshot with it.
+    let ops = rig.tw.take_module_ops();
+    fold_module_ops_into(&mut rig.store, ops);
+    let (_, submitted) = one_second(&mut rig, pilot);
+    land_quietly(&mut rig, &submitted);
+    let ops = rig.tw.take_module_ops();
+    let (sets, _, _) = co12_bubble_writes(&ops);
+    let after = co12_record(&rig, hull);
+    assert!(
+        sets > 2,
+        "the first save after writes the record and all its snapshots apart: {sets} sets"
+    );
+    fold_module_ops_into(&mut rig.store, ops);
+
+    // A step's save from then on: the record, the one snapshot taken, the one let go.
+    let (_, submitted) = one_second(&mut rig, pilot);
+    land_quietly(&mut rig, &submitted);
+    let ops = rig.tw.take_module_ops();
+    let (sets, dels, bytes) = co12_bubble_writes(&ops);
+    let stepped = co12_record(&rig, hull);
+    assert_ne!(stepped.steps, after.steps, "the bubble stepped");
+    assert_eq!(
+        (sets, dels),
+        (2, 1),
+        "a step writes the record and its new snapshot and lets one go"
+    );
+    assert!(
+        bytes * 2 < whole_bytes,
+        "a step's save is a fraction of the whole record: {bytes} B of {whole_bytes} B"
+    );
+    fold_module_ops_into(&mut rig.store, ops);
+    rig = reboot_with(rig, roster);
+    assert_eq!(
+        co12_record(&rig, hull),
+        stepped,
+        "the bubble written apart comes back"
+    );
+    no_refused_writes(&rig.tw);
+}

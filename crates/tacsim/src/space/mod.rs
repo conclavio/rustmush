@@ -19,6 +19,7 @@ pub mod customs;
 pub mod docking;
 pub mod mining;
 pub mod picket;
+pub mod save;
 pub mod sortie;
 pub mod thinks;
 pub mod tick;
