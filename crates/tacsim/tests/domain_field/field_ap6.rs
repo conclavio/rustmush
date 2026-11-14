@@ -18,8 +18,11 @@
 //! 2. [`ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour`]: on `HOLD` the same fire
 //!    on the lessee's other rig is not answered; fire on the rig itself is, from a seat that was
 //!    never set to `FIRE FREE`. It is not taken home, and its player reads why at login.
-//! 3. [`ap6_the_same_rig_on_return_goes_home`]: on `RETURN` it answers for nobody, drives to
-//!    its carrier's ramp and is put aboard.
+//! 3. [`co2_the_same_rig_on_return_answers_on_its_way_home`] (doc 47 unit CO.2, R-47-3): on
+//!    `RETURN` it does not answer for its neighbour; fired on itself it answers the unit that
+//!    fired, and nobody else, while it drives on to its carrier's ramp; and it is put aboard.
+//!    (Until CO.2: `ap6_the_same_rig_on_return_goes_home`, fired on only through its
+//!    neighbour.)
 //! 4. [`ap6_a_guard_that_loses_its_last_fire_channel_goes_home`]: a guard with two rounds
 //!    left answers with them, and with nothing left to fire goes home; the lessee's word is
 //!    still `GUARD`.
@@ -537,31 +540,138 @@ async fn ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour() {
     assert!(heard.contains(&told), "{heard}");
 }
 
-/// **Story 3** (this module's head): `RETURN` goes home, and answers for nobody on the way.
+/// `unit`'s positions in the field's position record, centimetres, in the order recorded:
+/// each with the index of the line that carries it.
+fn track(lines: &[LedgerEvent], of: ObjId) -> Vec<(usize, i64, i64)> {
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(at, line)| match &line.kind {
+            EventKind::PositionSummary { units } => units
+                .iter()
+                .find(|(unit, ..)| *unit == of)
+                .map(|(_, x, y, ..)| (at, *x, *y)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The cell `unit` was last recorded on, if the record has it.
+fn last_cell(lines: &[LedgerEvent], of: ObjId) -> Option<(u16, u16)> {
+    track(lines, of).last().map(|(_, x, y)| {
+        let (cx, cy) = tacsim::surface::excursion::site_cell(*x, *y);
+        (
+            u16::try_from(cx).unwrap_or(0),
+            u16::try_from(cy).unwrap_or(0),
+        )
+    })
+}
+
+impl Ground {
+    /// **The intruder's player keeps a lock on the lessee's rig wherever the field last
+    /// recorded it and fires** until `done` holds or `secs` of wall time pass.
+    async fn raid_the_rig(
+        &mut self,
+        secs: u64,
+        mut done: impl FnMut(&Rig, &[LedgerEvent]) -> bool,
+    ) -> bool {
+        let gun = weapon_of(&self.rig, self.hostile);
+        for _ in 0..secs {
+            let at = last_cell(&self.lines, self.hull).unwrap_or(HULL_AT);
+            if let Some(contact) = contact_near(&self.rig, self.intruder, at)
+                && frame(&self.rig, self.intruder)
+                    .is_some_and(|frame| frame.lock != Some(contact.id))
+            {
+                let _ = run(
+                    &mut self.rig.tw,
+                    self.intruder,
+                    &format!("LOCK {}", contact.designator),
+                );
+            }
+            let _ = run(&mut self.rig.tw, self.intruder, &format!("FIRE {gun}"));
+            if self.wait(1, |rig, lines| done(rig, lines)).await {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// **Story 3** (this module's head): `RETURN` answers for nobody else, answers the unit that
+/// fires on it on its way home, and does not stop going home to do it (doc 47 unit CO.2,
+/// R-47-3). Until CO.2 this story was `ap6_the_same_rig_on_return_goes_home`: the rig was
+/// fired on only through its neighbour, and fired nothing; under fire itself the doctrine's
+/// cornered stand would have stopped it where it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ap6_the_same_rig_on_return_goes_home() {
+async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
     let mut g = ground(Posture::Return, |_, _| {}).await;
     let (hull, kin, hostile) = (g.hull, g.kin, g.hostile);
     g.leave();
+    // Its owner's other rig is fired on: not its quarrel on RETURN.
     let struck = g
-        .raid(KIN_AT, 150, |_, lines| arrived(lines, hostile, kin) >= 3)
+        .raid(KIN_AT, 150, |_, lines| arrived(lines, hostile, kin) >= 1)
         .await;
-    g.cease();
     assert!(
         struck,
         "the intruder's fire arrives on the lessee's other rig: {}",
         g.exchange()
     );
-    assert!(
-        g.goes_home(240).await,
-        "a rig on RETURN is taken out at its carrier's ramp and put aboard: {}",
-        g.exchange()
-    );
-    let _ = g.wait(5, |_, _| false).await;
     assert_eq!(
         fired(&g.lines, hull),
         0,
-        "it answered for nobody on the way: {}",
+        "a rig on RETURN does not answer for its neighbour: {}",
+        g.exchange()
+    );
+    // The intruder turns on the rig itself, wherever it has got to: it answers, more than
+    // once, and nobody else.
+    let answered = g
+        .raid_the_rig(150, |_, lines| fired_at(lines, hull, hostile) >= 2)
+        .await;
+    g.cease();
+    assert!(
+        answered,
+        "a rig on RETURN answers the unit that fires on it: {}",
+        g.exchange()
+    );
+    let on_it = first(
+        &g.lines,
+        |kind| matches!(kind, EventKind::Impact { unit, target, .. } if *unit == hostile && *target == hull),
+    );
+    let answer = first(
+        &g.lines,
+        |kind| matches!(kind, EventKind::Fired { unit, .. } if *unit == hull),
+    );
+    assert!(
+        on_it.is_some() && on_it < answer,
+        "its first round follows the first arrival on it: {on_it:?} then {answer:?}"
+    );
+    assert_eq!(
+        fired(&g.lines, hull),
+        fired_at(&g.lines, hull, hostile),
+        "and on nobody else"
+    );
+    // It kept going while it answered: between its first round and its second it moved.
+    let shots: Vec<usize> = g
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == hull))
+        .map(|(at, _)| at)
+        .collect();
+    let path = track(&g.lines, hull);
+    let at_or_after = |line: usize| path.iter().find(|(at, ..)| *at >= line).copied();
+    let (Some(from), Some(to)) = (at_or_after(shots[0]), at_or_after(shots[1])) else {
+        panic!("the field recorded where it was as it answered: {path:?}");
+    };
+    let moved_cm = (to.1 - from.1).abs().max((to.2 - from.2).abs());
+    assert!(
+        moved_cm >= 100,
+        "it drove on between its two rounds: {from:?} then {to:?}"
+    );
+    // And it is home.
+    assert!(
+        g.goes_home(240).await,
+        "a rig on RETURN is taken out at its carrier's ramp and put aboard: {}",
         g.exchange()
     );
 }

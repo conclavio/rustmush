@@ -123,6 +123,11 @@ pub struct Answer {
     /// **The mind sealed aboard, when the clean answer is its own** (doc 44 unit MW.13):
     /// `None` when a house default answered, or nothing did.
     pub sealed: Option<Arc<SealedMind>>,
+    /// **The house default's think beside the sealed mind's** (doc 47 unit CO.2; R-47-2):
+    /// when the clean answer is the sealed mind's, the first clean answer of the sources
+    /// after it (the house defaults the seat tries), which the pool ran on the same view.
+    /// The backup seat lands its fire channel and nothing else of it. `None` otherwise.
+    pub house: Option<ThinkResult>,
 }
 
 /// **A step as it fell due**: what the tick that first found it due would have stepped the
@@ -768,8 +773,17 @@ impl ThinkHost {
             .map(|(asked, sources)| {
                 let mut result = None;
                 let mut by_sealed = false;
+                let mut house = None;
                 for (index, answer) in sources.into_iter().enumerate() {
-                    if result.is_some() || asked.struck {
+                    if asked.struck {
+                        continue;
+                    }
+                    if result.is_some() {
+                        // Doc 47 unit CO.2: beside a sealed mind's answer, the first clean
+                        // answer of a house default is kept for the fire channel.
+                        if by_sealed && house.is_none() && answer.result.fault.is_none() {
+                            house = Some(answer.result);
+                        }
                         continue;
                     }
                     if let Some(fault) = &answer.result.fault {
@@ -789,7 +803,12 @@ impl ThinkHost {
                     think_seq: asked.think_seq,
                     contacts: asked.contacts,
                     result,
-                    sealed: asked.sealed.filter(|_| by_sealed),
+                    sealed: asked.sealed.as_ref().filter(|_| by_sealed).cloned(),
+                    house: if by_sealed && asked.sealed.is_some() {
+                        house
+                    } else {
+                        None
+                    },
                 }
             })
             .collect();

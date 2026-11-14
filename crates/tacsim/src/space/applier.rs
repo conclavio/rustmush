@@ -43,9 +43,9 @@
 //! arrived on another unit of her player), and the applier asks the gate at its two doors, a
 //! `lock` and a `fire`. A lock on a ship she may not answer is dropped, because a bubble's
 //! fire commands take their target from the lock; a shot at a lock she may not answer is
-//! dropped whoever set the lock. The backup seat gives `Answer` to the house default of a
-//! hull her player left on `HOLD` or `GUARD` (`super::backup`), and `Never` on `RETURN` and
-//! to every mind sealed aboard.
+//! dropped whoever set the lock. The backup seat gives `Answer` to the house default under
+//! every posture (doc 47 unit CO.2, R-47-3), and `Never` to every mind sealed aboard, beside
+//! which the house default's own think answers by [`apply_answer`] (R-47-2).
 //!
 //! # A collector drone
 //!
@@ -558,15 +558,110 @@ pub fn apply_intents_answering(
         applied.dropped += u32::try_from(shots.len()).unwrap_or(u32::MAX);
         return applied;
     };
+    shoot(
+        bubble,
+        tape,
+        events,
+        ship_id,
+        &target,
+        shots,
+        may_fire_on(&target),
+        &mut applied,
+    );
+    applied
+}
+
+/// **The house default's answer beside a mind sealed aboard** (doc 47 unit CO.2; R-47-2):
+/// the fire channel of the house default's think on a hull whose helm and sensors are the
+/// sealed mind's ([`Seat::lock`]). The two minds thought on one view, so `contacts` names
+/// the ships of both.
+///
+/// The target is the ship the think's last `lock` names, and its `fire`s are the shots. The
+/// shots go through the one gate, as an answering seat's do: at a ship `answers` does not
+/// let her answer they are dropped. Her lock is **not** moved: a bubble's fire command
+/// carries its target, so the answer is fired at its ship and the lock the sealed mind set
+/// stands. Every other intent of the think (its helm, its emission posture) is dropped: they
+/// are the sealed mind's.
+pub fn apply_answer(
+    bubble: &mut LocalSpaceBubble,
+    tape: &mut BubbleInputTape,
+    ship_id: &str,
+    answers: &Answers,
+    contacts: &BTreeMap<ContactId, String>,
+    intents: &[IntentKind],
+    events: &mut Vec<SpaceCombatEvent>,
+) -> Applied {
+    let mut applied = Applied::default();
+    if bubble
+        .ships
+        .get(ship_id)
+        .is_none_or(|ship| ship.status != HullStatus::Operational)
+    {
+        return applied;
+    }
+    let mut target: Option<String> = None;
+    let mut shots: Vec<Mount> = Vec::new();
+    for intent in intents {
+        match intent {
+            IntentKind::Lock { contact } => match contacts.get(contact) {
+                Some(ship) => target = Some(ship.clone()),
+                None => applied.dropped += 1,
+            },
+            IntentKind::Fire { weapon, .. } => match bubble
+                .ships
+                .get(ship_id)
+                .and_then(|ship| mount_of(ship, weapon))
+            {
+                Some(mount) if mount != Mount::Collector => shots.push(mount),
+                _ => applied.dropped += 1,
+            },
+            _ => applied.dropped += 1,
+        }
+    }
+    let Some(target) = target.filter(|_| !shots.is_empty()) else {
+        applied.dropped += u32::try_from(shots.len()).unwrap_or(u32::MAX);
+        return applied;
+    };
+    let permitted = answers.permits(&target);
+    shoot(
+        bubble,
+        tape,
+        events,
+        ship_id,
+        &target,
+        shots,
+        permitted,
+        &mut applied,
+    );
+    applied
+}
+
+/// **Fire `shots` from `ship_id` at `target`**, one command a family, in the order named;
+/// `permitted` is whether the absent player's rule lets her fire on `target` (a collector
+/// shoots nothing and is worked either way).
+#[allow(clippy::too_many_arguments)]
+fn shoot(
+    bubble: &mut LocalSpaceBubble,
+    tape: &mut BubbleInputTape,
+    events: &mut Vec<SpaceCombatEvent>,
+    ship_id: &str,
+    target: &str,
+    mut shots: Vec<Mount>,
+    permitted: bool,
+    applied: &mut Applied,
+) {
+    let mut command = |bubble: &mut LocalSpaceBubble, command: BubbleInputCommand| {
+        events.extend(tape.record_and_apply(bubble, command));
+    };
     // The second door (the file head, "return fire"): a shot at a lock the rule does not
     // let her answer is dropped, whoever set that lock. A collector shoots nothing and is
     // the seat's to work or not.
-    if !may_fire_on(&target) {
+    if !permitted {
         let before = shots.len();
         shots.retain(|mount| *mount == Mount::Collector);
         applied.dropped += u32::try_from(before - shots.len()).unwrap_or(u32::MAX);
         if shots.is_empty() {
-            return applied;
+            return;
         }
     }
     if shots.iter().any(|mount| *mount != Mount::Collector)
@@ -593,7 +688,7 @@ pub fn apply_intents_answering(
         }
         fired.push(mount);
         let shooter_id = ship_id.to_owned();
-        let target_id = target.clone();
+        let target_id = target.to_owned();
         match mount {
             Mount::Laser => {
                 applied.fired = true;
@@ -640,7 +735,6 @@ pub fn apply_intents_answering(
             }
         }
     }
-    applied
 }
 
 #[cfg(test)]

@@ -28,8 +28,9 @@
 //! | `speed(n)`, n above nought | the return passage, by the ruled order | while a stop holds her, a burn of that strength along its `helm(word)` if it takes her drift against the stopping ship off; any other burn is dropped and she coasts |
 //! | `hold()` | she holds where she is | her drive is cut; hove to under a customs hail, she is submitted to inspection |
 //! | `emcon(on)` | nothing | her emission posture, COMBAT or STANDARD |
-//! | `lock` | dropped | dropped for a house default; her lock, for a mind sealed aboard |
-//! | `fire`, `arm` | dropped | dropped |
+//! | `lock` | dropped | for a house default, only on a ship she may answer; her lock, for a mind sealed aboard |
+//! | `fire` | dropped | for a house default, only at a ship she may answer; dropped for a mind sealed aboard, beside which the house default's own shots land (doc 47 unit CO.2) |
+//! | `arm` | dropped | dropped |
 //!
 //! A mind sealed aboard sits in the same seat as the house default, with one difference
 //! (doc 44 unit MW.13; Q-44-26, "helm and sensors"): its sensors' act, a lock, is let
@@ -49,8 +50,8 @@
 //!
 //! | | Outside a bubble | Inside a bubble |
 //! |---|---|---|
-//! | `RETURN` | the return passage, as above | she never locks or fires; she heaves to when stopped |
-//! | `HOLD` | she holds where she is: a `speed(n)` is read as a `hold()` | the same helm; the house default may answer a ship whose fire has arrived on her |
+//! | `RETURN` | the return passage, as above | she heaves to when stopped; the house default may answer a ship whose fire has arrived on her (doc 47 unit CO.2, R-47-3), and she is on her passage again when the bubble lets her go |
+//! | `HOLD` | she holds where she is: a `speed(n)` is read as a `hold()` | the same helm and the same answer as `RETURN` |
 //! | `GUARD` | as `HOLD` | as `HOLD`, and the house default may also answer a ship whose fire has arrived on another unit of her player in the bubble |
 //!
 //! **One gate.** What she may answer is `crate::arena::absent::permits`, the ground's rule,
@@ -74,8 +75,13 @@
 //! `RETURN`. Her record is not rewritten.
 //!
 //! **A mind sealed aboard** (doc 44 unit MW.13) keeps her helm and her sensors under every
-//! posture and has no fire channel, so on a hull that carries one nothing answers fire. The
-//! house default does not think beside it. A default for the owner, in the cut note.
+//! posture and has no fire channel. **The house default answers fire beside it** (doc 47 unit
+//! CO.2, R-47-2): the think host runs every source the seat tries, so the house default's
+//! think on the same step is already there; its fire channel alone lands
+//! ([`super::applier::apply_answer`]), fired at its ship without moving her lock, so the
+//! sealed mind's helm, lock and emission posture stand. The sealed mind reads the bubble as
+//! her sensors hold it; the house default reads the view narrowed to what she may answer.
+//! (Until CO.2 nothing answered fire for her: AP.9's default 1, which the owner ruled.)
 //!
 //! **Whose she is** ([`player_of`]): whoever commands her by charter or title
 //! (`crate::port::coop::helm_holder`), if that is a player. Her player's other hulls in the
@@ -204,7 +210,9 @@ fn complying_with<'a>(situation: &'a super::view::Situation, ship_id: &str) -> O
 /// **What a hull flown on `flown` may answer** (the module head, "one gate"): the facts the
 /// absent player's rule reads, off the bubble's record of whose fire has arrived on whom.
 /// `kin` is her player's other units in the bubble, by ship id; `complying` the ship she
-/// complies with. `None` on `RETURN`: the seat then drops every lock and shot.
+/// complies with. Under every posture she may answer a ship whose fire has arrived on her
+/// (doc 47 unit CO.2, R-47-3: `RETURN` too); on `GUARD` also one whose fire has arrived on
+/// another unit of her player.
 ///
 /// Her player's own units and the ship she complies with are never among them, so neither
 /// set can let her fire on one.
@@ -215,10 +223,7 @@ pub fn answers_of(
     flown: Posture,
     kin: &[String],
     complying: Option<&str>,
-) -> Option<Answers> {
-    if flown.is_return() {
-        return None;
-    }
+) -> Answers {
     let answerable = |by: &&String| {
         by.as_str() != ship_id && Some(by.as_str()) != complying && !kin.contains(*by)
     };
@@ -232,7 +237,7 @@ pub fn answers_of(
             .collect()
     };
     let guards = flown == Posture::Guard;
-    Some(Answers {
+    Answers {
         fired_on_by: arrived_on(ship_id),
         guards,
         fired_on_kin: if guards {
@@ -240,7 +245,7 @@ pub fn answers_of(
         } else {
             std::collections::BTreeSet::new()
         },
-    })
+    }
 }
 
 /// **How the seat stands `hull` in her bubble** ([`standing`]).
@@ -248,8 +253,8 @@ pub fn answers_of(
 pub struct Standing {
     /// The posture she is flown on ([`flown`]).
     pub posture: Posture,
-    /// What she may answer; `None` on `RETURN`.
-    pub answers: Option<Answers>,
+    /// What she may answer, under every posture (doc 47 unit CO.2).
+    pub answers: Answers,
 }
 
 /// **How the seat stands `hull`, as the bubble is now** (the module head): the posture off
@@ -270,13 +275,13 @@ pub fn standing(
         .get(ship_id)
         .map_or(Posture::Return, |ship| flown(record, ship));
     let kin: Vec<String> = match player_of(w, hull) {
-        Some(player) if !posture.is_return() => active
+        Some(player) => active
             .all_carrier_hulls()
             .into_iter()
             .filter(|(other, _, _, _)| *other != hull && player_of(w, *other) == Some(player))
             .map(|(_, other_ship, _, _)| other_ship)
             .collect(),
-        _ => Vec::new(),
+        None => Vec::new(),
     };
     let answers = answers_of(
         &active.bubble,
@@ -310,14 +315,15 @@ const fn held_to(ask: Asks, posture: Posture) -> Asks {
 }
 
 /// **Whether the seat lets the mind that thought answer fire** (the module head, "a mind
-/// sealed aboard"; doc 45 unit AP.9): only where her posture gives her something to answer
-/// (`answers`), and only the house default. A mind sealed aboard has no fire channel
-/// (doc 44 unit MW.13; Q-44-26), under every posture.
-const fn fire_rule(answers: bool, sealed: bool) -> FireRule {
-    if answers && !sealed {
-        FireRule::Answer
-    } else {
+/// sealed aboard"; doc 45 unit AP.9, doc 47 unit CO.2): the house default answers under the
+/// gate, under every posture. A mind sealed aboard has no fire channel (doc 44 unit MW.13;
+/// Q-44-26), under every posture: beside it the house default's own think answers
+/// ([`super::applier::apply_answer`]).
+const fn fire_rule(sealed: bool) -> FireRule {
+    if sealed {
         FireRule::Never
+    } else {
+        FireRule::Answer
     }
 }
 
@@ -802,31 +808,64 @@ pub(crate) fn collect_in_bubble(
     let mut situation = active.situation(step_ms);
     // Doc 45 units AP.3 and AP.9: the posture her player left on her, off her own record
     // and as she is flown on it, so her mind reads in a bubble the word it reads outside
-    // one; and, on `HOLD` and `GUARD`, the ships she may answer, which are the only ones
-    // her view shows hostile.
+    // one; and the ships she may answer, which are the only ones the house default's view
+    // shows hostile (doc 47 unit CO.2: under every posture, `RETURN` too).
     let stood = standing(w, active, hull, ship_id, &situation);
-    if let Some(answers) = stood.answers.as_ref() {
-        if answers.guards {
-            stand_guard(&mut active.bubble, ship_id, answers);
-        }
-        situation
-            .answerable
-            .insert(ship_id.to_owned(), answers.all());
+    if stood.answers.guards {
+        stand_guard(&mut active.bubble, ship_id, &stood.answers);
     }
     situation.postures.insert(ship_id.to_owned(), stood.posture);
-    super::picket::collect_bubble_think_on(
+    let sensors = situation.clone();
+    situation
+        .answerable
+        .insert(ship_id.to_owned(), stood.answers.all());
+    let store = w.module_state::<TacsimStore>();
+    let sources = sources(w, hull);
+    // Doc 47 unit CO.2 (R-47-2): a mind sealed aboard keeps her sensors, so it reads the
+    // bubble as her sensors hold it, not narrowed to what she may answer: it has no fire
+    // channel, and the narrowing is the fire channel's. The house default beside it, whose
+    // shots are the ones landed, reads the narrowed view. Both views number the contacts
+    // off the one book, so one map names the ships of both.
+    let (first, rest) = match sources.split_first() {
+        Some((Source::Sealed(_), rest)) => (&sources[..1], rest),
+        _ => (&sources[..0], &sources[..]),
+    };
+    let mut ask = None;
+    if !first.is_empty() {
+        ask = super::picket::collect_bubble_think_on(
+            host,
+            store,
+            &active.bubble,
+            Thinker::Backup,
+            ship_id,
+            hull,
+            first,
+            state.mind_think_seq,
+            &state.mind_memory,
+            &mut state.mind_contacts,
+            &sensors,
+        );
+    }
+    let house = super::picket::collect_bubble_think_on(
         host,
-        w.module_state::<TacsimStore>(),
+        store,
         &active.bubble,
         Thinker::Backup,
         ship_id,
         hull,
-        &sources(w, hull),
+        rest,
         state.mind_think_seq,
         &state.mind_memory,
         &mut state.mind_contacts,
         &situation,
-    )
+    );
+    match (ask, house) {
+        (Some(mut sealed), Some(house)) => {
+            sealed.jobs.extend(house.jobs);
+            Some(sealed)
+        }
+        (sealed, house) => sealed.or(house),
+    }
 }
 
 /// **A hull that stands guard takes up her player's quarrel** (the module head, "whose she
@@ -922,7 +961,7 @@ pub(crate) fn land_in_bubble(
     // the bubble stands now. Only the house default asks: a mind sealed aboard has her
     // sensors and no fire channel under every posture.
     let stood = standing(w, active, state.hull, ship_id, &situation);
-    let fire = fire_rule(stood.answers.is_some(), sealed.is_some());
+    let fire = fire_rule(sealed.is_some());
     let mut answered = Vec::new();
     let applied = super::applier::apply_intents_answering(
         &mut active.bubble,
@@ -935,11 +974,30 @@ pub(crate) fn land_in_bubble(
             lock: sealed.is_some(),
             ..Seat::ABSENT
         },
-        stood.answers.as_ref(),
+        Some(&stood.answers),
         &answer.contacts,
         &thought.intents,
         &mut answered,
     );
+    // Doc 47 unit CO.2 (R-47-2): beside a mind sealed aboard, the house default answers fire.
+    // Its think ran on the same view; only its fire channel lands, and her lock, her helm
+    // and her emission posture stay the sealed mind's.
+    let answered_beside = match (sealed, answer.house.as_ref()) {
+        (Some(_), Some(house)) => super::applier::apply_answer(
+            &mut active.bubble,
+            &mut active.tape,
+            ship_id,
+            &stood.answers,
+            &answer.contacts,
+            &house.intents,
+            &mut answered,
+        ),
+        _ => super::applier::Applied::default(),
+    };
+    let applied = super::applier::Applied {
+        fired: applied.fired || answered_beside.fired,
+        ..applied
+    };
     flown.events = answered;
 
     // What the seat does with the world in hand, and what the crew are told.
@@ -1086,13 +1144,13 @@ mod tests {
             .insert(shooter.to_owned());
     }
 
-    /// **Doc 45 unit AP.9: what a hull may answer is read off the bubble's record, by her
-    /// posture.** `RETURN` answers nobody. `HOLD` answers a ship whose fire has arrived on
-    /// her. `GUARD` also answers one whose fire has arrived on another unit of her player.
-    /// Neither answers a ship that fired only on a stranger, a unit of her own player, or
-    /// the ship she complies with.
+    /// **Doc 45 unit AP.9, as doc 47 unit CO.2 rules it (R-47-3): what a hull may answer is
+    /// read off the bubble's record, by her posture.** `RETURN` and `HOLD` answer a ship whose
+    /// fire has arrived on her. `GUARD` also answers one whose fire has arrived on another
+    /// unit of her player. None answers a ship that fired only on a stranger, a unit of her
+    /// own player, or the ship she complies with. (Until CO.2, `RETURN` answered nobody.)
     #[test]
-    fn ap9_what_a_hull_may_answer_is_read_off_the_bubbles_record_by_her_posture() {
+    fn co2_what_a_hull_may_answer_is_read_off_the_bubbles_record_by_her_posture() {
         let mut bubble = five_ships();
         arrived(&mut bubble, "raider", "her");
         arrived(&mut bubble, "customs", "her");
@@ -1102,20 +1160,18 @@ mod tests {
         arrived(&mut bubble, "raider", "stranger");
         let kin = ["kin".to_owned()];
 
-        assert_eq!(
-            answers_of(&bubble, "her", Posture::Return, &kin, None),
-            None
-        );
-        assert_eq!(
-            answers_of(&bubble, "her", Posture::Hold, &kin, None),
-            Some(Answers {
-                fired_on_by: set(&["raider", "customs"]),
-                guards: false,
-                fired_on_kin: BTreeSet::new(),
-            }),
-            "her own attackers, and never her player's other hull"
-        );
-        let guard = answers_of(&bubble, "her", Posture::Guard, &kin, None).expect("on GUARD");
+        for posture in [Posture::Return, Posture::Hold] {
+            assert_eq!(
+                answers_of(&bubble, "her", posture, &kin, None),
+                Answers {
+                    fired_on_by: set(&["raider", "customs"]),
+                    guards: false,
+                    fired_on_kin: BTreeSet::new(),
+                },
+                "{posture}: her own attackers, and never her player's other hull"
+            );
+        }
+        let guard = answers_of(&bubble, "her", Posture::Guard, &kin, None);
         assert_eq!(guard.fired_on_by, set(&["raider", "customs"]));
         assert!(guard.guards);
         assert_eq!(
@@ -1125,13 +1181,20 @@ mod tests {
         );
         assert!(guard.permits("stranger") && guard.permits("raider"));
         assert!(!guard.permits("kin"), "never her player's own unit");
+        for posture in [Posture::Return, Posture::Hold] {
+            let answers = answers_of(&bubble, "her", posture, &kin, None);
+            assert!(
+                !answers.permits("stranger"),
+                "{posture}: only a guard answers for her player's other hull"
+            );
+        }
 
         // A hull with no other unit of her player in the bubble: the raider that fired on a
-        // stranger beside her is nobody she may answer, under either word.
+        // stranger beside her is nobody she may answer, under any word.
         let mut alone = five_ships();
         arrived(&mut alone, "raider", "stranger");
-        for posture in [Posture::Hold, Posture::Guard] {
-            let answers = answers_of(&alone, "her", posture, &[], None).expect("she stays");
+        for posture in [Posture::Return, Posture::Hold, Posture::Guard] {
+            let answers = answers_of(&alone, "her", posture, &[], None);
             assert!(
                 !answers.permits("raider"),
                 "{posture}: a stranger's quarrel"
@@ -1140,9 +1203,8 @@ mod tests {
         }
 
         // The ship she complies with is not one she answers, whatever arrived from it.
-        for posture in [Posture::Hold, Posture::Guard] {
-            let answers =
-                answers_of(&bubble, "her", posture, &kin, Some("customs")).expect("she stays");
+        for posture in [Posture::Return, Posture::Hold, Posture::Guard] {
+            let answers = answers_of(&bubble, "her", posture, &kin, Some("customs"));
             assert!(!answers.permits("customs"), "{posture}");
             assert!(answers.permits("raider"), "{posture}");
         }
@@ -1297,16 +1359,15 @@ mod tests {
     }
 
     /// **Doc 45 unit AP.9: only the house default answers fire.** A mind sealed aboard is
-    /// given no fire rule but `Never`, with something to answer or without; the house
-    /// default answers only where her posture gives her something to.
+    /// given no fire rule but `Never`; the house default's seat answers under the gate,
+    /// under every posture (doc 47 unit CO.2). Beside a sealed mind the house default's own
+    /// think answers (`space::tick::thinks_tests::co2_*`).
     #[test]
     fn ap9_a_mind_sealed_aboard_is_never_given_the_answering_seat() {
         use super::super::applier::FireRule;
         use super::fire_rule;
-        assert_eq!(fire_rule(true, false), FireRule::Answer);
-        assert_eq!(fire_rule(false, false), FireRule::Never);
-        assert_eq!(fire_rule(true, true), FireRule::Never);
-        assert_eq!(fire_rule(false, true), FireRule::Never);
+        assert_eq!(fire_rule(false), FireRule::Answer);
+        assert_eq!(fire_rule(true), FireRule::Never);
     }
 
     /// **Doc 45 unit AP.9: a slug and a torpedo arrive when their flight ends on her.** The
