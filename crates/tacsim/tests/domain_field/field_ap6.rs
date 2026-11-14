@@ -19,8 +19,8 @@
 //!    on the lessee's other rig is not answered; fire on the rig itself is, from a seat that was
 //!    never set to `FIRE FREE`. It is not taken home, and its player reads why at login.
 //! 3. [`co2_the_same_rig_on_return_answers_on_its_way_home`] (doc 47 unit CO.2, R-47-3): on
-//!    `RETURN` it does not answer for its neighbour; fired on itself it answers the unit that
-//!    fired, and nobody else, while it drives on to its carrier's ramp; and it is put aboard.
+//!    `RETURN`, fired on as it makes for its ramp, it answers the unit that fired, and nobody
+//!    else, while it drives on; and it is put aboard.
 //!    (Until CO.2: `ap6_the_same_rig_on_return_goes_home`, fired on only through its
 //!    neighbour.)
 //! 4. [`ap6_a_guard_that_loses_its_last_fire_channel_goes_home`]: a guard with two rounds
@@ -577,8 +577,21 @@ impl Ground {
     ) -> bool {
         let gun = weapon_of(&self.rig, self.hostile);
         for _ in 0..secs {
+            // Where the field last recorded it (every five arena seconds), and the contact
+            // the intruder plots nearest there: not one of the two rigs left on HOLD.
             let at = last_cell(&self.lines, self.hull).unwrap_or(HULL_AT);
-            if let Some(contact) = contact_near(&self.rig, self.intruder, at)
+            let apart = |a: (u16, u16), b: (u16, u16)| a.0.abs_diff(b.0).max(a.1.abs_diff(b.1));
+            let target = frame(&self.rig, self.intruder).and_then(|frame| {
+                frame
+                    .contacts
+                    .iter()
+                    .filter_map(|contact| contact.cell.map(|cell| (cell, contact)))
+                    .filter(|(cell, _)| apart(*cell, KIN_AT) > 1 && apart(*cell, WORKER_AT) > 1)
+                    .min_by_key(|(cell, _)| apart(*cell, at))
+                    .filter(|(cell, _)| apart(*cell, at) <= 12)
+                    .map(|(_, contact)| contact.clone())
+            });
+            if let Some(contact) = target
                 && frame(&self.rig, self.intruder)
                     .is_some_and(|frame| frame.lock != Some(contact.id))
             {
@@ -597,8 +610,8 @@ impl Ground {
     }
 }
 
-/// **Story 3** (this module's head): `RETURN` answers for nobody else, answers the unit that
-/// fires on it on its way home, and does not stop going home to do it (doc 47 unit CO.2,
+/// **Story 3** (this module's head): `RETURN` answers the unit that fires on it on its way
+/// home, and nobody else, and does not stop going home to do it (doc 47 unit CO.2,
 /// R-47-3). Until CO.2 this story was `ap6_the_same_rig_on_return_goes_home`: the rig was
 /// fired on only through its neighbour, and fired nothing; under fire itself the doctrine's
 /// cornered stand would have stopped it where it was.
@@ -607,31 +620,23 @@ async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
     let mut g = ground(Posture::Return, |_, _| {}).await;
     let (hull, kin, hostile) = (g.hull, g.kin, g.hostile);
     g.leave();
-    // Its owner's other rig is fired on: not its quarrel on RETURN.
-    let struck = g
-        .raid(KIN_AT, 150, |_, lines| arrived(lines, hostile, kin) >= 1)
-        .await;
-    assert!(
-        struck,
-        "the intruder's fire arrives on the lessee's other rig: {}",
-        g.exchange()
-    );
-    assert_eq!(
-        fired(&g.lines, hull),
-        0,
-        "a rig on RETURN does not answer for its neighbour: {}",
-        g.exchange()
-    );
-    // The intruder turns on the rig itself, wherever it has got to: it answers, more than
-    // once, and nobody else.
+    // The intruder fires on the rig itself as it makes for its ramp, wherever it has got
+    // to: it answers, more than once, and nobody else. (That it does not answer for its
+    // neighbour on RETURN is the gate's: `arena::weapons::tests`, AP.6's guard test.)
     let answered = g
         .raid_the_rig(150, |_, lines| fired_at(lines, hull, hostile) >= 2)
         .await;
     g.cease();
     assert!(
         answered,
-        "a rig on RETURN answers the unit that fires on it: {}",
-        g.exchange()
+        "a rig on RETURN answers the unit that fires on it: {}; last recorded at {:?}",
+        g.exchange(),
+        last_cell(&g.lines, hull)
+    );
+    assert_eq!(
+        arrived(&g.lines, hostile, kin),
+        0,
+        "the story's premise: the intruder fired on the rig, not its neighbour"
     );
     let on_it = first(
         &g.lines,
