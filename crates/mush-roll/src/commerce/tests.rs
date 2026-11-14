@@ -445,4 +445,4 @@ pub(crate) mod ct0_rig;
 mod ct0_conduct;
 
 /// Doc 46 CT.0: the purchase twins (`tests/ct0/purchase_*.snap`).
-mod ct0_purchase;
+pub(crate) mod ct0_purchase;

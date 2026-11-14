@@ -136,6 +136,44 @@ impl Rig for Personal {
     fn offer(row: &RenewalOperationV1) -> TestResult<mush_economy::managed_renewal::RenewalOffer> {
         Ok(ct0_snapshot::ct0_offer(row).map_err(|e| e.to_string())?)
     }
+    type Other = crate::commerce::renewal_twin::House;
+    type BirthRow = crate::commerce::entitlement::EntitlementAllocationV1;
+    fn birth_row(
+        row: &RenewalOperationV1,
+        offer: &mush_economy::managed_renewal::RenewalOffer,
+    ) -> TestResult<crate::commerce::entitlement::EntitlementAllocationV1> {
+        let mut birth = crate::commerce::tests::ct0_purchase::personal::allocation(
+            mush_economy::managed_entitlement::EntitlementProtocol::OriginalV3,
+        )?;
+        birth.product_digest = row.binding().product_digest();
+        birth.economics = crate::commerce::renewal_twin::Binding::economics_at(
+            row.binding(),
+            TermGeneration::new(1)?,
+            token(1),
+        )?;
+        birth.quote = offer.basis.prior_quote;
+        birth.quote_digest = offer.basis.prior_quote_digest;
+        Ok(birth)
+    }
+    fn as_birth(
+        row: &crate::commerce::entitlement::EntitlementAllocationV1,
+    ) -> crate::commerce::entitlement::history::Birth<'_> {
+        crate::commerce::entitlement::history::Birth::Entitlement(row)
+    }
+    /// A personal birth has no issuer's side beside the fields the shared checks compare.
+    fn birth_off_side(
+        _: &crate::commerce::entitlement::EntitlementAllocationV1,
+    ) -> TestResult<Option<crate::commerce::entitlement::EntitlementAllocationV1>> {
+        Ok(None)
+    }
+    fn with_birth_product(
+        row: &crate::commerce::entitlement::EntitlementAllocationV1,
+        product: DefinitionDigest,
+    ) -> crate::commerce::entitlement::EntitlementAllocationV1 {
+        let mut row = row.clone();
+        row.product_digest = product;
+        row
+    }
     fn off_side(
         mut offer: mush_economy::managed_renewal::RenewalOffer,
     ) -> mush_economy::managed_renewal::RenewalOffer {

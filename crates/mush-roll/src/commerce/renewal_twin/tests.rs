@@ -80,6 +80,19 @@ pub(crate) trait Rig: Rules {
     /// issuer's own side changed: the royalty chain's digest, or the House's scope.
     fn offer(row: &Self::Operation) -> TestResult<super::history::Offer<Self>>;
     fn off_side(offer: super::history::Offer<Self>) -> super::history::Offer<Self>;
+    /// The other issuer, for a birth of the other variant.
+    type Other: Rig;
+    /// The purchase row a licence of this issuer is born in, its fields set to what a row
+    /// and its offer stand on; the birth it is; and the same row with its issuer's own side
+    /// changed, where the issuer has one (the House that issued it).
+    type BirthRow;
+    fn birth_row(
+        row: &Self::Operation,
+        offer: &super::history::Offer<Self>,
+    ) -> TestResult<Self::BirthRow>;
+    fn as_birth(row: &Self::BirthRow) -> super::super::entitlement::history::Birth<'_>;
+    fn birth_off_side(row: &Self::BirthRow) -> TestResult<Option<Self::BirthRow>>;
+    fn with_birth_product(row: &Self::BirthRow, product: DefinitionDigest) -> Self::BirthRow;
 }
 
 pub(crate) fn definition(kind: &str, id: &str) -> TestResult<DefinitionRef> {
@@ -239,6 +252,7 @@ macro_rules! instantiate {
             exact_transition_and_issued_clock_refuse_crossed_receipts,
             exhausted_generation_refuses_before_any_new_offer_or_money,
             an_offer_off_the_issuers_side_of_the_binding_is_refused,
+            the_audit_joins_a_renewal_to_its_own_issuers_birth,
             the_issuer_seal_admits_exactly_two,
         });
         mod holder {
@@ -830,3 +844,40 @@ macro_rules! reader_service_tests {
     };
 }
 pub(crate) use reader_service_tests;
+
+/// Doc 46 CT.5 (mutations R10 to R13): the audit joins each operation to the purchase its
+/// licence was born in (§4.3 4, the birth variant): its own issuer's variant, with the
+/// binding's product and grant and the offer's prior quote, and for the House the issuer
+/// that sold it. A later generation the issuer has no renewal of must be the other's.
+pub(crate) fn the_audit_joins_a_renewal_to_its_own_issuers_birth<I: Rig>() -> TestResult {
+    let row = draft::<I>(&birth::<I>()?, 10, 20, RenewalAttemptV1::Automatic {})?;
+    let offer = I::offer(&row)?;
+    let own = I::birth_row(&row, &offer)?;
+    I::check_birth(&I::as_birth(&own), row.binding(), &offer)?;
+    check!(!I::other_issuers_birth(&I::as_birth(&own)));
+    let other_row = draft::<I::Other>(
+        &birth::<I::Other>()?,
+        10,
+        20,
+        RenewalAttemptV1::Automatic {},
+    )?;
+    let other_offer = <I::Other as Rig>::offer(&other_row)?;
+    let other = <I::Other as Rig>::birth_row(&other_row, &other_offer)?;
+    check!(I::other_issuers_birth(&<I::Other as Rig>::as_birth(&other)));
+    check!(matches!(
+        I::check_birth(&<I::Other as Rig>::as_birth(&other), row.binding(), &offer),
+        Err(PublicationError::Mismatch)
+    ));
+    let moved = I::with_birth_product(&own, digest(77));
+    check!(matches!(
+        I::check_birth(&I::as_birth(&moved), row.binding(), &offer),
+        Err(PublicationError::Mismatch)
+    ));
+    if let Some(off) = I::birth_off_side(&own)? {
+        check!(matches!(
+            I::check_birth(&I::as_birth(&off), row.binding(), &offer),
+            Err(PublicationError::Mismatch)
+        ));
+    }
+    Ok(())
+}

@@ -138,6 +138,46 @@ impl Rig for House {
     ) -> TestResult<mush_economy::managed_house_renewal::RenewalOffer> {
         Ok(ct0_snapshot::ct0_offer(row).map_err(|e| e.to_string())?)
     }
+    type Other = crate::commerce::renewal_twin::Personal;
+    type BirthRow = crate::commerce::house_purchase::HouseAllocationV1;
+    fn birth_row(
+        row: &RenewalOperationV1,
+        offer: &mush_economy::managed_house_renewal::RenewalOffer,
+    ) -> TestResult<crate::commerce::house_purchase::HouseAllocationV1> {
+        let mut birth = crate::commerce::tests::ct0_purchase::house::allocation(
+            crate::commerce::house_purchase::HouseProtocol::HouseV1,
+        )?;
+        birth.product_digest = row.binding().product_digest();
+        birth.economics = crate::commerce::renewal_twin::Binding::economics_at(
+            row.binding(),
+            TermGeneration::new(1)?,
+            token(1),
+        )?;
+        birth.quote = offer.basis.prior_quote;
+        birth.quote_digest = offer.basis.prior_quote_digest;
+        birth.issuer = row.binding().issuer();
+        Ok(birth)
+    }
+    fn as_birth(
+        row: &crate::commerce::house_purchase::HouseAllocationV1,
+    ) -> crate::commerce::entitlement::history::Birth<'_> {
+        crate::commerce::entitlement::history::Birth::House(row)
+    }
+    fn birth_off_side(
+        row: &crate::commerce::house_purchase::HouseAllocationV1,
+    ) -> TestResult<Option<crate::commerce::house_purchase::HouseAllocationV1>> {
+        let mut off = row.clone();
+        off.issuer = HouseIssuer::new(mush_org::OrgId(1), mush_org::OrgScopeId(0))?;
+        Ok(Some(off))
+    }
+    fn with_birth_product(
+        row: &crate::commerce::house_purchase::HouseAllocationV1,
+        product: DefinitionDigest,
+    ) -> crate::commerce::house_purchase::HouseAllocationV1 {
+        let mut row = row.clone();
+        row.product_digest = product;
+        row
+    }
     fn off_side(
         mut offer: mush_economy::managed_house_renewal::RenewalOffer,
     ) -> mush_economy::managed_house_renewal::RenewalOffer {
