@@ -1,26 +1,24 @@
 //! Doc 46 CT.0: the personal renewal walk, pinned in `tests/ct0/renewal_personal.snap`. The
-//! walk is shared with the House twin (`ct0_kit::renewal_walk!`).
+//! walk is shared with the House twin (`renewal_twin/tests/ct0_walk.rs`).
 //!
 //! Beside it, `ct0_capacity_wire` pins the coordinator's own strict persisted metadata (the
 //! capacity `Reservation`, its `Target`s and `Key`s, and the `DefinitionRef` / `ClockStamp`
 //! the renewal and purchase validators decode) in `tests/ct0/wire_capacity.snap`, from the
 //! reservation a real personal Draft wrote.
 use super::*;
+use crate::action_state::terminal_capacity::tests::ct0_kit as kit;
+use mush_testkit::snapshot::Snapshot;
 
-crate::action_state::terminal_capacity::tests::ct0_kit::renewal_walk! {
-    test: ct0_renewal_personal_walk,
-    file: "tests/ct0/renewal_personal.snap",
-    twin: "personal",
-    protocol: mind_renewal,
-    domains: entitlement,
-    follow_seed: entitlement::tests::follow_renewal_birth_seed(),
+#[test]
+fn ct0_renewal_personal_walk() -> TestResult {
+    twin::ct0_walk::walk::<Personal>("personal", "tests/ct0/renewal_personal.snap")
 }
 
 #[test]
 fn ct0_capacity_wire() -> TestResult {
-    let mut f = fixture()?;
-    let prepared = draft(&mut f, 31, None)?;
-    install(&mut f, prepared)?;
+    let mut f = twin::fixture::<Personal>()?;
+    let prepared = twin::draft(&mut f, 31, None)?;
+    twin::install(&mut f, prepared)?;
     let stored = f
         .store
         .capacity

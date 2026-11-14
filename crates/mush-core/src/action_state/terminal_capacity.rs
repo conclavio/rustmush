@@ -22,6 +22,7 @@ mod paid;
 mod paid_resale;
 mod registry;
 mod renewal;
+mod renewal_twin;
 use crate::{CommitToken, DefinitionRef};
 pub(super) use bay_refit::{Protocol as BayRefitProtocol, bay_refit_change};
 pub(super) use charter_pending::{Protocol as CharterPendingProtocol, charter_pending_change};
