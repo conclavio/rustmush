@@ -385,7 +385,7 @@ fn words(held: &Held) -> String {
         Some(FieldObjective::Withdraw) => "WITHDRAW".to_owned(),
         Some(FieldObjective::Advance { to }) => format!("ADVANCE {},{}", to.0, to.1),
         Some(FieldObjective::Concentrate { designator, .. }) => {
-            format!("CONCENTRATE {designator}")
+            format!("FOCUS {designator}")
         }
         Some(other) => format!("{other:?}"),
     }
@@ -896,7 +896,7 @@ fn concentrate_all(field: &mut Field, designator: &str) -> String {
     commit(
         &mut field.rig,
         captain,
-        &format!("ORDER {fenced} ALL CONCENTRATE {designator}"),
+        &format!("ORDER {fenced} ALL FOCUS {designator}"),
     )
 }
 
@@ -950,10 +950,10 @@ async fn mw14c_a_leaders_concentrate_puts_a_hull_that_holds_the_contact_on_it() 
     let nothing = run(
         &mut field.rig.tw,
         captain,
-        &format!("ORDER {fenced} ALL CONCENTRATE ZZ9"),
+        &format!("ORDER {fenced} ALL FOCUS ZZ9"),
     );
     assert!(
-        nothing.contains(tacsim::detachment::sortie::CONCENTRATE_NO_CONTACT),
+        nothing.contains(tacsim::detachment::sortie::FOCUS_NO_CONTACT),
         "{nothing}"
     );
 
@@ -1371,7 +1371,7 @@ async fn mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired() {
         .collect();
     for held in &orders {
         assert_eq!((held.issuer, held.issuer_unit), (okonkwo, lead_rig));
-        assert_eq!(words(held), format!("CONCENTRATE {designator}"));
+        assert_eq!(words(held), format!("FOCUS {designator}"));
         assert_eq!(
             goes_back_to(&mut field, held.slot),
             Some(Some(FieldObjective::Hold)),
@@ -1427,8 +1427,8 @@ async fn mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired() {
     assert!(
         given_by(&mut field, okonkwo)
             .iter()
-            .filter(|(_, _, words)| words.starts_with("CONCENTRATE"))
-            .all(|(_, _, words)| *words == format!("CONCENTRATE {designator}")),
+            .filter(|(_, _, words)| words.starts_with("FOCUS"))
+            .all(|(_, _, words)| *words == format!("FOCUS {designator}")),
         "{:?}",
         given_by(&mut field, okonkwo)
     );
@@ -1438,9 +1438,7 @@ async fn mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired() {
             let report = run(&mut rig.tw, organiser, "+sortie/orders 1:1");
             report
                 .lines()
-                .filter(|line| {
-                    line.contains(&format!(": CONCENTRATE {designator}; WILCO received."))
-                })
+                .filter(|line| line.contains(&format!(": FOCUS {designator}; WILCO received.")))
                 .count()
                 == 2
         })
@@ -1738,7 +1736,7 @@ async fn mw14c_the_same_run_gives_the_same_orders_twice() {
     assert_eq!(first, second);
     assert_eq!(first.0.len(), 2, "an advance a hull: {:?}", first.0);
     assert!(
-        first.1.len() == 2 && first.1.iter().all(|line| line.contains("CONCENTRATE ")),
+        first.1.len() == 2 && first.1.iter().all(|line| line.contains("FOCUS ")),
         "a CONCENTRATE a hull: {:?}",
         first.1
     );
