@@ -15,8 +15,10 @@
 use super::plans::{self, FundingIntent};
 use super::receipt::{FundingReceipt, PaymentHistory, ReceiptAudit, TerminalReceipt};
 use super::{Leg, Subject};
-use crate::plan::{EconomyPlan, HoldOp};
-use crate::record::{Hold, HoldPurpose, HoldStatus};
+use crate::plan::HoldOp;
+use crate::record::{
+    EconomicTransaction, Hold, HoldEffect, HoldEffectKind, HoldPurpose, HoldStatus,
+};
 use crate::{AccountId, HoldId, TransactionId};
 use mush_core::{CommitToken, DefinitionDigest};
 use mush_org::PrincipalId;
@@ -84,6 +86,7 @@ macro_rules! instantiate {
             ct7_the_supplier_attributes_the_offer_taken,
             ct7_an_uncomposed_leg_is_not_ready,
             ct7_the_fee_and_its_payee_follow_the_site,
+            ct7_a_second_accept_waits_for_the_first,
         );
     };
     ($leg:ty; $($name:ident),+ $(,)?) => {
@@ -293,11 +296,15 @@ pub(crate) fn ct7_a_replayed_history_keeps_the_legs_exclusive_object<M: Rig>() {
     let first = M::intent();
     let rival = M::rival(&first);
     let elsewhere = M::elsewhere(&rival);
-    let install = !M::EXCLUSIVE_WHILE_OPEN;
+    let end = if M::EXCLUSIVE_WHILE_OPEN {
+        End::Open
+    } else {
+        End::Installed
+    };
     let build = |second: &FundingIntent<M>| {
         let mut audit = ReceiptAudit::<M>::default();
         for (n, intent) in [(1_u8, &first), (2, second)] {
-            let h = history(intent, n, install);
+            let (h, _) = history(intent, n, end);
             h.validate().expect("each history is valid alone");
             audit.histories.insert(h.funding.commit, h);
         }
@@ -387,6 +394,36 @@ pub(crate) fn ct7_the_fee_and_its_payee_follow_the_site<M: Rig>() {
     assert_eq!(lines, [(first.subject.payer(), -fee), (provider, fee)]);
 }
 
+/// An Accept is replayed only while no retained order holds what it would take: the same hull
+/// while that order is open (both legs), and for the core refit the same incoming core unless
+/// that order was cancelled ([`Leg::conflicts`]). The same Accept at another object, or after
+/// the first order was cancelled, is replayed.
+pub(crate) fn ct7_a_second_accept_waits_for_the_first<M: Rig>() {
+    let first = M::intent();
+    let rival = M::rival(&first);
+    let elsewhere = M::elsewhere(&rival);
+    let replay = |end: End, second: &FundingIntent<M>| {
+        let (h, _) = history(&first, 1, end);
+        let mut audit = ReceiptAudit::<M>::default();
+        audit.histories.insert(h.funding.commit, h);
+        audit.finish_replay().expect("the first order alone");
+        let (_, tx) = history(second, 2, End::Open);
+        audit.prepare(&tx).is_ok()
+    };
+    assert!(replay(End::Open, &elsewhere), "another object, first open");
+    assert!(!replay(End::Open, &rival), "the same object, first open");
+    assert!(
+        replay(End::Cancelled, &rival),
+        "the same object, first cancelled"
+    );
+    assert_eq!(
+        replay(End::Installed, &rival),
+        M::EXCLUSIVE_WHILE_OPEN,
+        "the same object, first installed: the bay's hull is free again, the core refit's \
+         incoming core is fitted"
+    );
+}
+
 /// The seal is the tripwire for an edit that widens it rather than going round it: over the
 /// crate's source, exactly two `impl Member for` lines, both in `refit_twin/leg.rs`; exactly
 /// two `impl Leg for`, one in each family's `leg.rs`; one `mod members {`, not `pub`; and no
@@ -441,16 +478,25 @@ fn the_leg_seal_admits_exactly_two() {
     assert_eq!(modules, [[module.as_str(), " {"].concat()]);
 }
 
-/// A funded history, and with `install` its Install, built from the leg's own plans the way
-/// the fold builds it from the journal.
+/// How a test history ends.
+#[derive(Clone, Copy)]
+pub(crate) enum End {
+    Open,
+    Installed,
+    Cancelled,
+}
+
+/// A funded history ended as `end`, built from the leg's own plans the way the fold builds it
+/// from the journal, and the Accept transaction that funded it.
 pub(crate) fn history<M: Rig>(
     intent: &FundingIntent<M>,
     n: u8,
-    install: bool,
-) -> PaymentHistory<M> {
+    end: End,
+) -> (PaymentHistory<M>, EconomicTransaction) {
     let accept = CommitToken::from_bytes([10 + n; 16]);
     let action = M::action_ref(&intent.policy, M::ACCEPT_ACTION).expect("accept");
     let plan = plans::funding(intent, accept, &action).expect("a funding plan");
+    let seq = 10 * u64::from(n);
     let hold = Hold {
         id: HoldId(u64::from(n)),
         account: intent.subject.payer(),
@@ -467,49 +513,73 @@ pub(crate) fn history<M: Rig>(
         expires: None,
         status: HoldStatus::Held,
         revision: 1,
-        last_journal_seq: 10 * u64::from(n),
+        last_journal_seq: seq,
+    };
+    let tx = EconomicTransaction {
+        id: TransactionId(seq),
+        journal_seq: seq,
+        idempotency: plan.idempotency.clone(),
+        cause: plan.cause.clone(),
+        actor: plan.actor.clone(),
+        posted_at: 200,
+        description: plan.description.clone(),
+        lines: Vec::new(),
+        reverses: None,
+        visibility: plan.visibility.clone(),
+        plan_hash: crate::hash::plan_hash(&plan),
+        asset_effects: Vec::new(),
+        custody_effects: Vec::new(),
+        consumed_approval: None,
+        hold_effects: vec![HoldEffect {
+            kind: HoldEffectKind::Placed,
+            hold: hold.clone(),
+        }],
     };
     let mut h = PaymentHistory {
         intent: Box::new(intent.clone()),
         funding: Box::new(FundingReceipt {
             commit: accept,
             action,
-            transaction: TransactionId(10 * u64::from(n)),
-            journal_seq: 10 * u64::from(n),
-            posted_at: 200,
-            plan_hash: crate::hash::plan_hash(&plan),
+            transaction: tx.id,
+            journal_seq: seq,
+            posted_at: tx.posted_at,
+            plan_hash: tx.plan_hash,
             hold: hold.clone(),
         }),
         terminal: None,
     };
-    if install {
-        let at = stamp(7200);
-        let part = DefinitionDigest::from_bytes([30 + n; 32]);
-        let commit = CommitToken::from_bytes([20 + n; 16]);
-        let action = M::action_ref(&intent.policy, M::INSTALL_ACTION).expect("install");
-        let plan: EconomyPlan =
-            plans::terminal(intent, accept, hold.id, commit, &action, &at, Some(part))
-                .expect("an install plan");
-        let transaction = TransactionId(10 * u64::from(n) + 1);
-        h.terminal = Some(Box::new(TerminalReceipt {
-            commit,
-            action,
-            transaction,
-            journal_seq: 10 * u64::from(n) + 1,
-            posted_at: 300,
-            at,
-            plan_hash: crate::hash::plan_hash(&plan),
-            hold: Hold {
-                status: HoldStatus::Consumed {
-                    transaction,
-                    amount: intent.price().expect("a price"),
-                },
-                revision: 2,
-                last_journal_seq: 10 * u64::from(n) + 1,
-                ..hold
+    let (part, id, status) = match end {
+        End::Open => return (h, tx),
+        End::Installed => (
+            Some(DefinitionDigest::from_bytes([30 + n; 32])),
+            M::INSTALL_ACTION,
+            HoldStatus::Consumed {
+                transaction: TransactionId(seq + 1),
+                amount: intent.price().expect("a price"),
             },
-            result: M::installed(part),
-        }));
-    }
-    h
+        ),
+        End::Cancelled => (None, M::CANCEL_ACTION, HoldStatus::Released),
+    };
+    let at = stamp(7200);
+    let commit = CommitToken::from_bytes([20 + n; 16]);
+    let action = M::action_ref(&intent.policy, id).expect("a terminal action");
+    let plan = plans::terminal(intent, accept, hold.id, commit, &action, &at, part)
+        .expect("a terminal plan");
+    h.terminal = Some(Box::new(TerminalReceipt {
+        commit,
+        action,
+        transaction: TransactionId(seq + 1),
+        journal_seq: seq + 1,
+        posted_at: 300,
+        at,
+        plan_hash: crate::hash::plan_hash(&plan),
+        hold: Hold {
+            status,
+            revision: 2,
+            last_journal_seq: seq + 1,
+            ..hold
+        },
+        result: part.map_or_else(M::cancelled, M::installed),
+    }));
+    (h, tx)
 }
