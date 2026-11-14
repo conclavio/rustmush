@@ -6327,6 +6327,39 @@ fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quara
     );
 }
 
+/// **Doc 47 CO.11, D1: a 3 kg burn takes a whole tonne off the hold, and no propellant is
+/// lost.** MW.21 read the hold's `stow.propellant` fall from 9 t to 8 t on a 3 kg jink. That is
+/// the ledger's rule (`SF.R4`, `D-35-6`): the integer-tonne pool always holds
+/// `floor(live_kg / 1_000)`, so the first kilogram of a fresh tonne debits it whole, and the
+/// 997 kg left of it stay live in the ledger. The next 997 kg cost the pool nothing; the
+/// kilogram after them debits the next tonne.
+#[test]
+fn co11_a_part_tonne_burn_debits_a_whole_tonne_and_keeps_the_rest_live() {
+    let mut ledger = tacsim::space::tick::HullPropellantLedger::default();
+    assert_eq!(
+        ledger.record_burn_kg(9, 3),
+        1,
+        "3 kg off a full 9 t debits one tonne"
+    );
+    // The debit has not landed: the vault still reads 9, and the ledger knows it owes one.
+    assert_eq!(ledger.effective_live_kg(9), 8_997);
+    // The debit lands: the vault reads 8, and the live mass is the same.
+    assert_eq!(ledger.effective_live_kg(8), 8_997);
+    assert_eq!(
+        ledger.record_burn_kg(8, 997),
+        0,
+        "the rest of the tonne is already paid"
+    );
+    assert_eq!(ledger.effective_live_kg(8), 8_000);
+    assert_eq!(
+        ledger.record_burn_kg(8, 1),
+        1,
+        "the next kilogram opens the next tonne"
+    );
+    assert_eq!(ledger.effective_live_kg(7), 7_999);
+    assert_eq!(ledger.total_burned_kg, 1_001);
+}
+
 /// **Doc 35 cut SF.R11 (`D-35-15`, `35b` §5 #10/#11/#12/#14/#15/#16, §8 `SF.R11`)**:
 /// One ledger, rated drive:
 /// 1. In-bubble `max_accel_mps2` equals the hull's rated drive flip acceleration (`1 m/s²` for the Dray's `50 mg` drive).

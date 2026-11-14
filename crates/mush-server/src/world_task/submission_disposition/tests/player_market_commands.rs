@@ -622,46 +622,73 @@ async fn file_and_rate_read_only_the_actors_own_revision_and_shell() -> TestResu
     result?
 }
 
+/// The world's refusal of a line it shed under load (`mode.rs`): the line
+/// never ran, and the player is asked to retry it.
+const WORLD_BUSY: &str = "The world was busy too long for that line; please retry in a moment.";
+/// `actor`'s own reply to `line`, sent again while the loaded world sheds it
+/// (`WORLD_BUSY`), within `STEP`.
+async fn admitted(server: &Running, actor: ObjId, line: &str) -> TestResult<Vec<String>> {
+    let end = Instant::now() + STEP;
+    loop {
+        let own = server.command_seen(actor, line.into()).await?.own;
+        if !own.iter().any(|l| l == WORLD_BUSY) {
+            return Ok(own);
+        }
+        check!(Instant::now() < end, "{line} was shed until STEP: {own:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// 17g C2a test 12: `@mind/rate` queues a genuine Registry preparation of the
 /// author's own saved revision by name; once the job is admitted a second
 /// `@mind/rate` refuses `RATING_BUSY`; `@registry/cancel` releases the job,
 /// after which `@mind/rate` queues again.
+///
+/// Each reply is matched by the line it must hold, never by the whole drain:
+/// `command` returns every line recorded since the command was sent, and on
+/// a loaded box late lines land in the same drain (the engine's `Queued.` and
+/// the driver's `Done.` for the author's earlier `@mind/save`, whose wait is on
+/// the store row, and other connections' lines, such as an inventory
+/// provider's `Dissolved lot#<id> into tranche#<id>.`). The old whole-drain
+/// match on the re-rate loop missed a reply that did queue a new job, and
+/// every later `@mind/rate` then met that job and refused `RATING_BUSY`
+/// until `STEP` ran out. The author's own lines are read (`command_seen`).
+/// A line the loaded world shed (`WORLD_BUSY`, "please retry") never ran,
+/// so it is sent again (`admitted`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_queues_and_cancels_a_genuine_registry_preparation() -> TestResult {
+    const RATE: &str = "@mind/rate Sentinel@1";
+    const PREPARATION: &str = "Registry preparation queued.";
+    const RETAINED: &str = "Registry work retained and queued.";
+    const FINISHED: &str = "Registry work finished.";
+    const BUSY: &str = "The Registry is already working on one of your revisions; wait until it says it is finished.";
     let mut w = world("mush-c2a-rate", 2).await?;
     let result = timeout(STEP * 10, async {
         let p = w.launch.principals;
         saved(&w, p.author, "Sentinel").await?;
-        let queued = vec!["Registry preparation queued.".to_owned()];
-        check_eq!(
-            w.server
-                .command(p.author, "@mind/rate Sentinel@1".into())
-                .await?,
-            queued
+        let first = admitted(&w.server, p.author, RATE).await?;
+        check!(
+            first.iter().any(|line| line == PREPARATION),
+            "the first rate: {first:?}"
         );
-        await_own(&w.server, p.author, |line| {
-            line == "Registry work retained and queued."
-        })
-        .await?;
-        check_eq!(
-            w.server
-                .command(p.author, "@mind/rate Sentinel@1".into())
-                .await?,
-            vec!["The Registry is already working on one of your revisions; wait until it says it is finished.".to_owned()]
+        until_own(&w.server, p.author, first, |line| line == RETAINED).await?;
+        let busy = admitted(&w.server, p.author, RATE).await?;
+        check!(
+            busy.iter().any(|line| line == BUSY) && !busy.iter().any(|line| line == PREPARATION),
+            "the second rate: {busy:?}"
         );
-        check_eq!(
-            w.server.command(p.author, "@registry/cancel".into()).await?,
-            Vec::<String>::new(),
-            "the cancel is accepted silently"
+        let cancel = admitted(&w.server, p.author, "@registry/cancel").await?;
+        check!(
+            cancel
+                .iter()
+                .all(|line| line == FINISHED || line == QUEUED || line == "Done."),
+            "the cancel is accepted silently: {cancel:?}"
         );
-        await_own(&w.server, p.author, |line| line == "Registry work finished.").await?;
+        until_own(&w.server, p.author, cancel, |line| line == FINISHED).await?;
         let end = Instant::now() + STEP;
         loop {
-            let lines = w
-                .server
-                .command(p.author, "@mind/rate Sentinel@1".into())
-                .await?;
-            if lines == queued {
+            let lines = admitted(&w.server, p.author, RATE).await?;
+            if lines.iter().any(|line| line == PREPARATION) {
                 break;
             }
             check!(Instant::now() < end, "the job was released: {lines:?}");

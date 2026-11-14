@@ -43,7 +43,9 @@ use std::sync::Arc;
 
 use mush_core::{Ctx, ObjId};
 
-use crate::minds::ic_sortie::{ClaimRead, IcHost, IcHostTicket, claim_closed, claim_of};
+use crate::minds::ic_sortie::{
+    ClaimRead, IcHost, IcHostTicket, claim_closed, claim_of, claim_seal,
+};
 use crate::port_tick::{Fire, Step, SwapRefused};
 use crate::surface::excursion::{ClaimCloseKind, ClaimCursor, RigRecord};
 
@@ -185,14 +187,32 @@ pub(crate) fn step(
             launch_ic,
             ..
         }) => match claim_of(ctx.w, tv) {
-            ClaimRead::Active { dispatcher, .. } if dispatcher == *operator => {
-                if let Some((_, ticket)) = arm.opens.remove(&tv) {
-                    let _ = host.acknowledge(ctx.w, &ticket);
+            ClaimRead::Active { open, dispatcher } if dispatcher == *operator => {
+                let landed = arm.opens.remove(&tv);
+                if let Some((_, ticket)) = &landed {
+                    let _ = host.acknowledge(ctx.w, ticket);
                 }
                 // Doc 38a F-23.4: a staff `close` or `home` cleared the queued launch under the
                 // opening claim; the claim opened anyway, so it is cancelled
                 // (`PoweredDownInBase`), never left for a launch that will not come.
                 if queued_launch(record) {
+                    // Doc 47 CO.11 (D8): the operator is told which mind is aboard, once, as
+                    // the Open is acknowledged.
+                    if landed.is_some()
+                        && let Some(seal) = claim_seal(ctx.w, open)
+                    {
+                        let line = crate::surface::excursion::CLAIM_ADMITTED
+                            .replace("{licence}", &licence.to_string())
+                            .replace("{tv}", &tv.0.to_string())
+                            .replace("{mind}", seal.mind.as_str())
+                            .replace("{class}", seal.class.as_str());
+                        crate::port_tick::notify_budget(
+                            ctx,
+                            *operator,
+                            &line,
+                            crate::port_tick::NoticeLevel::Trip,
+                        );
+                    }
                     start.map_or(Step::Refused, |start| {
                         submit_launch(ctx, fire, start, record, *operator)
                     })

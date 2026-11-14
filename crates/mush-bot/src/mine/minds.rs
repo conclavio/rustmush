@@ -132,6 +132,8 @@ pub mod claim {
         "The launch could not start; the mind's claim is closed and the rig stays in its bay.";
     /// `tacsim::surface::excursion::CLAIM_NOT_OPEN`.
     pub const CLAIM_NOT_OPEN: &str = "that rig's mind claim has not opened yet";
+    /// `tacsim::surface::excursion::CLAIM_ADMITTED` (doc 47 CO.11): its second row's tail.
+    pub const CLAIM_ADMITTED: &str = " until the rig is home.";
 }
 
 /// A launch's `mind=` refusals (doc 23 S.4b, doc 17h M8e): `tacsim::surface::dispatch`.
@@ -207,7 +209,7 @@ pub mod ship_mind {
     pub const MIND_ABOARD: &str =
         "It has her helm and sensors while her crew has no link, until she next docks at a port.";
     /// `tacsim::port::ship_mind::MIND_UNFIT`.
-    pub const MIND_UNFIT: &str = ", and no longer fits her; its claim is being closed.";
+    pub const MIND_UNFIT: &str = "It no longer fits her; its claim is being closed.";
     /// `tacsim::port::ship_mind::MIND_CLOSING`.
     pub const MIND_CLOSING: &str = "The claim on the mind last sealed aboard the ";
     /// `tacsim::port::ship_mind::MIND_WAS_REFUSED`.
@@ -237,8 +239,7 @@ pub mod ship_mind {
     /// `tacsim::port::ship_mind::MIND_NOT_YET`.
     pub const MIND_NOT_YET: &str = "'s mind claim yet; try again in a moment.";
     /// `tacsim::port::ship_mind::MIND_OFF_PREVIEW`.
-    pub const MIND_OFF_PREVIEW: &str =
-        ": its claim closes and the licence's seat is free. Add go to unseal it.";
+    pub const MIND_OFF_PREVIEW: &str = ": its claim closes and the licence's seat is free.";
     /// `tacsim::port::ship_mind::MIND_SEALED`.
     pub const MIND_SEALED: &str = "The Registry admits the claim: ";
     /// `tacsim::port::ship_mind::MIND_REFUSED`.
@@ -252,7 +253,7 @@ pub mod ship_mind {
     pub const MIND_UNWIRED: &str = "Minds cannot be sealed aboard a ship here.";
     /// `tacsim::port::ship_mind::MIND_HOLDS_HER`.
     pub const MIND_HOLDS_HER: &str =
-        ", and she is held as she is until it is unsealed: +ship/mind off, at her berth.";
+        " is held as she is while a mind is sealed aboard: +ship/mind off, at her berth.";
 }
 
 /// A posture practised in the simulator (doc 45 unit AP.10): `tacsim::match_::practice`.
@@ -684,6 +685,7 @@ mod tests {
             CLAIM_REFUSED,
             CLAIM_CANCELLED,
             CLAIM_NOT_OPEN,
+            CLAIM_ADMITTED,
         )
     }
 
