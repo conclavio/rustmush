@@ -1,7 +1,7 @@
 //! Prebuilt E4 images. All local checks precede consuming bind; apply is infallible.
 use super::{
-    CoreRefitConfig,
-    fold::RefitMoneyFold,
+    Leg, Policy, Subject,
+    fold::MoneyFold,
     money::{self, MoneyPreparation, Output, Request},
     refused,
 };
@@ -18,8 +18,8 @@ use mush_core::participant::{BoundParticipant, OwnerPrepareContext, ParticipantE
 use mush_core::{OwnerId, PreparedLedgerAppend};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub struct RefitMoneyPatch {
-    prepared: Box<MoneyPreparation>,
+pub struct MoneyPatch<M: Leg> {
+    prepared: Box<MoneyPreparation<M>>,
     before_meta: MetaFence,
     before_posts: u64,
     before_accounts: Vec<Account>,
@@ -33,28 +33,36 @@ pub struct RefitMoneyPatch {
     journal: PreparedLedgerAppend,
     bloom: PreparedBloomInsert,
     chunk: u64,
-    fold: Box<RefitMoneyFold>,
+    fold: Box<MoneyFold<M>>,
 }
-pub(crate) fn prepare(
-    config: &CoreRefitConfig,
+pub(crate) fn prepare<M: Leg>(
+    config: &M::Config,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
-    request: Request,
-) -> Result<(Output, Box<RefitMoneyPatch>, Vec<ReplayWrite>), ParticipantError> {
+    request: Request<M>,
+) -> Result<(Output<M>, Box<MoneyPatch<M>>, Vec<ReplayWrite>), ParticipantError> {
     let mut prepared = money::prepare(config, state, ctx, request)?;
-    let next_transaction = state.next_transaction.checked_add(1).ok_or_else(refused)?;
-    let next_posts = state.posts_since_boot.checked_add(1).ok_or_else(refused)?;
-    let fold = Box::new(RefitMoneyFold::prepare(&state.fold, &prepared.transaction)?);
+    let next_transaction = state
+        .next_transaction
+        .checked_add(1)
+        .ok_or_else(refused::<M>)?;
+    let next_posts = state
+        .posts_since_boot
+        .checked_add(1)
+        .ok_or_else(refused::<M>)?;
+    let fold = Box::new(MoneyFold::prepare(&state.fold, &prepared.transaction)?);
     let journal = state
         .journal
         .prepare_append(
             JOURNAL_LOG,
             serde_json::to_value(&prepared.transaction).map_err(|_| ParticipantError::Encoding)?,
         )
-        .map_err(|_| refused())?;
+        .map_err(|_| refused::<M>())?;
     let mut writes = vec![
         journal
-            .authoritative_replay_write(OwnerId::new(crate::module::NS).map_err(|_| refused())?)
+            .authoritative_replay_write(
+                OwnerId::new(crate::module::NS).map_err(|_| refused::<M>())?,
+            )
             .map_err(|_| ParticipantError::Encoding)?,
     ];
     for a in &prepared.delta.accounts {
@@ -72,19 +80,25 @@ pub(crate) fn prepare(
     object.insert("next_transaction_id".into(), next_transaction.into());
     object.insert("next_hold_id".into(), prepared.next_hold.into());
     writes.push(json_write(crate::api::META_KEY.into(), &meta)?);
-    let mut ids = BTreeSet::from([prepared.history.subject().payer]);
+    let mut ids = BTreeSet::from([prepared.history.subject().payer()]);
     ids.extend(prepared.transaction.lines.iter().map(|l| l.account));
     let before_accounts = ids
         .into_iter()
-        .map(|id| state.snapshot.account(id).cloned().ok_or_else(refused))
+        .map(|id| state.snapshot.account(id).cloned().ok_or_else(refused::<M>))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut instruments = BTreeSet::from([prepared.history.policy().instrument.clone()]);
+    let mut instruments = BTreeSet::from([prepared.history.policy().instrument().clone()]);
     if let Some(live) = &prepared.live {
         instruments.extend(live.instruments.iter().map(|i| i.id.clone()));
     }
     let before_instruments = instruments
         .into_iter()
-        .map(|id| state.snapshot.instrument(&id).cloned().ok_or_else(refused))
+        .map(|id| {
+            state
+                .snapshot
+                .instrument(&id)
+                .cloned()
+                .ok_or_else(refused::<M>)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let before_holds = prepared
         .delta
@@ -96,7 +110,7 @@ pub(crate) fn prepare(
         .live
         .as_ref()
         .map_or_else(Vec::new, |facts| facts.titles.clone());
-    let payer = prepared.history.subject().payer;
+    let payer = prepared.history.subject().payer();
     let before_window = state.debit_window.get(&payer).cloned();
     let mut window = BTreeMap::new();
     if let Some(v) = &before_window {
@@ -111,11 +125,11 @@ pub(crate) fn prepare(
     let bloom = state
         .key_filter
         .prepare_insert(&prepared.transaction.idempotency)
-        .ok_or_else(refused)?;
-    let output = prepared.output.take().ok_or_else(refused)?;
+        .ok_or_else(refused::<M>)?;
+    let output = prepared.output.take().ok_or_else(refused::<M>)?;
     Ok((
         output,
-        Box::new(RefitMoneyPatch {
+        Box::new(MoneyPatch {
             prepared,
             before_meta: MetaFence::capture(state),
             before_posts: state.posts_since_boot,
@@ -135,10 +149,10 @@ pub(crate) fn prepare(
         writes,
     ))
 }
-impl RefitMoneyPatch {
+impl<M: Leg> MoneyPatch<M> {
     pub(crate) fn recheck(
         &self,
-        config: &CoreRefitConfig,
+        config: &M::Config,
         state: &EconomyStore,
         ctx: &OwnerPrepareContext<'_>,
     ) -> Result<(), ParticipantError> {
@@ -172,18 +186,18 @@ impl RefitMoneyPatch {
                 .any(|a| state.snapshot.asset(a.object) != Some(a))
             || state
                 .debit_window
-                .get(&self.prepared.history.subject().payer)
+                .get(&self.prepared.history.subject().payer())
                 != self.before_window.as_ref()
             || !self.fold.matches(&state.fold)
         {
-            return Err(refused());
+            return Err(refused::<M>());
         }
         Ok(())
     }
     pub(crate) fn bind(
         self: Box<Self>,
         state: &mut EconomyStore,
-    ) -> Result<BoundRefitMoney<'_>, ParticipantError> {
+    ) -> Result<BoundMoney<'_, M>, ParticipantError> {
         self.check_local(state)?;
         let EconomyStore {
             journal,
@@ -201,7 +215,7 @@ impl RefitMoneyPatch {
             debit_window,
             ..
         } = state;
-        let payer = self.prepared.history.subject().payer;
+        let payer = self.prepared.history.subject().payer();
         let Self {
             prepared,
             journal: prepared_journal,
@@ -215,9 +229,9 @@ impl RefitMoneyPatch {
         } = *self;
         let journal = journal
             .bind_prepared(prepared_journal)
-            .map_err(|_| refused())?;
-        let bloom = key_filter.bind_insert(bloom).ok_or_else(refused)?;
-        Ok(BoundRefitMoney {
+            .map_err(|_| refused::<M>())?;
+        let bloom = key_filter.bind_insert(bloom).ok_or_else(refused::<M>)?;
+        Ok(BoundMoney {
             journal,
             bloom,
             snapshot,
@@ -243,7 +257,7 @@ impl RefitMoneyPatch {
         })
     }
 }
-pub struct BoundRefitMoney<'a> {
+pub struct BoundMoney<'a, M: Leg> {
     journal: BoundLedgerAppend<'a>,
     bloom: BoundBloomInsert<'a>,
     snapshot: &'a mut EconomySnapshot,
@@ -265,9 +279,9 @@ pub struct BoundRefitMoney<'a> {
     after_hold: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: Box<RefitMoneyFold>,
+    fold_patch: Box<MoneyFold<M>>,
 }
-impl BoundParticipant for BoundRefitMoney<'_> {
+impl<M: Leg> BoundParticipant for BoundMoney<'_, M> {
     fn apply(self) {
         let _persisted = self.journal.apply();
         self.delta.apply_to(self.snapshot);
