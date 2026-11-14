@@ -1173,6 +1173,12 @@ kernel's table is the purchase twins (`entitlement` 1,436, `house` 1,415), which
 - **The licence and term families are shared.** A House licence renews into
   `roll_mind_personal_paid_licence` and `roll_mind_paid_term`, the personal names; only the
   term-economics family differs. They are plain constants of the module, not the trait's.
+- **A second read, not anchored on this one.** A reviewer given the two old files and the four
+  new ones, and told to substitute each issuer into the twin and explain every hunk that is left,
+  found no behavioural difference, no change in the order of evaluation, and the same reachable
+  refusal sentences for each issuer (125 personal, 134 House). One side effect it named:
+  `Protocol`'s derived `Debug` output now shows the type parameter. The registry's own `Debug` is
+  hand-written and prints no protocol, so nothing reads it.
 - No defect in production code was found, and no production behaviour was changed.
 
 **For CT.4.**
