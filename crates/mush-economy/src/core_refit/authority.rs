@@ -2,16 +2,12 @@
 //! Supplier membership is required for fresh acceptance, never inherited as the
 //! requester's identity and never re-required for already accepted fixed work.
 use super::plans::FundingIntent;
-use super::{
-    RefitError as Error, RefitOfferAttribution, RefitOrderAttribution, RefitOwnerAuthority,
-    RefitPaymentPolicy, RefitSubject,
-};
+use super::{RefitError as Error, RefitOwnerAuthority, RefitPaymentPolicy, RefitSubject};
 use crate::core_integration::ScopedCoreAccount;
 use crate::{
-    Account, AccountStatus, AssetLifecycle, EconomicAsset, EconomyStore, InstrumentDef,
-    InstrumentKind, InstrumentStatus,
+    AccountStatus, AssetLifecycle, EconomicAsset, EconomyStore, InstrumentKind, InstrumentStatus,
 };
-use mush_core::{ClockStamp, CommitToken, DefinitionRef, Flags, ObjId, ObjKind, World};
+use mush_core::{CommitToken, DefinitionRef, Flags, ObjId, ObjKind, World};
 use mush_org::{AuthRequest, CapabilityId, OrgStatus, OrgStore, PrincipalId, ScopeStatus};
 use std::{
     any::TypeId,
@@ -77,16 +73,8 @@ impl CoreRefitConfig {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct CurrentFacts {
-    pub accounts: Vec<Account>,
-    pub instruments: Vec<InstrumentDef>,
-    pub titles: Vec<EconomicAsset>,
-    pub supplier: Option<RefitOfferAttribution>,
-    pub order: Option<RefitOrderAttribution>,
-    pub at: ClockStamp,
-    pub utc: i64,
-}
+/// The live facts, `crate::refit_twin::CurrentFacts` for this leg.
+pub(super) type CurrentFacts = crate::refit_twin::CurrentFacts<crate::refit_twin::Core>;
 fn owned<T: 'static>(w: &World, owner: &str) -> Result<(), Error> {
     if w.module_state_owner(TypeId::of::<T>())
         .is_none_or(|o| o.as_str() != owner)

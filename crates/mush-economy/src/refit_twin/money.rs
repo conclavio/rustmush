@@ -1,13 +1,8 @@
-//! Live native fitting hold/capture/release under the same actual E4 owner.
+//! Live native fee hold/capture/release under the same actual E4 owner.
+use super::{CurrentFacts, FundingRequest, Leg, Policy, Subject, refused};
 use super::{
-    ACCEPT_ACTION, CANCEL_ACTION, CoreRefitConfig, INSTALL_ACTION, RefitCancellationRequest,
-    RefitFundingReceipt, RefitFundingRequest, RefitInstallationRequest, RefitTerminalReceipt,
-    refused,
-};
-use super::{
-    authority::{self, CurrentFacts},
     plans::{self, FundingIntent},
-    receipt::RefitPaymentHistory,
+    receipt::{FundingReceipt, PaymentHistory, TerminalReceipt},
 };
 use crate::api::WorldAuth;
 use crate::engine::{AuthEval, Delta, NoCustody, NoFacts, ValidateEnv};
@@ -16,11 +11,12 @@ use crate::{Account, Amount, EconomySnapshot, EconomyStore, Hold, TransactionId}
 use mush_core::participant::{OwnerPreparationBinding, OwnerPrepareContext, ParticipantError};
 use mush_org::PrincipalId;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
-pub(crate) enum Request {
-    Fund(Box<RefitFundingRequest>),
-    Install(RefitInstallationRequest),
-    Cancel(RefitCancellationRequest),
+pub enum Request<M: Leg> {
+    Fund(Box<FundingRequest<M>>),
+    Install(M::Installation),
+    Cancel(M::Cancellation),
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum Transition {
@@ -29,49 +25,49 @@ pub(super) enum Transition {
     Cancel,
 }
 impl Transition {
-    pub fn action(self) -> &'static str {
+    pub fn action<M: Leg>(self) -> &'static str {
         match self {
-            Self::Fund => ACCEPT_ACTION,
-            Self::Install => INSTALL_ACTION,
-            Self::Cancel => CANCEL_ACTION,
+            Self::Fund => M::ACCEPT_ACTION,
+            Self::Install => M::INSTALL_ACTION,
+            Self::Cancel => M::CANCEL_ACTION,
         }
     }
 }
 /// Opaque actual owner outputs. Raw decoded histories cannot create them.
-pub struct RefitFundingOutput {
-    pub(super) history: Box<RefitPaymentHistory>,
+pub struct FundingOutput<M: Leg> {
+    pub(super) history: Box<PaymentHistory<M>>,
 }
-impl RefitFundingOutput {
-    pub fn subject(&self) -> &super::RefitSubject {
+impl<M: Leg> FundingOutput<M> {
+    pub fn subject(&self) -> &M::Subject {
         self.history.subject()
     }
-    pub fn receipt(&self) -> &RefitFundingReceipt {
+    pub fn receipt(&self) -> &FundingReceipt {
         self.history.funding()
     }
 }
-pub struct RefitTerminalOutput {
-    pub(super) history: Box<RefitPaymentHistory>,
-    receipt: Box<RefitTerminalReceipt>,
+pub struct TerminalOutput<M: Leg> {
+    pub(super) history: Box<PaymentHistory<M>>,
+    receipt: Box<TerminalReceipt<M>>,
 }
-impl RefitTerminalOutput {
-    pub fn subject(&self) -> &super::RefitSubject {
+impl<M: Leg> TerminalOutput<M> {
+    pub fn subject(&self) -> &M::Subject {
         self.history.subject()
     }
-    pub fn receipt(&self) -> &RefitTerminalReceipt {
+    pub fn receipt(&self) -> &TerminalReceipt<M> {
         &self.receipt
     }
 }
-pub(crate) enum Output {
-    Funded(RefitFundingOutput),
-    Terminal(RefitTerminalOutput),
+pub enum Output<M: Leg> {
+    Funded(FundingOutput<M>),
+    Terminal(TerminalOutput<M>),
 }
-pub(super) struct MoneyPreparation {
-    pub output: Option<Output>,
-    pub history: RefitPaymentHistory,
+pub(super) struct MoneyPreparation<M: Leg> {
+    pub output: Option<Output<M>>,
+    pub history: PaymentHistory<M>,
     pub transition: Transition,
     pub binding: OwnerPreparationBinding,
-    pub before_history: Option<RefitPaymentHistory>,
-    pub live: Option<CurrentFacts>,
+    pub before_history: Option<PaymentHistory<M>>,
+    pub live: Option<CurrentFacts<M>>,
     pub plan: EconomyPlan,
     pub validated: Prepared,
     pub delta: Delta,
@@ -80,11 +76,12 @@ pub(super) struct MoneyPreparation {
 }
 /// Exact owner-only permission to the native engine. It never authorizes a
 /// replacement plan, unrelated hold or title that already exists.
-pub(crate) struct ClosedRefitPlan {
+pub struct ClosedPlan<M: Leg> {
     plan: EconomyPlan,
     before_hold: Option<Hold>,
+    leg: PhantomData<M>,
 }
-impl ClosedRefitPlan {
+impl<M: Leg> ClosedPlan<M> {
     pub(crate) fn plan(&self) -> &EconomyPlan {
         &self.plan
     }
@@ -94,7 +91,7 @@ impl ClosedRefitPlan {
         snapshot: &EconomySnapshot,
     ) -> Result<(), crate::EconomyError> {
         if plan != &self.plan
-            || plan.idempotency.namespace != super::NAMESPACE
+            || plan.idempotency.namespace != M::NAMESPACE
             || self
                 .before_hold
                 .as_ref()
@@ -107,8 +104,8 @@ impl ClosedRefitPlan {
         Ok(())
     }
 }
-fn identity(
-    config: &CoreRefitConfig,
+fn identity<M: Leg>(
+    config: &M::Config,
     ctx: &OwnerPrepareContext<'_>,
     phase: Transition,
     requester: mush_core::ObjId,
@@ -117,69 +114,56 @@ fn identity(
     if ctx.world().get(requester).is_none_or(|o| {
         o.kind != mush_core::ObjKind::Player || o.flags.contains(mush_core::Flags::GOING)
     }) {
-        return Err(refused());
+        return Err(refused::<M>());
     }
     if ctx.action()
-        != &config
-            .policy
-            .action_ref(phase.action())
-            .map_err(|_| refused())?
+        != &M::action_ref(M::policy(config), phase.action::<M>()).map_err(|_| refused::<M>())?
         || inv.actor() != requester
         || inv.principal() != &(mush_core::PrincipalId::Object { id: requester })
         || inv.subject() != &mush_core::PerceivedRef::SelfActor
         || !inv.targets().is_empty()
         || inv.idempotency().scope().owner.as_str() != "industry"
     {
-        return Err(refused());
+        return Err(refused::<M>());
     }
     Ok(())
 }
-pub(super) fn prepare(
-    config: &CoreRefitConfig,
+pub(super) fn prepare<M: Leg>(
+    config: &M::Config,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
-    request: Request,
-) -> Result<Box<MoneyPreparation>, ParticipantError> {
-    state
-        .fold
-        .refit_receipts
+    request: Request<M>,
+) -> Result<Box<MoneyPreparation<M>>, ParticipantError> {
+    M::receipts(&state.fold)
         .require_complete()
-        .map_err(|_| refused())?;
+        .map_err(|_| refused::<M>())?;
     let (intent, transition, before_history, live) = match request {
         Request::Fund(request) => {
-            identity(config, ctx, Transition::Fund, request.subject.requester)?;
-            let (intent, live) =
-                authority::funding(config, state, ctx.world(), &request.subject, true)
-                    .map_err(|_| refused())?;
+            identity::<M>(config, ctx, Transition::Fund, request.subject.requester())?;
+            let (intent, live) = M::funding(config, state, ctx.world(), &request.subject, true)
+                .map_err(|_| refused::<M>())?;
             (intent, Transition::Fund, None, Some(live))
         }
         Request::Install(request) => {
-            let history = state
-                .fold
-                .refit_receipts
-                .get(request.acceptance)
-                .map_err(|_| refused())?
+            let acceptance = M::installation_acceptance(&request);
+            let history = M::receipts(&state.fold)
+                .get(acceptance)
+                .map_err(|_| refused::<M>())?
                 .clone();
-            identity(
+            identity::<M>(
                 config,
                 ctx,
                 Transition::Install,
-                history.subject().requester,
+                history.subject().requester(),
             )?;
             if history.terminal().is_some() {
-                return Err(refused());
+                return Err(refused::<M>());
             }
             history
                 .verify_hold(state.snapshot())
-                .map_err(|_| refused())?;
-            let live = authority::installation(
-                config,
-                state,
-                ctx.world(),
-                &history.intent,
-                request.acceptance,
-            )
-            .map_err(|_| refused())?;
+                .map_err(|_| refused::<M>())?;
+            let live = M::installation(config, state, ctx.world(), &history.intent, acceptance)
+                .map_err(|_| refused::<M>())?;
             (
                 history.intent.as_ref().clone(),
                 Transition::Install,
@@ -188,20 +172,23 @@ pub(super) fn prepare(
             )
         }
         Request::Cancel(request) => {
-            let history = state
-                .fold
-                .refit_receipts
-                .get(request.acceptance)
-                .map_err(|_| refused())?
+            let history = M::receipts(&state.fold)
+                .get(M::cancellation_acceptance(&request))
+                .map_err(|_| refused::<M>())?
                 .clone();
-            identity(config, ctx, Transition::Cancel, history.subject().requester)?;
-            config.cleanup_ready(ctx.world()).map_err(|_| refused())?;
+            identity::<M>(
+                config,
+                ctx,
+                Transition::Cancel,
+                history.subject().requester(),
+            )?;
+            M::cleanup_ready(config, ctx.world()).map_err(|_| refused::<M>())?;
             if history.terminal().is_some() {
-                return Err(refused());
+                return Err(refused::<M>());
             }
             history
                 .verify_hold(state.snapshot())
-                .map_err(|_| refused())?;
+                .map_err(|_| refused::<M>())?;
             (
                 history.intent.as_ref().clone(),
                 Transition::Cancel,
@@ -219,18 +206,17 @@ pub(super) fn prepare(
             ctx.commit_token(),
             ctx.action(),
             &at,
-            live.as_ref()
-                .and_then(|v| v.order.as_ref())
-                .map(|v| v.replacement),
+            live.as_ref().and_then(|v| v.order.as_ref()).map(M::part),
         )
     } else {
         plans::funding(&intent, ctx.commit_token(), ctx.action())
     }
-    .map_err(|_| refused())?;
+    .map_err(|_| refused::<M>())?;
     let before_hold = before_history.as_ref().map(|h| h.funding.hold.clone());
-    let proof = ClosedRefitPlan {
+    let proof = ClosedPlan {
         plan: plan.clone(),
         before_hold: before_hold.clone(),
+        leg: PhantomData,
     };
     let validated = validate(state, ctx, &intent, transition, &proof)?;
     let (delta, transaction) = crate::engine::apply_delta(
@@ -240,15 +226,13 @@ pub(super) fn prepare(
         state.journal.next_seq(crate::module::JOURNAL_LOG),
         ctx.world().now(),
     );
-    let history = state
-        .fold
-        .refit_receipts
+    let history = M::receipts(&state.fold)
         .prepare(&transaction)
-        .map_err(|_| refused())?
+        .map_err(|_| refused::<M>())?
         .row()
         .clone();
     let next_hold = if transition == Transition::Fund {
-        state.next_hold.checked_add(1).ok_or_else(refused)?
+        state.next_hold.checked_add(1).ok_or_else(refused::<M>)?
     } else {
         state.next_hold
     };
@@ -265,15 +249,15 @@ pub(super) fn prepare(
         || delta.reversed.is_some()
         || !transaction.custody_effects.is_empty()
     {
-        return Err(refused());
+        return Err(refused::<M>());
     }
     let output = if transition == Transition::Fund {
-        Output::Funded(RefitFundingOutput {
+        Output::Funded(FundingOutput {
             history: Box::new(history.clone()),
         })
     } else {
-        Output::Terminal(RefitTerminalOutput {
-            receipt: Box::new(history.terminal().cloned().ok_or_else(refused)?),
+        Output::Terminal(TerminalOutput {
+            receipt: Box::new(history.terminal().cloned().ok_or_else(refused::<M>)?),
             history: Box::new(history.clone()),
         })
     };
@@ -291,30 +275,31 @@ pub(super) fn prepare(
         next_hold,
     }))
 }
-fn validate(
+fn validate<M: Leg>(
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
-    intent: &FundingIntent,
+    intent: &FundingIntent<M>,
     phase: Transition,
-    proof: &ClosedRefitPlan,
+    proof: &ClosedPlan<M>,
 ) -> Result<Prepared, ParticipantError> {
-    let auth = RefitAuth {
+    let auth = Auth {
         world: WorldAuth { w: ctx.world() },
         intent,
         phase,
         hold: proof.before_hold.as_ref(),
     };
     let keys = state.key_gate();
+    let payer = intent.subject.payer();
     let mut spent = BTreeMap::new();
     if let Some(window) = state
         .snapshot()
-        .account(intent.subject.payer)
+        .account(payer)
         .and_then(|a| a.approval.as_ref())
         .and_then(|a| a.window.as_ref())
     {
         spent.insert(
-            intent.subject.payer,
-            state.spent_in_window(intent.subject.payer, ctx.world().now(), window.period_secs),
+            payer,
+            state.spent_in_window(payer, ctx.world().now(), window.period_secs),
         );
     }
     let env = ValidateEnv {
@@ -327,55 +312,54 @@ fn validate(
         spent,
         keys: &keys,
     };
-    match crate::engine::validate_core_refit(proof, state.snapshot(), &env) {
+    match M::validate(proof, state.snapshot(), &env) {
         PlanResult::Post(p) => Ok(*p),
         PlanResult::NeedsApproval(_) | PlanResult::AlreadyPosted(_) | PlanResult::Refused(_) => {
-            Err(refused())
+            Err(refused::<M>())
         }
     }
 }
-pub(super) fn recheck(
-    config: &CoreRefitConfig,
+pub(super) fn recheck<M: Leg>(
+    config: &M::Config,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
-    prepared: &MoneyPreparation,
+    prepared: &MoneyPreparation<M>,
 ) -> Result<(), ParticipantError> {
     if !ctx.matches_preparation(&prepared.binding) {
-        return Err(refused());
+        return Err(refused::<M>());
     }
-    identity(
+    identity::<M>(
         config,
         ctx,
         prepared.transition,
-        prepared.history.subject().requester,
+        prepared.history.subject().requester(),
     )?;
     let intent = prepared.history.intent.as_ref();
     let current = match prepared.transition {
         Transition::Fund => {
             // Historical accepted_at remains fixed. Recheck the exact old offer
             // against monotonic current time, not a replacement accepted intent.
-            let (actual, facts) =
-                authority::funding(config, state, ctx.world(), &intent.subject, false)
-                    .map_err(|_| refused())?;
+            let (actual, facts) = M::funding(config, state, ctx.world(), &intent.subject, false)
+                .map_err(|_| refused::<M>())?;
             if &actual != intent {
-                return Err(refused());
+                return Err(refused::<M>());
             }
             facts
         }
-        Transition::Install => authority::installation(
+        Transition::Install => M::installation(
             config,
             state,
             ctx.world(),
             intent,
             prepared.history.funding.commit,
         )
-        .map_err(|_| refused())?,
+        .map_err(|_| refused::<M>())?,
         Transition::Cancel => {
-            config.cleanup_ready(ctx.world()).map_err(|_| refused())?;
+            M::cleanup_ready(config, ctx.world()).map_err(|_| refused::<M>())?;
             return Ok(());
         }
     };
-    let old = prepared.live.as_ref().ok_or_else(refused)?;
+    let old = prepared.live.as_ref().ok_or_else(refused::<M>)?;
     if current.accounts != old.accounts
         || current.instruments != old.instruments
         || current.titles != old.titles
@@ -385,43 +369,45 @@ pub(super) fn recheck(
         || current.at.at < old.at.at
         || current.utc < old.utc
     {
-        return Err(refused());
+        return Err(refused::<M>());
     }
-    let proof = ClosedRefitPlan {
+    let proof = ClosedPlan {
         plan: prepared.plan.clone(),
         before_hold: prepared
             .before_history
             .as_ref()
             .map(|h| h.funding.hold.clone()),
+        leg: PhantomData,
     };
     if validate(state, ctx, intent, prepared.transition, &proof)? != prepared.validated {
-        return Err(refused());
+        return Err(refused::<M>());
     }
     Ok(())
 }
-struct RefitAuth<'a> {
+struct Auth<'a, M: Leg> {
     world: WorldAuth<'a>,
-    intent: &'a FundingIntent,
+    intent: &'a FundingIntent<M>,
     phase: Transition,
     hold: Option<&'a Hold>,
 }
-impl AuthEval for RefitAuth<'_> {
+impl<M: Leg> AuthEval for Auth<'_, M> {
     fn authorize(&self, actor: &PrincipalId, account: &Account, delta: Amount) -> bool {
-        if actor != &PrincipalId::System(self.intent.policy.issuer.clone()) {
+        if actor != &PrincipalId::System(self.intent.policy.issuer().clone()) {
             return false;
         }
-        if account.id == self.intent.subject.payer {
+        let subject = &self.intent.subject;
+        if account.id == subject.payer() {
             return delta.checked_neg() == self.intent.price().ok()
-                && account.owner == PrincipalId::Object(self.intent.subject.requester)
+                && account.owner == PrincipalId::Object(subject.requester())
                 && (self.phase == Transition::Install
                     || self.world.authorize(
-                        &PrincipalId::Object(self.intent.subject.requester),
+                        &PrincipalId::Object(subject.requester()),
                         account,
                         delta,
                     ));
         }
-        // Doc 17h cut M8b G3: the provider is credited the subject's recipe's own fee
-        // (`core_ungovern` charges `ungovern_minor`), never a fixed fitting fee.
+        // The provider is credited the leg's fee ([`Leg::price`]: the bay's quote, the core
+        // recipe's own fee, never a fixed fitting fee), at Install only.
         self.phase == Transition::Install
             && self
                 .intent
@@ -430,7 +416,7 @@ impl AuthEval for RefitAuth<'_> {
             && self.intent.price().is_ok_and(|price| delta == price)
     }
     fn authorize_hold(&self, actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
-        if actor != &PrincipalId::System(self.intent.policy.issuer.clone())
+        if actor != &PrincipalId::System(self.intent.policy.issuer().clone())
             || Some(hold) != self.hold
         {
             return false;
