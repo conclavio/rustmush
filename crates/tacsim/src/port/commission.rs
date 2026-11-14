@@ -376,6 +376,101 @@ fn scope_of(w: &World, owner: &PrincipalId) -> Option<OrgScopeId> {
         .flat_map(|map| map.orgs.values())
         .find(|row| row.org == org.0)
         .map(|row| OrgScopeId(row.root_scope))
+        // Doc 47 cut CO.9: an organization staff made (a House) is on no port map; its root
+        // scope is its own record's, so a `unit.deploy` grant there reaches the title.
+        .or_else(|| {
+            w.module_state::<mush_org::OrgStore>()?
+                .state()
+                .org(*org)
+                .map(|record| record.root_scope)
+        })
+}
+
+/// **The first pool index of a staff-seeded House hull** (doc 47 cut CO.9): past a recovery
+/// house's ([`HOUSE_POOL_BASE`]), so a seed never takes another hull's mooring row.
+pub const SEED_POOL_BASE: u32 = 128;
+/// The most House hulls staff may seed on one world (the seeds' pool indices stay below 256).
+pub const MAX_SEEDS: u32 = 128;
+
+/// **Staff seed a hull for an organization** (doc 47 cut CO.9): `@tacsim/port seed`. One
+/// commission with no work order and no kit (a house seed's identity, so [`next_mark`] steps
+/// past it), at [`Step::Laying`], titled to `owner` on its root scope, docked at `home` by the
+/// commission arm on the port's next fires. The mark is the caller's and must be fresh: a
+/// second seed under one mark is refused, so a bring-up typed twice seeds once. Ships only.
+///
+/// # Errors
+///
+/// A sentence: an unknown port or design, a design with no drive, a mark in use, or the seeds
+/// spent.
+pub fn seed(
+    ctx: &mut Ctx<'_>,
+    home: &CanonicalId,
+    design: &CanonicalId,
+    mark: &str,
+    owner: PrincipalId,
+) -> Result<YardCommission, String> {
+    if !matches!(owner, PrincipalId::Organization(_)) {
+        return Err("A seeded hull is titled to an organization.".into());
+    }
+    if mark.is_empty()
+        || mark.len() > 16
+        || !mark
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err("A mark is 1 to 16 of A-Z, 0-9 and -.".into());
+    }
+    yard_of(ctx.w, home)?;
+    let drive = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.definitions().specs.get(design))
+        .ok_or_else(|| format!("No such design: {design}."))?
+        .logistics
+        .as_ref()
+        .is_some_and(|logistics| logistics.drive.is_some());
+    if !drive {
+        return Err(format!("{design} is not a ship: only a ship is seeded."));
+    }
+    let records = commissions(ctx.w);
+    let taken = records.iter().any(|record| record.mark == mark)
+        || crate::port::owned::rows(ctx.w).any(|row| row.mark == mark);
+    if taken {
+        return Err(format!("The mark {mark} is already a hull's."));
+    }
+    let n = records
+        .iter()
+        .filter(|record| record.work_order == 0 && record.n >= SEED_POOL_BASE)
+        .map(|record| record.n.saturating_add(1))
+        .max()
+        .unwrap_or(SEED_POOL_BASE);
+    if n >= SEED_POOL_BASE.saturating_add(MAX_SEEDS) {
+        return Err(format!(
+            "This world holds its {MAX_SEEDS} seeded hulls already."
+        ));
+    }
+    let order = crate::port::apply::alloc_vault_id(ctx)?.0;
+    let record = YardCommission {
+        order,
+        work_order: 0,
+        facility: ctx.actor,
+        home: home.clone(),
+        design: design.clone(),
+        requester: ctx.actor,
+        beneficiary: owner,
+        mark: mark.to_owned(),
+        n,
+        ship: true,
+        kit: LotId(0),
+        parts: Vec::new(),
+        step: Step::Laying,
+        row: None,
+        hold: None,
+        at_ic: ctx.w.world_ic_now().at,
+    };
+    record.check()?;
+    put(ctx, &record);
+    Ok(record)
 }
 
 /// **Run every step left of `record`** — the port tick's body for one record, and the story's
@@ -670,14 +765,23 @@ fn announce(ctx: &mut Ctx<'_>, record: &YardCommission) {
         return;
     };
     let name = mush_core::output::display_name(ctx.w, obj);
+    // Doc 47 cut CO.9: a hull titled to an organization is said to be its, not the requester's.
+    let to = match &record.beneficiary {
+        PrincipalId::Organization(org) => ctx
+            .w
+            .module_state::<mush_org::OrgStore>()
+            .and_then(|store| store.state().org(*org).map(|o| o.name.to_string()))
+            .unwrap_or_else(|| format!("org #{}", org.0)),
+        _ => "you".to_owned(),
+    };
     let line = if record.ship {
         format!(
-            "Order {}: the yard hands over {name} ({}), docked here and titled to you.",
+            "Order {}: the yard hands over {name} ({}), docked here and titled to {to}.",
             record.order, record.mark
         )
     } else {
         format!(
-            "Order {}: the yard hands over {name} ({}) on the workshop floor, titled to you; \
+            "Order {}: the yard hands over {name} ({}) on the workshop floor, titled to {to}; \
              `+bay/stow {name}=<carrier>` puts her in a carrier's bay.",
             record.order, record.mark
         )
