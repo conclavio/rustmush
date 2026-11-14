@@ -1,12 +1,12 @@
 //! Actual owner output affinity; no paired commercial publication is activated.
 use super::*;
 
-#[test]
-fn offer_and_close_outputs_bind_exact_material_and_actual_preparation() -> TestResult {
+pub(crate) fn offer_and_close_outputs_bind_exact_material_and_actual_preparation<I: Rig>()
+-> TestResult {
     for reason in [UnfundedCloseReason::Declined, UnfundedCloseReason::Expired] {
-        let mut rig = Rig::new()?;
+        let mut rig = Fixture::<I>::new()?;
         let mut crossed = rig.offer.clone();
-        crossed.terms.price = Amount::from_minor(101);
+        *I::terms(&mut crossed).price = Amount::from_minor(101);
         let expected = rig.offer.digest()?;
         check_ne!(crossed.digest()?, expected);
         let created_at = rig.world.now();
@@ -18,7 +18,7 @@ fn offer_and_close_outputs_bind_exact_material_and_actual_preparation() -> TestR
         check_eq!(offered.posted_at_utc(), created_at);
         check!(offered.closed().is_none());
         let later = if reason == UnfundedCloseReason::Expired {
-            rig.offer.terms.expires_at.at
+            rig.offer.terms().expires_at().at
         } else {
             created_at + 1
         };
@@ -36,9 +36,7 @@ fn offer_and_close_outputs_bind_exact_material_and_actual_preparation() -> TestR
         check_eq!(closed.closed(), Some(reason));
         patch.recheck_in(&rig.state, &rig.context(true, token(4)))?;
         patch.bind(&mut rig.state)?.apply();
-        let actual = rig
-            .state
-            .renewal_offers
+        let actual = I::book(&rig.state)
             .get(token(3))
             .ok_or("actual closed row")?;
         let closure = actual.closure.as_ref().ok_or("actual closure")?;

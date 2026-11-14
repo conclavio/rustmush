@@ -3,68 +3,24 @@
 use crate::Holder;
 use mush_core::checked;
 use mush_core::participant::ParticipantError;
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, Flags, ObjId, ObjKind};
+use mush_core::{ClockStamp, CommitToken, DefinitionDigest, Flags, ObjId};
 use mush_org::{OrgId, OrgScopeId, OrgStatus, OrgStore, PrincipalId, ScopeStatus};
-use serde::Deserialize;
 use std::{any::TypeId, collections::BTreeMap};
 
-use super::{MAX_RENEWAL_OFFER_IC_SECONDS, refused};
 use crate::managed_entitlement::{GrossRecipientCut, Recipient};
 use crate::managed_purchase::PurchasePayout;
 use crate::module::EconomyStore;
 use crate::record::{AccountStatus, AssetLifecycle, InstrumentStatus};
+use crate::renewal_twin::wire::{gross_cut, venue_cut};
+use crate::renewal_twin::{player, refused};
 use crate::{AccountId, Amount, InstrumentId};
 
-fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
-    d: D,
-) -> Result<Option<T>, D::Error> {
-    Option::<T>::deserialize(d)
-}
-
-// New renewal wire requires explicit nulls in every optional economic role.
-// The shared C structs and their historical wire remain unchanged.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GrossWire {
-    permille: u16,
-    #[serde(deserialize_with = "required_option")]
-    recipient: Option<Recipient>,
-}
-impl From<GrossWire> for GrossRecipientCut {
-    fn from(w: GrossWire) -> Self {
-        Self {
-            permille: w.permille,
-            recipient: w.recipient,
-        }
-    }
-}
-fn gross_cut<'de, D: serde::Deserializer<'de>>(d: D) -> Result<GrossRecipientCut, D::Error> {
-    GrossWire::deserialize(d).map(Into::into)
-}
-fn venue_cut<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<Option<GrossRecipientCut>, D::Error> {
-    Option::<GrossWire>::deserialize(d).map(|v| v.map(Into::into))
-}
 checked!(pub struct RenewalBasisV1, BasisWire, pub fields, {
     format:u16, licence:u64, predecessor_generation:u64, next_generation:u64,
     predecessor_operation:CommitToken, prior_quote:CommitToken,
     prior_quote_digest:DefinitionDigest, product_digest:DefinitionDigest,
     template_digest:DefinitionDigest, grant_economics_digest:DefinitionDigest,
 });
-impl RenewalBasisV1 {
-    pub fn validate(&self) -> Result<(), ParticipantError> {
-        if self.format != 1
-            || self.licence == 0
-            || self.predecessor_generation == 0
-            || self.predecessor_generation.checked_add(1) != Some(self.next_generation)
-            || self.predecessor_operation == self.prior_quote
-        {
-            return Err(refused());
-        }
-        Ok(())
-    }
-}
 
 checked!(pub struct RenewalOfferTermsV1, TermsWire, pub fields, attrs on wire, {
     format:u16, buyer:Holder, organization:OrgId, scope:OrgScopeId,
@@ -76,21 +32,6 @@ checked!(pub struct RenewalOfferTermsV1, TermsWire, pub fields, attrs on wire, {
     not_before:ClockStamp, expires_at:ClockStamp,
 });
 impl RenewalOfferTermsV1 {
-    pub fn validate(&self) -> Result<(), ParticipantError> {
-        if self.format != 1
-            || !matches!(self.not_before.clock,ClockRef::WorldIc{generation} if generation != 0)
-            || self.not_before.clock != self.expires_at.clock
-            || self
-                .expires_at
-                .at
-                .checked_sub(self.not_before.at)
-                .is_none_or(|n| !(1..=MAX_RENEWAL_OFFER_IC_SECONDS).contains(&n))
-        {
-            return Err(refused());
-        }
-        self.payouts()?;
-        Ok(())
-    }
     pub fn payouts(&self) -> Result<Vec<PurchasePayout>, ParticipantError> {
         if self.buyer.is_nobody()
             || self.charter.0 == 0
@@ -234,45 +175,9 @@ impl RenewalOfferTermsV1 {
 }
 
 checked!(pub struct RenewalOffer, OfferWire, pub fields, { format:u16, basis:RenewalBasisV1, terms:RenewalOfferTermsV1 });
-impl RenewalOffer {
-    /// Plain data only. Public byte ingress must use this bounded, typed-first
-    /// decoder; Deserialize exists for the already bounded owner document.
-    pub fn decode(bytes: &[u8]) -> Result<Self, ParticipantError> {
-        if bytes.len() > super::MAX_RENEWAL_OFFER_BYTES {
-            return Err(refused());
-        }
-        let value: Self = serde_json::from_slice(bytes).map_err(|_| refused())?;
-        value.validate()?;
-        let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| refused())?;
-        if serde_json::to_value(&value).map_err(|_| ParticipantError::Encoding)? != raw {
-            return Err(refused());
-        }
-        Ok(value)
-    }
-    pub fn validate(&self) -> Result<(), ParticipantError> {
-        if self.format != 1 {
-            return Err(refused());
-        }
-        self.basis.validate()?;
-        self.terms.validate()
-    }
-    /// Canonical identity of validated plain data, never economic authority.
-    /// Paired owners compare it with the digest in the opaque prepared output.
-    pub fn digest(&self) -> Result<DefinitionDigest, ParticipantError> {
-        self.validate()?;
-        DefinitionDigest::for_canonical_value(
-            "economy.house_mind_renewal_offer.v1",
-            &serde_json::to_value(self).map_err(|_| ParticipantError::Encoding)?,
-        )
-        .map_err(|_| refused())
-    }
-}
 
-pub(crate) fn player(world: &mush_core::World, id: ObjId) -> bool {
-    world
-        .get(id)
-        .is_some_and(|o| o.kind == ObjKind::Player && !o.flags.contains(Flags::GOING))
-}
+crate::renewal_twin::subject_records!(crate::renewal_twin::House);
+
 fn merge(
     amounts: &mut BTreeMap<AccountId, (PrincipalId, Amount)>,
     r: &Recipient,

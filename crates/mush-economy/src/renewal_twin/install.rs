@@ -2,7 +2,7 @@
 //! after the consuming bind. This module exposes no independent public apply.
 
 use super::{
-    CLOSE_ACTION, DRAFT_ACTION, RenewalOffer, RenewalOfferOutput, UnfundedCloseReason,
+    Basis as _, Issuer, Offer as _, RenewalOfferOutput, Terms as _, UnfundedCloseReason,
     action_matches, contract,
     history::{self, Closure, OfferBook, OfferRecord},
     refused,
@@ -11,7 +11,6 @@ use crate::contract::{EconomicContract, check_offerable};
 use crate::module::EconomyStore;
 use crate::record::{Account, EconomicAsset, HoldPurpose, InstrumentDef};
 use crate::registry_filing::{MetaFence, json_write};
-use mush_core::authoritative::ReplayWrite;
 use mush_core::participant::{BoundParticipant, OwnerPrepareContext, ParticipantError};
 use mush_core::{CommitToken, DefinitionRef, ObjId};
 
@@ -39,48 +38,46 @@ fn actor(context: &OfferContext<'_>, buyer: crate::Holder) -> Result<(), Partici
     let buyer = buyer.acting_character();
     if context.actor != buyer
         || context.principal != &(mush_core::PrincipalId::Object { id: buyer })
-        || !super::subject::player(context.world, buyer)
+        || !super::player(context.world, buyer)
     {
         return Err(refused());
     }
     Ok(())
 }
-fn open_counts(state: &EconomyStore, terms: &super::RenewalOfferTermsV1) -> (usize, usize) {
-    let buyer = terms.buyer.principal();
-    // The buyer is the renewal's issuer (`managed_house_renewal::contract`).
-    let issuer = buyer.clone();
+fn open_counts(state: &EconomyStore, buyer: crate::Holder) -> (usize, usize) {
+    let buyer = buyer.principal();
     state
         .snapshot
         .contracts()
         .filter(|c| !c.state.is_terminal())
         .fold((0, 0), |(issued, party), c| {
             (
-                issued + usize::from(c.issuer == issuer),
+                issued + usize::from(c.issuer == buyer),
                 party + usize::from(c.consent.parties.contains(&buyer)),
             )
         })
 }
-fn offer_current(
+fn offer_current<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
-    request: &RenewalOffer,
+    request: &I::Offer,
 ) -> Result<(), ParticipantError> {
-    actor(context, request.terms.buyer)?;
-    if !action_matches(context.action, DRAFT_ACTION)
-        || context.commit == request.basis.prior_quote
-        || context.commit == request.basis.predecessor_operation
+    actor(context, request.terms().buyer())?;
+    if !action_matches(context.action, I::DRAFT_ACTION)
+        || context.commit == request.basis().prior_quote()
+        || context.commit == request.basis().predecessor_operation()
     {
         return Err(refused());
     }
-    request.terms.check_current(state, context.world)?;
+    request.terms().check_current(state, context.world)?;
     let now = context.world.world_ic_now();
-    if now.clock != request.terms.not_before.clock
-        || now.at < request.terms.not_before.at
-        || now.at >= request.terms.expires_at.at
+    if now.clock != request.terms().not_before().clock
+        || now.at < request.terms().not_before().at
+        || now.at >= request.terms().expires_at().at
     {
         return Err(refused());
     }
-    let (issued, party) = open_counts(state, &request.terms);
+    let (issued, party) = open_counts(state, request.terms().buyer());
     if issued >= crate::contract::MAX_OPEN_CONTRACTS_PER_ISSUER
         || party >= crate::contract::MAX_LIVE_CONTRACTS_PER_PARTY
     {
@@ -88,19 +85,19 @@ fn offer_current(
     }
     Ok(())
 }
-pub(super) fn offer(
+pub(super) fn offer<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
-    request: RenewalOffer,
-) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
+    request: I::Offer,
+) -> super::OfferPrepared<I> {
     create(state, context, request, super::RenewalAttemptV1::Automatic)
 }
-pub(super) fn retry(
+pub(super) fn retry<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
-    request: RenewalOffer,
+    request: I::Offer,
     previous_operation: CommitToken,
-) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     create(
         state,
         context,
@@ -108,13 +105,13 @@ pub(super) fn retry(
         super::RenewalAttemptV1::BuyerRetry { previous_operation },
     )
 }
-pub(super) fn holder_offer(
+pub(super) fn holder_offer<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
-    request: RenewalOffer,
+    request: I::Offer,
     basis: crate::managed_paid_resale::RenewalHolderBasisV1,
     previous_operation: Option<CommitToken>,
-) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     basis.validate()?;
     let attempt = match previous_operation {
         None => super::RenewalAttemptV1::HolderAutomatic { basis },
@@ -125,14 +122,14 @@ pub(super) fn holder_offer(
     };
     create(state, context, request, attempt)
 }
-fn create(
+fn create<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
-    request: RenewalOffer,
+    request: I::Offer,
     attempt: super::RenewalAttemptV1,
-) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     request.validate()?;
-    offer_current(state, context, &request)?;
+    offer_current::<I>(state, context, &request)?;
     let id = crate::ContractId(state.next_contract);
     let next_contract = state.next_contract.checked_add(1).ok_or_else(refused)?;
     if state.snapshot.contract(id).is_some() {
@@ -153,25 +150,18 @@ fn create(
     OfferBook::require_holder_origin(&row, &state.fold.paid_resale_receipts)?;
     let after = contract(&row)?;
     row.consent_hash = after.consent_hash;
-    state.house_renewal_offers.admits(&row)?;
-    state.house_renewal_offers.require_retry(
-        &row,
-        &state.snapshot,
-        &state.fold.house_renewal_receipts,
-    )?;
+    I::book(state).admits(&row)?;
+    I::book(state).require_retry(&row, &state.snapshot, I::receipts(&state.fold))?;
     check_offerable(&after, &state.snapshot).map_err(|_| refused())?;
     images(state, row, after, None, next_contract, None)
 }
-pub(super) fn close(
+pub(super) fn close<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     operation: CommitToken,
     reason: UnfundedCloseReason,
-) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
-    let before = state
-        .house_renewal_offers
-        .get(operation)
-        .ok_or_else(refused)?;
+) -> super::OfferPrepared<I> {
+    let before = I::book(state).get(operation).ok_or_else(refused)?;
     close_current(state, context, before, reason)?;
     before.verify_documents(&state.snapshot)?;
     let before_contract = state
@@ -198,16 +188,13 @@ pub(super) fn close(
         None,
     )
 }
-pub(super) fn service_close(
+pub(super) fn service_close<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     operation: CommitToken,
     reason: super::RenewalServiceCloseReason,
-) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
-    let before = state
-        .house_renewal_offers
-        .get(operation)
-        .ok_or_else(refused)?;
+) -> super::OfferPrepared<I> {
+    let before = I::book(state).get(operation).ok_or_else(refused)?;
     service_close_current(state, context, before, reason)?;
     let record = super::service::ServiceRecord {
         format: 1,
@@ -229,25 +216,22 @@ pub(super) fn service_close(
         Some(record),
     )
 }
-fn service_close_current(
+fn service_close_current<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
-    before: &OfferRecord,
+    before: &OfferRecord<I>,
     reason: super::RenewalServiceCloseReason,
 ) -> Result<(), ParticipantError> {
     if state.frozen
         || context.actor != mush_core::GOD
         || context.principal != &(mush_core::PrincipalId::Object { id: mush_core::GOD })
-        || !super::subject::player(context.world, mush_core::GOD)
-        || !action_matches(context.action, super::SERVICE_CLOSE_ACTION)
-        || state
-            .house_renewal_offers
-            .service(before.operation)
-            .is_some()
+        || !super::player(context.world, mush_core::GOD)
+        || !action_matches(context.action, I::SERVICE_CLOSE_ACTION)
+        || I::book(state).service(before.operation).is_some()
     {
         return Err(refused());
     }
-    let audit = state.house_renewal_audit().map_err(|_| refused())?;
+    let audit = super::audit::read::<I>(state).map_err(|_| refused())?;
     let actual = audit.get(before.operation).map_err(|_| refused())?;
     if actual.history().is_some() || actual.closure().is_some() || actual.service_closed().is_some()
     {
@@ -255,59 +239,56 @@ fn service_close_current(
     }
     super::RenewalServiceClosureV1::create(context, reason)?.require_origin(before)
 }
-fn close_current(
+fn close_current<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
-    before: &OfferRecord,
+    before: &OfferRecord<I>,
     reason: UnfundedCloseReason,
 ) -> Result<(), ParticipantError> {
-    actor(context, before.offer.terms.buyer)?;
+    actor(context, before.offer.terms().buyer())?;
     let now = context.world.world_ic_now();
     if state.frozen
-        || !action_matches(context.action, CLOSE_ACTION)
+        || !action_matches(context.action, I::CLOSE_ACTION)
         || before.closure.is_some()
-        || state
-            .house_renewal_offers
-            .service(before.operation)
-            .is_some()
+        || I::book(state).service(before.operation).is_some()
         || context.commit == before.operation
-        || context.commit == before.offer.basis.predecessor_operation
-        || context.commit == before.offer.basis.prior_quote
+        || context.commit == before.offer.basis().predecessor_operation()
+        || context.commit == before.offer.basis().prior_quote()
         || now.clock != before.created_at_ic.clock
         || now.at < before.created_at_ic.at
         || context.world.now() < before.created_at_utc
-        || (reason == UnfundedCloseReason::Expired && now.at < before.offer.terms.expires_at.at)
+        || (reason == UnfundedCloseReason::Expired && now.at < before.offer.terms().expires_at().at)
     {
         return Err(refused());
     }
     Ok(())
 }
 
-pub struct OfferPatch {
+pub struct OfferPatch<I: Issuer> {
     before_meta: MetaFence,
     before_book_generation: u64,
-    before_record: Option<OfferRecord>,
+    before_record: Option<OfferRecord<I>>,
     before_contract: Option<EconomicContract>,
     before_accounts: Vec<Account>,
     before_titles: Vec<EconomicAsset>,
     before_instrument: Option<InstrumentDef>,
     before_open_counts: Option<(usize, usize)>,
-    row: OfferRecord,
-    service: Option<super::service::ServiceRecord>,
+    row: OfferRecord<I>,
+    service: Option<super::service::ServiceRecord<I>>,
     contract: EconomicContract,
     next_contract: u64,
     next_book_generation: u64,
 }
-fn images(
+fn images<I: Issuer>(
     state: &EconomyStore,
-    row: OfferRecord,
+    row: OfferRecord<I>,
     after: EconomicContract,
     before_contract: Option<EconomicContract>,
     next_contract: u64,
-    service: Option<super::service::ServiceRecord>,
-) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
+    service: Option<super::service::ServiceRecord<I>>,
+) -> super::OfferPrepared<I> {
     row.validate()?;
-    let next_book_generation = state.house_renewal_offers.next_generation()?;
+    let next_book_generation = I::book(state).next_generation()?;
     let mut writes = vec![json_write(crate::api::contract_key(after.id), &after)?];
     if let Some(record) = &service {
         record.require_origin(&row)?;
@@ -319,11 +300,11 @@ fn images(
             return Err(refused());
         }
         writes.push(json_write(
-            super::service::key(row.operation).into(),
+            super::service::key::<I>(row.operation).into(),
             record,
         )?);
     } else {
-        writes.push(json_write(history::key(row.operation).into(), &row)?);
+        writes.push(json_write(history::key::<I>(row.operation).into(), &row)?);
     }
     let offered = row.closure.is_none() && service.is_none();
     if offered {
@@ -345,24 +326,23 @@ fn images(
     {
         return Err(refused());
     }
-    let terms = &row.offer.terms;
+    let terms = row.offer.terms();
     let mut before_accounts = Vec::new();
     let mut before_titles = Vec::new();
     let mut before_instrument = None;
     if offered {
-        let mut ids = std::collections::BTreeSet::from([terms.payer]);
+        let mut ids = std::collections::BTreeSet::from([terms.payer()]);
         ids.extend(terms.recipients().iter().map(|r| r.account));
         for id in ids {
             before_accounts.push(state.snapshot.account(id).cloned().ok_or_else(refused)?);
         }
-        let titles = std::collections::BTreeSet::from([terms.charter]);
-        for id in titles {
+        for id in I::titles(terms) {
             before_titles.push(state.snapshot.asset(id).cloned().ok_or_else(refused)?);
         }
         before_instrument = Some(
             state
                 .snapshot
-                .instrument(&terms.instrument)
+                .instrument(terms.instrument())
                 .cloned()
                 .ok_or_else(refused)?,
         );
@@ -398,13 +378,13 @@ fn images(
     }
     let patch = Box::new(OfferPatch {
         before_meta: MetaFence::capture(state),
-        before_book_generation: state.house_renewal_offers.generation(),
-        before_record: state.house_renewal_offers.get(row.operation).cloned(),
+        before_book_generation: I::book(state).generation(),
+        before_record: I::book(state).get(row.operation).cloned(),
         before_contract,
         before_accounts,
         before_titles,
         before_instrument,
-        before_open_counts: offered.then(|| open_counts(state, terms)),
+        before_open_counts: offered.then(|| open_counts(state, terms.buyer())),
         row,
         service,
         contract: after,
@@ -413,7 +393,7 @@ fn images(
     });
     Ok((output, patch, writes))
 }
-impl OfferPatch {
+impl<I: Issuer> OfferPatch<I> {
     pub(crate) fn recheck(
         &self,
         state: &EconomyStore,
@@ -466,7 +446,7 @@ impl OfferPatch {
                 close.reason,
             )?;
         } else {
-            offer_current(state, context, &self.row.offer)?;
+            offer_current::<I>(state, context, &self.row.offer)?;
         }
         Ok(())
     }
@@ -475,36 +455,38 @@ impl OfferPatch {
         // OfferBook generation. Repeat its exact proof before custody as well.
         if self.before_record.is_none() {
             OfferBook::require_holder_origin(&self.row, &state.fold.paid_resale_receipts)?;
-            state.house_renewal_offers.admits(&self.row)?;
-            state.house_renewal_offers.require_retry(
-                &self.row,
-                &state.snapshot,
-                &state.fold.house_renewal_receipts,
-            )?;
+            I::book(state).admits(&self.row)?;
+            I::book(state).require_retry(&self.row, &state.snapshot, I::receipts(&state.fold))?;
         }
         if state.frozen || !self.before_meta.matches(state)
-            || state.house_renewal_offers.generation()!=self.before_book_generation
-            || state.house_renewal_offers.get(self.row.operation)!=self.before_record.as_ref()
-            || state.house_renewal_offers.service(self.row.operation).is_some()
+            || I::book(state).generation()!=self.before_book_generation
+            || I::book(state).get(self.row.operation)!=self.before_record.as_ref()
+            || I::book(state).service(self.row.operation).is_some()
             || state.snapshot.contract(self.row.contract)!=self.before_contract.as_ref()
             || state.snapshot.holds().any(|h|matches!(h.purpose,HoldPurpose::Escrow{contract} if contract==self.row.contract))
             || self.before_accounts.iter().any(|a|state.snapshot.account(a.id)!=Some(a))
             || self.before_titles.iter().any(|t|state.snapshot.asset(t.object)!=Some(t))
             || self.before_instrument.as_ref().is_some_and(|i|state.snapshot.instrument(&i.id)!=Some(i))
-            || self.before_open_counts.is_some_and(|n|open_counts(state,&self.row.offer.terms)!=n) {
+            || self.before_open_counts.is_some_and(|n|open_counts(state,self.row.offer.terms().buyer())!=n) {
             return Err(refused());
         }
         Ok(())
     }
+    #[expect(
+        clippy::boxed_local,
+        reason = "the issuer is a type parameter, so clippy cannot see how large the patch is; \
+                  its callers hold it boxed"
+    )]
     pub(crate) fn bind(
         self: Box<Self>,
         state: &mut EconomyStore,
-    ) -> Result<BoundOffer<'_>, ParticipantError> {
+    ) -> Result<BoundOffer<'_, I>, ParticipantError> {
         self.check_local(state)?;
+        let (snapshot, book, next_contract) = I::bind(state);
         Ok(BoundOffer {
-            snapshot: &mut state.snapshot,
-            book: &mut state.house_renewal_offers,
-            next_contract: &mut state.next_contract,
+            snapshot,
+            book,
+            next_contract,
             row: self.row,
             service: self.service,
             contract: self.contract,
@@ -513,17 +495,17 @@ impl OfferPatch {
         })
     }
 }
-pub struct BoundOffer<'a> {
+pub struct BoundOffer<'a, I: Issuer> {
     snapshot: &'a mut crate::EconomySnapshot,
-    book: &'a mut OfferBook,
+    book: &'a mut OfferBook<I>,
     next_contract: &'a mut u64,
-    row: OfferRecord,
-    service: Option<super::service::ServiceRecord>,
+    row: OfferRecord<I>,
+    service: Option<super::service::ServiceRecord<I>>,
     contract: EconomicContract,
     after_contract: u64,
     after_generation: u64,
 }
-impl BoundParticipant for BoundOffer<'_> {
+impl<I: Issuer> BoundParticipant for BoundOffer<'_, I> {
     fn apply(self) {
         self.snapshot.put_contract(self.contract);
         self.book.install(self.row, self.after_generation);

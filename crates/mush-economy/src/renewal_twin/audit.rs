@@ -1,45 +1,53 @@
 //! Borrowed evidence for a paired owner audit. No serialized value, mutable
 //! contract, or public constructor can establish the combined runtime latch.
 use super::{
-    RenewalAuditError, RenewalHistory, RenewalOffer, UnfundedCloseReason,
+    Issuer, RenewalAuditError, RenewalHistory, UnfundedCloseReason,
     history::{Closure, OfferRecord},
 };
 use crate::{ContractId, EconomyStore};
 use mush_core::{ClockStamp, CommitToken, DefinitionRef};
+use std::marker::PhantomData;
 
-pub struct RenewalAudit<'a> {
+pub struct RenewalAudit<'a, I: Issuer> {
     state: &'a EconomyStore,
+    issuer: PhantomData<I>,
 }
-pub(crate) fn read(state: &EconomyStore) -> Result<RenewalAudit<'_>, RenewalAuditError> {
-    if state.frozen || !state.house_renewal_offers.combined_verified() {
+pub(crate) fn read<I: Issuer>(
+    state: &EconomyStore,
+) -> Result<RenewalAudit<'_, I>, RenewalAuditError> {
+    if state.frozen || !I::book(state).combined_verified() {
         return Err(RenewalAuditError::Incomplete);
     }
-    state.fold.house_renewal_receipts.require_complete()?;
-    Ok(RenewalAudit { state })
+    I::receipts(&state.fold).require_complete()?;
+    Ok(RenewalAudit {
+        state,
+        issuer: PhantomData,
+    })
 }
-impl<'a> RenewalAudit<'a> {
+impl<'a, I: Issuer> RenewalAudit<'a, I> {
     pub fn require_complete(&self) -> Result<(), RenewalAuditError> {
-        read(self.state).map(|_| ())
+        read::<I>(self.state).map(|_| ())
     }
     pub fn len(&self) -> usize {
-        self.state.house_renewal_offers.operations().len()
+        I::book(self.state).operations().len()
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    pub fn get(&self, operation: CommitToken) -> Result<RenewalOfferView<'a>, RenewalAuditError> {
+    pub fn get(
+        &self,
+        operation: CommitToken,
+    ) -> Result<RenewalOfferView<'a, I>, RenewalAuditError> {
         self.require_complete()?;
-        let record = self
-            .state
-            .house_renewal_offers
+        let record = I::book(self.state)
             .get(operation)
             .ok_or(RenewalAuditError::Refused)?;
         record.validate().map_err(|_| RenewalAuditError::Refused)?;
-        let history = self.state.fold.house_renewal_receipts.find(operation)?;
+        let history = I::receipts(&self.state.fold).find(operation)?;
         if let Some(h) = history {
             if h.origin() != record
                 || record.closure.is_some()
-                || self.state.house_renewal_offers.service(operation).is_some()
+                || I::book(self.state).service(operation).is_some()
             {
                 return Err(RenewalAuditError::Refused);
             }
@@ -54,37 +62,34 @@ impl<'a> RenewalAudit<'a> {
                     .ok_or(RenewalAuditError::Refused)?,
             )?;
         } else {
-            self.state
-                .house_renewal_offers
+            I::book(self.state)
                 .verify_offer(record, &self.state.snapshot)
                 .map_err(|_| RenewalAuditError::Refused)?;
         }
         Ok(RenewalOfferView {
             record,
             history,
-            service: self.state.house_renewal_offers.service(operation),
+            service: I::book(self.state).service(operation),
         })
     }
     /// At most the existing 32,768 permanent offers. Every yielded row repeats
     /// its exact current projection join; a failure is not an absent row.
     pub fn offers(
         &self,
-    ) -> impl ExactSizeIterator<Item = Result<RenewalOfferView<'a>, RenewalAuditError>> + '_ {
-        self.state
-            .house_renewal_offers
-            .operations()
-            .map(|op| self.get(op))
+    ) -> impl ExactSizeIterator<Item = Result<RenewalOfferView<'a, I>, RenewalAuditError>> + '_
+    {
+        I::book(self.state).operations().map(|op| self.get(op))
     }
 }
 
 /// Non-Clone, non-Deserialize borrowed evidence. Consumers must join their
 /// exact typed operation; this is not a current-rights or money capability.
-pub struct RenewalOfferView<'a> {
-    record: &'a OfferRecord,
-    history: Option<&'a RenewalHistory>,
-    service: Option<&'a super::service::ServiceRecord>,
+pub struct RenewalOfferView<'a, I: Issuer> {
+    record: &'a OfferRecord<I>,
+    history: Option<&'a RenewalHistory<I>>,
+    service: Option<&'a super::service::ServiceRecord<I>>,
 }
-impl<'a> RenewalOfferView<'a> {
+impl<'a, I: Issuer> RenewalOfferView<'a, I> {
     pub fn format(&self) -> u16 {
         self.record.format
     }
@@ -97,7 +102,7 @@ impl<'a> RenewalOfferView<'a> {
     pub fn action(&self) -> &'a DefinitionRef {
         &self.record.action
     }
-    pub fn offer(&self) -> &'a RenewalOffer {
+    pub fn offer(&self) -> &'a I::Offer {
         &self.record.offer
     }
     pub fn contract(&self) -> ContractId {
@@ -118,10 +123,10 @@ impl<'a> RenewalOfferView<'a> {
             .as_ref()
             .map(|closure| RenewalClosureView { closure })
     }
-    pub fn service_closed(&self) -> Option<&'a super::RenewalServiceClosureV1> {
+    pub fn service_closed(&self) -> Option<&'a super::RenewalServiceClosureV1<I>> {
         self.service.map(|record| &record.closure)
     }
-    pub fn history(&self) -> Option<&'a RenewalHistory> {
+    pub fn history(&self) -> Option<&'a RenewalHistory<I>> {
         self.history
     }
 }

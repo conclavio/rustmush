@@ -1,22 +1,18 @@
-// Doc 46 CT.0: the one renewal walk both twins run.
-//
-// This file is `include!`d into a `mod walk` twice: under the personal
-// family's test rig (`managed_renewal::tests::ct0_snapshot`) and under the
-// House family's (`managed_house_renewal::ct0_snapshot`). Its parent supplies
-// `twin` (the family module), `Rig` (with `world`, `state`, `offer` and
-// `principal`), the book and receipt accessors, the twin's widening and its
-// protocol name. The walk drives the real owner functions to every terminal
-// state and writes every persisted key, value, digest and identity string it
-// meets.
-use super::twin::{
-    self, RenewalAttemptV1, RenewalMarkerV1, RenewalOffer, RenewalOfferOutput,
-    RenewalServiceCloseReason, UnfundedCloseReason,
+//! Doc 46 CT.0: the one renewal walk, run for both issuers.
+//!
+//! `run` drives the real owner functions to every terminal state and writes every persisted
+//! key, value, digest and identity string it meets. Each family's snapshot test calls it
+//! at its own issuer (`managed_renewal::tests::ct0_snapshot`,
+//! `managed_house_renewal::ct0_snapshot`) and compares the result with its committed file.
+use super::super::{
+    self as twin, Offer as _, RenewalAttemptV1, RenewalMarkerV1, RenewalOfferOutput,
+    RenewalServiceCloseReason, Terms as _, UnfundedCloseReason,
     funding::{self, MoneyOutput, RenewalMoneyRequest, Transition},
     history::{self, OfferRecord},
     install::{self, OfferContext},
     money_install, receipt, service,
 };
-use super::{Rig, book, book_mut, receipts, receipts_mut};
+use super::{Fixture, Rig};
 use crate::engine::{NoCustody, NoFacts, ValidateEnv};
 use crate::managed_paid_resale::{PaidHolderRefV1, RenewalHolderBasisV1};
 use crate::module::JOURNAL_LOG;
@@ -36,9 +32,9 @@ use mush_testkit::snapshot::Snapshot;
 use std::collections::BTreeMap;
 
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error>>;
-type Prepared = (
-    RenewalOfferOutput,
-    Box<install::OfferPatch>,
+type Prepared<I> = (
+    RenewalOfferOutput<I>,
+    Box<install::OfferPatch<I>>,
     Vec<ReplayWrite>,
 );
 
@@ -75,8 +71,8 @@ fn god() -> mush_core::PrincipalId {
     mush_core::PrincipalId::Object { id: GOD }
 }
 /// The buyer's context, or the service's (GOD) for a service closure.
-fn context<'a>(
-    r: &'a Rig,
+fn context<'a, I: Rig>(
+    r: &'a Fixture<I>,
     principal: &'a mush_core::PrincipalId,
     action: &'a DefinitionRef,
     commit: u64,
@@ -92,7 +88,7 @@ fn context<'a>(
         commit: token(commit),
     }
 }
-fn request(out: &RenewalOfferOutput) -> RenewalMoneyRequest {
+fn request<I: Rig>(out: &RenewalOfferOutput<I>) -> RenewalMoneyRequest {
     RenewalMoneyRequest {
         operation: out.operation(),
         contract: out.contract(),
@@ -102,11 +98,11 @@ fn request(out: &RenewalOfferOutput) -> RenewalMoneyRequest {
 
 /// Fixture cash through a real balanced engine post, as the funded tests do:
 /// a system source with unbounded credit pays the buyer 1000.
-fn cash(r: &mut Rig) -> Outcome {
+fn cash<I: Rig>(r: &mut Fixture<I>) -> Outcome {
     let mut source = r
         .state
         .snapshot
-        .account(r.offer.terms.payer)
+        .account(r.offer.terms().payer())
         .ok_or("payer")?
         .clone();
     source.id = AccountId(10);
@@ -118,7 +114,7 @@ fn cash(r: &mut Rig) -> Outcome {
     let mut instrument = r
         .state
         .snapshot
-        .instrument(&r.offer.terms.instrument)
+        .instrument(r.offer.terms().instrument())
         .ok_or("instrument")?
         .clone();
     instrument.negative_policy = NegativePolicy::SystemOnly;
@@ -137,7 +133,7 @@ fn cash(r: &mut Rig) -> Outcome {
                 memo: "fixture treasury debit".into(),
             },
             RequestedLine {
-                account: r.offer.terms.payer,
+                account: r.offer.terms().payer(),
                 delta: Amount::from_minor(1000),
                 memo: "fixture buyer cash".into(),
             },
@@ -186,29 +182,43 @@ fn cash(r: &mut Rig) -> Outcome {
         .checked_add(1)
         .ok_or("transaction")?;
     r.state.posts_since_boot = r.state.posts_since_boot.checked_add(1).ok_or("posts")?;
-    receipts_mut(&mut r.state.fold).finish_replay()?;
+    I::receipts_mut(&mut r.state.fold).finish_replay()?;
     Ok(())
 }
 
-#[derive(Default)]
-struct Fixtures {
-    offers: Vec<RenewalOffer>,
-    markers: Vec<RenewalMarkerV1>,
-    records: Vec<OfferRecord>,
+struct Fixtures<I: Rig> {
+    offers: Vec<I::Offer>,
+    markers: Vec<RenewalMarkerV1<I>>,
+    records: Vec<OfferRecord<I>>,
     closures: Vec<history::Closure>,
-    services: Vec<service::ServiceRecord>,
-    funding: Option<twin::RenewalFundingReceiptV1>,
-    terminals: Vec<twin::RenewalTerminalReceiptV1>,
-    histories: Vec<twin::RenewalHistory>,
+    services: Vec<service::ServiceRecord<I>>,
+    funding: Option<twin::RenewalFundingReceiptV1<I>>,
+    terminals: Vec<twin::RenewalTerminalReceiptV1<I>>,
+    histories: Vec<twin::RenewalHistory<I>>,
 }
 
-struct Walk {
+// Not derived: a derive would ask the issuer's records for a default of their own.
+impl<I: Rig> Default for Fixtures<I> {
+    fn default() -> Self {
+        Self {
+            offers: Vec::new(),
+            markers: Vec::new(),
+            records: Vec::new(),
+            closures: Vec::new(),
+            services: Vec::new(),
+            funding: None,
+            terminals: Vec::new(),
+            histories: Vec::new(),
+        }
+    }
+}
+struct Walk<I: Rig> {
     snap: Snapshot,
     /// The documents one walk's writes left, by key: what a cold boot reads.
     kv: BTreeMap<String, serde_json::Value>,
-    fixtures: Fixtures,
+    fixtures: Fixtures<I>,
 }
-impl Walk {
+impl<I: Rig> Walk<I> {
     fn writes(&mut self, writes: &[ReplayWrite]) -> Outcome {
         self.snap.replay_writes(writes)?;
         for write in writes {
@@ -224,7 +234,7 @@ impl Walk {
         }
         Ok(())
     }
-    fn output(&mut self, out: &RenewalOfferOutput) -> Outcome {
+    fn output(&mut self, out: &RenewalOfferOutput<I>) -> Outcome {
         let s = &mut self.snap;
         s.line("output operation", &out.operation().to_hex());
         s.wire("output contract", &out.contract())?;
@@ -240,23 +250,23 @@ impl Walk {
         Ok(())
     }
     /// The persisted owner images of one offer after a transition.
-    fn images(&mut self, r: &Rig, operation: CommitToken) -> Outcome {
-        let row = book(&r.state).get(operation).ok_or("record")?.clone();
+    fn images(&mut self, r: &Fixture<I>, operation: CommitToken) -> Outcome {
+        let row = I::book(&r.state).get(operation).ok_or("record")?.clone();
         self.snap.wire("record", &row)?;
         self.snap.wire("record offer", &row.offer)?;
         self.snap
             .wire("record offer digest", &row.offer.digest()?)?;
         self.snap.hex("record consent hash", &row.consent_hash);
-        self.snap.line("record key", &history::key(operation));
-        let marker = RenewalMarkerV1::new(row.operation, row.action.clone(), &row.offer)?;
+        self.snap.line("record key", &history::key::<I>(operation));
+        let marker = RenewalMarkerV1::<I>::new(row.operation, row.action.clone(), &row.offer)?;
         self.snap.wire("consent marker", &marker)?;
         let contract = r.state.snapshot.contract(row.contract).ok_or("contract")?;
         self.snap.wire("contract", contract)?;
         self.snap
             .hex("contract consent hash", &contract.consent_hash);
-        if let Some(record) = book(&r.state).service(operation) {
+        if let Some(record) = I::book(&r.state).service(operation) {
             self.snap.wire("service record", record)?;
-            self.snap.line("service key", &service::key(operation));
+            self.snap.line("service key", &service::key::<I>(operation));
             self.fixtures.services.push(record.clone());
         }
         if let Some(closure) = &row.closure {
@@ -269,7 +279,7 @@ impl Walk {
     fn refusal(
         &mut self,
         label: &str,
-        result: Result<Prepared, mush_core::participant::ParticipantError>,
+        result: Result<Prepared<I>, mush_core::participant::ParticipantError>,
     ) -> Outcome {
         match result {
             Ok(_) => Err(format!("{label}: a repeated transition was accepted").into()),
@@ -281,10 +291,10 @@ impl Walk {
     }
 
     /// Draft (Automatic) at commit 3, at 1000 on the rig's clock.
-    fn publish(&mut self, r: &mut Rig, title: &str) -> Outcome<RenewalOfferOutput> {
-        let draft = action(twin::DRAFT_ACTION)?;
+    fn publish(&mut self, r: &mut Fixture<I>, title: &str) -> Outcome<RenewalOfferOutput<I>> {
+        let draft = action(I::DRAFT_ACTION)?;
         let principal = r.principal.clone();
-        let prepared = install::offer(
+        let prepared = install::offer::<I>(
             &r.state,
             &context(r, &principal, &draft, 3),
             r.offer.clone(),
@@ -298,12 +308,12 @@ impl Walk {
     }
     fn install(
         &mut self,
-        r: &mut Rig,
-        prepared: Prepared,
+        r: &mut Fixture<I>,
+        prepared: Prepared<I>,
         principal: &mush_core::PrincipalId,
         action: &DefinitionRef,
         commit: u64,
-    ) -> Outcome<(RenewalOfferOutput, Vec<ReplayWrite>)> {
+    ) -> Outcome<(RenewalOfferOutput<I>, Vec<ReplayWrite>)> {
         let (out, patch, writes) = prepared;
         patch.recheck_in(&r.state, &context(r, principal, action, commit))?;
         patch.bind(&mut r.state)?.apply();
@@ -311,15 +321,15 @@ impl Walk {
     }
     fn close(
         &mut self,
-        r: &mut Rig,
+        r: &mut Fixture<I>,
         title: &str,
         operation: u64,
         commit: u64,
         reason: UnfundedCloseReason,
     ) -> Outcome {
-        let close = action(twin::CLOSE_ACTION)?;
+        let close = action(I::CLOSE_ACTION)?;
         let principal = r.principal.clone();
-        let prepared = install::close(
+        let prepared = install::close::<I>(
             &r.state,
             &context(r, &principal, &close, commit),
             token(operation),
@@ -330,7 +340,7 @@ impl Walk {
         self.writes(&writes)?;
         self.output(&out)?;
         self.images(r, token(operation))?;
-        let again = install::close(
+        let again = install::close::<I>(
             &r.state,
             &context(r, &principal, &close, commit + 100),
             token(operation),
@@ -340,13 +350,13 @@ impl Walk {
     }
     fn service_close(
         &mut self,
-        r: &mut Rig,
+        r: &mut Fixture<I>,
         title: &str,
         reason: RenewalServiceCloseReason,
     ) -> Outcome {
-        let action = action(twin::SERVICE_CLOSE_ACTION)?;
+        let action = action(I::SERVICE_CLOSE_ACTION)?;
         let principal = god();
-        let prepared = install::service_close(
+        let prepared = install::service_close::<I>(
             &r.state,
             &context(r, &principal, &action, 4),
             token(3),
@@ -358,7 +368,7 @@ impl Walk {
         self.writes(&writes)?;
         self.output(&out)?;
         self.images(r, token(3))?;
-        let again = install::service_close(
+        let again = install::service_close::<I>(
             &r.state,
             &context(r, &principal, &action, 5),
             token(3),
@@ -368,14 +378,14 @@ impl Walk {
     }
     fn retry(
         &mut self,
-        r: &mut Rig,
+        r: &mut Fixture<I>,
         title: &str,
         previous: u64,
         commit: u64,
-    ) -> Outcome<RenewalOfferOutput> {
-        let draft = action(twin::DRAFT_ACTION)?;
+    ) -> Outcome<RenewalOfferOutput<I>> {
+        let draft = action(I::DRAFT_ACTION)?;
         let principal = r.principal.clone();
-        let prepared = install::retry(
+        let prepared = install::retry::<I>(
             &r.state,
             &context(r, &principal, &draft, commit),
             r.offer.clone(),
@@ -390,21 +400,21 @@ impl Walk {
     }
     fn money(
         &mut self,
-        r: &mut Rig,
+        r: &mut Fixture<I>,
         title: &str,
         request: RenewalMoneyRequest,
         transition: Transition,
         commit: u64,
     ) -> Outcome {
         let (id, name) = match transition {
-            Transition::Fund => (twin::FUND_ACTION, "funded"),
-            Transition::Grant => (twin::GRANT_ACTION, "granted"),
-            Transition::Refund => (twin::REFUND_ACTION, "refunded"),
+            Transition::Fund => (I::FUND_ACTION, "funded"),
+            Transition::Grant => (I::GRANT_ACTION, "granted"),
+            Transition::Refund => (I::REFUND_ACTION, "refunded"),
         };
         let action = action(id)?;
         let principal = r.principal.clone();
         let operation = request.operation;
-        let prepared = funding::prepare_in(
+        let prepared = funding::prepare_in::<I>(
             &r.state,
             &context(r, &principal, &action, commit),
             request.clone(),
@@ -419,12 +429,12 @@ impl Walk {
         self.writes(&writes)?;
         self.snap.hex("plan hash", &plan_hash);
         match output {
-            MoneyOutput::Funded(out) => {
+            MoneyOutput::<I>::Funded(out) => {
                 check_eq!(out.operation(), operation);
                 self.snap.wire("funding receipt", out.receipt())?;
                 self.fixtures.funding = Some(out.receipt().clone());
             }
-            MoneyOutput::Terminal(out) => {
+            MoneyOutput::<I>::Terminal(out) => {
                 check_eq!(out.operation(), operation);
                 self.snap.wire("terminal receipt", out.receipt())?;
                 self.fixtures.terminals.push(out.receipt().clone());
@@ -432,7 +442,7 @@ impl Walk {
         }
         let tx = r.state.transactions.values().last().ok_or("transaction")?;
         self.snap.wire("transaction", tx)?;
-        let history = receipts(&r.state.fold).get(operation)?;
+        let history = I::receipts(&r.state.fold).get(operation)?;
         self.snap.wire("history", history)?;
         let hold = r
             .state
@@ -442,7 +452,7 @@ impl Walk {
         self.snap.wire("hold", hold)?;
         self.fixtures.histories.push(history.clone());
         self.images(r, operation)?;
-        let again = funding::prepare_in(
+        let again = funding::prepare_in::<I>(
             &r.state,
             &context(r, &principal, &action, commit + 100),
             request,
@@ -462,13 +472,13 @@ impl Walk {
     /// bridge, joined with a fold replayed from the journal. The rebuilt book
     /// must equal the live one; it then replaces it (the combined latch the
     /// service closure needs).
-    fn cold(&mut self, r: &mut Rig, title: &str) -> Outcome {
+    fn cold(&mut self, r: &mut Fixture<I>, title: &str) -> Outcome {
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = self
             .kv
             .iter()
             .map(|(k, v)| (smol_str::SmolStr::new(k), v.clone()))
             .collect();
-        let docs = twin::bridge::documents(&kv, true)?;
+        let docs = twin::bridge::documents::<I>(&kv, true)?;
         self.snap.section(&format!("{title} | cold rebuild"));
         for (name, bytes) in &docs {
             self.snap.bytes(&format!("document {name}"), bytes);
@@ -491,7 +501,7 @@ impl Walk {
             .holds()
             .map(|h| (h.id, h.clone()))
             .collect();
-        let refused = twin::bridge::recover(
+        let refused = twin::bridge::recover::<I>(
             &mut crate::fold::FoldState::default(),
             &mut EconomySnapshot::new(),
             &mut contracts.clone(),
@@ -504,7 +514,7 @@ impl Walk {
             Err(error) => self.snap.line("disabled boot refused", &error.to_string()),
         }
         let mut snapshot = EconomySnapshot::new();
-        let rebuilt = twin::bridge::recover(
+        let rebuilt = twin::bridge::recover::<I>(
             &mut fold,
             &mut snapshot,
             &mut contracts,
@@ -513,8 +523,8 @@ impl Walk {
             true,
         )?;
         check!(rebuilt.combined_verified());
-        check_eq!(receipts(&fold), receipts(&r.state.fold));
-        let live = book(&r.state);
+        check_eq!(I::receipts(&fold), I::receipts(&r.state.fold));
+        let live = I::book(&r.state);
         check_eq!(rebuilt.operations().len(), live.operations().len());
         let mut operations = Vec::new();
         for operation in live.operations() {
@@ -528,29 +538,30 @@ impl Walk {
             operations.push(operation.to_hex());
         }
         self.snap.line("rebuilt operations", &operations.join(","));
-        self.snap.wire("rebuilt receipt audit", receipts(&fold))?;
-        *book_mut(&mut r.state) = rebuilt;
+        self.snap
+            .wire("rebuilt receipt audit", I::receipts(&fold))?;
+        *I::book_mut(&mut r.state) = rebuilt;
         Ok(())
     }
 }
 
-fn identities(s: &mut Snapshot) -> Outcome {
+fn identities<I: Rig>(s: &mut Snapshot) -> Outcome {
     s.section("identities");
     for (label, value) in [
-        ("draft action", twin::DRAFT_ACTION),
-        ("close action", twin::CLOSE_ACTION),
-        ("fund action", twin::FUND_ACTION),
-        ("grant action", twin::GRANT_ACTION),
-        ("refund action", twin::REFUND_ACTION),
-        ("service close action", twin::SERVICE_CLOSE_ACTION),
-        ("namespace", twin::NAMESPACE),
-        ("offer key prefix", history::PREFIX),
-        ("service key prefix", service::PREFIX),
+        ("draft action", I::DRAFT_ACTION),
+        ("close action", I::CLOSE_ACTION),
+        ("fund action", I::FUND_ACTION),
+        ("grant action", I::GRANT_ACTION),
+        ("refund action", I::REFUND_ACTION),
+        ("service close action", I::SERVICE_CLOSE_ACTION),
+        ("namespace", I::NAMESPACE),
+        ("offer key prefix", I::OFFER_PREFIX),
+        ("service key prefix", I::SERVICE_PREFIX),
     ] {
         s.line(label, value);
     }
-    s.line("offer key", &history::key(token(3)));
-    s.line("service key", &service::key(token(3)));
+    s.line("offer key", &history::key::<I>(token(3)));
+    s.line("service key", &service::key::<I>(token(3)));
     for (label, value) in [
         (
             "default offer seconds",
@@ -603,7 +614,7 @@ fn identities(s: &mut Snapshot) -> Outcome {
 /// name the twin's bridge must accept, so a moved protocol name, transition
 /// tag or reference list fails `validate`; the service action is the bridge's
 /// own.
-fn configuration(s: &mut Snapshot) -> Outcome {
+fn configuration<I: Rig>(s: &mut Snapshot) -> Outcome {
     let manifest = reference(
         "tacsim",
         "registry_manifest",
@@ -629,30 +640,31 @@ fn configuration(s: &mut Snapshot) -> Outcome {
                 DefinitionKind::new("action")?,
                 DefinitionId::new(id)?,
                 1,
-                serde_json::json!({"format":1,"protocol":super::PROTOCOL,"transition":transition}),
+                serde_json::json!({"format":1,"protocol":I::PROTOCOL,"transition":transition}),
             )?
             .with_references(vec![manifest.clone(), economy.clone(), roll.clone()]),
         )?)
     };
     let actions = [
-        make(twin::DRAFT_ACTION, "draft")?,
-        make(twin::FUND_ACTION, "fund")?,
-        make(twin::GRANT_ACTION, "grant")?,
-        make(twin::REFUND_ACTION, "refund")?,
-        make(twin::CLOSE_ACTION, "unfunded_close")?,
+        make(I::DRAFT_ACTION, "draft")?,
+        make(I::FUND_ACTION, "fund")?,
+        make(I::GRANT_ACTION, "grant")?,
+        make(I::REFUND_ACTION, "refund")?,
+        make(I::CLOSE_ACTION, "unfunded_close")?,
     ];
-    let mut configuration = twin::bridge::Configuration {
+    let mut configuration = twin::bridge::Configuration::<I> {
         manifest,
         participants: [economy.clone(), roll],
         actions,
         service_close: None,
+        issuer: std::marker::PhantomData,
     };
     configuration.validate(&economy)?;
     let service = configuration.service_reference()?;
     configuration.service_close = Some(service.clone());
     configuration.validate(&economy)?;
     s.section("boot configuration");
-    s.line("protocol", super::PROTOCOL);
+    s.line("protocol", I::PROTOCOL);
     for (label, reference) in ["draft", "fund", "grant", "refund", "unfunded close"]
         .into_iter()
         .zip(&configuration.actions)
@@ -667,7 +679,7 @@ fn configuration(s: &mut Snapshot) -> Outcome {
 /// on the real path; the holder attempts need a settled paid resale in the
 /// fold (another family's rig), so their record bytes are pinned here from the
 /// walked root row with only the attempt changed and the consent recomputed.
-fn attempts(walk: &mut Walk, root: &OfferRecord) -> Outcome {
+fn attempts<I: Rig>(walk: &mut Walk<I>, root: &OfferRecord<I>) -> Outcome {
     let basis = RenewalHolderBasisV1 {
         acceptance: token(40),
         ownership: PaidHolderRefV1 {
@@ -715,7 +727,7 @@ fn attempts(walk: &mut Walk, root: &OfferRecord) -> Outcome {
 
 /// The renewal wire requires an explicit null in every optional economic role
 /// (the macro's field attributes on the wire struct): one line a role.
-fn required_roles(s: &mut Snapshot, offer: &RenewalOffer) -> Outcome {
+fn required_roles<I: Rig>(s: &mut Snapshot, offer: &I::Offer) -> Outcome {
     for pointer in [
         "/terms/venue",
         "/terms/registry/recipient",
@@ -731,7 +743,7 @@ fn required_roles(s: &mut Snapshot, offer: &RenewalOffer) -> Outcome {
         if object.remove(field).is_none() {
             continue;
         }
-        match serde_json::from_value::<RenewalOffer>(json) {
+        match serde_json::from_value::<I::Offer>(json) {
             Ok(_) => s.line(&format!("missing {pointer}"), "accepted"),
             Err(error) => s.line(&format!("missing {pointer} refused"), &error.to_string()),
         }
@@ -739,15 +751,15 @@ fn required_roles(s: &mut Snapshot, offer: &RenewalOffer) -> Outcome {
     Ok(())
 }
 
-fn codecs(walk: &mut Walk) -> Outcome {
+fn codecs<I: Rig>(walk: &mut Walk<I>) -> Outcome {
     let f = std::mem::take(&mut walk.fixtures);
     let s = &mut walk.snap;
     let fail = |json: &mut serde_json::Value| json["format"] = 2.into();
     for offer in &f.offers {
-        s.codec("RenewalBasisV1", &offer.basis, fail)?;
-        s.codec("RenewalOfferTermsV1", &offer.terms, fail)?;
+        s.codec("RenewalBasisV1", offer.basis(), fail)?;
+        s.codec("RenewalOfferTermsV1", offer.terms(), fail)?;
         s.codec("RenewalOffer", offer, fail)?;
-        required_roles(s, offer)?;
+        required_roles::<I>(s, offer)?;
     }
     for marker in f.markers.iter().take(1) {
         s.codec("RenewalMarkerV1", marker, fail)?;
@@ -786,20 +798,20 @@ fn codecs(walk: &mut Walk) -> Outcome {
 }
 
 /// Every terminal state, each from a fresh rig.
-pub(super) fn run() -> Outcome<Snapshot> {
+pub(crate) fn run<I: Rig>() -> Outcome<Snapshot> {
     let mut walk = Walk {
         snap: Snapshot::new(),
         kv: BTreeMap::new(),
         fixtures: Fixtures::default(),
     };
-    identities(&mut walk.snap)?;
-    configuration(&mut walk.snap)?;
+    identities::<I>(&mut walk.snap)?;
+    configuration::<I>(&mut walk.snap)?;
     {
-        let r = super::rig()?;
+        let r = Fixture::<I>::new()?;
         walk.snap.section("refusal");
-        let empty = install::close(
+        let empty = install::close::<I>(
             &r.state,
-            &context(&r, &r.principal, &action(twin::CLOSE_ACTION)?, 4),
+            &context(&r, &r.principal, &action(I::CLOSE_ACTION)?, 4),
             token(3),
             UnfundedCloseReason::Declined,
         );
@@ -807,13 +819,13 @@ pub(super) fn run() -> Outcome<Snapshot> {
     }
 
     // Declined, then a buyer retry (record format 2) closed Declined again.
-    let mut r = super::rig()?;
+    let mut r = Fixture::<I>::new()?;
     walk.kv.clear();
     walk.fixtures.offers.push(r.offer.clone());
-    receipts_mut(&mut r.state.fold).finish_replay()?;
+    I::receipts_mut(&mut r.state.fold).finish_replay()?;
     walk.publish(&mut r, "declined")?;
     walk.close(&mut r, "declined", 3, 4, UnfundedCloseReason::Declined)?;
-    let root = book(&r.state).get(token(3)).ok_or("root")?.clone();
+    let root = I::book(&r.state).get(token(3)).ok_or("root")?.clone();
     walk.retry(&mut r, "declined", 3, 6)?;
     walk.close(
         &mut r,
@@ -826,11 +838,11 @@ pub(super) fn run() -> Outcome<Snapshot> {
     attempts(&mut walk, &root)?;
 
     // Expired: closed by the buyer at the deadline.
-    let mut r = super::rig()?;
+    let mut r = Fixture::<I>::new()?;
     walk.kv.clear();
-    receipts_mut(&mut r.state.fold).finish_replay()?;
+    I::receipts_mut(&mut r.state.fold).finish_replay()?;
     walk.publish(&mut r, "expired")?;
-    let deadline = r.offer.terms.expires_at.at;
+    let deadline = r.offer.terms().expires_at().at;
     r.world.set_now(deadline);
     walk.close(&mut r, "expired", 3, 4, UnfundedCloseReason::Expired)?;
     walk.cold(&mut r, "expired")?;
@@ -844,14 +856,14 @@ pub(super) fn run() -> Outcome<Snapshot> {
             RenewalServiceCloseReason::DeadlineReached => "service deadline",
             RenewalServiceCloseReason::ClockInvalidated => "service clock",
         };
-        let mut r = super::rig()?;
+        let mut r = Fixture::<I>::new()?;
         walk.kv.clear();
-        receipts_mut(&mut r.state.fold).finish_replay()?;
+        I::receipts_mut(&mut r.state.fold).finish_replay()?;
         walk.publish(&mut r, title)?;
         walk.cold(&mut r, &format!("{title} offered"))?;
         match reason {
             RenewalServiceCloseReason::DeadlineReached => {
-                let deadline = r.offer.terms.expires_at.at;
+                let deadline = r.offer.terms().expires_at().at;
                 r.world.set_now(deadline);
             }
             RenewalServiceCloseReason::ClockInvalidated => {
@@ -864,9 +876,9 @@ pub(super) fn run() -> Outcome<Snapshot> {
     }
 
     // Funded and granted, with every payee role the twin has.
-    let mut r = super::rig()?;
+    let mut r = Fixture::<I>::new()?;
     walk.kv.clear();
-    super::widen(&mut r)?;
+    I::widen(&mut r)?;
     walk.fixtures.offers.push(r.offer.clone());
     cash(&mut r)?;
     let offered = walk.publish(&mut r, "granted")?;
@@ -876,7 +888,7 @@ pub(super) fn run() -> Outcome<Snapshot> {
     walk.cold(&mut r, "granted")?;
 
     // Funded and refunded; then a buyer retry funded and granted.
-    let mut r = super::rig()?;
+    let mut r = Fixture::<I>::new()?;
     walk.kv.clear();
     cash(&mut r)?;
     let offered = walk.publish(&mut r, "refunded")?;

@@ -114,6 +114,7 @@ pub use managed_title::CoreProvenanceNote;
 mod plan;
 mod record;
 pub mod registry_filing;
+pub(crate) mod renewal_twin;
 mod snapshot;
 pub mod unit_authority;
 
