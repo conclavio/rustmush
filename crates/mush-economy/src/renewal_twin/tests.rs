@@ -119,6 +119,9 @@ pub(crate) trait Rig: Issuer {
     /// How many accounts a grant of the widened offer pays: registry, venue and remainder,
     /// and for the personal issuer three royalty parents.
     const ROLES: usize;
+    /// How many titles the widened offer stands on: the charter's, and for the personal
+    /// issuer each paid royalty parent's.
+    const TITLES: usize;
     fn seed() -> TestResult<Seed<Self>>;
     /// Every payee role the issuer has.
     fn widen(f: &mut Fixture<Self>) -> TestResult;
@@ -131,6 +134,10 @@ pub(crate) trait Rig: Issuer {
     /// The issuer's side stops being current: the seller leaves, or the organisation's
     /// charter does. A sale is refused after it; a close and a refund are not.
     fn lapse(f: &mut Fixture<Self>) -> TestResult;
+    /// The fixture's offer rewritten onto another line of the same issuer, and the store
+    /// with it, so that the offer is good in every way but that: a derived lineage with
+    /// its royalty parents, or another scope of the same organisation.
+    fn other_line(f: &mut Fixture<Self>) -> TestResult;
     /// The issuer's own fields of a widened offer at their widest encoding.
     fn widest(offer: &mut Self::Offer) -> TestResult;
     /// What the issuer's own part of the wire refuses: a royalty parent that leaves its
@@ -149,11 +156,15 @@ pub(crate) struct Fixture<I: Rig> {
 impl<I: Rig> Fixture<I> {
     #[inline(never)]
     pub(crate) fn new() -> TestResult<Box<Self>> {
+        Self::from_seed(I::seed()?)
+    }
+    /// A fixture over a seed an issuer's own test varied.
+    pub(crate) fn from_seed(seed: Seed<I>) -> TestResult<Box<Self>> {
         let Seed {
             world,
             state,
             offer,
-        } = I::seed()?;
+        } = seed;
         Ok(Box::new(Self {
             world,
             state,
@@ -897,6 +908,59 @@ pub(crate) fn actual_legacy_plan_and_boot_continue_refusing_the_new_managed_kind
     Ok(())
 }
 
+/// Every title an offer stands on is read when the offer is made and fenced until the offer
+/// is installed: the charter's, and for the personal issuer each paid royalty parent's.
+pub(crate) fn every_title_an_offer_stands_on_is_current_and_fenced<I: Rig>() -> TestResult {
+    let titles = {
+        let mut f = Fixture::<I>::new()?;
+        I::widen(&mut f)?;
+        I::titles(f.offer.terms())
+    };
+    check_eq!(titles.len(), I::TITLES);
+    for id in titles {
+        let mut f = Fixture::<I>::new()?;
+        I::widen(&mut f)?;
+        let (_, patch, _) = f.prepare()?;
+        let mut title = f.state.snapshot.asset(id).ok_or("title")?.clone();
+        title.revision += 1;
+        f.state.snapshot.put_asset(title);
+        check!(
+            f.prepare().is_err(),
+            "a title that moved on is offered: {id:?}"
+        );
+        check!(
+            patch.bind(&mut f.state).is_err(),
+            "a title that moved on is installed: {id:?}"
+        );
+    }
+    Ok(())
+}
+
+/// No payee is the payer's own account: a buyer is not paid a cut of their own purchase.
+/// The recipient named here is otherwise good (the account exists, is the buyer's and holds
+/// the instrument), so only that rule refuses it.
+pub(crate) fn a_payee_cannot_be_the_payers_own_account<I: Rig>() -> TestResult {
+    let mut f = Fixture::<I>::new()?;
+    f.prepare()?;
+    let own = Recipient {
+        account: f.offer.terms().payer(),
+        owner: f.offer.terms().buyer().principal(),
+    };
+    I::terms(&mut f.offer).registry.recipient = Some(own);
+    check!(f.prepare().is_err());
+    Ok(())
+}
+
+/// The issuer's side must be current for an offer to be made. `lapse` is the seller leaving,
+/// or the organisation's charter leaving.
+pub(crate) fn an_offer_is_refused_once_the_issuers_side_lapses<I: Rig>() -> TestResult {
+    let mut f = Fixture::<I>::new()?;
+    f.prepare()?;
+    I::lapse(&mut f)?;
+    check!(f.prepare().is_err());
+    Ok(())
+}
+
 pub(crate) mod ct0_walk;
 pub(crate) mod funded;
 pub(crate) mod output;
@@ -985,6 +1049,9 @@ macro_rules! instantiate {
             complete_near_limit_record_and_contract_reserve_both_closures_before_custody,
             permanent_offer_table_counts_closed_predecessors_at_the_actual_limit,
             actual_legacy_plan_and_boot_continue_refusing_the_new_managed_kind,
+            every_title_an_offer_stands_on_is_current_and_fenced,
+            an_offer_is_refused_once_the_issuers_side_lapses,
+            a_payee_cannot_be_the_payers_own_account,
         ]);
         mod funded {
             $crate::renewal_twin::tests::scenarios!($issuer, (funded::), [
@@ -1003,6 +1070,8 @@ macro_rules! instantiate {
                 largest_actual_offer_keeps_both_complete_terminal_images_with_unchanged_f0_caps,
                 renewal_zero_cash_credit_changed_owner_and_approval_rule_never_create_escrow,
                 renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction,
+                every_title_a_sale_stands_on_is_current_and_fenced,
+                a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not,
             ]);
             mod bridge_tests {
                 $crate::renewal_twin::tests::scenarios!($issuer, (funded::bridge_tests::), [
@@ -1023,6 +1092,7 @@ macro_rules! instantiate {
                     complete_recovery_rejects_missing_crossed_branched_and_cyclic_retry_links,
                     newer_automatic_predecessor_prevents_returning_to_old_retry_head,
                     complete_retry_closure_fits_a_full_legacy_offer_without_raising_any_cap,
+                    a_retry_on_another_line_of_the_issuer_is_refused,
                 ]);
             }
             mod service {

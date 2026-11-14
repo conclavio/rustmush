@@ -571,3 +571,22 @@ pub(crate) fn complete_retry_closure_fits_a_full_legacy_offer_without_raising_an
     check_eq!(history::FUTURE_RESERVE_BYTES, 2048);
     Ok(())
 }
+
+/// A retry stays on the line of the offer it follows: the same lineage for the personal
+/// issuer, the same organisation and scope for the House. The other-line offer is good in
+/// every other way (the same basis, buyer, charter and instrument, and the issuer current),
+/// and a first offer of it would be accepted.
+pub(crate) fn a_retry_on_another_line_of_the_issuer_is_refused<I: Rig>() -> TestResult {
+    let mut r = Fixture::<I>::new()?;
+    cash(&mut r)?;
+    r.publish()?;
+    close_at(&mut r, 3, 4)?;
+    retry(&r, 3, 6)?;
+    I::other_line(&mut r)?;
+    r.offer.terms().check_current(&r.state, &r.world)?;
+    check!(retry(&r, 3, 6).is_err(), "a retry on another line");
+    let mut fresh = r.offer.clone();
+    *I::basis(&mut fresh).licence = 8;
+    install::offer::<I>(&r.state, &r.context(false, token(7)), fresh)?;
+    Ok(())
+}

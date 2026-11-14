@@ -18,6 +18,7 @@ use mush_org::PrincipalId;
 
 impl Rig for Personal {
     const ROLES: usize = 6;
+    const TITLES: usize = 4;
 
     #[inline(never)]
     fn seed() -> TestResult<Seed<Self>> {
@@ -206,6 +207,10 @@ impl Rig for Personal {
             .insert(mush_core::Flags::GOING);
         Ok(())
     }
+    /// A derived lineage, with the royalty parents it then needs.
+    fn other_line(f: &mut Fixture<Self>) -> TestResult {
+        Self::widen(f)
+    }
     /// The seller, and every royalty parent's charter, revision and recipient.
     fn widest(offer: &mut RenewalOffer) -> TestResult {
         offer.terms.seller = ObjId(u32::MAX - 1);
@@ -289,6 +294,40 @@ fn personal_identity_strings_hold_todays_bytes() {
     assert_eq!(super::SERVICE_CLOSE_ACTION, Personal::SERVICE_CLOSE_ACTION);
     assert_eq!(super::NAMESPACE, Personal::NAMESPACE);
     assert_eq!(super::service::PREFIX, Personal::SERVICE_PREFIX);
+}
+
+/// Personal only: the seller's title is a personal one. A title that sits on an
+/// organisation's scope is refused even when it names the seller as its owner; a scoped title
+/// is the House issuer's, whose terms say the scope.
+#[test]
+fn a_personal_offer_refuses_a_title_on_a_scope() -> TestResult {
+    let mut f = Fixture::<Personal>::new()?;
+    f.prepare()?;
+    let mut title = f
+        .state
+        .snapshot
+        .asset(f.offer.terms.charter)
+        .ok_or("title")?
+        .clone();
+    title.scope = Some(mush_org::OrgScopeId(1));
+    f.state.snapshot.put_asset(title);
+    check!(f.prepare().is_err());
+    Ok(())
+}
+
+/// Personal only: a personal renewal is filed under no scope. The House's is filed under
+/// the issuing organisation's (`managed_house_renewal::tests`).
+#[test]
+fn a_personal_contract_is_filed_under_no_scope() -> TestResult {
+    let mut f = Fixture::<Personal>::new()?;
+    let (out, _) = f.publish()?;
+    let contract = f
+        .state
+        .snapshot
+        .contract(out.contract())
+        .ok_or("contract")?;
+    check_eq!(contract.consent.scope, None);
+    Ok(())
 }
 
 #[path = "tests/ct0_snapshot.rs"]

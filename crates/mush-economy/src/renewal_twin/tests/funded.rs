@@ -841,6 +841,55 @@ pub(crate) fn renewal_zero_cash_credit_changed_owner_and_approval_rule_never_cre
     Ok(())
 }
 
+/// A sale stands on the same titles as the offer: a grant is refused once one of them has
+/// moved on, and a grant prepared before that no longer installs. A refund does not ask.
+pub(crate) fn every_title_a_sale_stands_on_is_current_and_fenced<I: Rig>() -> TestResult {
+    let titles = {
+        let mut f = Fixture::<I>::new()?;
+        I::widen(&mut f)?;
+        I::titles(f.offer.terms())
+    };
+    check_eq!(titles.len(), I::TITLES);
+    for id in titles {
+        let (mut r, req, _) = funded::<I>(true)?;
+        let prep = prepared(&r, req.clone(), Transition::Grant, 5)?;
+        let (_, patch, _) =
+            money_install::finish_images(&r.state, r.world.world_ic_now().clock, prep)?;
+        patch.check_local(&r.state)?;
+        let mut title = r.state.snapshot.asset(id).ok_or("title")?.clone();
+        title.revision += 1;
+        r.state.snapshot.put_asset(title);
+        check!(
+            patch.check_local(&r.state).is_err(),
+            "a title that moved on is granted from a prepared image: {id:?}"
+        );
+        check!(
+            prepared(&r, req.clone(), Transition::Grant, 5).is_err(),
+            "a title that moved on is granted: {id:?}"
+        );
+        prepared(&r, req, Transition::Refund, 6)?;
+    }
+    Ok(())
+}
+
+/// The issuer's side must be current for money to move toward it: a funding and a grant are
+/// refused once it lapses. The buyer's refund is not the issuer's to stop.
+pub(crate) fn a_sale_is_refused_once_the_issuers_side_lapses_and_a_refund_is_not<I: Rig>()
+-> TestResult {
+    let mut r = Fixture::<I>::new()?;
+    cash(&mut r)?;
+    let (offer, _) = r.publish()?;
+    prepared(&r, request(&offer), Transition::Fund, 4)?;
+    I::lapse(&mut r)?;
+    check!(prepared(&r, request(&offer), Transition::Fund, 4).is_err());
+    let (mut r, req, _) = funded::<I>(false)?;
+    prepared(&r, req.clone(), Transition::Grant, 5)?;
+    I::lapse(&mut r)?;
+    check!(prepared(&r, req.clone(), Transition::Grant, 5).is_err());
+    prepared(&r, req, Transition::Refund, 5)?;
+    Ok(())
+}
+
 #[path = "funded/reoffer.rs"]
 pub(crate) mod reoffer;
 
