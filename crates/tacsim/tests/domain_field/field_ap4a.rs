@@ -10,12 +10,19 @@
 //!    same order arrives inside their five minutes, the rig's record reads `GUARD`, and the
 //!    order is answered WILCO for the rig. Five minutes after the loss the rig is its mind's
 //!    and is flown as doc 45 unit AP.6 has a guard: it stays where it stood and returns the
-//!    fire of a unit that fires on it. An order to a unit whose player has gone is refused by
-//!    the roster's own authority rule. The player reads who set the posture and to what at
-//!    login, is seated again, sets it back to `RETURN` from their own seat, and their word
-//!    stands.
+//!    fire of a unit that fires on it. An order to the unit after its player has gone goes to
+//!    its mind (doc 47 unit CO.3, R-47-4; until CO.3 it was refused, "command authority does
+//!    not cover the target unit"). The player reads who set the posture and to what at login,
+//!    is seated again, sets it back to `RETURN` from their own seat, and their word stands.
 //! 2. [`ap4a_a_hired_crews_slot_takes_no_posture_order`]: the same order to a slot a hired
 //!    crew flies is refused, and nothing is issued.
+//! 3. [`co3_a_leaders_order_after_the_grace_goes_to_the_members_mind`] (doc 47 unit CO.3,
+//!    R-47-4): the leader orders a present member's rig to `HOLD` and it is still its player's
+//!    rig. Five minutes after the member's link drops the rig is its mind's and holds where it
+//!    stood. The member, who does not lead, is refused an order to it. The leader's
+//!    `ORDER ... 2 POSTURE RETURN` is accepted, written to the rig's record and answered WILCO
+//!    for the rig, and its mind flies it home under the absent-player limits: it fires on
+//!    nobody first, and it is taken out of the field.
 //!
 //! What the stories stand in for: the second player comes aboard the captain's carrier by a
 //! staff hand (`roster_rig::Billet::Member`), and the roster's rigs are stood on their cells by
@@ -76,6 +83,22 @@ fn refused_as(field: &mut Field, who: ObjId, words: &str) -> String {
     let captain = field.flown.organiser;
     let fenced = fence(&mut field.rig, captain, &field.flown);
     run(&mut field.rig.tw, who, &format!("ORDER {fenced} {words}"))
+}
+
+/// The leader's report shows slot `slot`'s own answer, WILCO, within ninety seconds.
+async fn answered_wilco(field: &mut Field, slot: usize) -> bool {
+    let captain = field.flown.organiser;
+    for _ in 0..90 {
+        let answer = reply(&mut field.rig, captain, &field.flown, slot);
+        if answer
+            .as_deref()
+            .is_some_and(|status| status.to_ascii_uppercase().contains("WILCO"))
+        {
+            return true;
+        }
+        field.wait(1).await;
+    }
+    false
 }
 
 /// **Story 1** (this module's head).
@@ -172,7 +195,7 @@ async fn ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_ba
             && !minded(field.rig.tw.world(), rig2),
         "inside the five minutes: the rig is still its player's"
     );
-    let (word, sequence) = ordered(&mut field, 2).expect("the POSTURE order is delivered");
+    let (word, _) = ordered(&mut field, 2).expect("the POSTURE order is delivered");
     assert_eq!(word, Posture::Guard);
     // The rig answers for itself: the leader's report reads WILCO against slot 2's order.
     let mut answer = None;
@@ -240,14 +263,28 @@ async fn ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_ba
         "and it is still in the field, where a rig on RETURN would have made for home"
     );
 
-    // (5) A unit whose player has gone is no longer under the roster's command: the same
-    // order is refused by the roster's own authority rule, and changes nothing.
-    let gone = refused_as(&mut field, captain, "2 POSTURE HOLD");
+    // (5) Doc 47 unit CO.3 (R-47-4): the unit's player has gone, and the leader's order goes
+    // to the unit's mind. Until CO.3 this step held the refusal ("command authority does not
+    // cover the target unit") and the rig kept GUARD.
+    let gone = order_as(&mut field, captain, "2 POSTURE HOLD");
     assert!(
-        gone.contains("command authority does not cover the target unit"),
-        "{gone}"
+        field
+            .until(30, |rig, _| held(rig, rig2) == Posture::Hold)
+            .await,
+        "the leader's order reaches the gone member's rig: {gone}; book {:?}",
+        orders_of(&mut field.rig, field.flown.operation)
     );
-    assert_eq!(held(&field.rig, rig2), Posture::Guard);
+    let (word, sequence) = ordered(&mut field, 2).expect("the second POSTURE order is delivered");
+    assert_eq!(word, Posture::Hold);
+    assert!(
+        answered_wilco(&mut field, 2).await,
+        "the rig answers the order for itself: {}",
+        field.report()
+    );
+    assert!(
+        crate::escort_lease::in_field(&field.rig, rig2) && minded(field.rig.tw.world(), rig2),
+        "a HOLD keeps the rig its mind's, in the field"
+    );
 
     // (6) The server's own grace has ended the session by now. Its player logs in, reads who
     // set it and to what, and is seated again.
@@ -281,7 +318,7 @@ async fn ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_ba
         ),
     );
     assert!(
-        own.contains("POSTURE GUARD") && !own.contains("NEGATIVE DT:"),
+        own.contains("POSTURE HOLD") && !own.contains("NEGATIVE DT:"),
         "the member reads the order and is offered no reply to it: {own}"
     );
     let fenced = fence(&mut field.rig, captain, &field.flown);
@@ -354,5 +391,105 @@ async fn ap4a_a_hired_crews_slot_takes_no_posture_order() {
             .iter()
             .all(|held| !matches!(held.objective, Some(FieldObjective::Posture { .. }))),
         "and none of them was issued"
+    );
+}
+
+/// **Story 3** (this module's head; doc 47 unit CO.3, R-47-4): a leader's order after the
+/// grace goes to the member's mind, which flies it under the absent-player limits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn co3_a_leaders_order_after_the_grace_goes_to_the_members_mind() {
+    let mut field = opened(
+        &Plan {
+            who: ("Pilot", 1, "Salt Moth"),
+            duty: "combat",
+            billets: vec![Billet::Leader, Billet::Member("Wren")],
+            commander: None,
+        },
+        true,
+    )
+    .await;
+    let (captain, member) = (field.flown.organiser, field.flown.operator(2));
+    let rig2 = field.flown.unit(2);
+    assert_eq!(held(&field.rig, rig2), Posture::Return);
+
+    // (1) A present member's rig: the order is AP.4a's, unchanged. It is written to the rig's
+    // record and answered for the rig, and the rig stays its player's.
+    let first = order_as(&mut field, captain, "2 POSTURE HOLD");
+    assert!(
+        field
+            .until(30, |rig, _| held(rig, rig2) == Posture::Hold)
+            .await,
+        "the order reaches a present member's rig: {first}"
+    );
+    assert!(answered_wilco(&mut field, 2).await, "{}", field.report());
+    assert!(
+        away_of(field.rig.tw.world(), rig2).is_none() && !minded(field.rig.tw.world(), rig2),
+        "a present member's rig is still its player's"
+    );
+
+    // (2) The member's link drops. Five minutes later the rig is its mind's and holds where it
+    // stood.
+    lose_link(&mut field.rig, member);
+    let lost = away_of(field.rig.tw.world(), rig2)
+        .expect("the field's clock runs")
+        .since_wall_s;
+    field.pass_to(lost + FIELD_LINKDEAD_GRACE_WALL_S + 5);
+    field.wait(15).await;
+    assert!(
+        minded(field.rig.tw.world(), rig2) && crate::escort_lease::in_field(&field.rig, rig2),
+        "five minutes after the loss the member's rig is its mind's, in the field"
+    );
+    assert_eq!(held(&field.rig, rig2), Posture::Hold);
+
+    // (3) A player who does not lead is refused, as before.
+    let refused = refused_as(&mut field, member, "2 POSTURE RETURN");
+    assert!(
+        refused.contains("not this detachment's current leader"),
+        "{refused}"
+    );
+    field.wait(5).await;
+    assert_eq!(held(&field.rig, rig2), Posture::Hold, "{refused}");
+    // And the leader's other orders do not reach a gone member's unit: only a POSTURE goes to
+    // its mind.
+    let kernel = refused_as(&mut field, captain, "2 HOLD");
+    assert!(
+        kernel.contains("command authority does not cover the target unit"),
+        "{kernel}"
+    );
+
+    // (4) The leader's order after the grace is accepted, written to the rig's record and
+    // answered WILCO for the rig. Until CO.3 it was refused: "command authority does not cover
+    // the target unit".
+    let issued = order_as(&mut field, captain, "2 POSTURE RETURN");
+    assert!(
+        field
+            .until(30, |rig, _| held(rig, rig2) == Posture::Return)
+            .await,
+        "the leader's order reaches the gone member's rig: {issued}; book {:?}",
+        orders_of(&mut field.rig, field.flown.operation)
+    );
+    assert_eq!(
+        ordered(&mut field, 2).map(|(word, _)| word),
+        Some(Posture::Return)
+    );
+    assert!(
+        answered_wilco(&mut field, 2).await,
+        "the rig answers the order for itself: {}",
+        field.report()
+    );
+
+    // (5) Its mind flies it: home, firing on nobody first.
+    let home = field
+        .until(240, |rig, _| !crate::escort_lease::in_field(rig, rig2))
+        .await;
+    assert!(
+        home,
+        "the mind takes the rig home on RETURN: it fired {} round(s)",
+        fired(&field.lines, rig2)
+    );
+    assert_eq!(
+        fired(&field.lines, rig2),
+        0,
+        "an absent player's rig fires on nobody first"
     );
 }

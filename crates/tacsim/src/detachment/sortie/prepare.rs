@@ -1330,8 +1330,9 @@ fn message(
                         expires_at_ms: *expires_at_ms,
                     },
                     |m| {
+                        // Doc 47 unit CO.3 (R-47-4): a POSTURE reaches a gone member's mind.
                         allowed(actor, m.unit)
-                            && roster.member_available(m.slot)
+                            && field_orders::takes(world, &roster, m, directive)
                             && (!tolerant || afield.contains(&m.slot))
                     },
                 )
@@ -1446,7 +1447,9 @@ fn message(
                 ) {
                     continue;
                 }
-                if !roster.member_available(member.slot) || !allowed(pending.issuer, member.unit) {
+                if !field_orders::takes(world, &roster, member, &pending.directive)
+                    || !allowed(pending.issuer, member.unit)
+                {
                     book.discard_pending(member.slot, pending.sequence, now)
                         .map_err(|e| e.to_string())?;
                     orders.outbound.remove(&member.slot);
