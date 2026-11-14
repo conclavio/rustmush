@@ -614,8 +614,8 @@ re-bless it. The projection is in `ct0b_capture.rs` and is five rules:
 - Of a journal chunk, only the entries the transition appended to what the rig's store held. A
   chunk's earlier entries are other transactions' (a mint, a filing, a legacy purchase).
 - No digest. Every digest on this path inherits TacSim's registry manifest: each action's
-  descriptor refers to it, and the manifest pins the unit catalogue and the source text of
-  thirteen files of the minds' own code. A 64-digit hex string, and a hash written as an array of
+  descriptor refers to it, and the manifest pins the unit catalogue and the source text of more
+  than twenty files of the minds' own code. A 64-digit hex string, and a hash written as an array of
   32 bytes (economy's consent hash and plan hash), is written `<dN>`, numbered by its first
   appearance in its section. What the digests join is kept; their values are not.
 - No object number. The story's worlds load the shipped out-of-character content (about a
@@ -646,10 +646,13 @@ above), so a unit compares its base's with its tip's: see "For CT.5 and CT.6".
 
 | File | Preparations | Of them refused | Installed | Service submissions | Lines | Size |
 |---|---|---|---|---|---|---|
-| `renewal_personal.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
-| `renewal_house.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
-| `purchase_personal.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
-| `purchase_house.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
+| `renewal_personal.snap` | 113 | 31 | 70 | 15 | 1,839 | 1.25 MB |
+| `renewal_house.snap` | 50 | 14 | 26 | 10 | 880 | 0.59 MB |
+| `purchase_personal.snap` | 161 | 30 | 125 | none | 2,770 | 1.69 MB |
+| `purchase_house.snap` | 29 | 5 | 16 | none | 524 | 0.30 MB |
+
+353 preparations, the audit's count, and 3.83 MB of text. A line is a whole stored document, as
+in CT.0's files.
 
 **What the composed path reaches**, by file:
 
@@ -729,8 +732,10 @@ TBD-MUTATIONS
 5. **The readers' facts as such.** `reader.rs` runs on this path and what it reads is in the
    rows the writers write; a fact a writer checks and does not store is seen only as a refusal.
 6. **Why a provider refused.** Every refusal of a twin's provider is one sentence
-   ("This renewal is unavailable or has changed.", "No personal mind entitlement is available
-   under these terms."), whatever the writer's `PublicationError` or the owner's reason was. The
+   ("This renewal is unavailable or has changed.", "This retained renewal cleanup is
+   unavailable.", "No personal mind entitlement is available under these terms.", "No house mind
+   licence is available under these terms."), whatever the writer's `PublicationError` or the
+   owner's reason was. The
    file pins the sentence and that the story's refusals are refusals; a reworded internal reason
    passes unseen, as CT.0's item 7 says of the kernel's.
 7. **The other families on the path**: the legacy original purchase (versions 1 and 2), the paid
@@ -794,8 +799,8 @@ diff -r $HOME/ct0b-raw/base $HOME/ct0b-raw/tip && echo "no byte moved on the com
   Linux: commit tokens are the story's own numbers, every stamp comes from a clock the story
   sets, and the genuine rating gives the same certificate on both platforms.
 - **A bundle's writes are sorted by target** before they are persisted (the third item above).
-- **Every twin refusal is one sentence a provider.** The 30 personal and the purchase refusals
-  the story provokes differ in their causes and print the same line.
+- **A twin's provider has one refusal sentence** (the renewal service's close has its own). The
+  80 refusals the story provokes have many causes and print four lines between them.
 - No defect was found.
 
 ## CT.1

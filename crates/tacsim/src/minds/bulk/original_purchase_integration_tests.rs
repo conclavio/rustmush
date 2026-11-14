@@ -1261,7 +1261,7 @@ fn change_one_family(
 #[test]
 #[ignore = "required serialized M7 gate: completes the unmodified real Registry schedule before purchase/recovery branches"]
 fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> TestResult {
-    ct0b::begin();
+    let _record = ct0b::begin();
     let mut registry = Fixture::new()?;
     let rating = complete_registry(&mut registry)?;
     eprintln!("M7_STORY phase=house event=begin");

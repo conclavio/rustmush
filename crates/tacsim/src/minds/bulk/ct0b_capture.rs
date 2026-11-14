@@ -203,13 +203,84 @@ fn name(action: &DefinitionRef) -> String {
     )
 }
 
+/// The running record, held by the story for as long as it runs. If the story stops before
+/// [`finish`] (a step refused, a check failed), dropping this says where the record so far
+/// left the committed files: a failing story names the preparation that changed.
+#[must_use]
+pub(super) struct Record(());
+
 /// Starts the record. The pinned M7 story calls it once, before its first branch.
-pub(super) fn begin() {
+pub(super) fn begin() -> Record {
     let mut guard = match CAPTURE.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
     *guard = Some(Capture::default());
+    Record(())
+}
+
+impl Drop for Record {
+    fn drop(&mut self) {
+        let capture = {
+            let mut guard = match CAPTURE.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.take()
+        };
+        // `finish` took the record: the story reached its end.
+        let Some(capture) = capture else {
+            return;
+        };
+        eprintln!("CT0B_CAPTURE the story stopped before its end; its record so far:");
+        for (twin, slot) in capture.twins.iter().enumerate() {
+            let (file, _) = TWINS[twin];
+            let relative = format!("{DIRECTORY}/{file}.snap");
+            let produced = render(twin, slot, false).render(&relative);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&relative);
+            let report = match std::fs::read_to_string(&path) {
+                Ok(committed) => stopped(&committed.replace("\r\n", "\n"), &produced),
+                Err(error) => format!("no committed file ({error})"),
+            };
+            eprintln!(
+                "CT0B_CAPTURE file={file} preparations={}: {report}",
+                slot.count
+            );
+        }
+    }
+}
+
+/// Where a record that stopped early leaves its committed file: the first line of `produced`
+/// that is not the committed file's, or that it agrees as far as it goes.
+fn stopped(committed: &str, produced: &str) -> String {
+    let produced: Vec<&str> = produced.lines().collect();
+    let committed: Vec<&str> = committed.lines().collect();
+    let clip = |line: &str| -> String { line.chars().take(240).collect() };
+    for (index, line) in produced.iter().enumerate() {
+        match committed.get(index) {
+            Some(old) if old == line => {}
+            Some(old) => {
+                return format!(
+                    "first difference, line {}:\n  committed: {}\n  produced:  {}",
+                    index + 1,
+                    clip(old),
+                    clip(line)
+                );
+            }
+            None => {
+                return format!(
+                    "line {} is past the committed file's end:\n  produced:  {}",
+                    index + 1,
+                    clip(line)
+                );
+            }
+        }
+    }
+    format!(
+        "agrees with the committed file as far as it goes ({} of {} lines)",
+        produced.len(),
+        committed.len()
+    )
 }
 
 /// One preparation by a story rig, passed through unchanged. Recorded when the record is
@@ -766,6 +837,24 @@ pub(super) fn finish() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_record_that_stopped_early_says_where_it_left_the_committed_file() {
+        let committed = "a\n[0001 market/draft_mind_renewal@1]\nb\nc\n";
+        assert_eq!(
+            stopped(
+                committed,
+                "a\n[0001 market/draft_mind_renewal@1, refused]\n"
+            ),
+            "first difference, line 2:\n  committed: [0001 market/draft_mind_renewal@1]\n  \
+             produced:  [0001 market/draft_mind_renewal@1, refused]"
+        );
+        assert_eq!(
+            stopped(committed, "a\n[0001 market/draft_mind_renewal@1]\nb\n"),
+            "agrees with the committed file as far as it goes (3 of 4 lines)"
+        );
+        assert!(stopped("a\n", "a\nb\n").starts_with("line 2 is past the committed file's end"));
+    }
 
     #[test]
     fn a_digest_and_an_object_number_are_named_by_first_appearance() {
