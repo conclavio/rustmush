@@ -567,6 +567,29 @@ fn last_cell(lines: &[LedgerEvent], of: ObjId) -> Option<(u16, u16)> {
     })
 }
 
+/// **Where the field recorded `hull` while it answered**: the first position record after
+/// its first round, and the first after a round it fired once two more records had passed
+/// (ten arena seconds at the five-second cadence). `None` until it has fired across them.
+fn answered_across(
+    lines: &[LedgerEvent],
+    hull: ObjId,
+) -> Option<((usize, i64, i64), (usize, i64, i64))> {
+    let shots: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == hull))
+        .map(|(at, _)| at)
+        .collect();
+    let path = track(lines, hull);
+    let first_shot = *shots.first()?;
+    let after = path.iter().position(|(at, ..)| *at >= first_shot)?;
+    let from = *path.get(after)?;
+    let two_on = path.get(after + 2)?.0;
+    let later = *shots.iter().find(|at| **at >= two_on)?;
+    let to = *path.iter().find(|(at, ..)| *at >= later)?;
+    Some((from, to))
+}
+
 impl Ground {
     /// **The intruder's player keeps a lock on the lessee's rig wherever the field last
     /// recorded it and fires** until `done` holds or `secs` of wall time pass.
@@ -624,7 +647,7 @@ async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
     // to: it answers, more than once, and nobody else. (That it does not answer for its
     // neighbour on RETURN is the gate's: `arena::weapons::tests`, AP.6's guard test.)
     let answered = g
-        .raid_the_rig(150, |_, lines| fired_at(lines, hull, hostile) >= 2)
+        .raid_the_rig(150, |_, lines| answered_across(lines, hull).is_some())
         .await;
     g.cease();
     assert!(
@@ -655,23 +678,13 @@ async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
         fired_at(&g.lines, hull, hostile),
         "and on nobody else"
     );
-    // It kept going while it answered: between its first round and its second it moved.
-    let shots: Vec<usize> = g
-        .lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| matches!(&line.kind, EventKind::Fired { unit, .. } if *unit == hull))
-        .map(|(at, _)| at)
-        .collect();
-    let path = track(&g.lines, hull);
-    let at_or_after = |line: usize| path.iter().find(|(at, ..)| *at >= line).copied();
-    let (Some(from), Some(to)) = (at_or_after(shots[0]), at_or_after(shots[1])) else {
-        panic!("the field recorded where it was as it answered: {path:?}");
-    };
+    // It kept going while it answered: where the field recorded it just after its first
+    // round, and where it recorded it at a later round, two records on, differ.
+    let (from, to) = answered_across(&g.lines, hull).expect("the raid ended on it");
     let moved_cm = (to.1 - from.1).abs().max((to.2 - from.2).abs());
     assert!(
         moved_cm >= 100,
-        "it drove on between its two rounds: {from:?} then {to:?}"
+        "it drove on while it answered: {from:?} then {to:?}"
     );
     // And it is home.
     assert!(
