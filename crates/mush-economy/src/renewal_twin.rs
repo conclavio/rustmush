@@ -352,6 +352,9 @@ fn contract<I: Issuer>(
     let offer = &record.offer;
     offer.validate()?;
     let marker = RenewalMarkerV1::<I>::new(record.operation, record.action.clone(), offer)?;
+    // The buyer issues their own renewal, whoever the issuer of the licence is, as an original
+    // purchase does: the contract checker requires the issuer to be a party and only the buyer
+    // consents. The seller, or the House, is paid through the split.
     let buyer = offer.terms().buyer().principal();
     let consent = ConsentSurface {
         fact_consent: None,
