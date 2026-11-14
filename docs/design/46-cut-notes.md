@@ -819,8 +819,7 @@ diff -r $HOME/ct0b-raw/base $HOME/ct0b-raw/tip && echo "no byte moved on the com
 ```
 
 - **Run time.** On conclav.dev the story is 16 to 17 minutes (970 to 1,000 s measured, up to
-  six at once; eight at once and two builds is more than the box took, below), and its test
-  binary rebuilds in three to four minutes after a change to `mush-roll`, `mush-market` or the
+  six at once), and its test binary rebuilds in three to four minutes after a change to `mush-roll`, `mush-market` or the
   story's files, at sixteen jobs (a cold build was not timed): so command 1 is about twenty
   minutes, and command 2 about twenty-five with the two runs side by side. On the owner's
   Windows box the story is 18 to 22 minutes (1,057 s alone, 1,307 s beside a build) after a
@@ -856,7 +855,8 @@ diff -r $HOME/ct0b-raw/base $HOME/ct0b-raw/tip && echo "no byte moved on the com
   80 refusals the story provokes have many causes and print four lines between them.
 - **conclav.dev stopped answering** (ssh on 22 and 2222 timing out) at about 16:17 UTC on
   2026-11-14, while this unit had about eight story runs and two 14-job builds on it. Whether
-  the load did it is not known. Run at most four stories and one build there at a time.
+  the load did it is not known. The owner treats it as a one-off (the box has run as hard
+  before; it may have been the provider's), so it sets no limit. It was back half an hour later.
 - No defect was found.
 
 ## CT.1
