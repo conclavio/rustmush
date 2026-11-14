@@ -12,14 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const MAX_RECORDS: usize = 32_768;
-pub(crate) const MAX_RECORD_BYTES: usize = 8_192;
-pub(crate) const MAX_CONTRACT_BYTES: usize = 8_192;
-pub(crate) const FUTURE_RESERVE_BYTES: usize = 2_048;
+pub(super) const MAX_RECORDS: usize = 32_768;
+pub(super) const MAX_RECORD_BYTES: usize = 8_192;
+pub(super) const MAX_CONTRACT_BYTES: usize = 8_192;
+pub(super) const FUTURE_RESERVE_BYTES: usize = 2_048;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Closure {
+pub(super) struct Closure {
     pub commit: CommitToken,
     pub action: DefinitionRef,
     pub at_ic: ClockStamp,
@@ -28,7 +28,7 @@ pub(crate) struct Closure {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, bound = "")]
-pub(crate) struct OfferRecord<I: Issuer> {
+pub(super) struct OfferRecord<I: Issuer> {
     pub format: u16,
     pub operation: CommitToken,
     pub action: DefinitionRef,
@@ -58,17 +58,17 @@ fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     Option::<T>::deserialize(d)
 }
-pub(crate) fn key<I: Issuer>(operation: CommitToken) -> String {
+pub(super) fn key<I: Issuer>(operation: CommitToken) -> String {
     format!("{}{}", I::OFFER_PREFIX, operation.to_hex())
 }
 impl<I: Issuer> OfferRecord<I> {
-    pub(crate) fn attempt(&self) -> RenewalAttemptV1 {
+    pub(super) fn attempt(&self) -> RenewalAttemptV1 {
         self.attempt.unwrap_or(RenewalAttemptV1::Automatic)
     }
-    pub(crate) fn previous(&self) -> Option<CommitToken> {
+    pub(super) fn previous(&self) -> Option<CommitToken> {
         self.attempt().previous_operation()
     }
-    pub(crate) fn validate(&self) -> Result<(), ParticipantError> {
+    pub(super) fn validate(&self) -> Result<(), ParticipantError> {
         self.offer.validate()?;
         let terms = self.offer.terms();
         let shape = matches!(
@@ -198,7 +198,7 @@ impl<I: Issuer> OfferRecord<I> {
         }
         Ok(())
     }
-    pub(crate) fn verify_documents(
+    pub(super) fn verify_documents(
         &self,
         snapshot: &EconomySnapshot,
     ) -> Result<(), ParticipantError> {
@@ -240,42 +240,42 @@ pub struct OfferBook<I: Issuer> {
     combined_verified: bool,
 }
 impl<I: Issuer> OfferBook<I> {
-    pub(crate) const fn combined_verified(&self) -> bool {
+    pub(super) const fn combined_verified(&self) -> bool {
         self.combined_verified
     }
-    pub(crate) fn operations(&self) -> impl ExactSizeIterator<Item = CommitToken> + '_ {
+    pub(super) fn operations(&self) -> impl ExactSizeIterator<Item = CommitToken> + '_ {
         self.rows.keys().copied()
     }
     /// Any retained service closure needs the service action in this composition.
     pub(crate) fn has_services(&self) -> bool {
         !self.services.is_empty()
     }
-    pub(crate) fn service(
+    pub(super) fn service(
         &self,
         operation: CommitToken,
     ) -> Option<&super::service::ServiceRecord<I>> {
         self.services.get(&operation)
     }
-    pub(crate) fn install_service(&mut self, record: super::service::ServiceRecord<I>) {
+    pub(super) fn install_service(&mut self, record: super::service::ServiceRecord<I>) {
         self.services.insert(record.operation, record);
     }
-    pub(crate) fn verify_offer(
+    pub(super) fn verify_offer(
         &self,
         row: &OfferRecord<I>,
         snapshot: &EconomySnapshot,
     ) -> Result<(), ParticipantError> {
         verify_pair(row, snapshot, None, self.service(row.operation))
     }
-    pub(crate) fn get(&self, operation: CommitToken) -> Option<&OfferRecord<I>> {
+    pub(super) fn get(&self, operation: CommitToken) -> Option<&OfferRecord<I>> {
         self.rows.get(&operation)
     }
-    pub(crate) const fn generation(&self) -> u64 {
+    pub(super) const fn generation(&self) -> u64 {
         self.generation
     }
-    pub(crate) fn next_generation(&self) -> Result<u64, ParticipantError> {
+    pub(super) fn next_generation(&self) -> Result<u64, ParticipantError> {
         self.generation.checked_add(1).ok_or_else(refused)
     }
-    pub(crate) fn admits(&self, row: &OfferRecord<I>) -> Result<(), ParticipantError> {
+    pub(super) fn admits(&self, row: &OfferRecord<I>) -> Result<(), ParticipantError> {
         row.validate()?;
         let basis = row.offer.basis();
         if self.rows.len() >= MAX_RECORDS
@@ -326,7 +326,7 @@ impl<I: Issuer> OfferBook<I> {
     }
     /// Repeated at actual preparation and consuming bind. A mutable terminal
     /// contract cannot stand in for the exact replayed previous funding proof.
-    pub(crate) fn require_retry(
+    pub(super) fn require_retry(
         &self,
         row: &OfferRecord<I>,
         snapshot: &EconomySnapshot,
@@ -345,7 +345,7 @@ impl<I: Issuer> OfferBook<I> {
             self.service(before.operation),
         )
     }
-    pub(crate) fn install(&mut self, row: OfferRecord<I>, generation: u64) {
+    pub(super) fn install(&mut self, row: OfferRecord<I>, generation: u64) {
         self.contracts.insert(row.contract, row.operation);
         self.predecessors.insert(
             (
@@ -389,7 +389,7 @@ impl<I: Issuer> OfferBook<I> {
         receipts.require_complete().map_err(|_| refused())?;
         Self::reconstruct(snapshot, documents, Some(receipts), Some(resale))
     }
-    pub(crate) fn require_holder_origin(
+    pub(super) fn require_holder_origin(
         row: &OfferRecord<I>,
         resale: &crate::managed_paid_resale::book::PaidResaleBook,
     ) -> Result<(), ParticipantError> {

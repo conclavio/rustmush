@@ -15,7 +15,7 @@ use mush_core::authoritative::ReplayWrite;
 use mush_core::participant::{BoundParticipant, OwnerPrepareContext, ParticipantError};
 use mush_core::{CommitToken, DefinitionRef, ObjId};
 
-pub(crate) struct OfferContext<'a> {
+pub(super) struct OfferContext<'a> {
     pub world: &'a mush_core::World,
     pub actor: ObjId,
     pub principal: &'a mush_core::PrincipalId,
@@ -86,14 +86,14 @@ fn offer_current<I: Issuer>(
     }
     Ok(())
 }
-pub(crate) fn offer<I: Issuer>(
+pub(super) fn offer<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: I::Offer,
 ) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
     create(state, context, request, super::RenewalAttemptV1::Automatic)
 }
-pub(crate) fn retry<I: Issuer>(
+pub(super) fn retry<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: I::Offer,
@@ -106,7 +106,7 @@ pub(crate) fn retry<I: Issuer>(
         super::RenewalAttemptV1::BuyerRetry { previous_operation },
     )
 }
-pub(crate) fn holder_offer<I: Issuer>(
+pub(super) fn holder_offer<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: I::Offer,
@@ -156,7 +156,7 @@ fn create<I: Issuer>(
     check_offerable(&after, &state.snapshot).map_err(|_| refused())?;
     images(state, row, after, None, next_contract, None)
 }
-pub(crate) fn close<I: Issuer>(
+pub(super) fn close<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     operation: CommitToken,
@@ -189,7 +189,7 @@ pub(crate) fn close<I: Issuer>(
         None,
     )
 }
-pub(crate) fn service_close<I: Issuer>(
+pub(super) fn service_close<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     operation: CommitToken,
@@ -402,7 +402,7 @@ impl<I: Issuer> OfferPatch<I> {
     ) -> Result<(), ParticipantError> {
         self.recheck_in(state, &OfferContext::from(context))
     }
-    pub(crate) fn recheck_in(
+    pub(super) fn recheck_in(
         &self,
         state: &EconomyStore,
         context: &OfferContext<'_>,

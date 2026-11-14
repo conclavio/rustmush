@@ -216,7 +216,7 @@ pub struct RenewalMoneyPatch<I: Issuer> {
     fold: Box<RenewalFold<I>>,
 }
 
-pub(crate) fn prepare_images<I: Issuer>(
+pub(super) fn prepare_images<I: Issuer>(
     state: &EconomyStore,
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
@@ -228,7 +228,7 @@ pub(crate) fn prepare_images<I: Issuer>(
         funding::prepare(state, context, request, transition)?,
     )
 }
-pub(crate) fn finish_images<I: Issuer>(
+pub(super) fn finish_images<I: Issuer>(
     state: &EconomyStore,
     clock: ClockRef,
     prepared: Box<MoneyPreparation<I>>,

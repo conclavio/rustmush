@@ -253,5 +253,43 @@ impl Rig for Personal {
 
 twin::instantiate!(crate::renewal_twin::Personal);
 
+/// Every identity string of the issuer against a literal. The shared scenarios read the
+/// issuer's constants, so a constant that moved would move the rig with it and they
+/// would still pass; this second copy of the strings, and the CT.0 snapshot, would not.
+#[test]
+fn personal_identity_strings_hold_todays_bytes() {
+    use crate::renewal_twin::Issuer;
+    assert_eq!(Personal::DRAFT_ACTION, "draft_mind_renewal");
+    assert_eq!(Personal::CLOSE_ACTION, "close_mind_renewal");
+    assert_eq!(Personal::FUND_ACTION, "fund_mind_renewal");
+    assert_eq!(Personal::GRANT_ACTION, "settle_mind_renewal");
+    assert_eq!(Personal::REFUND_ACTION, "refund_mind_renewal");
+    assert_eq!(Personal::SERVICE_CLOSE_ACTION, "close_mind_renewal_service");
+    assert_eq!(Personal::NAMESPACE, "market.mind.renewal.v1");
+    assert_eq!(Personal::OFFER_PREFIX, "renewal-offer:");
+    assert_eq!(Personal::SERVICE_PREFIX, "renewal-service-close:");
+    assert_eq!(Personal::PROTOCOL, "personal_mind_renewal_v1");
+    assert_eq!(
+        Personal::SERVICE_PROTOCOL,
+        "personal_mind_renewal_service_v1"
+    );
+    assert_eq!(Personal::OFFER_DOMAIN, "economy.mind_renewal_offer.v1");
+    assert_eq!(Personal::CONTRACT_NAME, "Mind renewal offer");
+    assert_eq!(Personal::FUNDING_DESCRIPTION, "mind renewal funding");
+    assert_eq!(
+        Personal::BIRTH_ROUTE,
+        crate::managed_paid_resale::PaidBirthRouteV1::Entitlement
+    );
+    // The names the rest of the crate and the other crates read are the same strings.
+    assert_eq!(super::DRAFT_ACTION, Personal::DRAFT_ACTION);
+    assert_eq!(super::CLOSE_ACTION, Personal::CLOSE_ACTION);
+    assert_eq!(super::FUND_ACTION, Personal::FUND_ACTION);
+    assert_eq!(super::GRANT_ACTION, Personal::GRANT_ACTION);
+    assert_eq!(super::REFUND_ACTION, Personal::REFUND_ACTION);
+    assert_eq!(super::SERVICE_CLOSE_ACTION, Personal::SERVICE_CLOSE_ACTION);
+    assert_eq!(super::NAMESPACE, Personal::NAMESPACE);
+    assert_eq!(super::service::PREFIX, Personal::SERVICE_PREFIX);
+}
+
 #[path = "tests/ct0_snapshot.rs"]
 mod ct0_snapshot;

@@ -238,3 +238,41 @@ impl Rig for House {
 }
 
 twin::instantiate!(crate::renewal_twin::House);
+
+/// Every identity string of the issuer against a literal. The shared scenarios read the
+/// issuer's constants, so a constant that moved would move the rig with it and they
+/// would still pass; this second copy of the strings, and the CT.0 snapshot, would not.
+#[test]
+fn house_identity_strings_hold_todays_bytes() {
+    use crate::renewal_twin::Issuer;
+    assert_eq!(House::DRAFT_ACTION, "draft_house_mind_renewal");
+    assert_eq!(House::CLOSE_ACTION, "close_house_mind_renewal");
+    assert_eq!(House::FUND_ACTION, "fund_house_mind_renewal");
+    assert_eq!(House::GRANT_ACTION, "settle_house_mind_renewal");
+    assert_eq!(House::REFUND_ACTION, "refund_house_mind_renewal");
+    assert_eq!(
+        House::SERVICE_CLOSE_ACTION,
+        "close_house_mind_renewal_service"
+    );
+    assert_eq!(House::NAMESPACE, "market.mind.house_renewal.v1");
+    assert_eq!(House::OFFER_PREFIX, "house-renewal-offer:");
+    assert_eq!(House::SERVICE_PREFIX, "house-renewal-service-close:");
+    assert_eq!(House::PROTOCOL, "house_mind_renewal_v1");
+    assert_eq!(House::SERVICE_PROTOCOL, "house_mind_renewal_service_v1");
+    assert_eq!(House::OFFER_DOMAIN, "economy.house_mind_renewal_offer.v1");
+    assert_eq!(House::CONTRACT_NAME, "House mind renewal offer");
+    assert_eq!(House::FUNDING_DESCRIPTION, "house mind renewal funding");
+    assert_eq!(
+        House::BIRTH_ROUTE,
+        crate::managed_paid_resale::PaidBirthRouteV1::House
+    );
+    // The names the rest of the crate and the other crates read are the same strings.
+    assert_eq!(super::DRAFT_ACTION, House::DRAFT_ACTION);
+    assert_eq!(super::CLOSE_ACTION, House::CLOSE_ACTION);
+    assert_eq!(super::FUND_ACTION, House::FUND_ACTION);
+    assert_eq!(super::GRANT_ACTION, House::GRANT_ACTION);
+    assert_eq!(super::REFUND_ACTION, House::REFUND_ACTION);
+    assert_eq!(super::SERVICE_CLOSE_ACTION, House::SERVICE_CLOSE_ACTION);
+    assert_eq!(super::NAMESPACE, House::NAMESPACE);
+    assert_eq!(super::service::PREFIX, House::SERVICE_PREFIX);
+}

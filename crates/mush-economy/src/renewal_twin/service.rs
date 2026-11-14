@@ -95,7 +95,7 @@ impl<I: Issuer> RenewalServiceClosureV1<I> {
         self.reason
     }
 
-    pub(crate) fn create(
+    pub(super) fn create(
         context: &super::install::OfferContext<'_>,
         reason: RenewalServiceCloseReason,
     ) -> Result<Self, ParticipantError> {
@@ -112,7 +112,7 @@ impl<I: Issuer> RenewalServiceClosureV1<I> {
         row.validate().map_err(|_| refused())?;
         Ok(row)
     }
-    pub(crate) fn require_origin(&self, row: &OfferRecord<I>) -> Result<(), ParticipantError> {
+    pub(super) fn require_origin(&self, row: &OfferRecord<I>) -> Result<(), ParticipantError> {
         self.validate().map_err(|_| refused())?;
         if row.closure.is_some()
             || self.commit == row.operation
@@ -144,13 +144,13 @@ impl<I: Issuer> RenewalServiceClosureV1<I> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, bound = "")]
-pub(crate) struct ServiceRecord<I: Issuer> {
+pub(super) struct ServiceRecord<I: Issuer> {
     pub format: u16,
     pub operation: CommitToken,
     pub closure: RenewalServiceClosureV1<I>,
 }
 impl<I: Issuer> ServiceRecord<I> {
-    pub(crate) fn validate(&self) -> Result<(), ParticipantError> {
+    pub(super) fn validate(&self) -> Result<(), ParticipantError> {
         self.closure.validate().map_err(|_| refused())?;
         if self.format != 1
             || self.operation == self.closure.commit
@@ -163,14 +163,14 @@ impl<I: Issuer> ServiceRecord<I> {
         }
         Ok(())
     }
-    pub(crate) fn require_origin(&self, origin: &OfferRecord<I>) -> Result<(), ParticipantError> {
+    pub(super) fn require_origin(&self, origin: &OfferRecord<I>) -> Result<(), ParticipantError> {
         self.validate()?;
         if self.operation != origin.operation {
             return Err(refused());
         }
         self.closure.require_origin(origin)
     }
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, ParticipantError> {
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, ParticipantError> {
         if bytes.is_empty() || bytes.len() > MAX_BYTES {
             return Err(refused());
         }
@@ -187,7 +187,7 @@ pub(crate) fn key<I: Issuer>(operation: CommitToken) -> String {
     format!("{}{}", I::SERVICE_PREFIX, operation.to_hex())
 }
 
-pub(crate) fn contract<I: Issuer>(
+pub(super) fn contract<I: Issuer>(
     origin: &OfferRecord<I>,
     close: &ServiceRecord<I>,
 ) -> Result<crate::contract::EconomicContract, ParticipantError> {

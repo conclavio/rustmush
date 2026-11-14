@@ -901,6 +901,56 @@ pub(crate) mod ct0_walk;
 pub(crate) mod funded;
 pub(crate) mod output;
 
+/// A census of the crate's source, for a later edit that widens the seal instead of going
+/// round it: exactly two `impl Sealed for`, both in `issuer.rs`; exactly two `impl Issuer
+/// for`, one in each family's file; one `mod sealed {` with no `pub`; and no `dyn` beside
+/// the trait's name. It is not the proof. The proof is the compiler's refusal of a third
+/// implementation (the `compile_fail` example on [`Issuer`], and doc 46's cut note).
+#[test]
+fn the_issuer_seal_admits_exactly_two() -> TestResult {
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> TestResult {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                sources(&path, out)?;
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files)?;
+    files.sort();
+    let dynamic = ["dyn ", "Issuer"].concat();
+    let seal = ["mod ", "sealed"].concat();
+    let (mut sealed, mut issuers, mut seals) = (Vec::new(), Vec::new(), Vec::new());
+    for path in &files {
+        let name = path
+            .strip_prefix(&root)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        for line in std::fs::read_to_string(path)?.lines() {
+            let line = line.trim();
+            if line.starts_with("impl Sealed for ") {
+                sealed.push(name.clone());
+            }
+            if line.starts_with("impl Issuer for ") {
+                issuers.push(name.clone());
+            }
+            if line.contains(&seal) && !line.starts_with("//") {
+                seals.push(line.to_owned());
+            }
+            check!(!line.contains(&dynamic), "{name}: {line}");
+        }
+    }
+    check_eq!(sealed, ["renewal_twin/issuer.rs", "renewal_twin/issuer.rs"]);
+    check_eq!(issuers, ["managed_house_renewal.rs", "managed_renewal.rs"]);
+    check_eq!(seals, [[seal.as_str(), " {"].concat()]);
+    Ok(())
+}
+
 /// One scenario as a `#[test]` of the family's module: `$prefix` is the path from this
 /// module to the body, in parentheses (`()`, `(funded::)`, `(funded::reoffer::)`).
 macro_rules! scenario {

@@ -28,7 +28,7 @@ pub struct RenewalMoneyRequest {
     pub consent_hash: [u8; 32],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Transition {
+pub(super) enum Transition {
     Fund,
     Grant,
     Refund,
@@ -41,7 +41,7 @@ impl Transition {
             Self::Refund => I::REFUND_ACTION,
         }
     }
-    pub(crate) const fn sale(self) -> bool {
+    pub(super) const fn sale(self) -> bool {
         !matches!(self, Self::Refund)
     }
 }
@@ -70,7 +70,7 @@ impl<I: Issuer> RenewalTerminalOutput<I> {
         &self.receipt
     }
 }
-pub(crate) enum MoneyOutput<I: Issuer> {
+pub(super) enum MoneyOutput<I: Issuer> {
     Funded(RenewalFundingOutput<I>),
     Terminal(RenewalTerminalOutput<I>),
 }
@@ -106,7 +106,7 @@ impl<I: Issuer> ClosedPlan<I> {
         Ok(())
     }
 }
-pub(crate) struct MoneyPreparation<I: Issuer> {
+pub(super) struct MoneyPreparation<I: Issuer> {
     pub output: MoneyOutput<I>,
     pub request: RenewalMoneyRequest,
     pub transition: Transition,
@@ -120,7 +120,7 @@ pub(crate) struct MoneyPreparation<I: Issuer> {
     pub next_hold: u64,
 }
 
-pub(crate) fn prepare<I: Issuer>(
+pub(super) fn prepare<I: Issuer>(
     state: &EconomyStore,
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
@@ -128,7 +128,7 @@ pub(crate) fn prepare<I: Issuer>(
 ) -> Result<Box<MoneyPreparation<I>>, ParticipantError> {
     prepare_in(state, &OfferContext::from(context), request, transition)
 }
-pub(crate) fn prepare_in<I: Issuer>(
+pub(super) fn prepare_in<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: RenewalMoneyRequest,

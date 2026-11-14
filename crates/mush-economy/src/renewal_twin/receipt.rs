@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-pub(crate) const MAX_CORRELATION_BYTES: usize = 8192;
-pub(crate) const MAX_HISTORY_BYTES: usize = 12288;
-pub(crate) const TERMINAL_RESERVE_BYTES: usize = 2048;
-pub(crate) const MAX_HISTORIES: usize = 32768;
+pub(super) const MAX_CORRELATION_BYTES: usize = 8192;
+pub(super) const MAX_HISTORY_BYTES: usize = 12288;
+pub(super) const TERMINAL_RESERVE_BYTES: usize = 2048;
+pub(super) const MAX_HISTORIES: usize = 32768;
 pub const MAX_RENEWAL_RECEIPT_BYTES: usize = 1024;
 fn versioned(stamp: &ClockStamp) -> bool {
     matches!(stamp.clock, ClockRef::WorldIc { generation } if generation != 0)
@@ -287,7 +287,7 @@ fn encode<I: Issuer>(proof: &Proof<I>) -> Result<String, ParticipantError> {
     }
     Ok(s)
 }
-pub(crate) fn funding_plan<I: Issuer>(
+pub(super) fn funding_plan<I: Issuer>(
     origin: &OfferRecord<I>,
     commit: CommitToken,
     action: &DefinitionRef,
@@ -325,7 +325,7 @@ pub(crate) fn funding_plan<I: Issuer>(
     });
     Ok(plan)
 }
-pub(crate) fn terminal_plan<I: Issuer>(
+pub(super) fn terminal_plan<I: Issuer>(
     history: &RenewalHistory<I>,
     commit: CommitToken,
     action: &DefinitionRef,
@@ -444,10 +444,10 @@ impl<I: Issuer> RenewalHistory<I> {
     pub fn terminal(&self) -> Option<&RenewalTerminalReceiptV1<I>> {
         self.terminal.as_ref().map(|t| &t.receipt)
     }
-    pub(crate) fn origin(&self) -> &OfferRecord<I> {
+    pub(super) fn origin(&self) -> &OfferRecord<I> {
         &self.origin
     }
-    pub(crate) fn contract(&self) -> Result<EconomicContract, RenewalAuditError> {
+    pub(super) fn contract(&self) -> Result<EconomicContract, RenewalAuditError> {
         let mut c = contract(&self.origin).map_err(|_| RenewalAuditError::Refused)?;
         c.acceptances.push(Acceptance {
             party: self.origin.offer.terms().buyer().principal(),
@@ -485,7 +485,7 @@ impl<I: Issuer> RenewalHistory<I> {
     /// Conservative future terminal envelope bound, evaluated before a hold is
     /// prepared. It uses the admitted receipt cap plus maximal fixed-width
     /// transaction/sequence values; it creates no receipt or authority.
-    pub(crate) fn require_terminal_room(&self) -> Result<(), RenewalAuditError> {
+    pub(super) fn require_terminal_room(&self) -> Result<(), RenewalAuditError> {
         let fail = || RenewalAuditError::Refused;
         if self.terminal.is_some() {
             return Err(fail());
@@ -699,7 +699,7 @@ impl<I: Issuer> RenewalReceiptAudit<I> {
             .get(&operation)
             .ok_or(RenewalAuditError::Refused)
     }
-    pub(crate) fn find(
+    pub(super) fn find(
         &self,
         operation: CommitToken,
     ) -> Result<Option<&RenewalHistory<I>>, RenewalAuditError> {
@@ -779,7 +779,7 @@ impl<I: Issuer> RenewalReceiptAudit<I> {
             Err(_) => self.invalid = true,
         }
     }
-    pub(crate) fn prepare(
+    pub(super) fn prepare(
         &self,
         tx: &EconomicTransaction,
     ) -> Result<PreparedHistory<I>, ParticipantError> {
@@ -973,7 +973,7 @@ impl<I: Issuer> RenewalReceiptAudit<I> {
         Ok(row)
     }
 }
-pub(crate) struct PreparedHistory<I: Issuer> {
+pub(super) struct PreparedHistory<I: Issuer> {
     before: Option<RenewalHistory<I>>,
     after: RenewalHistory<I>,
     count: usize,
@@ -982,17 +982,17 @@ pub(crate) struct PreparedHistory<I: Issuer> {
     verified: bool,
 }
 impl<I: Issuer> PreparedHistory<I> {
-    pub(crate) fn row(&self) -> &RenewalHistory<I> {
+    pub(super) fn row(&self) -> &RenewalHistory<I> {
         &self.after
     }
-    pub(crate) fn matches(&self, state: &RenewalReceiptAudit<I>) -> bool {
+    pub(super) fn matches(&self, state: &RenewalReceiptAudit<I>) -> bool {
         state.histories.len() == self.count
             && state.complete == self.complete
             && state.invalid == self.invalid
             && state.verified_this_boot == self.verified
             && state.histories.get(&self.after.operation()) == self.before.as_ref()
     }
-    pub(crate) fn apply(self, state: &mut RenewalReceiptAudit<I>) {
+    pub(super) fn apply(self, state: &mut RenewalReceiptAudit<I>) {
         state.histories.insert(self.after.operation(), self.after);
     }
 }
