@@ -226,7 +226,108 @@ reaches it).
 
 ## CO.3
 
-Not built.
+A leader's order to an absent member's unit (R-47-4; doc 47 §3, "A leader's order"). Paths are
+under `crates/tacsim/src/` unless given.
+
+**Survey** (written before the cut).
+
+- **Where the refusal is.** Not in the order book's authority rule as such. `OrderBook::issue`
+  (`mush-tactics`, `detachment/orders.rs`) answers `OrderError::Unauthorized` ("command
+  authority does not cover the target unit") when the host's resolver refuses a recipient, and
+  the field's resolver (`detachment/sortie/prepare.rs`, `message`, `Act::Issue`) asks two
+  things of each unit: the mission command right over it (`allowed`, read from the unit
+  authority owner) and `roster.member_available(slot)`. The second is what refuses a gone
+  member: `field::reconcile` reads the member's `Presence` (`field::orders::presence`), and
+  once the unit has passed to its mind (a quit, or five minutes after a lost link) the
+  member's connection is `Disconnected` and the roster counts the slot unavailable. The
+  command right is the member's lending to the mission's current leader and does not read the
+  member's presence.
+- **A second gate at the delivery.** The poll (`Act::Poll`) discards a delivered envelope's
+  pending order when the slot is not available, by the same `member_available`. So admitting
+  the issue alone would issue an order that never arrives.
+- **The hand-off already works.** The carrying-out walk (`detachment/sortie/npc.rs`,
+  `posture_order`) does not read presence: it writes the record, tells the player (queued when
+  away) and answers WILCO as the player. A changed posture on a unit a mind flies lays the new
+  word's standing order at once (`Arena::set_posture`, AP.6). So the cut is the admission.
+
+**Built.**
+
+- **One rule, read at the issue and at the delivery** (`detachment/sortie/field_orders.rs`,
+  `takes`): a slot takes an order when the roster counts it available, or, for a `POSTURE`
+  alone, when it is a player's unit that a mind flies because its player has gone
+  (`field::orders::minded_for`: the field's presence record for that pilot says handed, the
+  unit is in a running field, and it is not lost). The order then goes to the unit's mind
+  through AP.4a's path unchanged. Every other order to a gone member's unit is refused as
+  before.
+- **What binds the mind is CO.2's**, untouched: `arena::absent::permits` (it answers a unit
+  whose fire has arrived on it, never fires first) and `Arena::keep_going_home` (`RETURN`
+  keeps going home while it answers).
+- **Unchanged:** a present member's unit (the order is written while they hold the seat and
+  the unit stays theirs), the leader check (`validate_command_at`), the command right, the
+  relay and its jams, the OOC refusal, the hired-crew refusal, the unit answering for itself,
+  the notice.
+- Help: `docs/help/detachments.md` (POSTURE) and `docs/help/field.md` (*Setting it*, the
+  leader's bullet). Every changed line is within 120 columns.
+
+**Tests.** Stories in `tests/domain_field/field_ap4a.rs`:
+
+1. **New**, `co3_a_leaders_order_after_the_grace_goes_to_the_members_mind`: two players on a
+   roster in a three-party field. The leader orders the present member's rig to `HOLD`; it is
+   written, answered WILCO, and the rig is still its player's (no presence record, not
+   minded). The member's link drops; five minutes later the rig is its mind's and holds in the
+   field. The member, who does not lead, is refused ("not this detachment's current leader").
+   The leader's kernel `HOLD` to the gone member's slot is still refused ("command authority
+   does not cover the target unit"). The leader's `2 POSTURE RETURN` is accepted, the rig's
+   record reads `RETURN`, the rig answers WILCO, and its mind takes it out of the field having
+   fired on nobody. **On base it fails** at the RETURN order: the leader's `ORDER ... 2 POSTURE RETURN` is refused, "command authority does not cover the
+   target unit" (conclav.dev, main `6c86731fb` with only the tests applied). AP.4a's rewritten
+   story fails on base at its step 5 the same way..
+2. **Rewritten**, AP.4a's `ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_back`
+   step 5 held the refusal ("command authority does not cover the target unit") after the
+   grace. It now orders `2 POSTURE HOLD` there and holds it accepted, written, answered WILCO,
+   and the rig still its mind's in the field; steps 6 and 7 read the `HOLD` order (the
+   member's report, the refused `NEGATIVE` against that order's sequence).
+3. AP.4a's hired-crew story is unchanged.
+
+**Mutations**, each alone on a throwaway clone of main with this branch applied, on
+conclav.dev (Linux), with stories 1 and 2:
+
+| | Mutation | Caught by |
+|---|---|---|
+| M1 | The issue's check back to availability alone (`takes` replaced by `member_available`) | both stories: the order is refused, "command authority does not cover the target unit" |
+| M2 | The rule widened to every order (`sets_posture` dropped from `takes`) | story 1: the kernel `2 HOLD` to the gone member is queued, not refused |
+| M3 | The delivery's check back to availability alone (the poll) | both stories: the order is issued, never delivered, and the record keeps its word |
+| M4 | The hand-off skips a unit a mind flies (`posture_order` idles on `minded`) | both stories: the order is delivered and never written to the record |
+| M5 | `Arena::set_posture` no longer lays the new word's standing order on a minded unit | **survives.** The field host asks a `RETURN` unit out at its ramp every second (`field/absent.rs`), and the rig stands near its carrier's ramp, so that, not the arena's order, takes it home here. AP.6's code, not this cut's; recorded |
+
+**Verified, and how.**
+- conclav.dev (Linux), a throwaway clone of main `6c86731fb` with this branch applied: AP.4a's
+  three stories pass on the branch (147 s, 24 s and the new one 75 s); stories 1 and 2 fail
+  on base; the mutation table.
+- Windows, the branch: `cargo clippy -p tacsim --all-targets -D warnings`, the lint job's M7
+  memory-size pass (with `.github/clippy-m7`), `cargo doc -p tacsim --no-deps` with and without
+  private items under `-D warnings`, `cargo test -p mush-contract-tests` (nothing re-blessed),
+  `cargo fmt -p tacsim`.
+- No mind API, store schema, persisted record or `MIND_ABI` changed. Nothing ran against a
+  live server; nothing was deployed.
+
+**Divergences.**
+
+- The ruling's limits are CO.2's: this cut adds no limit and no story of its own for the
+  mind answering fire after the order. AP.4a's story 1 step 4 holds a guard answering; CO.2's
+  `co2_the_same_rig_on_return_answers_on_its_way_home` holds `RETURN` answering on its way
+  home. The new story holds "fires on nobody first" and "goes home" after the order.
+- Only `POSTURE` reaches a gone member's unit. The ruling speaks of "the order"; the other
+  roster orders (`HOLD`, `ENGAGE`, `ADVANCE`, `FOCUS` ...) are objectives for the player's own
+  hand and the mind flies a posture, not an objective, so they stay refused. A default; low to
+  reverse (`takes`).
+
+**Not built.**
+
+- A gone member's unit that has already been taken out at its ramp takes no order
+  (`minded_for` needs a running field). Nothing flies it.
+- Not pinned by a story: a lost (destroyed) unit refused the order (`minded_for`'s `!lost`);
+  a member who quit rather than lost their link (the same presence record, `handed`).
 
 ## CO.4
 
@@ -531,7 +632,142 @@ Not built.
 
 ## CO.7
 
-Not built.
+AP.11's ship arm: the space half of doc 45's closing story, flown under R-47-3 as CO.2 built
+it. Tests and this note only; no production code moved. Paths are under `crates/tacsim/`
+unless given.
+
+**Survey** (written before the cut).
+
+- **Two rigs, one lane.** The closing story (`tests/domain_field/field_ap11.rs`) runs on
+  `driving_rig`'s keyed world; AP.9's helpers (`space_ap9.rs`) take `excursions::Rig`. Both
+  compose the same shipped game content, and the Kirkwood customs picket is lane content, so
+  the arm flies in the closing story's own world with the owner's own carrier, after his
+  field and its restart. The helpers read only the world, so `space_ap9::read_at_the_picket`
+  and `drop_link_in` were split out of `ship_at_the_picket` and `drop_link`, which now wrap
+  them; nothing else in `space_ap9.rs` moved.
+- **The route.** Ahuna Flank clears only for Ceres ("No passage leaves Ahuna Flank for that
+  port; Ahuna Flank clears for Ceres Freeport"), and the one shipped lane with a picket is
+  Ceres to Stickney Yards by Kirkwood Depot (two legs, the bubble at the end of the first).
+  So she lifts for Ceres first, by `+ship/lift ceres`, as `escort_lease`'s lessee does.
+- **Her tank.** At Ceres she holds 18 t of reaction mass; the passage to Stickney burns 41 t.
+  No route in this rig puts reaction mass in a tank (the chandlery sells it as cargo), so the
+  rig's stores fixture `load` tops her up, as `bay_gc8` does before the same passage and as
+  the story's own staging does for the passage out.
+- **What "rounds read from the frame" is in space.** A bubble's frame is its step
+  (`ActiveInterdictionBubble::steps`), and its input tape (`tape.entries`) holds every fire
+  command with its shooter and target (`FireOffensiveLasers`, `FireRailgun`,
+  `FireTorpedoSalvo`), the raider's script's and hers alike; `fired_on` holds the arrivals.
+  The arm reads both, so every bound on fire is in steps and rounds, and the only wall bound
+  is the outer one on the picket letting her go.
+- **What AP.11 owed AP.9.** The staged write of the ship's posture (the record's one writer
+  under a staff context) is gone: AP.9 built `+ship/posture`, and the owner types it from
+  aboard her before he leaves. The second marker ("what the ship did on her word goes
+  here") is the arm.
+
+**The arm** (step 10 of `ap11_an_absent_players_outfit_through_a_raid_and_their_return`,
+`ship_arm`). After the restart the owner's armed rig is stood beside the ramp and he takes
+CF.5's exit from its cab (`+tv/1 recover go`), steps into the bay (`+tv/1 leave`), lifts for
+Ceres, sets `+ship/posture return` from aboard her ("The Salt Moth holds RETURN.") and files
+`+ship/undock stickney`. His connection drops and the link-loss grace is jumped at the play
+rate, so the house default has her helm; the story takes her to the end of her first leg,
+where the picket's bubble opens on her beside the customs corvette and the belt raider, and
+reads her a second at a time (`Watch`, AP.9's reading plus what the tape gained) until the
+picket lets her go.
+
+**Each clause of the row, and the assertion that holds it.**
+
+| "Done when" | Read from | The assertion |
+|---|---|---|
+| She flies her posture | Her record, the reply | `+ship/posture return` answers the set line; after the passage she still reads `RETURN` |
+| She heaves to for the ship she complies with | AP.9's reading, each second | Her seat's act reads `HeavingTo` (her mind's own burn), customs read her cleared, and no reading ever says she ran the picket; and she was cleared at a step before the raider's first round at her |
+| She never fires first | The tape and the readings, by step | No round and no lock of hers is at or before the step whose reading first shows the raider's fire arrived on her (step 6 in a run; her answer lands at step 7, from the think made on what step 6 showed). The raider, which her party holds hostile from the bubble's opening, lit its torch the step before it opened, so a mind that fired first would lock it by step 6 (M2) |
+| She answers fire that arrived on her | The tape, by step | She fires, and her first round is within 3 of the bubble's steps of the raider's first round at her, with no more than 6 of its rounds fired at her by then (a run: the next step, after 3) |
+| She never answers the ship she complies with | The tape | Every round of hers is at the raider (the only other ship there); no lock of hers names the corvette |
+| She keeps going home while she answers | The berth, the passage's end | The picket lets her go within the outer bound (about 35 s in a run); she is under way on her filed passage; stepped an IC day at a time she is docked at Stickney Yards, the end of the passage she filed |
+
+**What a run shows** (Linux, the probe that led to the arm): at the bubble's first step her
+mind burns 750 mm/s² against her drift and she reads hove to; at the third she is cleared;
+at the fifth the raider goes to active emission, at the sixth it locks her and three rounds of
+its are on the tape at her, and the corvette locks the raider and fires; at the seventh she
+locks the raider and fires, a round a step from then on; at the tenth she blows coolant. At
+about 33 wall seconds the picket lets her go, and she is under way.
+
+**Where the arm departs from the row, and why.**
+
+- **"Home" in space is her filed passage.** The seat never thinks for a hull on a corridor
+  (Q-44-45): `RETURN`'s movement there is the passage her commander filed, and inside the
+  bubble her drive is cut once customs have let her go, under every word (CO.2). So "keeps
+  going home while she answers" is: answering does not stop the picket letting her go, and
+  she flies the passage to its end. The passage is for Stickney Yards, not a port of her own,
+  because that is the one shipped lane with a picket; a ship left on `RETURN` at a cluster
+  makes for port, which AP.9's cluster story holds.
+- **The closing story's ship flies `RETURN` only.** `HOLD` and `GUARD` at the picket are
+  `space_ap9`'s `co2_` stories, the same three parties under every word. On her pad in the
+  field she holds `HOLD`, set by the owner; the field flies a carrier on her pad as `HOLD`
+  whatever her record says (AP.7), so the field holds her to the record only, as before.
+- **The arm's raider is the picket's scripted belt raider**, not the field's raider player:
+  no route gives a player a hull that can fire in a bubble (AP.9's note: carriers in a bubble
+  are marked Friendly to each other).
+
+**Each use of staff fiat added.** No `module_state_mut` is added to a test file, so the fiat
+budget is not re-blessed.
+
+| What | How | Why no route in play reaches it |
+|---|---|---|
+| The armed rig beside the ramp | `driving_rig::to_cell` | The story's existing placement fixture; the drive is in play and the placement saves it |
+| Her tank for Stickney | `driving_rig::load`, 60 t and 40 crew-days | No route puts reaction mass in a tank in this rig (above) |
+| The passage's rate | `@tacsim/time rate=3600`, and 24:1 to jump the grace | The lane stories' rate; the link-loss grace is jumped at the play rate, not waited |
+| The lost link | the connections dropped by the engine (`space_ap9::drop_link_in`) | AP.9's way: a lost link is a connection that goes down |
+
+And one removed: **the ship's posture**, staged by AP.11 through `posture::record::set`
+because no verb set it, is now the owner's `+ship/posture hold`.
+
+**Mutations.** Each applied by exact text on its own copy of a throwaway clone on conclav.dev
+(Linux), the closing story run, the copy discarded; the five run side by side, the story
+unmutated beside them. Every one is caught, each by the assertion it was aimed at, which is
+why the arm asserts in the order below.
+
+| | Mutation | Fails at |
+|---|---|---|
+| M1 | `RETURN` given nothing to answer in space (`space/backup.rs` `answers_of`: an empty set on `RETURN`) | "she answers the raider": its three rounds are on the tape at step 6, the corvette fires on it each step after, and she locks nothing and fires nothing |
+| M2 | She may answer any ship in the bubble (`answers_of`: every ship but her own, her player's and the one she complies with, whether its fire arrived or not) | "she locks and fires on nothing until the raider's fire has arrived on her (step 6)": she locks the raider and fires on it in step 6, on the think she made when it lit its torch |
+| M3 | She may answer the ship she complies with (`answers_of`: that ship added), alone | **Survives**, as CO.2's M5 did: her view shows her a neutral ship as neutral (`space/view.rs`), so her mind never picks the corvette. The view is the second lock |
+| M3b | M3, and her view shows her every ship she may answer as hostile, whatever its relation | "she answers the raider and nobody else, never the corvette": she locks the corvette at step 1 and fires on it every step |
+| M4 | The house default does not heave her to (`content/minds/linkdead_return.rhai`: the hailed and held branches off) | "she heaves to by her mind's own burn, is cleared and never runs the picket": she coasts, customs still wait on her heave-to after the 600 s bound, and the raider never lights |
+| M5 | Answering stops her return (`space/tick.rs` `is_carrier_clear_to_resume`: a carrier whose fire has arrived on any ship is never let go) | "the picket lets her go": cleared, answering the raider, still held at the bound |
+
+M5 adds a stop rather than removing a line: no code in space stops a `RETURN` ship when she
+answers (CO.2's divergence, "'Stops' has no space arm"), so the mutation is the defect the rule
+forbids. Its file is CO.12's; it was mutated on the throwaway copy only.
+
+What the clauses that are not the rule rest on: `+ship/posture` and the record are AP.9's
+(its S1); that the raider opens on her once customs have finished with her is the picket's
+script (`belt_raider.rhai`), the story's premise, asserted so a broken premise reads as one.
+
+**Tier, and run time.** Unchanged: not gated, one `mod` line in `tests/domain_field.rs`, so
+the pull request's `tacsim-integration` cells run it by nextest's hash partition. Alone, in a
+test build on Linux (conclav.dev), the story with its arm took 121.4, 123.3 and 121.8 s in
+three runs; the same story before the arm took 119.2 s in the same clone (AP.11 recorded 119 s
+on Linux and 120 s on Windows). The arm costs about 2 s: about 33 one-second fires at the
+picket and a handful of IC jumps. No window is waited out (the grace is jumped, the legs
+are jumped to their ends, the arrival is stepped an IC day at a time).
+
+**Verified.** On conclav.dev (Linux), a throwaway clone at main `6c86731fb` with this
+branch's two test files, the final tree: the closing story and `space_ap9.rs`'s four stories
+(5 passed, 122 s, the four AP.9 stories over the split helpers unchanged at 14 s);
+`cargo clippy -p tacsim --all-targets` with warnings denied; the lint job's memory-size pass
+(`.github/clippy-m7`); `cargo doc -p tacsim --no-deps` with warnings denied; `cargo test -p
+mush-contract-tests --no-fail-fast` (all passed, nothing re-blessed); the mutation table.
+`cargo fmt -p tacsim` on Windows. No production code moved, so `tacsim`'s unit suite, the
+mind ABI and every pin are untouched.
+
+**Not verified.** Nothing ran against a live server or over SSH; nothing was deployed. The
+arm was not run on Windows.
+
+**Found, and not fixed.** Nothing new. The picket holding her shifts her arrival past her
+plan's own end (by the time she was held): her ticket's plan is not re-timed, so a story that
+waits on `depart_ic + total_s` finds her still under way. Not a defect of this unit's rule;
+noted for whoever reads arrivals off a ticket.
 
 ## CO.8
 
@@ -914,8 +1150,125 @@ fix (the unit's row allows "named with the reason").
 
 ## CO.12
 
-Not built.
+Saving an open bubble costs what changed (doc 44 MW.20, "Found, not fixed" item 1).
 
-## CO.13
+**The short of it.** The space tick with eight bubbles open, back to back, went from 5.3 ms
+at the median to 1.2 ms, and its store writes from 487 KB a tick to 152 KB. They are more
+documents and not fewer: 8.1 a tick before, 23.7 after, because a stepped bubble now writes
+its record and the one snapshot the step took, and deletes the one its ring let go. The store
+layout for an open bubble changed; a store written by main reads as it did, and its first save
+after writes it in the new shape.
 
-Not built.
+### What was measured first
+
+The MW.20 space lane (`minds_at_size::mw20_eight_bubbles_think_on_the_pool`), with one thing
+added: it now counts the space book's writes (`tacsim:space:*`) and their encoded bytes
+apart from every module write. On the base (`6c86731fb` with that counter only), one bubble's
+record is 63,437 B; a clone of it takes 33 µs and `serde_json::to_value` 311 µs. Eight
+bubbles step every second, so the tick spent about 2.5 ms encoding and 0.27 ms copying. The
+encoding was the cost, not the clone, which ruled out a dirty flag alone: every open bubble
+steps every second, so every record is dirty every tick.
+
+What the record is made of explains it. `ActiveInterdictionBubble` holds the live bubble,
+its tape's opening snapshot, and a ring of up to six snapshots, and each step pushes a
+snapshot (`push_bounded_snapshot`). Eight copies of the bubble, seven of which do not change
+once taken. So the record is written apart from its snapshots, and each snapshot once.
+
+### What was built
+
+- **`crates/tacsim/src/space/save.rs`** (new). `save_bubbles` diffs the live bubbles against
+  the last save's copies in place and writes:
+  - the record without its snapshots at `tacsim:space:bubble:{domain}` (the key it had),
+    when the record changed or its snapshots' slots did;
+  - each snapshot not yet saved at `tacsim:space:bubble_snapshot:{domain}:{slot}`, once;
+  - a delete for each slot the record no longer names.
+
+  A live snapshot keeps the slot of an equal one already saved (the hash first, then the
+  whole), so the ring sliding by one is one set and one delete. A new slot is never one the
+  saved record still names, so no write of a batch touches a document the stored record
+  reads. The comparison and the copy name every field of the record (`same_core`,
+  `copy_core`): a field added later is a compile error there until it is handled.
+- **`persist_space_state`** (`space/tick.rs`) no longer clones the bubbles. It lifts them
+  out of the book while the rest is copied, takes the last save's bubbles out of the cache,
+  and hands both to `save_bubbles`. The cache is still the whole book as the store holds it
+  (`TacsimStore::space_state`), so voyage's "`persisted.book == book_before_1`" holds.
+- **`#[serde(skip_serializing_if = "kept_apart")]`** on `ActiveInterdictionBubble::snapshots`
+  and `BubbleInputTape::initial_snapshot`. `kept_apart` reads a thread-local that is set
+  only while `save_bubbles` encodes a record, so every other encoding is whole, as before.
+- **Reading.** `load_space_kv_entry` holds a bubble document that names its `parts` and
+  each snapshot document; `finish_space_kv_load`, called after the loop in both loaders
+  (`boot_read` and `store.rs`'s), puts each snapshot back into its record's JSON and
+  decodes the record as before. A record with a snapshot missing or unreadable holds its
+  domain (`quarantined_bubbles`), as an unreadable record always did. A snapshot key that
+  does not parse holds the space state, as for any other `tacsim:space:*` key.
+
+### The layout, plainly
+
+| Key | Shape |
+|---|---|
+| `tacsim:space:bubble:{domain}` | `PersistedBubbleDoc { format, domain, bubble, parts }`. `bubble` has no `snapshots` and its `tape` no `initial_snapshot`. `parts` is `{ initial: slot, snapshots: [slot, ...] }`, the ring's slots in order. Two equal snapshots may name one slot. |
+| `tacsim:space:bubble_snapshot:{domain}:{slot}` (new) | `PersistedBubbleSnapshotDoc { format, domain, slot, snapshot }`, `deny_unknown_fields`; `snapshot` is a `BubbleSnapshot` as before. |
+
+`SPACE_STATE_FORMAT` stays 1. A store written by main has the whole record under the
+bubble key and no `parts`; it decodes as it always did, and the next save writes it apart
+(every snapshot, the record with its parts). Read the other way, a binary from main would
+hold the space state on the first `bubble_snapshot` key it met (an unknown `tacsim:space:*`
+key does that today), so a server rolled back across this change needs those keys cleared.
+Nothing is persisted that players depend on.
+
+### Figures
+
+conclav.dev, release, as `ghrunner` in a throwaway clone, `MW20_PACE_MS=0 MW20_POOLS=2`,
+three runs each of 120 ticks with all eight bubbles open, one-minute load average 7 to 10
+(other sessions were building). ms p50/p95/p99/max.
+
+| | Space tick, run 1 | run 2 | run 3 | Space writes a tick | Bytes a tick |
+|---|---|---|---|---|---|
+| before (`6c86731fb`) | 5.33/8.36/9.05/11.79 | 4.94/6.90/7.50/7.71 | 5.61/7.78/9.82/11.85 | 8.1 | 486,544 |
+| after | 1.40/2.29/2.48/7.73 | 1.22/1.36/1.68/2.04 | 1.14/1.23/1.60/2.06 | 23.7 | 151,978 |
+
+MW.20 read the base's tick at 4.0 ms at `fb39c2b5`; the 5.3 here is the same lane a week
+of code later on a busier box. The rest of the second's ticks are unchanged (2.2 to 2.6 ms).
+Steps 960 of 960, thinks 1,920, held steps 0 in every run, before and after.
+
+### The stories
+
+- `voyage::co12_a_restart_between_two_steps_restores_the_saved_bubble`: two customs
+  pickets open (`flown_into_pickets`), stepped until the rings are full and sliding,
+  restarted over the kept store (`reboot_with`); the bubbles read back equal the world's,
+  thinks owed, snapshots and tape included. Again after the crew's `+helm/heading` between
+  two steps (a change to the record with no snapshot taken), and again after one more step.
+  Each round checks the store holds exactly the snapshot documents the records name.
+- `voyage::co12_a_store_written_before_the_cut_reads_and_is_written_apart`: the record put
+  back whole, as main writes it, with the snapshot documents removed; it reads back the
+  same, its first save writes it apart, a step's save after that is two sets and a delete
+  and under half the whole record's bytes, and a restart brings it back.
+
+Mutations, each run on conclav.dev against both stories:
+
+| Mutation | Result |
+|---|---|
+| M1: a new snapshot's document is never written | both fail (the restart reads no bubble back) |
+| M2: a changed record is not marked dirty (`core_changed` only for a new bubble) | the restart story fails at round 2: the heading order's tape entry is lost |
+| M3: a slot the ring let go is never deleted | both fail (a stray snapshot document; `(2, 0)` for `(2, 1)`) |
+
+M2 survived the first form of the restart story, which gave no order: a step always changes
+the slots, which writes the record anyway. The order between two steps is why the story has
+one.
+
+Every existing tacsim test passes unchanged (`cargo test -p tacsim`, conclav.dev).
+
+### Found, not fixed
+
+1. **A closed bubble's summary is still copied and compared every tick.**
+   `SpaceBubbleBook::completed` keeps up to eight `CompletedInterdictionBubble`s, each with its
+   whole tape and snapshots, and they ride the auxiliary document. `persist_space_state`
+   clones the book (now without the open bubbles) and `without_per_entity_maps` clones it
+   twice more for the auxiliary compare. On a server that has closed eight bubbles that is
+   about 64 bubble copies cloned three times a tick, and the auxiliary document is written
+   whole when any of it changes. The MW.20 lane closes no bubble, so this is not measured.
+   The same treatment (summaries in documents of their own, compared in place) fits.
+2. **A step's record still carries the live bubble that its newest snapshot also holds.**
+   The snapshot is taken at the end of the step, so the two are equal unless an order lands
+   after; a record that named the snapshot for its live bubble would halve a step's bytes
+   again. Not done: the record would then depend on its newest snapshot to read at all.

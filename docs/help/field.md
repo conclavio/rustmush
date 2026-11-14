@@ -671,7 +671,9 @@ order reaches one:
   read at your next login, "Vance, leading your detachment, ordered #123 to
   GUARD: it holds that word until you set another." The unit answers that
   order itself; you do not. Set the posture yourself, any of the ways above,
-  and yours stands until the leader orders it again.
+  and yours stands until the leader orders it again. The leader's order
+  reaches your unit after it has passed to its mind as well, and the mind
+  flies the new word under the rules above.
 - **Never from an OOC room.** "A posture is an order to a unit in the world.
   It is not given from an OOC room." Nothing you do in the simulator sets a
   posture on a unit in the world.

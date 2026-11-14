@@ -211,6 +211,11 @@ pub struct TacsimStore {
     /// readable or not (when `space_state.is_none() && space_state_held`, the document is
     /// unreadable and quarantined against overwrite).
     pub(crate) space_state_held: bool,
+    /// Doc 47 unit CO.12: the slots each saved open bubble's snapshots are kept in
+    /// (`tacsim:space:bubble_snapshot:{domain}:{slot}`), as its record names them.
+    pub(crate) space_bubble_parts: BTreeMap<mush_sim::DomainId, crate::space::save::BubbleParts>,
+    /// Doc 47 unit CO.12: split bubble records read at boot and waiting on their snapshots.
+    pub(crate) space_bubble_load: crate::space::save::PendingBubbleLoad,
     /// **The server's one think pool** (doc 44 unit MW.11; [`TacsimStore::mind_pool`]): empty
     /// until something thinks. RAM only.
     pub(crate) mind_pool: crate::minds::PoolSlot,
@@ -3001,6 +3006,7 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
         }
         // Every other key belongs to a forward schema; tolerated in both directions.
     }
+    crate::space::save::finish_space_kv_load(&mut store);
     store.reindex();
     store
 }

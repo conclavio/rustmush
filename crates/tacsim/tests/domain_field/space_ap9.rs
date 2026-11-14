@@ -30,12 +30,17 @@ use crate::excursions::{Rig, docked_dray, run};
 
 /// Drop every connection `who` holds, uncleanly, so the presence hook reads a lost link.
 pub(crate) fn drop_link(rig: &mut Rig, who: ObjId) {
+    drop_link_in(&mut rig.tw, who);
+}
+
+/// [`drop_link`] over any rig's world.
+pub(crate) fn drop_link_in(tw: &mut mush_testkit::TestWorld, who: ObjId) {
     let conns: Vec<u64> = (1..=64)
-        .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(who))
+        .filter(|conn| tw.engine().actor_of(*conn) == Some(who))
         .collect();
     assert!(!conns.is_empty(), "{who} holds a connection");
     for conn in conns {
-        rig.tw.engine_mut().step(
+        tw.engine_mut().step(
             mush_core::Inbound::ConnDown {
                 conn,
                 actor: who,
@@ -137,9 +142,13 @@ impl ShipAtPicket {
 
 /// **Read `hull` at the picket**; `None` once she is in no picket's bubble.
 pub(crate) fn ship_at_the_picket(rig: &Rig, hull: ObjId) -> Option<ShipAtPicket> {
-    let book = rig
-        .tw
-        .world()
+    read_at_the_picket(rig.tw.world(), hull)
+}
+
+/// [`ship_at_the_picket`] over any rig's world (doc 47 unit CO.7: the closing story's rig is
+/// `driving_rig`'s, not this one).
+pub(crate) fn read_at_the_picket(world: &mush_core::World, hull: ObjId) -> Option<ShipAtPicket> {
+    let book = world
         .module_state::<SpaceBubbleBook>()
         .expect("the space book");
     let active = book.active_for_hull(hull)?;
