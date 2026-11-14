@@ -96,11 +96,12 @@ reading). Whether one carrier should be able to fight another is a design call.
 | **CO.11** | The defect sweep, D1 to D8 | several, small | — | each defect has a test that failed before its fix, or is named with the reason it was left |
 | **CO.3** | A leader's order to an absent member's unit (R-47-4) | detachment authority, order book | CO.2 | the order is accepted and flown by the mind under §3's limits; a present member's unit is unchanged |
 | **CO.7** | AP.11's ship arm | `tests/domain_field/field_ap11.rs` | CO.2 | the closing story's ship flies her posture under the new `RETURN` rule |
+| **CO.12** | Saving an open bubble costs what changed (doc 44 MW.20, "Found, not fixed" item 1). Today `persist_space_state` (`space/tick.rs`) clones the whole bubble book every tick and re-encodes every stepped bubble's whole record, about 63 KB of JSON, as a store write under `tacsim:space:bubble:{domain}`, every second per open bubble: about 0.5 ms a bubble on the world thread and 63 KB a second of writes to the authoritative store. Candidates, cheapest first: skip the clone and compare when nothing stepped; mark bubbles dirty where stepped or commanded; write the slowly changing parts of a record apart from the parts that change each step | `space/tick.rs` and what it persists | CO.2 (same files) | measured on conclav.dev in release with MW.20's lane (`MW20_PACE_MS=0 MW20_POOLS=2 cargo test --release -p tacsim --test domain_world minds_at_size::mw20_eight_bubbles_think_on_the_pool -- --exact --ignored --nocapture`): the space tick with eight bubbles open below 4.0 ms back to back, and the store writes a tick fewer or smaller; a restart between two steps restores the same bubble as today (held by a story or unit test that fails on a lost write, thinks owed included); every existing space story passes unchanged |
 | **CO.4** | Removed parts to storage (R-47-5) | the refit admission (`bay_refit`, `core_refit`, the kernel's two), the `detached` head, inventory | CT.7 (same files) | a displaced or removed part that is not destroyed is stored, can be fitted again, and can be sold |
 | **CO.6** | A route to a cored ship | refit, yard, content | CO.4 | a player can have a governed core fitted to a ship by registered commands; MW.21's staff fiat removed; MW.5's stories 2 and 7 built |
 
 **Order.** Wave 1: CO.1, CO.2, CO.5, CO.8, CO.9, CO.10, CO.11, side by side, one writer a file.
-Wave 2: CO.3 and CO.7 after CO.2. Wave 3: CO.4 after doc 46's CT.7, then CO.6.
+Wave 2: CO.3, CO.7 and CO.12 after CO.2. Wave 3: CO.4 after doc 46's CT.7, then CO.6.
 
 **Collisions to watch.** CO.1 and CO.2 both touch the field; CO.1 is a rename and lands first if
 they meet. CO.2 and CO.11's D3/D4 both touch the absent-unit notices: D3 and D4 wait for CO.2. CO.2
