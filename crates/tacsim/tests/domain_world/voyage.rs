@@ -3045,6 +3045,19 @@ fn lane_with_interdicted_kirkwood() -> &'static str {
     Box::leak(signed.into_boxed_str())
 }
 
+/// **The shipped lane with no interdiction on the way to Stickney**: the Ceres to Stickney
+/// route's Kirkwood leg is not interdicted, so no picket stops a hull on it. For the docking
+/// stories, which fly to Stickney's collar and are not about the picket: a recoupled autopilot
+/// keeps the uncrossed interdicted leg (`SF.R25`), and a hull flying it meets the picket
+/// however late she crosses the boundary.
+fn lane_without_the_kirkwood_interdiction() -> &'static str {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    doc["entries"]["ceres_stickney"]["def"]["legs"][0]["interdiction"] = serde_json::json!(0);
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    Box::leak(signed.into_boxed_str())
+}
+
 /// **The venues a hull may clear Ceres for, and the route to each** (the shipped Ceres port's
 /// `routes`), Stickney first: the one whose first leg the shipped lane already interdicts at
 /// the Kirkwood picket.
@@ -7911,7 +7924,10 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
     assert_ne!(auth_corvette, auth_raider);
     assert_ne!(auth_raider, auth_halcyon);
 
-    let roster = Roster::default();
+    let roster = Roster {
+        seed_lane: Some(lane_without_the_kirkwood_interdiction()),
+        ..Roster::default()
+    };
     let mut rig = stocked_with(roster);
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
@@ -8410,7 +8426,10 @@ fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30
     // --- Part B: Port dock range/speed gate (`remaining_s = 45` refused, free-flight `1 km` refused),
     //             free-flyer `DOCK ABORT` leaving `JourneyState::Promoted`, duplicate `+helm/dock`
     //             refused without resetting `started_wall_s`, and 60s expiry submitting a burn ---
-    let mut rig_dock = stocked_with(Roster::default());
+    let mut rig_dock = stocked_with(Roster {
+        seed_lane: Some(lane_without_the_kirkwood_interdiction()),
+        ..Roster::default()
+    });
     let (pilot_dock, row_dock) = chartered(&mut rig_dock, "PilotDock", 3);
     let hull_dock = ObjId(row_dock.hull);
     load(&mut rig_dock, &row_dock, 70, 50);
@@ -11429,7 +11448,10 @@ fn sfr24_one_docking_kinematics_and_ephemeris_canopy() {
 
     // 1. Charter a ship at Ceres Freeport, fly to Stickney Yards (Phobos), and open a docking
     //    session via `+helm/dock stickney` (`D-35-14`):
-    let mut rig = stocked_with(Roster::default());
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_without_the_kirkwood_interdiction()),
+        ..Roster::default()
+    });
     let (pilot, row) = chartered(&mut rig, "PilotSfR24", 1);
     let hull = ObjId(row.hull);
     load(&mut rig, &row, 70, 50);
@@ -13765,6 +13787,52 @@ fn a_ship_whose_crew_is_away_meets_the_picket() {
         journey(&rig.tw, hull).map(|j| j.cursor()),
         Some(1),
         "and she is on her second leg"
+    );
+}
+
+/// **A launch that runs late meets the picket.** Her burn lands, and the port's tick does not
+/// launch her until two IC hours after her first leg's frozen end, as an outage between the burn
+/// and the launch would, or a held launch released later. Her leg times are frozen from the
+/// plan's own `depart_ic` (doc 18 lead ruling L3), so the launch puts her past the Kirkwood
+/// boundary at once. The picket's bubble opens on her all the same, and her journey waits in it.
+///
+/// On the code before, the carrier hook opened the waypoint's domain only within an IC hour of
+/// the boundary's due time. On a world where no hull had yet passed Kirkwood she raised no
+/// picket, never did later (the cursor moves once a boundary), and flew her second leg unmet.
+/// On a world where one had, she was stopped however late she crossed.
+#[test]
+fn a_launch_that_runs_late_still_meets_the_picket() {
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 53, 19);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    assert!(
+        journey(&rig.tw, hull).is_none(),
+        "the burn landed, the launch owed"
+    );
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+
+    let _ = to_ic(&mut rig, boundary + 7_200);
+    assert!(
+        journey(&rig.tw, hull).is_some(),
+        "launched, two IC hours late"
+    );
+    for _ in 0..3 {
+        if picket_status(&rig.tw, hull).is_some() {
+            break;
+        }
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
+    assert!(
+        picket_status(&rig.tw, hull).is_some(),
+        "the picket's bubble opens on her"
+    );
+    let journey = journey(&rig.tw, hull).expect("her journey");
+    assert_eq!(journey.cursor(), 1, "she is stopped at the first boundary");
+    assert!(
+        matches!(journey.state(), mush_sim::JourneyState::Promoted { .. }),
+        "and her journey waits in the bubble: {:?}",
+        journey.state()
     );
 }
 
