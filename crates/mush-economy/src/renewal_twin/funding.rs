@@ -1,7 +1,7 @@
 //! Unregistered same-contract funding and terminal preparation. Only actual
 //! owner context supplies actor/action/commit. Plain selectors grant no rights.
 use super::{
-    FUND_ACTION, GRANT_ACTION, NAMESPACE, REFUND_ACTION, action_matches,
+    Basis as _, Issuer, Offer as _, Terms as _, action_matches,
     history::OfferRecord,
     install::OfferContext,
     receipt::{self, RenewalFundingReceiptV1, RenewalOutcome, RenewalTerminalReceiptV1},
@@ -18,6 +18,7 @@ use mush_core::CommitToken;
 use mush_core::participant::{OwnerPrepareContext, ParticipantError};
 use mush_org::PrincipalId;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 /// Only acknowledged identity; no replacement offer, wallet or amount.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,58 +28,59 @@ pub struct RenewalMoneyRequest {
     pub consent_hash: [u8; 32],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Transition {
+pub(crate) enum Transition {
     Fund,
     Grant,
     Refund,
 }
 impl Transition {
-    fn action(self) -> &'static str {
+    fn action<I: Issuer>(self) -> &'static str {
         match self {
-            Self::Fund => FUND_ACTION,
-            Self::Grant => GRANT_ACTION,
-            Self::Refund => REFUND_ACTION,
+            Self::Fund => I::FUND_ACTION,
+            Self::Grant => I::GRANT_ACTION,
+            Self::Refund => I::REFUND_ACTION,
         }
     }
-    pub(super) const fn sale(self) -> bool {
+    pub(crate) const fn sale(self) -> bool {
         !matches!(self, Self::Refund)
     }
 }
 /// Actual output, deliberately neither Clone nor Deserialize.
-pub struct RenewalFundingOutput {
+pub struct RenewalFundingOutput<I: Issuer> {
     operation: CommitToken,
-    receipt: RenewalFundingReceiptV1,
+    receipt: RenewalFundingReceiptV1<I>,
 }
-impl RenewalFundingOutput {
+impl<I: Issuer> RenewalFundingOutput<I> {
     pub const fn operation(&self) -> CommitToken {
         self.operation
     }
-    pub fn receipt(&self) -> &RenewalFundingReceiptV1 {
+    pub fn receipt(&self) -> &RenewalFundingReceiptV1<I> {
         &self.receipt
     }
 }
-pub struct RenewalTerminalOutput {
+pub struct RenewalTerminalOutput<I: Issuer> {
     operation: CommitToken,
-    receipt: RenewalTerminalReceiptV1,
+    receipt: RenewalTerminalReceiptV1<I>,
 }
-impl RenewalTerminalOutput {
+impl<I: Issuer> RenewalTerminalOutput<I> {
     pub const fn operation(&self) -> CommitToken {
         self.operation
     }
-    pub fn receipt(&self) -> &RenewalTerminalReceiptV1 {
+    pub fn receipt(&self) -> &RenewalTerminalReceiptV1<I> {
         &self.receipt
     }
 }
-pub(super) enum MoneyOutput {
-    Funded(RenewalFundingOutput),
-    Terminal(RenewalTerminalOutput),
+pub(crate) enum MoneyOutput<I: Issuer> {
+    Funded(RenewalFundingOutput<I>),
+    Terminal(RenewalTerminalOutput<I>),
 }
 /// Fixed exact plan and actual before image, never caller-constructible.
-pub(crate) struct ClosedHouseRenewalPlan {
+pub struct ClosedPlan<I: Issuer> {
     plan: EconomyPlan,
     before: EconomicContract,
+    issuer: PhantomData<I>,
 }
-impl ClosedHouseRenewalPlan {
+impl<I: Issuer> ClosedPlan<I> {
     pub(crate) fn plan(&self) -> &EconomyPlan {
         &self.plan
     }
@@ -88,15 +90,15 @@ impl ClosedHouseRenewalPlan {
         snapshot: &crate::EconomySnapshot,
     ) -> Result<(), crate::EconomyError> {
         if plan != &self.plan
-            || plan.idempotency.namespace.as_str() != NAMESPACE
-            || !matches!(&plan.cause,EconomicCause::Ruleset{namespace,..} if namespace.as_str()==NAMESPACE)
+            || plan.idempotency.namespace.as_str() != I::NAMESPACE
+            || !matches!(&plan.cause,EconomicCause::Ruleset{namespace,..} if namespace.as_str()==I::NAMESPACE)
             || snapshot.contract(self.before.id) != Some(&self.before)
             || self
                 .before
                 .consent
                 .managed
                 .as_ref()
-                .and_then(|m| m.house_renewal_offer_marker())
+                .and_then(I::marker)
                 .is_none()
         {
             return Err(crate::EconomyError::ManagedContract);
@@ -104,11 +106,11 @@ impl ClosedHouseRenewalPlan {
         Ok(())
     }
 }
-pub(super) struct MoneyPreparation {
-    pub output: MoneyOutput,
+pub(crate) struct MoneyPreparation<I: Issuer> {
+    pub output: MoneyOutput<I>,
     pub request: RenewalMoneyRequest,
     pub transition: Transition,
-    pub origin: OfferRecord,
+    pub origin: OfferRecord<I>,
     pub plan: EconomyPlan,
     pub validated: Prepared,
     pub before_contract: EconomicContract,
@@ -118,52 +120,47 @@ pub(super) struct MoneyPreparation {
     pub next_hold: u64,
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare<I: Issuer>(
     state: &EconomyStore,
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-) -> Result<Box<MoneyPreparation>, ParticipantError> {
+) -> Result<Box<MoneyPreparation<I>>, ParticipantError> {
     prepare_in(state, &OfferContext::from(context), request, transition)
 }
-pub(super) fn prepare_in(
+pub(crate) fn prepare_in<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-) -> Result<Box<MoneyPreparation>, ParticipantError> {
-    let origin = state
-        .house_renewal_offers
-        .get(request.operation)
-        .ok_or_else(refused)?;
+) -> Result<Box<MoneyPreparation<I>>, ParticipantError> {
+    let origin = I::book(state).get(request.operation).ok_or_else(refused)?;
     origin.validate()?;
-    let terms = &origin.offer.terms;
+    let terms = origin.offer.terms();
     let now = context.world.world_ic_now();
     if state.frozen
         || origin.closure.is_some()
         || origin.contract != request.contract
         || origin.consent_hash != request.consent_hash
-        || !action_matches(context.action, transition.action())
+        || !action_matches(context.action, transition.action::<I>())
         || [
             origin.operation,
-            origin.offer.basis.predecessor_operation,
-            origin.offer.basis.prior_quote,
+            origin.offer.basis().predecessor_operation(),
+            origin.offer.basis().prior_quote(),
         ]
         .contains(&context.commit)
-        || context.actor != terms.buyer.acting_character()
+        || context.actor != terms.buyer().acting_character()
         || context.principal
             != &(mush_core::PrincipalId::Object {
-                id: terms.buyer.acting_character(),
+                id: terms.buyer().acting_character(),
             })
-        || !super::subject::player(context.world, terms.buyer.acting_character())
+        || !super::player(context.world, terms.buyer().acting_character())
         || !matches!(now.clock,mush_core::ClockRef::WorldIc{generation} if generation!=0)
         || context.world.now() < origin.created_at_utc
     {
         return Err(refused());
     }
-    state
-        .fold
-        .house_renewal_receipts
+    I::receipts(&state.fold)
         .require_complete()
         .map_err(|_| refused())?;
     let before = state
@@ -175,8 +172,8 @@ pub(super) fn prepare_in(
         terms.check_current(state, context.world)?;
         if now.clock != origin.created_at_ic.clock
             || now.at < origin.created_at_ic.at
-            || now.at < terms.not_before.at
-            || now.at >= terms.expires_at.at
+            || now.at < terms.not_before().at
+            || now.at >= terms.expires_at().at
         {
             return Err(refused());
         }
@@ -189,19 +186,17 @@ pub(super) fn prepare_in(
 }
 
 #[inline(never)]
-fn prepare_funding(
+fn prepare_funding<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-    origin: &OfferRecord,
+    origin: &OfferRecord<I>,
     before: EconomicContract,
     now: mush_core::ClockStamp,
-) -> Result<Box<MoneyPreparation>, ParticipantError> {
+) -> Result<Box<MoneyPreparation<I>>, ParticipantError> {
     origin.verify_documents(&state.snapshot)?;
-    if state
-        .fold
-        .house_renewal_receipts
+    if I::receipts(&state.fold)
         .receipts()
         .map_err(|_| refused())?
         .any(|h| h.operation() == request.operation)
@@ -209,9 +204,10 @@ fn prepare_funding(
         return Err(refused());
     }
     let plan = receipt::funding_plan(origin, context.commit, context.action, &now)?;
-    let proof = ClosedHouseRenewalPlan {
+    let proof = ClosedPlan::<I> {
         plan: plan.clone(),
         before: before.clone(),
+        issuer: PhantomData,
     };
     let auth = WorldAuth { w: context.world };
     let keys = state.key_gate();
@@ -225,11 +221,7 @@ fn prepare_funding(
         spent: BTreeMap::new(),
         keys: &keys,
     };
-    let validated = posted(crate::engine::validate_house_renewal(
-        &proof,
-        &state.snapshot,
-        &env,
-    ))?;
+    let validated = posted(I::validate(&proof, &state.snapshot, &env))?;
     let (delta, transaction) = apply(state, context, &validated)?;
     let [effect] = transaction.hold_effects.as_slice() else {
         return Err(refused());
@@ -238,7 +230,7 @@ fn prepare_funding(
         return Err(refused());
     }
     let next_hold = state.next_hold.checked_add(1).ok_or_else(refused)?;
-    let prepared_history = state.fold.house_renewal_receipts.prepare(&transaction)?;
+    let prepared_history = I::receipts(&state.fold).prepare(&transaction)?;
     let history = prepared_history.row();
     if history.origin() != origin {
         return Err(refused());
@@ -266,19 +258,17 @@ fn prepare_funding(
 }
 
 #[inline(never)]
-fn prepare_terminal(
+fn prepare_terminal<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-    origin: &OfferRecord,
+    origin: &OfferRecord<I>,
     before: EconomicContract,
     now: mush_core::ClockStamp,
-) -> Result<Box<MoneyPreparation>, ParticipantError> {
-    let terms = &origin.offer.terms;
-    let history = state
-        .fold
-        .house_renewal_receipts
+) -> Result<Box<MoneyPreparation<I>>, ParticipantError> {
+    let terms = origin.offer.terms();
+    let history = I::receipts(&state.fold)
         .get(request.operation)
         .map_err(|_| refused())?;
     if history.origin() != origin
@@ -306,7 +296,7 @@ fn prepare_terminal(
         return Err(refused());
     }
     let auth = TerminalAuth {
-        buyer: terms.buyer.principal(),
+        buyer: terms.buyer().principal(),
         hold: hold.clone(),
         payouts: if transition.sale() {
             terms.payouts()?
@@ -340,17 +330,14 @@ fn prepare_terminal(
     if native != plan {
         return Err(refused());
     }
-    let proof = ClosedHouseRenewalPlan {
+    let proof = ClosedPlan::<I> {
         plan: plan.clone(),
         before: before.clone(),
+        issuer: PhantomData,
     };
-    let validated = posted(crate::engine::validate_house_renewal(
-        &proof,
-        &state.snapshot,
-        &env,
-    ))?;
+    let validated = posted(I::validate(&proof, &state.snapshot, &env))?;
     let (delta, transaction) = apply(state, context, &validated)?;
-    let prepared_history = state.fold.house_renewal_receipts.prepare(&transaction)?;
+    let prepared_history = I::receipts(&state.fold).prepare(&transaction)?;
     let history = prepared_history.row();
     let after = history.contract().map_err(|_| refused())?;
     let receipt = history.terminal().ok_or_else(refused)?.clone();

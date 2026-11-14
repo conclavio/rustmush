@@ -1,7 +1,7 @@
 //! Nonmonetary owner evidence. This is not journal-derived funding proof.
 
 use super::{
-    CLOSE_ACTION, DRAFT_ACTION, RenewalAttemptV1, RenewalOffer, RenewalOutcome,
+    Basis as _, Issuer, Offer as _, RenewalAttemptV1, RenewalOutcome, Terms as _,
     UnfundedCloseReason, action_matches, contract, refused,
 };
 use crate::record::HoldPurpose;
@@ -12,15 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) const MAX_RECORDS: usize = 32_768;
-pub(super) const MAX_RECORD_BYTES: usize = 8_192;
-pub(super) const MAX_CONTRACT_BYTES: usize = 8_192;
-pub(super) const FUTURE_RESERVE_BYTES: usize = 2_048;
-pub(super) const PREFIX: &str = "house-renewal-offer:";
+pub(crate) const MAX_RECORDS: usize = 32_768;
+pub(crate) const MAX_RECORD_BYTES: usize = 8_192;
+pub(crate) const MAX_CONTRACT_BYTES: usize = 8_192;
+pub(crate) const FUTURE_RESERVE_BYTES: usize = 2_048;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Closure {
+pub(crate) struct Closure {
     pub commit: CommitToken,
     pub action: DefinitionRef,
     pub at_ic: ClockStamp,
@@ -28,12 +27,12 @@ pub(super) struct Closure {
     pub reason: UnfundedCloseReason,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OfferRecord {
+#[serde(deny_unknown_fields, bound = "")]
+pub(crate) struct OfferRecord<I: Issuer> {
     pub format: u16,
     pub operation: CommitToken,
     pub action: DefinitionRef,
-    pub offer: RenewalOffer,
+    pub offer: I::Offer,
     pub contract: ContractId,
     pub consent_hash: [u8; 32],
     pub created_at_ic: ClockStamp,
@@ -59,19 +58,19 @@ fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     Option::<T>::deserialize(d)
 }
-pub(super) fn key(operation: CommitToken) -> String {
-    format!("{PREFIX}{}", operation.to_hex())
+pub(crate) fn key<I: Issuer>(operation: CommitToken) -> String {
+    format!("{}{}", I::OFFER_PREFIX, operation.to_hex())
 }
-impl OfferRecord {
-    pub(super) fn attempt(&self) -> RenewalAttemptV1 {
+impl<I: Issuer> OfferRecord<I> {
+    pub(crate) fn attempt(&self) -> RenewalAttemptV1 {
         self.attempt.unwrap_or(RenewalAttemptV1::Automatic)
     }
-    pub(super) fn previous(&self) -> Option<CommitToken> {
+    pub(crate) fn previous(&self) -> Option<CommitToken> {
         self.attempt().previous_operation()
     }
-    pub(super) fn validate(&self) -> Result<(), ParticipantError> {
+    pub(crate) fn validate(&self) -> Result<(), ParticipantError> {
         self.offer.validate()?;
-        let terms = &self.offer.terms;
+        let terms = self.offer.terms();
         let shape = matches!(
             (self.format, self.attempt),
             (1, None)
@@ -88,29 +87,29 @@ impl OfferRecord {
         if !shape
             || self.previous().is_some_and(|p| {
                 p == self.operation
-                    || p == self.offer.basis.predecessor_operation
-                    || p == self.offer.basis.prior_quote
+                    || p == self.offer.basis().predecessor_operation()
+                    || p == self.offer.basis().prior_quote()
             })
-            || !action_matches(&self.action, DRAFT_ACTION)
-            || self.operation == self.offer.basis.predecessor_operation
-            || self.operation == self.offer.basis.prior_quote
-            || self.created_at_ic.clock != terms.not_before.clock
-            || self.created_at_ic.at < terms.not_before.at
-            || self.created_at_ic.at >= terms.expires_at.at
+            || !action_matches(&self.action, I::DRAFT_ACTION)
+            || self.operation == self.offer.basis().predecessor_operation()
+            || self.operation == self.offer.basis().prior_quote()
+            || self.created_at_ic.clock != terms.not_before().clock
+            || self.created_at_ic.at < terms.not_before().at
+            || self.created_at_ic.at >= terms.expires_at().at
         {
             return Err(refused());
         }
         if let Some(close) = &self.closure
-            && (!action_matches(&close.action, CLOSE_ACTION)
+            && (!action_matches(&close.action, I::CLOSE_ACTION)
                 || close.commit == self.operation
                 || self.previous() == Some(close.commit)
-                || close.commit == self.offer.basis.predecessor_operation
-                || close.commit == self.offer.basis.prior_quote
+                || close.commit == self.offer.basis().predecessor_operation()
+                || close.commit == self.offer.basis().prior_quote()
                 || close.at_ic.clock != self.created_at_ic.clock
                 || close.at_ic.at < self.created_at_ic.at
                 || close.at_utc < self.created_at_utc
                 || (close.reason == UnfundedCloseReason::Expired
-                    && close.at_ic.at < terms.expires_at.at))
+                    && close.at_ic.at < terms.expires_at().at))
         {
             return Err(refused());
         }
@@ -166,7 +165,7 @@ impl OfferRecord {
                 at_utc: i64::MIN,
                 reason,
             });
-            let extra = CLOSE_ACTION.len().saturating_sub(DRAFT_ACTION.len());
+            let extra = I::CLOSE_ACTION.len().saturating_sub(I::DRAFT_ACTION.len());
             let terminal_contract = contract(&terminal)?;
             let bytes = serde_json::to_vec(&terminal)
                 .map_err(|_| ParticipantError::Encoding)?
@@ -182,7 +181,7 @@ impl OfferRecord {
                 return Err(refused());
             }
             let writes = vec![
-                crate::registry_filing::json_write(key(self.operation).into(), &terminal)?,
+                crate::registry_filing::json_write(key::<I>(self.operation).into(), &terminal)?,
                 crate::registry_filing::json_write(
                     crate::api::contract_key(self.contract),
                     &terminal_contract,
@@ -199,7 +198,7 @@ impl OfferRecord {
         }
         Ok(())
     }
-    pub(super) fn verify_documents(
+    pub(crate) fn verify_documents(
         &self,
         snapshot: &EconomySnapshot,
     ) -> Result<(), ParticipantError> {
@@ -229,10 +228,10 @@ impl OfferRecord {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct OfferBook {
-    rows: BTreeMap<CommitToken, OfferRecord>,
+pub struct OfferBook<I: Issuer> {
+    rows: BTreeMap<CommitToken, OfferRecord<I>>,
     contracts: BTreeMap<ContractId, CommitToken>,
-    services: BTreeMap<CommitToken, super::service::ServiceRecord>,
+    services: BTreeMap<CommitToken, super::service::ServiceRecord<I>>,
     // The legacy holder uses generation1. A transferred holder has its own
     // automatic/retry chain within the same unchanged total inventory bound.
     predecessors: BTreeMap<(u64, u64, u64), CommitToken>,
@@ -240,42 +239,45 @@ pub(crate) struct OfferBook {
     // Runtime-only: the old unfunded-only document path cannot mint this.
     combined_verified: bool,
 }
-impl OfferBook {
-    pub(super) const fn combined_verified(&self) -> bool {
+impl<I: Issuer> OfferBook<I> {
+    pub(crate) const fn combined_verified(&self) -> bool {
         self.combined_verified
     }
-    pub(super) fn operations(&self) -> impl ExactSizeIterator<Item = CommitToken> + '_ {
+    pub(crate) fn operations(&self) -> impl ExactSizeIterator<Item = CommitToken> + '_ {
         self.rows.keys().copied()
     }
     /// Any retained service closure needs the service action in this composition.
     pub(crate) fn has_services(&self) -> bool {
         !self.services.is_empty()
     }
-    pub(super) fn service(&self, operation: CommitToken) -> Option<&super::service::ServiceRecord> {
+    pub(crate) fn service(
+        &self,
+        operation: CommitToken,
+    ) -> Option<&super::service::ServiceRecord<I>> {
         self.services.get(&operation)
     }
-    pub(super) fn install_service(&mut self, record: super::service::ServiceRecord) {
+    pub(crate) fn install_service(&mut self, record: super::service::ServiceRecord<I>) {
         self.services.insert(record.operation, record);
     }
-    pub(super) fn verify_offer(
+    pub(crate) fn verify_offer(
         &self,
-        row: &OfferRecord,
+        row: &OfferRecord<I>,
         snapshot: &EconomySnapshot,
     ) -> Result<(), ParticipantError> {
         verify_pair(row, snapshot, None, self.service(row.operation))
     }
-    pub(super) fn get(&self, operation: CommitToken) -> Option<&OfferRecord> {
+    pub(crate) fn get(&self, operation: CommitToken) -> Option<&OfferRecord<I>> {
         self.rows.get(&operation)
     }
-    pub(super) const fn generation(&self) -> u64 {
+    pub(crate) const fn generation(&self) -> u64 {
         self.generation
     }
-    pub(super) fn next_generation(&self) -> Result<u64, ParticipantError> {
+    pub(crate) fn next_generation(&self) -> Result<u64, ParticipantError> {
         self.generation.checked_add(1).ok_or_else(refused)
     }
-    pub(super) fn admits(&self, row: &OfferRecord) -> Result<(), ParticipantError> {
+    pub(crate) fn admits(&self, row: &OfferRecord<I>) -> Result<(), ParticipantError> {
         row.validate()?;
-        let basis = &row.offer.basis;
+        let basis = row.offer.basis();
         if self.rows.len() >= MAX_RECORDS
             || self.rows.contains_key(&row.operation)
             || self.contracts.contains_key(&row.contract)
@@ -286,14 +288,14 @@ impl OfferBook {
             .predecessors
             .range(
                 (
-                    basis.licence,
+                    basis.licence(),
                     row.attempt()
                         .holder_basis()
                         .map_or(1, |b| b.ownership.generation),
                     0,
                 )
                     ..=(
-                        basis.licence,
+                        basis.licence(),
                         row.attempt()
                             .holder_basis()
                             .map_or(1, |b| b.ownership.generation),
@@ -304,7 +306,8 @@ impl OfferBook {
             .map(|(key, op)| (key.2, *op));
         match row.attempt() {
             RenewalAttemptV1::Automatic | RenewalAttemptV1::HolderAutomatic { .. } => {
-                if highest.is_some_and(|(generation, _)| generation >= basis.predecessor_generation)
+                if highest
+                    .is_some_and(|(generation, _)| generation >= basis.predecessor_generation())
                 {
                     return Err(refused());
                 }
@@ -313,7 +316,7 @@ impl OfferBook {
             | RenewalAttemptV1::HolderRetry {
                 previous_operation, ..
             } => {
-                if highest != Some((basis.predecessor_generation, previous_operation)) {
+                if highest != Some((basis.predecessor_generation(), previous_operation)) {
                     return Err(refused());
                 }
             }
@@ -323,11 +326,11 @@ impl OfferBook {
     }
     /// Repeated at actual preparation and consuming bind. A mutable terminal
     /// contract cannot stand in for the exact replayed previous funding proof.
-    pub(super) fn require_retry(
+    pub(crate) fn require_retry(
         &self,
-        row: &OfferRecord,
+        row: &OfferRecord<I>,
         snapshot: &EconomySnapshot,
-        receipts: &super::receipt::RenewalReceiptAudit,
+        receipts: &super::receipt::RenewalReceiptAudit<I>,
     ) -> Result<(), ParticipantError> {
         let Some(previous) = row.previous() else {
             return Ok(());
@@ -342,47 +345,67 @@ impl OfferBook {
             self.service(before.operation),
         )
     }
-    pub(super) fn install(&mut self, row: OfferRecord, generation: u64) {
+    pub(crate) fn install(&mut self, row: OfferRecord<I>, generation: u64) {
         self.contracts.insert(row.contract, row.operation);
         self.predecessors.insert(
             (
-                row.offer.basis.licence,
+                row.offer.basis().licence(),
                 row.attempt()
                     .holder_basis()
                     .map_or(1, |b| b.ownership.generation),
-                row.offer.basis.predecessor_generation,
+                row.offer.basis().predecessor_generation(),
             ),
             row.operation,
         );
         self.rows.insert(row.operation, row);
         self.generation = generation;
     }
+    /// Private complete forward/reverse evidence join, still not a production
+    /// boot readiness setter. No document arrival order establishes ancestry.
+    #[cfg(test)]
+    pub(crate) fn from_documents_with_renewals(
+        snapshot: &EconomySnapshot,
+        documents: &[(String, Vec<u8>)],
+        receipts: &super::receipt::RenewalReceiptAudit<I>,
+    ) -> Result<Self, ParticipantError> {
+        receipts.require_complete().map_err(|_| refused())?;
+        Self::reconstruct(snapshot, documents, Some(receipts), None)
+    }
+    /// Old unfunded-only reconstruction cannot mint the combined audit latch.
+    /// A format2 unfunded link still needs its actual closed predecessor image.
+    #[cfg(test)]
+    pub(crate) fn from_documents(
+        snapshot: &EconomySnapshot,
+        documents: &[(String, Vec<u8>)],
+    ) -> Result<Self, ParticipantError> {
+        Self::reconstruct(snapshot, documents, None, None)
+    }
     pub(crate) fn from_documents_with_resale(
         snapshot: &EconomySnapshot,
         documents: &[(String, Vec<u8>)],
-        receipts: &super::receipt::RenewalReceiptAudit,
+        receipts: &super::receipt::RenewalReceiptAudit<I>,
         resale: &crate::managed_paid_resale::book::PaidResaleBook,
     ) -> Result<Self, ParticipantError> {
         receipts.require_complete().map_err(|_| refused())?;
         Self::reconstruct(snapshot, documents, Some(receipts), Some(resale))
     }
-    pub(super) fn require_holder_origin(
-        row: &OfferRecord,
+    pub(crate) fn require_holder_origin(
+        row: &OfferRecord<I>,
         resale: &crate::managed_paid_resale::book::PaidResaleBook,
     ) -> Result<(), ParticipantError> {
         if let Some(basis) = row.attempt().holder_basis() {
             basis.require_origin(
                 resale,
-                row.offer.basis.licence,
+                row.offer.basis().licence(),
                 // A resale-born licence is held by a character (M8c: resale
                 // names characters only), so the basis takes the acting one.
-                row.offer.terms.buyer.acting_character(),
-                row.offer.terms.charter,
-                row.offer.basis.predecessor_generation,
-                row.offer.basis.predecessor_operation,
+                row.offer.terms().buyer().acting_character(),
+                row.offer.terms().charter(),
+                row.offer.basis().predecessor_generation(),
+                row.offer.basis().predecessor_operation(),
                 &row.created_at_ic,
                 row.created_at_utc,
-                crate::managed_paid_resale::PaidBirthRouteV1::House,
+                I::BIRTH_ROUTE,
             )?;
         }
         Ok(())
@@ -390,7 +413,7 @@ impl OfferBook {
     fn reconstruct(
         snapshot: &EconomySnapshot,
         documents: &[(String, Vec<u8>)],
-        receipts: Option<&super::receipt::RenewalReceiptAudit>,
+        receipts: Option<&super::receipt::RenewalReceiptAudit<I>>,
         resale: Option<&crate::managed_paid_resale::book::PaidResaleBook>,
     ) -> Result<Self, ParticipantError> {
         if documents.len() > MAX_RECORDS * 2 {
@@ -407,11 +430,11 @@ impl OfferBook {
         let mut book = Self::default();
         for (name, bytes) in documents
             .iter()
-            .filter(|(k, _)| k.starts_with(super::service::PREFIX))
+            .filter(|(k, _)| k.starts_with(I::SERVICE_PREFIX))
         {
             let record = super::service::ServiceRecord::decode(bytes)?;
             if book.services.len() == MAX_RECORDS
-                || *name != super::service::key(record.operation)
+                || *name != super::service::key::<I>(record.operation)
                 || book.services.insert(record.operation, record).is_some()
             {
                 return Err(refused());
@@ -419,14 +442,14 @@ impl OfferBook {
         }
         for (name, bytes) in documents
             .iter()
-            .filter(|(k, _)| !k.starts_with(super::service::PREFIX))
+            .filter(|(k, _)| !k.starts_with(I::SERVICE_PREFIX))
         {
             let row = OfferRecord::decode(bytes)?;
             if row.attempt().holder_basis().is_some() {
                 Self::require_holder_origin(&row, resale.ok_or_else(refused)?)?;
             }
             if book.rows.len() == MAX_RECORDS
-                || *name != key(row.operation)
+                || *name != key::<I>(row.operation)
                 || book.rows.contains_key(&row.operation)
                 || book.contracts.contains_key(&row.contract)
             {
@@ -449,7 +472,7 @@ impl OfferBook {
                 .consent
                 .managed
                 .as_ref()
-                .and_then(|m| m.house_renewal_offer_marker())
+                .and_then(I::marker)
                 .is_some()
                 && !book.contracts.contains_key(&contract.id)
             {
@@ -464,17 +487,17 @@ impl OfferBook {
     fn rebuild_links(
         &mut self,
         snapshot: &EconomySnapshot,
-        receipts: Option<&super::receipt::RenewalReceiptAudit>,
+        receipts: Option<&super::receipt::RenewalReceiptAudit<I>>,
     ) -> Result<(), ParticipantError> {
         let mut roots = BTreeMap::new();
         let mut followers = BTreeMap::new();
         for row in self.rows.values() {
             let group = (
-                row.offer.basis.licence,
+                row.offer.basis().licence(),
                 row.attempt()
                     .holder_basis()
                     .map_or(1, |b| b.ownership.generation),
-                row.offer.basis.predecessor_generation,
+                row.offer.basis().predecessor_generation(),
             );
             if let Some(previous) = row.previous() {
                 let before = self.rows.get(&previous).ok_or_else(refused)?;
@@ -513,11 +536,11 @@ impl OfferBook {
     }
 }
 
-fn verify_pair(
-    row: &OfferRecord,
+fn verify_pair<I: Issuer>(
+    row: &OfferRecord<I>,
     snapshot: &EconomySnapshot,
-    history: Option<&super::RenewalHistory>,
-    service: Option<&super::service::ServiceRecord>,
+    history: Option<&super::RenewalHistory<I>>,
+    service: Option<&super::service::ServiceRecord<I>>,
 ) -> Result<(), ParticipantError> {
     if let Some(history) = history {
         if row.closure.is_some() || service.is_some() || history.origin() != row {
@@ -555,23 +578,22 @@ fn verify_pair(
     Ok(())
 }
 
-fn require_link(
-    before: &OfferRecord,
-    row: &OfferRecord,
+fn require_link<I: Issuer>(
+    before: &OfferRecord<I>,
+    row: &OfferRecord<I>,
     snapshot: &EconomySnapshot,
-    receipts: Option<&super::receipt::RenewalReceiptAudit>,
-    service: Option<&super::service::ServiceRecord>,
+    receipts: Option<&super::receipt::RenewalReceiptAudit<I>>,
+    service: Option<&super::service::ServiceRecord<I>>,
 ) -> Result<(), ParticipantError> {
     if row.previous() != Some(before.operation)
         || row.operation == before.operation
         || row.contract == before.contract
         || row.attempt().holder_basis() != before.attempt().holder_basis()
-        || row.offer.basis != before.offer.basis
-        || row.offer.terms.buyer != before.offer.terms.buyer
-        || row.offer.terms.charter != before.offer.terms.charter
-        || row.offer.terms.organization != before.offer.terms.organization
-        || row.offer.terms.scope != before.offer.terms.scope
-        || row.offer.terms.instrument != before.offer.terms.instrument
+        || row.offer.basis() != before.offer.basis()
+        || row.offer.terms().buyer() != before.offer.terms().buyer()
+        || row.offer.terms().charter() != before.offer.terms().charter()
+        || !I::same_line(row.offer.terms(), before.offer.terms())
+        || row.offer.terms().instrument() != before.offer.terms().instrument()
     {
         return Err(refused());
     }

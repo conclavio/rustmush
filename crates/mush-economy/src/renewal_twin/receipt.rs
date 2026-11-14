@@ -1,8 +1,8 @@
 //! Separate journal authority for an existing renewal offer. No current contract
 //! or decoded row can manufacture this module's runtime replay provenance.
 use super::{
-    FUND_ACTION, GRANT_ACTION, NAMESPACE, REFUND_ACTION, action_matches, contract,
-    history::OfferRecord, refused,
+    Basis as _, Issuer, Offer as _, Terms as _, action_matches, contract, history::OfferRecord,
+    refused,
 };
 use crate::contract::{Acceptance, ContractState, EconomicContract};
 use crate::plan::{EconomyPlan, HoldOp, RequestedLine};
@@ -15,11 +15,12 @@ use mush_core::participant::ParticipantError;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionRef};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
-pub(super) const MAX_CORRELATION_BYTES: usize = 8192;
-pub(super) const MAX_HISTORY_BYTES: usize = 12288;
-pub(super) const TERMINAL_RESERVE_BYTES: usize = 2048;
-pub(super) const MAX_HISTORIES: usize = 32768;
+pub(crate) const MAX_CORRELATION_BYTES: usize = 8192;
+pub(crate) const MAX_HISTORY_BYTES: usize = 12288;
+pub(crate) const TERMINAL_RESERVE_BYTES: usize = 2048;
+pub(crate) const MAX_HISTORIES: usize = 32768;
 pub const MAX_RENEWAL_RECEIPT_BYTES: usize = 1024;
 fn versioned(stamp: &ClockStamp) -> bool {
     matches!(stamp.clock, ClockRef::WorldIc { generation } if generation != 0)
@@ -31,7 +32,8 @@ fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct RenewalFundingReceiptV1 {
+#[serde(bound = "")]
+pub struct RenewalFundingReceiptV1<I: Issuer> {
     format: u16,
     commit: CommitToken,
     action: DefinitionRef,
@@ -42,6 +44,8 @@ pub struct RenewalFundingReceiptV1 {
     consent_hash: [u8; 32],
     at_ic: ClockStamp,
     posted_at_utc: i64,
+    #[serde(skip)]
+    issuer: PhantomData<I>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,7 +61,7 @@ struct FundingWire {
     at_ic: ClockStamp,
     posted_at_utc: i64,
 }
-impl<'de> Deserialize<'de> for RenewalFundingReceiptV1 {
+impl<'de, I: Issuer> Deserialize<'de> for RenewalFundingReceiptV1<I> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let w = FundingWire::deserialize(d)?;
         let value = Self {
@@ -71,13 +75,14 @@ impl<'de> Deserialize<'de> for RenewalFundingReceiptV1 {
             consent_hash: w.consent_hash,
             at_ic: w.at_ic,
             posted_at_utc: w.posted_at_utc,
+            issuer: PhantomData,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
     }
 }
 
-impl RenewalFundingReceiptV1 {
+impl<I: Issuer> RenewalFundingReceiptV1<I> {
     pub fn decode(bytes: &[u8]) -> Result<Self, RenewalAuditError> {
         let row = decode_receipt(bytes)?;
         Self::validate(&row)?;
@@ -85,7 +90,7 @@ impl RenewalFundingReceiptV1 {
     }
     fn validate(&self) -> Result<(), RenewalAuditError> {
         if self.format != 1
-            || !action_matches(&self.action, FUND_ACTION)
+            || !action_matches(&self.action, I::FUND_ACTION)
             || !versioned(&self.at_ic)
             || serde_json::to_vec(self)
                 .map_err(|_| RenewalAuditError::Refused)?
@@ -131,7 +136,8 @@ pub enum RenewalOutcome {
     Refunded,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct RenewalTerminalReceiptV1 {
+#[serde(bound = "")]
+pub struct RenewalTerminalReceiptV1<I: Issuer> {
     format: u16,
     commit: CommitToken,
     action: DefinitionRef,
@@ -141,6 +147,8 @@ pub struct RenewalTerminalReceiptV1 {
     at_ic: ClockStamp,
     posted_at_utc: i64,
     issued_at_ic: Option<ClockStamp>,
+    #[serde(skip)]
+    issuer: PhantomData<I>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -156,7 +164,7 @@ struct TerminalWire {
     #[serde(deserialize_with = "required_option")]
     issued_at_ic: Option<ClockStamp>,
 }
-impl<'de> Deserialize<'de> for RenewalTerminalReceiptV1 {
+impl<'de, I: Issuer> Deserialize<'de> for RenewalTerminalReceiptV1<I> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let w = TerminalWire::deserialize(d)?;
         let value = Self {
@@ -169,13 +177,14 @@ impl<'de> Deserialize<'de> for RenewalTerminalReceiptV1 {
             at_ic: w.at_ic,
             posted_at_utc: w.posted_at_utc,
             issued_at_ic: w.issued_at_ic,
+            issuer: PhantomData,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
     }
 }
 
-impl RenewalTerminalReceiptV1 {
+impl<I: Issuer> RenewalTerminalReceiptV1<I> {
     pub fn decode(bytes: &[u8]) -> Result<Self, RenewalAuditError> {
         let row = decode_receipt(bytes)?;
         Self::validate(&row)?;
@@ -183,9 +192,9 @@ impl RenewalTerminalReceiptV1 {
     }
     fn validate(&self) -> Result<(), RenewalAuditError> {
         let id = if self.outcome == RenewalOutcome::Granted {
-            GRANT_ACTION
+            I::GRANT_ACTION
         } else {
-            REFUND_ACTION
+            I::REFUND_ACTION
         };
         if self.format != 1
             || !action_matches(&self.action, id)
@@ -241,14 +250,19 @@ fn decode_receipt<T: serde::de::DeserializeOwned + Serialize>(
     Ok(row)
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Proof {
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    deny_unknown_fields,
+    bound = ""
+)]
+enum Proof<I: Issuer> {
     Fund {
         format: u16,
         operation: CommitToken,
         commit: CommitToken,
         action: DefinitionRef,
-        origin: Box<OfferRecord>,
+        origin: Box<OfferRecord<I>>,
         at_ic: ClockStamp,
     },
     Grant {
@@ -266,21 +280,21 @@ enum Proof {
         at_ic: ClockStamp,
     },
 }
-fn encode(proof: &Proof) -> Result<String, ParticipantError> {
+fn encode<I: Issuer>(proof: &Proof<I>) -> Result<String, ParticipantError> {
     let s = serde_json::to_string(proof).map_err(|_| ParticipantError::Encoding)?;
     if s.len() > MAX_CORRELATION_BYTES {
         return Err(refused());
     }
     Ok(s)
 }
-pub(super) fn funding_plan(
-    origin: &OfferRecord,
+pub(crate) fn funding_plan<I: Issuer>(
+    origin: &OfferRecord<I>,
     commit: CommitToken,
     action: &DefinitionRef,
     at_ic: &ClockStamp,
 ) -> Result<EconomyPlan, ParticipantError> {
     origin.validate()?;
-    let t = &origin.offer.terms;
+    let t = origin.offer.terms();
     let correlation = encode(&Proof::Fund {
         format: 1,
         operation: origin.operation,
@@ -290,19 +304,19 @@ pub(super) fn funding_plan(
         at_ic: at_ic.clone(),
     })?;
     let mut plan = EconomyPlan::new(
-        IdempotencyKey::new(NAMESPACE, format!("{}/fund", origin.operation.to_hex())),
-        t.buyer.principal(),
+        IdempotencyKey::new(I::NAMESPACE, format!("{}/fund", origin.operation.to_hex())),
+        t.buyer().principal(),
         EconomicCause::Ruleset {
-            namespace: NAMESPACE.into(),
+            namespace: I::NAMESPACE.into(),
             correlation: correlation.into(),
         },
         Vec::new(),
     );
-    plan.description = "house mind renewal funding".into();
+    plan.description = I::FUNDING_DESCRIPTION.into();
     plan.visibility = EconomicVisibility::Parties;
     plan.hold_ops.push(HoldOp::Place {
-        account: t.payer,
-        amount: t.price,
+        account: t.payer(),
+        amount: t.price(),
         beneficiary: Some(crate::api::contract_principal()),
         purpose: HoldPurpose::Escrow {
             contract: origin.contract,
@@ -311,17 +325,17 @@ pub(super) fn funding_plan(
     });
     Ok(plan)
 }
-pub(super) fn terminal_plan(
-    history: &RenewalHistory,
+pub(crate) fn terminal_plan<I: Issuer>(
+    history: &RenewalHistory<I>,
     commit: CommitToken,
     action: &DefinitionRef,
     at_ic: &ClockStamp,
     outcome: RenewalOutcome,
 ) -> Result<EconomyPlan, ParticipantError> {
     let grant = outcome == RenewalOutcome::Granted;
-    let t = &history.origin.offer.terms;
+    let t = history.origin.offer.terms();
     let proof = if grant {
-        Proof::Grant {
+        Proof::<I>::Grant {
             format: 1,
             operation: history.operation(),
             commit,
@@ -340,8 +354,8 @@ pub(super) fn terminal_plan(
     let mut lines = Vec::new();
     if grant {
         lines.push(RequestedLine {
-            account: t.payer,
-            delta: t.price.checked_neg().ok_or_else(refused)?,
+            account: t.payer(),
+            delta: t.price().checked_neg().ok_or_else(refused)?,
             memo: format!("contract {} escrow", history.origin.contract).into(),
         });
         for p in t.payouts()? {
@@ -354,16 +368,16 @@ pub(super) fn terminal_plan(
     }
     let mut plan = EconomyPlan::new(
         IdempotencyKey::new(
-            NAMESPACE,
+            I::NAMESPACE,
             format!(
                 "{}/{}",
                 history.operation().to_hex(),
                 if grant { "grant" } else { "refund" }
             ),
         ),
-        t.buyer.principal(),
+        t.buyer().principal(),
         EconomicCause::Ruleset {
-            namespace: NAMESPACE.into(),
+            namespace: I::NAMESPACE.into(),
             correlation: encode(&proof)?.into(),
         },
         lines,
@@ -384,7 +398,7 @@ pub(super) fn terminal_plan(
     plan.hold_ops.push(if grant {
         HoldOp::Capture {
             hold: history.funding.hold,
-            amount: t.price,
+            amount: t.price(),
         }
     } else {
         HoldOp::Release {
@@ -401,42 +415,42 @@ pub enum RenewalAuditError {
     Refused,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TerminalHistory {
-    receipt: RenewalTerminalReceiptV1,
+#[serde(deny_unknown_fields, bound = "")]
+struct TerminalHistory<I: Issuer> {
+    receipt: RenewalTerminalReceiptV1<I>,
     hold: Hold,
     plan_hash: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RenewalHistory {
-    origin: OfferRecord,
-    funding: RenewalFundingReceiptV1,
+#[serde(deny_unknown_fields, bound = "")]
+pub struct RenewalHistory<I: Issuer> {
+    origin: OfferRecord<I>,
+    funding: RenewalFundingReceiptV1<I>,
     hold: Hold,
     plan_hash: [u8; 32],
     #[serde(deserialize_with = "required_option")]
-    terminal: Option<TerminalHistory>,
+    terminal: Option<TerminalHistory<I>>,
 }
-impl RenewalHistory {
+impl<I: Issuer> RenewalHistory<I> {
     pub fn operation(&self) -> CommitToken {
         self.origin.operation
     }
-    pub fn offer(&self) -> &super::RenewalOffer {
+    pub fn offer(&self) -> &I::Offer {
         &self.origin.offer
     }
-    pub fn funding(&self) -> &RenewalFundingReceiptV1 {
+    pub fn funding(&self) -> &RenewalFundingReceiptV1<I> {
         &self.funding
     }
-    pub fn terminal(&self) -> Option<&RenewalTerminalReceiptV1> {
+    pub fn terminal(&self) -> Option<&RenewalTerminalReceiptV1<I>> {
         self.terminal.as_ref().map(|t| &t.receipt)
     }
-    pub(super) fn origin(&self) -> &OfferRecord {
+    pub(crate) fn origin(&self) -> &OfferRecord<I> {
         &self.origin
     }
-    pub(super) fn contract(&self) -> Result<EconomicContract, RenewalAuditError> {
+    pub(crate) fn contract(&self) -> Result<EconomicContract, RenewalAuditError> {
         let mut c = contract(&self.origin).map_err(|_| RenewalAuditError::Refused)?;
         c.acceptances.push(Acceptance {
-            party: self.origin.offer.terms.buyer.principal(),
+            party: self.origin.offer.terms().buyer().principal(),
             at: self.funding.posted_at_utc,
             consent_hash: self.origin.consent_hash,
         });
@@ -471,7 +485,7 @@ impl RenewalHistory {
     /// Conservative future terminal envelope bound, evaluated before a hold is
     /// prepared. It uses the admitted receipt cap plus maximal fixed-width
     /// transaction/sequence values; it creates no receipt or authority.
-    pub(super) fn require_terminal_room(&self) -> Result<(), RenewalAuditError> {
+    pub(crate) fn require_terminal_room(&self) -> Result<(), RenewalAuditError> {
         let fail = || RenewalAuditError::Refused;
         if self.terminal.is_some() {
             return Err(fail());
@@ -479,7 +493,7 @@ impl RenewalHistory {
         let mut hold = self.hold.clone();
         hold.status = HoldStatus::Consumed {
             transaction: TransactionId(u64::MAX),
-            amount: self.origin.offer.terms.price,
+            amount: self.origin.offer.terms().price(),
         };
         hold.revision = 2;
         hold.last_journal_seq = u64::MAX;
@@ -519,30 +533,31 @@ impl RenewalHistory {
         self.funding.validate()?;
         let f = &self.funding;
         let o = &self.origin;
-        let terms = &o.offer.terms;
+        let terms = o.offer.terms();
         if o.closure.is_some()
             || [
                 o.operation,
-                o.offer.basis.predecessor_operation,
-                o.offer.basis.prior_quote,
+                o.offer.basis().predecessor_operation(),
+                o.offer.basis().prior_quote(),
             ]
             .contains(&f.commit)
             || f.contract != o.contract
             || f.consent_hash != o.consent_hash
             || f.at_ic.clock != o.created_at_ic.clock
             || f.at_ic.at < o.created_at_ic.at
-            || f.at_ic.at < terms.not_before.at
-            || f.at_ic.at >= terms.expires_at.at
+            || f.at_ic.at < terms.not_before().at
+            || f.at_ic.at >= terms.expires_at().at
             || f.posted_at_utc < o.created_at_utc
         {
             return Err(fail());
         }
         let h = &self.hold;
         if h.id != f.hold
-            || h.account != terms.payer
-            || h.amount != terms.price
-            || h.placed_by != terms.buyer.principal()
-            || h.holder != IdempotencyKey::new(NAMESPACE, format!("{}/fund", o.operation.to_hex()))
+            || h.account != terms.payer()
+            || h.amount != terms.price()
+            || h.placed_by != terms.buyer().principal()
+            || h.holder
+                != IdempotencyKey::new(I::NAMESPACE, format!("{}/fund", o.operation.to_hex()))
             || h.purpose
                 != (HoldPurpose::Escrow {
                     contract: o.contract,
@@ -563,8 +578,8 @@ impl RenewalHistory {
             r.validate()?;
             if [
                 o.operation,
-                o.offer.basis.predecessor_operation,
-                o.offer.basis.prior_quote,
+                o.offer.basis().predecessor_operation(),
+                o.offer.basis().prior_quote(),
                 f.commit,
             ]
             .contains(&r.commit)
@@ -578,7 +593,7 @@ impl RenewalHistory {
             if grant
                 && (r.at_ic.clock != f.at_ic.clock
                     || r.at_ic.at < f.at_ic.at
-                    || r.at_ic.at >= terms.expires_at.at)
+                    || r.at_ic.at >= terms.expires_at().at)
             {
                 return Err(fail());
             }
@@ -586,7 +601,7 @@ impl RenewalHistory {
             expected.status = if grant {
                 HoldStatus::Consumed {
                     transaction: r.transaction,
-                    amount: terms.price,
+                    amount: terms.price(),
                 }
             } else {
                 HoldStatus::Released
@@ -620,12 +635,12 @@ impl RenewalHistory {
     }
 }
 
-fn history_rows<'de, D: serde::Deserializer<'de>>(
+fn history_rows<'de, D: serde::Deserializer<'de>, I: Issuer>(
     d: D,
-) -> Result<BTreeMap<CommitToken, RenewalHistory>, D::Error> {
-    struct Rows;
-    impl<'de> serde::de::Visitor<'de> for Rows {
-        type Value = BTreeMap<CommitToken, RenewalHistory>;
+) -> Result<BTreeMap<CommitToken, RenewalHistory<I>>, D::Error> {
+    struct Rows<I>(PhantomData<I>);
+    impl<'de, I: Issuer> serde::de::Visitor<'de> for Rows<I> {
+        type Value = BTreeMap<CommitToken, RenewalHistory<I>>;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("bounded distinct renewal histories")
         }
@@ -643,7 +658,7 @@ fn history_rows<'de, D: serde::Deserializer<'de>>(
                         "renewal history capacity or duplicate",
                     ));
                 }
-                let row = map.next_value::<RenewalHistory>()?;
+                let row = map.next_value::<RenewalHistory<I>>()?;
                 row.validate().map_err(serde::de::Error::custom)?;
                 if key != row.operation() {
                     return Err(serde::de::Error::custom("renewal history key"));
@@ -653,19 +668,19 @@ fn history_rows<'de, D: serde::Deserializer<'de>>(
             Ok(rows)
         }
     }
-    d.deserialize_map(Rows)
+    d.deserialize_map(Rows(PhantomData))
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RenewalReceiptAudit {
+#[serde(deny_unknown_fields, bound = "")]
+pub struct RenewalReceiptAudit<I: Issuer> {
     #[serde(deserialize_with = "history_rows")]
-    histories: BTreeMap<CommitToken, RenewalHistory>,
+    histories: BTreeMap<CommitToken, RenewalHistory<I>>,
     complete: bool,
     invalid: bool,
     #[serde(skip)]
     verified_this_boot: bool,
 }
-impl RenewalReceiptAudit {
+impl<I: Issuer> RenewalReceiptAudit<I> {
     pub(crate) fn uninitialized(&self) -> bool {
         !self.complete && !self.invalid && self.histories.is_empty()
     }
@@ -678,22 +693,22 @@ impl RenewalReceiptAudit {
         }
         Ok(())
     }
-    pub fn get(&self, operation: CommitToken) -> Result<&RenewalHistory, RenewalAuditError> {
+    pub fn get(&self, operation: CommitToken) -> Result<&RenewalHistory<I>, RenewalAuditError> {
         self.require_complete()?;
         self.histories
             .get(&operation)
             .ok_or(RenewalAuditError::Refused)
     }
-    pub(super) fn find(
+    pub(crate) fn find(
         &self,
         operation: CommitToken,
-    ) -> Result<Option<&RenewalHistory>, RenewalAuditError> {
+    ) -> Result<Option<&RenewalHistory<I>>, RenewalAuditError> {
         self.require_complete()?;
         Ok(self.histories.get(&operation))
     }
     pub fn receipts(
         &self,
-    ) -> Result<impl ExactSizeIterator<Item = &RenewalHistory>, RenewalAuditError> {
+    ) -> Result<impl ExactSizeIterator<Item = &RenewalHistory<I>>, RenewalAuditError> {
         self.require_complete()?;
         Ok(self.histories.values())
     }
@@ -740,7 +755,7 @@ impl RenewalReceiptAudit {
                 );
             }
         }
-        for r in rows.iter().filter(|r| r.ns.as_str() == NAMESPACE) {
+        for r in rows.iter().filter(|r| r.ns.as_str() == I::NAMESPACE) {
             let Some((tx, seq, at, hash)) = expected.remove(r.key.as_str()) else {
                 return false;
             };
@@ -752,8 +767,8 @@ impl RenewalReceiptAudit {
         expected.is_empty()
     }
     pub(crate) fn observe(&mut self, tx: &EconomicTransaction) {
-        if tx.idempotency.namespace.as_str() != NAMESPACE
-            && !matches!(&tx.cause,EconomicCause::Ruleset{namespace,..}if namespace.as_str()==NAMESPACE)
+        if tx.idempotency.namespace.as_str() != I::NAMESPACE
+            && !matches!(&tx.cause,EconomicCause::Ruleset{namespace,..}if namespace.as_str()==I::NAMESPACE)
         {
             return;
         }
@@ -764,10 +779,10 @@ impl RenewalReceiptAudit {
             Err(_) => self.invalid = true,
         }
     }
-    pub(super) fn prepare(
+    pub(crate) fn prepare(
         &self,
         tx: &EconomicTransaction,
-    ) -> Result<PreparedHistory, ParticipantError> {
+    ) -> Result<PreparedHistory<I>, ParticipantError> {
         self.require_complete().map_err(|_| refused())?;
         let after = self.next(tx).map_err(|_| refused())?;
         Ok(PreparedHistory {
@@ -779,10 +794,10 @@ impl RenewalReceiptAudit {
             verified: self.verified_this_boot,
         })
     }
-    fn next(&self, tx: &EconomicTransaction) -> Result<RenewalHistory, RenewalAuditError> {
+    fn next(&self, tx: &EconomicTransaction) -> Result<RenewalHistory<I>, RenewalAuditError> {
         let fail = || RenewalAuditError::Refused;
         if self.invalid
-            || tx.idempotency.namespace.as_str() != NAMESPACE
+            || tx.idempotency.namespace.as_str() != I::NAMESPACE
             || tx.reverses.is_some()
             || !tx.asset_effects.is_empty()
             || !tx.custody_effects.is_empty()
@@ -797,10 +812,10 @@ impl RenewalReceiptAudit {
         else {
             return Err(fail());
         };
-        if namespace.as_str() != NAMESPACE || correlation.len() > MAX_CORRELATION_BYTES {
+        if namespace.as_str() != I::NAMESPACE || correlation.len() > MAX_CORRELATION_BYTES {
             return Err(fail());
         }
-        let proof: Proof = serde_json::from_str(correlation).map_err(|_| fail())?;
+        let proof: Proof<I> = serde_json::from_str(correlation).map_err(|_| fail())?;
         if encode(&proof).map_err(|_| fail())?.as_str() != correlation.as_str() {
             return Err(fail());
         }
@@ -821,7 +836,7 @@ impl RenewalReceiptAudit {
                     || origin.operation != operation
                     || !tx.lines.is_empty()
                     || effect.kind != HoldEffectKind::Placed
-                    || tx.actor != origin.offer.terms.buyer.principal()
+                    || tx.actor != origin.offer.terms().buyer().principal()
                     || tx.idempotency.key.as_str() != format!("{}/fund", operation.to_hex())
                 {
                     return Err(fail());
@@ -838,6 +853,7 @@ impl RenewalReceiptAudit {
                         consent_hash: origin.consent_hash,
                         at_ic,
                         posted_at_utc: tx.posted_at,
+                        issuer: PhantomData,
                     },
                     origin: *origin,
                     hold: effect.hold.clone(),
@@ -886,15 +902,15 @@ impl RenewalReceiptAudit {
         action: DefinitionRef,
         at_ic: ClockStamp,
         outcome: RenewalOutcome,
-    ) -> Result<RenewalHistory, RenewalAuditError> {
+    ) -> Result<RenewalHistory<I>, RenewalAuditError> {
         let fail = || RenewalAuditError::Refused;
         let mut row = self.histories.get(&operation).cloned().ok_or_else(fail)?;
         if row.terminal.is_some() {
             return Err(fail());
         }
-        let t = &row.origin.offer.terms;
+        let t = row.origin.offer.terms();
         let grant = outcome == RenewalOutcome::Granted;
-        if tx.actor != t.buyer.principal()
+        if tx.actor != t.buyer().principal()
             || tx.idempotency.key.as_str()
                 != format!(
                     "{}/{}",
@@ -918,14 +934,14 @@ impl RenewalReceiptAudit {
         }
         let mut actual = Vec::new();
         for line in &tx.lines {
-            if line.instrument != t.instrument {
+            if &line.instrument != t.instrument() {
                 return Err(fail());
             }
             actual.push((line.account, line.delta.minor()));
         }
         let mut expected = Vec::new();
         if grant {
-            expected.push((t.payer, t.price.checked_neg().ok_or_else(fail)?.minor()));
+            expected.push((t.payer(), t.price().checked_neg().ok_or_else(fail)?.minor()));
             expected.extend(
                 t.payouts()
                     .map_err(|_| fail())?
@@ -949,6 +965,7 @@ impl RenewalReceiptAudit {
                 at_ic: at_ic.clone(),
                 posted_at_utc: tx.posted_at,
                 issued_at_ic: grant.then_some(at_ic),
+                issuer: PhantomData,
             },
             hold: effect.hold.clone(),
             plan_hash: tx.plan_hash,
@@ -956,26 +973,26 @@ impl RenewalReceiptAudit {
         Ok(row)
     }
 }
-pub(super) struct PreparedHistory {
-    before: Option<RenewalHistory>,
-    after: RenewalHistory,
+pub(crate) struct PreparedHistory<I: Issuer> {
+    before: Option<RenewalHistory<I>>,
+    after: RenewalHistory<I>,
     count: usize,
     complete: bool,
     invalid: bool,
     verified: bool,
 }
-impl PreparedHistory {
-    pub(super) fn row(&self) -> &RenewalHistory {
+impl<I: Issuer> PreparedHistory<I> {
+    pub(crate) fn row(&self) -> &RenewalHistory<I> {
         &self.after
     }
-    pub(super) fn matches(&self, state: &RenewalReceiptAudit) -> bool {
+    pub(crate) fn matches(&self, state: &RenewalReceiptAudit<I>) -> bool {
         state.histories.len() == self.count
             && state.complete == self.complete
             && state.invalid == self.invalid
             && state.verified_this_boot == self.verified
             && state.histories.get(&self.after.operation()) == self.before.as_ref()
     }
-    pub(super) fn apply(self, state: &mut RenewalReceiptAudit) {
+    pub(crate) fn apply(self, state: &mut RenewalReceiptAudit<I>) {
         state.histories.insert(self.after.operation(), self.after);
     }
 }

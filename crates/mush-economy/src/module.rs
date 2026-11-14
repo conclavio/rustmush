@@ -2002,6 +2002,7 @@ impl EconomyModule {
             participants,
             actions,
             service_close: None,
+            issuer: std::marker::PhantomData,
         });
         self
     }
@@ -2017,6 +2018,7 @@ impl EconomyModule {
                 participants,
                 actions,
                 service_close: None,
+                issuer: std::marker::PhantomData,
             });
         self
     }

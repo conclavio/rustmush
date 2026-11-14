@@ -1,6 +1,7 @@
 //! Complete prebuilt renewal money images. No late encode, World callback or
 //! journal inference runs after consuming bind. No production participant yet.
 use super::{
+    Issuer, Offer as _, Terms as _,
     funding::{self, MoneyOutput, MoneyPreparation, RenewalMoneyRequest, Transition},
     history::OfferRecord,
     refused,
@@ -27,9 +28,9 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 /// Only affected fold entries are copied. A large retained journal is never
 /// cloned merely to preflight one bounded purchase.
-struct RenewalFold {
+struct RenewalFold<I: Issuer> {
     before: FoldBefore,
-    history: super::receipt::PreparedHistory,
+    history: super::receipt::PreparedHistory<I>,
     accounts: Vec<FoldAccount>,
     hold: Hold,
     terminal_at: Option<i64>,
@@ -53,7 +54,7 @@ struct FoldAccount {
     running: Option<i128>,
     touches: u64,
 }
-impl RenewalFold {
+impl<I: Issuer> RenewalFold<I> {
     fn prepare(
         state: &FoldState,
         tx: &EconomicTransaction,
@@ -123,7 +124,7 @@ impl RenewalFold {
             .checked_add(signed)
             .ok_or_else(refused)?;
         Ok(Self {
-            history: state.renewal_receipts.prepare(tx)?,
+            history: I::receipts(state).prepare(tx)?,
             max_hold_id: Some(
                 state
                     .max_hold_id
@@ -139,7 +140,7 @@ impl RenewalFold {
         })
     }
     fn matches(&self, state: &FoldState) -> bool {
-        self.history.matches(&state.renewal_receipts)
+        self.history.matches(I::receipts(state))
             && self.before.max_hold_id == state.max_hold_id
             && self.before.max_txid == state.max_txid
             && self.before.covered == state.covered_seq
@@ -158,7 +159,7 @@ impl RenewalFold {
                 })
     }
     fn apply(self, state: &mut FoldState) {
-        self.history.apply(&mut state.renewal_receipts);
+        self.history.apply(I::receipts_mut(state));
         // Store the already checked result, not fresh post-publication arithmetic.
         for account in self.accounts {
             if let Some(running) = account.running {
@@ -185,11 +186,11 @@ impl RenewalFold {
     }
 }
 
-pub struct RenewalMoneyPatch {
+pub struct RenewalMoneyPatch<I: Issuer> {
     clock: ClockRef,
     request: RenewalMoneyRequest,
     transition: Transition,
-    origin: OfferRecord,
+    origin: OfferRecord<I>,
     before_book_generation: u64,
     plan: EconomyPlan,
     validated: Prepared,
@@ -212,26 +213,26 @@ pub struct RenewalMoneyPatch {
     next_hold: u64,
     next_contract: u64,
     chunk: u64,
-    fold: Box<RenewalFold>,
+    fold: Box<RenewalFold<I>>,
 }
 
-pub(super) fn prepare_images(
+pub(crate) fn prepare_images<I: Issuer>(
     state: &EconomyStore,
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-) -> Result<(MoneyOutput, Box<RenewalMoneyPatch>, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(MoneyOutput<I>, Box<RenewalMoneyPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
     finish_images(
         state,
         context.world().world_ic_now().clock,
         funding::prepare(state, context, request, transition)?,
     )
 }
-pub(super) fn finish_images(
+pub(crate) fn finish_images<I: Issuer>(
     state: &EconomyStore,
     clock: ClockRef,
-    prepared: Box<MoneyPreparation>,
-) -> Result<(MoneyOutput, Box<RenewalMoneyPatch>, Vec<ReplayWrite>), ParticipantError> {
+    prepared: Box<MoneyPreparation<I>>,
+) -> Result<(MoneyOutput<I>, Box<RenewalMoneyPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
     let MoneyPreparation {
         output,
         request,
@@ -285,8 +286,8 @@ pub(super) fn finish_images(
     object.insert("next_hold_id".into(), Value::from(next_hold));
     object.insert("next_contract_id".into(), Value::from(next_contract));
     writes.push(json_write(crate::api::META_KEY.into(), &meta)?);
-    let terms = &origin.offer.terms;
-    let mut ids = BTreeSet::from([terms.payer]);
+    let terms = origin.offer.terms();
+    let mut ids = BTreeSet::from([terms.payer()]);
     if transition.sale() {
         ids.extend(terms.recipients().iter().map(|r| r.account));
     }
@@ -296,19 +297,12 @@ pub(super) fn finish_images(
         .collect::<Result<Vec<_>, _>>()?;
     let before_instrument = state
         .snapshot
-        .instrument(&terms.instrument)
+        .instrument(terms.instrument())
         .cloned()
         .ok_or_else(refused)?;
     let before_titles = if transition.sale() {
-        let mut ids = BTreeSet::from([terms.charter]);
-        ids.extend(
-            terms
-                .parents
-                .iter()
-                .filter(|p| p.title.is_some())
-                .map(|p| p.charter),
-        );
-        ids.into_iter()
+        I::titles(terms)
+            .into_iter()
             .map(|id| state.snapshot.asset(id).cloned().ok_or_else(refused))
             .collect::<Result<Vec<_>, _>>()?
     } else {
@@ -319,14 +313,14 @@ pub(super) fn finish_images(
         .iter()
         .map(|hold| (hold.id, state.snapshot.hold(hold.id).cloned()))
         .collect();
-    let before_window = state.debit_window.get(&terms.payer).cloned();
+    let before_window = state.debit_window.get(&terms.payer()).cloned();
     let mut window = BTreeMap::new();
     if let Some(before) = &before_window {
-        window.insert(terms.payer, before.clone());
+        window.insert(terms.payer(), before.clone());
     }
     crate::module::note_window_debits(&mut window, &transaction);
-    let next_window = if crate::module::account_windowed(&state.snapshot, terms.payer) {
-        window.remove(&terms.payer)
+    let next_window = if crate::module::account_windowed(&state.snapshot, terms.payer()) {
+        window.remove(&terms.payer())
     } else {
         None
     };
@@ -334,7 +328,7 @@ pub(super) fn finish_images(
         clock,
         request,
         transition,
-        before_book_generation: state.renewal_offers.generation(),
+        before_book_generation: I::book(state).generation(),
         origin,
         plan,
         validated,
@@ -365,7 +359,7 @@ pub(super) fn finish_images(
     Ok((output, patch, writes))
 }
 
-impl RenewalMoneyPatch {
+impl<I: Issuer> RenewalMoneyPatch<I> {
     pub(crate) fn recheck(
         &self,
         state: &EconomyStore,
@@ -375,7 +369,7 @@ impl RenewalMoneyPatch {
         if self.clock != context.world().world_ic_now().clock {
             return Err(refused());
         }
-        let actual = funding::prepare(state, context, self.request.clone(), self.transition)?;
+        let actual = funding::prepare::<I>(state, context, self.request.clone(), self.transition)?;
         if actual.plan != self.plan
             || actual.validated != self.validated
             || actual.contract != self.contract
@@ -391,8 +385,8 @@ impl RenewalMoneyPatch {
             || state.posts_since_boot != self.before_posts
             || state.next_transaction != self.transaction.id.0
             || state.snapshot.contract(self.contract.id) != Some(&self.before_contract)
-            || state.renewal_offers.generation() != self.before_book_generation
-            || state.renewal_offers.get(self.origin.operation) != Some(&self.origin)
+            || I::book(state).generation() != self.before_book_generation
+            || I::book(state).get(self.origin.operation) != Some(&self.origin)
             || self
                 .before_holds
                 .iter()
@@ -409,7 +403,8 @@ impl RenewalMoneyPatch {
                 .before_accounts
                 .iter()
                 .any(|row| state.snapshot.account(row.id) != Some(row))
-            || state.debit_window.get(&self.origin.offer.terms.payer) != self.before_window.as_ref()
+            || state.debit_window.get(&self.origin.offer.terms().payer())
+                != self.before_window.as_ref()
             || !self.fold.matches(&state.fold)
         {
             return Err(refused());
@@ -419,7 +414,7 @@ impl RenewalMoneyPatch {
     pub(crate) fn bind(
         self: Box<Self>,
         state: &mut EconomyStore,
-    ) -> Result<BoundRenewalMoney<'_>, ParticipantError> {
+    ) -> Result<BoundRenewalMoney<'_, I>, ParticipantError> {
         self.check_local(state)?;
         let EconomyStore {
             journal,
@@ -438,7 +433,7 @@ impl RenewalMoneyPatch {
             debit_window,
             ..
         } = state;
-        let payer = self.origin.offer.terms.payer;
+        let payer = self.origin.offer.terms().payer();
         let Self {
             journal: prepared_journal,
             bloom,
@@ -488,7 +483,7 @@ impl RenewalMoneyPatch {
     }
 }
 
-pub struct BoundRenewalMoney<'a> {
+pub struct BoundRenewalMoney<'a, I: Issuer> {
     journal: BoundLedgerAppend<'a>,
     bloom: BoundBloomInsert<'a>,
     snapshot: &'a mut EconomySnapshot,
@@ -513,9 +508,9 @@ pub struct BoundRenewalMoney<'a> {
     after_contract: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: Box<RenewalFold>,
+    fold_patch: Box<RenewalFold<I>>,
 }
-impl BoundParticipant for BoundRenewalMoney<'_> {
+impl<I: Issuer> BoundParticipant for BoundRenewalMoney<'_, I> {
     fn apply(self) {
         let _already_persisted_write = self.journal.apply();
         self.delta.apply_to(self.snapshot);

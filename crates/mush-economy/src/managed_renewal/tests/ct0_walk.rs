@@ -646,6 +646,7 @@ fn configuration(s: &mut Snapshot) -> Outcome {
         participants: [economy.clone(), roll],
         actions,
         service_close: None,
+        issuer: std::marker::PhantomData,
     };
     configuration.validate(&economy)?;
     let service = configuration.service_reference()?;
