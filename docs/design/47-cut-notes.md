@@ -982,4 +982,125 @@ fix (the unit's row allows "named with the reason").
 
 ## CO.12
 
-Not built.
+Saving an open bubble costs what changed (doc 44 MW.20, "Found, not fixed" item 1).
+
+**The short of it.** The space tick with eight bubbles open, back to back, went from 5.3 ms
+at the median to 1.2 ms, and its store writes from 487 KB a tick to 152 KB. They are more
+documents and not fewer: 8.1 a tick before, 23.7 after, because a stepped bubble now writes
+its record and the one snapshot the step took, and deletes the one its ring let go. The store
+layout for an open bubble changed; a store written by main reads as it did, and its first save
+after writes it in the new shape.
+
+### What was measured first
+
+The MW.20 space lane (`minds_at_size::mw20_eight_bubbles_think_on_the_pool`), with one thing
+added: it now counts the space book's writes (`tacsim:space:*`) and their encoded bytes
+apart from every module write. On the base (`6c86731fb` with that counter only), one bubble's
+record is 63,437 B; a clone of it takes 33 µs and `serde_json::to_value` 311 µs. Eight
+bubbles step every second, so the tick spent about 2.5 ms encoding and 0.27 ms copying. The
+encoding was the cost, not the clone, which ruled out a dirty flag alone: every open bubble
+steps every second, so every record is dirty every tick.
+
+What the record is made of explains it. `ActiveInterdictionBubble` holds the live bubble,
+its tape's opening snapshot, and a ring of up to six snapshots, and each step pushes a
+snapshot (`push_bounded_snapshot`). Eight copies of the bubble, seven of which do not change
+once taken. So the record is written apart from its snapshots, and each snapshot once.
+
+### What was built
+
+- **`crates/tacsim/src/space/save.rs`** (new). `save_bubbles` diffs the live bubbles against
+  the last save's copies in place and writes:
+  - the record without its snapshots at `tacsim:space:bubble:{domain}` (the key it had),
+    when the record changed or its snapshots' slots did;
+  - each snapshot not yet saved at `tacsim:space:bubble_snapshot:{domain}:{slot}`, once;
+  - a delete for each slot the record no longer names.
+
+  A live snapshot keeps the slot of an equal one already saved (the hash first, then the
+  whole), so the ring sliding by one is one set and one delete. A new slot is never one the
+  saved record still names, so no write of a batch touches a document the stored record
+  reads. The comparison and the copy name every field of the record (`same_core`,
+  `copy_core`): a field added later is a compile error there until it is handled.
+- **`persist_space_state`** (`space/tick.rs`) no longer clones the bubbles. It lifts them
+  out of the book while the rest is copied, takes the last save's bubbles out of the cache,
+  and hands both to `save_bubbles`. The cache is still the whole book as the store holds it
+  (`TacsimStore::space_state`), so voyage's "`persisted.book == book_before_1`" holds.
+- **`#[serde(skip_serializing_if = "kept_apart")]`** on `ActiveInterdictionBubble::snapshots`
+  and `BubbleInputTape::initial_snapshot`. `kept_apart` reads a thread-local that is set
+  only while `save_bubbles` encodes a record, so every other encoding is whole, as before.
+- **Reading.** `load_space_kv_entry` holds a bubble document that names its `parts` and
+  each snapshot document; `finish_space_kv_load`, called after the loop in both loaders
+  (`boot_read` and `store.rs`'s), puts each snapshot back into its record's JSON and
+  decodes the record as before. A record with a snapshot missing or unreadable holds its
+  domain (`quarantined_bubbles`), as an unreadable record always did. A snapshot key that
+  does not parse holds the space state, as for any other `tacsim:space:*` key.
+
+### The layout, plainly
+
+| Key | Shape |
+|---|---|
+| `tacsim:space:bubble:{domain}` | `PersistedBubbleDoc { format, domain, bubble, parts }`. `bubble` has no `snapshots` and its `tape` no `initial_snapshot`. `parts` is `{ initial: slot, snapshots: [slot, ...] }`, the ring's slots in order. Two equal snapshots may name one slot. |
+| `tacsim:space:bubble_snapshot:{domain}:{slot}` (new) | `PersistedBubbleSnapshotDoc { format, domain, slot, snapshot }`, `deny_unknown_fields`; `snapshot` is a `BubbleSnapshot` as before. |
+
+`SPACE_STATE_FORMAT` stays 1. A store written by main has the whole record under the
+bubble key and no `parts`; it decodes as it always did, and the next save writes it apart
+(every snapshot, the record with its parts). Read the other way, a binary from main would
+hold the space state on the first `bubble_snapshot` key it met (an unknown `tacsim:space:*`
+key does that today), so a server rolled back across this change needs those keys cleared.
+Nothing is persisted that players depend on.
+
+### Figures
+
+conclav.dev, release, as `ghrunner` in a throwaway clone, `MW20_PACE_MS=0 MW20_POOLS=2`,
+three runs each of 120 ticks with all eight bubbles open, one-minute load average 7 to 10
+(other sessions were building). ms p50/p95/p99/max.
+
+| | Space tick, run 1 | run 2 | run 3 | Space writes a tick | Bytes a tick |
+|---|---|---|---|---|---|
+| before (`6c86731fb`) | 5.33/8.36/9.05/11.79 | 4.94/6.90/7.50/7.71 | 5.61/7.78/9.82/11.85 | 8.1 | 486,544 |
+| after | 1.40/2.29/2.48/7.73 | 1.22/1.36/1.68/2.04 | 1.14/1.23/1.60/2.06 | 23.7 | 151,978 |
+
+MW.20 read the base's tick at 4.0 ms at `fb39c2b5`; the 5.3 here is the same lane a week
+of code later on a busier box. The rest of the second's ticks are unchanged (2.2 to 2.6 ms).
+Steps 960 of 960, thinks 1,920, held steps 0 in every run, before and after.
+
+### The stories
+
+- `voyage::co12_a_restart_between_two_steps_restores_the_saved_bubble`: two customs
+  pickets open (`flown_into_pickets`), stepped until the rings are full and sliding,
+  restarted over the kept store (`reboot_with`); the bubbles read back equal the world's,
+  thinks owed, snapshots and tape included. Again after the crew's `+helm/heading` between
+  two steps (a change to the record with no snapshot taken), and again after one more step.
+  Each round checks the store holds exactly the snapshot documents the records name.
+- `voyage::co12_a_store_written_before_the_cut_reads_and_is_written_apart`: the record put
+  back whole, as main writes it, with the snapshot documents removed; it reads back the
+  same, its first save writes it apart, a step's save after that is two sets and a delete
+  and under half the whole record's bytes, and a restart brings it back.
+
+Mutations, each run on conclav.dev against both stories:
+
+| Mutation | Result |
+|---|---|
+| M1: a new snapshot's document is never written | both fail (the restart reads no bubble back) |
+| M2: a changed record is not marked dirty (`core_changed` only for a new bubble) | the restart story fails at round 2: the heading order's tape entry is lost |
+| M3: a slot the ring let go is never deleted | both fail (a stray snapshot document; `(2, 0)` for `(2, 1)`) |
+
+M2 survived the first form of the restart story, which gave no order: a step always changes
+the slots, which writes the record anyway. The order between two steps is why the story has
+one.
+
+Every existing tacsim test passes unchanged (`cargo test -p tacsim`, conclav.dev).
+
+### Found, not fixed
+
+1. **A closed bubble's summary is still copied and compared every tick.**
+   `SpaceBubbleBook::completed` keeps up to eight `CompletedInterdictionBubble`s, each with its
+   whole tape and snapshots, and they ride the auxiliary document. `persist_space_state`
+   clones the book (now without the open bubbles) and `without_per_entity_maps` clones it
+   twice more for the auxiliary compare. On a server that has closed eight bubbles that is
+   about 64 bubble copies cloned three times a tick, and the auxiliary document is written
+   whole when any of it changes. The MW.20 lane closes no bubble, so this is not measured.
+   The same treatment (summaries in documents of their own, compared in place) fits.
+2. **A step's record still carries the live bubble that its newest snapshot also holds.**
+   The snapshot is taken at the end of the step, so the two are equal unless an order lands
+   after; a record that named the snapshot for its live bubble would halve a step's bytes
+   again. Not done: the record would then depend on its newest snapshot to read at all.

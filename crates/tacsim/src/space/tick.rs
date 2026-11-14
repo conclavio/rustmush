@@ -164,6 +164,9 @@ pub struct ActiveInterdictionBubble {
     /// Recorded input tape for deterministic replay (`§6.3`).
     pub tape: BubbleInputTape,
     /// Periodic snapshots captured at bubble creation and after each tick step (`§6.3`).
+    /// Saved apart from the record, each in a document of its own (doc 47 unit CO.12,
+    /// [`super::save`]).
+    #[serde(skip_serializing_if = "super::save::kept_apart")]
     pub snapshots: Vec<BubbleSnapshot>,
     /// Multi-party Kirkwood Customs Picket state when this bubble is a Kirkwood picket encounter (`SF.R6`, `D-35-11`).
     pub picket: Option<super::picket::KirkwoodPicketState>,
@@ -1515,8 +1518,14 @@ pub struct PersistedBubbleDoc {
     pub format: u16,
     /// Domain identity matching the key suffix.
     pub domain: DomainId,
-    /// Persisted [`ActiveInterdictionBubble`].
+    /// Persisted [`ActiveInterdictionBubble`]. In a document that names its `parts`, the
+    /// record's `snapshots` and its tape's `initial_snapshot` are not here but in their own
+    /// documents (doc 47 unit CO.12, [`super::save`]).
     pub bubble: ActiveInterdictionBubble,
+    /// The slots of the record's snapshots (doc 47 unit CO.12). Absent from a record written
+    /// whole, as every record was before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<super::save::BubbleParts>,
 }
 
 /// Per-hull free-flight store document (`tacsim:space:flight:{hull}`, `SF.R21`, `35c` §6.2).
@@ -1655,6 +1664,18 @@ pub fn load_space_kv_entry(store: &mut TacsimStore, key: &str, value: &serde_jso
             }
             _ => false,
         }
+    } else if key.starts_with(super::save::SPACE_BUBBLE_SNAPSHOT_PREFIX) {
+        // Doc 47 unit CO.12: one of an open bubble's snapshots, put back into its record
+        // once every key is read (`super::save::finish_space_kv_load`).
+        super::save::stash_bubble_snapshot(store, key, value)
+    } else if let Some((dom, true)) = key
+        .strip_prefix(SPACE_BUBBLE_PREFIX)
+        .and_then(|d| d.parse::<u64>().ok())
+        .map(|d| (DomainId(d), super::save::names_its_parts(value)))
+    {
+        // Doc 47 unit CO.12: a record saved without its snapshots waits for them.
+        super::save::stash_bubble_core(store, dom, key, value);
+        true
     } else if let Some(dom_str) = key.strip_prefix(SPACE_BUBBLE_PREFIX) {
         match (
             dom_str.parse::<u64>().ok().map(DomainId),
@@ -1813,7 +1834,16 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
     {
         return;
     }
-    let Some(book) = ctx.w.module_state::<SpaceBubbleBook>().cloned() else {
+    // Doc 47 unit CO.12: the open bubbles are most of the book and most of every bubble is
+    // its snapshots, so the bubbles are neither copied nor compared whole here. The book is
+    // copied with its bubbles lifted out, and the bubbles are diffed against the last save's
+    // copies in place (`super::save`).
+    let Some(rest) = ctx.w.module_state_mut::<SpaceBubbleBook>().map(|book| {
+        let bubbles = std::mem::take(&mut book.by_domain);
+        let rest = book.clone();
+        book.by_domain = bubbles;
+        rest
+    }) else {
         return;
     };
 
@@ -1825,57 +1855,26 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
     let standing_orders = mush_sim::tick::standing_orders_snapshot(ctx.w);
     let snapshot = SpacePersistedState {
         format: SPACE_STATE_FORMAT,
-        book,
+        book: rest,
         salvage,
         standing_orders,
     };
-    let prev = ctx
+    let (mut prev, mut parts) = ctx
         .w
-        .module_state::<TacsimStore>()
-        .and_then(TacsimStore::space_state)
-        .cloned();
-    let unchanged = match &prev {
-        Some(p) => *p == snapshot,
-        None => {
-            snapshot.book == SpaceBubbleBook::default()
-                && snapshot.salvage == SalvageClaimBook::new()
-                && snapshot.standing_orders == mush_sim::tick::StandingOrderBook::default()
-        }
-    };
-    if unchanged {
-        return;
-    }
+        .module_state_mut::<TacsimStore>()
+        .map(|store| (store.space_state.take(), super::save::take_parts(store)))
+        .unwrap_or_default();
+    let had_prev = prev.is_some();
+    // The last save's bubbles, kept whole: the cache is the record as the store holds it.
+    let mut saved_bubbles = prev
+        .as_mut()
+        .map(|p| std::mem::take(&mut p.book.by_domain))
+        .unwrap_or_default();
 
-    // 1. Per-domain active bubbles (`tacsim:space:bubble:{domain}`).
-    for (&domain, active) in &snapshot.book.by_domain {
-        if prev.as_ref().and_then(|p| p.book.by_domain.get(&domain)) != Some(active) {
-            let doc = PersistedBubbleDoc {
-                format: SPACE_STATE_FORMAT,
-                domain,
-                bubble: active.clone(),
-            };
-            if let Ok(value) = serde_json::to_value(&doc) {
-                crate::store::push_op(
-                    ctx.out,
-                    ModuleWrite::JsonSet {
-                        key: SmolStr::new(space_bubble_key(domain)),
-                        value,
-                    },
-                );
-            }
-        }
-    }
-    if let Some(p) = &prev {
-        for &domain in p.book.by_domain.keys() {
-            if !snapshot.book.by_domain.contains_key(&domain) {
-                crate::store::push_op(
-                    ctx.out,
-                    ModuleWrite::Del {
-                        key: SmolStr::new(space_bubble_key(domain)),
-                    },
-                );
-            }
-        }
+    // 1. Per-domain active bubbles (`tacsim:space:bubble:{domain}` and their snapshots,
+    //    `tacsim:space:bubble_snapshot:{domain}:{slot}`).
+    if let Some(book) = ctx.w.module_state::<SpaceBubbleBook>() {
+        super::save::save_bubbles(&book.by_domain, &mut saved_bubbles, &mut parts, ctx.out);
     }
 
     // 2. Per-hull free-flight records (`tacsim:space:flight:{hull}`).
@@ -2114,25 +2113,43 @@ pub fn persist_space_state(ctx: &mut Ctx<'_>) {
                 || aux_now.standing_orders != mush_sim::tick::StandingOrderBook::default()
         }
     };
-    if aux_changed {
-        match serde_json::to_value(&aux_now) {
-            Ok(value) => crate::store::push_op(
-                ctx.out,
-                ModuleWrite::JsonSet {
-                    key: SmolStr::new_static(SPACE_STATE_KEY),
-                    value,
-                },
-            ),
+    let aux_written = !aux_changed
+        || match serde_json::to_value(&aux_now) {
+            Ok(value) => {
+                crate::store::push_op(
+                    ctx.out,
+                    ModuleWrite::JsonSet {
+                        key: SmolStr::new_static(SPACE_STATE_KEY),
+                        value,
+                    },
+                );
+                true
+            }
             Err(error) => {
                 tracing::error!(%error, "tacsim: space state did not encode");
-                return;
+                false
             }
-        }
-    }
+        };
 
+    // The bubbles were written above whatever else did, so the cache keeps them; the rest
+    // of the state is the last save's when the auxiliary document did not encode, and is
+    // written again next tick.
+    let unchanged_empty = !had_prev
+        && saved_bubbles.is_empty()
+        && snapshot.book == SpaceBubbleBook::default()
+        && snapshot.salvage == SalvageClaimBook::new()
+        && snapshot.standing_orders == mush_sim::tick::StandingOrderBook::default();
+    let mut kept = match prev {
+        Some(prev) if !aux_written => prev,
+        _ => snapshot,
+    };
+    kept.book.by_domain = saved_bubbles;
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-        store.space_state = Some(snapshot);
-        store.space_state_held = true;
+        store.space_bubble_parts = parts;
+        if !unchanged_empty {
+            store.space_state = Some(kept);
+            store.space_state_held = true;
+        }
     }
 }
 
@@ -2144,12 +2161,14 @@ pub fn boot_read(ctx: &mut Ctx<'_>, kv: &[(SmolStr, serde_json::Value)]) {
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
         store.space_state = None;
         store.space_state_held = false;
+        super::save::forget(store);
         for (key, value) in kv {
             if key.as_str() == SPACE_STATE_KEY || key.as_str().starts_with(SPACE_KEY_PREFIX) {
                 has_space_keys = true;
                 load_space_kv_entry(store, key.as_str(), value);
             }
         }
+        super::save::finish_space_kv_load(store);
     }
     if !has_space_keys {
         return;
