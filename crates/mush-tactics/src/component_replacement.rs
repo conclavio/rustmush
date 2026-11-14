@@ -293,16 +293,25 @@ impl Binding {
         for r in refs {
             definitions.get_exact(&r).map_err(|_| refused())?;
         }
-        // This lane accepts a real intact incoming component, never a damage
-        // reset of unrelated cells. Its asset pointer is still not custody proof.
+        // This lane accepts a real incoming component of the target's own shape, never a
+        // damage reset of unrelated cells. Its asset pointer is still not custody proof. Doc 47
+        // CO.4 (ruling R-47-5): a component a refit displaced is stored and may go in again
+        // carrying the condition and cell values it came out with, so the incoming state is the
+        // trusted policy's (an intact component for a fresh core); its definition, mount, cell
+        // set and ranges and capabilities stay the target's own.
         let baseline = TacticalUnit::from_spec(&target, unit.object()).map_err(|_| refused())?;
         let healthy = ComponentState::capture(&baseline, &self.component).map_err(|_| refused())?;
         let incoming = &choice.incoming;
+        let shaped =
+            |a: &crate::ScalarCell, b: &crate::ScalarCell| a.min == b.min && a.max == b.max;
         if incoming.installed().asset.is_none_or(|a| a.0 == 0)
-            || incoming.installed().condition != healthy.installed().condition
             || incoming.installed().definition != healthy.installed().definition
             || incoming.installed().install != healthy.installed().install
-            || incoming.cells() != healthy.cells()
+            || incoming.cells().len() != healthy.cells().len()
+            || incoming
+                .cells()
+                .iter()
+                .any(|(id, cell)| healthy.cells().get(id).is_none_or(|h| !shaped(cell, h)))
             || incoming.capabilities() != healthy.capabilities()
         {
             return Err(refused());

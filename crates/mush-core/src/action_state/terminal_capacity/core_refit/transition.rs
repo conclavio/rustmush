@@ -159,9 +159,17 @@ fn release(before: &View<'_>, after: &View<'_>, r: &Row) -> Result<(), ActionSta
     }
     Ok(())
 }
+/// A core a fitting may take: one that was never fitted (`released`), or one a refit
+/// displaced and returned to its owner's hands (`detached`; doc 47 CO.4, ruling R-47-5).
+pub(super) fn admissible(head: &Value) -> bool {
+    matches!(
+        head.pointer("/position/state").and_then(Value::as_str),
+        Some("released" | "detached")
+    )
+}
 fn admission_heads(before: &View<'_>, r: &Row) -> Result<(), ActionStateError> {
     if let Some(a) = value(before, &r.key(ASSET)?)?
-        && a.pointer("/position/state") != Some(&json!("released"))
+        && !admissible(&a)
     {
         return Err(refused("core refit incoming preimage"));
     }

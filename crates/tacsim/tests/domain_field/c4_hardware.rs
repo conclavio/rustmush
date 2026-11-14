@@ -24,7 +24,7 @@ use mush_economy::core_integration::{CoreClass, DieSource, require_core_delivery
 use mush_industry::core_production::DieClass;
 use mush_org::PrincipalId;
 use serde_json::json;
-use tacsim::definitions::core_replacement::{RIG_I, RIG_II, RIG_III};
+use tacsim::definitions::core_replacement::{RIG_II, RIG_III};
 use tacsim::launch::end_user::END_USER_DONE;
 use tacsim::minds::registry_inspection::{HullClass, Provenance};
 
@@ -91,8 +91,8 @@ fn core_of(world: &M8World, hull: ObjId) -> Option<(tacsim::arena::core::CoreCla
 }
 
 /// **Where the kernel's refit record puts `core`** (`mush-core`'s `industry_refit_assets`
-/// head): `pending`, `mounted`, `released` or `detached`. A core is admitted to a fitting only
-/// with no head or a `released` one.
+/// head): `pending`, `mounted`, `released` or `detached`. A core is admitted to a fitting with no
+/// head, a `released` one or (doc 47 CO.4) a `detached` one, if it came out whole.
 fn head_of(world: &M8World, core: ObjId) -> String {
     world
         .rows("industry_refit_assets")
@@ -166,13 +166,12 @@ fn try_refit(
 ///    in the first one's place. The root is the family's Class II; the dent and every other
 ///    cell and component outside the core are as they were; the displaced Class III core is
 ///    back in the pilot's hands, still theirs, unencumbered.
-/// 6. **A core is fitted once.** The core fitted in the first rig is in that hull and not in
-///    the pilot's hands, so the shop will not offer it for the second rig. The displaced core
-///    is in the pilot's hands and the shop offers it, but the kernel refuses the acceptance:
-///    it admits a core to a fitting only if its head is absent or `released`
-///    (`mush-core`'s `core_refit` heads), and a displaced core's reads `detached`. So it
-///    stays the pilot's and stays out. Nothing is charged for either try. A third core, fresh
-///    from the shop, goes into the second rig, so the second rig was never the reason.
+/// 6. **A fitted core is not offered; a stored one is fitted again** (doc 47 CO.4, ruling
+///    R-47-5, which reverses doc 17f §9's "a second install cannot reuse it"). The core fitted
+///    in the first rig is in that hull and not in the pilot's hands, so the shop will not offer
+///    it for the second rig, and nothing is charged. The displaced core is stored in the pilot's
+///    hands (its kernel head `detached`), came out whole, and goes into the second rig: its root
+///    is the rig family's Class III and the pilot pays the fitting fee.
 /// 7. **A second restart** keeps both rigs as they stood.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -370,56 +369,40 @@ fn c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced() {
     assert_eq!(displaced.title_owner, PrincipalId::Object(pilot));
     assert!(displaced.encumbrances.is_empty(), "{displaced:?}");
 
-    // 6. A core is fitted once. The fitted core is in its hull, not in the pilot's hands, and
-    // the shop will not offer it. The displaced core is in the pilot's hands, the shop offers
-    // it, and the kernel refuses the acceptance: its head reads `detached`. Nothing is charged
-    // and nothing moves.
+    // 6. A fitted core is not offered: it is in its hull, not in the pilot's hands. Nothing is
+    // charged and nothing moves.
     let wallet = credit(&world, pilot).1;
     assert_eq!(head_of(&world, second), "mounted");
     assert_eq!(head_of(&world, core), "detached");
-    for (name, again, class, stage) in [
-        (
-            "the fitted core",
-            (second_built, second),
-            DieClass::II,
-            "offer:",
-        ),
-        (
-            "the displaced core",
-            (built, core),
-            DieClass::III,
-            "accept:",
-        ),
-    ] {
-        let refused = try_refit(&mut world, payer, spare, again, class)
-            .expect_err("a core that has been mounted is not fitted again");
-        assert!(refused.starts_with(stage), "{name}: {refused}");
-        assert!(refused.contains(REFIT_REFUSAL), "{name}: {refused}");
-        assert_eq!(credit(&world, pilot).1, wallet, "{name}: nothing charged");
-        assert_eq!(core_of(&world, spare), None, "{name}");
-    }
+    let refused = try_refit(
+        &mut world,
+        payer,
+        spare,
+        (second_built, second),
+        DieClass::II,
+    )
+    .expect_err("a fitted core is not offered for another hull");
+    assert!(refused.starts_with("offer:"), "{refused}");
+    assert!(refused.contains(REFIT_REFUSAL), "{refused}");
+    assert_eq!(credit(&world, pilot).1, wallet, "nothing charged");
+    assert_eq!(core_of(&world, spare), None);
+    // The stored core is fitted again (R-47-5): into the second rig, for the fitting fee.
+    try_refit(&mut world, payer, spare, (built, core), DieClass::III)
+        .unwrap_or_else(|refused| panic!("the stored core's second fitting: {refused}"));
+    assert_eq!(unit(&world, spare).schema().key().id.as_str(), RIG_III);
     assert_eq!(
-        core_of(&world, tv),
-        Some((tacsim::arena::core::CoreClass::II, true))
+        core_of(&world, spare),
+        Some((tacsim::arena::core::CoreClass::III, true))
     );
-    assert_eq!(place_of(&world, core), pilot);
-    assert_eq!(
-        title_of(&world, core).title_owner,
-        PrincipalId::Object(pilot),
-        "the displaced core is still the pilot's"
-    );
-    // A core fresh from the shop goes into the second rig: the rig was never the reason.
-    let (third_built, third) = world.integrate(pilot, payer, DieClass::I);
-    for thing in [pilot, spare] {
-        stand(&mut world, thing, factory);
-    }
-    let wallet = credit(&world, pilot).1;
-    try_refit(&mut world, payer, spare, (third_built, third), DieClass::I)
-        .unwrap_or_else(|refused| panic!("a fresh core's fitting: {refused}"));
-    assert_eq!(unit(&world, spare).schema().key().id.as_str(), RIG_I);
+    assert_eq!(head_of(&world, core), "mounted");
+    assert_eq!(place_of(&world, core), spare);
     assert_eq!(
         credit(&world, pilot).1,
         wallet - mush_economy::core_refit::FITTING_MINOR
+    );
+    assert_eq!(
+        core_of(&world, tv),
+        Some((tacsim::arena::core::CoreClass::II, true))
     );
     for rig in [tv, spare] {
         stand(&mut world, rig, bay);
@@ -433,7 +416,7 @@ fn c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced() {
     assert_eq!(unit(&world, spare), other);
     for (rig, fitted, grade, class) in [
         (tv, second, CoreClass::II, HullClass::II),
-        (spare, third, CoreClass::I, HullClass::I),
+        (spare, core, CoreClass::III, HullClass::III),
     ] {
         let record = inspect(&mut world, rig);
         assert_eq!(record.core, Some(fitted));
@@ -441,5 +424,140 @@ fn c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced() {
         assert_eq!(record.governed, Some(true));
         assert_eq!(record.provenance, certified(grade));
     }
+    crate::excursions::no_refused_writes(&world.rig.tw);
+}
+
+/// Staff mark the core in `hull` with `condition` (`@unit/damage`), as a fight would.
+fn harm_core(world: &mut M8World, hull: ObjId, condition: &str) {
+    let before = unit(world, hull);
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetComponentCondition {
+            component: mush_tactics::ComponentId::new("core").expect("the core's id"),
+            condition: mush_tactics::ConditionId::new(condition).expect("a condition"),
+        }],
+        Some(before.revision()),
+        Some("the core takes harm".into()),
+    )
+    .expect("a plan");
+    god(
+        &mut world.rig,
+        &format!(
+            "@unit/damage #{}={}",
+            hull.0,
+            serde_json::to_string(&plan).expect("the plan's text")
+        ),
+    );
+}
+
+/// The condition word the core in `hull` carries.
+fn core_condition(world: &M8World, hull: ObjId) -> String {
+    unit(world, hull)
+        .component(&mush_tactics::ComponentId::new("core").expect("the core's id"))
+        .expect("a core")
+        .condition
+        .as_str()
+        .to_owned()
+}
+
+/// **Doc 47 CO.4, ruling R-47-5: a core a refit displaces, and that is not destroyed, is
+/// stored and fitted again; a destroyed one is gone.** On the launch world, with nothing minted
+/// but the pilot's starting credits (staff's top-up, as in story 4):
+///
+/// 1. **Stored.** The pilot's Class II core is fitted to the first rig and takes harm there
+///    (`damaged`). A Class I core is fitted in its place; the Class II core comes out into the
+///    pilot's hands, still titled to them and unencumbered: its kernel head reads `detached`.
+/// 2. **Fitted again, as it came out.** The stored core is fitted to the second rig. Its root is
+///    the rig family's Class II, and the core goes in `damaged`, not as new: a refit is not a
+///    repair. The pilot pays the fitting fee and nothing else.
+/// 3. **Stored again.** A fresh Class I core displaces it from the second rig, and it is back
+///    in the pilot's hands, `detached`. (Its sale is doc 47 CO.13's: a governed core's title is
+///    a managed title, which no generic contract may move.)
+/// 4. **A destroyed core is gone.** The first rig's Class I core is destroyed, and a fresh
+///    core displaces it. It comes out into the pilot's hands (the exchange returns what it
+///    takes) but no fitting takes it: the shop's offer is refused, and nothing is charged.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn co4_a_displaced_core_is_stored_and_fitted_again() {
+    let mut world = m8_world_field(("ahuna", "ahuna_port"), 2);
+    let pilot = world.pilot;
+    let (tv, spare) = (world.tvs[0], world.tvs[1]);
+    let factory = world.deployment.hardware.factory;
+    fund(&mut world, pilot, 9_000_000);
+    let (payer, _) = credit(&world, pilot);
+    for rig in [tv, spare] {
+        title_to_pilot(&mut world, rig);
+    }
+    let done = run(&mut world.rig.tw, pilot, "+enduser/apply go");
+    assert!(
+        done.contains(END_USER_DONE.split("{fee}").next().expect("a head")),
+        "{done}"
+    );
+    let (second_built, second) = world.integrate(pilot, payer, DieClass::II);
+    let (first_built, first) = world.integrate(pilot, payer, DieClass::I);
+    let (fresh_built, fresh) = world.integrate(pilot, payer, DieClass::I);
+    let (last_built, last) = world.integrate(pilot, payer, DieClass::I);
+    for thing in [pilot, tv, spare] {
+        stand(&mut world, thing, factory);
+    }
+
+    // 1. Stored.
+    try_refit(&mut world, payer, tv, (second_built, second), DieClass::II)
+        .unwrap_or_else(|refused| panic!("the Class II fitting: {refused}"));
+    harm_core(&mut world, tv, "damaged");
+    try_refit(&mut world, payer, tv, (first_built, first), DieClass::I)
+        .unwrap_or_else(|refused| panic!("the Class I fitting: {refused}"));
+    assert_eq!(
+        place_of(&world, second),
+        pilot,
+        "stored in the pilot's hands"
+    );
+    assert_eq!(head_of(&world, second), "detached");
+    let stored = title_of(&world, second);
+    assert_eq!(stored.title_owner, PrincipalId::Object(pilot));
+    assert!(stored.encumbrances.is_empty(), "{stored:?}");
+
+    // 2. Fitted again, carrying its condition.
+    let wallet = credit(&world, pilot).1;
+    try_refit(
+        &mut world,
+        payer,
+        spare,
+        (second_built, second),
+        DieClass::II,
+    )
+    .unwrap_or_else(|refused| panic!("the stored core's fitting: {refused}"));
+    assert_eq!(unit(&world, spare).schema().key().id.as_str(), RIG_II);
+    assert_eq!(head_of(&world, second), "mounted");
+    assert_eq!(place_of(&world, second), spare);
+    assert_eq!(core_condition(&world, spare), "damaged", "not repaired");
+    assert_eq!(
+        credit(&world, pilot).1,
+        wallet - mush_economy::core_refit::FITTING_MINOR,
+        "the fitting fee and nothing else"
+    );
+
+    // 3. Stored again.
+    try_refit(&mut world, payer, spare, (fresh_built, fresh), DieClass::I)
+        .unwrap_or_else(|refused| panic!("the fresh core's fitting: {refused}"));
+    assert_eq!(place_of(&world, second), pilot);
+    assert_eq!(head_of(&world, second), "detached");
+    assert_eq!(
+        title_of(&world, second).title_owner,
+        PrincipalId::Object(pilot),
+        "still the pilot's"
+    );
+
+    // 4. A destroyed core is gone.
+    harm_core(&mut world, tv, "destroyed");
+    try_refit(&mut world, payer, tv, (last_built, last), DieClass::I)
+        .unwrap_or_else(|refused| panic!("the last fitting: {refused}"));
+    assert_eq!(place_of(&world, first), pilot);
+    let wallet = credit(&world, pilot).1;
+    let refused = try_refit(&mut world, payer, spare, (first_built, first), DieClass::I)
+        .expect_err("a destroyed core is fitted into nothing");
+    assert!(refused.starts_with("offer:"), "{refused}");
+    assert!(refused.contains(REFIT_REFUSAL), "{refused}");
+    assert_eq!(credit(&world, pilot).1, wallet, "nothing charged");
+    assert_eq!(head_of(&world, first), "detached");
     crate::excursions::no_refused_writes(&world.rig.tw);
 }

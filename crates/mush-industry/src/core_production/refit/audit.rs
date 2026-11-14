@@ -194,10 +194,12 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, r: &Runtime) -> Result<Projection, Erro
         let row = orders.get(id).ok_or(Error::Integrity)?;
         let o = &row.intent.offer;
         if !terminal {
-            if assets
-                .get(&o.incoming)
-                .is_some_and(|a| !matches!(a.position, AssetPosition::Released { .. }))
-            {
+            if assets.get(&o.incoming).is_some_and(|a| {
+                !matches!(
+                    a.position,
+                    AssetPosition::Released { .. } | AssetPosition::Detached { .. }
+                )
+            }) {
                 return Err(Error::Integrity);
             }
             match (hulls.get(&o.hull), o.displaced_asset()) {

@@ -166,7 +166,7 @@ pub(super) fn heads(view: &View<'_>, rows: &BTreeMap<u64, Row>) -> Result<(), Ac
         if !terminal {
             if assets
                 .get(&incoming)
-                .is_some_and(|v| v.pointer("/position/state") != Some(&json!("released")))
+                .is_some_and(|v| !super::transition::admissible(v))
             {
                 return Err(refused("core refit incoming already held or installed"));
             }

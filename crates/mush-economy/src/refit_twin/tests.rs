@@ -61,9 +61,13 @@ pub(crate) trait Rig: Leg {
     fn rival(intent: &FundingIntent<Self>) -> FundingIntent<Self>;
     /// The same order with its exclusive object changed.
     fn elsewhere(intent: &FundingIntent<Self>) -> FundingIntent<Self>;
-    /// Whether the exclusive object is held while the order is open (the bay) or once it is
-    /// installed (the core refit).
+    /// Whether the exclusive object is held while the order is open (both legs since doc 47
+    /// CO.4) or once it is installed.
     const EXCLUSIVE_WHILE_OPEN: bool;
+    /// Whether an installed order still holds its object for a fresh Accept: the core refit's
+    /// incoming core is in a hull until a later installation displaces it (doc 47 CO.4); the
+    /// bay's hull is free again.
+    const INSTALLED_HOLDS: bool;
     /// Suppliers' attributions the family refuses for the fixture's subject, each named.
     fn bad_suppliers(intent: &FundingIntent<Self>) -> Vec<(&'static str, Self::Supplier)>;
     /// The leg composed with no definitions yet (`cleanup_ready` must refuse it).
@@ -290,8 +294,8 @@ pub(crate) fn ct7_a_spent_commit_posts_no_plan<M: Rig>() {
 }
 
 /// A replayed history set in which two orders share what the leg holds exclusive
-/// ([`Leg::exclusive`]: the bay's hull while open, the core refit's incoming core once
-/// installed) is refused; the same set with the second order elsewhere is accepted.
+/// ([`Leg::exclusive`]: the bay's hull and the core refit's incoming core, while open) is
+/// refused; the same set with the second order elsewhere is accepted.
 pub(crate) fn ct7_a_replayed_history_keeps_the_legs_exclusive_object<M: Rig>() {
     let first = M::intent();
     let rival = M::rival(&first);
@@ -395,9 +399,9 @@ pub(crate) fn ct7_the_fee_and_its_payee_follow_the_site<M: Rig>() {
 }
 
 /// An Accept is replayed only while no retained order holds what it would take: the same hull
-/// while that order is open (both legs), and for the core refit the same incoming core unless
-/// that order was cancelled ([`Leg::conflicts`]). The same Accept at another object, or after
-/// the first order was cancelled, is replayed.
+/// while that order is open (both legs), and for the core refit the same incoming core while it
+/// is open or installed and not since displaced ([`Leg::conflicts`]; doc 47 CO.4). The same
+/// Accept at another object, or after the first order was cancelled, is replayed.
 pub(crate) fn ct7_a_second_accept_waits_for_the_first<M: Rig>() {
     let first = M::intent();
     let rival = M::rival(&first);
@@ -418,9 +422,9 @@ pub(crate) fn ct7_a_second_accept_waits_for_the_first<M: Rig>() {
     );
     assert_eq!(
         replay(End::Installed, &rival),
-        M::EXCLUSIVE_WHILE_OPEN,
+        !M::INSTALLED_HOLDS,
         "the same object, first installed: the bay's hull is free again, the core refit's \
-         incoming core is fitted"
+         incoming core is in its hull"
     );
 }
 
@@ -582,4 +586,36 @@ pub(crate) fn history<M: Rig>(
         result: part.map_or_else(M::cancelled, M::installed),
     }));
     (h, tx)
+}
+
+/// **Doc 47 CO.4 (ruling R-47-5): a core a later installation displaced is accepted again.**
+/// The first order fits the core into a hull; while it is there a fresh Accept for it
+/// conflicts. A second order fits another core into that hull, displacing it, and the same
+/// Accept then replays: the core is stored in its owner's hands and may be fitted again.
+#[test]
+fn co4_a_displaced_core_is_accepted_again() {
+    use super::Core;
+    let first = <Core as Rig>::intent();
+    let core = first.subject.incoming;
+    let mut displacing = <Core as Rig>::rival(&first);
+    displacing.subject.hull = first.subject.hull;
+    displacing.subject.incoming = mush_core::ObjId(52);
+    displacing.subject.displaced = Some(core);
+    let mut again = <Core as Rig>::rival(&first);
+    again.subject.order = 3;
+    again.subject.offer = CommitToken::from_bytes([7; 16]);
+    again.supplier.operation = again.subject.offer;
+    let replay = |before: &[&FundingIntent<Core>]| {
+        let mut audit = ReceiptAudit::<Core>::default();
+        for (n, intent) in (1_u8..).zip(before) {
+            let (h, _) = history(intent, n, End::Installed);
+            h.validate().expect("each history is valid alone");
+            audit.histories.insert(h.funding.commit, h);
+        }
+        audit.finish_replay().expect("the retained histories");
+        let (_, tx) = history(&again, 9, End::Open);
+        audit.prepare(&tx).is_ok()
+    };
+    assert!(!replay(&[&first]), "the core is in its hull");
+    assert!(replay(&[&first, &displacing]), "the core is stored");
 }

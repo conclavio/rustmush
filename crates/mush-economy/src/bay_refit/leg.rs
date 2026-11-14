@@ -232,7 +232,10 @@ impl Leg for Bay {
             .is_none()
             .then_some(history.intent.subject.hull)
     }
-    fn conflicts(_: &refit_twin::receipt::PaymentHistory<Self>, _: &FundingIntent) -> bool {
+    fn conflicts(
+        _: &std::collections::BTreeMap<CommitToken, refit_twin::receipt::PaymentHistory<Self>>,
+        _: &FundingIntent,
+    ) -> bool {
         false
     }
 }

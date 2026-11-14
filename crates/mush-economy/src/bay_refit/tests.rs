@@ -94,6 +94,7 @@ impl Rig for Bay {
     const FEE: i64 = 12_500;
     const PROVIDER: crate::AccountId = crate::AccountId(1);
     const EXCLUSIVE_WHILE_OPEN: bool = true;
+    const INSTALLED_HOLDS: bool = false;
     fn intent() -> FundingIntent {
         intent()
     }

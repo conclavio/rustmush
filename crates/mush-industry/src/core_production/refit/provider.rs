@@ -190,6 +190,16 @@ impl Provider {
                 s.class,
                 s.recipe,
             )?;
+            // Doc 47 CO.4 (R-47-5): a core a refit displaced is stored in its owner's hands and
+            // may be fitted again carrying its condition; a destroyed one is gone.
+            if let Some(left) =
+                super::policies::displaced_by(ctx.world().map_err(bad)?, s.incoming)?
+            {
+                let registry = r.config.definitions.0.get().ok_or(Error::Unavailable)?;
+                if super::policies::destroyed(registry, &left)? {
+                    return Err(Error::Unavailable);
+                }
+            }
             let row = RefitOffer {
                 format: 1,
                 sequence: index.offers.checked_add(1).ok_or(Error::Capacity)?,
