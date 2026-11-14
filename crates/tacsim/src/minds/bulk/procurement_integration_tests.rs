@@ -113,10 +113,16 @@ fn land(
     };
     let (action, request, _) = resolved.into_authoritative_parts();
     check_eq!(action, submit.action);
-    let Ok((prepared, _)) = world
+    let prepared = world
         .engine
-        .prepare_registered_composed_resolved_authoritative_action(&action, &request, token(n))
-    else {
+        .prepare_registered_composed_resolved_authoritative_action(&action, &request, token(n));
+    let Ok((prepared, _)) = ct0b::seen(
+        &action,
+        actor,
+        &submit.parameters,
+        prepared,
+        ct0b::image_reader(&world.image),
+    ) else {
         return Ok(false);
     };
     let (writes, install) = prepared.into_parts();

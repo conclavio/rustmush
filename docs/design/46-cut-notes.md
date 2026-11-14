@@ -547,6 +547,257 @@ and provider files without the first item):
 - No defect was found: nothing non-deterministic, nothing that differs between Windows and Linux,
   no terminal state that cannot be reached by the code that owns it.
 
+### CT.0b
+
+The second pull request CT.0 owed: the capture on the real composed path. Built 2026-11-14 on
+main `26d30dd4b` (CT.1, CT.2 and CT.3 in). It adds four snapshot files and moves none:
+`git diff --stat origin/main -- '*.snap'` shows four additions. The rule at the top of this note
+holds for the four new files as it does for CT.0's.
+
+**Built.**
+
+- **The record**, `crates/tacsim/src/minds/bulk/ct0b_capture.rs`, a test module of the pinned M7
+  story (`original_purchase_integration_tests.rs`,
+  `genuine_registry_original_purchase_grant_refund_and_paired_recovery`). The story calls
+  `ct0b::begin()` first and `ct0b::finish()` last. Between them, every preparation by one of the
+  story's rigs of a renewal twin's or a purchase twin's market action is recorded: the actor and
+  the parameters; then the provider's outcome and the transition's replay writes, or the
+  provider's refusal as printed. When the rig installs that transition the record says so, and
+  when the transition ended an operation (it wrote a receipt) the store's documents under every
+  key the twin wrote since its last end are read back from the rig's store. A submission the
+  market's dispatched service queued is recorded when the rig takes it from the engine: its actor,
+  action, parameters and idempotency key.
+- **The hooks**, one line each where a rig prepares or installs: the personal rig
+  (`entitlement_integration_tests.rs` `prepare` and `prepare_public`,
+  `dependent_owner_integration_tests.rs` `apply`), the House rig
+  (`house_purchase_integration_tests.rs` `signed`, `direct`, `persist`), the two service rigs
+  (`renewal_service_integration_tests.rs` and `house_renewal_service_integration_tests.rs`, `next`
+  and `land`), the IC rig that runs the two-seat House purchase
+  (`paid_resale_integration_tests.rs` `prepare` and `take_install`,
+  `house_two_seat_integration_tests.rs` `act`), the procurement tick's `land`, and the paid-resale
+  route's rig (`paid_resale_route_integration_tests.rs` `prepare` and `land`), which is where a
+  transferred holder renews. A hook passes its argument through: outside the story (no `begin`)
+  it records nothing, and for any action that is not a twin's it returns at once.
+- **Four committed files**, `crates/tacsim/src/minds/bulk/ct0b/renewal_personal.snap`,
+  `renewal_house.snap`, `purchase_personal.snap` and `purchase_house.snap`, compared by
+  `mush_testkit::snapshot` at the story's end. A difference fails the story with the kit's
+  report (the file, the line, both sides).
+- **In the kit**, `mush_testkit::snapshot::refuses_left_out`: the pin for a decode-only
+  attribute that requires a key (below, "The smaller pins").
+
+No production source was edited and no visibility was widened. The story's name, tier, path and
+`M7_STORY` lines are as they were; the record prints two kinds of line of its own, both starting
+`CT0B_CAPTURE`.
+
+**The route, and the measurement behind it.** CT.0 named two routes. This is the first: the
+story compares. The second (a fast composed walk over a pre-rated store) needs a generator and a
+staleness check that CT.2's note describes and nobody has built, and the measurement did not
+call for it:
+
+| Question | Measured | Answer |
+|---|---|---|
+| Are the story's stamps, tokens and ids the same from run to run? | Three runs of one binary at once on conclav.dev, the unprojected record of each (7.3 MB, every digest and number as it is) compared by `cmp` | Byte-identical, all four files. Again with the final recorder: TBD-V4 |
+| And on Windows? | One run on the owner's Windows box against the three Linux runs | Byte-identical. The rating's certificate id is the same on both. TBD-WIN |
+| What does the compare add to a pinned story? | The recorder times itself (`CT0B_CAPTURE recorder_ms=… compare_ms=…`) | 0.16 s in the hooks and 0.4 s comparing, of a 970 to 1,000 s story on conclav.dev; 0.9 s of 1,057 s on Windows. Noise |
+| Does the record see every twin transition the story runs? | An audit build (never committed) in which the engine printed every composed preparation and the recorder every one it saw | The first audit found 30 renewal preparations the hooks missed, all in the paid-resale route's rig, which was then hooked. The second: 353 of 353. The story's other 119 market preparations are the legacy original purchase (versions 1 and 2) and the paid resale, which are not twins |
+| Would another programme's edit move the committed files? | Two variants (never committed), each compared with the committed files: a comment added to `crates/tacsim/src/minds/fees.rs`, which the registry manifest pins by its source text; and every object made after the shipped content renumbered by seven | The comment moves 2,348 lines of the unprojected record and none of the committed files: the story passes. The renumbering: TBD-SHIFT |
+
+The story is 16 to 17 minutes on conclav.dev, not the half hour CT.0's note gives: that figure
+is the hosted runner's.
+
+**What a file holds.** Only what the twins' families own, so that a change elsewhere does not
+re-bless it. The projection is in `ct0b_capture.rs` and is five rules:
+
+- A write in the `market`, `roll` or `economy` namespace is written as the tagged JSON a bundle
+  carries. Any other write (an object, another module's document) is written by its kind,
+  namespace and key alone.
+- Of a journal chunk, only the entries the transition appended to what the rig's store held. A
+  chunk's earlier entries are other transactions' (a mint, a filing, a legacy purchase).
+- No digest. Every digest on this path inherits TacSim's registry manifest: each action's
+  descriptor refers to it, and the manifest pins the unit catalogue and the source text of
+  thirteen files of the minds' own code. A 64-digit hex string, and a hash written as an array of
+  32 bytes (economy's consent hash and plan hash), is written `<dN>`, numbered by its first
+  appearance in its section. What the digests join is kept; their values are not.
+- No object number. The story's worlds load the shipped out-of-character content (about a
+  hundred objects), so a charter or a character made afterwards has a number that moves with
+  every room a content pack adds. The numeric value of a field that holds a charter, a character
+  or a principal (`charter`, `acting`, `object`, `Object`, `holder`, `buyer`, `seller`, `actor`,
+  `character`, `publisher`) is written `<oN>`, numbered the same way, as is the actor of a
+  request.
+- The dispatched service's submission key is a digest, so the line under it says what it is a
+  digest of. The recorder makes the digest again from the literal domain
+  (`market.renewal_submission.v1`, `market.house_renewal_submission.v1`) over the actor, the
+  action, the parameters and the service's selection, and fails the story if the key is not it.
+  This is the one place a digest's domain is pinned in a committed file.
+
+What is left in a file does depend on the story: licence, contract, hold and journal numbers
+count what the story did before, and economy's `meta` document carries its counters. A change to
+the story's own drive of the twins, or to an earlier phase of the same store, moves the files and
+is re-blessed by whoever makes it, as the top rule says for a change outside doc 46. No doc 46
+unit edits the story (Q-46-6).
+
+**The digests are not lost.** With `CT0B_RAW_DIR=<directory>` the story also writes each record
+there unprojected (`<file>.raw`, every digest and number as it is) and this run's projected one
+beside it (`<file>.snap`). Two unprojected records of one tree are byte-identical (the table
+above), so a unit compares its base's with its tip's: see "For CT.5 and CT.6".
+
+**The files blessed**, once, by this pull request, on conclav.dev
+(`COMMERCE_SNAPSHOT_BLESS=1` on the story):
+
+| File | Preparations | Of them refused | Installed | Service submissions | Lines | Size |
+|---|---|---|---|---|---|---|
+| `renewal_personal.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
+| `renewal_house.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
+| `purchase_personal.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
+| `purchase_house.snap` | TBD | TBD | TBD | TBD | TBD | TBD |
+
+**What the composed path reaches**, by file:
+
+- `renewal_personal.snap` (`market/{draft,fund,settle,refund,close}_mind_renewal@1` and
+  `close_mind_renewal_service@1`; the Roll's `renewal/writer.rs` `draft`, `fund`, `terminal`,
+  `close` and `service_close`): drafted, funded, granted, refunded, closed unfunded (declined and
+  expired), closed by the service (deadline reached and clock invalidated); all four attempts,
+  `automatic`, `buyer_retry` and, after a paid resale in the same store, `holder_automatic` and
+  `holder_retry`; a character holder and an organisation's acting character; the service's
+  submissions of a draft, a fund, a grant, a refund, a close and its own close, with both close
+  keys (`renewal.close.d.…` and `renewal.close.c.…`).
+- `renewal_house.snap` (the House twin's six actions; `house_renewal/writer.rs`): the same
+  states and attempts but the expired close, which the story does not drive for a House.
+- `purchase_personal.snap` (`market/{list,quote,purchase,settle,refund}_original_mind@3` and
+  `…_derived_mind@1`; the Roll's `entitlement/writer.rs` `fund` and `terminal`): listed, quoted,
+  funded, granted and refunded, for `original_v3` and `derived_v1`, sealed, open and open-resale
+  forms, a character buyer and an organisation's.
+- `purchase_house.snap` (`market/{list,quote,purchase,settle,refund}_house_mind@1` and `@2`;
+  `house_purchase/writer.rs`): the same states for `house_v1` and for the two-seat `house_v2`.
+
+This closes, on the composed path, four items of CT.0's "Not covered": item 1 (the Roll's
+writers; their readers run too, and what they read is in the rows the writers write), item 2
+(the outcome kinds `drafted`, `funded`, `granted`, `refunded`, `closed` and `service_closed`; both
+provider refusals as printed; both close key formats; the submission key's domain), item 4 (the
+House purchase's replay writes, with each row's family and schema envelope and the `registry`
+counts document) and item 5 (the transferred-holder attempts).
+
+**The smaller pins.**
+
+- **The market's House renewal submission domain** (CT.0's mutation M10, caught by nothing): the
+  fifth rule above. Mutations 7 and 8 below.
+- **The market's House purchase at the store**: by the composed capture (`purchase_house.snap`
+  holds its replay writes), not by a test helper beside the personal twin's `token_family`,
+  which would have been an edit to `mind_house/families.rs`.
+- **The three decode-only attributes CT.1 found unpinned.** `refuses_left_out` takes a fixture
+  whose optional field is absent and checks that it says so with an explicit `null`, that its
+  bytes decode back, and that the same object with the key left out is refused. Called from the
+  three `ct0_` tests that already build the fixtures, with no line added to a committed file:
+  the market's `HouseReceiptV1` (`mind_house/ct0_snapshot.rs`, a refunded receipt's
+  `issued_at_ic`), the Roll's `ConductResult` (`commerce/tests/ct0_conduct.rs`, a cancelled
+  result's `artifact` and `measurement`) and `MeterSummary` (`rating/tests/ct0_wire.rs`, the
+  `peak` of a meter that never thought). Each attribute was removed alone on a throwaway clone
+  and its test failed: `HouseReceiptV1 (refunded, not issued): a record with `issued_at_ic` left
+  out decoded`, `ConductResult (cancelled): a record with `artifact` left out decoded`,
+  `MeterSummary (no think, no peak): a record with `peak` left out decoded`.
+- **Not done:** economy's purchase twins as a crate's own walk, and the two record pins of
+  "Not covered" item 8 (`PendingRecord`, `PaidResaleRecord`). Economy's side of a purchase is in
+  the composed files (every `economy` write of a purchase transition: the contract, the hold, the
+  receipts, the appended journal entry), without its digests.
+
+**The mutations.** Each was made alone on a throwaway clone on conclav.dev (`perl` over one
+file, the story's test binary built, the file put back, the story run), never in the worktree.
+"Committed files" is what the story said; "Unprojected record" is the mutant's `CT0B_RAW_DIR`
+against the unmutated run's.
+
+TBD-MUTATIONS
+
+**Not covered.** A later unit must not read these files as proof of what is listed here.
+
+1. **A digest's value, in the committed files.** They hold no digest, so a digest domain that
+   nobody recomputes moves no committed line. On this path most are recomputed (by the kernel's
+   validators, or by the paired owner), and such a change fails the story itself (mutations 1
+   and 2); the two submission domains are pinned by the fifth rule. For every other digest the
+   proof is the unprojected comparison below, which a unit must run: a green story is not it.
+2. **The order of a writer's writes.** The kernel sorts a bundle's replay writes by their target
+   (`canonicalize_replay_writes`), so the order a writer emits them in is not persisted and no
+   file can show it (mutation 4).
+3. **What the story does not drive.** An expired close of a House renewal; a renewal or a
+   purchase under a changed manifest; a Follow birth. The kernel's and the crates' own walks
+   reach some of these (CT.0's tables); the composed path does not.
+4. **What a prepared action carries beside its outcome and its writes**: its definitions, its
+   eligible witnesses, its durable outbox and its semantic events are not recorded. Nor is an
+   offer's presentation (verb, label, help): the caller transitions are selected by verb, so a
+   changed verb fails the story, but the service-close offers (`mind-renewal-service`,
+   `house-renewal-service`) are selected by action and their presentation is still unpinned
+   (CT.0's "Not covered" item 3).
+5. **The readers' facts as such.** `reader.rs` runs on this path and what it reads is in the
+   rows the writers write; a fact a writer checks and does not store is seen only as a refusal.
+6. **Why a provider refused.** Every refusal of a twin's provider is one sentence
+   ("This renewal is unavailable or has changed.", "No personal mind entitlement is available
+   under these terms."), whatever the writer's `PublicationError` or the owner's reason was. The
+   file pins the sentence and that the story's refusals are refusals; a reworded internal reason
+   passes unseen, as CT.0's item 7 says of the kernel's.
+7. **The other families on the path**: the legacy original purchase (versions 1 and 2), the paid
+   resale, the charter transfer, the filings, recall and revocation. Their transitions run in
+   the story and are not recorded.
+8. **An object number in a field the projection does not name.** The list of fields is by
+   type, and the renumbering variant found two (`holder`, `buyer`) that the first list lacked. A
+   new field that carries a character made after the content would make a file move with the
+   shipped content; the variant's patch is kept with this unit's hand-over note.
+9. **Economy's purchase twins by a crate's own walk**, the two record pins of item 8, the
+   kernel's refusal reasons (item 7) and the registrations a composed engine cannot enumerate
+   (item 3): as CT.0 left them.
+
+**For CT.5 and CT.6.** The story is the proof for the Roll's writers and readers and the
+market's providers and service. Two commands, from the repository root:
+
+```sh
+STORY=minds::bulk::registry_integration_tests::original_purchase::genuine_registry_original_purchase_grant_refund_and_paired_recovery
+
+# 1. The committed files. A moved line fails the story with SNAPSHOT MOVED, the file, the
+#    line and both sides.
+cargo test --locked -p tacsim --lib $STORY -- --ignored --exact --test-threads=1 --nocapture
+
+# 2. The digests. The unprojected record at the unit's base, then at its tip, compared.
+#    (Two clones side by side, or one checkout twice.) The base must have CT.0b.
+CT0B_RAW_DIR=$HOME/ct0b-raw/base cargo test --locked -p tacsim --lib $STORY -- --ignored --exact --test-threads=1 --nocapture
+CT0B_RAW_DIR=$HOME/ct0b-raw/tip  cargo test --locked -p tacsim --lib $STORY -- --ignored --exact --test-threads=1 --nocapture
+diff -r $HOME/ct0b-raw/base $HOME/ct0b-raw/tip && echo "no byte moved on the composed path"
+```
+
+- **Run time.** On conclav.dev the story is 16 to 17 minutes (970 to 1,000 s measured, up to
+  six at once), and its test binary builds in about nine minutes cold and three and a half after
+  a change to `mush-roll` or `mush-market`, at sixteen jobs: so command 1 is about twenty
+  minutes, and command 2 about twenty-five with the two runs side by side. On the owner's
+  Windows box the story is 18 minutes (1,057 s) after a ten-minute build at two jobs. On a
+  hosted runner: TBD-HOSTED.
+- **In branch CI.** `gh workflow run ci.yml --ref <branch>` runs command 1 as the cell
+  "M7 author and buyer lifecycle" of `mind-commerce-acceptance` (the tacsim stories do not read
+  the pulse). Pull-request CI does not run it: the story is nightly tier, as before.
+- **Command 2 is the unit's own.** No job runs it. Both records come from the same tree but
+  for the unit's change, so a difference is the unit's: `diff` names the file and the line, and
+  the line's section says which action of which preparation. If the unit edits a file the
+  registry manifest pins (none of `mush-roll`, `mush-market`, `mush-economy` or `mush-core`
+  is), every digest moves and command 2 proves nothing: command 1 still does.
+- A unit that splits or renames nothing in the story leaves both commands green. A unit may
+  not re-bless: `COMMERCE_SNAPSHOT_BLESS=1` on the story is for a change outside doc 46 that
+  means to move a line, with the diff named in its cut note.
+- What these commands do not prove is the list above. For CT.5 that is chiefly item 3 (the
+  ends the story does not reach, which the Roll's own `ct0_` walks hold structurally) and
+  item 6; for CT.6, item 4 (the service-close presentation) and the commands' printed text,
+  which the market's own snapshot holds.
+
+**Found on the way.**
+
+- **The registry manifest pins source text**, more than twenty files of `crates/tacsim/src/minds`
+  and `crates/mush-mind/src` (`implementation()` in `minds/registry/manifest.rs`). A comment
+  added to one of them moves the manifest's digest and with it every commerce digest on the
+  composed path: 2,348 lines of the unprojected record. That, more than the unit catalogue, is
+  why the committed files can hold no digest.
+- **The composed path is deterministic to the byte**, from run to run and between Windows and
+  Linux: commit tokens are the story's own numbers, every stamp comes from a clock the story
+  sets, and the genuine rating gives the same certificate on both platforms.
+- **A bundle's writes are sorted by target** before they are persisted (the third item above).
+- **Every twin refusal is one sentence a provider.** The 30 personal and the purchase refusals
+  the story provokes differ in their causes and print the same line.
+- No defect was found.
+
 ## CT.1
 
 One wire macro. Built 2026-11-13 on main `2b1f5aa3b`. No snapshot file moved.

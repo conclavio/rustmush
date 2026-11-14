@@ -229,6 +229,37 @@ impl Snapshot {
     }
 }
 
+/// The pin for a decode-only attribute that requires a key (doc 46 units CT.1 and CT.0b): a
+/// record whose optional field `key` is absent must say so with an explicit `null`. Without
+/// the attribute `serde` reads a left-out key as `None`, and a store document that lost the
+/// field would decode as a record that never had it.
+///
+/// It fails if `value` does not encode `key` as `null`, if its own bytes do not decode back,
+/// or if the same object with `key` left out decodes.
+pub fn refuses_left_out<T>(name: &str, value: &T, key: &str) -> Result<(), String>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq,
+{
+    let mut json = serde_json::to_value(value).map_err(|error| error.to_string())?;
+    let back: T = serde_json::from_value(json.clone())
+        .map_err(|error| format!("{name}: its own bytes do not decode: {error}"))?;
+    if back != *value {
+        return Err(format!("{name}: its bytes decode to another value"));
+    }
+    let serde_json::Value::Object(fields) = &mut json else {
+        return Err(format!("{name}: not a JSON object"));
+    };
+    match fields.remove(key) {
+        Some(serde_json::Value::Null) => {}
+        Some(_) => return Err(format!("{name}: the fixture's `{key}` is not null")),
+        None => return Err(format!("{name}: the fixture does not encode `{key}`")),
+    }
+    match serde_json::from_value::<T>(json) {
+        Ok(_) => Err(format!("{name}: a record with `{key}` left out decoded")),
+        Err(_) => Ok(()),
+    }
+}
+
 fn difference(path: &Path, committed: &str, produced: &str) -> String {
     let old: Vec<&str> = committed.split('\n').collect();
     let new: Vec<&str> = produced.split('\n').collect();
@@ -383,6 +414,60 @@ mod tests {
         ensure(
             accepted.is_err(),
             "an edit that still decodes is an error",
+            "",
+        )
+    }
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Lenient {
+        format: u16,
+        stamp: Option<u8>,
+    }
+
+    fn required<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+        serde::Deserialize::deserialize(d)
+    }
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Required {
+        format: u16,
+        #[serde(deserialize_with = "required")]
+        stamp: Option<u8>,
+    }
+
+    #[test]
+    fn a_left_out_key_must_be_refused_and_a_lenient_record_fails_the_pin() -> Result<(), String> {
+        let strict = Required {
+            format: 1,
+            stamp: None,
+        };
+        refuses_left_out("Required", &strict, "stamp")?;
+        let lenient = Lenient {
+            format: 1,
+            stamp: None,
+        };
+        let passed = refuses_left_out("Lenient", &lenient, "stamp");
+        ensure(
+            passed
+                .as_ref()
+                .is_err_and(|error| error.contains("left out decoded")),
+            "a record that reads a left-out key as None fails the pin",
+            &format!("{passed:?}"),
+        )?;
+        let present = Required {
+            format: 1,
+            stamp: Some(2),
+        };
+        ensure(
+            refuses_left_out("Required", &present, "stamp").is_err(),
+            "a fixture whose field is present proves nothing",
+            "",
+        )?;
+        ensure(
+            refuses_left_out("Required", &strict, "absent").is_err(),
+            "a key the record does not encode proves nothing",
             "",
         )
     }

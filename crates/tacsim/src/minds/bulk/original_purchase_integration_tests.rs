@@ -33,6 +33,9 @@ mod charter_transfer_fences;
 mod charter_transfer_fixture;
 #[path = "charter_transfer_integration_tests.rs"]
 mod charter_transfers;
+// Doc 46 unit CT.0b: the record of the renewal and purchase twins on this composed path.
+#[path = "ct0b_capture.rs"]
+mod ct0b;
 #[path = "house_filing_integration_tests.rs"]
 mod house_filing;
 #[path = "ic_integration_tests.rs"]
@@ -1258,6 +1261,7 @@ fn change_one_family(
 #[test]
 #[ignore = "required serialized M7 gate: completes the unmodified real Registry schedule before purchase/recovery branches"]
 fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> TestResult {
+    ct0b::begin();
     let mut registry = Fixture::new()?;
     let rating = complete_registry(&mut registry)?;
     eprintln!("M7_STORY phase=house event=begin");
@@ -1687,6 +1691,8 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
         granted.reboot(&term_changed).is_err(),
         "locally valid shortened paid term escaped frozen duration join"
     );
+    // Doc 46 unit CT.0b: what the twins' branches persisted, against the committed files.
+    ct0b::finish()?;
     eprintln!("M7_STORY phase=v1_story event=complete");
     eprintln!(
         "M7_ACTUAL_PURCHASE_PASSED registry={rating:?} funded={operation} grant={} refund={}",

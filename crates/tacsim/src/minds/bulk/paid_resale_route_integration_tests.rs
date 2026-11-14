@@ -278,13 +278,21 @@ fn prepare(
     let (actual, resolved, _) = resolved.into_authoritative_parts();
     check_eq!(actual, action);
     let invocation = resolved.invocation().clone();
-    let (prepared, output) = w
+    let prepared = w
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
             &action,
             &resolved,
             token(number),
-        )?;
+        );
+    // Doc 46 unit CT.0b: a renewal by the holder a paid resale left is one of the twins'.
+    let (prepared, output) = ct0b::seen(
+        &action,
+        actor,
+        invocation.parameters(),
+        prepared,
+        ct0b::image_reader(&w.image),
+    )?;
     Ok(Box::new(Prepared {
         prepared,
         output,
@@ -375,6 +383,7 @@ fn land(w: &mut PlayerWorld, value: Box<Prepared>) -> TestResult {
         .collect::<TestResult<Vec<_>>>()?;
     mush_testkit::fold_module_ops_into(&mut w.image, operations);
     w.engine.install_composed_action(installation)?;
+    ct0b::installed(bundle.writes(), ct0b::image_reader(&w.image));
     w.commit()?;
     Ok(())
 }
