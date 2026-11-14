@@ -751,8 +751,9 @@ pub(crate) fn launch_seal(ctx: &Ctx<'_>, hull: ObjId) -> LaunchSeal {
 /// **A joined launch's pilot takes its cockpit** (doc 40 cut FR.3): the seat the live row names,
 /// still sat in, is bound to the field's task as an admission binds it (`arena_bridge`'s
 /// check-out: never a watcher, the seat's channels at the check-out's epoch), so the frames
-/// the kernel sends for the hull reach its pilot.
-fn seat_joined_pilot(
+/// the kernel sends for the hull reach its pilot. Doc 47 unit CO.10: a raider's join too
+/// (`super::raiders::on_joined`), whose seated crew holds its helm at the same epoch.
+pub(super) fn seat_joined_pilot(
     ctx: &mut Ctx<'_>,
     task: crate::arena_task::MatchId,
     unit: ObjId,
