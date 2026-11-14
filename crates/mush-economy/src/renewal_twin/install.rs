@@ -482,7 +482,7 @@ impl<I: Issuer> OfferPatch<I> {
         state: &mut EconomyStore,
     ) -> Result<BoundOffer<'_, I>, ParticipantError> {
         self.check_local(state)?;
-        let (snapshot, book, next_contract) = I::bind(state);
+        let (snapshot, book, next_contract) = I::bind(state, super::issuer::bind_key());
         Ok(BoundOffer {
             snapshot,
             book,

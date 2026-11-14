@@ -75,10 +75,10 @@ pub const MIND_NONE: &str =
 pub const MIND_ADMITTING: &str =
     "The Registry is admitting licence {licence}'s claim on the {name}.";
 /// A mind aboard: `{mind}`, `{name}`, `{licence}`, `{class}`.
-pub const MIND_ABOARD: &str = "{mind} is sealed aboard the {name} under licence {licence}, at Class {class}. It has her helm and sensors while her crew has no link, until she next docks at a port.";
+pub const MIND_ABOARD: &str = "{mind} is sealed aboard the {name} under licence {licence}, at Class {class}.\nIt has her helm and sensors while her crew has no link, until she next docks at a port.";
 /// A mind aboard that no longer fits her: `{mind}`, `{name}`.
 pub const MIND_UNFIT: &str =
-    "{mind} was sealed aboard the {name}, and no longer fits her; its claim is being closed.";
+    "{mind} was sealed aboard the {name}.\nIt no longer fits her; its claim is being closed.";
 /// A claim closing: `{name}`.
 pub const MIND_CLOSING: &str = "The claim on the mind last sealed aboard the {name} is closing.";
 /// The last claim was refused: `{name}`.
@@ -102,7 +102,7 @@ pub const MIND_DRAFT: &str =
 /// A lapsed or revoked licence: `{licence}`, `{state}`.
 pub const MIND_LAPSED: &str = "Licence {licence} is {state}; nothing is sealed aboard.";
 /// The preview: `{licence}`, `{name}`.
-pub const MIND_PREVIEW: &str = "Seal licence {licence} aboard the {name}: its mind takes her helm and sensors while her crew has no link, and holds a seat of the licence until she next docks at a port. Add go to seal it.";
+pub const MIND_PREVIEW: &str = "Seal licence {licence} aboard the {name}: its mind takes her helm and sensors while her crew has no link,\nand holds a seat of the licence until she next docks at a port. Add go to seal it.";
 /// Nothing to unseal: `{name}`.
 pub const MIND_NOT_SEALED: &str = "The {name} has no mind sealed aboard to unseal.";
 /// Another's seal: `{name}`.
@@ -112,7 +112,7 @@ pub const MIND_NOT_YOURS: &str =
 pub const MIND_NOT_YET: &str =
     "The Registry has not admitted the {name}'s mind claim yet; try again in a moment.";
 /// The unseal's preview: `{name}`.
-pub const MIND_OFF_PREVIEW: &str = "Unseal the mind aboard the {name}: its claim closes and the licence's seat is free. Add go to unseal it.";
+pub const MIND_OFF_PREVIEW: &str = "Unseal the mind aboard the {name}: its claim closes and the licence's seat is free.\nAdd go to unseal it.";
 /// The tick's word once the claim is open: `{mind}`, `{name}`, `{class}`.
 pub const MIND_SEALED: &str =
     "The Registry admits the claim: {mind} is sealed aboard the {name} at Class {class}.";
@@ -127,7 +127,8 @@ pub const MIND_VOIDED: &str =
 /// A refit, a strip, a fitting or a scrapping asked of a hull with a mind sealed aboard:
 /// `{name}`. The unit's owner holds a hull under a claim as she is (`mush_tactics`'
 /// `ic_custody`), so the yard says why before it tries.
-pub const MIND_HOLDS_HER: &str = "A mind is sealed aboard the {name}, and she is held as she is until it is unsealed: +ship/mind off, at her berth.";
+pub const MIND_HOLDS_HER: &str =
+    "The {name} is held as she is while a mind is sealed aboard: +ship/mind off, at her berth.";
 /// The verb is not wired on this roster.
 pub const MIND_UNWIRED: &str = "Minds cannot be sealed aboard a ship here.";
 
@@ -1107,7 +1108,7 @@ pub(crate) fn step(
                     .replace("{mind}", sealed.seal.mind.as_str())
                     .replace("{name}", &name)
                     .replace("{class}", sealed.seal.class.as_str());
-                crate::port_tick::notify_budget(ctx, operator, &line, NoticeLevel::Trip);
+                crate::port_tick::notify_budget(ctx, operator, &fit(&line), NoticeLevel::Trip);
             }
             Step::Worked
         }
@@ -1127,7 +1128,7 @@ pub(crate) fn step(
             );
             if step == Step::Submitted {
                 let line = MIND_VOIDED.replace("{name}", &name).replace("{why}", why);
-                crate::port_tick::notify_budget(ctx, operator, &line, NoticeLevel::Trip);
+                crate::port_tick::notify_budget(ctx, operator, &fit(&line), NoticeLevel::Trip);
             }
             step
         }
@@ -1144,7 +1145,7 @@ pub(crate) fn step(
             // then withdraws it): a refuse the book refuses leaves the claim standing.
             if step == Step::Submitted {
                 let line = MIND_REFUSED.replace("{name}", &name);
-                crate::port_tick::notify_budget(ctx, operator, &line, NoticeLevel::Trip);
+                crate::port_tick::notify_budget(ctx, operator, &fit(&line), NoticeLevel::Trip);
             }
             step
         }
@@ -1198,7 +1199,7 @@ pub(crate) fn step(
                 let _ = host.acknowledge(ctx.w, &ticket);
             }
             let line = MIND_UNSEALED.replace("{name}", &name);
-            crate::port_tick::notify_budget(ctx, operator, &line, NoticeLevel::Trip);
+            crate::port_tick::notify_budget(ctx, operator, &fit(&line), NoticeLevel::Trip);
             Step::Worked
         }
         _ => Step::Idle,
@@ -1206,6 +1207,16 @@ pub(crate) fn step(
 }
 
 // ---- the verb ----------------------------------------------------------------------------------
+
+/// **A `+ship/mind` line as said: no row past the 120-column floor** (doc 47 CO.11, D2). The
+/// words break their own lines where a sentence ends; a hull's name (32 bytes) and a mind's are
+/// the player's, so each line is wrapped on spaces as well, continuation rows indented two.
+fn fit(text: &str) -> String {
+    text.split('\n')
+        .flat_map(crate::port::site_map::wrap)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// What `+ship/mind` reads of a hull's claim.
 fn status_line(w: &World, hull: ObjId, record: Option<&ShipEpochRecord>) -> String {
@@ -1233,7 +1244,7 @@ fn status_line(w: &World, hull: ObjId, record: Option<&ShipEpochRecord>) -> Stri
         // A claim the cursor does not name: the arm is closing it.
         _ if claim_of(w, hull) != ClaimRead::None => MIND_CLOSING.replace("{name}", &name),
         Some(ClaimCursor::Refused { .. }) => format!(
-            "{} {}",
+            "{}\n{}",
             MIND_WAS_REFUSED.replace("{name}", &name),
             MIND_NONE.replace("{name}", &name)
         ),
@@ -1258,7 +1269,7 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (raw, go) = crate::surface::retrieval::split_go(ctx.args.raw());
     if raw.is_empty() && !go {
         let line = status_line(ctx.w, hull, record.as_ref());
-        say(ctx, line);
+        say(ctx, fit(&line));
         return Ok(());
     }
     // Where the claim path is not composed nothing would carry a seal; said after the
@@ -1298,7 +1309,7 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg(MIND_NOT_YET.replace("{name}", &name)));
         }
         if !go {
-            say(ctx, MIND_OFF_PREVIEW.replace("{name}", &name));
+            say(ctx, fit(&MIND_OFF_PREVIEW.replace("{name}", &name)));
             return Ok(());
         }
         let action = action.ok_or_else(|| CmdError::msg(MIND_UNWIRED))?;
@@ -1371,9 +1382,9 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !go {
         say(
             ctx,
-            MIND_PREVIEW
+            fit(&MIND_PREVIEW
                 .replace("{licence}", &licence.to_string())
-                .replace("{name}", &name),
+                .replace("{name}", &name)),
         );
         return Ok(());
     }
@@ -1438,6 +1449,85 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Every `+ship/mind` line fits the 120-column floor** (doc 47 CO.11, D2: the read of a
+    /// sealed hull was one 154-column sentence for the Salt Moth). Filled at a 32-byte hull
+    /// name, a long mind and a ten-digit licence: what the verb and the arm say goes through
+    /// [`fit`]; the refusals and [`MIND_HOLDS_HER`] (said by the yard and the refit, unwrapped)
+    /// fit as they stand.
+    #[test]
+    fn co11_every_ship_mind_line_fits_120_columns() {
+        let name = "N".repeat(crate::port::coop::MAX_HULL_NAME_BYTES);
+        let fill = |line: &str| {
+            line.replace("{name}", &name)
+                .replace("{mind}", "Concordat Pilot Keeper 2")
+                .replace("{licence}", "4294967295")
+                .replace("{class}", "III")
+                .replace("{state}", "revoked")
+                .replace("{why}", Unfit::Holder.clause())
+        };
+        let rows = |text: &str| -> Vec<String> { text.split('\n').map(str::to_owned).collect() };
+        let fitted = [
+            MIND_NONE,
+            MIND_ADMITTING,
+            MIND_ABOARD,
+            MIND_UNFIT,
+            MIND_CLOSING,
+            MIND_PREVIEW,
+            MIND_OFF_PREVIEW,
+            MIND_SEALED,
+            MIND_REFUSED,
+            MIND_UNSEALED,
+            MIND_VOIDED,
+        ];
+        let said_as_is = [
+            MIND_USAGE,
+            MIND_WAS_REFUSED,
+            MIND_BERTH,
+            MIND_NO_CORE,
+            MIND_ALREADY,
+            MIND_PASSAGE,
+            MIND_DRAFT,
+            MIND_LAPSED,
+            MIND_NOT_SEALED,
+            MIND_NOT_YOURS,
+            MIND_NOT_YET,
+            MIND_HOLDS_HER,
+            MIND_UNWIRED,
+        ];
+        for line in fitted {
+            for row in rows(&fit(&fill(line))) {
+                assert!(row.chars().count() <= 120, "{}: {row}", row.chars().count());
+            }
+        }
+        for line in said_as_is {
+            for row in rows(&fill(line)) {
+                assert!(row.chars().count() <= 120, "{}: {row}", row.chars().count());
+            }
+        }
+        // The read of a sealed hull, as MW.21 flew it: two rows, the second whole.
+        let aboard = fit(&MIND_ABOARD
+            .replace("{mind}", "keeper")
+            .replace("{name}", "Salt Moth")
+            .replace("{licence}", "2")
+            .replace("{class}", "II"));
+        assert_eq!(
+            rows(&aboard),
+            [
+                "keeper is sealed aboard the Salt Moth under licence 2, at Class II.",
+                "It has her helm and sensors while her crew has no link, until she next docks at a port.",
+            ]
+        );
+        // A mind's name past any floor still wraps.
+        let long = fit(&MIND_SEALED
+            .replace("{mind}", &"m".repeat(60))
+            .replace("{name}", &name)
+            .replace("{class}", "III"));
+        assert!(
+            long.split('\n').all(|row| row.chars().count() <= 120),
+            "{long}"
+        );
+    }
 
     /// The op words round-trip, and none is an end of the epoch.
     #[test]

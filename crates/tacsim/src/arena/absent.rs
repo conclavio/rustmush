@@ -53,7 +53,10 @@
 //! - `RETURN`, the default: **going home.** [`Arena::set_absent`] lays the standing objective
 //!   every mind reads as its order (`MindObjective::Withdraw`, no deadline): the stock mind
 //!   obeys it as it obeys a leader's, driving for its party's home and never rallying while it
-//!   stands, and a player's sealed mind reads it as `v.order`.
+//!   stands, and a player's sealed mind reads it as `v.order`. **It answers fire on the way
+//!   and does not stop to** (doc 47 unit CO.2, R-47-3): the stock mind answers by a cornered
+//!   stand, and the landing lands that stand's stop as the drive home
+//!   (`Arena::keep_going_home`).
 //! - `HOLD` and `GUARD`: **staying.** The order laid is `Hold`: the unit parks where it stands.
 //!   At each think (`Arena::stand_posture`) the order is turned to a `Screen` that faces the
 //!   nearest contact the unit may answer, and back to `Hold` when it holds none, so the stock
@@ -444,6 +447,80 @@ impl Arena {
             (None, _) => Objective::Hold,
         };
         self.lay_order(unit, objective);
+    }
+
+    /// **A house mind on `RETURN` answers on its way home** (this module's head, "flying a
+    /// posture"; doc 47 unit CO.2, R-47-3): what the landing does with a think of the
+    /// Standard Doctrine flying `unit` for an absent player on `RETURN` under the go-home
+    /// order (`Arena::mind_land`, ahead of the intents' apply).
+    ///
+    /// The doctrine answers fire on its way home by a cornered stand: it stops (`Goal(Hold)`)
+    /// and faces the unit that fired (`Heading`), fires, dwells, and stands again while that
+    /// unit is in range. Under the go-home order a stop is not the player's word, so the
+    /// landing lands the stop as the drive home: a `Goal(Hold)` becomes the goal the doctrine
+    /// itself drives `Withdraw` to (its party's entry cell, read as the doctrine reads it), and
+    /// so does the facing `Heading`, which would otherwise let the goal go. The lock and the
+    /// shot land as thought, through the one gate at the shot. A ground shot needs no facing,
+    /// so the unit fires as it drives.
+    ///
+    /// Nothing for any other unit or think: a pilot's, a sealed mind's (its helm is its own:
+    /// a sealed script that ignores the order home is not driven home, Q-35-B4), a unit on
+    /// `HOLD` or `GUARD`, a think that stops nothing, or a unit with no home cell. So no
+    /// doctrine source, no `STOCK_VERSION` and no `MIND_ABI` moved.
+    pub(crate) fn keep_going_home(
+        &self,
+        unit: ObjId,
+        intents: Vec<crate::arena::intents::IntentKind>,
+    ) -> Vec<crate::arena::intents::IntentKind> {
+        use crate::arena::intents::{IntentKind, MotorGoal};
+        use crate::arena::perception::MindObjective;
+        let Some(state) = self.unit(unit).filter(|state| {
+            state.absent && state.controller == Controller::Mind && state.seal.doctrine
+        }) else {
+            return intents;
+        };
+        let going_home = flown(state).is_return()
+            && self
+                .minds
+                .get(&unit)
+                .and_then(|row| row.order.as_ref())
+                .is_some_and(|order| order.objective == MindObjective::Withdraw);
+        if !going_home
+            || !intents
+                .iter()
+                .any(|intent| matches!(intent, IntentKind::Goal(MotorGoal::Hold)))
+        {
+            return intents;
+        }
+        let Some(home) = self
+            .definition
+            .terrain
+            .cell_of(&state.pose)
+            .and_then(|here| {
+                crate::arena::motor::entry_cell(
+                    &self.definition,
+                    state.team,
+                    crate::arena::state::CostRow::Tracked,
+                    here,
+                )
+            })
+        else {
+            return intents;
+        };
+        // One intent for one, so the landing's outcomes still line up with the think's own
+        // intents (the author trace joins them by position): the facing `Heading` is landed
+        // as the same drive, which the motor takes as the goal it already holds.
+        let drive = IntentKind::Goal(MotorGoal::Cell {
+            x: home.0,
+            y: home.1,
+        });
+        intents
+            .into_iter()
+            .map(|intent| match intent {
+                IntentKind::Goal(MotorGoal::Hold) | IntentKind::Heading { .. } => drive.clone(),
+                intent => intent,
+            })
+            .collect()
     }
 
     /// **Whether the rule refuses `unit` a shot at `target`** (this module's head): the facts

@@ -51,6 +51,7 @@ impl Issuer for House {
     }
     fn bind(
         state: &mut EconomyStore,
+        _: renewal_twin::BindKey,
     ) -> (
         &mut EconomySnapshot,
         &mut renewal_twin::history::OfferBook<Self>,

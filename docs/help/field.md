@@ -613,7 +613,8 @@ limits above stand under all three: it never fires first, and it never mines or
 trades.
 
 - **RETURN** takes the unit home, as the section above describes. It returns
-  fire on a unit that fires on it, on the way and beside the ramp.
+  fire on a unit that fires on it, on the way and beside the ramp, and it
+  does not stop to do it: the house default fires as it drives.
 - **HOLD** keeps the unit on the cell where its mind took it. It turns to face
   a unit that has fired on it and returns that unit's fire. It answers for
   nobody else, and it is not taken home.
@@ -672,7 +673,9 @@ order reaches one:
   read at your next login, "Vance, leading your detachment, ordered #123 to
   GUARD: it holds that word until you set another." The unit answers that
   order itself; you do not. Set the posture yourself, any of the ways above,
-  and yours stands until the leader orders it again.
+  and yours stands until the leader orders it again. The leader's order
+  reaches your unit after it has passed to its mind as well, and the mind
+  flies the new word under the rules above.
 - **Never from an OOC room.** "A posture is an order to a unit in the world.
   It is not given from an OOC room." Nothing you do in the simulator sets a
   posture on a unit in the world.

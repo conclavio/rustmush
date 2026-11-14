@@ -257,10 +257,12 @@ ship. It is refused from an OOC room. `+ship` shows it when it is not RETURN.
 
 - **RETURN**, the default. Five minutes after her last crew link drops (at once
   if you QUIT away from port) a mind makes for the port she filed for. In an
-  encounter she heaves to for a ship that stops her, and she never fires.
+  encounter she heaves to for a ship that stops her, and she returns fire on a
+  ship that has fired on her and on no other. Answering does not end her
+  return: she is on her way again when the encounter lets her go.
 - **HOLD**. She stays. Adrift or at a cluster she holds where she is and makes
-  for no port. In an encounter she heaves to and submits to customs as on
-  RETURN, and she returns fire on a ship that has fired on her and on no other.
+  for no port. In an encounter she heaves to, submits to customs and returns
+  fire as on RETURN.
 - **GUARD**. As HOLD, and she also returns fire on a ship that has fired on
   another ship of yours in the same encounter. A ship with nothing to fire
   flies GUARD as HOLD; one whose drive is destroyed flies it as RETURN. The
@@ -273,8 +275,9 @@ encounter opens on her way she flies her posture inside it, and she is on her
 passage again when it lets her go.
 
 If you have sealed a mind of your own aboard (above), it keeps her helm and
-her sensors under every posture and has no fire channel, so nothing returns
-fire for her.
+her sensors under every posture and has no fire channel. The house default
+returns fire for her beside it, under the same rules: it fires her mounts and
+nothing else, and her lock stays the one your mind set.
 
 On the ground she is your carrier, and on her pad she stays whatever her
 posture (`help field`).

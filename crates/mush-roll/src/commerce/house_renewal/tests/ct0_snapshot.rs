@@ -19,7 +19,7 @@ crate::commerce::tests::ct0_rig::ct0_renewal_walk! {
 }
 
 /// The Economy's offer for the row's binding, every optional role filled.
-fn ct0_offer(row: &RenewalOperationV1) -> Ct0Result<econ::RenewalOffer> {
+pub(super) fn ct0_offer(row: &RenewalOperationV1) -> Ct0Result<econ::RenewalOffer> {
     let b = row.binding();
     let template = b.grant().renewal();
     Ok(econ::RenewalOffer {

@@ -7,16 +7,17 @@
 // What it may ask: `helm(word)` with `speed(n)` (a burn; outside a bubble `speed(n)` above
 // nought makes for port by the ruled order), `hold()` (cut the drive; hove to under a customs
 // hail, submit to inspection; outside a bubble, hold where she is), `emcon(on)` and
-// `trace(word)`. `arm` is refused by the seat, and so are `lock` and `fire` on RETURN.
+// `trace(word)`, and `lock` and `fire` to answer. `arm` is refused by the seat.
 //
 // The posture her player left on her (doc 45 AP.9), `v.posture`: on RETURN she makes for
-// port. On HOLD and GUARD she holds where she is, and inside a bubble answers the nearest
-// ship her view shows hostile. The seat shows her as hostile only a ship the absent
-// player's rule lets her answer, and drops any other lock or shot.
+// port. On HOLD and GUARD she holds where she is. Under every posture (doc 47 CO.2), inside
+// a bubble she answers the nearest ship her view shows hostile, and flies her helm as before.
+// The seat shows her as hostile only a ship the absent player's rule lets her answer, and
+// drops any other lock or shot. Beside a mind sealed aboard only her shots are landed.
 fn think(v, c) {
     let s = space(v);
     let stays = v.posture != "return";
-    if s != () && stays {
+    if s != () {
         let at = ();
         let at_range = 0;
         for row in v.contacts {

@@ -32,25 +32,17 @@ fn families() -> TestResult<(Box<Engine>, CommerceFamilies)> {
         .ok_or("families")?;
     Ok((engine, families))
 }
-fn wide_birth(width: usize) -> TestResult<Birth> {
-    let mut b = birth()?;
-    let old = b.economics.grant();
-    let t = old.renewal();
-    let template = HouseRenewalTemplateV1::new(
+fn wide_birth<I: Rig>(width: usize) -> TestResult<Birth<I>> {
+    let mut b = birth::<I>()?;
+    let grant = I::widen(
+        I::grant_of(&b.economics),
         InstrumentId::new("x".repeat(width)).ok_or("instrument")?,
-        t.price(),
-        t.term_seconds(),
-        t.grace_seconds(),
-        t.terms(),
-        t.revision(),
-        t.policy().clone(),
     )?;
-    let grant = HouseGrantEconomicsV1::new(template)?;
-    b.economics = HouseTermEconomicsV1::capture(
+    b.economics = I::economics_row(
         b.economics.licence(),
         b.economics.generation(),
         b.economics.operation(),
-        b.economics.product_digest(),
+        I::product(&b.economics),
         grant,
     )?;
     Ok(b)
@@ -62,36 +54,41 @@ fn document<T: Record>(
     serde_json::json!({"family":{"owner":family.owner(),"id":family.descriptor().id()},"key":row.key(),
         "schema":{"id":family.descriptor().value_schema(),"version":family.descriptor().schema_version()},"value":row})
 }
-#[test]
-fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() -> TestResult {
+/// A row made from the opened and the funded operation.
+type Make<I> = fn(
+    &<I as super::super::Issuer>::Operation,
+    &<I as super::super::Issuer>::Operation,
+) -> TestResult<<I as super::super::Issuer>::Operation>;
+pub(crate) fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded<I: Rig>()
+-> TestResult {
     let (_engine, f) = families()?;
-    let base = wide_birth(1)?;
-    let mut max = HouseTermEconomicsV1::capture(
+    let base = wide_birth::<I>(1)?;
+    let mut max = I::economics_row(
         base.economics.licence(),
         TermGeneration::new(u64::MAX)?,
         base.economics.operation(),
-        base.economics.product_digest(),
-        base.economics.grant().clone(),
+        I::product(&base.economics),
+        I::grant_of(&base.economics).clone(),
     )?;
-    let initial = canonical_json_bytes_with_limit(&document(&f.house_economics, &max), 8192)?.len();
+    let initial = canonical_json_bytes_with_limit(&document(I::economics(&f), &max), 8192)?.len();
     let width = 8192usize
         .checked_sub(initial)
         .and_then(|n| n.checked_add(1))
         .ok_or("width")?;
-    let b = wide_birth(width)?;
-    max = HouseTermEconomicsV1::capture(
+    let b = wide_birth::<I>(width)?;
+    max = I::economics_row(
         b.economics.licence(),
         TermGeneration::new(u64::MAX)?,
         b.economics.operation(),
-        b.economics.product_digest(),
-        b.economics.grant().clone(),
+        I::product(&b.economics),
+        I::grant_of(&b.economics).clone(),
     )?;
     check_eq!(
-        canonical_json_bytes_with_limit(&document(&f.house_economics, &max), 8192)?.len(),
+        canonical_json_bytes_with_limit(&document(I::economics(&f), &max), 8192)?.len(),
         8192
     );
-    crate::commerce::house_purchase::admission_capacity::check(&f.house_economics, &b.economics)?;
-    let opened = draft(
+    I::admission_capacity(I::economics(&f), &b.economics)?;
+    let opened = draft::<I>(
         &b,
         10,
         20,
@@ -99,31 +96,31 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
             previous_operation: token(8),
         },
     )?;
-    crate::commerce::house_renewal::capacity::check(&f, &opened)?;
-    let funded = funded(&opened)?;
-    let rows: [fn(&RenewalOperationV1, &RenewalOperationV1) -> TestResult<RenewalOperationV1>; 5] = [
+    super::super::capacity::check::<I>(&f, &opened)?;
+    let funded = funded::<I>(&opened)?;
+    let rows: [Make<I>; 5] = [
         |opened, _| Ok(opened.clone()),
         |_, funded| Ok(funded.clone()),
-        |_, funded| terminal(funded, true),
-        |_, funded| terminal(funded, false),
-        |opened, _| closed(opened),
+        |_, funded| terminal::<I>(funded, true),
+        |_, funded| terminal::<I>(funded, false),
+        |opened, _| closed::<I>(opened),
     ];
     for make in rows {
         let row = make(&opened, &funded)?;
         let bytes = serde_json::to_vec(&row)?;
-        check_eq!(RenewalOperationV1::decode(&bytes)?, row);
+        check_eq!(I::decode(&bytes)?, row);
         check!(
             canonical_json_bytes_with_limit(
-                &document(&f.house_renewal_operations, &row),
-                RenewalOperationV1::MAX_BYTES
+                &document(I::operations(&f), &row),
+                <I::Operation as Record>::MAX_BYTES
             )
             .is_ok()
         );
-        let head = RenewalHeadV1::for_operation(&row)?;
+        let head = RenewalHeadV1::<I>::for_operation(&row)?;
         check!(
             canonical_json_bytes_with_limit(
-                &document(&f.house_renewal_heads, &head),
-                RenewalHeadV1::MAX_BYTES
+                &document(I::heads(&f), &head),
+                RenewalHeadV1::<I>::MAX_BYTES
             )
             .is_ok()
         );
@@ -145,20 +142,14 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
             );
             check!(
                 canonical_json_bytes_with_limit(
-                    &document(&f.house_economics, &economics),
-                    HouseTermEconomicsV1::MAX_BYTES
+                    &document(I::economics(&f), &economics),
+                    <I::Economics as Record>::MAX_BYTES
                 )
                 .is_ok()
             );
         }
     }
-    let oversized = wide_birth(width.checked_add(1).ok_or("width")?)?;
-    check!(
-        crate::commerce::house_purchase::admission_capacity::check(
-            &f.house_economics,
-            &oversized.economics
-        )
-        .is_err()
-    );
+    let oversized = wide_birth::<I>(width.checked_add(1).ok_or("width")?)?;
+    check!(I::admission_capacity(I::economics(&f), &oversized.economics).is_err());
     Ok(())
 }

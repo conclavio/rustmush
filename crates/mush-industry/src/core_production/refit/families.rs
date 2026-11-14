@@ -89,7 +89,11 @@ impl Families {
         let id = row.intent.order;
         if let Some(a) = txn.get(&self.assets, &o.incoming).map_err(bad)? {
             a.validate()?;
-            if !matches!(a.position, AssetPosition::Released { .. }) {
+            // Doc 47 CO.4 (R-47-5): a stored (`detached`) core is fitted again too.
+            if !matches!(
+                a.position,
+                AssetPosition::Released { .. } | AssetPosition::Detached { .. }
+            ) {
                 return Err(Error::Unavailable);
             }
         }

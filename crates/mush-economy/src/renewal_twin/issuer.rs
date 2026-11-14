@@ -41,7 +41,17 @@ mod sealed {
     pub trait Sealed {}
     impl Sealed for super::Personal {}
     impl Sealed for super::House {}
+
+    /// What [`super::Issuer::bind`] asks of its caller. Nothing outside this crate can make
+    /// one, so the one function of the trait that hands out the snapshot mutably cannot be
+    /// called from another crate, though the trait is public (doc 46 CT.5).
+    pub struct BindKey(());
+    pub(crate) const fn bind_key() -> BindKey {
+        BindKey(())
+    }
 }
+pub use sealed::BindKey;
+pub(crate) use sealed::bind_key;
 
 /// The predecessor a renewal stands on. The two issuers' records differ by one field (the
 /// personal basis carries the royalty chain's digest), so each family keeps its own
@@ -52,6 +62,12 @@ pub trait Basis: Clone + Debug + Eq + Serialize + DeserializeOwned {
     fn predecessor_generation(&self) -> u64;
     fn predecessor_operation(&self) -> CommitToken;
     fn prior_quote(&self) -> CommitToken;
+    /// The four fields the Roll's paired owner compares with its own binding (doc 46 CT.5).
+    fn next_generation(&self) -> u64;
+    fn prior_quote_digest(&self) -> DefinitionDigest;
+    fn product_digest(&self) -> DefinitionDigest;
+    fn template_digest(&self) -> DefinitionDigest;
+    fn grant_economics_digest(&self) -> DefinitionDigest;
 }
 
 /// The disclosed terms of one renewal. A seller, a lineage and up to three royalty parents
@@ -61,6 +77,8 @@ pub trait Basis: Clone + Debug + Eq + Serialize + DeserializeOwned {
 pub trait Terms: Clone + Debug + Eq + Serialize + DeserializeOwned {
     fn buyer(&self) -> Holder;
     fn charter(&self) -> ObjId;
+    /// The charter's title revision the terms were offered at.
+    fn title_revision(&self) -> u64;
     fn payer(&self) -> AccountId;
     fn instrument(&self) -> &InstrumentId;
     fn price(&self) -> Amount;
@@ -89,8 +107,9 @@ pub trait Offer: Clone + Debug + Eq + Serialize + DeserializeOwned {
 /// The issuer of a renewal family.
 ///
 /// Sealed: nothing outside this file can implement it, so the set is exactly [`Personal`] and
-/// [`House`]. The module is private to the crate, so from another crate the trait cannot
-/// even be named:
+/// [`House`]. Since doc 46 CT.5 the module is public, so that the Roll's and the market's twins
+/// can name the generic types at their own issuer; a third implementation is still refused,
+/// since its supertrait cannot be named from another crate:
 ///
 /// ```compile_fail
 /// struct Guild;
@@ -130,7 +149,11 @@ pub trait Issuer: sealed::Sealed + Copy + Debug + Default + Eq + 'static {
     /// This issuer's offer book in the store.
     fn book(state: &EconomyStore) -> &OfferBook<Self>;
     /// The three things a published offer writes, borrowed apart for the consuming bind.
-    fn bind(state: &mut EconomyStore) -> (&mut EconomySnapshot, &mut OfferBook<Self>, &mut u64);
+    /// Callable only inside this crate: the key cannot be made outside it.
+    fn bind(
+        state: &mut EconomyStore,
+        key: BindKey,
+    ) -> (&mut EconomySnapshot, &mut OfferBook<Self>, &mut u64);
     /// This issuer's receipt audit in the fold.
     fn receipts(fold: &FoldState) -> &RenewalReceiptAudit<Self>;
     fn receipts_mut(fold: &mut FoldState) -> &mut RenewalReceiptAudit<Self>;

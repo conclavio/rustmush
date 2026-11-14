@@ -485,11 +485,11 @@ impl<M: Leg> ReceiptAudit<M> {
             } => {
                 if self.histories.len() >= M::MAX_ORDERS
                     || self.histories.contains_key(&commit)
+                    || M::conflicts(&self.histories, &intent)
                     || self.histories.values().any(|h| {
                         h.intent.subject.order() == intent.subject.order()
                             || h.intent.subject.offer() == intent.subject.offer()
                             || h.funding.hold.id == effect.hold.id
-                            || M::conflicts(h, &intent)
                             || (h.intent.subject.hull() == intent.subject.hull()
                                 && h.terminal.is_none())
                     })

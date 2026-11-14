@@ -3459,6 +3459,87 @@ mod tests {
         );
     }
 
+    /// **Doc 47 unit CO.2 (R-47-3): a house mind on `RETURN` answers on its way home.** The
+    /// Standard Doctrine answers fire under the go-home order by a cornered stand: a stop and
+    /// a facing heading beside its lock and its shot. The landing lands the stop and the
+    /// heading as the drive to the cell the doctrine drives `Withdraw` to, one intent for
+    /// one, and the lock and the shot as thought. Nothing else is touched: the same think on
+    /// `HOLD` or `GUARD`, from a mind that is not Standard Doctrine, for a unit its player
+    /// flies, or with no stop in it, lands as it was thought.
+    #[test]
+    fn co2_a_house_mind_on_return_answers_on_its_way_home() {
+        use crate::arena::intents::{IntentKind, MotorGoal};
+        use crate::posture::Posture;
+        let stand = vec![
+            IntentKind::Goal(MotorGoal::Hold),
+            IntentKind::Heading { mdeg: 90_000 },
+            IntentKind::Lock {
+                contact: ContactId(1),
+            },
+            IntentKind::Fire {
+                weapon: "cannon".into(),
+                slot: Some(1),
+            },
+        ];
+        let going_home = |posture: Posture, doctrine: bool, absent: bool| {
+            let mut arena = a_guards_field();
+            if let Some(state) = arena.unit_mut(RED) {
+                state.seal.doctrine = doctrine;
+            }
+            assert!(arena.set_posture(RED, posture));
+            assert!(arena.set_absent(RED, absent));
+            arena.note_fired_on(BLUE, RED);
+            arena.stand_posture(RED);
+            arena
+        };
+        let arena = going_home(Posture::Return, true, true);
+        let home = crate::arena::motor::entry_cell(
+            &arena.definition,
+            PartyId::RED,
+            crate::arena::state::CostRow::Tracked,
+            reds_cell(&arena),
+        )
+        .expect("red's party has a home");
+        let drive = IntentKind::Goal(MotorGoal::Cell {
+            x: home.0,
+            y: home.1,
+        });
+        assert_eq!(
+            arena.keep_going_home(RED, stand.clone()),
+            vec![drive.clone(), drive, stand[2].clone(), stand[3].clone()],
+            "its stand lands as the drive home; its lock and its shot as thought"
+        );
+        // The shot itself is the gate's: let through at the unit that fired on it.
+        assert_eq!(
+            arena.absent_denies_fire(RED, BLUE),
+            None,
+            "it answers the unit that fired on it"
+        );
+        assert_eq!(
+            arena.absent_denies_fire(RED, STRANGER),
+            Some(crate::arena::absent::Denied::FiredFirst),
+            "and never fires first"
+        );
+        // A think that stops nothing is not touched.
+        let drives = vec![IntentKind::Goal(MotorGoal::Cell { x: 1, y: 1 })];
+        assert_eq!(arena.keep_going_home(RED, drives.clone()), drives);
+        // HOLD and GUARD stay; a sealed mind's helm is its own; a pilot's think is a pilot's.
+        for (posture, doctrine, absent, why) in [
+            (Posture::Hold, true, true, "HOLD stays where it stands"),
+            (Posture::Guard, true, true, "GUARD stays where it stands"),
+            (
+                Posture::Return,
+                false,
+                true,
+                "a mind that is not Standard Doctrine",
+            ),
+            (Posture::Return, true, false, "a unit its player flies"),
+        ] {
+            let arena = going_home(posture, doctrine, absent);
+            assert_eq!(arena.keep_going_home(RED, stand.clone()), stand, "{why}");
+        }
+    }
+
     /// `arena` with nothing armed and the odds at nought: what the law would
     /// refuse a mind for three ways over.
     fn nothing_armed_at_nought(arena: &Arena) -> Arena {

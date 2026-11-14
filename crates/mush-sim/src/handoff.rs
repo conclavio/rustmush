@@ -75,14 +75,13 @@ pub(crate) fn physical_npc_station(world: &World, actor: ObjId, unit: ObjId) -> 
         .iter()
         .filter_map(|(station, seat)| {
             let spec = state.stations.get(&unit)?.stations.get(station)?;
-            let channel = station_channel(state, unit, station)?;
+            // Doc 47 unit CO.5 (R-47-6): a console of several channels seats an NPC too; what it
+            // leases is the set its billet grants ([`npc_channels`]), one lease a channel.
+            let channels = npc_channels(state, unit, station, actor)?;
             (seat.actor == actor
                 && seat.check().is_ok()
                 && spec.space == Some(room)
-                && seat
-                    .granted
-                    .as_ref()
-                    .is_none_or(|channels| channels.contains(&channel)))
+                && !channels.is_empty())
             .then_some(station.clone())
         });
     let first = found.next()?;
@@ -223,6 +222,33 @@ pub(crate) fn station_channel(
     spec.channels.iter().next().cloned()
 }
 
+/// **The channels a physically seated NPC leases at `station`** (doc 47 unit CO.5, R-47-6): the
+/// station's own set as its billet grants it ([`crate::data::StationAssignment::granted_channels`]),
+/// or `None` when `actor` holds no billet there or the billet grants nothing.
+///
+/// For a console of one channel this is [`station_channel`]'s answer, exactly: the one channel,
+/// unless the billet's narrowing leaves it out. A console of several channels (an armed rig's
+/// pilot console carries the helm, the sensors and the fire channel) gives the whole set, and
+/// the NPC's request takes one K6 lease a channel in one transaction
+/// ([`HandoffProvider::prepare_request`]'s `also`). Which channels the billet grants is the
+/// campaign's call; this module only does set membership.
+pub(crate) fn npc_channels(
+    spatial: &SpatialState,
+    unit: ObjId,
+    station: &StationId,
+    actor: ObjId,
+) -> Option<std::collections::BTreeSet<ChannelId>> {
+    let spec = spatial.stations.get(&unit)?.stations.get(station)?;
+    let seat = spatial
+        .assignments
+        .get(&unit)?
+        .seats
+        .get(station)
+        .filter(|seat| seat.actor == actor)?;
+    let channels = seat.granted_channels(spec);
+    (!channels.is_empty()).then_some(channels)
+}
+
 /// The declared fallback controller for a station (B6's `sim.station_fallback`),
 /// or `None` when none is declared. Read from the world-owned RAM mirror.
 fn declared_fallback(engine: &Engine, unit: ObjId, station: &StationId) -> Option<ObjId> {
@@ -300,6 +326,19 @@ struct RequestParameters {
     station: Option<SmolStr>,
     #[serde(default)]
     grant_epoch: Option<u64>,
+    /// Doc 47 unit CO.5: the further channels a physically seated NPC's one request leases at
+    /// a console of several channels, each with its own lease's revision. Empty (and absent from
+    /// the offer) for every other request, so a one-channel offer is the offer it always was.
+    #[serde(default)]
+    also: Vec<AlsoLease>,
+}
+
+/// One further lease a physically seated NPC's request takes (doc 47 unit CO.5).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AlsoLease {
+    channel: ChannelId,
+    expected_revision: u64,
 }
 
 /// The requester's station-grant witness, carried on the durable job so the
@@ -432,6 +471,20 @@ impl HandoffProvider {
                         "station release requires a vacant target and actual billet",
                     ));
                 }
+                // Doc 47 unit CO.5: further leases ride only a physically seated NPC's request,
+                // each a distinct channel other than the first, bounded as a billet's set is.
+                if !p.also.is_empty() {
+                    let mut seen = std::collections::BTreeSet::from([p.channel.clone()]);
+                    if p.reason.as_str() != NPC_STATION_REASON
+                        || p.station.is_none()
+                        || p.also.len() >= crate::data::MAX_GRANTED_CHANNELS
+                        || !p.also.iter().all(|more| seen.insert(more.channel.clone()))
+                    {
+                        return Err(Self::invalid(
+                            "further station leases require one NPC console's distinct channels",
+                        ));
+                    }
+                }
             }
             HandoffOperation::Cancel => {
                 let _: CancelParameters = Self::decode(invocation)?;
@@ -486,7 +539,48 @@ impl HandoffProvider {
         txn: &mut ActionTxn<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters: RequestParameters = Self::decode(invocation)?;
-        let key = ControlLeaseKey::new(Self::subject(invocation)?, parameters.channel);
+        let next = self.request_lease(
+            invocation,
+            txn,
+            &parameters,
+            parameters.channel.clone(),
+            parameters.expected_revision,
+        )?;
+        let mut witnesses = Self::witnesses(invocation, &next);
+        // Doc 47 unit CO.5: a physically seated NPC at a console of several channels takes every
+        // lease its billet grants in this one transaction ([`npc_channels`]); each is its own
+        // lease, schedule and job, applied at its own boundary exactly as the first is.
+        for also in &parameters.also {
+            let more = self.request_lease(
+                invocation,
+                txn,
+                &parameters,
+                also.channel.clone(),
+                also.expected_revision,
+            )?;
+            witnesses.extend(Self::witnesses(invocation, &more));
+        }
+        witnesses.sort();
+        witnesses.dedup();
+        Ok(AuthoritativeActionOutput::new(self.outcome(
+            "requested",
+            &next,
+            invocation.request(),
+        )?)
+        .with_eligible_witnesses(witnesses))
+    }
+
+    /// One lease of a request: the handoff staged on `(subject, channel)` with its reusable
+    /// schedule and its job.
+    fn request_lease(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        parameters: &RequestParameters,
+        channel: ChannelId,
+        expected_revision: u64,
+    ) -> Result<ControlLeaseState, ActionError> {
+        let key = ControlLeaseKey::new(Self::subject(invocation)?, channel);
         let current = txn
             .get(&self.families.leases, &key)
             .map_err(|error| Self::state_error(&error))?
@@ -504,12 +598,12 @@ impl HandoffProvider {
         }
         let next = lease
             .checked_request_handoff(
-                parameters.expected_revision,
+                expected_revision,
                 ControlHandoffDraft {
                     request: invocation.request(),
                     requested_by: invocation.principal().clone(),
-                    next_holder: parameters.next_holder,
-                    requested_at: parameters.requested_at,
+                    next_holder: parameters.next_holder.clone(),
+                    requested_at: parameters.requested_at.clone(),
                     boundary: parameters.boundary.clone(),
                     reason: parameters.reason.clone(),
                 },
@@ -537,7 +631,7 @@ impl HandoffProvider {
             id: job.schedule,
             owner: self.families.leases.owner().clone(),
             clock: parameters.boundary.clock.clone(),
-            next_due: parameters.boundary,
+            next_due: parameters.boundary.clone(),
             cadence: None,
             generation: next.revision(),
             next_ordinal: 0,
@@ -580,12 +674,7 @@ impl HandoffProvider {
         txn.insert(&self.families.jobs, &schedule_id, job)
             .map_err(|error| Self::state_error(&error))?;
 
-        Ok(AuthoritativeActionOutput::new(self.outcome(
-            "requested",
-            &next,
-            invocation.request(),
-        )?)
-        .with_eligible_witnesses(Self::witnesses(invocation, &next)))
+        Ok(next)
     }
 
     fn prepare_cancel(
@@ -773,6 +862,18 @@ impl HandoffProvider {
         let Some(spatial) = engine.world.module_state::<SpatialState>() else {
             return Ok(None);
         };
+        // Doc 47 unit CO.5 (R-47-6): a physically seated NPC at a console of several channels
+        // asks for every lease its billet grants at once. Every other station is cut 5's
+        // one-channel offer below, unchanged.
+        if npc_here
+            && spatial
+                .stations
+                .get(&unit)
+                .and_then(|stations| stations.stations.get(&station))
+                .is_some_and(|spec| spec.channels.len() > 1)
+        {
+            return self.project_npc_console_offer(action, engine, unit, actor, &station);
+        }
         let Some(channel) = station_channel(spatial, unit, &station) else {
             return Ok(None);
         };
@@ -883,6 +984,84 @@ impl HandoffProvider {
                 "expected_revision": revision,
             })
         };
+        self.offer_draft(action, engine, fixed).map(Some)
+    }
+
+    /// **A physically seated NPC's offer at a console of several channels** (doc 47 unit CO.5).
+    ///
+    /// The request asks for every channel of [`npc_channels`] not already the NPC's, in one
+    /// invocation (`channel` the first, `also` the rest), vacant leases only: a lease another
+    /// principal holds, or any pending handoff on the set, projects no offer, as cut 5's
+    /// "a non-holder cannot relieve" does for one channel. Nothing left to ask for projects no
+    /// offer either ([`crate::station::request_npc_control`] answers "already observed"). The
+    /// release gives back every lease of the set the NPC holds. A cancel is not offered here:
+    /// the NPC's request applies at the instant it is made (`boundary = now`).
+    fn project_npc_console_offer(
+        &self,
+        action: &DefinitionRef,
+        engine: &Engine,
+        unit: ObjId,
+        actor: ObjId,
+        station: &StationId,
+    ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
+        let release = match self.operation {
+            HandoffOperation::Request => false,
+            HandoffOperation::Release => true,
+            HandoffOperation::Cancel | HandoffOperation::Apply => return Ok(None),
+        };
+        let Some(spatial) = engine.world.module_state::<SpatialState>() else {
+            return Ok(None);
+        };
+        let Some(channels) = npc_channels(spatial, unit, station, actor) else {
+            return Ok(None);
+        };
+        let Some(epoch) = requester_grant_epoch(engine, actor, unit, station.as_str()) else {
+            return Ok(None);
+        };
+        let actor_principal = PrincipalId::Object { id: actor };
+        let mut asked: Vec<(ChannelId, u64)> = Vec::new();
+        for channel in channels {
+            let key = ControlLeaseKey::new(unit, channel.clone());
+            let lease = engine
+                .action_state()
+                .get(&self.families.leases, &key)
+                .map_err(|error| Self::state_error(&error))?;
+            if lease.and_then(ControlLeaseState::pending).is_some() {
+                return Ok(None);
+            }
+            let holder = lease.and_then(ControlLeaseState::holder);
+            let revision = lease.map_or(0, ControlLeaseState::revision);
+            if release {
+                if holder == Some(&actor_principal) {
+                    asked.push((channel, revision));
+                }
+                continue;
+            }
+            match holder {
+                None => asked.push((channel, revision)),
+                Some(holder) if *holder == actor_principal => {}
+                Some(_) => return Ok(None),
+            }
+        }
+        let Some(((channel, revision), also)) = asked.split_first() else {
+            return Ok(None);
+        };
+        let now = engine.world.world_ic_now();
+        let also: Vec<Value> = also
+            .iter()
+            .map(|(channel, revision)| json!({"channel": channel, "expected_revision": revision}))
+            .collect();
+        let fixed = json!({
+            "channel": channel,
+            "next_holder": if release { None } else { Some(actor_principal) },
+            "requested_at": now,
+            "boundary": now,
+            "reason": NPC_STATION_REASON,
+            "expected_revision": revision,
+            "station": station.as_str(),
+            "grant_epoch": epoch,
+            "also": also,
+        });
         self.offer_draft(action, engine, fixed).map(Some)
     }
 
@@ -1628,7 +1807,110 @@ mod tests {
         );
     }
 
-    /// A genuine persisted holder is visible before the first periodic tick.
+    /// **Doc 47 unit CO.5**: a physically seated NPC's one request at a console of several
+    /// channels stages a lease, a schedule and a job a channel, atomically; `also` is refused on
+    /// any other request, and on a repeated channel.
+    #[test]
+    fn co5_one_npc_request_stages_every_console_channel() {
+        let mut world = World::new_minimal();
+        world.set_now(100);
+        let subject = world
+            .create(mush_core::ObjKind::Thing, "armed rig", ObjId(1), None)
+            .unwrap();
+        let mut engine = Engine::with_modules(
+            world,
+            Registry::new(),
+            vec![Box::new(SimulationModule::new())],
+        )
+        .unwrap();
+        let (request_action, _, _) = definition_refs();
+        let now = json!({ "clock": { "kind": "utc" }, "at": 100 });
+        let parameters = |reason: &str, also: Value| {
+            json!({
+                "channel": "fire",
+                "next_holder": PrincipalId::Object { id: ObjId(1) },
+                "requested_at": now,
+                "boundary": now,
+                "reason": reason,
+                "expected_revision": 0,
+                "station": "pilot",
+                "grant_epoch": 1,
+                "also": also,
+            })
+        };
+        let three = json!([
+            { "channel": "helm", "expected_revision": 0 },
+            { "channel": "sensors", "expected_revision": 0 },
+        ]);
+        for (n, refused) in [
+            parameters("focus.station_seat", three.clone()),
+            parameters(
+                NPC_STATION_REASON,
+                json!([{ "channel": "fire", "expected_revision": 0 }]),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let invocation = invocation(
+                &request_action,
+                RequestUid::from_bytes([20 + u8::try_from(n).unwrap(); 16]),
+                subject,
+                refused,
+            );
+            let error = engine
+                .prepare_registered_authoritative_action(
+                    &request_action,
+                    &invocation,
+                    CommitToken::from_bytes([20; 16]),
+                )
+                .expect_err("further leases are an NPC console's distinct channels only");
+            assert!(matches!(
+                error,
+                mush_core::ActionProviderPrepareError::Provider { source, .. }
+                    if source.code() == ActionErrorCode::InvalidRequest
+            ));
+        }
+        let invocation = invocation(
+            &request_action,
+            RequestUid::from_bytes([30; 16]),
+            subject,
+            parameters(NPC_STATION_REASON, three),
+        );
+        let (prepared, _) = prepare(&mut engine, &request_action, &invocation, 30);
+        assert_eq!(
+            prepared.operation_count(),
+            9,
+            "a lease, a schedule and a job for each of the three channels"
+        );
+        let ops = install(&mut engine, prepared);
+        let channels: std::collections::BTreeSet<String> = ops
+            .iter()
+            .filter_map(|op| match &op.op {
+                mush_core::ModuleWrite::JsonSet { key, value }
+                    if key.contains("/control_leases/") =>
+                {
+                    value["value"]["key"]["channel"].as_str().map(str::to_owned)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            channels,
+            ["fire", "helm", "sensors"].map(str::to_owned).into(),
+            "every channel's lease is staged"
+        );
+        engine.world.set_now(101);
+        let page = engine
+            .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
+            .unwrap();
+        assert_eq!(
+            page.candidates().len(),
+            3,
+            "each applies on its own schedule"
+        );
+    }
+
     /// The seat refusal must be occupancy, rather than a fabricated ready bit
     /// or an unread mirror, and must leave the station untouched.
     #[test]

@@ -6,6 +6,12 @@ use mush_core::{CmdError, Ctx};
 use mush_org::unit_authority::reader::{UnitAuthorityRequest, UnitAuthorityResponse};
 use mush_tactics::detachment::planning::PlannedController;
 
+/// **`+sortie/seat`'s refusal of a console that fires to a hire not on a combat duty** (doc 47 unit
+/// CO.5, R-47-6). The activation's duty is one every hired NPC's contract carries
+/// (`+sortie/activate`), so a contract without combat never reaches a console with the fire
+/// channel; nor does a contract with combat activated for mining or recovery.
+pub const NPC_SEAT_NO_FIRE: &str = "This crew member is not on a combat duty here, and that console fires. Seat them in an unarmed rig, or activate the plan for combat under a contract that covers it.";
+
 pub(super) fn seat(ctx: &mut Ctx<'_>, operation: OperationId, slot: u16) -> Result<(), CmdError> {
     arrange(ctx, operation, slot).map_err(CmdError::msg)
 }
@@ -94,6 +100,12 @@ fn arrange(ctx: &mut Ctx<'_>, operation: OperationId, slot: u16) -> Result<(), S
         }
     }
     let (station, room, assigned) = console(ctx, unit, roster.plan.carrier, npc)?;
+    // Doc 47 unit CO.5 (R-47-6): hired crew may take an armed rig's one console, which carries the
+    // helm, the sensors and the fire channel; Sim's hand-off then leases all three. The fire
+    // channel is a combat duty's alone.
+    if super::facts::console_fires(ctx.w, unit, &station) && !super::facts::fires_by_duty(&roster) {
+        return Err(NPC_SEAT_NO_FIRE.into());
+    }
     // These are ordinary physical/billet changes. A later refusal retains the
     // person's actual position; a retry never fabricates a completed lease.
     if ctx.w.get(npc).and_then(|person| person.location) != Some(room) {

@@ -1345,6 +1345,13 @@ impl ClaimCursor {
     }
 }
 
+/// **The operator's word once the Registry admits a rig's claim** (doc 47 CO.11, D8: doc 44
+/// MW.19's item 4, "an IC launch tells the operator nothing about the mind"): `{licence}`,
+/// `{tv}`, `{mind}`, `{class}`. Said once, by the visit that acknowledges the claim's Open, with
+/// the queued launch submitted behind it; a launch refused after it is told by
+/// [`CLAIM_CANCELLED`].
+pub const CLAIM_ADMITTED: &str = "The Registry admits licence {licence}'s claim on #{tv}.\n{mind} is sealed aboard at Class {class} until the rig is home.";
+
 /// **A launch over a live claim cursor** (doc 23 §17.3): the claim's relaunch guard.
 pub const CLAIM_STILL_OPEN: &str = "that rig's mind claim is still open";
 /// **The cursor's reason when the claim was refused for good** (doc 23 cut S.4b-2, D-23-21): the

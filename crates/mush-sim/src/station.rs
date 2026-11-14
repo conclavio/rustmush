@@ -499,6 +499,10 @@ pub fn request_control_release(
 /// Request the existing K6 handoff as a physically seated NPC. The campaign
 /// caller admits employment and unit permissions before arranging this request.
 /// The offer and scheduled apply independently recheck the real console/billet.
+///
+/// **Doc 47 unit CO.5** (R-47-6): at a console of several channels the one request leases
+/// every channel the NPC's billet grants. Answers `Ok(false)` when the NPC already holds all of
+/// them.
 pub fn request_npc_control(
     ctx: &mut Ctx<'_>,
     unit: ObjId,
@@ -510,16 +514,19 @@ pub fn request_npc_control(
             "NPC is not at its assigned physical console.",
         ));
     }
-    let channel = ctx
+    // Doc 47 unit CO.5 (R-47-6): every channel the NPC's billet grants, one lease each; a
+    // console of one channel is that one channel, as before.
+    let channels = ctx
         .w
         .module_state::<SpatialState>()
-        .and_then(|state| crate::handoff::station_channel(state, unit, station))
+        .and_then(|state| crate::handoff::npc_channels(state, unit, station, npc))
         .ok_or_else(|| CmdError::msg(NO_SUCH_STATION))?;
     // Advisory duplicate suppression only. The campaign context cannot read
     // Sim's typed family. Actual admission and launch use the real provider.
-    if crate::seat::channel_lease_holder(ctx.w, unit, &channel)
-        == Some(mush_core::PrincipalId::Object { id: npc })
-    {
+    let seated = mush_core::PrincipalId::Object { id: npc };
+    if channels.iter().all(|channel| {
+        crate::seat::channel_lease_holder(ctx.w, unit, channel).as_ref() == Some(&seated)
+    }) {
         return Ok(false);
     }
     if ctx.authoritative_pending(npc)

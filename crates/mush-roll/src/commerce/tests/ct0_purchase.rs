@@ -203,7 +203,7 @@ macro_rules! purchase_walk {
     };
 }
 
-mod personal {
+pub(crate) mod personal {
     use super::*;
     use crate::commerce::entitlement::{
         DownstreamTermsV1, EntitlementAllocationV1 as Allocation, FiledRoyaltyTermsV1,
@@ -211,7 +211,7 @@ mod personal {
     };
     use mush_economy::managed_entitlement::EntitlementProtocol;
 
-    fn allocation(protocol: EntitlementProtocol) -> TestResult<Allocation> {
+    pub(crate) fn allocation(protocol: EntitlementProtocol) -> TestResult<Allocation> {
         let licence = LicenceId::new(7)?;
         let one = TermGeneration::new(1)?;
         let terms =
@@ -273,7 +273,7 @@ mod personal {
     }
 }
 
-mod house {
+pub(crate) mod house {
     use super::*;
     use crate::commerce::house_catalogue::HouseIssuer;
     use crate::commerce::house_purchase::{
@@ -281,7 +281,7 @@ mod house {
         HouseRenewalTemplateV1, HouseTermEconomicsV1, audit, writer,
     };
 
-    fn allocation(protocol: HouseProtocol) -> TestResult<Allocation> {
+    pub(crate) fn allocation(protocol: HouseProtocol) -> TestResult<Allocation> {
         let licence = LicenceId::new(7)?;
         let one = TermGeneration::new(1)?;
         let terms = writer::HousePurchaseTerms::personal_terms_for_protocol(

@@ -30,12 +30,17 @@ use crate::excursions::{Rig, docked_dray, run};
 
 /// Drop every connection `who` holds, uncleanly, so the presence hook reads a lost link.
 pub(crate) fn drop_link(rig: &mut Rig, who: ObjId) {
+    drop_link_in(&mut rig.tw, who);
+}
+
+/// [`drop_link`] over any rig's world.
+pub(crate) fn drop_link_in(tw: &mut mush_testkit::TestWorld, who: ObjId) {
     let conns: Vec<u64> = (1..=64)
-        .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(who))
+        .filter(|conn| tw.engine().actor_of(*conn) == Some(who))
         .collect();
     assert!(!conns.is_empty(), "{who} holds a connection");
     for conn in conns {
-        rig.tw.engine_mut().step(
+        tw.engine_mut().step(
             mush_core::Inbound::ConnDown {
                 conn,
                 actor: who,
@@ -137,9 +142,13 @@ impl ShipAtPicket {
 
 /// **Read `hull` at the picket**; `None` once she is in no picket's bubble.
 pub(crate) fn ship_at_the_picket(rig: &Rig, hull: ObjId) -> Option<ShipAtPicket> {
-    let book = rig
-        .tw
-        .world()
+    read_at_the_picket(rig.tw.world(), hull)
+}
+
+/// [`ship_at_the_picket`] over any rig's world (doc 47 unit CO.7: the closing story's rig is
+/// `driving_rig`'s, not this one).
+pub(crate) fn read_at_the_picket(world: &mush_core::World, hull: ObjId) -> Option<ShipAtPicket> {
+    let book = world
         .module_state::<SpaceBubbleBook>()
         .expect("the space book");
     let active = book.active_for_hull(hull)?;
@@ -489,18 +498,20 @@ fn hit_by_the_raider(posture: Posture) -> (Rig, ObjId, ObjId, Answered) {
     )
 }
 
-/// **The same ship, hit by the same hull, answers on `HOLD` and on `GUARD` and not on
-/// `RETURN`; she never fires first, and never on the corvette or the stranger** (the row's
-/// second and third clauses; Q-45-8, Q-45-12, Q-44-38).
+/// **The same ship, hit by the same hull, answers it under every posture; she never fires
+/// first, and never on the corvette or the stranger** (doc 45 unit AP.9's row, second and
+/// third clauses, as doc 47 unit CO.2 rules them, R-47-3; Q-45-8, Q-45-12, Q-44-38). Until
+/// CO.2 she answered on `HOLD` and `GUARD` and on `RETURN` answered nobody.
 ///
 /// Three parties beside her in the bubble: the customs corvette, the belt raider, which her
 /// party holds hostile from the bubble's opening, and a second pilot's ship.
 ///
-/// On `HOLD` the story goes on: she complied with customs before the raider lit (she hove
-/// to by her mind's own burn and was cleared, and never ran), and once the picket lets her
-/// go she is on her filed passage again, across a restart.
+/// On `RETURN` and on `HOLD` the story goes on: she complied with customs before the raider
+/// lit (she hove to by her mind's own burn and was cleared, and never ran), and once the
+/// picket lets her go she is on her filed passage again, across a restart: answering did
+/// not stop her return.
 #[test]
-fn ap9_at_the_picket_a_ship_answers_the_raider_that_fired_on_her_by_her_posture() {
+fn co2_at_the_picket_a_ship_answers_the_raider_that_fired_on_her_under_every_posture() {
     for posture in [Posture::Return, Posture::Guard, Posture::Hold] {
         let (mut rig, _pilot, hull, told) = hit_by_the_raider(posture);
         assert!(
@@ -521,13 +532,6 @@ fn ap9_at_the_picket_a_ship_answers_the_raider_that_fired_on_her_by_her_posture(
             Some("BACKUP_COAST"),
             "{posture}: {told:?}"
         );
-        if posture.is_return() {
-            assert!(
-                told.after.answered.is_empty() && told.after.lock.is_none(),
-                "on RETURN she answers nobody: {told:?}"
-            );
-            continue;
-        }
         assert_eq!(
             told.after.answered, raider,
             "{posture}: she answers the raider and nobody else: {told:?}"
@@ -548,11 +552,11 @@ fn ap9_at_the_picket_a_ship_answers_the_raider_that_fired_on_her_by_her_posture(
             "{posture}: {told:?}"
         );
         assert_ne!(told.after.status, PicketInspectionStatus::RanThePicket);
-        if posture != Posture::Hold {
+        if posture == Posture::Guard {
             continue;
         }
 
-        // On HOLD: the picket lets her go, and she is on her passage again.
+        // On RETURN and on HOLD: the picket lets her go, and she is on her passage again.
         let mut left = false;
         for _ in 0..1_800 {
             if ship_at_the_picket(&rig, hull).is_none() {
@@ -576,18 +580,19 @@ fn ap9_at_the_picket_a_ship_answers_the_raider_that_fired_on_her_by_her_posture(
         // A restart under way, after the picket: she is still on it, on the same word.
         let rig = crate::excursions::reboot_with(rig, &[]);
         assert!(under_way(&rig), "and after a restart");
-        assert_eq!(posture_of(&rig, hull), Posture::Hold);
+        assert_eq!(posture_of(&rig, hull), posture);
     }
 }
 
-/// **A ship left on `HOLD` or on `GUARD` does not answer for a stranger** (the row's second
-/// clause; Q-45-8). The second pilot runs the picket as the bubble opens, so the raider
-/// lights and opens on them while the absent ship is still heaving to. The raider is a party
-/// her own party has held hostile since the bubble opened, and it has fired beside her: she
-/// locks nothing and fires on nobody, under either word.
+/// **A ship left on any posture does not answer for a stranger** (the row's second clause;
+/// Q-45-8). The second pilot runs the picket as the bubble opens, so the raider lights and
+/// opens on them while the absent ship is still heaving to. The raider is a party her own
+/// party has held hostile since the bubble opened, and it has fired beside her: she locks
+/// nothing and fires on nobody, under any word. (Doc 47 unit CO.2: `RETURN`, which answers
+/// fire now too, is flown here beside the other two; until CO.2 it was `HOLD` and `GUARD`.)
 #[test]
-fn ap9_a_ship_left_on_hold_or_guard_does_not_answer_for_a_stranger() {
-    for posture in [Posture::Hold, Posture::Guard] {
+fn co2_a_ship_left_on_any_posture_does_not_answer_for_a_stranger() {
+    for posture in [Posture::Return, Posture::Hold, Posture::Guard] {
         let mut rig = crate::excursions::stocked_fitted();
         let (pilot, row) = docked_dray(&mut rig, ("Pilot", 1, "Salt Moth"), (53, 19));
         let (stranger, other) = docked_dray(&mut rig, ("Stranger", 2, "Tin Kettle"), (53, 19));

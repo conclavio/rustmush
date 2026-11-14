@@ -80,6 +80,24 @@ pub(super) fn station(
     }
     matches.pop().ok_or_else(|| "NPC helm unavailable.".into())
 }
+/// **Whether `station` on `unit` carries the fire channel** (doc 47 unit CO.5): an armed rig's one
+/// pilot console does (doc 32 cut CF.6c), a prospector's does not.
+pub(super) fn console_fires(world: &World, unit: ObjId, station: &mush_sim::StationId) -> bool {
+    mush_core::ChannelId::new("fire").is_some_and(|fire| {
+        world
+            .module_state::<SpatialState>()
+            .and_then(|state| state.stations.get(&unit))
+            .and_then(|stations| stations.stations.get(station))
+            .is_some_and(|spec| spec.channels.contains(&fire))
+    })
+}
+
+/// **Whether the roster's hired crew may hold the fire channel** (doc 47 unit CO.5, R-47-6): only
+/// under a combat activation, whose duty each hired NPC's contract carries.
+pub(super) fn fires_by_duty(roster: &ActiveDetachment) -> bool {
+    roster.duty == crate::detachment::crew::CrewDuty::Combat
+}
+
 pub(super) fn launch_person(
     world: &World,
     roster: &ActiveDetachment,
@@ -108,6 +126,19 @@ pub(super) fn launch_person(
                 || terms.digest().ok().as_ref() != roster.npc_terms.get(&character)
             {
                 return Err("NPC's accepted employment terms or duty changed.".into());
+            }
+            // Doc 47 unit CO.5: the seat's rule again at launch, so a console that came to fire
+            // after the seat (a refit) does not launch a hire who is not on a combat duty.
+            let firing = world
+                .module_state::<SpatialState>()
+                .and_then(|state| state.assignments.get(&unit))
+                .is_some_and(|seats| {
+                    seats.seats.iter().any(|(station, seat)| {
+                        seat.actor == character && console_fires(world, unit, station)
+                    })
+                });
+            if firing && !fires_by_duty(roster) {
+                return Err(super::seating::NPC_SEAT_NO_FIRE.into());
             }
             (character, true)
         }

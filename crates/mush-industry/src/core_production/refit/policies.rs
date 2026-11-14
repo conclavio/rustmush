@@ -17,6 +17,7 @@ use mush_tactics::{
     component_replacement::{ReplacementChoice, ReplacementPolicy},
     unit::replacement::{ComponentState, ReplacementJournal},
 };
+use std::sync::Arc;
 
 pub(crate) fn replacement(
     world: &World,
@@ -29,13 +30,22 @@ pub(crate) fn replacement(
     let current =
         mush_tactics::component_replacement::current_refit_unit(world, o.requester, o.hull)
             .map_err(bad)?;
-    replacement_from(current, registry, c, intent, world.now())
+    let carried = displaced_by(world, o.incoming)?;
+    replacement_from(
+        current,
+        registry,
+        c,
+        intent,
+        carried.as_deref(),
+        world.now(),
+    )
 }
 fn replacement_from(
     current: &TacticalUnit,
     registry: &DefinitionRegistry,
     c: &CoreRefitFactoryConfig,
     intent: &AcceptedIntent,
+    carried: Option<&RefitOrder>,
     now: i64,
 ) -> Result<(ReplacementChoice, ReplacementJournal), Error> {
     let o = &intent.offer;
@@ -62,7 +72,38 @@ fn replacement_from(
         None,
     )
     .map_err(bad)?;
-    let (with_asset, _) = mush_tactics::apply(&baseline, &asset, now).map_err(bad)?;
+    let (mut with_asset, _) = mush_tactics::apply(&baseline, &asset, now).map_err(bad)?;
+    // Doc 47 CO.4 (R-47-5): a stored core goes in as it came out, its cells and its condition
+    // carried; a destroyed one goes in nowhere. A cell the new root's core does not carry
+    // refuses the plan, so a core never goes in as less than it is.
+    if let Some(left) = carried {
+        if destroyed(registry, left)? {
+            return Err(Error::Unavailable);
+        }
+        let saved = left
+            .intent
+            .offer
+            .displaced
+            .as_ref()
+            .ok_or(Error::Integrity)?;
+        let mut ops = saved
+            .cells()
+            .iter()
+            .map(|(cell, value)| UnitMutationOp::SetCell {
+                addr: mush_tactics::CellAddr::Component {
+                    component: c.component.clone(),
+                    cell: cell.clone(),
+                },
+                value: value.current,
+            })
+            .collect::<Vec<_>>();
+        ops.push(UnitMutationOp::SetComponentCondition {
+            component: c.component.clone(),
+            condition: saved.installed.condition.clone(),
+        });
+        let plan = UnitMutationPlan::new(ops, Some(with_asset.revision()), None).map_err(bad)?;
+        with_asset = mush_tactics::apply(&with_asset, &plan, now).map_err(bad)?.0;
+    }
     let incoming = ComponentState::capture(&with_asset, &c.component).map_err(bad)?;
     let (_, journal) = mush_tactics::unit::replacement::replace_component(
         registry,
@@ -75,6 +116,43 @@ fn replacement_from(
     )
     .map_err(bad)?;
     Ok((ReplacementChoice::new(target.clone(), incoming), journal))
+}
+/// **The order that last displaced `core`**, from the acknowledged order image (doc 47 CO.4,
+/// ruling R-47-5): its offer saved the component the core was when it came out, which is the
+/// condition the stored core carries. `None` for a core no refit has displaced.
+///
+/// A core in its owner's hands that some order displaced came out at the latest such order:
+/// a later order could displace it only after a fitting mounted it again, and a mounted core
+/// leaves its hull by no other route (the custody hook), so a cancelled later one leaves it in
+/// a hull, not in hand.
+pub(crate) fn displaced_by(world: &World, core: ObjId) -> Result<Option<Arc<RefitOrder>>, Error> {
+    let p = state(world)?.refit.as_ref().ok_or(Error::Unavailable)?;
+    Ok(p.orders
+        .values()
+        .filter(|o| o.intent.offer.displaced_asset() == Some(core))
+        .max_by_key(|o| o.sequence)
+        .cloned())
+}
+/// **A stored core that is destroyed** (doc 47 CO.4, R-47-5: "non-destroyed parts removed go to
+/// storage, to be fitted again or sold"; a destroyed part is still gone). `left` is the order
+/// that displaced it. The core is destroyed when it came out with the `destroyed` condition,
+/// or without the capabilities its own fitting put in (the arena's `destroy_core` revokes the
+/// core capability). A damaged or degraded core is not destroyed: it is fitted again carrying
+/// its cells and its condition (`replacement_from`).
+pub(crate) fn destroyed(registry: &DefinitionRegistry, left: &RefitOrder) -> Result<bool, Error> {
+    let o = &left.intent.offer;
+    let saved = o.displaced.as_ref().ok_or(Error::Integrity)?;
+    if saved.installed.condition.as_str()
+        == mush_tactics::field_ops::ComponentCondition::Destroyed.as_str()
+    {
+        return Ok(true);
+    }
+    registry.get_exact(&o.before).map_err(bad)?;
+    let spec =
+        mush_tactics::unit::replacement::registered_spec(registry, &o.before).map_err(bad)?;
+    let baseline = TacticalUnit::from_spec(&spec, o.hull).map_err(bad)?;
+    let went_in = SavedComponent::of_unit(&baseline, &o.component)?.ok_or(Error::Integrity)?;
+    Ok(went_in.capabilities() != saved.capabilities())
 }
 fn state(world: &World) -> Result<&CoreProductionState, Error> {
     if world
@@ -154,11 +232,14 @@ impl ReplacementPolicy for RefitReplacementPolicy {
         let row = ready(ctx.world(), s, &self.config, *id, ctx.invocation().actor())
             .map_err(|_| refused())?;
         let definitions = self.definitions.0.get().ok_or_else(refused)?;
+        let carried =
+            displaced_by(ctx.world(), row.intent.offer.incoming).map_err(|_| refused())?;
         replacement_from(
             current,
             definitions,
             &self.config,
             &row.intent,
+            carried.as_deref(),
             ctx.world().now(),
         )
         .map(|v| v.0)

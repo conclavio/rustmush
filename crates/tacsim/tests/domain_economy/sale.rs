@@ -845,9 +845,14 @@ fn docked_at_stickney(rig: &mut Rig, cargo: &[(&str, u64)]) -> (ObjId, HullRow) 
 /// (`lane_chain::strip_industry`). This suite's subject is Kasei's concentrate bid as IC10's
 /// plain bid, lapsed and re-posted by the clerk; since IN.5 it refreshes (the drip's) and the
 /// refine consumes what it buys.
+///
+/// Doc 47 cut CO.8: and without the Kirkwood interdiction. These stories step the clock past
+/// the Kirkwood boundary to reach Stickney; the customs picket stops a hull there however late
+/// she crosses, and the picket is not this suite's subject.
 fn lane_variant(version: u32, edit: impl FnOnce(&mut serde_json::Value)) -> String {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
     crate::support::lane_chain::strip_industry(&mut doc);
+    doc["entries"]["ceres_stickney"]["def"]["legs"][0]["interdiction"] = serde_json::json!(0);
     doc["manifest"]["version"] = serde_json::json!(version);
     doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
     edit(&mut doc);

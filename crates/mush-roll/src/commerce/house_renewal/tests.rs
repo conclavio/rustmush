@@ -1,554 +1,310 @@
 //! Structural history tests. These do not fabricate an accepted E4 grant;
 //! actual owner/output/audit integration must also pass at the paired boundary.
+//!
+//! Doc 46 CT.5: the scenarios are the twin's (`renewal_twin::tests`), run here for the House
+//! issuer under their old names; this module holds the House rig and the CT.0 walk.
+use super::super::renewal_twin::tests::{self as twin, Rig};
 use super::super::{
-    CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration, TermWindow,
-    WorldIcSeconds,
+    Holder, LicenceId, RevisionIdentity, TermGeneration,
     house_catalogue::HouseIssuer,
     house_purchase::{HouseGrantEconomicsV1, HouseRenewalTemplateV1, HouseTermEconomicsV1},
     paid::{PaidForm, PaidTermRecord, PaidTerms, PersonalPaidLicence},
     rating::RatingClass,
-    records::{Record, RevisionPolicy},
+    records::{PublicationError, Record, RevisionPolicy},
+    renewal_twin::House,
 };
 use super::records::*;
 use super::*;
-use mush_core::{
-    ClockRef, ClockStamp, CommitToken, DefinitionRef, ObjId,
-    mechanics::{
-        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
-    },
-};
-use mush_economy::{
-    Amount, InstrumentId,
-    managed_house_renewal::{
-        RenewalFundingReceiptV1, RenewalTerminalReceiptV1, UnfundedCloseReason,
-    },
-};
-use serde_json::json;
+use mush_core::{CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_economy::{Amount, InstrumentId};
+#[allow(unused_imports)]
 use std::collections::BTreeMap;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 use mush_testkit::fixtures::digest;
+#[allow(unused_imports)]
 use mush_testkit::fixtures::stamp;
 use mush_testkit::fixtures::token;
-fn definition(kind: &str, id: &str) -> TestResult<DefinitionRef> {
-    Ok(DefinitionRegistryBuilder::new().register(
-        OwnerId::new("market")?,
-        DefinitionDescriptor::new(
-            DefinitionKind::new(kind)?,
-            DefinitionId::new(id)?,
-            1,
-            json!({"format":1}),
-        )?,
+
+/// The House of the structural birth.
+fn issuer() -> TestResult<HouseIssuer> {
+    Ok(HouseIssuer::new(
+        mush_org::OrgId(0),
+        mush_org::OrgScopeId(0),
     )?)
 }
-fn identity() -> TestResult<RevisionIdentity> {
-    Ok(serde_json::from_value(
-        json!({"format":1,"revision":{"key":{"character":1,"mind":1,"number":1},
-        "digest":digest(1)},"source":digest(2)}),
-    )?)
-}
-struct Birth {
-    licence: PersonalPaidLicence,
-    term: PaidTermRecord,
-    economics: HouseTermEconomicsV1,
-}
-fn birth() -> TestResult<Birth> {
-    let id = LicenceId::new(7)?;
-    let one = TermGeneration::new(1)?;
-    let terms = PaidTerms::original_personal_form(RatingClass::I, PaidForm::Sealed {}, false)?;
-    let policy = RevisionPolicy::Pin {
-        filed: FiledRevisionId::new(3)?,
-        revision: identity()?,
-    };
-    let grant = HouseGrantEconomicsV1::new(HouseRenewalTemplateV1::new(
-        InstrumentId::new("cr").ok_or("instrument")?,
-        Amount::from_minor(500),
-        100,
-        20,
-        terms,
-        policy,
-        definition("entitlement_policy", "house_personal")?,
-    )?)?;
-    Ok(Birth {
-        licence: PersonalPaidLicence::original(
-            id,
-            CharterId::new(9)?,
-            LineId::new(2)?,
-            ObjId(5).into(),
-            one,
-            token(1),
-        )?,
-        term: PaidTermRecord::original(
-            id,
-            one,
-            TermWindow::new(
-                WorldIcSeconds::from_stamp(&stamp(10))?,
-                WorldIcSeconds::from_stamp(&stamp(10))?,
-                WorldIcSeconds::from_stamp(&stamp(110))?,
-                WorldIcSeconds::from_stamp(&stamp(130))?,
-            )?,
+
+impl Rig for House {
+    fn birth_terms() -> TestResult<PaidTerms> {
+        Ok(PaidTerms::original_personal_form(
+            RatingClass::I,
+            PaidForm::Sealed {},
+            false,
+        )?)
+    }
+    fn grant(terms: PaidTerms, policy: RevisionPolicy) -> TestResult<HouseGrantEconomicsV1> {
+        Ok(HouseGrantEconomicsV1::new(HouseRenewalTemplateV1::new(
+            InstrumentId::new("cr").ok_or("instrument")?,
+            Amount::from_minor(500),
+            100,
+            20,
             terms,
             policy,
-            token(1),
-        )?,
-        economics: HouseTermEconomicsV1::capture(id, one, token(1), digest(9), grant)?,
-    })
-}
-fn draft(b: &Birth, n: u8, at: i64, attempt: RenewalAttemptV1) -> TestResult<RenewalOperationV1> {
-    let row = RenewalOperationV1 {
-        format: 1,
-        operation: token(n),
-        action: definition("action", "draft_house_mind_renewal")?,
-        attempt,
-        binding: RenewalBindingV1::capture(
-            &b.licence,
-            &b.term,
-            &b.economics,
-            HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-        )?,
-        offer_digest: digest(n),
-        contract: serde_json::from_value(json!(n))?,
-        consent_hash: [n; 32],
-        created_at_ic: stamp(at),
-        created_at_utc: at,
-        state: RenewalStateV1::Drafted {},
-    };
-    row.validate()?;
-    Ok(row)
-}
-fn funded(row: &RenewalOperationV1) -> TestResult<RenewalOperationV1> {
-    let n = u8::try_from(row.created_at_utc)?;
-    let receipt: RenewalFundingReceiptV1 = serde_json::from_value(
-        json!({"format":1,"commit":token(n+1),
-        "action":definition("action","fund_house_mind_renewal")?,"contract":row.contract,"hold":u64::from(n),
-        "transaction":u64::from(n),"journal_seq":u64::from(n),"consent_hash":row.consent_hash,
-        "at_ic":stamp(i64::from(n)+1),"posted_at_utc":i64::from(n)+1}),
-    )?;
-    let next = RenewalOperationV1 {
-        state: RenewalStateV1::Funded { funding: receipt },
-        ..row.clone()
-    };
-    next.follows(row)?;
-    Ok(next)
-}
-fn terminal(row: &RenewalOperationV1, grant: bool) -> TestResult<RenewalOperationV1> {
-    let funding = row.state.funding().ok_or("funding")?.clone();
-    let n = u8::try_from(row.created_at_utc)?;
-    let at = stamp(i64::from(n) + 2);
-    let receipt: RenewalTerminalReceiptV1 = serde_json::from_value(
-        json!({"format":1,"commit":token(n+2),
-        "action":definition("action",if grant{"settle_house_mind_renewal"}else{"refund_house_mind_renewal"})?,
-        "outcome":if grant{"granted"}else{"refunded"},"transaction":u64::from(n)+1,"journal_seq":u64::from(n)+1,
-        "at_ic":at,"posted_at_utc":i64::from(n)+2,"issued_at_ic":if grant{Some(at)}else{None}}),
-    )?;
-    let state = if grant {
-        RenewalStateV1::Granted {
-            funding,
-            terminal: receipt,
-        }
-    } else {
-        RenewalStateV1::Refunded {
-            funding,
-            terminal: receipt,
-        }
-    };
-    let next = RenewalOperationV1 {
-        state,
-        ..row.clone()
-    };
-    next.follows(row)?;
-    Ok(next)
-}
-fn closed(row: &RenewalOperationV1) -> TestResult<RenewalOperationV1> {
-    let n = u8::try_from(row.created_at_utc)?;
-    let next = RenewalOperationV1 {
-        state: RenewalStateV1::UnfundedClosed {
-            closure: RenewalClosureV1 {
-                commit: token(n + 2),
-                action: definition("action", "close_house_mind_renewal")?,
-                at_ic: stamp(i64::from(n) + 2),
-                posted_at_utc: i64::from(n) + 2,
-                reason: UnfundedCloseReason::Declined,
-            },
-        },
-        ..row.clone()
-    };
-    next.follows(row)?;
-    Ok(next)
-}
-fn granted_birth(row: &RenewalOperationV1) -> TestResult<Birth> {
-    let (licence, term, economics) = row.granted_rows()?;
-    Ok(Birth {
-        licence,
-        term,
-        economics,
-    })
-}
-
-#[test]
-fn strict_rows_reject_missing_null_duplicate_and_nested_unknown_fields() -> TestResult {
-    let row = draft(&birth()?, 10, 20, RenewalAttemptV1::Automatic {})?;
-    let raw = serde_json::to_vec(&row)?;
-    check_eq!(RenewalOperationV1::decode(&raw)?, row);
-    let repeated = String::from_utf8(raw)?.replacen("{", "{\"format\":1,", 1);
-    check!(RenewalOperationV1::decode(repeated.as_bytes()).is_err());
-    let mut value = serde_json::to_value(&row)?;
-    value
-        .get_mut("state")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or("state")?
-        .insert("allowed".into(), json!(true));
-    check!(serde_json::from_value::<RenewalOperationV1>(value).is_err());
-    let head = RenewalHeadV1::for_operation(&closed(&row)?)?;
-    let mut value = serde_json::to_value(&head)?;
-    check_eq!(value.get("pending"), Some(&serde_json::Value::Null));
-    value.as_object_mut().ok_or("head")?.remove("pending");
-    check!(serde_json::from_value::<RenewalHeadV1>(value).is_err());
-    check!(
-        serde_json::from_str::<RenewalAttemptV1>(
-            r#"{"kind":"automatic","previous_operation":null}"#
-        )
-        .is_err()
-    );
-    check!(RenewalOperationV1::decode(&vec![b' '; MAX_OPERATION_BYTES + 1]).is_err());
-    Ok(())
-}
-
-#[test]
-fn closed_attempt_can_precede_exact_retry_grant_without_eternal_next_absence() -> TestResult {
-    let b = birth()?;
-    let closed = closed(&draft(&b, 90, 20, RenewalAttemptV1::Automatic {})?)?;
-    let retry = draft(
-        &b,
-        10,
-        40,
-        RenewalAttemptV1::BuyerRetry {
-            previous_operation: closed.operation,
-        },
-    )?;
-    chain::check_draft(
-        &b.licence,
-        &retry,
-        Some(&RenewalHeadV1::for_operation(&closed)?),
-        Some(&closed),
-    )?;
-    let granted = terminal(&funded(&retry)?, true)?;
-    let current = granted_birth(&granted)?;
-    let terms = BTreeMap::from([
-        (b.term.generation(), &b.term),
-        (current.term.generation(), &current.term),
-    ]);
-    let economics = BTreeMap::from([
-        (b.economics.generation(), &b.economics),
-        (current.economics.generation(), &current.economics),
-    ]);
-    // Lexical token order is deliberately the opposite of causal order.
-    chain::verify(
-        &current.licence,
-        HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-        Some(&RenewalHeadV1::for_operation(&granted)?),
-        &[&granted, &closed],
-        &terms,
-        &economics,
-    )?;
-    check!(
-        chain::verify(
-            &current.licence,
-            HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-            Some(&RenewalHeadV1::for_operation(&granted)?),
-            &[&granted],
-            &terms,
-            &economics
-        )
-        .is_err()
-    );
-    // The accepted House issuer is immutable across holder and term history.
-    check!(
-        chain::verify(
-            &current.licence,
-            HouseIssuer::new(mush_org::OrgId(1), mush_org::OrgScopeId(0))?,
-            Some(&RenewalHeadV1::for_operation(&granted)?),
-            &[&granted, &closed],
-            &terms,
-            &economics,
-        )
-        .is_err()
-    );
-    let mut wrong = current.term.clone();
-    let mut wire = serde_json::to_value(&wrong)?;
-    wire.as_object_mut()
-        .ok_or("term")?
-        .insert("operation".into(), json!(closed.operation));
-    wrong = serde_json::from_value(wire)?;
-    let wrong_terms =
-        BTreeMap::from([(b.term.generation(), &b.term), (wrong.generation(), &wrong)]);
-    check!(
-        chain::verify(
-            &current.licence,
-            HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-            Some(&RenewalHeadV1::for_operation(&granted)?),
-            &[&closed, &granted],
-            &wrong_terms,
-            &economics
-        )
-        .is_err()
-    );
-    Ok(())
-}
-
-#[test]
-fn retry_chain_rejects_branch_orphan_wrong_holder_and_automatic_repeat() -> TestResult {
-    let b = birth()?;
-    let refund = terminal(
-        &funded(&draft(&b, 80, 20, RenewalAttemptV1::Automatic {})?)?,
-        false,
-    )?;
-    let head = RenewalHeadV1::for_operation(&refund)?;
-    let retry = draft(
-        &b,
-        10,
-        40,
-        RenewalAttemptV1::BuyerRetry {
-            previous_operation: refund.operation,
-        },
-    )?;
-    let branch = draft(&b, 11, 50, retry.attempt)?;
-    let terms = BTreeMap::from([(b.term.generation(), &b.term)]);
-    let economics = BTreeMap::from([(b.economics.generation(), &b.economics)]);
-    chain::verify(
-        &b.licence,
-        HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-        Some(&RenewalHeadV1::for_operation(&retry)?),
-        &[&retry, &refund],
-        &terms,
-        &economics,
-    )?;
-    check!(
-        chain::verify(
-            &b.licence,
-            HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-            Some(&head),
-            &[&refund, &retry, &branch],
-            &terms,
-            &economics
-        )
-        .is_err()
-    );
-    check!(
-        chain::check_draft(
-            &b.licence,
-            &draft(&b, 12, 40, RenewalAttemptV1::Automatic {})?,
-            Some(&head),
-            Some(&refund)
-        )
-        .is_err()
-    );
-    let mut wrong = retry.clone();
-    wrong.binding.holder = ObjId(6).into();
-    check!(chain::check_draft(&b.licence, &wrong, Some(&head), Some(&refund)).is_err());
-    let mut orphan = retry;
-    orphan.attempt = RenewalAttemptV1::BuyerRetry {
-        previous_operation: token(99),
-    };
-    check!(
-        chain::verify(
-            &b.licence,
-            HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-            Some(&RenewalHeadV1::for_operation(&orphan)?),
-            &[&refund, &orphan],
-            &terms,
-            &economics
-        )
-        .is_err()
-    );
-    Ok(())
-}
-
-#[test]
-fn current_generation_advances_without_rewriting_birth_or_historical_acquisition() -> TestResult {
-    let b = birth()?;
-    let first = terminal(
-        &funded(&draft(&b, 80, 20, RenewalAttemptV1::Automatic {})?)?,
-        true,
-    )?;
-    let second_birth = granted_birth(&first)?;
-    let second = terminal(
-        &funded(&draft(
-            &second_birth,
-            10,
-            40,
-            RenewalAttemptV1::Automatic {},
-        )?)?,
-        true,
-    )?;
-    let current = granted_birth(&second)?;
-    let terms = BTreeMap::from([
-        (b.term.generation(), &b.term),
-        (second_birth.term.generation(), &second_birth.term),
-        (current.term.generation(), &current.term),
-    ]);
-    let economics = BTreeMap::from([
-        (b.economics.generation(), &b.economics),
-        (second_birth.economics.generation(), &second_birth.economics),
-        (current.economics.generation(), &current.economics),
-    ]);
-    chain::verify(
-        &current.licence,
-        HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-        Some(&RenewalHeadV1::for_operation(&second)?),
-        &[&second, &first],
-        &terms,
-        &economics,
-    )?;
-    check_eq!(current.licence.operation(), b.licence.operation());
-    check_eq!(current.term.operation(), second.operation);
-    first
-        .binding
-        .check_predecessor(&current.licence, &b.term, &b.economics)?;
-    second.binding.check_predecessor(
-        &current.licence,
-        &second_birth.term,
-        &second_birth.economics,
-    )?;
-    check!(b.term.matches_current(&current.licence).is_err());
-    check!(
-        chain::verify(
-            &current.licence,
-            HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-            None,
-            &[&first, &second],
-            &terms,
-            &economics
-        )
-        .is_err()
-    );
-    Ok(())
-}
-
-#[test]
-fn pending_funding_preserves_old_current_rows_and_blocks_new_attempt() -> TestResult {
-    let b = birth()?;
-    let old = (
-        serde_json::to_vec(&b.licence)?,
-        serde_json::to_vec(&b.term)?,
-        serde_json::to_vec(&b.economics)?,
-    );
-    let draft = draft(&b, 80, 20, RenewalAttemptV1::Automatic {})?;
-    let funded = funded(&draft)?;
-    let head = RenewalHeadV1::for_operation(&funded)?;
-    check_eq!(head, RenewalHeadV1::for_operation(&draft)?);
-    chain::verify(
-        &b.licence,
-        HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?,
-        Some(&head),
-        &[&funded],
-        &BTreeMap::from([(b.term.generation(), &b.term)]),
-        &BTreeMap::from([(b.economics.generation(), &b.economics)]),
-    )?;
-    check!(funded.granted_rows().is_err());
-    check!(chain::check_draft(&b.licence, &draft, Some(&head), Some(&funded)).is_err());
-    check!(
-        old == (
-            serde_json::to_vec(&b.licence)?,
-            serde_json::to_vec(&b.term)?,
-            serde_json::to_vec(&b.economics)?
-        ),
-        "pending renewal rewrote issued rows"
-    );
-    Ok(())
-}
-
-#[test]
-fn exact_transition_and_issued_clock_refuse_crossed_receipts() -> TestResult {
-    let b = birth()?;
-    let draft = draft(&b, 80, 20, RenewalAttemptV1::Automatic {})?;
-    let funded = funded(&draft)?;
-    let granted = terminal(&funded, true)?;
-    check!(granted.follows(&draft).is_err());
-    check!(granted.follows(&granted).is_err());
-    let mut crossed = granted.clone();
-    crossed.offer_digest = digest(99);
-    check!(crossed.follows(&funded).is_err());
-    let mut wire = serde_json::to_value(&granted)?;
-    let terminal = wire
-        .get_mut("state")
-        .and_then(|s| s.get_mut("terminal"))
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or("terminal")?;
-    let other = ClockStamp {
-        clock: ClockRef::WorldIc { generation: 2 },
-        at: 22,
-    };
-    terminal.insert("at_ic".into(), json!(other));
-    terminal.insert("issued_at_ic".into(), json!(other));
-    check!(serde_json::from_value::<RenewalOperationV1>(wire).is_err());
-    let refund = terminal_refund_clock(&funded, 2)?;
-    refund.follows(&funded)?;
-    check!(refund.granted_rows().is_err());
-    Ok(())
-}
-fn terminal_refund_clock(
-    funded: &RenewalOperationV1,
-    generation: u64,
-) -> TestResult<RenewalOperationV1> {
-    let refund = terminal(funded, false)?;
-    let mut wire = serde_json::to_value(&refund)?;
-    let terminal = wire
-        .get_mut("state")
-        .and_then(|s| s.get_mut("terminal"))
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or("terminal")?;
-    terminal.insert(
-        "at_ic".into(),
-        json!(ClockStamp {
-            clock: ClockRef::WorldIc { generation },
-            at: 22
-        }),
-    );
-    Ok(serde_json::from_value(wire)?)
-}
-
-#[test]
-fn exhausted_generation_refuses_before_any_new_offer_or_money() -> TestResult {
-    let b = birth()?;
-    let max = TermGeneration::new(u64::MAX)?;
-    let licence = PersonalPaidLicence::original(
-        b.licence.id(),
-        b.licence.charter(),
-        b.licence.line(),
-        b.licence.holder(),
-        max,
-        b.licence.operation(),
-    )?;
-    let term = PaidTermRecord::original(
-        licence.id(),
-        max,
-        b.term.window(),
-        b.term.terms(),
-        b.term.policy(),
-        token(9),
-    )?;
-    let economics = HouseTermEconomicsV1::capture(
-        licence.id(),
-        max,
-        token(9),
-        b.economics.product_digest(),
-        b.economics.grant().clone(),
-    )?;
-    check!(
+            twin::definition("entitlement_policy", "house_personal")?,
+        )?)?)
+    }
+    fn widen(
+        old: &HouseGrantEconomicsV1,
+        instrument: InstrumentId,
+    ) -> TestResult<HouseGrantEconomicsV1> {
+        let t = old.renewal();
+        let template = HouseRenewalTemplateV1::new(
+            instrument,
+            t.price(),
+            t.term_seconds(),
+            t.grace_seconds(),
+            t.terms(),
+            t.revision(),
+            t.policy().clone(),
+        )?;
+        Ok(HouseGrantEconomicsV1::new(template)?)
+    }
+    fn capture(
+        licence: &PersonalPaidLicence,
+        term: &PaidTermRecord,
+        economics: &HouseTermEconomicsV1,
+    ) -> Result<RenewalBindingV1, PublicationError> {
         RenewalBindingV1::capture(
-            &licence,
-            &term,
-            &economics,
-            HouseIssuer::new(mush_org::OrgId(0), mush_org::OrgScopeId(0))?
+            licence,
+            term,
+            economics,
+            issuer().map_err(|_| PublicationError::Invalid)?,
         )
-        .is_err()
+    }
+    fn birth_line() -> TestResult<HouseIssuer> {
+        issuer()
+    }
+    fn other_line() -> TestResult<Option<HouseIssuer>> {
+        Ok(Some(HouseIssuer::new(
+            mush_org::OrgId(1),
+            mush_org::OrgScopeId(0),
+        )?))
+    }
+    fn economics_row(
+        licence: LicenceId,
+        generation: TermGeneration,
+        operation: CommitToken,
+        product: DefinitionDigest,
+        grant: HouseGrantEconomicsV1,
+    ) -> Result<HouseTermEconomicsV1, PublicationError> {
+        HouseTermEconomicsV1::capture(licence, generation, operation, product, grant)
+    }
+    fn product(economics: &HouseTermEconomicsV1) -> DefinitionDigest {
+        economics.product_digest()
+    }
+    fn grant_of(economics: &HouseTermEconomicsV1) -> &HouseGrantEconomicsV1 {
+        economics.grant()
+    }
+    fn with_holder(row: &RenewalOperationV1, holder: Holder) -> RenewalOperationV1 {
+        let mut row = row.clone();
+        row.binding.holder = holder;
+        row
+    }
+    fn with_attempt(row: &RenewalOperationV1, attempt: RenewalAttemptV1) -> RenewalOperationV1 {
+        let mut row = row.clone();
+        row.attempt = attempt;
+        row
+    }
+    fn with_offer_digest(row: &RenewalOperationV1, digest: DefinitionDigest) -> RenewalOperationV1 {
+        let mut row = row.clone();
+        row.offer_digest = digest;
+        row
+    }
+    fn with_holder_basis(
+        row: &RenewalOperationV1,
+        holder: Holder,
+        basis: mush_economy::managed_paid_resale::RenewalHolderBasisV1,
+    ) -> RenewalOperationV1 {
+        let mut row = row.clone();
+        row.binding.format = 2;
+        row.binding.holder = holder;
+        row.binding.holder_basis = Some(basis);
+        row
+    }
+    fn decode(bytes: &[u8]) -> Result<RenewalOperationV1, PublicationError> {
+        RenewalOperationV1::decode(bytes)
+    }
+    fn offer(
+        row: &RenewalOperationV1,
+    ) -> TestResult<mush_economy::managed_house_renewal::RenewalOffer> {
+        Ok(ct0_snapshot::ct0_offer(row).map_err(|e| e.to_string())?)
+    }
+    type Other = crate::commerce::renewal_twin::Personal;
+    type BirthRow = crate::commerce::house_purchase::HouseAllocationV1;
+    fn birth_row(
+        row: &RenewalOperationV1,
+        offer: &mush_economy::managed_house_renewal::RenewalOffer,
+    ) -> TestResult<crate::commerce::house_purchase::HouseAllocationV1> {
+        let mut birth = crate::commerce::tests::ct0_purchase::house::allocation(
+            crate::commerce::house_purchase::HouseProtocol::HouseV1,
+        )?;
+        birth.product_digest = row.binding().product_digest();
+        birth.economics = crate::commerce::renewal_twin::Binding::economics_at(
+            row.binding(),
+            TermGeneration::new(1)?,
+            token(1),
+        )?;
+        birth.quote = offer.basis.prior_quote;
+        birth.quote_digest = offer.basis.prior_quote_digest;
+        birth.issuer = row.binding().issuer();
+        Ok(birth)
+    }
+    fn as_birth(
+        row: &crate::commerce::house_purchase::HouseAllocationV1,
+    ) -> crate::commerce::entitlement::history::Birth<'_> {
+        crate::commerce::entitlement::history::Birth::House(row)
+    }
+    fn birth_off_side(
+        row: &crate::commerce::house_purchase::HouseAllocationV1,
+    ) -> TestResult<Option<crate::commerce::house_purchase::HouseAllocationV1>> {
+        let mut off = row.clone();
+        off.issuer = HouseIssuer::new(mush_org::OrgId(1), mush_org::OrgScopeId(0))?;
+        Ok(Some(off))
+    }
+    fn with_birth_product(
+        row: &crate::commerce::house_purchase::HouseAllocationV1,
+        product: DefinitionDigest,
+    ) -> crate::commerce::house_purchase::HouseAllocationV1 {
+        let mut row = row.clone();
+        row.product_digest = product;
+        row
+    }
+    fn off_side(
+        mut offer: mush_economy::managed_house_renewal::RenewalOffer,
+    ) -> mush_economy::managed_house_renewal::RenewalOffer {
+        offer.terms.scope = mush_org::OrgScopeId(5);
+        offer
+    }
+}
+
+/// 17g C2g: `pub(crate)` with the helpers below, for Roll's command-read
+/// tests (the named buyer's resale step on a granted licence).
+pub(crate) type Birth = twin::Birth<House>;
+#[allow(dead_code)]
+fn definition(kind: &str, id: &str) -> TestResult<DefinitionRef> {
+    twin::definition(kind, id)
+}
+#[allow(dead_code)]
+fn identity() -> TestResult<RevisionIdentity> {
+    twin::identity()
+}
+fn birth() -> TestResult<Birth> {
+    twin::birth::<House>()
+}
+#[allow(dead_code)]
+pub(crate) fn birth_with(terms: PaidTerms) -> TestResult<Birth> {
+    twin::birth_with::<House>(terms)
+}
+pub(crate) fn draft(
+    b: &Birth,
+    n: u8,
+    at: i64,
+    attempt: RenewalAttemptV1,
+) -> TestResult<RenewalOperationV1> {
+    twin::draft::<House>(b, n, at, attempt)
+}
+#[allow(dead_code)]
+pub(crate) fn funded(row: &RenewalOperationV1) -> TestResult<RenewalOperationV1> {
+    twin::funded::<House>(row)
+}
+#[allow(dead_code)]
+pub(crate) fn terminal(row: &RenewalOperationV1, grant: bool) -> TestResult<RenewalOperationV1> {
+    twin::terminal::<House>(row, grant)
+}
+pub(crate) fn granted_birth(row: &RenewalOperationV1) -> TestResult<Birth> {
+    twin::granted_birth::<House>(row)
+}
+
+super::super::renewal_twin::tests::instantiate!(crate::commerce::renewal_twin::House);
+
+/// Doc 46 CT.5: every identity constant the twin reads for the house issuer, against the
+/// literal its family's files held, and the family's old names against the constants. The
+/// action ids, protocol names and offer domain are Economy's constants of the same issuer.
+#[test]
+fn house_identity_strings_hold_todays_bytes() -> TestResult {
+    check_eq!(
+        <House as crate::commerce::renewal_twin::Issuer>::OPERATION_FAMILY,
+        "roll_house_mind_renewal_operation"
+    );
+    check_eq!(
+        <House as crate::commerce::renewal_twin::Issuer>::HEAD_FAMILY,
+        "roll_house_mind_renewal_head"
+    );
+    check_eq!(
+        <House as crate::commerce::renewal_twin::Issuer>::PREDECESSOR_DOMAIN,
+        "roll.mind.house_renewal_predecessor.v1"
+    );
+    check_eq!(
+        <House as crate::commerce::renewal_twin::Issuer>::TEMPLATE_DOMAIN,
+        "roll.mind.house_renewal_template.v1"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::DRAFT_ACTION,
+        "draft_house_mind_renewal"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::FUND_ACTION,
+        "fund_house_mind_renewal"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::GRANT_ACTION,
+        "settle_house_mind_renewal"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::REFUND_ACTION,
+        "refund_house_mind_renewal"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::CLOSE_ACTION,
+        "close_house_mind_renewal"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::SERVICE_CLOSE_ACTION,
+        "close_house_mind_renewal_service"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::PROTOCOL,
+        "house_mind_renewal_v1"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::SERVICE_PROTOCOL,
+        "house_mind_renewal_service_v1"
+    );
+    check_eq!(
+        <House as mush_economy::renewal_twin::Issuer>::OFFER_DOMAIN,
+        "economy.house_mind_renewal_offer.v1"
+    );
+    check_eq!(mush_economy::renewal_twin::MAX_RENEWAL_RECEIPT_BYTES, 1024);
+    check_eq!(
+        RenewalOperationV1::FAMILY,
+        "roll_house_mind_renewal_operation"
+    );
+    check_eq!(RenewalHeadV1::FAMILY, "roll_house_mind_renewal_head");
+    let ids: Vec<&str> = protocol::Transition::ALL.iter().map(|t| t.id()).collect();
+    check_eq!(
+        ids,
+        [
+            "draft_house_mind_renewal",
+            "fund_house_mind_renewal",
+            "settle_house_mind_renewal",
+            "refund_house_mind_renewal",
+            "close_house_mind_renewal"
+        ]
+    );
+    check_eq!(
+        <House as crate::commerce::renewal_twin::Rules>::anchor(token(1)).record(),
+        format!("v1/house_renewal_operation/{}", token(1))
     );
     Ok(())
 }
-
-#[path = "capacity_tests.rs"]
-mod capacity_tests;
-
-mod holder;
 
 mod ct0_snapshot;

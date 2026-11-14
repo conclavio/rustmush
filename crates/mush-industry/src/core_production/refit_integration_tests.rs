@@ -1154,3 +1154,140 @@ fn real_refit_roster_validates_all_six_exact_actions_and_outcome() -> Result {
     );
     Ok(())
 }
+
+/// Doc 47 CO.4 (ruling R-47-5): two fittings into the rig's hull, the second displacing the
+/// first core; `harm` names a condition the first core takes before it comes out, if any.
+/// Returns the displaced core, its manufacture and the second fitting's order.
+#[inline(never)]
+fn co4_displaced(s: &mut Fitting, harm: Option<&str>) -> Result<(ObjId, CommitToken, WorkOrderId)> {
+    let first = s.accepted(40)?;
+    s.ready(first, 42)?;
+    s.commit(4, s.f.buyer, 44, FactoryRig::order_parameters(first))?;
+    let stored = (s.incoming, s.manufacture);
+    if let Some(condition) = harm {
+        let core = ComponentId::new("core")?;
+        let unit = s.unit()?;
+        // A damaged core is degraded too: its class cell lowered to the floor.
+        let plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetComponentCondition {
+                    component: core.clone(),
+                    condition: mush_tactics::ConditionId::new(condition)?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: core,
+                        cell: CellId::new("class")?,
+                    },
+                    value: 0,
+                },
+            ],
+            Some(unit.revision()),
+            Some("a core that comes out harmed".into()),
+        )?;
+        command(
+            &mut s.f.r.w,
+            &format!(
+                "@unit/damage #{}={}",
+                s.hull.0,
+                serde_json::to_string(&plan)?
+            ),
+        )?;
+        s.f.r.flush();
+    }
+    second_core(s)?;
+    let second = s.accepted(70)?;
+    s.ready(second, 72)?;
+    s.commit(4, s.f.buyer, 74, FactoryRig::order_parameters(second))?;
+    // Stored: in its owner's hands, its head `detached` from the second fitting.
+    check_eq!(
+        s.f.r.w.world().get(stored.0).ok_or("stored")?.location,
+        Some(s.f.buyer)
+    );
+    check!(
+        matches!(s.position(stored.0)?, AssetPosition::Detached { order, .. } if order == second)
+    );
+    Ok((stored.0, stored.1, second))
+}
+
+/// **Doc 47 CO.4 (R-47-5): a core a refit displaced whole is stored and fitted again.** The
+/// first core comes out of the hull whole when a second is fitted, goes to its owner's hands,
+/// and a third fitting puts it back in, displacing the second, which is stored in its turn.
+/// The cold boot audit reads the history.
+#[test]
+fn co4_a_displaced_whole_core_is_stored_and_fitted_again() -> Result {
+    let mut s = Fitting::new(false)?;
+    let (stored, made, _) = co4_displaced(&mut s, None)?;
+    let second = s.incoming;
+    (s.incoming, s.manufacture) = (stored, made);
+    let third = s.accepted(80)?;
+    s.ready(third, 82)?;
+    s.commit(4, s.f.buyer, 84, FactoryRig::order_parameters(third))?;
+    let core = ComponentId::new("core")?;
+    check_eq!(
+        SavedComponent::from_unit(&s.unit()?, &core)?
+            .installed
+            .asset,
+        Some(stored)
+    );
+    check_eq!(
+        s.f.r.w.world().get(stored).ok_or("refitted")?.location,
+        Some(s.hull)
+    );
+    check!(
+        matches!(s.position(stored)?, AssetPosition::Mounted { order, hull } if order == third && hull == s.hull)
+    );
+    check!(matches!(s.position(second)?, AssetPosition::Detached { order, .. } if order == third));
+    check_eq!(
+        s.f.r.w.world().get(second).ok_or("second")?.location,
+        Some(s.f.buyer)
+    );
+    s.f.restart(CoreOriginMode::Active)?;
+    check_eq!(
+        SavedComponent::from_unit(&s.unit()?, &core)?
+            .installed
+            .asset,
+        Some(stored)
+    );
+    Ok(())
+}
+
+/// **Doc 47 CO.4: a damaged, degraded core is stored and fitted again carrying its condition.** It
+/// is not destroyed, so a third fitting takes it, and it goes in `damaged` with its class cell at
+/// the floor, not as new.
+#[test]
+fn co4_a_damaged_core_is_fitted_again_carrying_its_condition() -> Result {
+    let mut s = Fitting::new(false)?;
+    let (stored, made, _) = co4_displaced(&mut s, Some("damaged"))?;
+    (s.incoming, s.manufacture) = (stored, made);
+    let third = s.accepted(80)?;
+    s.ready(third, 82)?;
+    s.commit(4, s.f.buyer, 84, FactoryRig::order_parameters(third))?;
+    let core = ComponentId::new("core")?;
+    let fitted = SavedComponent::from_unit(&s.unit()?, &core)?;
+    check_eq!(fitted.installed.asset, Some(stored));
+    check_eq!(fitted.installed.condition.as_str(), "damaged");
+    let class = *s
+        .unit()?
+        .cell(&CellAddr::Component {
+            component: core.clone(),
+            cell: CellId::new("class")?,
+        })
+        .ok_or("the class cell")?;
+    check_eq!((class.current, class.max), (0, 1), "degraded, not restored");
+    check!(matches!(s.position(stored)?, AssetPosition::Mounted { order, .. } if order == third));
+    Ok(())
+}
+
+/// **Doc 47 CO.4: a destroyed core is stored and never fitted again** (R-47-5: a destroyed
+/// part is still gone). The offer is refused and nothing is written.
+#[test]
+fn co4_a_destroyed_core_is_never_fitted_again() -> Result {
+    let mut s = Fitting::new(false)?;
+    let (stored, made, second) = co4_displaced(&mut s, Some("destroyed"))?;
+    (s.incoming, s.manufacture) = (stored, made);
+    let offer = invocation(s.f.r.policy.agents[1].actor, 80, s.offer_parameters());
+    check!(s.prepare_inv(1, &offer, 80).is_err());
+    check!(matches!(s.position(stored)?, AssetPosition::Detached { order, .. } if order == second));
+    Ok(())
+}

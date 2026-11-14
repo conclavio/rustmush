@@ -25,7 +25,7 @@ use crate::record::EconomicVisibility;
 use crate::{ContractId, EconomicClock, EconomicDeadline};
 
 mod issuer;
-pub use issuer::{Basis, House, Issuer, Offer, Personal, Terms};
+pub use issuer::{Basis, BindKey, House, Issuer, Offer, Personal, Terms};
 pub(crate) mod audit;
 pub(crate) mod bridge;
 pub use audit::{RenewalAudit, RenewalClosureView, RenewalOfferView};
@@ -660,6 +660,21 @@ macro_rules! subject_records {
             fn prior_quote(&self) -> mush_core::CommitToken {
                 self.prior_quote
             }
+            fn next_generation(&self) -> u64 {
+                self.next_generation
+            }
+            fn prior_quote_digest(&self) -> mush_core::DefinitionDigest {
+                self.prior_quote_digest
+            }
+            fn product_digest(&self) -> mush_core::DefinitionDigest {
+                self.product_digest
+            }
+            fn template_digest(&self) -> mush_core::DefinitionDigest {
+                self.template_digest
+            }
+            fn grant_economics_digest(&self) -> mush_core::DefinitionDigest {
+                self.grant_economics_digest
+            }
         }
 
         impl RenewalOfferTermsV1 {
@@ -687,6 +702,9 @@ macro_rules! subject_records {
             }
             fn charter(&self) -> mush_core::ObjId {
                 self.charter
+            }
+            fn title_revision(&self) -> u64 {
+                self.title_revision
             }
             fn payer(&self) -> $crate::AccountId {
                 self.payer

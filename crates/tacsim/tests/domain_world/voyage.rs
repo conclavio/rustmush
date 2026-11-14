@@ -3045,6 +3045,19 @@ fn lane_with_interdicted_kirkwood() -> &'static str {
     Box::leak(signed.into_boxed_str())
 }
 
+/// **The shipped lane with no interdiction on the way to Stickney**: the Ceres to Stickney
+/// route's Kirkwood leg is not interdicted, so no picket stops a hull on it. For the docking
+/// stories, which fly to Stickney's collar and are not about the picket: a recoupled autopilot
+/// keeps the uncrossed interdicted leg (`SF.R25`), and a hull flying it meets the picket
+/// however late she crosses the boundary.
+fn lane_without_the_kirkwood_interdiction() -> &'static str {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    doc["entries"]["ceres_stickney"]["def"]["legs"][0]["interdiction"] = serde_json::json!(0);
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    Box::leak(signed.into_boxed_str())
+}
+
 /// **The venues a hull may clear Ceres for, and the route to each** (the shipped Ceres port's
 /// `routes`), Stickney first: the one whose first leg the shipped lane already interdicts at
 /// the Kirkwood picket.
@@ -6314,6 +6327,39 @@ fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quara
     );
 }
 
+/// **Doc 47 CO.11, D1: a 3 kg burn takes a whole tonne off the hold, and no propellant is
+/// lost.** MW.21 read the hold's `stow.propellant` fall from 9 t to 8 t on a 3 kg jink. That is
+/// the ledger's rule (`SF.R4`, `D-35-6`): the integer-tonne pool always holds
+/// `floor(live_kg / 1_000)`, so the first kilogram of a fresh tonne debits it whole, and the
+/// 997 kg left of it stay live in the ledger. The next 997 kg cost the pool nothing; the
+/// kilogram after them debits the next tonne.
+#[test]
+fn co11_a_part_tonne_burn_debits_a_whole_tonne_and_keeps_the_rest_live() {
+    let mut ledger = tacsim::space::tick::HullPropellantLedger::default();
+    assert_eq!(
+        ledger.record_burn_kg(9, 3),
+        1,
+        "3 kg off a full 9 t debits one tonne"
+    );
+    // The debit has not landed: the vault still reads 9, and the ledger knows it owes one.
+    assert_eq!(ledger.effective_live_kg(9), 8_997);
+    // The debit lands: the vault reads 8, and the live mass is the same.
+    assert_eq!(ledger.effective_live_kg(8), 8_997);
+    assert_eq!(
+        ledger.record_burn_kg(8, 997),
+        0,
+        "the rest of the tonne is already paid"
+    );
+    assert_eq!(ledger.effective_live_kg(8), 8_000);
+    assert_eq!(
+        ledger.record_burn_kg(8, 1),
+        1,
+        "the next kilogram opens the next tonne"
+    );
+    assert_eq!(ledger.effective_live_kg(7), 7_999);
+    assert_eq!(ledger.total_burned_kg, 1_001);
+}
+
 /// **Doc 35 cut SF.R11 (`D-35-15`, `35b` §5 #10/#11/#12/#14/#15/#16, §8 `SF.R11`)**:
 /// One ledger, rated drive:
 /// 1. In-bubble `max_accel_mps2` equals the hull's rated drive flip acceleration (`1 m/s²` for the Dray's `50 mg` drive).
@@ -7911,7 +7957,10 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
     assert_ne!(auth_corvette, auth_raider);
     assert_ne!(auth_raider, auth_halcyon);
 
-    let roster = Roster::default();
+    let roster = Roster {
+        seed_lane: Some(lane_without_the_kirkwood_interdiction()),
+        ..Roster::default()
+    };
     let mut rig = stocked_with(roster);
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
@@ -8410,7 +8459,10 @@ fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30
     // --- Part B: Port dock range/speed gate (`remaining_s = 45` refused, free-flight `1 km` refused),
     //             free-flyer `DOCK ABORT` leaving `JourneyState::Promoted`, duplicate `+helm/dock`
     //             refused without resetting `started_wall_s`, and 60s expiry submitting a burn ---
-    let mut rig_dock = stocked_with(Roster::default());
+    let mut rig_dock = stocked_with(Roster {
+        seed_lane: Some(lane_without_the_kirkwood_interdiction()),
+        ..Roster::default()
+    });
     let (pilot_dock, row_dock) = chartered(&mut rig_dock, "PilotDock", 3);
     let hull_dock = ObjId(row_dock.hull);
     load(&mut rig_dock, &row_dock, 70, 50);
@@ -11429,7 +11481,10 @@ fn sfr24_one_docking_kinematics_and_ephemeris_canopy() {
 
     // 1. Charter a ship at Ceres Freeport, fly to Stickney Yards (Phobos), and open a docking
     //    session via `+helm/dock stickney` (`D-35-14`):
-    let mut rig = stocked_with(Roster::default());
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_without_the_kirkwood_interdiction()),
+        ..Roster::default()
+    });
     let (pilot, row) = chartered(&mut rig, "PilotSfR24", 1);
     let hull = ObjId(row.hull);
     load(&mut rig, &row, 70, 50);
@@ -13768,6 +13823,52 @@ fn a_ship_whose_crew_is_away_meets_the_picket() {
     );
 }
 
+/// **A launch that runs late meets the picket.** Her burn lands, and the port's tick does not
+/// launch her until two IC hours after her first leg's frozen end, as an outage between the burn
+/// and the launch would, or a held launch released later. Her leg times are frozen from the
+/// plan's own `depart_ic` (doc 18 lead ruling L3), so the launch puts her past the Kirkwood
+/// boundary at once. The picket's bubble opens on her all the same, and her journey waits in it.
+///
+/// On the code before, the carrier hook opened the waypoint's domain only within an IC hour of
+/// the boundary's due time. On a world where no hull had yet passed Kirkwood she raised no
+/// picket, never did later (the cursor moves once a boundary), and flew her second leg unmet.
+/// On a world where one had, she was stopped however late she crossed.
+#[test]
+fn a_launch_that_runs_late_still_meets_the_picket() {
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 53, 19);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    assert!(
+        journey(&rig.tw, hull).is_none(),
+        "the burn landed, the launch owed"
+    );
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+
+    let _ = to_ic(&mut rig, boundary + 7_200);
+    assert!(
+        journey(&rig.tw, hull).is_some(),
+        "launched, two IC hours late"
+    );
+    for _ in 0..3 {
+        if picket_status(&rig.tw, hull).is_some() {
+            break;
+        }
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
+    assert!(
+        picket_status(&rig.tw, hull).is_some(),
+        "the picket's bubble opens on her"
+    );
+    let journey = journey(&rig.tw, hull).expect("her journey");
+    assert_eq!(journey.cursor(), 1, "she is stopped at the first boundary");
+    assert!(
+        matches!(journey.state(), mush_sim::JourneyState::Promoted { .. }),
+        "and her journey waits in the bubble: {:?}",
+        journey.state()
+    );
+}
+
 /// **Doc 35 cut SF.R30 (doc 35d §6.6, `D-35-17`)** — a world whose packs author no orbital
 /// clusters has none: the lookup no longer falls back to the lane compiled into the binary. The
 /// shipped picket cast parses (a cast that did not would now be logged, and the built-in cast
@@ -15221,5 +15322,257 @@ fn mw12_a_drone_whose_doctrine_stops_short_brings_back_less_and_no_sortie_stays_
         "a drone left behind brings nothing"
     );
     assert_eq!(pool(&mut rig.tw, rock, ore), in_rock - 5);
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 47 unit CO.12: saving an open bubble costs what changed
+// ---------------------------------------------------------------------------
+
+/// The bubble `hull` is in, whole, as the world holds it.
+fn co12_record(rig: &Rig, hull: ObjId) -> tacsim::space::ActiveInterdictionBubble {
+    rig.tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .and_then(|book| book.active_for_hull(hull))
+        .cloned()
+        .expect("she is in a bubble")
+}
+
+/// The `tacsim:space:*` documents the rig's store holds, by key.
+fn co12_space_docs(rig: &Rig) -> BTreeMap<String, serde_json::Value> {
+    rig.store
+        .get(tacsim::NS)
+        .map(|data| {
+            data.kv
+                .iter()
+                .filter(|(key, _)| key.starts_with(tacsim::space::SPACE_KEY_PREFIX))
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The bubble documents among `ops`: sets and their bytes, and deletes of snapshots.
+fn co12_bubble_writes(ops: &[mush_core::ModuleOp]) -> (usize, usize, usize) {
+    let (mut sets, mut dels, mut bytes) = (0, 0, 0);
+    for op in ops {
+        match &op.op {
+            mush_core::ModuleWrite::JsonSet { key, value }
+                if key.starts_with(tacsim::space::SPACE_BUBBLE_PREFIX)
+                    || key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX) =>
+            {
+                sets += 1;
+                bytes += serde_json::to_vec(value).map_or(0, |b| b.len());
+            }
+            mush_core::ModuleWrite::Del { key }
+                if key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX) =>
+            {
+                dels += 1;
+            }
+            _ => {}
+        }
+    }
+    (sets, dels, bytes)
+}
+
+/// Two pilots flown into two customs pickets at once ([`flown_into_pickets`]), the roster to
+/// boot their world again, and the first pilot and her hull. A picket waits for its hull to
+/// heave to, so both bubbles stay open while the crews give no order.
+fn co12_in_the_bubble() -> (Rig, Roster, ObjId, ObjId) {
+    let roster = Roster {
+        seed_lane: Some(lane_with_pickets(2)),
+        mind_workers: Some(1),
+        ..Roster::default()
+    };
+    let (rig, crews) = flown_into_pickets(1, 2);
+    let (pilot, hull) = crews[0];
+    (rig, roster, pilot, hull)
+}
+
+/// **Doc 47 unit CO.12: a restart between two steps brings back the bubble the last save
+/// left, thinks owed included, from a record saved apart from its snapshots.**
+///
+/// Two pickets' bubbles step a second at a time until their rings of snapshots are full and
+/// sliding, and the server restarts over the store the saves left; the bubble read back is
+/// the one the world held, field for field. It steps on, its crew gives an order between
+/// two steps, and it restarts again; once more after a step. Each
+/// step's save writes the record without its snapshots, the one snapshot that step took,
+/// and deletes the one the ring let go: the record names each snapshot's slot, and every
+/// slot it names is in the store and nothing else is. A save that dropped any of those
+/// writes, or that missed a change to the record, reads back as a different bubble here.
+#[test]
+fn co12_a_restart_between_two_steps_restores_the_saved_bubble() {
+    let (mut rig, roster, pilot, _) = co12_in_the_bubble();
+    let bubbles = |rig: &Rig| {
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .map(|book| book.by_domain.clone())
+            .unwrap_or_default()
+    };
+    for (round, seconds, ordered) in [(1, 8, false), (2, 3, true), (3, 1, false)] {
+        for _ in 0..seconds {
+            let (_, submitted) = one_second(&mut rig, pilot);
+            land_quietly(&mut rig, &submitted);
+        }
+        if ordered {
+            // An order between two steps changes the record and takes no snapshot, so its
+            // save is the record's alone.
+            let stepped = bubbles(&rig);
+            let heading = run(&mut rig.tw, pilot, "+helm/heading 90 0");
+            assert!(heading.contains("Helm heading set"), "{heading}");
+            let submits = drain(&mut rig.tw);
+            land_all(&mut rig, &submits);
+            let ordered = bubbles(&rig);
+            assert_ne!(ordered, stepped, "the order is on her bubble's record");
+            assert!(
+                ordered
+                    .iter()
+                    .all(|(domain, active)| stepped[domain].steps == active.steps
+                        && stepped[domain].snapshots == active.snapshots),
+                "no step was taken"
+            );
+        }
+        let before = bubbles(&rig);
+        assert_eq!(before.len(), 2, "round {round}: both pickets are open");
+        for active in before.values() {
+            assert!(
+                active.thinks_owed.is_some(),
+                "round {round}: the step left its minds' thinks owed"
+            );
+            assert!(
+                active.snapshots.len() >= 2,
+                "round {round}: the ring holds the steps' snapshots"
+            );
+        }
+        rig = reboot_with(rig, roster);
+        let after = bubbles(&rig);
+        for (domain, active) in &before {
+            let back = after.get(domain).expect("each bubble comes back");
+            assert_eq!(
+                back.thinks_owed, active.thinks_owed,
+                "round {round}: the thinks owed come back"
+            );
+            assert_eq!(
+                back.snapshots, active.snapshots,
+                "round {round}: every snapshot comes back, in order"
+            );
+            assert_eq!(
+                back.tape, active.tape,
+                "round {round}: the tape comes back, its opening snapshot with it"
+            );
+        }
+        assert_eq!(after, before, "round {round}: the same bubbles come back");
+
+        // The layout: each record without its snapshots, and each of them once, apart.
+        let docs = co12_space_docs(&rig);
+        let mut named = std::collections::BTreeSet::new();
+        for (&domain, active) in &before {
+            let key = tacsim::space::space_bubble_key(domain);
+            let doc = docs.get(&key).expect("the record is saved under its key");
+            assert!(
+                doc["bubble"].get("snapshots").is_none()
+                    && doc["bubble"]["tape"].get("initial_snapshot").is_none(),
+                "round {round}: the record is saved without its snapshots"
+            );
+            let parts: tacsim::space::save::BubbleParts =
+                serde_json::from_value(doc["parts"].clone()).expect("the record names its parts");
+            assert_eq!(parts.snapshots.len(), active.snapshots.len());
+            named.extend(
+                std::iter::once(parts.initial)
+                    .chain(parts.snapshots.iter().copied())
+                    .map(|slot| tacsim::space::save::space_bubble_snapshot_key(domain, slot)),
+            );
+        }
+        let held: std::collections::BTreeSet<String> = docs
+            .keys()
+            .filter(|key| key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX))
+            .cloned()
+            .collect();
+        assert_eq!(
+            held, named,
+            "round {round}: the store holds the snapshots the records name, and no others"
+        );
+    }
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 47 unit CO.12: a store written before the cut reads as it did.** The bubble's record
+/// is put back in the store whole, under its one key with no `parts`, as every save before
+/// the cut wrote it, and its snapshot documents are taken away. The server restarts over it
+/// and the same bubble comes back; its next save writes it apart, and a restart after that
+/// brings it back again. A step's save from then on is two sets and a delete, and a fraction
+/// of the whole record's bytes.
+#[test]
+fn co12_a_store_written_before_the_cut_reads_and_is_written_apart() {
+    let (mut rig, roster, pilot, hull) = co12_in_the_bubble();
+    for _ in 0..7 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+    }
+    let before = co12_record(&rig, hull);
+    let domain = before.domain;
+    let whole = serde_json::json!({
+        "format": tacsim::space::SPACE_STATE_FORMAT,
+        "domain": domain.0,
+        "bubble": serde_json::to_value(&before).expect("the record encodes"),
+    });
+    let whole_bytes = serde_json::to_vec(&whole).map_or(0, |bytes| bytes.len());
+    rig = reboot_editing(rig, roster, |store| {
+        let data = store.get_mut(tacsim::NS).expect("the documents of tacsim");
+        data.kv
+            .retain(|(key, _)| !key.starts_with(tacsim::space::save::SPACE_BUBBLE_SNAPSHOT_PREFIX));
+        let key = tacsim::space::space_bubble_key(domain);
+        let slot = data
+            .kv
+            .iter_mut()
+            .find(|(k, _)| k.as_str() == key)
+            .expect("the key of the record");
+        slot.1 = whole.clone();
+    });
+    assert_eq!(
+        co12_record(&rig, hull),
+        before,
+        "a record written whole reads as it did"
+    );
+
+    // The first step after: the record is written apart, every snapshot with it.
+    let ops = rig.tw.take_module_ops();
+    fold_module_ops_into(&mut rig.store, ops);
+    let (_, submitted) = one_second(&mut rig, pilot);
+    land_quietly(&mut rig, &submitted);
+    let ops = rig.tw.take_module_ops();
+    let (sets, _, _) = co12_bubble_writes(&ops);
+    let after = co12_record(&rig, hull);
+    assert!(
+        sets > 2,
+        "the first save after writes the record and all its snapshots apart: {sets} sets"
+    );
+    fold_module_ops_into(&mut rig.store, ops);
+
+    // A step's save from then on: the record, the one snapshot taken, the one let go.
+    let (_, submitted) = one_second(&mut rig, pilot);
+    land_quietly(&mut rig, &submitted);
+    let ops = rig.tw.take_module_ops();
+    let (sets, dels, bytes) = co12_bubble_writes(&ops);
+    let stepped = co12_record(&rig, hull);
+    assert_ne!(stepped.steps, after.steps, "the bubble stepped");
+    assert_eq!(
+        (sets, dels),
+        (2, 1),
+        "a step writes the record and its new snapshot and lets one go"
+    );
+    assert!(
+        bytes * 2 < whole_bytes,
+        "a step's save is a fraction of the whole record: {bytes} B of {whole_bytes} B"
+    );
+    fold_module_ops_into(&mut rig.store, ops);
+    rig = reboot_with(rig, roster);
+    assert_eq!(
+        co12_record(&rig, hull),
+        stepped,
+        "the bubble written apart comes back"
+    );
     no_refused_writes(&rig.tw);
 }

@@ -254,6 +254,10 @@ the actual vehicle bay and have an authored helm console. You need Deploy
 permission and the NPC needs OperateCrew permission; employment alone grants
 neither. An occupied billet or another operator's control prevents taking over.
 The NPC boards the unit and requests control through its existing station.
+An armed rig's console carries the helm, the sensors and the fire channel, and
+the NPC takes control of all three; only a crew member on a combat duty (a
+plan activated for combat, under a contract that covers it) may sit at a
+console that fires. Anyone else flies an unarmed rig.
 Preflight and launch check current facts again after that request settles.
 Each departure takes the existing ramp duration;
 units complete independently. A blocked departure remains pending and can be
@@ -411,9 +415,13 @@ next login, when it changed the word the unit held. The player's own later set
 wins: an order the unit has answered is not applied again, and only a new order
 from you sets it again. An expiry on the order only limits how late it may
 arrive; a posture that has been set stays set. You can order it while that
-player holds the unit's seat, the five minutes after a lost link included. Once
-the unit has passed to its mind your command no longer reaches it. It is not
-given from an OOC room.
+player holds the unit's seat, the five minutes after a lost link included, and
+after the unit has passed to its mind: then the order goes to the mind, which
+flies the new word under the same limits as any unit whose player is away. It
+answers a unit that fires on it, never fires first, and on RETURN keeps going
+home while it answers. POSTURE is the one order that reaches a unit whose player
+has gone; any other order to it is refused ("command authority does not cover
+the target unit"). It is not given from an OOC room.
 
 Sending requires current leadership, physical station control and command rights
 for every selected unit. Admission checks the entire `ALL` set before sending;

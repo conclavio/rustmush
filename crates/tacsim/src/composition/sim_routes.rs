@@ -102,13 +102,12 @@ impl CarrierHooks for TacsimCarrierHooks {
             && let Some(leg) = journey.route().legs().get(leg_idx)
             && leg.is_interdicted()
         {
-            let now_ic = ctx.w.world_ic_now().at;
-            let on_time_boundary = journey
-                .leg_due_at(reached as usize)
-                .is_none_or(|next_due| now_ic < next_due)
-                && journey
-                    .leg_due_at(leg_idx)
-                    .is_some_and(|due_ic| now_ic.saturating_sub(due_ic) < 3_600);
+            // However late the boundary is crossed, the waypoint's domain opens. Leg times are
+            // frozen from the plan's `depart_ic` (doc 18 lead ruling L3), so a launch that runs
+            // late (an outage between the burn and the launch, or a held launch released later)
+            // crosses the first boundary as soon as it departs. Sim raises the interception into
+            // whatever domain is there, at any lateness, so a lateness gate here only decided
+            // whether the first hull ever to reach the waypoint met it.
             let active_bridge_crew =
                 crate::port::ship::hull_view(ctx.w, hull).is_some_and(|view| {
                     let crew_room = mush_core::CanonicalId::new("crew")
@@ -135,7 +134,7 @@ impl CarrierHooks for TacsimCarrierHooks {
                 .w
                 .module_state::<crate::space::SpaceBubbleBook>()
                 .is_some_and(|book| book.linkdead_state(hull).is_some());
-            if on_time_boundary && (active_bridge_crew || crew_away_under_cover) {
+            if active_bridge_crew || crew_away_under_cover {
                 let dom_opt = ctx
                     .w
                     .module_state::<mush_sim::SpatialState>()

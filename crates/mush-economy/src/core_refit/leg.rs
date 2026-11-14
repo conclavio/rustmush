@@ -223,24 +223,49 @@ impl Leg for Core {
     fn commit_reused(subject: &RefitSubject, commit: CommitToken) -> bool {
         commit == subject.core_acceptance
     }
-    /// One installation an incoming core.
+    /// One open order an incoming core.
     fn exclusive(history: &refit_twin::receipt::PaymentHistory<Self>) -> Option<ObjId> {
         history
             .terminal
-            .as_ref()
-            .is_some_and(|t| matches!(t.result, RefitTerminalResult::Installed { .. }))
+            .is_none()
             .then_some(history.intent.subject.incoming)
     }
-    /// An incoming core is accepted again only after its last order was cancelled.
+    /// An incoming core is accepted again while no order for it is open and it is in no hull:
+    /// its last installation, by the journal, either never was or displaced it (doc 47 CO.4,
+    /// ruling R-47-5, which reverses doc 17f section 9's "a second install cannot reuse it").
+    /// A cancelled order moves nothing.
     fn conflicts(
-        history: &refit_twin::receipt::PaymentHistory<Self>,
+        histories: &std::collections::BTreeMap<
+            CommitToken,
+            refit_twin::receipt::PaymentHistory<Self>,
+        >,
         intent: &FundingIntent,
     ) -> bool {
-        history.intent.subject.incoming == intent.subject.incoming
-            && !history
-                .terminal
-                .as_ref()
-                .is_some_and(|t| matches!(t.result, RefitTerminalResult::Cancelled {}))
+        let core = intent.subject.incoming;
+        let mut last: Option<(u64, bool)> = None;
+        for h in histories.values() {
+            let s = &h.intent.subject;
+            let Some(t) = &h.terminal else {
+                if s.incoming == core {
+                    return true;
+                }
+                continue;
+            };
+            if !matches!(t.result, RefitTerminalResult::Installed { .. }) {
+                continue;
+            }
+            let mounted = if s.incoming == core {
+                true
+            } else if s.displaced == Some(core) {
+                false
+            } else {
+                continue;
+            };
+            if last.is_none_or(|(seq, _)| t.journal_seq > seq) {
+                last = Some((t.journal_seq, mounted));
+            }
+        }
+        last.is_some_and(|(_, mounted)| mounted)
     }
 }
 
