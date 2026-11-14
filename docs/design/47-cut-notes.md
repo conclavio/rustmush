@@ -114,7 +114,55 @@ rides beside an escort in a 20 t bay". So Occator gets a third lease design, the
 - Lane v34: `co10_strip_wrecker_rebuilds_the_published_v33` and the pins that move with a lane
   (lane and relay digests and versions in `domain_economy`, `cost_lane` and `split_boundary`).
 
-RESULTS_PENDING
+- **Mutations of the limit, each caught** (run on conclav.dev, the in-source test and the 256
+  story; the unmutated tree passes both):
+
+  | Mutation | Caught by |
+  |---|---|
+  | `RecoveryOptimized` cap 3× to 2× | both |
+  | the wrecker's 12 t to 9 t (re-signed) | both |
+  | the wrecker's coupling dropped to standard (re-signed) | both |
+  | `profile_of_spec` maps recovery to standard | both |
+  | the cap check removed | both (the prospector's refusal, the heavy hull) |
+  | the cap made exclusive (`>=`) | the in-source test (36,000 kg at 12 t) |
+  | the titled branch back to escort only | the story (the load's preview) |
+  | an authored `tow_cap_t` of 29 t on the wrecker (re-signed) | both |
+
+- **The pins lane v34 moves.** Occator's shed holds two more rigs, so
+  `domain_world::vehicles`' readiness line and its 14-rig refusal, and `domain_arena::content`'s
+  four unit counts and its 22-entry core table, move with it.
+- **AP.6's story 1, loosened by exactly one move** (`field_ap6.rs`, CO.2's file, with the parent
+  session's agreement). The two shed rigs move every later object's id, and with them whether
+  the intruder's sensor clock (`classify_after_ms`, an elapsed-time rule that runs whoever flies
+  the rig) comes due inside the story's twelve-second wait. The intruder's row of the rig then
+  reads `Classified` where it read `Unknown`. The check now pins the row's bearing, range,
+  motion, cell, aspect and facing (`seen_where`), and allows identity only the classify move:
+  `Unknown` to `Classified` as the rig's own party, under that party's designator, its
+  provisional number kept as its alias. Mutations planted in the contact row for a mind-flown
+  target (range +1 m, bearing +5°, cell +1, alias dropped) each fail story 1; all five AP.6
+  stories pass.
+
+**Found and fixed: a raid that joins a running field never took its leader's WITHDRAW.**
+
+- **The defect.** A director raid that arrives while a field runs joins it (doc 36 GC.11). Its
+  hulls' crews are seated (doc 42b SU.1), so the arena raises each hull's helm epoch at the join.
+  `field::raiders::on_joined` never mirrored that epoch into the world's `ArenaRegistry`, as a
+  launch's join does (`field::carrier::seat_joined_pilot`). Every order the host stamped for a
+  joined hull carried epoch 0, and the kernel refused it (`Refusal::Epoch`), the leader's
+  WITHDRAW (`raiders::order_home`) among them. On base both of GC.11's hulls are refused, and the
+  story passed only because the doctrine happened to bring both beside the ramp. Under lane v34's
+  ids one hull chased its last kill nineteen cells east, stopped there, and was never ordered
+  home: the field ran on to its idle demotion, about 2,600 IC seconds.
+- **The fix** (its own commit): `raiders::on_joined` seats the joined crew through
+  `carrier::seat_joined_pilot`, as a launch's join does.
+- **The test**: `field_director::co10_a_raid_that_joins_a_running_field_mirrors_its_crews_helm`,
+  on GC.11's ground: once the kernel's answer to the join is in, the world mirrors each joined
+  hull's helm at its seat's epoch (1, as `field::admit` seats every crew). It reads no position
+  and no id, so it holds under any numbering. Without the fix it fails on both hulls
+  (`[(819, 0), (821, 0)]`); with it, it passes, and GC.11 passes unchanged. A probe on the
+  kernel's intent loop (not kept) showed the WITHDRAW refused `Epoch` for both hulls on base and
+  applied for both with the fix. The ledger line it writes (`DetachmentCommanded`) is not what
+  the test reads, since a ledger chunk reaches the world only when it fills or the field ends.
 
 **Divergences.**
 
