@@ -557,7 +557,7 @@ async fn co10_a_raid_that_joins_a_running_field_mirrors_its_crews_helm() {
     });
     let (a, tvs, guard) = tempting_site(&mut rig, false);
     rationed(&mut rig, guard, 0);
-    let (barge, raiders) = raided_before(&mut rig, false);
+    let (_barge, raiders) = raided_before(&mut rig, false);
     let mut rx = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     let (out, queued) = command(&mut rig, a, "+field/mark W=hostile");
