@@ -59,7 +59,7 @@ pub const MAX_RENEWAL_OFFER_BYTES: usize = 8_192;
 pub(crate) fn refused() -> ParticipantError {
     ParticipantError::refused("The renewal offer is unavailable or has changed.")
 }
-pub(crate) fn action_matches(action: &DefinitionRef, id: &str) -> bool {
+fn action_matches(action: &DefinitionRef, id: &str) -> bool {
     action.key().owner.as_str() == "market"
         && action.key().kind.as_str() == "action"
         && action.key().id.as_str() == id
@@ -251,14 +251,7 @@ pub(crate) fn prepare_offer<I: Issuer>(
     state: &EconomyStore,
     context: &OwnerPrepareContext<'_>,
     request: I::Offer,
-) -> Result<
-    (
-        RenewalOfferOutput<I>,
-        Box<install::OfferPatch<I>>,
-        Vec<mush_core::authoritative::ReplayWrite>,
-    ),
-    ParticipantError,
-> {
+) -> OfferPrepared<I> {
     install::offer(state, &install::OfferContext::from(context), request)
 }
 /// Explicit buyer retry; the closed owner proves the exact previous terminal.
@@ -268,14 +261,7 @@ pub(crate) fn prepare_retry<I: Issuer>(
     context: &OwnerPrepareContext<'_>,
     request: I::Offer,
     previous_operation: CommitToken,
-) -> Result<
-    (
-        RenewalOfferOutput<I>,
-        Box<install::OfferPatch<I>>,
-        Vec<mush_core::authoritative::ReplayWrite>,
-    ),
-    ParticipantError,
-> {
+) -> OfferPrepared<I> {
     install::retry(
         state,
         &install::OfferContext::from(context),
@@ -290,14 +276,7 @@ pub(crate) fn prepare_holder_offer<I: Issuer>(
     offer: I::Offer,
     basis: crate::managed_paid_resale::RenewalHolderBasisV1,
     previous_operation: Option<CommitToken>,
-) -> Result<
-    (
-        RenewalOfferOutput<I>,
-        Box<install::OfferPatch<I>>,
-        Vec<mush_core::authoritative::ReplayWrite>,
-    ),
-    ParticipantError,
-> {
+) -> OfferPrepared<I> {
     install::holder_offer(
         state,
         &install::OfferContext::from(context),
@@ -312,14 +291,7 @@ pub(crate) fn prepare_close<I: Issuer>(
     context: &OwnerPrepareContext<'_>,
     operation: CommitToken,
     reason: UnfundedCloseReason,
-) -> Result<
-    (
-        RenewalOfferOutput<I>,
-        Box<install::OfferPatch<I>>,
-        Vec<mush_core::authoritative::ReplayWrite>,
-    ),
-    ParticipantError,
-> {
+) -> OfferPrepared<I> {
     install::close(
         state,
         &install::OfferContext::from(context),
@@ -333,14 +305,7 @@ pub(crate) fn prepare_service_close<I: Issuer>(
     context: &OwnerPrepareContext<'_>,
     operation: CommitToken,
     reason: RenewalServiceCloseReason,
-) -> Result<
-    (
-        RenewalOfferOutput<I>,
-        Box<install::OfferPatch<I>>,
-        Vec<mush_core::authoritative::ReplayWrite>,
-    ),
-    ParticipantError,
-> {
+) -> OfferPrepared<I> {
     install::service_close(
         state,
         &install::OfferContext::from(context),
@@ -354,14 +319,7 @@ pub(crate) fn prepare_funding<I: Issuer>(
     state: &EconomyStore,
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
-) -> Result<
-    (
-        RenewalFundingOutput<I>,
-        Box<money_install::RenewalMoneyPatch<I>>,
-        Vec<mush_core::authoritative::ReplayWrite>,
-    ),
-    ParticipantError,
-> {
+) -> MoneyPrepared<I, RenewalFundingOutput<I>> {
     let (output, patch, writes) =
         money_install::prepare_images(state, context, request, funding::Transition::Fund)?;
     let funding::MoneyOutput::Funded(output) = output else {
@@ -374,14 +332,7 @@ pub(crate) fn prepare_terminal<I: Issuer>(
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
     outcome: RenewalOutcome,
-) -> Result<
-    (
-        RenewalTerminalOutput<I>,
-        Box<money_install::RenewalMoneyPatch<I>>,
-        Vec<mush_core::authoritative::ReplayWrite>,
-    ),
-    ParticipantError,
-> {
+) -> MoneyPrepared<I, RenewalTerminalOutput<I>> {
     let transition = if outcome == RenewalOutcome::Granted {
         funding::Transition::Grant
     } else {
@@ -395,7 +346,7 @@ pub(crate) fn prepare_terminal<I: Issuer>(
     Ok((output, patch, writes))
 }
 
-pub(crate) fn contract<I: Issuer>(
+fn contract<I: Issuer>(
     record: &history::OfferRecord<I>,
 ) -> Result<EconomicContract, ParticipantError> {
     let offer = &record.offer;

@@ -11,7 +11,6 @@ use crate::contract::{EconomicContract, check_offerable};
 use crate::module::EconomyStore;
 use crate::record::{Account, EconomicAsset, HoldPurpose, InstrumentDef};
 use crate::registry_filing::{MetaFence, json_write};
-use mush_core::authoritative::ReplayWrite;
 use mush_core::participant::{BoundParticipant, OwnerPrepareContext, ParticipantError};
 use mush_core::{CommitToken, DefinitionRef, ObjId};
 
@@ -90,7 +89,7 @@ pub(super) fn offer<I: Issuer>(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: I::Offer,
-) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     create(state, context, request, super::RenewalAttemptV1::Automatic)
 }
 pub(super) fn retry<I: Issuer>(
@@ -98,7 +97,7 @@ pub(super) fn retry<I: Issuer>(
     context: &OfferContext<'_>,
     request: I::Offer,
     previous_operation: CommitToken,
-) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     create(
         state,
         context,
@@ -112,7 +111,7 @@ pub(super) fn holder_offer<I: Issuer>(
     request: I::Offer,
     basis: crate::managed_paid_resale::RenewalHolderBasisV1,
     previous_operation: Option<CommitToken>,
-) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     basis.validate()?;
     let attempt = match previous_operation {
         None => super::RenewalAttemptV1::HolderAutomatic { basis },
@@ -128,7 +127,7 @@ fn create<I: Issuer>(
     context: &OfferContext<'_>,
     request: I::Offer,
     attempt: super::RenewalAttemptV1,
-) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     request.validate()?;
     offer_current::<I>(state, context, &request)?;
     let id = crate::ContractId(state.next_contract);
@@ -152,7 +151,7 @@ fn create<I: Issuer>(
     let after = contract(&row)?;
     row.consent_hash = after.consent_hash;
     I::book(state).admits(&row)?;
-    I::book(state).require_retry(&row, &state.snapshot, &I::receipts(&state.fold))?;
+    I::book(state).require_retry(&row, &state.snapshot, I::receipts(&state.fold))?;
     check_offerable(&after, &state.snapshot).map_err(|_| refused())?;
     images(state, row, after, None, next_contract, None)
 }
@@ -161,7 +160,7 @@ pub(super) fn close<I: Issuer>(
     context: &OfferContext<'_>,
     operation: CommitToken,
     reason: UnfundedCloseReason,
-) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     let before = I::book(state).get(operation).ok_or_else(refused)?;
     close_current(state, context, before, reason)?;
     before.verify_documents(&state.snapshot)?;
@@ -194,7 +193,7 @@ pub(super) fn service_close<I: Issuer>(
     context: &OfferContext<'_>,
     operation: CommitToken,
     reason: super::RenewalServiceCloseReason,
-) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     let before = I::book(state).get(operation).ok_or_else(refused)?;
     service_close_current(state, context, before, reason)?;
     let record = super::service::ServiceRecord {
@@ -287,7 +286,7 @@ fn images<I: Issuer>(
     before_contract: Option<EconomicContract>,
     next_contract: u64,
     service: Option<super::service::ServiceRecord<I>>,
-) -> Result<(RenewalOfferOutput<I>, Box<OfferPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::OfferPrepared<I> {
     row.validate()?;
     let next_book_generation = I::book(state).next_generation()?;
     let mut writes = vec![json_write(crate::api::contract_key(after.id), &after)?];
@@ -457,7 +456,7 @@ impl<I: Issuer> OfferPatch<I> {
         if self.before_record.is_none() {
             OfferBook::require_holder_origin(&self.row, &state.fold.paid_resale_receipts)?;
             I::book(state).admits(&self.row)?;
-            I::book(state).require_retry(&self.row, &state.snapshot, &I::receipts(&state.fold))?;
+            I::book(state).require_retry(&self.row, &state.snapshot, I::receipts(&state.fold))?;
         }
         if state.frozen || !self.before_meta.matches(state)
             || I::book(state).generation()!=self.before_book_generation
@@ -473,6 +472,11 @@ impl<I: Issuer> OfferPatch<I> {
         }
         Ok(())
     }
+    #[expect(
+        clippy::boxed_local,
+        reason = "the issuer is a type parameter, so clippy cannot see how large the patch is; \
+                  its callers hold it boxed"
+    )]
     pub(crate) fn bind(
         self: Box<Self>,
         state: &mut EconomyStore,

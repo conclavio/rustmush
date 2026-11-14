@@ -55,7 +55,7 @@ pub(crate) fn actual_default_boot_proves_absence_without_new_serialized_history<
         .ok_or("store")?;
     state.require_no_renewal_history()?;
     check!(
-        audit::read::<I>(&state).is_err(),
+        audit::read::<I>(state).is_err(),
         "disabled empty boot is not combined renewal activation"
     );
     check!(

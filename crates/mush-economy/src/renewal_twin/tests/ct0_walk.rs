@@ -114,7 +114,7 @@ fn cash<I: Rig>(r: &mut Fixture<I>) -> Outcome {
     let mut instrument = r
         .state
         .snapshot
-        .instrument(&r.offer.terms().instrument())
+        .instrument(r.offer.terms().instrument())
         .ok_or("instrument")?
         .clone();
     instrument.negative_policy = NegativePolicy::SystemOnly;

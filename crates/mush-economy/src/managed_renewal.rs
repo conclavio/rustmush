@@ -1,6 +1,6 @@
 //! The personal renewal family: a player's own mind licence, renewed.
 //!
-//! The owner is [`crate::renewal_twin`], written once for both issuers. This module is its
+//! The owner is `crate::renewal_twin`, written once for both issuers. This module is its
 //! personal instantiation: the personal issuer's identity strings and the rules that are its
 //! alone, the records its offers are made of (`subject.rs`), and the family's face under the
 //! paths the rest of Economy, the Roll and the market name.

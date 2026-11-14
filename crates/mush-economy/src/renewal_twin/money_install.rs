@@ -19,7 +19,6 @@ use crate::record::{
 use crate::registry_filing::{MetaFence, json_write};
 use crate::snapshot::EconomySnapshot;
 use crate::{AccountId, HoldId, TransactionId};
-use mush_core::authoritative::ReplayWrite;
 use mush_core::ledger::BoundLedgerAppend;
 use mush_core::mechanics::OwnerId;
 use mush_core::participant::{BoundParticipant, OwnerPrepareContext, ParticipantError};
@@ -221,18 +220,23 @@ pub(super) fn prepare_images<I: Issuer>(
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-) -> Result<(MoneyOutput<I>, Box<RenewalMoneyPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::MoneyPrepared<I, MoneyOutput<I>> {
     finish_images(
         state,
         context.world().world_ic_now().clock,
         funding::prepare(state, context, request, transition)?,
     )
 }
+#[expect(
+    clippy::boxed_local,
+    reason = "the issuer is a type parameter, so clippy cannot see how large the preparation is; \
+              its callers hold it boxed"
+)]
 pub(super) fn finish_images<I: Issuer>(
     state: &EconomyStore,
     clock: ClockRef,
     prepared: Box<MoneyPreparation<I>>,
-) -> Result<(MoneyOutput<I>, Box<RenewalMoneyPatch<I>>, Vec<ReplayWrite>), ParticipantError> {
+) -> super::MoneyPrepared<I, MoneyOutput<I>> {
     let MoneyPreparation {
         output,
         request,
@@ -411,6 +415,11 @@ impl<I: Issuer> RenewalMoneyPatch<I> {
         }
         Ok(())
     }
+    #[expect(
+        clippy::boxed_local,
+        reason = "the issuer is a type parameter, so clippy cannot see how large the patch is; \
+                  its callers hold it boxed"
+    )]
     pub(crate) fn bind(
         self: Box<Self>,
         state: &mut EconomyStore,

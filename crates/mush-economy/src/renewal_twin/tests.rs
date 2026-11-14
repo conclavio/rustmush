@@ -165,7 +165,7 @@ impl<I: Rig> Fixture<I> {
             close: action(I::CLOSE_ACTION, 1)?,
         }))
     }
-    pub(crate) fn context(&self, closing: bool, commit: CommitToken) -> OfferContext<'_> {
+    fn context(&self, closing: bool, commit: CommitToken) -> OfferContext<'_> {
         OfferContext {
             world: &self.world,
             actor: self.offer.terms().buyer().acting_character(),
@@ -355,7 +355,7 @@ pub(crate) fn actual_before_images_and_identity_refuse_stale_bind_without_partia
                 let mut i = f
                     .state
                     .snapshot
-                    .instrument(&f.offer.terms().instrument())
+                    .instrument(f.offer.terms().instrument())
                     .ok_or("instrument")?
                     .clone();
                 i.revision += 1;

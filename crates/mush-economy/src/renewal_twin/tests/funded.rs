@@ -31,7 +31,7 @@ fn cash<I: Rig>(r: &mut Fixture<I>) -> TestResult {
     let mut instrument = r
         .state
         .snapshot
-        .instrument(&r.offer.terms().instrument())
+        .instrument(r.offer.terms().instrument())
         .ok_or("instrument")?
         .clone();
     instrument.negative_policy = NegativePolicy::SystemOnly;
@@ -719,7 +719,7 @@ fn replace_instrument<I: Rig>(r: &mut Fixture<I>, length: usize) -> TestResult {
     let mut definition = r
         .state
         .snapshot
-        .instrument(&r.offer.terms().instrument())
+        .instrument(r.offer.terms().instrument())
         .ok_or("definition")?
         .clone();
     definition.id = id.clone();
