@@ -464,7 +464,142 @@ Not built.
 
 ## CO.7
 
-Not built.
+AP.11's ship arm: the space half of doc 45's closing story, flown under R-47-3 as CO.2 built
+it. Tests and this note only; no production code moved. Paths are under `crates/tacsim/`
+unless given.
+
+**Survey** (written before the cut).
+
+- **Two rigs, one lane.** The closing story (`tests/domain_field/field_ap11.rs`) runs on
+  `driving_rig`'s keyed world; AP.9's helpers (`space_ap9.rs`) take `excursions::Rig`. Both
+  compose the same shipped game content, and the Kirkwood customs picket is lane content, so
+  the arm flies in the closing story's own world with the owner's own carrier, after his
+  field and its restart. The helpers read only the world, so `space_ap9::read_at_the_picket`
+  and `drop_link_in` were split out of `ship_at_the_picket` and `drop_link`, which now wrap
+  them; nothing else in `space_ap9.rs` moved.
+- **The route.** Ahuna Flank clears only for Ceres ("No passage leaves Ahuna Flank for that
+  port; Ahuna Flank clears for Ceres Freeport"), and the one shipped lane with a picket is
+  Ceres to Stickney Yards by Kirkwood Depot (two legs, the bubble at the end of the first).
+  So she lifts for Ceres first, by `+ship/lift ceres`, as `escort_lease`'s lessee does.
+- **Her tank.** At Ceres she holds 18 t of reaction mass; the passage to Stickney burns 41 t.
+  No route in this rig puts reaction mass in a tank (the chandlery sells it as cargo), so the
+  rig's stores fixture `load` tops her up, as `bay_gc8` does before the same passage and as
+  the story's own staging does for the passage out.
+- **What "rounds read from the frame" is in space.** A bubble's frame is its step
+  (`ActiveInterdictionBubble::steps`), and its input tape (`tape.entries`) holds every fire
+  command with its shooter and target (`FireOffensiveLasers`, `FireRailgun`,
+  `FireTorpedoSalvo`), the raider's script's and hers alike; `fired_on` holds the arrivals.
+  The arm reads both, so every bound on fire is in steps and rounds, and the only wall bound
+  is the outer one on the picket letting her go.
+- **What AP.11 owed AP.9.** The staged write of the ship's posture (the record's one writer
+  under a staff context) is gone: AP.9 built `+ship/posture`, and the owner types it from
+  aboard her before he leaves. The second marker ("what the ship did on her word goes
+  here") is the arm.
+
+**The arm** (step 10 of `ap11_an_absent_players_outfit_through_a_raid_and_their_return`,
+`ship_arm`). After the restart the owner's armed rig is stood beside the ramp and he takes
+CF.5's exit from its cab (`+tv/1 recover go`), steps into the bay (`+tv/1 leave`), lifts for
+Ceres, sets `+ship/posture return` from aboard her ("The Salt Moth holds RETURN.") and files
+`+ship/undock stickney`. His connection drops and the link-loss grace is jumped at the play
+rate, so the house default has her helm; the story takes her to the end of her first leg,
+where the picket's bubble opens on her beside the customs corvette and the belt raider, and
+reads her a second at a time (`Watch`, AP.9's reading plus what the tape gained) until the
+picket lets her go.
+
+**Each clause of the row, and the assertion that holds it.**
+
+| "Done when" | Read from | The assertion |
+|---|---|---|
+| She flies her posture | Her record, the reply | `+ship/posture return` answers the set line; after the passage she still reads `RETURN` |
+| She heaves to for the ship she complies with | AP.9's reading, each second | Her seat's act reads `HeavingTo` (her mind's own burn), customs read her cleared, and no reading ever says she ran the picket; and she was cleared at a step before the raider's first round at her |
+| She never fires first | The tape and the readings, by step | No round and no lock of hers is at or before the step whose reading first shows the raider's fire arrived on her (step 6 in a run; her answer lands at step 7, from the think made on what step 6 showed). The raider, which her party holds hostile from the bubble's opening, lit its torch the step before it opened, so a mind that fired first would lock it by step 6 (M2) |
+| She answers fire that arrived on her | The tape, by step | She fires, and her first round is within 3 of the bubble's steps of the raider's first round at her, with no more than 6 of its rounds fired at her by then (a run: the next step, after 3) |
+| She never answers the ship she complies with | The tape | Every round of hers is at the raider (the only other ship there); no lock of hers names the corvette |
+| She keeps going home while she answers | The berth, the passage's end | The picket lets her go within the outer bound (about 35 s in a run); she is under way on her filed passage; stepped an IC day at a time she is docked at Stickney Yards, the end of the passage she filed |
+
+**What a run shows** (Linux, the probe that led to the arm): at the bubble's first step her
+mind burns 750 mm/s² against her drift and she reads hove to; at the third she is cleared;
+at the fifth the raider goes to active emission, at the sixth it locks her and three rounds of
+its are on the tape at her, and the corvette locks the raider and fires; at the seventh she
+locks the raider and fires, a round a step from then on; at the tenth she blows coolant. At
+about 33 wall seconds the picket lets her go, and she is under way.
+
+**Where the arm departs from the row, and why.**
+
+- **"Home" in space is her filed passage.** The seat never thinks for a hull on a corridor
+  (Q-44-45): `RETURN`'s movement there is the passage her commander filed, and inside the
+  bubble her drive is cut once customs have let her go, under every word (CO.2). So "keeps
+  going home while she answers" is: answering does not stop the picket letting her go, and
+  she flies the passage to its end. The passage is for Stickney Yards, not a port of her own,
+  because that is the one shipped lane with a picket; a ship left on `RETURN` at a cluster
+  makes for port, which AP.9's cluster story holds.
+- **The closing story's ship flies `RETURN` only.** `HOLD` and `GUARD` at the picket are
+  `space_ap9`'s `co2_` stories, the same three parties under every word. On her pad in the
+  field she holds `HOLD`, set by the owner; the field flies a carrier on her pad as `HOLD`
+  whatever her record says (AP.7), so the field holds her to the record only, as before.
+- **The arm's raider is the picket's scripted belt raider**, not the field's raider player:
+  no route gives a player a hull that can fire in a bubble (AP.9's note: carriers in a bubble
+  are marked Friendly to each other).
+
+**Each use of staff fiat added.** No `module_state_mut` is added to a test file, so the fiat
+budget is not re-blessed.
+
+| What | How | Why no route in play reaches it |
+|---|---|---|
+| The armed rig beside the ramp | `driving_rig::to_cell` | The story's existing placement fixture; the drive is in play and the placement saves it |
+| Her tank for Stickney | `driving_rig::load`, 60 t and 40 crew-days | No route puts reaction mass in a tank in this rig (above) |
+| The passage's rate | `@tacsim/time rate=3600`, and 24:1 to jump the grace | The lane stories' rate; the link-loss grace is jumped at the play rate, not waited |
+| The lost link | the connections dropped by the engine (`space_ap9::drop_link_in`) | AP.9's way: a lost link is a connection that goes down |
+
+And one removed: **the ship's posture**, staged by AP.11 through `posture::record::set`
+because no verb set it, is now the owner's `+ship/posture hold`.
+
+**Mutations.** Each applied by exact text on its own copy of a throwaway clone on conclav.dev
+(Linux), the closing story run, the copy discarded; the five run side by side, the story
+unmutated beside them. Every one is caught, each by the assertion it was aimed at, which is
+why the arm asserts in the order below.
+
+| | Mutation | Fails at |
+|---|---|---|
+| M1 | `RETURN` given nothing to answer in space (`space/backup.rs` `answers_of`: an empty set on `RETURN`) | "she answers the raider": its three rounds are on the tape at step 6, the corvette fires on it each step after, and she locks nothing and fires nothing |
+| M2 | She may answer any ship in the bubble (`answers_of`: every ship but her own, her player's and the one she complies with, whether its fire arrived or not) | "she locks and fires on nothing until the raider's fire has arrived on her (step 6)": she locks the raider and fires on it in step 6, on the think she made when it lit its torch |
+| M3 | She may answer the ship she complies with (`answers_of`: that ship added), alone | **Survives**, as CO.2's M5 did: her view shows her a neutral ship as neutral (`space/view.rs`), so her mind never picks the corvette. The view is the second lock |
+| M3b | M3, and her view shows her every ship she may answer as hostile, whatever its relation | "she answers the raider and nobody else, never the corvette": she locks the corvette at step 1 and fires on it every step |
+| M4 | The house default does not heave her to (`content/minds/linkdead_return.rhai`: the hailed and held branches off) | "she heaves to by her mind's own burn, is cleared and never runs the picket": she coasts, customs still wait on her heave-to after the 600 s bound, and the raider never lights |
+| M5 | Answering stops her return (`space/tick.rs` `is_carrier_clear_to_resume`: a carrier whose fire has arrived on any ship is never let go) | "the picket lets her go": cleared, answering the raider, still held at the bound |
+
+M5 adds a stop rather than removing a line: no code in space stops a `RETURN` ship when she
+answers (CO.2's divergence, "'Stops' has no space arm"), so the mutation is the defect the rule
+forbids. Its file is CO.12's; it was mutated on the throwaway copy only.
+
+What the clauses that are not the rule rest on: `+ship/posture` and the record are AP.9's
+(its S1); that the raider opens on her once customs have finished with her is the picket's
+script (`belt_raider.rhai`), the story's premise, asserted so a broken premise reads as one.
+
+**Tier, and run time.** Unchanged: not gated, one `mod` line in `tests/domain_field.rs`, so
+the pull request's `tacsim-integration` cells run it by nextest's hash partition. Alone, in a
+test build on Linux (conclav.dev), the story with its arm took 121.4, 123.3 and 121.8 s in
+three runs; the same story before the arm took 119.2 s in the same clone (AP.11 recorded 119 s
+on Linux and 120 s on Windows). The arm costs about 2 s: about 33 one-second fires at the
+picket and a handful of IC jumps. No window is waited out (the grace is jumped, the legs
+are jumped to their ends, the arrival is stepped an IC day at a time).
+
+**Verified.** On conclav.dev (Linux), a throwaway clone at main `6c86731fb` with this
+branch's two test files, the final tree: the closing story and `space_ap9.rs`'s four stories
+(5 passed, 122 s, the four AP.9 stories over the split helpers unchanged at 14 s);
+`cargo clippy -p tacsim --all-targets` with warnings denied; the lint job's memory-size pass
+(`.github/clippy-m7`); `cargo doc -p tacsim --no-deps` with warnings denied; `cargo test -p
+mush-contract-tests --no-fail-fast` (all passed, nothing re-blessed); the mutation table.
+`cargo fmt -p tacsim` on Windows. No production code moved, so `tacsim`'s unit suite, the
+mind ABI and every pin are untouched.
+
+**Not verified.** Nothing ran against a live server or over SSH; nothing was deployed. The
+arm was not run on Windows.
+
+**Found, and not fixed.** Nothing new. The picket holding her shifts her arrival past her
+plan's own end (by the time she was held): her ticket's plan is not re-timed, so a story that
+waits on `depart_ic + total_s` finds her still under way. Not a defect of this unit's rule;
+noted for whoever reads arrivals off a ticket.
 
 ## CO.8
 
