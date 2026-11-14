@@ -169,6 +169,16 @@ impl Rig for Core {
             ),
         ]
     }
+    fn other_site() -> (FundingIntent, crate::AccountId, i64) {
+        let i = fixture(
+            &composed().expect("the composed policy"),
+            RefitKind::CoreUngovern,
+            family("line_twin").expect("a family")[1].clone(),
+            None,
+        )
+        .expect("the ungoverning fixture");
+        (i, crate::AccountId(2), 25_000)
+    }
     fn config(i: &FundingIntent) -> CoreRefitConfig {
         CoreRefitConfig::new(
             i.policy.clone(),

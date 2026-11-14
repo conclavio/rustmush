@@ -213,6 +213,15 @@ impl Rig for Bay {
             ),
         ]
     }
+    fn other_site() -> (FundingIntent, crate::AccountId, i64) {
+        let mut i = intent();
+        i.policy.bays = vec![site(40, 1), site(41, 2)];
+        i.subject.facility = ObjId(41);
+        i.subject.fee_minor = 20_000;
+        i.subject.policy = i.policy.digest().expect("a digest");
+        i.supplier.action = i.policy.action_ref(OFFER_ACTION).expect("the offer");
+        (i, crate::AccountId(2), 20_000)
+    }
     fn config(i: &FundingIntent) -> BayRefitConfig {
         BayRefitConfig::new(
             i.policy.clone(),

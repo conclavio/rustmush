@@ -66,6 +66,9 @@ pub(crate) trait Rig: Leg {
     fn bad_suppliers(intent: &FundingIntent<Self>) -> Vec<(&'static str, Self::Supplier)>;
     /// The leg composed with no definitions yet (`cleanup_ready` must refuse it).
     fn config(intent: &FundingIntent<Self>) -> Self::Config;
+    /// An accepted order at the policy's other site, with the provider and fee its Install
+    /// must move: the bay's second bay, the core refit's ungoverning recipe.
+    fn other_site() -> (FundingIntent<Self>, AccountId, i64);
 }
 
 /// Name each body as a `#[test]` of the leg `$leg`, in the module that expands it.
@@ -80,6 +83,7 @@ macro_rules! instantiate {
             ct7_a_replayed_history_keeps_the_legs_exclusive_object,
             ct7_the_supplier_attributes_the_offer_taken,
             ct7_an_uncomposed_leg_is_not_ready,
+            ct7_the_fee_and_its_payee_follow_the_site,
         );
     };
     ($leg:ty; $($name:ident),+ $(,)?) => {
@@ -339,6 +343,48 @@ pub(crate) fn ct7_an_uncomposed_leg_is_not_ready<M: Rig>() {
     let config = M::config(&intent);
     assert_eq!(M::policy(&config), &intent.policy);
     assert!(M::cleanup_ready(&config, &mush_core::World::new_minimal()).is_err());
+}
+
+/// The fee and the account it pays are the subject's site's ([`Leg::price`],
+/// [`Leg::provider_account`]): an order at the policy's other site holds, captures and credits
+/// that site's, not the first site's.
+pub(crate) fn ct7_the_fee_and_its_payee_follow_the_site<M: Rig>() {
+    let (intent, provider, fee) = M::other_site();
+    intent.validate().expect("the order at the other site");
+    let first = M::intent();
+    assert_ne!(
+        (provider, fee),
+        (M::PROVIDER, M::FEE),
+        "the other site differs in both"
+    );
+    let p = &intent.policy;
+    let accept = CommitToken::from_bytes([10; 16]);
+    let funding = plans::funding(
+        &intent,
+        accept,
+        &M::action_ref(p, M::ACCEPT_ACTION).expect("accept"),
+    )
+    .expect("a funding plan");
+    assert!(matches!(
+        funding.hold_ops.as_slice(),
+        [HoldOp::Place { amount, .. }] if amount.minor() == fee
+    ));
+    let captured = plans::terminal(
+        &intent,
+        accept,
+        HoldId(5),
+        CommitToken::from_bytes([11; 16]),
+        &M::action_ref(p, M::INSTALL_ACTION).expect("install"),
+        &stamp(7200),
+        Some(DefinitionDigest::from_bytes([12; 32])),
+    )
+    .expect("an install plan");
+    let lines: Vec<_> = captured
+        .requested_lines
+        .iter()
+        .map(|l| (l.account, l.delta.minor()))
+        .collect();
+    assert_eq!(lines, [(first.subject.payer(), -fee), (provider, fee)]);
 }
 
 /// The seal is the tripwire for an edit that widens it rather than going round it: over the
