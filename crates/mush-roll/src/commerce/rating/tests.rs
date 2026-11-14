@@ -3,9 +3,7 @@ use mush_core::ClockRef;
 use serde_json::{Value, json};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-fn hash(byte: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([byte; 32])
-}
+use mush_testkit::fixtures::digest as hash;
 fn subject() -> Result<RatingSubject, serde_json::Error> {
     let revision: RevisionIdentity = serde_json::from_value(
         json!({"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},"digest":hash(1)},"source":hash(2)}),

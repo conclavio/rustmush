@@ -10,36 +10,24 @@ use crate::registry_filing::{
     EconomyRequest, InitialFilingParticipant, InitialFilingPolicy, RegistryInitialFiling,
 };
 use crate::{AccountId, Amount, EconomyStore, InstrumentId};
-use mush_core::action::{
-    ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionProvider, AuthoritativeActionOutput, CanonicalHash, IdempotencyKey as ActionKey,
-    IdempotencyScope, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
-    PrincipalId as ActionPrincipal, RequestUid, ScopedIdempotencyKey,
-};
-use mush_core::action_state::{StateFamilyDescriptor, StateFamilyHandle, StateFamilyId};
+use mush_core::action::{ActionError, ActionInvocation, ActionProvider, AuthoritativeActionOutput};
+use mush_core::action_state::StateFamilyHandle;
 use mush_core::authoritative::ReplayWrite;
-use mush_core::authoritative::{AuthoritativeBundle, AuthoritativeBundleDraft};
-use mush_core::mechanics::OwnerId;
 use mush_core::participant::ParticipantHandle;
 use mush_core::{
-    ActionTxn, CanonicalId, DefinitionDescriptor, DefinitionId, DefinitionKind,
-    DefinitionRegistryBuilder, DefinitionValidationContext, GOD, GameModule, ModError,
-    ModuleBootData, ModuleOp, ModuleWrite, ObjKind, PrepareCtx, Registrar, RevisionSet, RulesValue,
+    ActionTxn, DefinitionDescriptor, GOD, GameModule, ModError, ObjKind, PrepareCtx, Registrar,
+    RulesValue,
 };
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef, ObjId};
 use mush_org::{PrincipalId, SystemPrincipalId};
+use mush_testkit::cold::{Boot, fold_replay_writes_into};
+use mush_testkit::fixtures::token;
+use mush_testkit::funding::Funding;
+use mush_testkit::owner_rig::{self, MockOwner, PreparedAction, Unavailable};
 use mush_testkit::{TestWorld, fold_module_ops_into};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use smol_str::SmolStr;
-use std::collections::HashMap;
+use serde_json::json;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-type Boot = HashMap<SmolStr, ModuleBootData>;
-type PreparedAction = (
-    mush_core::composed::PreparedComposedTxn,
-    PreparedAuthoritativeAction,
-    ActionInvocation,
-);
 
 #[derive(Clone)]
 struct Rules {
@@ -54,35 +42,19 @@ struct Rules {
     wrong: DefinitionRef,
     outcome: DefinitionRef,
 }
-fn descriptor(kind: &str, id: &str, version: u32) -> Result<DefinitionDescriptor> {
-    Ok(DefinitionDescriptor::new(
-        DefinitionKind::new(kind)?,
-        DefinitionId::new(id)?,
-        version,
-        json!({"fixture":"native-charter-pending"}),
-    )?)
-}
 fn rules() -> Result<Rules> {
-    let mut b = DefinitionRegistryBuilder::new();
-    let owner = OwnerId::new("roll")?;
-    let mut declarations = Vec::new();
-    let mut add = |kind, id, version| -> Result<DefinitionRef> {
-        let d = descriptor(kind, id, version)?;
-        let r = b.register(owner.clone(), d.clone())?;
-        declarations.push(d);
-        Ok(r)
-    };
-    let initial = add("action", "initial_filing", 1)?;
-    let offer = add("action", OFFER_ACTION, 2)?;
-    let immediate = add("action", "accept_mind_charter_transfer", 1)?;
-    let fund = add("action", FUND_ACTION, 1)?;
-    let settle = add("action", SETTLE_ACTION, 1)?;
-    let refund = add("action", REFUND_ACTION, 1)?;
-    let revoke = add("action", "registry_term_revocation", 1)?;
-    let wrong = add("action", "wrong_pending_transfer", 1)?;
-    let outcome = add("outcome", "charter_pending_fixture", 1)?;
+    let mut d = RIG.declare()?;
+    let initial = d.add("action", "initial_filing", 1)?;
+    let offer = d.add("action", OFFER_ACTION, 2)?;
+    let immediate = d.add("action", "accept_mind_charter_transfer", 1)?;
+    let fund = d.add("action", FUND_ACTION, 1)?;
+    let settle = d.add("action", SETTLE_ACTION, 1)?;
+    let refund = d.add("action", REFUND_ACTION, 1)?;
+    let revoke = d.add("action", "registry_term_revocation", 1)?;
+    let wrong = d.add("action", "wrong_pending_transfer", 1)?;
+    let outcome = d.add("outcome", "charter_pending_fixture", 1)?;
     Ok(Rules {
-        declarations,
+        declarations: d.finish(),
         initial,
         offer,
         immediate,
@@ -113,6 +85,14 @@ enum Input {
 // Strict test-only typed evidence derived from each actual prepared Economy
 // output. It is not a production Roll filing/update record or an authority.
 const RECEIPT_FAMILY: &str = "charter_pending_fixture_receipt";
+/// This rig's names in the shared owner-rig skeleton (`mush_testkit::owner_rig`).
+const RIG: MockOwner = MockOwner {
+    owner: "roll",
+    label: "native-charter-pending",
+    receipts: RECEIPT_FAMILY,
+    idempotency: "charter_pending_fixture",
+    refusal: "charter pending owner fixture refused",
+};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -179,79 +159,16 @@ impl FixtureReceipt {
         Ok(())
     }
 }
-fn receipts(
-    reg: &mut Registrar<'_>,
-    rules: &Rules,
-) -> std::result::Result<StateFamilyHandle<CommitToken, FixtureReceipt>, ModError> {
-    let bad = |e: &dyn std::fmt::Display| ModError::msg(e.to_string());
-    let initial = rules.initial.clone();
-    reg.state_family(
-        StateFamilyDescriptor::new(
-            StateFamilyId::new(RECEIPT_FAMILY).map_err(|e| bad(&e))?,
-            CanonicalId::new("charter_pending_fixture_receipt.key.v1").map_err(|e| bad(&e))?,
-            CanonicalId::new("charter_pending_fixture_receipt.value.v1").map_err(|e| bad(&e))?,
-            1,
-            CanonicalId::new("charter_pending_fixture_receipt.decode.v1").map_err(|e| bad(&e))?,
-            CanonicalId::new("charter_pending_fixture_receipt.validate.v1").map_err(|e| bad(&e))?,
-            CanonicalId::new("charter_pending_fixture_receipt.canonical.v1")
-                .map_err(|e| bad(&e))?,
-        )
-        .map_err(|e| bad(&e))?
-        .with_limits(128, 65_536)
-        .map_err(|e| bad(&e))?,
-        |key: &CommitToken| Ok(key.to_hex()),
-        |value: &Value| {
-            let row: FixtureReceipt = serde_json::from_value(value.clone())
-                .map_err(|_| "fixture receipt encoding".to_owned())?;
-            if serde_json::to_value(&row).map_err(|_| "fixture receipt encoding".to_owned())?
-                != *value
-            {
-                return Err("fixture receipt exact shape".into());
-            }
-            Ok(row)
-        },
-        move |row: &FixtureReceipt| row.validate(&initial),
-        |row: &FixtureReceipt| {
-            serde_json::to_value(row).map_err(|_| "fixture receipt encoding".into())
-        },
-    )
-}
-fn prepared_receipt(
-    writes: &[ReplayWrite],
-    rules: &Rules,
-    action: &DefinitionRef,
-    commit: CommitToken,
-    actor: ObjId,
-) -> Result<FixtureReceipt> {
-    let mut found = None;
-    for write in writes {
-        let ReplayWrite::ModuleJsonSet {
-            namespace,
-            key,
-            value,
-        } = write
-        else {
-            continue;
-        };
-        if namespace.as_str() != "roll" {
-            continue;
-        }
-        let receipt: FixtureReceipt =
-            serde_json::from_value(value.get("value").ok_or("typed fixture value")?.clone())?;
-        receipt.validate(&rules.initial)?;
-        let expected = json!({"family":{"owner":"roll","id":RECEIPT_FAMILY},"key":receipt.commit.to_hex(),"schema":{"id":"charter_pending_fixture_receipt.value.v1","version":1},"value":receipt});
-        if value != &expected
-            || key.as_str() != format!("action-state/v1/{RECEIPT_FAMILY}/{}", commit.to_hex())
-            || &receipt.action != action
-            || receipt.commit != commit
-            || receipt.actor != actor
-            || found.is_some()
-        {
-            return Err("unexpected/crossed typed fixture write".into());
-        }
-        found = Some(receipt);
+impl owner_rig::FixtureReceipt for FixtureReceipt {
+    fn action(&self) -> &DefinitionRef {
+        &self.action
     }
-    found.ok_or_else(|| "actual composed fixture receipt missing".into())
+    fn commit(&self) -> CommitToken {
+        self.commit
+    }
+    fn actor(&self) -> ObjId {
+        self.actor
+    }
 }
 struct Provider {
     receipts: StateFamilyHandle<CommitToken, FixtureReceipt>,
@@ -260,12 +177,7 @@ struct Provider {
     outcome: DefinitionRef,
 }
 fn error() -> ActionError {
-    ActionError::new(
-        ActionErrorCode::ProviderRejected,
-        false,
-        "charter pending owner fixture refused",
-    )
-    .expect("static error")
+    RIG.error()
 }
 impl ActionProvider for Provider {
     fn validate_invocation(&self, _: &ActionInvocation) -> std::result::Result<(), ActionError> {
@@ -361,45 +273,17 @@ impl ActionProvider for Provider {
 // The actual Economy pending configuration retains the immediate-transfer
 // prerequisite grant. This owner-only fixture never exercises that action;
 // register its exact provider while keeping it unavailable to invocations.
-struct ImmediateUnavailable;
-impl ActionProvider for ImmediateUnavailable {
-    fn validate_invocation(&self, _: &ActionInvocation) -> std::result::Result<(), ActionError> {
-        Err(error())
-    }
-}
 impl GameModule for Rules {
     fn name(&self) -> &'static str {
         "roll"
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> std::result::Result<(), ModError> {
-        for kind in ["action", "outcome"] {
-            let expected: Vec<_> = self
-                .declarations
-                .iter()
-                .filter(|d| d.kind().as_str() == kind)
-                .cloned()
-                .collect();
-            reg.definition_validator(
-                DefinitionKind::new(kind).map_err(|e| ModError::msg(e.to_string()))?,
-                move |ctx: &DefinitionValidationContext<'_>| {
-                    let e = ctx.definition();
-                    if expected.iter().any(|d| {
-                        d.id() == &e.reference().key().id
-                            && d.payload() == e.payload()
-                            && d.references() == e.references()
-                    }) {
-                        Ok(())
-                    } else {
-                        Err("fixture definition drift".into())
-                    }
-                },
-            )?;
-        }
-        for d in &self.declarations {
-            reg.definition(d.clone())?;
-        }
-        reg.action_provider(self.immediate.clone(), ImmediateUnavailable)?;
-        let receipts = receipts(reg, self)?;
+        owner_rig::register_declarations(reg, &self.declarations, &["action", "outcome"])?;
+        reg.action_provider(self.immediate.clone(), Unavailable(error()))?;
+        let initial = self.initial.clone();
+        let receipts = RIG.receipts(reg, 128, 65_536, move |row: &FixtureReceipt| {
+            row.validate(&initial)
+        })?;
         let fund_handle =
             reg.request_owner_participant::<InitialFilingParticipant>(self.fund.clone())?;
         for action in [
@@ -512,20 +396,14 @@ impl Fixture {
     }
     fn new() -> Result<Box<Self>> {
         let mut f = Self::empty()?;
-        for command in [
-            "@instrument/register cr=0".to_owned(),
-            "@account/system faucet=cr".to_owned(),
-            format!("@account/open #{}=cr", f.actor.0),
-            "@account/system roll.registry=cr".to_owned(),
-            "@econ/mint 0=1 10000".to_owned(),
-            format!("@account/open #{}=cr", f.buyer.0),
-            "@econ/mint 0=3 10000".to_owned(),
-        ] {
-            let events = f.world.run(GOD, &command);
-            if events.iter().any(|(_,e)|matches!(e,mush_proto::OutputEvent::Sys(t) if t.spans().iter().any(|s|s.tag.as_deref()==Some("error")))) {return Err("actual economic fixture setup refused".into());}
-        }
-        fold_module_ops_into(&mut f.boot, f.world.take_module_ops());
-        let _ = f.world.world_mut().take_dirty();
+        Funding::instrument("cr", 0)
+            .system("faucet")
+            .open(f.actor)
+            .system("roll.registry")
+            .mint(0, 1, 10000)
+            .open(f.buyer)
+            .mint(0, 3, 10000)
+            .run_into(&mut f.world, &mut f.boot)?;
         let action = f.rules.initial.clone();
         let p = f.prepare(
             &action,
@@ -599,32 +477,13 @@ impl Fixture {
         n: u8,
         input: Input,
     ) -> Result<PreparedAction> {
-        let commit = token(n);
-        let request = RequestUid::from_bytes([n; 16]);
-        let principal = ActionPrincipal::Object { id: actor };
-        let inv = ActionInvocation::new(ActionInvocationDraft {
-            request,
-            principal: principal.clone(),
+        RIG.prepare(
+            &mut self.world,
+            action,
             actor,
-            offered_action: ActionOfferId(CanonicalHash::from_bytes([2; 32])),
-            subject: PerceivedRef::SelfActor,
-            targets: vec![],
-            parameters: serde_json::to_value(input)?,
-            idempotency: ScopedIdempotencyKey::new(
-                IdempotencyScope {
-                    principal,
-                    owner: OwnerId::new("roll")?,
-                    namespace: CanonicalId::new("charter_pending_fixture")?,
-                },
-                1,
-                ActionKey::Request(request),
-            ),
-        })?;
-        let (p, o) = self
-            .world
-            .engine_mut()
-            .prepare_registered_composed_authoritative_action(action, &inv, commit)?;
-        Ok((p, o, inv))
+            n,
+            serde_json::to_value(input)?,
+        )
     }
     fn fund(&mut self, n: u8) -> Result<PreparedAction> {
         self.prepare(
@@ -653,36 +512,19 @@ impl Fixture {
             },
         )
     }
-    fn cold(&self, mut boot: Boot) -> Result<Box<Self>> {
-        let mut f = Self::empty()?;
-        check_eq!(
-            (f.shell, f.actor, f.buyer),
-            (self.shell, self.actor, self.buyer)
-        );
-        f.world.world_mut().set_now(self.world.world().now());
-        f.world
-            .world_mut()
-            .set_world_timeline(self.world.world().world_timeline().clone());
-        let mut typed = Vec::new();
-        for (namespace, data) in &mut boot {
-            data.kv.retain(|(key, value)| {
-                if mush_core::is_action_state_persistence_key(key) {
-                    typed.push(mush_core::ActionStateBootRecord::new(
-                        namespace.clone(),
-                        key.clone(),
-                        value.clone(),
-                    ));
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-        f.world.engine_mut().hydrate_action_state(typed)?;
-        f.world.try_modules_loaded(boot)?;
-        let _ = f.world.take_module_ops();
-        let _ = f.world.world_mut().take_dirty();
-        Ok(f)
+    fn cold(&self, boot: Boot) -> Result<Box<Self>> {
+        let mut world = self.world.cold_restart(modules(&self.rules, 100), boot)?;
+        let _ = world.take_module_ops();
+        let _ = world.world_mut().take_dirty();
+        Ok(Box::new(Self {
+            world,
+            rules: self.rules.clone(),
+            actor: self.actor,
+            buyer: self.buyer,
+            shell: self.shell,
+            boot: Boot::new(),
+            staged: None,
+        }))
     }
     fn stage(
         &mut self,
@@ -690,60 +532,16 @@ impl Fixture {
         n: u8,
         p: PreparedAction,
     ) -> Result<Vec<ReplayWrite>> {
-        let (p, o, inv) = p;
-        let writes = p.authoritative_replay_writes();
-        let receipt = prepared_receipt(&writes, &self.rules, &action, token(n), inv.actor())?;
-        let (outcome, resolution, mut definitions, mut witnesses, mut outbox, events) =
-            o.into_parts();
-        definitions.push(action.clone());
-        definitions.push(outcome.schema().clone());
-        definitions.sort();
-        definitions.dedup();
-        if witnesses.is_empty() {
-            witnesses.push(inv.principal().clone());
-        }
-        witnesses.sort();
-        witnesses.dedup();
-        outbox.sort_by_key(|o| o.ordinal());
-        let bundle = AuthoritativeBundle::new(AuthoritativeBundleDraft {
-            token: token(n),
-            request: inv.request(),
-            idempotency: inv.idempotency().clone(),
-            ingress_hash: CanonicalHash::from_bytes([3; 32]),
-            request_hash: inv.request_hash(),
-            plan_hash: CanonicalHash::from_bytes([4; 32]),
-            action,
-            provider: p.owner().clone(),
-            cause: PreparedCausalRef::new(inv.request(), None, 0)?,
-            definitions,
-            writes: writes.clone(),
-            outcome,
-            resolution: resolution.map(|r| r.bind(token(n))),
-            semantic_events: events,
-            eligible_witnesses: witnesses,
-            durable_outbox: outbox,
-        })?;
-        let guards = self
-            .world
-            .registry()
-            .server_guard_set_builder(RevisionSet::default())?
-            .finish()?;
-        self.world
-            .engine_mut()
-            .stage_authoritative_action(p, guards, bundle)?;
+        let initial = &self.rules.initial;
+        let (writes, receipt) =
+            RIG.stage(&mut self.world, action, n, p, |r: &FixtureReceipt| {
+                r.validate(initial)
+            })?;
         self.staged = Some(receipt);
         Ok(writes)
     }
     fn take_install(&mut self) -> Result {
-        let held = self
-            .world
-            .engine_mut()
-            .take_staged_action()?
-            .ok_or("actual staged action")?;
-        let (_, installation) = held.into_parts();
-        self.world
-            .engine_mut()
-            .install_composed_action(installation)?;
+        owner_rig::install_staged(&mut self.world)?;
         self.staged
             .take()
             .ok_or("prepared typed receipt")?
@@ -758,36 +556,9 @@ impl Fixture {
     ) -> Result<Vec<ReplayWrite>> {
         let writes = self.stage(action, n, p)?;
         self.take_install()?;
-        let mut ops = Vec::new();
-        for w in &writes {
-            ops.push(match w {
-                ReplayWrite::ModuleJsonSet {
-                    namespace,
-                    key,
-                    value,
-                } => ModuleOp {
-                    ns: namespace.as_str().into(),
-                    op: ModuleWrite::JsonSet {
-                        key: key.as_str().into(),
-                        value: value.clone(),
-                    },
-                },
-                ReplayWrite::LedgerChunkSet { write } => ModuleOp {
-                    ns: write.namespace().as_str().into(),
-                    op: ModuleWrite::JsonSet {
-                        key: write.key().as_str().into(),
-                        value: serde_json::to_value(write.chunk())?,
-                    },
-                },
-                _ => return Err("unexpected pending replay write".into()),
-            });
-        }
-        fold_module_ops_into(&mut self.boot, ops);
+        fold_replay_writes_into(&mut self.boot, &writes)?;
         Ok(writes)
     }
-}
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
 }
 
 fn funded() -> Result<Box<Fixture>> {

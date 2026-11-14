@@ -41,6 +41,49 @@
 //! every open port nearest first, each through the planner with its tank and locker checks and
 //! its debit. Nothing here draws from a vault; the seat has no verb that mines or trades.
 //!
+//! # The posture her player left on her
+//!
+//! Doc 45 unit AP.9 (Q-45-23, Q-45-24; Q-45-7, Q-45-8, Q-45-12). A ship carries the one
+//! posture every unit carries, on her own record (`crate::posture::record`), and the seat
+//! reads it there and nowhere else. What the seat holds a mind to, whichever source thinks:
+//!
+//! | | Outside a bubble | Inside a bubble |
+//! |---|---|---|
+//! | `RETURN` | the return passage, as above | she never locks or fires; she heaves to when stopped |
+//! | `HOLD` | she holds where she is: a `speed(n)` is read as a `hold()` | the same helm; the house default may answer a ship whose fire has arrived on her |
+//! | `GUARD` | as `HOLD` | as `HOLD`, and the house default may also answer a ship whose fire has arrived on another unit of her player in the bubble |
+//!
+//! **One gate.** What she may answer is `crate::arena::absent::permits`, the ground's rule,
+//! asked by the applier at a lock and at a shot with the facts [`standing`] reads off the
+//! bubble ([`super::applier::Answers`]): never first, never at a party her party only marks
+//! or holds hostile, and nothing that mines or trades (the seat has no such act).
+//!
+//! **Holding station.** A hull adrift or at a cluster stays where she is. A hull on a
+//! passage keeps her passage (Q-44-45): her plan is her player's own act, and the seat
+//! never thinks for a hull on a corridor. Inside a bubble her drive is cut and she keeps the
+//! way she had; the one burn the seat lets through is the one that heaves her to, under
+//! every posture, and when the bubble lets her go she is on her passage again.
+//!
+//! **She complies with customs** (`complying_with`). While a picket's or an interdictor's
+//! stop on her stands, and after it has cleared her, the ship that stopped her is not one she
+//! answers, whatever arrived from it. A hull that ran is past that.
+//!
+//! **A hull that cannot defend herself** ([`flown`]) is read as on the ground
+//! (`crate::arena::absent::flown_as`): on `GUARD` with nothing to fire she is flown as
+//! `HOLD`; on `GUARD` with her drive destroyed or nothing left to fire she is flown as
+//! `RETURN`. Her record is not rewritten.
+//!
+//! **A mind sealed aboard** (doc 44 unit MW.13) keeps her helm and her sensors under every
+//! posture and has no fire channel, so on a hull that carries one nothing answers fire. The
+//! house default does not think beside it. A default for the owner, in the cut note.
+//!
+//! **Whose she is** ([`player_of`]): whoever commands her by charter or title
+//! (`crate::port::coop::helm_holder`), if that is a player. Her player's other hulls in the
+//! bubble are the units a `GUARD` answers for. When she stands guard and a ship has fired on
+//! one of them, the seat marks that ship's party hostile in her own party's book
+//! (`collect_in_bubble`): each carrier is a party of its own in a bubble, so without the
+//! mark the bubble would refuse the shot the gate lets through.
+//!
 //! What the mind reads: inside a bubble, the view every space mind reads
 //! ([`super::view::space_mind_view`]): her contacts, her own velocity and drive, and the stop
 //! a picket or an interdictor has on her (`space(v).stop`; `v.held` is true while it holds
@@ -54,8 +97,8 @@ use mush_core::{Ctx, ObjId, World};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use super::applier::{BurnRule, Seat};
-use super::bubble::HullStatus;
+use super::applier::{Answers, BurnRule, FireRule, Seat};
+use super::bubble::{HullStatus, LocalSpaceBubble, ShipSectionId, SpaceShipState};
 use super::picket::{CARRIER_PARTY, HEAVE_TO_REL_VEL_MMPS};
 use super::thinks::{Answer, Ask, Due, Owed, Owner, Source, ThinkHost, Thinker};
 use super::tick::{ActiveInterdictionBubble, SpaceBubbleBook, SpaceLinkdeadState};
@@ -65,6 +108,7 @@ use crate::arena::perception::{DriveOutcome, Receiver as FrameReceiver};
 use crate::arena::state::{Designator, MatchMode, Power};
 use crate::arena::step::FrameMotor;
 use crate::minds::content::{LINKDEAD_RETURN_ROLE, linkdead_return_digest};
+use crate::posture::Posture;
 use crate::store::TacsimStore;
 
 /// Real seconds the seat waits, after every open port's passage was refused, before it asks
@@ -92,6 +136,156 @@ pub enum BackupAct {
     Holding,
     /// No port is within her tank and stores: she holds and is a retrieval job.
     HoldingForRetrieval,
+    /// She holds where she is because her player left her on `HOLD` or `GUARD` (doc 45
+    /// unit AP.9).
+    HoldingStation,
+    /// She has answered a ship that fired on her, or on another unit of her player (doc 45
+    /// unit AP.9).
+    ReturningFire,
+}
+
+/// The hull's line when she holds station on her posture: `{posture}`.
+pub const BACKUP_HOLDS_STATION: &str =
+    "[SPACE] Backup mind: holding station where she is; her posture is {posture}.";
+/// The hull's line the first time she answers fire in a bubble.
+pub const BACKUP_RETURNS_FIRE: &str = "[SPACE] Backup mind: returning fire.";
+
+/// **Whose ship `hull` is** (the module head): whoever commands her by charter or title, if
+/// that is a player. `None` for a cast hull, a hull laid up and a hull a non-player commands.
+#[must_use]
+pub fn player_of(w: &World, hull: ObjId) -> Option<ObjId> {
+    crate::port::coop::helm_holder(w, hull).filter(|who| {
+        w.get(*who)
+            .is_some_and(|object| object.kind == mush_core::ObjKind::Player)
+    })
+}
+
+/// Whether `ship` carries anything she can fire: a beam, a railgun or a tube.
+fn armed(ship: &SpaceShipState) -> bool {
+    !(ship.lasers.is_empty() && ship.railguns.is_empty() && ship.torpedo_tubes.is_empty())
+}
+
+/// **Whether `ship` can still defend herself** (Q-45-9, as `crate::arena::absent` reads it
+/// of a unit on the ground): she flies, her drive section stands, and she has a beam, or a
+/// railgun or a tube with a round left.
+fn can_defend(ship: &SpaceShipState) -> bool {
+    ship.status == HullStatus::Operational
+        && ship
+            .sections
+            .get(&ShipSectionId::Drive)
+            .is_none_or(|drive| drive.internals > 0)
+        && (!ship.lasers.is_empty()
+            || ship.railguns.iter().any(|mount| mount.rounds_remaining > 0)
+            || ship
+                .torpedo_tubes
+                .iter()
+                .any(|tube| tube.magazine_remaining > 0))
+}
+
+/// **The posture a hull the seat flies in a bubble is flown on** (the module head, "a hull
+/// that cannot defend herself"): `record`, the word on her own record, read by the ground's
+/// rule over what `ship` carries and can still do.
+#[must_use]
+pub fn flown(record: Posture, ship: &SpaceShipState) -> Posture {
+    crate::arena::absent::flown_as(record, true, armed(ship), can_defend(ship))
+}
+
+/// **The ship `ship_id` complies with** (the module head, "she complies with customs"): the
+/// ship that holds the stops in this bubble, while its stop on her stands or has cleared
+/// her. `None` when nobody has stopped her, and when she ran.
+fn complying_with<'a>(situation: &'a super::view::Situation, ship_id: &str) -> Option<&'a str> {
+    use super::view::Stop;
+    match situation.stop_of(ship_id) {
+        Stop::Hailed | Stop::HoveTo | Stop::Cleared => situation.stopper.as_deref(),
+        Stop::None | Stop::Ran => None,
+    }
+}
+
+/// **What a hull flown on `flown` may answer** (the module head, "one gate"): the facts the
+/// absent player's rule reads, off the bubble's record of whose fire has arrived on whom.
+/// `kin` is her player's other units in the bubble, by ship id; `complying` the ship she
+/// complies with. `None` on `RETURN`: the seat then drops every lock and shot.
+///
+/// Her player's own units and the ship she complies with are never among them, so neither
+/// set can let her fire on one.
+#[must_use]
+pub fn answers_of(
+    bubble: &LocalSpaceBubble,
+    ship_id: &str,
+    flown: Posture,
+    kin: &[String],
+    complying: Option<&str>,
+) -> Option<Answers> {
+    if flown.is_return() {
+        return None;
+    }
+    let answerable = |by: &&String| {
+        by.as_str() != ship_id && Some(by.as_str()) != complying && !kin.contains(*by)
+    };
+    let arrived_on = |target: &str| -> std::collections::BTreeSet<String> {
+        bubble
+            .fired_on_by(target)
+            .into_iter()
+            .flatten()
+            .filter(answerable)
+            .cloned()
+            .collect()
+    };
+    let guards = flown == Posture::Guard;
+    Some(Answers {
+        fired_on_by: arrived_on(ship_id),
+        guards,
+        fired_on_kin: if guards {
+            kin.iter().flat_map(|unit| arrived_on(unit)).collect()
+        } else {
+            std::collections::BTreeSet::new()
+        },
+    })
+}
+
+/// **How the seat stands `hull` in her bubble** ([`standing`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Standing {
+    /// The posture she is flown on ([`flown`]).
+    pub posture: Posture,
+    /// What she may answer; `None` on `RETURN`.
+    pub answers: Option<Answers>,
+}
+
+/// **How the seat stands `hull`, as the bubble is now** (the module head): the posture off
+/// her own record, read over what she carries; her player's other hulls in the bubble; the
+/// ship she complies with; and so what she may answer.
+#[must_use]
+pub fn standing(
+    w: &World,
+    active: &ActiveInterdictionBubble,
+    hull: ObjId,
+    ship_id: &str,
+    situation: &super::view::Situation,
+) -> Standing {
+    let record = crate::posture::record::of(w, hull);
+    let posture = active
+        .bubble
+        .ships
+        .get(ship_id)
+        .map_or(Posture::Return, |ship| flown(record, ship));
+    let kin: Vec<String> = match player_of(w, hull) {
+        Some(player) if !posture.is_return() => active
+            .all_carrier_hulls()
+            .into_iter()
+            .filter(|(other, _, _, _)| *other != hull && player_of(w, *other) == Some(player))
+            .map(|(_, other_ship, _, _)| other_ship)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let answers = answers_of(
+        &active.bubble,
+        ship_id,
+        posture,
+        &kin,
+        complying_with(situation, ship_id),
+    );
+    Standing { posture, answers }
 }
 
 /// What one think asked of the seat.
@@ -103,6 +297,28 @@ enum Asks {
     MakeForPort,
     /// `hold()`, or `speed(0)`.
     Hold,
+}
+
+/// **What the seat does outside a bubble with what a think asked, by her posture** (the
+/// module head, "holding station"; doc 45 unit AP.9): on `HOLD` and `GUARD` a passage asked
+/// for is a hold. On `RETURN` the ask is the mind's own.
+const fn held_to(ask: Asks, posture: Posture) -> Asks {
+    match ask {
+        Asks::MakeForPort if !posture.is_return() => Asks::Hold,
+        ask => ask,
+    }
+}
+
+/// **Whether the seat lets the mind that thought answer fire** (the module head, "a mind
+/// sealed aboard"; doc 45 unit AP.9): only where her posture gives her something to answer
+/// (`answers`), and only the house default. A mind sealed aboard has no fire channel
+/// (doc 44 unit MW.13; Q-44-26), under every posture.
+const fn fire_rule(answers: bool, sealed: bool) -> FireRule {
+    if answers && !sealed {
+        FireRule::Answer
+    } else {
+        FireRule::Never
+    }
 }
 
 /// One think, read: what it asks of the seat outside a bubble, and the intents themselves,
@@ -448,8 +664,20 @@ fn land_adrift(
     let no_route = wall_now_s < state.return_retry_at_wall_s;
     let thought = read(result, &mut state);
     let mut line = None;
-    match thought.ask {
+    // Doc 45 unit AP.9 (the module head, "holding station"): a hull her player left on
+    // `HOLD` or `GUARD` stays where she is. The seat reads a passage asked for as a hold,
+    // so no source can take her home against her player's word.
+    let posture = crate::posture::record::of(ctx.w, hull);
+    let ask = held_to(thought.ask, posture);
+    match ask {
         Asks::Nothing => {}
+        Asks::Hold if !posture.is_return() => {
+            if state.backup_act != BackupAct::HoldingStation {
+                state.backup_act = BackupAct::HoldingStation;
+                line = Some(BACKUP_HOLDS_STATION.replace("{posture}", posture.label()));
+            }
+            state.next_think_at_wall_s = wall_now_s.saturating_add(BACKUP_RETURN_RETRY_WALL_S);
+        }
         Asks::Hold => {
             if !matches!(
                 state.backup_act,
@@ -533,6 +761,9 @@ pub(crate) struct BubbleBackup {
     submit: bool,
     /// The crew's line for a change of act.
     line: Option<&'static str>,
+    /// What the bubble answered to her mind's commands: her own shots, since doc 45 unit
+    /// AP.9. They go with the step's events.
+    pub(crate) events: Vec<super::bubble::SpaceCombatEvent>,
 }
 
 /// **The seat's own upkeep of a hull it flies in a bubble** (doc 35 §11 `B-5`), at the head
@@ -554,7 +785,7 @@ pub(crate) fn seat_in_bubble(active: &mut ActiveInterdictionBubble, ship_id: &st
 pub(crate) fn collect_in_bubble(
     w: &World,
     host: &ThinkHost,
-    active: &ActiveInterdictionBubble,
+    active: &mut ActiveInterdictionBubble,
     hull: ObjId,
     ship_id: &str,
     state: &mut SpaceLinkdeadState,
@@ -569,11 +800,20 @@ pub(crate) fn collect_in_bubble(
         return None;
     }
     let mut situation = active.situation(step_ms);
-    // Doc 45 unit AP.3: the posture her player left on her, off her own record, so her mind
-    // reads in a bubble the word it reads outside one.
-    situation
-        .postures
-        .insert(ship_id.to_owned(), crate::posture::record::of(w, hull));
+    // Doc 45 units AP.3 and AP.9: the posture her player left on her, off her own record
+    // and as she is flown on it, so her mind reads in a bubble the word it reads outside
+    // one; and, on `HOLD` and `GUARD`, the ships she may answer, which are the only ones
+    // her view shows hostile.
+    let stood = standing(w, active, hull, ship_id, &situation);
+    if let Some(answers) = stood.answers.as_ref() {
+        if answers.guards {
+            stand_guard(&mut active.bubble, ship_id, answers);
+        }
+        situation
+            .answerable
+            .insert(ship_id.to_owned(), answers.all());
+    }
+    situation.postures.insert(ship_id.to_owned(), stood.posture);
     super::picket::collect_bubble_think_on(
         host,
         w.module_state::<TacsimStore>(),
@@ -589,6 +829,28 @@ pub(crate) fn collect_in_bubble(
     )
 }
 
+/// **A hull that stands guard takes up her player's quarrel** (the module head, "whose she
+/// is"): the party of each ship whose fire has arrived on another unit of her player is
+/// marked hostile in her own party's book, if it does not hold it hostile already. Only her
+/// party's book moves. The mark is the host's, like a customs clearance and a stand-down:
+/// it is made on the bubble and not through the tape.
+fn stand_guard(bubble: &mut LocalSpaceBubble, ship_id: &str, answers: &Answers) {
+    use crate::arena::party::{Mark, Relation};
+    let Some(own) = bubble.ships.get(ship_id).map(|ship| ship.party) else {
+        return;
+    };
+    let theirs: Vec<_> = answers
+        .fired_on_kin
+        .iter()
+        .filter_map(|by| bubble.ships.get(by).map(|ship| ship.party))
+        .filter(|party| *party != own && bubble.party_relation(own, *party) != Relation::Hostile)
+        .collect();
+    for party in theirs {
+        // Her own book alone: `LocalSpaceBubble::set_party_relation` would mark both.
+        bubble.party_relations.mark(own, party, Some(Mark::Hostile));
+    }
+}
+
 /// **Land `hull`'s think at the head of her bubble's step** (doc 35 §11 `B-5`; doc 44 units
 /// MW.9 and MW.11): hand what the mind asked to the one applier, seated [`Seat::ABSENT`],
 /// before the bubble steps `dt_wall_ms`. The seat's rules are read off the bubble as it
@@ -596,6 +858,7 @@ pub(crate) fn collect_in_bubble(
 /// heaves her to is the mind's own. An answer for a think her record has moved past, or
 /// with no clean result, changes nothing.
 pub(crate) fn land_in_bubble(
+    w: &World,
     active: &mut ActiveInterdictionBubble,
     ship_id: &str,
     state: &mut SpaceLinkdeadState,
@@ -655,21 +918,29 @@ pub(crate) fn land_in_bubble(
         ]),
         _ => BurnRule::Never,
     };
+    // Doc 45 unit AP.9 (the module head, "one gate"): what her posture lets her answer, as
+    // the bubble stands now. Only the house default asks: a mind sealed aboard has her
+    // sensors and no fire channel under every posture.
+    let stood = standing(w, active, state.hull, ship_id, &situation);
+    let fire = fire_rule(stood.answers.is_some(), sealed.is_some());
     let mut answered = Vec::new();
-    let applied = super::applier::apply_intents(
+    let applied = super::applier::apply_intents_answering(
         &mut active.bubble,
         &mut active.tape,
         ship_id,
         Seat {
             burn,
+            fire,
             // Doc 44 unit MW.13 (Q-44-26): her own sealed mind has her sensors.
             lock: sealed.is_some(),
             ..Seat::ABSENT
         },
+        stood.answers.as_ref(),
         &answer.contacts,
         &thought.intents,
         &mut answered,
     );
+    flown.events = answered;
 
     // What the seat does with the world in hand, and what the crew are told.
     let hove_to = active.bubble.ships.get(ship_id).is_some_and(|ship| {
@@ -678,9 +949,19 @@ pub(crate) fn land_in_bubble(
                 < HEAVE_TO_REL_VEL_MMPS
         })
     });
+    if applied.fired && state.backup_act != BackupAct::ReturningFire {
+        state.backup_act = BackupAct::ReturningFire;
+        flown.line = Some(BACKUP_RETURNS_FIRE);
+    }
     if applied.asked_hold && customs_holds && hove_to {
         flown.submit = true;
-    } else if applied.asked_burn && stop.holds() && state.backup_act != BackupAct::HeavingTo {
+    } else if applied.asked_burn
+        && stop.holds()
+        && !matches!(
+            state.backup_act,
+            BackupAct::HeavingTo | BackupAct::ReturningFire
+        )
+    {
         state.backup_act = BackupAct::HeavingTo;
         flown.line = Some(if customs_holds {
             "[SPACE] Backup mind: heaving to for the customs picket."
@@ -749,5 +1030,350 @@ mod tests {
             assert_eq!(view.posture, posture);
             assert!(view.space.is_none() && view.contacts.is_empty());
         }
+    }
+
+    use super::super::applier::Answers;
+    use super::super::bubble::{LocalSpaceBubble, ShipSectionId, SpaceShipState, admitted_party};
+    use super::super::picket::{BELT_RAIDER_PARTY, CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY};
+    use super::super::view::{Situation, Stop};
+    use super::{answers_of, complying_with, flown, stand_guard};
+    use crate::arena::party::{Mark, Relation};
+    use std::collections::BTreeSet;
+
+    fn set(ships: &[&str]) -> BTreeSet<String> {
+        ships.iter().map(|ship| (*ship).to_owned()).collect()
+    }
+
+    /// Her, another hull of her player, a stranger, a raider and the customs corvette, each
+    /// carrier a party of its own as the tick admits them.
+    fn five_ships() -> LocalSpaceBubble {
+        let mut bubble = LocalSpaceBubble::new("bubble.test.ap9", "domain.5", "Test", 1_000);
+        for (id, party) in [
+            ("her", CARRIER_PARTY),
+            ("kin", admitted_party(3)),
+            ("stranger", admitted_party(4)),
+        ] {
+            bubble.insert_ship(SpaceShipState::new_dray(
+                id,
+                id,
+                party,
+                [0, 0, 0],
+                [0, 0, 0],
+            ));
+        }
+        bubble.insert_ship(SpaceShipState::new_corvette(
+            "raider",
+            "Raider",
+            BELT_RAIDER_PARTY,
+            [9_000, 0, 0],
+            [0, 0, 0],
+        ));
+        bubble.insert_ship(SpaceShipState::new_corvette(
+            "customs",
+            "Customs",
+            CUSTOMS_CORVETTE_PARTY,
+            [-9_000, 0, 0],
+            [0, 0, 0],
+        ));
+        bubble
+    }
+
+    fn arrived(bubble: &mut LocalSpaceBubble, shooter: &str, target: &str) {
+        bubble
+            .fired_on
+            .entry(target.to_owned())
+            .or_default()
+            .insert(shooter.to_owned());
+    }
+
+    /// **Doc 45 unit AP.9: what a hull may answer is read off the bubble's record, by her
+    /// posture.** `RETURN` answers nobody. `HOLD` answers a ship whose fire has arrived on
+    /// her. `GUARD` also answers one whose fire has arrived on another unit of her player.
+    /// Neither answers a ship that fired only on a stranger, a unit of her own player, or
+    /// the ship she complies with.
+    #[test]
+    fn ap9_what_a_hull_may_answer_is_read_off_the_bubbles_record_by_her_posture() {
+        let mut bubble = five_ships();
+        arrived(&mut bubble, "raider", "her");
+        arrived(&mut bubble, "customs", "her");
+        arrived(&mut bubble, "kin", "her");
+        arrived(&mut bubble, "stranger", "kin");
+        arrived(&mut bubble, "customs", "kin");
+        arrived(&mut bubble, "raider", "stranger");
+        let kin = ["kin".to_owned()];
+
+        assert_eq!(
+            answers_of(&bubble, "her", Posture::Return, &kin, None),
+            None
+        );
+        assert_eq!(
+            answers_of(&bubble, "her", Posture::Hold, &kin, None),
+            Some(Answers {
+                fired_on_by: set(&["raider", "customs"]),
+                guards: false,
+                fired_on_kin: BTreeSet::new(),
+            }),
+            "her own attackers, and never her player's other hull"
+        );
+        let guard = answers_of(&bubble, "her", Posture::Guard, &kin, None).expect("on GUARD");
+        assert_eq!(guard.fired_on_by, set(&["raider", "customs"]));
+        assert!(guard.guards);
+        assert_eq!(
+            guard.fired_on_kin,
+            set(&["stranger", "customs"]),
+            "whoever fired on her player's other hull"
+        );
+        assert!(guard.permits("stranger") && guard.permits("raider"));
+        assert!(!guard.permits("kin"), "never her player's own unit");
+
+        // A hull with no other unit of her player in the bubble: the raider that fired on a
+        // stranger beside her is nobody she may answer, under either word.
+        let mut alone = five_ships();
+        arrived(&mut alone, "raider", "stranger");
+        for posture in [Posture::Hold, Posture::Guard] {
+            let answers = answers_of(&alone, "her", posture, &[], None).expect("she stays");
+            assert!(
+                !answers.permits("raider"),
+                "{posture}: a stranger's quarrel"
+            );
+            assert!(answers.all().is_empty());
+        }
+
+        // The ship she complies with is not one she answers, whatever arrived from it.
+        for posture in [Posture::Hold, Posture::Guard] {
+            let answers =
+                answers_of(&bubble, "her", posture, &kin, Some("customs")).expect("she stays");
+            assert!(!answers.permits("customs"), "{posture}");
+            assert!(answers.permits("raider"), "{posture}");
+        }
+    }
+
+    /// **Doc 45 unit AP.9: she complies with the ship that stops her** while its stop stands
+    /// and once it has cleared her, and with nobody when none stands or she ran.
+    #[test]
+    fn ap9_she_complies_with_the_ship_whose_stop_stands_or_cleared_her() {
+        let mut situation = Situation::open(1_000);
+        situation.stopper = Some("customs".to_owned());
+        assert_eq!(complying_with(&situation, "her"), None, "no stop on her");
+        for (stop, complies) in [
+            (Stop::Hailed, true),
+            (Stop::HoveTo, true),
+            (Stop::Cleared, true),
+            (Stop::Ran, false),
+        ] {
+            situation.stops.insert("her".to_owned(), stop);
+            assert_eq!(
+                complying_with(&situation, "her"),
+                complies.then_some("customs"),
+                "{stop:?}"
+            );
+            assert_eq!(complying_with(&situation, "kin"), None, "her stop is hers");
+        }
+    }
+
+    /// **Doc 45 unit AP.9: a hull that cannot defend herself** is read as a unit on the
+    /// ground is. On `GUARD` with nothing to fire she is flown as `HOLD`; with her drive
+    /// destroyed, or adrift as a derelict, as `RETURN`. `HOLD` and `RETURN` are never read
+    /// as anything else.
+    #[test]
+    fn ap9_a_guard_that_cannot_defend_herself_is_flown_as_on_the_ground() {
+        let armed = SpaceShipState::new_dray("her", "Her", CARRIER_PARTY, [0; 3], [0; 3]);
+        assert!(!armed.lasers.is_empty(), "a Dray carries a beam");
+        assert_eq!(flown(Posture::Guard, &armed), Posture::Guard);
+
+        let mut unarmed = armed.clone();
+        unarmed.lasers.clear();
+        unarmed.railguns.clear();
+        unarmed.torpedo_tubes.clear();
+        assert_eq!(flown(Posture::Guard, &unarmed), Posture::Hold);
+
+        let mut crippled = armed.clone();
+        if let Some(drive) = crippled.sections.get_mut(&ShipSectionId::Drive) {
+            drive.internals = 0;
+        }
+        assert_eq!(flown(Posture::Guard, &crippled), Posture::Return);
+
+        for ship in [&armed, &unarmed, &crippled] {
+            assert_eq!(flown(Posture::Hold, ship), Posture::Hold);
+            assert_eq!(flown(Posture::Return, ship), Posture::Return);
+        }
+    }
+
+    /// **Doc 45 unit AP.9: a hull that stands guard takes up her player's quarrel, and
+    /// nobody else's.** The party of a ship that fired on her player's other hull is marked
+    /// hostile in her own party's book. No other book moves, and no party that fired on
+    /// nobody of hers is marked.
+    #[test]
+    fn ap9_standing_guard_marks_only_the_party_that_fired_on_her_players_unit() {
+        let mut bubble = five_ships();
+        let stranger = admitted_party(4);
+        let kin = admitted_party(3);
+        assert_eq!(
+            bubble.party_relation(CARRIER_PARTY, stranger),
+            Relation::Neutral
+        );
+        let answers = Answers {
+            fired_on_by: BTreeSet::new(),
+            guards: true,
+            fired_on_kin: set(&["stranger"]),
+        };
+        stand_guard(&mut bubble, "her", &answers);
+        assert_eq!(
+            bubble.party_relations.mark_of(CARRIER_PARTY, stranger),
+            Some(Mark::Hostile)
+        );
+        assert_eq!(
+            bubble.party_relation(stranger, CARRIER_PARTY),
+            Relation::Neutral
+        );
+        assert_eq!(bubble.party_relation(kin, stranger), Relation::Neutral);
+        assert_eq!(
+            bubble
+                .party_relations
+                .mark_of(CARRIER_PARTY, BELT_RAIDER_PARTY),
+            None,
+            "the raider fired on nobody of hers"
+        );
+        assert_eq!(
+            bubble
+                .party_relations
+                .mark_of(CARRIER_PARTY, CUSTOMS_CORVETTE_PARTY),
+            None
+        );
+    }
+
+    /// **Doc 45 unit AP.9: the bubble records whose fire arrives on whom, by ship, and keeps
+    /// it through a snapshot.** A beam's shot is an arrival; a ship that has fired on nobody
+    /// is on nobody's record; the record moves the bubble's hash and reads back from the
+    /// document a restart loads.
+    #[test]
+    fn ap9_the_bubble_records_whose_fire_arrived_on_whom_and_a_snapshot_keeps_it() {
+        let mut bubble = five_ships();
+        let quiet = bubble.state_hash();
+        assert!(bubble.fired_on.is_empty());
+        assert_eq!(
+            serde_json::to_value(&bubble)
+                .ok()
+                .and_then(|doc| doc.get("fired_on").cloned()),
+            None,
+            "a bubble nobody has fired in spends no byte on the record"
+        );
+        // A shot the bubble refuses arrives on nobody: the stranger holds her neutral.
+        assert!(bubble.fire_offensive_lasers("stranger", "her").is_empty());
+        assert!(bubble.fired_on.is_empty());
+        bubble.set_party_relation(admitted_party(4), CARRIER_PARTY, Some(Mark::Hostile));
+        let hits = bubble.fire_offensive_lasers("stranger", "her");
+        assert!(!hits.is_empty(), "the beam lands");
+        assert_eq!(bubble.fired_on_by("her"), Some(&set(&["stranger"])));
+        assert_eq!(bubble.fired_on_by("stranger"), None);
+        assert_eq!(bubble.fired_on_by("kin"), None);
+        assert_ne!(bubble.state_hash(), quiet);
+
+        let text = serde_json::to_string(&bubble.snapshot()).expect("the snapshot is written");
+        let back: super::super::bubble::BubbleSnapshot =
+            serde_json::from_str(&text).expect("and read");
+        let restored = LocalSpaceBubble::from_snapshot(back);
+        assert_eq!(restored.fired_on_by("her"), Some(&set(&["stranger"])));
+        assert_eq!(restored.state_hash(), bubble.state_hash());
+    }
+
+    /// **Doc 45 unit AP.9: outside a bubble the seat holds a hull to her posture, whatever
+    /// her mind asks.** A passage asked for on `HOLD` or `GUARD` is a hold; on `RETURN` it is
+    /// a passage. A hold is a hold under every word, and nothing is nothing.
+    #[test]
+    fn ap9_a_passage_asked_for_on_hold_or_guard_is_a_hold() {
+        use super::{Asks, held_to};
+        assert_eq!(
+            held_to(Asks::MakeForPort, Posture::Return),
+            Asks::MakeForPort
+        );
+        for posture in [Posture::Hold, Posture::Guard] {
+            assert_eq!(held_to(Asks::MakeForPort, posture), Asks::Hold);
+        }
+        for posture in Posture::ALL {
+            assert_eq!(held_to(Asks::Hold, posture), Asks::Hold);
+            assert_eq!(held_to(Asks::Nothing, posture), Asks::Nothing);
+        }
+    }
+
+    /// **Doc 45 unit AP.9: only the house default answers fire.** A mind sealed aboard is
+    /// given no fire rule but `Never`, with something to answer or without; the house
+    /// default answers only where her posture gives her something to.
+    #[test]
+    fn ap9_a_mind_sealed_aboard_is_never_given_the_answering_seat() {
+        use super::super::applier::FireRule;
+        use super::fire_rule;
+        assert_eq!(fire_rule(true, false), FireRule::Answer);
+        assert_eq!(fire_rule(false, false), FireRule::Never);
+        assert_eq!(fire_rule(true, true), FireRule::Never);
+        assert_eq!(fire_rule(false, true), FireRule::Never);
+    }
+
+    /// **Doc 45 unit AP.9: a slug and a torpedo arrive when their flight ends on her.** The
+    /// raider's railgun round is on her record once its flight is over, struck or dodged;
+    /// its torpedoes once they strike or her point defence stops them. Nothing is on the
+    /// record while they are still in flight.
+    #[test]
+    fn ap9_a_slug_and_a_torpedo_are_on_her_record_when_their_flight_ends() {
+        let rigged = || {
+            let mut bubble = five_ships();
+            bubble.set_party_relation(BELT_RAIDER_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
+            bubble
+        };
+        let mut bubble = rigged();
+        assert!(
+            !bubble.fire_railgun("raider", "her").is_empty(),
+            "the raider carries a railgun in range"
+        );
+        assert_eq!(
+            bubble.fired_on_by("her"),
+            None,
+            "a round in flight has not arrived"
+        );
+        for _ in 0..400 {
+            if bubble.railgun_slugs.is_empty() {
+                break;
+            }
+            let _ = bubble.step_wall_ms_at(250, 1_000);
+        }
+        assert!(bubble.railgun_slugs.is_empty());
+        assert_eq!(bubble.fired_on_by("her"), Some(&set(&["raider"])));
+
+        let mut bubble = rigged();
+        assert!(
+            !bubble.fire_torpedo_salvo("raider", "her", 2).is_empty(),
+            "the raider carries a tube"
+        );
+        assert_eq!(bubble.fired_on_by("her"), None);
+        for _ in 0..2_000 {
+            if bubble.torpedoes.is_empty() {
+                break;
+            }
+            let _ = bubble.step_wall_ms_at(250, 1_000);
+        }
+        assert!(bubble.torpedoes.is_empty());
+        assert_eq!(bubble.fired_on_by("her"), Some(&set(&["raider"])));
+    }
+
+    /// **Doc 45 unit AP.9 (Q-45-16): nothing an attacker reads carries the record.** The
+    /// holotank and the cockpit feeds of the ship that fired, and of a bystander, are the
+    /// same documents with the record of arrivals written as without it. The posture is
+    /// not on the bubble at all.
+    #[test]
+    fn ap9_nothing_another_ship_reads_carries_the_record_of_arrivals() {
+        let mut bubble = five_ships();
+        let read = |bubble: &LocalSpaceBubble| {
+            ["raider", "stranger", "customs"].map(|observer| {
+                (
+                    bubble.holotank_feed(observer),
+                    bubble.cockpit_feed(observer),
+                )
+            })
+        };
+        let before = read(&bubble);
+        arrived(&mut bubble, "raider", "her");
+        arrived(&mut bubble, "her", "raider");
+        arrived(&mut bubble, "raider", "stranger");
+        assert_eq!(read(&bubble), before);
     }
 }

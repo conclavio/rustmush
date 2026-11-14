@@ -4,12 +4,10 @@ use crate::{AccountId, Amount, InstrumentId};
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, ObjId};
+use mush_core::{ClockRef, ClockStamp, DefinitionDigest, ObjId};
+use mush_testkit::fixtures::{stamp, token};
 use serde_json::json;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
 fn action(id: &str, version: u32) -> Result<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new("roll")?,
@@ -20,12 +18,6 @@ fn action(id: &str, version: u32) -> Result<DefinitionRef> {
             json!({"fixture":"inactive_pending_consent"}),
         )?,
     )?)
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
-    }
 }
 pub(super) fn sample() -> Result<CharterPendingConsentV1> {
     let terms = CharterPendingTermsV1 {

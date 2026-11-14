@@ -349,15 +349,7 @@ fn mw23_a_restart_keeps_the_registration() -> TestResult {
     check!(answer.starts_with("Ok("), "{answer}");
     let own = account_of(&r.tw, &PrincipalId::Object(holder), CORE3_ENTITLEMENT)?;
     let boot = fold_module_ops(r.tw.take_module_ops());
-    let world = r.tw.into_engine().world;
-    let (_, registry) = mush_testkit::boot_world();
-    let mut engine = mush_core::Engine::with_modules(world, registry, modules()?)?;
-    engine.modules_loaded(
-        boot,
-        &mut mush_core::Outbox::new(),
-        &mut mush_core::engine::Effects::new(),
-    )?;
-    let mut tw = TestWorld::from_engine(engine);
+    let mut tw = r.tw.cold_reboot_into(modules()?, boot)?;
     check!(
         !tw.world()
             .module_state::<EconomyStore>()

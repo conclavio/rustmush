@@ -7,21 +7,13 @@ use crate::{AccountId, Amount, InstrumentId};
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, ObjId};
+use mush_core::{ClockRef, DefinitionDigest, ObjId};
 use mush_org::PrincipalId;
+use mush_testkit::fixtures::{stamp, token};
 use serde_json::json;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
 fn digest() -> DefinitionDigest {
     DefinitionDigest::from_bytes([255; 32])
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
-    }
 }
 fn action(id: &str) -> Result<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(

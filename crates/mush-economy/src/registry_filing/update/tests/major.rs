@@ -22,8 +22,7 @@ fn empty_fixture(rules: Rules) -> Result<Box<Fixture>> {
 fn registered(
     modules: Vec<Box<dyn GameModule>>,
 ) -> std::result::Result<Box<mush_core::Engine>, ModError> {
-    mush_core::Engine::with_modules(World::new_minimal(), mush_core::Registry::new(), modules)
-        .map(Box::new)
+    mush_testkit::fixtures::boxed_engine(World::new_minimal(), mush_core::Registry::new(), modules)
 }
 fn exact_receipt(f: &Fixture, n: u8) -> Result<UpdateAuditSubject> {
     f.state()
@@ -183,7 +182,7 @@ fn major_fee_complete_cold_inventory_rejects_missing_disabled_and_crossed_protoc
         f.publish(action, n, p)?;
     }
     let mut cold = empty_fixture(major_rules()?)?;
-    cold.world.try_modules_loaded(f.boot.clone())?;
+    cold.world.try_cold_loaded(f.boot.clone())?;
     check_eq!(cold.state().snapshot, f.state().snapshot);
     check_eq!(
         cold.state().update_receipt_audit(),

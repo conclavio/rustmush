@@ -26,10 +26,11 @@ use super::super::paid::PersonalPaidLicence;
 use super::super::{CharterId, LicenceId, LineId, TermGeneration};
 use super::*;
 use mush_core::{
-    ActionStateBootRecord, CommitToken, DefinitionDigest, Engine, GameModule, ModError,
-    ModuleBootData, ModuleWrite, ObjId, Outbox, Registrar, Registry, World,
+    DefinitionDigest, Engine, GameModule, ModError, ModuleBootData, ModuleWrite, ObjId, Outbox,
+    Registrar, Registry, World,
 };
 use mush_economy::managed_paid_resale::PaidHolderRefV1;
+use mush_testkit::cold;
 use std::sync::{Arc, Mutex};
 
 /// The character holder `n`.
@@ -80,9 +81,7 @@ fn rig() -> TestResult<(Engine, CommerceFamilies)> {
         .ok_or("families")?;
     Ok((e, f))
 }
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
+use mush_testkit::fixtures::token;
 fn licence(n: u64) -> TestResult<LicenceId> {
     Ok(LicenceId::new(n)?)
 }
@@ -126,10 +125,11 @@ fn change(
 /// audits, then the family's own `audit`).
 fn boot(disk: &Disk) -> TestResult {
     let (mut e, _) = rig()?;
-    e.hydrate_action_state(disk.iter().map(|((ns, key), value)| {
-        ActionStateBootRecord::new(ns.as_str(), key.as_str(), value.clone())
-    }))?;
-    live_boot(&mut e)
+    let rows = disk
+        .iter()
+        .map(|((ns, key), value)| (ns.as_str(), key.as_str(), value));
+    cold::load_typed(&mut e, "roll", rows)?;
+    Ok(())
 }
 /// The rig's boot on its live store: the family's own `audit` alone.
 fn live_boot(e: &mut Engine) -> TestResult {

@@ -1438,7 +1438,10 @@ review row 16). PR #551. Paths are under `crates/tacsim/src/space/` unless given
 
 - **Return fire in space (Q-44-38).** Not built, and not in this unit. The absent seat
   refuses every lock and shot. MW.7 is on main, so the follow-up can start; what it has to do
-  is the section below.
+  is the section below. *Built since by doc 45 unit AP.9* (`45-cut-notes.md`, AP.9), for a
+  hull her player left on `HOLD` or `GUARD` and flown by the house default: the record by
+  ship, the third `FireRule` and the narrowed view are as the section below has them. On
+  `RETURN`, and under a mind sealed aboard, she still never fires.
 - **MW.10** (a doctrine by digest): every seal is still built with the compiled digest. The
   unit test selects a revision by building the seal with another digest and handing the think
   a store that holds its source.

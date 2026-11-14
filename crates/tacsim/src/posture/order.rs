@@ -13,6 +13,12 @@
 //!    the unit (`crate::field::orders::posture_order`) and jamming stops it: an order that
 //!    does not arrive changes nothing.
 //!
+//! 4. **A ship's, from aboard her** (doc 45 unit AP.9; Q-45-23): `+ship/posture <word>`,
+//!    typed by whoever commands her while they are aboard ([`ship`]). The word is set at
+//!    once, on the same record a rig's is, and it is the word she is flown on in space
+//!    (`crate::space::backup`). No relay carries an order to a ship: her commander sets it
+//!    before they leave her.
+//!
 //! **Never from an OOC room** ([`ooc`]): Limbo, the OOC area and the simulator centre inside
 //! it. In a practice match `MIND POSTURE` sets a practice posture instead, which is the
 //! match's and never a unit's record (doc 45 unit AP.10; `crate::match_::practice`): none
@@ -62,6 +68,14 @@ pub const POSTURE_ORDER_USAGE: &str = "Use <slot> POSTURE RETURN, GUARD or HOLD.
 /// The unit's player, when a leader's roster order sets its posture: `{leader}`, `{unit}`,
 /// `{posture}`.
 pub const POSTURE_ORDERED: &str = "{leader}, leading your detachment, ordered #{unit} to {posture}: it holds that word until you set another.";
+/// A ship's posture set by her commander who is not aboard her: `{unit}`.
+pub const POSTURE_SHIP_ABOARD: &str =
+    "A posture is an order to a ship in the world. Set {unit}'s from aboard her.";
+/// `+ship/posture`'s grammar (doc 45 unit AP.9).
+pub const POSTURE_SHIP_USAGE: &str = "Usage: +ship/posture [return|guard|hold]";
+/// `+ship`'s line for a ship off the default: `{posture}`.
+pub const POSTURE_SHIP_LINE: &str =
+    "Posture: {posture}. A mind flies her on it while her crew has no link (help ships).";
 /// The roster's and the status's line for a unit off the default: `{posture}`.
 pub const POSTURE_LINE: &str = "  posture {posture}";
 
@@ -187,6 +201,41 @@ pub fn tv(
     }
 }
 
+/// **`+ship/posture [word]`** (this module's head, 4): the ship's posture read, or set at
+/// once by her commander from aboard her. `name` is how the answer names her and `aboard`
+/// whether the actor is aboard her now.
+///
+/// # Errors
+///
+/// [`POSTURE_SHIP_USAGE`], [`POSTURE_WORDS`], [`POSTURE_OOC`], [`POSTURE_SHIP_ABOARD`].
+pub fn ship(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    name: &str,
+    aboard: bool,
+    typed: &str,
+) -> Result<Vec<String>, CmdError> {
+    let mut words = typed.split_whitespace();
+    let (Some(typed), None) = (words.next(), words.next()) else {
+        if typed.trim().is_empty() {
+            return Ok(vec![line(
+                POSTURE_READ,
+                name,
+                super::record::of(ctx.w, hull),
+            )]);
+        }
+        return Err(CmdError::msg(POSTURE_SHIP_USAGE));
+    };
+    let posture = word(typed)?;
+    if ooc(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(POSTURE_OOC));
+    }
+    if !aboard {
+        return Err(CmdError::msg(POSTURE_SHIP_ABOARD.replace("{unit}", name)));
+    }
+    set_present(ctx, hull, name, posture)
+}
+
 #[cfg(test)]
 mod tests {
     use mush_core::{GOD, LIMBO, ObjKind, World};
@@ -242,6 +291,9 @@ mod tests {
             // With a leader's name of twenty characters in place of the placeholder.
             &super::POSTURE_ORDERED.replace("{leader}", "Twenty Characters Xx"),
             super::POSTURE_CREW,
+            super::POSTURE_SHIP_ABOARD,
+            super::POSTURE_SHIP_USAGE,
+            super::POSTURE_SHIP_LINE,
         ] {
             let said = line(template, "Rig 4", Posture::Return);
             assert!(said.chars().count() < 120, "{said}");

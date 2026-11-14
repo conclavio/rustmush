@@ -16,6 +16,8 @@ use mush_org::{
     PolicyRule, PolicySubject, ScopeSelector, SystemPrincipalId,
 };
 use mush_testkit::TestWorld;
+use mush_testkit::fixtures::has_error;
+use mush_testkit::funding::Funding;
 use std::sync::Arc;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -122,8 +124,7 @@ struct Fixture {
     adapter: InitialFilingParticipant,
 }
 fn command(world: &mut TestWorld, line: &str) -> TestResult {
-    let output = world.run(GOD, line);
-    if output.iter().any(|(_, event)| matches!(event, mush_proto::OutputEvent::Sys(text) if text.spans().iter().any(|s| s.tag.as_deref()==Some("error")))) {
+    if has_error(&world.run(GOD, line)) {
         return Err(format!("fixture setup refused: {line}").into());
     }
     Ok(())
@@ -140,16 +141,14 @@ impl Fixture {
         let shell = world
             .world_mut()
             .create(ObjKind::Thing, "Reserved charter", GOD, None)?;
-        for line in [
-            "@org/create House",
-            "@org/scope create House=publication",
-            "@org/scope create House=unrelated",
-            "@instrument/register cr=0",
-            "@account/system faucet=cr",
-            "@account/system roll.registry=cr",
-        ] {
-            command(&mut world, line)?;
-        }
+        Funding::of("cr")
+            .line("@org/create House")
+            .line("@org/scope create House=publication")
+            .line("@org/scope create House=unrelated")
+            .register(0)
+            .system("faucet")
+            .system("roll.registry")
+            .run(&mut world)?;
         let state = world
             .world()
             .module_state::<OrgStore>()

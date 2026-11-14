@@ -30,12 +30,7 @@ use std::sync::{Arc, Mutex};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const BUYER: ObjId = ObjId(8);
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn tokens(ids: &[u8]) -> BTreeSet<CommitToken> {
-    ids.iter().map(|n| token(*n)).collect()
-}
+use mush_testkit::fixtures::{token, tokens};
 /// The seller's pending offer `id` of `charter` naming `buyer`, offered at
 /// `offered` and expiring 1000 seconds later (`wide_offer`'s shape).
 pub(crate) fn offer(id: u8, buyer: ObjId, charter: u32, offered: i64) -> Result<PendingOffer> {

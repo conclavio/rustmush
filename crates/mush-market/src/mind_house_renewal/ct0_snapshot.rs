@@ -155,11 +155,12 @@ macro_rules! renewal_walk {
             }
             check!(found > 0);
             let (mut cold, _) = ct0_rig()?;
+            let typed = disk.iter().map(|(key, value)| (crate::NS, key.as_str(), value));
             check!(
-                cold.hydrate_action_state(disk.iter().map(|(key, value)| {
-                    mush_core::ActionStateBootRecord::new(crate::NS, key.clone(), value.clone())
-                }))
-                .is_err(),
+                matches!(
+                    mush_testkit::cold::load_typed(&mut cold, crate::NS, typed),
+                    Err(mush_testkit::cold::ColdError::Typed(_))
+                ),
                 "renewal documents boot only under the kernel's renewal protocol"
             );
             Ok(())

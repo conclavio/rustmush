@@ -19,14 +19,15 @@ use super::super::families::Families;
 use super::super::index::{self, MAX_BUYER_OFFERS, ResaleBuyerOffers};
 use super::super::records::MindPaidResaleOffer;
 use mush_core::{
-    ActionTxn, ClockRef, ClockStamp, CommitToken, DefinitionDigest, Engine, GameModule, ModError,
-    ModuleBootData, ModuleCtx, ObjId, Outbox, Registrar, Registry, World,
+    ActionTxn, ClockRef, ClockStamp, CommitToken, Engine, GameModule, ModError, ModuleBootData,
+    ModuleCtx, ObjId, Outbox, Registrar, Registry, World,
 };
 use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
 use mush_economy::managed_paid_resale::{PaidResaleTermsV1, SETTLEMENT_IC_SECONDS};
 use mush_economy::{AccountId, Amount, InstrumentId};
 use mush_roll::commerce::LicenceId;
 use mush_roll::commerce::paid_resale::{PaidResaleBinding, protocol};
+use mush_testkit::fixtures::{digest, token, tokens};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,15 +35,6 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SELLER: ObjId = ObjId(7);
 const BUYER: ObjId = ObjId(8);
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn digest(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
-fn tokens(ids: &[u8]) -> BTreeSet<CommitToken> {
-    ids.iter().map(|n| token(*n)).collect()
-}
 /// A transferable personal licence's resale binding at its first holder.
 fn binding(licence: u64) -> TestResult<PaidResaleBinding> {
     let revision = json!({"format":1,"revision":{"key":{"character":7,"mind":1,"number":1},

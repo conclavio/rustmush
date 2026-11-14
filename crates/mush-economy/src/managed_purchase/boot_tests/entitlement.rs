@@ -212,7 +212,7 @@ impl ColdFixture {
         );
         check_eq!(parent_objects(&mut tw)?, self.parents);
         tw.set_now(self.old.tw.world().now());
-        tw.try_modules_loaded(disk)?;
+        tw.try_cold_loaded(disk)?;
         check!(!store(&tw)?.is_frozen());
         Ok(tw)
     }

@@ -10,22 +10,15 @@ use super::super::families::{Families, Row};
 use super::super::records::{MindPaidResaleOffer, MindPaidResaleOperation, MindPaidResaleReceipt};
 use super::buyer_offers::offer;
 use mush_core::{
-    CommitToken, DefinitionDigest, Engine, GameModule, ModError, ObjId, Registrar, Registry,
-    StateFamilyDescriptor, World,
+    Engine, GameModule, ModError, ObjId, Registrar, Registry, StateFamilyDescriptor, World,
 };
 use mush_roll::commerce::paid_resale::protocol;
+use mush_testkit::fixtures::{digest, token};
 use mush_testkit::snapshot::Snapshot;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn digest(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
 
 struct Ct0Module(Arc<Mutex<Option<Families>>>);
 impl GameModule for Ct0Module {

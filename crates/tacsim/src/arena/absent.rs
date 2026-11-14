@@ -551,10 +551,25 @@ impl Arena {
 
 /// **The posture `state`'s mind is held to** ([`Arena::flown_posture`]).
 pub(crate) fn flown(state: &UnitState) -> Posture {
-    match state.posture {
+    flown_as(
+        state.posture,
+        state.absent,
+        !state.weapons.is_empty(),
+        can_defend(state),
+    )
+}
+
+/// **The posture a unit is flown on, from the word its player left** (this module's head,
+/// "flying a posture"): the one rule the arena and a bubble both read (doc 45 unit AP.9;
+/// `crate::space::backup`). `armed` is whether the unit carries anything to fire at all;
+/// `can_defend` whether it can still defend itself (Q-45-9). Only a `GUARD` flown for an
+/// absent player is read differently from the record.
+#[must_use]
+pub const fn flown_as(posture: Posture, absent: bool, armed: bool, can_defend: bool) -> Posture {
+    match posture {
         // Doc 45 unit AP.7 (Q-45-10): nothing to fire, so no guard to stand or to lose.
-        Posture::Guard if state.absent && state.weapons.is_empty() => Posture::Hold,
-        Posture::Guard if state.absent && !can_defend(state) => Posture::Return,
+        Posture::Guard if absent && !armed => Posture::Hold,
+        Posture::Guard if absent && !can_defend => Posture::Return,
         posture => posture,
     }
 }

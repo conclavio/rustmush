@@ -28,20 +28,9 @@ use mush_roll::commerce::{
         protocol::{self, Transition},
     },
 };
+use mush_testkit::fixtures::{digest, stamp, token};
 use serde_json::{Value, json};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn digest(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
-    }
-}
 fn definition(owner: &str, kind: &str, id: &str, n: u8) -> TestResult<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new(owner)?,

@@ -4,20 +4,17 @@
 //! open the receipt audit directly: only the real complete boot may do so.
 
 use super::*;
-use std::collections::HashMap;
 
 use mush_core::action::{ActionError, ActionErrorCode, ActionInvocation, ActionProvider};
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
 };
-use mush_core::{
-    Audience, GOD, GameModule, LedgerChunk, ModError, ModuleBootData, ModuleOp, ModuleWrite,
-    ObjKind, Registrar,
-};
-use mush_proto::OutputEvent;
+use mush_core::{GOD, GameModule, LedgerChunk, ModError, ObjKind, Registrar};
+use mush_testkit::cold::{Boot as BootMap, fold_replay_writes_into};
+use mush_testkit::fixtures::has_error;
+use mush_testkit::funding::Funding;
 use mush_testkit::{TestWorld, fold_module_ops_into};
 
-type BootMap = HashMap<SmolStr, ModuleBootData>;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn action_descriptor() -> DefinitionDescriptor {
@@ -104,15 +101,16 @@ fn store(tw: &TestWorld) -> &EconomyStore {
 }
 fn run(tw: &mut TestWorld, command: &str) {
     let events = tw.run(GOD, command);
-    let is_error = |(_, event): &(Audience, OutputEvent)| matches!(event, OutputEvent::Sys(text) if text.spans().iter().any(|s| s.tag.as_deref() == Some("error")));
-    assert!(!events.iter().any(is_error), "{command}: {events:?}");
+    assert!(!has_error(&events), "{command}: {events:?}");
 }
 fn fund(tw: &mut TestWorld) {
-    run(tw, "@instrument/register cr=2");
-    run(tw, "@account/system faucet=cr");
-    run(tw, "@account/open #1=cr");
-    run(tw, "@account/system roll.registry=cr");
-    run(tw, "@econ/mint 0=1 10000");
+    Funding::instrument("cr", 2)
+        .system("faucet")
+        .open(GOD)
+        .system("roll.registry")
+        .mint(0, 1, 10000)
+        .run(tw)
+        .unwrap();
     assert_eq!(
         store(tw)
             .snapshot()
@@ -177,31 +175,8 @@ fn file(tw: &mut TestWorld, boot: &mut BootMap) -> (InitialFilingAuditSubject, u
         )
         .unwrap()
         .apply();
-    let ops = writes
-        .into_iter()
-        .map(|write| match write {
-            ReplayWrite::ModuleJsonSet {
-                namespace,
-                key,
-                value,
-            } => ModuleOp {
-                ns: namespace.as_str().into(),
-                op: ModuleWrite::JsonSet {
-                    key: key.as_str().into(),
-                    value,
-                },
-            },
-            ReplayWrite::LedgerChunkSet { write } => ModuleOp {
-                ns: write.namespace().as_str().into(),
-                op: ModuleWrite::JsonSet {
-                    key: write.key().as_str().into(),
-                    value: serde_json::to_value(write.chunk()).unwrap(),
-                },
-            },
-            _ => panic!("E4 filing only writes module JSON and journal chunks"),
-        })
-        .collect();
-    fold_module_ops_into(boot, ops);
+    // E4 filing only writes module JSON and journal chunks.
+    fold_replay_writes_into(boot, &writes).unwrap();
     (
         receipt::subject_of(store(tw).transaction(output.transaction()).unwrap()).unwrap(),
         output.journal_seq(),
@@ -221,7 +196,7 @@ fn legacy_checkpoint_requires_full_fetch_before_empty_filing_history_is_trusted(
 
     // Prove this is a valid old checkpoint, not merely a bad hash fixture.
     let mut legacy = world(false);
-    legacy.try_modules_loaded(narrow(saved.clone(), floor))?;
+    legacy.try_cold_loaded(narrow(saved.clone(), floor))?;
     check!(
         store(&legacy)
             .boot_replay()
@@ -234,7 +209,7 @@ fn legacy_checkpoint_requires_full_fetch_before_empty_filing_history_is_trusted(
     let mut composed = world(true);
     let error = composed.try_modules_loaded(narrow(saved.clone(), floor));
     check!(matches!(error, Err(ModError::RetryFullFetch { module, .. }) if module == "economy"));
-    composed.try_modules_loaded(saved)?;
+    composed.try_cold_loaded(saved)?;
     check_eq!(
         store(&composed).boot_replay().unwrap().from_checkpoint,
         None
@@ -263,7 +238,7 @@ fn checkpoint_and_tail_recover_a_receipt_older_than_every_loaded_journal_chunk()
     }
     let mut restarted = world(true);
     check_eq!(reserve_object(&mut restarted), title);
-    restarted.try_modules_loaded(narrowed)?;
+    restarted.try_cold_loaded(narrowed)?;
     let replay = store(&restarted).boot_replay().unwrap();
     check_eq!(replay.from_checkpoint, Some(covered));
     check_eq!(replay.replayed, 1);
@@ -287,12 +262,7 @@ fn assert_generic_title_commands_refuse(tw: &mut TestWorld, title: ObjId) {
         format!("@asset/writeoff #{}=fixture", title.0),
     ] {
         let events = tw.run(GOD, &command);
-        assert!(
-            events
-                .iter()
-                .any(|(_, event)| matches!(event, OutputEvent::Sys(text)
-            if text.spans().iter().any(|span| span.tag.as_deref() == Some("error"))))
-        );
+        assert!(has_error(&events));
         assert_eq!(store(tw).snapshot.asset(title), Some(&before));
         assert_eq!(store(tw).next_transaction, next);
     }

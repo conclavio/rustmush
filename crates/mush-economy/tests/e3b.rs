@@ -13,15 +13,16 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::module::{HookPoint, ModError, Registrar};
 use mush_core::{
-    Audience, Effects, EventHook, GOD, GameModule, HookReadContext, LIMBO, ModuleBootData,
-    ModuleWrite, ObjId, ObjKind, Outbox, World, WorldEvent,
+    Effects, EventHook, GOD, GameModule, HookReadContext, LIMBO, ModuleBootData, ModuleWrite,
+    ObjId, ObjKind, Outbox, World, WorldEvent,
 };
 use mush_economy::{
     AccountId, AssetLifecycle, CustodyError, CustodyProvider, CustodyRef, EconomySnapshot,
     EconomyStore, VaultId, VaultStatus,
 };
-use mush_proto::{OutputEvent, RichText};
-use mush_testkit::{TestWorld, text_of};
+use mush_proto::RichText;
+use mush_testkit::TestWorld;
+use mush_testkit::fixtures::{has_error, texts};
 use smol_str::SmolStr;
 
 const NS: &str = "economy";
@@ -44,18 +45,6 @@ fn boot_with(
     ];
     mods.extend(extra);
     TestWorld::with_modules(mods)
-}
-fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events
-        .iter()
-        .map(|(_, e)| text_of(e))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
-    events.iter().any(|(_, e)| {
-        matches!(e, OutputEvent::Sys(rt) if rt.spans().iter().any(|sp| sp.tag.as_deref() == Some("error")))
-    })
 }
 fn store(tw: &TestWorld) -> &EconomyStore {
     tw.world()
@@ -109,14 +98,15 @@ fn merge(base: &mut Vec<(SmolStr, serde_json::Value)>, extra: Vec<(SmolStr, serd
 /// server's real shape, and the only way the liveness + custody passes have anything
 /// to look at.
 fn reboot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) {
-    tw.modules_loaded(HashMap::from([(
+    tw.try_cold_loaded(HashMap::from([(
         SmolStr::new(NS),
         ModuleBootData {
             kv,
             streams: HashMap::new(),
             ..Default::default()
         },
-    )]));
+    )]))
+    .expect("module boot data must load");
 }
 fn patch(kv: &mut [(SmolStr, serde_json::Value)], key: &str, f: impl Fn(&mut serde_json::Value)) {
     for (k, v) in kv.iter_mut() {

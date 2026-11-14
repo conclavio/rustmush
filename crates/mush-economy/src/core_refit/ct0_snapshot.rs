@@ -19,10 +19,11 @@ use crate::plan::EconomyPlan;
 use crate::record::{Hold, HoldPurpose, HoldStatus};
 use crate::{HoldId, TransactionId};
 use mush_core::{
-    ClockRef, ClockStamp, DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind,
-    DefinitionRef, DefinitionRegistryBuilder, ObjId, OwnerId,
+    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionRegistryBuilder, ObjId, OwnerId,
 };
 use mush_org::{OrgId, OrgScopeId, PrincipalId, SystemPrincipalId};
+use mush_testkit::fixtures::stamp;
 use mush_testkit::snapshot::Snapshot;
 
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -50,12 +51,6 @@ fn account(n: u64) -> ScopedCoreAccount {
         account: crate::AccountId(n),
         organization: OrgId(n),
         scope: OrgScopeId(n),
-    }
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
     }
 }
 /// The M8b fixtures (`subject.rs`'s `m8b_tests`): the line-only policy and

@@ -14,7 +14,7 @@ use super::super::{
 use super::records::*;
 use super::*;
 use mush_core::{
-    ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId,
+    ClockRef, ClockStamp, CommitToken, DefinitionRef, ObjId,
     mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
     },
@@ -26,18 +26,9 @@ use mush_economy::{
 use serde_json::json;
 use std::collections::BTreeMap;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
-fn digest(n: u8) -> DefinitionDigest {
-    DefinitionDigest::from_bytes([n; 32])
-}
-fn stamp(at: i64) -> ClockStamp {
-    ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at,
-    }
-}
+use mush_testkit::fixtures::digest;
+use mush_testkit::fixtures::stamp;
+use mush_testkit::fixtures::token;
 fn definition(kind: &str, id: &str) -> TestResult<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new("market")?,

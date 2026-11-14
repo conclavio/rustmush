@@ -16,10 +16,11 @@ use mush_core::mechanics::{
     DefinitionRegistryBuilder, OwnerId,
 };
 use mush_core::{
-    ActionStateBootRecord, Engine, GOD, GameModule, ModError, ModuleBootData, ModuleCtx, Outbox,
-    Registrar, Registry, World,
+    Engine, GOD, GameModule, ModError, ModuleBootData, ModuleCtx, Outbox, Registrar, Registry,
+    World,
 };
 use mush_economy::{AccountId, Amount, CatalogRef, EconomyModule, EconomyStore};
+use mush_testkit::cold;
 use serde_json::json;
 
 use super::filing::InitialFilingTerms;
@@ -192,22 +193,19 @@ pub(super) fn invocation() -> ActionInvocation {
     })
     .unwrap()
 }
-fn hydrate(engine: &mut Engine, writes: &[ReplayWrite]) {
-    let rows = writes
-        .iter()
-        .map(|write| {
-            let ReplayWrite::ModuleJsonSet {
-                namespace,
-                key,
-                value,
-            } = write
-            else {
-                panic!("setup only writes typed markers")
-            };
-            ActionStateBootRecord::new(namespace.as_str(), key.as_str(), value.clone())
-        })
-        .collect::<Vec<_>>();
-    engine.hydrate_action_state(rows).unwrap();
+/// The kit's cold restart over setup's persisted `writes`: the typed markers
+/// hydrated, then every module's boot. Only a module's refusal is the
+/// restart's answer; the kernel refusing the markers is a broken fixture.
+fn restart(engine: &mut Engine, writes: &[ReplayWrite]) -> Result<(), ModError> {
+    let mut boot = cold::Boot::new();
+    cold::fold_replay_writes_into(&mut boot, writes).expect("setup only writes typed markers");
+    cold::load(engine, boot).map_err(module_refusal)
+}
+fn module_refusal(error: cold::ColdError) -> ModError {
+    let cold::ColdError::Module(error) = error else {
+        panic!("the typed markers hydrate: {error}")
+    };
+    error
 }
 fn assert_closed(engine: &Engine) {
     let roll = engine.world.module_state::<RollStore>().unwrap();
@@ -294,8 +292,7 @@ fn setup_uses_actual_empty_economy_replay_and_does_not_open_until_active_restart
     );
 
     let mut restarted = engine(CommerceMode::Active);
-    hydrate(&mut restarted, &writes);
-    boot(&mut restarted).unwrap();
+    restart(&mut restarted, &writes).unwrap();
     assert!(
         restarted
             .world
@@ -313,9 +310,8 @@ fn setup_uses_actual_empty_economy_replay_and_does_not_open_until_active_restart
             .is_ok()
     );
     let mut setup_again = engine(CommerceMode::Initialize);
-    hydrate(&mut setup_again, &writes);
     assert!(
-        boot(&mut setup_again).is_err(),
+        restart(&mut setup_again, &writes).is_err(),
         "Initialize refuses retained prior deployment"
     );
     assert_closed(&setup_again);
@@ -344,8 +340,7 @@ fn uninstalled_setup_has_no_half_state_and_exact_persisted_bundle_recovers() {
     // Model durable write replay after no RAM installation. The server's actual
     // lost-ACK protocol is a separate integration gate, not claimed here.
     let mut recovered = engine(CommerceMode::Active);
-    hydrate(&mut recovered, &writes);
-    boot(&mut recovered).unwrap();
+    restart(&mut recovered, &writes).unwrap();
     assert!(
         recovered
             .world
@@ -362,9 +357,8 @@ fn uninstalled_setup_has_no_half_state_and_exact_persisted_bundle_recovers() {
             .map(|(_, w)| w.clone())
             .collect();
         let mut broken = engine(CommerceMode::Active);
-        hydrate(&mut broken, &partial);
         assert!(
-            boot(&mut broken).is_err(),
+            restart(&mut broken, &partial).is_err(),
             "either missing marker refuses recovery"
         );
         assert_closed(&broken);

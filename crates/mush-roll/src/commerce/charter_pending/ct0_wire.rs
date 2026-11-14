@@ -13,13 +13,11 @@ use crate::commerce::families::CommerceFamilies;
 use crate::commerce::records::{OwnerTerm, RevisionPolicy};
 use crate::commerce::tests::ct0_rig::{self as rig, TestResult};
 use crate::commerce::{CharterId, LicenceId, LineId, TermGeneration, TermWindow, WorldIcSeconds};
-use mush_core::{CommitToken, DefinitionDigest, ObjId};
+use mush_core::{DefinitionDigest, ObjId};
 use mush_economy::managed_charter_transfer::CharterPendingDecisionKindV1;
 use mush_testkit::snapshot::Snapshot;
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
+use mush_testkit::fixtures::token;
 
 fn families(s: &mut Snapshot, f: &CommerceFamilies) {
     s.section("families");

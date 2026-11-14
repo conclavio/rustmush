@@ -14,13 +14,11 @@ use crate::{AccountId, Amount, InstrumentId};
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_core::{ClockRef, ClockStamp, DefinitionDigest, DefinitionRef, ObjId};
 use mush_org::{OrgId, OrgScopeId};
+use mush_testkit::fixtures::token;
 use mush_testkit::snapshot::Snapshot;
 
-fn token(n: u8) -> CommitToken {
-    CommitToken::from_bytes([n; 16])
-}
 fn reference(kind: &str, id: &str) -> Result<DefinitionRef> {
     Ok(DefinitionRegistryBuilder::new().register(
         OwnerId::new("tacsim")?,

@@ -24,8 +24,8 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::module::{GameModule, ModError, Registrar};
 use mush_core::{
-    ArgShape, Audience, AuthoritativeSubmit, CmdError, CommandSpec, CommitToken, Ctx, GOD,
-    GameClock, IdempotencyKey, IdempotencyKeyText, IdempotencyScope, LIMBO, ObjId, ObjKind,
+    ArgShape, AuthoritativeSubmit, CmdError, CommandSpec, CommitToken, Ctx, GOD, GameClock,
+    IdempotencyKey, IdempotencyKeyText, IdempotencyScope, LIMBO, ObjId, ObjKind,
     OfferExecutionContext, OfferSubmission, PerceivedRef, ProjectedLegalAction,
     ProjectedParameterKind, RequestUid, ScopedIdempotencyKey,
 };
@@ -44,8 +44,8 @@ use mush_market::{
     QuoteId, STALE_QUOTE, VendorId, VenueGate, VenueRefusal,
 };
 use mush_org::{OrgId, PrincipalId};
-use mush_proto::OutputEvent;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::TestWorld;
+use mush_testkit::fixtures::{err, ok};
 use serde_json::json;
 
 // ---- the test seams ---------------------------------------------------------
@@ -611,40 +611,6 @@ fn buyer(tw: &mut TestWorld, name: &str, faucet: AccountId) -> (ObjId, AccountId
 }
 
 // ---- helpers ---------------------------------------------------------------
-
-fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events
-        .iter()
-        .map(|(_, e)| text_of(e))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
-    events.iter().any(|(_, e)| {
-        matches!(e, OutputEvent::Sys(rt) if rt.spans().iter().any(|sp| sp.tag.as_deref() == Some("error")))
-    })
-}
-
-fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let events = tw.run(actor, line);
-    assert!(
-        !has_error(&events),
-        "`{line}` was refused: {}",
-        texts(&events)
-    );
-    texts(&events)
-}
-
-fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
-    let events = tw.run(actor, line);
-    assert!(
-        has_error(&events),
-        "`{line}` should have been refused: {}",
-        texts(&events)
-    );
-    texts(&events)
-}
 
 fn economy_of(tw: &TestWorld) -> &EconomyStore {
     tw.world()

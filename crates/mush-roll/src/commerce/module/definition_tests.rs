@@ -308,11 +308,4 @@ fn house_filing_opt_in_preserves_personal_identity_and_refuses_unconfigured_sche
     Ok(())
 }
 
-#[inline(never)]
-fn boxed_test_engine(
-    world: mush_core::World,
-    registry: mush_core::Registry,
-    modules: Vec<Box<dyn mush_core::GameModule>>,
-) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
-    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
-}
+use mush_testkit::fixtures::boxed_engine as boxed_test_engine;
