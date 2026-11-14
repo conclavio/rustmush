@@ -226,7 +226,108 @@ reaches it).
 
 ## CO.3
 
-Not built.
+A leader's order to an absent member's unit (R-47-4; doc 47 §3, "A leader's order"). Paths are
+under `crates/tacsim/src/` unless given.
+
+**Survey** (written before the cut).
+
+- **Where the refusal is.** Not in the order book's authority rule as such. `OrderBook::issue`
+  (`mush-tactics`, `detachment/orders.rs`) answers `OrderError::Unauthorized` ("command
+  authority does not cover the target unit") when the host's resolver refuses a recipient, and
+  the field's resolver (`detachment/sortie/prepare.rs`, `message`, `Act::Issue`) asks two
+  things of each unit: the mission command right over it (`allowed`, read from the unit
+  authority owner) and `roster.member_available(slot)`. The second is what refuses a gone
+  member: `field::reconcile` reads the member's `Presence` (`field::orders::presence`), and
+  once the unit has passed to its mind (a quit, or five minutes after a lost link) the
+  member's connection is `Disconnected` and the roster counts the slot unavailable. The
+  command right is the member's lending to the mission's current leader and does not read the
+  member's presence.
+- **A second gate at the delivery.** The poll (`Act::Poll`) discards a delivered envelope's
+  pending order when the slot is not available, by the same `member_available`. So admitting
+  the issue alone would issue an order that never arrives.
+- **The hand-off already works.** The carrying-out walk (`detachment/sortie/npc.rs`,
+  `posture_order`) does not read presence: it writes the record, tells the player (queued when
+  away) and answers WILCO as the player. A changed posture on a unit a mind flies lays the new
+  word's standing order at once (`Arena::set_posture`, AP.6). So the cut is the admission.
+
+**Built.**
+
+- **One rule, read at the issue and at the delivery** (`detachment/sortie/field_orders.rs`,
+  `takes`): a slot takes an order when the roster counts it available, or, for a `POSTURE`
+  alone, when it is a player's unit that a mind flies because its player has gone
+  (`field::orders::minded_for`: the field's presence record for that pilot says handed, the
+  unit is in a running field, and it is not lost). The order then goes to the unit's mind
+  through AP.4a's path unchanged. Every other order to a gone member's unit is refused as
+  before.
+- **What binds the mind is CO.2's**, untouched: `arena::absent::permits` (it answers a unit
+  whose fire has arrived on it, never fires first) and `Arena::keep_going_home` (`RETURN`
+  keeps going home while it answers).
+- **Unchanged:** a present member's unit (the order is written while they hold the seat and
+  the unit stays theirs), the leader check (`validate_command_at`), the command right, the
+  relay and its jams, the OOC refusal, the hired-crew refusal, the unit answering for itself,
+  the notice.
+- Help: `docs/help/detachments.md` (POSTURE) and `docs/help/field.md` (*Setting it*, the
+  leader's bullet). Every changed line is within 120 columns.
+
+**Tests.** Stories in `tests/domain_field/field_ap4a.rs`:
+
+1. **New**, `co3_a_leaders_order_after_the_grace_goes_to_the_members_mind`: two players on a
+   roster in a three-party field. The leader orders the present member's rig to `HOLD`; it is
+   written, answered WILCO, and the rig is still its player's (no presence record, not
+   minded). The member's link drops; five minutes later the rig is its mind's and holds in the
+   field. The member, who does not lead, is refused ("not this detachment's current leader").
+   The leader's kernel `HOLD` to the gone member's slot is still refused ("command authority
+   does not cover the target unit"). The leader's `2 POSTURE RETURN` is accepted, the rig's
+   record reads `RETURN`, the rig answers WILCO, and its mind takes it out of the field having
+   fired on nobody. **On base it fails** at the RETURN order: the leader's `ORDER ... 2 POSTURE RETURN` is refused, "command authority does not cover the
+   target unit" (conclav.dev, main `6c86731fb` with only the tests applied). AP.4a's rewritten
+   story fails on base at its step 5 the same way..
+2. **Rewritten**, AP.4a's `ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_back`
+   step 5 held the refusal ("command authority does not cover the target unit") after the
+   grace. It now orders `2 POSTURE HOLD` there and holds it accepted, written, answered WILCO,
+   and the rig still its mind's in the field; steps 6 and 7 read the `HOLD` order (the
+   member's report, the refused `NEGATIVE` against that order's sequence).
+3. AP.4a's hired-crew story is unchanged.
+
+**Mutations**, each alone on a throwaway clone of main with this branch applied, on
+conclav.dev (Linux), with stories 1 and 2:
+
+| | Mutation | Caught by |
+|---|---|---|
+| M1 | The issue's check back to availability alone (`takes` replaced by `member_available`) | both stories: the order is refused, "command authority does not cover the target unit" |
+| M2 | The rule widened to every order (`sets_posture` dropped from `takes`) | story 1: the kernel `2 HOLD` to the gone member is queued, not refused |
+| M3 | The delivery's check back to availability alone (the poll) | both stories: the order is issued, never delivered, and the record keeps its word |
+| M4 | The hand-off skips a unit a mind flies (`posture_order` idles on `minded`) | both stories: the order is delivered and never written to the record |
+| M5 | `Arena::set_posture` no longer lays the new word's standing order on a minded unit | **survives.** The field host asks a `RETURN` unit out at its ramp every second (`field/absent.rs`), and the rig stands near its carrier's ramp, so that, not the arena's order, takes it home here. AP.6's code, not this cut's; recorded |
+
+**Verified, and how.**
+- conclav.dev (Linux), a throwaway clone of main `6c86731fb` with this branch applied: AP.4a's
+  three stories pass on the branch (147 s, 24 s and the new one 75 s); stories 1 and 2 fail
+  on base; the mutation table.
+- Windows, the branch: `cargo clippy -p tacsim --all-targets -D warnings`, the lint job's M7
+  memory-size pass (with `.github/clippy-m7`), `cargo doc -p tacsim --no-deps` with and without
+  private items under `-D warnings`, `cargo test -p mush-contract-tests` (nothing re-blessed),
+  `cargo fmt -p tacsim`.
+- No mind API, store schema, persisted record or `MIND_ABI` changed. Nothing ran against a
+  live server; nothing was deployed.
+
+**Divergences.**
+
+- The ruling's limits are CO.2's: this cut adds no limit and no story of its own for the
+  mind answering fire after the order. AP.4a's story 1 step 4 holds a guard answering; CO.2's
+  `co2_the_same_rig_on_return_answers_on_its_way_home` holds `RETURN` answering on its way
+  home. The new story holds "fires on nobody first" and "goes home" after the order.
+- Only `POSTURE` reaches a gone member's unit. The ruling speaks of "the order"; the other
+  roster orders (`HOLD`, `ENGAGE`, `ADVANCE`, `FOCUS` ...) are objectives for the player's own
+  hand and the mind flies a posture, not an objective, so they stay refused. A default; low to
+  reverse (`takes`).
+
+**Not built.**
+
+- A gone member's unit that has already been taken out at its ramp takes no order
+  (`minded_for` needs a running field). Nothing flies it.
+- Not pinned by a story: a lost (destroyed) unit refused the order (`minded_for`'s `!lost`);
+  a member who quit rather than lost their link (the same presence record, `handed`).
 
 ## CO.4
 

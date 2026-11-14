@@ -431,6 +431,37 @@ pub fn concentrates(directive: &Directive<FieldPayload>) -> bool {
         })
     )
 }
+/// Whether `directive` is a `POSTURE` (doc 45 unit AP.4a).
+#[must_use]
+pub(super) const fn sets_posture(directive: &Directive<FieldPayload>) -> bool {
+    matches!(
+        directive,
+        Directive::Objective(FieldPayload {
+            objective: FieldObjective::Posture { .. },
+            ..
+        })
+    )
+}
+/// **Whether slot `member` may take `directive` now** (the issue and the delivery read this
+/// one rule): a member the roster counts available, or, for a `POSTURE` alone, a player's
+/// unit a mind flies because its player has gone (doc 47 unit CO.3, R-47-4;
+/// `crate::field::orders::minded_for`). The order then goes to the unit's mind. Any other
+/// order to a gone member's unit is refused as before.
+pub(super) fn takes(
+    world: &mush_core::World,
+    roster: &DetachmentRoster,
+    member: &mush_tactics::detachment::Member,
+    directive: &Directive<FieldPayload>,
+) -> bool {
+    roster.member_available(member.slot)
+        || (sets_posture(directive)
+            && match member.controller {
+                mush_tactics::detachment::Controller::Player { character } => {
+                    crate::field::orders::minded_for(world, member.unit, character)
+                }
+                _ => false,
+            })
+}
 pub(super) fn message_key(id: OperationId, sequence: u64, slot: Slot) -> String {
     format!(
         "dt:{}:{}:{}:{}:{}",
