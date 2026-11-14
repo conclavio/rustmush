@@ -1057,5 +1057,58 @@ fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
     Ok(())
 }
 
+/// Doc 46 CT.6: every market identity constant of the personal issuer, against the literal its
+/// family's files held before the two were merged, and the records' families. A persisted
+/// byte, a definition or a printed line depends on each.
+#[test]
+fn personal_market_identity_strings_hold_todays_bytes() -> TestResult {
+    use crate::renewal_twin::Issuer;
+    type I = mush_economy::renewal_twin::Personal;
+    check_eq!(
+        <I as Issuer>::OPERATION_FAMILY,
+        "market_mind_renewal_operation"
+    );
+    check_eq!(<I as Issuer>::RECEIPT_FAMILY, "market_mind_renewal_receipt");
+    check_eq!(
+        MindRenewalOperationV1::FAMILY,
+        "market_mind_renewal_operation"
+    );
+    check_eq!(MindRenewalReceiptV1::FAMILY, "market_mind_renewal_receipt");
+    check_eq!(<I as Issuer>::POLICY_KIND, "renewal_policy");
+    check_eq!(<I as Issuer>::OUTCOME_ID, "mind_renewal_recorded");
+    check_eq!(<I as Issuer>::BINDING_KIND, "mind_renewal_binding");
+    check_eq!(
+        <I as Issuer>::VERBS,
+        [
+            "mind-renewal-draft",
+            "mind-renewal-fund",
+            "mind-renewal-grant",
+            "mind-renewal-refund",
+            "mind-renewal-close",
+        ]
+    );
+    check_eq!(<I as Issuer>::SERVICE_VERB, "mind-renewal-service");
+    check_eq!(<I as Issuer>::COMMAND, "@mindrenewal");
+    check_eq!(
+        <I as Issuer>::HELP,
+        "@mindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously."
+    );
+    check_eq!(<I as Issuer>::SERVICE_TICK, "personal_mind_renewal_service");
+    check_eq!(
+        <I as Issuer>::INTENT_DOMAIN,
+        "market.renewal_service_intent.v1"
+    );
+    check_eq!(
+        <I as Issuer>::SUBMISSION_DOMAIN,
+        "market.renewal_submission.v1"
+    );
+    // The binding's protocol, which the family's file spelled and the twin reads from Economy.
+    check_eq!(
+        <I as mush_economy::renewal_twin::Issuer>::PROTOCOL,
+        "personal_mind_renewal_v1"
+    );
+    Ok(())
+}
+
 #[path = "ct0_snapshot.rs"]
 mod ct0_snapshot;
