@@ -1,0 +1,284 @@
+{
+  "entries": {
+    "tacsim.unit.tv_wrecker": {
+      "def": {
+        "class": "vehicle",
+        "components": [
+          {
+            "id": "power",
+            "role": {
+              "capability": "tacsim.power",
+              "initial": "off",
+              "kind": "power",
+              "plant": "tacsim.plant.light_mk1",
+              "states": [
+                "off",
+                "starting",
+                "online"
+              ]
+            },
+            "section": "chassis"
+          },
+          {
+            "id": "visual_sensor",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            },
+            "section": "boom"
+          }
+        ],
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 100
+              }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 60
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              {
+                "section": "chassis",
+                "weight": 40
+              },
+              {
+                "section": "stores",
+                "weight": 40
+              },
+              {
+                "section": "boom",
+                "weight": 20
+              }
+            ]
+          }
+        ],
+        "interior": {
+          "berths_slot": {
+            "id": "berths",
+            "maximum_items": 1
+          },
+          "exits": [],
+          "gauges": {
+            "stores": [
+              "cab"
+            ]
+          },
+          "rooms": [
+            {
+              "desc": "A one-seat cab set high over wide tracks, the seat empty and its harness clipped back. Where a driver's hands would rest a teleoperation repeater blinks green, carrying the bridge's commands down the link and the rig's cameras back up it. Through the rear glass the A-frame of a recovery boom stands over a winch drum as wide as the hull, and a pair of ground spades are folded against the tail. An Occator Water & Propellant lease tag is riveted under the stores gauge. The air is thin and cold and smells of grease and hydraulic oil.",
+              "details": {
+                "hitch box": "The wrecker's coupling controls: a winch, the spades and the boom on one panel. The plate reads RATED THREE TIMES OWN MASS, LADEN CASUALTY.",
+                "repeater": "A sealed box with a green link light and a red one. Green means the bridge has the rig; red means nobody does, and the rig sits still until somebody does.",
+                "seat": "Empty, its harness clipped back. A stencil on the headrest says CREW SEAT; rigs like this one are driven from the bridge.",
+                "spades": "Two folded steel blades on rams at the tail. Dug into the regolith they hold the wrecker still while the winch takes a casualty's weight.",
+                "stores gauge": "Tonnes and cubic metres in the tool locker against its two limits, 1 t and 2 m3."
+              },
+              "id": "cab",
+              "kind": "walkable",
+              "name": "Cab",
+              "short_desc": "One empty seat high over wide tracks, a repeater blinking where the hands would go, a recovery boom through the rear glass."
+            },
+            {
+              "desc": "A tool locker under the boom: chain, shackles, snatch blocks and cutting gear. Not a place anyone walks.",
+              "id": "stores",
+              "kind": "store",
+              "name": "Stores"
+            }
+          ],
+          "space": "cab",
+          "store": "stores"
+        },
+        "label": "Wrecker terrain vehicle",
+        "logistics": {
+          "berths": 1,
+          "dry_mass_t": 12,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 1100,
+          "recovery_profile": "recovery_optimized",
+          "stowage": {
+            "stores": {
+              "accepts": [
+                "stow.bulk"
+              ],
+              "limits": {
+                "si.mass_kg": 1000,
+                "si.volume_l": 2000
+              }
+            }
+          }
+        },
+        "mobility": {
+          "tracked": {
+            "accel_cms2": 40,
+            "brake_cms2": 90,
+            "max_speed_cms": 250,
+            "reverse_factor_pct": 50,
+            "turn_rate_mdeg_s": 15000
+          }
+        },
+        "note": "Doc 47 unit CO.10: the wrecker, Occator's heavy recovery rig, so a player's tug can take in a raider's line tank (29.9 t laden, which no earlier leased rig reached: the 6 t prospector tows 12 t, the 8 t escort 16 t, the 7 t tender 21 t). The tender's chassis widened and ballasted: 12 t dry (provisional), unarmed, one teleoperated cab, a 1 t / 2 m3 stow.bulk tool locker and no tender stores. logistics.recovery_profile recovery_optimized tows three times its mass, 36 t laden (Q-41-27), so it takes any shipped line tank and refuses a heavier hull. 12 t and 36 m3 ride a Dray-P's 20 t / 70 m3 bay beside a prospector or an escort. Occator leases it beside the tender (+tv/lease wrecker).",
+        "sections": [
+          {
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ],
+            "facets": [
+              {
+                "armor": 40,
+                "id": "front"
+              },
+              {
+                "armor": 30,
+                "id": "left"
+              },
+              {
+                "armor": 30,
+                "id": "right"
+              },
+              {
+                "armor": 30,
+                "id": "rear"
+              },
+              {
+                "armor": 20,
+                "id": "top"
+              }
+            ],
+            "id": "chassis",
+            "internals": 120
+          },
+          {
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 50
+              }
+            ],
+            "facets": [
+              {
+                "armor": 20,
+                "id": "left"
+              },
+              {
+                "armor": 20,
+                "id": "right"
+              },
+              {
+                "armor": 20,
+                "id": "top"
+              }
+            ],
+            "id": "stores",
+            "internals": 80
+          },
+          {
+            "consequences": [
+              {
+                "kind": "slow",
+                "percent": 90
+              }
+            ],
+            "facets": [],
+            "id": "boom",
+            "internals": 40,
+            "struck_through": {
+              "facet": "top",
+              "section": "chassis"
+            }
+          }
+        ],
+        "sensor_height_cm": 250,
+        "silhouettes": [
+          {
+            "band": "front",
+            "height_cm": 250,
+            "width_cm": 300
+          },
+          {
+            "band": "left",
+            "height_cm": 250,
+            "width_cm": 700
+          },
+          {
+            "band": "right",
+            "height_cm": 250,
+            "width_cm": 700
+          },
+          {
+            "band": "rear",
+            "height_cm": 250,
+            "width_cm": 300
+          },
+          {
+            "band": "top",
+            "height_cm": 300,
+            "width_cm": 700
+          }
+        ],
+        "stowage_volume_l": 36000
+      },
+      "kind": "unit"
+    }
+  },
+  "manifest": {
+    "digest": "a6f556916ef9ac97004e6a819b536e5aaf3f1cf80919b4bc14b07a4c08d584b7",
+    "id": "tacsim.pack.tv_wrecker",
+    "kind": "rules_definition",
+    "requires": [
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.plants",
+        "version": 1
+      }
+    ],
+    "version": 1
+  }
+}

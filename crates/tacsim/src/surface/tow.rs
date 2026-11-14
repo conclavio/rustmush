@@ -826,12 +826,21 @@ fn unit_facts(
 /// `logistics.recovery_profile`, `Standard` when it authors none.
 #[must_use]
 pub(crate) fn profile_of(w: &World, unit: ObjId) -> TowRigProfile {
-    use crate::definitions::RecoveryProfile;
-    let profile = mush_tactics::module::unit_of(w, unit)
+    mush_tactics::module::unit_of(w, unit)
         .and_then(|cells| crate::carrier_damage::spec_of(w, cells))
-        .and_then(|spec| spec.logistics.as_ref())
-        .map_or(RecoveryProfile::Standard, |l| l.recovery_profile);
-    match profile {
+        .map_or(TowRigProfile::Standard, profile_of_spec)
+}
+
+/// **The tow coupling `spec` authors** ([`profile_of`] for a definition; doc 47 unit CO.10's
+/// limit test reads the shipped rigs through it).
+#[must_use]
+pub(crate) fn profile_of_spec(spec: &crate::definitions::UnitSpec) -> TowRigProfile {
+    use crate::definitions::RecoveryProfile;
+    match spec
+        .logistics
+        .as_ref()
+        .map_or(RecoveryProfile::Standard, |l| l.recovery_profile)
+    {
         RecoveryProfile::Standard => TowRigProfile::Standard,
         RecoveryProfile::RecoveryOptimized => TowRigProfile::RecoveryOptimized,
         RecoveryProfile::Heavy => TowRigProfile::Heavy,
@@ -844,7 +853,14 @@ pub(crate) fn profile_of(w: &World, unit: ObjId) -> TowRigProfile {
 pub(crate) fn tow_cap_kg_of(w: &World, unit: ObjId) -> Option<u64> {
     mush_tactics::module::unit_of(w, unit)
         .and_then(|cells| crate::carrier_damage::spec_of(w, cells))
-        .and_then(|spec| spec.logistics.as_ref())
+        .and_then(tow_cap_kg_of_spec)
+}
+
+/// **The tow cap `spec` authors, kg** ([`tow_cap_kg_of`] for a definition).
+#[must_use]
+pub(crate) fn tow_cap_kg_of_spec(spec: &crate::definitions::UnitSpec) -> Option<u64> {
+    spec.logistics
+        .as_ref()
         .and_then(|l| l.tow_cap_t)
         .map(|t| u64::from(t) * 1_000)
 }
@@ -956,6 +972,19 @@ pub(crate) fn escorted(w: &World, casualty: ObjId, assessment: &FieldUnitAssessm
             assessment.state,
             OperationalState::Wreck | OperationalState::Irrecoverable
         )
+}
+
+/// **Whether `casualty` is a raider hull whose crew yielded and that is no wreck** (doc 47 unit
+/// CO.10): the hull SU.7's "crew aboard, hull titled" takes when the bay cannot, whether it came
+/// under escort ([`escorted`]) or, unable to drive, in tow.
+fn yielded_hull(w: &World, casualty: ObjId) -> bool {
+    crate::field::raiders::yielded(w, casualty)
+        && unit_facts(w, casualty).is_some_and(|(_, assessment, _, _, _)| {
+            !matches!(
+                assessment.state,
+                OperationalState::Wreck | OperationalState::Irrecoverable
+            )
+        })
 }
 
 /// **Whether `casualty`, as it stands, would go under escort** (the lines' choice).
@@ -2861,8 +2890,9 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
         .check_can_load(op.casualty_mass().total_mass_kg(), facts.volume_l)
     {
         // The owner's ruling (2026-11-05): a yielded hull the bay cannot take leaves its crew
-        // aboard as captives and itself on the site, the captor's.
-        if escorted_now(ctx.w, casualty) && !facts.friendly {
+        // aboard as captives and itself on the site, the captor's. Doc 47 unit CO.10: whether it
+        // came under escort or, unable to drive, in a wrecker's tow.
+        if yielded_hull(ctx.w, casualty) && !facts.friendly {
             return crew_aboard_hull_titled(ctx, rig, (&site, casualty, carrier), &why(&error), go);
         }
         return Err(CmdError::msg(
@@ -2918,8 +2948,8 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
 }
 
 /// **Crew aboard, hull titled** (doc 42b cut SU.7; the owner's ruling of 2026-11-05: "crew aboard,
-/// claim hull … it's the starter ship"): a yielded hull escorted to a carrier whose bay cannot take
-/// it. Its crew are captured into the bay room by CR.1's branch ([`load_crew`]); the hull, which a
+/// claim hull … it's the starter ship"): a yielded hull escorted (or, doc 47 unit CO.10, towed)
+/// to a carrier whose bay cannot take it. Its crew are captured into the bay room by CR.1's branch ([`load_crew`]); the hull, which a
 /// raid's seed makes with no title, is titled to the captor under the registry issuer as salvage of
 /// the unowned — doc 41's RS.6c-1 rule for an ownerless wreck — so the captor may retrieve it later
 /// with a bigger carrier or post `+salvage/retrieve`; and the escort lets it go. A hull already

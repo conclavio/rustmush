@@ -2574,6 +2574,8 @@ fn m3_every_shipped_chassis_binds_its_core() {
         // Doc 41 cut RS.6a: Tycho's crawler and lifter, no core (Class 0).
         (content::TYCHO_CRAWLER, None),
         (content::TYCHO_LIFTER, None),
+        // Doc 47 unit CO.10: the wrecker, no core (Class 0, as the tender).
+        (content::TV_WRECKER, None),
     ];
     assert_eq!(fielded.specs.len(), expected.len(), "every fielded chassis");
     for (entry, fitted) in expected {

@@ -255,7 +255,9 @@ the site has settled:
   it admits the pair coupled, at the tow's rate. The tow counts the casualty
   laden: her hopper's ore, her hold's goods and the hulls in her bay. Any rig
   tows up to twice its own mass; the tender's recovery coupling tows three
-  times its mass.
+  times its mass. For a heavy casualty Occator leases the wrecker
+  (`+tv/lease wrecker`), a 12 t recovery rig whose coupling tows 36 t laden:
+  enough for a line tank, never for anything heavier.
 - **The tender.** Occator leases a support rig (`+tv/lease tender`) whose
   stores carry munitions, structural alloys and yard fittings. In its
   carrier's bay, `+tv/<n> stores load <qty> <good> go` takes goods from the
