@@ -407,6 +407,18 @@ pub(crate) fn gone_from_field(w: &World, unit: ObjId, character: ObjId) -> bool 
         || super::absent::homebound(w, unit)
 }
 
+/// **Whether a mind flies `unit` for `character`, gone from it**, in a running field and with
+/// the unit not lost (doc 47 unit CO.3, R-47-4): the one roster member a leader's `POSTURE`
+/// still reaches once the roster no longer counts the member available. The order goes to the
+/// unit's mind, which flies it under every absent-player limit (`crate::arena::absent`).
+/// Narrower than [`gone_from_field`]: a unit already taken out at its ramp is not flown.
+#[must_use]
+pub(crate) fn minded_for(w: &World, unit: ObjId, character: ObjId) -> bool {
+    away_of_pilot(w, unit, character).is_some_and(|away| away.handed)
+        && super::field_of_unit(w, unit).is_some()
+        && !lost(w, unit, character)
+}
+
 /// **Whether an order presses**: an `ENGAGE`, a `CONCENTRATE` or an `ADVANCE`, the orders that
 /// carry an attack forward (Q-45-13; a `CONCENTRATE` is an `ENGAGE` for this rule, doc 44 unit
 /// MW.14c). A `HOLD`, a `SCREEN`, a `SUPPORT`, a `WITHDRAW`, a mining run and a release do not,
