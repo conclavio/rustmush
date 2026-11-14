@@ -5,7 +5,7 @@
 //! Doc 46 CT.5: what both families' `records.rs` held word for word. The attempt is one type
 //! for both families, the state and the head are generic over the issuer, and the three
 //! `checked!` records stay each family's own (the binding has another shape in each; the
-//! macro takes no type parameter): [`binding_records`] and [`operation_records`] give them
+//! macro takes no type parameter): `binding_records!` and `operation_records!` give them
 //! one text, expanded in each family's file beside its own records.
 
 use super::super::records::{PublicationError, Record};

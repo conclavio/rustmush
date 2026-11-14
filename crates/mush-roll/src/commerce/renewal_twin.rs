@@ -4,7 +4,7 @@
 //! (`commerce::renewal`) and the House one (`commerce::house_renewal`). Their records, chain,
 //! history, roots, capacity, protocol, audit and writer were two copies of the same text.
 //! Everything they share is here, generic over the sealed [`Issuer`] and its crate-private
-//! rules ([`Rules`]); what an issuer alone decides (its binding's shape, its sale reader, the
+//! rules (`Rules`); what an issuer alone decides (its binding's shape, its sale reader, the
 //! accounts a renewal pairs, the House's buyer admission, which of the closed lists' entries
 //! are its own) is its implementation of those traits, in its family's `mod.rs`. Each family
 //! keeps its own reader (`reader.rs`, real logic) and its own `checked!` records, and its

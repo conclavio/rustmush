@@ -545,7 +545,6 @@ pub(crate) mod rating_roots;
 pub(crate) mod read;
 pub mod records;
 pub mod renewal;
-/// Doc 46 CT.5: the renewal owner written once for the personal and the House issuer.
 pub mod renewal_twin;
 pub mod rights;
 pub(crate) mod roots;

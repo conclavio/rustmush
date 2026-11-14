@@ -242,6 +242,7 @@ pub(crate) trait Rules:
     ) -> Result<(), PublicationError>;
     /// Whether a next generation already has the House's own economics row (the House) or
     /// nothing more (the personal issuer), after the paid term and the entitlement economics.
+    #[expect(clippy::ptr_arg, reason = "a state family's key is a `String`; `ActionTxn::get` takes `&K`")]
     fn next_present(
         txn: &mut ActionTxn<'_>,
         f: &CommerceFamilies,

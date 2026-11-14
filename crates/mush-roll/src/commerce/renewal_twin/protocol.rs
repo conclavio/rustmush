@@ -3,7 +3,7 @@
 //!
 //! Doc 46 CT.5: the generic owner names a transition by [`Step`]; each family keeps its own
 //! `Transition` (its callers and the market name it, and `id` answers the family's action),
-//! expanded from [`entry_points`] with the family's four forwarders.
+//! expanded from `entry_points!` with the family's four forwarders.
 use super::super::purchase::PurchaseParticipants;
 use super::Issuer;
 use mush_core::{
