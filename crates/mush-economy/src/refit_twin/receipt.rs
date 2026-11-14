@@ -294,7 +294,7 @@ fn require_transaction<M: Leg>(
 #[serde(deny_unknown_fields, bound = "")]
 pub struct ReceiptAudit<M: Leg> {
     #[serde(deserialize_with = "rows")]
-    histories: BTreeMap<CommitToken, PaymentHistory<M>>,
+    pub(super) histories: BTreeMap<CommitToken, PaymentHistory<M>>,
     complete: bool,
     invalid: bool,
     #[serde(skip)]

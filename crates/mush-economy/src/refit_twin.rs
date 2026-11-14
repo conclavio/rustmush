@@ -20,6 +20,8 @@ mod leg;
 pub(crate) mod money;
 pub(crate) mod plans;
 pub(crate) mod receipt;
+#[cfg(test)]
+pub(crate) mod tests;
 
 pub use leg::{Bay, Core, Leg, Policy, Subject, Supplier};
 

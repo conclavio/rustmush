@@ -40,10 +40,12 @@ pub struct Bay;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Core;
 
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for super::Bay {}
-    impl Sealed for super::Core {}
+// The seal: a public trait in a private module, implemented here for the two legs only.
+// (Named apart from `renewal_twin`'s `sealed`, whose census counts that module's lines.)
+mod members {
+    pub trait Member {}
+    impl Member for super::Bay {}
+    impl Member for super::Core {}
 }
 
 /// One accepted order's money terms. Each family keeps its own (`BaySubject`,
@@ -82,7 +84,7 @@ pub trait Supplier: Clone + Debug + Eq + Serialize + DeserializeOwned {
 /// ```compile_fail
 /// use mush_economy::refit_twin::Leg;
 /// ```
-pub trait Leg: sealed::Sealed + Copy + Debug + Default + Eq + Send + Sync + 'static {
+pub trait Leg: members::Member + Copy + Debug + Default + Eq + Send + Sync + 'static {
     /// The kernel's three paid actions, by id.
     const ACCEPT_ACTION: &'static str;
     const INSTALL_ACTION: &'static str;

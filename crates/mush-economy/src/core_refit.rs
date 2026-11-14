@@ -13,6 +13,8 @@ pub use receipt::{
 #[cfg(test)]
 mod ct0_snapshot;
 mod subject;
+#[cfg(test)]
+mod tests;
 pub use authority::CoreRefitConfig;
 pub use consent::{RefitOfferAttribution, RefitOrderAttribution, RefitOwnerAuthority};
 use mush_core::CommitToken;
