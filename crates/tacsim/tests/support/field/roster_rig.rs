@@ -54,6 +54,11 @@ pub(crate) enum Billet {
     Leader,
     /// A shipped crew member, by name (`content/crew/ceres.json`).
     Hired(&'static str),
+    /// **A shipped crew member in Occator's escort line tank** (doc 47 unit CO.5, R-47-6): the
+    /// slot's rig is leased `+tv/lease escort go`, an armed rig whose one console carries the
+    /// helm, the sensors and the fire channel, and the crew member is seated at it by
+    /// `+sortie/seat` like any hire.
+    HiredArmed(&'static str),
     /// **A second player**, by name (doc 45 unit AP.4a): a guest aboard the organiser's
     /// carrier, lent the slot's rig under the organiser's own operational loan, who boards its
     /// cab, takes its console and accepts the plan by their own commands. They come aboard
@@ -570,7 +575,7 @@ pub(crate) fn fly_to(
         .iter()
         .map(|billet| match billet {
             Billet::Leader | Billet::Member(_) => None,
-            Billet::Hired(name) => Some(npc_named(rig, name)),
+            Billet::Hired(name) | Billet::HiredArmed(name) => Some(npc_named(rig, name)),
         })
         .collect();
     let mut members: Vec<Option<ObjId>> = vec![None; plan.billets.len()];
@@ -586,7 +591,7 @@ pub(crate) fn fly_to(
     let (organiser, row, units) = if crewed {
         // Everything but the launch at Ceres, the organiser in a cab while the crew board.
         let (organiser, row) = prospector(rig, plan.who.0, plan.who.1, plan.who.2);
-        ashore(rig, organiser, &hired, slots, at_ceres);
+        ashore(rig, organiser, &hired, &plan.billets, at_ceres);
         load(
             rig,
             &row,
@@ -634,70 +639,13 @@ pub(crate) fn fly_to(
         warm(rig);
         (organiser, row, units)
     } else {
-        // (1) At Ceres: the crew hired, the rigs leased with their loans, the crew aboard.
-        let (organiser, row, units) = on_pad_with_at(rig, plan.who, at.site(), |rig, organiser| {
-            ashore(rig, organiser, &hired, slots, at_ceres);
-            for npc in hired.iter().flatten() {
-                let aboard = run(&mut rig.tw, organiser, &format!("+sortie/board #{}", npc.0));
-                assert!(aboard.contains("has come aboard"), "{aboard}");
-            }
-        });
-        assert_eq!(units.len(), slots, "one leased rig a slot");
-        // Doc 45 unit AP.4a: a second player comes aboard where the organiser stands, is lent
-        // their slot's rig, and boards its cab by their own commands.
-        let lock = rig
-            .tw
-            .world()
-            .get(organiser)
-            .and_then(|object| object.location)
-            .expect("the organiser is aboard");
-        for (index, billet) in plan.billets.iter().enumerate() {
-            let Billet::Member(name) = billet else {
-                continue;
-            };
-            let member = crate::driving_rig::pilot(rig, name, 7);
-            let _ = rig.tw.connect(member);
-            let loan = crew_loan(rig, organiser, units[index]);
-            let _ = commit(
-                rig,
-                organiser,
-                &format!(
-                    "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
-                    units[index].0, member.0
-                ),
-            );
-            teleport(&mut rig.tw, member, lock);
-            into_cab(rig, member, index + 1);
-            let focus = run(
-                &mut rig.tw,
-                member,
-                &format!("+focus #{}/pilot", units[index].0),
-            );
-            assert!(!focus.contains("Usage"), "{focus}");
-            members[index] = Some(member);
-        }
-        // (4) A player leader boards their own rig in the bay and takes its console.
-        let own = plan
-            .billets
-            .iter()
-            .position(|billet| *billet == Billet::Leader);
-        if let Some(index) = own {
-            into_cab(rig, organiser, index + 1);
-            let focus = run(
-                &mut rig.tw,
-                organiser,
-                &format!("+focus #{}/pilot", units[index].0),
-            );
-            assert!(!focus.contains("Usage"), "{focus}");
-        }
-        planned(
+        let (organiser, row, units) = on_pad_planned(
             rig,
-            organiser,
-            ObjId(row.hull),
-            &units,
-            (plan, work),
-            (&hired, &members),
-            own,
+            at,
+            plan,
+            work,
+            (&hired[..], &mut members[..]),
+            at_ceres,
         );
         // (6) Each NPC seated.
         for (index, npc) in hired.iter().enumerate() {
@@ -782,13 +730,131 @@ pub(crate) fn fly_to(
     flown
 }
 
+/// **[`fly_to`]'s roster of one hired NPC, up to its seat**: steps 1 to 5 of this module's head,
+/// the hull on `at`'s pad and the plan activated, nobody seated yet. `members` is filled with
+/// each second player's character.
+fn on_pad_planned(
+    rig: &mut Rig,
+    at: &Ground,
+    plan: &Plan,
+    work: Option<(u16, u16)>,
+    (hired, members): (&[Option<ObjId>], &mut [Option<ObjId>]),
+    at_ceres: impl FnOnce(&mut Rig, ObjId),
+) -> (ObjId, HullRow, Vec<ObjId>) {
+    let slots = plan.billets.len();
+    // (1) At Ceres: the crew hired, the rigs leased with their loans, the crew aboard.
+    let (organiser, row, units) = on_pad_with_at(rig, plan.who, at.site(), |rig, organiser| {
+        ashore(rig, organiser, hired, &plan.billets, at_ceres);
+        for npc in hired.iter().flatten() {
+            let aboard = run(&mut rig.tw, organiser, &format!("+sortie/board #{}", npc.0));
+            assert!(aboard.contains("has come aboard"), "{aboard}");
+        }
+    });
+    assert_eq!(units.len(), slots, "one leased rig a slot");
+    // Doc 45 unit AP.4a: a second player comes aboard where the organiser stands, is lent
+    // their slot's rig, and boards its cab by their own commands.
+    let lock = rig
+        .tw
+        .world()
+        .get(organiser)
+        .and_then(|object| object.location)
+        .expect("the organiser is aboard");
+    for (index, billet) in plan.billets.iter().enumerate() {
+        let Billet::Member(name) = billet else {
+            continue;
+        };
+        let member = crate::driving_rig::pilot(rig, name, 7);
+        let _ = rig.tw.connect(member);
+        let loan = crew_loan(rig, organiser, units[index]);
+        let _ = commit(
+            rig,
+            organiser,
+            &format!(
+                "@unitgrant/issue #{}=#{} operate_crew parent={loan}",
+                units[index].0, member.0
+            ),
+        );
+        teleport(&mut rig.tw, member, lock);
+        into_cab(rig, member, index + 1);
+        let focus = run(
+            &mut rig.tw,
+            member,
+            &format!("+focus #{}/pilot", units[index].0),
+        );
+        assert!(!focus.contains("Usage"), "{focus}");
+        members[index] = Some(member);
+    }
+    // (4) A player leader boards their own rig in the bay and takes its console.
+    let own = plan
+        .billets
+        .iter()
+        .position(|billet| *billet == Billet::Leader);
+    if let Some(index) = own {
+        into_cab(rig, organiser, index + 1);
+        let focus = run(
+            &mut rig.tw,
+            organiser,
+            &format!("+focus #{}/pilot", units[index].0),
+        );
+        assert!(!focus.contains("Usage"), "{focus}");
+    }
+    planned(
+        rig,
+        organiser,
+        ObjId(row.hull),
+        &units,
+        (plan, work),
+        (hired, &*members),
+        own,
+    );
+    (organiser, row, units)
+}
+
+/// **A roster of one hired NPC on `at`'s pad, its plan activated, nobody seated** (doc 47 unit
+/// CO.5): [`fly`]'s steps 1 to 5, for a story that types `+sortie/seat` itself.
+pub(crate) struct Staged {
+    /// The organiser.
+    pub(crate) organiser: ObjId,
+    /// The unit of each slot.
+    pub(crate) units: Vec<ObjId>,
+    /// The hired NPC of each slot, where one flies it.
+    pub(crate) hired: Vec<Option<ObjId>>,
+}
+
+/// [`Staged`]: `plan` (a leader and one hired NPC) on `at`'s pad.
+pub(crate) fn staged(rig: &mut Rig, at: &Ground, plan: &Plan) -> Staged {
+    let hired: Vec<Option<ObjId>> = plan
+        .billets
+        .iter()
+        .map(|billet| match billet {
+            Billet::Leader | Billet::Member(_) => None,
+            Billet::Hired(name) | Billet::HiredArmed(name) => Some(npc_named(rig, name)),
+        })
+        .collect();
+    assert_eq!(hired.iter().flatten().count(), 1, "one hired NPC");
+    let mut members = vec![None; plan.billets.len()];
+    let (organiser, _, units) = on_pad_planned(
+        rig,
+        at,
+        plan,
+        None,
+        (&hired[..], &mut members[..]),
+        |_, _| {},
+    );
+    Staged {
+        organiser,
+        units,
+        hired,
+    }
+}
+
 /// **The organiser's business ashore at Ceres**: each crew member hired in the Slack Line, a
 /// prospector leased a slot with its operational loans, and the story's own errand.
 fn ashore(
     rig: &mut Rig,
     organiser: ObjId,
     hired: &[Option<ObjId>],
-    slots: usize,
+    billets: &[Billet],
     at_ceres: impl FnOnce(&mut Rig, ObjId),
 ) {
     let _ = rig.tw.connect(organiser);
@@ -796,8 +862,34 @@ fn ashore(
         hire(rig, organiser, *npc);
     }
     at_counter(rig, organiser);
-    for n in 1..=slots {
-        let leased = run(&mut rig.tw, organiser, "+tv/lease go");
+    // An escort's lease (2,500cr and a 15,000cr deposit) beside a prospector's is more than a new
+    // First Captain holds: the treasury pays the difference in (a staff hand, the story's stand-in
+    // for a captain who has earned it).
+    if billets
+        .iter()
+        .any(|billet| matches!(billet, Billet::HiredArmed(_)))
+    {
+        let treasury = crate::driving_rig::port_map(&rig.tw, "ceres_port")
+            .treasury
+            .expect("a treasury");
+        let account = tacsim::port::credit::own_account(rig.tw.world(), organiser)
+            .map(|account| account.id.0)
+            .expect("the organiser's account");
+        let minted = run(
+            &mut rig.tw,
+            mush_core::GOD,
+            &format!("@econ/mint {treasury}={account} 2000000"),
+        );
+        assert!(!minted.contains("Usage"), "{minted}");
+    }
+    for (index, billet) in billets.iter().enumerate() {
+        let n = index + 1;
+        let lease = if matches!(billet, Billet::HiredArmed(_)) {
+            "+tv/lease escort go"
+        } else {
+            "+tv/lease go"
+        };
+        let leased = run(&mut rig.tw, organiser, lease);
         assert!(
             leased.contains("Occator Water & Propellant leases you "),
             "rig {n} is leased: {leased}"
@@ -850,7 +942,7 @@ fn embark_two(rig: &mut Rig, organiser: ObjId, hired: &[Option<ObjId>]) {
 }
 
 /// **Seat slot `n`'s NPC at its rig's console** (`+sortie/seat`), its helm hand-off applied.
-fn seat(rig: &mut Rig, organiser: ObjId, n: usize) {
+pub(crate) fn seat(rig: &mut Rig, organiser: ObjId, n: usize) {
     let seated = commit(rig, organiser, &format!("+sortie/seat 1:1={n}"));
     assert!(seated.contains("console"), "{seated}");
     handoff(rig);
@@ -890,7 +982,7 @@ fn planned(
             "slot": index + 1,
             "unit": units[index].0,
             "controller": {
-                "kind": if matches!(billet, Billet::Hired(_)) { "npc" } else { "player" },
+                "kind": if matches!(billet, Billet::Hired(_) | Billet::HiredArmed(_)) { "npc" } else { "player" },
                 "character": hired[index].or(members[index]).unwrap_or(organiser).0,
             },
             "role": "scout",

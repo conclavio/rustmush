@@ -80,6 +80,49 @@ pub(crate) fn is_npc(w: &World, actor: ObjId) -> bool {
         .is_some_and(|object| object.kind == ObjKind::Npc)
 }
 
+/// **Whether `operator` may fire from `unit`** (doc 47 unit CO.5, R-47-6): a hired NPC seated at a
+/// console that carries the fire channel fires only while it holds that channel's K6 lease on
+/// the unit, which `+sortie/seat` asks for through Sim's hand-off with the helm and the sensors.
+/// A seat at a console with no fire channel (a prospector's) is not this gate's: nothing it
+/// carries fires.
+pub(crate) fn may_fire(w: &World, unit: ObjId, operator: ObjId) -> bool {
+    let Some(fire) = mush_core::ChannelId::new("fire") else {
+        return false;
+    };
+    let Some(state) = w.module_state::<mush_sim::data::SpatialState>() else {
+        return false;
+    };
+    let at_a_firing_console = state.assignments.get(&unit).is_some_and(|seats| {
+        seats.seats.iter().any(|(station, seat)| {
+            seat.actor == operator
+                && state
+                    .stations
+                    .get(&unit)
+                    .and_then(|stations| stations.stations.get(station))
+                    .is_some_and(|spec| spec.channels.contains(&fire))
+        })
+    });
+    !at_a_firing_console
+        || mush_sim::channel_lease_holder(w, unit, &fire)
+            == Some(mush_core::PrincipalId::Object { id: operator })
+}
+
+/// **Offer one NPC unit's order to the field's kernel**, its fire held when its operator may not
+/// fire ([`may_fire`]). Every order this host offers for a hired NPC goes through here.
+fn offer(
+    ctx: &mut Ctx<'_>,
+    task: MatchId,
+    (control, mut command): (DetachmentControl, DetachmentCommand),
+    operator: ObjId,
+) -> bool {
+    if !may_fire(ctx.w, control.unit, operator)
+        && let Some(directive) = command.directive.as_mut()
+    {
+        directive.constraints.hold_fire = true;
+    }
+    crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+}
+
 /// The ordinal of the field running on `site`.
 fn ordinal(w: &World, site: &CanonicalId) -> Option<u32> {
     w.module_state::<super::FieldBook>()?
@@ -542,7 +585,7 @@ pub(crate) fn stand(
         }),
         expires_at_ms: None,
     };
-    if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+    if offer(ctx, task, (control, command), operator)
         && let Some(book) = ctx.w.module_state_mut::<Offered>()
     {
         book.0.insert(unit, (key, now));
@@ -837,7 +880,7 @@ pub(crate) fn step(
             expires_at_ms: arena_deadline(ctx.w, task, order.expires_at_ms),
         };
         let now = ctx.w.now();
-        if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+        if offer(ctx, task, (control, command), operator)
             && let Some(book) = ctx.w.module_state_mut::<Offered>()
         {
             book.0.insert(unit, (key, now));
@@ -1133,7 +1176,7 @@ pub(crate) fn concentrate(
                 earlier.and_then(|earlier| earlier.expires_at_ms),
             ),
         };
-        if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+        if offer(ctx, task, (control, command), operator)
             && let Some(book) = ctx.w.module_state_mut::<Offered>()
         {
             book.0.insert(unit, (key, now));
@@ -1172,7 +1215,7 @@ pub(crate) fn concentrate(
                         }),
                         expires_at_ms: None,
                     };
-                    if crate::arena_bridge::offer_field_detachment(ctx, task, control, command)
+                    if offer(ctx, task, (control, command), operator)
                         && let Some(book) = ctx.w.module_state_mut::<Offered>()
                     {
                         book.0.insert(unit, (key, now));
