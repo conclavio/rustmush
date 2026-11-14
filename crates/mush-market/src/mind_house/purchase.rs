@@ -1,32 +1,19 @@
 //! Separate permanent paired identities; no publication constructor is public.
 use super::codec::{self, Row};
 use super::records::HouseQuoteV1;
+use mush_core::checked;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::managed_purchase::FundingReceipt;
 use mush_economy::{ContractId, HoldId, TransactionId};
 use mush_roll::commerce::house_purchase::HouseAllocationV1;
 use mush_roll::commerce::purchase::{PurchaseParticipants, PurchasePhase};
 use mush_roll::commerce::{LicenceId, TermGeneration};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 fn invalid() -> String {
     "permanent house records disagree".into()
 }
-macro_rules! data {
-    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$(pub(super) $field:$ty),*}
-        #[derive(Deserialize)] #[serde(deny_unknown_fields)]
-        struct $wire {$($(#[$attr])* $field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let row=$wire::deserialize(d)?; let value=Self {$($field:row.$field),*};
-                value.validate().map_err(serde::de::Error::custom)?; Ok(value)
-            }
-        }
-    };
-}
-data!(HousePurchaseV1,PurchaseWire,{
+checked!(pub struct HousePurchaseV1, PurchaseWire, pub(super) fields, {
     format:u16,operation:CommitToken,effect:DefinitionRef,participants:PurchaseParticipants,
     quote:HouseQuoteV1,quote_digest:DefinitionDigest,licence:LicenceId,term:TermGeneration,
     funding:FundingReceipt,phase:PurchasePhase,updated_by:CommitToken,
@@ -104,7 +91,7 @@ pub(super) enum Outcome {
     Granted {},
     Refunded {},
 }
-data!(HouseReceiptV1,ReceiptWire,{
+checked!(pub struct HouseReceiptV1, ReceiptWire, pub(super) fields, attrs on wire, {
     format:u16,operation:CommitToken,commit:CommitToken,outcome:Outcome,
     contract:ContractId,hold:HoldId,transaction:TransactionId,journal_seq:u64,
     licence:LicenceId,term:TermGeneration,quote_digest:DefinitionDigest,product_digest:DefinitionDigest,

@@ -1,10 +1,11 @@
 //! Source-free renewal consent data. Decoding conveys no commercial authority.
 
 use crate::Holder;
+use mush_core::checked;
 use mush_core::participant::ParticipantError;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, Flags, ObjId, ObjKind};
 use mush_org::{OrgId, OrgScopeId, OrgStatus, OrgStore, PrincipalId, ScopeStatus};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{any::TypeId, collections::BTreeMap};
 
 use super::{MAX_RENEWAL_OFFER_IC_SECONDS, refused};
@@ -13,24 +14,6 @@ use crate::managed_purchase::PurchasePayout;
 use crate::module::EconomyStore;
 use crate::record::{AccountStatus, AssetLifecycle, InstrumentStatus};
 use crate::{AccountId, Amount, InstrumentId};
-
-macro_rules! record {
-    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-        pub struct $name { $(pub $field:$ty),* }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire { $($(#[$attr])* $field:$ty),* }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let w=$wire::deserialize(d)?;
-                let value=Self {$($field:w.$field),*};
-                value.validate().map_err(serde::de::Error::custom)?;
-                Ok(value)
-            }
-        }
-    }
-}
 
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -63,7 +46,7 @@ fn venue_cut<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<GrossRecipientCut>, D::Error> {
     Option::<GrossWire>::deserialize(d).map(|v| v.map(Into::into))
 }
-record!(RenewalBasisV1,BasisWire,{
+checked!(pub struct RenewalBasisV1, BasisWire, pub fields, {
     format:u16, licence:u64, predecessor_generation:u64, next_generation:u64,
     predecessor_operation:CommitToken, prior_quote:CommitToken,
     prior_quote_digest:DefinitionDigest, product_digest:DefinitionDigest,
@@ -83,7 +66,7 @@ impl RenewalBasisV1 {
     }
 }
 
-record!(RenewalOfferTermsV1,TermsWire,{
+checked!(pub struct RenewalOfferTermsV1, TermsWire, pub fields, attrs on wire, {
     format:u16, buyer:Holder, organization:OrgId, scope:OrgScopeId,
     charter:ObjId, title_revision:u64, payer:AccountId, instrument:InstrumentId,
     price:Amount,
@@ -250,7 +233,7 @@ impl RenewalOfferTermsV1 {
     }
 }
 
-record!(RenewalOffer,OfferWire,{ format:u16, basis:RenewalBasisV1, terms:RenewalOfferTermsV1 });
+checked!(pub struct RenewalOffer, OfferWire, pub fields, { format:u16, basis:RenewalBasisV1, terms:RenewalOfferTermsV1 });
 impl RenewalOffer {
     /// Plain data only. Public byte ingress must use this bounded, typed-first
     /// decoder; Deserialize exists for the already bounded owner document.

@@ -549,7 +549,196 @@ and provider files without the first item):
 
 ## CT.1
 
-Not built.
+One wire macro. Built 2026-11-13 on main `2b1f5aa3b`. No snapshot file moved.
+
+**Built.**
+
+- **`mush_core::checked!`**, in `crates/mush-core/src/checked_wire.rs` (a private module that
+  holds the macro, its documentation and its tests; `#[macro_export]` puts the macro at the
+  crate's root). It builds what each copy built: the domain struct, deriving `Clone`, `Debug`,
+  `PartialEq`, `Eq` and `Serialize`; a private wire struct with the same fields in the same
+  order, deriving `Deserialize` with `deny_unknown_fields`; and a `Deserialize` for the domain
+  struct that decodes the wire struct, moves the fields across and calls the domain struct's
+  own `validate`, whose text is the refusal.
+- **The twenty copies are deleted** (`record!`, `closed!`, `checked!`, `strict!`, `data!`), and
+  their 93 calls call the one macro. A call's braces, the fields, are not touched: in the diff a
+  call is its head line and nothing else. Each of the twenty files gains
+  `use mush_core::checked;`, and eight lose a `serde` name they imported only for their copy
+  (the expansion names `::serde` itself).
+- **The head carries what the copies differed in**, so nothing is a default:
+
+  `checked!(VIS struct Name, NameWire, FIELDS fields[, attrs on wire | attrs on both], { … })`
+
+  - `VIS` is the domain struct's visibility: `pub` in nineteen files, `pub(crate)` in the
+    Roll's `charter_pending/records.rs`. The macro takes any visibility and widens none.
+  - `FIELDS` is `pub`, `pub(crate)`, `pub(super)` (any `pub(…)`) or `private`, for every field
+    of the domain struct. Three arms of the macro read it and hand it on as one group.
+  - Where a field's attributes land is three more arms. With no clause the fields take no
+    attribute, and one does not compile. `attrs on wire` puts them on the wire struct only.
+    `attrs on both` puts them on both. Each arm writes a field as
+    `[visibility] [the domain struct's attributes] [the wire struct's attributes] name: type`,
+    and one last arm builds the two structs and the decode from that.
+  - The clause is on a call only where the call has an attribute: eleven calls of the 93
+    (nine `attrs on wire`, two `attrs on both`). A record with no attribute says nothing, and
+    whoever gives it one must say where it lands.
+
+  What each file's calls say:
+
+  | Files | Was | `VIS struct` | `FIELDS fields` | Calls | With an attribute |
+  |---|---|---|---|---|---|
+  | economy `managed_renewal/subject.rs`, `managed_house_renewal/subject.rs`, `managed_coverage/subject.rs` | `record!` | `pub` | `pub` | 3, 3, 4 | 1, 1, 1, `attrs on wire` |
+  | economy `managed_charter_transfer/subject.rs`, `managed_paid_resale/subject.rs` | `closed!` | `pub` | `pub` | 4, 7 | none |
+  | roll `renewal/records.rs`, `house_renewal/records.rs` | `checked!` | `pub` | `pub(crate)` | 3, 3 | 1, 1, `attrs on both` |
+  | roll `paid_resale/records.rs` | `checked!` | `pub` | `pub(crate)` | 6 | none |
+  | roll `charter_pending/records.rs` | `closed!` | `pub(crate)` | `pub(crate)` | 5 | none |
+  | roll `conduct/records.rs` | `strict!` | `pub` | `pub(super)` | 6 | 1, `attrs on wire` |
+  | roll `entitlement/economics.rs` | `record!` | `pub` | `pub(crate)` | 5 | none |
+  | roll `rating.rs` | `record!` | `pub` | `private` | 22 | 2, `attrs on wire` |
+  | roll `house_purchase/economics.rs` | `data!` | `pub` | `pub(crate)` | 3 | none |
+  | market `mind_renewal/records.rs`, `mind_house_renewal/records.rs`, `mind_paid_resale/records.rs` | `data!` | `pub` | `pub(super)` | 2, 2, 3 | none |
+  | market `mind_entitlement/records.rs`, `mind_entitlement/purchase.rs`, `mind_house/purchase.rs` | `data!` | `pub` | `pub(super)` | 4, 2, 2 | 1, 1, 1, `attrs on wire` |
+  | market `mind_house/records.rs` | `data!` | `pub` | `pub(super)` | 4 | none |
+
+  The market's `mind_house/records.rs` copy placed attributes on the wire struct and no call of
+  it ever had one, so its four calls take the plain head.
+
+**Tests.**
+
+- **The snapshot.** The 31 `ct0_` tests of the four crates pass on Windows and on Linux, and the
+  three of `mush-industry` and `tacsim` on Linux; `git diff --stat origin/main -- '*.snap'` is
+  empty. No `ct0_` test and no test file of the three crates was edited.
+- **The crates' own tests**, on Linux (conclav.dev), `cargo test -p <crate> --lib`: `mush-core`
+  836 (829 on main and the macro's seven), `mush-economy` 279, `mush-roll` 367, `mush-market`
+  136, the same counts as main, all passing.
+- **The macro's own**, in `checked_wire.rs`: seven unit tests and two doc tests. They pin what
+  no record that exists today can: that an attribute under `attrs on wire` never reaches the
+  encode, that one under `attrs on both` does, that the plain head refuses an attribute (a
+  `compile_fail` doc test beside the same call compiling under `attrs on wire`), each field
+  visibility, the encode's order, and the two refusals with `serde`'s own text.
+- **The guards.** `cargo clippy --all-targets -- -D warnings` over the four crates, CI's M7
+  memory-size pass, `cargo doc --document-private-items` with warnings denied, and
+  `cargo test -p mush-contract-tests` (35, 80 and 84 tests) pass with nothing adjusted: the
+  census and the restriction lints count no macro definition and no file this unit moved.
+
+**The mutations.** Each is one change to `checked!`, made alone on a throwaway clone on
+conclav.dev (so the worktree was never edited), with `cargo test --lib` over the four crates and
+`mush-core`'s doc tests for the macro, and the file put back.
+
+| # | The mutation | Tests that failed | `ct0_` among them | The others |
+|---|---|---|---|---|
+| 1 | the wire struct loses `deny_unknown_fields` | 34 | 18: every codec pin and renewal snapshot of the three crates (5 economy, 8 roll, 5 market) | 15 existing strict-wire tests (`…_reject_duplicates_unknown_null_missing…`, `new_wire_is_strict…` and kin); the macro's `an_unknown_field_is_refused`; its doc test |
+| 2 | the decode does not call `validate` | 36 | the same 18 | 17 existing tests; the macro's `a_failed_validation_is_refused_with_its_own_text`; its doc test |
+| 3a | `attrs on wire` puts the attributes on the domain struct only | 9 | 3: economy's `ct0_wire_coverage` and its two renewal snapshots | 4 existing (`rating`'s `missing_duplicate_unknown_and_nullable_fields_are_rejected`, economy's `new_wire_is_strict…`, two of the market's `mind_entitlement`); two of the macro's |
+| 3b | `attrs on wire` puts them on both structs | 1 | none | the macro's `attributes_on_the_wire_shape_the_decode_and_never_the_encode` only |
+| 3c | `attrs on both` puts them on the wire struct only | 38 | 4: the Roll's and the market's two renewal snapshots each | 33 existing renewal tests; the macro's `attributes_on_both_shape_the_decode_and_the_encode` |
+| 3d | `attrs on both` puts them on the domain struct only | 3 | none | the Roll's `holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence`, personal and House; the macro's |
+| 3e | the plain head takes attributes (and drops them) | the `compile_fail` doc test | none | none |
+| 4a | the domain struct lists the first field last | 24 | 21 | three of the macro's |
+| 4b | the wire struct lists the first field last | 19 | 18 (the refusal lines: `serde` lists the expected fields in the wire struct's order) | the macro's `an_unknown_field_is_refused` |
+
+Every mutation fails a test. What the table says about CT.0's pin:
+
+- **3b and 3e fail only the macro's own tests**, and no test of the three crates could fail on
+  them: no record today has an attribute that shapes an encode under `attrs on wire`, and none
+  has an attribute under the plain head, so those mutations change no byte and no refusal of a
+  record that exists. They would change the first record that gained one. The macro's tests are
+  the pin, in a file of this unit's own.
+- **3d fails no `ct0_` test.** With the attribute off the wire struct, the Roll's
+  `RenewalBindingV1` accepts an explicit `null` for `holder_basis`. The codec pin holds a
+  fixture with the field and one without it, not one with a null; the existing `holder` tests
+  hold that.
+
+**Found on the way: three decode-only attributes that no unit test of their crate pins.**
+Mutation 3a was caught unevenly, so each of the eleven calls that has an attribute was mutated
+by itself (its attributes removed) and its crate's `cargo test --lib` run:
+
+| Record | Attribute | What failed |
+|---|---|---|
+| economy `CoverageBasisV1` | `required_option` | `ct0_wire_coverage` |
+| economy `RenewalOfferTermsV1`, personal | `gross_cut`, `venue_cut`, `parent_cuts` | `ct0_renewal_personal_snapshot`, `new_wire_is_strict…` |
+| economy `RenewalOfferTermsV1`, House | `gross_cut`, `venue_cut` | `ct0_renewal_house_snapshot` |
+| roll `RenewalBindingV1`, personal and House | `default`, `skip_serializing_if`, `present_holder` | the renewal snapshot and the `holder` test, each |
+| roll `CaseResult` | `required_option` | `missing_duplicate_unknown_and_nullable_fields_are_rejected` |
+| market `EntitlementSubjectV1` | `codec::required` | `required_nulls_unknowns_duplicates_and_bounded_arrays_refuse` |
+| market `EntitlementReceiptV1` | `codec::required` | `terminal_receipt_requires_exact_phase_stamp_and_grant_digest` |
+| **market `HouseReceiptV1`** (`mind_house/purchase.rs`) | `codec::required` | **nothing** |
+| **roll `ConductResult`** (`conduct/records.rs`) | `required`, twice | **nothing** |
+| **roll `MeterSummary`** (`rating.rs`) | `required_option` | **nothing** |
+
+Each of the three attributes makes a decode refuse a record whose key is left out, where
+`serde` would otherwise read a missing `Option` as `None`. Nothing in the record's own crate
+fails if the attribute goes (the market's integration tests and `tacsim` were not run for
+this). CT.1 did not move them: the macro puts them where the copies did, and mutation 3a
+proves the macro's side. CT.0's codec pin records two refusals, an unknown field and a failed
+validation, and not a key left out. **Owed, not built here:** a refusal line for a left-out key
+on those three records. It belongs in the Roll's and the market's test modules, which are
+CT.2's while it runs, or in the codec pin itself, which would add lines to committed snapshot
+files.
+
+**Divergences.**
+
+- **The mutations were run on a clone, not by a WIP commit and a revert.** The work was
+  committed first; each mutated file was written beside the worktree, copied over the clone's
+  file on conclav.dev and copied back, as CT.0 did. The worktree's files were never mutated.
+- **The clause is a call's, not a file's.** A copy placed attributes for its whole file. The
+  one macro asks only the calls that have an attribute, which changes no expansion.
+- **A test module was added**, in `mush-core`, for the macro. It is not a test file of the
+  three crates.
+- **"Three placements" are two that can differ and one that refuses.** For a call with no
+  attribute the three arms expand to the same tokens.
+
+**Not built.**
+
+- **Generic records.** `checked!` takes no type parameter, as no copy did. A twin record that
+  is generic over its issuer needs a new arm, and `serde`'s derive then adds its own bounds;
+  that is for the unit that first wants one.
+- The hand-written pairs (`FundingWire`, `TerminalWire`, the parents list, `GrossWire` and
+  kin) and the other macros (`row!`, `digest_id!`, `identity!`, `int_id!`, `numeric_id!`,
+  `put_record!`, the `check!` family) are as they were.
+- The pin owed above, and everything CT.0 lists as owed.
+
+**For CT.3 and the twin units.**
+
+- Inside `mush-core` the macro is `crate::checked!` (or `use crate::checked;`). The kernel has
+  no call of it today: no file of `action_state/terminal_capacity/` defined a copy.
+- **A wire struct's name is part of a refusal** (`invalid type: …, expected struct
+  BindingWire`), and no snapshot line holds that text. The two twins of every family already
+  give their wire structs the same names, so a merged twin keeps them.
+- The personal and the House file of each renewal family have the same head on every call
+  (the same visibilities, the same clause), so merging them changes no head.
+- A field added to a record goes where it should sit in the stored bytes, and an attribute
+  that must shape the encode needs `attrs on both`: under `attrs on wire` a
+  `skip_serializing_if` compiles and does nothing.
+
+**The yardstick, before and after.** Before is main `2b1f5aa3b`, which is CT.0's "after" to the
+line.
+
+| Root | Before: cloned of lines | Rate | After: cloned of lines | Rate |
+|---|---|---|---|---|
+| `crates/mush-market/src` | 10,698 of 45,375 | 23.6% | 10,588 of 45,277 | 23.4% |
+| `crates/mush-economy/src` | 22,237 of 101,401 | 21.9% | 22,181 of 101,321 | 21.9% |
+| `crates/mush-roll/src/commerce` | 16,942 of 91,868 | 18.4% | 16,924 of 91,757 | 18.4% |
+| `crates/mush-core/src/action_state/terminal_capacity` | 11,605 of 40,352 | 28.8% | 11,605 of 40,352 | 28.8% |
+
+289 lines left the three crates (the twenty definitions, less twenty imports) and 184 cloned
+lines with them. The macro was small beside the twins; what this unit buys is one place to
+read and to change, not the rate.
+
+**Check time** (§7.4), `cargo check -p <crate>` for the library, the crate's root file touched
+and every dependency already checked, in milliseconds, the median of the runs:
+
+| Crate | conclav.dev before | after | Windows before | after |
+|---|---|---|---|---|
+| `mush-core` | 8,642 | 8,403 | 3,068 | 3,017 |
+| `mush-economy` | 8,532 | 8,370 | 3,106 | 2,856 |
+| `mush-roll` | 8,239 | 8,059 | 2,927 | 2,820 |
+| `mush-market` | 3,595 | 3,422 | 1,404 | 1,471 |
+
+conclav.dev is five runs with `CARGO_INCREMENTAL=0` and six jobs, so each is the whole crate
+checked again; the box was busy (a load of 15 to 23) and the runs of one crate spread by up to
+a second. Windows is three runs at `-j 2` with incremental compilation on, the figure CT.0's
+table holds. Neither moved outside its own spread: a call now expands three times (the head,
+the placement, the build) where it expanded once, and 93 calls of that do not show.
 
 ## CT.2
 

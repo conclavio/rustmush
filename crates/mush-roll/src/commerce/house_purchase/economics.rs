@@ -4,9 +4,10 @@ use super::HouseProtocol;
 use crate::commerce::paid::{PaidForm, PaidTerms};
 use crate::commerce::records::{PublicationError, Record, RevisionPolicy};
 use crate::commerce::{LicenceId, MAX_GRACE_SECONDS, MAX_TERM_SECONDS, TermGeneration};
+use mush_core::checked;
 use mush_core::{CommitToken, DefinitionDigest, DefinitionRef};
 use mush_economy::{Amount, InstrumentId};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 pub const MAX_ECONOMICS_BYTES: usize = 8192;
 fn invalid() -> PublicationError {
     PublicationError::Invalid
@@ -33,21 +34,7 @@ fn terms(
     }
     Ok(())
 }
-macro_rules! data {
-    ($name:ident,$wire:ident,{$($field:ident:$ty:ty),*$(,)?})=>{
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$(pub(crate) $field:$ty),*}
-        #[derive(Deserialize)] #[serde(deny_unknown_fields)]
-        struct $wire {$($field:$ty),*}
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let r=$wire::deserialize(d)?;let v=Self {$($field:r.$field),*};
-                v.validate().map_err(serde::de::Error::custom)?;Ok(v)
-            }
-        }
-    };
-}
-data!(HouseRenewalTemplateV1,RenewalWire,{
+checked!(pub struct HouseRenewalTemplateV1, RenewalWire, pub(crate) fields, {
     format:u16,instrument:InstrumentId,price:Amount,term_seconds:i64,grace_seconds:i64,
     terms:PaidTerms,revision:RevisionPolicy,policy:DefinitionRef,
 });
@@ -157,7 +144,7 @@ impl HouseRenewalTemplateV1 {
 pub enum HouseDownstreamV1 {
     Sealed {},
 }
-data!(HouseGrantEconomicsV1,GrantWire,{
+checked!(pub struct HouseGrantEconomicsV1, GrantWire, pub(crate) fields, {
     format:u16,downstream:HouseDownstreamV1,renewal:HouseRenewalTemplateV1,
 });
 impl HouseGrantEconomicsV1 {
@@ -195,7 +182,7 @@ impl HouseGrantEconomicsV1 {
         &self.renewal
     }
 }
-data!(HouseTermEconomicsV1,TermWire,{
+checked!(pub struct HouseTermEconomicsV1, TermWire, pub(crate) fields, {
     format:u16,licence:LicenceId,generation:TermGeneration,operation:CommitToken,
     product_digest:DefinitionDigest,grant:HouseGrantEconomicsV1,
 });

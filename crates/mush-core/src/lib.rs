@@ -59,6 +59,7 @@ pub mod action_window;
 pub mod attr;
 pub mod authoritative;
 pub mod behavior;
+mod checked_wire;
 pub mod clock;
 pub mod clock_provider;
 pub mod cmd;

@@ -2,26 +2,10 @@
 //! claim, title or Registry authority. The actual paired owners must prove it.
 use super::*;
 use crate::{AccountId, Amount, InstrumentId};
+use mush_core::checked;
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, ObjId};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-macro_rules! closed {
-    ($name:ident, $wire:ident, { $($field:ident : $ty:ty),* $(,)? }) => {
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-        pub struct $name { $(pub $field: $ty),* }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire { $($field: $ty),* }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                let w = $wire::deserialize(d)?;
-                let row = Self { $($field: w.$field),* };
-                row.validate().map_err(serde::de::Error::custom)?;
-                Ok(row)
-            }
-        }
-    }
-}
 fn world(stamp: &ClockStamp) -> Result<(), ParticipantError> {
     if !matches!(stamp.clock, ClockRef::WorldIc { generation } if generation != 0) {
         return Err(refused());
@@ -35,7 +19,7 @@ fn bytes<T: Serialize>(row: &T) -> Result<Vec<u8>, ParticipantError> {
     )
     .map_err(|_| refused())
 }
-closed!(CharterOwnershipBasisV1, OwnershipWire, {
+checked!(pub struct CharterOwnershipBasisV1, OwnershipWire, pub fields, {
     generation: u64, operation: CommitToken, digest: DefinitionDigest,
 });
 impl CharterOwnershipBasisV1 {
@@ -47,7 +31,7 @@ impl CharterOwnershipBasisV1 {
         Ok(())
     }
 }
-closed!(CharterTermBasisV1, TermWire, {
+checked!(pub struct CharterTermBasisV1, TermWire, pub fields, {
     licence: u64, generation: u64, operation: CommitToken,
     digest: DefinitionDigest, term_end: i64, grace_end: i64,
 });
@@ -71,7 +55,7 @@ impl CharterTermBasisV1 {
         Ok(())
     }
 }
-closed!(CharterPendingTermsV1, TermsWire, {
+checked!(pub struct CharterPendingTermsV1, TermsWire, pub fields, {
     format: u16, offer: CommitToken, offer_action: DefinitionRef,
     offer_digest: DefinitionDigest, charter: ObjId, birth: CommitToken,
     ownership: CharterOwnershipBasisV1, owner_term: CharterTermBasisV1,
@@ -134,7 +118,7 @@ impl CharterPendingTermsV1 {
         })
     }
 }
-closed!(CharterPendingConsentV1, ConsentWire, {
+checked!(pub struct CharterPendingConsentV1, ConsentWire, pub fields, {
     format: u16, operation: CommitToken, effect: DefinitionRef,
     terms: CharterPendingTermsV1, payer: AccountId,
     accepted_at_ic: ClockStamp, accepted_at_utc: i64, deadline: ClockStamp,

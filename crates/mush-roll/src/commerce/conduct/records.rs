@@ -5,23 +5,10 @@ use crate::commerce::rating::{
     execution::{ArtifactIdentity, ExecutionObservation, ExecutionPhase},
 };
 use crate::commerce::{CharterId, FiledRevisionId, LineId, RevisionIdentity, records::Record};
+use mush_core::checked;
 use mush_core::{CommitToken, DefinitionRef, ObjId};
 use serde::{Deserialize, Deserializer, Serialize};
 
-macro_rules! strict {
-    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
-        #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name { $(pub(super) $field:$ty),* }
-        #[derive(Deserialize)] #[serde(deny_unknown_fields)]
-        struct $wire { $($(#[$attr])* $field:$ty),* }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D:Deserializer<'de>>(d:D)->Result<Self,D::Error> {
-                let w=$wire::deserialize(d)?; let v=Self{$($field:w.$field),*};
-                v.validate().map_err(serde::de::Error::custom)?; Ok(v)
-            }
-        }
-    }
-}
 fn required<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
     Option::<T>::deserialize(d)
 }
@@ -33,7 +20,7 @@ pub enum ConductRole {
     Transit,
 }
 
-strict!(ConductSubject,SubjectWire,{
+checked!(pub struct ConductSubject, SubjectWire, pub(super) fields, {
     charter:CharterId,line:LineId,filed:FiledRevisionId,revision:RevisionIdentity,
     rating:RatingRef,worker:RatingSubject,profile:String,role:ConductRole
 });
@@ -108,7 +95,7 @@ impl ConductSubject {
     }
 }
 
-strict!(ConductAdmission,AdmissionWire,{
+checked!(pub struct ConductAdmission, AdmissionWire, pub(super) fields, {
     account_binding:DefinitionDigest,character:ObjId,run:u64,nonce:u64,
     subject:DefinitionDigest,policy:DefinitionDigest,schedule:DefinitionDigest,budget:DefinitionDigest,
     start:ArtifactIdentity,maximum_unit_ms:u64
@@ -188,7 +175,7 @@ impl ConductAdmission {
     }
 }
 
-strict!(ConductJob,JobWire,{
+checked!(pub struct ConductJob, JobWire, pub(super) fields, {
     format:u16,operation:CommitToken,action:DefinitionRef,manifest:DefinitionRef,
     subject:ConductSubject,admission:ConductAdmission,at_utc:i64
 });
@@ -251,7 +238,7 @@ impl ConductJob {
     }
 }
 
-strict!(ConductExecution,ExecutionWire,{
+checked!(pub struct ConductExecution, ExecutionWire, pub(super) fields, {
     format:u16,job:CommitToken,updated_by:CommitToken,action:DefinitionRef,
     observation:ExecutionObservation
 });
@@ -311,7 +298,7 @@ impl ConductExecution {
     }
 }
 
-strict!(ConductMeasurement,MeasurementWire,{
+checked!(pub struct ConductMeasurement, MeasurementWire, pub(super) fields, {
     digest:DefinitionDigest,policy:DefinitionDigest,subject:DefinitionDigest,
     charged_unit_ms:u64,paired_cases:u16,passed:bool
 });
@@ -360,7 +347,7 @@ impl ConductMeasurement {
     }
 }
 
-strict!(ConductResult,ResultWire,{
+checked!(pub struct ConductResult, ResultWire, pub(super) fields, attrs on wire, {
     format:u16,job:CommitToken,operation:CommitToken,action:DefinitionRef,
     job_digest:DefinitionDigest,execution_digest:DefinitionDigest,
     phase:ExecutionPhase,

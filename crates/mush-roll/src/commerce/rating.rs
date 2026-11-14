@@ -7,6 +7,7 @@ pub mod reconformance;
 
 use std::{fmt, marker::PhantomData};
 
+use mush_core::checked;
 use mush_core::{ClockStamp, CommitToken, mechanics::DefinitionDigest};
 use serde::{
     Deserialize, Deserializer, Serialize,
@@ -89,25 +90,6 @@ impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for Rows<T, N> {
     }
 }
 
-// Each value validates even through ordinary serde, not only helper decoders.
-macro_rules! record {
-    ($name:ident, $wire:ident, {$($(#[$attribute:meta])* $field:ident: $ty:ty),* $(,)?}) => {
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-        pub struct $name { $($field: $ty),* }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct $wire { $($(#[$attribute])* $field: $ty),* }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                let wire = $wire::deserialize(d)?;
-                let value = Self { $($field: wire.$field),* };
-                value.validate().map_err(de::Error::custom)?;
-                Ok(value)
-            }
-        }
-    };
-}
-
 macro_rules! digest_id {
     ($name:ident) => {
         #[derive(
@@ -163,7 +145,7 @@ pub enum RegistryManifestName {
     CombatV1,
 }
 
-record!(RatingSubject, SubjectWire, {
+checked!(pub struct RatingSubject, SubjectWire, private fields, {
     revision: RevisionIdentity, envelope: DefinitionDigest, schema: DefinitionDigest, definition: DefinitionDigest,
     expanded: DefinitionDigest, declared: RatingClass, role: RatingRole,
 });
@@ -221,7 +203,7 @@ impl RatingSubject {
         digest("tacsim.registry.subject.v1", self, 4096)
     }
 }
-record!(RatingCompatibility, CompatibilityWire, { manifest: RegistryManifestName, digest: DefinitionDigest });
+checked!(pub struct RatingCompatibility, CompatibilityWire, private fields, { manifest: RegistryManifestName, digest: DefinitionDigest });
 impl RatingCompatibility {
     #[must_use]
     pub const fn combat_v1(digest: DefinitionDigest) -> Self {
@@ -292,7 +274,7 @@ pub enum CaseKind {
         name: KernelName,
     },
 }
-record!(CaseKey, CaseKeyWire, { class: RatingClass, case: CaseKind });
+checked!(pub struct CaseKey, CaseKeyWire, private fields, { class: RatingClass, case: CaseKind });
 impl CaseKey {
     pub fn new(class: RatingClass, case: CaseKind) -> Result<Self, RatingError> {
         let value = Self { class, case };
@@ -328,7 +310,7 @@ impl Ord for CaseKey {
     }
 }
 
-record!(Peak, PeakWire, { ops: u64, fees: u64, unit: u16, think_seq: u64 });
+checked!(pub struct Peak, PeakWire, private fields, { ops: u64, fees: u64, unit: u16, think_seq: u64 });
 impl Peak {
     pub fn new(ops: u64, fees: u64, unit: u16, think_seq: u64) -> Result<Self, RatingError> {
         let value = Self {
@@ -360,7 +342,7 @@ impl Peak {
         self.fees
     }
 }
-record!(MeterSummary, MeterWire, {
+checked!(pub struct MeterSummary, MeterWire, private fields, attrs on wire, {
     thinks: u64, max_ops: u64, max_fees: u64, #[serde(deserialize_with="required_option")] peak: Option<Peak>,
     ops_faults: u64, other_faults: u64, dropped: u64, unmeasured: u64,
 });
@@ -454,7 +436,7 @@ impl MeterSummary {
     }
 }
 
-record!(CaseBinding, BindingWire, { source: DefinitionDigest, definition: DefinitionDigest, card: DefinitionDigest, program: DefinitionDigest });
+checked!(pub struct CaseBinding, BindingWire, private fields, { source: DefinitionDigest, definition: DefinitionDigest, card: DefinitionDigest, program: DefinitionDigest });
 impl CaseBinding {
     #[must_use]
     pub const fn new(
@@ -493,7 +475,7 @@ pub enum Applicability {
     Unarmed,
     EngineBoundary,
 }
-record!(Coverage, CoverageWire, { applicability: Applicability, required_thinks: u32, evaluated_thinks: u32, witness: DefinitionDigest });
+checked!(pub struct Coverage, CoverageWire, private fields, { applicability: Applicability, required_thinks: u32, evaluated_thinks: u32, witness: DefinitionDigest });
 impl Coverage {
     pub fn new(
         applicability: Applicability,
@@ -556,7 +538,7 @@ pub enum CaseOutcome {
         actual: KernelOutcome,
     },
 }
-record!(TrialEnd, TrialEndWire, { at_ms: u64, state_hash: String, ledger: DefinitionDigest, outcome: TrialOutcome });
+checked!(pub struct TrialEnd, TrialEndWire, private fields, { at_ms: u64, state_hash: String, ledger: DefinitionDigest, outcome: TrialOutcome });
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrialOutcome {
@@ -600,7 +582,7 @@ impl TrialEnd {
         self.outcome
     }
 }
-record!(CaseResult, CaseResultWire, { key: CaseKey, binding: CaseBinding, meter: MeterSummary, coverage: Coverage, refusals: u32, outcome: CaseOutcome, #[serde(deserialize_with="required_option")] terminal: Option<TrialEnd> });
+checked!(pub struct CaseResult, CaseResultWire, private fields, attrs on wire, { key: CaseKey, binding: CaseBinding, meter: MeterSummary, coverage: Coverage, refusals: u32, outcome: CaseOutcome, #[serde(deserialize_with="required_option")] terminal: Option<TrialEnd> });
 impl CaseResult {
     pub fn new(
         key: CaseKey,
@@ -700,7 +682,7 @@ impl CaseResult {
     }
 }
 
-record!(PageContent, PageContentWire, { format: u16, subject: DefinitionDigest, compatibility: DefinitionDigest, ordinal: u16, rows: Rows<CaseResult,MAX_PAGE_ROWS> });
+checked!(pub struct PageContent, PageContentWire, private fields, { format: u16, subject: DefinitionDigest, compatibility: DefinitionDigest, ordinal: u16, rows: Rows<CaseResult,MAX_PAGE_ROWS> });
 impl PageContent {
     pub fn new(
         subject: DefinitionDigest,
@@ -748,7 +730,7 @@ impl PageContent {
         &self.rows.0
     }
 }
-record!(RatingPageRef, PageRefWire, { ordinal:u16, digest:DefinitionDigest, rows:u16 });
+checked!(pub struct RatingPageRef, PageRefWire, private fields, { ordinal:u16, digest:DefinitionDigest, rows:u16 });
 impl RatingPageRef {
     fn validate(&self) -> Result<(), RatingError> {
         if usize::from(self.ordinal) >= MAX_PAGES
@@ -769,7 +751,7 @@ impl RatingPageRef {
         self.digest
     }
 }
-record!(RatingResultRef, ResultRefWire, { id:ResultId, pages:Rows<RatingPageRef,MAX_PAGES>, cases:u16 });
+checked!(pub struct RatingResultRef, ResultRefWire, private fields, { id:ResultId, pages:Rows<RatingPageRef,MAX_PAGES>, cases:u16 });
 impl RatingResultRef {
     pub fn from_pages(pages: &[PageContent]) -> Result<Self, RatingError> {
         let mut refs = Vec::with_capacity(pages.len().min(MAX_PAGES));
@@ -828,7 +810,7 @@ impl RatingResultRef {
         self.cases
     }
 }
-record!(RatingPage, PageWire, { job:CommitToken, rating:RatingId, result:ResultId, content:PageContent });
+checked!(pub struct RatingPage, PageWire, private fields, { job:CommitToken, rating:RatingId, result:ResultId, content:PageContent });
 impl RatingPage {
     /// No circular hash: result derives from content-only page hashes. The
     /// actual parent receipt validates the ordered complete page set. The
@@ -890,7 +872,7 @@ pub enum AliasKind {
     Profile,
     Preset,
 }
-record!(VariantAlias,AliasWire,{kind:AliasKind,name:String,variant:u8});
+checked!(pub struct VariantAlias, AliasWire, private fields, {kind:AliasKind,name:String,variant:u8});
 impl VariantAlias {
     pub fn new(kind: AliasKind, name: String, variant: u8) -> Result<Self, RatingError> {
         let value = Self {
@@ -920,7 +902,7 @@ pub enum ClassOutcome {
     BudgetExceeded,
     Passing,
 }
-record!(ClassSummary,ClassWire,{class:RatingClass,outcome:ClassOutcome,cases:u16,meter:MeterSummary,peak_case:CaseKey,cases_digest:DefinitionDigest});
+checked!(pub struct ClassSummary, ClassWire, private fields, {class:RatingClass,outcome:ClassOutcome,cases:u16,meter:MeterSummary,peak_case:CaseKey,cases_digest:DefinitionDigest});
 impl ClassSummary {
     pub fn from_cases(class: RatingClass, rows: &[&CaseResult]) -> Result<Self, RatingError> {
         let cases = u16::try_from(rows.len()).map_err(|_| RatingError::Bound)?;
@@ -989,7 +971,7 @@ impl ClassSummary {
         }
     }
 }
-record!(CertificateContent,CertificateWire,{format:u16,subject:RatingSubject,compatibility:RatingCompatibility,plan:DefinitionDigest,aliases:Rows<VariantAlias,12>,classes:Rows<ClassSummary,3>,minimum:RatingClass,result:RatingResultRef});
+checked!(pub struct CertificateContent, CertificateWire, private fields, {format:u16,subject:RatingSubject,compatibility:RatingCompatibility,plan:DefinitionDigest,aliases:Rows<VariantAlias,12>,classes:Rows<ClassSummary,3>,minimum:RatingClass,result:RatingResultRef});
 impl CertificateContent {
     pub fn new(
         subject: RatingSubject,
@@ -1053,7 +1035,7 @@ impl CertificateContent {
         )?))
     }
 }
-record!(RatingPublication,PublicationWire,{job:CommitToken,issued:ClockStamp});
+checked!(pub struct RatingPublication, PublicationWire, private fields, {job:CommitToken,issued:ClockStamp});
 impl RatingPublication {
     pub fn new(job: CommitToken, issued: ClockStamp) -> Result<Self, RatingError> {
         let value = Self { job, issued };
@@ -1069,7 +1051,7 @@ impl RatingPublication {
         self.job
     }
 }
-record!(RatingReceipt,ReceiptWire,{format:u16,id:RatingId,content:CertificateContent,publication:RatingPublication});
+checked!(pub struct RatingReceipt, ReceiptWire, private fields, {format:u16,id:RatingId,content:CertificateContent,publication:RatingPublication});
 impl RatingReceipt {
     /// Structural assembly only. This constructor never installs a typed row.
     pub fn new(
@@ -1201,7 +1183,7 @@ impl RatingReceipt {
 }
 // Every reference binds both the exact durable attempt and measured content.
 // Identical measurements from another admission may share `id`, never `job`.
-record!(RatingRef,RatingRefWire,{job:CommitToken,id:RatingId,schema:u16,receipt_digest:DefinitionDigest});
+checked!(pub struct RatingRef, RatingRefWire, private fields, {job:CommitToken,id:RatingId,schema:u16,receipt_digest:DefinitionDigest});
 impl Copy for RatingRef {}
 impl RatingRef {
     /// Exact admitted attempt. This is a structural locator, not producer authority.
@@ -1306,7 +1288,7 @@ pub enum RatingFailure {
     Compatibility,
     Capacity,
 }
-record!(RatingJob,JobWire,{format:u16,job:CommitToken,subject:RatingSubject,compatibility:RatingCompatibility,plan:DefinitionDigest,state:RatingJobState});
+checked!(pub struct RatingJob, JobWire, private fields, {format:u16,job:CommitToken,subject:RatingSubject,compatibility:RatingCompatibility,plan:DefinitionDigest,state:RatingJobState});
 impl RatingJob {
     pub fn new(
         job: CommitToken,
@@ -1407,7 +1389,7 @@ impl RatingJob {
         Ok(next)
     }
 }
-record!(RatingCompletion,CompletionWire,{format:u16,job:CommitToken,subject:DefinitionDigest,compatibility:DefinitionDigest,result:ResultId,receipt:RatingRef,execution:DefinitionDigest});
+checked!(pub struct RatingCompletion, CompletionWire, private fields, {format:u16,job:CommitToken,subject:DefinitionDigest,compatibility:DefinitionDigest,result:ResultId,receipt:RatingRef,execution:DefinitionDigest});
 impl RatingCompletion {
     pub(crate) fn for_execution(
         row: &RatingReceipt,
@@ -1457,7 +1439,7 @@ pub enum RatingStanding {
     Active {},
     Recalled { operation: CommitToken },
 }
-record!(RatingStatus,StatusWire,{format:u16,rating:RatingRef,standing:RatingStanding});
+checked!(pub struct RatingStatus, StatusWire, private fields, {format:u16,rating:RatingRef,standing:RatingStanding});
 impl RatingStatus {
     pub(crate) fn active(row: &RatingReceipt) -> Result<Self, RatingError> {
         Ok(Self {
