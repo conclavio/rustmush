@@ -4291,6 +4291,7 @@ fn step_bubble(
             .contacts
             .retain(|_, ship_id| active.bubble.ships.contains_key(ship_id));
         land_bubble_think(
+            tick.w,
             active,
             answer,
             linkdead_hulls,
@@ -5017,6 +5018,7 @@ fn thinks_for_step(
 /// was collected for. A backup mind's answer is dropped when the seat no longer has that
 /// hull (her crew is back).
 fn land_bubble_think(
+    w: &World,
     active: &mut ActiveInterdictionBubble,
     answer: Answer,
     linkdead_hulls: &mut BTreeMap<ObjId, SpaceLinkdeadState>,
@@ -5051,8 +5053,10 @@ fn land_bubble_think(
                 .get_mut(&hull)
                 .filter(|state| state.backup_has_helm())
             {
-                let flown =
-                    super::backup::land_in_bubble(active, &ship_id, state, answer, dt_wall_ms);
+                let mut flown =
+                    super::backup::land_in_bubble(w, active, &ship_id, state, answer, dt_wall_ms);
+                // Doc 45 unit AP.9: her own shots are part of the step's fight.
+                events.append(&mut flown.events);
                 backup_flown.push((hull, flown));
             }
         }

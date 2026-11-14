@@ -37,7 +37,10 @@
 //! says `RETURN` is told `HOLD` ([`flown_by`]): its mind stands where it is and answers only a
 //! unit that has fired on it, by the orders `HOLD` already lays, and the kernel is never asked
 //! to drive an immobile hull anywhere. The record, and everything a player reads of it, still
-//! says `RETURN`. No verb sets a carrier's posture today, so this is every carrier.
+//! says `RETURN`. A carrier is a ship, and her commander may set her another word from aboard
+//! her (`+ship/posture`, doc 45 unit AP.9): that word is the one she is flown on in space,
+//! and on her pad she is told `HOLD` whatever it is. A carrier that stood guard over her
+//! player's rigs from the pad is not built.
 
 use std::collections::BTreeMap;
 
@@ -138,13 +141,13 @@ pub(crate) fn sync(ctx: &mut Ctx<'_>) {
 }
 
 /// **The posture `unit`'s arena is told** (this module's head, "a carrier is home"): the
-/// unit's own record, except that a carrier on `RETURN` is told `HOLD`.
+/// unit's own record, except that a carrier is told `HOLD` whatever hers says.
 #[must_use]
 pub(crate) fn flown_by(w: &mush_core::World, unit: ObjId) -> Posture {
-    match crate::posture::record::of(w, unit) {
-        Posture::Return if super::carrier::is_carrier(w, unit) => Posture::Hold,
-        posture => posture,
+    if super::carrier::is_carrier(w, unit) {
+        return Posture::Hold;
     }
+    crate::posture::record::of(w, unit)
 }
 
 /// **The player whose unit `unit` is** (this module's head, "whose unit it is"), `pilot`
