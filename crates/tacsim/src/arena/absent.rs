@@ -56,7 +56,7 @@
 //!   stands, and a player's sealed mind reads it as `v.order`. **It answers fire on the way
 //!   and does not stop to** (doc 47 unit CO.2, R-47-3): the stock mind answers by a cornered
 //!   stand, and the landing lands that stand's stop as the drive home
-//!   ([`Arena::keep_going_home`]).
+//!   (`Arena::keep_going_home`).
 //! - `HOLD` and `GUARD`: **staying.** The order laid is `Hold`: the unit parks where it stands.
 //!   At each think (`Arena::stand_posture`) the order is turned to a `Screen` that faces the
 //!   nearest contact the unit may answer, and back to `Hold` when it holds none, so the stock

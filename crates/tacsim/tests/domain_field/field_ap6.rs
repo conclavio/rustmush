@@ -567,14 +567,14 @@ fn last_cell(lines: &[LedgerEvent], of: ObjId) -> Option<(u16, u16)> {
     })
 }
 
+/// One position record of a unit: the index of its line, and its `x` and `y`, centimetres.
+type Recorded = (usize, i64, i64);
+
 /// **Where the field recorded `hull` while it answered**: the first position record after
 /// its first round, and the first record after a round it fired once that record had passed
 /// (the field records every unit every five arena seconds). `None` until it has fired across
 /// two records.
-fn answered_across(
-    lines: &[LedgerEvent],
-    hull: ObjId,
-) -> Option<((usize, i64, i64), (usize, i64, i64))> {
+fn answered_across(lines: &[LedgerEvent], hull: ObjId) -> Option<(Recorded, Recorded)> {
     let shots: Vec<usize> = lines
         .iter()
         .enumerate()
