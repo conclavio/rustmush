@@ -2673,8 +2673,21 @@ pub(crate) fn claimed_launch(
     );
     assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
     let mut open = None;
+    // Doc 47 CO.11 (D8, MW.19's item 4): the operator is told which mind is aboard, once,
+    // live if connected and queued for the login if not.
+    let admitted = |w: &mush_core::World| {
+        tacsim::port_tick::pending_notices(w, pilot)
+            .iter()
+            .filter(|notice| notice.starts_with("The Registry admits licence "))
+            .count()
+    };
+    let queued_before = admitted(world.rig.tw.world());
+    let mut heard = String::new();
     for _ in 0..12 {
-        fires(world, 1);
+        let (events, queued) = crate::excursions::fire(&mut world.rig);
+        heard.push_str(&crate::excursions::said(&world.rig.tw, &events, pilot));
+        crate::excursions::land_all(&mut world.rig, &queued);
+        world.pulse();
         if let tacsim::IcClaimRead::Active {
             open: token,
             dispatcher,
@@ -2698,6 +2711,22 @@ pub(crate) fn claimed_launch(
         matches!(record.claim.as_deref(), Some(ClaimCursor::Open { open: o, .. }) if *o == open),
         "{:?}",
         record.claim
+    );
+    let seal = tacsim::ic_claim_seal(world.rig.tw.world(), open).expect("the claim's seal");
+    let word = tacsim::surface::excursion::CLAIM_ADMITTED
+        .replace("{licence}", &licence.to_string())
+        .replace("{tv}", &tv.0.to_string())
+        .replace("{mind}", seal.mind.as_str())
+        .replace("{class}", seal.class.as_str());
+    assert!(
+        word.split('\n').all(|row| row.chars().count() <= 120),
+        "{word}"
+    );
+    assert_eq!(
+        crate::excursions::count(&heard, &word)
+            + admitted(world.rig.tw.world()).saturating_sub(queued_before),
+        1,
+        "{line}: the operator is told the mind aboard once: {heard}"
     );
     let _ = crate::excursions::finish(&mut world.rig, tv, pilot);
     open
