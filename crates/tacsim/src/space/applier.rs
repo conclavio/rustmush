@@ -1436,9 +1436,10 @@ mod tests {
 
     /// **Doc 45 unit AP.9: the second door does not trust the lock.** A lock her crew left
     /// standing on a ship she may not answer is not a target: the shot is dropped. The same
-    /// asks on `RETURN`'s seat, which never fires, are dropped whatever has arrived on her.
+    /// asks on a seat that never fires (a mind sealed aboard's; until doc 47 unit CO.2 also
+    /// `RETURN`'s) are dropped whatever has arrived on her.
     #[test]
-    fn ap9_a_shot_at_a_lock_she_may_not_answer_is_dropped_and_return_never_fires() {
+    fn ap9_a_shot_at_a_lock_she_may_not_answer_is_dropped_and_a_seat_that_never_fires_drops_all() {
         let hit_by_raider = Answers {
             fired_on_by: BTreeSet::from(["raider".to_owned()]),
             ..Answers::default()
@@ -1464,7 +1465,7 @@ mod tests {
         assert_eq!(applied.dropped, 1);
         assert!(beams_fired(&tape).is_empty() && events.is_empty());
 
-        // `RETURN`: the absent seat as it was, with the raider's fire arrived on her.
+        // A seat that never fires (a sealed mind's), with the raider's fire arrived on her.
         let (mut bubble, mut tape, contacts) = three_parties();
         let applied = apply_intents_answering(
             &mut bubble,
