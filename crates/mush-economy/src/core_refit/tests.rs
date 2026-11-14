@@ -19,7 +19,8 @@ impl Rig for Core {
     const PAYER: crate::AccountId = crate::AccountId(9);
     const FEE: i64 = FITTING_MINOR;
     const PROVIDER: crate::AccountId = crate::AccountId(1);
-    const EXCLUSIVE_WHILE_OPEN: bool = false;
+    const EXCLUSIVE_WHILE_OPEN: bool = true;
+    const INSTALLED_HOLDS: bool = true;
     fn intent() -> FundingIntent {
         fixture(
             &composed().expect("the composed policy"),

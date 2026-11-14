@@ -230,7 +230,175 @@ Not built.
 
 ## CO.4
 
-Not built.
+Removed parts to storage (R-47-5). Built 2026-11-14 on `claude/co4-removed-parts-storage-3f6d14`,
+cut from `6c86731fb`. Stored and fitted again are built; the sale moved to CO.13 (below, "Not
+built").
+
+**Survey.**
+
+- **Where a displaced core went.** Back to its owner already. The core refit's Install is one
+  closed exchange (`mush-core` `core_exchange`, industry's `ExchangePolicy::facts`): the
+  incoming core goes into the hull and the displaced one to the requester (`return_to`), still
+  titled to them and unencumbered. MW.5's story 4 pinned that. The kernel's head for it
+  (`industry_refit_assets`) reads `detached`, carrying the order that displaced it, the hull it
+  came from and a digest of the component it came out as (`history::detached`).
+- **Why it was never fitted again.** Four places held "a second install cannot reuse it"
+  (doc 17f §9), each on its own:
+  1. the kernel's Accept heads (`core_refit/transition.rs` `admission_heads`, and the boot
+     replay `history::heads`) admitted an incoming core only with no head or `released`;
+  2. industry's Accept heads (`families.rs` `accept_heads`) and boot audit (`audit.rs`) the same;
+  3. the economy's refit twin (`core_refit/leg.rs`): `exclusive` held a core installed once for
+     ever, and `conflicts` refused a fresh Accept for it unless its last order was cancelled;
+  4. the Tactics replacement lane (`component_replacement.rs` `Binding::definitions`) took only
+     an incoming component equal to a fresh one of the target (condition, cells,
+     capabilities), so even past the first three a damaged core could go in only as new.
+- **What identity and condition it carries.** The core is the same `ObjId` and the same
+  managed title. Its condition is the `SavedComponent` the displacing order's offer captured
+  (`offer.displaced`: condition word, cells, capabilities), kept in the order's acknowledged
+  image (`CoreProductionState` refit projection) and digested into the `detached` head. Nothing
+  wrote it anywhere else.
+- **Which storage.** The owner's own custody: the core is a titled world object in their hands,
+  which they may stow wherever they keep things. No new store is needed, and none is built.
+- **Bay parts.** Two paths. The player's is the port's `+bay` (doc 36 GC.8, doc 39 IN.2/IN.7):
+  `+bay/strip` takes a surviving part (intact, damaged or jammed) off into a one-unit lot in the
+  owner's hold with its `PartProvenance` row (condition included); `+bay/fit` fits it carrying
+  that condition (`bay_work::jobs::work`, "comes in the condition its provenance records");
+  `+market/sell <bid>=1` sells the lot into a yard bid (IN.11's story); a destroyed part is
+  replaced (`replace`) and nothing comes back. That path already meets R-47-5, and its stories
+  pin it (`in2_lifecycle`, `in7_part_recipes`, `in11_matter`). A part has no title: it is an
+  inventory lot, so the managed-title wall below does not apply to it. The industry `bay_refit`
+  (doc 31 UD.4b) has no player route: no command offers it; only the hardware flow's rig
+  (`hardware/flow/bay.rs`) drives it. Its removed part is minted into **the bay operator's
+  stores** as a lot at grade 9 (intact) or 3 (anything else), untraced. See "Not built".
+
+**Design taken.** The smallest change that lets the existing exchange's output be fitted again:
+open the `detached` head to Accept everywhere it was shut, and carry the saved condition into
+the fitting. A destroyed core is the one refused.
+
+**Built.**
+
+- **Kernel** (`mush-core`, `core_refit/transition.rs`, `history.rs`): `admissible` reads a head
+  `released` or `detached`; the Accept heads and the boot replay use it.
+- **Economy** (`mush-economy`, the refit twin): `Leg::conflicts` now sees the retained histories,
+  not one. The core's rule: a fresh Accept for a core conflicts while an order for it is open,
+  or while its last installation by the journal put it in a hull; once a later installation
+  displaced it, it replays. `exclusive` holds a core while its order is open, as the bay holds
+  its hull. The twin stays one (CT.7): the bay's `conflicts` takes the same map and answers
+  `false`. The seal census is unchanged.
+- **Industry** (`core_production/refit/`): Accept heads and the boot audit admit `detached`.
+  `policies::displaced_by` finds the order that last displaced a core in the acknowledged
+  image (a core in hand was displaced by its latest displacing order: a later one could only
+  displace it after a fitting mounted it again, and a mounted core leaves its hull by no other
+  route). `policies::destroyed` reads that order's saved component: destroyed when it came out
+  `destroyed`, or without the capabilities its own fitting put in (the arena's `destroy_core`
+  revokes the core capability). The offer refuses a destroyed core; the fitting
+  (`replacement_from`) puts any other in carrying its saved cells and condition.
+- **Tactics** (`component_replacement.rs`): the lane checks the incoming component's shape
+  against the target's (definition, mount, cell set and ranges, capabilities), not its state.
+  The state is the trusted policy's: an intact component for a fresh core, the saved one for a
+  stored core. `replace_component` already checked shape only.
+- **Doc 47**: a CO.13 row after CO.4, "then CO.13" in the order line, CO.4's done-when amended.
+
+**Defaults taken (provisional).**
+
+1. **A damaged or degraded core goes in as it came out.** Its cells and its condition word are
+   carried; it is not repaired by being fitted. Repairing a core is a separate job, not this one. **Cheap to
+   reverse.**
+2. **"Destroyed" is the condition word `destroyed`, or a capability missing** against the root it
+   came out of. The arena's two core words map onto it: `degrade_core` lowers the class cell
+   (carried), `destroy_core` revokes the capability (refused). **Cheap to reverse.**
+3. **A destroyed core still comes out into its owner's hands.** The exchange returns whatever it
+   displaces, and making it vanish is a new exchange shape. It is inert: no fitting takes it.
+   Selling it, or writing it off, is CO.13's to decide (a buy-back must refuse it).
+4. **The Tactics lane no longer insists on a fresh-condition component.** A policy that hands it
+   a damaged state now installs one. The only policy is the core refit's (trusted composition
+   only); the comment's "never a damage reset of unrelated cells" still holds (cells outside
+   the component are the hull's own). **Flagged: a security-shaped change to a kernel seam**,
+   cheap to reverse in code.
+
+**Persisted shapes.** None move. `AssetPosition::Detached` already existed; no record gains a
+field; CT.0's `refit_core.snap` and `refit_bay.snap` pass unchanged. The economy fold's replay
+rule widens (a history set it refused, a core installed twice after a displacement, it now
+accepts), which matters only for data that does not exist yet (pre-launch).
+
+**Tests.** Each fails on `6c86731fb` with only the test files applied, and passes here:
+
+- `mush-industry` `core_production::…::refit_tests` (the composed refit rig, under a second):
+  `co4_a_displaced_whole_core_is_stored_and_fitted_again` (stored in the owner's hands, its head
+  `detached`; a third fitting puts it back and stores the second core in turn; a cold boot
+  reads the history), `co4_a_damaged_core_is_fitted_again_carrying_its_condition` (it comes
+  out `damaged` with its class cell at the floor and goes back in so),
+  `co4_a_destroyed_core_is_never_fitted_again` (the offer refuses it). On base all three are
+  refused at Accept; the destroyed one's offer is admitted there, so its assertion fails too.
+- `mush-economy` `refit_twin::tests::co4_a_displaced_core_is_accepted_again`: a core in its hull
+  conflicts with a fresh Accept, the same core displaced by a later installation does not. The
+  shared twin bodies now read `INSTALLED_HOLDS` beside `EXCLUSIVE_WHILE_OPEN` (both legs hold
+  while open; only the core holds once installed).
+- `mush-tactics` `component_replacement::tests::co4_a_carried_component_goes_in_as_it_came_out`:
+  the lane installs a core whose class cell is under its maximum and whose condition is not the
+  spec's, as given.
+- **The story**, `tacsim` `domain_field` `c4_hardware::co4_a_displaced_core_is_stored_and_fitted_again`
+  (the launch world, about 12 s): a Class II core takes harm in the first rig, is displaced by a
+  Class I and stored in the pilot's hands, titled and unencumbered; fitted to the second rig it
+  goes in `damaged` for the fitting fee alone; displaced again it is stored again; a destroyed
+  Class I core displaced from the first rig is in the pilot's hands and the shop's offer of it
+  is refused, nothing charged. Staff do the M8 world's standing three things (the wallet top-up,
+  titling the leased rigs, standing things in the shop) and mark the harm (`@unit/damage`, as
+  story 4's dent); nothing is minted for CO.4's legs.
+- **MW.5's story 4, step 6, moved to the ruling**
+  (`c4_story_4_a_class_three_core_is_fitted_read_after_a_restart_and_replaced`): the fitted core
+  is still not offered; the displaced Class III core now goes into the second rig (its root the
+  rig family's Class III, the fee paid), where it pinned the kernel's refusal; the third, fresh
+  core is gone from the story, and the second restart reads the displaced core in that rig.
+
+**Mutations**, each caught (`co4-muts.py`, in this group's notes folder):
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | store: the displaced core is returned into the hull, not to its owner | all three industry tests |
+| M3 | kernel admits `released` only | whole and damaged |
+| M4 | the economy twin holds a core installed once for ever | `co4_a_displaced_core_is_accepted_again` |
+| M5 | industry Accept admits `released` only | whole and damaged |
+| M6 | the boot audit admits `released` only | whole (its cold boot) |
+| M7 | the Tactics lane takes a fresh-condition core only | the tactics test |
+| M8 | the carried condition is dropped | damaged |
+| M9 | the carried cells are dropped | damaged (survived until it degraded the class cell; it does now) |
+| M10 | the offer's destroyed check removed | destroyed |
+| M11 | the `destroyed` word reads as not destroyed | destroyed |
+
+There is no sell path in this unit to mutate: it moved to CO.13.
+
+**Not built.**
+
+- **The sale (CO.13).** A stored core cannot be sold with its title by any existing path. A
+  governed core's title is a managed title, and `mush-economy/src/managed_title.rs`
+  (`require_unmanaged_mutations`) refuses every generic `TransferTitle`, `Title`, `Encumber`,
+  `Release`, `SetCatalog`, `Abandon` and `WriteOff` on one: "a future managed transfer must carry
+  a separate private closed plan proof". Only charter transfer, seizure and coverage have such a
+  plan. Built and run here, then reverted: three market catalogue entries for the governed
+  cores (`asset`, at `CoreClass::finished_minor`), the fitting shop's integrator as a
+  `+market/sell` vendor at 500 permille, an `Accept` party cap for that org, and a
+  `TitleHeld` + `TitleTransfer` arm in `+market/sell` for an owner's unencumbered asset. On the
+  launch world the contract reached both conditions met (the core in the vendor's vault, the
+  title held by the pilot) and went `disputed` at settlement: the settle plan's `TransferTitle`
+  meets `require_unmanaged_mutations`. A custody-only sale (the object arm as it stands) works,
+  but leaves the pilot holding the title to a core the vendor holds; the lead ruled it out.
+  CO.13 needs: a closed managed core-title sale family on the charter-transfer pattern (kernel
+  protocol, economy plan with its closed proof, audit and boot replay); the core catalogue
+  entries and the buy-back vendor as its first users; a refusal for a destroyed core; and the
+  vendor's `Accept` standing (the port party-cap source names no fitting shop today).
+- **The industry `bay_refit`'s removed part.** It has no player route, and three gaps, each
+  owed with that route (with IN.2's owed `CommissionSource::BayRefit` producer):
+  1. a destroyed part comes back as a worn lot (`ShippedParts::grade` returns grade 3 for any
+     condition but intact). Fixing it moves the kernel's offer rule "a removed part is always
+     returned" (`bay_refit/wire.rs` `validate_offer`, `validate_installation`), which is a
+     kernel shape change for a path nobody reaches;
+  2. the lot lands in the bay operator's stores, not the hull owner's, so the owner cannot
+     sell it;
+  3. the lot is untraced (no `PartProvenance` row) and carries only a grade, so `+bay/fit`
+     refuses it and a second industry bay refit would fit it as new.
+- **The capability arm of "destroyed"** is built but no test drives `destroy_core` into a
+  displaced core; the tests use the condition word.
 
 ## CO.5
 
@@ -745,5 +913,9 @@ fix (the unit's row allows "named with the reason").
   the same change. It wants its own unit, with the stories' and the bot's runs.
 
 ## CO.12
+
+Not built.
+
+## CO.13
 
 Not built.

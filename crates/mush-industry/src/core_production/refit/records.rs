@@ -44,6 +44,14 @@ impl SavedComponent {
             capabilities: value.capabilities().clone(),
         }
     }
+    /// Its scalar cells (doc 47 CO.4: what a stored core carries into its next fitting).
+    pub(crate) fn cells(&self) -> &BTreeMap<CellId, ScalarCell> {
+        &self.cells
+    }
+    /// Its capabilities (doc 47 CO.4: a core whose core capability was revoked is destroyed).
+    pub(crate) fn capabilities(&self) -> &BTreeMap<CapabilityId, RulesValue> {
+        &self.capabilities
+    }
     pub(crate) fn from_unit(unit: &TacticalUnit, component: &ComponentId) -> Result<Self, Error> {
         Ok(Self::capture(
             &ComponentState::capture(unit, component).map_err(bad)?,

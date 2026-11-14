@@ -26,6 +26,8 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Clone)]
 struct Policy {
     specs: Vec<crate::UnitSpec>,
+    /// Doc 47 CO.4: the class cell value and condition a stored core carries, if any.
+    carry: Option<(i64, &'static str)>,
 }
 struct PolicyRequest {
     target: usize,
@@ -69,6 +71,29 @@ impl ReplacementPolicy for Policy {
         donor = crate::apply(&donor, &plan, c.world().now())
             .map_err(|_| refused())?
             .0;
+        if let Some((class, condition)) = self.carry {
+            let plan = crate::UnitMutationPlan::new(
+                vec![
+                    crate::UnitMutationOp::SetCell {
+                        addr: crate::CellAddr::Component {
+                            component: core.clone(),
+                            cell: crate::CellId::new("class").map_err(|_| refused())?,
+                        },
+                        value: class,
+                    },
+                    crate::UnitMutationOp::SetComponentCondition {
+                        component: core.clone(),
+                        condition: crate::ConditionId::new(condition).map_err(|_| refused())?,
+                    },
+                ],
+                Some(donor.revision()),
+                Some("a stored core's condition".into()),
+            )
+            .map_err(|_| refused())?;
+            donor = crate::apply(&donor, &plan, c.world().now())
+                .map_err(|_| refused())?
+                .0;
+        }
         Ok(ReplacementChoice::new(
             spec.definition.clone(),
             ComponentState::capture(&donor, &core).map_err(|_| refused())?,
@@ -329,6 +354,12 @@ impl GameModule for Rules {
     }
 }
 fn modules(r: &Rules) -> Result<Vec<Box<dyn GameModule>>> {
+    modules_carrying(r, None)
+}
+fn modules_carrying(
+    r: &Rules,
+    carry: Option<(i64, &'static str)>,
+) -> Result<Vec<Box<dyn GameModule>>> {
     let mut catalog = crate::UnitCatalogBuilder::new();
     let vocabulary = crate::MobilityVocabulary::base().freeze();
     for spec in &r.specs {
@@ -337,6 +368,7 @@ fn modules(r: &Rules) -> Result<Vec<Box<dyn GameModule>>> {
     let tactics = crate::TacticsModule::with_catalog(catalog.freeze()).with_component_replacement(
         Policy {
             specs: r.specs.clone(),
+            carry,
         },
         r.action.clone(),
         ComponentId::new("core")?,
@@ -355,8 +387,11 @@ struct Fixture {
     asset: ObjId,
 }
 fn fixture() -> Result<Fixture> {
+    fixture_carrying(None)
+}
+fn fixture_carrying(carry: Option<(i64, &'static str)>) -> Result<Fixture> {
     let rules = rules()?;
-    let mut world = TestWorld::with_modules(modules(&rules)?);
+    let mut world = TestWorld::with_modules(modules_carrying(&rules, carry)?);
     let hull = world
         .world_mut()
         .create(ObjKind::Thing, "Replacement hull", GOD, None)?;
@@ -815,5 +850,33 @@ fn m8b_sixteen_replacement_roots_register_and_seventeen_refuse() -> Result {
     if participant_descriptor(&action, &component, &roots(MAX_REPLACEMENT_ROOTS + 1)?).is_ok() {
         return Err("a seventeenth is refused".into());
     }
+    Ok(())
+}
+
+/// **Doc 47 CO.4 (ruling R-47-5): a stored component goes in carrying its condition.** The
+/// policy hands the lane a core of the target's own shape whose class cell stands below its
+/// maximum and whose condition is not the spec's; the lane installs it as given, not as new.
+#[test]
+fn co4_a_carried_component_goes_in_as_it_came_out() -> Result {
+    let mut f = fixture_carrying(Some((1, "worn")))?;
+    let (p, o, inv) = prepare(&mut f)?;
+    stage(&mut f, p, o, &inv)?;
+    let held = f.world.engine_mut().take_staged_action()?.ok_or("staged")?;
+    let (_, installation) = held.into_parts();
+    f.world.engine_mut().install_composed_action(installation)?;
+    let after = stored(&f);
+    let unit = after.units.get(&f.hull).ok_or("after unit")?;
+    let core = ComponentId::new("core")?;
+    check_eq!(
+        unit.component(&core).ok_or("core")?.condition.as_str(),
+        "worn"
+    );
+    let class = unit
+        .cell(&crate::CellAddr::Component {
+            component: core,
+            cell: crate::CellId::new("class")?,
+        })
+        .ok_or("class")?;
+    check_eq!((class.current, class.max), (1, 2));
     Ok(())
 }

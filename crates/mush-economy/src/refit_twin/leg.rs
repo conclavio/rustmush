@@ -190,11 +190,15 @@ pub trait Leg: members::Member + Copy + Debug + Default + Eq + Send + Sync + 'st
     /// A commit token the subject already spent besides its offer: the core refit's
     /// manufacture acceptance. The bay has none.
     fn commit_reused(subject: &Self::Subject, commit: CommitToken) -> bool;
-    /// What no two retained histories may share: the bay's hull while its order is open, the
-    /// core refit's incoming core once installed.
+    /// What no two retained histories may share: the bay's hull and the core refit's incoming
+    /// core, each while its order is open.
     fn exclusive(history: &PaymentHistory<Self>) -> Option<ObjId>;
-    /// A fresh Accept conflicts with a retained history beyond the order, offer, hold and
-    /// open-hull rules both legs have: the core refit's incoming core, unless that history
-    /// was cancelled. The bay has none.
-    fn conflicts(history: &PaymentHistory<Self>, intent: &FundingIntent<Self>) -> bool;
+    /// A fresh Accept conflicts with the retained histories beyond the order, offer, hold and
+    /// open-hull rules both legs have: the core refit's incoming core while it is in an open
+    /// order or in a hull (doc 47 CO.4, ruling R-47-5: once a later installation displaced it,
+    /// it is stored in its owner's hands and may be fitted again). The bay has none.
+    fn conflicts(
+        histories: &std::collections::BTreeMap<CommitToken, PaymentHistory<Self>>,
+        intent: &FundingIntent<Self>,
+    ) -> bool;
 }
