@@ -75,6 +75,10 @@ pub(crate) trait Rig: Rules {
     ) -> Self::Operation;
     /// The issuer's operation record decoded from its stored bytes.
     fn decode(bytes: &[u8]) -> Result<Self::Operation, PublicationError>;
+    /// Economy's offer for a row's binding (the CT.0 walk's), and the same offer with the
+    /// issuer's own side changed: the royalty chain's digest, or the House's scope.
+    fn offer(row: &Self::Operation) -> TestResult<super::history::Offer<Self>>;
+    fn off_side(offer: super::history::Offer<Self>) -> super::history::Offer<Self>;
 }
 
 pub(crate) fn definition(kind: &str, id: &str) -> TestResult<DefinitionRef> {
@@ -233,6 +237,8 @@ macro_rules! instantiate {
             pending_funding_preserves_old_current_rows_and_blocks_new_attempt,
             exact_transition_and_issued_clock_refuse_crossed_receipts,
             exhausted_generation_refuses_before_any_new_offer_or_money,
+            an_offer_off_the_issuers_side_of_the_binding_is_refused,
+            the_issuer_seal_admits_exactly_two,
         });
         mod holder {
             $crate::commerce::renewal_twin::tests::instantiate!(@tests $issuer, (holder::) {
@@ -613,5 +619,101 @@ pub(crate) fn exhausted_generation_refuses_before_any_new_offer_or_money<I: Rig>
         I::grant_of(&b.economics).clone(),
     )?;
     check!(I::capture(&licence, &term, &economics).is_err());
+    Ok(())
+}
+
+/// Doc 46 CT.5 (mutation H-B): the issuer's side of an offer is held to the binding, the
+/// royalty chain's digest for the personal issuer, the House's organisation and scope for
+/// the House. Only that one field differs between the two offers here, and the row carries
+/// each offer's own digest, so the refusal is the issuer's check and no other.
+pub(crate) fn an_offer_off_the_issuers_side_of_the_binding_is_refused<I: Rig>() -> TestResult {
+    use mush_economy::renewal_twin::Offer as _;
+    let row = draft::<I>(&birth::<I>()?, 10, 20, RenewalAttemptV1::Automatic {})?;
+    let offer = I::offer(&row)?;
+    let row = I::with_offer_digest(&row, offer.digest()?);
+    super::history::check_offer::<I>(&row, &offer)?;
+    let off = I::off_side(offer);
+    let row = I::with_offer_digest(&row, off.digest()?);
+    check!(matches!(
+        super::history::check_offer::<I>(&row, &off),
+        Err(PublicationError::Mismatch)
+    ));
+    Ok(())
+}
+
+/// The census for a later edit that widens the seal instead of going round it: exactly two
+/// `impl Sealed for` in the twin's `issuer.rs`; one `impl Issuer for` and one
+/// `impl Rules for` in each family's `mod.rs`; one `mod sealed {` of the twin's, and no
+/// `dyn` beside either trait's name. A census of the source, not a proof. Run for both
+/// issuers, which read the same files.
+pub(crate) fn the_issuer_seal_admits_exactly_two<I: Rig>() -> TestResult {
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> TestResult {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                sources(&path, out)?;
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files)?;
+    files.sort();
+    let dynamic = [["dyn ", "Issuer"].concat(), ["dyn ", "Rules"].concat()];
+    let (mut sealed, mut issuers, mut rules) = (Vec::new(), Vec::new(), Vec::new());
+    for path in &files {
+        let name = path
+            .strip_prefix(&root)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        for line in std::fs::read_to_string(path)?.lines() {
+            let line = line.trim();
+            if line.starts_with(
+                ["impl Sealed for ", "mush_economy::renewal_twin::"]
+                    .concat()
+                    .as_str(),
+            ) {
+                sealed.push(name.clone());
+            }
+            if line.starts_with("impl Issuer for ") {
+                issuers.push(name.clone());
+            }
+            if line.starts_with("impl Rules for ") {
+                rules.push(name.clone());
+            }
+            for d in &dynamic {
+                check!(!line.contains(d.as_str()), "{name}: {line}");
+            }
+        }
+    }
+    check_eq!(
+        sealed,
+        [
+            "commerce/renewal_twin/issuer.rs",
+            "commerce/renewal_twin/issuer.rs"
+        ]
+    );
+    check_eq!(
+        issuers,
+        ["commerce/house_renewal/mod.rs", "commerce/renewal/mod.rs"]
+    );
+    check_eq!(
+        rules,
+        ["commerce/house_renewal/mod.rs", "commerce/renewal/mod.rs"]
+    );
+    let twin = std::fs::read_to_string(root.join("commerce/renewal_twin/issuer.rs"))?;
+    check_eq!(
+        twin.lines()
+            .filter(|l| l.trim() == ["mod ", "sealed {"].concat())
+            .count(),
+        1
+    );
+    check_eq!(
+        std::any::type_name::<I>().matches("renewal_twin").count(),
+        1
+    );
     Ok(())
 }

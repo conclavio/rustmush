@@ -133,6 +133,15 @@ impl Rig for Personal {
     fn decode(bytes: &[u8]) -> Result<RenewalOperationV1, PublicationError> {
         RenewalOperationV1::decode(bytes)
     }
+    fn offer(row: &RenewalOperationV1) -> TestResult<mush_economy::managed_renewal::RenewalOffer> {
+        Ok(ct0_snapshot::ct0_offer(row).map_err(|e| e.to_string())?)
+    }
+    fn off_side(
+        mut offer: mush_economy::managed_renewal::RenewalOffer,
+    ) -> mush_economy::managed_renewal::RenewalOffer {
+        offer.basis.royalty_chain_digest = digest(77);
+        offer
+    }
 }
 
 /// 17g C2g: `pub(crate)` with the helpers below, for Roll's command-read
@@ -259,6 +268,84 @@ fn the_marked_licence_cannot_be_offered_for_resale() -> TestResult {
             check!(RenewalBindingV1::capture(&b.licence, &widened, &b.economics).is_err());
         }
     }
+    Ok(())
+}
+
+/// Doc 46 CT.5: every identity constant the twin reads for the personal issuer, against the
+/// literal its family's files held, and the family's old names against the constants. The
+/// action ids, protocol names and offer domain are Economy's constants of the same issuer.
+#[test]
+fn personal_identity_strings_hold_todays_bytes() -> TestResult {
+    check_eq!(
+        <Personal as crate::commerce::renewal_twin::Issuer>::OPERATION_FAMILY,
+        "roll_mind_renewal_operation"
+    );
+    check_eq!(
+        <Personal as crate::commerce::renewal_twin::Issuer>::HEAD_FAMILY,
+        "roll_mind_renewal_head"
+    );
+    check_eq!(
+        <Personal as crate::commerce::renewal_twin::Issuer>::PREDECESSOR_DOMAIN,
+        "roll.mind.renewal_predecessor.v1"
+    );
+    check_eq!(
+        <Personal as crate::commerce::renewal_twin::Issuer>::TEMPLATE_DOMAIN,
+        "roll.mind.renewal_template.v1"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::DRAFT_ACTION,
+        "draft_mind_renewal"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::FUND_ACTION,
+        "fund_mind_renewal"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::GRANT_ACTION,
+        "settle_mind_renewal"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::REFUND_ACTION,
+        "refund_mind_renewal"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::CLOSE_ACTION,
+        "close_mind_renewal"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::SERVICE_CLOSE_ACTION,
+        "close_mind_renewal_service"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::PROTOCOL,
+        "personal_mind_renewal_v1"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::SERVICE_PROTOCOL,
+        "personal_mind_renewal_service_v1"
+    );
+    check_eq!(
+        <Personal as mush_economy::renewal_twin::Issuer>::OFFER_DOMAIN,
+        "economy.mind_renewal_offer.v1"
+    );
+    check_eq!(mush_economy::renewal_twin::MAX_RENEWAL_RECEIPT_BYTES, 1024);
+    check_eq!(RenewalOperationV1::FAMILY, "roll_mind_renewal_operation");
+    check_eq!(RenewalHeadV1::FAMILY, "roll_mind_renewal_head");
+    let ids: Vec<&str> = protocol::Transition::ALL.iter().map(|t| t.id()).collect();
+    check_eq!(
+        ids,
+        [
+            "draft_mind_renewal",
+            "fund_mind_renewal",
+            "settle_mind_renewal",
+            "refund_mind_renewal",
+            "close_mind_renewal"
+        ]
+    );
+    check_eq!(
+        <Personal as crate::commerce::renewal_twin::Rules>::anchor(token(1)).record(),
+        format!("v1/renewal_operation/{}", token(1))
+    );
     Ok(())
 }
 
