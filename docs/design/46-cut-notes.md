@@ -724,6 +724,11 @@ line.
 lines with them. The macro was small beside the twins; what this unit buys is one place to
 read and to change, not the rate.
 
+CT.2 landed first (main `003de2253`), and this unit was merged with it. With both in, the four
+totals are 10,522 of 45,090 (market, 23.3%), 20,913 of 99,897 (economy, 20.9%), 16,802 of
+91,607 (the Roll's commerce, 18.3%) and 11,605 of 40,352 (the kernel, 28.8%). CT.3 compares
+with these.
+
 **Check time** (§7.4), `cargo check -p <crate>` for the library, the crate's root file touched
 and every dependency already checked, in milliseconds, the median of the runs:
 
