@@ -203,7 +203,7 @@ fn no_private_result(events: &Events) {
     }
 }
 async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         raw(
@@ -322,7 +322,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             selector
         );
         let retained = capture(&world, &disk(&world));
-        let cold = PlayerWorld::boot_forks(f, &retained, true)?;
+        let cold = Rig::personal(f, Compose::FORKS).boot(&retained)?;
         assert_eq!(roll(&cold)?.mind(BUYER, "child")?, &child);
         let revision = roll(&cold)?.revision(BUYER, child.latest().ok_or("saved revision")?)?;
         let normalized = mush_roll::RevisionAdapter::normalize_source(
@@ -358,7 +358,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     result
 }
 async fn refusal(f: &PurchaseFixture, saved: &Durable, mode: &str) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         let job=submit(&mut world,true,true)?;ready(&world,job).await?;
@@ -400,7 +400,7 @@ async fn refusal(f: &PurchaseFixture, saved: &Durable, mode: &str) -> TestResult
     result
 }
 async fn issuer_independent(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let job = submit(&mut world, true, true)?;
@@ -443,7 +443,7 @@ async fn issuer_independent(f: &PurchaseFixture, saved: &Durable) -> TestResult 
     result
 }
 async fn diagnostics(f: &PurchaseFixture, saved: &Durable, expire: bool) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let edit = line(

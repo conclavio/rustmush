@@ -56,7 +56,7 @@ fn disk(world: &PlayerWorld) -> Disk {
         .collect()
 }
 async fn save(f: &PurchaseFixture, saved: &Durable) -> TestResult<(Durable, Revision)> {
-    let mut world = PlayerWorld::boot_updates(f, saved)?;
+    let mut world = Rig::personal(f, Compose::UPDATES).boot(saved)?;
     let tasks = world.tasks.clone();
     let result:TestResult<(Durable,Revision)>=async {
         let mind=roll(&world)?.mind(GOD,"Candidate")?;

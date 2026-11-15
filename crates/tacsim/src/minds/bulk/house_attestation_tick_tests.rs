@@ -24,12 +24,12 @@ fn refused(why: impl std::fmt::Display) -> TestResult<bool> {
     *REFUSED.lock().map_err(module_error)? = Some(why.to_string());
     Ok(false)
 }
-
-/// The House world with the owner attestations and the original-holdings read
-/// composed.
-fn boot_tick(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    boot_every_option(registry, saved, false, false, None, true, true)
-}
+/// The tick's world: the owner attestations and the original-holdings read composed.
+const TICKING: Compose = Compose {
+    owner_attestations: true,
+    original_holdings: true,
+    ..Compose::NONE
+};
 
 /// What a launch's finalize sets (the rig composes no launch): the House's
 /// attesting character, and the offer keys the agent's offers are signed with.
@@ -253,7 +253,7 @@ pub(super) fn exercise(
     let birth = one(rows(&saved.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
         serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
-    let mut w = boot_tick(registry, saved)?;
+    let mut w = Rig::house(registry, TICKING).boot(saved)?;
     let house_agent = agent(registry, &mut w)?;
     let result = story(registry, &mut w, (organization, scope), owner, house_agent);
     let mut values = registry.accounts.values.lock().map_err(module_error)?;
@@ -333,12 +333,12 @@ fn story(
     // 4. A restart between due and attestation: the tick queues the
     //    attestation and the world restarts before it lands. The restarted
     //    tick reads the generation still due and attests it once.
-    let mut cold = boot_tick(registry, &due)?;
+    let mut cold = Rig::house(registry, TICKING).boot(&due)?;
     arm(&mut cold, organization, house_agent)?;
     let queued = fire(&mut cold)?.ok_or("the queued attestation")?;
     check_eq!(queued.action.key().id.as_str(), HOUSE_ATTEST);
     check_eq!(queued.actor, house_agent, "queued as the agent");
-    let mut cold = boot_tick(registry, &saved(&cold))?;
+    let mut cold = Rig::house(registry, TICKING).boot(&saved(&cold))?;
     arm(&mut cold, organization, house_agent)?;
     check_eq!(generation(&cold, owner)?, json!("1"), "nothing landed");
     check_eq!(
@@ -354,7 +354,7 @@ fn story(
 
     // 5. A human curator attests first: the tick does nothing for that
     //    generation.
-    let mut curated = boot_tick(registry, &due)?;
+    let mut curated = Rig::house(registry, TICKING).boot(&due)?;
     arm(&mut curated, organization, house_agent)?;
     grant(&mut curated, GOD, scope)?;
     n += 1;
@@ -368,7 +368,7 @@ fn story(
     // 6. An Unattestable filing: an ungoverned seal mark inside the term. The
     //    tick never attests it, logs it exactly once, and the generation
     //    lapses at the end of Grace.
-    let mut marked = boot_tick(registry, &due)?;
+    let mut marked = Rig::house(registry, TICKING).boot(&due)?;
     arm(&mut marked, organization, house_agent)?;
     let hull = marked
         .engine

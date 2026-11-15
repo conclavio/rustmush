@@ -23,7 +23,9 @@ impl SubmissionRuntime for Runtime {
     }
 }
 fn branch(f: &Fixture, snapshot: &Durable) -> TestResult<Box<PlayerWorld>> {
-    let mut w = boot(f, snapshot)?;
+    let mut w = Rig::house(f, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     w.engine.set_submission_runtime(Arc::new(Runtime))?;
     w.engine.set_offer_keys(mush_core::OfferKeyRing::new(
         mush_core::OfferSecret::new(1, [0x79; 32])?,
@@ -208,7 +210,9 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
     none(&mut w);
     check_eq!(balance(&w, payer)?, money);
     current_same(&w, &old, &predecessor)?;
-    let _cold = boot(f, &saved(&w))?;
+    let _cold = Rig::house(f, Compose::HOUSE_RENEWALS)
+        .boot(&saved(&w))
+        .map(Box::new)?;
 
     // Successful accepted funding is advanced by exact installed readback.
     let mut healthy = branch(f, &drafted)?;
@@ -221,7 +225,9 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
     tick(&mut healthy)?;
     none(&mut healthy);
     check_eq!(licence(&healthy, id)?.term().get(), 2);
-    let _cold = boot(f, &saved(&healthy))?;
+    let _cold = Rig::house(f, Compose::HOUSE_RENEWALS)
+        .boot(&saved(&healthy))
+        .map(Box::new)?;
 
     for invalidated in [false, true] {
         let mut close = branch(f, &drafted)?;
@@ -282,13 +288,17 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
         )?;
         current_same(&close, &old, &predecessor)?;
         check_eq!(balance(&close, payer)?, money);
-        let _cold = boot(f, &saved(&close))?;
+        let _cold = Rig::house(f, Compose::HOUSE_RENEWALS)
+            .boot(&saved(&close))
+            .map(Box::new)?;
     }
     Ok(())
 }
 /// Actual registered GC must preserve both terminal holds needed for cold proof.
 pub(super) fn retention(f: &Fixture, snapshot: &Durable, n: u128) -> TestResult {
-    let mut w = boot(f, snapshot)?;
+    let mut w = Rig::house(f, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     let before = operation(&w, n)?;
     let hold = match before.state() {
         RenewalStateV1::Granted { funding, .. } | RenewalStateV1::Refunded { funding, .. } => {
@@ -315,7 +325,9 @@ pub(super) fn retention(f: &Fixture, snapshot: &Durable, n: u128) -> TestResult 
     );
     let audit = economy(&w)?.house_renewal_audit()?;
     before.verify_history(&audit.get(token(n))?)?;
-    let cold = boot(f, &saved(&w))?;
+    let cold = Rig::house(f, Compose::HOUSE_RENEWALS)
+        .boot(&saved(&w))
+        .map(Box::new)?;
     check_eq!(operation(&cold, n)?, before);
     check!(economy(&cold)?.snapshot().hold(hold).is_some());
     Ok(())

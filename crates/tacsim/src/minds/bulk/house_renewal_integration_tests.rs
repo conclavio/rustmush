@@ -1,8 +1,12 @@
 //! Actual granted House purchase continues through genuine offered-contract renewal.
 //! No receipt/certificate is invented. All signed actions install the real owner union.
 use super::*;
+use crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::renewal_twins;
+use mush_core::CommitToken;
 use mush_market::mind_house_renewal::{MindRenewalOperationV1, MindRenewalReceiptV1};
-use mush_roll::commerce::house_renewal::{RenewalAttemptV1, RenewalHeadV1, RenewalStateV1};
+use mush_roll::commerce::house_renewal::{
+    RenewalAttemptV1, RenewalHeadV1, RenewalOperationV1, RenewalStateV1,
+};
 use mush_roll::commerce::records::OwnerTerm;
 use mush_roll::commerce::{TermGeneration, TermPhase, WorldIcSeconds};
 #[path = "house_renewal_service_integration_tests.rs"]
@@ -57,9 +61,6 @@ fn operation(w: &PlayerWorld, n: u128) -> TestResult<MindRenewalOperationV1> {
 }
 fn step(w: &mut PlayerWorld, id: &str, n: u128, params: Value) -> TestResult<Vec<ReplayWrite>> {
     perform(w, id, BUYER, n, params)
-}
-fn boot(registry: &Fixture, snapshot: &Durable) -> TestResult<Box<PlayerWorld>> {
-    Ok(Box::new(super::boot_options(registry, snapshot, true)?))
 }
 
 /// M8c B4: the House attestation's action and its operation family.
@@ -146,13 +147,15 @@ pub(super) fn attest_house(
         serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
     let params = json!({"owner_licence": owner.get(), "org": organization.0});
     let personal = json!({"owner_licence": owner.get()});
-    let plain = boot(registry, snapshot)?;
+    let plain = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     check!(
         roll_action(&plain, HOUSE_ATTEST).is_err(),
         "the House attestation is composed with the owner attestations alone"
     );
     drop(plain);
-    let mut w = boot_attestations(registry, snapshot)?;
+    let mut w = Rig::house(registry, Compose::HOUSE_ATTESTATIONS).boot(snapshot)?;
     check_eq!(organization, OrgId(0), "F8: organisation 0 attests");
     check_ne!(
         roll_action(&w, HOUSE_ATTEST)?,
@@ -305,12 +308,16 @@ pub(super) fn attest_house(
         "generation 2 is not due, after the grant: {error}"
     );
     let attested = saved(&w);
-    let cold = boot_attestations(registry, &attested)?;
+    let cold = Rig::house(registry, Compose::HOUSE_ATTESTATIONS).boot(&attested)?;
     check_eq!(current_generation(&cold, owner)?, json!("2"));
     check_eq!(owner_generation(&cold, owner, 2)?, second);
     drop(cold);
     check!(
-        crate::test_checks::refused(boot(registry, &attested))?,
+        crate::test_checks::refused(
+            Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(&attested)
+                .map(Box::new)
+        )?,
         "a retained House generation needs the attestation composed"
     );
     Ok(())
@@ -333,7 +340,9 @@ fn fresh_fences(
         (funded, GRANT, json!({"operation":token(START)})),
     ] {
         for boundary in 0..3 {
-            let mut w = boot(registry, base)?;
+            let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(base)
+                .map(Box::new)?;
             let before = balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?;
             if boundary == 0 {
                 command(&mut w, "@org/status House=suspended")?;
@@ -365,7 +374,9 @@ fn fresh_fences(
         (funded, GRANT, json!({"operation":token(START)})),
     ] {
         for after_stage in [false, true] {
-            let mut w = boot(registry, base)?;
+            let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(base)
+                .map(Box::new)?;
             let before = disk(&w);
             let (p, o) = direct(&mut w, action, BUYER, START + 71, params.clone())?;
             if after_stage {
@@ -384,6 +395,180 @@ fn fresh_fences(
     }
     Ok(())
 }
+/// Doc 46 CT.8: the House issuer's renewal twin, for the scenarios both issuers run.
+struct HouseTwin<'a> {
+    registry: &'a Fixture,
+    /// The granted House purchase, before any renewal.
+    granted: &'a Durable,
+    licence: LicenceId,
+    charter: mush_roll::commerce::CharterId,
+    birth: CommitToken,
+}
+impl renewal_twins::Twin for HouseTwin<'_> {
+    const DRAFT: &'static str = DRAFT;
+    const FUND: &'static str = FUND;
+    const GRANT: &'static str = GRANT;
+    const REFUND: &'static str = REFUND;
+    const CLOSE: &'static str = CLOSE;
+    const MARKET_OP: &'static str = OP;
+    const RECEIPT: &'static str = RECEIPT;
+    const ROLL_OP: &'static str = ROLL_OP;
+    const HEAD: &'static str = HEAD;
+    const ECONOMICS: &'static str = "roll_mind_house_term_economics";
+    const ECONOMY_OFFER: &'static str = "house-renewal-offer:";
+    const LOGIN_PAIR: bool = false;
+    fn licence(&self) -> LicenceId {
+        self.licence
+    }
+    fn charter(&self) -> ObjId {
+        self.charter.object()
+    }
+    fn renewer(&self) -> ObjId {
+        BUYER
+    }
+    fn boot(&self, saved: &Durable) -> TestResult<PlayerWorld> {
+        Rig::house(self.registry, Compose::HOUSE_RENEWALS).boot(saved)
+    }
+    fn boot_disabled(&self, saved: &Durable) -> TestResult<PlayerWorld> {
+        Rig::house(self.registry, Compose::NONE).boot(saved)
+    }
+    fn due_world(&self) -> TestResult<PlayerWorld> {
+        let mut w = self.boot(self.granted)?;
+        let due = self.term_end(&w)?;
+        set_ic(&mut w, due)?;
+        Ok(w)
+    }
+    fn set_time(&self, w: &mut PlayerWorld, at: i64) -> TestResult {
+        set_ic(w, at)
+    }
+    fn term_end(&self, w: &PlayerWorld) -> TestResult<i64> {
+        let old = licence(w, self.licence)?;
+        Ok(paid(w, self.licence, old.term().get())?
+            .window()
+            .term_end()
+            .get())
+    }
+    fn disk(&self, w: &PlayerWorld) -> Disk {
+        disk(w)
+    }
+    fn capture(&self, w: &PlayerWorld) -> Durable {
+        saved(w)
+    }
+    fn balances(&self, w: &PlayerWorld) -> TestResult<Vec<(WalletId, Amount, Amount)>> {
+        Ok(economy(w)?
+            .snapshot()
+            .accounts()
+            .map(|a| (a.id, a.posted_balance, a.held_amount))
+            .collect())
+    }
+    fn current(&self, w: &PlayerWorld) -> TestResult<Value> {
+        let old = licence(w, self.licence)?;
+        Ok(json!([
+            serde_json::to_value(&old)?,
+            self.term_at(w, old.term())?,
+            self.economics_at(w, old.term())?,
+        ]))
+    }
+    fn term_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
+        Ok(serde_json::to_value(paid(
+            w,
+            self.licence,
+            generation.get(),
+        )?)?)
+    }
+    fn economics_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
+        let mut found = rows(&disk(w), "roll", "roll_mind_house_term_economics")
+            .into_iter()
+            .filter(|v| {
+                v.get("licence") == Some(&json!(self.licence))
+                    && v.get("generation") == Some(&json!(generation))
+            });
+        let actual = found.next().ok_or("actual retained House economics")?;
+        check!(found.next().is_none(), "economics generation is unique");
+        Ok(actual)
+    }
+    fn head(&self, w: &PlayerWorld) -> TestResult<(Option<CommitToken>, CommitToken)> {
+        let head: RenewalHeadV1 = row(w, "roll", HEAD, "licence", json!(self.licence))?;
+        Ok((head.pending(), head.last_operation()))
+    }
+    fn operation(&self, w: &PlayerWorld, n: u128) -> TestResult<renewal_twins::Operation> {
+        let actual: RenewalOperationV1 = row(w, "roll", ROLL_OP, "operation", json!(token(n)))?;
+        let market = operation(w, n)?;
+        market.matches_roll(&actual)?;
+        let audit = economy(w)?.house_renewal_audit()?;
+        let proof = audit.get(token(n))?;
+        actual.verify_history(&proof)?;
+        market.verify_history(&proof)?;
+        let receipts: Vec<_> = rows(&disk(w), "market", RECEIPT)
+            .into_iter()
+            .filter(|v| v.get("operation") == Some(&json!(token(n))))
+            .collect();
+        if actual.state().pending() {
+            check!(receipts.is_empty(), "pending offer has no terminal receipt");
+        } else {
+            check_eq!(receipts.len(), 1);
+            let receipt: MindRenewalReceiptV1 =
+                serde_json::from_value(receipts.into_iter().next().ok_or("receipt")?)?;
+            receipt.verify_history(&market, &proof)?;
+        }
+        Ok(renewal_twins::Operation {
+            pending: actual.state().pending(),
+            retryable: actual.state().retryable(),
+            attempt: actual.attempt(),
+            next: actual.binding().next(),
+            contract: serde_json::to_value(actual.contract())?,
+            consent: serde_json::to_value(actual.consent_hash())?,
+            binding: serde_json::to_value(actual.binding())?,
+            expires_at: market.offer().terms.expires_at.at,
+        })
+    }
+    fn licence_operation(&self, w: &PlayerWorld) -> TestResult<CommitToken> {
+        Ok(licence(w, self.licence)?.operation())
+    }
+    fn birth_operation(&self) -> CommitToken {
+        self.birth
+    }
+    fn title_owner(&self, w: &PlayerWorld) -> TestResult<Value> {
+        Ok(serde_json::to_value(
+            &economy(w)?
+                .snapshot()
+                .asset(ObjId(self.charter.get()))
+                .ok_or("title")?
+                .title_owner,
+        )?)
+    }
+    fn prepare(
+        &self,
+        w: &mut PlayerWorld,
+        id: &str,
+        actor: ObjId,
+        n: u128,
+        params: Value,
+    ) -> TestResult<renewal_twins::Prepared> {
+        direct(w, id, actor, n, params)
+    }
+    fn stage(
+        &self,
+        w: &mut PlayerWorld,
+        id: &str,
+        actor: ObjId,
+        n: u128,
+        params: Value,
+        (prepared, output): renewal_twins::Prepared,
+    ) -> TestResult {
+        stage(w, id, actor, n, params, prepared, output)
+    }
+    fn step(&self, w: &mut PlayerWorld, id: &str, n: u128, params: Value) -> TestResult {
+        step(w, id, n, params).map(drop)
+    }
+    fn merge_login_accounts(&self) -> TestResult<mush_core::AccountId> {
+        Err("a House is paid through its treasury: no login account pair".into())
+    }
+    fn restore_login_account(&self, _seller: mush_core::AccountId) -> TestResult {
+        Err("a House is paid through its treasury: no login account pair".into())
+    }
+}
+
 #[inline(never)]
 pub(super) fn exercise(
     registry: &Fixture,
@@ -392,7 +577,9 @@ pub(super) fn exercise(
     issuer_grace_end: i64,
 ) -> TestResult<Durable> {
     service::exercise(registry, snapshot, id)?;
-    let mut w = boot(registry, snapshot)?;
+    let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     let old = licence(&w, id)?;
     let predecessor = paid(&w, id, 1)?;
     let birth = rows(&disk(&w), "roll", "roll_mind_house_purchase");
@@ -441,9 +628,11 @@ pub(super) fn exercise(
         "automatic predecessor offered once"
     );
     let drafted = saved(&w);
-    let _cold_draft = boot(registry, &drafted)?;
+    let _cold_draft = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&drafted)
+        .map(Box::new)?;
     check!(
-        super::boot(registry, &drafted).is_err(),
+        Rig::house(registry, Compose::NONE).boot(&drafted).is_err(),
         "disabled renewal cannot ignore native offer"
     );
     let payer = draft.offer().terms.payer;
@@ -474,10 +663,14 @@ pub(super) fn exercise(
     check_eq!(balance(&w, payer)?, (money.0, Amount::from_minor(300)));
     current_same(&w, &old, &predecessor)?;
     let funded = saved(&w);
-    let _cold_funded = boot(registry, &funded)?;
+    let _cold_funded = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&funded)
+        .map(Box::new)?;
     fresh_fences(registry, &due, &drafted, &funded, id)?;
     // A real held refund survives issuer loss and cannot extend the predecessor.
-    let mut refund = boot(registry, &funded)?;
+    let mut refund = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&funded)
+        .map(Box::new)?;
     command(&mut refund, "@org/status House=suspended")?;
     step(
         &mut refund,
@@ -487,7 +680,9 @@ pub(super) fn exercise(
     )?;
     check_eq!(balance(&refund, payer)?, money);
     current_same(&refund, &old, &predecessor)?;
-    let _cold_refund = boot(registry, &saved(&refund))?;
+    let _cold_refund = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&saved(&refund))
+        .map(Box::new)?;
     service::retention(registry, &saved(&refund), START)?;
     check!(
         direct(
@@ -540,7 +735,9 @@ pub(super) fn exercise(
         START + 8,
         json!({"operation":token(START+6)}),
     )?;
-    let retry_cold = boot(registry, &saved(&refund))?;
+    let retry_cold = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&saved(&refund))
+        .map(Box::new)?;
     check_eq!(
         licence(&retry_cold, id)?.term().get(),
         2,
@@ -607,7 +804,9 @@ pub(super) fn exercise(
     );
     let granted = saved(&w);
     service::retention(registry, &granted, START)?;
-    let cold = boot(registry, &granted)?;
+    let cold = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&granted)
+        .map(Box::new)?;
     check_eq!(licence(&cold, id)?, actual);
     let receipt: MindRenewalReceiptV1 =
         row(&cold, "market", RECEIPT, "operation", json!(token(START)))?;
@@ -623,7 +822,10 @@ pub(super) fn exercise(
         let mut missing = granted.clone();
         check!(remove_family(&mut missing, owner, family) > 0);
         check!(
-            boot(registry, &missing).is_err(),
+            Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(&missing)
+                .map(Box::new)
+                .is_err(),
             "missing renewal inverse accepted"
         );
     }
@@ -637,7 +839,10 @@ pub(super) fn exercise(
         remove_family(&mut missing, owner, family);
     }
     check!(
-        boot(registry, &missing).is_err(),
+        Rig::house(registry, Compose::HOUSE_RENEWALS)
+            .boot(&missing)
+            .map(Box::new)
+            .is_err(),
         "all missing typed history cannot hide native renewal"
     );
     let mut crossed = granted.clone();
@@ -648,7 +853,12 @@ pub(super) fn exercise(
             .ok_or("scope")? = json!(draft.binding().issuer().scope().0 + 1);
         Ok(())
     })?;
-    check!(boot(registry, &crossed).is_err());
+    check!(
+        Rig::house(registry, Compose::HOUSE_RENEWALS)
+            .boot(&crossed)
+            .map(Box::new)
+            .is_err()
+    );
     // Existing paid generation is independent of issuer loss; no automatic extension.
     set_ic(&mut w, issuer_grace_end)?;
     command(&mut w, "@org/status House=suspended")?;
@@ -677,10 +887,28 @@ pub(super) fn exercise(
     );
     selection(&mut w, id, true)?;
     let independent = saved(&w);
-    let mut cold = boot(registry, &independent)?;
+    let mut cold = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&independent)
+        .map(Box::new)?;
     selection(&mut cold, id, true)?;
     set_ic(&mut cold, next.window().grace_end().get())?;
     selection(&mut cold, id, false)?;
+    // Doc 46 CT.8: the personal story's scenarios, run for the House twin beside its own.
+    // They run on branches of the granted purchase and of the renewed store, and are left
+    // out of CT.0b's record, whose House file pins this story as it was before them.
+    let _aside = ct0b::aside();
+    let twin = HouseTwin {
+        registry,
+        granted: snapshot,
+        licence: id,
+        charter: old.charter(),
+        birth: old.operation(),
+    };
+    renewal_twins::retries(&twin, START + 1_000)?;
+    renewal_twins::title_fences(&twin, START + 1_000)?;
+    renewal_twins::accounts_and_expiry(&twin, START + 1_000)?;
+    renewal_twins::corruptions(&twin, &granted, START)?;
+    renewal_twins::economy_history_alone(&twin, START + 1_000)?;
     Ok(independent)
 }
 
@@ -689,7 +917,9 @@ pub(super) async fn checkout(
     snapshot: &Durable,
     licence: LicenceId,
 ) -> TestResult {
-    let mut w = boot(registry, snapshot)?;
+    let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     let tasks = w.tasks.clone();
     let result: TestResult = async {
         let term = paid(&w, licence, self::licence(&w, licence)?.term().get())?;

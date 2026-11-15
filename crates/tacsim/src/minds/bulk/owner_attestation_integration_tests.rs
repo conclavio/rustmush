@@ -5,9 +5,6 @@ use super::*;
 const START: u128 = 23_000_000;
 const ACTION: &str = "attest_owner_mind";
 const OPS: &str = "roll_mind_owner_attestation_operation";
-fn boot(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    PlayerWorld::boot_owner_attestation(f, saved)
-}
 fn params(owner: LicenceId) -> Value {
     json!({"owner_licence":owner.get()})
 }
@@ -152,7 +149,7 @@ async fn fences(
     parent_end: i64,
 ) -> TestResult {
     for mode in ["foreign", "clock", "lapse_stage", "lapse_take", "title"] {
-        let mut w = boot(f, saved)?;
+        let mut w = Rig::personal(f, Compose::OWNER_ATTESTATION).boot(saved)?;
         let tasks = w.tasks.clone();
         let result: TestResult = (|| {
             let before = disk(&w);
@@ -202,7 +199,7 @@ async fn fences(
         tasks.shutdown(Duration::from_secs(5)).await;
         result?;
     }
-    let mut w = boot(f, saved)?;
+    let mut w = Rig::personal(f, Compose::OWNER_ATTESTATION).boot(saved)?;
     let tasks = w.tasks.clone();
     let result: TestResult = (|| {
         let (p, o) = prepare_attest(&mut w, BUYER, START + 31, params(owner))?;
@@ -225,7 +222,7 @@ async fn fences(
 // definition readiness must still fence title authority through custody.
 async fn original_economy_freeze(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     for at in 0..3 {
-        let mut w = boot(f, saved)?;
+        let mut w = Rig::personal(f, Compose::OWNER_ATTESTATION).boot(saved)?;
         let tasks = w.tasks.clone();
         let result: TestResult = (|| {
             let before = disk(&w);
@@ -272,7 +269,7 @@ async fn original_economy_freeze(f: &PurchaseFixture, saved: &Durable) -> TestRe
 }
 async fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     assert!(
-        crate::test_checks::refused(PlayerWorld::boot_owner_qualification(f, saved))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(saved))?,
         "disabled attestation accepted retained generations"
     );
     for mode in [
@@ -348,7 +345,7 @@ async fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             }
         }
         assert!(
-            crate::test_checks::refused(boot(f, &bad))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::OWNER_ATTESTATION).boot(&bad))?,
             "cold generation/cause corruption became current authority"
         );
     }
@@ -362,7 +359,7 @@ pub(super) async fn exercise(
 ) -> TestResult {
     let mut tasks = Vec::new();
     let result: TestResult = async {
-        let mut w = boot(f, saved)?;
+        let mut w = Rig::personal(f, Compose::OWNER_ATTESTATION).boot(saved)?;
         tasks.push(w.tasks.clone());
         let child = term(&w, owner, 1)?;
         let source = super::child_source(&w, owner)?;
@@ -404,7 +401,7 @@ pub(super) async fn exercise(
         unchanged(&w, &retained)?;
         source_answer(&mut w, BUYER, owner, Some(source))?;
         let generation_two = capture(&w, &disk(&w));
-        let mut cold_two = boot(f, &generation_two)?;
+        let mut cold_two = Rig::personal(f, Compose::OWNER_ATTESTATION).boot(&generation_two)?;
         tasks.push(cold_two.tasks.clone());
         assert_eq!(current(&cold_two, owner)?, 2);
         assert!(
@@ -465,7 +462,7 @@ pub(super) async fn exercise(
         )?;
         let saved = capture(&w, &disk(&w));
         super::super::story_phase("attestation.corruptions", || corruptions(f, &saved))?.await?;
-        let mut cold = boot(f, &saved)?;
+        let mut cold = Rig::personal(f, Compose::OWNER_ATTESTATION).boot(&saved)?;
         tasks.push(cold.tasks.clone());
         assert_eq!(current(&cold, owner)?, 3);
         source_answer(&mut cold, BUYER, owner, Some(source))?;

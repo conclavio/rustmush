@@ -17,7 +17,7 @@ fn setup(
     f: &PurchaseFixture,
     granted: &Durable,
 ) -> TestResult<(Durable, RegistryRevocationPolicy)> {
-    let mut world = PlayerWorld::boot_entitlements(f, granted)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(granted)?;
     world.say(GOD, &format!("@org/create {ORG}"))?;
     world.say(GOD, &format!("@org/scope create {ORG}=revocation"))?;
     let state = world
@@ -45,7 +45,7 @@ fn setup(
     )?;
     let policy = RegistryRevocationPolicy::new(issuer()?, org, scope, vec![BUYER])?;
     let saved = capture(&world, &disk(&world));
-    let mut configured = PlayerWorld::boot_revocation(f, &saved, policy.clone())?;
+    let mut configured = Rig::personal(f, Compose::revocation(policy.clone())).boot(&saved)?;
     configured
         .engine
         .set_offer_keys(mush_core::OfferKeyRing::new(
@@ -186,7 +186,7 @@ fn fences(
     policy: &RegistryRevocationPolicy,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut disabled = PlayerWorld::boot_entitlements(f, saved)?;
+    let mut disabled = Rig::personal(f, Compose::ENTITLEMENTS).boot(saved)?;
     check!(action(&disabled, "roll", ACTION, 1).is_err());
     check!(crate::test_checks::refused(prepare(
         &mut disabled,
@@ -198,7 +198,7 @@ fn fences(
         params(a.licence())
     ))?);
     for after_stage in [false, true] {
-        let mut world = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+        let mut world = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
         check!(
             crate::test_checks::refused(prepare(
                 &mut world,
@@ -234,7 +234,7 @@ fn fences(
     // Readiness is a live composed latch, not the mere continued existence of
     // an Org slot or an old generic AuthWitness.
     for after_stage in [false, true] {
-        let mut world = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+        let mut world = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
         let (prepared, output) = prepare(
             &mut world,
             "roll",
@@ -349,7 +349,7 @@ fn publication(
     owner: LicenceId,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut w = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+    let mut w = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
     source_answer(&mut w, BUYER, owner, Some(a.revision().source()))?;
     source_answer(&mut w, GOD, a.licence(), Some(a.revision().source()))?;
     let before = disk(&w);
@@ -396,14 +396,14 @@ fn publication(
     );
     notices(&mut w, owner, a.licence())?;
     let retained = capture(&w, &disk(&w));
-    let mut cold = PlayerWorld::boot_revocation(f, &retained, policy.clone())?;
+    let mut cold = Rig::personal(f, Compose::revocation(policy.clone())).boot(&retained)?;
     source_answer(&mut cold, BUYER, owner, None)?;
     source_answer(&mut cold, GOD, a.licence(), None)?;
     private_status(&mut cold, GOD, a.licence(), true)?;
     // Revoking current operator authority cannot erase retained sanctions.
     suspend(&mut cold)?;
     let revoked_policy = capture(&cold, &disk(&cold));
-    let mut disabled = PlayerWorld::boot_entitlements(f, &revoked_policy)?;
+    let mut disabled = Rig::personal(f, Compose::ENTITLEMENTS).boot(&revoked_policy)?;
     check!(action(&disabled, "roll", ACTION, 1).is_err());
     private_status(&mut disabled, GOD, a.licence(), true)?;
     source_answer(&mut disabled, GOD, a.licence(), None)?;
@@ -435,7 +435,9 @@ fn cold_corruptions(
         });
         check_eq!(broken.disk.len() + 1, before);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_revocation(f, &broken, policy.clone()))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::revocation(policy.clone())).boot(&broken)
+            )?,
             "missing paired {remove}"
         );
     }
@@ -459,7 +461,9 @@ fn cold_corruptions(
             },
         );
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_revocation(f, &broken, policy.clone()))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::revocation(policy.clone())).boot(&broken)
+            )?,
             "crossed term proof {field}"
         );
     }
@@ -472,7 +476,7 @@ fn parent_independence(
     owner: LicenceId,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut w = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+    let mut w = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
     let parent: PaidTermRecord = serde_json::from_value(
         rows(&disk(&w), "roll", "roll_mind_paid_term")
             .into_iter()
@@ -484,7 +488,7 @@ fn parent_independence(
     source_answer(&mut w, BUYER, owner, None)?;
     source_answer(&mut w, GOD, a.licence(), Some(a.revision().source()))?;
     let retained = capture(&w, &disk(&w));
-    let mut cold = PlayerWorld::boot_revocation(f, &retained, policy.clone())?;
+    let mut cold = Rig::personal(f, Compose::revocation(policy.clone())).boot(&retained)?;
     source_answer(&mut cold, BUYER, owner, None)?;
     source_answer(&mut cold, GOD, a.licence(), Some(a.revision().source()))?;
     Ok(())
@@ -496,7 +500,7 @@ fn late_consumer_fence(
     owner: LicenceId,
 ) -> TestResult {
     for after_stage in [false, true] {
-        let mut w = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+        let mut w = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
         w.engine.world.move_to(BUYER, ROOM)?;
         w.commit()?;
         let before = disk(&w);
@@ -547,7 +551,7 @@ fn new_owner_term(
     saved: &Durable,
     policy: &RegistryRevocationPolicy,
 ) -> TestResult {
-    let mut w = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+    let mut w = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
     // This is the genuine original author's first filing, verified before using its ID.
     let owner = LicenceId::new(1)?;
     let birth: InitialFilingOperation = serde_json::from_value(
@@ -612,7 +616,7 @@ fn new_owner_term(
     let old = w.say(GOD, &format!("@mindrevoke/status {}/1", owner.get()))?;
     check!(PlayerWorld::private_text(&old, GOD).contains("Registry revocation: your mind licence"));
     let saved = capture(&w, &disk(&w));
-    let mut cold = PlayerWorld::boot_revocation(f, &saved, policy.clone())?;
+    let mut cold = Rig::personal(f, Compose::revocation(policy.clone())).boot(&saved)?;
     original_owner_available(&mut cold, owner, true)?;
     Ok(())
 }
@@ -622,7 +626,7 @@ fn grace_admission(
     policy: &RegistryRevocationPolicy,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut w = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+    let mut w = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
     let term = own_term(&w, a.licence())?;
     w.engine.world.set_now(term.window().term_end().get());
     revoke(&mut w, a.licence(), START + 40)?;
@@ -634,7 +638,7 @@ fn grace_admission(
     // A rollback cannot restore use of that accepted generation.
     w.engine.world.set_now(term.window().issued_at().get());
     source_answer(&mut w, GOD, a.licence(), None)?;
-    let mut expired = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+    let mut expired = Rig::personal(f, Compose::revocation(policy.clone())).boot(saved)?;
     expired
         .engine
         .world
@@ -652,7 +656,7 @@ async fn already_sealed(
     policy: &RegistryRevocationPolicy,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_revocation(f, granted, policy.clone())?;
+    let mut world = Rig::personal(f, Compose::revocation(policy.clone())).boot(granted)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         world.say(GOD, "SIM TEAM red")?;

@@ -56,7 +56,7 @@ fn assert_same(mind: &mush_roll::Mind, other: &mush_roll::Mind) {
     );
 }
 async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let initial = roll(&world)?.mind(BUYER, "child")?.clone();
@@ -131,7 +131,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         assert!(edited.require_original_access().is_err());
         assert!(one(rows(&disk(&world), "roll", "roll_mind_draft_parent"))? == selector);
         assert!(rows(&disk(&world), "roll", "roll_mind_paid_term") == paid);
-        let cold = PlayerWorld::boot_forks(f, &capture(&world, &disk(&world)), true)?;
+        let cold = Rig::personal(f, Compose::FORKS).boot(&capture(&world, &disk(&world)))?;
         let cold_same = roll(&cold)?.mind(BUYER, "child")? == &edited;
         cold.tasks.shutdown(Duration::from_secs(5)).await;
         assert!(cold_same, "real cold audit preserves marked replacement");
@@ -164,7 +164,7 @@ enum Stop {
     Capacity,
 }
 async fn refusal(f: &PurchaseFixture, saved: &Durable, why: Stop) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let later = world.engine.world.now().checked_add(10).ok_or("clock")?;

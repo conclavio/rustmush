@@ -78,7 +78,7 @@ fn probe(world: &mut PlayerWorld, conn: u64, verb: &str, accepted: bool) -> Test
     Ok(())
 }
 async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         let before=disk(&world);let initial=roll(&world)?.mind(BUYER,"child")?.clone();
@@ -142,7 +142,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         assert!(world.engine.world.now()<term.window().grace_end().get());
         assert!(read_saved(&mut world,"history")?.source==source);
         let retained=capture(&world,&disk(&world));
-        let mut cold=PlayerWorld::boot_forks(f,&retained,true)?;let cold_tasks=cold.tasks.clone();
+        let mut cold=Rig::personal(f, Compose::FORKS).boot(&retained)?;let cold_tasks=cold.tasks.clone();
         let read=read_saved(&mut cold,"history");cold_tasks.shutdown(Duration::from_secs(5)).await;
         assert!(read?.source==source,"cold source/selector audit preserves exact history");
         assert!(rows(&disk(&world),"roll","roll_mind_paid_term")==paid,"historical reads never renew grants");
@@ -167,7 +167,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     result
 }
 async fn held(f: &PurchaseFixture, saved: &Durable, mode: &str) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         probe(&mut world, BUYER_CONN, "capture-history", true)?;
@@ -247,7 +247,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
     // Explicitly disabling fork support refuses retained marked records at the
     // real final owner audit; it cannot silently load them as original source.
     assert!(
-        crate::test_checks::refused(PlayerWorld::boot(f, saved))?,
+        crate::test_checks::refused(Rig::purchase(f).boot(saved))?,
         "default composition cannot reinterpret marked records"
     );
     // A raw status bit without its actual acknowledged cause is corruption,
@@ -259,7 +259,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
             Ok(())
         })?;
         assert!(
-            crate::test_checks::refused(PlayerWorld::boot_forks(f, &changed, true))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::FORKS).boot(&changed))?,
             "uncorroborated status must fail the actual cold audit"
         );
     }

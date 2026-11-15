@@ -206,7 +206,7 @@ fn restart_with(
     zero: bool,
 ) -> TestResult {
     let snapshot = capture(world, &disk(world));
-    *world = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    *world = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
     seat(world)?;
     arm(world, house, zero)
 }
@@ -222,7 +222,7 @@ pub(super) fn procurement_tick(
     granted: &Durable,
     owner: LicenceId,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_entitlements(f, granted)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(granted)?;
     cash(&mut world)?;
     world.say(GOD, "@org/create House")?;
     let (org, root) = {

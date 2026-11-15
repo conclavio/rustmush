@@ -58,7 +58,7 @@ fn branch(
 ) -> TestResult<(PurchaseFixture, PlayerWorld)> {
     let resources = Resources::reconformance_config(cfg)?;
     let composed = PurchaseFixture::boot(resources, f.accounts.clone(), saved)?;
-    let mut world = PlayerWorld::boot(&composed, saved)?;
+    let mut world = Rig::purchase(&composed).boot(saved)?;
     world.engine.set_submission_runtime(Arc::new(Runtime))?;
     world.engine.set_offer_keys(mush_core::OfferKeyRing::new(
         mush_core::OfferSecret::new(1, [0x92; 32])?,
@@ -390,7 +390,7 @@ async fn scenario(
         let tasks = w.tasks.clone();
         drop(w);
         tasks.shutdown(Duration::from_secs(5)).await;
-        let mut w = PlayerWorld::boot(&configured, &cancelled)?;
+        let mut w = Rig::purchase(&configured).boot(&cancelled)?;
         all_tasks.push(w.tasks.clone());
         w.engine.set_submission_runtime(Arc::new(Runtime))?;
         w.engine.set_offer_keys(mush_core::OfferKeyRing::new(
@@ -456,7 +456,7 @@ async fn scenario(
                 .iter()
                 .any(|v| paid.contains(v))
         );
-        let mut positive = PlayerWorld::boot(&configured, &result)?;
+        let mut positive = Rig::purchase(&configured).boot(&result)?;
         all_tasks.push(positive.tasks.clone());
         positive.select()?;
         let tasks = positive.tasks.clone();
@@ -469,7 +469,7 @@ async fn scenario(
             let mut corrupt = result.clone();
             assert!(remove_family(&mut corrupt, "roll", family) > 0);
             assert!(
-                crate::test_checks::is_refusal(PlayerWorld::boot(&configured, &corrupt)),
+                crate::test_checks::is_refusal(Rig::purchase(&configured).boot(&corrupt)),
                 "missing re-conformance history refused"
             );
         }
@@ -497,7 +497,7 @@ async fn scenario(
             status.get("recalled_by"),
             causes.first().and_then(|v| v.get("operation"))
         );
-        let cold = PlayerWorld::boot(&rejected_config, &rejected)?;
+        let cold = Rig::purchase(&rejected_config).boot(&rejected)?;
         all_tasks.push(cold.tasks.clone());
         let tasks = cold.tasks.clone();
         drop(cold);
@@ -505,7 +505,7 @@ async fn scenario(
         for family in [CAUSE, "rating_nonconformance", HEAD] {
             let mut corrupt = rejected.clone();
             assert!(remove_family(&mut corrupt, "roll", family) > 0);
-            assert!(crate::test_checks::is_refusal(PlayerWorld::boot(&rejected_config, &corrupt)));
+            assert!(crate::test_checks::is_refusal(Rig::purchase(&rejected_config).boot(&corrupt)));
         }
         let tasks = w.tasks.clone();
         drop(w);

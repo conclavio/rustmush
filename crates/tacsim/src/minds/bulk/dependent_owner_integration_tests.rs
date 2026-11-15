@@ -264,7 +264,7 @@ async fn exercise_cold_execution(
 ) -> TestResult {
     // Exact same typed+owner union cold-loads, including complete roots and
     // historical parent grant/E4 evidence, before any player use.
-    let mut cold = PlayerWorld::boot_dependent(f, filed)?;
+    let mut cold = Rig::personal(f, Compose::DEPENDENT).boot(filed)?;
     filed_source(&mut cold, BUYER, licence, true, saved.source())?;
     filed_source(&mut cold, GOD, licence, false, saved.source())?;
     select(&mut cold, licence, true)?;
@@ -362,7 +362,7 @@ async fn exercise_title_and_expiry(
     licence: u64,
     shell: ObjId,
 ) -> TestResult {
-    let mut sale = PlayerWorld::boot_dependent(f, filed)?;
+    let mut sale = Rig::personal(f, Compose::DEPENDENT).boot(filed)?;
     let listing = f.config.quotes.listing_action()?;
     for actor in [GOD, BUYER] {
         sale.engine.world.move_to(actor, ROOM)?;
@@ -400,7 +400,7 @@ async fn exercise_title_and_expiry(
     );
     assert_eq!(disk(&sale), before_sale);
     sale.tasks.shutdown(Duration::from_secs(5)).await;
-    let mut titles = PlayerWorld::boot_dependent(f, filed)?;
+    let mut titles = Rig::personal(f, Compose::DEPENDENT).boot(filed)?;
     let parent_licence: PersonalPaidLicence = serde_json::from_value(one(rows(
         &filed.disk,
         "roll",
@@ -455,7 +455,7 @@ async fn exercise_title_and_expiry(
         mush_roll::source_digest(SOURCE),
     )?;
     let transferred = capture(&titles, &disk(&titles));
-    let mut transferred_cold = PlayerWorld::boot_dependent(f, &transferred)?;
+    let mut transferred_cold = Rig::personal(f, Compose::DEPENDENT).boot(&transferred)?;
     filed_source(&mut transferred_cold, GOD, licence, false, saved.source())?;
     transferred_cold
         .tasks
@@ -464,14 +464,14 @@ async fn exercise_title_and_expiry(
     titles.tasks.shutdown(Duration::from_secs(5)).await;
     // Fresh owner selection refuses at expiry, but historical cold audit
     // remains valid. No term is extended or a seller parent purchased.
-    let mut expired = PlayerWorld::boot_dependent(f, filed)?;
+    let mut expired = Rig::personal(f, Compose::DEPENDENT).boot(filed)?;
     expired
         .engine
         .world
         .set_now(parent.window().grace_end().get());
     select(&mut expired, licence, false)?;
     let expired_image = capture(&expired, &disk(&expired));
-    let restarted = PlayerWorld::boot_dependent(f, &expired_image)?;
+    let restarted = Rig::personal(f, Compose::DEPENDENT).boot(&expired_image)?;
     restarted.tasks.shutdown(Duration::from_secs(5)).await;
     expired.tasks.shutdown(Duration::from_secs(5)).await;
     Ok(())
@@ -534,7 +534,7 @@ pub(super) async fn exercise(
     rating: &RatingRef,
 ) -> TestResult {
     eprintln!("M7_STORY phase=dependent_owner event=begin");
-    let mut world = PlayerWorld::boot_dependent(f, certified)?;
+    let mut world = Rig::personal(f, Compose::DEPENDENT).boot(certified)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let saved = source(&world)?;
@@ -579,7 +579,7 @@ pub(super) async fn exercise(
         story_phase("dependent.title_and_expiry", || exercise_title_and_expiry(f, &filed, &saved, &parent, licence, shell))?.await?;
         // Stage/take must re-resolve the actual parent's time fence.
         for clock in [false, true] {
-            let mut staged = PlayerWorld::boot_dependent(f, &before)?;
+            let mut staged = Rig::personal(f, Compose::DEPENDENT).boot(&before)?;
             let (prepared, output) = prepare(&mut staged, FIRST + 1, parameters.clone())?;
             if clock {
                 let stamp = staged.engine.world.world_ic_now();
@@ -594,7 +594,7 @@ pub(super) async fn exercise(
             assert!(!staged.engine.action_state().reservation_lost());
             staged.tasks.shutdown(Duration::from_secs(5)).await;
         }
-        let mut late = PlayerWorld::boot_dependent(f, &before)?;
+        let mut late = Rig::personal(f, Compose::DEPENDENT).boot(&before)?;
         let (prepared, output) = prepare(&mut late, FIRST + 1, parameters.clone())?;
         stage(&mut late, FIRST + 1, parameters.clone(), prepared, output)?;
         late.engine.world.set_now(parent.window().grace_end().get());
@@ -604,14 +604,14 @@ pub(super) async fn exercise(
         late.tasks.shutdown(Duration::from_secs(5)).await;
         // Once taken into writer custody, the same acknowledged operation can
         // install after lapse; live access still refuses and boot keeps history.
-        let mut owned = PlayerWorld::boot_dependent(f, &before)?;
+        let mut owned = Rig::personal(f, Compose::DEPENDENT).boot(&before)?;
         let (prepared, output) = prepare(&mut owned, FIRST + 1, parameters.clone())?;
         stage(&mut owned, FIRST + 1, parameters, prepared, output)?;
         let (bundle, install) = owned.engine.take_staged_action()?.ok_or("owned")?.into_parts();
         owned.engine.world.set_now(parent.window().grace_end().get());
         apply(&mut owned, bundle.writes(), install)?;
         filed_source(&mut owned, BUYER, licence, false, saved.source())?;
-        let replayed = PlayerWorld::boot_dependent(f, &capture(&owned, &disk(&owned)))?;
+        let replayed = Rig::personal(f, Compose::DEPENDENT).boot(&capture(&owned, &disk(&owned)))?;
         replayed.tasks.shutdown(Duration::from_secs(5)).await;
         owned.tasks.shutdown(Duration::from_secs(5)).await;
         // Mandatory scans reject all missing bindings and a crossed owner,
@@ -619,9 +619,9 @@ pub(super) async fn exercise(
         let mut missing = filed.clone();
         missing.disk.retain(|(ns,_), row| !(ns=="roll"
             && row.pointer("/family/id") == Some(&json!("roll_mind_owner_parent"))));
-        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_dependent(f, &missing)));
+        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::DEPENDENT).boot(&missing)));
         let mut crossed = filed.clone(); alter_binding(&mut crossed, GOD)?;
-        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_dependent(f, &crossed)));
+        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::DEPENDENT).boot(&crossed)));
         Ok(())
     }.await;
     tasks.shutdown(Duration::from_secs(5)).await;

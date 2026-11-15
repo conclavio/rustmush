@@ -24,13 +24,21 @@ impl SubmissionRuntime for Runtime {
     }
 }
 fn branch(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    let mut world = PlayerWorld::boot_renewal_service(f, saved)?;
+    let mut world = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(saved)?;
     world.engine.set_submission_runtime(Arc::new(Runtime))?;
     world.engine.set_offer_keys(mush_core::OfferKeyRing::new(
         mush_core::OfferSecret::new(1, [0x79; 32])?,
         [],
     )?);
     Ok(world)
+}
+/// A cold boot of `saved` with the service composed, out of line so that the story's long
+/// frames stay under CI's stack-frame lint.
+#[inline(never)]
+fn reboots(f: &PurchaseFixture, saved: &Durable) -> TestResult {
+    Rig::personal(f, Compose::RENEWAL_SERVICE)
+        .boot(saved)
+        .map(drop)
 }
 fn fire(world: &mut PlayerWorld) -> TestResult {
     let now = world.engine.world.now();
@@ -178,6 +186,68 @@ fn closed(
     Ok(())
 }
 
+/// Doc 46 CT.8 (CT.6's F30): the service's due scan reads the Roll's licence inventory a page
+/// (four licences) at a time and carries on from where the last page ended. With three more
+/// licences bought as the birth was, the family holds five, the last is on the second page,
+/// and the service still offers its renewal.
+pub(super) fn second_page(
+    f: &PurchaseFixture,
+    saved: &Durable,
+    owner: LicenceId,
+    birth: &EntitlementAllocationV1,
+) -> TestResult {
+    const N: u128 = SERVICE_START + 500;
+    let mut world = branch(f, saved)?;
+    // The buyer's cash, and both characters at the market, as the birth's purchase had them.
+    super::super::cash(&mut world)?;
+    // Three more licences, quoted from the birth's own listing (a fresh listing if that one
+    // is spent), so that the family holds five: the last is the second page's.
+    for k in 0..3 {
+        let n = N + k * 10;
+        if super::super::quote(&mut world, super::super::FIRST + 2, n + 1).is_err() {
+            super::super::list(&mut world, owner, n)?;
+            super::super::quote(&mut world, n, n + 1)?;
+        }
+        super::super::fund(&mut world, n + 1, n + 2)?;
+        super::super::grant(&mut world, n + 2, n + 3)?;
+    }
+    let fifth = super::super::allocation(&world, N + 22)?;
+    let licences = rows(&disk(&world), "roll", "roll_mind_personal_paid_licence");
+    check!(
+        licences.len() > 4,
+        "a second inventory page: {} licences",
+        licences.len()
+    );
+    check!(
+        licences
+            .iter()
+            .filter_map(|r| r.get("id").cloned())
+            .filter_map(|id| serde_json::from_value::<LicenceId>(id).ok())
+            .filter(|id| id.get() < fifth.licence().get())
+            .count()
+            >= 4,
+        "the fifth licence is not on the first page"
+    );
+    let holder = fifth.holder().acting_character();
+    check_eq!(holder, birth.holder().acting_character());
+    let current = licence(&world, fifth.licence())?;
+    let end = term(&world, current.id(), current.term())?
+        .window()
+        .term_end()
+        .get();
+    advance(&mut world, end)?;
+    // The first page's due licence (the birth) is offered first; the fifth after it.
+    let mut offered = Vec::new();
+    for n in 0..8 {
+        let (draft, _) = next(&mut world, holder, DRAFT)?;
+        offered.push(draft.parameters.clone());
+        if draft.parameters == json!({"licence":fifth.licence().get()}) {
+            return Ok(());
+        }
+        land(&mut world, &draft, N + 100 + n)?;
+    }
+    Err(format!("the service never offered the fifth licence: {offered:?}").into())
+}
 pub(super) fn exercise(
     f: &PurchaseFixture,
     saved: &Durable,
@@ -271,7 +341,7 @@ pub(super) fn exercise(
     check_eq!(balances(&world)?, old_money);
     assert_current_unchanged(&world, &initial, &old_term, &old_economics)?;
     let end = capture(&world, &disk(&world));
-    let _ = PlayerWorld::boot_renewal_service(f, &end)?;
+    reboots(f, &end)?;
 
     // A healthy exact funded readback advances even if its acceptance ACK is
     // unknown. This is independent from the expiry/refund branch above.
@@ -292,7 +362,7 @@ pub(super) fn exercise(
         RenewalStateV1::Granted { .. }
     ));
     let end = capture(&healthy, &disk(&healthy));
-    let _ = PlayerWorld::boot_renewal_service(f, &end)?;
+    reboots(f, &end)?;
 
     let mut declined = branch(f, &draft_image)?;
     declined.say(
@@ -399,9 +469,9 @@ pub(super) fn exercise(
         tick_later(&mut close)?;
         none(&mut close);
         let ended = capture(&close, &disk(&close));
-        let _ = PlayerWorld::boot_renewal_service(f, &ended)?;
+        reboots(f, &ended)?;
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_renewals(f, &ended))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&ended))?,
             "five-action composition cannot erase service proof"
         );
         if !invalidated {
@@ -468,7 +538,7 @@ pub(in super::super) fn unavailable_buyer(
         RenewalServiceCloseReason::DeadlineReached,
     )?;
     check_eq!(balances(&world)?, money);
-    let _ = PlayerWorld::boot_renewal_service(f, &capture(&world, &disk(&world)))?;
+    reboots(f, &capture(&world, &disk(&world)))?;
 
     let mut held = branch(f, &drafted)?;
     held.say(

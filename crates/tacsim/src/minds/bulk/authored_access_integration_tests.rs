@@ -121,7 +121,7 @@ fn private_source(events: &Events, expected: &str) -> TestResult {
     Ok(())
 }
 async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult<Durable> = async {
         let initial = roll(&world)?.mind(BUYER, "child")?.clone();
@@ -334,7 +334,7 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
         );
         let edited_disk = disk(&world);
         let retained = capture(&world, &edited_disk);
-        let cold = PlayerWorld::boot_forks(f, &retained, true)?;
+        let cold = Rig::personal(f, Compose::FORKS).boot(&retained)?;
         assert_eq!(roll(&cold)?.mind(BUYER, "child")?, &edited);
         cold.tasks.shutdown(Duration::from_secs(5)).await;
         // Same timestamp, changed actual clock generation invalidates a held view.
@@ -354,7 +354,7 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
 
 pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     let edited = story_phase("access.working", || working(f, saved))?.await?;
-    let mut world = PlayerWorld::boot_forks(f, &edited, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(&edited)?;
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         let term:PaidTermRecord=serde_json::from_value(one(rows(&disk(&world),"roll","roll_mind_paid_term"))?)?;
@@ -378,7 +378,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
         assert_eq!(roll(&world)?.mind(BUYER,"child")?,&before);
         // Original M6 authors keep their own library source after filed-title loss.
         assert!(matches!(invoke(&mut world,GOD,OBSERVER_CONN,MindRequest::Read { name:"Candidate".into(),revision:None })?,MindResponse::Read { draft,.. } if draft.source==SOURCE));
-        let retained=capture(&world,&disk(&world));let cold=PlayerWorld::boot_forks(f,&retained,true)?;
+        let retained=capture(&world,&disk(&world));let cold=Rig::personal(f, Compose::FORKS).boot(&retained)?;
         assert_eq!(roll(&cold)?.mind(BUYER,"child")?,&before,"valid lapse is loadable, not a reason to remove provenance");
         cold.tasks.shutdown(Duration::from_secs(5)).await;Ok(())
     }.await;
@@ -395,7 +395,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
             Ok(())
         })?;
         assert!(
-            crate::test_checks::refused(PlayerWorld::boot_forks(f, &changed, true))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::FORKS).boot(&changed))?,
             "a forged {field} cause loaded"
         );
     }

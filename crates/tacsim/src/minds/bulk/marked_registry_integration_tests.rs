@@ -249,7 +249,7 @@ fn expiry(world: &PlayerWorld) -> TestResult<i64> {
     Ok(term.window().grace_end().get())
 }
 async fn public_start(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_marked(f, saved)?;
+    let mut world = Rig::personal(f, Compose::MARKED).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let revision = source(&world)?.reference();
@@ -285,9 +285,9 @@ async fn public_start(f: &PurchaseFixture, saved: &Durable) -> TestResult {
 async fn freshness(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     for mode in ["default", "before", "stage", "take", "clock", "foreign"] {
         let mut world = if mode == "default" {
-            PlayerWorld::boot_forks(f, saved, true)?
+            Rig::personal(f, Compose::FORKS).boot(saved)?
         } else {
-            PlayerWorld::boot_marked(f, saved)?
+            Rig::personal(f, Compose::MARKED).boot(saved)?
         };
         let tasks = world.tasks.clone();
         let result: TestResult = async {
@@ -383,7 +383,7 @@ fn admit(world: &mut PlayerWorld, number: u128) -> TestResult<(Binding, Ready)> 
 /// same-source roundtrip assertions. The comment changes no runtime policy,
 /// schema, profiles, rules, budgets or acceptance criteria.
 async fn distinct_saved(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
-    let mut world = PlayerWorld::boot_marked(f, saved)?;
+    let mut world = Rig::personal(f, Compose::MARKED).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult<Durable> = async {
         let before = source(&world)?;
@@ -463,7 +463,7 @@ async fn complete_eligible(
     f: &PurchaseFixture,
     saved: &Durable,
 ) -> TestResult<(Durable, RatingRef)> {
-    let mut world = PlayerWorld::boot_marked(f, saved)?;
+    let mut world = Rig::personal(f, Compose::MARKED).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult<(Durable, RatingRef)> = async {
         let (binding, mut ready) = admit(&mut world, 5_200_000)?;
@@ -577,7 +577,7 @@ async fn complete_eligible(
         // A separate later world state proves expiry is not boot corruption.
         world.engine.world.set_now(expiry(&world)?);
         let terminal = capture(&world, &disk(&world));
-        let cold = PlayerWorld::boot_marked(f, &terminal)?;
+        let cold = Rig::personal(f, Compose::MARKED).boot(&terminal)?;
         assert_eq!(run(&cold, binding)?.status, Status::Complete);
         assert_eq!(
             typed::<RatingReceipt>(&cold, "rating_receipts", binding.job)?,
@@ -600,7 +600,7 @@ async fn complete_eligible(
     result
 }
 async fn recover_after_lapse(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_marked(f, saved)?;
+    let mut world = Rig::personal(f, Compose::MARKED).boot(saved)?;
     let (binding, ready) = admit(&mut world, 5_300_000)?;
     let original: RatingJob = typed(&world, "rating_jobs", binding.job)?;
     world.engine.world.set_now(expiry(&world)?);
@@ -676,7 +676,7 @@ async fn recover_after_lapse(f: &PurchaseFixture, saved: &Durable) -> TestResult
     drop(world);
     // Real Tacsim hydration alone captures StoppedBinding on its never-run
     // service. No timeout or caller-created worker receipt proves stoppage.
-    let mut cold = PlayerWorld::boot_marked(f, &retained)?;
+    let mut cold = Rig::personal(f, Compose::MARKED).boot(&retained)?;
     let tasks = cold.tasks.clone();
     let result: TestResult = async {
         let service = bulk_world::service(&cold.engine.world)?;
@@ -708,7 +708,7 @@ async fn recover_after_lapse(f: &PurchaseFixture, saved: &Durable) -> TestResult
             "recovery preserves settled measured charge"
         );
         assert!(run(&cold, binding)?.result.is_none());
-        let again = PlayerWorld::boot_marked(f, &capture(&cold, &disk(&cold)))?;
+        let again = Rig::personal(f, Compose::MARKED).boot(&capture(&cold, &disk(&cold)))?;
         assert_eq!(run(&again, binding)?.status, Status::Interrupted);
         again.tasks.shutdown(Duration::from_secs(5)).await;
         Ok(())

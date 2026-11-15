@@ -4,9 +4,6 @@ use super::*;
 use mush_roll::commerce::{TermPhase, WorldIcSeconds};
 const START: u128 = 24_000_000;
 const OPS: &str = "roll_mind_owner_attestation_operation";
-fn boot(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    PlayerWorld::boot_updates_with_attestation(f, saved)
-}
 fn action(w: &PlayerWorld, id: &str) -> TestResult<DefinitionRef> {
     w.engine
         .registry
@@ -177,7 +174,9 @@ async fn cold_refusals(f: &PurchaseFixture, saved: &Durable) -> TestResult {
                 "exact historical evidence removed"
             );
         }
-        if let Some(world) = crate::test_checks::accepted(boot(f, &corrupt))? {
+        if let Some(world) = crate::test_checks::accepted(
+            Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&corrupt),
+        )? {
             world.tasks.shutdown(Duration::from_secs(5)).await;
             return Err("corrupted attested update history passed cold boot".into());
         }
@@ -194,7 +193,7 @@ pub(super) async fn exercise(
         chartered(f, certified, revision, rating)
     })?
     .await?;
-    let mut w = boot(f, certified)?;
+    let mut w = Rig::personal(f, Compose::UPDATES_ATTESTED).boot(certified)?;
     let mut tasks = vec![w.tasks.clone()];
     let result: TestResult = async {
         let birth = owner(&w, 1)?;
@@ -298,7 +297,7 @@ pub(super) async fn exercise(
         assert_eq!(filed.rating(), &rating);
         owner_available(&mut w, true)?;
         let saved = Durable::capture(&w.engine, &disk(&w));
-        let cold = boot(f, &saved)?;
+        let cold = Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&saved)?;
         tasks.push(cold.tasks.clone());
         assert_eq!(current(&cold)?, 2);
         // Advance the current pointer again. The update must continue proving
@@ -312,7 +311,7 @@ pub(super) async fn exercise(
             "attestation/update added a certificate instead of reusing measured evidence"
         );
         let saved = Durable::capture(&w.engine, &disk(&w));
-        let mut cold = boot(f, &saved)?;
+        let mut cold = Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&saved)?;
         tasks.push(cold.tasks.clone());
         assert_eq!(current(&cold)?, 3);
         owner_available(&mut cold, true)?;
@@ -342,7 +341,7 @@ async fn chartered(
 ) -> TestResult {
     use super::super::super::charter_transfer_fixture;
     const SALE: u128 = 48_100_000;
-    let mut w = boot(f, certified)?;
+    let mut w = Rig::personal(f, Compose::UPDATES_ATTESTED).boot(certified)?;
     let mut tasks = vec![w.tasks.clone()];
     let result: TestResult = async {
         let birth = owner(&w, 1)?;
@@ -422,7 +421,7 @@ async fn chartered(
         assert!(rows(&disk(&w), "roll", "roll_mind_paid_term") == paid);
         assert!(rows(&disk(&w), "roll", "rating_receipts") == certificates);
         let saved = Durable::capture(&w.engine, &disk(&w));
-        let mut cold = boot(f, &saved)?;
+        let mut cold = Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&saved)?;
         tasks.push(cold.tasks.clone());
         owner_available(&mut cold, true)?;
         cold.engine.world.set_now(term2.window().term_end().get());
@@ -430,7 +429,7 @@ async fn chartered(
         assert_eq!(current(&cold)?, 3);
         assert!(one(rows(&disk(&cold), "roll", "roll_mind_line_update"))? == update);
         let saved = Durable::capture(&cold.engine, &disk(&cold));
-        let final_world = boot(f, &saved)?;
+        let final_world = Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&saved)?;
         tasks.push(final_world.tasks.clone());
         assert_eq!(current(&final_world)?, 3);
         for family in [OPS, "roll_mind_line_update"] {
@@ -446,7 +445,9 @@ async fn chartered(
                 .ok_or("actual captured ownership row")?;
             *row.pointer_mut("/value/charter_ownership/generation")
                 .ok_or("ownership generation")? = json!(4);
-            if let Some(world) = crate::test_checks::accepted(boot(f, &crossed))? {
+            if let Some(world) = crate::test_checks::accepted(
+                Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&crossed),
+            )? {
                 world.tasks.shutdown(Duration::from_secs(5)).await;
                 return Err("crossed historical charter ownership passed cold boot".into());
             }
