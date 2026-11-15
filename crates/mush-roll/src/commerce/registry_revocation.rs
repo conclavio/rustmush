@@ -14,10 +14,7 @@ use super::{
     roots::{RequiredRoot, RootAnchor},
 };
 use mush_core::action::{ActionInvocation, PerceivedRef, PrincipalId};
-use mush_core::mechanics::{
-    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistry,
-    DefinitionRegistryBuilder, OwnerId,
-};
+use mush_core::mechanics::{DefinitionRegistry, OwnerId};
 use mush_core::participant::OwnerPrepareContext;
 use mush_core::{CommitToken, DefinitionRef, ModError, ObjId};
 pub use policy::RegistryRevocationPolicy;
