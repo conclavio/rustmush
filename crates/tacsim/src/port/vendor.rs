@@ -511,6 +511,12 @@ pub(crate) fn put(
         .map_err(|error| format!("{id}: the goods catalog: {error}"))?;
     mush_market::load_pack(ctx, crate::definitions::goods::GOODS_PACK, entries)
         .map_err(|error| format!("{id}: the goods catalog: {error:?}"))?;
+    // Doc 47 CO.13: the three governed cores, beside the goods (idempotent), the reference
+    // prices the fitting shop's buy-back reads.
+    let cores = crate::hardware::sale::core_catalog_entries()
+        .map_err(|error| format!("{id}: the core catalog: {error}"))?;
+    mush_market::load_pack(ctx, crate::hardware::sale::CORE_PACK, cores)
+        .map_err(|error| format!("{id}: the core catalog: {error:?}"))?;
     let instrument = credit()?;
     let venue = MarketId::new(def.venue.as_str())
         .ok_or_else(|| format!("{id}: venue {} is not a market id", def.venue))?;

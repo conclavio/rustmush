@@ -243,6 +243,7 @@ mod tests {
                 output_container: ObjId(32),
                 ungovern: None,
                 bay: None,
+                buy_back_permille: None,
             },
             market: None,
             procurement: Vec::new(),

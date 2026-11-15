@@ -6,6 +6,7 @@ pub(crate) mod bay;
 mod composition;
 mod content;
 mod recipes;
+pub mod sale;
 pub(crate) use composition::Registration;
 pub(crate) use composition::RosterPolicy;
 pub use composition::{

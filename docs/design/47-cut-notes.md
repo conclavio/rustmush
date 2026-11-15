@@ -1406,3 +1406,167 @@ Every existing tacsim test passes unchanged (`cargo test -p tacsim`, conclav.dev
    The snapshot is taken at the end of the step, so the two are equal unless an order lands
    after; a record that named the snapshot for its live bubble would halve a step's bytes
    again. Not done: the record would then depend on its newest snapshot to read at all.
+
+## CO.13
+
+Selling a stored core (R-47-5's "or sold"). Built 2026-11-14 on
+`claude/co13-managed-core-sale-0231e0`, cut from `26a539b5d`.
+
+**Survey.**
+
+- **Why no path sold one.** A governed core's title is a managed title (its birth is a native
+  core integration, `managed_title::ManagedTitleIndex::core`). Every generic entry point,
+  contract settlement included, reaches `require_unmanaged_mutations`, which refuses
+  `TransferTitle` (and Title, Encumber, Release, SetCatalog, Abandon, WriteOff) on one. Only a
+  closed plan proof under its own `PlanGuard` arm (`managed_mutations`) is exempt: the charter
+  transfer, the pending charter and the Registry seizure. CO.4's `disputed` contract was the
+  generic settle plan meeting that wall.
+- **The pattern.** The charter transfer's economy leg (`registry_filing::charter_transfer`) is
+  one owner-participant action with a closed request, a private proof (exact plan, before-title,
+  birth, op shape), a native install that writes complete journal/account/title images in the
+  coordinator union, and a receipt audit folded from the journal and replayed at boot. The
+  Registry seizure (`registry_filing::seizure`) is the same shape on a managed **core**, with a
+  tacsim producer (`minds::registry_inspection::seizure`); this unit follows the seizure's
+  structure and adds the charter transfer's two money lines.
+- **What the charter transfer has that a core needs too, and what it lacks.** A charter is
+  title only. A core is also a world object in the seller's hands, and no native economy install
+  moves an object (custody effects are refused there). Only the kernel writes world objects in
+  a union (`core_delivery`, `core_exchange`, `physical_transition`, each a `BuiltinObjects`
+  image). The completed-core delivery is the nearest: three object pre-images, the real carry
+  hooks, a record family. The sale is that delivery run the other way.
+- **Who buys, and from what money.** The fitting shop's integrator (`CorePaymentPolicy::
+  integrator`: Basin's factory scope and account in the M8 world). Its till holds only the
+  integration and fitting fees it has earned; on the launch world, after the story's four
+  integrations and three fittings, 2,000cr against a 4,000cr buy-back.
+
+**Built.**
+
+- **Kernel** (`mush-core`, new `core_sale.rs`): the fixed action `tacsim/sell_stored_core` v1;
+  `CoreSalePolicy` (the trusted policy names the core, the seller and the shop, read at prepare
+  and again before custody: a fence refuses unless both reads agree); `SaleObjects` (the core
+  from the seller's contents into the shop's, three exact pre-images plus both ancestries, the
+  registered carry hooks); a `core_sales` record family keyed by the operation, with `audit`
+  for the producer's boot pass. One variant on the closed `BuiltinObjects` list and one
+  `PrepareCtx::sell_stored_core` beside `deliver_core_output`.
+- **Economy** (`mush-economy`, new `registry_filing/core_sale{.rs,/install.rs,/receipt.rs}`):
+  `CoreSaleConfig { action, vendor: ScopedCoreAccount }`; the closed request `RegistryCoreSale
+  { core, title_revision, seller_account, price }` (the seller is the actor); the plan (the
+  vendor's account pays the price, the seller's own credit account receives it, one
+  `TransferTitle` to the vendor org); `ClosedCoreSalePlan` (exact plan, before-title, core
+  birth, exactly those two lines and that one op, no hold or custody op); the native install
+  (the charter transfer's, with the seizure's fold); `CoreSaleReceiptAudit` (receipts by
+  commit, observed per journal entry, finished and checked against the managed-title index at
+  boot, checkpoint coverage as the seizure's). One variant each on `EconomyRequest`,
+  `EconomyOutput`, `EconomyPatch`, `BoundEconomy` and `PlanGuard` (the lead told CT.9).
+  `EconomyModule::with_core_sale`; `EconomyStore::{is_managed_core, core_sale_receipt,
+  core_sale_receipts}`. `require_unmanaged_mutations` is not touched.
+- **Industry**: `CoreRefitFactoryConfig::stored_core_destroyed` (CO.4's `displaced_by` and
+  `destroyed`, read-only).
+- **Tacsim** (new `hardware/sale.rs`): `+core/sell <core>` (the quote) and `+core/sell
+  <core>=go` (the sale), one registered action whose provider binds the economy leg and the
+  kernel image in one union; the offer projected to a character standing in the shop; the
+  receipt for the seller. The one read (`quote`) refuses, each in its own line: not at the shop,
+  not a governed core, fitted (the core is a hull's fitted core), not held (anywhere else),
+  not the seller's title alone (another's, a claim, impounded), destroyed, no catalogue price,
+  the shop's till short, no credit account. The boot pass (`boot_audit`, `on_all_loaded`) pairs
+  the kernel's records and the economy's receipts one to one by operation, core and seller.
+  Composed by `HardwareDeployment::buy_back_permille` (and `HardwareCoordinates`, skipped when
+  absent): `GovernedHardware::configure_economy` and the roster policy add the economy leg,
+  `configure_tacsim` the provider and the command's slot.
+- **Market**: the three core catalogue entries (pack `tacsim.cores`: `tacsim.core.doctrine`,
+  `.line`, `.command`, `asset`, baselines `CoreClass::finished_minor`), loaded by the port
+  applier beside the goods. `+market/sell` (and `mush_market::sell`) refuses a managed core
+  outright (`MANAGED_CORE_SALE`): with a catalogue price a core would otherwise go into the
+  custody-only offer the lead ruled out.
+- **Contract tests**: `+core` pinned `authoritative` in `legacy-handlers.toml`.
+
+**Defaults taken (provisional).**
+
+1. **The buy-back rate is 500 permille** of the catalogue baseline (`BUY_BACK_PERMILLE`): 1,500cr,
+   4,000cr and 12,500cr for Class I, II, III. **Cheap to reverse** (a constant, or the
+   deployment's number).
+2. **The buyer is the integrator**, paying from the account the integration and fitting fees go
+   into, and the sale refuses when that till is short. Nothing refills the till but the shop's
+   own fees. **Cheap to reverse.** Flagged: a shop that has done little work buys little.
+3. **A damaged core sells at the full buy-back rate.** The condition is carried with the core
+   (CO.4) but does not price it. **Cheap to reverse** (a factor in `quote`).
+4. **The core goes into the shop's completed-work container** (`CorePaymentPolicy::
+   output_container`), titled to the integrator's org in no scope. What the shop does with it
+   next (refit it into a customer's hull, sell it on) is not built.
+5. **The seller stands in the shop** (the factory object, as every fitting).
+
+**Persisted shapes.** No existing record changes and no `.snap` moves. Three additions:
+the economy fold (the checkpoint body) gains `core_sale_receipts`, skipped while uninitialized,
+the seizure and bay audits' form. As theirs, the boot closes it on every world, so every
+checkpoint written after this lands carries it (`{"receipts":{},"complete":true,...}` where
+nothing was sold); a checkpoint without it still loads (serde default), and `e2b`'s format-3
+pin strips it as it strips those two. The fold's charter-transfer audit is now boxed (its JSON
+is unchanged) to hold `load_boot_with_coverage` under the M7 stack bound, which the new field
+had taken 87 bytes over. The kernel gains the tacsim-owned `core_sales` action-state family,
+written only by a sale. `HardwareCoordinates` gains an optional field, skipped when absent, so every
+deployment that names none keeps its bytes and digest.
+
+**Tests.**
+
+- `mush-economy` `registry_filing::core_sale::tests` (engine level, as the seizure's):
+  `co13_the_closed_plan_refuses_every_mismatch` (nine plan changes, a moved title, three wrong
+  births); `co13_no_generic_transfer_touches_a_managed_title` (the exact sale plan through the
+  generic guard is refused; `require_unmanaged_mutations` refuses its transfer and passes the
+  same transfer of an unmanaged object); `co13_a_sale_posts_replays_and_a_forgery_is_refused`
+  (money and title through the engine, the receipt, the replay, a forged price, a third line, a
+  repeated commit, the seller paid elsewhere); `co13_another_holders_or_a_claimed_title_is_refused`;
+  `co13_the_prepare_read_refuses_what_the_seller_may_not_sell` (the participant's own read: another
+  holder's core, a claimed core, a payout account not the seller's, a zero price).
+- `tacsim` `hardware::sale::tests::co13_the_lines_fit_and_the_entries_are_the_class_prices`.
+- **The story**, `tacsim` `domain_field` `c4_hardware::co13_a_stored_core_is_sold_with_its_title`
+  (the launch world, about 11 s): four cores built and fitted as CO.4's story does; the fitted
+  core, the destroyed core and a core another character holds each refused (quote and `=go`),
+  nothing paid or moved; refused away from the shop; refused while the till is short, then
+  staff top the till up from the world's faucet (the M8 world's standing practice, as the
+  wallet's); the stored Class II core quoted and sold for 4,000cr: the title is Basin's,
+  unencumbered, one revision on; the core is in the shop's container; the pilot is paid and
+  the till pays; one economy receipt and one kernel record; `+market/sell` of a core refused;
+  a restart replays both audits, the title and the core's place read as before, and the sold
+  core is not the pilot's to sell again.
+- **On base** (`26a539b5d` with only the test files applied) the story does not compile: no
+  `HardwareCoordinates::buy_back_permille`, no `EconomyStore::core_sale_receipt(s)`, no
+  `tacsim::hardware::sale` (11 errors). The economy tests are a new module over new code.
+- CO.4's and MW.5's stories beside it pass unchanged.
+
+**Mutations**, each run on conclav.dev (`co13-muts.py`, in this group's notes folder):
+
+| # | Mutation | Caught by |
+|---|---|---|
+| P1 | the closed check drops plan equality | `co13_the_closed_plan_refuses_every_mismatch` (another actor, no revision fence; survived until those two changes were added) |
+| P2 | the sale's `PlanGuard` arm removed (it falls to `require_unmanaged_mutations`) | the story: the sale is refused |
+| P3 | the vendor's auth admits another holder's title | `co13_another_holders_or_a_claimed_title_is_refused` |
+| A1 | the fold ignores the family | `co13_a_sale_posts_replays_and_a_forgery_is_refused`, the story |
+| A2 | the receipt does not check the seller's line | the forgery test (the seller paid elsewhere; survived until that forgery was added) |
+| A3 | the boot never closes the sale audit | the story (the restart reads no receipt) |
+| R1 | a destroyed core is bought | the story |
+| R2 | a fitted core is not told apart | the story (it is refused as "not holding") |
+| R3 | the holder check is gone (a core in anyone's hands is offered) | the story (the kernel image refuses it, unsaid) |
+| R4 | the economy's read admits another holder's core | `co13_the_prepare_read_refuses_what_the_seller_may_not_sell` (survived until that test was added: the engine's auth and the quote both refuse first) |
+
+**Divergences.**
+
+- **The buy-back vendor is the integrator by composition, not a market `Vendor` record.**
+  CO.4's attempt registered Basin as a `+market/sell` vendor by staff (`@market/vendor create`,
+  a vault, a venue). The closed family names its one buyer in `CoreSaleConfig`, from the
+  hardware's own payment policy, so nothing staff stand up decides who may buy a managed title.
+  The market's part is the three catalogue entries, which price the core.
+- **`+market/sell` now refuses a governed core.** Not asked for, but the catalogue entries would
+  otherwise give a core a price there, and that path is the custody-only sale the lead ruled out.
+- **The tacsim side lives in `hardware/sale.rs`**, beside the hardware composition that owns the
+  integrator, the shop and the refit it reads, not under `minds/`.
+
+**Not built.**
+
+- **What the shop does with a bought core.** It holds it, titled, in its container. Fitting it
+  into a customer's hull needs the shop to be the refit's requester and titleholder (the refit
+  offers a core to its owner); reselling it needs a market listing for a managed title, a second
+  closed family. Neither is asked for here.
+- **A sale to anyone but the fitting shop.** The family names one vendor by composition.
+  A player-to-player core sale is the charter transfer's two-step offer/accept shape over this
+  plan, not built.
+- **The industry `bay_refit`'s removed parts** stay as CO.4 left them (no player route).

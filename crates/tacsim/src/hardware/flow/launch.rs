@@ -223,6 +223,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             output_container: h.output_container,
             ungovern: None,
             bay: None,
+            buy_back_permille: None,
         },
         market,
         procurement: Vec::new(),

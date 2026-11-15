@@ -99,8 +99,10 @@ pub struct FoldState {
         default,
         skip_serializing_if = "crate::registry_filing::charter_transfer::CharterTransferReceiptAudit::uninitialized"
     )]
+    /// Boxed (doc 47 CO.13, the bay audit's reason): the fold is held by value in the boot
+    /// frame, which the M7 stack bound caps.
     pub(crate) charter_transfer_receipts:
-        crate::registry_filing::charter_transfer::CharterTransferReceiptAudit,
+        Box<crate::registry_filing::charter_transfer::CharterTransferReceiptAudit>,
     #[serde(
         default,
         skip_serializing_if = "crate::core_integration::receipt::CoreReceiptAudit::uninitialized"
@@ -112,6 +114,12 @@ pub struct FoldState {
         skip_serializing_if = "crate::registry_filing::seizure::SeizureReceiptAudit::uninitialized"
     )]
     pub(crate) seizure_receipts: crate::registry_filing::seizure::SeizureReceiptAudit,
+    /// Doc 47 CO.13: the sales of stored managed cores with their titles.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::core_sale::CoreSaleReceiptAudit::uninitialized"
+    )]
+    pub(crate) core_sale_receipts: crate::registry_filing::core_sale::CoreSaleReceiptAudit,
     #[serde(
         default,
         skip_serializing_if = "crate::core_refit::receipt::RefitReceiptAudit::uninitialized"
@@ -213,6 +221,7 @@ impl FoldState {
         self.coverage_receipts.observe(tx);
         self.core_receipts.observe(tx);
         self.seizure_receipts.observe(tx);
+        self.core_sale_receipts.observe(tx);
         self.refit_receipts.observe(tx);
         self.bay_refit_receipts.observe(tx);
         self.filing_receipts.observe(tx);

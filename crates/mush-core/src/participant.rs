@@ -715,6 +715,38 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(output)
     }
 
+    /// Doc 47 CO.13: the closed sale image of a stored core, beside the economy's owner leg.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sell_stored_core<P: crate::core_sale::CoreSalePolicy>(
+        &mut self,
+        service: &crate::core_sale::CoreSales<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        request: crate::core_sale::SaleRequest,
+        hooks: std::sync::Arc<[crate::module::HookReg]>,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::core_sale::SoldCore, ParticipantError> {
+        if self.shell.is_some() {
+            return Err(ParticipantError::Authority);
+        }
+        let (output, image) = service.prepare(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            request,
+            hooks,
+            base,
+            provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Sale(Box::new(
+            image,
+        )));
+        Ok(output)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn exchange_core_component<P: crate::core_exchange::CoreExchangePolicy>(
         &mut self,

@@ -513,6 +513,23 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // Registry account and one entitlement unit to the actor, one transaction). No
     // authoritative submission. Registered unconditionally; without an Active launch it
     // says the Registry takes no registrations. Accepted from anywhere.
+    // ---- Doc 47 CO.13: `+core/sell`, a stored core sold back to the fitting shop ----
+    //
+    // Registered unconditionally; a world whose hardware composes no buy-back says so. `=go`
+    // submits one registered action, so the verb takes the `Authoritative` class (`+survey`'s
+    // bracket).
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    reg.command(
+        CommandSpec {
+            name: crate::hardware::sale::SALE_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: std::iter::once(SmolStr::new("sell")).collect(),
+            help: crate::hardware::sale::SALE_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::hardware::sale::sale_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: crate::launch::end_user::END_USER_VERB.into(),

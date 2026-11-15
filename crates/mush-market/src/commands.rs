@@ -930,6 +930,14 @@ fn sell(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Ok(object) = mush_core::match_object(ctx.w, ctx.actor, ctx.args.lhs().trim()) else {
         return Err(refuse(ctx, "No such asset."));
     };
+    // Doc 47 CO.13: a governed core is sold with its title by its own family, never offered here.
+    if ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|s| s.is_managed_core(object))
+    {
+        return Err(refuse(ctx, crate::trade::MANAGED_CORE_SALE));
+    }
     let rhs = ctx.args.rhs().unwrap_or_default().trim().to_string();
     let Some(vendor) = resolve_vendor(ctx, &rhs) else {
         return Err(refuse(ctx, NO_SUCH_VENDOR));

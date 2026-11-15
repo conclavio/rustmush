@@ -148,7 +148,9 @@ pub(crate) fn register_with_ic(
     burn: Option<crate::port::burn::BurnTable>,
     ic: Option<&crate::minds::ic_sortie::registration::Registration>,
 ) -> Result<(), ModError> {
-    register_with_coverage(reg, test_world, inventory, burn, ic, None, None, false)
+    register_with_coverage(
+        reg, test_world, inventory, burn, ic, None, None, false, None,
+    )
 }
 // One optional composition each (the IC sortie, the coverage, the Registry inspection) and the
 // unit-authority switch: the merge of doc 17h cut M8a's inspection with main's detachments
@@ -163,6 +165,7 @@ pub(crate) fn register_with_coverage(
     coverage: Option<&crate::underwriting::registration::Registration>,
     inspection: Option<&crate::minds::registry_inspection::Composition>,
     unit_authority: bool,
+    sale: Option<&crate::hardware::sale::SaleTerms>,
 ) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
     reg.revision_validator(
@@ -212,7 +215,7 @@ pub(crate) fn register_with_coverage(
     } else {
         None
     };
-    let outcome_refs = register_outcomes(reg, test_world, ic, coverage, inspection)?;
+    let outcome_refs = register_outcomes(reg, test_world, ic, coverage, inspection, sale)?;
     let probe_outcome = outcome_refs.get(PROBE_OUTCOME).cloned();
     let stock_outcome = outcome_refs
         .get(crate::port::stock::STOCK_OUTCOME)
@@ -341,6 +344,10 @@ pub(crate) fn register_with_coverage(
     if let Some(inspection) = inspection {
         inspection_descriptors(inspection, 0, &mut actions)?;
     }
+    // Doc 47 CO.13: the stored core sale's action, when the fitting shop's buy-back composes.
+    if sale.is_some() {
+        actions.push(crate::hardware::sale::action_descriptor()?);
+    }
     reg.definition_validator(
         kind("action")?,
         crate::definitions::exact_validator(actions.clone()),
@@ -355,6 +362,19 @@ pub(crate) fn register_with_coverage(
     // them, in a frame of their own.
     if let Some(inspection) = inspection {
         register_inspection(reg, inspection, &action_refs, &outcome_refs)?;
+    }
+    if let Some(terms) = sale {
+        let need = |refs: &BTreeMap<String, DefinitionRef>, id: &str| {
+            refs.get(id)
+                .cloned()
+                .ok_or_else(|| ModError::msg(format!("the core sale's {id} did not register")))
+        };
+        crate::hardware::sale::register(
+            reg,
+            terms,
+            need(&action_refs, crate::hardware::sale::SALE_ACTION)?,
+            need(&outcome_refs, crate::hardware::sale::SALE_OUTCOME)?,
+        )?;
     }
     register_providers(
         reg,
@@ -688,6 +708,7 @@ fn register_outcomes(
     ic: Option<&crate::minds::ic_sortie::registration::Registration>,
     coverage: Option<&crate::underwriting::registration::Registration>,
     inspection: Option<&crate::minds::registry_inspection::Composition>,
+    sale: Option<&crate::hardware::sale::SaleTerms>,
 ) -> Result<BTreeMap<String, DefinitionRef>, ModError> {
     let mut outcomes = outcome_descriptors(test_world)?;
     outcomes.push(crate::detachment::planning::outcome_descriptor()?);
@@ -716,6 +737,9 @@ fn register_outcomes(
     // revocation's and the quirk claim's when they compose, doc 17h cut M8g G3).
     if let Some(inspection) = inspection {
         inspection_descriptors(inspection, 1, &mut outcomes)?;
+    }
+    if sale.is_some() {
+        outcomes.push(crate::hardware::sale::outcome_descriptor()?);
     }
     reg.definition_validator(
         kind("outcome")?,

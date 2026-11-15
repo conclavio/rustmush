@@ -1047,6 +1047,38 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// **Sell a stored core into its buyer's shop** (doc 47 CO.13): the trusted sale policy
+    /// names the core, its seller (this invocation's actor) and the shop; Core evaluates the
+    /// real carry hooks against committed pre-images and owns the three object images. The
+    /// economy's closed sale leg is prepared beside it in the same union.
+    pub fn sell_stored_core<P: crate::core_sale::CoreSalePolicy>(
+        &mut self,
+        service: &crate::core_sale::CoreSales<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        request: crate::core_sale::SaleRequest,
+    ) -> Result<crate::core_sale::SoldCore, crate::participant::ParticipantError> {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let hooks = std::sync::Arc::from(
+                self.carry_hooks
+                    .ok_or(crate::participant::ParticipantError::Unavailable)?,
+            );
+            self.with_shell(|p, c| {
+                p.sell_stored_core(service, txn, c, request, hooks, base, provider)
+            })
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
     /// Exchange one incoming and optional displaced core only with the exact
     /// already-prepared Economy and Tactics owners. Core owns physical images.
     pub fn exchange_core_component<P: crate::core_exchange::CoreExchangePolicy>(

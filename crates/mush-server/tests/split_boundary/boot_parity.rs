@@ -1529,6 +1529,7 @@ fn format_two_launch() -> tacsim::launch::LaunchDeployment {
             output_container: ObjId(33),
             ungovern: None,
             bay: None,
+            buy_back_permille: None,
         },
         market: Some(PlayerMarket {
             clerk: ObjId(40),
