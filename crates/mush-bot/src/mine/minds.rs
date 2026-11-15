@@ -525,10 +525,13 @@ pub mod market {
 /// mush-bot`.
 pub mod walk {
     /// The engine's answer to a line it took for the world to commit: `mush-core`,
-    /// `engine.rs`. A whole line; a reader takes a line that is exactly it.
+    /// `engine.rs`. A whole line; a reader takes a line that is exactly it. Only for a line
+    /// the player typed (doc 47 CO.14): a step the engine takes on the player's behalf, a
+    /// Registry rating's among them, prints neither this nor [`DONE`].
     pub const QUEUED: &str = "Queued.";
-    /// The world task's answer when that commit landed: `mush-server`, `world_task.rs`. A
-    /// whole line; a reader takes a line that is exactly it.
+    /// The world task's answer when that commit landed and its provider has no sentence of
+    /// its own: `mush-server`, `world_task.rs`. A whole line; a reader takes a line that is
+    /// exactly it.
     pub const DONE: &str = "Done.";
     /// `mush_core::action::SUBMISSION_REFUSED_LINE`: the commit was refused.
     pub const REFUSED: &str = "That did not go through. Nothing changed.";

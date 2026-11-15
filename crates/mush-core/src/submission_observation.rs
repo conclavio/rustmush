@@ -155,9 +155,13 @@ impl ObservedSubmission {
     }
 }
 
+/// A submission waiting in the Engine's queue. The `bool` beside a fresh
+/// selector is whether the actor typed it (doc 47 CO.14): set at the drain from
+/// the step's typed line, carried to [`DrivenSubmission::typed`]. A retry keeps
+/// the value its first drive took.
 pub(crate) enum QueuedSubmission {
-    Plain(Box<AuthoritativeSubmit>),
-    Observed(ObservedSubmission),
+    Plain(Box<AuthoritativeSubmit>, bool),
+    Observed(ObservedSubmission, bool),
     Retry(DrivenSubmission),
 }
 impl QueuedSubmission {
@@ -167,8 +171,8 @@ impl QueuedSubmission {
 
     pub(crate) fn actor(&self) -> crate::ObjId {
         match self {
-            Self::Plain(request) => request.actor,
-            Self::Observed(request) => request.actor(),
+            Self::Plain(request, _) => request.actor,
+            Self::Observed(request, _) => request.actor(),
             Self::Retry(driven) => driven.request.actor,
         }
     }
@@ -178,14 +182,15 @@ impl QueuedSubmission {
         placement: Arc<()>,
     ) -> Option<DrivenSubmission> {
         match self {
-            Self::Plain(request) => Some(DrivenSubmission {
+            Self::Plain(request, typed) => Some(DrivenSubmission {
                 request,
                 driver: None,
                 placement,
                 observed: false,
+                typed,
             }),
             Self::Retry(driven) => Some(driven),
-            Self::Observed(request) => {
+            Self::Observed(request, typed) => {
                 if request
                     .guard
                     .0
@@ -206,6 +211,7 @@ impl QueuedSubmission {
                     driver,
                     placement,
                     observed: true,
+                    typed,
                 })
             }
         }
@@ -219,8 +225,20 @@ pub struct DrivenSubmission {
     driver: Option<Box<dyn Any + Send>>,
     placement: Arc<()>,
     observed: bool,
+    typed: bool,
 }
 impl DrivenSubmission {
+    /// Whether the actor typed the line that made this submission (doc 47
+    /// CO.14): a command read off the actor's own connection in the step that
+    /// queued it. One the engine made on its own (a mind, a scheduled
+    /// continuation, a backup seat, a module tick, a line queued by `@wait`)
+    /// is `false`: the drain gave it no receipt `Queued.`, and the driver gives
+    /// it no fallback `Done.`, so the actor hears only a provider's own summary.
+    #[must_use]
+    pub const fn typed(&self) -> bool {
+        self.typed
+    }
+
     /// The immutable selector retained through a read-only preflight retry.
     #[must_use]
     pub fn request(&self) -> &AuthoritativeSubmit {

@@ -105,6 +105,7 @@ async fn transient_retry_retains_one_observation_and_waits_before_actual_success
         staged,
         disposition: Some(proof),
         actor,
+        ..
     } = driver.drive_one(&mut engine, &store).await?
     else {
         return Err("healed original attempt must stage".into());

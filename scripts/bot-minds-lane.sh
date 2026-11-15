@@ -336,7 +336,7 @@ python3 - "$work" "$author_status" "$buyer_status" "$bots_s" << 'PY' || status=$
 import json, os, sys
 
 work, author_status, buyer_status, bots_s = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-failures, known = [], []
+failures = []
 
 
 def report(account):
@@ -396,19 +396,13 @@ if licence:
         if f"filed:{licence}" not in (bm.get(key) or "") and am.get("charter", "").lower() not in (bm.get(key) or "").lower():
             failures.append(f"the simulator's {key} line does not name the licensed mind: {bm.get(key)!r}")
 
-# A known defect is held at the truth: while it reproduces the lane says so and
-# passes; the day it stops reproducing the lane fails until its marker is taken
-# out here and in the cut note (docs/design/44-cut-notes.md, MW.19).
+# The Registry's own steps are the engine's, not the author's: since doc 47
+# CO.14 the author hears no `Queued.` or `Done.` for them, and one line of
+# either during the rating is a regression.
 unasked = am.get("rating_unasked_lines", 0)
-if author_status == 0:
-    if unasked > 0:
-        known.append(f"the Registry sent the author {unasked} lines it did not ask for during the rating "
-                     "(`Queued.` and `Done.` for the Registry's own steps)")
-    else:
-        failures.append("KNOWN DEFECT GONE: the rating sent the author no unasked line; take the marker out "
-                        "of scripts/bot-minds-lane.sh and the MW.19 cut note")
-for line in known:
-    say("KNOWN DEFECT (expected to fail): " + line)
+if unasked > 0:
+    failures.append(f"the Registry sent the author {unasked} lines it did not ask for during the rating "
+                    "(`Queued.` and `Done.` for the Registry's own steps; doc 47 CO.14)")
 for line in failures:
     say("FAILED: " + line)
 sys.exit(1 if failures else 0)

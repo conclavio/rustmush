@@ -2742,7 +2742,19 @@ enum CommandSubmitDrive {
         staged: StagedAuthoritativeAction,
         actor: ObjId,
         disposition: Option<submission_disposition::StagedAttempt>,
+        /// Doc 47 CO.14: whether the actor typed the line
+        /// ([`DrivenSubmission::typed`](mush_core::submission_observation::DrivenSubmission::typed)).
+        /// An untyped one gets no fallback `Done.`.
+        typed: bool,
     },
+}
+
+/// Doc 47 CO.14: the line a staged command submission confirms with. A
+/// provider's own summary always; the fallback `Done.` only for a line the
+/// actor typed; nothing for a submission the engine made on its own with no
+/// summary to give.
+fn staged_confirmation(summary: Option<String>, typed: bool) -> Option<String> {
+    summary.or_else(|| typed.then(|| "Done.".to_owned()))
 }
 
 impl CommandSubmitDriver {
@@ -2793,6 +2805,7 @@ impl CommandSubmitDriver {
         // branch. A transient lookup may only restore this same attempt.
         let submit = driven.request();
         let actor = submit.actor;
+        let typed = driven.typed();
         for _ in 0..3 {
             let envelope = match ActionCoordinator::command_ingress(submit, self.idempotency_epoch)
             {
@@ -2869,6 +2882,7 @@ impl CommandSubmitDriver {
                                 staged,
                                 actor,
                                 disposition,
+                                typed,
                             }
                         }
                         Err(detail) => {
@@ -4810,6 +4824,7 @@ async fn run(
                         staged,
                         actor,
                         disposition,
+                        typed,
                     }) => {
                         // The confirmation is COMMIT-BOUND: `resolve_classified_sends`
                         // collects it below and the delivery boundary withholds
@@ -4820,11 +4835,16 @@ async fn run(
                         // same projection a HIT renders — never
                         // `deterministic_commit_token`'s internal binding digest
                         // rendered raw into player output.
+                        //
+                        // Doc 47 CO.14: the fallback `Done.` is for a line the
+                        // actor typed. A submission the engine made on its own
+                        // (a mind, a scheduled step, a backup seat) says only
+                        // what its provider says, and nothing when it says
+                        // nothing.
                         failure_actor = Some(actor);
-                        out.info(
-                            actor,
-                            staged.summary.clone().unwrap_or_else(|| "Done.".to_owned()),
-                        );
+                        if let Some(line) = staged_confirmation(staged.summary.clone(), typed) {
+                            out.info(actor, line);
+                        }
                         action_completion = Some(ActionCompletion {
                             disposition,
                             staged,

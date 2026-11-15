@@ -59,11 +59,11 @@ fn last_undriven_copy_reports_only_not_dispatched_once() -> TestResult {
 fn only_one_clone_enters_runtime_and_drop_after_entry_stays_unresolved() -> TestResult {
     let (request, mut observed) = ObservedSubmission::new(request()?);
     let copy = request.clone();
-    let driven = QueuedSubmission::Observed(request)
+    let driven = QueuedSubmission::Observed(request, true)
         .drive(None, Arc::new(()))
         .ok_or("first handoff")?;
     assert!(
-        QueuedSubmission::Observed(copy)
+        QueuedSubmission::Observed(copy, true)
             .drive(None, Arc::new(()))
             .is_none()
     );
@@ -78,10 +78,10 @@ fn completion_and_consumption_belong_to_one_exact_attempt() -> TestResult {
     let second = Arc::new(AtomicBool::new(false));
     let (a, mut old) = ObservedSubmission::new(request()?);
     let (b, mut current) = ObservedSubmission::new(request()?);
-    let _a = QueuedSubmission::Observed(a)
+    let _a = QueuedSubmission::Observed(a, true)
         .drive(Some(&Runtime(first.clone())), Arc::new(()))
         .ok_or("old handoff")?;
-    let _b = QueuedSubmission::Observed(b)
+    let _b = QueuedSubmission::Observed(b, true)
         .drive(Some(&Runtime(second.clone())), Arc::new(()))
         .ok_or("new handoff")?;
     first.store(true, Ordering::Release);

@@ -9305,6 +9305,100 @@ async fn e7c2_b1_the_confirmation_never_outruns_the_durable_ack() {
     assert_eq!(out.classes(), [mush_core::DeliveryClass::OnCommit]);
 }
 
+/// Doc 47 CO.14, the typed half: a submission from a line the actor typed
+/// keeps its receipt `Queued.` and, with no provider summary, the fallback
+/// `Done.`.
+#[tokio::test]
+async fn co14_a_typed_submission_keeps_queued_and_done() {
+    let mut world = b1_world();
+    let out = b1_run(&mut world, "@b1submit 3");
+    assert_eq!(b1_lines(&out), vec!["Queued.".to_owned()]);
+    let store = mush_store::InMemoryStore::new();
+    let _ = world.drain_write_batch();
+    let mut engine = world.into_engine();
+    let mut driver = CommandSubmitDriver::new(1);
+    let CommandSubmitDrive::Staged { staged, typed, .. } =
+        driver.drive_one(&mut engine, &store).await.unwrap()
+    else {
+        panic!("the typed submission must stage")
+    };
+    assert!(typed, "a line read off the actor's connection is typed");
+    assert_eq!(
+        staged_confirmation(staged.summary.clone(), typed),
+        staged.summary,
+        "a provider's own summary is the confirmation"
+    );
+    assert_eq!(
+        staged_confirmation(None, typed).as_deref(),
+        Some("Done."),
+        "a typed submission with no summary still hears `Done.`"
+    );
+}
+
+/// Doc 47 CO.14, the engine's half: the same submission made by a line the
+/// scheduler runs (`@wait`, with no connection) gets no receipt `Queued.`
+/// and no fallback `Done.`; a provider's own summary still reaches the actor.
+/// MW.19 saw thousands of these pairs reach a mind's author in one rating.
+#[tokio::test]
+async fn co14_an_engine_made_submission_gets_neither_queued_nor_done() {
+    // `b1_world` with the engine's own commands, for `@wait`.
+    let (boot, mut registry) = mush_testkit::boot_world();
+    mush_core::register_engine_commands(&mut registry).unwrap();
+    let mut engine = Engine::with_modules(
+        boot,
+        registry,
+        vec![Box::new(mush_contract_tests::b1_seam::B1SeamModule)],
+    )
+    .unwrap();
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .unwrap();
+    engine.set_offer_keys(OfferKeyRing::new(OfferSecret::new(1, [0x61; 32]).unwrap(), []).unwrap());
+    let mut world = mush_testkit::TestWorld::from_engine(engine);
+    let typed = b1_run(&mut world, "@wait 1=@b1submit 3");
+    assert!(
+        b1_lines(&typed).is_empty(),
+        "queuing the line says nothing: {:?}",
+        b1_lines(&typed)
+    );
+    assert!(!world.engine().has_authoritative_submit());
+    let now_ms = world.engine().world.now() * 1000;
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    world
+        .engine_mut()
+        .fire_due(now_ms + 1_000, &mut out, &mut fx);
+    assert!(
+        world.engine().has_authoritative_submit(),
+        "the scheduled line must queue its submission"
+    );
+    assert!(
+        !b1_lines(&out).iter().any(|line| line == "Queued."),
+        "a submission the actor did not type gets no receipt: {:?}",
+        b1_lines(&out)
+    );
+    let store = mush_store::InMemoryStore::new();
+    let _ = world.drain_write_batch();
+    let mut engine = world.into_engine();
+    let mut driver = CommandSubmitDriver::new(1);
+    let CommandSubmitDrive::Staged { staged, typed, .. } =
+        driver.drive_one(&mut engine, &store).await.unwrap()
+    else {
+        panic!("the scheduled submission must stage")
+    };
+    assert!(!typed, "a line the scheduler ran is not typed");
+    assert_eq!(
+        staged_confirmation(None, typed),
+        None,
+        "an engine-made submission with no summary says nothing"
+    );
+    assert_eq!(
+        staged_confirmation(staged.summary.clone(), typed),
+        staged.summary,
+        "a provider's own summary still reaches the actor"
+    );
+}
+
 // ---- E7 cut 2 independent verify fold ----
 
 fn b1_run_as(world: &mut mush_testkit::TestWorld, actor: ObjId, line: &str) -> Outbox {

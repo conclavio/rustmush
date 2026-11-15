@@ -752,6 +752,12 @@ pub struct Engine {
     /// requires the pre-ingress queue to be global. A second submission by the
     /// **same** actor is still back-pressure, and a handler still cannot buffer.
     authoritative_submits: BTreeMap<ObjId, crate::submission_observation::QueuedSubmission>,
+    /// Doc 47 CO.14: the actor whose own line this step is running (a command
+    /// read off their connection, an invoke, a request answered), for the drain
+    /// to tell a typed submission from one the engine made on its own. `None`
+    /// outside [`step`](Self::step)'s body, so a tick, a scheduled
+    /// continuation, a world event or an external step stamps nobody.
+    typed_actor: Option<ObjId>,
     submission_runtime: Option<Arc<dyn crate::submission_observation::SubmissionRuntime>>,
     // Process-local placement, independent of World clones or registry identity.
     submission_placement: Arc<()>,
@@ -792,6 +798,7 @@ impl Engine {
             .map_or_else(ActionStateStore::unregistered, ActionStateStore::new);
         Engine {
             gateway_reply_framing: false,
+            typed_actor: None,
             world,
             registry,
             sched: Scheduler::new(),
@@ -3894,6 +3901,7 @@ impl Engine {
                     );
                     self.world.set_connection_dispatch(ingress);
                     self.world.set_dispatching_conn(Some(conn));
+                    self.typed_actor = Some(actor);
                     // Line-mode answer to a server-initiated request
                     // (interface plan I10): `respond <arg>` when the actor has
                     // a pending request resolves it without an idle stamp (an
@@ -3941,6 +3949,7 @@ impl Engine {
                 id,
                 request,
             } => {
+                self.typed_actor = Some(actor);
                 self.handle_invoke(conn, actor, id, &request, out);
                 StepOutcome::Continue
             }
@@ -3959,6 +3968,7 @@ impl Engine {
                 id,
                 choice,
             } => {
+                self.typed_actor = Some(actor);
                 self.handle_respond(conn, actor, id, &epoch, choice, out);
                 StepOutcome::Continue
             }
@@ -4011,6 +4021,7 @@ impl Engine {
             }
         };
         self.drain_deferred(out, fx);
+        self.typed_actor = None;
         out.note_pending_authoritative([]);
         // 16b cut AP.4: the suffix, read now (after the body) and pushed last
         // as a `Trailer` — see the head of this function.
@@ -5026,16 +5037,18 @@ impl Engine {
                     captured_this_drain.insert(actor);
                 }
                 Deferred::AuthoritativeSubmit(request) => {
+                    let typed = self.typed_actor == Some(request.actor);
                     self.drain_authoritative_submit(
-                        crate::submission_observation::QueuedSubmission::Plain(request),
+                        crate::submission_observation::QueuedSubmission::Plain(request, typed),
                         &mut queued_this_drain,
                         &mut fanned_out,
                         out,
                     );
                 }
                 Deferred::ObservedAuthoritativeSubmit(request) => {
+                    let typed = self.typed_actor == Some(request.actor());
                     self.drain_authoritative_submit(
-                        crate::submission_observation::QueuedSubmission::Observed(request),
+                        crate::submission_observation::QueuedSubmission::Observed(request, typed),
                         &mut queued_this_drain,
                         &mut fanned_out,
                         out,
@@ -5114,6 +5127,11 @@ impl Engine {
         out: &mut Outbox,
     ) {
         let actor = request.actor();
+        let typed = matches!(
+            &request,
+            crate::submission_observation::QueuedSubmission::Plain(_, true)
+                | crate::submission_observation::QueuedSubmission::Observed(_, true)
+        );
         if fanned_out.contains(&actor) {
             // Already told; a third submission adds no new fact.
             return;
@@ -5161,7 +5179,14 @@ impl Engine {
         // `@inv/move` produced no output whatever. `BestEffort`, so
         // the durable-ack gate never withholds it and it can never
         // be read as the confirmation.
-        out.best_effort_info(actor, "Queued.");
+        //
+        // Doc 47 CO.14: only for a line the actor typed. A submission the
+        // engine made on its own (a mind's step, a scheduled continuation, a
+        // backup seat) gets no receipt: the actor asked for nothing, and a
+        // Registry rating used to send its author thousands of these.
+        if typed {
+            out.best_effort_info(actor, "Queued.");
+        }
     }
 
     /// E7c2 B1: whether one command-originated authoritative submission is
@@ -5282,7 +5307,9 @@ impl Engine {
         }
         self.authoritative_submits.insert(
             actor,
-            crate::submission_observation::QueuedSubmission::Plain(submit),
+            // Doc 47 CO.14: a decision capture keeps its fallback `Done.` as
+            // before; it never had a receipt `Queued.` (it skips the drain).
+            crate::submission_observation::QueuedSubmission::Plain(submit, true),
         );
         Ok(())
     }

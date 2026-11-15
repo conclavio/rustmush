@@ -77,7 +77,7 @@ no ramp in reach holds (MW.7's default stands).
 | D5 | The recover owed across a restart is lost: the retry list is held in memory only | MW.7 |
 | D6 | `mush-server` `rate_queues_and_cancels_a_genuine_registry_preparation` fails now and then | MW.13, MW.19, MW.21 |
 | D7 | `docs/design/45-cut-notes.md` has the `## AP.11` section twice | this survey |
-| D8 | MW.19's known defect (its item 3, which the nightly passes) and its item 4's missing sentence | MW.19 |
+| D8 | MW.19's known defect (its item 3, which the nightly passes; CO.14) and its item 4's missing sentence | MW.19 |
 
 **For the owner, not a defect until ruled:** no carrier can fire on another carrier in a bubble.
 Carriers are marked Friendly to each other when they join and no command marks a party (AP.9, by
@@ -100,6 +100,7 @@ reading). Whether one carrier should be able to fight another is a design call.
 | **CO.4** | Removed parts to storage (R-47-5) | the refit admission (`bay_refit`, `core_refit`, the kernel's two), the `detached` head, inventory | CT.7 (same files) | a displaced or removed part that is not destroyed is stored and can be fitted again; its sale moved to CO.13 (a governed core's title is a managed title, which no generic contract may move) |
 | **CO.13** | Selling a stored core (R-47-5's "or sold") | a closed managed core-title sale family on the charter-transfer pattern: kernel protocol, economy plan and audit; the market's core catalogue entries; the fitting shop's buy-back vendor | CO.4 | a stored core is sold with its title to the fitting shop's buy-back vendor by registered commands, audited, with no generic TransferTitle on a managed title |
 | **CO.6** | A route to a cored ship | refit, yard, content | CO.4 | a player can have a governed core fitted to a ship by registered commands; MW.21's staff fiat removed; MW.5's stories 2 and 7 built |
+| **CO.14** | No `Queued.` or `Done.` for a submission the player did not type (D8 item 3, left by CO.11) | the engine's submit drain (`mush-core`), the world task's staged confirmation (`mush-server`), MW.19's lane script | CO.11 | a submission the player typed still gets `Queued.` and, with no provider summary, `Done.`; one the engine made on its own gets neither and keeps a provider's own summary; a test shows each and fails before the fix; MW.19's "KNOWN DEFECT" marker removed and the nightly `bot-minds-lane` passes |
 
 **Order.** Wave 1: CO.1, CO.2, CO.5, CO.8, CO.9, CO.10, CO.11, side by side, one writer a file.
 Wave 2: CO.3, CO.7 and CO.12 after CO.2. Wave 3: CO.4 after doc 46's CT.7, then CO.6, then CO.13.
