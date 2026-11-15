@@ -171,7 +171,10 @@ pub(in crate::world_task::submission_disposition::tests) async fn open_wallet(
         PrincipalId::System(id) => format!("@account/system {}=tacsim.credit", id.as_str()),
         _ => return Err("fixture requires actual personal/system wallet".into()),
     };
-    let lines = server.command(GOD, command).await?;
+    // GOD's own lines, the command sent again while the world sheds it
+    // (CO.11c): a shed `@account/open` never ran, and its refusal named no
+    // account (doc 47 D6's "one acknowledged wallet creation ... got []").
+    let lines = server.command_admitted(GOD, command).await?.own;
     let ids = lines
         .iter()
         .filter_map(|line| line.split_once("Opened account #"))
