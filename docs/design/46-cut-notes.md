@@ -2785,7 +2785,339 @@ accessors.
 
 ## CT.6
 
-Not built.
+The renewal twin in the market. Built 2026-11-14 on main `6c86731fb` (CT.0 to CT.5, CT.0b and
+CT.7 in: the branch was cut from CT.5's and merged with main first, which had #603).
+
+**The survey, before the cut.** `mind_renewal/` against `mind_house_renewal/`, the fourteen
+production files each has (3,006 lines each, `player.rs` aside: it is the personal family's and
+both services print its words). `diff` gives 93 hunks, 358 changed lines; the rest is the same
+text.
+
+| File | Lines, personal and House | Hunks | (a) a rename | (b) an identity string | (c) real logic |
+|---|---|---|---|---|---|
+| `mod.rs` | 29, 31 | 5 | 3 (the doc, the `player` module, the House's test exports) | | |
+| `actions.rs` | 153, 153 | 3 | 1 | 2 (the five line selectors, and the test's copy) | |
+| `audit.rs` | 129, 129 | 2 | 2 | | |
+| `capacity.rs` | 78, 78 | 1 | 1 | | |
+| `config.rs` | 185, 216 | 11 | 3 | 2 | 6 |
+| `families.rs` | 98, 98 | 1 | 1 | | |
+| `offer.rs` | 208, 171 | 10 | 3 | | 7 |
+| `pair.rs`, `publication.rs` | 55, 54 each | 2 | 2 | | |
+| `provider.rs` | 453, 464 | 18 | 17 | | 1 |
+| `records.rs` | 284, 284 | 8 | 6 | 2 | |
+| `registration.rs` | 169, 169 | 7 | 3 | 4 | |
+| `service.rs` | 918, 911 | 19 | 9 (3 of them docs) | 5 | 2 |
+| `service_provider.rs` | 193, 193 | 5 | 4 | 1 | |
+| **All** | 3,006, 3,006 | 92 | 55 | 16 | 16 |
+
+(and `service/ct0_service.rs`, CT.0's test child, one hunk of doc.)
+
+- *(a) A rename, 55 hunks.* Which family's paths are named (`managed_renewal::` against
+  `managed_house_renewal::`, `commerce::renewal::` against `commerce::house_renewal::`), which
+  of Economy's request variants and output accessors (`RenewalDraft` against
+  `HouseRenewalDraft` and the other eight, `renewal_offer()` against `house_renewal_offer()`
+  and the other two), which of Economy's audits, which of the kernel's completion and capacity
+  calls (`reserve_mind_renewal_completion` against `reserve_house_mind_renewal_completion`, and
+  the advance and the two capacity declarations), the order of two `use` lines, three doc
+  comments, and the House's `pub(crate)` test exports.
+- *(b) An identity string, 16 hunks, 17 strings:* the two state families, the policy's
+  definition kind, the outcome id, the binding's definition kind (twice) and its protocol, the
+  five line selectors and the service's, the command and its help, the service tick, and the
+  close intent's and a submission's digest domains.
+- *(c) Real logic, 16 hunks*, all of them doc 46 §4.3's:
+  - *The House purchase policies* (config, 6): the House configuration carries its one-seat
+    purchase policy and its two-seat one, is built from the `HouseConfig` they come from (and
+    gives the writer its purchase admission), references both from the renewal policy, and
+    answers whether a renewal template names one (`accepts_purchase_template`), which the
+    provider asks at `observed` (provider, 1) and the offer before its payee (§4.3 5).
+  - *The payee and the parents* (offer, 7): the personal offer pays the seller's personal
+    account and carries up to three royalty parents and its lineage; the House offer pays the
+    issuing House's treasury on its scope and names the organisation and scope instead (§4.3 1
+    and 3).
+  - *The status line* (service, 2): the personal line names the parent royalties, the House's
+    does not, and the House's view sums none.
+
+Where each of §4.3's nine sits in the market:
+
+| §4.3 | In the market | Carried by |
+|---|---|---|
+| 1, the terms | the offer's own terms and basis | `Issuer::offer` |
+| 2, the current-authority check | the Roll's readers | the two readers, through `reader_face!` |
+| 3, the payee | the offer's remainder | `Issuer::remainder` |
+| 4, the birth variant | not in the market | — |
+| 5, buyer admission | the House purchase template a renewal must name, at `observed` and before the payee | `Issuer::admits`, `Issuer::Purchase`, the House's `accepts_purchase_template` |
+| 6, the `OwnCharter` stop | the Roll's reader; the market prints its `RenewalStop` | the personal reader |
+| 7, the account pairing | the Roll's writer | — |
+| 8, the prerequisite audits | that a disabled composition has no renewal history in Economy | `Issuer::require_no_economy_history` |
+| 9, the identity strings | the 17 strings of (b) | 12 market constants and Economy's `PROTOCOL` (below) |
+
+**The writer face (CT.5's decision for CT.6).** CT.5 left the choice: keep the market's two
+families on their aliases, or give the Roll a public face. The first leaves the providers, the
+service and the audit, which call the writer, as two copies, which is this unit. So the second,
+with one change: `mush_roll::commerce::renewal_twin::Writes` is a public trait over the Roll's
+`Issuer`, with the writer's thirteen methods over its own public types, and one blanket
+`impl<I: Rules> Writes for I` whose every method is the inherent method of the same name.
+CT.5's note said "implemented for the two issuers by forwarding"; one blanket impl is the same
+face without the second copy of the forwarders, and the set it covers is still exactly the two
+(`Rules` is sealed by `Issuer`'s seal). The market calls `I::draft(&writer, …)` where it called
+`self.writer.draft(…)`. It is the one file this unit adds outside `mush-market`
+(`renewal_twin/face.rs`, 238 lines, and one `mod` and one `pub use` line in `renewal_twin.rs`).
+
+**Built.** One composition, two instantiations, in `crates/mush-market/src/`:
+
+| File | Lines | What it is |
+|---|---|---|
+| `renewal_twin.rs` | 30 | the module |
+| `renewal_twin/issuer.rs` | 221 | the sealed `Issuer`, the reader's `Inventory` and `Entry`, `OfferParts` |
+| `renewal_twin/records.rs` | 568 | the shared helpers, `Row`, `OperationRow`, `ReceiptRow`, and `records!`: the two `checked!` records, their pairing and publication (the old `records.rs`, `pair.rs`, `publication.rs`) |
+| `renewal_twin/reader.rs` | 58 | `reader_face!`: the two traits for a family's reader module |
+| `renewal_twin/{actions, audit, capacity, config, families, offer, provider, registration, service, service_provider}.rs` | 2,526 | the ten files of the old personal family, generic over the issuer |
+| `mind_renewal/mod.rs`, `mind_house_renewal/mod.rs` | 413, 420 (and 85, 72 of test-only paths) | `impl Issuer`, the `records!` and `reader_face!` expansions, the constructor `RenewalConfig::new`, the House's purchase policies, and every path a caller names |
+
+The twenty-eight production files were 6,012 lines (`player.rs` aside, and with the two
+`actions.rs` presentation tests); the sixteen are 4,468, with the Roll's face.
+
+*The trait.* `Issuer: Sealed + mush_roll::commerce::renewal_twin::Issuer + Writes + Debug`,
+private to the crate (the families it names are), on Economy's own `Personal` and `House`, so
+one issuer type names a renewal family across economy, the Roll and the market. Twelve
+constants (the strings of (b) but the protocol, which the twin reads from Economy's
+`PROTOCOL`, the same value), five associated types and thirty-six functions:
+
+| Item | What it carries | §4.3 |
+|---|---|---|
+| the twelve constants (`VERBS` is the five selectors) | the identity strings | 9 |
+| `Renewal`, `Receipt` | the family's two `checked!` records | 9 |
+| `Purchase` | `()`, or the House's purchase policies | 5 |
+| `Inventory`, `Entry` | the family's reader's inventory and entry | 2 |
+| `purchase_references`, `admits` | the policy's references after the manifest; the template admission at `observed` | 5 |
+| `remainder`, `offer`, `decode_offer` | the payee; the offer's own terms and basis (the personal parents and lineage, the House's organisation and scope); Economy's bounded decode | 3, 1 |
+| `registry`, `venue`, `parent_permille`, `status_line` | what the status view reads of the terms, and the line it prints | 1 |
+| nine `…_request`, three `…_output` | which entry of Economy's closed request and output lists | (a) |
+| `economy_audit`, `require_no_economy_history` | which of Economy's audits | (a), 8 |
+| `reserve_completion`, `advance_completion`, `capacity`, `capacity_with_service` | which of the kernel's calls | (a) |
+| `request_reader`, four `read_…`, three `…_of`, `term_end` | the family's reader: its registration, its requests, its answers | 2 |
+
+Twenty-seven of the thirty-six are one line naming one entry of a closed list (Economy's requests
+and outputs, the kernel's calls, the reader's requests); they are the rename (a), and stay
+hooks because the lists are closed enums and inherent methods with one name an issuer.
+
+*The records.* `checked!` takes no type parameter, so each family expands `records!` once,
+as CT.5 did for the Roll's: the operation and the receipt, with every method, are one text,
+and each family's types are concrete (`mind_renewal::MindRenewalOperationV1` is the type it
+was). Every field is where it was. The generic owner reads them through `OperationRow` and
+`ReceiptRow`, implemented in the same text.
+
+*The config.* `RenewalConfig<I>` and `RenewalPolicy` are one type each; the two families'
+`RenewalConfig` are aliases, and `RenewalConfig::new` is each family's own constructor (the
+personal one from a manifest and participants, the House's from a `HouseConfig`), in an
+inherent impl on its instantiation. `RenewalPolicy` was two identical types and is one.
+
+*What did not move.* No file outside `mush-market` but the Roll's face: no caller's path
+changed (`module.rs`, `mind_entitlement/capabilities.rs` and tacsim, mush-server and mush-bot
+name the families' items, which are all there). The readers stay the Roll's two (CT.5).
+
+**Tests.** `cargo test -p mush-market --lib -- --list`, before (main `6c86731fb`) and after:
+136 and 139. The diff of the two sorted lists:
+
+- *Added, 3:* `mind_renewal::tests::personal_market_identity_strings_hold_todays_bytes` and
+  `mind_house_renewal::tests::house_market_identity_strings_hold_todays_bytes`: every market
+  constant of the issuer against the literal its family held, the records' `FAMILY`, and
+  Economy's `PROTOCOL`, which the binding now reads. And
+  `mind_renewal::tests::the_status_line_reads_each_cut_of_the_frozen_offer`, for both issuers:
+  asked for by three mutations that passed everything (F5 to F7, below).
+- *Moved, 4:* the personal service's tests, `mind_renewal::service::tests::…` to
+  `renewal_twin::service::tests::…`, the same four names. They read the service's private items
+  (its runtime, its selections, its key), which are now the twin's, so they moved with it and
+  name the personal issuer; their bodies changed only in two paths.
+- No name was lost. Every other test is where it was: the families' tests compile against the
+  families' paths, and the paths the tests name that are no longer the families' own modules
+  (`actions`, `capacity`, `families`, `offer`, `provider`, `service`) are `#[cfg(test)]`
+  modules at the bottom of each `mod.rs`, each item a forwarder at the issuer. That is the first
+  of CT.5's two commits; the second, one body run for both issuers, is not done here (below).
+- CT.0's service lines (`service_lines!`) read the service's private names, so the two
+  `ct0_service.rs` children moved with the service (`renewal_twin/service/ct0_personal.rs`,
+  `ct0_house.rs`), each naming its issuer's command under the name the lines read.
+
+**The snapshots.** `git diff --stat main -- '*.snap'` is empty, and nothing was re-blessed. The
+market's two renewal walks (`ct0_personal_renewal_snapshot`, `ct0_house_renewal_snapshot`), which
+write the command, its refusal, the status and the front's lines, the service's command, refusal
+and stopped line and both issuers' descriptors, pass unedited on Windows and on Linux: the
+command output both issuers print is byte-identical. Every string literal of the families'
+production files and the twin was listed before and after (`literals.py`): 164 distinct before,
+163 after. Gone are the binding's two protocol names, which the twin reads from Economy's
+`PROTOCOL` of the same value (the identity tests hold both); added is the lint expectation's
+`reason`.
+
+**The proof on the composed path (CT.0b's two commands).** On conclav.dev, base a clone at main
+`6c86731fb`, tip this branch's production code as built (commit `202761427`; what followed it is
+tests and docs), both tacsim binaries built at eight jobs, the two stories side by side:
+
+| | Base | Tip |
+|---|---|---|
+| Command 1, the story against the committed files | passed, 1,058.9 s | passed, 1,053.7 s |
+| The recorder (`CT0B_CAPTURE recorder_ms=… compare_ms=…`) | 185, 468 | 179, 466 |
+| Command 2, `diff -r` of the unprojected records | | empty: no byte moved on the composed path |
+
+The eight files (8.6 MB) have the same SHA-256 at base and tip: `renewal_personal.raw`
+`d0376cd8…`, `renewal_house.raw` `3690ec43…`, `purchase_personal.raw` `6ef3c0aa…`,
+`purchase_house.raw` `bfb6a4a3…`, the same as CT.5's tip.
+
+**The other gates.** On conclav.dev, a clone at the tip: clippy with `-D warnings` over all
+targets of `mush-market`, `mush-roll`, `tacsim`, `mush-server` and `mush-bot` (the crates that
+name the families); CI's M7 memory-size pass; `cargo doc` with `-D warnings` for the two edited
+crates; `cargo test -p mush-contract-tests --no-fail-fast`. All clean. Locally, `cargo test -p
+mush-market --lib`: 139 passed.
+
+**The seal.** `Issuer` is private to the crate, so no other crate can name it, and its supertrait
+`sealed::Sealed` is implemented in `issuer.rs` for Economy's two issuer types only. The Roll's
+face is sealed by the Roll's `Issuer`, its supertrait.
+
+**The mutations.** Each was made alone on a throwaway clone on conclav.dev (the worktree was
+never edited): one exact text of `mind_renewal/mod.rs` (the personal `impl Issuer`) replaced,
+the market's library tests run (`cargo test -p mush-market --lib`, 138 tests), the file put
+back (`ct6-muts.py`). The constant runs below were made after the identity tests; the
+function runs before them, which none of the functions' mutations can reach. What passed them was run again on the composed path: tacsim's binary
+built with the mutation, the M7 story run with it (`ct6-story-muts.py`, six and three at a
+time).
+
+*The personal `impl Issuer`, every function, each answering a wrong but well-typed value.* "The
+story" is the M7 story with the mutant's binary: where it fails, the first line of the composed
+record that differs from the committed file, at the preparation it names (`CT0B_CAPTURE`).
+
+| # | The mutation | Unit tests | The M7 story |
+|---|---|---|---|
+| F1 | `admits` answers `false` | nothing | **fails** (360 s): the first personal preparation differs (line 24) |
+| F2 | `remainder` answers `Err` | nothing | **fails** (375 s): the same, line 24 |
+| F3 | `offer` drops the royalty parents | nothing | **fails** (390 s): preparation 15, line 273 |
+| F4 | `decode_offer` refuses | nothing | **fails** (360 s): line 24 |
+| F5 | `registry` answers the venue's cut | nothing | passes; **killed** by the added `the_status_line_reads_each_cut_of_the_frozen_offer` |
+| F6 | `venue` answers `None` | nothing | passes; **killed** by the same test |
+| F7 | `parent_permille` answers 0 | nothing | passes; **killed** by the same test |
+| F8 | `status_line` is the House's | 2 tests: `renewal_player_step_keeps_the_service_commands_byte_identical`, `ct0_personal_renewal_snapshot` | — |
+| F9 | `draft_request` asks a retry | nothing | **fails** (390 s): line 24 |
+| F10 | `retry_request` asks a draft | nothing | **fails** (660 s): preparation 42, line 792 |
+| F11 | `holder_draft_request` asks a plain draft | nothing | **fails** (360 s): preparation 9, line 166 |
+| F12 | `holder_retry_request` asks a plain retry | nothing | **fails** (375 s): preparation 12, line 207 |
+| F13 | `funding_request` asks a grant | nothing | **fails** (360 s): preparation 3, line 71 |
+| F14 | `grant_request` asks a refund | nothing | **fails** (375 s): preparation 14, line 239 |
+| F15 | `refund_request` asks a grant | nothing | **fails** (375 s): preparation 4, line 94 |
+| F16 | `close_request` swaps the reason | nothing | **fails** (360 s): preparation 6, line 135 |
+| F17 | `service_close_request` swaps the reason | nothing | **fails** (405 s): preparation 2, line 44 |
+| F18 to F20 | `offer_output`, `funding_output`, `terminal_output` refuse | nothing | **fail** (405 to 435 s): lines 24, 71, 94 |
+| F21 | `economy_audit` refuses | nothing | **fails** (405 s): before the first preparation |
+| F22 | `require_no_economy_history` answers `Ok` | nothing | passes |
+| F23 | `reserve_completion` reserves nothing | nothing | **fails** (390 s): line 24 |
+| F24 | `advance_completion` advances nothing | nothing | **fails** (360 s): line 44 |
+| F25 | `capacity` declares nothing | nothing | **fails** (375 s): preparation 5, line 120 |
+| F26 | `capacity_with_service` leaves the service out | nothing | **fails** (360 s): line 44 |
+| F27 | `request_reader` drops the service | nothing | **fails** (375 s): before the first preparation |
+| F28 | `read_own` asks a status | nothing | **fails** (645 s): preparation 34 |
+| F29 | `read_status` asks the facts | nothing | **fails** (360 s): before the first preparation |
+| F30 | `read_inventory` restarts from the top | nothing | passes |
+| F31 | `read_operation` asks another operation | nothing | **fails** (420 s): preparation 1 |
+| F32 to F34 | `facts_of`, `inventory_of`, `operation_of` refuse | nothing | **fail** (405 to 660 s) |
+| F35 | `term_end` answers the epoch | nothing | passes |
+| — | `purchase_references` | not made at the personal issuer, which answers the empty list | HF1 instead |
+| HF1 | House `purchase_references` references nothing | 1 test: `ct0_house_renewal_snapshot` | — |
+| HF2 | House `admits` answers `true` | nothing | passes |
+| HF3 | House `parent_permille` answers 1 | 1 test: `renewal_player_step_keeps_the_service_commands_byte_identical` | — |
+
+- **Thirty-three passed the market's tests**: every hook that only a provider, the service or the
+  boot audit calls. The composed story fails on twenty-six of them, and the three status-view
+  hooks (F5 to F7) fail the test this unit added after the runs.
+- **Not closed: four**, and none is new. Each was made on main's own files (`ct6-muts-base.py`,
+  the slot at base, never synced) and passes main's 136 tests there:
+  - *Held twice* (F35, HF2). `require_due` against the facts' term end is also the Roll's
+    `check_fresh` (`now < predecessor_term_end` is a `Mismatch`), and the House template a draft
+    must name is asked again before the payee, in `remainder`. For a fund or a grant the House's
+    `admits` is the only template check, but the story's House templates never change.
+  - *A page boundary* (F30): the service's due scan reads the Roll's inventory a page at a time;
+    the story's licences fit in one page, so restarting from the top reads the same page.
+  - *A store with history and no composition* (F22): `require_disabled` runs only when the market
+    composes no renewals, and then Economy holds no renewal of a market that never composed one.
+    CT.5's R19 is the Roll's half of the same check.
+  Closing them needs a composed rig with more licences than a page, a House whose policy changes
+  between a draft and its fund, and a store booted without the composition: CT.8's.
+
+*The identity constants, one of each kind.* Each fails its issuer's identity test; those a
+persisted byte or a printed line depends on also fail the walk.
+
+| # | The mutation | What failed |
+|---|---|---|
+| C1, C2 | a state family (the operation, the receipt) | the identity test and `ct0_personal_renewal_snapshot` |
+| C3 | the policy's definition kind | the same |
+| C4 | the outcome id | the same |
+| C5 | the binding's definition kind | the identity test |
+| C6 | a line selector | the identity test and `actions::presentation_tests::renewal_transitions_have_unique_line_selectors` |
+| C7 | the service's selector | the identity test |
+| C8 | the command | the identity test and the walk |
+| C9, C10 | the help, the tick | the identity test |
+| C11 | the close intent's digest domain | the identity test and the walk |
+| C12 | a submission's digest domain | the identity test |
+
+C5, C7, C9, C10 and C12 had passed every test before the identity tests were written: the
+walk does not record the binding's kind, the service selector, the help, the tick or a
+submission's key.
+
+**Divergences.**
+
+- **The trait is private to the crate**, unlike the Roll's and Economy's. Nothing outside the
+  market names it: the two families' public names are aliases of the twin's types and
+  forwarders to its functions, and the structs it bounds (`RenewalConfig<I>`) carry
+  `#[expect(private_bounds)]`.
+- **The Roll's face is a blanket impl**, not two forwarding impls (above).
+- **One `RenewalPolicy`.** The two families' identical policy types are one type; tacsim names it
+  by both paths, which still compile.
+- **Two pure checks reordered**, found by the second read (below): the personal offer's royalty
+  parents are now gathered after the offer's expiry is computed, and the House provider's
+  template admission is now asked before `require_due`, where it was after. Each is a pure read
+  or a checked add between fallible checks that answer the same `invalid()`, so no outcome moves.
+- **`RenewalConfig::new` is each family's**, an inherent impl on its instantiation, so its two
+  signatures stay as they were.
+- **The family test paths** (Tests, above) are test-only forwarders, as CT.5's first commit was.
+- **The mutations ran on clones**, as in CT.0 to CT.5.
+
+**Found on the way.**
+
+- **The market's own tests do not reach its providers or its service.** CT.0 recorded that the
+  walk does not reach the providers' prepare arms; the mutations show what that means: 33 of the
+  36 hooks pass the market's 138 tests. The composed story is what sees them (the table above).
+- **A second read, not anchored on this one.** A reviewer given the old files and the new, told
+  to substitute each issuer into the twin and explain every difference, found no behavioural
+  difference in persisted bytes, identity strings, the error returned or the order of
+  side-effecting calls, and that the Roll face forwards each method exactly. It named the two
+  reorders under Divergences.
+- No defect in production code was found, and no production behaviour was changed.
+
+**Not built.**
+
+- *One test body for both issuers.* The two families' eight record tests (the first 544 lines of
+  each `tests.rs`) differ in 92 lines, all fixtures; they could be one body over a `Rig`, as
+  CT.5's are. Not done: it would move every one of those names, and the House file also hosts
+  CT.0's shared walk. A later unit's, with CT.8's rig.
+- The Roll's two readers, as CT.5 left them: the market reads them through `reader_face!`.
+- Tests for the hooks only the composed path reaches (the table above): a market test that
+  drives a provider's prepare with a real Roll writer needs the composed rig (CT.8).
+
+**For CT.8 and CT.9.**
+
+- *What the market names now.* `mush_market::renewal_twin` is crate-private; the families' paths
+  are what tacsim, mush-server and mush-bot name, unchanged. A CT.8 rig over both issuers would
+  build `RenewalConfig` through each family's `new`.
+- *The Roll's face* (`mush_roll::commerce::renewal_twin::Writes`) is the way to call the writer at
+  a generic issuer from outside the Roll; a later unit that needs more of the writer adds a
+  method there, one line in the blanket impl.
+- *Copy:* the survey sorted into rename, identity and logic first; the records as one macro text
+  expanded in each family, in a child module so its imports stay its own; a forwarding macro for
+  the foreign types the generic code reads (`reader_face!`); the test paths as test-only modules
+  first; the literals listed before and after; the mutations on a clone, then the survivors on the
+  composed story.
+- *Watch for:* a `macro_rules!` `$p:path` fragment cannot be followed by `::Name` (import it
+  with `use $p as p;`); a `pub struct` bounded on a crate-private trait needs
+  `#[expect(private_bounds)]`, but the blanket impl of a public trait over a private one does not;
+  `I::Renewal` (not `I::Operation`) because the Roll's `Issuer` already has an `Operation`.
+- *CT.0b's proof* took about 25 minutes for both commands on conclav.dev with the binaries built
+  (four minutes each at eight jobs): the story is 1,054 to 1,059 s.
 
 ## CT.7
 
