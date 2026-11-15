@@ -1580,19 +1580,28 @@ item 3, found by MW.19 and left by CO.11).
 **The short of it.** The engine now knows, for each authoritative submission it queues,
 whether the actor typed it. One the engine made on its own gets no receipt `Queued.` when it
 is queued and no fallback `Done.` when it commits: a Registry rating's steps, a mind's, a
-backup seat's, a scheduled continuation's, a module tick's. A provider's own summary still
+backup seat's, a module tick's, a continuation a tick or another continuation scheduled. A
+continuation the player's own connected line scheduled (the renewal front `+minds/renew`
+queues) finishes what they typed and keeps both words. A provider's own summary still
 reaches the actor. A line the player typed reads as it did. `AuthoritativeSubmit` is
 unchanged, so none of its literals moved.
 
 **The shape chosen.** Not a field on `AuthoritativeSubmit` and not a constructor: the engine
 stamps it at the drain.
 
-- `Engine` holds `typed_actor`, the actor whose own line `step` is running: an
-  `Inbound::Cmd` read off their connection, an `Inbound::Invoke` (the SSH exec services), an
-  `Inbound::Respond`. It is set in those three arms and cleared after `step`'s one drain, so
-  `fire_due`, `emit_world_event` and `finish_external_step` stamp nobody.
+- `Engine` holds `typed_actors`, the actors whose own line this step or `fire_due` slice is
+  running. `step` adds the actor of an `Inbound::Cmd` read off their connection, an
+  `Inbound::Invoke` (the SSH exec services) and an `Inbound::Respond`. `fire_due` adds the
+  actor of a `CommandContinuation` marked typed and of a `ConnectionCompletion` (captured only
+  off a connected line). The set is emptied after each drain, so a module tick, a `WaitCmd`,
+  `emit_world_event` and `finish_external_step` stamp nobody.
+- `ContinuationRequest` carries `typed`, set by `schedule_continuation` when the scheduling
+  dispatch has a connection and the continuation is for that dispatch's own actor. A tick, a
+  continuation and a `@wait` line dispatch with no connection, so what they schedule is not
+  typed.
 - The drain marks each `Deferred::AuthoritativeSubmit` and `ObservedAuthoritativeSubmit`
-  typed when its actor is `typed_actor`. The queue's `QueuedSubmission::Plain` and `Observed`
+  typed when its actor is in `typed_actors`. The mark is per actor: in one slice, a
+  typed continuation's actor and a tick submitting for that same actor are both marked. The queue's `QueuedSubmission::Plain` and `Observed`
   carry the mark beside the selector, and `DrivenSubmission::typed()` hands it to the driver.
   A retry keeps the mark its first drive took.
 - `drain_authoritative_submit` prints `Queued.` only for a typed one. The world task's
@@ -1607,6 +1616,11 @@ too, and a module that writes `Deferred::AuthoritativeSubmit` straight into the 
 
 **What reads differently.**
 
+- **`@mind/rate`'s answer is its own sentence.** The command submits nothing; it hands the
+  revision to the off-thread preparer and prints `Registry preparation queued.`. The
+  `Queued.` and `Done.` that used to follow were the first Registry step after preparation,
+  never the command's. `mush-bot`'s rate step now ends on the sentence alone (it waited for
+  that `Done.` before, and the first dispatch of this branch failed there).
 - **A line queued by `@wait`** is the scheduler's, not a typed one: its submission gets no
   `Queued.` and no fallback `Done.` (a provider's summary still comes). `@force` on another
   actor is the same for the forced actor.
@@ -1627,6 +1641,12 @@ too, and a module that writes `Deferred::AuthoritativeSubmit` straight into the 
 - `co14_an_engine_made_submission_gets_neither_queued_nor_done`: the same submission from
   `@wait 1=@b1submit 3`, run by `fire_due` with no connection, gets no `Queued.`, stages
   untyped, and confirms with the provider's summary or nothing.
+- `mush-core` (lib) `continuation::tests::a_continuation_is_typed_only_from_its_actors_own_connected_line`:
+  the actor's own `@enqueue` queues a typed continuation; the same command typed by another
+  actor for them, and run as a `WaitCmd`, queues untyped ones.
+- **The M7 story** (`player_market_commands_story_two_accounts_alt_stale_tiny_and_restart`)
+  holds the renewal front's `RENEW_DECLINING`, `Queued.`, `Done.` from a continuation. The
+  first dispatch of this branch, before continuations carried the mark, failed there.
 - **Fails before the fix.** Two mutations, each run: the drain's plain arm stamped typed
   always fails the second test on `Queued.`; `staged_confirmation` ignoring `typed` fails it
   on `Done.`. The drain's observed arm (the Registry's lane) is not reached by the B1 seam,

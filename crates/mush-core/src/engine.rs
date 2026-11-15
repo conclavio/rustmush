@@ -752,12 +752,17 @@ pub struct Engine {
     /// requires the pre-ingress queue to be global. A second submission by the
     /// **same** actor is still back-pressure, and a handler still cannot buffer.
     authoritative_submits: BTreeMap<ObjId, crate::submission_observation::QueuedSubmission>,
-    /// Doc 47 CO.14: the actor whose own line this step is running (a command
-    /// read off their connection, an invoke, a request answered), for the drain
-    /// to tell a typed submission from one the engine made on its own. `None`
-    /// outside [`step`](Self::step)'s body, so a tick, a scheduled
-    /// continuation, a world event or an external step stamps nobody.
-    typed_actor: Option<ObjId>,
+    /// Doc 47 CO.14: the actors whose own line this step or slice is running,
+    /// for the drain to tell a typed submission from one the engine made on
+    /// its own: in [`step`](Self::step), a command read off their connection,
+    /// an invoke or a request answered; in [`fire_due`](Self::fire_due), a
+    /// continuation their connected line scheduled
+    /// ([`ContinuationRequest::typed`](crate::continuation::ContinuationRequest))
+    /// or their line's connection completion. Empty after each drain, so a
+    /// tick, a line queued by `@wait`, a continuation a tick or another
+    /// continuation scheduled, a world event or an external step stamps
+    /// nobody.
+    typed_actors: std::collections::BTreeSet<ObjId>,
     submission_runtime: Option<Arc<dyn crate::submission_observation::SubmissionRuntime>>,
     // Process-local placement, independent of World clones or registry identity.
     submission_placement: Arc<()>,
@@ -798,7 +803,7 @@ impl Engine {
             .map_or_else(ActionStateStore::unregistered, ActionStateStore::new);
         Engine {
             gateway_reply_framing: false,
-            typed_actor: None,
+            typed_actors: std::collections::BTreeSet::new(),
             world,
             registry,
             sched: Scheduler::new(),
@@ -3901,7 +3906,7 @@ impl Engine {
                     );
                     self.world.set_connection_dispatch(ingress);
                     self.world.set_dispatching_conn(Some(conn));
-                    self.typed_actor = Some(actor);
+                    self.typed_actors.insert(actor);
                     // Line-mode answer to a server-initiated request
                     // (interface plan I10): `respond <arg>` when the actor has
                     // a pending request resolves it without an idle stamp (an
@@ -3949,7 +3954,7 @@ impl Engine {
                 id,
                 request,
             } => {
-                self.typed_actor = Some(actor);
+                self.typed_actors.insert(actor);
                 self.handle_invoke(conn, actor, id, &request, out);
                 StepOutcome::Continue
             }
@@ -3968,7 +3973,7 @@ impl Engine {
                 id,
                 choice,
             } => {
-                self.typed_actor = Some(actor);
+                self.typed_actors.insert(actor);
                 self.handle_respond(conn, actor, id, &epoch, choice, out);
                 StepOutcome::Continue
             }
@@ -4021,7 +4026,7 @@ impl Engine {
             }
         };
         self.drain_deferred(out, fx);
-        self.typed_actor = None;
+        self.typed_actors.clear();
         out.note_pending_authoritative([]);
         // 16b cut AP.4: the suffix, read now (after the body) and pushed last
         // as a `Trailer` — see the head of this function.
@@ -4076,6 +4081,9 @@ impl Engine {
                 }
                 ScheduledKind::CommandContinuation(request) => {
                     self.dec_pending_waits(request.actor());
+                    if request.typed() {
+                        self.typed_actors.insert(request.actor());
+                    }
                     crate::cmd::dispatch_continuation(
                         &self.registry,
                         &mut self.world,
@@ -4086,6 +4094,8 @@ impl Engine {
                 }
                 ScheduledKind::ConnectionCompletion(request) => {
                     self.dec_pending_waits(request.actor());
+                    // Captured only off the player's own connected line.
+                    self.typed_actors.insert(request.actor());
                     crate::cmd::dispatch_connection_completion(
                         &self.registry,
                         &mut self.world,
@@ -4125,6 +4135,7 @@ impl Engine {
             }
         }
         self.drain_deferred(out, fx);
+        self.typed_actors.clear();
         out.note_pending_authoritative([]);
     }
 
@@ -5037,7 +5048,7 @@ impl Engine {
                     captured_this_drain.insert(actor);
                 }
                 Deferred::AuthoritativeSubmit(request) => {
-                    let typed = self.typed_actor == Some(request.actor);
+                    let typed = self.typed_actors.contains(&request.actor);
                     self.drain_authoritative_submit(
                         crate::submission_observation::QueuedSubmission::Plain(request, typed),
                         &mut queued_this_drain,
@@ -5046,7 +5057,7 @@ impl Engine {
                     );
                 }
                 Deferred::ObservedAuthoritativeSubmit(request) => {
-                    let typed = self.typed_actor == Some(request.actor());
+                    let typed = self.typed_actors.contains(&request.actor());
                     self.drain_authoritative_submit(
                         crate::submission_observation::QueuedSubmission::Observed(request, typed),
                         &mut queued_this_drain,

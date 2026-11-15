@@ -789,3 +789,41 @@ fn delegation_is_one_grantee_bounded_and_checked_at_freeze() -> TestResult {
     );
     Ok(())
 }
+
+/// The `typed` mark of every continuation queued now, in due order.
+fn queued_typed(engine: &mut Engine) -> Vec<bool> {
+    engine
+        .sched
+        .pop_due(i64::MAX)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            ScheduledKind::CommandContinuation(request) => Some(request.typed()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Doc 47 CO.14: a continuation finishes what the player typed only when
+/// their own connected line scheduled it for them. ACTOR's typed `@enqueue`
+/// is marked typed; GOD's typed `@enqueue`, which schedules for ACTOR, is
+/// not; nor is ACTOR's `@enqueue` queued as a `@wait` line does (a
+/// `WaitCmd`, dispatched with no connection). The drain keeps `Queued.` and
+/// the fallback `Done.` only for a submission whose actor is marked.
+#[test]
+fn a_continuation_is_typed_only_from_its_actors_own_connected_line() -> TestResult {
+    let (mut engine, _) = engine(spec(), None)?;
+    command(&mut engine, ACTOR, "@enqueue mine");
+    assert_eq!(queued_typed(&mut engine), vec![true], "ACTOR's own line");
+    command(&mut engine, GOD, "@enqueue theirs");
+    assert_eq!(queued_typed(&mut engine), vec![false], "for another actor");
+    engine.sched.insert(
+        100_000,
+        ScheduledKind::WaitCmd {
+            actor: ACTOR,
+            line: "@enqueue queued".into(),
+        },
+    );
+    fire(&mut engine);
+    assert_eq!(queued_typed(&mut engine), vec![false], "a queued line");
+    Ok(())
+}
