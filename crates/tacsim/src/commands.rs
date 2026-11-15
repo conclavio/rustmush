@@ -513,21 +513,34 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // Registry account and one entitlement unit to the actor, one transaction). No
     // authoritative submission. Registered unconditionally; without an Active launch it
     // says the Registry takes no registrations. Accepted from anywhere.
-    // ---- Doc 47 CO.13: `+core/sell`, a stored core sold back to the fitting shop ----
+    // ---- Doc 47 CO.13: `+core/sell`, a stored core sold back to the fitting shop; and doc 47
+    // CO.6: `+core`, `+core/buy` and `+core/fit`, the fitting shop's counter ----
     //
-    // Registered unconditionally; a world whose hardware composes no buy-back says so. `=go`
-    // submits one registered action, so the verb takes the `Authoritative` class (`+survey`'s
-    // bracket).
+    // One verb. Registered unconditionally; a world whose hardware composes no buy-back, or no
+    // Active launch, says so. `/sell <core>=go` submits one registered action, so the verb takes
+    // the `Authoritative` class (`+survey`'s bracket). The counter's forms submit nothing from
+    // the handler: the bare verb is a read, `/buy` and `/fit` preview, and with `go` keep one
+    // request in the counter's RAM slot; its tick (`tacsim.core_counter`) submits each typed
+    // action, as the shop's agent or as the player, and its provider checks it.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: crate::hardware::sale::SALE_VERB.into(),
             shape: ArgShape::Raw,
-            switches: std::iter::once(SmolStr::new("sell")).collect(),
-            help: crate::hardware::sale::SALE_HELP.into(),
+            switches: ["buy", "fit", "sell"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: format!(
+                "{}
+{}",
+                crate::hardware::counter::CORE_HELP,
+                crate::hardware::sale::SALE_HELP
+            ),
             ..CommandSpec::default()
         },
-        Arc::new(crate::hardware::sale::sale_cmd),
+        Arc::new(crate::hardware::counter::core_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(

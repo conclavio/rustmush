@@ -15,7 +15,7 @@ industry max work units = 167
 industry max progress bytes = 32768
 industry index key = core_refit_registry
 industry offer seconds = 300
-industry record bounds = orders=8192 offer=32768 order=196608 installation=69632 index=4096 asset=32768
+industry record bounds = orders=8192 offer=32768 order=196608 installation=69632 index=8192 asset=32768
 economy actions = ["offer_core_refit","accept_core_refit","install_core_component","cancel_core_refit"]
 economy fitting minor = 10000
 economy reservation seconds = 2419200
@@ -61,7 +61,7 @@ component = "core"
 payment policy = {"issuer":"core.factory","instrument":"cr","provider":{"account":1,"organization":0,"scope":2},"factory":7,"recipe":{"key":{"owner":"tacsim","kind":"recipe","id":"core_refit"},"version":1,"digest":"957ab8a382147c5fba619763d4c6cc07443edda53d03c78987f72a8e2914f9de"},"fitted_units":[{"key":{"owner":"tacsim","kind":"unit","id":"refit_unit_1"},"version":1,"digest":"9e16f103fb888fd2797ccdf2419a3b65a014831b42a9820c4a09dab5d501212d"},{"key":{"owner":"tacsim","kind":"unit","id":"refit_unit_2"},"version":1,"digest":"5cb0f7e2aad41b3b0422f23d98a1b5f263b467c64657037858bbe982c39d9683"},{"key":{"owner":"tacsim","kind":"unit","id":"refit_unit_3"},"version":1,"digest":"cc2a81709786982e6536bdf64c8cc35bacc4569a4c26ad34606d35ab557d2fce"}]}
 family offers = industry_refit_offers key=industry.industry_refit_offers.key.v1 value=industry.industry_refit_offers.value.v1 schema=1 decoder=industry.industry_refit_offers.decode.v1 validator=industry.industry_refit_offers.validate.v1 serializer=industry.industry_refit_offers.canonical.v1 max_key=64 max_record=33792
 family orders = industry_refit_orders key=industry.industry_refit_orders.key.v1 value=industry.industry_refit_orders.value.v1 schema=1 decoder=industry.industry_refit_orders.decode.v1 validator=industry.industry_refit_orders.validate.v1 serializer=industry.industry_refit_orders.canonical.v1 max_key=64 max_record=197632
-family deployment = industry_refit_deployment key=industry.industry_refit_deployment.key.v1 value=industry.industry_refit_deployment.value.v1 schema=1 decoder=industry.industry_refit_deployment.decode.v1 validator=industry.industry_refit_deployment.validate.v1 serializer=industry.industry_refit_deployment.canonical.v1 max_key=64 max_record=5120
+family deployment = industry_refit_deployment key=industry.industry_refit_deployment.key.v1 value=industry.industry_refit_deployment.value.v1 schema=1 decoder=industry.industry_refit_deployment.decode.v1 validator=industry.industry_refit_deployment.validate.v1 serializer=industry.industry_refit_deployment.canonical.v1 max_key=64 max_record=9216
 family assets = industry_refit_assets key=industry.industry_refit_assets.key.v1 value=industry.industry_refit_assets.value.v1 schema=1 decoder=industry.industry_refit_assets.decode.v1 validator=industry.industry_refit_assets.validate.v1 serializer=industry.industry_refit_assets.canonical.v1 max_key=64 max_record=4096
 family hulls = industry_refit_hulls key=industry.industry_refit_hulls.key.v1 value=industry.industry_refit_hulls.value.v1 schema=1 decoder=industry.industry_refit_hulls.decode.v1 validator=industry.industry_refit_hulls.validate.v1 serializer=industry.industry_refit_hulls.canonical.v1 max_key=64 max_record=4096
 family schedules = industry_refit_schedule key=durable_schedule_id.v1 value=durable_schedule.v1 schema=1 decoder=durable_schedule_decode.v1 validator=durable_schedule_validate.v1 serializer=durable_schedule_serialize.v1 max_key=1024 max_record=262144

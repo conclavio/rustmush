@@ -648,6 +648,9 @@ fn register_providers(
     // Doc 17h cut M8f: the procurement ledger, its record action and the `tacsim.procurement`
     // tick, unconditionally (no policy, no visit).
     crate::procurement::register(reg, action_refs, outcome_refs)?;
+    // Doc 47 CO.6: the fitting shop's counter, its RAM slot and the `tacsim.core_counter` tick,
+    // unconditionally (no launch, no visit).
+    crate::hardware::counter::register(reg)?;
     // Doc 36 cut GC.4: the tow's provider, its black box handle closing a loaded casualty's
     // epoch, and its RAM slots.
     crate::surface::tow::register(

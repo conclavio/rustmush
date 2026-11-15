@@ -12,14 +12,18 @@
 //! takes one genuine Registry rating, so the CI dispatch runs it.
 //!
 //! **Neither player is staff.** Every act of theirs is a registered command typed by a
-//! character on an account of their own, landed on the composed path. Each pays from the
-//! wallet their Co-op charter opened: nothing is minted.
+//! character on an account of their own, landed on the composed path. The author pays from the
+//! wallet their Co-op charter opened.
+//!
+//! **Her core** (doc 47 unit CO.6): the buyer buys her Dray out of the Co-op (`+coop/buyout`),
+//! has the fitting shop make her a governed Class II core (`+core/buy II go`) and fits it to her
+//! ship where the shop stands on the berth gallery (`+core/fit`): the route
+//! `co6_cored_ship::core_her` walks. Until CO.6 staff bound her hull to the Dray's Class II root.
 //!
 //! **What staff do, and why.** Each is a gap in the game or in this rig:
 //!
-//! 1. *Her core.* No ship ships with a core and nothing in play fits one to a ship (doc 44
-//!    unit MW.13's cut note). Staff bind the buyer's chartered Dray to the Dray's governed
-//!    Class II root, as MW.13's stories do.
+//! 1. *Her money.* Staff top the buyer's wallet up for the buyout and the core (98,100cr; the M8
+//!    world's standing practice: a story cannot play the trading that earns it).
 //! 2. *The way to the counter.* The launch's counter is a room staff made with no door (the
 //!    M8 rig's venue). Staff carry the author there, and the buyer there and back to the
 //!    berth gallery; she leaves her ship and boards it again by her own verbs.
@@ -69,7 +73,7 @@ const AUTHORS_SHARE_MINOR: i64 = 38_000;
 /// everything her drive gives; from its second it brakes, in [`PACE_THINKS`] equal burns.
 /// Hove to, it stands for customs. Its trace words are its own. A cold hull (the Registry's
 /// trials begin cold) it leaves cold, so in a trial it asks nothing.
-fn warden() -> String {
+pub(crate) fn warden() -> String {
     format!(
         "fn think(v, c) {{ \
            if v.power != \"online\" {{ return; }} \
@@ -115,7 +119,7 @@ fn strength(thrust: [i64; 3]) -> i64 {
 }
 
 /// Every line of `text` holds under 120 columns (the owner's terminal floor).
-fn fits(text: &str) {
+pub(crate) fn fits(text: &str) {
     for line in text.lines() {
         assert!(
             line.chars().count() < 120,
@@ -127,7 +131,7 @@ fn fits(text: &str) {
 
 /// **Type `line` as `who` and land what it submits** on the composed path, as the server's
 /// driver lands a command's action. What `who` read, and how many submissions it staged.
-fn types_counting(world: &mut M8World, who: ObjId, line: &str) -> (String, usize) {
+pub(crate) fn types_counting(world: &mut M8World, who: ObjId, line: &str) -> (String, usize) {
     // What a tick queued before the line is the tick's, not the typist's.
     let earlier = crate::excursions::drain(&mut world.rig.tw);
     crate::excursions::land_quietly(&mut world.rig, &earlier);
@@ -149,19 +153,19 @@ fn types_counting(world: &mut M8World, who: ObjId, line: &str) -> (String, usize
 }
 
 /// [`types_counting`], what `who` read.
-fn types(world: &mut M8World, who: ObjId, line: &str) -> String {
+pub(crate) fn types(world: &mut M8World, who: ObjId, line: &str) -> String {
     types_counting(world, who, line).0
 }
 
 /// A row's number under `field`, as the Roll writes it (a number, or its text).
-fn number(row: &Value, field: &str) -> u64 {
+pub(crate) fn number(row: &Value, field: &str) -> u64 {
     row.get(field)
         .and_then(|n| n.as_u64().or_else(|| n.as_str()?.parse().ok()))
         .unwrap_or_else(|| panic!("the row's {field}: {row}"))
 }
 
 /// `who`'s wallet: the posted balance of their one unscoped credit account, centicredits.
-fn wallet(world: &M8World, who: ObjId) -> i64 {
+pub(crate) fn wallet(world: &M8World, who: ObjId) -> i64 {
     crate::m8_end_user::credit(world, who).1
 }
 
@@ -544,7 +548,8 @@ fn world() -> (M8World, ObjId) {
 fn house_default_at_the_picket() -> Vec<Reading> {
     let (mut world, _) = world();
     let (buyer, hull) = (world.pilot, ObjId(world.row.hull));
-    crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_II);
+    let _ = crate::co6_cored_ship::core_her(&mut world);
+    let _ = run(&mut world.rig.tw, buyer, "+ship/board");
     assert_eq!(ship_mind::aboard(world.rig.tw.world(), hull), None);
     let boundary = sail_and_lose_the_link(&mut world.rig, buyer, hull);
     arrive_at_the_picket(&mut world.rig, hull, boundary);
@@ -566,7 +571,7 @@ fn house_default_at_the_picket() -> Vec<Reading> {
 ///
 /// It is `c4_filed_mind_field::file_own_mind` for a named author, without that helper's
 /// wallet top-up.
-async fn writes_rates_and_files(
+pub(crate) async fn writes_rates_and_files(
     world: &mut M8World,
     author: ObjId,
     name: &str,
@@ -820,8 +825,17 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
             "a staff verb is refused {who}"
         );
     }
-    // What the gap forces: staff bind her core.
-    crate::ic_sortie_surface::fit(&mut world.rig, hull, SHIP_II);
+    // Her core, by her own commands (doc 47 CO.6): the buyout, the core made, the fitting.
+    let _ = crate::co6_cored_ship::core_her(&mut world);
+    assert_eq!(
+        mush_tactics::module::unit_of(world.rig.tw.world(), hull)
+            .map(|u| u.schema().key().id.as_str().to_owned())
+            .as_deref(),
+        Some(SHIP_II),
+        "her Dray carries the governed Class II core she had fitted"
+    );
+    let boarded = run(&mut world.rig.tw, buyer, "+ship/board");
+    assert!(!boarded.is_empty(), "{boarded}");
 
     // The author writes, rates and files, from their own wallet.
     let wallets = (wallet(&world, author), wallet(&world, buyer));

@@ -4,7 +4,7 @@ mod capacity;
 mod config;
 mod families;
 pub(super) mod policies;
-mod progress;
+pub(crate) mod progress;
 mod recipe;
 pub(crate) mod records;
 pub(crate) mod state;

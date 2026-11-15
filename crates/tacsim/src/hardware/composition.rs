@@ -98,7 +98,7 @@ pub(crate) struct Registration {
     /// catalog, so its catalog is the whole fitted set.
     pub(crate) rig: Box<SurfaceRigCores>,
     /// Doc 44 unit MW.13: the ship's family, built over the rig family's catalog, so its
-    /// catalog is the whole fitted set. No recipe fits one of its roots.
+    /// catalog is the whole fitted set. Since doc 47 CO.6 the chartered refit fits its roots.
     pub(crate) ship: Box<ShipCores>,
     content: DefinitionDescriptor,
     /// Doc 31 UD.4b: the bay recipe, registered beside the shipped hardware
@@ -219,6 +219,88 @@ impl RosterPolicy {
         self.state.hardware.with_bay(module)
     }
 }
+/// **The launch's fitting policy** (doc 17h cut M8b; doc 47 CO.6 added the ship family): the line,
+/// rig and ship families, their coreless bases, and the back room's twins when it is composed.
+/// Its own frame: built inline it took [`GovernedHardware::prepare`] past the M7 lint's 64 KiB.
+#[inline(never)]
+fn launch_fitting_policy(
+    (family, rig, ship): (&GovernedLineCores, &SurfaceRigCores, &ShipCores),
+    deployment: &HardwareDeployment,
+    publication: &PublishedHardware,
+    instrument: &mush_economy::InstrumentId,
+) -> Result<RefitPaymentPolicy, ModError> {
+    let core_classes = [
+        crate::arena::core::CoreClass::I,
+        crate::arena::core::CoreClass::II,
+        crate::arena::core::CoreClass::III,
+    ];
+    // Doc 17h cut M8b: one `[I, II, III]` per family, governed or the twins.
+    let roots_of = |family: &crate::definitions::core_replacement::CoreFamily,
+                    governed: bool|
+     -> Result<[mush_core::DefinitionRef; 3], ModError> {
+        core_classes
+            .map(|class| family.root(class, governed).cloned())
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| bad("finite fitted family"))?
+            .try_into()
+            .map_err(|_| bad("three fitted roots"))
+    };
+    let fitted_units = roots_of(family, true)?;
+    let ungovern = match &deployment.ungovern {
+        Some(site) => Some(UngovernTerms {
+            provider: site.provider.clone(),
+            factory: site.factory,
+            recipe: publication.definition(HardwareProcess::Ungovern).clone(),
+            fee_minor: site
+                .fee_minor
+                .unwrap_or(publication.catalogue().ungovern_minor()),
+            twins: vec![
+                roots_of(family, false)?,
+                roots_of(rig, false)?,
+                roots_of(ship, false)?,
+            ],
+        }),
+        None => None,
+    };
+    Ok(RefitPaymentPolicy {
+        issuer: deployment.issuer.clone(),
+        instrument: instrument.clone(),
+        provider: deployment.integrator.clone(),
+        factory: deployment.factory,
+        recipe: publication.definition(HardwareProcess::Refit).clone(),
+        fitted_units,
+        // Doc 47 CO.6: the ship's family beside the rig's, so the shop fits a Dray.
+        families: vec![roots_of(rig, true)?, roots_of(ship, true)?],
+        ungovern,
+        // Doc 17h cut M8b G2 (the lead's ruling): the shipped coreless terrain
+        // vehicle is the rig family's base; `core_refit` fits a core into it.
+        coreless: vec![
+            CorelessBase {
+                base: rig
+                    .catalog()
+                    .units
+                    .get(crate::definitions::content::TV_PROSPECTOR)
+                    .ok_or_else(|| bad("the shipped rig"))?
+                    .definition
+                    .clone(),
+                family: 1,
+            },
+            // Doc 47 CO.6: the shipped coreless Dray is the ship family's base.
+            CorelessBase {
+                base: ship
+                    .catalog()
+                    .units
+                    .get(crate::definitions::content::DRAY)
+                    .ok_or_else(|| bad("the shipped Dray"))?
+                    .definition
+                    .clone(),
+                family: 2,
+            },
+        ],
+    })
+}
+
 /// **The fitting families over `layer`'s fielded catalog** (doc 17h cut M8b C1; doc 44 unit
 /// MW.13): the line family, then the rig family built on its catalog, then the ship family
 /// built on the rig's. Each holds a whole catalog, so they are built here, boxed, off the
@@ -375,6 +457,13 @@ impl GovernedHardware {
         }
         let publication = PublishedHardware::shipped().map_err(bad)?;
         let (family, rig, ship) = families(layer)?;
+        // Built before the deployment's fields move into the origin and payment policies.
+        let fitting = launch_fitting_policy(
+            (&family, &rig, &ship),
+            &deployment,
+            &publication,
+            &InstrumentId::new(crate::economy::CREDIT).ok_or_else(|| bad("credit identity"))?,
+        )?;
         let content = origin_content_descriptor(deployment.grades)?;
         let mut defs = DefinitionRegistryBuilder::new();
         let content_ref = defs
@@ -433,58 +522,6 @@ impl GovernedHardware {
                     output_container: site.output_container,
                 }
             }),
-        };
-        let core_classes = [
-            crate::arena::core::CoreClass::I,
-            crate::arena::core::CoreClass::II,
-            crate::arena::core::CoreClass::III,
-        ];
-        // Doc 17h cut M8b: one `[I, II, III]` per family, governed or the twins.
-        let roots_of = |family: &crate::definitions::core_replacement::CoreFamily,
-                        governed: bool|
-         -> Result<[mush_core::DefinitionRef; 3], ModError> {
-            core_classes
-                .map(|class| family.root(class, governed).cloned())
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| bad("finite fitted family"))?
-                .try_into()
-                .map_err(|_| bad("three fitted roots"))
-        };
-        let fitted_units = roots_of(&family, true)?;
-        let ungovern = match &deployment.ungovern {
-            Some(site) => Some(UngovernTerms {
-                provider: site.provider.clone(),
-                factory: site.factory,
-                recipe: publication.definition(HardwareProcess::Ungovern).clone(),
-                fee_minor: site
-                    .fee_minor
-                    .unwrap_or(publication.catalogue().ungovern_minor()),
-                twins: vec![roots_of(&family, false)?, roots_of(&rig, false)?],
-            }),
-            None => None,
-        };
-        let fitting = RefitPaymentPolicy {
-            issuer: deployment.issuer,
-            instrument: payment.instrument.clone(),
-            provider: deployment.integrator,
-            factory: deployment.factory,
-            recipe: publication.definition(HardwareProcess::Refit).clone(),
-            fitted_units,
-            families: vec![roots_of(&rig, true)?],
-            ungovern,
-            // Doc 17h cut M8b G2 (the lead's ruling): the shipped coreless terrain
-            // vehicle is the rig family's base; `core_refit` fits a core into it.
-            coreless: vec![CorelessBase {
-                base: rig
-                    .catalog()
-                    .units
-                    .get(crate::definitions::content::TV_PROSPECTOR)
-                    .ok_or_else(|| bad("the shipped rig"))?
-                    .definition
-                    .clone(),
-                family: 1,
-            }],
         };
         let component = ComponentId::new("core").map_err(bad)?;
         let roots = fitting.roots().cloned().collect::<BTreeSet<_>>();

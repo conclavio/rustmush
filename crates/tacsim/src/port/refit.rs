@@ -45,6 +45,10 @@ pub const REFIT_BAY: &str = "Rig {n} is still in the {name}'s bay; return it to 
 pub const REFIT_ALREADY: &str = "The {name} is already a {class}.";
 /// Away from the desk: `{office}`, `{port}`.
 pub const REFIT_WHERE: &str = "Refits are signed at the {office} in {port}.";
+/// A core fitted (doc 47 CO.6): `{name}`. The re-dress rebinds her unit, which would take the
+/// core's mount with it.
+pub const REFIT_CORED: &str =
+    "The {name} carries a fitted core; the Co-op's yard re-dresses only a coreless Dray.";
 /// A step that should not fail did: `{name}`.
 pub const REFIT_FAILED: &str = "The yard could not refit the {name}; nothing changed.";
 /// The refit to a Dray-P: `{name}`, `{mark}`, `{tonnes}`, `{m3}`, `{countersign}`.
@@ -141,6 +145,13 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
     // refuse the re-dress; the yard says why first.
     if crate::port::ship_mind::holds(ctx, hull) {
         return Err(refused(crate::port::ship_mind::MIND_HOLDS_HER));
+    }
+    // Doc 47 CO.6: a Dray the fitting shop cored keeps her core; the re-dress would drop it.
+    if mush_tactics::module::unit_of(w, hull)
+        .and_then(crate::arena::core::read_core)
+        .is_some()
+    {
+        return Err(refused(REFIT_CORED));
     }
     let view: HullView<'_> = hull_view(w, hull).ok_or_else(|| refused(REFIT_FAILED))?;
     let vault =

@@ -133,8 +133,9 @@ pub(crate) fn current(
             return Err(Error::Unavailable);
         }
     }
-    if world.get(requester).and_then(|o| o.location) != Some(site.factory)
-        || world.get(hull).and_then(|o| o.location) != Some(site.factory)
+    // Doc 47 CO.6: in the shop, or where the shop stands (a ship at the berth it serves).
+    if !mush_economy::core_refit::at_shop(world, requester, site.factory)
+        || !mush_economy::core_refit::at_shop(world, hull, site.factory)
         || world.get(incoming).and_then(|o| o.location) != Some(requester)
     {
         return Err(Error::Unavailable);
@@ -163,10 +164,9 @@ pub(crate) fn current(
     }
     let unit = mush_tactics::component_replacement::current_refit_unit(world, requester, hull)
         .map_err(bad)?;
-    // Doc 17h cut M8b (the lead's G1 note): the policy fits only line, rig and coreless-TV
-    // roots. A co-op hull is a dray-family unit, never one of them, so no co-op hull is ever
-    // cored and `live_unit_id`'s fitted-root-to-base-chassis read never reaches a co-op
-    // refit (`+coop/refit` rebinding to `plan.spec`) or a port HullView.
+    // Doc 17h cut M8b (the lead's G1 note): the policy fits only the roots it names. Since doc
+    // 47 CO.6 the launch's names the Dray's (the ship family and the coreless Dray), so a
+    // co-op hull titled to its pilot may be cored; `+coop/refit` refuses a cored hull.
     if !c.payment.fits(unit.schema()) {
         return Err(Error::Unavailable);
     }

@@ -628,7 +628,257 @@ memory-size pass on `tacsim`, rustdoc for both, `mush-contract-tests`.
 
 ## CO.6
 
-Not built.
+A route to a cored ship. Cut from main `26a539b5d` on `claude/co6-cored-ship-route-4a060c`.
+
+**Survey** (written before the cut; read from the code and one probe on the M8 world).
+
+- **How a governed core comes into the world.** Three doors, and only one of them makes one:
+  1. *Made* (integration, doc 17f M7): the importer's stock agent issues a certified die from
+     the month's allotment (`industry:issue_core_die`), offers its integration to a requester
+     (`offer_core_integration`); the requester accepts and pays the catalogue's price
+     (`accept_core_integration`), reserves the output (`reserve_core_output`), the shop's
+     scheduled hours run (24, 48 or 96 for Class I, II, III; `advance_core_integration`), the
+     requester completes (`complete_core_integration`, the title is born to them) and takes
+     delivery into their hands (`deliver_core_output`). Class III asks the end-user entitlement
+     (MW.23's `+enduser`). The requester need not stand anywhere.
+  2. *Bought* with its title: no route. A governed core's title is a managed title; the
+     generic market and contracts refuse it (CO.4). That is CO.13's, and this unit does not
+     need it: an integration births the title to its requester.
+  3. *Commissioned* with a hull: no route. The yard (`+yard`, IN.9) commissions rigs from its
+     designs; no design carries a core, and no hull leaves the yard cored.
+- **Who acts for the shop.** Nobody. The agent's three acts (the die, the integration's offer,
+  the refit's offer) are typed actions of the importer's stock agent, a service character
+  (`LaunchAgent` in the bring-up, its password thrown away). Nothing submits them in play: every
+  story that has a core made (`m8_end_user`, `c4_hardware`, MW.13, MW.21) performs them through
+  the rig's `M8World::perform`. The requester's own acts have no registered command either; the
+  gateway's generic `+act <verb>` would reach them, but a player cannot learn an offer's token
+  or an order's id from any line. So no player can have a core made by registered commands
+  today, for a rig or a ship.
+- **What a refit fits.** `RefitPaymentPolicy` (the launch's, `hardware/composition.rs`) fits
+  the line family, the rig family and the coreless prospector rig. The ship family
+  (`ShipCores`, MW.13) is in the catalogue and no policy names it: "no recipe fits a ship's
+  root yet". So the refit refuses a Dray at `current` (`c.payment.fits(unit.schema())`).
+- **Where a refit happens.** The requester and the hull must stand *in* the shop's object
+  (industry `refit/authority.rs` `current`, and economy `core_refit/authority.rs`, both read at
+  the offer, the accept and the install). The launch's shop is an object with no place (the
+  M8 rig makes it with no location; the bring-up makes it in staff's hands). MW.5 found it: "the
+  fitting shop is not a place". The probe: at Ceres a docked Dray's object stands in the
+  Visiting Berth Gallery (#101 on the M8 world), and the pilot stands there after
+  `+ship/leave`. A ship cannot be put in an object.
+- **Whose hull.** The refit fits a hull titled to the requester, unscoped and unencumbered. A
+  Co-op Dray is the Co-op's, scoped, under a `Lease` encumbrance (the probe), so a chartered
+  ship cannot be fitted; `+coop/buyout` (90,000cr on the Ceres programme) titles her to her
+  pilot. MW.21's buyer flies a chartered Dray.
+- **What a cored Dray meets after.** `+coop/refit` re-dresses a Dray as a Dray-P and back by
+  rebinding her unit (`refit_unit`); its comment says no co-op hull is ever cored, so it does not
+  look for a core, and a cored Dray re-dressed would lose the core's component while the core's
+  object stays in her. `+ship/mind` reads the core as MW.13 built it. A sealed mind holds her
+  as she is (`ic_custody`): the kernel refuses a fitting under a claim.
+- **What is missing between a core and a refit fitting it to a ship**, so the work of this unit:
+  (a) someone to make the shop's offers; (b) commands for the requester's acts; (c) the ship's
+  roots in the refit policy; (d) a shop a ship can stand at; (e) the cored Dray guarded from
+  the yard's re-dress. The title (buyout) is a route that exists.
+- **MW.5's stories 2 and 7** (doc 17f §9: private and derivative; the fact interface) are not
+  blocked by the cored ship, whatever doc 47 §4 says: MW.5's inventory and doc 17g's "C4 as
+  built" give their reason as "no unit owns it". Story 2's one clause that flies a mind ("an
+  already-running sortie ... stay unchanged") can fly a filed mind on a coreless rig, as MW.5's
+  field story does. They are built here because the row asks it.
+
+**Design taken.** A counter, not a new protocol: the shop's offers and the requester's acts are
+the existing typed actions, each checked by its provider; what was missing is somebody to
+submit them and a place a ship can stand. The counter is `+core` and its tick; the place is the
+room the shop's object stands in.
+
+**Built.**
+
+- **`+core`, the fitting shop's counter** (`crates/tacsim/src/hardware/counter.rs`, registered
+  in `commands.rs` beside `+enduser`; its tick `tacsim.core_counter` beside procurement's in
+  `port_tick.rs`). `+core/buy <I|II|III> [go]` has a core made; `+core/fit <core>=<hull> [go]`
+  fits one; `+core` reads the shop's place, the governed cores in hand and the work under way.
+  `go` keeps one request a player in the counter's RAM slot and submits nothing; each fire the
+  tick reads where the request stands and takes one step through the port tick's swap
+  (`Fire::as_principal`), as the shop's stock agent for the die and the two offers, and as the
+  player for the acceptance, the reservation, the completion, the delivery and the install. A
+  step not seen to land is tried again after 3 fires, at most 4 times; then the player is told
+  and staff's log says why. The agent is the deployment's first stock agent that is not GOD (a
+  tick never acts as GOD). Preview refusals, in order: the usage, Class III without the
+  registration, no credit account, short of the price; for a fit, the requester at the shop,
+  the core in their hands (titled to them, with an integration birth), the hull at hand, a mind
+  sealed aboard (`MIND_HOLDS_HER`), clear title (owner, unscoped, unencumbered), the hull at the
+  shop, a Dray or prospector chassis, the fee.
+- **One verb with CO.13's sale.** CO.13 (merged while this was built) registered `+core/sell`.
+  `+core` is now one registration: switches `buy`, `fit` and `sell`, the Authoritative class
+  `/sell`'s submission needs, CO.13's help after the counter's; `core_cmd` hands `/sell` to CO.13's
+  `sale_cmd` before anything of its own. One `legacy-handlers.toml` stanza covers both.
+- **Industry's read for it** (`mush-industry`, `core_production/counter.rs`): `view(world,
+  requester)` lists the integrations and refits offered to a requester with their orders (worked,
+  completed output, cancelled, delivered), from the owner's acknowledged projection; and
+  `unoffered_dies(world, agent)`, the dies an agent issued that no offer names, from a new
+  this-boot record in `CoreProductionState` (`issued`, filled when an Issue applies, bounded at
+  256, never written). Two modules became `pub(crate)` for it (the integration's `offer` and
+  `progress`, the refit's `progress`).
+- **The shop's place** (`mush_economy::core_refit::at_shop`): a thing is at the shop when it is
+  in the shop's object or in the room that object stands in. Economy's refit authority and
+  industry's (`refit/authority.rs` `current`, read at the offer, the accept and the install) both
+  ask it in place of "in the object". The M8 rig stands its shop at Ceres' Visiting Berth Gallery
+  (`m8_world.rs` `hardware`), where a docked Dray's object stands and her captain lands on
+  `+ship/leave`.
+- **The ship's roots in the fitting policy** (`hardware/composition.rs`): the ship family beside
+  the rig's in `families`, the shipped coreless Dray as its base in `coreless` (family 2), and its
+  ungoverned twins in `ungovern.twins` (the policy requires a twin set a family). Two bounds grew
+  with it, each against the launch policy's real size: **20 roots** with an ungoverning site (line,
+  rig and ship families, three governed and three twins each, and two coreless bases; 11 without
+  one), so tactics' `MAX_REPLACEMENT_ROOTS` went 16 to 24, a length check over the root set that
+  sizes no array, record or stack frame; and industry's refit `INDEX_BYTES` 4 KiB to 8 KiB, because
+  the index holds the whole policy. A test holds the new cap
+  (`refit::records::co6_index_bound_tests`: 8,192 bytes admitted, 8,193 refused).
+- **The yard guarded** (`port/refit.rs`): `+coop/refit` refuses a hull whose unit carries a core,
+  `REFIT_CORED`, before the desk check.
+- **MW.21's fiat removed** (`mw21_completion.rs`): both binds (`ic_sortie_surface::fit`, the
+  story's and the house default's comparison flight) are now `co6_cored_ship::core_her`, the
+  route: the buyer leaves her ship, walks to the Registry & Co-op Desk and buys her Dray out
+  (`+coop/buyout`), walks back, orders a Class II core, and fits it on the gallery. Its head
+  comment's staff list now says staff top her wallet up (98,100cr) where it said they bind her
+  core.
+- **Help**: `docs/help/hardware.md` has the counter's section; `CORE_HELP` is the verb's.
+
+**Persisted shapes and snapshots.** No record gains or loses a field. **One `.snap` moves, by
+two lines**: `mush-industry/tests/ct0/refit_core.snap` pins industry's refit record bounds, and
+the index bound went 4096 to 8192 (its bound line, and the deployment family's decoder line that
+carries it). Re-blessed with `COMMERCE_SNAPSHOT_BLESS=1`; told to the lead before the PR. What moves on a launch world is
+a definition: the refit policy is the refit actions' descriptor payload, so their digests, the
+refit index's genesis and every refit offer's `policy` change; a kept store's refit records
+would be refused by the new policy. Pre-launch, there are none. Two bounds grew (above); a bound
+admits more and refuses nothing it admitted. The this-boot die record and the counter's
+requests are RAM only.
+
+**Tests.**
+
+- `tacsim` `domain_field` `co6_cored_ship.rs` (default sweep, about 12 s on conclav.dev for the
+  two):
+  - `co6_a_captain_has_a_governed_core_fitted_to_her_ship_by_her_own_commands`: on the combined
+    M8 world a first captain with a chartered Dray docked at Ceres leaves her ship, finds the
+    shop will not fit a core she does not hold, walks to the desk, buys the Dray out, walks
+    back, previews (nothing paid) and orders a Class II core (a second order is refused while
+    the first is under way), is told her payment is in, the shop's 48 hours run, she is told it
+    is delivered: in her hands, titled to her, born Class II to her, 8,000cr less. Aboard she is
+    not at the shop; on the gallery she previews and orders the fitting, the 2 hours run, she is
+    told it is fitted, 100cr less. Her root is `dray_core_ii`, governed Class II, the core's object
+    in her. After a restart the same; `+coop/refit prospector` is refused with `REFIT_CORED`
+    and she stays cored; `+ship/mind` no longer answers `MIND_NO_CORE`.
+  - `co6_the_shop_fits_only_her_own_ship_at_the_shop`: Class III without the registration is
+    refused (nothing queued or paid); a Class I core is made, and fitting it to her chartered
+    Dray is refused with `CORE_NOT_YOURS`, nothing queued.
+  - Helpers for other stories: `core_her` (the whole route), `pump` (the counter's fires, its
+    submissions landed on the composed path), `walk` (a player's way through the exits).
+- **MW.21 through the route**: `mw21_completion` passes on conclav.dev (185 s) with both staff
+  binds replaced by `core_her`.
+- `tacsim` in source: `hardware::counter::tests` (the counter's lines under the floor; the hours
+  it tells are the shipped catalogue's).
+- **On base** (`26a539b5d`, the test files alone applied): `domain_field` does not compile: no
+  `tacsim::hardware::counter`, no `REFIT_CORED`. On base `+core` is no command and the
+  policy refuses a Dray (mutation M3 below is base's composition).
+- **One bug of this unit's own, found on the way**: a `reserved` flag derived into industry's
+  `OrderView` broke the projection's equality with its row (a reservation does not recapture
+  the view), so every later act on the order was refused; MW.23's stories caught it. Removed:
+  the counter remembers its own reservation instead.
+
+**MW.5's stories 2 and 7** (doc 17f §9), on the combined M8 world, built by a subagent of this
+session (its branch merged here). `domain_field` `c4_story_2_derivative.rs`,
+`c4_story_7_facts.rs` and their shared `c4_story_kit.rs`; `#[ignore]`d, in the `m8-gate-stories`
+dispatch matrix and `test-tiers.toml`'s nightly rows. On conclav.dev: story 2 passed in 597 s
+(three genuine ratings, 161, 192 and 228 s), story 7 in 186 s (one rating, 159 s). They exercise
+behaviour that existed: with the files added they pass on base; before, they did not exist.
+
+- **Story 2, private and derivative.** A filed unlisted mind offers nothing to another player
+  (`+minds` has no row; a fork from its owner licence lands nothing). An ordinary open fork is
+  forked, edited, rated and filed privately, binds one owner parent, and is refused a listing in
+  every form. An open-resale derivative (a second fork, made under an open-resale licence: an open
+  fork stays unlistable even once open-resale rights are made its qualifying parent) lists
+  "sealed; derived" at 10% royalty, and a sale moves exactly 400cr from the buyer, 40cr to the
+  parent's author, 340cr to the deriver. The Registry operator's `@registry/revoke` of the
+  deriver's parent licence: a quote taken before it pays and completes nothing; the deriver's
+  source read and owner seal are refused; the existing customer's open claim keeps its rows and
+  their term is unchanged across an unseal and a seal. A restart reads every family the same.
+  Restoration (fresh open-resale rights, requalified) keeps the source digest and the owner-parent
+  binding and does not extend the owner term, and a new sale pays the royalty again.
+  **Not built**: the dependent's new filing refused after the loss (`@mind/file` asks for a
+  completed rating first, a fourth rating); a recall as the loss (not restorable); a lapse or a
+  transfer as the loss; a renewal of the customer's licence while the parent is lost (90 IC days
+  away).
+- **Story 7, the fact interface.** A public contract on a filing settles in the economy's sweep.
+  A foreign caller attaching another's private licence lapse and attaching a reference that does
+  not exist read the same reply, and the contract is unchanged; the holder can attach it. Before
+  the receipt: an acceptance at a price the holder did not ask submits nothing; at the asked price
+  under an open claim the transfer's contract stays Active through 12 fires and a restart. After
+  the unseal the resale settles and the contract settles; a later generation reads like a missing
+  reference. The lapse: no occurrence two days before Grace ends; at its end the Roll's recorder
+  writes it and the contract settles. A renewal after it adds generation 2 and leaves the
+  generation-1 occurrence; a second restart reads every family the same. **Not built**: a front
+  consuming a mind fact (fronts read none on a launch); a refunded resale named as a fact (a failed
+  acceptance has no commit token on the command path).
+- **What staff do in them**: a governed Class II core bound to each Dray that seals a licence
+  (`ic_sortie_surface::fit`; the stories need a sealable hull, not the route, and the route needs
+  a 90,000cr buyout a player); teleports to the doorless counter; the tank stowage.
+- **Found by them, not fixed**: the M8 rig's `excursions::drain` drops every submission not of
+  tacsim, inventory or market, which silently discards the Roll's lapse recorder's and then it
+  never retries (the kit lands everything itself; any later story waiting on a Roll or economy
+  service meets it); `TestWorld::run` types on GOD's connection, and a fork's save answers on the
+  typist's, so the kit types on each player's own; an unchanged fork is refused filing as a
+  duplicate; renewing an original paid licence needed the seller's owner licence current
+  (inferred from two runs and the reader, not proven); a deriver's refused seal reads "You hold
+  no licence 5." though they do; a draft contract is gone after a 118 IC-day jump.
+
+**Mutations**, each applied alone, the two stories run (`co6-muts.py` in this group's notes
+folder):
+
+| # | Mutation | Caught by |
+|---|---|---|
+| M1 | economy's `at_shop`: inside the shop only | both |
+| M2 | industry's refit authority: inside the shop only | the route story |
+| M3 | the fitting policy without the ship family (composition at base) | the route story |
+| M4 | the counter's clear-title check removed | the refusals story |
+| M5 | the counter's requester-at-the-shop check removed | the route story (aboard) |
+| M6 | `+coop/refit`'s cored guard removed | the route story (after the assertion was tightened to the whole line: the first run, which matched the template's head "The ", let it through) |
+| M7 | the output never reserved | both |
+| M8 | the counter's hull-at-the-shop check removed | survived: the check was unreachable (a hull is found only beside the requester or inside the shop, both at the shop once the requester is). Deleted, with its sentence |
+| M9 | the install never submitted | the route story |
+| M10 | Class III without the registration | the refusals story (added after it survived) |
+
+**Defaults taken (provisional).**
+
+1. **The shop's place is where its object stands.** No deployment key: an operator stands the
+   shop's object in a port room (the M8 rig at Ceres' berth gallery). **Owed**: the bring-up
+   (`deploy/instance/launch-bringup.py`) makes the shop in staff's hands and does not stand it
+   anywhere; until an operator does, `+core/fit` says the shop fits nothing (`CORE_SHOP_NOWHERE`
+   reads that) and `+core/buy` works. A `deploy/` change, left to the owner. Cheap to reverse.
+2. **`go` is the consent; the counter submits the player's own acts after it.** The acceptance,
+   reservation, completion, delivery and install are submitted as the player by the tick, as the
+   Registry's service submits an author's rating steps. A player who wants each step by hand
+   still has `+act`. **Flagged**: a tick acting as a player on a paid step is a pattern a
+   reviewer may want ruled; cheap to reverse in code.
+3. **One request a player, in RAM; asking again picks up.** After a restart an order under way
+   is adopted by the next `+core/buy` of its class; a die issued and not offered is forgotten
+   (it stays in the agent's stock, inert). Patience 3 fires, 4 tries a step.
+4. **A core is made from anywhere; fitted only at the shop.** The integration has no place
+   rule, so the counter imposes none.
+5. **Clear title only.** A chartered or leased hull is not fitted: the core would go into a hull
+   its owner does not hold. `+coop/buyout` (90,000cr at Ceres) is the way. MW.21's buyer needs a
+   staff top-up of 98,100cr for it, where the bind was before.
+6. **A cored Dray is not re-dressed by the Co-op's yard** (`REFIT_CORED`). Taking the core out
+   first is a strip, which no player route offers for a core.
+7. **Ships may now be ungoverned** at the back room's refit (the policy needs a twin set a
+   family). Nothing in this unit drives it.
+
+**Not built.**
+
+- **A rig at the shop.** `+core/fit` fits a prospector rig only taken into the shop's object, and
+  no player command takes a rig there (MW.5's "the fitting shop is not a place", for rigs). The
+  stories that fit rigs stand them there by staff, as before.
+- **MW.13's stories** still bind their Dray by staff (`ic_sortie_surface::fit`); the row names
+  MW.21's only.
+- **The bring-up's shop placement** (default 1).
+- **A strip of a core** from a hull by a player, and the sale of a stored core (CO.13).
 
 ## CO.7
 

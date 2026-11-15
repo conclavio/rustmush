@@ -208,6 +208,17 @@ jobs:
           # rating).
           - name: MW.21 a bought mind flies its buyer's ship
             test: mw21_completion::mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins
+          # Doc 47 unit CO.6, doc 17f §9 story 2: an open fork files privately and cannot
+          # list; an open-resale derivative lists and pays its parent; a parent revocation
+          # stops the fork's owner and its new sales, not its customer; restoration, and a
+          # restart (three ratings: the parent and two forks).
+          - name: CO.6 story 2, private and derivative
+            test: c4_story_2_derivative::c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_survives_revocation
+          # Doc 47 unit CO.6, doc 17f §9 story 7: contracts settled on the filing, transfer
+          # receipt and lapse facts, a pending transfer and a renewal claiming no event, and
+          # two restarts (one rating).
+          - name: CO.6 story 7, the fact interface
+            test: c4_story_7_facts::c4_story_7_minds_facts_settle_contracts_on_the_launch_and_survive_a_restart
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain

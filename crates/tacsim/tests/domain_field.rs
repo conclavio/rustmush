@@ -49,6 +49,14 @@ mod bay_gc8;
 mod c4_filed_mind_field;
 #[path = "domain_field/c4_hardware.rs"]
 mod c4_hardware;
+#[path = "domain_field/c4_story_2_derivative.rs"]
+mod c4_story_2_derivative;
+#[path = "domain_field/c4_story_7_facts.rs"]
+mod c4_story_7_facts;
+#[path = "domain_field/c4_story_kit.rs"]
+mod c4_story_kit;
+#[path = "domain_field/co6_cored_ship.rs"]
+mod co6_cored_ship;
 #[path = "domain_field/crew_custody.rs"]
 mod crew_custody;
 #[path = "domain_field/crew_exit.rs"]
