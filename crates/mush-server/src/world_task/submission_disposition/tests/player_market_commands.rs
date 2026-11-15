@@ -11,7 +11,7 @@
 //! C2c and C2d reuse both, with `world` and `saved`.
 use super::paid_purchase::{
     auth_account, open_wallet,
-    runtime::{Running, STEP, Seen, rows},
+    runtime::{Running, SHED, STEP, Seen, rows},
 };
 use super::player_market::{
     LAUNCH_AUTHOR, Launch, acknowledged, character, initialized_launch_with, launch_active, scratch,
@@ -160,9 +160,11 @@ async fn world_from(
         "LaunchBystander",
     )
     .await?;
+    // Sent again while the world sheds it (CO.11c): a shed teleport never
+    // ran, and the alt or the bystander would not stand at the counter.
     for actor in [alt, bystander] {
         server
-            .command(
+            .command_admitted(
                 GOD,
                 format!("@teleport #{}=#{}", actor.0, launch.deployment.venue.room.0),
             )
@@ -189,17 +191,27 @@ pub(super) async fn active(launch: &Launch, alt: ObjId, bystander: ObjId) -> Tes
 
 /// `actor` creates `name` from Standard and saves it; the saved revision is
 /// read back from Roll's own row once the bounded author worker publishes it.
+///
+/// CO.11c: each line is sent again while the world sheds it (`admitted`),
+/// and the save's own later line (`Saved revision <n> (<digest>)`, said when
+/// the worker's job publishes) is awaited here, so it never lands in a later
+/// command's reply.
 pub(super) async fn saved(
     world: &World,
     actor: ObjId,
     name: &str,
 ) -> TestResult<mush_roll::Revision> {
-    for line in [
-        format!("@mind/new {name} FROM Standard"),
-        format!("@mind/save {name}=first"),
-    ] {
-        world.server.command(actor, line).await?;
-    }
+    admitted(
+        &world.server,
+        actor,
+        &format!("@mind/new {name} FROM Standard"),
+    )
+    .await?;
+    let save = admitted(&world.server, actor, &format!("@mind/save {name}=first")).await?;
+    until_own(&world.server, actor, save, |l| {
+        l.starts_with("Saved revision ")
+    })
+    .await?;
     let end = Instant::now() + STEP;
     loop {
         let found = world
@@ -324,7 +336,7 @@ async fn author_commands_refuse_alike_for_foreign_and_missing_targets() -> TestR
                 let mut replies = Vec::new();
                 for typed in ["1", "987654"] {
                     let line = template.replace("{n}", typed);
-                    let mut lines = w.server.command(actor, line.clone()).await?;
+                    let mut lines = admitted(&w.server, actor, &line).await?;
                     if !filed {
                         lines = until_own(&w.server, actor, lines, |l| l == DRIVER).await?;
                     }
@@ -398,7 +410,7 @@ async fn author_command_replies_reach_only_the_actor_and_name_no_digest() -> Tes
         // The positive control: room speech reaches every observer.
         let said = w
             .server
-            .command_seen(p.author, "say Testing the counter room.".into())
+            .command_admitted(p.author, "say Testing the counter room.".into())
             .await?;
         for (observer, name) in observers {
             check!(
@@ -430,7 +442,7 @@ async fn author_command_replies_reach_only_the_actor_and_name_no_digest() -> Tes
             // The settle window: whatever reached anyone since the last check.
             let late = w.server.take_seen(p.author)?;
             quiet(&late, previous)?;
-            let mut seen = w.server.command_seen(p.author, line.into()).await?;
+            let mut seen = w.server.command_admitted(p.author, line.into()).await?;
             if submits && !seen.own.iter().any(|l| answered(l)) {
                 seen.extend(await_own(&w.server, p.author, answered).await?);
             }
@@ -464,10 +476,7 @@ async fn file_reserves_a_shell_then_waits_for_a_rating_across_a_restart() -> Tes
     let result = timeout(STEP * 10, async {
         let p = w.launch.principals;
         saved(&w, p.author, "Sentinel").await?;
-        let reserving = w
-            .server
-            .command(p.author, "@mind/file Sentinel@1".into())
-            .await?;
+        let reserving = admitted(&w.server, p.author, "@mind/file Sentinel@1").await?;
         let reserving = until_own(&w.server, p.author, reserving, |l| l == "Done." || l == DRIVER).await?;
         check_eq!(
             reserving.first().map(String::as_str),
@@ -490,17 +499,13 @@ async fn file_reserves_a_shell_then_waits_for_a_rating_across_a_restart() -> Tes
                 .to_owned(),
         ];
         check_eq!(
-            w.server
-                .command(p.author, "@mind/file Sentinel@1".into())
-                .await?,
+            admitted(&w.server, p.author, "@mind/file Sentinel@1").await?,
             not_rated
         );
         w.server.stop().await?;
         w.server = active(&w.launch, w.alt, w.bystander).await?;
         check_eq!(
-            w.server
-                .command(p.author, "@mind/file Sentinel@1".into())
-                .await?,
+            admitted(&w.server, p.author, "@mind/file Sentinel@1").await?,
             not_rated,
             "the shell survives the restart"
         );
@@ -540,7 +545,7 @@ async fn file_and_rate_read_only_the_actors_own_revision_and_shell() -> TestResu
                 "@mind/rate Sentinel@1",
             ] {
                 check_eq!(
-                    w.server.command(actor, line.into()).await?,
+                    admitted(&w.server, actor, line).await?,
                     none("sentinel@1"),
                     "the {name}: {line}"
                 );
@@ -548,26 +553,20 @@ async fn file_and_rate_read_only_the_actors_own_revision_and_shell() -> TestResu
         }
         for line in ["@mind/file Sentinel@7", "@mind/rate Sentinel@7"] {
             check_eq!(
-                w.server.command(p.author, line.into()).await?,
+                admitted(&w.server, p.author, line).await?,
                 none("sentinel@7"),
                 "{line}"
             );
         }
         let reserved = |l: &str| l == "Done." || l == DRIVER;
-        let reserving = w
-            .server
-            .command(p.author, "@mind/file Sentinel@1".into())
-            .await?;
+        let reserving = admitted(&w.server, p.author, "@mind/file Sentinel@1").await?;
         let reserving = until_own(&w.server, p.author, reserving, reserved).await?;
         check!(
             reserving.iter().any(|l| l == "Done.") && !reserving.iter().any(|l| l == DRIVER),
             "the author's reservation: {reserving:?}"
         );
         saved(&w, w.alt, "Watcher").await?;
-        let alt = w
-            .server
-            .command(w.alt, "@mind/file Watcher@1".into())
-            .await?;
+        let alt = admitted(&w.server, w.alt, "@mind/file Watcher@1").await?;
         let alt = until_own(&w.server, w.alt, alt, reserved).await?;
         check_eq!(
             alt,
@@ -596,9 +595,7 @@ async fn file_and_rate_read_only_the_actors_own_revision_and_shell() -> TestResu
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         check_eq!(
-            w.server
-                .command(w.alt, "@mind/file Watcher@1".into())
-                .await?,
+            admitted(&w.server, w.alt, "@mind/file Watcher@1").await?,
             vec![
                 "watcher@1 has no finished Registry rating. Rate it with @mind/rate watcher@1."
                     .to_owned()
@@ -607,9 +604,7 @@ async fn file_and_rate_read_only_the_actors_own_revision_and_shell() -> TestResu
         );
         for (actor, name) in strangers {
             check_eq!(
-                w.server
-                    .command(actor, "@mind/file Sentinel@1".into())
-                    .await?,
+                admitted(&w.server, actor, "@mind/file Sentinel@1").await?,
                 none("sentinel@1"),
                 "the {name} after the reservations"
             );
@@ -622,21 +617,21 @@ async fn file_and_rate_read_only_the_actors_own_revision_and_shell() -> TestResu
     result?
 }
 
-/// The world's refusal of a line it shed under load (`mode.rs`): the line
-/// never ran, and the player is asked to retry it.
-const WORLD_BUSY: &str = "The world was busy too long for that line; please retry in a moment.";
-/// `actor`'s own reply to `line`, sent again while the loaded world sheds it
-/// (`WORLD_BUSY`), within `STEP`.
-async fn admitted(server: &Running, actor: ObjId, line: &str) -> TestResult<Vec<String>> {
-    let end = Instant::now() + STEP;
-    loop {
-        let own = server.command_seen(actor, line.into()).await?.own;
-        if !own.iter().any(|l| l == WORLD_BUSY) {
-            return Ok(own);
-        }
-        check!(Instant::now() < end, "{line} was shed until STEP: {own:?}");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+/// `actor`'s own reply to `line` (`command_seen`'s `own`: never a line that
+/// reached another connection), sent again while the loaded world sheds it
+/// (`Running::command_admitted`), within `STEP`. Every whole-reply match in
+/// this file reads its reply through here (doc 47 D6, CO.11c).
+pub(super) async fn admitted(
+    server: &Running,
+    actor: ObjId,
+    line: &str,
+) -> TestResult<Vec<String>> {
+    let own = server.command_admitted(actor, line.into()).await?.own;
+    check!(
+        !own.iter().any(|l| l.ends_with(SHED)),
+        "{line} was shed until STEP: {own:?}"
+    );
+    Ok(own)
 }
 
 /// 17g C2a test 12: `@mind/rate` queues a genuine Registry preparation of the
@@ -653,7 +648,7 @@ async fn admitted(server: &Running, actor: ObjId, line: &str) -> TestResult<Vec<
 /// match on the re-rate loop missed a reply that did queue a new job, and
 /// every later `@mind/rate` then met that job and refused `RATING_BUSY`
 /// until `STEP` ran out. The author's own lines are read (`command_seen`).
-/// A line the loaded world shed (`WORLD_BUSY`, "please retry") never ran,
+/// A line the loaded world shed (`SHED`, "please retry") never ran,
 /// so it is sent again (`admitted`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_queues_and_cancels_a_genuine_registry_preparation() -> TestResult {
@@ -721,15 +716,13 @@ async fn author_commands_are_not_open_on_a_house_only_launch() -> TestResult {
             "@mind/fork 1=Sentinel Copy",
         ] {
             check_eq!(
-                w.server.command(p.author, line.into()).await?,
+                admitted(&w.server, p.author, line).await?,
                 vec![NOT_OPEN.to_owned()],
                 "{line}"
             );
         }
         check_eq!(
-            w.server
-                .command(p.author, "@mind/rate Sentinel@1".into())
-                .await?,
+            admitted(&w.server, p.author, "@mind/rate Sentinel@1").await?,
             vec!["Registry preparation queued.".to_owned()]
         );
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -791,20 +784,16 @@ async fn listings_are_identical_for_every_principal_at_the_counter() -> TestResu
             );
             let mut at_counter = Vec::new();
             for actor in principals {
-                at_counter.push(w.server.command(actor, "+minds".into()).await?);
+                at_counter.push(admitted(&w.server, actor, "+minds").await?);
             }
             for lines in &at_counter {
                 check_eq!(lines, &vec![EMPTY.to_owned()], "restarted: {restarted}");
             }
             let mut away = Vec::new();
             for actor in principals {
-                w.server
-                    .command(GOD, format!("@teleport #{}=#0", actor.0))
-                    .await?;
-                away.push(w.server.command(actor, "+minds".into()).await?);
-                w.server
-                    .command(GOD, format!("@teleport #{}=#{}", actor.0, venue.0))
-                    .await?;
+                w.server.command_admitted(GOD, format!("@teleport #{}=#0", actor.0)).await?;
+                away.push(admitted(&w.server, actor, "+minds").await?);
+                w.server.command_admitted(GOD, format!("@teleport #{}=#{}", actor.0, venue.0)).await?;
             }
             for lines in &away {
                 check_eq!(lines, &vec![COUNTER.to_owned()], "restarted: {restarted}");
@@ -864,12 +853,10 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
             "TERMS_400 names the provisional price"
         );
         w.server
-            .command(GOD, format!("@teleport #{}=#0", p.buyer.0))
+            .command_admitted(GOD, format!("@teleport #{}=#0", p.buyer.0))
             .await?;
         check_eq!(
-            w.server
-                .command(p.buyer, "@mind/publish 1 form=sealed".into())
-                .await?,
+            admitted(&w.server, p.buyer, "@mind/publish 1 form=sealed").await?,
             vec![COUNTER.to_owned()],
             "away from the counter"
         );
@@ -884,13 +871,13 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
             ("+minds/buy/refund feed0001", no_purchase("feed0001")),
         ] {
             check_eq!(
-                w.server.command(p.buyer, line.into()).await?,
+                admitted(&w.server, p.buyer, line).await?,
                 vec![reply],
                 "away from the counter: {line}"
             );
         }
         w.server
-            .command(
+            .command_admitted(
                 GOD,
                 format!(
                     "@teleport #{}=#{}",
@@ -907,7 +894,7 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
             "@mind/publish 1 form=open term=30",
         ] {
             check_eq!(
-                w.server.command(p.buyer, line.into()).await?,
+                admitted(&w.server, p.buyer, line).await?,
                 vec![TERMS_400.to_owned()],
                 "{line}"
             );
@@ -915,7 +902,7 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
         let mut replies = Vec::new();
         for typed in ["1", "987654"] {
             let line = format!("@mind/publish {typed} form=sealed");
-            let lines = w.server.command(p.buyer, line.clone()).await?;
+            let lines = admitted(&w.server, p.buyer, &line).await?;
             check_eq!(
                 lines,
                 vec![format!("You own no filed mind {typed}.")],
@@ -931,7 +918,7 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
         );
         for line in ["+minds feed0001", "+minds/next feed0001"] {
             check_eq!(
-                w.server.command(p.buyer, line.into()).await?,
+                admitted(&w.server, p.buyer, line).await?,
                 vec![no_listing("feed0001")],
                 "{line}"
             );
@@ -944,34 +931,23 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
             ("+minds/buy/refund feed0001", no_purchase("feed0001")),
         ] {
             check_eq!(
-                w.server.command(p.buyer, line.into()).await?,
+                admitted(&w.server, p.buyer, line).await?,
                 vec![reply],
                 "{line}"
             );
         }
-        let buyer = w
-            .server
-            .command(p.buyer, "+minds/buy/complete feed0001".into())
-            .await?;
-        let author = w
-            .server
-            .command(p.author, "+minds/buy/complete feed0001".into())
-            .await?;
+        let buyer = admitted(&w.server, p.buyer, "+minds/buy/complete feed0001").await?;
+        let author = admitted(&w.server, p.author, "+minds/buy/complete feed0001").await?;
         check_eq!(
             &buyer,
             &author,
             "another character on nothing: the same bytes"
         );
-        let other_code = w
-            .server
-            .command(p.author, "+minds/buy/refund 0fffffff".into())
-            .await?;
+        let other_code = admitted(&w.server, p.author, "+minds/buy/refund 0fffffff").await?;
         check_eq!(&other_code, &vec![no_purchase("0fffffff")]);
         check!(
             same_refusal(
-                &w.server
-                    .command(p.buyer, "+minds/buy/refund feed0001".into())
-                    .await?,
+                &admitted(&w.server, p.buyer, "+minds/buy/refund feed0001").await?,
                 "feed0001",
                 &other_code,
                 "0fffffff"
@@ -987,9 +963,7 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
             .await?;
         }
         check_eq!(
-            w.server
-                .command(w.alt, "+minds/buy/pay feed0001".into())
-                .await?,
+            admitted(&w.server, w.alt, "+minds/buy/pay feed0001").await?,
             vec![ACCOUNT.to_owned()],
             "two personal accounts"
         );
@@ -1018,7 +992,7 @@ async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
     let result = timeout(STEP * 10, async {
         let p = w.launch.principals;
         w.server
-            .command(
+            .command_admitted(
                 GOD,
                 format!(
                     "@teleport #{}=#{}",
@@ -1035,7 +1009,7 @@ async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
             ("@mind/attest 1 org=", USAGE_FILED),
         ] {
             check_eq!(
-                w.server.command(p.buyer, line.into()).await?,
+                admitted(&w.server, p.buyer, line).await?,
                 vec![reply.to_owned()],
                 "a bare org=: {line}"
             );
@@ -1055,13 +1029,13 @@ async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
         ];
         for line in forms {
             check_eq!(
-                w.server.command(p.buyer, line.into()).await?,
+                admitted(&w.server, p.buyer, line).await?,
                 vec![NOT_FOR_ORG.to_owned()],
                 "ungranted: {line}"
             );
             let unknown = line.replace("org=Guild", "org=Nowhere");
             check_eq!(
-                w.server.command(p.buyer, unknown.clone()).await?,
+                admitted(&w.server, p.buyer, &unknown).await?,
                 vec![NOT_FOR_ORG.to_owned()],
                 "unknown organisation: {unknown}"
             );
@@ -1098,20 +1072,18 @@ async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
             ),
         ] {
             check_eq!(
-                w.server.command(p.buyer, line.into()).await?,
+                admitted(&w.server, p.buyer, line).await?,
                 vec![reply],
                 "granted, nothing held: {line}"
             );
         }
         check_eq!(
-            w.server
-                .command(p.author, "+minds/holdings org=Guild".into())
-                .await?,
+            admitted(&w.server, p.author, "+minds/holdings org=Guild").await?,
             vec![NOT_FOR_ORG.to_owned()],
             "another character stays refused"
         );
         check_eq!(
-            w.server.command(p.buyer, "+minds/holdings".into()).await?,
+            admitted(&w.server, p.buyer, "+minds/holdings").await?,
             vec![HOLD_EMPTY.to_owned()],
             "the grant changes nothing without org="
         );
@@ -1150,14 +1122,14 @@ async fn market_commands_are_not_open_on_a_house_only_launch() -> TestResult {
                 "@mind/publish 1 form=open royalty=100 transfer=no",
             ] {
                 check_eq!(
-                    w.server.command(actor, line.into()).await?,
+                    admitted(&w.server, actor, line).await?,
                     vec![NOT_OPEN.to_owned()],
                     "#{} {line}",
                     actor.0
                 );
             }
             check_eq!(
-                w.server.command(actor, "+minds/next/pay x".into()).await?,
+                admitted(&w.server, actor, "+minds/next/pay x").await?,
                 vec![MINDS_HELP.to_owned()],
                 "#{} an unknown switch set",
                 actor.0
@@ -1172,7 +1144,7 @@ async fn market_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 }
 /// 17g C2c test 9 (C2 plan §4; the C2c fix round, reviewer T-F6): on the
 /// production composition (format 2, Active), every `+minds` form and
-/// `@mind/publish` answers its actor alone. Through `command_seen`, for the
+/// `@mind/publish` answers its actor alone. Through `command_admitted`, for the
 /// author, the buyer and the bystander, no line of theirs reaches any other
 /// principal in the counter room (the alt, the bystander, the buyer, the
 /// author), and every line passes `assert_private` against every account id
@@ -1229,7 +1201,7 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
         ];
         let said = w
             .server
-            .command_seen(p.author, "say Testing the counter room.".into())
+            .command_admitted(p.author, "say Testing the counter room.".into())
             .await?;
         for (observer, name) in room.iter().filter(|(o, _)| *o != p.author) {
             check!(
@@ -1282,7 +1254,7 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
                 // The settle window: whatever arrived since the last check.
                 let late = w.server.take_seen(actor)?;
                 quiet(&late, actor, "the settle window")?;
-                let seen = w.server.command_seen(actor, line.into()).await?;
+                let seen = w.server.command_admitted(actor, line.into()).await?;
                 quiet(&seen, actor, line)?;
                 // The bystander has no personal credit account (17g C2g).
                 let reply = if actor == w.bystander && line == "+minds/buy/pay feed0001" {
@@ -1298,12 +1270,12 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
         let venue = w.launch.deployment.venue.room;
         for actor in [p.author, p.buyer, w.bystander] {
             w.server
-                .command(GOD, format!("@teleport #{}=#0", actor.0))
+                .command_admitted(GOD, format!("@teleport #{}=#0", actor.0))
                 .await?;
             for line in ["+minds", "@mind/publish 1 form=sealed"] {
                 let late = w.server.take_seen(actor)?;
                 quiet(&late, actor, "the settle window")?;
-                let seen = w.server.command_seen(actor, line.into()).await?;
+                let seen = w.server.command_admitted(actor, line.into()).await?;
                 quiet(&seen, actor, line)?;
                 check_eq!(
                     seen.own,
@@ -1313,7 +1285,7 @@ async fn market_replies_reach_only_the_actor() -> TestResult {
                 );
             }
             w.server
-                .command(GOD, format!("@teleport #{}=#{}", actor.0, venue.0))
+                .command_admitted(GOD, format!("@teleport #{}=#{}", actor.0, venue.0))
                 .await?;
         }
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -1364,7 +1336,7 @@ async fn registry_commands_refuse_alike_for_every_principal_on_unknown_targets()
             let mut replies = Vec::new();
             for (actor, name) in [(p.buyer, "buyer"), (p.god, "god"), (p.operator, "operator")] {
                 let line = template.replace("{n}", "999");
-                let lines = w.server.command(actor, line.clone()).await?;
+                let lines = admitted(&w.server, actor, &line).await?;
                 let lines = until_own(&w.server, actor, lines, |l| l == DRIVER).await?;
                 assert_private(&lines, &known)?;
                 check_eq!(
@@ -1387,7 +1359,7 @@ async fn registry_commands_refuse_alike_for_every_principal_on_unknown_targets()
         let mut replies = Vec::new();
         for typed in ["1", "999"] {
             let line = format!("@registry/recall {typed}");
-            let lines = w.server.command(p.buyer, line).await?;
+            let lines = admitted(&w.server, p.buyer, &line).await?;
             replies.push((
                 until_own(&w.server, p.buyer, lines, |l| l == DRIVER).await?,
                 typed,
@@ -1401,9 +1373,7 @@ async fn registry_commands_refuse_alike_for_every_principal_on_unknown_targets()
         );
         // A malformed number is the help, for anyone.
         check_eq!(
-            w.server
-                .command(p.buyer, "@registry/recall x".into())
-                .await?,
+            admitted(&w.server, p.buyer, "@registry/recall x").await?,
             vec![REGISTRY_HELP.to_owned()]
         );
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -1471,7 +1441,7 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
                 let mut replies = Vec::new();
                 for typed in ["1", "999"] {
                     let line = template.replace("{n}", typed);
-                    let lines = w.server.command(actor, line.clone()).await?;
+                    let lines = admitted(&w.server, actor, &line).await?;
                     check_eq!(lines, vec![reply.replace("{n}", typed)], "{name}: {line}");
                     replies.push((lines, typed));
                 }
@@ -1505,15 +1475,13 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
                 ("+minds/charter/accept 999 price=1", NO_CHARTER_OFFER_999),
             ] {
                 check_eq!(
-                    w.server.command(actor, line.into()).await?,
+                    admitted(&w.server, actor, line).await?,
                     vec![reply.to_owned()],
                     "{name}: {line}"
                 );
             }
             check_eq!(
-                w.server
-                    .command(actor, "+minds/resell/accept 999 cost=1".into())
-                    .await?,
+                admitted(&w.server, actor, "+minds/resell/accept 999 cost=1").await?,
                 vec![MINDS_HELP.to_owned()],
                 "{name}: a malformed accept"
             );
@@ -1532,7 +1500,7 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
                 let mut replies = Vec::new();
                 for typed in ["1", "999"] {
                     let line = template.replace("{n}", typed);
-                    let lines = w.server.command(actor, line.clone()).await?;
+                    let lines = admitted(&w.server, actor, &line).await?;
                     check_eq!(
                         lines,
                         vec![format!("You hold no licence {typed}.")],
@@ -1552,7 +1520,7 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
                 let mut replies = Vec::new();
                 for typed in ["1", "999"] {
                     let line = template.replace("{n}", typed);
-                    let lines = w.server.command(actor, line.clone()).await?;
+                    let lines = admitted(&w.server, actor, &line).await?;
                     check_eq!(
                         lines,
                         vec![RENEWAL_UNAVAILABLE.to_owned()],
@@ -1584,7 +1552,7 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
 
 /// 17g C2d test 12 (C2 plan §2.8, the observer rule): every C2d command's
 /// reply, the driver's later line included, reaches its actor alone: for the
-/// author, the buyer and the bystander, through `command_seen`, no line
+/// author, the buyer and the bystander, through `command_admitted`, no line
 /// reaches any other principal in the counter room, and every line passes
 /// `assert_private` against every account id the store holds. The seller's
 /// chosen buyer may be named only on `RESELLING` and `CHARTERING` (the
@@ -1615,7 +1583,7 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
         ];
         let said = w
             .server
-            .command_seen(p.author, "say Testing the counter room.".into())
+            .command_admitted(p.author, "say Testing the counter room.".into())
             .await?;
         for (observer, name) in room.iter().filter(|(o, _)| *o != p.author) {
             check!(
@@ -1685,7 +1653,7 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
                 // The settle window: whatever arrived since the last check.
                 let late = w.server.take_seen(actor)?;
                 quiet(&late, actor, "the settle window")?;
-                let mut seen = w.server.command_seen(actor, line.into()).await?;
+                let mut seen = w.server.command_admitted(actor, line.into()).await?;
                 if submits && !seen.own.iter().any(|l| l == DRIVER) {
                     seen.extend(await_own(&w.server, actor, |l| l == DRIVER).await?);
                 }
@@ -1740,7 +1708,7 @@ async fn trade_commands_are_not_open_on_a_house_only_launch() -> TestResult {
                 "+minds/charter/accept 1 price=1",
             ] {
                 check_eq!(
-                    w.server.command(actor, line.into()).await?,
+                    admitted(&w.server, actor, line).await?,
                     vec![NOT_OPEN.to_owned()],
                     "#{} {line}",
                     actor.0
@@ -1748,7 +1716,7 @@ async fn trade_commands_are_not_open_on_a_house_only_launch() -> TestResult {
             }
             for line in ["@registry/recall 1", "@registry/revoke 1"] {
                 check_eq!(
-                    w.server.command(actor, line.into()).await?,
+                    admitted(&w.server, actor, line).await?,
                     vec![REGISTRY_OFF.to_owned()],
                     "#{} {line}",
                     actor.0

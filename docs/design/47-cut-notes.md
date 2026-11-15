@@ -1794,7 +1794,108 @@ conclav.dev (Linux), a throwaway clone of main `aa3e1e4c3`.
 - **D6's neighbours.** Left for after CO.14 (above): the stray `Queued.` and `Done.` it removes
   are most of what these matches trip on, and rewriting the matches now would be written against
   drains about to change, beside CO.14's open edits to the world task's tests. The same
-  `admitted`/`command_seen` idiom fixes each that still fails after it.
+  `admitted`/`command_seen` idiom fixes each that still fails after it. **Built as CO.11c**
+  (below).
+
+## CO.11c
+
+D6's neighbours (CO.11's and CO.11b's "Not built"), on main `b1b4c57f6` with CO.14 in. Paths are
+under `crates/mush-server/src/world_task/submission_disposition/tests/`.
+
+**Measured first.** On conclav.dev, in a throwaway clone at `b1b4c57f6`, the lib test binary
+was run over `player_market_commands::` (16 tests), copies of the binary at once, round after
+round. The harness keeps its store in memory, so no Redis.
+
+- **Four at once:** 48 rounds, 192 runs, load 22 to 38. All 192 passed. CO.14 had taken out
+  the `Queued.` and `Done.` nobody typed, and at this load nothing else landed.
+- **Twelve at once:** 16 rounds, 192 runs, load 23 to 138. 115 runs failed, 148 test failures
+  in six tests: `trade_commands_refuse_without_own_records` 68,
+  `author_commands_refuse_alike_for_foreign_and_missing_targets` 44,
+  `file_and_rate_read_only_the_actors_own_revision_and_shell` 19,
+  `registry_commands_refuse_alike_for_every_principal_on_unknown_targets` 7,
+  `file_reserves_a_shell_then_waits_for_a_rating_across_a_restart` 6,
+  `author_commands_are_not_open_on_a_house_only_launch` 4.
+
+The stray lines in those failures, by kind:
+
+- **Another connection's line in a whole drain** (`Running::command` returns every target's
+  lines). Nearly all of them: `Dissolved lot#… into tranche#….` (279 times), an inventory
+  provider's summary for a module's own submission, sent to the submitting principal. Twice the
+  yard's `Order N: the yard hands over Tycho heavy lifter (TMA-LF-01) …` and its crawler line,
+  sent to the Tycho dispatcher (the order's requester, `port::house`), an NPC nobody connects.
+- **A shed line** (`The world was busy too long for that line; please retry in a moment.`, 6
+  times). The line never ran, so the reply holds only the refusal. Once it was the shared setup's
+  `@account/open` (`open_wallet`): "one acknowledged wallet creation for
+  System(…"launch.registry"), got []", the reported failure. Twice `saved()`'s line was shed and
+  it failed "Watcher was not saved" after `STEP`. Once a shed `@mind/fork` left `until_own`
+  waiting for a driver's line that was never coming.
+- **The author's own late line.** Once `@mind/save`'s `Saved revision 1 (<digest>)` and its
+  `Hint: @mind/prove …`, said when the authoring job publishes, after `saved()` had stopped
+  waiting (it waits on Roll's row, which is written first), landed in the next command's drain.
+
+**Built.**
+
+- **`Running::command_admitted`** (`paid_purchase/runtime.rs`). It is `command_seen` with the
+  line sent again while the world sheds it: both shed refusals (`CommitPending`,
+  `CommitTimedOut`) end in `SHED` ("please retry in a moment.") and refuse the line before it
+  runs, so saying it again is exact. Each shed attempt's other lines are kept in the `Seen` it
+  returns, so an observer check still sees a late line; only the refusals go. Within `STEP`; past
+  it the last refusal is kept, so the caller's check names it.
+- **`admitted`** (`player_market_commands.rs`, CO.11's helper, now `pub(super)`): the actor's
+  own lines (`command_admitted(..).own`), and an error if the line was still shed at `STEP`.
+  Every whole-reply match in the file now reads its reply through it, in place of
+  `w.server.command(..)`. The three observer tests (`author_command_replies_reach_only_the_actor_and_name_no_digest`,
+  `market_replies_reach_only_the_actor`, `trade_replies_reach_only_the_actor`) call
+  `command_admitted` where they called `command_seen`, and keep their `Seen` for the observers.
+- **The shared setup.** `world()` sends its two `@teleport`s through `command_admitted`;
+  `initialized_launch_with` (`player_market.rs`) sends its six; `open_wallet`
+  (`paid_purchase.rs`) reads GOD's own lines through `command_admitted`. A shed teleport would
+  have left a principal in the wrong room; a shed `@account/open` failed the setup.
+- **`saved()`** sends `@mind/new` and `@mind/save` through `admitted` and waits for the save's
+  own `Saved revision …` line (`until_own`) before it reads Roll's row, so that line never lands
+  in a later command's reply.
+
+Test-only; no production line moved. No expectation changed: every match still names the
+command's own reply whole (`check_eq!` on the actor's lines), and each test still checks the
+lines it checked. What a reply no longer holds is a line sent to another connection, which was
+never the actor's, and a shed refusal, after which the line is said again.
+
+**Robust before this cut, and changed anyway.** No test was robust against a shed line: the shared
+setup's wallets failed every `world()` test when one was shed (below). Against a stray line from
+another connection, four already read only the actor's own lines and passed with one injected:
+`rate_queues_and_cancels_a_genuine_registry_preparation` (CO.11's) and the three observer tests.
+They change only by `command_admitted`. `comparison_rule_masks_only_the_typed_number` boots
+nothing and needs no change.
+
+**Tests.**
+
+- **Fails before the fix, by injection.** A throwaway patch to the harness's `send_command`
+  (never committed; `co11c-inject.py` in the session notes): with `CO11C_INJECT=shed` every
+  seventh command is not sent and its actor is told the world's shed refusal; with
+  `CO11C_INJECT=stray` every third command's drain gets `Dissolved lot#1 into tranche#2.` sent
+  to another connection. On main, shed fails 15 of 16 tests (eight in the setup's
+  `open_wallet` with the reported "one acknowledged wallet creation … got []"), stray fails 11
+  of 16. With the fix, both pass 16 of 16 (252 sheds injected, 43 of them on the setup's
+  `@account/open` and `@teleport` lines; 506 strays).
+- **Fails before the fix, recorded.** The twelve-at-once run above: 115 of 192 runs failed on
+  main.
+- **The same load runs with the fix:** four at once, 48 rounds, 192 runs, load 34 to 77:
+  192 of 192 passed. Twelve at once, 16 rounds, 192 runs, load 102 to 139:
+  192 of 192 passed. 384 runs with the fix, none failed.
+- **Beside it.** The whole `mush-server` lib binary with the fix passed (373, 6 ignored). The
+  three ignored stories that share `saved`, `open_wallet` and the launch
+  (`paid_purchase::genuine_registry_purchase_writer_unknown_expiry_and_recovery`,
+  `player_market_story::…`, `player_market_typed::…`, CI's dispatch story job) were started
+  on conclav.dev with the fix at the 50 ms pulse and had not finished when the PR opened (CI's
+  runs of them take 31 to 131 minutes); their result goes on the PR.
+- **Not a gate here.** The M7 memory-size clippy pass covers six other crates; this cut touches
+  only `mush-server`'s tests.
+
+**Divergences.** None from the row.
+
+**Not built.** Nothing of the row. Seen, not touched: the setup's other GOD lines (`launch_world`'s
+staff commands) already retry through `acknowledged`; `seed()` in `player_market.rs`, which no
+test in this file uses, still sends its teleports through `command`.
 
 ## CO.12
 

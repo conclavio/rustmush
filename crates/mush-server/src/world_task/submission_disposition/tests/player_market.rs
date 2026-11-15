@@ -1208,9 +1208,11 @@ pub(super) async fn initialized_launch_with(
         .copied()
         .ok_or("one Registry operator")?;
     // The census's class C assertion proves these placements took.
+    // Each sent again while the world sheds it (CO.11c): a shed teleport
+    // never ran, and its principal would stand in the wrong room.
     for actor in [author, buyer, accountless] {
         server
-            .command(
+            .command_admitted(
                 GOD,
                 format!("@teleport #{}=#{}", actor.0, deployment.venue.room.0),
             )
@@ -1218,7 +1220,7 @@ pub(super) async fn initialized_launch_with(
     }
     for actor in [GOD, market.clerk, operator] {
         server
-            .command(GOD, format!("@teleport #{}=#0", actor.0))
+            .command_admitted(GOD, format!("@teleport #{}=#0", actor.0))
             .await?;
     }
     server.stop().await?;

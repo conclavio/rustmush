@@ -17,6 +17,10 @@ use tokio::time::{Instant, timeout};
 
 pub(in crate::world_task::submission_disposition::tests) const STEP: Duration =
     Duration::from_secs(120);
+/// The phrase both of the world's shed refusals end in
+/// (`RefusalReason::CommitPending`, `CommitTimedOut`): the line never ran.
+pub(in crate::world_task::submission_disposition::tests) const SHED: &str =
+    "please retry in a moment.";
 
 pub(super) fn now() -> TestResult<i64> {
     Ok(SystemTime::now()
@@ -381,6 +385,30 @@ impl Running {
     pub async fn command_seen(&self, actor: ObjId, line: String) -> TestResult<Seen> {
         self.send_command(actor, line).await?;
         self.take_seen(actor)
+    }
+
+    /// CO.11c: `command_seen`, the line sent again while the world sheds it.
+    /// Both shed refusals (`RefusalReason::CommitPending`, `CommitTimedOut`)
+    /// end in [`SHED`] and refuse the line before it runs, so saying it again
+    /// is exact. A loaded box sheds a typed line now and then, and a test that
+    /// matched the first reply whole read the refusal as the command's answer
+    /// (doc 47 D6). Every other line a shed attempt's drain held is kept, so
+    /// an observer check still sees a late line; only the refusals go. Within
+    /// `STEP`; past it the last refusal is kept, so the caller's check names it.
+    pub async fn command_admitted(&self, actor: ObjId, line: String) -> TestResult<Seen> {
+        let end = Instant::now() + STEP;
+        let mut all = Seen::default();
+        loop {
+            let mut seen = self.command_seen(actor, line.clone()).await?;
+            let shed = seen.own.iter().any(|l| l.ends_with(SHED));
+            if !shed || Instant::now() >= end {
+                all.extend(seen);
+                return Ok(all);
+            }
+            seen.own.retain(|l| !l.ends_with(SHED));
+            all.extend(seen);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// 17g C2a: everything sent since the last drain, split for `actor`,
