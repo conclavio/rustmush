@@ -1224,7 +1224,8 @@ CO.10's two "Not built" items: the wrecker's look, and its yard bill and hull ki
 - CO.10's story is now `towed_in_by_a_wrecker(…, Wrecker::Leased)` behind the old name; its
   steps and checks are unchanged (one assertion message reads "the second rig is a wrecker").
 - Pins the new rows move: `content_studio`'s goods count (45 to 46), `domain_arena::content`'s
-  goods table (the row and `GOODS_DIGEST`); `unit_looks`' `LOOKLESS` loses the wrecker.
+  goods table (the row and `GOODS_DIGEST`), `domain_arena::capacity`'s catalogue rows (46) and
+  `mush-server`'s `split_boundary` goods count (46); `unit_looks`' `LOOKLESS` loses the wrecker.
 - **Each new test fails on base.** The look tests with the wrecker's look taken out of
   `look::SHIPPED` (run locally): the 2.5D test at the look index, the TUI test at the row count.
   The bill test and the story on conclav.dev with base's `hulls-v2.json` and `goods.json`: the
