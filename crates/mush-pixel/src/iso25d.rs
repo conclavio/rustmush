@@ -2953,6 +2953,37 @@ mod tests {
         (sized.size, height_cm as f32 / 100.0 * px_per_m)
     }
 
+    /// Doc 47 unit CO.10b: the wrecker is drawn from its own bake
+    /// (`mc.st.wrecker`), not the `unknown` hump it drew as while lookless,
+    /// and stands at its 2.5 m beside the heavy's 2.8 m.
+    #[test]
+    fn co10b_the_wrecker_is_drawn_from_its_own_bake() {
+        let wrecker = look_index(Some("tacsim.unit.tv_wrecker"));
+        assert_ne!(
+            wrecker,
+            look_index(None),
+            "the wrecker has a look of its own"
+        );
+        let look = crate::look::for_unit("tacsim.unit.tv_wrecker").expect("the wrecker's look");
+        assert_eq!(look.model.as_deref(), Some("mc.st.wrecker"));
+        assert!(
+            bake::model("mc.st.wrecker").is_some(),
+            "the bake ships in the catalogue"
+        );
+        let (chain, height_cm) = bake::iso_chain(wrecker).expect("a chain");
+        assert_eq!(height_cm, 250, "the wrecker's 2.5 m");
+        assert!(!chain.sizes.is_empty());
+        let vp = (640, 360);
+        let (_, at) = own_unit("tacsim.unit.tv_wrecker", 1000, vp);
+        let (_, heavy) = own_unit("tacsim.unit.heavy_mk1", 1000, vp);
+        let ratio = at / heavy;
+        let truth = 250.0 / 280.0;
+        assert!(
+            ratio > truth * 0.75 && ratio < truth / 0.75,
+            "wrecker {at:.1} px, heavy {heavy:.1} px: {ratio:.2}, not {truth:.2}"
+        );
+    }
+
     /// Doc 32 cut CF.0, Q-CF-12: the own unit is the friend colour whatever
     /// its party (here red, which drew red by team before), a contact is
     /// drawn by its `relation` (`own` and `friend` alike, `neutral` grey) and

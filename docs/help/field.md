@@ -257,7 +257,9 @@ the site has settled:
   tows up to twice its own mass; the tender's recovery coupling tows three
   times its mass. For a heavy casualty Occator leases the wrecker
   (`+tv/lease wrecker`), a 12 t recovery rig whose coupling tows 36 t laden:
-  enough for a line tank, never for anything heavier.
+  enough for a line tank, never for anything heavier. Stickney's yard builds
+  one to keep (`+yard/order tv_wrecker`); it rides your carrier's bay by its
+  title and tows as the leased one does.
 - **The tender.** Occator leases a support rig (`+tv/lease tender`) whose
   stores carry munitions, structural alloys and yard fittings. In its
   carrier's bay, `+tv/<n> stores load <qty> <good> go` takes goods from the

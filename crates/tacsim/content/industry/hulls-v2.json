@@ -1,6 +1,6 @@
 {
   "manifest": {
-    "digest": "2a00d6530cc8fb070cc8688154005aebfb8e83a7376540f32a8c6ddbe9654048",
+    "digest": "aaeeae95687c477addbcff89314bc919573f781e85994cdc842703c5aa0098df",
     "id": "tacsim.industry.hulls",
     "kind": "rules_definition",
     "requires": [],
@@ -375,6 +375,33 @@
         "outputs": [
           {
             "commodity": "tacsim.hull_kit.tv_tender",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.yard"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
+    "tv_wrecker": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 9
+          },
+          {
+            "commodity": "industrial_parts",
+            "units": 3
+          }
+        ],
+        "label": "Wrecker hull",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.hull_kit.tv_wrecker",
             "units": 1
           }
         ],

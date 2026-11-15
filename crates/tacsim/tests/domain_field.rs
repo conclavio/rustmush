@@ -38,6 +38,8 @@ mod support;
 mod surrender_rig;
 #[path = "support/vertex.rs"]
 mod vertex;
+#[path = "support/field/yard_rig.rs"]
+mod yard_rig;
 
 #[path = "domain_field/bay_36a.rs"]
 mod bay_36a;

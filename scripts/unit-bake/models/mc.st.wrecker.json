@@ -1,0 +1,39 @@
+{
+  "model": "mc.st.wrecker",
+  "asset_version": "",
+  "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+  "package": "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+  "root": "Assets/Mech_Constructor_Spiders/",
+  "id_texture": "Materials/MC_Spiders_X_Color_ID.png",
+  "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab",
+  "attach": [
+    {
+      "prefab": "Prefabs/Tanks/Chassis_Carrier_Lvl1",
+      "mount": "Mount_Chassis",
+      "parent": ""
+    },
+    {
+      "prefab": "Prefabs/Cockpit_Riser_Wide",
+      "mount": "Mount_Top",
+      "parent": "Chassis_Carrier_Lvl1"
+    },
+    {
+      "prefab": "Prefabs/Backpack_Med_Frame",
+      "mount": "Mount_Backpack_Med",
+      "parent": "Chassis_Carrier_Lvl1"
+    }
+  ],
+  "still": {
+    "file": "Animations/Chassis_Tank_Anim_ROOT@Tank_Anim_Idle.fbx",
+    "name": "Tank_Anim_Idle"
+  },
+  "moving": {
+    "file": "Animations/Chassis_Tank_Anim_ROOT@Tank_Anim_Drive_Forward.fbx",
+    "name": "Tank_Anim_Drive_Forward"
+  },
+  "muzzles": [],
+  "size_cm": [
+    700,
+    250
+  ]
+}

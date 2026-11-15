@@ -460,32 +460,82 @@ pub(crate) async fn taken_in(at: &Ground) {
 /// stranger's prospector is refused the tow (12 t is its cap), and the wrecker (36 t) takes it in
 /// tow. At the Red Moth's ramp the 20 t bay cannot take it, so (SU.7's ruling) its crew come
 /// aboard as captives and the hull stays on the site titled to the stranger, out of tow.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn towed_in_by_the_wrecker(at: &Ground) {
+    towed_in_by_a_wrecker(at, Wrecker::Leased).await;
+}
+
+/// Where the stranger's wrecker comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Wrecker {
+    /// Leased from Occator's shed at Ceres (CO.10).
+    Leased,
+    /// Built at Stickney's yard and titled to the stranger (doc 47 unit CO.10b,
+    /// `yard_rig::built_wrecker`): it rides the Red Moth's bay by its title, slot 2 beside the
+    /// leased prospector.
+    Built,
+}
+
+/// [`towed_in_by_the_wrecker`] with the wrecker from `from`; every step after the Red Moth
+/// lands is the same.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn towed_in_by_a_wrecker(at: &Ground, from: Wrecker) {
     use crate::custody_rig::{powerless, ramp_cell_on, seconds_until};
     let mut rig = stocked_tuned(quick);
+    let mut built = None;
     let (b, b_row, b_tvs) = crate::driving_rig::on_pad_with_at(
         &mut rig,
         ("Second", 2, "Red Moth"),
         at.site(),
-        |rig, pilot| {
-            crate::driving_rig::lease_one(rig, pilot);
-            crate::driving_rig::at_counter(rig, pilot);
-            let preview = run(&mut rig.tw, pilot, "+tv/lease wrecker");
-            assert!(preview.contains("+tv/lease wrecker go"), "{preview}");
-            let signed = run(&mut rig.tw, pilot, "+tv/lease wrecker go");
-            assert!(
-                signed.contains("Occator Water & Propellant leases you "),
-                "{signed}"
-            );
+        |rig, pilot| match from {
+            Wrecker::Leased => {
+                crate::driving_rig::lease_one(rig, pilot);
+                crate::driving_rig::at_counter(rig, pilot);
+                let preview = run(&mut rig.tw, pilot, "+tv/lease wrecker");
+                assert!(preview.contains("+tv/lease wrecker go"), "{preview}");
+                let signed = run(&mut rig.tw, pilot, "+tv/lease wrecker go");
+                assert!(
+                    signed.contains("Occator Water & Propellant leases you "),
+                    "{signed}"
+                );
+            }
+            Wrecker::Built => {
+                // The yard first: the prospector's lease starts when the Red Moth is home.
+                built = Some(crate::yard_rig::built_wrecker(rig, pilot));
+                crate::driving_rig::lease_one(rig, pilot);
+            }
         },
     );
-    assert_eq!(
-        b_tvs.len(),
-        2,
-        "a prospector and the wrecker ride the Red Moth's bay"
-    );
-    let (prospector, wrecker) = (b_tvs[0], b_tvs[1]);
+    let (prospector, wrecker) = match from {
+        Wrecker::Leased => {
+            assert_eq!(
+                b_tvs.len(),
+                2,
+                "a prospector and the wrecker ride the Red Moth's bay"
+            );
+            (b_tvs[0], b_tvs[1])
+        }
+        Wrecker::Built => {
+            assert_eq!(b_tvs.len(), 1, "the prospector is the one lease");
+            let wrecker = built.expect("the yard's wrecker");
+            assert!(
+                tacsim::surface::tow::in_bay_of(rig.tw.world(), wrecker, ObjId(b_row.hull)),
+                "the yard-built wrecker rides the Red Moth's bay"
+            );
+            (b_tvs[0], wrecker)
+        }
+    };
+    // The bay slot each rig answers to (`+tv/<n>`). A lease holds its stored slot; a titled rig's
+    // view takes the lowest slot no lease holds, so the yard-built wrecker, stowed before the
+    // prospector was leased, may sit in either.
+    let w_slot = match from {
+        Wrecker::Leased => 2,
+        Wrecker::Built => {
+            tacsim::port::owned::title_view(rig.tw.world(), wrecker)
+                .expect("the wrecker's title view")
+                .slot
+        }
+    };
+    let p_slot = if w_slot == 1 { 2 } else { 1 };
     let b_carrier = ObjId(b_row.hull);
     let design = |rig: &crate::driving_rig::Rig, unit: ObjId| {
         mush_tactics::module::unit_of(rig.tw.world(), unit)
@@ -494,7 +544,7 @@ pub(crate) async fn towed_in_by_the_wrecker(at: &Ground) {
     assert_eq!(
         design(&rig, wrecker).as_deref(),
         Some(tacsim::definitions::content::TV_WRECKER),
-        "the second lease is Occator's wrecker"
+        "the second rig is a wrecker"
     );
     let (c, _, _) =
         crate::driving_rig::on_pad_as_at(&mut rig, ("Third", 3, "Lone Moth"), at.site(), 0);
@@ -598,9 +648,14 @@ pub(crate) async fn towed_in_by_the_wrecker(at: &Ground) {
     }
 
     // Both rigs out beside the hull, which cannot drive: a tow, never an escort.
-    crate::driving_rig::launched_at(&mut rig, at.entry, b, prospector);
+    if p_slot == 1 {
+        crate::driving_rig::launched_at(&mut rig, at.entry, b, prospector);
+    } else {
+        let _ = crate::driving_rig::act_go(&mut rig, b, &format!("+tv/{p_slot} launch go"));
+        let _ = crate::driving_rig::finish(&mut rig, prospector, b);
+    }
     crate::driving_rig::to_cell_on(&mut rig, at.entry, prospector, (ramp.0 + 2, ramp.1 + 1));
-    let _ = crate::driving_rig::act_go(&mut rig, b, "+tv/2 launch go");
+    let _ = crate::driving_rig::act_go(&mut rig, b, &format!("+tv/{w_slot} launch go"));
     let _ = crate::driving_rig::finish(&mut rig, wrecker, b);
     assert!(
         mush_sim::pose_of(rig.tw.world(), wrecker).is_some(),
@@ -608,18 +663,18 @@ pub(crate) async fn towed_in_by_the_wrecker(at: &Ground) {
     );
     crate::driving_rig::to_cell_on(&mut rig, at.entry, wrecker, (ramp.0 + 1, ramp.1 + 1));
     let _ = crate::field_host_rig::second(&mut rig);
-    let refused = run(&mut rig.tw, b, &format!("+tv/1 tow #{}", hull.0));
+    let refused = run(&mut rig.tw, b, &format!("+tv/{p_slot} tow #{}", hull.0));
     assert!(
         refused.contains("could not take")
             && refused.contains("more than the 12 t a 6 t tug can tow"),
         "the prospector is still refused the line tank: {refused}"
     );
-    let preview = run(&mut rig.tw, b, &format!("+tv/2 tow #{}", hull.0));
+    let preview = run(&mut rig.tw, b, &format!("+tv/{w_slot} tow #{}", hull.0));
     assert!(
         preview.contains("looks the") && preview.contains("29 t") && !preview.contains("escort"),
         "the wrecker takes the line tank in tow: {preview}"
     );
-    let (out, queued) = command(&mut rig, b, &format!("+tv/2 tow #{} go", hull.0));
+    let (out, queued) = command(&mut rig, b, &format!("+tv/{w_slot} tow #{} go", hull.0));
     assert_eq!(queued.len(), 1, "one tow start: {out}");
     crate::driving_rig::land(&mut rig, &queued[0]).expect("the tow start lands");
     assert!(
@@ -631,13 +686,13 @@ pub(crate) async fn towed_in_by_the_wrecker(at: &Ground) {
 
     // At the Red Moth's ramp: the 20 t bay cannot take 29.9 t, so the crew come aboard as captives
     // and the hull stays, titled to the captor.
-    let preview = run(&mut rig.tw, b, "+tv/2 load");
+    let preview = run(&mut rig.tw, b, &format!("+tv/{w_slot} load"));
     assert!(
         preview.contains("will not fit the Red Moth's bay")
             && preview.contains("salvage of the unowned"),
         "{preview}"
     );
-    let done = run(&mut rig.tw, b, "+tv/2 load go");
+    let done = run(&mut rig.tw, b, &format!("+tv/{w_slot} load go"));
     let _ = crate::field_host_rig::second(&mut rig);
     let record = crew_of(rig.tw.world(), crew)
         .cloned()

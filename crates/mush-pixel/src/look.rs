@@ -58,6 +58,9 @@ const SHIPPED: &[(&str, &str)] = &[
     ("biped.json", include_str!("../looks/biped.json")),
     ("drone.json", include_str!("../looks/drone.json")),
     ("unknown.json", include_str!("../looks/unknown.json")),
+    // Doc 47 unit CO.10b: Occator's wrecker, a terrain vehicle seen in the field. Last, so
+    // no earlier look's index moves.
+    ("wrecker.json", include_str!("../looks/wrecker.json")),
 ];
 
 /// What a sprite pixel is made of (doc 22 D-22-7): the three team slots,

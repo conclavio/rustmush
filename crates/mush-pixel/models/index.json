@@ -234,6 +234,18 @@
       ]
     },
     {
+      "asset_pack": "Mech Constructor: Spiders and Tanks (Slava Z)",
+      "bytes": 1010318,
+      "file": "mc.st.wrecker.9f3a61b9415f.mupk",
+      "id": "mc.st.wrecker",
+      "prefab": "Prefabs/Tanks/Chassis_Tank_Anim_ROOT.prefab + Prefabs/Tanks/Chassis_Carrier_Lvl1 on Mount_Chassis + Prefabs/Cockpit_Riser_Wide on Mount_Top + Prefabs/Backpack_Med_Frame on Mount_Backpack_Med",
+      "sha256": "9f3a61b9415f5d010cac14e7fa5389ada9abc139154ae7655c7cbbf3b4504dd1",
+      "size_cm": [
+        412,
+        250
+      ]
+    },
+    {
       "asset_pack": "Sci-Fi Turret Constructor (Slava Z)",
       "bytes": 1242511,
       "file": "mc.tr.drone_fighter.c8cea5292e12.mupk",
