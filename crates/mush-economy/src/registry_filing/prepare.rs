@@ -607,6 +607,22 @@ impl InitialFilingParticipant {
         ))
     }
     #[inline(never)]
+    pub(super) fn prepare_core_sale_request(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: core_sale::RegistryCoreSale,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.core_sale.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            core_sale::prepare(config, &self.policy, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::CoreSale(output),
+            EconomyPatch::CoreSale(Box::new(patch)),
+            writes,
+        ))
+    }
+    #[inline(never)]
     pub(super) fn prepare_charter_transfer_request(
         &self,
         state: &EconomyStore,

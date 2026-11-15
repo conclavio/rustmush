@@ -1088,6 +1088,7 @@ pub(super) async fn launch_world(
             output_container: output,
             ungovern: None,
             bay: None,
+            buy_back_permille: None,
         },
         market: Some(PlayerMarket {
             clerk,

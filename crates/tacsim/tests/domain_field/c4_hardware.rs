@@ -561,3 +561,222 @@ fn co4_a_displaced_core_is_stored_and_fitted_again() {
     assert_eq!(head_of(&world, first), "detached");
     crate::excursions::no_refused_writes(&world.rig.tw);
 }
+
+/// The pilot types `line` and every submission it queues lands; what was said, and each
+/// landing's receipt or refusal.
+fn sell(world: &mut M8World, line: &str) -> (String, Vec<Result<Option<String>, String>>) {
+    let pilot = world.pilot;
+    let (out, queued) = crate::excursions::command(&mut world.rig, pilot, line);
+    let landed = queued
+        .iter()
+        .map(|submit| crate::excursions::land_receipt(&mut world.rig, submit))
+        .collect();
+    (out, landed)
+}
+
+/// The fitting shop's integrator's account balance (it pays for a sold core).
+fn till(world: &M8World) -> i64 {
+    economy(&world.rig.tw)
+        .snapshot()
+        .account(world.deployment.hardware.integrator.account)
+        .expect("the integrator's account")
+        .posted_balance
+        .minor()
+}
+
+/// Staff top the fitting shop's till up from the world's faucet.
+fn fund_till(world: &mut M8World, minor: i64) {
+    let till = world.deployment.hardware.integrator.account;
+    let faucet = economy(&world.rig.tw)
+        .snapshot()
+        .accounts_of(&PrincipalId::System(
+            mush_org::SystemPrincipalId::new("hardware.fixture").expect("a system principal"),
+        ))
+        .next()
+        .expect("the world's faucet")
+        .id;
+    god(
+        &mut world.rig,
+        &format!("@econ/mint {}={} {minor}", faucet.0, till.0),
+    );
+}
+
+/// **Doc 47 CO.13 (R-47-5's "or sold"): a stored core is sold back to the fitting shop with its
+/// title**, by the pilot's own registered verb, on the launch world.
+///
+/// The pilot builds four cores and fits them as CO.4's story does, so that one Class II core is
+/// stored in their hands whole, one Class I core comes out destroyed, one is fitted to a rig and
+/// one, never fitted, is handed to another character. At the shop:
+///
+/// 1. the fitted core, the destroyed core and the core the other character holds are each
+///    refused, each in its own words, nothing paid and nothing moved;
+/// 2. the stored core is quoted at half its catalogue price (the market's core entry,
+///    `CoreClass::finished_minor`, at the buy-back's 500 permille) and sold: the shop's
+///    integrator pays the pilot, takes the core into its completed-work container and holds its
+///    title, unencumbered; the economy holds one sale receipt and the kernel one sale record;
+/// 3. the market's custody-only `+market/sell` refuses a governed core outright;
+/// 4. a restart replays the sale (the economy's receipt audit and the pairing with the kernel's
+///    records): the title, the core's place and the receipt read as before, and a second sale
+///    of the same core is refused (it is no longer the pilot's).
+#[test]
+fn co13_a_stored_core_is_sold_with_its_title() {
+    let mut world = m8_world_field(("ahuna", "ahuna_port"), 2);
+    let pilot = world.pilot;
+    let (tv, spare) = (world.tvs[0], world.tvs[1]);
+    let factory = world.deployment.hardware.factory;
+    let shop = world.deployment.hardware.output_container;
+    let basin = PrincipalId::Organization(world.deployment.hardware.integrator.organization);
+    fund(&mut world, pilot, 9_000_000);
+    let (payer, _) = credit(&world, pilot);
+    for rig in [tv, spare] {
+        title_to_pilot(&mut world, rig);
+    }
+    let done = run(&mut world.rig.tw, pilot, "+enduser/apply go");
+    assert!(
+        done.contains(END_USER_DONE.split("{fee}").next().expect("a head")),
+        "{done}"
+    );
+    let (second_built, second) = world.integrate(pilot, payer, DieClass::II);
+    let (first_built, first) = world.integrate(pilot, payer, DieClass::I);
+    let (fresh_built, fresh) = world.integrate(pilot, payer, DieClass::I);
+    let (_, handed) = world.integrate(pilot, payer, DieClass::I);
+    for thing in [pilot, tv, spare] {
+        stand(&mut world, thing, factory);
+    }
+    // The stored core: the Class II core, displaced whole by the Class I.
+    try_refit(&mut world, payer, tv, (second_built, second), DieClass::II)
+        .unwrap_or_else(|refused| panic!("the Class II fitting: {refused}"));
+    try_refit(&mut world, payer, tv, (first_built, first), DieClass::I)
+        .unwrap_or_else(|refused| panic!("the Class I fitting: {refused}"));
+    assert_eq!(
+        place_of(&world, second),
+        pilot,
+        "stored in the pilot's hands"
+    );
+    // The destroyed core: the Class I core, displaced destroyed by the fresh one.
+    harm_core(&mut world, tv, "destroyed");
+    try_refit(&mut world, payer, tv, (fresh_built, fresh), DieClass::I)
+        .unwrap_or_else(|refused| panic!("the fresh fitting: {refused}"));
+    assert_eq!(
+        place_of(&world, first),
+        pilot,
+        "a destroyed core still comes out"
+    );
+    assert_eq!(place_of(&world, fresh), tv, "the fitted core");
+    // The core someone else holds: still the pilot's title, in another character's hands.
+    let other = world.rig.tw.spawn_player("Another Pilot");
+    stand(&mut world, other, factory);
+    stand(&mut world, handed, other);
+    assert_eq!(
+        title_of(&world, handed).title_owner,
+        PrincipalId::Object(pilot)
+    );
+
+    // 1. Each refused, in its own words, nothing paid and nothing moved.
+    let (wallet, shop_till) = (credit(&world, pilot).1, till(&world));
+    for (core, line) in [
+        (fresh, tacsim::hardware::sale::SALE_FITTED),
+        (first, tacsim::hardware::sale::SALE_DESTROYED),
+        (handed, tacsim::hardware::sale::SALE_NOT_HELD),
+    ] {
+        for verb in [
+            format!("+core/sell #{}", core.0),
+            format!("+core/sell #{}=go", core.0),
+        ] {
+            let (out, landed) = sell(&mut world, &verb);
+            assert!(out.contains(line), "{verb}: {out}");
+            assert!(landed.is_empty(), "{verb}: nothing submitted");
+        }
+    }
+    assert_eq!((credit(&world, pilot).1, till(&world)), (wallet, shop_till));
+    assert_eq!(place_of(&world, handed), other);
+    // Not at the shop: refused before anything is read.
+    stand(&mut world, pilot, tv);
+    let (out, _) = sell(&mut world, &format!("+core/sell #{}", second.0));
+    assert!(out.contains(tacsim::hardware::sale::SALE_NOT_HERE), "{out}");
+    stand(&mut world, pilot, factory);
+
+    // 2. The stored core: quoted, then sold with its title. The shop's till holds only the
+    // fees it has earned, less than the price: refused in its own words until staff top it up
+    // from the world's faucet (the M8 world's standing practice, as the wallet's top-up).
+    let price = CoreClass::II.finished_minor() * 500 / 1_000;
+    assert!(till(&world) < price, "the till starts short");
+    let (out, landed) = sell(&mut world, &format!("+core/sell #{}=go", second.0));
+    assert!(
+        out.contains(tacsim::hardware::sale::SALE_SHOP_SHORT),
+        "{out}"
+    );
+    assert!(landed.is_empty());
+    fund_till(&mut world, price);
+    let shop_till = till(&world);
+    let (quote, landed) = sell(&mut world, &format!("+core/sell #{}", second.0));
+    assert!(landed.is_empty(), "a quote submits nothing");
+    assert!(quote.contains(&format!("core #{}", second.0)), "{quote}");
+    assert!(
+        quote.contains("4000"),
+        "the quote is half the Class II price: {quote}"
+    );
+    let before = title_of(&world, second);
+    let (out, landed) = sell(&mut world, &format!("+core/sell #{}=go", second.0));
+    assert!(out.contains(&format!("core #{}", second.0)), "{out}");
+    let receipt = match landed.as_slice() {
+        [Ok(Some(receipt))] => receipt.clone(),
+        other => panic!("one sale lands: {other:?}"),
+    };
+    assert!(receipt.contains("4000.00cr"), "{receipt}");
+    let sold = title_of(&world, second);
+    assert_eq!(sold.title_owner, basin, "the shop holds the title");
+    assert!(sold.encumbrances.is_empty(), "{sold:?}");
+    assert_eq!(sold.revision, before.revision + 1);
+    assert_eq!(
+        place_of(&world, second),
+        shop,
+        "the core is in the shop's stores"
+    );
+    assert_eq!(credit(&world, pilot).1, wallet + price, "paid the quote");
+    assert_eq!(till(&world), shop_till - price, "from the shop's till");
+    let receipts: Vec<_> = economy(&world.rig.tw)
+        .core_sale_receipts()
+        .expect("the audit is complete")
+        .cloned()
+        .collect();
+    assert_eq!(receipts.len(), 1, "{receipts:?}");
+    assert_eq!(
+        (
+            receipts[0].seller,
+            receipts[0].core,
+            receipts[0].price.minor()
+        ),
+        (pilot, second, price)
+    );
+    let records = world.rows("core_sales");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].get("core"), Some(&json!(second)));
+
+    // 3. The market's custody-only offer never takes a governed core.
+    let (out, queued) = crate::excursions::command(
+        &mut world.rig,
+        pilot,
+        &format!("+market/sell #{}=Basin", first.0),
+    );
+    assert!(queued.is_empty(), "{out}");
+    assert!(out.contains(mush_market::MANAGED_CORE_SALE), "{out}");
+
+    // 4. A restart replays the sale; the same core is not sold twice.
+    let commit = receipts[0].commit;
+    let mut world = world.reboot();
+    assert_eq!(title_of(&world, second), sold);
+    assert_eq!(place_of(&world, second), shop);
+    assert_eq!(
+        economy(&world.rig.tw)
+            .core_sale_receipt(commit)
+            .expect("the audit is complete")
+            .map(|r| r.core),
+        Some(second)
+    );
+    stand(&mut world, pilot, factory);
+    let (out, landed) = sell(&mut world, &format!("+core/sell #{}=go", second.0));
+    assert!(out.contains(tacsim::hardware::sale::SALE_NOT_HELD), "{out}");
+    assert!(landed.is_empty());
+    crate::excursions::no_refused_writes(&world.rig.tw);
+}

@@ -7,6 +7,7 @@
 #[cfg(test)]
 mod boot_tests;
 pub mod charter_transfer;
+pub mod core_sale;
 mod house;
 mod prepare;
 mod receipt;
@@ -156,6 +157,7 @@ pub struct InitialFilingParticipant {
     house_update: Option<update::house::HouseUpdateConfig>,
     charter_transfer: Option<mush_core::DefinitionRef>,
     seizure: Option<seizure::SeizureConfig>,
+    core_sale: Option<core_sale::CoreSaleConfig>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     core_refit: Option<crate::core_refit::CoreRefitConfig>,
     bay_refit: Option<crate::bay_refit::BayRefitConfig>,
@@ -175,6 +177,7 @@ impl InitialFilingParticipant {
             house_update: None,
             charter_transfer: None,
             seizure: None,
+            core_sale: None,
             core_integration: None,
             core_refit: None,
             bay_refit: None,
@@ -210,6 +213,7 @@ pub(crate) fn register_with_house_updates(
     house_update: Option<&update::house::HouseUpdateConfig>,
     seizure: Option<&seizure::SeizureConfig>,
     bay_refit: Option<&crate::bay_refit::BayRefitConfig>,
+    core_sale: Option<&core_sale::CoreSaleConfig>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -438,6 +442,16 @@ pub(crate) fn register_with_house_updates(
         }
         actions.extend([config.seize.clone(), config.forfeit.clone()]);
     }
+    if let Some(config) = core_sale {
+        // Doc 47 CO.13: a managed core exists only under native manufacture.
+        config.validate().map_err(|e| bad(&e))?;
+        if core_integration.is_none() {
+            return Err(mush_core::ModError::msg(
+                "core sale requires native manufacture history",
+            ));
+        }
+        actions.insert(config.action.clone());
+    }
     if let Some(config) = charter_pending {
         config.validate().map_err(|e| bad(&e))?;
         if config.issuer != policy.issuer
@@ -499,6 +513,7 @@ pub(crate) fn register_with_house_updates(
             house_update: house_update.cloned(),
             charter_transfer: charter_transfer.cloned(),
             seizure: seizure.cloned(),
+            core_sale: core_sale.cloned(),
             core_integration: core_integration.cloned(),
             core_refit: core_refit.cloned(),
             bay_refit: bay_refit.cloned(),
@@ -1019,6 +1034,7 @@ pub enum EconomyRequest {
     CharterPendingTerminal(crate::managed_charter_transfer::CharterPendingTerminalRequest),
     CharterTransfer(charter_transfer::RegistryCharterTransfer),
     CoreSeizure(seizure::RegistryCoreSeizure),
+    CoreSale(core_sale::RegistryCoreSale),
     CoreFunding(crate::core_integration::CoreFundingRequest),
     CoreCompletion(crate::core_integration::CoreCompletionRequest),
     CoreCancellation(crate::core_integration::CoreCancellationRequest),
@@ -1105,6 +1121,7 @@ pub enum EconomyOutput {
     CharterPending(crate::managed_charter_transfer::CharterPendingOutput),
     CharterTransfer(charter_transfer::CharterTransferOutput),
     CoreSeizure(seizure::CoreSeizureOutput),
+    CoreSale(core_sale::CoreSaleOutput),
     CoreFunding(crate::core_integration::CoreFundingOutput),
     CoreTerminal(crate::core_integration::CoreTerminalOutput),
     RefitFunding(crate::core_refit::RefitFundingOutput),
@@ -1176,6 +1193,12 @@ impl EconomyOutput {
     pub fn core_seizure(self) -> Result<seizure::CoreSeizureOutput, ParticipantError> {
         match self {
             Self::CoreSeizure(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    pub fn core_sale(self) -> Result<core_sale::CoreSaleOutput, ParticipantError> {
+        match self {
+            Self::CoreSale(output) => Ok(output),
             _ => Err(refused()),
         }
     }
@@ -1318,6 +1341,7 @@ pub enum EconomyPatch {
     CharterPending(Box<crate::managed_charter_transfer::CharterPendingPatch>),
     CharterTransfer(Box<charter_transfer::CharterTransferPatch>),
     CoreSeizure(Box<seizure::CoreSeizurePatch>),
+    CoreSale(Box<core_sale::CoreSalePatch>),
     CoreMoney(Box<crate::core_integration::CoreMoneyPatch>),
     RefitMoney(Box<crate::core_refit::RefitMoneyPatch>),
     BayMoney(Box<crate::bay_refit::BayMoneyPatch>),
@@ -1343,6 +1367,7 @@ pub enum BoundEconomy<'a> {
     CharterPending(crate::managed_charter_transfer::BoundCharterPending<'a>),
     CharterTransfer(charter_transfer::BoundCharterTransfer<'a>),
     CoreSeizure(seizure::BoundCoreSeizure<'a>),
+    CoreSale(core_sale::BoundCoreSale<'a>),
     CoreMoney(crate::core_integration::BoundCoreMoney<'a>),
     RefitMoney(crate::core_refit::BoundRefitMoney<'a>),
     BayMoney(crate::bay_refit::BoundBayMoney<'a>),
@@ -1363,6 +1388,7 @@ impl BoundParticipant for BoundEconomy<'_> {
             Self::CompatibleUpdate(bound) => bound.apply(),
             Self::CharterTransfer(bound) => bound.apply(),
             Self::CoreSeizure(bound) => bound.apply(),
+            Self::CoreSale(bound) => bound.apply(),
             Self::CharterPending(bound) => bound.apply(),
             Self::Purchase(bound) => bound.apply(),
             Self::RenewalOffer(bound) => bound.apply(),
@@ -1713,6 +1739,9 @@ impl OwnerParticipant for InitialFilingParticipant {
             EconomyRequest::CoreSeizure(request) => {
                 self.prepare_core_seizure_request(state, context, request)
             }
+            EconomyRequest::CoreSale(request) => {
+                self.prepare_core_sale_request(state, context, request)
+            }
             EconomyRequest::CharterTransfer(request) => {
                 self.prepare_charter_transfer_request(state, context, request)
             }
@@ -1788,6 +1817,13 @@ impl OwnerParticipant for InitialFilingParticipant {
             ),
             EconomyPatch::CoreSeizure(patch) => seizure::recheck(
                 self.seizure.as_ref().ok_or_else(refused)?,
+                &self.policy,
+                state,
+                context,
+                patch,
+            ),
+            EconomyPatch::CoreSale(patch) => core_sale::recheck(
+                self.core_sale.as_ref().ok_or_else(refused)?,
                 &self.policy,
                 state,
                 context,
@@ -1874,6 +1910,9 @@ impl OwnerParticipant for InitialFilingParticipant {
             }
             EconomyPatch::CoreSeizure(patch) => {
                 seizure::bind(state, *patch).map(BoundEconomy::CoreSeizure)
+            }
+            EconomyPatch::CoreSale(patch) => {
+                core_sale::bind(state, *patch).map(BoundEconomy::CoreSale)
             }
             EconomyPatch::CharterTransfer(patch) => {
                 charter_transfer::bind(state, *patch).map(BoundEconomy::CharterTransfer)

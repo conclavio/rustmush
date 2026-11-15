@@ -154,6 +154,20 @@ pub(crate) fn destroyed(registry: &DefinitionRegistry, left: &RefitOrder) -> Res
     let went_in = SavedComponent::of_unit(&baseline, &o.component)?.ok_or(Error::Integrity)?;
     Ok(went_in.capabilities() != saved.capabilities())
 }
+impl CoreRefitFactoryConfig {
+    /// **Whether a core in its owner's hands is destroyed** (doc 47 CO.13, R-47-5: a stored
+    /// core is fitted again or sold; a destroyed one is neither). `Some(true)` when the refit
+    /// that last displaced it found it destroyed (`destroyed`), `Some(false)` for a core no
+    /// refit ever displaced or one displaced whole or damaged, `None` when the refit history
+    /// or the definitions cannot be read (a reader refuses).
+    #[must_use]
+    pub fn stored_core_destroyed(&self, world: &World, core: ObjId) -> Option<bool> {
+        match displaced_by(world, core).ok()? {
+            None => Some(false),
+            Some(left) => destroyed(self.definitions.0.get()?, &left).ok(),
+        }
+    }
+}
 fn state(world: &World) -> Result<&CoreProductionState, Error> {
     if world
         .module_state_owner(std::any::TypeId::of::<CoreProductionState>())

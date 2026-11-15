@@ -89,6 +89,11 @@ pub struct HardwareCoordinates {
     /// `launch_deployment` identity and its digest are as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bay: Option<BayCoordinates>,
+    /// **The fitting shop's buy-back rate** (doc 47 CO.13), permille of a stored core's catalogue
+    /// baseline. Skipped when absent, so every deployment that names none, its
+    /// `launch_deployment` identity and its digest are as before; absent, no shop buys cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buy_back_permille: Option<u32>,
 }
 
 /// **A refit bay's coordinates** (doc 31 cut UD.4b): the deployment's serializable twin of
@@ -155,6 +160,7 @@ impl HardwareCoordinates {
                 stores: b.stores,
                 max_fee_minor: b.max_fee_minor,
             }),
+            buy_back_permille: self.buy_back_permille,
         }
     }
 }

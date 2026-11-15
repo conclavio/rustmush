@@ -296,6 +296,7 @@ pub(crate) enum BuiltinObjects {
     Shell(Box<ShellObjects>),
     CoreOutput(Box<CoreOutputObjects>),
     Delivery(Box<crate::core_delivery::DeliveryObjects>),
+    Sale(Box<crate::core_sale::SaleObjects>),
     Exchange(Box<crate::core_exchange::image::ExchangeObjects>),
     Physical(Box<crate::physical_transition::image::PhysicalTransitionObjects>),
 }
@@ -322,6 +323,7 @@ impl BuiltinObjects {
             Self::Shell(x) => x.creates_object(),
             Self::CoreOutput(x) => x.create,
             Self::Delivery(_) => false,
+            Self::Sale(_) => false,
             Self::Exchange(_) => false,
             Self::Physical(_) => false,
         }
@@ -331,6 +333,7 @@ impl BuiltinObjects {
             Self::Shell(x) => x.writes(),
             Self::CoreOutput(x) => &x.writes,
             Self::Delivery(x) => x.writes(),
+            Self::Sale(x) => x.writes(),
             Self::Exchange(x) => x.writes(),
             Self::Physical(x) => x.writes(),
         }
@@ -344,6 +347,7 @@ impl BuiltinObjects {
             Self::Shell(x) => x.recheck(world),
             Self::CoreOutput(x) => x.recheck(world),
             Self::Delivery(x) => x.recheck(world, lens),
+            Self::Sale(x) => x.recheck(world, lens),
             Self::Exchange(x) => x.recheck(world, lens),
             Self::Physical(x) => x.recheck(world, lens),
         }
@@ -353,6 +357,7 @@ impl BuiltinObjects {
             Self::Shell(_) => Ok(()),
             Self::CoreOutput(x) => x.fence.local(world),
             Self::Delivery(x) => x.local(world),
+            Self::Sale(x) => x.local(world),
             Self::Exchange(x) => x.local(world),
             Self::Physical(x) => x.local(world),
         }
@@ -365,6 +370,7 @@ impl BuiltinObjects {
             Self::Shell(x) => x.bind(storage).map(BoundBuiltinObjects::Shell),
             Self::CoreOutput(x) => x.bind(storage).map(BoundBuiltinObjects::CoreOutput),
             Self::Delivery(x) => x.bind(storage).map(BoundBuiltinObjects::Delivery),
+            Self::Sale(x) => x.bind(storage).map(BoundBuiltinObjects::Sale),
             Self::Exchange(x) => x.bind(storage).map(BoundBuiltinObjects::Exchange),
             Self::Physical(x) => x.bind(storage).map(BoundBuiltinObjects::Physical),
         }
@@ -374,6 +380,7 @@ pub(crate) enum BoundBuiltinObjects<'a> {
     Shell(BoundShellObjects<'a>),
     CoreOutput(BoundCoreOutputObjects<'a>),
     Delivery(crate::core_delivery::BoundDeliveryObjects<'a>),
+    Sale(crate::core_sale::BoundSaleObjects<'a>),
     Exchange(crate::core_exchange::image::BoundExchangeObjects<'a>),
     Physical(crate::physical_transition::image::BoundPhysicalTransitionObjects<'a>),
 }
@@ -383,6 +390,7 @@ impl BoundBuiltinObjects<'_> {
             Self::Shell(x) => x.apply(),
             Self::CoreOutput(x) => x.apply(),
             Self::Delivery(x) => x.apply(),
+            Self::Sale(x) => x.apply(),
             Self::Exchange(x) => x.apply(),
             Self::Physical(x) => x.apply(),
         }

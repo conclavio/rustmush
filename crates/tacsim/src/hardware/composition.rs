@@ -55,6 +55,10 @@ pub struct HardwareDeployment {
     /// its stores and the provider it pays. The bay refits a hull within its family of
     /// fielded units, a part from its stores.
     pub bay: Option<RefitBay>,
+    /// **The fitting shop's buy-back** (doc 47 CO.13), when composed: the permille of a core's
+    /// catalogue baseline the integrator pays for a stored core with its title
+    /// ([`super::sale::BUY_BACK_PERMILLE`] is the launch's). Absent, no shop buys cores.
+    pub buy_back_permille: Option<u32>,
 }
 
 /// **A refit bay** (doc 31 cut UD.4b): who is paid, where, and from which stores.
@@ -133,6 +137,8 @@ struct GovernedHardwareState {
     refit: CoreRefitFactoryConfig,
     /// Doc 31 UD.4b: the refit bay, when the deployment names one.
     bay: Option<Box<mush_industry::bay_refit::BayRefitConfig>>,
+    /// Doc 47 CO.13: the fitting shop's buy-back, when the deployment names one.
+    sale: Option<Box<super::sale::SaleTerms>>,
 }
 
 /// Configured modules returned by the explicit host entry. Add the host's real
@@ -161,6 +167,7 @@ struct RosterPolicyState {
     install: mush_core::DefinitionRef,
     bay_economy: Option<mush_economy::bay_refit::BayRefitConfig>,
     bay_parts: Option<mush_inventory::bay_part::BayPartBinding>,
+    sale: Option<mush_economy::registry_filing::core_sale::CoreSaleConfig>,
 }
 impl RosterPolicy {
     pub(crate) fn inventory(&self, module: InventoryModule) -> InventoryModule {
@@ -177,6 +184,10 @@ impl RosterPolicy {
         let module = module
             .with_core_integration(self.state.economy.clone())
             .with_core_refit(self.state.fitting.clone());
+        let module = match &self.state.sale {
+            Some(config) => module.with_core_sale(config.clone()),
+            None => module,
+        };
         match &self.state.bay_economy {
             Some(config) => module.with_bay_refit(config.clone()),
             None => module,
@@ -317,6 +328,12 @@ impl GovernedHardware {
                     .map(|b| b.part_binding())
                     .transpose()
                     .map_err(bad)?,
+                sale: self
+                    .state
+                    .sale
+                    .as_deref()
+                    .map(super::sale::SaleTerms::economy_config)
+                    .transpose()?,
             }),
         })
     }
@@ -401,12 +418,7 @@ impl GovernedHardware {
             factory: deployment.factory,
             output_container: deployment.output_container,
             recipe: publication.definition(HardwareProcess::Integrate).clone(),
-            catalogs: [
-                "tacsim.core.doctrine",
-                "tacsim.core.line",
-                "tacsim.core.command",
-            ]
-            .map(|code| CatalogRef {
+            catalogs: super::sale::CORE_CATALOG_CODES.map(|code| CatalogRef {
                 ruleset: crate::NS.into(),
                 code: code.into(),
             }),
@@ -503,6 +515,16 @@ impl GovernedHardware {
             &payment.instrument,
             &economy,
         )?;
+        let sale = deployment.buy_back_permille.map(|permille| {
+            Box::new(super::sale::SaleTerms {
+                permille,
+                vendor: payment.integrator.clone(),
+                factory: payment.factory,
+                shop: payment.output_container,
+                catalogs: payment.catalogs.clone(),
+                refit: refit.clone(),
+            })
+        });
         let factory = CoreFactoryConfig::new(mode, payment, Arc::new(publication.clone()), economy)
             .map_err(bad)?
             .with_refits(refit.clone())
@@ -521,6 +543,7 @@ impl GovernedHardware {
                 factory,
                 refit,
                 bay,
+                sale,
             }),
         })
     }
@@ -574,6 +597,7 @@ impl GovernedHardware {
             }),
         }
         layer.governed_hardware = Some(Box::new(self.state.registration.clone()));
+        layer.core_sale = self.state.sale.clone();
         Ok(layer)
     }
     pub fn configure_inventory(
@@ -618,6 +642,11 @@ impl GovernedHardware {
     pub fn configure_economy(&self, module: EconomyModule) -> Result<EconomyModule, ModError> {
         let module = match self.state.bay.as_deref() {
             Some(bay) => module.with_bay_refit(bay.economy_config().map_err(bad)?),
+            None => module,
+        };
+        // Doc 47 CO.13: the economy's closed sale leg, beside the fitting shop's buy-back.
+        let module = match self.state.sale.as_deref() {
+            Some(sale) => module.with_core_sale(sale.economy_config()?),
             None => module,
         };
         Ok(module

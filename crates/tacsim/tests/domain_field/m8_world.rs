@@ -180,6 +180,8 @@ fn hardware(rig: &mut Rig) -> HardwareCoordinates {
     HardwareCoordinates {
         ungovern: Some(ungovern),
         bay: None,
+        // Doc 47 CO.13: the fitting shop buys stored cores back at the launch's rate.
+        buy_back_permille: Some(tacsim::hardware::sale::BUY_BACK_PERMILLE),
         importer: basin,
         stock_scope,
         depot: vault(rig, "HardwareStock0"),

@@ -74,6 +74,7 @@ pub mod control;
 pub mod core_delivery;
 pub mod core_exchange;
 pub mod core_output;
+pub mod core_sale;
 pub mod decision;
 pub mod decision_source;
 pub mod depth;

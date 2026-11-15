@@ -547,6 +547,13 @@ pub(crate) fn validate_core_seizure(
 ) -> PlanResult {
     validate_guarded(proof.plan(), snapshot, env, PlanGuard::Seizure(proof))
 }
+pub(crate) fn validate_core_sale(
+    proof: &crate::registry_filing::core_sale::ClosedCoreSalePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::CoreSale(proof))
+}
 pub(crate) fn validate_charter_pending(
     proof: &crate::managed_charter_transfer::ClosedCharterPendingPlan,
     snapshot: &EconomySnapshot,
@@ -607,6 +614,7 @@ enum PlanGuard<'a> {
     CharterTransfer(&'a crate::registry_filing::charter_transfer::ClosedCharterTransferPlan),
     CharterPending(&'a crate::managed_charter_transfer::ClosedCharterPendingPlan),
     Seizure(&'a crate::registry_filing::seizure::ClosedSeizurePlan),
+    CoreSale(&'a crate::registry_filing::core_sale::ClosedCoreSalePlan),
     CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
     CoreRefit(&'a crate::core_refit::ClosedRefitPlan),
     BayRefit(&'a crate::bay_refit::ClosedBayPlan),
@@ -625,6 +633,7 @@ impl PlanGuard<'_> {
             Self::CharterTransfer(proof) => proof.check(plan, snapshot),
             Self::CharterPending(proof) => proof.check(plan, snapshot),
             Self::Seizure(proof) => proof.check(plan, snapshot),
+            Self::CoreSale(proof) => proof.check(plan, snapshot),
             _ => crate::managed_title::require_unmanaged_mutations(plan, snapshot),
         }
     }
@@ -643,6 +652,7 @@ impl PlanGuard<'_> {
             Self::CharterTransfer(proof) => proof.check(plan, snapshot),
             Self::CharterPending(proof) => proof.check(plan, snapshot),
             Self::Seizure(proof) => proof.check(plan, snapshot),
+            Self::CoreSale(proof) => proof.check(plan, snapshot),
         }
     }
 }

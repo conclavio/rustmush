@@ -420,6 +420,9 @@ fn requires_cycle(
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
     governed_hardware: Option<Box<hardware::Registration>>,
+    /// Doc 47 CO.13: the fitting shop's buy-back, set by the governed hardware's
+    /// `configure_tacsim` when its deployment names one.
+    core_sale: Option<Box<hardware::sale::SaleTerms>>,
     launch: Option<Box<launch::Registration>>,
     ic_minds: Option<Box<minds::ic_sortie::registration::Registration>>,
     coverage: Option<Box<underwriting::registration::Registration>>,
@@ -588,6 +591,7 @@ impl TacsimRuleset {
         };
         TacsimRuleset {
             governed_hardware: None,
+            core_sale: None,
             launch: None,
             ic_minds: None,
             coverage: None,
@@ -1051,6 +1055,7 @@ impl GameModule for TacsimRuleset {
             self.coverage.as_deref(),
             self.registry_inspection.as_deref(),
             self.unit_authority,
+            self.core_sale.as_deref(),
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -1336,6 +1341,8 @@ impl GameModule for TacsimRuleset {
         relay_world::boot(ctx).map_err(ModError::msg)?;
         // Doc 17h cut M8d D6/D7: the unwarranted chronicle's reconcile and the Red Dies front.
         minds::registry_inspection::unwarranted::boot(ctx).map_err(ModError::msg)?;
+        // Doc 47 CO.13: the kernel's core sale records pair one to one with the economy's.
+        hardware::sale::boot_audit(ctx)?;
         store::audit_mind_revisions(ctx).map_err(|error| ModError::msg(error.to_string()))?;
         let (red, blue) = match_::net::ensure_nets(ctx);
         if red.is_none() || blue.is_none() {

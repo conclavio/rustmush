@@ -456,6 +456,7 @@ impl Rig {
         }
         let deployment = HardwareDeployment {
             bay: None,
+            buy_back_permille: None,
             ungovern: Some(super::UngoverningSite {
                 provider: ScopedCoreAccount {
                     account: shop_account,

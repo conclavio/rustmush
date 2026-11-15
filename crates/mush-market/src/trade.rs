@@ -130,6 +130,11 @@ const UNDELIVERABLE: &str = "That cannot be delivered to you right now, so the s
 /// the offerer.
 pub const MAX_OPEN_SELLS_PER_VENDOR: usize = 4;
 
+/// **A governed core is not sold here** (doc 47 CO.13): its managed title moves only with it,
+/// through the stored-core sale's own closed family.
+pub const MANAGED_CORE_SALE: &str =
+    "A governed core is sold with its title, at the fitting shop, not through a market offer.";
+
 /// The **exact** words a quote that can no longer be honoured is refused with.
 ///
 /// One string for every reason (D-E6-13, scenario 29): lapsed, a moved listing
@@ -1337,6 +1342,16 @@ pub fn sell(
     object: ObjId,
     vendor_id: crate::ids::VendorId,
 ) -> Result<ContractId, MarketError> {
+    // Doc 47 CO.13: a governed core's title is a managed title, which this custody-only sale
+    // would leave with the seller while the vendor holds the core. It is sold with its title by
+    // its own closed family, never here.
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.is_managed_core(object))
+    {
+        return Err(MarketError::bad(MANAGED_CORE_SALE));
+    }
     let seller = ctx.actor;
     let Some(vendor) = ctx
         .w

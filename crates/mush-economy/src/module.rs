@@ -1723,6 +1723,7 @@ struct EconomyModuleState {
     house_update: Option<crate::registry_filing::update::house::HouseUpdateConfig>,
     charter_transfer: Option<mush_core::mechanics::DefinitionRef>,
     seizure: Option<crate::registry_filing::seizure::SeizureConfig>,
+    core_sale: Option<crate::registry_filing::core_sale::CoreSaleConfig>,
     providers: CustodyTable,
     config: EconomyConfig,
     facts: crate::facts::FactTable,
@@ -1772,6 +1773,7 @@ impl std::fmt::Debug for EconomyModule {
             .field("house_update", &self.state.house_update)
             .field("charter_transfer", &self.state.charter_transfer)
             .field("seizure", &self.state.seizure)
+            .field("core_sale", &self.state.core_sale)
             .field("providers", &self.state.providers)
             .field("config", &self.state.config)
             .field("facts", &self.state.facts)
@@ -1916,6 +1918,18 @@ impl EconomyModule {
         config: crate::registry_filing::seizure::SeizureConfig,
     ) -> Self {
         self.state.seizure = Some(config);
+        self
+    }
+    /// **The sale of a stored managed core with its title** (doc 47 CO.13): the exact tacsim
+    /// action and the buy-back vendor. The producer proves the core in the seller's hands and
+    /// moves it in the same union; this enables only the economy's closed leg and its boot
+    /// audit. Requires native manufacture (`with_core_integration`).
+    #[must_use]
+    pub fn with_core_sale(
+        mut self,
+        config: crate::registry_filing::core_sale::CoreSaleConfig,
+    ) -> Self {
+        self.state.core_sale = Some(config);
         self
     }
     /// Add the three exact closed Market purchase actions to the existing
@@ -2303,6 +2317,7 @@ impl GameModule for EconomyModule {
                 self.state.house_update.as_ref(),
                 self.state.seizure.as_ref(),
                 self.state.bay_refit.as_ref(),
+                self.state.core_sale.as_ref(),
             )?;
         }
         if (self.state.house_purchases.is_some()
@@ -2317,6 +2332,7 @@ impl GameModule for EconomyModule {
             || self.state.house_update.is_some()
             || self.state.charter_transfer.is_some()
             || self.state.seizure.is_some()
+            || self.state.core_sale.is_some()
             || self.state.core_integration.is_some()
             || self.state.core_refit.is_some()
             || self.state.bay_refit.is_some()
@@ -2507,6 +2523,7 @@ impl GameModule for EconomyModule {
             self.state.coverage.is_some(),
             self.state.seizure.is_some(),
             self.state.bay_refit.is_some(),
+            self.state.core_sale.is_some(),
         )?;
         store
             .fold
