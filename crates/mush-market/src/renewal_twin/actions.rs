@@ -1,14 +1,15 @@
 //! Authenticated self-only offer projection. These forms expose selectors,
 //! never hidden account/source/issuer data or an automatic acceptance action.
+use super::Issuer;
 use super::provider::Provider;
 use mush_core::action::{ActionError, PerceivedRef, PrincipalId};
 use mush_core::{
     DefinitionRef, Engine, LegalActionQuery, ProjectedParameter, ProjectedParameterKind,
     ProviderOfferDraft,
 };
-use mush_roll::commerce::renewal::protocol::Transition;
+use mush_roll::commerce::renewal_twin::protocol::Step;
 
-pub(super) fn parameters(kind: Transition) -> Result<Vec<ProjectedParameter>, String> {
+pub(crate) fn parameters(kind: Step) -> Result<Vec<ProjectedParameter>, String> {
     let p = |id: &str, required, kind| -> Result<ProjectedParameter, String> {
         Ok(ProjectedParameter {
             id: mush_core::mechanics::CanonicalId::new(id).map_err(|e| e.to_string())?,
@@ -17,7 +18,7 @@ pub(super) fn parameters(kind: Transition) -> Result<Vec<ProjectedParameter>, St
         })
     };
     match kind {
-        Transition::Draft => Ok(vec![
+        Step::Draft => Ok(vec![
             p(
                 "licence",
                 false,
@@ -32,7 +33,7 @@ pub(super) fn parameters(kind: Transition) -> Result<Vec<ProjectedParameter>, St
                 ProjectedParameterKind::Text { maximum_bytes: 32 },
             )?,
         ]),
-        Transition::Close => Ok(vec![
+        Step::Close => Ok(vec![
             p(
                 "operation",
                 true,
@@ -53,8 +54,8 @@ pub(super) fn parameters(kind: Transition) -> Result<Vec<ProjectedParameter>, St
         )?]),
     }
 }
-pub(super) fn offer(
-    p: &Provider,
+pub(crate) fn offer<I: Issuer>(
+    p: &Provider<I>,
     action: &DefinitionRef,
     q: &LegalActionQuery,
     engine: &Engine,
@@ -83,17 +84,17 @@ pub(super) fn offer(
     ] {
         guards.add_definition(r.clone(), defs).map_err(|_| bad())?;
     }
-    if p.kind == Transition::Draft {
+    if p.kind == Step::Draft {
         guards
             .add_definition(p.config.policy_ref().map_err(|_| bad())?, defs)
             .map_err(|_| bad())?;
     }
     let label = match p.kind {
-        Transition::Draft => "Request a renewal offer",
-        Transition::Fund => "Accept a renewal offer",
-        Transition::Grant => "Complete a funded renewal",
-        Transition::Refund => "Refund a funded renewal",
-        Transition::Close => "Close a renewal offer",
+        Step::Draft => "Request a renewal offer",
+        Step::Fund => "Accept a renewal offer",
+        Step::Grant => "Complete a funded renewal",
+        Step::Refund => "Refund a funded renewal",
+        Step::Close => "Close a renewal offer",
     };
     Ok(Some(ProviderOfferDraft {
         fixed_parameters: serde_json::json!({}),
@@ -105,7 +106,7 @@ pub(super) fn offer(
         required_channels: vec![],
         expires: None,
         presentation: mush_core::ActionPresentation::new(
-            verb(p.kind),
+            verb::<I>(p.kind),
             label,
             "Use the exact acknowledged offer. Requesting an offer does not accept or pay it.",
         )
@@ -114,40 +115,14 @@ pub(super) fn offer(
     }))
 }
 
-fn verb(kind: Transition) -> &'static str {
+/// The issuer's line selector of `kind` (`Issuer::VERBS`, in `Step::ALL`'s order).
+pub(crate) fn verb<I: Issuer>(kind: Step) -> &'static str {
+    let [draft, fund, grant, refund, close] = I::VERBS;
     match kind {
-        Transition::Draft => "mind-renewal-draft",
-        Transition::Fund => "mind-renewal-fund",
-        Transition::Grant => "mind-renewal-grant",
-        Transition::Refund => "mind-renewal-refund",
-        Transition::Close => "mind-renewal-close",
-    }
-}
-
-#[cfg(test)]
-mod presentation_tests {
-    use super::*;
-    #[test]
-    fn renewal_transitions_have_unique_line_selectors() {
-        let verbs: std::collections::BTreeSet<_> = [
-            Transition::Draft,
-            Transition::Fund,
-            Transition::Grant,
-            Transition::Refund,
-            Transition::Close,
-        ]
-        .into_iter()
-        .map(verb)
-        .collect();
-        assert_eq!(
-            verbs,
-            std::collections::BTreeSet::from([
-                "mind-renewal-draft",
-                "mind-renewal-fund",
-                "mind-renewal-grant",
-                "mind-renewal-refund",
-                "mind-renewal-close",
-            ])
-        );
+        Step::Draft => draft,
+        Step::Fund => fund,
+        Step::Grant => grant,
+        Step::Refund => refund,
+        Step::Close => close,
     }
 }

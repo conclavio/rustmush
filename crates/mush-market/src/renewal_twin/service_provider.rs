@@ -1,28 +1,31 @@
 //! The sixth provider is available only for one private retained service intent.
 //! A public GOD offer or a decoded selector cannot create that intent.
-use super::{Families, RenewalConfig};
+use super::Issuer;
+use super::config::RenewalConfig;
+use super::families::Families;
+use super::records::{OperationRow, ReceiptRow};
 use mush_core::action::{
     ActionError, ActionInvocation, ActionProvider, AuthoritativeActionOutput, PerceivedRef,
     PrincipalId,
 };
 use mush_core::participant::ParticipantHandle;
 use mush_core::{ActionTxn, DefinitionRef, GOD, PrepareCtx, RulesValue};
-use mush_economy::registry_filing::{EconomyRequest, InitialFilingParticipant};
-use mush_roll::commerce::house_renewal::writer::RegisteredRenewalWriter;
-pub(super) struct Provider {
+use mush_economy::registry_filing::InitialFilingParticipant;
+use mush_roll::commerce::renewal_twin::{Binding as _, writer::RegisteredRenewalWriter};
+pub(crate) struct Provider<I: Issuer> {
     pub action: DefinitionRef,
     pub outcome: DefinitionRef,
-    pub config: RenewalConfig,
-    pub families: Families,
+    pub config: RenewalConfig<I>,
+    pub families: Families<I>,
     pub economy: ParticipantHandle<InitialFilingParticipant>,
-    pub writer: RegisteredRenewalWriter,
+    pub writer: RegisteredRenewalWriter<I>,
     pub refusal: ActionError,
 }
 fn invalid(_: impl std::fmt::Display) -> String {
     super::records::invalid()
 }
-impl Provider {
-    fn intent(&self, inv: &ActionInvocation) -> Result<super::service::CloseIntent, String> {
+impl<I: Issuer> Provider<I> {
+    fn intent(&self, inv: &ActionInvocation) -> Result<super::service::CloseIntent<I>, String> {
         let service = self
             .config
             .service
@@ -62,30 +65,21 @@ impl Provider {
                 .get(&self.families.receipts, &operation)
                 .map_err(invalid)?
                 .is_some()
-            || super::service::close_reason(ctx.world().map_err(invalid)?, &before)
+            || super::service::close_reason::<I>(ctx.world().map_err(invalid)?, &before)
                 != Some(intent.reason)
         {
             return Err(super::records::invalid());
         }
-        let roll = self
-            .writer
-            .operation(ctx, txn, operation)
-            .map_err(invalid)?;
+        let roll = I::operation(&self.writer, ctx, txn, operation).map_err(invalid)?;
         before.matches_roll(&roll)?;
         let output = ctx
             .prepare_owner(
                 &self.economy,
-                EconomyRequest::HouseRenewalServiceClose {
-                    operation,
-                    reason: intent.reason,
-                },
+                I::service_close_request(operation, intent.reason),
             )
-            .and_then(|o| o.house_renewal_offer())
+            .and_then(I::offer_output)
             .map_err(invalid)?;
-        let roll = self
-            .writer
-            .service_close(ctx, txn, &roll, &output)
-            .map_err(invalid)?;
+        let roll = I::service_close(&self.writer, ctx, txn, &roll, &output).map_err(invalid)?;
         let after = before.progressed(&roll)?;
         txn.replace(&self.families.operations, &operation, after.clone())
             .map_err(invalid)?;
@@ -102,8 +96,7 @@ impl Provider {
             .map_err(invalid)?
             .ok_or_else(super::records::invalid)?
             .matches_operation(&after)?;
-        ctx.advance_house_mind_renewal_completion(txn, operation)
-            .map_err(invalid)?;
+        I::advance_completion(ctx, txn, operation).map_err(invalid)?;
         let outcome=RulesValue::new(self.outcome.clone(),serde_json::json!({"kind":"service_closed","operation":operation,"commit":ctx.commit_token()})).map_err(invalid)?;
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_definitions(vec![self.outcome.clone(), self.config.manifest.clone()])
@@ -115,7 +108,7 @@ impl Provider {
             ]))
     }
 }
-impl ActionProvider for Provider {
+impl<I: Issuer> ActionProvider for Provider<I> {
     fn validate_invocation(&self, inv: &ActionInvocation) -> Result<(), ActionError> {
         self.intent(inv)
             .map(|_| ())
@@ -154,7 +147,8 @@ impl ActionProvider for Provider {
             return Ok(None);
         };
         if intent.action != self.action
-            || super::service::close_reason(&engine.world, &intent.before) != Some(intent.reason)
+            || super::service::close_reason::<I>(&engine.world, &intent.before)
+                != Some(intent.reason)
         {
             return Ok(None);
         }
@@ -182,7 +176,7 @@ impl ActionProvider for Provider {
             required_channels: vec![],
             expires: None,
             presentation: mush_core::ActionPresentation::new(
-                "house-renewal-service",
+                I::SERVICE_VERB,
                 "Close an unavailable renewal offer",
                 "Process the exact retained unfunded offer.",
             )

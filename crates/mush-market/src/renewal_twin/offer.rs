@@ -1,18 +1,23 @@
 //! Build a new consent surface exclusively from current owner observations and
 //! immutable acquired renewal terms. A later retry captures fresh recipients;
 //! the old offer and old paid term remain immutable.
-use super::RenewalConfig;
+//!
+//! Doc 46 CT.6: the checks and the recipients both issuers have are here; the payee and the
+//! offer's own terms are the issuer's (`Issuer::remainder`, `Issuer::offer`), at the places
+//! they were.
+use super::config::RenewalConfig;
+use super::{Issuer, Offer, OfferParts};
 use mush_core::{ClockStamp, ObjId, World};
-use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
-use mush_economy::managed_house_renewal::{RenewalBasisV1, RenewalOffer, RenewalOfferTermsV1};
+use mush_economy::managed_entitlement::GrossRecipientCut;
+use mush_economy::renewal_twin::Offer as _;
 use mush_economy::{
     Account, AccountStatus, EconomySnapshot, EconomyStore, InstrumentId, InstrumentStatus,
 };
-use mush_roll::commerce::house_renewal::reader::RenewalFacts;
+use mush_roll::commerce::renewal_twin::{Binding as _, Facts as _};
 fn invalid(_: impl std::fmt::Display) -> String {
     super::records::invalid()
 }
-pub(super) fn personal<'a>(
+pub(crate) fn personal<'a>(
     snapshot: &'a EconomySnapshot,
     instrument: &InstrumentId,
     actor: ObjId,
@@ -68,12 +73,12 @@ fn payer<'a>(
 /// holder with it as the acting character (`org_holder::acting_as`), so a
 /// character granted `roll.holder.org` runs the renewal steps for the
 /// organisation; a character holder must be the actor itself.
-pub(super) fn build(
-    config: &RenewalConfig,
+pub(crate) fn build<I: Issuer>(
+    config: &RenewalConfig<I>,
     world: &World,
-    facts: &RenewalFacts,
+    facts: &I::Facts,
     actor: ObjId,
-) -> Result<RenewalOffer, String> {
+) -> Result<Offer<I>, String> {
     config.policy.validate().map_err(invalid)?;
     let e = world
         .module_state::<EconomyStore>()
@@ -86,8 +91,7 @@ pub(super) fn build(
         return Err(super::records::invalid());
     }
     let binding = facts.binding();
-    let template = binding.grant().renewal();
-    let instrument = template.instrument();
+    let instrument = binding.template_instrument();
     if e.snapshot()
         .instrument(instrument)
         .is_none_or(|i| i.status != InstrumentStatus::Active || !i.transferable)
@@ -97,30 +101,7 @@ pub(super) fn build(
     let buyer = mush_roll::commerce::org_holder::acting_as(world, binding.holder(), actor)
         .map_err(|_| super::records::invalid())?;
     let payer = payer(e, world, instrument, buyer)?.id;
-    if !config.accepts_purchase_template(template) {
-        return Err(super::records::invalid());
-    }
-    let issuer = binding.issuer();
-    let principal = issuer.principal();
-    let snapshot = e.snapshot();
-    let treasury = {
-        let mut treasuries = snapshot.accounts_of(&principal).filter(|a| {
-            a.instrument == *instrument
-                && a.owner == principal
-                && a.scope == Some(issuer.scope())
-                && a.status == AccountStatus::Active
-                && a.approval.is_none()
-        });
-        let treasury = treasuries.next().ok_or_else(super::records::invalid)?;
-        if treasuries.next().is_some() {
-            return Err(super::records::invalid());
-        }
-        treasury.id
-    };
-    let remainder = Recipient {
-        account: treasury,
-        owner: principal,
-    };
+    let remainder = I::remainder(config, e, world, facts, instrument)?;
     cut(e, instrument, &config.policy.registry)?;
     if let Some(venue) = &config.policy.venue {
         cut(e, instrument, venue)?;
@@ -133,39 +114,17 @@ pub(super) fn build(
             .checked_add(config.policy.offer_ic_seconds)
             .ok_or_else(super::records::invalid)?,
     };
-    let offer = RenewalOffer {
-        format: 1,
-        basis: RenewalBasisV1 {
-            format: 1,
-            licence: binding.licence().get(),
-            predecessor_generation: binding.predecessor().get(),
-            next_generation: binding.next().get(),
-            predecessor_operation: binding.predecessor_operation(),
-            prior_quote: facts.prior_quote(),
-            prior_quote_digest: facts.prior_quote_digest(),
-            product_digest: binding.product_digest(),
-            template_digest: binding.template_digest().map_err(invalid)?,
-            grant_economics_digest: binding.grant().digest().map_err(invalid)?,
-        },
-        terms: RenewalOfferTermsV1 {
-            format: 1,
-            buyer,
-            organization: issuer.organization(),
-            scope: issuer.scope(),
-            charter: ObjId(binding.charter().get()),
-            title_revision: facts.sale().title_revision(),
-            payer,
-            instrument: instrument.clone(),
-            price: template.price(),
-            registry: config.policy.registry.clone(),
-            venue: config.policy.venue.clone(),
-            remainder,
-            not_before: now,
-            expires_at,
-        },
+    let parts = OfferParts {
+        buyer,
+        payer,
+        instrument: instrument.clone(),
+        remainder,
+        now,
+        expires_at,
     };
+    let offer = I::offer(config, e, world, facts, parts)?;
     offer.validate().map_err(invalid)?;
     // Public offer ingress has the same explicit size ceiling as E4's records.
     let bytes = serde_json::to_vec(&offer).map_err(invalid)?;
-    RenewalOffer::decode(&bytes).map_err(invalid)
+    I::decode_offer(&bytes).map_err(invalid)
 }

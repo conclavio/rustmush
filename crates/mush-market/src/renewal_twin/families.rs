@@ -1,45 +1,19 @@
 //! Exact kernel-recognized Market families. E4 owns the permanent offer cap;
 //! adding a third progress counter would violate Fund's closed two-write set.
-use super::{MindRenewalOperationV1, MindRenewalReceiptV1, RenewalConfig};
+use super::Issuer;
+use super::config::RenewalConfig;
+use super::records::Row;
 use mush_core::mechanics::CanonicalId;
 use mush_core::read_service::OwnerReadHandle;
 use mush_core::{
     CommitToken, ModError, Registrar, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
 };
-use mush_roll::commerce::house_renewal::reader::RenewalReader;
-use serde::{Serialize, de::DeserializeOwned};
 
-pub(super) trait Row: Clone + Serialize + DeserializeOwned + Send + Sync + 'static {
-    const FAMILY: &'static str;
-    const MAX_BYTES: usize;
-    fn validate(&self) -> Result<(), String>;
-    fn key(&self) -> String;
+pub(crate) struct Families<I: Issuer> {
+    pub(crate) operations: StateFamilyHandle<CommitToken, I::Renewal>,
+    pub(crate) receipts: StateFamilyHandle<CommitToken, I::Receipt>,
 }
-impl Row for MindRenewalOperationV1 {
-    const FAMILY: &'static str = MindRenewalOperationV1::FAMILY;
-    const MAX_BYTES: usize = MindRenewalOperationV1::MAX_BYTES;
-    fn validate(&self) -> Result<(), String> {
-        Self::validate(self)
-    }
-    fn key(&self) -> String {
-        Self::key(self)
-    }
-}
-impl Row for MindRenewalReceiptV1 {
-    const FAMILY: &'static str = MindRenewalReceiptV1::FAMILY;
-    const MAX_BYTES: usize = MindRenewalReceiptV1::MAX_BYTES;
-    fn validate(&self) -> Result<(), String> {
-        Self::validate(self)
-    }
-    fn key(&self) -> String {
-        self.operation().to_hex()
-    }
-}
-pub(crate) struct Families {
-    pub(super) operations: StateFamilyHandle<CommitToken, MindRenewalOperationV1>,
-    pub(super) receipts: StateFamilyHandle<CommitToken, MindRenewalReceiptV1>,
-}
-impl Clone for Families {
+impl<I: Issuer> Clone for Families<I> {
     fn clone(&self) -> Self {
         Self {
             operations: self.operations.clone(),
@@ -47,7 +21,7 @@ impl Clone for Families {
         }
     }
 }
-pub(super) fn family<R: Row>(
+pub(crate) fn family<R: Row>(
     reg: &mut Registrar<'_>,
 ) -> Result<StateFamilyHandle<CommitToken, R>, ModError> {
     let id = |suffix| {
@@ -81,18 +55,18 @@ pub(super) fn family<R: Row>(
         |row: &R| serde_json::to_value(row).map_err(|e| e.to_string()),
     )
 }
-impl Families {
-    pub(super) fn register(
+impl<I: Issuer> Families<I> {
+    pub(crate) fn register(
         reg: &mut Registrar<'_>,
-        config: &RenewalConfig,
-    ) -> Result<(Self, OwnerReadHandle<RenewalReader>), ModError> {
+        config: &RenewalConfig<I>,
+    ) -> Result<(Self, OwnerReadHandle<I::Reader>), ModError> {
         // Exactly one owner-read request is shared by all five typed consumers.
         Ok((
             Self {
                 operations: family(reg)?,
                 receipts: family(reg)?,
             },
-            RenewalReader::request_configured(reg, &config.manifest, config.service.is_some())?,
+            I::request_reader(reg, &config.manifest, config.service.is_some())?,
         ))
     }
 }

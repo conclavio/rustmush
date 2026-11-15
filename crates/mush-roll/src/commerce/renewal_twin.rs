@@ -16,6 +16,7 @@
 //! across the two crates, and the Roll's trait is a subtrait of Economy's.
 
 mod issuer;
+pub use face::Writes;
 pub(crate) use issuer::Rules;
 pub use issuer::{Binding, Closure, Facts, Issuer, Operation, TermEconomics};
 pub use mush_economy::renewal_twin::{House, Personal};
@@ -23,6 +24,7 @@ pub use mush_economy::renewal_twin::{House, Personal};
 pub(crate) mod audit;
 pub(crate) mod capacity;
 pub(crate) mod chain;
+mod face;
 pub(crate) mod history;
 pub mod protocol;
 pub mod records;

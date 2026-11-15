@@ -1,9 +1,12 @@
 //! Mandatory three-owner reverse completeness, including an empty Market
 //! projection. Historical evidence is independent of current issuer rights.
-use super::families::Row;
-use super::{Families, MindRenewalOperationV1, RenewalConfig};
+use super::Issuer;
+use super::config::RenewalConfig;
+use super::families::Families;
+use super::records::{OperationRow, ReceiptRow, Row};
 use mush_core::{CommitToken, ModError, ModuleCtx, StateFamilyHandle};
 use mush_economy::EconomyStore;
+use mush_roll::commerce::renewal_twin::Operation as _;
 use std::collections::BTreeSet;
 fn error(_: impl std::fmt::Display) -> ModError {
     ModError::msg("renewal paired recovery is incomplete or contradictory")
@@ -40,11 +43,11 @@ fn scan<R: Row>(
         after = Some(next.to_string());
     }
 }
-fn operation<'a>(
+fn operation<'a, I: Issuer>(
     ctx: &'a ModuleCtx<'_>,
-    f: &Families,
+    f: &Families<I>,
     id: CommitToken,
-) -> Result<&'a MindRenewalOperationV1, ModError> {
+) -> Result<&'a I::Renewal, ModError> {
     let row = ctx
         .action_state(&f.operations, &id)
         .map_err(error)?
@@ -55,16 +58,16 @@ fn operation<'a>(
     }
     Ok(row)
 }
-impl Families {
+impl<I: Issuer> Families<I> {
     pub(crate) fn audit(
         &self,
         ctx: &ModuleCtx<'_>,
-        config: &RenewalConfig,
+        config: &RenewalConfig<I>,
     ) -> Result<(), ModError> {
         let e = ctx
             .state::<EconomyStore>()
             .ok_or_else(|| error("economy"))?;
-        let actual = e.house_renewal_audit().map_err(error)?;
+        let actual = I::economy_audit(e).map_err(error)?;
         actual.require_complete().map_err(error)?;
         let mut seen = BTreeSet::new();
         let n = scan(ctx, &self.operations, |row| {
@@ -73,10 +76,8 @@ impl Families {
             }
             let proof = actual.get(row.operation()).map_err(error)?;
             row.verify_history(&proof).map_err(error)?;
-            let roll = config
-                .writer
-                .operation_for_boot(ctx, row.operation())
-                .map_err(error)?;
+            let roll =
+                I::operation_for_boot(&config.writer, ctx, row.operation()).map_err(error)?;
             row.matches_roll(&roll).map_err(error)?;
             let receipt = ctx
                 .action_state(&self.receipts, &row.operation())
@@ -102,7 +103,7 @@ impl Families {
                 .verify_history(&proof)
                 .map_err(error)?;
         }
-        let rows = config.writer.operations_for_boot(ctx).map_err(error)?;
+        let rows = I::operations_for_boot(&config.writer, ctx).map_err(error)?;
         if rows.len() != n {
             return Err(error("roll count"));
         }
@@ -112,18 +113,18 @@ impl Families {
                 .map_err(error)?;
         }
         scan(ctx, &self.receipts, |r| {
-            let row = operation(ctx, self, r.operation())?;
+            let row = operation(ctx, self, ReceiptRow::operation(r))?;
             r.verify_history(row, &actual.get(row.operation()).map_err(error)?)
                 .map_err(error)
         })?;
         Ok(())
     }
 }
-pub(crate) fn require_disabled(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
-    // Market may exist in a world with no economy module at all. If the owner
-    // is present, only its completed boot inventory can establish absence.
+/// Market may exist in a world with no economy module at all. If the owner
+/// is present, only its completed boot inventory can establish absence.
+pub(crate) fn require_disabled<I: Issuer>(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
     if let Some(e) = ctx.state::<EconomyStore>() {
-        e.require_no_house_renewal_history().map_err(error)?;
+        I::require_no_economy_history(e).map_err(error)?;
     }
     Ok(())
 }

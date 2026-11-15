@@ -8,6 +8,11 @@ use mush_core::submission_observation::{
 use mush_core::{Engine, GameModule, Inbound, Outbox, Registry};
 use std::sync::atomic::{AtomicBool, Ordering};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+// Doc 46 CT.6: these are the personal issuer's service tests; they moved with the service
+// whose private items they read, and name the issuer here.
+use crate::mind_renewal::{MindRenewalOperationV1, RenewalConfig, RenewalPolicy};
+type CloseIntent = super::CloseIntent<mush_economy::renewal_twin::Personal>;
+type Runtime = super::Runtime<mush_economy::renewal_twin::Personal>;
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<SubmissionObservation>>>);
 struct Fixture(Captured);
@@ -96,13 +101,13 @@ fn token(n: u128) -> CommitToken {
     CommitToken::from_bytes(n.to_be_bytes())
 }
 fn config() -> TestResult<RenewalConfig> {
-    let row = super::super::tests::fixture()?;
+    let row = crate::mind_renewal::tests::fixture()?;
     let [e, r] = row.participants();
     Ok(RenewalConfig::new(
         row.manifest().clone(),
         mush_roll::commerce::purchase::PurchaseParticipants::new(e.clone(), r.clone())?,
         mush_roll::commerce::renewal::writer::RenewalWriter::new(),
-        super::super::RenewalPolicy {
+        RenewalPolicy {
             registry: mush_economy::managed_entitlement::GrossRecipientCut {
                 permille: 0,
                 recipient: None,
@@ -113,7 +118,7 @@ fn config() -> TestResult<RenewalConfig> {
     )?)
 }
 fn intent() -> TestResult<CloseIntent> {
-    let before = super::super::tests::fixture()?;
+    let before = crate::mind_renewal::tests::fixture()?;
     Ok(CloseIntent {
         before,
         action: config()?

@@ -1,11 +1,14 @@
 //! Retained, bounded continuations. The durable owner records are inventory;
 //! missing acknowledgement is never absence, and no path automatically funds.
-use super::{Families, MindRenewalOperationV1, RenewalConfig};
+use super::config::RenewalConfig;
+use super::families::Families;
+use super::records::{OperationRow, ReceiptRow};
+use super::{Entry as _, Inventory as _, Issuer};
 use crate::mind_renewal::player::{
     FrontAnswer, FrontStep, RenewalOfferTerms, RenewalPlayerOutcome, RenewalPlayerStep,
     RenewalState, RenewalStatusView, Submission, Switches, front_bound, front_line,
-    front_player_step, front_request, front_submitted, house_status_line, outcome_line,
-    parse_front, renew_stopped, sent_outcome,
+    front_player_step, front_request, front_submitted, outcome_line, parse_front, renew_stopped,
+    sent_outcome,
 };
 use mush_core::action::{AuthorityGuard, AuthorityGuardContext, IdempotencyKeyText, PerceivedRef};
 use mush_core::mechanics::{CanonicalId, OwnerId};
@@ -16,27 +19,22 @@ use mush_core::{
     DefinitionDigest, DefinitionRef, Flags, GOD, ModError, ModuleCtx, ObjId, ObjKind, Registrar,
     TickCadence, World,
 };
-use mush_economy::{EconomyStore, managed_house_renewal::RenewalServiceCloseReason as Reason};
-use mush_roll::commerce::house_renewal::reader::RenewalStop;
+use mush_economy::renewal_twin::{Offer as _, Terms as _};
+use mush_economy::{EconomyStore, renewal_twin::RenewalServiceCloseReason as Reason};
+use mush_roll::commerce::renewal::reader::RenewalStop;
 use mush_roll::commerce::{
     LicenceId, TermGeneration,
-    house_renewal::{
-        RenewalStateV1,
-        protocol::Transition,
-        reader::{RenewalInventoryEntry, RenewalReader, RenewalRequest},
-    },
+    renewal_twin::{Binding as _, protocol::Step as Transition, records::RenewalStateV1},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
-const COMMAND: &str = "@housemindrenewal";
 const MAX_ENTRIES: usize = 63; // plus one independently retained service close
 const PAGE: usize = 16;
-#[derive(Clone, Default)]
-pub(super) struct ServiceConfig {
-    pub runtime: Arc<Mutex<Runtime>>,
+pub(crate) struct ServiceConfig<I: Issuer> {
+    pub runtime: Arc<Mutex<Runtime<I>>>,
     /// 17g C2h (the lead's ruling R3): the module the `front` continuation
     /// is delegated to, set by the composition that composes the player
     /// market (TacSim's `MindCommerce::configure_market`, with TacSim's own
@@ -46,34 +44,71 @@ pub(super) struct ServiceConfig {
     /// read the manifest, the participants and the policy only).
     pub player_front: Option<OwnerId>,
 }
-impl std::fmt::Debug for ServiceConfig {
+impl<I: Issuer> Clone for ServiceConfig<I> {
+    fn clone(&self) -> Self {
+        Self {
+            runtime: self.runtime.clone(),
+            player_front: self.player_front.clone(),
+        }
+    }
+}
+impl<I: Issuer> Default for ServiceConfig<I> {
+    fn default() -> Self {
+        Self {
+            runtime: Arc::default(),
+            player_front: None,
+        }
+    }
+}
+impl<I: Issuer> std::fmt::Debug for ServiceConfig<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RenewalServiceConfig")
     }
 }
-#[derive(Default)]
-pub(super) struct Runtime {
+pub(crate) struct Runtime<I: Issuer> {
     pub enabled: bool,
-    pub close: Option<CloseIntent>,
+    pub close: Option<CloseIntent<I>>,
     close_observation: Option<SubmissionObservation>,
     after: Option<String>,
     due_after: Option<String>,
     rotation: Option<String>,
     entries: BTreeMap<String, Entry>,
 }
-#[derive(Clone)]
-pub(super) struct CloseIntent {
-    pub before: MindRenewalOperationV1,
+impl<I: Issuer> Default for Runtime<I> {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            close: None,
+            close_observation: None,
+            after: None,
+            due_after: None,
+            rotation: None,
+            entries: BTreeMap::new(),
+        }
+    }
+}
+pub(crate) struct CloseIntent<I: Issuer> {
+    pub before: I::Renewal,
     pub action: DefinitionRef,
     pub reason: Reason,
     pub key: IdempotencyKeyText,
 }
-impl CloseIntent {
+impl<I: Issuer> Clone for CloseIntent<I> {
+    fn clone(&self) -> Self {
+        Self {
+            before: self.before.clone(),
+            action: self.action.clone(),
+            reason: self.reason,
+            key: self.key.clone(),
+        }
+    }
+}
+impl<I: Issuer> CloseIntent<I> {
     pub fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"operation":self.before.operation(),"reason":self.reason})
     }
     fn identity(&self) -> Result<CanonicalId, String> {
-        let d=DefinitionDigest::for_canonical_value("market.house_renewal_service_intent.v1",&serde_json::json!({"before":self.before,"action":self.action,"reason":self.reason,"key":self.key})).map_err(|_|super::records::invalid())?;
+        let d=DefinitionDigest::for_canonical_value(I::INTENT_DOMAIN,&serde_json::json!({"before":self.before,"action":self.action,"reason":self.reason,"key":self.key})).map_err(|_|super::records::invalid())?;
         // The digest is already domain-separated and uses the full 64-byte
         // canonical identifier budget; a prefix would make every guard fail.
         CanonicalId::new(d.to_hex()).map_err(|_| super::records::invalid())
@@ -99,16 +134,27 @@ struct Entry {
     after: i64,
     attempt: Option<(DefinitionRef, SubmissionObservation)>,
 }
-#[derive(Clone)]
-struct Service {
-    config: RenewalConfig,
-    families: Families,
-    reader: OwnerReadHandle<RenewalReader>,
+struct Service<I: Issuer> {
+    config: RenewalConfig<I>,
+    families: Families<I>,
+    reader: OwnerReadHandle<I::Reader>,
     continuation: ContinuationHandle,
     scan: ContinuationHandle,
     /// 17g C2h: the `front` continuation (the player front `+minds/renew`
     /// hands its step to; `player_front`).
     front: ContinuationHandle,
+}
+impl<I: Issuer> Clone for Service<I> {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            families: self.families.clone(),
+            reader: self.reader.clone(),
+            continuation: self.continuation.clone(),
+            scan: self.scan.clone(),
+            front: self.front.clone(),
+        }
+    }
 }
 fn unavailable() -> CmdError {
     CmdError::msg("Renewal is unavailable or has changed.")
@@ -124,27 +170,30 @@ fn live(world: &World, actor: ObjId) -> bool {
         .get(actor)
         .is_some_and(|o| o.kind == ObjKind::Player && !o.flags.contains(Flags::GOING))
 }
-fn service(ctx: &Ctx<'_>) -> Result<Service, CmdError> {
-    ctx.state::<Service>().cloned().ok_or_else(unavailable)
+fn service<I: Issuer>(ctx: &Ctx<'_>) -> Result<Service<I>, CmdError> {
+    ctx.state::<Service<I>>().cloned().ok_or_else(unavailable)
 }
-fn runtime(service: &Service) -> Result<&ServiceConfig, CmdError> {
+fn runtime<I: Issuer>(service: &Service<I>) -> Result<&ServiceConfig<I>, CmdError> {
     service.config.service.as_ref().ok_or_else(unavailable)
 }
-pub(super) fn close_reason(world: &World, row: &MindRenewalOperationV1) -> Option<Reason> {
+pub(crate) fn close_reason<I: Issuer>(world: &World, row: &I::Renewal) -> Option<Reason> {
     if !matches!(row.state(), RenewalStateV1::Drafted {}) || world.now() < row.created_at_utc() {
         return None;
     }
     let now = world.world_ic_now();
     if now.clock != row.created_at_ic().clock {
         Some(Reason::ClockInvalidated)
-    } else if now.at >= row.offer().terms.expires_at.at {
+    } else if now.at >= row.offer().terms().expires_at().at {
         Some(Reason::DeadlineReached)
     } else {
         None
     }
 }
-pub(crate) fn guard_current(ctx: &AuthorityGuardContext<'_>, guard: &AuthorityGuard) -> bool {
-    let Some(service) = ctx.module_state::<Service>() else {
+pub(crate) fn guard_current<I: Issuer>(
+    ctx: &AuthorityGuardContext<'_>,
+    guard: &AuthorityGuard,
+) -> bool {
+    let Some(service) = ctx.module_state::<Service<I>>() else {
         return false;
     };
     let Ok(config) = runtime(service) else {
@@ -158,7 +207,7 @@ pub(crate) fn guard_current(ctx: &AuthorityGuardContext<'_>, guard: &AuthorityGu
     };
     if intent.guard().ok().as_ref() != Some(guard)
         || !live(ctx.world(), GOD)
-        || close_reason(ctx.world(), &intent.before) != Some(intent.reason)
+        || close_reason::<I>(ctx.world(), &intent.before) != Some(intent.reason)
     {
         return false;
     }
@@ -173,28 +222,41 @@ pub(crate) fn guard_current(ctx: &AuthorityGuardContext<'_>, guard: &AuthorityGu
     let Some(e) = ctx.world().module_state::<EconomyStore>() else {
         return false;
     };
-    e.house_renewal_audit()
+    I::economy_audit(e)
         .ok()
         .and_then(|a| a.get(intent.before.operation()).ok())
         .is_some_and(|a| intent.before.verify_history(&a).is_ok())
 }
-pub(super) fn register(
+pub(crate) fn register<I: Issuer>(
     reg: &mut Registrar<'_>,
-    config: &RenewalConfig,
-    families: Families,
-    reader: OwnerReadHandle<RenewalReader>,
+    config: &RenewalConfig<I>,
+    families: Families<I>,
+    reader: OwnerReadHandle<I::Reader>,
 ) -> Result<(), ModError> {
     if config.service.is_none() {
         return Ok(());
     }
     reg.classify_commands(CommandCompatibility::Authoritative);
-    reg.command(CommandSpec { name:COMMAND.into(),switches:["status","request","accept","decline","retry","continue","scan","front"].into_iter().map(Into::into).collect(),shape:ArgShape::Raw,
-        help:"@housemindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously.".into(),..CommandSpec::default() },Arc::new(command))?;
-    let continuation = reg.command_continuation(COMMAND, &["continue"])?;
-    let scan = reg.command_continuation(COMMAND, &["scan"])?;
+    reg.command(
+        CommandSpec {
+            name: I::COMMAND.into(),
+            switches: [
+                "status", "request", "accept", "decline", "retry", "continue", "scan", "front",
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            shape: ArgShape::Raw,
+            help: I::HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(command::<I>),
+    )?;
+    let continuation = reg.command_continuation(I::COMMAND, &["continue"])?;
+    let scan = reg.command_continuation(I::COMMAND, &["scan"])?;
     // 17g C2h (the lead's ruling R3): the player front, delegated to the one
     // module the configuration names. Undocumented to players (R5).
-    let front = reg.command_continuation(COMMAND, &["front"])?;
+    let front = reg.command_continuation(I::COMMAND, &["front"])?;
     if let Some(grantee) = config
         .service
         .as_ref()
@@ -215,17 +277,17 @@ pub(super) fn register(
         front,
     });
     reg.tick(
-        "house_mind_renewal_service",
+        I::SERVICE_TICK,
         TickCadence::Coarse(Duration::from_secs(1)),
         Arc::new(
             |ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>| {
-                let _ = tick(ctx);
+                let _ = tick::<I>(ctx);
             },
         ),
     )
 }
-pub(crate) fn enable(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
-    let Some(s) = ctx.state::<Service>() else {
+pub(crate) fn enable<I: Issuer>(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
+    let Some(s) = ctx.state::<Service<I>>() else {
         return Ok(());
     };
     let mut r = runtime(s)
@@ -239,19 +301,19 @@ pub(crate) fn enable(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
     r.enabled = true;
     Ok(())
 }
-fn checked(
+fn checked<I: Issuer>(
     ctx: &Ctx<'_>,
-    s: &Service,
+    s: &Service<I>,
     operation: CommitToken,
-) -> Result<MindRenewalOperationV1, CmdError> {
+) -> Result<I::Renewal, CmdError> {
     let row = ctx
         .action_state(&s.families.operations, &operation)
         .map_err(|_| unavailable())?
         .cloned()
         .ok_or_else(unavailable)?;
     let roll = ctx
-        .read_owner(&s.reader, RenewalRequest::operation(operation))
-        .and_then(|v| v.into_operation())
+        .read_owner(&s.reader, I::read_operation(operation))
+        .and_then(I::operation_of)
         .map_err(|_| unavailable())?;
     row.matches_roll(&roll).map_err(|_| unavailable())?;
     let e = ctx
@@ -259,7 +321,7 @@ fn checked(
         .module_state::<EconomyStore>()
         .ok_or_else(unavailable)?;
     row.verify_history(
-        &e.house_renewal_audit()
+        &I::economy_audit(e)
             .map_err(|_| unavailable())?
             .get(operation)
             .map_err(|_| unavailable())?,
@@ -290,7 +352,11 @@ fn key(selection: Selection) -> String {
         }
     }
 }
-fn admit(r: &mut Runtime, selection: Selection, actor: ObjId) -> Result<(), CmdError> {
+fn admit<I: Issuer>(
+    r: &mut Runtime<I>,
+    selection: Selection,
+    actor: ObjId,
+) -> Result<(), CmdError> {
     let key = key(selection);
     if let Some(old) = r.entries.get(&key) {
         if old.actor != actor || old.selection != selection {
@@ -312,7 +378,7 @@ fn admit(r: &mut Runtime, selection: Selection, actor: ObjId) -> Result<(), CmdE
     );
     Ok(())
 }
-fn rotation_order(r: &mut Runtime) -> Vec<String> {
+fn rotation_order<I: Issuer>(r: &mut Runtime<I>) -> Vec<String> {
     let keys: Vec<_> = r.entries.keys().cloned().collect();
     let start = r
         .rotation
@@ -329,8 +395,8 @@ fn rotation_order(r: &mut Runtime) -> Vec<String> {
     r.rotation = order.first().cloned();
     order
 }
-fn tick(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let s = service(ctx)?;
+fn tick<I: Issuer>(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let s = service::<I>(ctx)?;
     let mut r = runtime(&s)?.runtime.lock().map_err(|_| unavailable())?;
     if !r.enabled {
         return Ok(());
@@ -361,7 +427,7 @@ fn tick(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     Ok(())
 }
-fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
+fn scan<I: Issuer>(ctx: &mut Ctx<'_>, s: &Service<I>) -> Result<(), CmdError> {
     if ctx.actor != GOD || !ctx.args.raw().is_empty() {
         return Err(unavailable());
     }
@@ -401,7 +467,7 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
             );
         }
         if r.close.is_none()
-            && let Some(reason) = close_reason(ctx.w, &row)
+            && let Some(reason) = close_reason::<I>(ctx.w, &row)
         {
             let exact = checked(ctx, s, row.operation())?;
             if exact != row {
@@ -448,8 +514,8 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         )?);
     }
     let inventory = ctx
-        .read_owner(&s.reader, RenewalRequest::inventory(r.due_after.clone()))
-        .and_then(|v| v.into_inventory())
+        .read_owner(&s.reader, I::read_inventory(r.due_after.clone()))
+        .and_then(I::inventory_of)
         .map_err(|_| unavailable())?;
     r.due_after = inventory.next_after().map(ToString::to_string);
     for item in inventory.entries() {
@@ -470,10 +536,10 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     }
     Ok(())
 }
-fn own(ctx: &Ctx<'_>, s: &Service, licence: LicenceId) -> Result<RenewalInventoryEntry, CmdError> {
+fn own<I: Issuer>(ctx: &Ctx<'_>, s: &Service<I>, licence: LicenceId) -> Result<I::Entry, CmdError> {
     let list = ctx
-        .read_owner(&s.reader, RenewalRequest::status(licence))
-        .and_then(|v| v.into_inventory())
+        .read_owner(&s.reader, I::read_status(licence))
+        .and_then(I::inventory_of)
         .map_err(|_| unavailable())?;
     let item = list.into_single().map_err(|_| unavailable())?;
     // M8c B3: a character acting for the holding organisation owns its
@@ -484,12 +550,12 @@ fn own(ctx: &Ctx<'_>, s: &Service, licence: LicenceId) -> Result<RenewalInventor
     }
     Ok(item)
 }
-fn action(s: &Service, t: Transition) -> Result<DefinitionRef, CmdError> {
+fn action<I: Issuer>(s: &Service<I>, t: Transition) -> Result<DefinitionRef, CmdError> {
     s.config
         .actions()
         .map_err(|_| unavailable())?
         .into_iter()
-        .find(|a| a.key().id.as_str() == t.id())
+        .find(|a| a.key().id.as_str() == t.id::<I>())
         .ok_or_else(unavailable)
 }
 /// Submit `t` for the retained entry `e`. 17g C2h (the C2e plan §5.1,
@@ -497,9 +563,9 @@ fn action(s: &Service, t: Transition) -> Result<DefinitionRef, CmdError> {
 /// entry still awaits an earlier attempt's terminal or the actor already has
 /// an authoritative submission awaiting its receipt
 /// (`Submission::may_send`); `Submission::Sent` after the one submission.
-fn submit(
+fn submit<I: Issuer>(
     ctx: &mut Ctx<'_>,
-    s: &Service,
+    s: &Service<I>,
     e: &mut Entry,
     t: Transition,
     parameters: serde_json::Value,
@@ -509,7 +575,7 @@ fn submit(
     }
     let action = action(s, t)?;
     let digest = DefinitionDigest::for_canonical_value(
-        "market.house_renewal_submission.v1",
+        I::SUBMISSION_DOMAIN,
         &serde_json::json!({"actor":ctx.actor,"action":action,"parameters":parameters,"selection":key(e.selection)}),
     )
     .map_err(|_| unavailable())?;
@@ -526,7 +592,7 @@ fn submit(
     e.after = ctx.w.now().saturating_add(1);
     Ok(Submission::Sent)
 }
-fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
+fn continuation<I: Issuer>(ctx: &mut Ctx<'_>, s: &Service<I>) -> Result<(), CmdError> {
     let id = ctx.args.raw().to_owned();
     let mut r = runtime(s)?.runtime.lock().map_err(|_| unavailable())?;
     if !r.enabled {
@@ -566,7 +632,7 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     if let Selection::Pending(op) = e.selection
         && e.attempt
             .as_ref()
-            .is_some_and(|(a, _)| a.key().id.as_str() == Transition::Fund.id())
+            .is_some_and(|(a, _)| a.key().id.as_str() == Transition::Fund.id::<I>())
         && checked(ctx, s, op).is_ok_and(|v| matches!(v.state(), RenewalStateV1::Funded { .. }))
     {
         e.attempt = None;
@@ -627,18 +693,18 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
             }
             let now = ctx.w.world_ic_now();
             let cleanup = now.clock != row.created_at_ic().clock
-                || now.at >= row.offer().terms.expires_at.at
+                || now.at >= row.offer().terms().expires_at().at
                 || row.manifest() != &s.config.manifest
                 || row.participants() != &s.config.participants.ordered();
             if !cleanup {
                 // Generic missing/failed owner reads retain funded custody.
                 let Ok(facts) = ctx
-                    .read_owner(&s.reader, RenewalRequest::own(row.binding().licence()))
-                    .and_then(|v| v.into_facts())
+                    .read_owner(&s.reader, I::read_own(row.binding().licence()))
+                    .and_then(I::facts_of)
                 else {
                     return Ok(());
                 };
-                if facts.binding() != row.binding() {
+                if mush_roll::commerce::renewal_twin::Facts::binding(&facts) != row.binding() {
                     return Ok(());
                 }
             }
@@ -657,8 +723,8 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
     }
     Ok(())
 }
-fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let s = service(ctx)?;
+fn command<I: Issuer>(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let s = service::<I>(ctx)?;
     if ctx.switches.has("scan") {
         return scan(ctx, &s);
     }
@@ -689,19 +755,19 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // command keeps its own switches and prints exactly its pre-C2d lines.
     let outcome = step(ctx, &s, licence, Switches::of_command(&ctx.switches))?;
     ctx.out
-        .sys_to_actor(ctx.actor, "market", command_line(outcome));
+        .sys_to_actor(ctx.actor, "market", command_line::<I>(outcome));
     Ok(())
 }
 
-/// `@housemindrenewal`'s one line for a step's outcome (the 17g C2d test 1 compares it
+/// The service command's one line for a step's outcome (the 17g C2d test 1 compares it
 /// with the pre-C2d sentences).
-pub(crate) fn command_line(outcome: RenewalPlayerOutcome) -> String {
-    outcome_line(outcome, house_status_line)
+pub(crate) fn command_line<I: Issuer>(outcome: RenewalPlayerOutcome) -> String {
+    outcome_line(outcome, I::status_line)
 }
 
 /// 17g C2d (C2 plan §2.1's renewal exception): one player step on the
-/// actor's own House Pin renewal (C2d's front for `+minds/renew`). It is the
-/// `@housemindrenewal` command's own player branch (`step`): the renewal reader's
+/// actor's own renewal (C2d's front for `+minds/renew`). It is the
+/// service command's (`Issuer::COMMAND`) own player branch (`step`): the renewal reader's
 /// holder check, the service's admission, retained entry, idempotency key and
 /// submission, unchanged; a funded offer is still granted or refunded by the
 /// service's continuation. Every refusal is the service's one uniform line,
@@ -712,21 +778,21 @@ pub(crate) fn command_line(outcome: RenewalPlayerOutcome) -> String {
 /// it answers only in the market's own context; `+minds/renew` reaches the
 /// same `step` through the service's delegated `front` continuation
 /// (`player_front`), which runs under the market's identity.
-pub fn player_step(
+pub(crate) fn player_step<I: Issuer>(
     ctx: &mut Ctx<'_>,
     licence: LicenceId,
     step_kind: RenewalPlayerStep,
 ) -> Result<RenewalPlayerOutcome, CmdError> {
-    let s = service(ctx)?;
+    let s = service::<I>(ctx)?;
     step(ctx, &s, licence, Switches::of(step_kind))
 }
 
 /// The status branch's view of the actor's own licence (`own`'s term end and
-/// the checked last operation), read exactly as `@housemindrenewal/status` reads
+/// the checked last operation), read exactly as the command's `/status` reads
 /// it.
-pub(crate) fn status_view(
+pub(crate) fn status_view<I: Issuer>(
     term_end_ic: i64,
-    row: Option<&MindRenewalOperationV1>,
+    row: Option<&I::Renewal>,
 ) -> RenewalStatusView {
     let state = match row.map(|r| r.state()) {
         None => RenewalState::None,
@@ -736,15 +802,14 @@ pub(crate) fn status_view(
         Some(_) => RenewalState::Closed,
     };
     let offer = row.map(|row| RenewalOfferTerms {
-        price_minor: row.offer().terms.price.minor(),
-        instrument: row.offer().terms.instrument.to_string(),
-        expires_ic: row.offer().terms.expires_at.at,
+        price_minor: row.offer().terms().price().minor(),
+        instrument: row.offer().terms().instrument().to_string(),
+        expires_ic: row.offer().terms().expires_at().at,
         term_seconds: row.binding().term_seconds(),
         grace_seconds: row.binding().grace_seconds(),
-        registry_permille: row.offer().terms.registry.permille,
-        venue_permille: row.offer().terms.venue.as_ref().map_or(0, |c| c.permille),
-        // A House Pin's offer carries no parent royalties.
-        parent_permille: 0,
+        registry_permille: I::registry(row.offer().terms()).permille,
+        venue_permille: I::venue(row.offer().terms()).map_or(0, |c| c.permille),
+        parent_permille: I::parent_permille(row.offer().terms()),
     });
     RenewalStatusView::new(state, term_end_ic, offer)
 }
@@ -752,9 +817,9 @@ pub(crate) fn status_view(
 /// The player branch, by the switches `sw` selects (the command's own, or
 /// `player_step`'s): status first, then request, accept, decline and retry
 /// in the command's original order.
-fn step(
+fn step<I: Issuer>(
     ctx: &mut Ctx<'_>,
-    s: &Service,
+    s: &Service<I>,
     licence: LicenceId,
     sw: Switches,
 ) -> Result<RenewalPlayerOutcome, CmdError> {
@@ -764,7 +829,7 @@ fn step(
         .map(|op| checked(ctx, s, op))
         .transpose()?;
     if sw.status {
-        return Ok(RenewalPlayerOutcome::Status(status_view(
+        return Ok(RenewalPlayerOutcome::Status(status_view::<I>(
             item.term_end().get(),
             row.as_ref(),
         )));
@@ -825,16 +890,16 @@ fn step(
 /// schedules it for the actor whose typed line it is dispatching (the
 /// delegation this service declared at composition admits nothing else).
 #[must_use]
-pub fn player_front(ctx: &Ctx<'_>) -> Option<ContinuationHandle> {
-    player_front_in(ctx.w)
+pub(crate) fn player_front<I: Issuer>(ctx: &Ctx<'_>) -> Option<ContinuationHandle> {
+    player_front_in::<I>(ctx.w)
 }
 
 /// `player_front`, read from the world itself (the service's state slot and
 /// its runtime), so a composition test can prove the handle TacSim would be
 /// handed after activation without a dispatched context.
 #[must_use]
-pub fn player_front_in(world: &World) -> Option<ContinuationHandle> {
-    let s = world.module_state::<Service>()?;
+pub(crate) fn player_front_in<I: Issuer>(world: &World) -> Option<ContinuationHandle> {
+    let s = world.module_state::<Service<I>>()?;
     let enabled = runtime(s).ok()?.runtime.lock().ok()?.enabled;
     enabled.then(|| s.front.clone())
 }
@@ -858,7 +923,7 @@ pub fn player_front_in(world: &World) -> Option<ContinuationHandle> {
 /// outcome is the uniform refusal, except a licence the Roll says can never
 /// be renewed (doc 44 MW.2, Q-44-14): `request` and `accept` then answer
 /// `RENEW_STOPPED` with the Registry's reason and submit nothing.
-fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
+fn front<I: Issuer>(ctx: &mut Ctx<'_>, s: &Service<I>) -> Result<(), CmdError> {
     let (licence, kind) = parse_front(ctx.args.raw()).ok_or_else(unavailable)?;
     let shown = licence.get().to_string();
     let item = own(ctx, s, licence)?;
@@ -875,7 +940,7 @@ fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
                 .last_operation()
                 .map(|op| checked(ctx, s, op))
                 .transpose()?;
-            let view = status_view(item.term_end().get(), row.as_ref());
+            let view = status_view::<I>(item.term_end().get(), row.as_ref());
             match front_request(&shown, &view, ctx.w.world_ic_now().at) {
                 FrontAnswer::Say(lines) => {
                     let actor = ctx.actor;
@@ -896,7 +961,7 @@ fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
             if !matches!(row.state(), RenewalStateV1::Drafted {}) {
                 return Err(unavailable());
             }
-            row.offer().terms.price.minor()
+            row.offer().terms().price().minor()
         }
     };
     let outcome = step(ctx, s, licence, Switches::of(front_player_step(kind)))?;
@@ -908,4 +973,8 @@ fn front(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
 }
 
 #[cfg(test)]
-pub(super) mod ct0_service;
+pub(crate) mod ct0_house;
+#[cfg(test)]
+pub(crate) mod ct0_personal;
+#[cfg(test)]
+mod tests;

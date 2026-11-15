@@ -54,7 +54,7 @@ fn action(
         protocol::descriptor(transition, manifest, &p)?,
     )?)
 }
-pub(super) fn fixture() -> TestResult<MindRenewalOperationV1> {
+pub(crate) fn fixture() -> TestResult<MindRenewalOperationV1> {
     let manifest = definition("tacsim", "registry_manifest", "combat", 1)?;
     let participants = [
         definition("economy", "owner_participant", "initial_filing", 2)?,
@@ -1053,6 +1053,104 @@ fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
     check_eq!(
         renew_stopped(house),
         "This licence cannot be renewed: its author withdrew this mind. Nothing further will be tried."
+    );
+    Ok(())
+}
+
+/// Doc 46 CT.6: the status line reads each cut of the frozen offer, for both issuers: the
+/// registry's, the venue's and (the personal issuer's alone) the parents'. The CT.0 walk and
+/// the M7 story compose a policy with no venue and a zero registry cut, so neither could tell
+/// one cut from the other (the mutations `registry` and `venue` passed both).
+#[test]
+fn the_status_line_reads_each_cut_of_the_frozen_offer() -> TestResult {
+    use super::player::RenewalPlayerOutcome;
+    let cut = |permille, n: u32| GrossRecipientCut {
+        permille,
+        recipient: Some(Recipient {
+            account: AccountId(u64::from(n)),
+            owner: mush_org::PrincipalId::Object(ObjId(n)),
+        }),
+    };
+    let parent = |charter, permille| mush_economy::managed_entitlement::RoyaltyRecipientCut {
+        charter: ObjId(charter),
+        permille,
+        title: None,
+    };
+    let mut row = fixture()?;
+    row.offer.terms.registry = cut(30, 20);
+    row.offer.terms.venue = Some(cut(70, 21));
+    row.offer.terms.parents = vec![parent(40, 11), parent(41, 5)];
+    let line = super::service::command_line(RenewalPlayerOutcome::Status(
+        super::service::status_view(100, Some(&row)),
+    ));
+    check!(
+        line.ends_with(
+            "Registry cut: 30 per mille; venue cut: 70 per mille; parent royalties: 16 per mille."
+        ),
+        "{line}"
+    );
+    let mut row = crate::mind_house_renewal::tests::fixture()?;
+    row.offer.terms.registry = cut(30, 20);
+    row.offer.terms.venue = Some(cut(70, 21));
+    let line = crate::mind_house_renewal::command_line(RenewalPlayerOutcome::Status(
+        crate::mind_house_renewal::status_view(100, Some(&row)),
+    ));
+    check!(
+        line.ends_with("Registry cut: 30 per mille; venue cut: 70 per mille."),
+        "{line}"
+    );
+    Ok(())
+}
+
+/// Doc 46 CT.6: every market identity constant of the personal issuer, against the literal its
+/// family's files held before the two were merged, and the records' families. A persisted
+/// byte, a definition or a printed line depends on each.
+#[test]
+fn personal_market_identity_strings_hold_todays_bytes() -> TestResult {
+    use crate::renewal_twin::Issuer;
+    type I = mush_economy::renewal_twin::Personal;
+    check_eq!(
+        <I as Issuer>::OPERATION_FAMILY,
+        "market_mind_renewal_operation"
+    );
+    check_eq!(<I as Issuer>::RECEIPT_FAMILY, "market_mind_renewal_receipt");
+    check_eq!(
+        MindRenewalOperationV1::FAMILY,
+        "market_mind_renewal_operation"
+    );
+    check_eq!(MindRenewalReceiptV1::FAMILY, "market_mind_renewal_receipt");
+    check_eq!(<I as Issuer>::POLICY_KIND, "renewal_policy");
+    check_eq!(<I as Issuer>::OUTCOME_ID, "mind_renewal_recorded");
+    check_eq!(<I as Issuer>::BINDING_KIND, "mind_renewal_binding");
+    check_eq!(
+        <I as Issuer>::VERBS,
+        [
+            "mind-renewal-draft",
+            "mind-renewal-fund",
+            "mind-renewal-grant",
+            "mind-renewal-refund",
+            "mind-renewal-close",
+        ]
+    );
+    check_eq!(<I as Issuer>::SERVICE_VERB, "mind-renewal-service");
+    check_eq!(<I as Issuer>::COMMAND, "@mindrenewal");
+    check_eq!(
+        <I as Issuer>::HELP,
+        "@mindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously."
+    );
+    check_eq!(<I as Issuer>::SERVICE_TICK, "personal_mind_renewal_service");
+    check_eq!(
+        <I as Issuer>::INTENT_DOMAIN,
+        "market.renewal_service_intent.v1"
+    );
+    check_eq!(
+        <I as Issuer>::SUBMISSION_DOMAIN,
+        "market.renewal_submission.v1"
+    );
+    // The binding's protocol, which the family's file spelled and the twin reads from Economy.
+    check_eq!(
+        <I as mush_economy::renewal_twin::Issuer>::PROTOCOL,
+        "personal_mind_renewal_v1"
     );
     Ok(())
 }

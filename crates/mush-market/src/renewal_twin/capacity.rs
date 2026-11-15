@@ -1,8 +1,11 @@
 //! Bound the complete future typed documents at Draft, including the largest
 //! admitted opaque receipt encodings. Placeholder nulls are size arithmetic;
 //! they are never decoded, inserted, or treated as economic evidence.
-use super::{Families, MindRenewalOperationV1, MindRenewalReceiptV1};
+use super::Issuer;
+use super::families::Families;
+use super::records::{OperationRow, Row};
 use mush_core::{CommitToken, StateFamilyHandle, canonical_json_bytes_with_limit};
+use mush_roll::commerce::renewal_twin::Binding as _;
 use serde::Serialize;
 use serde_json::{Value, json};
 fn bad(_: impl std::fmt::Display) -> String {
@@ -34,13 +37,13 @@ fn room(doc: &mut Value, state: Value, extra: usize, max: usize) -> Result<(), S
     }
     Ok(())
 }
-pub(super) fn check(f: &Families, row: &MindRenewalOperationV1) -> Result<(), String> {
+pub(crate) fn check<I: Issuer>(f: &Families<I>, row: &I::Renewal) -> Result<(), String> {
     row.validate()?;
-    let cap = mush_economy::managed_renewal::MAX_RENEWAL_RECEIPT_BYTES;
+    let cap = mush_economy::renewal_twin::MAX_RENEWAL_RECEIPT_BYTES;
     let one = cap.checked_sub(4).ok_or_else(super::records::invalid)?;
     let two = one.checked_mul(2).ok_or_else(super::records::invalid)?;
-    if f.operations.descriptor().max_record_bytes() != MindRenewalOperationV1::MAX_BYTES
-        || f.receipts.descriptor().max_record_bytes() != MindRenewalReceiptV1::MAX_BYTES
+    if f.operations.descriptor().max_record_bytes() != I::Renewal::MAX_BYTES
+        || f.receipts.descriptor().max_record_bytes() != I::Receipt::MAX_BYTES
     {
         return Err(super::records::invalid());
     }
@@ -49,13 +52,13 @@ pub(super) fn check(f: &Families, row: &MindRenewalOperationV1) -> Result<(), St
         &mut operation,
         json!({"kind":"refunded","funding":null,"terminal":null}),
         two,
-        MindRenewalOperationV1::MAX_BYTES,
+        I::Renewal::MAX_BYTES,
     )?;
     room(
         &mut operation,
         json!({"kind":"unfunded_closed","closure":null}),
         one,
-        MindRenewalOperationV1::MAX_BYTES,
+        I::Renewal::MAX_BYTES,
     )?;
     let d = f.receipts.descriptor();
     let mut receipt = json!({"family":{"owner":f.receipts.owner(),"id":d.id()},"key":row.key(),
@@ -66,13 +69,13 @@ pub(super) fn check(f: &Families, row: &MindRenewalOperationV1) -> Result<(), St
         &mut receipt,
         json!({"kind":"refunded","funding":null,"terminal":null}),
         two,
-        MindRenewalReceiptV1::MAX_BYTES,
+        I::Receipt::MAX_BYTES,
     )?;
     room(
         &mut receipt,
         json!({"kind":"unfunded_closed","closure":null}),
         one,
-        MindRenewalReceiptV1::MAX_BYTES,
+        I::Receipt::MAX_BYTES,
     )?;
     Ok(())
 }
