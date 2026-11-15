@@ -3456,7 +3456,196 @@ gained 36 cloned lines, the core refit's new tests sharing their rig calls with 
 
 ## CT.8
 
-Not built.
+The composed stories' rig. Built 2026-11-14 on main `26a539b5d` (CT.0 to CT.7 and CT.0b in;
+CT.9, CO.6 and CO.13 running beside it, none in `minds/bulk/`). Test files only: no production
+file, no `.snap` file and no persisted byte moved.
+
+**The survey, before the cut.** The pinned M7 story's worlds were booted by 39 functions:
+
+- *The personal `PlayerWorld`* (`personal_paid_checkout_tests.rs`): 26 associated functions, a
+  telescoping chain. `boot_options_with_derived_updates` took eighteen positional switches and
+  built the world; `boot_options_with_resales`, `_with_facts`, `_with_registry`, `_with_recall`,
+  `_with_attestation`, `_with_qualification` and `boot_options` each called the next with one
+  more `false`; and nineteen named variants (`boot_forks`, `boot_marked`, `boot_dependent`,
+  `boot_entitlements`, `boot_renewals`, `boot_withdrawal`, `boot_renewal_service`,
+  `boot_updates`, `boot_owner_qualification`, `boot_owner_qualification_short_parent`,
+  `boot_owner_attestation`, `boot_updates_with_attestation`, `boot_recall`, `boot_revocation`,
+  `boot_minds_facts`, `boot_paid_resales`, `boot_derived_updates`, `boot`) each fixed a row of
+  booleans.
+- *The House `PlayerWorld`* (`house_purchase_integration_tests.rs`): five free functions
+  (`boot_every_option` with five switches, and `boot_resale_options`, `boot_options`,
+  `boot_attestations`, `boot`), a second copy of the personal world's tail (load, the manifest
+  check, the arena egress, the image, the factory, the first commit, the two connections).
+- *Eight module-local wrappers* naming one row each: `boot` in `attested.rs`, `follow.rs`,
+  `derived_update_integration_tests.rs`, `owner_attestation_integration_tests.rs`,
+  `owner_qualification_integration_tests.rs` and `house_renewal_integration_tests.rs`,
+  `boot_tick` in `house_attestation_tick_tests.rs`, `boot_all` in `transferred_parent.rs`.
+
+280 call sites in 34 files named one of them.
+
+**Built.**
+
+- **One builder with a family switch** (`personal_paid_checkout_tests.rs`). `Compose` is what a
+  world composes beside its purchase, one named switch a family (sixteen personal, two the
+  House's alone: the original-holdings read and the buyer admission). Its presets are the rows
+  the stories booted with, each built on the one it extends by struct update (`FORKS`,
+  `MARKED`, `DEPENDENT`, `ENTITLEMENTS`, `RENEWALS`, `RENEWAL_SERVICE`, `WITHDRAWAL`, `UPDATES`,
+  `UPDATES_ATTESTED`, `OWNER_QUALIFICATION`, `SHORT_PARENT`, `OWNER_ATTESTATION`,
+  `DERIVED_UPDATES`, `MINDS_FACTS`, `PAID_RESALES`, `HOUSE_RENEWALS`, `HOUSE_ATTESTATIONS`, and
+  `purchase`, `recall` and `revocation`, which take a fixture or a policy); a story with a row
+  of its own writes it as a struct update (`follow.rs`'s `FOLLOW`, the tick's `TICKING`,
+  `transferred_parent.rs`'s `ALL`, the House resale's admission). `Family` is the switch,
+  `Personal(&PurchaseFixture)` or `House(&Fixture)`, and `Rig { family, compose }` the builder:
+  `Rig::personal(f, Compose::RENEWALS).boot(&saved)`, `Rig::house(registry,
+  Compose::HOUSE_RENEWALS).boot(&saved)`, `Rig::purchase(f)` for the fixture's own. `boot`
+  refuses a switch the family's module stack cannot compose (a House switch on the personal
+  rig, a personal one on the House rig), where a positional `true` was silently ignored before.
+- **One tail.** Each family builds its own module stack (`PlayerWorld::personal`,
+  `house_purchase::world`); both then call `PlayerWorld::assemble` (the account identity, the
+  load, the manifest check, the egress, the image, the factory, the first commit) and
+  `PlayerWorld::arrive` (the two connections), and keep their own last step (the personal world
+  checks the lobby is idle; the House world drops the boot's dirty marks), in the order each had.
+- **No boot variant a family.** The 39 functions are gone and every call site names the
+  builder. `grep -rn "PlayerWorld::boot\|boot_every_option\|boot_resale_options" crates/tacsim`
+  finds nothing.
+- **The House renewal story runs the personal story's scenarios**
+  (`minds/bulk/renewal_twin_scenarios.rs`). A `Twin` trait (each family's five transitions, its
+  typed history families, Economy's offer prefix, whether a login account pair exists, and
+  twenty-four functions: its boot, its clock, its readers of the licence, the term, the
+  economics, the head and the paired operation, its prepare, stage and step) and one body each
+  for four of the personal story's scenarios: `retries` (declined, expired and refunded, each
+  with its linked retry to a grant), `title_fences` (the charter's title under a prepared and a
+  staged draft, fund and grant), `accounts_and_expiry` (a staged draft before the term end; a
+  merged login account pair; a staged fund or grant at the offer's exact expiry) and
+  `corruptions` (each typed history family missing, the four together, Economy's offers, the
+  current term, the licence's term and operation crossed). The personal story calls them where
+  it called its own (`renewal_integration_tests.rs`, `Personal`), and the House story after its
+  own (`house_renewal_integration_tests.rs`, `HouseTwin`). The House twin had not driven an
+  expired close, a title fence, a staged step before the term end or at the offer's expiry, a
+  missing economics family or Economy offer, or a crossed licence; it does now.
+- **`ct0b::aside()`**: a guard that holds CT.0b's running record aside and puts it back when it
+  drops. The House story's added scenarios, and the two below, run under it.
+- **Two scenarios for CT.6's survivors** (below): `service_tests::second_page` and
+  `renewal_twins::economy_history_alone`.
+
+**Left to the personal story alone**, each with its reason:
+
+- `grant_chain`: its payout split (73 to 7 and 66) and the cold funded grant 31 s on. The House
+  story's own chain checks the House's split (300 to 270 and 30) and its cold draft and fund.
+- `cleanup_after_parent_lapse`: a House licence's issuer is an organisation, which has no parent
+  term to lapse. The House's issuer loss is its suspension, which `fresh_fences` drives at
+  three boundaries.
+- `customer`: the House story's `checkout` is its sortie.
+- The login account pair of `accounts_and_expiry` (`LOGIN_PAIR`): a House is paid through its
+  treasury, not a character's login account; its account fence is `fresh_fences`' epoch.
+
+**Why `aside`, and what it costs.** CT.0b's House file pins the House story as it was: every
+preparation of a House renewal action is a section of `renewal_house.snap`, numbered in order.
+The added scenarios prepare House actions, so recorded they would move the file, which no doc 46
+unit may re-bless. They run on branches of stores the story already had (the granted purchase and
+the renewed store), touch no shared fixture state (no account epoch), and are left out of the
+record; the story after them is the story before them. The proof is CT.0b's command 2, below. The
+cost is that the files do not pin the added scenarios' bytes: only their checks do.
+
+**Tests.** `cargo test -p tacsim --lib -- --list`, at main `26a539b5d` and at the tip: 2,362
+names both, and the two sorted lists are identical (`diff` is empty). No test was added, renamed or
+removed; the scenarios run inside the pinned story, whose name, tier (`test-tiers.toml`), path and
+`M7_STORY` lines are unchanged (`git diff 26a539b5d -- crates | grep 'M7_STORY'` is empty).
+
+**The proof on the composed path (CT.0b's two commands)**, on conclav.dev, a clone at main
+`26a539b5d` (base) and one at the tip, each its own target, six to twelve jobs:
+
+| Run | The story | Wall |
+|---|---|---|
+| base | passed against the committed files | 1,053 s |
+| tip | passed against the committed files | 1,075 s |
+
+`diff -r` of the two unprojected records (`CT0B_RAW_DIR`) is empty: no byte moved on the composed
+path. The four `.snap` files are unchanged (`git diff --stat 26a539b5d -- '*.snap'` is empty).
+
+**The other gates.** On conclav.dev at the tip: `cargo fmt -p tacsim --check`; clippy with
+`-D warnings` over all of tacsim's targets; CI's M7 memory-size pass; `cargo doc -p tacsim
+--no-deps` with `-D warnings`; `cargo test -p tacsim --lib minds::bulk` (110 passed, 2 ignored);
+`cargo test -p mush-contract-tests` (all three binaries).
+
+**CT.6's four survivors** (and CT.5's R19, the same check in the Roll). Each mutation was made
+alone on a throwaway clone of the tip on conclav.dev (`perl` over one file), the story built and
+run.
+
+| # | The check | The mutation | What the story said | Now |
+|---|---|---|---|---|
+| F30 | the service's due scan, page by page | `read_inventory` restarts from the top | failed in `second_page` after 630 s: `"actual renewal selector"` (the fifth licence, on the second page, is never offered) | **closed** |
+| F22 | the market's `require_disabled` (Economy holds no renewal history) | `require_no_economy_history` answers `Ok` | passed (1,076 s) | held three times |
+| F22 + R19 | the market's and the Roll's halves together | both answer `Ok` | passed (1,062 s) | held by a third check |
+| House F22 | the House market's half | `require_no_house_renewal_history` answers `Ok` | the House phase passed | held twice (the Roll's House half) |
+| F35 | `require_due` against the facts' term end | not re-run | | held twice (the Roll's `check_fresh`) |
+| HF2 | the House's `admits` | not re-run | | held by the definitions |
+
+- **F30 is closed** by `service_tests::second_page`, in the personal renewal story before its
+  other scenarios: a branch of the granted store buys three more licences from the birth's
+  listing (cash minted as the birth's purchase had it), so that the personal paid-licence family
+  holds five and the last is on the inventory's second page (the scan reads four); the clock is
+  set to that licence's term end, and the service must offer its draft within eight offers, each
+  earlier one landed. The mutant never reads the second page.
+- **F22 is held three times.** `economy_history_alone` (both twins, under `aside`) prepares a
+  draft over a due store, keeps only its Economy writes (the offered contract, the meta counters,
+  the renewal offer) and boots the store without the renewals: it is refused. With the market's
+  check gone it is still refused, and with the Roll's (CT.5's R19, the same Economy call) gone
+  too it is still refused, so a third check refuses Economy's renewal history in a world that
+  composes none; the runs do not say which. The scenario is kept as the pin of the refusal
+  itself, which no test had: every earlier disabled boot (`grant_chain`'s) had the Roll's
+  renewal rows in the store as well.
+- **F35 is held twice**: `now < predecessor_term_end` is also the Roll's `check_fresh`, inside
+  the same prepare, and both answer the same sentence. No composed step reaches one without the
+  other.
+- **HF2 is held by the definitions.** The House renewal policy's descriptor references the House
+  purchase policies (`purchase_references`, CT.6's HF1), so a House whose purchase policy changed
+  between a draft and its fund registers a different renewal policy and different actions: the
+  draft's operation names definitions the new world does not have, and is refused before
+  `admits`. A binding whose template the config does not accept under the same renewal policy
+  cannot be written.
+
+**Divergences.**
+
+- **`Compose` boxes the two Registry policies.** A `Compose` is a temporary at every boot, and two
+  of the story's long functions (`grant_chain`, the service story's `exercise`) went over the M7
+  pass's 64 KiB stack frame with them inline (65,572 and 66,691 bytes). With them boxed, and the
+  service story's four reboot checks moved into one `#[inline(never)]` helper (`reboots`), both
+  are under.
+- **The House renewal module's local `boot` returned a `Box<PlayerWorld>`**; its call sites now
+  write `Rig::house(…).boot(…).map(Box::new)`, so every House frame is as it was.
+- **The shared scenarios compare the licence, its term and its economics as one value**
+  (`Twin::current`) where the personal bodies compared them one by one, and `title_fences` checks
+  the whole current value where it checked the licence: stronger, never weaker.
+- **The House renewal module and the House rig name `old.charter()` and `old.operation()`** for
+  the twin's charter and birth, read once from the booted granted purchase.
+- **No new test name.** The two scenarios for CT.6's survivors run inside the pinned story, so the
+  name count is unchanged.
+
+**Not built.**
+
+- `PurchaseFixture`'s three boot functions (`original_purchase_integration_tests.rs`) and
+  `IcWorld`'s nine (`ic_integration_tests.rs`): neither is a `PlayerWorld`. `IcWorld`'s chain is
+  the same shape and is the next rig of its kind; it is CT.8's row's spirit but not its words.
+- `composition/mind_commerce/`: no boot variant lives there. Its tests boot the composition
+  directly and drive no `PlayerWorld`.
+- The rest of the personal story's scenarios as one body (above), and CT.6's eight record tests as
+  one body ("Not built" in CT.6): the latter are the market's unit tests, not the composed rig's.
+- CT.5's other thirteen survivors: the reader-fed checks and the boot audit's joins over rows no
+  writer writes. They need the sale facts' constructors (CT.9's files) or a hand-made row, not
+  this rig.
+
+**Found on the way.**
+
+- **The stories' frames sit at the M7 lint's edge.** The builder's temporaries took two
+  functions over 64 KiB by under 3 KiB (above); a later change to these stories should run the
+  M7 pass before its first push.
+- **The personal paid-licence family of the renewal store holds two licences**, not the four the
+  birth's number suggests (licence numbers are shared with the other licence families). A second
+  inventory page takes three more purchases; one, the first try, left three.
+- **A positional boolean the House stack had no use for was ignored**: the House rig took only
+  five of the personal rig's switches. The builder now refuses one it cannot compose.
+- No defect in production code was found, and no production file was edited.
 
 ## CT.9
 

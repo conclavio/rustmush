@@ -187,9 +187,9 @@ fn closed(
 }
 
 /// Doc 46 CT.8 (CT.6's F30): the service's due scan reads the Roll's licence inventory a page
-/// (four licences) at a time and carries on from where the last page ended. With a fifth
-/// licence bought as the birth was, the fifth is on the second page, and the service still
-/// offers its renewal.
+/// (four licences) at a time and carries on from where the last page ended. With three more
+/// licences bought as the birth was, the family holds five, the last is on the second page,
+/// and the service still offers its renewal.
 pub(super) fn second_page(
     f: &PurchaseFixture,
     saved: &Durable,
@@ -198,11 +198,20 @@ pub(super) fn second_page(
 ) -> TestResult {
     const N: u128 = SERVICE_START + 500;
     let mut world = branch(f, saved)?;
-    super::super::list(&mut world, owner, N)?;
-    super::super::quote(&mut world, N, N + 1)?;
-    super::super::fund(&mut world, N + 1, N + 2)?;
-    super::super::grant(&mut world, N + 2, N + 3)?;
-    let fifth = super::super::allocation(&world, N + 2)?;
+    // The buyer's cash, and both characters at the market, as the birth's purchase had them.
+    super::super::cash(&mut world)?;
+    // Three more licences, quoted from the birth's own listing (a fresh listing if that one
+    // is spent), so that the family holds five: the last is the second page's.
+    for k in 0..3 {
+        let n = N + k * 10;
+        if super::super::quote(&mut world, super::super::FIRST + 2, n + 1).is_err() {
+            super::super::list(&mut world, owner, n)?;
+            super::super::quote(&mut world, n, n + 1)?;
+        }
+        super::super::fund(&mut world, n + 1, n + 2)?;
+        super::super::grant(&mut world, n + 2, n + 3)?;
+    }
+    let fifth = super::super::allocation(&world, N + 22)?;
     let licences = rows(&disk(&world), "roll", "roll_mind_personal_paid_licence");
     check!(
         licences.len() > 4,
@@ -229,13 +238,13 @@ pub(super) fn second_page(
     advance(&mut world, end)?;
     // The first page's due licence (the birth) is offered first; the fifth after it.
     let mut offered = Vec::new();
-    for n in 0..4 {
+    for n in 0..8 {
         let (draft, _) = next(&mut world, holder, DRAFT)?;
         offered.push(draft.parameters.clone());
         if draft.parameters == json!({"licence":fifth.licence().get()}) {
             return Ok(());
         }
-        land(&mut world, &draft, N + 10 + n)?;
+        land(&mut world, &draft, N + 100 + n)?;
     }
     Err(format!("the service never offered the fifth licence: {offered:?}").into())
 }
