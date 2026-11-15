@@ -26,7 +26,8 @@ mod resale;
 type ResaleShared = Arc<Mutex<Option<mush_market::mind_paid_resale::PaidResaleConfig>>>;
 type RenewalShared = Arc<Mutex<Option<mush_market::mind_house_renewal::RenewalConfig>>>;
 /// 17g C1a: the optional House buyer admission the paid resale writer repeats.
-pub(super) type Admission = Option<Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>>;
+pub(super) type Admission =
+    Option<Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>>;
 
 const FIRST: u128 = 19_000_000;
 type HouseShared = Arc<Mutex<Option<HouseConfig>>>;
@@ -1143,7 +1144,9 @@ fn flow(
             .ok_or("scope")? = json!(scope.0.checked_add(1).ok_or("scope overflow")?);
         Ok(())
     })?;
-    check!(crate::test_checks::refused(Rig::house(registry, Compose::NONE).boot(&crossed))?);
+    check!(crate::test_checks::refused(
+        Rig::house(registry, Compose::NONE).boot(&crossed)
+    )?);
     // Members and even the publisher pay the identical gross public price.
     perform(
         &mut w,

@@ -8,6 +8,12 @@ use mush_roll::commerce::{FiledRevisionId, registry_recall::RegistryRecallPolicy
 const START: u128 = 56_000_000;
 const LISTINGS: &str = "market_mind_original_listing";
 
+/// The author withdrawal and the compatible updates composed.
+const FOLLOW: Compose = Compose {
+    author_withdrawal: true,
+    compatible_updates: true,
+    ..Compose::NONE
+};
 fn action(w: &PlayerWorld, owner: &str, id: &str) -> TestResult<DefinitionRef> {
     w.engine
         .registry
@@ -198,7 +204,7 @@ pub(super) async fn exercise(
     revision: &Revision,
     rating: RatingRef,
 ) -> TestResult {
-    let mut w = Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: None, ..Compose::NONE }).boot(certified)?;
+    let mut w = Rig::personal(f, FOLLOW).boot(certified)?;
     let mut tasks = vec![w.tasks.clone()];
     let result: TestResult = async {
         let old: FiledRecord =
@@ -233,7 +239,7 @@ pub(super) async fn exercise(
         // land under a prepared or staged listing at all, and nothing is
         // published; the withdrawn-then-unavailable order is proved below.
         for after_stage in [false, true] {
-            let mut fence = Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: None, ..Compose::NONE }).boot(&updated)?;
+            let mut fence = Rig::personal(f, FOLLOW).boot(&updated)?;
             tasks.push(fence.tasks.clone());
             to_market(&mut fence)?;
             let n = START + 10 + u128::from(after_stage);
@@ -282,7 +288,7 @@ pub(super) async fn exercise(
         withdraw(&mut w, START + 22, new.content().id())?;
         listing(&mut w, START + 23, &old)?;
         let withdrawn = Durable::capture(&w.engine, &disk(&w));
-        let mut cold = Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: None, ..Compose::NONE }).boot(&withdrawn)?;
+        let mut cold = Rig::personal(f, FOLLOW).boot(&withdrawn)?;
         tasks.push(cold.tasks.clone());
         listing(&mut cold, START + 24, &old)?;
         assert_eq!(
@@ -292,7 +298,8 @@ pub(super) async fn exercise(
         assert_eq!(rows(&disk(&cold), "roll", "roll_mind_paid_term"), old_paid);
         withdraw(&mut cold, START + 25, old.content().id())?;
         unavailable(&mut cold, START + 26)?;
-        let mut empty = Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: None, ..Compose::NONE }).boot(&Durable::capture(&cold.engine, &disk(&cold)))?;
+        let mut empty =
+            Rig::personal(f, FOLLOW).boot(&Durable::capture(&cold.engine, &disk(&cold)))?;
         tasks.push(empty.tasks.clone());
         unavailable(&mut empty, START + 27)?;
         // `/filed` lists owner licences only (the paid-holdings listing is a
@@ -313,11 +320,13 @@ pub(super) async fn exercise(
             remove_family(&mut missing, "roll", "roll_mind_line_update"),
             1
         );
-        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: None, ..Compose::NONE }).boot(&missing)));
+        assert!(crate::test_checks::is_refusal(
+            Rig::personal(f, FOLLOW).boot(&missing)
+        ));
 
         // A separate real Org-authorized exact-filed recall has the same
         // selection effect, without recalling its shared historical rating.
-        let mut authority = Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: None, ..Compose::NONE }).boot(&updated)?;
+        let mut authority = Rig::personal(f, FOLLOW).boot(&updated)?;
         tasks.push(authority.tasks.clone());
         authority.say(GOD, "@org/create FollowRegistry")?;
         authority.say(GOD, "@org/scope create FollowRegistry=recall")?;
@@ -346,7 +355,14 @@ pub(super) async fn exercise(
         )?;
         let policy = RegistryRecallPolicy::new(issuer()?, org, scope, vec![BUYER])?;
         let saved = Durable::capture(&authority.engine, &disk(&authority));
-        let mut recalled = Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: Some(policy.clone()), ..Compose::NONE }).boot(&saved)?;
+        let mut recalled = Rig::personal(
+            f,
+            Compose {
+                registry_recall: Some(Box::new(policy.clone())),
+                ..FOLLOW
+            },
+        )
+        .boot(&saved)?;
         tasks.push(recalled.tasks.clone());
         let ratings = rows(&disk(&recalled), "roll", "rating_status");
         assert!(!ratings.is_empty(), "actual shared rating statuses");
@@ -361,7 +377,14 @@ pub(super) async fn exercise(
         install(&mut recalled, p)?;
         listing(&mut recalled, START + 31, &old)?;
         assert_eq!(rows(&disk(&recalled), "roll", "rating_status"), ratings);
-        let mut cold = Rig::personal(f, Compose { author_withdrawal: true, compatible_updates: true, registry_recall: Some(policy), ..Compose::NONE }).boot(&Durable::capture(&recalled.engine, &disk(&recalled)))?;
+        let mut cold = Rig::personal(
+            f,
+            Compose {
+                registry_recall: Some(Box::new(policy)),
+                ..FOLLOW
+            },
+        )
+        .boot(&Durable::capture(&recalled.engine, &disk(&recalled)))?;
         tasks.push(cold.tasks.clone());
         listing(&mut cold, START + 32, &old)?;
         Ok(())

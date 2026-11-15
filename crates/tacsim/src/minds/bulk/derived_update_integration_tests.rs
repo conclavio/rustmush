@@ -296,7 +296,9 @@ pub(super) async fn exercise(
             lost.disk.retain(|(ns, _), v| {
                 !(ns == "roll" && v.pointer("/family/id") == Some(&json!(family)))
             });
-            assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::DERIVED_UPDATES).boot(&lost)));
+            assert!(crate::test_checks::is_refusal(
+                Rig::personal(f, Compose::DERIVED_UPDATES).boot(&lost)
+            ));
         }
         let mut crossed = after.clone();
         let value = crossed
@@ -307,7 +309,9 @@ pub(super) async fn exercise(
         *value
             .pointer_mut("/value/parent/selected/terminal")
             .ok_or("actual parent terminal")? = json!(token(START + 99));
-        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::DERIVED_UPDATES).boot(&crossed)));
+        assert!(crate::test_checks::is_refusal(
+            Rig::personal(f, Compose::DERIVED_UPDATES).boot(&crossed)
+        ));
         // Exact parent window and owner readiness remain live at both custody fences.
         for change in ["parent_lapse", "clock", "economy"] {
             for take in [false, true] {

@@ -336,7 +336,9 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         // different character, must fail final completeness even with valid JSON.
         let mut absent = restart.clone();
         remove_family(&mut absent, "roll", "roll_mind_draft_parent");
-        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::FORKS).boot(&absent)));
+        assert!(crate::test_checks::is_refusal(
+            Rig::personal(f, Compose::FORKS).boot(&absent)
+        ));
         let mut crossed = restart.clone();
         let mut moved = row.clone();
         *moved.get_mut("character").ok_or("mind character")? = json!(GOD);
@@ -367,7 +369,9 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         // Repair the canonical typed key too; rejection must be the actual
         // historical paid holder join, not an uncorrected key/body mismatch.
         move_selector(&mut crossed, GOD, 2)?;
-        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::FORKS).boot(&crossed)));
+        assert!(crate::test_checks::is_refusal(
+            Rig::personal(f, Compose::FORKS).boot(&crossed)
+        ));
         Ok(())
     }
     .await;
@@ -413,7 +417,8 @@ async fn freshness(f: &PurchaseFixture, saved: &Durable) -> TestResult {
                 retain_writes(&mut retained, bundle.writes())?;
                 world.engine.install_composed_action(installation)?;
                 assert_eq!(roll(&world)?.mind(BUYER, "child")?.draft().source, SOURCE);
-                let restarted = Rig::personal(f, Compose::FORKS).boot(&capture(&world, &retained))?;
+                let restarted =
+                    Rig::personal(f, Compose::FORKS).boot(&capture(&world, &retained))?;
                 assert!(
                     roll(&restarted)?.mind(BUYER, "child").is_ok(),
                     "legitimate lapse is not boot corruption"

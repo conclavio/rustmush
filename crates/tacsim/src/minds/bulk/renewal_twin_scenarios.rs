@@ -276,8 +276,13 @@ pub(super) fn title_fences<T: Twin>(t: &T, start: u128) -> TestResult {
             let before = t.balances(&world)?;
             let old = t.current(&world)?;
             let held = t.title_owner(&world)?;
-            let prepared =
-                t.prepare(&mut world, id, t.renewer(), number_for_action, params.clone())?;
+            let prepared = t.prepare(
+                &mut world,
+                id,
+                t.renewer(),
+                number_for_action,
+                params.clone(),
+            )?;
             // Core admits one pending commit: the issuer's title cannot move
             // under a prepared (or staged) renewal step, so the transfer is
             // refused and the renewal writes nothing.
@@ -329,7 +334,13 @@ pub(super) fn accounts_and_expiry<T: Twin>(t: &T, start: u128) -> TestResult {
         let before = t.disk(&world);
         let money = t.balances(&world)?;
         let params = licence_params(t);
-        let prepared = t.prepare(&mut world, T::DRAFT, t.renewer(), start + 249, params.clone())?;
+        let prepared = t.prepare(
+            &mut world,
+            T::DRAFT,
+            t.renewer(),
+            start + 249,
+            params.clone(),
+        )?;
         t.stage(
             &mut world,
             T::DRAFT,

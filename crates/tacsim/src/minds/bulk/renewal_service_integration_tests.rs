@@ -32,6 +32,14 @@ fn branch(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
     )?);
     Ok(world)
 }
+/// A cold boot of `saved` with the service composed, out of line so that the story's long
+/// frames stay under CI's stack-frame lint.
+#[inline(never)]
+fn reboots(f: &PurchaseFixture, saved: &Durable) -> TestResult {
+    Rig::personal(f, Compose::RENEWAL_SERVICE)
+        .boot(saved)
+        .map(drop)
+}
 fn fire(world: &mut PlayerWorld) -> TestResult {
     let now = world.engine.world.now();
     // Ordinary ticks enqueue exact continuations, then the actual scheduler
@@ -324,7 +332,7 @@ pub(super) fn exercise(
     check_eq!(balances(&world)?, old_money);
     assert_current_unchanged(&world, &initial, &old_term, &old_economics)?;
     let end = capture(&world, &disk(&world));
-    let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&end)?;
+    reboots(f, &end)?;
 
     // A healthy exact funded readback advances even if its acceptance ACK is
     // unknown. This is independent from the expiry/refund branch above.
@@ -345,7 +353,7 @@ pub(super) fn exercise(
         RenewalStateV1::Granted { .. }
     ));
     let end = capture(&healthy, &disk(&healthy));
-    let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&end)?;
+    reboots(f, &end)?;
 
     let mut declined = branch(f, &draft_image)?;
     declined.say(
@@ -452,7 +460,7 @@ pub(super) fn exercise(
         tick_later(&mut close)?;
         none(&mut close);
         let ended = capture(&close, &disk(&close));
-        let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&ended)?;
+        reboots(f, &ended)?;
         check!(
             crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&ended))?,
             "five-action composition cannot erase service proof"
@@ -521,7 +529,7 @@ pub(in super::super) fn unavailable_buyer(
         RenewalServiceCloseReason::DeadlineReached,
     )?;
     check_eq!(balances(&world)?, money);
-    let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&capture(&world, &disk(&world)))?;
+    reboots(f, &capture(&world, &disk(&world)))?;
 
     let mut held = branch(f, &drafted)?;
     held.say(

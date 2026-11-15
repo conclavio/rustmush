@@ -542,7 +542,11 @@ impl renewal_twins::Twin for Personal<'_> {
         ]))
     }
     fn term_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
-        Ok(serde_json::to_value(term(w, self.birth.licence(), generation)?)?)
+        Ok(serde_json::to_value(term(
+            w,
+            self.birth.licence(),
+            generation,
+        )?)?)
     }
     fn economics_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
         Ok(serde_json::to_value(economics(

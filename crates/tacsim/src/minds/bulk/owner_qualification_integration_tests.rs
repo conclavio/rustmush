@@ -218,7 +218,9 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         let mut missing = saved.clone();
         check!(remove_family(&mut missing, "roll", family) > 0);
         check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&missing))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&missing)
+            )?,
             "missing qualification half"
         );
     }
@@ -255,7 +257,9 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             json!(token(START + 999))
         };
         check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&crossed))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&crossed)
+            )?,
             "head cannot claim an unrelated history"
         );
     }
@@ -279,7 +283,9 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         .and_then(|v| v.get_mut("recalled_by"))
         .ok_or("recall")? = json!(token(START + 998));
     check!(
-        crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&recalled))?,
+        crate::test_checks::refused(
+            Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&recalled)
+        )?,
         "replacement cannot repair a forged recall cause"
     );
     Ok(())
@@ -374,7 +380,11 @@ fn fences(
     held.engine.world.set_now(parent_window.grace_end().get());
     apply(&mut held, bundle.writes(), installation)?;
     check_eq!(rows(&disk(&held), "roll", OPS).len(), 1);
-    check!(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&capture(&held, &disk(&held))).is_ok());
+    check!(
+        Rig::personal(f, Compose::OWNER_QUALIFICATION)
+            .boot(&capture(&held, &disk(&held)))
+            .is_ok()
+    );
     Ok(())
 }
 // A shorter *actual configured offer*, not altered persisted dates. The old
@@ -573,7 +583,11 @@ pub(super) async fn exercise(
             serde_json::to_value(owner_term(&expired, owner)?)?,
             serde_json::to_value(&child)?
         );
-        assert!(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&capture(&expired, &disk(&expired))).is_ok());
+        assert!(
+            Rig::personal(f, Compose::OWNER_QUALIFICATION)
+                .boot(&capture(&expired, &disk(&expired)))
+                .is_ok()
+        );
         let restored_lapsed = capture(&expired, &disk(&expired));
         super::story_phase("qualification.attestation", || {
             attestation::exercise(f, &restored_lapsed, owner, customer)

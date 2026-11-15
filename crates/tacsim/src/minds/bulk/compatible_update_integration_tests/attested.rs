@@ -174,7 +174,9 @@ async fn cold_refusals(f: &PurchaseFixture, saved: &Durable) -> TestResult {
                 "exact historical evidence removed"
             );
         }
-        if let Some(world) = crate::test_checks::accepted(Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&corrupt))? {
+        if let Some(world) = crate::test_checks::accepted(
+            Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&corrupt),
+        )? {
             world.tasks.shutdown(Duration::from_secs(5)).await;
             return Err("corrupted attested update history passed cold boot".into());
         }
@@ -443,7 +445,9 @@ async fn chartered(
                 .ok_or("actual captured ownership row")?;
             *row.pointer_mut("/value/charter_ownership/generation")
                 .ok_or("ownership generation")? = json!(4);
-            if let Some(world) = crate::test_checks::accepted(Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&crossed))? {
+            if let Some(world) = crate::test_checks::accepted(
+                Rig::personal(f, Compose::UPDATES_ATTESTED).boot(&crossed),
+            )? {
                 world.tasks.shutdown(Duration::from_secs(5)).await;
                 return Err("crossed historical charter ownership passed cold boot".into());
             }

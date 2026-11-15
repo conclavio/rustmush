@@ -371,7 +371,9 @@ fn cold_corruptions(
         });
         check!(lost.disk.len() < len);
         check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::recall(policy.clone())).boot(&lost))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::recall(policy.clone())).boot(&lost)
+            )?,
             "missing exact recall obligation"
         );
     }
@@ -399,7 +401,9 @@ fn cold_corruptions(
         }
         check!(changed);
         check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::recall(policy.clone())).boot(&crossed))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::recall(policy.clone())).boot(&crossed)
+            )?,
             "crossed cause cannot authenticate actual status/root"
         );
     }

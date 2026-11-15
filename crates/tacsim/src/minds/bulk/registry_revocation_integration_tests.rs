@@ -435,7 +435,9 @@ fn cold_corruptions(
         });
         check_eq!(broken.disk.len() + 1, before);
         check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::revocation(policy.clone())).boot(&broken))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::revocation(policy.clone())).boot(&broken)
+            )?,
             "missing paired {remove}"
         );
     }
@@ -459,7 +461,9 @@ fn cold_corruptions(
             },
         );
         check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::revocation(policy.clone())).boot(&broken))?,
+            crate::test_checks::refused(
+                Rig::personal(f, Compose::revocation(policy.clone())).boot(&broken)
+            )?,
             "crossed term proof {field}"
         );
     }

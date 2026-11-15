@@ -1,9 +1,9 @@
 //! Actual granted House purchase continues through genuine offered-contract renewal.
 //! No receipt/certificate is invented. All signed actions install the real owner union.
 use super::*;
-use mush_market::mind_house_renewal::{MindRenewalOperationV1, MindRenewalReceiptV1};
 use crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::renewal_twins;
 use mush_core::CommitToken;
+use mush_market::mind_house_renewal::{MindRenewalOperationV1, MindRenewalReceiptV1};
 use mush_roll::commerce::house_renewal::{
     RenewalAttemptV1, RenewalHeadV1, RenewalOperationV1, RenewalStateV1,
 };
@@ -147,7 +147,9 @@ pub(super) fn attest_house(
         serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
     let params = json!({"owner_licence": owner.get(), "org": organization.0});
     let personal = json!({"owner_licence": owner.get()});
-    let plain = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(snapshot).map(Box::new)?;
+    let plain = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     check!(
         roll_action(&plain, HOUSE_ATTEST).is_err(),
         "the House attestation is composed with the owner attestations alone"
@@ -311,7 +313,11 @@ pub(super) fn attest_house(
     check_eq!(owner_generation(&cold, owner, 2)?, second);
     drop(cold);
     check!(
-        crate::test_checks::refused(Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&attested).map(Box::new))?,
+        crate::test_checks::refused(
+            Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(&attested)
+                .map(Box::new)
+        )?,
         "a retained House generation needs the attestation composed"
     );
     Ok(())
@@ -334,7 +340,9 @@ fn fresh_fences(
         (funded, GRANT, json!({"operation":token(START)})),
     ] {
         for boundary in 0..3 {
-            let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(base).map(Box::new)?;
+            let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(base)
+                .map(Box::new)?;
             let before = balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?;
             if boundary == 0 {
                 command(&mut w, "@org/status House=suspended")?;
@@ -366,7 +374,9 @@ fn fresh_fences(
         (funded, GRANT, json!({"operation":token(START)})),
     ] {
         for after_stage in [false, true] {
-            let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(base).map(Box::new)?;
+            let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(base)
+                .map(Box::new)?;
             let before = disk(&w);
             let (p, o) = direct(&mut w, action, BUYER, START + 71, params.clone())?;
             if after_stage {
@@ -460,7 +470,11 @@ impl renewal_twins::Twin for HouseTwin<'_> {
         ]))
     }
     fn term_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
-        Ok(serde_json::to_value(paid(w, self.licence, generation.get())?)?)
+        Ok(serde_json::to_value(paid(
+            w,
+            self.licence,
+            generation.get(),
+        )?)?)
     }
     fn economics_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
         let mut found = rows(&disk(w), "roll", "roll_mind_house_term_economics")
@@ -563,7 +577,9 @@ pub(super) fn exercise(
     issuer_grace_end: i64,
 ) -> TestResult<Durable> {
     service::exercise(registry, snapshot, id)?;
-    let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(snapshot).map(Box::new)?;
+    let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     let old = licence(&w, id)?;
     let predecessor = paid(&w, id, 1)?;
     let birth = rows(&disk(&w), "roll", "roll_mind_house_purchase");
@@ -612,7 +628,9 @@ pub(super) fn exercise(
         "automatic predecessor offered once"
     );
     let drafted = saved(&w);
-    let _cold_draft = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&drafted).map(Box::new)?;
+    let _cold_draft = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&drafted)
+        .map(Box::new)?;
     check!(
         Rig::house(registry, Compose::NONE).boot(&drafted).is_err(),
         "disabled renewal cannot ignore native offer"
@@ -645,10 +663,14 @@ pub(super) fn exercise(
     check_eq!(balance(&w, payer)?, (money.0, Amount::from_minor(300)));
     current_same(&w, &old, &predecessor)?;
     let funded = saved(&w);
-    let _cold_funded = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&funded).map(Box::new)?;
+    let _cold_funded = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&funded)
+        .map(Box::new)?;
     fresh_fences(registry, &due, &drafted, &funded, id)?;
     // A real held refund survives issuer loss and cannot extend the predecessor.
-    let mut refund = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&funded).map(Box::new)?;
+    let mut refund = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&funded)
+        .map(Box::new)?;
     command(&mut refund, "@org/status House=suspended")?;
     step(
         &mut refund,
@@ -658,7 +680,9 @@ pub(super) fn exercise(
     )?;
     check_eq!(balance(&refund, payer)?, money);
     current_same(&refund, &old, &predecessor)?;
-    let _cold_refund = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&saved(&refund)).map(Box::new)?;
+    let _cold_refund = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&saved(&refund))
+        .map(Box::new)?;
     service::retention(registry, &saved(&refund), START)?;
     check!(
         direct(
@@ -711,7 +735,9 @@ pub(super) fn exercise(
         START + 8,
         json!({"operation":token(START+6)}),
     )?;
-    let retry_cold = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&saved(&refund)).map(Box::new)?;
+    let retry_cold = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&saved(&refund))
+        .map(Box::new)?;
     check_eq!(
         licence(&retry_cold, id)?.term().get(),
         2,
@@ -778,7 +804,9 @@ pub(super) fn exercise(
     );
     let granted = saved(&w);
     service::retention(registry, &granted, START)?;
-    let cold = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&granted).map(Box::new)?;
+    let cold = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&granted)
+        .map(Box::new)?;
     check_eq!(licence(&cold, id)?, actual);
     let receipt: MindRenewalReceiptV1 =
         row(&cold, "market", RECEIPT, "operation", json!(token(START)))?;
@@ -794,7 +822,10 @@ pub(super) fn exercise(
         let mut missing = granted.clone();
         check!(remove_family(&mut missing, owner, family) > 0);
         check!(
-            Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&missing).map(Box::new).is_err(),
+            Rig::house(registry, Compose::HOUSE_RENEWALS)
+                .boot(&missing)
+                .map(Box::new)
+                .is_err(),
             "missing renewal inverse accepted"
         );
     }
@@ -808,7 +839,10 @@ pub(super) fn exercise(
         remove_family(&mut missing, owner, family);
     }
     check!(
-        Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&missing).map(Box::new).is_err(),
+        Rig::house(registry, Compose::HOUSE_RENEWALS)
+            .boot(&missing)
+            .map(Box::new)
+            .is_err(),
         "all missing typed history cannot hide native renewal"
     );
     let mut crossed = granted.clone();
@@ -819,7 +853,12 @@ pub(super) fn exercise(
             .ok_or("scope")? = json!(draft.binding().issuer().scope().0 + 1);
         Ok(())
     })?;
-    check!(Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&crossed).map(Box::new).is_err());
+    check!(
+        Rig::house(registry, Compose::HOUSE_RENEWALS)
+            .boot(&crossed)
+            .map(Box::new)
+            .is_err()
+    );
     // Existing paid generation is independent of issuer loss; no automatic extension.
     set_ic(&mut w, issuer_grace_end)?;
     command(&mut w, "@org/status House=suspended")?;
@@ -848,7 +887,9 @@ pub(super) fn exercise(
     );
     selection(&mut w, id, true)?;
     let independent = saved(&w);
-    let mut cold = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(&independent).map(Box::new)?;
+    let mut cold = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(&independent)
+        .map(Box::new)?;
     selection(&mut cold, id, true)?;
     set_ic(&mut cold, next.window().grace_end().get())?;
     selection(&mut cold, id, false)?;
@@ -876,7 +917,9 @@ pub(super) async fn checkout(
     snapshot: &Durable,
     licence: LicenceId,
 ) -> TestResult {
-    let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS).boot(snapshot).map(Box::new)?;
+    let mut w = Rig::house(registry, Compose::HOUSE_RENEWALS)
+        .boot(snapshot)
+        .map(Box::new)?;
     let tasks = w.tasks.clone();
     let result: TestResult = async {
         let term = paid(&w, licence, self::licence(&w, licence)?.term().get())?;

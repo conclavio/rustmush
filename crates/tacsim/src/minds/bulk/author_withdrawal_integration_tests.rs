@@ -384,7 +384,11 @@ fn withdraw_after_lapse(
     let mut disabled = Rig::personal(f, Compose::ENTITLEMENTS).boot(&saved)?;
     transfer(&mut disabled, a)?;
     let transferred = capture(&disabled, &disk(&disabled));
-    check!(Rig::personal(f, Compose::ENTITLEMENTS).boot(&transferred).is_ok());
+    check!(
+        Rig::personal(f, Compose::ENTITLEMENTS)
+            .boot(&transferred)
+            .is_ok()
+    );
     cold_corruptions(f, &saved, a)?;
     Ok(saved)
 }

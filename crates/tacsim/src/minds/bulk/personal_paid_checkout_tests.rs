@@ -5,10 +5,10 @@
 use super::*;
 #[path = "house_purchase_integration_tests.rs"]
 mod house_purchase;
-#[path = "paid_resale_route_integration_tests.rs"]
-mod resale_routes;
 #[path = "renewal_twin_scenarios.rs"]
 mod renewal_twins;
+#[path = "paid_resale_route_integration_tests.rs"]
+mod resale_routes;
 pub(super) fn exercise_house(
     registry: &Fixture,
     saved: &Durable,
@@ -307,8 +307,11 @@ struct Compose {
     owner_qualification: bool,
     qualification_short_parent: bool,
     owner_attestations: bool,
-    registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
-    registry_revocation: Option<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>,
+    /// Boxed, as is the revocation's: a `Compose` is a temporary at every boot, and the
+    /// stories' long frames are held under CI's 64 KiB stack-frame lint.
+    registry_recall: Option<Box<mush_roll::commerce::registry_recall::RegistryRecallPolicy>>,
+    registry_revocation:
+        Option<Box<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>>,
     minds_facts: bool,
     paid_resales: bool,
     derived_updates: bool,
@@ -425,7 +428,7 @@ impl Compose {
     /// The Registry recall, composed beside the author withdrawal.
     fn recall(policy: mush_roll::commerce::registry_recall::RegistryRecallPolicy) -> Self {
         Self {
-            registry_recall: Some(policy),
+            registry_recall: Some(Box::new(policy)),
             ..Self::WITHDRAWAL
         }
     }
@@ -439,7 +442,7 @@ impl Compose {
             author_withdrawal: true,
             compatible_updates: true,
             owner_attestations: true,
-            registry_revocation: Some(policy),
+            registry_revocation: Some(Box::new(policy)),
             ..Self::OWNER_QUALIFICATION
         }
     }
@@ -615,8 +618,8 @@ impl PlayerWorld {
                 derived_updates: c.derived_updates,
                 owner_qualification: c.owner_qualification,
                 owner_attestations: c.owner_attestations,
-                registry_recall: c.registry_recall.clone(),
-                registry_revocation: c.registry_revocation.clone(),
+                registry_recall: c.registry_recall.as_deref().cloned(),
+                registry_revocation: c.registry_revocation.as_deref().cloned(),
                 qualification_short_parent: c.qualification_short_parent,
                 shared: shared.clone(),
                 purchase: purchase.clone(),
