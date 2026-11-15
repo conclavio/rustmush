@@ -170,7 +170,7 @@ fn due_world(
     saved: &Durable,
     birth: &EntitlementAllocationV1,
 ) -> TestResult<PlayerWorld> {
-    let mut world = PlayerWorld::boot_renewals(f, saved)?;
+    let mut world = Rig::personal(f, Compose::RENEWALS).boot(saved)?;
     let current = licence(&world, birth.licence())?;
     let predecessor = term(&world, current.id(), current.term())?;
     let due = predecessor.window().term_end().get();
@@ -231,7 +231,7 @@ fn grant_chain(
     granted: &Durable,
     birth: &EntitlementAllocationV1,
 ) -> TestResult<(Durable, Durable)> {
-    let mut world = PlayerWorld::boot_renewals(f, granted)?;
+    let mut world = Rig::personal(f, Compose::RENEWALS).boot(granted)?;
     let old = licence(&world, birth.licence())?;
     let old_term = term(&world, old.id(), old.term())?;
     let old_economics = economics(&world, old.id(), old.term())?;
@@ -311,7 +311,7 @@ fn grant_chain(
     }
     let funded_image = capture(&world, &disk(&world));
     // Cold funded recovery keeps the old pointer and escrow; no synthetic grant.
-    let mut cold = PlayerWorld::boot_renewals(f, &funded_image)?;
+    let mut cold = Rig::personal(f, Compose::RENEWALS).boot(&funded_image)?;
     paired(&cold, token(START))?;
     assert_current_unchanged(&cold, &old, &old_term, &old_economics)?;
     cold.engine
@@ -367,12 +367,12 @@ fn grant_chain(
         check_eq!(actual.2, *held);
     }
     let snapshot = capture(&cold, &disk(&cold));
-    let replay = PlayerWorld::boot_renewals(f, &snapshot)?;
+    let replay = Rig::personal(f, Compose::RENEWALS).boot(&snapshot)?;
     paired(&replay, token(START))?;
     check_eq!(licence(&replay, old.id())?, current);
     check_eq!(balances(&replay)?, balances(&cold)?);
     check!(
-        crate::test_checks::refused(PlayerWorld::boot_entitlements(f, &snapshot))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot))?,
         "disabled renewal composition rejects retained history"
     );
     Ok((snapshot, drafted))
@@ -433,7 +433,7 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
         check_eq!(head(&world, old.id())?.pending(), None);
         // Terminal history is durable before any retry and grants no extension.
         let closed_snapshot = capture(&world, &disk(&world));
-        let mut world = PlayerWorld::boot_renewals(f, &closed_snapshot)?;
+        let mut world = Rig::personal(f, Compose::RENEWALS).boot(&closed_snapshot)?;
         paired(&world, token(number))?;
         let before = disk(&world);
         check!(
@@ -490,7 +490,7 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
         // Old Closed/Refunded rows coexist lawfully with the linked retry's
         // successful next generation. No row is attributed to the old attempt.
         let complete = capture(&world, &disk(&world));
-        let cold = PlayerWorld::boot_renewals(f, &complete)?;
+        let cold = Rig::personal(f, Compose::RENEWALS).boot(&complete)?;
         paired(&cold, token(number))?;
         paired(&cold, token(number + 3))?;
         check_eq!(balances(&cold)?, balances(&world)?);
@@ -757,7 +757,7 @@ fn cleanup_after_parent_lapse(
             Some(birth.revision().source()),
         )?;
         let lapsed = capture(&world, &disk(&world));
-        let mut cold = PlayerWorld::boot_renewals(f, &lapsed)?;
+        let mut cold = Rig::personal(f, Compose::RENEWALS).boot(&lapsed)?;
         // Fresh work is unavailable, while captured custody can still close.
         // Both offer expiry and issuer lapse are present in this long-gap case.
         check!(
@@ -805,7 +805,7 @@ fn cleanup_after_parent_lapse(
             "retry requires fresh issuer eligibility"
         );
         let ended = capture(&cold, &disk(&cold));
-        let replay = PlayerWorld::boot_renewals(f, &ended)?;
+        let replay = Rig::personal(f, Compose::RENEWALS).boot(&ended)?;
         paired(&replay, token(number))?;
     }
     Ok(())
@@ -829,7 +829,7 @@ fn corruptions(
             .retain(|(ns, _), v| !(ns == owner && v.pointer("/family/id") == Some(&json!(family))));
         check!(lost.disk.len() < count, "removed actual persisted family");
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_renewals(f, &lost))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&lost))?,
             "missing or all-missing {family} must refuse"
         );
     }
@@ -847,9 +847,7 @@ fn corruptions(
         .any(|name| v.pointer("/family/id") == Some(&json!(name)))
     });
     check!(lost.disk.len() < count);
-    check!(crate::test_checks::refused(PlayerWorld::boot_renewals(
-        f, &lost
-    ))?);
+    check!(crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&lost))?);
     let mut missing_economy = snapshot.clone();
     let before = missing_economy.disk.len();
     missing_economy
@@ -860,7 +858,7 @@ fn corruptions(
         "removed the actual E4 offer history"
     );
     check!(
-        crate::test_checks::refused(PlayerWorld::boot_renewals(f, &missing_economy))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&missing_economy))?,
         "receipt/contract alone cannot replace missing E4 origins"
     );
     let mut missing_current_term = snapshot.clone();
@@ -873,7 +871,7 @@ fn corruptions(
     });
     check!(missing_current_term.disk.len() < before);
     check!(
-        crate::test_checks::refused(PlayerWorld::boot_renewals(f, &missing_current_term))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&missing_current_term))?,
         "current pointer cannot substitute for its term"
     );
     // Exact current pointer and retained immutable birth are independently joined.
@@ -900,7 +898,7 @@ fn corruptions(
         }
         check!(changed);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_renewals(f, &crossed))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&crossed))?,
             "crossed {field}"
         );
     }
@@ -921,7 +919,7 @@ async fn customer(
     )?;
     let mut lapsed = granted.clone();
     lapsed.now = parent.window().grace_end().get();
-    let mut active = PlayerWorld::boot_renewals(f, &lapsed)?;
+    let mut active = Rig::personal(f, Compose::RENEWALS).boot(&lapsed)?;
     let current = licence(&active, a.licence())?;
     let own = term(&active, current.id(), current.term())?;
     assert_eq!(
@@ -935,7 +933,7 @@ async fn customer(
     lapsed.now = own.window().term_end().get();
     assert!(lapsed.now >= parent.window().grace_end().get());
     drop(active);
-    let mut world = PlayerWorld::boot_renewals(f, &lapsed)?;
+    let mut world = Rig::personal(f, Compose::RENEWALS).boot(&lapsed)?;
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         let current=licence(&world,a.licence())?;
@@ -980,7 +978,7 @@ async fn customer(
         let second=world.progressed_snapshot(id,unit,first.at_ms,thinks,landed).await?;
         crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::assert_captured(&world,id,unit,&seal,&second)?;
         let mut ended=granted.clone();ended.now=own.window().grace_end().get();
-        let mut fresh=PlayerWorld::boot_renewals(f,&ended)?;source_answer(&mut fresh,GOD,a.licence(),None)?;
+        let mut fresh=Rig::personal(f, Compose::RENEWALS).boot(&ended)?;source_answer(&mut fresh,GOD,a.licence(),None)?;
         fresh.say(GOD,"SIM TEAM red")?;let refused=fresh.say(GOD,&format!("SIM MIND filed:{} PROFILE Default",a.licence().get()))?;
         assert!(!PlayerWorld::private_text(&refused,GOD).contains("Your slot will carry"));
         assert!(match_::centre_of(&fresh.engine.world).is_some_and(|c|c.match_id.is_none()));

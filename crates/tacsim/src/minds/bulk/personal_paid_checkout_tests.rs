@@ -287,416 +287,255 @@ impl Drop for PlayerWorld {
         self.tasks.signal_stop_all();
     }
 }
-impl PlayerWorld {
-    fn boot(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+/// Doc 46 CT.8: what a [`PlayerWorld`] composes beside the purchase it is born from, one
+/// switch a family. [`Rig::boot`] is the one way a world boots; the presets below are the
+/// sets the stories boot with, each named by what it adds to the one it is built on, and a
+/// story that needs its own set writes it as a struct update of one of them.
+#[derive(Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct Compose {
+    authored_forks: bool,
+    marked_registry: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    author_withdrawal: bool,
+    renewal_service: bool,
+    compatible_updates: bool,
+    owner_qualification: bool,
+    qualification_short_parent: bool,
+    owner_attestations: bool,
+    registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
+    registry_revocation: Option<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>,
+    minds_facts: bool,
+    paid_resales: bool,
+    derived_updates: bool,
+    /// The House family only: the original-holdings read (doc 17h §3 M8h).
+    original_holdings: bool,
+    /// The House family only: the optional buyer admission the paid resale writer repeats.
+    admission: house_purchase::Admission,
+}
+impl Compose {
+    /// Nothing beside the purchase.
+    const NONE: Self = Self {
+        authored_forks: false,
+        marked_registry: false,
+        dependent_owners: false,
+        entitlements: false,
+        renewals: false,
+        author_withdrawal: false,
+        renewal_service: false,
+        compatible_updates: false,
+        owner_qualification: false,
+        qualification_short_parent: false,
+        owner_attestations: false,
+        registry_recall: None,
+        registry_revocation: None,
+        minds_facts: false,
+        paid_resales: false,
+        derived_updates: false,
+        original_holdings: false,
+        admission: None,
+    };
+    const FORKS: Self = Self {
+        authored_forks: true,
+        ..Self::NONE
+    };
+    const MARKED: Self = Self {
+        marked_registry: true,
+        ..Self::FORKS
+    };
+    const DEPENDENT: Self = Self {
+        dependent_owners: true,
+        ..Self::MARKED
+    };
+    const ENTITLEMENTS: Self = Self {
+        entitlements: true,
+        ..Self::DEPENDENT
+    };
+    const RENEWALS: Self = Self {
+        renewals: true,
+        ..Self::ENTITLEMENTS
+    };
+    const RENEWAL_SERVICE: Self = Self {
+        renewal_service: true,
+        ..Self::RENEWALS
+    };
+    const WITHDRAWAL: Self = Self {
+        author_withdrawal: true,
+        ..Self::ENTITLEMENTS
+    };
+    const UPDATES: Self = Self {
+        compatible_updates: true,
+        ..Self::NONE
+    };
+    const UPDATES_ATTESTED: Self = Self {
+        owner_attestations: true,
+        ..Self::UPDATES
+    };
+    const OWNER_QUALIFICATION: Self = Self {
+        owner_qualification: true,
+        ..Self::ENTITLEMENTS
+    };
+    const SHORT_PARENT: Self = Self {
+        qualification_short_parent: true,
+        ..Self::OWNER_QUALIFICATION
+    };
+    const OWNER_ATTESTATION: Self = Self {
+        compatible_updates: true,
+        owner_attestations: true,
+        ..Self::OWNER_QUALIFICATION
+    };
+    const DERIVED_UPDATES: Self = Self {
+        owner_attestations: true,
+        derived_updates: true,
+        ..Self::OWNER_QUALIFICATION
+    };
+    const MINDS_FACTS: Self = Self {
+        renewals: true,
+        author_withdrawal: true,
+        owner_attestations: true,
+        minds_facts: true,
+        ..Self::OWNER_QUALIFICATION
+    };
+    const PAID_RESALES: Self = Self {
+        paid_resales: true,
+        ..Self::RENEWALS
+    };
+    /// The House family's renewals.
+    const HOUSE_RENEWALS: Self = Self {
+        renewals: true,
+        ..Self::NONE
+    };
+    /// The House family's owner attestations, the House one among them (M8c B4).
+    const HOUSE_ATTESTATIONS: Self = Self {
+        owner_attestations: true,
+        ..Self::NONE
+    };
+    /// The personal purchase's own: its compatible updates when the fixture has them.
+    fn purchase(f: &PurchaseFixture) -> Self {
         if f.config.compatible_update.is_some() {
-            Self::boot_updates(f, saved)
+            Self::UPDATES
         } else {
-            Self::boot_forks(f, saved, false)
+            Self::NONE
         }
     }
-    fn boot_forks(f: &PurchaseFixture, saved: &Durable, authored_forks: bool) -> TestResult<Self> {
-        Self::boot_options(
-            f,
-            saved,
-            authored_forks,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-        )
+    /// The Registry recall, composed beside the author withdrawal.
+    fn recall(policy: mush_roll::commerce::registry_recall::RegistryRecallPolicy) -> Self {
+        Self {
+            registry_recall: Some(policy),
+            ..Self::WITHDRAWAL
+        }
     }
-    fn boot_marked(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(
-            f, saved, true, true, false, false, false, false, false, false,
-        )
-    }
-    fn boot_dependent(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(
-            f, saved, true, true, true, false, false, false, false, false,
-        )
-    }
-    fn boot_entitlements(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, false, false, false, false)
-    }
-    fn boot_renewals(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, true, false, false, false)
-    }
-    fn boot_withdrawal(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, false, true, false, false)
-    }
-    fn boot_renewal_service(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, true, false, true, false)
-    }
-    fn boot_updates(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(
-            f, saved, false, false, false, false, false, false, false, true,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_qualification(
-            f,
-            saved,
-            authored_forks,
-            marked_registry,
-            dependent_owners,
-            entitlements,
-            renewals,
-            author_withdrawal,
-            renewal_service,
-            compatible_updates,
-            false,
-            false,
-        )
-    }
-    fn boot_owner_qualification(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options_with_qualification(
-            f, saved, true, true, true, true, false, false, false, false, true, false,
-        )
-    }
-    fn boot_owner_qualification_short_parent(
-        f: &PurchaseFixture,
-        saved: &Durable,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_qualification(
-            f, saved, true, true, true, true, false, false, false, false, true, true,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options_with_qualification(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-        owner_qualification: bool,
-        qualification_short_parent: bool,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_attestation(
-            f,
-            saved,
-            authored_forks,
-            marked_registry,
-            dependent_owners,
-            entitlements,
-            renewals,
-            author_withdrawal,
-            renewal_service,
-            compatible_updates,
-            owner_qualification,
-            qualification_short_parent,
-            false,
-        )
-    }
-    fn boot_owner_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options_with_attestation(
-            f, saved, true, true, true, true, false, false, false, true, true, false, true,
-        )
-    }
-    fn boot_updates_with_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options_with_attestation(
-            f, saved, false, false, false, false, false, false, false, true, false, false, true,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options_with_attestation(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-        owner_qualification: bool,
-        qualification_short_parent: bool,
-        owner_attestations: bool,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_recall(
-            f,
-            saved,
-            authored_forks,
-            marked_registry,
-            dependent_owners,
-            entitlements,
-            renewals,
-            author_withdrawal,
-            renewal_service,
-            compatible_updates,
-            owner_qualification,
-            qualification_short_parent,
-            owner_attestations,
-            None,
-        )
-    }
-    fn boot_recall(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        policy: mush_roll::commerce::registry_recall::RegistryRecallPolicy,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_recall(
-            f,
-            saved,
-            true,
-            true,
-            true,
-            true,
-            false,
-            true,
-            false,
-            false,
-            false,
-            false,
-            false,
-            Some(policy),
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options_with_recall(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-        owner_qualification: bool,
-        qualification_short_parent: bool,
-        owner_attestations: bool,
-        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_registry(
-            f,
-            saved,
-            authored_forks,
-            marked_registry,
-            dependent_owners,
-            entitlements,
-            renewals,
-            author_withdrawal,
-            renewal_service,
-            compatible_updates,
-            owner_qualification,
-            qualification_short_parent,
-            owner_attestations,
-            registry_recall,
-            None,
-        )
-    }
-    fn boot_revocation(
-        f: &PurchaseFixture,
-        saved: &Durable,
+    /// The Registry revocation, composed beside the renewals, the author withdrawal, the
+    /// compatible updates and the owner attestations.
+    fn revocation(
         policy: mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_registry(
-            f,
-            saved,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true,
-            false,
-            true,
-            true,
-            false,
-            true,
-            None,
-            Some(policy),
-        )
+    ) -> Self {
+        Self {
+            renewals: true,
+            author_withdrawal: true,
+            compatible_updates: true,
+            owner_attestations: true,
+            registry_revocation: Some(policy),
+            ..Self::OWNER_QUALIFICATION
+        }
     }
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options_with_registry(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-        owner_qualification: bool,
-        qualification_short_parent: bool,
-        owner_attestations: bool,
-        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
-        registry_revocation: Option<
-            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
-        >,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_facts(
-            f,
-            saved,
+    /// Whether a switch only the personal family has is on: the House family's module stack
+    /// composes none of them.
+    fn personal_only(&self) -> bool {
+        let Self {
             authored_forks,
             marked_registry,
             dependent_owners,
             entitlements,
-            renewals,
+            renewals: _,
             author_withdrawal,
             renewal_service,
             compatible_updates,
             owner_qualification,
             qualification_short_parent,
-            owner_attestations,
+            owner_attestations: _,
             registry_recall,
             registry_revocation,
-            false,
-        )
+            minds_facts,
+            paid_resales: _,
+            derived_updates,
+            original_holdings: _,
+            admission: _,
+        } = self;
+        *authored_forks
+            || *marked_registry
+            || *dependent_owners
+            || *entitlements
+            || *author_withdrawal
+            || *renewal_service
+            || *compatible_updates
+            || *owner_qualification
+            || *qualification_short_parent
+            || registry_recall.is_some()
+            || registry_revocation.is_some()
+            || *minds_facts
+            || *derived_updates
     }
-    fn boot_minds_facts(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options_with_facts(
-            f, saved, true, true, true, true, true, true, false, false, true, false, true, None,
-            None, true,
-        )
+}
+
+/// The family switch: which issuer's purchase a world is born from, and so which module
+/// stack composes it.
+enum Family<'a> {
+    Personal(&'a PurchaseFixture),
+    House(&'a Fixture),
+}
+
+/// Doc 46 CT.8: the one builder of a [`PlayerWorld`]. A family and what it composes, then
+/// [`Rig::boot`] over a saved store, as often as a story reboots.
+struct Rig<'a> {
+    family: Family<'a>,
+    compose: Compose,
+}
+impl<'a> Rig<'a> {
+    fn personal(f: &'a PurchaseFixture, compose: Compose) -> Self {
+        Self {
+            family: Family::Personal(f),
+            compose,
+        }
     }
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options_with_facts(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-        owner_qualification: bool,
-        qualification_short_parent: bool,
-        owner_attestations: bool,
-        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
-        registry_revocation: Option<
-            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
-        >,
-        enable_facts: bool,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_resales(
-            f,
-            saved,
-            authored_forks,
-            marked_registry,
-            dependent_owners,
-            entitlements,
-            renewals,
-            author_withdrawal,
-            renewal_service,
-            compatible_updates,
-            owner_qualification,
-            qualification_short_parent,
-            owner_attestations,
-            registry_recall,
-            registry_revocation,
-            enable_facts,
-            false,
-        )
+    /// The personal purchase's own composition ([`Compose::purchase`]).
+    fn purchase(f: &'a PurchaseFixture) -> Self {
+        Self::personal(f, Compose::purchase(f))
     }
-    fn boot_paid_resales(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options_with_resales(
-            f, saved, true, true, true, true, true, false, false, false, false, false, false, None,
-            None, false, true,
-        )
+    fn house(registry: &'a Fixture, compose: Compose) -> Self {
+        Self {
+            family: Family::House(registry),
+            compose,
+        }
     }
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options_with_resales(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-        owner_qualification: bool,
-        qualification_short_parent: bool,
-        owner_attestations: bool,
-        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
-        registry_revocation: Option<
-            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
-        >,
-        enable_facts: bool,
-        paid_resales: bool,
-    ) -> TestResult<Self> {
-        Self::boot_options_with_derived_updates(
-            f,
-            saved,
-            authored_forks,
-            marked_registry,
-            dependent_owners,
-            entitlements,
-            renewals,
-            author_withdrawal,
-            renewal_service,
-            compatible_updates,
-            owner_qualification,
-            qualification_short_parent,
-            owner_attestations,
-            registry_recall,
-            registry_revocation,
-            enable_facts,
-            paid_resales,
-            false,
-        )
+    fn boot(&self, saved: &Durable) -> TestResult<PlayerWorld> {
+        match self.family {
+            Family::Personal(f) => {
+                check!(
+                    !self.compose.original_holdings && self.compose.admission.is_none(),
+                    "the personal rig composes no House switch"
+                );
+                PlayerWorld::personal(f, saved, &self.compose)
+            }
+            Family::House(registry) => {
+                check!(
+                    !self.compose.personal_only(),
+                    "the House rig composes no personal-only switch"
+                );
+                house_purchase::world(registry, saved, &self.compose)
+            }
+        }
     }
-    fn boot_derived_updates(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options_with_derived_updates(
-            f, saved, true, true, true, true, false, false, false, false, true, false, true, None,
-            None, false, false, true,
-        )
-    }
+}
+
+impl PlayerWorld {
     #[inline(never)]
-    #[allow(clippy::too_many_arguments)]
-    fn boot_options_with_derived_updates(
-        f: &PurchaseFixture,
-        saved: &Durable,
-        authored_forks: bool,
-        marked_registry: bool,
-        dependent_owners: bool,
-        entitlements: bool,
-        renewals: bool,
-        author_withdrawal: bool,
-        renewal_service: bool,
-        compatible_updates: bool,
-        owner_qualification: bool,
-        qualification_short_parent: bool,
-        owner_attestations: bool,
-        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
-        registry_revocation: Option<
-            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
-        >,
-        enable_facts: bool,
-        paid_resales: bool,
-        derived_updates: bool,
-    ) -> TestResult<Self> {
-        let minds_facts = enable_facts.then(mush_roll::commerce::facts::MindsFactProvider::new);
+    fn personal(f: &PurchaseFixture, saved: &Durable, c: &Compose) -> TestResult<Self> {
+        let minds_facts = c
+            .minds_facts
+            .then(mush_roll::commerce::facts::MindsFactProvider::new);
         let manifest = f
             .engine
             .registry
@@ -725,11 +564,11 @@ impl PlayerWorld {
         cfg.enabled = true;
         cfg.match_.ai_fill = true;
         let real = crate::TacsimRuleset::with_config(cfg);
-        let real = if entitlements {
+        let real = if c.entitlements {
             // Doc 17h §3 M8f: and the procurement tick's two reads.
             real.with_mind_entitlement_holdings(manifest.clone())
                 .with_procurement_reads()
-        } else if dependent_owners {
+        } else if c.dependent_owners {
             real.with_dependent_owner_holdings(manifest.clone())
         } else if f.source_forms {
             real.with_personal_filed_source_forms(manifest.clone())
@@ -738,7 +577,7 @@ impl PlayerWorld {
         };
         let modules: Vec<Box<dyn GameModule>> = vec![
             Box::new(
-                if registry_recall.is_some() || registry_revocation.is_some() {
+                if c.registry_recall.is_some() || c.registry_revocation.is_some() {
                     mush_org::OrgModule::new()
                         .with_capabilities(crate::composition::domain_org_capability_vocabulary())
                 } else {
@@ -753,30 +592,30 @@ impl PlayerWorld {
             )),
             Box::new(mush_npc::NpcModule::new()),
             Box::new(PlayerTacsim {
-                authored_forks,
-                marked_registry,
+                authored_forks: c.authored_forks,
+                marked_registry: c.marked_registry,
                 real,
                 resources: f.resources.clone(),
                 shared: shared.clone(),
             }),
             Box::new(PurchaseRoll {
-                paid_resales,
+                paid_resales: c.paid_resales,
                 minds_facts: minds_facts.clone(),
                 source_forms: f.source_forms,
-                authored_forks,
-                marked_registry,
-                dependent_owners,
-                entitlements,
-                renewals,
-                renewal_service,
-                author_withdrawal,
-                compatible_updates,
-                derived_updates,
-                owner_qualification,
-                owner_attestations,
-                registry_recall,
-                registry_revocation,
-                qualification_short_parent,
+                authored_forks: c.authored_forks,
+                marked_registry: c.marked_registry,
+                dependent_owners: c.dependent_owners,
+                entitlements: c.entitlements,
+                renewals: c.renewals,
+                renewal_service: c.renewal_service,
+                author_withdrawal: c.author_withdrawal,
+                compatible_updates: c.compatible_updates,
+                derived_updates: c.derived_updates,
+                owner_qualification: c.owner_qualification,
+                owner_attestations: c.owner_attestations,
+                registry_recall: c.registry_recall.clone(),
+                registry_revocation: c.registry_revocation.clone(),
+                qualification_short_parent: c.qualification_short_parent,
                 shared: shared.clone(),
                 purchase: purchase.clone(),
                 inner: None,
@@ -792,8 +631,26 @@ impl PlayerWorld {
             }),
             content()?,
         ];
-        let mut engine = boxed_fixture_engine(saved.world()?, Registry::new(), modules)?;
-        engine.set_account_identity(f.accounts.clone());
+        let engine = boxed_fixture_engine(saved.world()?, Registry::new(), modules)?;
+        let mut this = Self::assemble(engine, &f.accounts, saved, &shared, manifest, minds_facts)?;
+        let lobby = match_::centre_object(&this.engine.world, match_::LOBBY_ENTRY)
+            .ok_or("shipped OOC centre")?;
+        this.arrive(lobby)?;
+        check_eq!(this.state()?, MatchState::Idle);
+        Ok(this)
+    }
+    /// What every family's world does once its engine is built: load the saved store, check
+    /// the manifest the composition registered, take the arena's egress, keep the store's
+    /// image and commit the boot's own writes.
+    fn assemble(
+        mut engine: Box<Engine>,
+        accounts: &Arc<Accounts>,
+        saved: &Durable,
+        shared: &Shared,
+        manifest: DefinitionRef,
+        minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
+    ) -> TestResult<Self> {
+        engine.set_account_identity(accounts.clone());
         load(&mut engine, &saved.disk)?;
         check_eq!(
             shared.lock().map_err(module_error)?.manifest,
@@ -838,19 +695,20 @@ impl PlayerWorld {
             snapshots: BTreeMap::new(),
         };
         this.commit()?;
-        let lobby = match_::centre_object(&this.engine.world, match_::LOBBY_ENTRY)
-            .ok_or("shipped OOC centre")?;
+        Ok(this)
+    }
+    /// The buyer and the observer walk into `room` and connect.
+    fn arrive(&mut self, room: ObjId) -> TestResult {
         for (actor, conn) in [(BUYER, BUYER_CONN), (GOD, OBSERVER_CONN)] {
-            this.engine.world.move_to(actor, lobby)?;
-            this.step(Inbound::ConnUp {
+            self.engine.world.move_to(actor, room)?;
+            self.step(Inbound::ConnUp {
                 conn,
                 actor,
                 caps_structured: false,
                 from_linkdead: false,
             })?;
         }
-        check_eq!(this.state()?, MatchState::Idle);
-        Ok(this)
+        Ok(())
     }
     fn transfer_charter(&mut self, charter: ObjId, buyer: ObjId, n: u128) -> TestResult {
         let image = &mut self.image;
@@ -1131,7 +989,7 @@ fn assert_captured(
 }
 
 async fn live_and_expired(f: &PurchaseFixture, granted: &Durable, grace_end: i64) -> TestResult {
-    let mut world = PlayerWorld::boot(f, granted)?;
+    let mut world = Rig::purchase(f).boot(granted)?;
     let tasks = world.tasks.clone();
     let outcome: TestResult = async {
         world.select()?;
@@ -1248,7 +1106,7 @@ async fn fresh_refused(
     grace_end: i64,
     after_start: bool,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot(f, granted)?;
+    let mut world = Rig::purchase(f).boot(granted)?;
     let tasks = world.tasks.clone();
     let outcome: TestResult = async {
         world.select()?;

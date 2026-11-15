@@ -14,7 +14,7 @@ fn params(a: &EntitlementAllocationV1) -> Value {
     json!({"filed":a.filed().get().to_string(),"reason":"registry_review"})
 }
 fn setup(f: &PurchaseFixture, granted: &Durable) -> TestResult<(Durable, RegistryRecallPolicy)> {
-    let mut world = PlayerWorld::boot_entitlements(f, granted)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(granted)?;
     world.say(GOD, &format!("@org/create {ORG}"))?;
     world.say(GOD, &format!("@org/scope create {ORG}=recall"))?;
     let state = world
@@ -42,7 +42,7 @@ fn setup(f: &PurchaseFixture, granted: &Durable) -> TestResult<(Durable, Registr
     )?;
     let policy = RegistryRecallPolicy::new(issuer()?, org, scope, vec![BUYER])?;
     let saved = capture(&world, &disk(&world));
-    let mut configured = PlayerWorld::boot_recall(f, &saved, policy.clone())?;
+    let mut configured = Rig::personal(f, Compose::recall(policy.clone())).boot(&saved)?;
     configured
         .engine
         .set_offer_keys(mush_core::OfferKeyRing::new(
@@ -187,7 +187,7 @@ fn fences(
     policy: &RegistryRecallPolicy,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut disabled = PlayerWorld::boot_entitlements(f, saved)?;
+    let mut disabled = Rig::personal(f, Compose::ENTITLEMENTS).boot(saved)?;
     check!(action(&disabled, "roll", ACTION, 1).is_err());
     check!(crate::test_checks::refused(prepare(
         &mut disabled,
@@ -199,7 +199,7 @@ fn fences(
         params(a)
     ))?);
     for after_stage in [false, true] {
-        let mut world = PlayerWorld::boot_recall(f, saved, policy.clone())?;
+        let mut world = Rig::personal(f, Compose::recall(policy.clone())).boot(saved)?;
         check!(
             crate::test_checks::refused(prepare(
                 &mut world,
@@ -228,7 +228,7 @@ fn fences(
     // Readiness is a live composed latch, not the mere continued existence of
     // an Org slot or an old generic AuthWitness.
     for after_stage in [false, true] {
-        let mut world = PlayerWorld::boot_recall(f, saved, policy.clone())?;
+        let mut world = Rig::personal(f, Compose::recall(policy.clone())).boot(saved)?;
         let (prepared, output) =
             prepare(&mut world, "roll", ACTION, 1, BUYER, START + 2, params(a))?;
         let freeze = |world: &PlayerWorld| -> TestResult {
@@ -371,7 +371,7 @@ fn cold_corruptions(
         });
         check!(lost.disk.len() < len);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_recall(f, &lost, policy.clone()))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::recall(policy.clone())).boot(&lost))?,
             "missing exact recall obligation"
         );
     }
@@ -399,7 +399,7 @@ fn cold_corruptions(
         }
         check!(changed);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_recall(f, &crossed, policy.clone()))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::recall(policy.clone())).boot(&crossed))?,
             "crossed cause cannot authenticate actual status/root"
         );
     }
@@ -412,7 +412,7 @@ fn publication(
     owner: LicenceId,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_recall(f, saved, policy.clone())?;
+    let mut world = Rig::personal(f, Compose::recall(policy.clone())).boot(saved)?;
     source_answer(&mut world, BUYER, owner, Some(a.revision().source()))?;
     source_answer(&mut world, GOD, a.licence(), Some(a.revision().source()))?;
     private_status(&mut world, BUYER, owner, false)?;
@@ -484,13 +484,13 @@ fn publication(
     );
     notices(&mut world, owner, a)?;
     let retained = capture(&world, &disk(&world));
-    let mut cold = PlayerWorld::boot_recall(f, &retained, policy.clone())?;
+    let mut cold = Rig::personal(f, Compose::recall(policy.clone())).boot(&retained)?;
     private_status(&mut cold, GOD, a.licence(), true)?;
     // Current policy revocation must stop new authority while preserving the
     // immutable cause and private historical-holder readback.
     suspend(&mut cold)?;
     let revoked = capture(&cold, &disk(&cold));
-    let mut disabled = PlayerWorld::boot_entitlements(f, &revoked)?;
+    let mut disabled = Rig::personal(f, Compose::ENTITLEMENTS).boot(&revoked)?;
     private_status(&mut disabled, GOD, a.licence(), true)?;
     check!(action(&disabled, "roll", ACTION, 1).is_err());
     cold_corruptions(f, &retained, policy, a)?;
@@ -502,7 +502,7 @@ fn withdrawn_then_recalled(
     policy: &RegistryRecallPolicy,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_recall(f, saved, policy.clone())?;
+    let mut world = Rig::personal(f, Compose::recall(policy.clone())).boot(saved)?;
     commit(
         &mut world,
         "roll",
@@ -522,7 +522,7 @@ fn withdrawn_then_recalled(
     check_eq!(row.get("recalled_by"), Some(&json!(token(START + 61))));
     source_answer(&mut world, GOD, a.licence(), None)?;
     let saved = capture(&world, &disk(&world));
-    let mut cold = PlayerWorld::boot_entitlements(f, &saved)?;
+    let mut cold = Rig::personal(f, Compose::ENTITLEMENTS).boot(&saved)?;
     private_status(&mut cold, GOD, a.licence(), true)?;
     Ok(())
 }
@@ -533,7 +533,7 @@ fn bounded_notice_drain(
     owner: LicenceId,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_recall(f, saved, policy.clone())?;
+    let mut world = Rig::personal(f, Compose::recall(policy.clone())).boot(saved)?;
     // Each recipient holding below is issued by the actual six-target E4/Roll/
     // Market Grant. No synthetic licence rows are used to fill the queue.
     cash(&mut world)?;
@@ -601,7 +601,7 @@ async fn already_sealed(
     policy: &RegistryRecallPolicy,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_recall(f, granted, policy.clone())?;
+    let mut world = Rig::personal(f, Compose::recall(policy.clone())).boot(granted)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         world.say(GOD, "SIM TEAM red")?;

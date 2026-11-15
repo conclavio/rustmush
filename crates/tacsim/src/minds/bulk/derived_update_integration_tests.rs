@@ -9,9 +9,6 @@ use mush_proto::{
 mod registry;
 const ACTION: &str = "update_derived_mind";
 const START: u128 = 81_000_000;
-fn boot(f: &PurchaseFixture, s: &Durable) -> TestResult<PlayerWorld> {
-    PlayerWorld::boot_derived_updates(f, s)
-}
 fn current_source(w: &PlayerWorld) -> TestResult<Revision> {
     let r = w.engine.world.module_state::<RollStore>().ok_or("Roll")?;
     let m = r.mind(BUYER, "child")?;
@@ -34,7 +31,7 @@ fn parent_end(w: &PlayerWorld) -> TestResult<i64> {
     Ok(term.window().grace_end().get())
 }
 async fn save(f: &PurchaseFixture, saved: &Durable) -> TestResult<(Durable, Revision)> {
-    let mut w = boot(f, saved)?;
+    let mut w = Rig::personal(f, Compose::DERIVED_UPDATES).boot(saved)?;
     let tasks = w.tasks.clone();
     let result: TestResult<(Durable, Revision)> = async {
   let old=current_source(&w)?;
@@ -170,7 +167,7 @@ pub(super) async fn exercise(
         .ok_or("actual initial child")?;
     let (edited, revision) = save(f, saved).await?;
     let (certified, rating) = registry::certify(f, &edited).await?;
-    let mut w = boot(f, &certified)?;
+    let mut w = Rig::personal(f, Compose::DERIVED_UPDATES).boot(&certified)?;
     let tasks = w.tasks.clone();
     let result: TestResult = async {
         let line = initial.content().position().line;
@@ -282,10 +279,10 @@ pub(super) async fn exercise(
         )?;
         let after = capture(&w, &disk(&w));
         assert!(
-            crate::test_checks::is_refusal(PlayerWorld::boot_entitlements(f, &after)),
+            crate::test_checks::is_refusal(Rig::personal(f, Compose::ENTITLEMENTS).boot(&after)),
             "missing derived protocol must refuse history"
         );
-        let mut cold = boot(f, &after)?;
+        let mut cold = Rig::personal(f, Compose::DERIVED_UPDATES).boot(&after)?;
         source_answer(&mut cold, BUYER, owner, Some(revision.source()))?;
         source_answer(
             &mut cold,
@@ -299,7 +296,7 @@ pub(super) async fn exercise(
             lost.disk.retain(|(ns, _), v| {
                 !(ns == "roll" && v.pointer("/family/id") == Some(&json!(family)))
             });
-            assert!(crate::test_checks::is_refusal(boot(f, &lost)));
+            assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::DERIVED_UPDATES).boot(&lost)));
         }
         let mut crossed = after.clone();
         let value = crossed
@@ -310,11 +307,11 @@ pub(super) async fn exercise(
         *value
             .pointer_mut("/value/parent/selected/terminal")
             .ok_or("actual parent terminal")? = json!(token(START + 99));
-        assert!(crate::test_checks::is_refusal(boot(f, &crossed)));
+        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::DERIVED_UPDATES).boot(&crossed)));
         // Exact parent window and owner readiness remain live at both custody fences.
         for change in ["parent_lapse", "clock", "economy"] {
             for take in [false, true] {
-                let mut stale = boot(f, &certified)?;
+                let mut stale = Rig::personal(f, Compose::DERIVED_UPDATES).boot(&certified)?;
                 let mut p = Some(prepare(
                     &mut stale,
                     "roll",

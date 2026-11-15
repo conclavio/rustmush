@@ -77,7 +77,7 @@ fn prepare_selected(
         .0)
 }
 async fn source_free_entry(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         configure(&mut world)?;
@@ -163,7 +163,7 @@ async fn source_free_entry(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         let action: DefinitionRef =
             serde_json::from_value(operation.get("action").ok_or("retirement action")?.clone())?;
         assert_eq!(action, submit.action);
-        let cold = PlayerWorld::boot_forks(f, &capture(&world, &after), true)?;
+        let cold = Rig::personal(f, Compose::FORKS).boot(&capture(&world, &after))?;
         assert!(roll(&cold)?.mind(BUYER, "child").is_err());
         cold.tasks.shutdown(Duration::from_secs(5)).await;
         // The new name-only route refuses originals. Their existing lifecycle
@@ -190,7 +190,7 @@ async fn source_free_entry(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     result
 }
 async fn delayed_name_reuse(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         configure(&mut world)?;

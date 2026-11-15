@@ -24,7 +24,7 @@ impl SubmissionRuntime for Runtime {
     }
 }
 fn branch(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    let mut world = PlayerWorld::boot_renewal_service(f, saved)?;
+    let mut world = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(saved)?;
     world.engine.set_submission_runtime(Arc::new(Runtime))?;
     world.engine.set_offer_keys(mush_core::OfferKeyRing::new(
         mush_core::OfferSecret::new(1, [0x79; 32])?,
@@ -271,7 +271,7 @@ pub(super) fn exercise(
     check_eq!(balances(&world)?, old_money);
     assert_current_unchanged(&world, &initial, &old_term, &old_economics)?;
     let end = capture(&world, &disk(&world));
-    let _ = PlayerWorld::boot_renewal_service(f, &end)?;
+    let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&end)?;
 
     // A healthy exact funded readback advances even if its acceptance ACK is
     // unknown. This is independent from the expiry/refund branch above.
@@ -292,7 +292,7 @@ pub(super) fn exercise(
         RenewalStateV1::Granted { .. }
     ));
     let end = capture(&healthy, &disk(&healthy));
-    let _ = PlayerWorld::boot_renewal_service(f, &end)?;
+    let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&end)?;
 
     let mut declined = branch(f, &draft_image)?;
     declined.say(
@@ -399,9 +399,9 @@ pub(super) fn exercise(
         tick_later(&mut close)?;
         none(&mut close);
         let ended = capture(&close, &disk(&close));
-        let _ = PlayerWorld::boot_renewal_service(f, &ended)?;
+        let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&ended)?;
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_renewals(f, &ended))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&ended))?,
             "five-action composition cannot erase service proof"
         );
         if !invalidated {
@@ -468,7 +468,7 @@ pub(in super::super) fn unavailable_buyer(
         RenewalServiceCloseReason::DeadlineReached,
     )?;
     check_eq!(balances(&world)?, money);
-    let _ = PlayerWorld::boot_renewal_service(f, &capture(&world, &disk(&world)))?;
+    let _ = Rig::personal(f, Compose::RENEWAL_SERVICE).boot(&capture(&world, &disk(&world)))?;
 
     let mut held = branch(f, &drafted)?;
     held.say(

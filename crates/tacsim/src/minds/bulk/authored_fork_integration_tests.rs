@@ -170,7 +170,7 @@ fn stage(
 
 async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResult {
     eprintln!("M7_STORY phase=fork_runtime event=enter");
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     eprintln!("M7_STORY phase=fork_runtime event=booted");
     let tasks = world.tasks.clone();
     let result: TestResult = async {
@@ -242,7 +242,7 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         // A crash after complete durable publication but before RAM install is
         // loaded from the exact owner+typed images, without rerunning eligibility.
         let cold = capture(&world, &committed);
-        let cold_world = PlayerWorld::boot_forks(f, &cold, true)?;
+        let cold_world = Rig::personal(f, Compose::FORKS).boot(&cold)?;
         assert_eq!(
             roll(&cold_world)?.mind(BUYER, "child")?.draft().source,
             SOURCE
@@ -319,7 +319,7 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         eprintln!("M7_STORY phase=b2 event=begin");
         story_phase("fork.jobs", || job_tests::exercise(f, &restart))?.await?;
         eprintln!("M7_STORY phase=b2 event=complete");
-        let reloaded = PlayerWorld::boot_forks(f, &restart, true)?;
+        let reloaded = Rig::personal(f, Compose::FORKS).boot(&restart)?;
         assert_eq!(roll(&reloaded)?.mind(BUYER, "child")?, &child);
         reloaded.tasks.shutdown(Duration::from_secs(5)).await;
         assert!(
@@ -336,9 +336,7 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         // different character, must fail final completeness even with valid JSON.
         let mut absent = restart.clone();
         remove_family(&mut absent, "roll", "roll_mind_draft_parent");
-        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(
-            f, &absent, true
-        )));
+        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::FORKS).boot(&absent)));
         let mut crossed = restart.clone();
         let mut moved = row.clone();
         *moved.get_mut("character").ok_or("mind character")? = json!(GOD);
@@ -369,9 +367,7 @@ async fn run(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResul
         // Repair the canonical typed key too; rejection must be the actual
         // historical paid holder join, not an uncorrected key/body mismatch.
         move_selector(&mut crossed, GOD, 2)?;
-        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(
-            f, &crossed, true
-        )));
+        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::FORKS).boot(&crossed)));
         Ok(())
     }
     .await;
@@ -393,7 +389,7 @@ async fn freshness(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         "staged_expiry",
         "owned_expiry",
     ] {
-        let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+        let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
         let tasks = world.tasks.clone();
         let result: TestResult = async {
             let before = disk(&world);
@@ -417,7 +413,7 @@ async fn freshness(f: &PurchaseFixture, saved: &Durable) -> TestResult {
                 retain_writes(&mut retained, bundle.writes())?;
                 world.engine.install_composed_action(installation)?;
                 assert_eq!(roll(&world)?.mind(BUYER, "child")?.draft().source, SOURCE);
-                let restarted = PlayerWorld::boot_forks(f, &capture(&world, &retained), true)?;
+                let restarted = Rig::personal(f, Compose::FORKS).boot(&capture(&world, &retained))?;
                 assert!(
                     roll(&restarted)?.mind(BUYER, "child").is_ok(),
                     "legitimate lapse is not boot corruption"
@@ -479,7 +475,7 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, permitted: bool) ->
 }
 
 async fn issuer_independence(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let before = f.rows("roll", "roll_mind_paid_term");
@@ -527,7 +523,7 @@ async fn issuer_independence(f: &PurchaseFixture, saved: &Durable) -> TestResult
             before,
             "a fork neither extends nor replaces its parent's grant"
         );
-        let cold = PlayerWorld::boot_forks(f, &capture(&world, &retained), true)?;
+        let cold = Rig::personal(f, Compose::FORKS).boot(&capture(&world, &retained))?;
         assert!(roll(&cold)?.mind(BUYER, "independent_child").is_ok());
         cold.tasks.shutdown(Duration::from_secs(5)).await;
         Ok(())

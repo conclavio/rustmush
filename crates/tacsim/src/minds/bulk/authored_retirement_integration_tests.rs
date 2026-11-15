@@ -111,7 +111,7 @@ fn no_source(events: &Events) {
     );
 }
 async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         // A real worker creates a named immutable revision; unnamed saves already exist.
@@ -139,7 +139,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         assert!(disk(&world)==before && roll(&world)?.mind(BUYER,"child").is_ok(),"no pre-ACK cleanup");
         let writes=prepared.authoritative_replay_writes();let mut committed=before.clone();retain_writes(&mut committed,&writes)?;
         let cold_saved=capture(&world,&committed);
-        let cold=PlayerWorld::boot_forks(f,&cold_saved,true)?;
+        let cold=Rig::personal(f, Compose::FORKS).boot(&cold_saved)?;
         assert!(roll(&cold)?.mind(BUYER,"child").is_err(),"durable complete union recovers without rerunning current rights");
         cold.tasks.shutdown(Duration::from_secs(5)).await;
         let retained=publish(&mut world,prepared)?;assert!(retained==committed);
@@ -160,27 +160,27 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         no_source(&line(&mut world,"@mind/new child")?);
         let replacement=roll(&world)?.mind(BUYER,"child")?.clone();assert!(replacement.id()>child.id());replacement.require_original_access()?;
         no_source(&line(&mut world,"@mind/remove child")?);assert!(roll(&world)?.mind(BUYER,"child").is_err());
-        let final_image=capture(&world,&disk(&world));let restart=PlayerWorld::boot_forks(f,&final_image,true)?;
+        let final_image=capture(&world,&disk(&world));let restart=Rig::personal(f, Compose::FORKS).boot(&final_image)?;
         restart.tasks.shutdown(Duration::from_secs(5)).await;
         for family in ["roll_mind_draft_parent","roll_mind_retired_draft_parent","roll_mind_authored_retirement"] {
             let mut corrupt=cold_saved.clone();remove_family(&mut corrupt,"roll",family);
-            assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(f,&corrupt,true)),"missing paired retirement family refuses {family}");
+            assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::FORKS).boot(&corrupt)),"missing paired retirement family refuses {family}");
         }
         for prefix in ["reference:roll:commercial:v1/draft_retirement/","reference:roll:unnamed_history:","reference:roll:named_version:"] {
             let mut corrupt=cold_saved.clone();let removed=corrupt.disk.keys().filter(|(ns,k)|ns=="roll" && k.starts_with(prefix)).cloned().collect::<Vec<_>>();
             assert!(!removed.is_empty(),"actual retention fixture exists");for key in removed {corrupt.disk.remove(&key);}
-            assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(f,&corrupt,true)),"missing actual retirement retention refuses");
+            assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::FORKS).boot(&corrupt)),"missing actual retirement retention refuses");
         }
         let mut both=cold_saved.clone();
         for ((ns,key),value) in &before {if ns=="roll" && (key==&format!("mind:{}:{}",BUYER.0,child.id()) || key==&format!("library:{}",BUYER.0)) {both.disk.insert((ns.clone(),key.clone()),value.clone());}}
-        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_forks(f,&both,true)),"live and retired identity cannot coexist");
+        assert!(crate::test_checks::is_refusal(Rig::personal(f, Compose::FORKS).boot(&both)),"live and retired identity cannot coexist");
         Ok(())
     }.await;
     tasks.shutdown(Duration::from_secs(5)).await;
     result
 }
 async fn stale(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let child = roll(&world)?.mind(BUYER, "child")?.clone();
@@ -207,7 +207,7 @@ async fn stale(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     result
 }
 async fn unsaved_and_queued(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_forks(f, saved, true)?;
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         let (fork, _) = super::super::prepare(
@@ -266,7 +266,7 @@ async fn unsaved_and_queued(f: &PurchaseFixture, saved: &Durable) -> TestResult 
             "ready worker cannot recreate a retired draft"
         );
         let after = capture(&world, &disk(&world));
-        let cold = PlayerWorld::boot_forks(f, &after, true)?;
+        let cold = Rig::personal(f, Compose::FORKS).boot(&after)?;
         assert!(roll(&cold)?.mind(BUYER, "cleanup").is_err());
         cold.tasks.shutdown(Duration::from_secs(5)).await;
         Ok(())

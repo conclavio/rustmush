@@ -7,7 +7,7 @@ pub(super) async fn certify(
     f: &PurchaseFixture,
     saved: &Durable,
 ) -> TestResult<(Durable, RatingRef)> {
-    let mut world = PlayerWorld::boot_derived_updates(f, saved)?;
+    let mut world = Rig::personal(f, Compose::DERIVED_UPDATES).boot(saved)?;
     let tasks = world.tasks.clone();
     let result: TestResult<(Durable, RatingRef)> = async {
         let (binding, mut ready) = admit(&mut world, 81_100_000)?;
@@ -121,7 +121,7 @@ pub(super) async fn certify(
         // A separate later world state proves expiry is not boot corruption.
         world.engine.world.set_now(super::parent_end(&world)?);
         let terminal = capture(&world, &disk(&world));
-        let cold = PlayerWorld::boot_derived_updates(f, &terminal)?;
+        let cold = Rig::personal(f, Compose::DERIVED_UPDATES).boot(&terminal)?;
         assert_eq!(run(&cold, binding)?.status, Status::Complete);
         assert_eq!(
             typed::<RatingReceipt>(&cold, "rating_receipts", binding.job)?,

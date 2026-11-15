@@ -302,7 +302,7 @@ fn file(
     certified: &Durable,
     rating: &RatingRef,
 ) -> TestResult<(Durable, LicenceId)> {
-    let mut world = PlayerWorld::boot_entitlements(f, certified)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(certified)?;
     let saved = source(&world)?;
     let parent: PaidTermRecord =
         serde_json::from_value(one(rows(&disk(&world), "roll", "roll_mind_paid_term"))?)?;
@@ -358,7 +358,7 @@ fn file(
     let owner =
         serde_json::from_value::<LicenceId>(value.get("licence").ok_or("owner licence")?.clone())?;
     let snapshot = capture(&world, &disk(&world));
-    let _cold = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    let _cold = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
     Ok((snapshot, owner))
 }
 /// A fresh boot seats both actors in the lobby; the market venue is ROOM.
@@ -417,7 +417,7 @@ fn grant(world: &mut PlayerWorld, operation: u128, number: u128) -> TestResult {
 }
 fn title_fences(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestResult {
     for after_stage in [false, true] {
-        let mut world = PlayerWorld::boot_entitlements(f, filed)?;
+        let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(filed)?;
         cash(&mut world)?;
         let child: FiledRecord = serde_json::from_value(
             rows(&disk(&world), "roll", "roll_mind_filed")
@@ -496,7 +496,7 @@ fn account_fences(
     params: Value,
 ) -> TestResult {
     for after_prepare in [false, true] {
-        let mut world = PlayerWorld::boot_entitlements(f, saved)?;
+        let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(saved)?;
         // A fresh boot seats both actors in the lobby; the venue is ROOM, so
         // each fence starts where the purchase itself is made.
         for actor in [GOD, BUYER] {
@@ -546,7 +546,7 @@ fn transactions(
     filed: &Durable,
     owner: LicenceId,
 ) -> TestResult<(Durable, EntitlementAllocationV1)> {
-    let mut world = PlayerWorld::boot_entitlements(f, filed)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(filed)?;
     cash(&mut world)?;
     let now = world.engine.world.now().checked_add(17).ok_or("time")?;
     world.engine.world.set_now(now);
@@ -603,7 +603,7 @@ fn transactions(
         FIRST + 81,
         json!({"operation":token(FIRST+4)}),
     )?;
-    let mut world = PlayerWorld::boot_entitlements(f, &funded)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(&funded)?;
     for actor in [GOD, BUYER] {
         world.engine.world.move_to(actor, ROOM)?;
     }
@@ -677,10 +677,10 @@ fn transactions(
         .get(a.operation())?;
     check!(actual.terminal().ok_or("actual E4 terminal")?.granted());
     let snapshot = capture(&world, &disk(&world));
-    let cold = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    let cold = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
     check_eq!(balances(&cold)?, balances(&world)?);
     check!(
-        crate::test_checks::refused(PlayerWorld::boot_dependent(f, &snapshot))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::DEPENDENT).boot(&snapshot))?,
         "old-only composition cannot accept new paid history"
     );
     // Each half of the immutable pair is mandatory, including all-row loss.
@@ -696,7 +696,7 @@ fn transactions(
             !(ns == owner_ns && row.pointer("/family/id") == Some(&json!(family)))
         });
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_entitlements(f, &missing))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::ENTITLEMENTS).boot(&missing))?,
             "missing {family}"
         );
     }
@@ -720,7 +720,7 @@ fn store(world: &PlayerWorld) -> TestResult<&EconomyStore> {
 }
 fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestResult {
     const ORG: u128 = FIRST + 900;
-    let mut world = PlayerWorld::boot_entitlements(f, granted)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(granted)?;
     cash(&mut world)?;
     world.say(GOD, "@org/create Guild")?;
     let (org, root) = {
@@ -916,7 +916,7 @@ fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestRes
         "the organisation's holding is indexed under the organisation"
     );
     let snapshot = capture(&world, &disk(&world));
-    let cold = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    let cold = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
     check_eq!(balances(&cold)?, balances(&world)?);
     check_eq!(
         allocation(&cold, ORG + 6)?.holder(),
@@ -947,7 +947,7 @@ fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestRes
 ///   cold boot.
 fn org_members(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestResult {
     const ORG: u128 = FIRST + 950;
-    let mut world = PlayerWorld::boot_entitlements(f, granted)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(granted)?;
     cash(&mut world)?;
     world.say(GOD, "@org/create Guild")?;
     let (org, root) = {
@@ -1226,7 +1226,7 @@ fn org_members_with(
     );
     // S3: the second member, non-staff and never the buyer, renews it.
     let renewing = capture(world, &disk(world));
-    let mut w = PlayerWorld::boot_renewals(f, &renewing)?;
+    let mut w = Rig::personal(f, Compose::RENEWALS).boot(&renewing)?;
     for actor in [GOD, BUYER, member, second] {
         w.engine.world.move_to(actor, ROOM)?;
     }
@@ -1325,11 +1325,11 @@ fn org_members_with(
         Some(&json!({"org": org, "acting": member})),
         "the row keeps the grant's acting"
     );
-    PlayerWorld::boot_renewals(f, &capture(&w, &disk(&w)))?;
+    Rig::personal(f, Compose::RENEWALS).boot(&capture(&w, &disk(&w)))?;
     Ok(())
 }
 fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
-    let mut world = PlayerWorld::boot_entitlements(f, filed)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(filed)?;
     cash(&mut world)?;
     commit(
         &mut world,
@@ -1379,7 +1379,7 @@ fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
     );
     check_eq!(a.terms().form(), PaidForm::OpenResale {});
     let snapshot = capture(&world, &disk(&world));
-    let _ = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    let _ = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
     renewal::service_tests::unavailable_buyer(f, &snapshot, &a)?;
     resale_routes::exercise(
         &f.accounts,
@@ -1390,12 +1390,12 @@ fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
         "purchase.fixture",
         63_000_000,
         None,
-        |saved| PlayerWorld::boot_paid_resales(f, saved),
+        |saved| Rig::personal(f, Compose::PAID_RESALES).boot(saved),
     )?;
     Ok(())
 }
 fn lapse_refund(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestResult {
-    let mut world = PlayerWorld::boot_entitlements(f, filed)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(filed)?;
     cash(&mut world)?;
     let parent: PaidTermRecord =
         serde_json::from_value(one(rows(&disk(&world), "roll", "roll_mind_paid_term"))?)?;
@@ -1449,7 +1449,7 @@ fn lapse_refund(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
     );
     check!(rows(&disk(&world), "roll", "roll_mind_paid_term_economics").is_empty());
     let snapshot = capture(&world, &disk(&world));
-    let _ = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    let _ = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
     Ok(())
 }
 #[track_caller]
@@ -1528,7 +1528,7 @@ async fn customer(
     )?;
     let mut lapsed = granted.clone();
     lapsed.now = parent.window().grace_end().get();
-    let mut world = PlayerWorld::boot_entitlements(f, &lapsed)?;
+    let mut world = Rig::personal(f, Compose::ENTITLEMENTS).boot(&lapsed)?;
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         let own=own_term(&world,a.licence())?;assert!(world.engine.world.now()<own.window().grace_end().get());
@@ -1567,7 +1567,7 @@ async fn customer(
         let second=world.progressed_snapshot(id,unit,first.at_ms,thinks,landed).await?;
         crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::assert_captured(&world,id,unit,&seal,&second)?;
         let mut ended=granted.clone();ended.now=own.window().grace_end().get();
-        let mut fresh=PlayerWorld::boot_entitlements(f,&ended)?;source_answer(&mut fresh,GOD,a.licence(),None)?;
+        let mut fresh=Rig::personal(f, Compose::ENTITLEMENTS).boot(&ended)?;source_answer(&mut fresh,GOD,a.licence(),None)?;
         fresh.say(GOD,"SIM TEAM red")?;let refused=fresh.say(GOD,&format!("SIM MIND filed:{} PROFILE Default",a.licence().get()))?;
         assert!(!PlayerWorld::private_text(&refused,GOD).contains("Your slot will carry"));
         assert!(match_::centre_of(&fresh.engine.world).is_some_and(|c|c.match_id.is_none()));
@@ -1608,7 +1608,7 @@ pub(super) async fn exercise(
         "purchase.fixture",
         64_000_000,
         None,
-        |saved| PlayerWorld::boot_paid_resales(f, saved),
+        |saved| Rig::personal(f, Compose::PAID_RESALES).boot(saved),
     )?;
     story_phase("derived.compatible_update", || {
         derived_update::exercise(f, &granted, owner, &allocation)

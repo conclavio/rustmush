@@ -52,7 +52,7 @@ pub(super) async fn exercise(
     revision: &Revision,
     rating: RatingRef,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_updates(f, saved)?;
+    let mut world = Rig::personal(f, Compose::UPDATES).boot(saved)?;
     let tasks = world.tasks.clone();
     let outcome: TestResult = async {
         world.select()?;

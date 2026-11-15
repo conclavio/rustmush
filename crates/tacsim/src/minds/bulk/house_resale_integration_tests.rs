@@ -12,7 +12,7 @@ pub(super) fn exercise(registry: &Fixture, snapshot: &Durable) -> TestResult {
     // every pair the fence asks about.
     let probe = Arc::new(resale_routes::AdmissionProbe::default());
     let admission = || -> Admission { Some(probe.clone()) };
-    let mut w = boot_resale_options(registry, snapshot, true, true, admission())?;
+    let mut w = Rig::house(registry, Compose { paid_resales: true, admission: admission(), ..Compose::HOUSE_RENEWALS }).boot(snapshot)?;
     command(&mut w, &format!("@account/open #{}=cr", BUYER.0))?;
     let payer = wallet(&w, EconomicOwner::Object(BUYER), None)?;
     let faucet = wallet(
@@ -69,6 +69,6 @@ pub(super) fn exercise(registry: &Fixture, snapshot: &Durable) -> TestResult {
         "faucet",
         START + 100,
         Some((probe.as_ref(), a.issuer())),
-        |saved| boot_resale_options(registry, saved, true, true, admission()),
+        |saved| Rig::house(registry, Compose { paid_resales: true, admission: admission(), ..Compose::HOUSE_RENEWALS }).boot(saved),
     )
 }

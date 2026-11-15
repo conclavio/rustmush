@@ -71,7 +71,7 @@ fn assert_source(events: &Events, conn: u64, permitted: bool) -> TestResult {
 }
 async fn exercise_async(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResult {
     eprintln!("M7_STORY phase=paid_source_player_boot event=begin");
-    let mut world = PlayerWorld::boot(f, saved)?;
+    let mut world = Rig::purchase(f).boot(saved)?;
     eprintln!("M7_STORY phase=paid_source_player_boot event=complete");
     let tasks = world.tasks.clone();
     let outcome: TestResult = async {
@@ -141,7 +141,7 @@ async fn exercise_async(f: &PurchaseFixture, saved: &Durable, permitted: bool) -
             Ok(())
         })?;
         assert!(
-            crate::test_checks::refused(PlayerWorld::boot(f, &changed))?,
+            crate::test_checks::refused(Rig::purchase(f).boot(&changed))?,
             "a status field alone cannot supply a missing cause receipt"
         );
     }

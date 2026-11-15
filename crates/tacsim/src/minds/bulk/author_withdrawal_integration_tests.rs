@@ -154,7 +154,7 @@ fn transfer(world: &mut PlayerWorld, a: &EntitlementAllocationV1) -> TestResult 
     Ok(())
 }
 fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -> TestResult {
-    let mut disabled = PlayerWorld::boot_entitlements(f, granted)?;
+    let mut disabled = Rig::personal(f, Compose::ENTITLEMENTS).boot(granted)?;
     check!(action(&disabled, "roll", ACTION, 1).is_err());
     check!(crate::test_checks::refused(prepare_withdraw(
         &mut disabled,
@@ -163,7 +163,7 @@ fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -
         a
     ))?);
     for after_stage in [false, true] {
-        let mut world = PlayerWorld::boot_withdrawal(f, granted)?;
+        let mut world = Rig::personal(f, Compose::WITHDRAWAL).boot(granted)?;
         check!(
             crate::test_checks::refused(prepare_withdraw(&mut world, GOD, START, a))?,
             "staff is not the personal author"
@@ -190,7 +190,7 @@ fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -
         // After a real transfer on a clean engine the original author no
         // longer holds the title.
         let untouched = capture(&world, &disk(&world));
-        let mut fresh = PlayerWorld::boot_withdrawal(f, &untouched)?;
+        let mut fresh = Rig::personal(f, Compose::WITHDRAWAL).boot(&untouched)?;
         transfer(&mut fresh, a)?;
         check!(
             crate::test_checks::refused(prepare_withdraw(&mut fresh, BUYER, START + 2, a))?,
@@ -202,7 +202,7 @@ fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -
         );
     }
     for at in 0..3 {
-        let mut world = PlayerWorld::boot_withdrawal(f, granted)?;
+        let mut world = Rig::personal(f, Compose::WITHDRAWAL).boot(granted)?;
         let before = disk(&world);
         let freeze = |world: &PlayerWorld| -> TestResult {
             world.engine.registry.freeze_mechanics_owner(
@@ -265,7 +265,7 @@ fn cold_corruptions(
         });
         check!(lost.disk.len() < before);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_withdrawal(f, &lost))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::WITHDRAWAL).boot(&lost))?,
             "missing withdrawal obligation"
         );
     }
@@ -289,7 +289,7 @@ fn cold_corruptions(
         }
         check!(changed);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_withdrawal(f, &crossed))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::WITHDRAWAL).boot(&crossed))?,
             "status/cause mismatch or unauthorized recall"
         );
     }
@@ -316,7 +316,7 @@ fn cold_corruptions(
         }
         check!(changed);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_withdrawal(f, &crossed))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::WITHDRAWAL).boot(&crossed))?,
             "cause/root or initial-author mismatch"
         );
     }
@@ -336,7 +336,7 @@ fn withdraw_after_lapse(
     )?;
     let mut lapsed = granted.clone();
     lapsed.now = parent.window().grace_end().get();
-    let mut world = PlayerWorld::boot_withdrawal(f, &lapsed)?;
+    let mut world = Rig::personal(f, Compose::WITHDRAWAL).boot(&lapsed)?;
     source_answer(&mut world, BUYER, owner, None)?;
     source_answer(&mut world, GOD, a.licence(), Some(a.revision().source()))?;
     let before = disk(&world);
@@ -374,17 +374,17 @@ fn withdraw_after_lapse(
         listing_params(owner, "open_resale", 100)
     ))?);
     let saved = capture(&world, &after);
-    let cold = PlayerWorld::boot_withdrawal(f, &saved)?;
+    let cold = Rig::personal(f, Compose::WITHDRAWAL).boot(&saved)?;
     check!(
         disk(&cold) == after,
         "cold audited withdrawal preserves durable evidence"
     );
     // A disabled producer still audits valid immutable history. Present-day
     // title transfer does not rewrite or invalidate the earlier actual cause.
-    let mut disabled = PlayerWorld::boot_entitlements(f, &saved)?;
+    let mut disabled = Rig::personal(f, Compose::ENTITLEMENTS).boot(&saved)?;
     transfer(&mut disabled, a)?;
     let transferred = capture(&disabled, &disk(&disabled));
-    check!(PlayerWorld::boot_entitlements(f, &transferred).is_ok());
+    check!(Rig::personal(f, Compose::ENTITLEMENTS).boot(&transferred).is_ok());
     cold_corruptions(f, &saved, a)?;
     Ok(saved)
 }
@@ -394,7 +394,7 @@ fn eligible_withdrawal(
     owner: LicenceId,
     a: &EntitlementAllocationV1,
 ) -> TestResult<Durable> {
-    let mut world = PlayerWorld::boot_withdrawal(f, granted)?;
+    let mut world = Rig::personal(f, Compose::WITHDRAWAL).boot(granted)?;
     // Positive control at the same clock: the later refusal is withdrawal,
     // not an already expired parent or owner term.
     seat(&mut world)?;
@@ -428,7 +428,7 @@ fn eligible_withdrawal(
     // revision from follow resolution; only Pin holders keep it.
     source_answer(&mut world, BUYER, owner, None)?;
     let saved = capture(&world, &disk(&world));
-    check!(PlayerWorld::boot_withdrawal(f, &saved).is_ok());
+    check!(Rig::personal(f, Compose::WITHDRAWAL).boot(&saved).is_ok());
     Ok(saved)
 }
 async fn already_sealed(
@@ -436,7 +436,7 @@ async fn already_sealed(
     granted: &Durable,
     a: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut world = PlayerWorld::boot_withdrawal(f, granted)?;
+    let mut world = Rig::personal(f, Compose::WITHDRAWAL).boot(granted)?;
     let tasks = world.tasks.clone();
     let result: TestResult = async {
         world.say(GOD, "SIM TEAM red")?;

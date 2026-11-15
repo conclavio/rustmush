@@ -31,7 +31,7 @@ impl SubmissionRuntime for Runtime {
     }
 }
 fn branch(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    let mut w = PlayerWorld::boot_minds_facts(f, saved)?;
+    let mut w = Rig::personal(f, Compose::MINDS_FACTS).boot(saved)?;
     w.engine.set_submission_runtime(Arc::new(Runtime))?;
     w.engine.set_offer_keys(mush_core::OfferKeyRing::new(
         mush_core::OfferSecret::new(1, [0x82; 32])?,
@@ -383,7 +383,7 @@ fn corruption(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         });
         check_eq!(broken.disk.len() + 1, before);
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_minds_facts(f, &broken))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::MINDS_FACTS).boot(&broken))?,
             "missing committed {missing}"
         );
     }
@@ -407,7 +407,7 @@ fn corruption(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             },
         );
         check!(
-            crate::test_checks::refused(PlayerWorld::boot_minds_facts(f, &broken))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::MINDS_FACTS).boot(&broken))?,
             "crossed committed {field}"
         );
     }
@@ -1047,7 +1047,7 @@ pub(super) async fn exercise(
     owner: LicenceId,
     birth: &EntitlementAllocationV1,
 ) -> TestResult {
-    let ordinary = PlayerWorld::boot_entitlements(f, saved)?;
+    let ordinary = Rig::personal(f, Compose::ENTITLEMENTS).boot(saved)?;
     assert!(action(&ordinary, "roll", ACTION, 1).is_err());
     assert!(!mush_economy::has_fact_provider(
         &ordinary.engine.world,

@@ -3,13 +3,13 @@
 use super::*;
 use mush_economy::{AccountId as WalletId, AccountStatus};
 const N: u128 = 82_000_000;
+/// The paid resales, the owner qualification and the owner attestations composed.
+const ALL: Compose = Compose {
+    owner_qualification: true,
+    owner_attestations: true,
+    ..Compose::PAID_RESALES
+};
 
-fn boot_all(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    PlayerWorld::boot_options_with_resales(
-        f, saved, true, true, true, true, true, false, false, false, true, false, true, None, None,
-        false, true,
-    )
-}
 fn wallet(w: &PlayerWorld, actor: ObjId) -> TestResult<WalletId> {
     let economy = w
         .engine
@@ -134,7 +134,7 @@ pub(super) async fn exercise(
     owner: LicenceId,
     customer: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut w = boot_all(f, saved)?;
+    let mut w = Rig::personal(f, ALL).boot(saved)?;
     let mut tasks = vec![w.tasks.clone()];
     let result: TestResult = async {
         let child = owner_term(&w, owner)?;
@@ -230,7 +230,7 @@ pub(super) async fn exercise(
         );
         source_answer(&mut w, BUYER, owner, Some(source))?;
         let qualified = capture(&w, &disk(&w));
-        let mut cold = boot_all(f, &qualified)?;
+        let mut cold = Rig::personal(f, ALL).boot(&qualified)?;
         tasks.push(cold.tasks.clone());
         source_answer(&mut cold, BUYER, owner, Some(source))?;
         // The old child dates remain unchanged; only a due actual attestation
@@ -268,13 +268,13 @@ pub(super) async fn exercise(
             .ok_or("new grace")?;
         assert!(new_grace > child.window().grace_end().get());
         let attested_saved = capture(&cold, &disk(&cold));
-        let mut later = boot_all(f, &attested_saved)?;
+        let mut later = Rig::personal(f, ALL).boot(&attested_saved)?;
         tasks.push(later.tasks.clone());
         source_answer(&mut later, BUYER, owner, Some(source))?;
         resale(&mut later, parent.licence(), BUYER, GOD, N + 12)?;
         source_answer(&mut later, BUYER, owner, None)?;
         let final_saved = capture(&later, &disk(&later));
-        let mut final_world = boot_all(f, &final_saved)?;
+        let mut final_world = Rig::personal(f, ALL).boot(&final_saved)?;
         tasks.push(final_world.tasks.clone());
         assert!(rows(&disk(&final_world), "roll", OPS).contains(&qualification));
         assert!(
@@ -294,7 +294,7 @@ pub(super) async fn exercise(
         )?;
         // Both actual native custody fences retain the exact current parent.
         for take in [false, true] {
-            let mut probe = boot_all(f, &acquired)?;
+            let mut probe = Rig::personal(f, ALL).boot(&acquired)?;
             tasks.push(probe.tasks.clone());
             let (prepared, out) =
                 prepare_q(&mut probe, BUYER, N + 20, params(owner, parent.licence()))?;
@@ -364,7 +364,7 @@ pub(super) async fn exercise(
                 }
             }
             assert!(
-                crate::test_checks::is_refusal(boot_all(f, &bad)),
+                crate::test_checks::is_refusal(Rig::personal(f, ALL).boot(&bad)),
                 "missing/crossed captured holder must refuse cold reconstruction"
             );
         }
@@ -384,7 +384,7 @@ async fn source_fork_history(
     saved: &Durable,
     parent: LicenceId,
 ) -> TestResult {
-    let mut w = boot_all(f, saved)?;
+    let mut w = Rig::personal(f, ALL).boot(saved)?;
     let mut tasks = vec![w.tasks.clone()];
     let result: TestResult = async {
         signed_action(
@@ -409,7 +409,7 @@ async fn source_fork_history(
             Some(&json!(2))
         );
         let forked = capture(&w, &disk(&w));
-        let mut cold = boot_all(f, &forked)?;
+        let mut cold = Rig::personal(f, ALL).boot(&forked)?;
         tasks.push(cold.tasks.clone());
         let before = cold
             .engine
@@ -420,7 +420,7 @@ async fn source_fork_history(
             .clone();
         resale(&mut cold, parent, BUYER, GOD, N + 102)?;
         let later = capture(&cold, &disk(&cold));
-        let mut restored = boot_all(f, &later)?;
+        let mut restored = Rig::personal(f, ALL).boot(&later)?;
         tasks.push(restored.tasks.clone());
         assert_eq!(
             restored
@@ -468,7 +468,7 @@ async fn source_fork_history(
                 }
             }
             assert!(
-                crate::test_checks::is_refusal(boot_all(f, &bad)),
+                crate::test_checks::is_refusal(Rig::personal(f, ALL).boot(&bad)),
                 "source capture must retain exact accepted ownership"
             );
         }

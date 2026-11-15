@@ -26,7 +26,7 @@ mod resale;
 type ResaleShared = Arc<Mutex<Option<mush_market::mind_paid_resale::PaidResaleConfig>>>;
 type RenewalShared = Arc<Mutex<Option<mush_market::mind_house_renewal::RenewalConfig>>>;
 /// 17g C1a: the optional House buyer admission the paid resale writer repeats.
-type Admission = Option<Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>>;
+pub(super) type Admission = Option<Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>>;
 
 const FIRST: u128 = 19_000_000;
 type HouseShared = Arc<Mutex<Option<HouseConfig>>>;
@@ -350,46 +350,10 @@ fn revoke_curator(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::CmdErro
     )
     .map_err(|e| mush_core::CmdError::msg(e.to_string()))
 }
-fn boot(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    boot_options(registry, saved, false)
-}
-fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResult<PlayerWorld> {
-    boot_resale_options(registry, saved, renewals, false, None)
-}
-/// M8c B4: the House world with the owner attestations composed (the House
-/// attestation among them), nothing else changed.
-fn boot_attestations(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    boot_every_option(registry, saved, false, false, None, true, false)
-}
-fn boot_resale_options(
-    registry: &Fixture,
-    saved: &Durable,
-    renewals: bool,
-    paid_resales: bool,
-    admission: Admission,
-) -> TestResult<PlayerWorld> {
-    boot_every_option(
-        registry,
-        saved,
-        renewals,
-        paid_resales,
-        admission,
-        false,
-        false,
-    )
-}
-/// `original`: doc 17h §3 M8h, the original-holdings read composed too (the
-/// House attestation tick walks the owner licences through it).
-#[allow(clippy::fn_params_excessive_bools)]
-fn boot_every_option(
-    registry: &Fixture,
-    saved: &Durable,
-    renewals: bool,
-    paid_resales: bool,
-    admission: Admission,
-    attestations: bool,
-    original: bool,
-) -> TestResult<PlayerWorld> {
+/// The House family's world ([`Rig::boot`] with [`Family::House`]): its own module stack, then
+/// what every family's world does ([`PlayerWorld::assemble`]).
+#[inline(never)]
+pub(super) fn world(registry: &Fixture, saved: &Durable, c: &Compose) -> TestResult<PlayerWorld> {
     let shared: Shared = Arc::new(Mutex::new(Registered::default()));
     let house: HouseShared = Arc::new(Mutex::new(None));
     let renewal: RenewalShared = Arc::new(Mutex::new(None));
@@ -399,7 +363,7 @@ fn boot_every_option(
     cfg.enabled = true;
     cfg.match_.ai_fill = true;
     let real = crate::TacsimRuleset::with_config(cfg);
-    let real = if original {
+    let real = if c.original_holdings {
         real.with_original_holdings(manifest.clone())
     } else {
         real
@@ -422,11 +386,11 @@ fn boot_every_option(
             shared: shared.clone(),
         }),
         Box::new(Roll {
-            paid_resales,
-            admission,
+            paid_resales: c.paid_resales,
+            admission: c.admission.clone(),
             resale: resale.clone(),
-            renewals,
-            attestations,
+            renewals: c.renewals,
+            attestations: c.owner_attestations,
             renewal: renewal.clone(),
             shared: shared.clone(),
             house: house.clone(),
@@ -447,65 +411,9 @@ fn boot_every_option(
         }),
         content()?,
     ];
-    let mut engine = Box::new(Engine::with_modules(
-        saved.world()?,
-        Registry::new(),
-        modules,
-    )?);
-    engine.set_account_identity(registry.accounts.clone());
-    load(&mut engine, &saved.disk)?;
-    check_eq!(
-        shared.lock().map_err(module_error)?.manifest,
-        Some(manifest)
-    );
-    let tasks = engine
-        .world
-        .module_state::<ArenaRegistry>()
-        .ok_or("ArenaRegistry")?
-        .tasks()
-        .clone();
-    let egress = tasks.take_egress().ok_or("unique egress")?;
-    let mut image: HashMap<SmolStr, ModuleBootData> = HashMap::new();
-    mush_testkit::fold_module_ops_into(
-        &mut image,
-        saved
-            .disk
-            .iter()
-            .map(|((ns, key), value)| ModuleOp {
-                ns: ns.as_str().into(),
-                op: ModuleWrite::JsonSet {
-                    key: key.as_str().into(),
-                    value: value.clone(),
-                },
-            })
-            .collect(),
-    );
-    let factory = shared
-        .lock()
-        .map_err(module_error)?
-        .factory
-        .clone()
-        .ok_or("Registry factory")?;
-    let mut w = PlayerWorld {
-        minds_facts: None,
-        engine,
-        tasks,
-        egress,
-        image,
-        serial: 0,
-        factory,
-        snapshots: BTreeMap::new(),
-    };
-    w.commit()?;
-    for (actor, conn) in [(BUYER, BUYER_CONN), (GOD, OBSERVER_CONN)] {
-        w.engine.world.move_to(actor, ROOM)?;
-        w.step(Inbound::ConnUp {
-            conn,
-            actor,
-            caps_structured: false,
-            from_linkdead: false,
-        })?;
-    }
+    let engine = boxed_fixture_engine(saved.world()?, Registry::new(), modules)?;
+    let mut w = PlayerWorld::assemble(engine, &registry.accounts, saved, &shared, manifest, None)?;
+    w.arrive(ROOM)?;
     let _ = w.engine.world.take_dirty();
     Ok(w)
 }
@@ -868,7 +776,7 @@ fn fresh_fences(registry: &Fixture, quoted: &Durable, funded: &Durable, n: u128)
         ),
     ] {
         for boundary in 0..3 {
-            let mut w = boot(registry, base)?;
+            let mut w = Rig::house(registry, Compose::NONE).boot(base)?;
             let old = balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?;
             if boundary == 0 {
                 command(&mut w, "@org/status House=suspended")?;
@@ -917,7 +825,7 @@ fn account_fences(registry: &Fixture, quoted: &Durable, funded: &Durable) -> Tes
         ),
     ] {
         for after_stage in [false, true] {
-            let mut w = boot(registry, base)?;
+            let mut w = Rig::house(registry, Compose::NONE).boot(base)?;
             let old = balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?;
             let original_disk = disk(&w);
             let (p, o) = direct(&mut w, id, BUYER, FIRST + 25, params.clone())?;
@@ -942,7 +850,7 @@ fn account_fences(registry: &Fixture, quoted: &Durable, funded: &Durable) -> Tes
     Ok(())
 }
 async fn checkout(registry: &Fixture, snapshot: &Durable, licence: LicenceId) -> TestResult {
-    let mut w = boot(registry, snapshot)?;
+    let mut w = Rig::house(registry, Compose::NONE).boot(snapshot)?;
     let tasks = w.tasks.clone();
     let result: TestResult = async {
         let term = term(&w, licence)?;
@@ -1030,7 +938,7 @@ fn flow(
         serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
     let owner_term: mush_roll::commerce::records::OwnerTerm =
         serde_json::from_value(one(rows(&snapshot.disk, "roll", "roll_mind_owner_term"))?)?;
-    let mut w = boot(registry, snapshot)?;
+    let mut w = Rig::house(registry, Compose::NONE).boot(snapshot)?;
     for actor in [GOD, BUYER] {
         command(&mut w, &format!("@account/open #{}=cr", actor.0))?;
     }
@@ -1108,7 +1016,7 @@ fn flow(
     fresh_fences(registry, &quoted, &funded, FIRST + 20)?;
     account_fences(registry, &quoted, &funded)?;
     // Real issuer loss blocks Grant, but the funded buyer can still drain.
-    let mut refund = boot(registry, &funded)?;
+    let mut refund = Rig::house(registry, Compose::NONE).boot(&funded)?;
     command(&mut refund, "@org/status House=suspended")?;
     perform(
         &mut refund,
@@ -1124,7 +1032,7 @@ fn flow(
         PurchasePhase::Refunded { .. }
     ));
     check!(rows(&disk(&refund), "roll", "roll_mind_house_term_economics").is_empty());
-    let _cold_refund = boot(registry, &saved(&refund))?;
+    let _cold_refund = Rig::house(registry, Compose::NONE).boot(&saved(&refund))?;
     let next = w
         .engine
         .world
@@ -1198,7 +1106,7 @@ fn flow(
         allocation.licence(),
         owner_term.window().grace_end().get(),
     )?;
-    let _cold = boot(registry, &granted)?;
+    let _cold = Rig::house(registry, Compose::NONE).boot(&granted)?;
     for (owner, family) in [
         ("market", "market_mind_house_purchase"),
         ("market", "market_mind_house_receipt"),
@@ -1209,7 +1117,7 @@ fn flow(
         let mut broken = granted.clone();
         check!(remove_family(&mut broken, owner, family) > 0);
         check!(
-            crate::test_checks::refused(boot(registry, &broken))?,
+            crate::test_checks::refused(Rig::house(registry, Compose::NONE).boot(&broken))?,
             "missing paired history accepted"
         );
     }
@@ -1225,7 +1133,7 @@ fn flow(
         remove_family(&mut all_missing, owner, family);
     }
     check!(
-        crate::test_checks::refused(boot(registry, &all_missing))?,
+        crate::test_checks::refused(Rig::house(registry, Compose::NONE).boot(&all_missing))?,
         "E4 inverse cannot lose all six rows"
     );
     let mut crossed = granted.clone();
@@ -1235,7 +1143,7 @@ fn flow(
             .ok_or("scope")? = json!(scope.0.checked_add(1).ok_or("scope overflow")?);
         Ok(())
     })?;
-    check!(crate::test_checks::refused(boot(registry, &crossed))?);
+    check!(crate::test_checks::refused(Rig::house(registry, Compose::NONE).boot(&crossed))?);
     // Members and even the publisher pay the identical gross public price.
     perform(
         &mut w,
@@ -1279,7 +1187,7 @@ fn flow(
     );
     command(&mut w, "@org/status House=suspended")?;
     let independent = saved(&w);
-    let mut cold = boot(registry, &independent)?;
+    let mut cold = Rig::house(registry, Compose::NONE).boot(&independent)?;
     selection(&mut cold, allocation.licence(), true)?;
     set_ic(&mut cold, paid.window().grace_end().get())?;
     selection(&mut cold, allocation.licence(), false)?;

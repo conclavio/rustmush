@@ -11,9 +11,6 @@ const START: u128 = 21_000_000;
 const ACTION: &str = "replace_owner_parent_qualification";
 const OPS: &str = "roll_mind_owner_qualification_operation";
 const HEADS: &str = "roll_mind_owner_qualification_head";
-fn boot(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    PlayerWorld::boot_owner_qualification(f, saved)
-}
 fn params(owner: LicenceId, parent: LicenceId) -> Value {
     json!({"owner_licence":owner.get(),"parent_licence":parent.get()})
 }
@@ -214,14 +211,14 @@ fn parent_purchase(
 }
 fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     check!(
-        crate::test_checks::refused(PlayerWorld::boot_entitlements(f, saved))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::ENTITLEMENTS).boot(saved))?,
         "disabled qualification cannot drop its obligations"
     );
     for family in [OPS, HEADS] {
         let mut missing = saved.clone();
         check!(remove_family(&mut missing, "roll", family) > 0);
         check!(
-            crate::test_checks::refused(boot(f, &missing))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&missing))?,
             "missing qualification half"
         );
     }
@@ -229,7 +226,7 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     check!(remove_family(&mut all, "roll", OPS) > 0);
     check!(remove_family(&mut all, "roll", HEADS) > 0);
     check!(
-        crate::test_checks::refused(boot(f, &all))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&all))?,
         "retained cause prevents all typed-row loss"
     );
     let mut root = saved.clone();
@@ -239,7 +236,7 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     });
     check!(root.disk.len() < before);
     check!(
-        crate::test_checks::refused(boot(f, &root))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&root))?,
         "exact permanent cause required"
     );
     for field in ["ordinal", "operation"] {
@@ -258,7 +255,7 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             json!(token(START + 999))
         };
         check!(
-            crate::test_checks::refused(boot(f, &crossed))?,
+            crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&crossed))?,
             "head cannot claim an unrelated history"
         );
     }
@@ -282,7 +279,7 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         .and_then(|v| v.get_mut("recalled_by"))
         .ok_or("recall")? = json!(token(START + 998));
     check!(
-        crate::test_checks::refused(boot(f, &recalled))?,
+        crate::test_checks::refused(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&recalled))?,
         "replacement cannot repair a forged recall cause"
     );
     Ok(())
@@ -295,11 +292,11 @@ fn fences(
 ) -> TestResult {
     let p = params(owner, parent.licence());
     let parent_window = {
-        let w = boot(f, saved)?;
+        let w = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(saved)?;
         own_term(&w, parent.licence())?.window()
     };
     for mode in ["foreign", "clock", "lapse_stage", "lapse_take", "title"] {
-        let mut w = boot(f, saved)?;
+        let mut w = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(saved)?;
         let before = disk(&w);
         let money = balances(&w)?;
         if mode == "foreign" {
@@ -366,7 +363,7 @@ fn fences(
         );
     }
     // Ordinary frozen custody completes after the actual parent lapses.
-    let mut held = boot(f, saved)?;
+    let mut held = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(saved)?;
     let (prepared, out) = prepare_q(&mut held, BUYER, START + 31, p.clone())?;
     stage_q(&mut held, START + 31, p, prepared, out)?;
     let (bundle, installation) = held
@@ -377,7 +374,7 @@ fn fences(
     held.engine.world.set_now(parent_window.grace_end().get());
     apply(&mut held, bundle.writes(), installation)?;
     check_eq!(rows(&disk(&held), "roll", OPS).len(), 1);
-    check!(boot(f, &capture(&held, &disk(&held))).is_ok());
+    check!(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&capture(&held, &disk(&held))).is_ok());
     Ok(())
 }
 // A shorter *actual configured offer*, not altered persisted dates. The old
@@ -388,7 +385,7 @@ async fn short_parent_lapse_and_restore(
     owner: LicenceId,
     customer: &EntitlementAllocationV1,
 ) -> TestResult {
-    let mut w = PlayerWorld::boot_owner_qualification_short_parent(f, saved)?;
+    let mut w = Rig::personal(f, Compose::SHORT_PARENT).boot(saved)?;
     let tasks = w.tasks.clone();
     let result: TestResult = async {
         let child = owner_term(&w, owner)?;
@@ -428,7 +425,7 @@ async fn short_parent_lapse_and_restore(
             Some(customer.revision().source()),
         )?;
         let lapsed = capture(&w, &disk(&w));
-        let mut restored = boot(f, &lapsed)?;
+        let mut restored = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&lapsed)?;
         source_answer(&mut restored, BUYER, owner, None)?;
         let replacement = parent_purchase(&mut restored, START + 220, "open_resale")?;
         let before = retained(&restored);
@@ -446,7 +443,7 @@ async fn short_parent_lapse_and_restore(
         );
         assert_eq!(rows(&disk(&restored), "roll", OPS).len(), 2);
         let cold = capture(&restored, &disk(&restored));
-        let mut cold = boot(f, &cold)?;
+        let mut cold = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&cold)?;
         source_answer(&mut cold, BUYER, owner, Some(source))?;
         source_answer(
             &mut cold,
@@ -480,7 +477,7 @@ pub(super) async fn exercise(
         short_parent_lapse_and_restore(f, saved, owner, customer)
     })?
     .await?;
-    let mut w = boot(f, saved)?;
+    let mut w = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(saved)?;
     let tasks = w.tasks.clone();
     let result: TestResult = async {
         let child = owner_term(&w, owner)?;
@@ -523,7 +520,7 @@ pub(super) async fn exercise(
         )?;
         let once = capture(&w, &disk(&w));
         corruptions(f, &once)?;
-        let mut cold = boot(f, &once)?;
+        let mut cold = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&once)?;
         source_answer(&mut cold, BUYER, owner, Some(source))?;
         let resale = parent_purchase(&mut cold, START + 40, "open_resale")?;
         let before = retained(&cold);
@@ -547,7 +544,7 @@ pub(super) async fn exercise(
         let twice = capture(&cold, &disk(&cold));
         let mut expired = twice.clone();
         expired.now = child.window().grace_end().get();
-        let mut expired = boot(f, &expired)?;
+        let mut expired = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&expired)?;
         source_answer(&mut expired, BUYER, owner, None)?;
         source_answer(
             &mut expired,
@@ -576,7 +573,7 @@ pub(super) async fn exercise(
             serde_json::to_value(owner_term(&expired, owner)?)?,
             serde_json::to_value(&child)?
         );
-        assert!(boot(f, &capture(&expired, &disk(&expired))).is_ok());
+        assert!(Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&capture(&expired, &disk(&expired))).is_ok());
         let restored_lapsed = capture(&expired, &disk(&expired));
         super::story_phase("qualification.attestation", || {
             attestation::exercise(f, &restored_lapsed, owner, customer)
@@ -600,7 +597,7 @@ async fn chartered(
 ) -> TestResult {
     use crate::minds::bulk::registry_integration_tests::original_purchase::charter_transfer_fixture;
     const SALE: u128 = 48_200_000;
-    let mut w = boot(f, saved)?;
+    let mut w = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(saved)?;
     let mut tasks = vec![w.tasks.clone()];
     let result: TestResult = async {
         let child = owner_term(&w, owner)?;
@@ -722,7 +719,7 @@ async fn chartered(
             Some(customer.revision().source()),
         )?;
         let saved = capture(&w, &disk(&w));
-        let mut cold = boot(f, &saved)?;
+        let mut cold = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&saved)?;
         tasks.push(cold.tasks.clone());
         source_answer(&mut cold, GOD, owner, Some(source))?;
         cold.transfer_charter(child_charter.object(), BUYER, SALE + 10)?;
@@ -737,7 +734,7 @@ async fn chartered(
         assert!(rows(&disk(&cold), "roll", OPS).contains(&proof));
         assert!(serde_json::to_value(owner_term(&cold, owner)?)? == serde_json::to_value(&child)?);
         let saved = capture(&cold, &disk(&cold));
-        let mut final_world = boot(f, &saved)?;
+        let mut final_world = Rig::personal(f, Compose::OWNER_QUALIFICATION).boot(&saved)?;
         tasks.push(final_world.tasks.clone());
         source_answer(&mut final_world, BUYER, owner, Some(source))?;
         source_answer(
