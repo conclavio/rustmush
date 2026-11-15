@@ -505,8 +505,8 @@ and HOLD keep the unit where it is (see *Postures* below).
   not take you for its pilot: it asks whether you are connected. If you are not,
   the unit is its mind's from the moment the field takes it in, exactly as after
   a `QUIT` inside a field, and you read at your next login "A field opened
-  around #123 while you were away: its mind has the controls, makes for its
-  carrier's ramp and fires only on a unit that fires on it." The same holds if
+  around #123 while you were away: its mind has the controls and makes for its
+  carrier's ramp. It fires only on a unit that fires on it." The same holds if
   you are in the seat but knocked out or held.
 - **If your link dropped just before the field opened**, the five minutes are
   still yours, counted from the moment the link dropped and not from the
@@ -523,13 +523,15 @@ field as their unit's pilot, as always.
 on a fill plan, has nobody at its controls. A field that opens around it takes
 it in as its mind's from the first moment, whether or not you are connected,
 and you are told "A field opened around #123 with nobody in its seat: its mind
-has the controls, makes for its carrier's ramp and fires only on a unit that
+has the controls and makes for its carrier's ramp. It fires only on a unit that
 fires on it. A plan it was working ends once it is aboard." It flies its
 posture like any unit:
 
 - On **RETURN**, which every rig holds until you set another, it drives to your
   carrier's ramp, is let out of the field and is put aboard, into the bay slot
-  it launched from. **Its fill plan ends when it comes aboard**, and you read
+  it launched from. You are told "Its mind took #123 out of the field at its
+  carrier's ramp, and it is aboard her now." **Its fill plan ends when it comes
+  aboard**, and you read
   "Rig 2's plan at Ahuna Flank ended: a field opened around it and it was taken
   home." with what it mined. Ore in its hopper is unloaded once the field has
   settled. A rig you sit at the console of and recover out of the field
@@ -584,12 +586,14 @@ its mind stands down and what it had pending is dropped. +focus #123/cockpit
 takes your cockpit back." Take the focus the line names, and your next command
 is what the unit does. If the mind had already taken the unit out at the ramp,
 it stays out, and you hear "While you were away its mind took #123 out of the
-field at its carrier's ramp."
+field at its carrier's ramp." If it was already aboard you read "Its mind took
+#123 out of the field at its carrier's ramp, and it is aboard her now."
 
 **A server restart** does not put you back at the controls unless you are
 connected. A unit its mind was flying is still its mind's. A unit you were
 flying waits five minutes from the restart for you to reconnect, firing
-nothing, and then passes to its mind.
+nothing, and then passes to its mind. A unit its mind had already taken out at
+the ramp, and not yet put aboard, is still put aboard after the restart.
 
 The simulator is different: there a dropped pilot's unit goes to its mind and
 fights on (`help simulator`).
