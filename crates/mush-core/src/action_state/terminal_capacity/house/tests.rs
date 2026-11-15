@@ -1353,6 +1353,21 @@ fn paid_follow_house_cannot_reinterpret_pin_or_change_acquisition_line() -> Test
     Ok(())
 }
 
+/// Doc 46 CT.9 (CT.3's B12): a two-seat House **Pin** birth, granted and rebooted, for
+/// the House renewal's recipe check. It is the one birth whose recipe the renewal's birth
+/// route does not check itself (a Follow birth's it does), so only through it does the
+/// validator's own call to the recipe check decide anything.
+pub(in crate::action_state::terminal_capacity) fn two_seat_renewal_birth_seed() -> TestResult<Seed>
+{
+    let mut f = fixture_with_two_seats(1, 1, true)?;
+    let p = fund(&mut f, Mode::TwoSeatPin, FundFault::default())?;
+    install(&mut f, p)?;
+    let p = finish(&mut f, Mode::TwoSeatPin, true, FinishFault::None)?;
+    install(&mut f, p)?;
+    reboot(&f)?;
+    Ok((f.store, f.handles, f.disk))
+}
+
 pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() -> TestResult<Seed> {
     let mut f = fixture_with_follow(1, 1, true, true)?;
     let p = fund(&mut f, Mode::TwoSeatFollow, FundFault::default())?;

@@ -506,6 +506,7 @@ pub mod paid_resale;
 pub mod registry_inspection;
 pub mod registry_recall;
 pub mod registry_revocation;
+pub mod registry_twin;
 pub(crate) mod withdrawal;
 pub use authored_retirement::entry::AuthoredRetirementSelection;
 pub(crate) mod bootstrap;

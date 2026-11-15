@@ -267,6 +267,70 @@ fn house_birth_product_requires_the_allocation_and_its_declared_recipe() -> Test
     Ok(())
 }
 
+// House only (CT.3's mutation B12, owed to CT.9): the validator's own call to the recipe
+// check, end to end. A two-seat Pin licence is renewed under a composition that declares the
+// first House recipe alone (the two-seat product withdrawn, its history kept): the renewal is
+// refused at Draft, at Fund and at Grant, each by the recipe check, and a funded renewal is
+// still refunded and still boots. Each step is also taken under the composition that
+// declares the recipe, where it is accepted.
+#[test]
+fn a_two_seat_pin_renewal_is_refused_at_draft_fund_and_grant_once_its_recipe_is_gone() -> TestResult
+{
+    const GONE: &str = "house two-seat recipe unavailable";
+    let operation = CommitToken::from_bytes([31; 16]);
+    let first_recipe_only = twin::fixture::<House>()?.store.registry.house_purchase;
+    // The two-seat Pin birth's fixture at `disk` (its own when `None`), booted cold under the
+    // composition with the two-seat recipe or (`gone`) without it.
+    let pin = |disk: Option<&twin::Disk>, gone: bool| -> TestResult<twin::Fixture<House>> {
+        let seed = house::tests::two_seat_renewal_birth_seed()?;
+        let mut f = twin::fixture_from_seed::<House>(1, false, false, seed)?;
+        if let Some(disk) = disk {
+            f.disk = disk.clone();
+        }
+        if gone {
+            f.store.registry.house_purchase = first_recipe_only.clone();
+        }
+        f.store = twin::hydrate(&f, &f.disk)?;
+        Ok(f)
+    };
+    let by_the_recipe = |step: &str, result: TestResult<PreparedTxn>| match result {
+        Err(e) if e.to_string().contains(GONE) => Ok(()),
+        Err(e) => Err(format!("{step} refused by another check: {e}")),
+        Ok(_) => Err(format!("{step} accepted without its recipe")),
+    };
+
+    let mut f = pin(None, false)?;
+    let licence = required(&twin::view(&f), &licence_key(LICENCE, 1)?)?;
+    let birth = token(field(&licence, "operation")?)?;
+    let allocation =
+        optional_family_value(&twin::view(&f), House::BIRTH, birth)?.ok_or("Pin birth")?;
+    assert_eq!(allocation["terms"]["seats"], json!(2));
+
+    by_the_recipe("Draft", twin::draft(&mut pin(None, true)?, 31, None))?;
+    let p = twin::draft(&mut f, 31, None)?;
+    twin::install(&mut f, p)?;
+
+    let drafted = f.disk.clone();
+    by_the_recipe(
+        "Fund",
+        twin::advance(&mut pin(Some(&drafted), true)?, operation, 1, 32),
+    )?;
+    let p = twin::advance(&mut f, operation, 1, 32)?;
+    twin::install(&mut f, p)?;
+
+    let funded = f.disk.clone();
+    let mut gone = pin(Some(&funded), true)?;
+    by_the_recipe("Grant", twin::advance(&mut gone, operation, 2, 33))?;
+    let p = twin::advance(&mut gone, operation, 3, 34)?;
+    twin::install(&mut gone, p)?;
+    twin::hydrate(&gone, &gone.disk)?;
+
+    let p = twin::advance(&mut f, operation, 2, 33)?;
+    twin::install(&mut f, p)?;
+    twin::hydrate(&f, &f.disk)?;
+    Ok(())
+}
+
 /// Doc 46 Q-46-2: every identity string of the House issuer, as a literal. The rig reads
 /// the constants, so this is the one place a changed constant meets the value it must
 /// hold; the CT.0 snapshot is the other.
