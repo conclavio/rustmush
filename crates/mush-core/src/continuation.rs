@@ -42,10 +42,19 @@ pub struct ContinuationRequest {
     pub(crate) handle: ContinuationHandle,
     actor: ObjId,
     pub(crate) argument: String,
+    /// Doc 47 CO.14: scheduled while the actor's own connected line was
+    /// dispatching, so the continuation finishes what the player typed and
+    /// its submission keeps the engine's `Queued.` and fallback `Done.`.
+    /// False when a tick, a continuation or a line queued by `@wait`
+    /// scheduled it (none of those dispatches with a connection).
+    typed: bool,
 }
 impl ContinuationRequest {
     pub(crate) const fn actor(&self) -> ObjId {
         self.actor
+    }
+    pub(crate) const fn typed(&self) -> bool {
+        self.typed
     }
 }
 
@@ -106,12 +115,15 @@ impl Ctx<'_> {
         {
             return Err(refused());
         }
+        let typed =
+            self.w.dispatching_conn().is_some() && actor == self.actor && actor == caller.actor();
         self.out.defer(crate::Deferred::ScheduleIn {
             delay_ms,
             kind: crate::ScheduledKind::CommandContinuation(ContinuationRequest {
                 handle: handle.clone(),
                 actor,
                 argument: argument.to_string(),
+                typed,
             }),
         });
         Ok(())

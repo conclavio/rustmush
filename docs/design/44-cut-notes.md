@@ -3544,11 +3544,12 @@ market's whole path on a world brought up by the runbook, and it met these on th
 3. **A rating talks to its author all the way through.** MW.5 read this in the code and did
    not see it on a connection. It is real: the author's session receives the engine's
    `Queued.` and `Done.` for every step the Registry takes on its behalf, 4,294 lines over
-   the lane's 24-minute rating. **Not fixed** (the engine's submit path and the world task's commit
-   line, for a continuation the player did not type). The lane counts them and holds the
-   truth as an expected failure: the job says `KNOWN DEFECT (expected to fail)` while they
-   come, and fails the day they stop, until the marker is taken out. The launch under a
-   licence and the recover print the same pairs for the claim's steps.
+   the lane's 24-minute rating. **Fixed in doc 47 CO.14** (`docs/design/47-cut-notes.md`,
+   `## CO.14`): a submission the player did not type gets no receipt `Queued.` and no fallback
+   `Done.`. The lane still counts those lines during the rating, and since CO.14 one is a
+   failure; the `KNOWN DEFECT` marker that held them as an expected failure is gone. The
+   launch under a licence and the recover printed the same pairs for the claim's steps, and
+   are quiet with it.
 4. **An IC launch tells the operator nothing about the mind.** `+tv/1 launch
    mind=filed:<licence> go` answers as a plain launch does. No line names the mind sealed
    aboard, `+tv` does not, and the licence's row in `+minds/holdings` reads the same with the

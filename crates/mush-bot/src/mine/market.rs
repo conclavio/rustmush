@@ -857,10 +857,11 @@ impl Lane {
                 }
             }
             Phase::Rate => {
-                // The request is the author's own submitted step: its sentence and the engine's
-                // `Done.` for it. Not `quiet`: the Registry's own steps follow at once, about one
-                // a second, and every line after this pair is one the author did not ask for.
-                if confirmed(raw, walk::RATING_QUEUED) {
+                // The command's own sentence is its whole answer: `@mind/rate` submits nothing
+                // itself (doc 47 CO.14). Not `quiet`: the Registry's own steps follow at once,
+                // about one a second, and every line after this one is one the author did not
+                // ask for (no `Queued.` or `Done.` among them, which the lane checks).
+                if lines::has(text, walk::RATING_QUEUED) {
                     Verdict::Done
                 } else if lines::has(text, walk::REFUSED) {
                     poll(walk::REFUSED, POLL_MS, SUBMIT_TRIES)
@@ -1654,8 +1655,6 @@ mod tests {
             "@mind/rate sentry@1" => {
                 let mut said = vec![
                     (0, "Registry preparation queued.".to_owned()),
-                    (0, "Queued.".to_owned()),
-                    (0, "Done.".to_owned()),
                     (1_000, "Registry work retained and queued.".to_owned()),
                     (1_500, "tally goes Mind Counter <MC>.".to_owned()),
                 ];
