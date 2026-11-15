@@ -5,14 +5,14 @@ mod authority;
 mod config;
 pub(crate) mod delivery;
 pub(crate) mod families;
-mod offer;
+pub(crate) mod offer;
 pub(super) mod output_policy;
 pub(crate) mod owner;
 pub(crate) mod records;
 pub(crate) mod runtime;
 pub(crate) mod state;
 pub use config::CoreFactoryConfig;
-mod progress;
+pub(crate) mod progress;
 mod recipe;
 pub use recipe::{CoreRecipeAuthority, PublishedCoreRecipe};
 

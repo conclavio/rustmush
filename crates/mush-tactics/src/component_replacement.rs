@@ -22,11 +22,12 @@ use std::collections::BTreeSet;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
 
-/// At most sixteen exact roots can participate in one frozen replacement policy
-/// (doc 17h cut M8b: with an ungoverning site, two chassis families of three
-/// governed roots and three ungoverned twins are twelve, and the rig's coreless
-/// base thirteen; without one, seven).
-pub const MAX_REPLACEMENT_ROOTS: usize = 16;
+/// At most twenty-four exact roots can participate in one frozen replacement
+/// policy (doc 17h cut M8b; doc 47 CO.6 added the ship's family: with an
+/// ungoverning site, three chassis families of three governed roots and three
+/// ungoverned twins are eighteen, and the rig's and the Dray's coreless bases
+/// twenty; without one, eleven).
+pub const MAX_REPLACEMENT_ROOTS: usize = 24;
 fn refused() -> ParticipantError {
     ParticipantError::refused("component replacement is unavailable or changed")
 }

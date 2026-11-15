@@ -80,6 +80,22 @@ pub struct RefitInstallationRequest {
 pub struct RefitCancellationRequest {
     pub acceptance: CommitToken,
 }
+/// **Whether `thing` stands at the shop `factory`** (doc 47 CO.6): in it, as a rig the shop has
+/// taken in does, or in the place the shop itself stands in, as a ship docked at the berth the
+/// shop stands at does, and her captain on the deck beside her. A shop that stands nowhere has
+/// only its inside. The refit's every check of where the requester and the hull are asks this,
+/// in this crate and in industry's, so the two never disagree.
+#[must_use]
+pub fn at_shop(
+    world: &mush_core::World,
+    thing: mush_core::ObjId,
+    factory: mush_core::ObjId,
+) -> bool {
+    let Some(here) = world.get(thing).and_then(|o| o.location) else {
+        return false;
+    };
+    here == factory || world.get(factory).and_then(|o| o.location) == Some(here)
+}
 /// The owner's refusal (`Leg::REFUSED`), which the CT.0 snapshot pins.
 #[cfg(test)]
 pub(crate) fn refused() -> mush_core::participant::ParticipantError {

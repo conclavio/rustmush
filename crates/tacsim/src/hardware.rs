@@ -5,6 +5,7 @@
 pub(crate) mod bay;
 mod composition;
 mod content;
+pub mod counter;
 mod recipes;
 pub mod sale;
 pub(crate) use composition::Registration;

@@ -144,10 +144,8 @@ fn current(
     live(w, s.incoming, Some(ObjKind::Thing))?;
     if w.get(s.incoming)
         .is_none_or(|o| o.location != Some(s.requester))
-        || w.get(s.requester)
-            .is_none_or(|o| o.location != Some(site.factory))
-        || w.get(s.hull)
-            .is_none_or(|o| o.location != Some(site.factory))
+        || !super::at_shop(w, s.requester, site.factory)
+        || !super::at_shop(w, s.hull, site.factory)
     {
         return Err(Error::Unavailable);
     }

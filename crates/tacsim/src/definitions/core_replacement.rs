@@ -4,7 +4,7 @@
 //! since doc 44 unit MW.13, the ship (`ShipCores`, the Dray's cored roots).
 //! Each family carries a governed root per class and, since M8b (doc 17 §10,
 //! D-UM-42), an **ungoverned twin** of each, which only the ungoverning recipe
-//! (`core_ungovern`) fits. No recipe fits a ship's root yet.
+//! (`core_ungovern`) fits. Since doc 47 CO.6 the launch's refit fits a ship's root too.
 //! Explicit composition only: this does not alter the ordinary fielded catalog,
 //! register an action, grant economic authority, or write a World unit.
 
@@ -237,8 +237,9 @@ pub struct SurfaceRigCores(CoreFamily);
 /// section, one root per class and an ungoverned twin of each. Built on a catalog that
 /// already carries the line and rig families, so its catalog is the whole fitted set.
 ///
-/// **No recipe fits one.** The chartered shop fits a hull that stands in it
-/// (`crate::hardware`), and a ship cannot; the roots are here so that a hull bound to one
+/// **The chartered shop fits one** (doc 47 CO.6): the launch's refit policy names this family
+/// and the shipped coreless Dray as its base (`crate::hardware`), and a ship docked where the
+/// shop stands is at the shop (`mush_economy::core_refit::at_shop`). A hull bound to a root
 /// reads a core, and a mind can be sealed on it (`crate::port::ship_mind`).
 #[derive(Clone, Debug)]
 pub struct ShipCores(CoreFamily);

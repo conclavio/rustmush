@@ -1,7 +1,7 @@
 # Governed cores and fitting
 
 A configured hardware works sells certified cores and fits them to the governed
-line-tank family. Ask for the site's supplier and fitting shop. These offers appear
+line tank, the prospector rig and the Dray. Ask for the site's supplier and fitting shop. These offers appear
 only at an explicitly enabled works with real stock, accounts and permissions.
 Use `+actions` to see the offers available to your character.
 
@@ -35,6 +35,31 @@ registration costs and writes nothing; `+enduser/apply go` pays the Registry
 once: it does not lapse, and it cannot be sold or handed to another character.
 A heirloom die in a back room needs it like any other Class III. The Registry may
 suspend a registration; `+enduser` then says so, and staff can tell you why.
+
+## The fitting shop's counter: +core
+
+```text
++core
++core/buy <I|II|III> [go]
++core/fit <core>=<hull> [go]
+```
+
+The counter does the shop's half of every step below for you, and submits your own steps
+when you have said go to the price. `+core/buy II` says what a Class II core costs and how
+long the shop works on it; `+core/buy II go` orders it. The shop draws a certified die, your
+payment goes in, the hours run, and the core is delivered into your hands, titled to you.
+You may order from anywhere. Class III needs your end-user registration (above).
+
+`+core/fit <core>=<hull>` fits a governed core you hold, new or one a fitting displaced
+earlier, to a hull titled to you: a Dray or a prospector rig. Sign it where the shop stands,
+with the hull there: on the berth gallery the shop stands at, with your ship docked there.
+The fee is paid at the counter, the fitting's hours run, and the core goes in. A core it
+displaces comes back to your hands. A Co-op charter is the Co-op's hull: `+coop/buyout`
+makes her yours first. A ship with a mind sealed aboard is held as she is; `+ship/mind off`
+first. `+core` reads where the shop stands, the cores in your hands and what the counter is
+doing for you. The Co-op's yard does not re-dress a cored Dray as a Dray-P.
+
+The steps the counter takes are the offers below, which `+act` also reaches.
 
 ## Buying a core
 

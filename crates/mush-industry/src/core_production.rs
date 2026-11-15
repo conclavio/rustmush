@@ -10,6 +10,7 @@ pub(crate) type Prepared<O, P> =
 mod audit;
 mod authority;
 mod config;
+pub mod counter;
 pub mod integration;
 mod participant;
 pub(crate) mod provider;

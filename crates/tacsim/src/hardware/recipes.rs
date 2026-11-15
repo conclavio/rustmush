@@ -114,6 +114,11 @@ impl PublishedHardware {
     pub fn pack(&self) -> &RulesPack {
         &self.pack
     }
+    /// The IC hours `process` works on a core of `class` (doc 47 CO.6: the counter tells them).
+    #[must_use]
+    pub fn work_units(&self, process: HardwareProcess, class: DieClass) -> u64 {
+        self.recipes[index(process)].work_units(core(class))
+    }
     pub fn catalogue(&self) -> &HardwareCatalogueDef {
         &self.catalogue
     }

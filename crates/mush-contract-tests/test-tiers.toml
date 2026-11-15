@@ -205,6 +205,18 @@ id = "tacsim/tests::mw21_completion::mw21_a_bought_mind_flies_its_buyers_ship_an
 tier = "nightly"
 job = "m8-gate-stories"
 
+# Doc 47 unit CO.6: doc 17f §9's story 2, private and derivative (three ratings), and story 7,
+# the fact interface (one rating), on the combined world.
+[[test]]
+id = "tacsim/tests::c4_story_2_derivative::c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_survives_revocation"
+tier = "nightly"
+job = "m8-gate-stories"
+
+[[test]]
+id = "tacsim/tests::c4_story_7_facts::c4_story_7_minds_facts_settle_contracts_on_the_launch_and_survive_a_restart"
+tier = "nightly"
+job = "m8-gate-stories"
+
 # H3: the scale harness, against a disposable Redis.
 [[test]]
 id = "mush-contract-tests/tests::scale_harness::*"

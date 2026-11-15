@@ -109,9 +109,18 @@ fn thing(rig: &mut Rig, name: &str) -> ObjId {
 /// treasury, a facility chartered `core_ungovern` and titled to Tether, and GOD's and the
 /// agent's `industry.core.ungovern` grants, named in the deployment's optional ungovern site
 /// (doc 17h cut M8g, the lead's ruling (a)); a shipped deployment names none.
+///
+/// Doc 47 CO.6: the fitting shop stands at Ceres' Visiting Berth Gallery, as an operator stands
+/// it at a port, so a ship docked there and her captain on the gallery are at the shop
+/// (`mush_economy::core_refit::at_shop`). A rig is still taken into it.
 fn hardware(rig: &mut Rig) -> HardwareCoordinates {
     let agent = rig.tw.spawn_player("Hardware stock agent");
     let factory = thing(rig, "Basin fitting shop");
+    let gallery = crate::excursions::station_room(&rig.tw, "ceres_port", "room.c01_berth_gallery");
+    rig.tw
+        .world_mut()
+        .move_to(factory, gallery)
+        .expect("the shop stands at the gallery");
     let output = thing(rig, "Basin completed work");
     let containers = [
         thing(rig, "Basin die depot"),

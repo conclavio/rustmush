@@ -16,6 +16,14 @@ pub(crate) struct CoreProductionState {
     pub(crate) index: Option<OriginIndex>,
     pub(crate) integration: Option<super::integration::state::Projection>,
     pub(crate) refit: Option<super::refit::state::Projection>,
+    /// **The dies issued since this boot** (doc 47 CO.6, for [`super::counter`]): the issuing
+    /// operation, the agent, the class and the lot. RAM only and derived, never written: a
+    /// restart forgets them, and a die it forgets stays in its agent's stock, inert, until a
+    /// staff offer names it. Bounded at [`super::counter::MAX_ISSUED`], oldest first out.
+    pub(crate) issued: std::collections::BTreeMap<
+        u64,
+        (CommitToken, ObjId, super::DieClass, mush_inventory::LotId),
+    >,
 }
 pub(crate) struct Readiness;
 impl OwnerReadService for Readiness {
@@ -58,16 +66,30 @@ pub(crate) struct OriginPatch {
     action: DefinitionRef,
     commit: CommitToken,
     live: Option<LiveFacts>,
+    /// Doc 47 CO.6: the die an Issue made, for the counter's this-boot record.
+    die: Option<(super::DieClass, mush_inventory::LotId)>,
 }
 pub(crate) struct OriginBound<'a> {
     state: &'a mut CoreProductionState,
     index: Box<OriginIndex>,
     generation: u64,
+    die: Option<(CommitToken, ObjId, super::DieClass, mush_inventory::LotId)>,
 }
 impl BoundParticipant for OriginBound<'_> {
     fn apply(self) {
         self.state.index = Some(*self.index);
         self.state.generation = self.generation;
+        if let Some(die) = self.die {
+            let next = self
+                .state
+                .issued
+                .last_key_value()
+                .map_or(0, |(k, _)| k.saturating_add(1));
+            self.state.issued.insert(next, die);
+            while self.state.issued.len() > super::counter::MAX_ISSUED {
+                self.state.issued.pop_first();
+            }
+        }
     }
 }
 fn refused() -> ParticipantError {
@@ -97,6 +119,7 @@ impl OriginParticipant {
         self.definitions
             .content(&self.config.policy)
             .map_err(|_| refused())?;
+        let mut die = None;
         let (after, live) = match request {
             Request::Integration(_) | Request::Refit(_) => return Err(refused()),
             Request::Initialize => {
@@ -135,6 +158,7 @@ impl OriginParticipant {
                 if live.stamp != certificate.observed_ic || live.utc != certificate.observed_utc {
                     return Err(refused());
                 }
+                die = Some((certificate.class, certificate.lot));
                 (
                     state
                         .index
@@ -161,6 +185,7 @@ impl OriginParticipant {
             action: ctx.action().clone(),
             commit: ctx.commit_token(),
             live,
+            die,
         };
         Ok((Box::new(after), Box::new(patch), writes))
     }
@@ -216,6 +241,7 @@ impl OriginParticipant {
             state,
             index: p.after,
             generation: p.next_generation,
+            die: p.die.map(|(class, lot)| (p.commit, p.actor, class, lot)),
         })
     }
     fn accepts_write(&self, w: &ReplayWrite) -> bool {

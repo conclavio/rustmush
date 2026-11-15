@@ -20,7 +20,10 @@ pub(crate) const MAX_ORDERS: u64 = 8192;
 pub(crate) const OFFER_BYTES: usize = 32768;
 pub(crate) const ORDER_BYTES: usize = 196608;
 pub(crate) const INSTALLATION_BYTES: usize = 69632;
-pub(crate) const INDEX_BYTES: usize = 4096;
+/// The refit index's bound. It holds the whole policy: since doc 47 CO.6 the launch's names the
+/// ship family beside the line and rig families (twenty roots with an ungoverning site), which
+/// outgrew 4 KiB.
+pub(crate) const INDEX_BYTES: usize = 8192;
 pub(crate) const ASSET_BYTES: usize = 32768;
 pub(crate) const INDEX_KEY: &str = "core_refit_registry";
 pub(crate) const OFFER_SECONDS: i64 = 300;
@@ -579,5 +582,32 @@ impl HullHead {
         }
         encode(self, 4096).map_err(bad)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod co6_index_bound_tests {
+    use super::*;
+
+    /// A value whose canonical JSON is exactly `bytes` long.
+    fn of_len(bytes: usize) -> serde_json::Value {
+        let frame = serde_json::to_vec(&serde_json::json!({ "policy": "" }))
+            .expect("encodes")
+            .len();
+        serde_json::json!({ "policy": "x".repeat(bytes - frame) })
+    }
+
+    /// **The refit index's bound still bites at its new size** (doc 47 CO.6): the launch's policy,
+    /// twenty roots with the back room, outgrew 4 KiB, so the bound is 8 KiB; an index record of
+    /// exactly 8,192 bytes is admitted and one of 8,193 refused, as `RefitIndex::validate` asks.
+    #[test]
+    fn co6_the_index_bound_admits_8192_bytes_and_refuses_one_more() {
+        assert_eq!(INDEX_BYTES, 8192);
+        assert_eq!(
+            serde_json::to_vec(&of_len(8192)).expect("encodes").len(),
+            8192
+        );
+        assert!(encode(&of_len(INDEX_BYTES), INDEX_BYTES).is_ok());
+        assert!(encode(&of_len(INDEX_BYTES + 1), INDEX_BYTES).is_err());
     }
 }
