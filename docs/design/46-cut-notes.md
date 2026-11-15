@@ -3460,4 +3460,229 @@ Not built.
 
 ## CT.9
 
-Not built.
+The purchase twins and the close-out (Q-46-4). Built 2026-11-14 on main `26a539b5d` (CT.0 to
+CT.7 in; CT.8 running beside it in `tacsim`, CO.6 in refit, yard and content, and CO.13 adding a
+core-title sale family in new files of the kernel, economy and market; this unit edits none of
+their files, and no closed list: not `EconomyRequest`, `EconomyOutput` or the plan guard).
+
+**The survey, before the cut.** Every candidate pair, file for file: `difflib` over the raw
+lines (trailing blanks stripped), similarity = twice the matched lines over both files' lines.
+The script and its full output are in the lead's notes folder (`ct9-tools/survey.py`,
+`survey-main.txt`). Q-46-4's line is 90%.
+
+| Crate | Pair | Files at 90% or more | The rest, at their best |
+|---|---|---|---|
+| kernel | `terminal_capacity/entitlement` against `house` | none | the validator 71% (1,331 and 1,265 lines, 94 hunks), its tests 62%, the CT.0 file 67% |
+| economy | `managed_entitlement` against `managed_house_purchase` | none | the face 81%, `subject.rs` 25% |
+| Roll | `commerce/entitlement` against `house_purchase` | `records.rs` 90% | `admission_capacity.rs` 88%, `audit.rs` 79%, `roots.rs` 70%, `writer.rs` 68%, `customer.rs` 58%, `economics.rs` 35%, `history.rs` 26%; five files on one side only |
+| Roll | `registry_recall` against `registry_revocation` | `authority.rs` 95%, `policy.rs` 95% | `notice.rs` 83%, `tests.rs` 81%, the face 72%, `provider.rs` 68%, `ct0_snapshot.rs` 54%, `records.rs` 41%, `audit.rs` 23%; `current.rs` and `history.rs` the revocation's alone |
+| market | `mind_entitlement` against `mind_house` | `codec.rs` 97% | `purchase.rs` 86%, `audit.rs` 85%, `families.rs` 84%, `publication.rs` 83%, `provider.rs` 81%, the rest 79% and under |
+
+So four files cross the line, and the brief's two (the Registry pair's policy and authority) are
+two of them.
+
+*The Registry pair, sorted.* `policy.rs` (152 lines each) differs in 6 hunks, 16 lines:
+the type's name at three sites (a rename), and three identity strings (the authority
+descriptor's id, `mind_recall` against `mind_revocation`; the action's id and body; the
+outcome's id). `authority.rs` (168 and 171) differs in 7 hunks, 17 lines: the policy type at
+three sites (a rename), the two readiness refusals (identity strings), and one piece of real
+logic in two places: the revocation reads Economy's store, so it asks `economy` to be a ready
+definition owner (at capture and at check) and asks that Economy's module state be owned by
+`economy` before it authorizes. The capability each asks the Org authorizer for is the family's
+own constant, read from the family's root. Nothing else differs.
+
+**Built.** One text for the two Registry sanctions' policy and authority, in
+`crates/mush-roll/src/commerce/`:
+
+| File | Lines | What it is |
+|---|---|---|
+| `registry_twin.rs` | 74 | the sealed trait `Review`, its seal `seal::Sealed` (seven identity constants and two functions), and the two issuer types `ExactRecall` and `TermRevocation` |
+| `registry_twin/policy.rs` | 168 | `RegistryPolicy<K>`, the old `policy.rs` over the issuer |
+| `registry_twin/authority.rs` | 174 | `Readiness<K>`, `Source`, `Authorization`, `observe` and `recheck`, the old `authority.rs` over the issuer |
+| `registry_recall/policy.rs` | 30 | `pub type RegistryRecallPolicy = RegistryPolicy<ExactRecall>`, and `impl Sealed for ExactRecall` |
+| `registry_revocation/policy.rs` | 34 | the same for `TermRevocation` |
+| `registry_recall/authority.rs`, `registry_revocation/authority.rs` | 9 each | the family's `Readiness` alias and the re-exports its files name |
+
+The four old files were 643 lines; the seven are 498.
+
+*The trait as built.* `Review: seal::Sealed + Copy + Debug + Default + Eq + Send + Sync +
+'static`, public and empty; what an issuer decides is on its supertrait, which nothing outside
+the crate can name (the classic sealed pattern, so the items are not callable from outside
+either). The seal's module is visible to the crate so that each family's own `policy.rs` holds
+its implementation, as CT.3 to CT.7 kept each `impl` in its family's file.
+
+| Item | What it carries | Recall | Revocation |
+|---|---|---|---|
+| `AUTHORITY`, `ACTION`, `OUTCOME` | the three descriptor ids | `mind_recall`, `registry_revision_recall`, `registry_revision_recalled` | `mind_revocation`, `registry_term_revocation`, `registry_term_revoked` |
+| `action_value()` | the action descriptor's body, the old `json!` literal | | |
+| `CAPABILITY` | the capability asked of the Org authorizer: the family root's constant | `roll.registry.recall` | `roll.registry.revoke` |
+| `UNAVAILABLE`, `CAPTURED` | the two readiness refusals | `recall …` | `revocation …` |
+| `OWNERS` | the definition owners that must be ready, in order | `roll`, `org` | `roll`, `org`, `economy` |
+| `owner_missing(world)` | the real logic: whether a store beyond Org's and the Roll's is not owned by its owner. Called where the old file made the check, between the two | `false` | Economy's store not owned by `economy` |
+
+*The public names did not move.* `registry_recall::RegistryRecallPolicy` and
+`registry_revocation::RegistryRevocationPolicy` are type aliases of `RegistryPolicy<ExactRecall>`
+and `RegistryPolicy<TermRevocation>`: two types still, so tacsim's launch struct that holds one
+of each, and every `RegistryRecallPolicy::new(…)` in tacsim and mush-server, compile unedited.
+The type parameter is a `PhantomData` that serde skips, so the authority descriptor's value (the
+policy's own JSON) is unchanged; mutation T3 is what happens when it is not. The family roots
+lost four imports that only the old files used, and nothing else: their `Request`, fence and
+`pub(crate) use authority::Readiness` are as they were.
+
+**What was left alone, and why.**
+
+- **The Roll's purchase `records.rs`** (`entitlement/` against `house_purchase/`, 90%). Its
+  differences are not a rename: the House allocation has a field the personal one has not
+  (`issuer`, with its accessor), and three rules of `validate` differ (the format and the
+  economics format read from the protocol, the seat count from the protocol, the sealed form).
+  One text would be a `checked!` record with an optional field, an arm the wire macro does not
+  have, over two persisted records, for 180 lines.
+- **The market's `codec.rs`** (`mind_entitlement/` against `mind_house/`, 97%, 64 lines). Its two
+  differences are refusal literals: one in `decode`, one inside the visitor of `Bounded<T, N>`.
+  `Bounded` is the type of nine persisted record fields across the two families, so one text
+  needs a family parameter on that type (and on every field that names it) or a third generic
+  on a `serde(transparent)` wrapper, which also changes the `Debug` of every record holding it.
+  Not clean, for 62 lines.
+- **Everything under 90%** (the survey's table), as Q-46-4 rules. The nearest are the Roll's
+  `admission_capacity.rs` (88%, 43 lines), the Registry pair's `notice.rs` (83%) and `tests.rs`
+  (81%), and the market's `purchase.rs`, `audit.rs` and `families.rs` (84% to 86%).
+- **Economy's purchase twins have no file at 90%**, so the snapshot CT.0 owed them (its item 6)
+  is still owed: no unit has touched their files.
+
+**B12 and the House recipe check, end to end** (CT.3's note: owed to CT.9). Built.
+`house::tests::two_seat_renewal_birth_seed` is the two-seat **Pin** birth (funded, granted,
+rebooted), the one birth whose recipe the House birth route does not check itself.
+`house_renewal::tests::a_two_seat_pin_renewal_is_refused_at_draft_fund_and_grant_once_its_recipe_is_gone`
+renews it under a composition that declares the first House recipe alone (the two-seat product
+withdrawn, its history kept, the store booted cold under it): Draft, Fund and Grant are each
+refused with `house two-seat recipe unavailable`, a Refund of the funded renewal is accepted
+and the store boots again, and each step is also taken under the composition that declares the
+recipe, where it is accepted. Under B12 (the validator no longer calls `birth_product`) it is the
+one test of the layer that fails. That is the "House recipe-check end-to-end test" the plan
+memory owed CT.9.
+
+**Tests.** `cargo test -p <crate> -- --list`, all targets, ignored included (none are), before
+and after, on conclav.dev:
+
+| | Before | After |
+|---|---|---|
+| `mush-core` | 1,106 | 1,107 |
+| `mush-roll` | 381 | 385 |
+
+No name disappeared and none changed: the diff of the two sorted lists is five additions.
+`house_renewal::tests::a_two_seat_pin_renewal_is_refused_at_draft_fund_and_grant_once_its_recipe_is_gone`
+(B12, above); `registry_twin::tests::recall_identity_strings_hold_todays_bytes` and
+`revocation_identity_strings_hold_todays_bytes`, every constant and the action body of each
+issuer against a literal (the second copy of the strings, as CT.3's identity tests are);
+`registry_twin::tests::the_review_seal_admits_exactly_two`, the census (two `impl Sealed for`
+the issuers, one in each family's `policy.rs`; two `impl Review for`, in `registry_twin.rs`; one
+`pub(crate) mod seal {`; no `dyn` beside either trait's name); and the `compile_fail` doc-test on
+`Review`, the attempt to implement it from outside the crate. The two families' own test files
+are unedited: their 33 registry tests read the twin through the families' old paths
+(`authority::observe`, `authority::Source`, `Readiness::default()`).
+
+**String literals.** Every literal of the changed production files (the two family roots, their
+`policy.rs` and `authority.rs`, `commerce/mod.rs`, and after the cut the twin's three files;
+comment lines and test modules excluded): 72 distinct before and 72 after, none gone and none
+new (`ct9-tools/literals.py`). The sites fell from 104 to 86: the shared ones are written once.
+
+**The snapshots.** `git diff --stat main -- '*.snap'` is empty. The Roll's two Registry
+snapshots (`ct0_registry_recall_snapshot`, `ct0_registry_revocation_snapshot`) pass with every
+other test of `mush-roll` and `mush-core` on Linux, and on Windows the Registry tests and the
+kernel's layer pass. **CT.0b's composed path** (conclav.dev, main `26a539b5d` against this
+branch, both clones built for it): the pinned M7 story passes at both, 1,036 s and 1,068 s, with no `SNAPSHOT MOVED` (its four files recorded 113, 50, 161 and 29 preparations, the same at both), and `diff -r` of the two unprojected records is empty: the eight files' SHA-256 are the same base and tip.
+
+**The mutations.** Each alone on a throwaway clone on conclav.dev, `cargo test -p mush-roll --lib
+registry_` run (36 tests), the file put back; B12 on the kernel's layer
+(`cargo test -p mush-core --lib terminal_capacity`, 245 tests) on a WIP commit. Every item of
+the trait was mutated for at least one issuer.
+
+| # | The mutation | What failed |
+|---|---|---|
+| C1 | recall `AUTHORITY` given another letter | the recall identity test and `ct0_registry_recall_snapshot` |
+| C2 | revocation `ACTION` | the revocation identity test and `ct0_registry_revocation_snapshot` |
+| C3 | recall `OUTCOME` | the recall identity test and its snapshot |
+| C4 | revocation `CAPABILITY`, another string | the identity test and four authorizer tests (`…_actual_authorizer_has_no_staff_or_unconfigured_operator_fallback`, `…_actual_owner_freeze_…`, `…_real_policy_allow_remains_subject_to_deny_precedence`, `…_fresh_org_deny_replacement_revocation_and_expiry_are_decisive`) |
+| C5 | recall `UNAVAILABLE` reworded | the recall identity test only |
+| C6 | revocation `CAPTURED` reworded | the revocation identity test only |
+| C7 | revocation `OWNERS` without `economy` | the identity test and `registry_revocation_actual_owner_freeze_…` |
+| C8 | recall `OWNERS` without `org` | the identity test and `registry_recall_actual_owner_freeze_…` |
+| F1 | recall `action_value`, one value changed | the identity test and the recall snapshot |
+| F2 | revocation `action_value`, one key dropped | the identity test and the revocation snapshot |
+| **F3** | **revocation `owner_missing` answers `false`** | **nothing** (below) |
+| F4 | recall `owner_missing` answers `true` | four recall authorizer tests |
+| **T1** | **the twin's `observe` no longer asks `owner_missing`** | **nothing**: F3 from the other side |
+| T2 | the twin's readiness check no longer asks the owners | both `…_actual_owner_freeze_…` tests |
+| T3 | the type parameter serialized (`skip` becomes `skip_deserializing`) | six tests, both snapshots among them |
+| B12 | the kernel's validator no longer calls `birth_product` | `a_two_seat_pin_renewal_is_refused_at_draft_fund_and_grant_once_its_recipe_is_gone`, alone |
+
+- **The survivor (F3, T1) is older than this unit.** The same check removed from main's own
+  `registry_revocation/authority.rs` (the base clone) passes all 33 of main's Registry tests.
+  It is reached only by a world in which Economy's definitions are ready but Economy's store is
+  owned by another module: the module that declares the definitions owns the store, and a
+  `StateInit` comes only from a module's registration, so no engine a test can build has that
+  world. The Org and Roll store checks beside it are the same kind; they are not the trait's
+  and were not mutated. Left as a named survivor, not closed.
+- **C5 and C6 are held by the identity tests alone.** The two readiness refusals are
+  `ModError` messages at boot, not persisted and not a player's sentence.
+
+**Divergences.**
+
+- **`Debug` of the two policies now prints the generic type**, `RegistryPolicy { …, review:
+  PhantomData<…ExactRecall> }` where it printed `RegistryRecallPolicy { … }`. Nothing reads it:
+  no snapshot, refusal or log line formats a policy. Keeping it would have needed a hand-written
+  `Debug` and a new literal for each name, against the literal rule.
+- **The trait's items are on the seal.** CT.3's `Issuer` holds its items itself and is private
+  to its layer; here the policy type is public (tacsim and mush-server name it), so the bound is
+  public, and the items sit on the unnameable supertrait instead of a second crate-private trait
+  with `#[expect(private_bounds)]` (CT.5's `Rules`).
+- **`for ns in [..]` became `for &ns in K::OWNERS`.** An associated constant is a slice; the
+  owners and their order are the same.
+- **The kernel's House test file is edited** (CT.3 could not): one seed added, no test moved.
+
+**Not built.**
+
+- The four files left alone (above), and everything under Q-46-4's line.
+- Economy's purchase-twin snapshot (CT.0's item 6) and the other unpinned items of CT.0's list.
+- The Registry pair's `notice.rs` and `tests.rs` (83% and 81%): the tests are the same
+  scenarios over two rigs and could be one body run twice, as CT.3's are; not in this unit's
+  brief, and below its line.
+
+**Compile time** (§7.4). Not measured: the twin is about 340 lines of code generic over two marker
+types inside one crate, the dependants name two aliases, and CT.3 to CT.7 found their far larger
+twins flat within the noise. `cargo check` of the seven touched and dependent crates, all
+targets, took 2 min 15 s on conclav.dev from a cold clone, which is not a comparison.
+
+**On Linux** (conclav.dev, a throwaway clone of `26a539b5d` with this branch's files over it):
+`cargo test -p mush-roll -p mush-core --no-fail-fast` passes every test (the libraries' 381 and
+849 among them, the `Review` doc-test too); `cargo check` and `cargo clippy -D warnings` over all
+targets of `mush-roll`, `mush-core`, `mush-market`, `mush-economy`, `mush-industry`, `tacsim` and
+`mush-server` are clean; CI's M7 memory-size pass is clean (its four warnings are in files this
+unit does not touch, of lints it does not deny); rustdoc with `-D warnings`, with and without
+`--document-private-items`, is clean for both crates; `cargo test -p mush-contract-tests` passes
+its 199 tests.
+
+**The yardstick, before and after**, beside §3's baseline (main `e4e2f6e8e`, before CT.0).
+Before is main `26a539b5d`.
+
+| Root | §3 | Before: cloned of lines | Rate | After: cloned of lines | Rate |
+|---|---|---|---|---|---|
+| `crates/mush-market/src` | 23.8% | 5,488 of 43,606 | 12.6% | 5,488 of 43,606 | 12.6% |
+| `crates/mush-economy/src` | 21.9% | 11,006 of 97,423 | 11.3% | 11,006 of 97,423 | 11.3% |
+| `crates/mush-roll/src/commerce` | 18.7% | 11,096 of 90,640 | 12.2% | 10,708 of 90,599 | 11.8% |
+| `crates/mush-core/src/action_state/terminal_capacity` | 30.4% | 6,646 of 38,818 | 17.1% | 6,646 of 38,886 | 17.1% |
+
+The Roll's commerce lost 388 cloned lines. With `--stems`, `registry_recall` and
+`registry_revocation` were 1,234 of 2,052 and 1,217 of 2,892; they are 935 of 1,768 and 915 of
+2,609, and `registry_twin` is 219 of 525, its policy and authority sharing their bounded-decode
+and authorization shape with `registry_inspection` (another family, out of scope). The kernel's
+layer gained 68 lines and no cloned line (B12's test). Against §7.3's estimate ("near 10% in the
+market, economy and the Roll, and near 17% in the kernel's layer, before CT.9"), the programme
+ends at 12.6%, 11.3%, 11.8% and 17.1%; what is left on top of each table is the purchase twins
+(below Q-46-4's line), economy's contract-shaped families (`managed_coverage`,
+`managed_charter_transfer`, `managed_paid_resale`, which §5.5 leaves for a later engine) and
+`registry_filing`.
+
+**Found on the way.**
+
+- No defect in production code was found, and no production behaviour was changed.
