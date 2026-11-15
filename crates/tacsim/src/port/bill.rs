@@ -160,6 +160,13 @@ mod tests {
             (441, 147, 30),
             "the 600 t lifter: a month in the yard"
         );
+        // Doc 47 unit CO.10b: the wrecker is built as the tender is, from its 12 t design.
+        let wrecker = bill(crate::definitions::content::TV_WRECKER);
+        assert_eq!(
+            (wrecker.alloys_t, wrecker.fittings_t, wrecker.days),
+            (9, 3, 2),
+            "a 12 t rig: two yard days"
+        );
         // The shipped hull pack is the bills, row for row: bulk lines, kit, days.
         let pack: serde_json::Value =
             serde_json::from_str(crate::definitions::content::INDUSTRY_HULLS_JSON)
@@ -198,5 +205,13 @@ mod tests {
             );
             assert_eq!(def["requires"][0].as_str(), Some("tacsim.yard"));
         }
+        // CO.10b: the wrecker has its row and its kit good, as the tender has.
+        assert!(entries.contains_key("tv_wrecker"), "the wrecker's hull row");
+        let goods = crate::definitions::goods::goods_table().expect("the goods table");
+        let kit = CanonicalId::new("tacsim.hull_kit.tv_wrecker").expect("an id");
+        assert!(
+            goods.goods.iter().any(|g| g.id == kit),
+            "the wrecker's hull kit is a good"
+        );
     }
 }

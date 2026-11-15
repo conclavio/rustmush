@@ -93,6 +93,7 @@ reading). Whether one carrier should be able to fight another is a design call.
 | **CO.8** | The late-launch interdiction defect | space routes | — | the story that shows it fails on main and passes |
 | **CO.9** | Hulls for Houses | content, launch bring-up | — | a House can own and field a hull through the routes a House uses |
 | **CO.10** | A tug that can tow a raider's line tank | content, tow | — | the surrender chain's tow lands with a shipped tug |
+| **CO.10b** | The wrecker's look, and its yard bill and hull kit (CO.10's "Not built") | `mush-pixel` (the bake config, the baked model, the look), the hull recipe pack, the goods table | CO.10 | the wrecker shows its look on the surfaces that show unit looks; a wrecker is built at a yard by registered commands and the built hull tows as the leased one does |
 | **CO.11** | The defect sweep, D1 to D8 | several, small | — | each defect has a test that failed before its fix, or is named with the reason it was left |
 | **CO.3** | A leader's order to an absent member's unit (R-47-4) | detachment authority, order book | CO.2 | the order is accepted and flown by the mind under §3's limits; a present member's unit is unchanged |
 | **CO.7** | AP.11's ship arm | `tests/domain_field/field_ap11.rs` | CO.2 | the closing story's ship flies her posture under the new `RETURN` rule |

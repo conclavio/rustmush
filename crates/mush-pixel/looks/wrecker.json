@@ -1,0 +1,66 @@
+{
+  "units": [
+    "tacsim.unit.tv_wrecker"
+  ],
+  "label": "Wrecker",
+  "short": "WR",
+  "model": "mc.st.wrecker",
+  "size_cm": [
+    700,
+    250
+  ],
+  "doll": {
+    "view": "top",
+    "rows": [
+      "FFFFFFFFFFFFFFFF",
+      "LHHHHHHHHHHHHHHR",
+      "LHHHHHHHHHHHHHHR",
+      "LssHHHHHHHHHHSSR",
+      "LssHHHHttHHHHSSR",
+      "LssHHHHttHHHHSSR",
+      "LssHHHHHHHHHHSSR",
+      "LHHHHHHHHHHHHHHR",
+      "LHHHMMMMMMMMHHHR",
+      "LHHHMMMMMMMMHHHR",
+      "LHHHMMMMMMMMHHHR",
+      "BBBBBBBBBBBBBBBB"
+    ],
+    "legend": {
+      "F": {
+        "section": "chassis",
+        "facet": "front"
+      },
+      "B": {
+        "section": "chassis",
+        "facet": "rear"
+      },
+      "L": {
+        "section": "chassis",
+        "facet": "left"
+      },
+      "R": {
+        "section": "chassis",
+        "facet": "right"
+      },
+      "H": {
+        "section": "chassis",
+        "facet": "top"
+      },
+      "s": {
+        "section": "stores",
+        "facet": "left"
+      },
+      "S": {
+        "section": "stores",
+        "facet": "right"
+      },
+      "t": {
+        "section": "stores",
+        "facet": "top"
+      },
+      "M": {
+        "section": "boom"
+      }
+    }
+  }
+}

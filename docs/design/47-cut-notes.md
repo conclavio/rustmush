@@ -1136,6 +1136,124 @@ rides beside an escort in a 20 t bay". So Occator gets a third lease design, the
 - Lane v34 collides with any other wave unit that bumps the lane: whichever lands second re-signs on
   top (v35 / relay v26).
 
+## CO.10b
+
+CO.10's two "Not built" items: the wrecker's look, and its yard bill and hull kit.
+
+**Survey.**
+
+- **No terrain vehicle has a look.** `mush-contract-tests`' `unit_looks` listed the prospector,
+  the tender and the wrecker as `LOOKLESS`, so there was no vehicle path to follow. The path a
+  look takes is doc 22's (D-22-9, D-22-10) as doc 31 cut UD.1 split it: a config under
+  `scripts/unit-bake/models/<model>.json` names a licensed kit's assembly; `bake.sh` renders it
+  in Unity's batch mode and the Rust reducer writes one content-named `.mupk` and its
+  `index.json` row under `crates/mush-pixel/models/`; a look under `crates/mush-pixel/looks/`
+  names the units it draws, the model, `size_cm` and the doll. Every picture finds a unit's look
+  by `look::for_unit(unit_type)`: the TUI cockpit's doll (`cockpit_text::doll_rows`), the
+  first-person contacts (`cockpit::contact_sprite_at_bearing_range`), the heightfield, the 2.5D
+  (`iso25d`), the kitty pictures and the web (`mush-pixel-wasm`, which fetches the model file
+  by `model::wanted_files`).
+- **The source asset.** The owner's machine holds Unity 6000.6.7f1 and the purchased kits the
+  shipped bakes came from (`UNITY_PACKAGES`). The Mech Constructor *Spiders and Tanks* kit, which
+  the tank, heavy and carrier bakes use, has an unarmed tracked carrier chassis, so the wrecker
+  is a bake of its own, not a stand-in.
+- **The yard.** A hull's bill is never authored: `port::bill::design_bill` derives it from the
+  design's mass budget (IN.8's partition), and the hull recipe pack
+  (`content/industry/hulls-v2.json`) carries one row a buildable design, which its test pins to
+  the derivation. The yard takes `+yard/order <design>` for any design with a row, and the
+  recipe's output is the kit good `tacsim.hull_kit.<design>` (`content/market/goods.json`,
+  class `kit`), which the commission consumes. The prospector and the tender have both; the
+  wrecker had neither. Only Stickney's yard builds.
+
+**Built.**
+
+- **The bake.** `scripts/unit-bake/models/mc.st.wrecker.json`: *Spiders and Tanks*'
+  `Chassis_Tank_Anim_ROOT` with `Chassis_Carrier_Lvl1`, `Cockpit_Riser_Wide` (a cab, no gun) and
+  `Backpack_Med_Frame` (the frame over the deck, standing for the boom), the tank's idle and
+  drive clips, no muzzles, 700 × 250 cm. Baked by `bake.sh` on the owner's machine at
+  `1b789a2e0` (the config's own commit, clean, so the provenance names it):
+  `crates/mush-pixel/models/mc.st.wrecker.9f3a61b9415f.mupk`, 1,010,318 bytes (987 KiB, under
+  rule 7's 2,048 KiB a model), measured 412 × 250 cm, both chains (`fp` 536,196 bytes, `iso`
+  474,477), matrix check holds. Only the reduced file and its index row are committed; the kit,
+  the Unity project and the renders stay on the owner's machine (the licensing ruling).
+- **The look.** `crates/mush-pixel/looks/wrecker.json` ("Wrecker", `WR`), on `mc.st.wrecker`,
+  700 × 250 cm (the unit's left silhouette), with a 16 × 12 top-view doll over the wrecker's
+  three sections: the chassis by its five facets, the stores' left, right and top lockers, the
+  boom at the rear. Shipped last in `look::SHIPPED`, so no earlier look's index moves. No
+  hand-drawn fallback sheet: until the browser has the model file the web draws the wrecker as
+  the `unknown` hump (`model::sheet`'s fallback), as it would any model without one.
+- **The bill and the kit.** `hulls-v2.json` gains `tv_wrecker` (re-signed): 9 t of structural
+  alloys, 3 t of industrial parts, 48 work units (two IC days), the kit
+  `tacsim.hull_kit.tv_wrecker`. The bill's parts are a light plant and a visual sight, one a
+  slot. `goods.json` gains the kit good after the tender's (47 of `MAX_GOODS`' 48; the table's
+  version stays 7, as RS.6a's two kits left it). **Figures, all provisional** (the owner's
+  economy rule): none is authored here; each is `design_bill`'s from CO.10's 12 t.
+- `docs/help/field.md`: Stickney builds a wrecker to keep, and it tows as the leased one does.
+
+**Tests.** Each fails on base (below).
+
+- `mush-pixel` `iso25d::tests::co10b_the_wrecker_is_drawn_from_its_own_bake`: the wrecker's
+  look index is not the `unknown` look's, its model is `mc.st.wrecker`, the bake is in the
+  catalogue, its `iso` chain reads 250 cm, and the 2.5D draws it beside the heavy in the ratio
+  of their heights.
+- `mush-net-ssh` `tui::cockpit_text::tests::co10b_the_wrecker_gets_its_own_doll`: the
+  wrecker's driver gets six doll rows over the three section rows; the boom worn to a fifth is
+  red and the chassis beside it green.
+- `tacsim` `port::bill::tests` (`in9_the_escort_and_the_dray_p_bills_come_from_their_designs`):
+  the wrecker's bill is 9 + 3 t over two days, the pack has its row, the goods table its kit.
+- **The story**, `surrender::co10b_a_yard_built_wrecker_tows_the_yielded_line_tank_in` at 256
+  (`surrender_rig::towed_in_by_a_wrecker(…, Wrecker::Built)`, the yard half in the new
+  `support/field/yard_rig.rs`). CO.10's story with its wrecker built, not leased; every step
+  after the Red Moth lands on the site is CO.10's, unchanged:
+  1. The stranger's chartered Red Moth, bill in her hold (the fixture: goods bought earlier),
+     sails Ceres to Stickney, the only yard that builds. The trip runs at the tests' 3,600:1 and
+     the rig's rate is restored after it: the Co-op's dormancy counts real days, and at the
+     rig's own rate the round trip passed seven and ended the charter (CO.9 met the same). `+yard/quote tv_wrecker` prints "9 structural_alloys, 3
+     industrial_parts" and "2 IC days"; `+yard/order tv_wrecker` books it; four
+     `+yard/deliver`s bring the bulk and the two parts from her hold; two IC days on,
+     `+yard/collect` commissions her (`SYB-`), and the commission finishes: a wrecker, titled to
+     the stranger, a register row. `+bay/stow` puts her in the Red Moth's bay; the Red Moth sails
+     home to Ceres (`+ship/leave` ashore at each end).
+  2. The stranger leases one prospector and sails to the site; the wrecker rides the bay by her
+     title view, the prospector the one lease. A titled rig's view takes the lowest bay slot no
+     lease holds, so the story reads each rig's slot (the title view's, the other the lease's)
+     and addresses `+tv/<n>` by it; the leased path keeps CO.10's 1 and 2.
+  3. From there CO.10's steps: three parties, the crew yields, the prospector is refused the
+     29.9 t line tank, the yard-built wrecker's tow previews and lands, the load takes the crew
+     aboard and leaves the hull titled on the site, and the wrecker lets it go.
+- CO.10's story is now `towed_in_by_a_wrecker(…, Wrecker::Leased)` behind the old name; its
+  steps and checks are unchanged (one assertion message reads "the second rig is a wrecker").
+- Pins the new rows move: `content_studio`'s goods count (45 to 46), `domain_arena::content`'s
+  goods table (the row and `GOODS_DIGEST`); `unit_looks`' `LOOKLESS` loses the wrecker.
+- **Each new test fails on base.** The look tests with the wrecker's look taken out of
+  `look::SHIPPED` (run locally): the 2.5D test at the look index, the TUI test at the row count.
+  The bill test and the story on conclav.dev with base's `hulls-v2.json` and `goods.json`: the
+  bill test at the missing row; the story at the quote, "The yard here does not make that."
+- **Run on conclav.dev** (a throwaway clone of `aa3e1e4c3` with this branch's files): the three
+  `surrender::co10*` stories pass (CO.10's two unchanged), `tacsim --lib`, `domain_arena`'s
+  content, extensions and definitions, `domain_economy`'s yard, matter, House-hull, pool and
+  Tycho stories, `domain_field`'s surrender stories, all of `mush-contract-tests`
+  (`--no-fail-fast`), clippy `-D warnings`, the M7 memory-size pass, rustdoc with `-D warnings`
+  in both modes. Locally: `mush-pixel` (143) and `mush-net-ssh`'s cockpit tests, their clippy.
+
+**Divergences.**
+
+- **The bake ran on the owner's machine, not conclav.dev.** The bake needs Unity and the
+  licensed kits, which are on the owner's Windows box only; copying the kits to another box would
+  be the redistribution the licensing ruling forbids. The reducer ran at `-j 2`.
+- **The boom is drawn, not modelled.** The kit has no crane; the wrecker's boom is the
+  `Backpack_Med_Frame` over the rear deck, and the doll's boom cells sit there.
+- **No line-up renders** (`unit_lineup` into `docs/design/images/22-u6/`): the bake's own
+  preview was looked at and holds the shape; the line-up is a doc image, not a check.
+
+**Not built.**
+
+- Looks for the prospector and the tender: still `LOOKLESS`, out of this unit's scope. The
+  wrecker's config is the pattern (the tender is the same chassis, narrower).
+- A hand-drawn fallback sheet for `mc.st.wrecker` (the web's first frames draw the hump).
+- A yard-built wrecker at 512: the story runs at 256 only (the yard half is ground-free; CO.10's
+  512 story covers the tow on the larger site).
+
 ## CO.11
 
 The defect sweep (doc 47 §5). Taken in the order the unit was given: D1, D2, D5, D6, D7, D8.

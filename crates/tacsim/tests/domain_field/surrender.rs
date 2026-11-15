@@ -100,6 +100,16 @@ async fn co10_a_yielded_line_tank_is_towed_in_by_a_leased_wrecker_at_512() {
     crate::surrender_rig::towed_in_by_the_wrecker(&URVARA_REACH).await;
 }
 
+/// **Doc 47 unit CO.10b**: the same tow by a wrecker the stranger had built at Stickney's yard
+/// (`+yard/order tv_wrecker`, its bill delivered from the Red Moth's hold, `+yard/collect`,
+/// `+bay/stow`) and flies by its title: it takes the line tank in tow and the crew aboard as the
+/// leased one does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn co10b_a_yard_built_wrecker_tows_the_yielded_line_tank_in() {
+    crate::surrender_rig::towed_in_by_a_wrecker(&AHUNA_FLANK, crate::surrender_rig::Wrecker::Built)
+        .await;
+}
+
 /// **SU.7 at 512**.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn su7_a_yielded_line_tank_drives_aboard_under_escort_at_512() {

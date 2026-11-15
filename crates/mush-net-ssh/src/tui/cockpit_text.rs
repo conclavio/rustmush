@@ -944,6 +944,38 @@ mod tests {
         );
     }
 
+    /// Doc 47 unit CO.10b: the wrecker's driver gets the wrecker's own doll
+    /// (it had none: the tender's chassis shipped lookless), its 16x12 grid
+    /// in six half-block rows over the chassis, the stores and the boom, each
+    /// coloured by what is left of it: the boom worn to a fifth reads red.
+    #[test]
+    fn co10b_the_wrecker_gets_its_own_doll() {
+        let section = |id: &str, left: i64| serde_json::json!({ "id": id, "condition": "intact", "internals": left, "internals_max": 100, "facets": [] });
+        let wrecker = serde_json::json!({
+            "unit_type": "tacsim.unit.tv_wrecker",
+            "sections": [section("chassis", 100), section("stores", 100), section("boom", 20)]
+        });
+        let lines = armour_rows(&wrecker, true, 99);
+        assert_eq!(lines.len(), 6 + 3, "six doll rows, then the three sections");
+        // Text row 4 holds grid rows 8 and 9: the boom at cells 4..12, red;
+        // the chassis beside it at cell 1, green.
+        assert!(
+            matches!(
+                cell_colours(&lines[4], 6),
+                (
+                    Some(Color::Red | Color::LightRed),
+                    Some(Color::Red | Color::LightRed)
+                )
+            ),
+            "{:?}",
+            cell_colours(&lines[4], 6)
+        );
+        assert!(matches!(
+            cell_colours(&lines[4], 1).0,
+            Some(Color::Green | Color::LightGreen)
+        ));
+    }
+
     /// Screen 0's words (`render_cockpit_status_rows`' heat row,
     /// `render_cockpit_weapons_rows`' readiness, `rule_summary_lines`): `heat
     /// 40/100` with the bar beside it, `ready` / `1 s`, `rules: S1 fire; MIND

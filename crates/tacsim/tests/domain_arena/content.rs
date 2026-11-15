@@ -2796,7 +2796,7 @@ const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4).
-const GOODS_DIGEST: &str = "ea6a5b9a2f22ca56325eeef9ca52a89603110b835df9152431b363e2e0ab5746";
+const GOODS_DIGEST: &str = "4515569c92957233526919381d3b5dfd1de4c8139150a86f61bac395ac6bb42a";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3765,6 +3765,19 @@ fn ic2_the_goods_table_is_pinned() {
             (
                 "tacsim.hull_kit.tv_tender",
                 "tender hull kit",
+                None,
+                GoodClass::Kit,
+                "each",
+                0,
+                0,
+                "stow.kit",
+                None,
+                1
+            ),
+            // Doc 47 unit CO.10b: the wrecker's kit.
+            (
+                "tacsim.hull_kit.tv_wrecker",
+                "wrecker hull kit",
                 None,
                 GoodClass::Kit,
                 "each",
