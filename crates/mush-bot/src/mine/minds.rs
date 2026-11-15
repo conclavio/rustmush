@@ -166,17 +166,19 @@ pub mod absent {
     /// `tacsim::field::absent::MIND_HAS_IT`.
     pub const MIND_HAS_IT: &str = "its mind has the controls and is taking it home. It fires only on a unit that fires on it.";
     /// `tacsim::field::absent::TAKEN_HOME`.
-    pub const TAKEN_HOME: &str = "passed to its mind, which makes for its carrier's ramp and fires only on a unit that fires on it.";
+    pub const TAKEN_HOME: &str = "passed to its mind, which makes for its carrier's ramp.";
     /// `tacsim::field::absent::BACK_IN_SEAT`.
-    pub const BACK_IN_SEAT: &str =
-        "its mind stands down and what it had pending is dropped. +focus #";
+    pub const BACK_IN_SEAT: &str = "its mind stands down and what it had pending is dropped.";
     /// `tacsim::field::absent::WENT_HOME`.
     pub const WENT_HOME: &str = "out of the field at its carrier's ramp.";
     /// `tacsim::field::absent::LEFT_AT_RAMP`.
-    pub const LEFT_AT_RAMP: &str = "out of the field, but it could not be put aboard: it stands beside your carrier's ramp. Recover it yourself.";
+    pub const LEFT_AT_RAMP: &str = "out of the field, but it could not be put aboard.";
+    /// `tacsim::field::absent::PUT_ABOARD` (doc 47 CO.11b).
+    pub const PUT_ABOARD: &str =
+        "out of the field at its carrier's ramp, and it is aboard her now.";
     /// `tacsim::field::absent::ADMITTED_AWAY` (doc 45 cut AP.5).
     pub const ADMITTED_AWAY: &str =
-        "while you were away: its mind has the controls, makes for its carrier's ramp";
+        "while you were away: its mind has the controls and makes for its carrier's ramp.";
     /// `tacsim::field::absent::NOT_FIT`.
     pub const NOT_FIT: &str = "its mind keeps the controls.";
     /// `tacsim::field::absent::GONE_HOME`.
@@ -191,7 +193,7 @@ pub mod absent {
     pub const STAYS_ON: &str = "passes to its mind, which flies it on ";
     /// `tacsim::field::absent::UNATTENDED` (doc 45 unit AP.7).
     pub const UNATTENDED: &str =
-        "with nobody in its seat: its mind has the controls, makes for its carrier's ramp";
+        "with nobody in its seat: its mind has the controls and makes for its carrier's ramp.";
     /// `tacsim::field::absent::UNATTENDED_ON` (doc 45 unit AP.7).
     pub const UNATTENDED_ON: &str =
         "with nobody in its seat: its mind has the controls and flies it on ";
@@ -714,6 +716,7 @@ mod tests {
             BACK_IN_SEAT,
             WENT_HOME,
             LEFT_AT_RAMP,
+            PUT_ABOARD,
             NOT_FIT,
             ADMITTED_AWAY,
             GONE_HOME,

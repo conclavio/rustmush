@@ -1282,6 +1282,150 @@ fix (the unit's row allows "named with the reason").
   lines stop (`scripts/bot-minds-lane.sh`, "KNOWN DEFECT GONE"), so the marker comes out in
   the same change. It wants its own unit, with the stories' and the bot's runs.
 
+## CO.11b
+
+CO.11's leftovers, now that CO.2 has merged (doc 47 §5; CO.11's "Not built"). Taken in the order
+given: D2's absent-unit notices, D3, D4, D5, CO.3's surviving mutation, D6's neighbours. Paths are
+under `crates/tacsim/` unless given.
+
+**Survey.**
+
+- **D2.** Filled at a five-digit unit, `RETURN` (the longest posture word), "its pilot was away
+  when the field opened" (the longest `Why::clause`) and a 32-byte station, eight of the fourteen
+  notices in `src/field/absent.rs` passed 120 columns: `UNATTENDED` (198), `UNATTENDED_ON` (184),
+  `BACK_IN_SEAT` (152), `LEFT_AT_RAMP` (149), `ADMITTED_AWAY` (148), `TAKEN_HOME` (124),
+  `ADMITTED_ON` (123), `GONE_HOME` (122). Every name in them is the game's (a unit number, a
+  posture word, a reason, a station), so unlike `+ship/mind` no fill is a player's and the rows
+  can be fixed in the text itself. A ninth line of the same family, the field's restart line in
+  `src/field/boot.rs`, carried a run of 22 spaces where a line continuation had been lost when
+  the file was first written (`cbf9f7697`), about 160 columns.
+- **D3: the order is the admission's.** At admission (`field::admit`, the open path) the seats
+  nobody is at pass to their minds (`seat_absent`) and the units nobody sits in
+  (`absent::unattended`), and each queues its notice then. The field's own opening line was
+  queued later, by the stakes' read at the field's first snapshot (`field::notice::fold` from
+  the host's snapshot branch). So a player away read each rig's line above the line that says a
+  field opened at all (AP.11's queue, `[guarding, homing, opened]`).
+- **D4: nothing told the aboard.** The host's pass (`absent::retry_recovers`) drops a unit from
+  its owed list once its recover has put it aboard, with a log line and nothing for its player.
+  `on_present`'s `WENT_HOME` is said only for a unit still owed (out, not yet aboard) whose
+  pilot sits in it, so a rig nobody sat in was never told before the close's fate line, and
+  neither was a seated pilot whose unit went aboard before they came back.
+- **D5: what survives a restart.** `Minding::homebound` is RAM. Its `then` and its pilot were
+  also held by the exit's own ask (`field::exit::ExitBook`, RAM): the exit's first try of the
+  recover runs once the exit's K3 write has landed. A restart between the kernel's answer and
+  that try loses both. What the store keeps: the live record's `owed_exits` (written with the
+  answer, resubmitted at boot) and then the site record's `exits`; the unit's pose on the site's
+  ground beside the ramp, where the check-in left it; its rig record (the excursion's slot and
+  operator, and no act in flight); its seat (`mush_sim` assignments). Not kept: whether the mind
+  or the player asked it out.
+- **CO.3's M5 is caught; CO.3 did not run the test that catches it.** CO.3's mutation table ran
+  AP.4a's two stories alone. `arena::weapons::tests::ap6_hold_and_guard_stay_where_their_mind_took_them`
+  holds "Set to RETURN while its mind flies it: the way home, at once" (`objective_of` is
+  `Withdraw` straight after `set_posture`).
+- **D6's neighbours** (`mush-server` `player_market_commands.rs`). CO.14 is changing the
+  engine's `Queued.` and the world task's `Done.` for submissions nobody typed (D8 item 3), which
+  are the stray lines most of these whole-reply matches trip on, and is editing the world task's
+  tests beside this file.
+
+**Built.**
+
+- **D2: the notices break their rows where a sentence ends.** Each of the eight is one row a
+  sentence or less, the words kept except where one sentence was itself too long:
+  `TAKEN_HOME`, `ADMITTED_AWAY` and `UNATTENDED` say "its mind has the controls and makes for its
+  carrier's ramp." and then "It fires only on a unit that fires on it." on the next row;
+  `LEFT_AT_RAMP` is "... but it could not be put aboard." then "It stands beside your carrier's
+  ramp: recover it yourself."; `BACK_IN_SEAT`'s `+focus` sentence, `GONE_HOME`'s and
+  `ADMITTED_ON`'s "It will not fire first." and the two `UNATTENDED` lines' plan sentences go on
+  a second row. The restart line in `field/boot.rs` is two rows, its `+focus` sentence the
+  second. **The reconnect queue holds one row a line** (`port_tick::NoticeQueue::push` turns a
+  line's breaks into spaces, by its schema), so `absent::notify_rows` hands each row to
+  `notify_budget` on its own: a two-row notice is said, or queued, as two lines in order. The
+  bot's needles follow (`mush-bot` `mine::minds::absent`: `TAKEN_HOME`,
+  `BACK_IN_SEAT`, `LEFT_AT_RAMP`, `ADMITTED_AWAY`, `UNATTENDED`, each inside one row), and the
+  help's quotes (`docs/help/field.md`).
+- **D3: the opening line is queued at admission, first.** `field::admit` reads the stakes
+  (`notice::fold(ctx, site, true)`) on the live record it has just written, before
+  `seat_absent` and `unattended`. The first snapshot's read then finds every unit known and says
+  nothing. A connected stakeholder elsewhere hears the opening a pulse sooner; the site's own
+  line is unchanged.
+- **D4: `PUT_ABOARD`.** "Its mind took #{unit} out of the field at its carrier's ramp, and it is
+  aboard her now." When the host's pass finds an owed unit aboard it tells the player it ran the
+  recover as (`notify_budget`, trip level: said to one who is connected, queued for one who is
+  not), seated pilot or operator alike. The close still reports the unit home. The bot has a row
+  for it.
+- **D5: CO.11's option (b).** `absent::rebuild_homebound`, called at the end of
+  `field::boot::resume`, owes a unit its recover again when it left the field at the ramp (the
+  live record's `owed_exits` or the site record's `exits`), is out of the live record and on the
+  site's ground, is not a carrier, has a recover (`recover_of`: the DT recover of a roster's unit
+  or the rig's own act) and no act in flight on its rig record, and its player (the pilot who
+  sits in it, else `posture::player_of`) is not connected. From there the pass is unchanged:
+  tried again every ten seconds, behind the boot's resubmitted exit (`exit::leaving`),
+  `PUT_ABOARD` when it lands, `LEFT_AT_RAMP` after thirty tries.
+
+**Tests.** Each failed before its fix. The stories' "before" is the branch with the three
+production fixes taken out (the D3 `fold`, the D4 notice, the D5 rebuild), its tests kept, on
+conclav.dev (Linux), a throwaway clone of main `aa3e1e4c3`.
+
+- **D2** `field::absent::tests::co11b_every_absent_unit_notice_fits_120_columns`: every one of
+  the fifteen notices, filled at the worst case above, is at most 120 columns a row. On main it
+  fails at the first: "124 columns: While you were away #99999 passed to its mind, which makes
+  for its carrier's ramp and fires only on a unit that fires on it." AP.11's story holds the
+  queued rows to 120 as well, which the unit test cannot: its first run on the branch failed
+  there, with every row flattened back to one line by the queue (above).
+- **D3 and D4** AP.11's closing story (`domain_field::field_ap11`), step 5: what is queued for
+  the owner is, in order, the field's opening, the guard's two rows, the prospector's two rows
+  and `PUT_ABOARD` for the prospector, and he reads exactly those rows under the heading. With
+  the fixes out it fails there: queued `[guarding, homing, opened]`, the opening last and no
+  aboard line.
+- **D5** MW.7's new story 7,
+  `field_mw7::co11b_a_restart_between_the_ramp_and_the_recover_still_puts_the_unit_aboard`: a
+  clean QUIT, the mind takes the escort out at its ramp, and the story reboots at the kernel's
+  answer, with no act on the rig record yet; after the boot the host puts it aboard and the
+  pilot reads `PUT_ABOARD` once at login. With the fix out it fails: "the host puts the escort
+  aboard its carrier after the restart: pose Some((129, 125)), act None".
+- **CO.3's M5** (`Arena::set_posture` no longer calls `lay_standing`), on Windows: caught by
+  `arena::weapons::tests::ap6_hold_and_guard_stay_where_their_mind_took_them`
+  (`weapons.rs:3130`, `objective_of` after `set_posture(RED, Return)`), the only one of the
+  733 `arena::` and `field::absent` tests to fail. No new test: the existing one fails under
+  the mutation, and CO.3's table ran only AP.4a's stories.
+- AP.6's, AP.7's (whose two login checks read a notice whole and needed the row-by-row queue)
+  and MW.7's other stories pass unchanged. `mush-bot`'s census, in step and distinct, passes
+  with the new needles (28 tests).
+
+**Verified, and how.**
+
+- conclav.dev, the branch at its head: all of `domain_field` (312 passed, 16 dispatch-only
+  ignored, 780 s at 12 threads), the stories above alone, `tacsim --lib` (2,357 passed),
+  `domain_world` (1,132) and `domain_arena` (273).
+- Windows: `cargo clippy -p tacsim -p mush-bot --all-targets -D warnings`, the lint job's M7
+  memory-size pass (with `.github/clippy-m7`), `cargo doc -p tacsim -p mush-bot --no-deps` with
+  and without private items under `-D warnings`, `cargo test -p mush-contract-tests`
+  (199 passed, nothing re-blessed), `cargo fmt -p tacsim -p mush-bot`.
+- No mind API, store schema, persisted record or `MIND_ABI` moved. Nothing ran against a live
+  server; nothing was deployed.
+
+**Divergences.**
+
+- **D5 cannot tell whose exit it was.** A player who took their own unit out at the ramp and
+  logged off before recovering it is, after a restart, recovered by the host as them, into the
+  bay slot it launched from, which is where their own recover takes it; before the restart the
+  host would have left it. A default: low to reverse (store the asker on the live record's
+  `OwedExit`), and it would need a new field on a persisted record.
+- **A two-row notice costs two of the queue's 32 lines.** The notice budget's count in
+  `field::notice` is per line, so an absent player's units now spend up to twice what they did
+  (the queue drops the oldest past 32). Low to reverse: one notice a line again, at the cost of
+  the floor.
+- **The rebuilt reason** is `LinkLost` for a seated pilot and `Unattended` for a unit nobody
+  sits in: what a hull put back into the field is handed over under (`owed_why`) reads it. The
+  true reason is not kept.
+
+**Not built.**
+
+- **D6's neighbours.** Left for after CO.14 (above): the stray `Queued.` and `Done.` it removes
+  are most of what these matches trip on, and rewriting the matches now would be written against
+  drains about to change, beside CO.14's open edits to the world task's tests. The same
+  `admitted`/`command_seen` idiom fixes each that still fails after it.
+
 ## CO.12
 
 Saving an open bubble costs what changed (doc 44 MW.20, "Found, not fixed" item 1).

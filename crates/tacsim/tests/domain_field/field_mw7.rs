@@ -31,6 +31,9 @@
 //! 6. [`mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind`]: the server restarts
 //!    with the mind holding the unit. The pilot is not seated by the boot; the mind still
 //!    answers only who fires on it; the pilot connects and is seated.
+//! 7. [`co11b_a_restart_between_the_ramp_and_the_recover_still_puts_the_unit_aboard`] (doc 47
+//!    CO.11b, D5): the server restarts after the mind took the unit out at its carrier's ramp
+//!    and before its recover started. The host still puts it aboard, and its pilot is told.
 //!
 //! What the stories stand in for: the raider and the ward are fixture hulls with players seated
 //! (CF.2's `armed` and `seat`), and the raider's player types every shot. The filed mind and the
@@ -774,4 +777,106 @@ async fn mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind() {
         away_of(yard.rig.tw.world(), ward).is_none() && bound(&yard.rig, pilot),
         "the pilot is seated again after the restart"
     );
+}
+
+/// **Story 7** (this module's head; doc 47 CO.11b, D5): a restart after the mind has taken the
+/// unit out at its carrier's ramp and before its recover has started. The list of recovers the
+/// host owes was held in memory only, so before the fix the unit stood beside the ramp for good.
+/// Now the resumed field rebuilds it from what the store kept, the host puts the unit aboard as
+/// its pilot, and the pilot reads at login that it is aboard (D4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn co11b_a_restart_between_the_ramp_and_the_recover_still_puts_the_unit_aboard() {
+    let mut rig = stocked_tuned(quiet);
+    let (escort, hull, intruder, _hostile) = stand_up(&mut rig);
+    let _ = rig.tw.connect(escort);
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    for _ in 0..3 {
+        let _ = second(&mut rig);
+    }
+    let (out, queued) = command(&mut rig, escort, "+field/fire E");
+    assert_eq!(queued.len(), 1, "one promotion: {out}");
+    land(&mut rig, &queued[0]).expect("the promotion lands");
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 15, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field's task opens"
+    );
+    // A clean QUIT: the unit passes to its mind at once, and it makes for the ramp.
+    quit(&mut rig, escort);
+    assert!(
+        minded(rig.tw.world(), hull),
+        "the mind has the unit: {:?}",
+        away_of(rig.tw.world(), hull)
+    );
+    // The kernel lets it out. The story stops the world at the answer, before any later
+    // world second can land the exit and start the recover.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let mut gone = false;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let _ = pump(&mut rig, &mut rx, &mut lines);
+        if !in_field(&rig, hull) {
+            gone = true;
+            break;
+        }
+        let _ = second(&mut rig);
+    }
+    assert!(
+        gone,
+        "the mind takes the escort out at its carrier's ramp: away {:?}",
+        away_of(rig.tw.world(), hull)
+    );
+    let act = |rig: &mut Rig| {
+        let h = crate::driving_rig::handles(&rig.tw);
+        crate::driving_rig::typed(
+            &mut rig.tw,
+            &h.families.excursions,
+            &tacsim::surface::excursion::RigKey(hull),
+        )
+        .and_then(|record| record.act)
+    };
+    assert!(
+        act(&mut rig).is_none(),
+        "the restart comes before the recover has started"
+    );
+    assert!(
+        mush_sim::pose_of(rig.tw.world(), hull).is_some(),
+        "it stands on the ground, out of the field"
+    );
+    // The server goes down and comes up; the pilot is not back.
+    let mut rig = crash(rig, &mut rx, &[intruder]).await;
+    let mut rx = egress(&mut rig);
+    let mut lines: Vec<LedgerEvent> = Vec::new();
+    assert!(
+        until(&mut rig, &mut rx, &mut lines, 30, |rig, _| task(rig)
+            .is_some())
+        .await,
+        "the field resumes"
+    );
+    // The host still owes the recover, and runs it as the pilot.
+    let home = until(&mut rig, &mut rx, &mut lines, 180, |rig, _| {
+        if let Some(due) = act(rig).map(|act| act.due_ic) {
+            to_ic(rig, due);
+        }
+        matches!(
+            crate::driving_rig::parent(&rig.tw, hull),
+            mush_sim::SpatialParent::Interior { .. }
+        )
+    })
+    .await;
+    assert!(
+        home,
+        "the host puts the escort aboard its carrier after the restart: pose {:?}, act {:?}",
+        mush_sim::pose_of(rig.tw.world(), hull)
+            .map(|(_, pose)| tacsim::surface::excursion::site_cell(pose.x_cm, pose.y_cm)),
+        act(&mut rig)
+    );
+    let _ = until(&mut rig, &mut rx, &mut lines, 5, |_, _| false).await;
+    // The pilot reads it at login (D4), once.
+    let aboard = tacsim::field::absent::PUT_ABOARD.replace("{unit}", &hull.0.to_string());
+    let heard = connect(&mut rig, escort);
+    assert_eq!(heard.matches(&aboard).count(), 1, "{aboard}: {heard}");
 }

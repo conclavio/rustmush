@@ -96,29 +96,33 @@ pub const RECOVER_TRIES: u32 = 30;
 /// The pilot, when the mind takes a unit whose pilot is still connected: `{unit}`.
 pub const MIND_HAS_IT: &str = "You cannot fly #{unit}: its mind has the controls and is taking it home. It fires only on a unit that fires on it.";
 /// The pilot, queued, when the mind takes the unit of a pilot who is away: `{unit}`.
-pub const TAKEN_HOME: &str = "While you were away #{unit} passed to its mind, which makes for its carrier's ramp and fires only on a unit that fires on it.";
+pub const TAKEN_HOME: &str = "While you were away #{unit} passed to its mind, which makes for its carrier's ramp.\nIt fires only on a unit that fires on it.";
 /// The pilot, back in the seat: `{unit}`, `{station}`.
-pub const BACK_IN_SEAT: &str = "You are back at the controls of #{unit}; its mind stands down and what it had pending is dropped. +focus #{unit}/{station} takes your cockpit back.";
+pub const BACK_IN_SEAT: &str = "You are back at the controls of #{unit}; its mind stands down and what it had pending is dropped.\n+focus #{unit}/{station} takes your cockpit back.";
 /// The pilot, back after the unit left the field: `{unit}`.
 pub const WENT_HOME: &str =
     "While you were away its mind took #{unit} out of the field at its carrier's ramp.";
 /// The pilot, queued, when the host gives up putting the unit aboard: `{unit}`.
-pub const LEFT_AT_RAMP: &str = "While you were away its mind took #{unit} out of the field, but it could not be put aboard: it stands beside your carrier's ramp. Recover it yourself.";
+pub const LEFT_AT_RAMP: &str = "While you were away its mind took #{unit} out of the field, but it could not be put aboard.\nIt stands beside your carrier's ramp: recover it yourself.";
+/// The pilot or operator, when the host's recover has put the unit aboard (doc 47 CO.11b, D4):
+/// said to one who is connected, queued for one who is not: `{unit}`.
+pub const PUT_ABOARD: &str =
+    "Its mind took #{unit} out of the field at its carrier's ramp, and it is aboard her now.";
 /// The pilot, back but not fit to fly: `{unit}`.
 pub const NOT_FIT: &str = "You are in no state to fly #{unit}: its mind keeps the controls.";
 /// The pilot, queued, when a field opened around a unit they sat in while they were away (doc 45
 /// cut AP.5): `{unit}`.
-pub const ADMITTED_AWAY: &str = "A field opened around #{unit} while you were away: its mind has the controls, makes for its carrier's ramp and fires only on a unit that fires on it.";
+pub const ADMITTED_AWAY: &str = "A field opened around #{unit} while you were away: its mind has the controls and makes for its carrier's ramp.\nIt fires only on a unit that fires on it.";
 /// Those the unit was with, when it goes home: `{unit}`, `{why}`.
 pub const GONE_HOME: &str =
-    "#{unit} breaks off for its carrier's ramp under its mind: {why}. It will not fire first.";
+    "#{unit} breaks off for its carrier's ramp under its mind: {why}.\nIt will not fire first.";
 /// [`MIND_HAS_IT`] for a unit left on `GUARD` or `HOLD` (doc 45 unit AP.6): `{unit}`,
 /// `{posture}`.
 pub const MIND_HAS_IT_ON: &str = "You cannot fly #{unit}: its mind has the controls and keeps it on {posture}. It will not fire first.";
 /// [`TAKEN_HOME`] for a unit left on `GUARD` or `HOLD`: `{unit}`, `{posture}`.
 pub const TAKEN_ON: &str = "While you were away #{unit} passed to its mind, which flies it on {posture} and will not fire first.";
 /// [`ADMITTED_AWAY`] for a unit left on `GUARD` or `HOLD`: `{unit}`, `{posture}`.
-pub const ADMITTED_ON: &str = "A field opened around #{unit} while you were away: its mind has the controls and flies it on {posture}. It will not fire first.";
+pub const ADMITTED_ON: &str = "A field opened around #{unit} while you were away: its mind has the controls and flies it on {posture}.\nIt will not fire first.";
 /// [`GONE_HOME`] for a unit left on `GUARD` or `HOLD`: `{unit}`, `{posture}`, `{why}`. It
 /// names the word and not what the unit does: only the kernel knows whether a guard can
 /// still defend itself, and one that cannot goes home.
@@ -127,9 +131,18 @@ pub const STAYS_ON: &str =
 
 /// The operator, when a field takes in a rig of theirs that nobody sits in (doc 45 unit
 /// AP.7), said to one who is connected and queued for one who is not: `{unit}`.
-pub const UNATTENDED: &str = "A field opened around #{unit} with nobody in its seat: its mind has the controls, makes for its carrier's ramp and fires only on a unit that fires on it. A plan it was working ends once it is aboard.";
+pub const UNATTENDED: &str = "A field opened around #{unit} with nobody in its seat: its mind has the controls and makes for its carrier's ramp.\nIt fires only on a unit that fires on it. A plan it was working ends once it is aboard.";
 /// [`UNATTENDED`] for a rig left on `GUARD` or `HOLD`: `{unit}`, `{posture}`.
-pub const UNATTENDED_ON: &str = "A field opened around #{unit} with nobody in its seat: its mind has the controls and flies it on {posture}. It will not fire first. A plan it was working runs on once the field has closed.";
+pub const UNATTENDED_ON: &str = "A field opened around #{unit} with nobody in its seat: its mind has the controls and flies it on {posture}.\nIt will not fire first. A plan it was working runs on once the field has closed.";
+
+/// **A notice, row by row** (doc 47 CO.11b, D2): `notify_budget` once a row. The reconnect
+/// queue holds one row a line and flattens a line's breaks into spaces, so a notice of two
+/// rows is queued as two lines, said or read in order.
+fn notify_rows(ctx: &mut Ctx<'_>, who: ObjId, text: &str, level: NoticeLevel) {
+    for row in text.split('\n') {
+        notify_budget(ctx, who, row, level);
+    }
+}
 
 /// **Why a unit's player is not at its controls.**
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,7 +515,7 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId, why: Why) 
         (false, true) => TAKEN_HOME,
         (false, false) => TAKEN_ON,
     };
-    notify_budget(
+    notify_rows(
         ctx,
         pilot,
         &line
@@ -520,7 +533,7 @@ pub(crate) fn hand_over(ctx: &mut Ctx<'_>, unit: ObjId, pilot: ObjId, why: Why) 
     .replace("{posture}", posture.label())
     .replace("{why}", why.clause());
     for lead in leads(ctx.w, &row) {
-        notify_budget(ctx, lead, &line, NoticeLevel::Trip);
+        notify_rows(ctx, lead, &line, NoticeLevel::Trip);
     }
     tracing::info!(site = %row.site, unit = unit.0, pilot = pilot.0, ?why, "tacsim: a field unit passed to its mind for an absent player");
     true
@@ -572,7 +585,7 @@ pub(crate) fn unattended(ctx: &mut Ctx<'_>, site: &CanonicalId, only: Option<Obj
         } else {
             UNATTENDED_ON
         };
-        notify_budget(
+        notify_rows(
             ctx,
             player,
             &line
@@ -589,7 +602,7 @@ pub(crate) fn unattended(ctx: &mut Ctx<'_>, site: &CanonicalId, only: Option<Obj
         .replace("{posture}", posture.label())
         .replace("{why}", Why::Unattended.clause());
         for lead in leads_of(ctx.w, &row.site, row.unit, player) {
-            notify_budget(ctx, lead, &line, NoticeLevel::Trip);
+            notify_rows(ctx, lead, &line, NoticeLevel::Trip);
         }
     }
 }
@@ -775,6 +788,76 @@ pub(crate) fn at_resume(ctx: &mut Ctx<'_>, task: MatchId, unit: ObjId, pilot: Ob
     }
     crate::arena_bridge::control_all_channels(ctx, unit, ControlState::Linkdead, pilot);
     false
+}
+
+/// **The recovers a restart owes** (doc 47 CO.11b, D5; `super::boot`, once a field has
+/// resumed): the list [`on_out`] fills is this boot's RAM, so it is rebuilt from what the store
+/// kept. A unit is owed its recover again when it left `site`'s field at its carrier's ramp
+/// (the site record's exits, or an exit the live record still owes), is out of the field and
+/// still on the site's ground, has a recover ([`recover_of`]) and no act in flight on its rig
+/// record, and its player, the pilot who sits in it or else the player behind it, is not
+/// connected. The recover then runs as before: tried again every [`RECOVER_RETRY_WALL_S`], said
+/// as [`PUT_ABOARD`] once it lands, [`LEFT_AT_RAMP`] if it never does.
+///
+/// What the store does not keep is whether the mind or its player asked the unit out. A
+/// player who took their own unit out at the ramp and left it there is recovered the same way
+/// after a restart, into the bay slot it launched from, which is where their own recover takes
+/// it.
+pub(crate) fn rebuild_homebound(ctx: &mut Ctx<'_>, site: &CanonicalId) {
+    let Some(live) = super::live_on(ctx.w, site) else {
+        return;
+    };
+    let Some(domain) = super::parties::site_domain(ctx.w, site) else {
+        return;
+    };
+    let mut out: BTreeSet<ObjId> = live.owed_exits.iter().map(|owed| owed.unit).collect();
+    if let Some(record) = super::close::site_record(ctx, site)
+        && let Some(open) = record.promoted.as_ref()
+    {
+        out.extend(open.exits.iter().copied());
+    }
+    let now = ctx.w.now();
+    for unit in out {
+        if live.units.iter().any(|row| row.unit == unit)
+            || homebound(ctx.w, unit)
+            || super::carrier::is_carrier(ctx.w, unit)
+            || mush_sim::pose_of(ctx.w, unit).is_none_or(|(on, _)| on != domain)
+        {
+            continue;
+        }
+        if super::parties::rig_record(ctx, unit).is_some_and(|record| record.act.is_some()) {
+            continue;
+        }
+        let Some(then) = recover_of(ctx, unit) else {
+            continue;
+        };
+        let sat = super::parties::seated(ctx.w, unit).map(|(who, _)| who);
+        let Some(pilot) = super::posture::player_of(ctx, unit, sat) else {
+            continue;
+        };
+        if on_watch(ctx.w, pilot) {
+            continue;
+        }
+        if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
+            minding.homebound.insert(
+                unit,
+                Homebound {
+                    site: site.clone(),
+                    pilot,
+                    seated: sat == Some(pilot),
+                    then,
+                    retry_at_wall_s: now.saturating_add(RECOVER_RETRY_WALL_S),
+                    why: if sat.is_some() {
+                        Why::LinkLost
+                    } else {
+                        Why::Unattended
+                    },
+                    tries: 0,
+                },
+            );
+        }
+        tracing::info!(site = %site, unit = unit.0, pilot = pilot.0, "tacsim: a recover a restart lost is owed again");
+    }
 }
 
 /// **The kernel let an absent player's unit out at its ramp** (`super::exit::on_withdrawn`,
@@ -1017,6 +1100,13 @@ fn retry_recovers(ctx: &mut Ctx<'_>, now: i64) {
             }
             if aboard {
                 tracing::info!(site = %owed.site, unit = unit.0, "tacsim: an absent player's unit is aboard its carrier");
+                // Doc 47 CO.11b (D4): its player is told now, not at the field's close.
+                notify_rows(
+                    ctx,
+                    owed.pilot,
+                    &PUT_ABOARD.replace("{unit}", &unit.0.to_string()),
+                    NoticeLevel::Trip,
+                );
             }
             continue;
         }
@@ -1055,7 +1145,7 @@ fn retry_recovers(ctx: &mut Ctx<'_>, now: i64) {
             if let Some(minding) = ctx.w.module_state_mut::<Minding>() {
                 minding.homebound.remove(&unit);
             }
-            notify_budget(
+            notify_rows(
                 ctx,
                 owed.pilot,
                 &LEFT_AT_RAMP.replace("{unit}", &unit.0.to_string()),
@@ -1136,5 +1226,63 @@ mod tests {
         }
         assert!(UNATTENDED.contains("ends once it is aboard") && !UNATTENDED.contains("{posture}"));
         assert!(UNATTENDED_ON.contains("{posture}") && UNATTENDED_ON.contains("runs on"));
+    }
+
+    /// **Doc 47 CO.11b, D2: every absent-unit notice fits the 120-column floor**, filled at its
+    /// worst case: a five-digit unit, the longest posture word, the longest reason clause and
+    /// a 32-byte station. A notice breaks its own rows where a sentence ends.
+    #[test]
+    fn co11b_every_absent_unit_notice_fits_120_columns() {
+        let longest_why = [
+            Why::LinkLost,
+            Why::Quit,
+            Why::Incapacitated,
+            Why::AwayAtAdmission,
+            Why::Unattended,
+        ]
+        .into_iter()
+        .map(Why::clause)
+        .max_by_key(|clause| clause.chars().count())
+        .expect("a clause");
+        let longest_posture = [
+            crate::posture::Posture::Return,
+            crate::posture::Posture::Guard,
+            crate::posture::Posture::Hold,
+        ]
+        .into_iter()
+        .map(crate::posture::Posture::label)
+        .max_by_key(|label| label.chars().count())
+        .expect("a posture");
+        let station = "s".repeat(32);
+        for line in [
+            MIND_HAS_IT,
+            TAKEN_HOME,
+            BACK_IN_SEAT,
+            WENT_HOME,
+            LEFT_AT_RAMP,
+            PUT_ABOARD,
+            NOT_FIT,
+            ADMITTED_AWAY,
+            GONE_HOME,
+            MIND_HAS_IT_ON,
+            TAKEN_ON,
+            ADMITTED_ON,
+            STAYS_ON,
+            UNATTENDED,
+            UNATTENDED_ON,
+        ] {
+            let filled = line
+                .replace("{unit}", "99999")
+                .replace("{posture}", longest_posture)
+                .replace("{why}", longest_why)
+                .replace("{station}", &station);
+            for row in filled.split('\n') {
+                assert!(
+                    row.chars().count() <= 120,
+                    "{} columns: {row}",
+                    row.chars().count()
+                );
+            }
+        }
     }
 }

@@ -560,6 +560,10 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         }
     }
     super::record::write_live(ctx, &live);
+    // Doc 47 CO.11b (D3): every player with a stake is told the field opened before any line
+    // about what their units' minds do in it, so a reconnect queue reads the opening first. The
+    // first snapshot's read of the stakes then finds every unit known and says nothing again.
+    super::notice::fold(ctx, site, true);
     // Doc 45 cut AP.5 (Q-45-1, Q-45-2): the seats nobody is at pass to their minds now, on the
     // record just written.
     seat_absent(ctx, site, None);

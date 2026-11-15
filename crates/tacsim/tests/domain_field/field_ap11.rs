@@ -84,7 +84,9 @@ use mush_org::PrincipalId;
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::perception::FrameContact;
 use tacsim::arena_task::ArenaOut;
-use tacsim::field::absent::{ADMITTED_ON, BACK_IN_SEAT, UNATTENDED, Why, away_of, minded};
+use tacsim::field::absent::{
+    ADMITTED_ON, BACK_IN_SEAT, PUT_ABOARD, UNATTENDED, Why, away_of, minded,
+};
 use tacsim::field::notice::{AFTER_FIELD, Fate};
 use tacsim::field::{FIELD_OPENED, FIELD_SETTLED};
 use tacsim::port::HullRow;
@@ -862,14 +864,20 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         .replace("{unit}", &guard.0.to_string())
         .replace("{posture}", Posture::Guard.label());
     let homing = UNATTENDED.replace("{unit}", &homer.0.to_string());
-    // Each rig's line was queued at admission and the field's own at its first snapshot, so
-    // the rigs come first. Nothing else is queued: no line for his carrier, which stays
-    // where it is, and none for anybody else's unit.
-    assert_eq!(
-        queued,
-        vec![guarding.clone(), homing.clone(), opened.clone()],
-        "what is queued for the owner, each once"
-    );
+    let put_aboard = PUT_ABOARD.replace("{unit}", &homer.0.to_string());
+    // Doc 47 CO.11b (D3): the field's own line first, then each rig's, both queued at
+    // admission. Then (D4) that the prospector is aboard, queued when the host's recover put
+    // it there, not left for the close. Nothing else is queued: no line for his carrier, which
+    // stays where it is, and none for anybody else's unit. (D2) A notice of two rows is queued
+    // as two lines, and no row is past the 120-column floor.
+    let expected: Vec<&str> = [&opened, &guarding, &homing, &put_aboard]
+        .into_iter()
+        .flat_map(|line| line.split('\n'))
+        .collect();
+    assert_eq!(queued, expected, "what is queued for the owner, each once");
+    for row in &queued {
+        assert!(row.chars().count() <= 120, "{row}");
+    }
     let back_at = s.rig.tw.world().now();
     let read = connect(&mut s.rig, owner);
     let rows: Vec<&str> = read.lines().map(str::trim).collect();
@@ -878,11 +886,11 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
             .position(|row| *row == text)
             .unwrap_or_else(|| panic!("the owner reads {text:?} at login: {read}"))
     };
-    // He reads exactly that under the one heading, and nothing after it.
+    // He reads exactly that under the one heading, row by row, and nothing after it.
     assert_eq!(
         rows[row(NOTICE_HEADING) + 1..],
-        [guarding.as_str(), homing.as_str(), opened.as_str()],
-        "under the heading: each rig, then the field, and no more: {read}"
+        expected[..],
+        "under the heading: the field, then each rig, and no more: {read}"
     );
     for other in [worker, hostile] {
         assert!(

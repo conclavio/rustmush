@@ -317,7 +317,8 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
                 *pilot,
                 "tacsim.field",
                 format!(
-                    "The server restarted. Field {} on {} resumed from its last save, {} s in.                      +focus #{}/{station} takes your cockpit back.",
+                    "The server restarted. Field {} on {} resumed from its last save, {} s in.\n\
+                     +focus #{}/{station} takes your cockpit back.",
                     live.field.ordinal,
                     super::admit::site_name(ctx, site),
                     head.at_ms / 1_000,
@@ -326,6 +327,9 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
             );
         }
     }
+    // Doc 47 CO.11b (D5): the recovers the host owed before the restart, rebuilt from what the
+    // store kept.
+    super::absent::rebuild_homebound(ctx, site);
     tracing::info!(site = %site, ordinal = live.field.ordinal, at_ms = head.at_ms, task = task.0, "tacsim: an IC field resumed from its snapshot");
     Ok(())
 }
