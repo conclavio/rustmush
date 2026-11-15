@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v26 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v34 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,31 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 47 unit CO.10 (lane v34): Occator's wrecker design taken out** of the vehicles'
+/// designs, so a strip chain rebuilds a lane before v34 (idempotent). The chain's head.
+pub fn strip_wrecker(doc: &mut Value) {
+    for entry in doc["entries"]
+        .as_object_mut()
+        .into_iter()
+        .flat_map(|entries| entries.values_mut())
+    {
+        // `get_mut`, never `IndexMut`: indexing would write `null` into every entry it misses.
+        if let Some(designs) = entry
+            .get_mut("def")
+            .and_then(|def| def.get_mut("vehicles"))
+            .and_then(|vehicles| vehicles.get_mut("designs"))
+            .and_then(Value::as_array_mut)
+        {
+            designs.retain(|design| design.get("word").and_then(Value::as_str) != Some("wrecker"));
+        }
+    }
+}
+
 /// **The owner's IN.11 house-restock ruling (lane v33, 2026-11-05): Stickney Yards' carbon
 /// taken out** — the stock row, the ask and the bid at Stickney, so a strip chain rebuilds a
-/// lane before v33 (idempotent). The chain's head.
+/// lane before v33 (idempotent); lane v34's [`strip_wrecker`] first.
 pub fn strip_stickney_carbon(doc: &mut Value) {
+    strip_wrecker(doc);
     for vendor in doc
         .get_mut("entries")
         .and_then(|entries| entries.get_mut("stickney_port"))

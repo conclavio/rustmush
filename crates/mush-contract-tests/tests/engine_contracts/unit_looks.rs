@@ -47,6 +47,10 @@ const LOOKLESS: &[(&str, &str)] = &[
         "the tender (doc 41 cut RS.1), the prospector's chassis, never in the arena: it takes the prospector's look when that cut lands",
     ),
     (
+        "tacsim.unit.tv_wrecker",
+        "the wrecker (doc 47 unit CO.10), the tender's chassis, never in the arena: it takes the prospector's look when that cut lands",
+    ),
+    (
         "tacsim.unit.tycho_crawler",
         "Tycho Mutual's recovery crawler (doc 41 cut RS.6a), never in the arena: the kit has no look for it yet (doc 41 §7)",
     ),

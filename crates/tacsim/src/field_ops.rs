@@ -730,6 +730,123 @@ mod tests {
         Ok((unit, spec))
     }
 
+    /// **Doc 47 unit CO.10, the limit on the shipped content.** The heaviest laden casualty each
+    /// rig takes, read as `attach_facts` reads it (the definition's coupling and cap through
+    /// `surface::tow`, the library's ratio), for `(rig, casualty)`.
+    fn takes(catalog: &Catalog, rig: &str, casualty: &str) -> Result<bool, Box<dyn Error>> {
+        let spec = |id: &str| -> Result<&UnitSpec, Box<dyn Error>> {
+            Ok(catalog
+                .specs
+                .get(&CanonicalId::new(id)?)
+                .ok_or_else(|| format!("missing unit spec {id}"))?)
+        };
+        let tug = spec(rig)?;
+        match mush_tactics::field_ops::tow_mass_ratio_permille_capped(
+            dry_mass_kg_for_spec(tug),
+            dry_mass_kg_for_spec(spec(casualty)?),
+            crate::surface::tow::profile_of_spec(tug),
+            crate::surface::tow::tow_cap_kg_of_spec(tug),
+        ) {
+            Ok(_) => Ok(true),
+            Err(RecoveryError::ExceedsTonnageCap { .. }) => Ok(false),
+            Err(other) => Err(other.into()),
+        }
+    }
+
+    /// **Doc 47 unit CO.10**: Occator's wrecker, 12 t on the recovery coupling (3×, 36 t), takes
+    /// every shipped line tank (29.9 t) and every leased rig, and refuses a hull heavier than
+    /// 36 t; no earlier leased rig reaches a line tank (the gap doc 42b's SU.4 found).
+    #[test]
+    fn co10_the_wrecker_takes_a_line_tank_and_refuses_a_heavier_hull() -> TestResult {
+        let catalog = load_stock_catalog()?;
+        let wrecker = "tacsim.unit.tv_wrecker";
+        let spec = catalog
+            .specs
+            .get(&CanonicalId::new(wrecker)?)
+            .ok_or("the wrecker is fielded")?;
+        check_eq!(dry_mass_kg_for_spec(spec), 12_000);
+        check_eq!(
+            crate::surface::tow::profile_of_spec(spec),
+            TowRigProfile::RecoveryOptimized
+        );
+        check_eq!(crate::surface::tow::tow_cap_kg_of_spec(spec), None);
+        let line_tank = catalog
+            .specs
+            .get(&CanonicalId::new("tacsim.unit.line_tank")?)
+            .ok_or("the line tank")?;
+        check_eq!(dry_mass_kg_for_spec(line_tank), 29_900);
+        for casualty in [
+            "tacsim.unit.line_tank",
+            "tacsim.unit.line_tank_ecm",
+            "tacsim.unit.line_tank_eccm",
+            "tacsim.unit.line_tank_laser",
+            "tacsim.unit.line_tank_thermal",
+            "tacsim.unit.scout_mk1",
+            "tacsim.unit.drone_mk1",
+            "tacsim.unit.tv_prospector",
+            "tacsim.unit.tv_escort",
+            "tacsim.unit.tv_tender",
+            wrecker,
+        ] {
+            check!(
+                takes(&catalog, wrecker, casualty)?,
+                "the wrecker takes {casualty}"
+            );
+        }
+        for casualty in [
+            "tacsim.unit.heavy_mk1",
+            "tacsim.unit.biped_mk1",
+            "tacsim.unit.biped_mk2",
+            "tacsim.unit.dray_p",
+        ] {
+            check!(
+                !takes(&catalog, wrecker, casualty)?,
+                "{casualty} is too heavy for the wrecker"
+            );
+        }
+        for rig in [
+            "tacsim.unit.tv_prospector",
+            "tacsim.unit.tv_escort",
+            "tacsim.unit.tv_tender",
+        ] {
+            check!(
+                !takes(&catalog, rig, "tacsim.unit.line_tank")?,
+                "{rig} never reached a line tank"
+            );
+        }
+        // Tows that worked still work: the tender its prospector, the prospector a drone.
+        check!(takes(
+            &catalog,
+            "tacsim.unit.tv_tender",
+            "tacsim.unit.tv_prospector"
+        )?);
+        check!(takes(
+            &catalog,
+            "tacsim.unit.tv_prospector",
+            "tacsim.unit.drone_mk1"
+        )?);
+        // The boundary binds inclusively at three times the wrecker's mass.
+        check!(
+            mush_tactics::field_ops::tow_mass_ratio_permille_capped(
+                12_000,
+                36_000,
+                TowRigProfile::RecoveryOptimized,
+                None
+            )
+            .is_ok()
+        );
+        check!(
+            mush_tactics::field_ops::tow_mass_ratio_permille_capped(
+                12_000,
+                36_001,
+                TowRigProfile::RecoveryOptimized,
+                None
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
     #[test]
     fn stock_biped_mk1_headshot_preserves_torso_and_arm_weapons_for_recovery() -> TestResult {
         let catalog = load_stock_catalog()?;

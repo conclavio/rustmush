@@ -1842,6 +1842,11 @@ pub(crate) fn on_joined(
     match outcome {
         Ok(name) => {
             tracing::info!(site = %site, hull = unit.0, name = ?name, "tacsim: a raider joined the field");
+            // Doc 47 unit CO.10 (found and fixed): the hull's seated crew (doc 42b SU.1) took its
+            // helm at the join's epoch in the arena; the world's mirror takes it too, as a launch's
+            // join does, or every order the host stamps for the hull (its leader's WITHDRAW,
+            // `order_home`) carries epoch 0 and the kernel refuses it.
+            super::carrier::seat_joined_pilot(ctx, task, unit, &live);
         }
         Err(why) => {
             tracing::warn!(site = %site, hull = unit.0, reason = %why, "tacsim: the field refused a raider; it goes back aboard");

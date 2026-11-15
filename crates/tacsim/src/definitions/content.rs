@@ -849,6 +849,24 @@ pub const EXTENSIONS_TYCHO: [(&str, &str); 2] = [
     ("tacsim/content/units/tycho_lifter.json", TYCHO_LIFTER_JSON),
 ];
 
+/// `crates/tacsim/content/units/tv_wrecker.json` (doc 47 unit CO.10).
+pub const TV_WRECKER_JSON: &str = include_str!("../../content/units/tv_wrecker.json");
+
+/// The wrecker's pack id.
+pub const TV_WRECKER_PACK: &str = "tacsim.pack.tv_wrecker";
+
+/// **The wrecker terrain vehicle** (doc 47 unit CO.10): Occator's heavy recovery rig, the
+/// tender's chassis widened and ballasted to 12 t dry (provisional), unarmed, a 1 t tool locker
+/// and no tender stores, on the `recovery_optimized` coupling (3×, Q-41-27): 36 t laden, so a
+/// player's tug takes in a raider's 29.9 t line tank. Class `vehicle`, never fielded in an
+/// arena. Occator leases it into a Dray-P's bay (`+tv/lease wrecker`).
+pub const TV_WRECKER: &str = "tacsim.unit.tv_wrecker";
+
+/// **The wrecker, one unit schema and no row of its own** (doc 47 unit CO.10), fielded **last**,
+/// after every earlier table, so none moves.
+pub const EXTENSIONS_WRECKER: [(&str, &str); 1] =
+    [("tacsim/content/units/tv_wrecker.json", TV_WRECKER_JSON)];
+
 /// `crates/tacsim/content/units/corvette.json` (doc 35b cut SF.R12).
 pub const CORVETTE_JSON: &str = include_str!("../../content/units/corvette.json");
 
@@ -1005,7 +1023,8 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// works (Stickney Yards', its house purchase of Kasei's alloys), and the Ceres works of Freeport
 /// Works (the new org), which stocks and asks carbon ore; **v31 since the player-response floor**
 /// (owner rule, 2026-11-04; doc 20's cut notes): the Freeport Registry licence's `grace_ic_days`
-/// 3 → 28 (v30 is doc 39 cut IN.11's, open beside it). The port readiness report
+/// 3 → 28 (v30 is doc 39 cut IN.11's, open beside it); **v34 since doc 47 unit CO.10**: Occator's
+/// wrecker design (`vehicles.designs`: two `tv_wrecker` rigs, `+tv/lease wrecker`). The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///
@@ -1019,7 +1038,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -1030,7 +1049,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 33;
+pub const LANE_VERSION: u32 = 34;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1224,6 +1243,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_CORVETTE.as_slice(),
         EXTENSIONS_TENDER.as_slice(),
         EXTENSIONS_TYCHO.as_slice(),
+        EXTENSIONS_WRECKER.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),
