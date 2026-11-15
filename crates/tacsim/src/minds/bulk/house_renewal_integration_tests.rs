@@ -419,6 +419,9 @@ impl renewal_twins::Twin for HouseTwin<'_> {
     fn boot(&self, saved: &Durable) -> TestResult<PlayerWorld> {
         Rig::house(self.registry, Compose::HOUSE_RENEWALS).boot(saved)
     }
+    fn boot_disabled(&self, saved: &Durable) -> TestResult<PlayerWorld> {
+        Rig::house(self.registry, Compose::NONE).boot(saved)
+    }
     fn due_world(&self) -> TestResult<PlayerWorld> {
         let mut w = self.boot(self.granted)?;
         let due = self.term_end(&w)?;
@@ -864,6 +867,7 @@ pub(super) fn exercise(
     renewal_twins::title_fences(&twin, START + 1_000)?;
     renewal_twins::accounts_and_expiry(&twin, START + 1_000)?;
     renewal_twins::corruptions(&twin, &granted, START)?;
+    renewal_twins::economy_history_alone(&twin, START + 1_000)?;
     Ok(independent)
 }
 

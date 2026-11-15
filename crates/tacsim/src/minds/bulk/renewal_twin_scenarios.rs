@@ -18,6 +18,7 @@
 
 use super::*;
 use mush_core::CommitToken;
+use mush_core::authoritative::ReplayWrite;
 use mush_roll::commerce::renewal::RenewalAttemptV1;
 use mush_roll::commerce::{LicenceId, TermGeneration};
 
@@ -73,6 +74,8 @@ pub(super) trait Twin {
     fn renewer(&self) -> ObjId;
     /// The world with the renewals composed, booted from `saved`.
     fn boot(&self, saved: &Durable) -> TestResult<PlayerWorld>;
+    /// The same world without the renewals composed.
+    fn boot_disabled(&self, saved: &Durable) -> TestResult<PlayerWorld>;
     /// A world on the granted purchase with its clock at the predecessor's term end.
     fn due_world(&self) -> TestResult<PlayerWorld>;
     /// Sets the clock the licence's windows are on.
@@ -483,5 +486,47 @@ pub(super) fn corruptions<T: Twin>(t: &T, snapshot: &Durable, renewed_by: u128) 
             "crossed {field}"
         );
     }
+    Ok(())
+}
+
+/// A store whose Economy holds a renewal's history (a draft's offered contract and its
+/// offer) while the Roll and the market hold none of it boots only with the renewals
+/// composed: a market that composes none refuses Economy's history on its own. (CT.6's
+/// F22; the Roll's half of the check, CT.5's R19, sees no Roll history in this store.)
+pub(super) fn economy_history_alone<T: Twin>(t: &T, start: u128) -> TestResult {
+    let mut world = t.due_world()?;
+    let due = t.capture(&world);
+    check!(
+        t.boot_disabled(&due).is_ok(),
+        "the due store boots without the renewals"
+    );
+    let (prepared, _) = t.prepare(
+        &mut world,
+        T::DRAFT,
+        t.renewer(),
+        start + 400,
+        licence_params(t),
+    )?;
+    let mut economy_only = due;
+    let mut added = 0_usize;
+    for write in prepared.authoritative_replay_writes() {
+        if let ReplayWrite::ModuleJsonSet {
+            namespace,
+            key,
+            value,
+        } = write
+            && namespace.as_str() == "economy"
+        {
+            economy_only
+                .disk
+                .insert((namespace.to_string(), key.to_string()), value);
+            added += 1;
+        }
+    }
+    check!(added > 0, "the draft writes Economy's renewal history");
+    check!(
+        crate::test_checks::refused(t.boot_disabled(&economy_only))?,
+        "a market that composes no renewals refuses Economy's renewal history"
+    );
     Ok(())
 }

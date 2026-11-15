@@ -510,6 +510,9 @@ impl renewal_twins::Twin for Personal<'_> {
     fn boot(&self, saved: &Durable) -> TestResult<PlayerWorld> {
         Rig::personal(self.f, Compose::RENEWALS).boot(saved)
     }
+    fn boot_disabled(&self, saved: &Durable) -> TestResult<PlayerWorld> {
+        Rig::personal(self.f, Compose::ENTITLEMENTS).boot(saved)
+    }
     fn due_world(&self) -> TestResult<PlayerWorld> {
         due_world(self.f, self.granted, self.birth)
     }
@@ -707,6 +710,13 @@ pub(super) async fn exercise(
 ) -> TestResult {
     eprintln!("M7_STORY phase=renewal.transitions event=begin");
     service_tests::exercise(f, granted, birth)?;
+    {
+        // Doc 46 CT.8: two scenarios CT.6's mutations asked for, left out of CT.0b's record
+        // (which pins this story as it was before them).
+        let _aside = ct0b::aside();
+        service_tests::second_page(f, granted, owner, birth)?;
+        renewal_twins::economy_history_alone(&Personal { f, granted, birth }, START)?;
+    }
     let (renewed, _drafted) = grant_chain(f, granted, birth)?;
     let twin = Personal { f, granted, birth };
     renewal_twins::retries(&twin, START)?;

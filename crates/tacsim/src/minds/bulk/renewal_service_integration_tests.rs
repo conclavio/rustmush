@@ -178,6 +178,59 @@ fn closed(
     Ok(())
 }
 
+/// Doc 46 CT.8 (CT.6's F30): the service's due scan reads the Roll's licence inventory a page
+/// (four licences) at a time and carries on from where the last page ended. With a fifth
+/// licence bought as the birth was, the fifth is on the second page, and the service still
+/// offers its renewal.
+pub(super) fn second_page(
+    f: &PurchaseFixture,
+    saved: &Durable,
+    owner: LicenceId,
+    birth: &EntitlementAllocationV1,
+) -> TestResult {
+    const N: u128 = SERVICE_START + 500;
+    let mut world = branch(f, saved)?;
+    super::super::list(&mut world, owner, N)?;
+    super::super::quote(&mut world, N, N + 1)?;
+    super::super::fund(&mut world, N + 1, N + 2)?;
+    super::super::grant(&mut world, N + 2, N + 3)?;
+    let fifth = super::super::allocation(&world, N + 2)?;
+    let licences = rows(&disk(&world), "roll", "roll_mind_personal_paid_licence");
+    check!(
+        licences.len() > 4,
+        "a second inventory page: {} licences",
+        licences.len()
+    );
+    check!(
+        licences
+            .iter()
+            .filter_map(|r| r.get("id").cloned())
+            .filter_map(|id| serde_json::from_value::<LicenceId>(id).ok())
+            .filter(|id| id.get() < fifth.licence().get())
+            .count()
+            >= 4,
+        "the fifth licence is not on the first page"
+    );
+    let holder = fifth.holder().acting_character();
+    check_eq!(holder, birth.holder().acting_character());
+    let current = licence(&world, fifth.licence())?;
+    let end = term(&world, current.id(), current.term())?
+        .window()
+        .term_end()
+        .get();
+    advance(&mut world, end)?;
+    // The first page's due licence (the birth) is offered first; the fifth after it.
+    let mut offered = Vec::new();
+    for n in 0..4 {
+        let (draft, _) = next(&mut world, holder, DRAFT)?;
+        offered.push(draft.parameters.clone());
+        if draft.parameters == json!({"licence":fifth.licence().get()}) {
+            return Ok(());
+        }
+        land(&mut world, &draft, N + 10 + n)?;
+    }
+    Err(format!("the service never offered the fifth licence: {offered:?}").into())
+}
 pub(super) fn exercise(
     f: &PurchaseFixture,
     saved: &Durable,
