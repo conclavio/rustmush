@@ -1057,6 +1057,51 @@ fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
     Ok(())
 }
 
+/// Doc 46 CT.6: the status line reads each cut of the frozen offer, for both issuers: the
+/// registry's, the venue's and (the personal issuer's alone) the parents'. The CT.0 walk and
+/// the M7 story compose a policy with no venue and a zero registry cut, so neither could tell
+/// one cut from the other (the mutations `registry` and `venue` passed both).
+#[test]
+fn the_status_line_reads_each_cut_of_the_frozen_offer() -> TestResult {
+    use super::player::RenewalPlayerOutcome;
+    let cut = |permille, n: u32| GrossRecipientCut {
+        permille,
+        recipient: Some(Recipient {
+            account: AccountId(u64::from(n)),
+            owner: mush_org::PrincipalId::Object(ObjId(n)),
+        }),
+    };
+    let parent = |charter, permille| mush_economy::managed_entitlement::RoyaltyRecipientCut {
+        charter: ObjId(charter),
+        permille,
+        title: None,
+    };
+    let mut row = fixture()?;
+    row.offer.terms.registry = cut(30, 20);
+    row.offer.terms.venue = Some(cut(70, 21));
+    row.offer.terms.parents = vec![parent(40, 11), parent(41, 5)];
+    let line = super::service::command_line(RenewalPlayerOutcome::Status(
+        super::service::status_view(100, Some(&row)),
+    ));
+    check!(
+        line.ends_with(
+            "Registry cut: 30 per mille; venue cut: 70 per mille; parent royalties: 16 per mille."
+        ),
+        "{line}"
+    );
+    let mut row = crate::mind_house_renewal::tests::fixture()?;
+    row.offer.terms.registry = cut(30, 20);
+    row.offer.terms.venue = Some(cut(70, 21));
+    let line = crate::mind_house_renewal::command_line(RenewalPlayerOutcome::Status(
+        crate::mind_house_renewal::status_view(100, Some(&row)),
+    ));
+    check!(
+        line.ends_with("Registry cut: 30 per mille; venue cut: 70 per mille."),
+        "{line}"
+    );
+    Ok(())
+}
+
 /// Doc 46 CT.6: every market identity constant of the personal issuer, against the literal its
 /// family's files held before the two were merged, and the records' families. A persisted
 /// byte, a definition or a printed line depends on each.
