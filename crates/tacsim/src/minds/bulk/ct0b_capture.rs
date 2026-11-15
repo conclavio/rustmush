@@ -250,6 +250,33 @@ impl Drop for Record {
     }
 }
 
+/// The record held aside: while this lives the hooks record nothing, and dropping it puts the
+/// record back as it was. Doc 46 CT.8 runs the House story's added scenarios under it, so
+/// that the committed files keep pinning the story as it was before them.
+#[must_use]
+pub(super) struct Aside(Option<Capture>);
+
+/// Holds the running record aside (a no-op outside the story).
+pub(super) fn aside() -> Aside {
+    let mut guard = match CAPTURE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    Aside(guard.take())
+}
+
+impl Drop for Aside {
+    fn drop(&mut self) {
+        if let Some(capture) = self.0.take() {
+            let mut guard = match CAPTURE.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *guard = Some(capture);
+        }
+    }
+}
+
 /// Where a record that stopped early leaves its committed file: the first line of `produced`
 /// that is not the committed file's, or that it agrees as far as it goes.
 fn stopped(committed: &str, produced: &str) -> String {

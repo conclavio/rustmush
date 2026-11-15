@@ -7,6 +7,8 @@ use super::*;
 mod house_purchase;
 #[path = "paid_resale_route_integration_tests.rs"]
 mod resale_routes;
+#[path = "renewal_twin_scenarios.rs"]
+mod renewal_twins;
 pub(super) fn exercise_house(
     registry: &Fixture,
     saved: &Durable,

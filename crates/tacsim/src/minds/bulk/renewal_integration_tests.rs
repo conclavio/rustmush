@@ -9,6 +9,9 @@ use mush_roll::commerce::{
     renewal::{RenewalAttemptV1, RenewalHeadV1, RenewalOperationV1, RenewalStateV1},
 };
 
+use crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::renewal_twins;
+use mush_core::CommitToken;
+
 #[path = "renewal_service_integration_tests.rs"]
 pub(super) mod service_tests;
 
@@ -378,341 +381,6 @@ fn grant_chain(
     Ok((snapshot, drafted))
 }
 
-fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocationV1) -> TestResult {
-    for (index, ending) in ["declined", "expired", "refund"].into_iter().enumerate() {
-        let number = START + 100 + u128::try_from(index)? * 10;
-        let mut world = due_world(f, granted, birth)?;
-        let old = licence(&world, birth.licence())?;
-        let old_term = term(&world, old.id(), old.term())?;
-        let old_economics = economics(&world, old.id(), old.term())?;
-        let initial = balances(&world)?;
-        step(&mut world, DRAFT, number, json!({"licence":old.id().get()}))?;
-        if ending == "refund" {
-            step_for(&mut world, FUND, number + 1, token(number))?;
-            step_for(&mut world, REFUND, number + 2, token(number))?;
-        } else {
-            if ending == "expired" {
-                let expires = market_operation(&world, token(number))?
-                    .offer()
-                    .terms
-                    .expires_at
-                    .at;
-                check!(
-                    prepare_step(
-                        &mut world,
-                        CLOSE,
-                        GOD,
-                        number + 2,
-                        json!({"operation":token(number),"reason":"expired"})
-                    )
-                    .is_err()
-                );
-                world.engine.world.set_now(expires);
-            }
-            step(
-                &mut world,
-                CLOSE,
-                number + 2,
-                json!({"operation":token(number),"reason":ending}),
-            )?;
-        }
-        let closed = paired(&world, token(number))?;
-        check!(closed.state().retryable());
-        check_eq!(balances(&world)?, initial);
-        assert_current_unchanged(&world, &old, &old_term, &old_economics)?;
-        check!(crate::test_checks::refused(term(
-            &world,
-            old.id(),
-            closed.binding().next()
-        ))?);
-        check!(crate::test_checks::refused(economics(
-            &world,
-            old.id(),
-            closed.binding().next()
-        ))?);
-        check_eq!(head(&world, old.id())?.pending(), None);
-        // Terminal history is durable before any retry and grants no extension.
-        let closed_snapshot = capture(&world, &disk(&world));
-        let mut world = Rig::personal(f, Compose::RENEWALS).boot(&closed_snapshot)?;
-        paired(&world, token(number))?;
-        let before = disk(&world);
-        check!(
-            prepare_step(
-                &mut world,
-                DRAFT,
-                GOD,
-                number + 3,
-                json!({"licence":old.id().get()})
-            )
-            .is_err(),
-            "same predecessor requires explicit new consent/retry link"
-        );
-        check!(
-            prepare_step(
-                &mut world,
-                DRAFT,
-                GOD,
-                number + 3,
-                json!({"previous_operation":token(number+99)})
-            )
-            .is_err()
-        );
-        assert_disk(&world, &before);
-        step(
-            &mut world,
-            DRAFT,
-            number + 3,
-            json!({"previous_operation":token(number)}),
-        )?;
-        let retry = paired(&world, token(number + 3))?;
-        check_eq!(
-            retry.attempt(),
-            RenewalAttemptV1::BuyerRetry {
-                previous_operation: token(number)
-            }
-        );
-        check_ne!(retry.contract(), closed.contract());
-        check_eq!(retry.binding(), closed.binding());
-        check_ne!(retry.consent_hash(), closed.consent_hash());
-        step_for(&mut world, FUND, number + 4, token(number + 3))?;
-        step_for(&mut world, GRANT, number + 5, token(number + 3))?;
-        paired(&world, token(number))?;
-        paired(&world, token(number + 3))?;
-        check_eq!(
-            term(&world, old.id(), retry.binding().next())?.operation(),
-            token(number + 3)
-        );
-        check_eq!(
-            economics(&world, old.id(), retry.binding().next())?.operation(),
-            token(number + 3)
-        );
-        check_eq!(licence(&world, old.id())?.operation(), birth.operation());
-        // Old Closed/Refunded rows coexist lawfully with the linked retry's
-        // successful next generation. No row is attributed to the old attempt.
-        let complete = capture(&world, &disk(&world));
-        let cold = Rig::personal(f, Compose::RENEWALS).boot(&complete)?;
-        paired(&cold, token(number))?;
-        paired(&cold, token(number + 3))?;
-        check_eq!(balances(&cold)?, balances(&world)?);
-        check_eq!(head(&cold, old.id())?.last_operation(), token(number + 3));
-    }
-    Ok(())
-}
-
-fn title_fences(
-    f: &PurchaseFixture,
-    granted: &Durable,
-    birth: &EntitlementAllocationV1,
-) -> TestResult {
-    for (offset, id) in [(0, DRAFT), (10, FUND), (20, GRANT)] {
-        for after_stage in [false, true] {
-            let number = START + 200 + offset;
-            let mut world = due_world(f, granted, birth)?;
-            if id != DRAFT {
-                step(
-                    &mut world,
-                    DRAFT,
-                    number,
-                    json!({"licence":birth.licence().get()}),
-                )?;
-            }
-            if id == GRANT {
-                step_for(&mut world, FUND, number + 1, token(number))?;
-            }
-            let params = if id == DRAFT {
-                json!({"licence":birth.licence().get()})
-            } else {
-                json!({"operation":token(number)})
-            };
-            let definition = action(&world, "market", id, 1)?;
-            let number_for_action = number + 2;
-            let before = balances(&world)?;
-            let old = licence(&world, birth.licence())?;
-            let held = world
-                .engine
-                .world
-                .module_state::<EconomyStore>()
-                .ok_or("Economy")?
-                .snapshot()
-                .asset(ObjId(birth.charter().get()))
-                .ok_or("title")?
-                .title_owner
-                .clone();
-            let (prepared, output) =
-                prepare_step(&mut world, id, GOD, number_for_action, params.clone())?;
-            // Core admits one pending commit: the issuer's title cannot move
-            // under a prepared (or staged) renewal step, so the transfer is
-            // refused and the renewal writes nothing.
-            if after_stage {
-                stage(
-                    &mut world,
-                    definition.clone(),
-                    GOD,
-                    number_for_action,
-                    params.clone(),
-                    prepared,
-                    output,
-                )?;
-                check!(
-                    world
-                        .transfer_charter(birth.charter().object(), GOD, 49_000_130)
-                        .is_err(),
-                    "title moved under a staged renewal step"
-                );
-            } else {
-                check!(
-                    world
-                        .transfer_charter(birth.charter().object(), GOD, 49_000_140)
-                        .is_err(),
-                    "title moved under a prepared renewal step"
-                );
-                drop((definition, params, prepared, output));
-            }
-            check_eq!(
-                world
-                    .engine
-                    .world
-                    .module_state::<EconomyStore>()
-                    .ok_or("Economy")?
-                    .snapshot()
-                    .asset(ObjId(birth.charter().get()))
-                    .ok_or("title")?
-                    .title_owner,
-                held
-            );
-            check_eq!(licence(&world, birth.licence())?, old);
-            check_eq!(balances(&world)?, before);
-            check!(rows(&disk(&world), "market", MindRenewalReceiptV1::FAMILY).is_empty());
-            if id == DRAFT {
-                check!(rows(&disk(&world), "roll", ROLL_OP).is_empty());
-            } else {
-                check!(paired(&world, token(number))?.state().pending());
-            }
-        }
-    }
-    Ok(())
-}
-fn accounts_and_expiry(
-    f: &PurchaseFixture,
-    granted: &Durable,
-    birth: &EntitlementAllocationV1,
-) -> TestResult {
-    {
-        let mut world = due_world(f, granted, birth)?;
-        let old = licence(&world, birth.licence())?;
-        let due = term(&world, old.id(), old.term())?
-            .window()
-            .term_end()
-            .get();
-        let before = disk(&world);
-        let money = balances(&world)?;
-        let params = json!({"licence":birth.licence().get()});
-        let definition = action(&world, "market", DRAFT, 1)?;
-        let (prepared, output) = prepare_step(&mut world, DRAFT, GOD, START + 249, params.clone())?;
-        stage(
-            &mut world,
-            definition,
-            GOD,
-            START + 249,
-            params,
-            prepared,
-            output,
-        )?;
-        world
-            .engine
-            .world
-            .set_now(due.checked_sub(1).ok_or("due boundary")?);
-        check!(
-            world.engine.take_staged_action().is_err(),
-            "captured due eligibility cannot publish before predecessor term_end"
-        );
-        assert_disk(&world, &before);
-        check_eq!(balances(&world)?, money);
-    }
-    for (offset, id) in [(0, DRAFT), (10, FUND), (20, GRANT)] {
-        let number = START + 250 + offset;
-        let mut world = due_world(f, granted, birth)?;
-        if id != DRAFT {
-            step(
-                &mut world,
-                DRAFT,
-                number,
-                json!({"licence":birth.licence().get()}),
-            )?;
-        }
-        if id == GRANT {
-            step_for(&mut world, FUND, number + 1, token(number))?;
-        }
-        let params = if id == DRAFT {
-            json!({"licence":birth.licence().get()})
-        } else {
-            json!({"operation":token(number)})
-        };
-        let definition = action(&world, "market", id, 1)?;
-        let before = disk(&world);
-        let money = balances(&world)?;
-        let (prepared, output) = prepare_step(&mut world, id, GOD, number + 2, params.clone())?;
-        let seller = merge_login_accounts(f)?;
-        let refusal = stage(
-            &mut world,
-            definition,
-            GOD,
-            number + 2,
-            params,
-            prepared,
-            output,
-        )
-        .is_err();
-        restore_login_account(f, seller)?;
-        check!(
-            refusal,
-            "retained actual login account pair must be rechecked"
-        );
-        assert_disk(&world, &before);
-        check_eq!(balances(&world)?, money);
-    }
-    for (offset, id) in [(0, FUND), (10, GRANT)] {
-        let number = START + 300 + offset;
-        let mut world = due_world(f, granted, birth)?;
-        step(
-            &mut world,
-            DRAFT,
-            number,
-            json!({"licence":birth.licence().get()}),
-        )?;
-        if id == GRANT {
-            step_for(&mut world, FUND, number + 1, token(number))?;
-        }
-        let expires = market_operation(&world, token(number))?
-            .offer()
-            .terms
-            .expires_at
-            .at;
-        let definition = action(&world, "market", id, 1)?;
-        let params = json!({"operation":token(number)});
-        let before = disk(&world);
-        let money = balances(&world)?;
-        let (prepared, output) = prepare_step(&mut world, id, GOD, number + 2, params.clone())?;
-        stage(
-            &mut world,
-            definition,
-            GOD,
-            number + 2,
-            params,
-            prepared,
-            output,
-        )?;
-        world.engine.world.set_now(expires);
-        check!(
-            world.engine.take_staged_action().is_err(),
-            "exact offer expiry at custody refuses fresh money/grant"
-        );
-        assert_disk(&world, &before);
-        check_eq!(balances(&world)?, money);
-    }
-    Ok(())
-}
-
 fn cleanup_after_parent_lapse(
     f: &PurchaseFixture,
     granted: &Durable,
@@ -811,98 +479,141 @@ fn cleanup_after_parent_lapse(
     Ok(())
 }
 
-fn corruptions(
-    f: &PurchaseFixture,
-    snapshot: &Durable,
-    birth: &EntitlementAllocationV1,
-) -> TestResult {
-    for (owner, family) in [
-        ("market", MindRenewalOperationV1::FAMILY),
-        ("market", MindRenewalReceiptV1::FAMILY),
-        ("roll", ROLL_OP),
-        ("roll", HEAD),
-        ("roll", ECONOMICS),
-    ] {
-        let mut lost = snapshot.clone();
-        let count = lost.disk.len();
-        lost.disk
-            .retain(|(ns, _), v| !(ns == owner && v.pointer("/family/id") == Some(&json!(family))));
-        check!(lost.disk.len() < count, "removed actual persisted family");
-        check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&lost))?,
-            "missing or all-missing {family} must refuse"
-        );
+/// Doc 46 CT.8: the personal issuer's renewal twin, for the scenarios both issuers run.
+struct Personal<'a> {
+    f: &'a PurchaseFixture,
+    granted: &'a Durable,
+    birth: &'a EntitlementAllocationV1,
+}
+impl renewal_twins::Twin for Personal<'_> {
+    const DRAFT: &'static str = DRAFT;
+    const FUND: &'static str = FUND;
+    const GRANT: &'static str = GRANT;
+    const REFUND: &'static str = REFUND;
+    const CLOSE: &'static str = CLOSE;
+    const MARKET_OP: &'static str = MindRenewalOperationV1::FAMILY;
+    const RECEIPT: &'static str = MindRenewalReceiptV1::FAMILY;
+    const ROLL_OP: &'static str = ROLL_OP;
+    const HEAD: &'static str = HEAD;
+    const ECONOMICS: &'static str = ECONOMICS;
+    const ECONOMY_OFFER: &'static str = "renewal-offer:";
+    const LOGIN_PAIR: bool = true;
+    fn licence(&self) -> LicenceId {
+        self.birth.licence()
     }
-    // One side absent while E4/roots/head survive cannot be mistaken for zero jobs.
-    let mut lost = snapshot.clone();
-    let count = lost.disk.len();
-    lost.disk.retain(|_, v| {
-        ![
-            ROLL_OP,
-            HEAD,
-            MindRenewalOperationV1::FAMILY,
-            MindRenewalReceiptV1::FAMILY,
-        ]
-        .iter()
-        .any(|name| v.pointer("/family/id") == Some(&json!(name)))
-    });
-    check!(lost.disk.len() < count);
-    check!(crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&lost))?);
-    let mut missing_economy = snapshot.clone();
-    let before = missing_economy.disk.len();
-    missing_economy
-        .disk
-        .retain(|(ns, key), _| !(ns == "economy" && key.starts_with("renewal-offer:")));
-    check!(
-        missing_economy.disk.len() < before,
-        "removed the actual E4 offer history"
-    );
-    check!(
-        crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&missing_economy))?,
-        "receipt/contract alone cannot replace missing E4 origins"
-    );
-    let mut missing_current_term = snapshot.clone();
-    let before = missing_current_term.disk.len();
-    missing_current_term.disk.retain(|(ns, _), value| {
-        !(ns == "roll"
-            && value.pointer("/family/id") == Some(&json!("roll_mind_paid_term"))
-            && value.pointer("/value/licence") == Some(&json!(birth.licence()))
-            && value.pointer("/value/generation") == Some(&json!("2")))
-    });
-    check!(missing_current_term.disk.len() < before);
-    check!(
-        crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&missing_current_term))?,
-        "current pointer cannot substitute for its term"
-    );
-    // Exact current pointer and retained immutable birth are independently joined.
-    for field in ["term", "operation"] {
-        let mut crossed = snapshot.clone();
-        let mut changed = false;
-        for ((ns, _), v) in &mut crossed.disk {
-            if ns == "roll"
-                && v.pointer("/family/id") == Some(&json!("roll_mind_personal_paid_licence"))
-                && v.pointer("/value/id") == Some(&json!(birth.licence()))
-            {
-                let value = v
-                    .get_mut("value")
-                    .and_then(Value::as_object_mut)
-                    .ok_or("licence document")?;
-                let slot = value.get_mut(field).ok_or("licence field")?;
-                *slot = if field == "term" {
-                    json!("1")
-                } else {
-                    json!(token(START))
-                };
-                changed = true;
-            }
-        }
-        check!(changed);
-        check!(
-            crate::test_checks::refused(Rig::personal(f, Compose::RENEWALS).boot(&crossed))?,
-            "crossed {field}"
-        );
+    fn charter(&self) -> ObjId {
+        self.birth.charter().object()
     }
-    Ok(())
+    fn renewer(&self) -> ObjId {
+        GOD
+    }
+    fn boot(&self, saved: &Durable) -> TestResult<PlayerWorld> {
+        Rig::personal(self.f, Compose::RENEWALS).boot(saved)
+    }
+    fn due_world(&self) -> TestResult<PlayerWorld> {
+        due_world(self.f, self.granted, self.birth)
+    }
+    fn set_time(&self, w: &mut PlayerWorld, at: i64) -> TestResult {
+        w.engine.world.set_now(at);
+        Ok(())
+    }
+    fn term_end(&self, w: &PlayerWorld) -> TestResult<i64> {
+        let old = licence(w, self.birth.licence())?;
+        Ok(term(w, old.id(), old.term())?.window().term_end().get())
+    }
+    fn disk(&self, w: &PlayerWorld) -> Disk {
+        disk(w)
+    }
+    fn capture(&self, w: &PlayerWorld) -> Durable {
+        capture(w, &disk(w))
+    }
+    fn balances(&self, w: &PlayerWorld) -> TestResult<Vec<(WalletId, Amount, Amount)>> {
+        balances(w)
+    }
+    fn current(&self, w: &PlayerWorld) -> TestResult<Value> {
+        let old = licence(w, self.birth.licence())?;
+        Ok(json!([
+            serde_json::to_value(&old)?,
+            serde_json::to_value(term(w, old.id(), old.term())?)?,
+            serde_json::to_value(economics(w, old.id(), old.term())?)?,
+        ]))
+    }
+    fn term_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
+        Ok(serde_json::to_value(term(w, self.birth.licence(), generation)?)?)
+    }
+    fn economics_at(&self, w: &PlayerWorld, generation: TermGeneration) -> TestResult<Value> {
+        Ok(serde_json::to_value(economics(
+            w,
+            self.birth.licence(),
+            generation,
+        )?)?)
+    }
+    fn head(&self, w: &PlayerWorld) -> TestResult<(Option<CommitToken>, CommitToken)> {
+        let head = head(w, self.birth.licence())?;
+        Ok((head.pending(), head.last_operation()))
+    }
+    fn operation(&self, w: &PlayerWorld, n: u128) -> TestResult<renewal_twins::Operation> {
+        let actual = paired(w, token(n))?;
+        Ok(renewal_twins::Operation {
+            pending: actual.state().pending(),
+            retryable: actual.state().retryable(),
+            attempt: actual.attempt(),
+            next: actual.binding().next(),
+            contract: serde_json::to_value(actual.contract())?,
+            consent: serde_json::to_value(actual.consent_hash())?,
+            binding: serde_json::to_value(actual.binding())?,
+            expires_at: market_operation(w, token(n))?.offer().terms.expires_at.at,
+        })
+    }
+    fn licence_operation(&self, w: &PlayerWorld) -> TestResult<CommitToken> {
+        Ok(licence(w, self.birth.licence())?.operation())
+    }
+    fn birth_operation(&self) -> CommitToken {
+        self.birth.operation()
+    }
+    fn title_owner(&self, w: &PlayerWorld) -> TestResult<Value> {
+        Ok(serde_json::to_value(
+            &w.engine
+                .world
+                .module_state::<EconomyStore>()
+                .ok_or("Economy")?
+                .snapshot()
+                .asset(ObjId(self.birth.charter().get()))
+                .ok_or("title")?
+                .title_owner,
+        )?)
+    }
+    fn prepare(
+        &self,
+        w: &mut PlayerWorld,
+        id: &str,
+        actor: ObjId,
+        n: u128,
+        params: Value,
+    ) -> TestResult<renewal_twins::Prepared> {
+        prepare_step(w, id, actor, n, params)
+    }
+    fn stage(
+        &self,
+        w: &mut PlayerWorld,
+        id: &str,
+        actor: ObjId,
+        n: u128,
+        params: Value,
+        (prepared, output): renewal_twins::Prepared,
+    ) -> TestResult {
+        let definition = action(w, "market", id, 1)?;
+        stage(w, definition, actor, n, params, prepared, output)
+    }
+    fn step(&self, w: &mut PlayerWorld, id: &str, n: u128, params: Value) -> TestResult {
+        step(w, id, n, params)
+    }
+    fn merge_login_accounts(&self) -> TestResult<mush_core::AccountId> {
+        merge_login_accounts(self.f)
+    }
+    fn restore_login_account(&self, seller: mush_core::AccountId) -> TestResult {
+        restore_login_account(self.f, seller)
+    }
 }
 
 async fn customer(
@@ -997,11 +708,12 @@ pub(super) async fn exercise(
     eprintln!("M7_STORY phase=renewal.transitions event=begin");
     service_tests::exercise(f, granted, birth)?;
     let (renewed, _drafted) = grant_chain(f, granted, birth)?;
-    retries(f, granted, birth)?;
-    title_fences(f, granted, birth)?;
-    accounts_and_expiry(f, granted, birth)?;
+    let twin = Personal { f, granted, birth };
+    renewal_twins::retries(&twin, START)?;
+    renewal_twins::title_fences(&twin, START)?;
+    renewal_twins::accounts_and_expiry(&twin, START)?;
     cleanup_after_parent_lapse(f, granted, birth)?;
-    corruptions(f, &renewed, birth)?;
+    renewal_twins::corruptions(&twin, &renewed, START)?;
     story_phase("renewal.customer", || customer(f, &renewed, owner, birth))?.await?;
     eprintln!("M7_STORY phase=renewal.transitions event=complete");
     Ok(())
