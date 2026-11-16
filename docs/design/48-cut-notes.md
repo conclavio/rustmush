@@ -544,6 +544,8 @@ Not built.
      feedstock asks, with a provisions ask at 20 and a stock row of 1,000.
 5. **The carbon press** (recipe pack v3, `INDUSTRY_RECIPES_VERSION` 3): `carbon_feedstock`, 5 t
    of carbon ore into 4 t of feedstock, 4 work units, pooled. It is a public slot at both works.
+   PL.2 is stacked on PL.7 (#629), whose three core-module recipes joined the pack at v2. v3
+   carries them, re-signed over the four new rows together.
 6. **The lane bump.** Lane v35 → v36, relay v26 → v27, and
    `support::lane_chain::strip_producers` as the strip chain's new head (`strip_refine` calls
    it). Pins moved:
