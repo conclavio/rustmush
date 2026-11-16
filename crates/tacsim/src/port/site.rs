@@ -880,7 +880,7 @@ pub(crate) fn read_plan(w: &World, map: &PortMap, site: &SiteDef) -> PlanRead {
 }
 
 /// One swapped submission's step: `Submitted`, or why not (the stock arm's).
-fn swapped(result: Result<(), crate::port_tick::SwapRefused>) -> crate::port_tick::Step {
+pub(crate) fn swapped(result: Result<(), crate::port_tick::SwapRefused>) -> crate::port_tick::Step {
     use crate::port_tick::{Step, SwapRefused};
     match result {
         Ok(()) => Step::Submitted,
@@ -980,7 +980,14 @@ pub(crate) fn site_step(
         crate::surface::opening::opening_line(ctx.w, &entry),
         SiteOpening::Open { .. }
     ) {
-        return claims_step(ctx, fire, clerk, &map, &site);
+        let step = claims_step(ctx, fire, clerk, &map, &site);
+        if step != crate::port_tick::Step::Idle {
+            return step;
+        }
+        // Doc 48 unit PL.10 (Q-48-61): with no claim work due, a worked-out deposit's mark or
+        // re-roll.
+        let receipts = crate::surface::opening::site_receipts(&entry);
+        return crate::surface::opening::reroll_step(ctx, fire, clerk, &entry, &receipts);
     }
     let plan = match read_plan(ctx.w, &map, &site) {
         PlanRead::Dark => return Step::Idle,
@@ -1273,7 +1280,11 @@ impl mush_core::ActionProvider for SiteWorkProvider {
         let clerk = query.actor();
         let (row_receipt, value) = match next_work_row(engine, &self.pockets, clerk) {
             None => {
-                match crate::space::mining::next_space_mine_work_row(engine, &self.pockets, clerk) {
+                match crate::space::mining::next_space_mine_work_row(engine, &self.pockets, clerk)
+                    // Doc 48 unit PL.10: else a worked-out deposit's mark or re-roll.
+                    .or_else(|| {
+                        crate::surface::opening::next_reroll_row(engine, &self.pockets, clerk)
+                    }) {
                     Some(found) => found,
                     None => return Ok(None),
                 }
@@ -1360,6 +1371,18 @@ impl mush_core::ActionProvider for SiteWorkProvider {
             .and_then(|rows| rows.get(receipt))
             .and_then(Value::as_object)
             .ok_or_else(work_invalid)?;
+        // Doc 48 unit PL.10: a worked-out deposit's mark or re-roll is its own row.
+        if entry.contains_key("reroll_act") {
+            return crate::surface::opening::prepare_reroll(
+                &self.pockets,
+                &self.inventory,
+                &self.outcome,
+                invocation,
+                txn,
+                receipt,
+                entry,
+            );
+        }
         let number = |key: &str| {
             entry
                 .get(key)
@@ -1440,6 +1463,8 @@ impl mush_core::ActionProvider for SiteWorkProvider {
             schema: crate::surface::cursor::POCKET_CURSOR_SCHEMA,
             deposit,
             rows: cursor,
+            // Doc 48 unit PL.10: a space draw keeps the deposit's re-roll ledger.
+            reroll: prior.as_ref().and_then(|prior| prior.reroll.clone()),
         };
         let expected_total = prior_drawn.checked_add(worked_t);
         if record.check().is_err() || record.drawn_total() != expected_total || worked_t == 0 {
@@ -1463,6 +1488,25 @@ impl mush_core::ActionProvider for SiteWorkProvider {
                     "the block's worked share could not be moved",
                 )
             })?;
+        // Doc 48 unit PL.10: the space draw that empties its rock records the rock worked out
+        // in this bundle, at the instant its row was offered, so the clerk files no mark of
+        // its own (a site's draws are the surface providers', and its clerk marks instead).
+        let record = match entry.get("at_ic").and_then(Value::as_i64) {
+            Some(at_ic) if is_space_mine => {
+                let left = self
+                    .inventory
+                    .pool(txn, mush_inventory::EndpointRef(VaultId(from)), &commodity)
+                    .ok()
+                    .flatten()
+                    .map(|pool| pool.quantity);
+                if left == Some(0) {
+                    crate::surface::opening::stamped_worked_out(record, at_ic)
+                } else {
+                    record
+                }
+            }
+            _ => record,
+        };
         let staged = if prior.is_some() {
             txn.replace(&self.pockets, &deposit, record)
         } else {

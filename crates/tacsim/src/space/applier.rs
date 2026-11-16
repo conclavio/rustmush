@@ -434,7 +434,7 @@ pub fn apply_intents_answering(
 
     let mut heading: Option<u32> = None;
     let mut strength: Option<i32> = None;
-    let mut shots: Vec<Mount> = Vec::new();
+    let mut shots: Vec<Shot> = Vec::new();
     for intent in intents {
         match intent {
             IntentKind::Emcon { on } => {
@@ -493,9 +493,11 @@ pub fn apply_intents_answering(
                     .get(ship_id)
                     .and_then(|ship| mount_of(ship, weapon))
                 {
-                    Some(Mount::Collector) if seat.work => shots.push(Mount::Collector),
+                    Some(Mount::Collector) if seat.work => {
+                        shots.push((Mount::Collector, weapon.to_string()));
+                    }
                     Some(mount) if mount != Mount::Collector && seat.fire != FireRule::Never => {
-                        shots.push(mount);
+                        shots.push((mount, weapon.to_string()));
                     }
                     _ => applied.dropped += 1,
                 }
@@ -600,7 +602,7 @@ pub fn apply_answer(
         return applied;
     }
     let mut target: Option<String> = None;
-    let mut shots: Vec<Mount> = Vec::new();
+    let mut shots: Vec<Shot> = Vec::new();
     for intent in intents {
         match intent {
             IntentKind::Lock { contact } => match contacts.get(contact) {
@@ -612,7 +614,7 @@ pub fn apply_answer(
                 .get(ship_id)
                 .and_then(|ship| mount_of(ship, weapon))
             {
-                Some(mount) if mount != Mount::Collector => shots.push(mount),
+                Some(mount) if mount != Mount::Collector => shots.push((mount, weapon.to_string())),
                 _ => applied.dropped += 1,
             },
             _ => applied.dropped += 1,
@@ -636,9 +638,20 @@ pub fn apply_answer(
     applied
 }
 
-/// **Fire `shots` from `ship_id` at `target`**, one command a family, in the order named;
-/// `permitted` is whether the absent player's rule lets her fire on `target` (a collector
-/// shoots nothing and is worked either way).
+/// One `fire` a think asked: the family of the mount it names, and its id on the hull.
+type Shot = (Mount, String);
+
+/// **Fire `shots` from `ship_id` at `target`**, in the order named; `permitted` is whether the
+/// absent player's rule lets her fire on `target` (a collector shoots nothing and is worked
+/// either way).
+///
+/// **Each tube family and spinal gun fires by its id** (doc 49 unit CC.6): one command a mount
+/// a think, a tube family's salvo as many as the think named it, at most [`SALVO_MAX`]. The
+/// first of each family takes the family's command ([`BubbleInputCommand::FireTorpedoSalvo`],
+/// [`BubbleInputCommand::FireRailgun`]), so a hull that carries one of a family records the
+/// tape she always did; any other takes [`BubbleInputCommand::FireMount`]. Her lasers are one
+/// battery, as `+tac/beam` fires them: naming any fires every one in offence that is ready, one
+/// command a think.
 #[allow(clippy::too_many_arguments)]
 fn shoot(
     bubble: &mut LocalSpaceBubble,
@@ -646,7 +659,7 @@ fn shoot(
     events: &mut Vec<SpaceCombatEvent>,
     ship_id: &str,
     target: &str,
-    mut shots: Vec<Mount>,
+    mut shots: Vec<Shot>,
     permitted: bool,
     applied: &mut Applied,
 ) {
@@ -658,13 +671,13 @@ fn shoot(
     // the seat's to work or not.
     if !permitted {
         let before = shots.len();
-        shots.retain(|mount| *mount == Mount::Collector);
+        shots.retain(|(mount, _)| *mount == Mount::Collector);
         applied.dropped += u32::try_from(before - shots.len()).unwrap_or(u32::MAX);
         if shots.is_empty() {
             return;
         }
     }
-    if shots.iter().any(|mount| *mount != Mount::Collector)
+    if shots.iter().any(|(mount, _)| *mount != Mount::Collector)
         && bubble
             .ships
             .get(ship_id)
@@ -677,16 +690,33 @@ fn shoot(
             },
         );
     }
-    let salvo = u8::try_from(shots.iter().filter(|mount| **mount == Mount::Tube).count())
+    let (first_tube, first_spinal) = bubble.ships.get(ship_id).map_or((None, None), |ship| {
+        (
+            ship.torpedo_tubes.first().map(|tube| tube.id.clone()),
+            ship.railguns.first().map(|gun| gun.id.clone()),
+        )
+    });
+    let salvo_of = |id: &str| {
+        u8::try_from(
+            shots
+                .iter()
+                .filter(|(mount, named)| *mount == Mount::Tube && named == id)
+                .count(),
+        )
         .unwrap_or(SALVO_MAX)
-        .min(SALVO_MAX);
-    let mut fired: Vec<Mount> = Vec::new();
-    for mount in shots {
-        // One command a family a think: the bubble fires every mount of it that is ready.
-        if fired.contains(&mount) {
+        .min(SALVO_MAX)
+    };
+    // One command a mount a think, and one a family for her lasers and her collector.
+    let mut fired: Vec<(Mount, Option<&str>)> = Vec::new();
+    for (mount, id) in &shots {
+        let key = match mount {
+            Mount::Tube | Mount::Railgun => (*mount, Some(id.as_str())),
+            Mount::Laser | Mount::Collector => (*mount, None),
+        };
+        if fired.contains(&key) {
             continue;
         }
-        fired.push(mount);
+        fired.push(key);
         let shooter_id = ship_id.to_owned();
         let target_id = target.to_owned();
         match mount {
@@ -703,25 +733,40 @@ fn shoot(
             Mount::Railgun => {
                 applied.fired = true;
                 applied.fired_heavy = true;
-                command(
-                    bubble,
+                let order = if first_spinal.as_deref() == Some(id.as_str()) {
                     BubbleInputCommand::FireRailgun {
                         shooter_id,
                         target_id,
-                    },
-                );
+                    }
+                } else {
+                    BubbleInputCommand::FireMount {
+                        shooter_id,
+                        target_id,
+                        mount_id: id.clone(),
+                        count: 1,
+                    }
+                };
+                command(bubble, order);
             }
             Mount::Tube => {
                 applied.fired = true;
                 applied.fired_heavy = true;
-                command(
-                    bubble,
+                let count = salvo_of(id);
+                let order = if first_tube.as_deref() == Some(id.as_str()) {
                     BubbleInputCommand::FireTorpedoSalvo {
                         shooter_id,
                         target_id,
-                        count: salvo,
-                    },
-                );
+                        count,
+                    }
+                } else {
+                    BubbleInputCommand::FireMount {
+                        shooter_id,
+                        target_id,
+                        mount_id: id.clone(),
+                        count,
+                    }
+                };
+                command(bubble, order);
             }
             Mount::Collector => {
                 applied.asked_work = true;
@@ -1514,5 +1559,97 @@ mod tests {
             assert_eq!(applied.fired, answers_it, "guards {guards}");
             assert_eq!(beams_fired(&tape).len(), usize::from(answers_it));
         }
+    }
+
+    /// **Doc 49 unit CC.6: each tube family and spinal gun fires by its id.** A second family
+    /// and a second gun each fire on their own `fire`, the first of each takes the family's
+    /// command as it always did, and a family named twice fires a salvo of two.
+    #[test]
+    fn cc6_a_second_tube_family_and_spinal_gun_each_fire_by_their_id() {
+        use super::super::weapons::{RailgunMount, TorpedoTube};
+
+        let (mut bubble, _, contacts) = field();
+        if let Some(patrol) = bubble.ships.get_mut("patrol") {
+            patrol
+                .torpedo_tubes
+                .push(TorpedoTube::standard_twin("torp_aft", 8));
+            patrol
+                .railguns
+                .push(RailgunMount::standard_spinal("rail_aft", 24));
+        }
+        let mut tape = BubbleInputTape::new(&bubble);
+        let fire = |id: &str| IntentKind::Fire {
+            weapon: SmolStr::new(id),
+            slot: Some(1),
+        };
+        let mut events = Vec::new();
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            "patrol",
+            Seat::PATROL,
+            &contacts,
+            &[
+                IntentKind::Lock {
+                    contact: ContactId(1),
+                },
+                fire("torp_bow"),
+                fire("torp_aft"),
+                fire("torp_aft"),
+                fire("rail_spinal"),
+                fire("rail_aft"),
+            ],
+            &mut events,
+        );
+        assert!(applied.fired && applied.fired_heavy);
+        let orders: Vec<String> = tape
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.command {
+                BubbleInputCommand::FireTorpedoSalvo { count, .. } => {
+                    Some(format!("salvo {count}"))
+                }
+                BubbleInputCommand::FireRailgun { .. } => Some("spinal".to_owned()),
+                BubbleInputCommand::FireMount {
+                    mount_id, count, ..
+                } => Some(format!("{mount_id} {count}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            orders,
+            ["salvo 1", "torp_aft 2", "spinal", "rail_aft 1"],
+            "one command a mount, the first of each family by the family's"
+        );
+        let patrol = bubble.ships.get("patrol").expect("the patrol");
+        let left: Vec<(&str, u16)> = patrol
+            .torpedo_tubes
+            .iter()
+            .map(|tube| (tube.id.as_str(), tube.magazine_remaining))
+            .chain(
+                patrol
+                    .railguns
+                    .iter()
+                    .map(|gun| (gun.id.as_str(), gun.rounds_remaining)),
+            )
+            .collect();
+        assert_eq!(
+            left,
+            [
+                ("torp_bow", 7),
+                ("torp_aft", 6),
+                ("rail_spinal", 23),
+                ("rail_aft", 23)
+            ]
+        );
+        // The tape replays to the same mounts.
+        let (replayed, _) = tape.replay();
+        let mounts = |bubble: &LocalSpaceBubble| {
+            bubble
+                .ships
+                .get("patrol")
+                .map(|ship| (ship.torpedo_tubes.clone(), ship.railguns.clone()))
+        };
+        assert_eq!(mounts(&replayed), mounts(&bubble));
     }
 }

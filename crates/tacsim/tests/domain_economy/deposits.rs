@@ -2118,3 +2118,226 @@ fn sm6_tacsim_never_writes_an_industry_family() {
         offenders.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Doc 48 unit PL.10: ore regeneration (Q-48-61)
+// ---------------------------------------------------------------------------
+
+/// Industry's quarantine of `deposit`, if any.
+fn quarantine_of(tw: &TestWorld, deposit: OreDepositId) -> Option<Quarantine> {
+    tw.world()
+        .module_state::<mush_industry::IndustryStore>()
+        .expect("the industry store")
+        .quarantine(deposit)
+}
+
+/// The world's IC instant.
+fn ic_now(tw: &TestWorld) -> i64 {
+    tw.world().world_ic_now().at
+}
+
+/// Land what lands of `queued` (the port's background work after a long jump).
+fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+    for submit in queued {
+        let _ = land(rig, submit);
+    }
+}
+
+/// Jump the world to the IC instant `ic` at its rate, fire everything due once and land what
+/// lands: a long wait is one jump, never a stride of idle fires.
+fn jump_to_ic(rig: &mut Rig, ic: i64) {
+    let rate = i64::from(rig.tw.world().world_timeline().current().rate.max(1));
+    let wall = (ic.saturating_sub(ic_now(&rig.tw)) + rate - 1) / rate;
+    let t = rig.tw.world().now().saturating_add(wall.max(1));
+    rig.tw.set_now(t);
+    let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    let queued = drain(&mut rig.tw);
+    land_quietly(rig, &queued);
+}
+
+/// Fire and land (quietly) up to `fires` times until `read` answers.
+fn fire_until<T>(
+    rig: &mut Rig,
+    fires: u32,
+    mut read: impl FnMut(&mut TestWorld) -> Option<T>,
+) -> Option<T> {
+    for _ in 0..fires {
+        if let Some(found) = read(&mut rig.tw) {
+            return Some(found);
+        }
+        let queued = fire(rig);
+        land_quietly(rig, &queued);
+    }
+    read(&mut rig.tw)
+}
+
+/// **Work one deposit out by hand**, as its mining would leave it: its whole pool moved into the
+/// site's spoil (a conserved transfer) and its cursor drawn to every ore pocket's tonnes, read
+/// independently through the chart's field ground; both kept for a reboot.
+fn work_out(rig: &mut Rig, entry: &str, row: &OpeningRow) {
+    let (spec, body, _, _) = ground_of(&mut rig.tw, entry);
+    let (gross, pockets) = block_truth(&spec, &body, row.letter, row.family, 1_000);
+    assert_eq!(
+        gross, row.gross_t,
+        "the block's truth is the deposit's reserve"
+    );
+    let left = pool(&mut rig.tw, row.vault, row.good.as_str());
+    assert_eq!(left, row.gross_t, "an unworked block's pool is its reserve");
+    let to = spoil(&rig.tw, entry);
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let prepared = {
+        let mut txn = rig
+            .tw
+            .engine_mut()
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        families
+            .transfer(
+                &mut txn,
+                EndpointRef(row.vault),
+                EndpointRef(to),
+                &row.good,
+                left,
+            )
+            .expect("the block's ore moves to the spoil");
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .expect("installs");
+    keep(rig, ops);
+    let handle = handles(&rig.tw).families.pockets;
+    let record = PocketCursor {
+        schema: tacsim::surface::cursor::POCKET_CURSOR_SCHEMA,
+        deposit: row.deposit,
+        rows: pockets
+            .iter()
+            .map(|(pocket, drawn_t)| tacsim::surface::cursor::CursorRow {
+                pocket: *pocket,
+                drawn_t: *drawn_t,
+                lock: None,
+            })
+            .collect(),
+        reroll: None,
+    };
+    record.check().expect("the worked-out cursor checks");
+    let prepared = {
+        let mut txn = rig
+            .tw
+            .engine_mut()
+            .action_transaction(&handle)
+            .expect("pockets transaction");
+        assert!(
+            txn.get(&handle, &row.deposit).expect("reads").is_none(),
+            "an unworked block has no cursor"
+        );
+        txn.insert(&handle, &row.deposit, record)
+            .expect("the cursor stages");
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .expect("installs");
+    keep(rig, ops);
+}
+
+/// **A worked-out site deposit re-rolls after 28 IC days, across a restart** (doc 48 unit
+/// PL.10; Q-48-61): one Ahuna deposit worked out by hand (its pool in the spoil, its cursor
+/// drawn to every pocket) passes industry's sweep. Its clerk marks it within a few port fires;
+/// the world reboots; two IC days short of the delay nothing has re-rolled; past it one re-roll
+/// lands: the pool holds the opened reserve again, the rows are cleared, the ledger counts one
+/// and carries the tonnes, and the deposit's total never falls. Industry's sweep still passes,
+/// a second reboot reads it all back, and an unworked deposit is never marked.
+#[test]
+fn pl10_a_worked_out_site_deposit_rerolls_after_28_ic_days_across_a_restart() {
+    let mut rig = stocked();
+    let _ = open_one(&mut rig, AHUNA);
+    let plan = plan_of(&mut rig.tw, AHUNA);
+    let row = plan.first().expect("Ahuna opens a deposit").clone();
+    let other = plan.get(1).expect("Ahuna opens a second deposit").clone();
+    work_out(&mut rig, AHUNA, &row);
+    sweep(&mut rig.tw, 61);
+    assert_eq!(
+        quarantine_of(&rig.tw, row.deposit),
+        None,
+        "the forge is honest"
+    );
+    set_rate(&mut rig.tw, 3_600);
+    // The clerk looks once an IC hour (a port fire is six at this rate): the mark lands.
+    let marked_ic = fire_until(&mut rig, 6, |tw| {
+        cursor(tw, row.deposit)
+            .and_then(|c| c.reroll)
+            .and_then(|ledger| ledger.worked_out_ic)
+    })
+    .expect("the clerk marks the deposit worked out");
+    assert_eq!(pool(&mut rig.tw, row.vault, row.good.as_str()), 0);
+    let due = marked_ic + 28 * 86_400;
+    // A restart between the mark and its due instant.
+    let mut rig = reboot(rig);
+    jump_to_ic(&mut rig, due - 2 * 86_400);
+    let early = fire_until(&mut rig, 4, |tw| {
+        let rows = cursor(tw, row.deposit).map(|c| c.rows.len());
+        (rows == Some(0)).then_some(())
+    });
+    assert!(early.is_none(), "nothing re-rolls before its delay");
+    assert_eq!(pool(&mut rig.tw, row.vault, row.good.as_str()), 0);
+    assert!(ic_now(&rig.tw) < due);
+    // Past the delay: one re-roll.
+    jump_to_ic(&mut rig, due);
+    let rerolled = fire_until(&mut rig, 6, |tw| {
+        cursor(tw, row.deposit).filter(|c| c.reroll.as_ref().is_some_and(|l| l.rerolls == 1))
+    })
+    .expect("the deposit re-rolls once its delay has run");
+    assert_eq!(
+        pool(&mut rig.tw, row.vault, row.good.as_str()),
+        row.gross_t,
+        "the pool holds the opened reserve again"
+    );
+    assert!(rerolled.rows.is_empty(), "every pocket is whole again");
+    assert_eq!(
+        rerolled.reroll,
+        Some(tacsim::surface::cursor::RerollLedger {
+            rerolls: 1,
+            carried_t: row.gross_t,
+            rerolled_t: row.gross_t,
+            worked_out_ic: None,
+        })
+    );
+    assert_eq!(
+        rerolled.drawn_total(),
+        Some(row.gross_t),
+        "the total never falls"
+    );
+    assert_eq!(rerolled.audit_drawn(), Some(0));
+    assert_eq!(
+        deposit(&mut rig.tw, row.deposit).map(|d| d.initial_reserve()),
+        Some(row.gross_t),
+        "industry's record is untouched"
+    );
+    sweep(&mut rig.tw, 61);
+    assert_eq!(quarantine_of(&rig.tw, row.deposit), None, "the audit holds");
+    // A second reboot reads it back, and nothing marks a deposit with ore in it.
+    let mut rig = reboot(rig);
+    for _ in 0..4 {
+        let queued = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    assert_eq!(cursor(&mut rig.tw, row.deposit), Some(rerolled));
+    assert_eq!(pool(&mut rig.tw, row.vault, row.good.as_str()), row.gross_t);
+    assert_eq!(
+        cursor(&mut rig.tw, other.deposit),
+        None,
+        "an unworked deposit is never marked"
+    );
+    no_refused_writes(&rig.tw);
+}

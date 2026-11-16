@@ -322,8 +322,15 @@ fn cms(vel_mmps: [i64; 3]) -> [i64; 3] {
     vel_mmps.map(|part| part / 10)
 }
 
-/// The mounts a mind may fire, as the rows a script reads them by: her first laser, tube and
-/// railgun.
+/// What a laser's row reads as its rounds and their maximum: a laser keeps no magazine, so its
+/// row reads full.
+pub const LASER_ROW_ROUNDS: u32 = 100;
+
+/// **The mounts a mind may fire, as the rows a script reads them by** (doc 49 unit CC.6: one row
+/// a mount, each fired by its id): every laser her fit lets fire at her lock (Q-49-24), then
+/// every tube family, then every spinal gun, each family in her fit's order; then a drone's
+/// collector. A magazine's maximum is what her fit stows ([`super::weapons::TorpedoTube::magazine_max`]),
+/// so it does not shrink as she fires. Point defence fires on its own and has no row.
 fn weapon_rows(observer: &SpaceShipState) -> Vec<FrameWeapon> {
     let row = |id: &str, ready: bool, ready_in_ms: u32, rounds: u32, rounds_max: u32| FrameWeapon {
         id: SmolStr::new(id),
@@ -338,31 +345,35 @@ fn weapon_rows(observer: &SpaceShipState) -> Vec<FrameWeapon> {
         armed: None,
     };
     let mut weapons = Vec::new();
-    if let Some(laser) = observer.lasers.first() {
+    for laser in observer
+        .lasers
+        .iter()
+        .filter(|laser| laser.offence_allowed())
+    {
         weapons.push(row(
             &laser.id,
             laser.cooldown_remaining_ms == 0,
             laser.cooldown_remaining_ms,
-            100,
-            100,
+            LASER_ROW_ROUNDS,
+            LASER_ROW_ROUNDS,
         ));
     }
-    if let Some(tube) = observer.torpedo_tubes.first() {
+    for tube in &observer.torpedo_tubes {
         weapons.push(row(
             &tube.id,
             tube.cooldown_remaining_ms == 0 && tube.magazine_remaining > 0,
             tube.cooldown_remaining_ms,
             u32::from(tube.magazine_remaining),
-            u32::from(tube.magazine_remaining.max(8)),
+            u32::from(tube.magazine_max()),
         ));
     }
-    if let Some(rail) = observer.railguns.first() {
+    for rail in &observer.railguns {
         weapons.push(row(
             &rail.id,
             rail.cooldown_remaining_ms == 0 && rail.rounds_remaining > 0,
             rail.cooldown_remaining_ms,
             u32::from(rail.rounds_remaining),
-            u32::from(rail.rounds_remaining.max(24)),
+            u32::from(rail.magazine_max()),
         ));
     }
     // Doc 44 unit MW.12 (Q-44-27): a collector drone's one mount is its collector, and the
@@ -894,5 +905,97 @@ mod tests {
             .insert("a.unseen".to_owned());
         let (_, with_unseen) = relations(&bubble, &answering);
         assert_eq!(with_unseen, bytes, "her view is the same bytes");
+    }
+}
+
+/// **Doc 49 unit CC.6: one row a mount, its maximum from the fit, its row by the fit's modes.**
+#[cfg(test)]
+mod cc6_tests {
+    use super::*;
+    use crate::arena::party::Mark;
+    use crate::space::picket::{BELT_RAIDER_PARTY, CARRIER_PARTY};
+
+    fn ids(rows: &[FrameWeapon]) -> Vec<&str> {
+        rows.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    fn halcyon() -> SpaceShipState {
+        let mut ship =
+            SpaceShipState::new_corvette("halcyon", "Halcyon", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
+        super::super::custody::apply_space_unit_overlay(
+            &mut ship,
+            &super::super::custody::space_unit_overlay_for_id("tacsim.unit.halcyon"),
+        );
+        ship
+    }
+
+    #[test]
+    fn cc6_every_mount_a_mind_may_fire_is_a_row() {
+        let corvette =
+            SpaceShipState::new_corvette("c", "Corvette", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
+        // Both lasers (the second starts in defence and may switch), the tubes, the spinal
+        // gun; point defence fires on its own and has no row.
+        assert_eq!(
+            ids(&weapon_rows(&corvette)),
+            ["laser_1", "laser_2", "torp_bow", "rail_spinal"]
+        );
+        let dray = SpaceShipState::new_dray("d", "Dray", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
+        assert_eq!(
+            ids(&weapon_rows(&dray)),
+            ["laser_dorsal", "laser_ventral"],
+            "Q-49-25: both of the Dray's lasers"
+        );
+    }
+
+    #[test]
+    fn cc6_a_magazines_maximum_is_her_fits_and_does_not_shrink() {
+        let mut bubble = LocalSpaceBubble::new("bubble.test.cc6", "domain.9", "Test", 1_000);
+        bubble.insert_ship(halcyon());
+        bubble.insert_ship(SpaceShipState::new_dray(
+            "prey",
+            "Prey",
+            BELT_RAIDER_PARTY,
+            [100_000, 0, 0],
+            [0, 0, 0],
+        ));
+        bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, Some(Mark::Hostile));
+        let max = |bubble: &LocalSpaceBubble, id: &str| {
+            weapon_rows(bubble.ships.get("halcyon").expect("her ship"))
+                .into_iter()
+                .find(|row| row.id == id)
+                .map(|row| (row.rounds, row.rounds_max))
+        };
+        // What her fit stows, read from content.
+        let stowed = |id: &str| {
+            super::super::custody::space_fit_for_id("tacsim.unit.halcyon")
+                .and_then(|fit| fit.mounts.iter().find(|mount| mount.id.as_str() == id))
+                .and_then(|mount| mount.magazine)
+                .expect("her fit stows it")
+        };
+        let (tubes, rounds) = (stowed("torp_bow"), stowed("rail_spinal"));
+        assert!(tubes > 8 && rounds > 24, "more than the old fixed maxima");
+        assert_eq!(max(&bubble, "torp_bow"), Some((tubes, tubes)));
+        assert_eq!(max(&bubble, "rail_spinal"), Some((rounds, rounds)));
+        assert!(!bubble.fire_torpedo_salvo("halcyon", "prey", 2).is_empty());
+        assert!(!bubble.fire_railgun("halcyon", "prey").is_empty());
+        assert_eq!(
+            max(&bubble, "torp_bow"),
+            Some((tubes - 2, tubes)),
+            "the old fixed maximum of 8 shrank it to what was left"
+        );
+        assert_eq!(max(&bubble, "rail_spinal"), Some((rounds - 1, rounds)));
+    }
+
+    #[test]
+    fn cc6_a_laser_fitted_defence_only_is_no_row() {
+        let mut dray = SpaceShipState::new_dray("d", "Dray", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
+        if let Some(laser) = dray.lasers.first_mut() {
+            laser.allowed_modes = super::super::weapons::LaserModes {
+                offence: false,
+                defence: true,
+            };
+            laser.mode = super::super::weapons::LaserMode::Defense;
+        }
+        assert_eq!(ids(&weapon_rows(&dray)), ["laser_ventral"]);
     }
 }

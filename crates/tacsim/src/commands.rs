@@ -1626,6 +1626,14 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 def.location,
                 def.orgs.len()
             ),
+            // Doc 49 unit CC.6: a space mount row is its family; a fit is its unit and mounts.
+            PackEntry::SpaceMount(def) => format!("{} — {}", def.label, def.family.as_str()),
+            PackEntry::SpaceFit(def) => format!(
+                "{} — fits {}, {} mounts",
+                def.label,
+                def.unit,
+                def.mounts.len()
+            ),
         };
         rows.push(format!("  {entry_id} ({}) {detail}", entry.label()));
     }

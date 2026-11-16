@@ -214,6 +214,32 @@ fn rounds(rig: &Rig, unit: ObjId) -> i64 {
         .sum()
 }
 
+/// **The escort's load on `component`, read off the content** (doc 49 cut CC.0, Q-49-16):
+/// the `count_per_load` of the round the shipped `tv_escort`'s mount there fires, so a retune
+/// of the round's pack moves no line here.
+fn escort_load(component: &str) -> i64 {
+    use tacsim::definitions::unit::ComponentRole;
+    let catalog = tacsim::builtin_definitions()
+        .unwrap_or_else(|error| panic!("the shipped content binds: {error}"));
+    let key = mush_core::CanonicalId::new(tacsim::definitions::content::TV_ESCORT)
+        .unwrap_or_else(|_| panic!("{} is an id", tacsim::definitions::content::TV_ESCORT));
+    let spec = catalog
+        .specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is fielded"));
+    spec.components
+        .iter()
+        .find_map(|slot| match &slot.role {
+            ComponentRole::Weapon { weapon, .. } if slot.id.as_str() == component => {
+                catalog.weapons.get(weapon)
+            }
+            _ => None,
+        })
+        .and_then(|def| catalog.ammunition.get(&def.ammunition))
+        .map(|round| i64::from(round.count_per_load))
+        .unwrap_or_else(|| panic!("{key} carries a loaded {component}"))
+}
+
 fn name_of(rig: &Rig, obj: ObjId) -> String {
     rig.tw
         .world()
@@ -424,9 +450,11 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     let name = name_of(&rig, escort);
     let quote = run(&mut rig.tw, captain, &format!("+bay {name}"));
     eprintln!("{quote}");
+    // A whole load to rearm on the cannon, and the coaxial empty, at the content's loads.
+    let (cannon_load, coaxial_load) = (escort_load("cannon"), escort_load("machine_gun"));
     assert!(
-        quote.contains("rearm cannon (40 rounds")
-            && quote.contains("0/2000 rounds")
+        quote.contains(&format!("rearm cannon ({cannon_load} rounds"))
+            && quote.contains(&format!("0/{coaxial_load} rounds"))
             && quote.contains("Built on this floor"),
         "clean but for the rearm, her magazines empty: {quote}"
     );
@@ -913,6 +941,54 @@ async fn in9b_the_yard_builds_a_line_tank_and_a_scout_by_their_templates() {
     assert!(out.contains("is stowed in the"), "{out}");
     let facility = tacsim::port::bay_work::facility_of(rig.tw.world(), scout_obj).expect("her bay");
     assert_eq!(facility.carrier, Some(dray));
+}
+
+/// **Doc 49 §4a (from the second review, doc 48b): the yard leaves a laser's beam charge
+/// full.** Q-39-36 empties a commissioned hull's magazines, and beam charge is a cell, not a
+/// magazine: no munitions good loads it. A line tank (laser) built at Stickney stands on the
+/// floor with her coaxial gun's magazine empty and her laser's charge full; the commission's
+/// Emptied step used to zero both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in9_a_yard_built_laser_tank_keeps_her_beam_charge() {
+    let mut rig = stocked();
+    let captain = free_captain(&mut rig, "LaserBuilder", 2);
+    let tank = build(
+        &mut rig,
+        captain,
+        "line_tank_laser",
+        (21, 7),
+        &[
+            "tacsim.part.weapon.laser_mk1",
+            "tacsim.part.weapon.mg_coax",
+            "tacsim.part.sensor.visual_mk1",
+            "tacsim.part.plant.vehicle_mk1",
+        ],
+        9_930,
+    )
+    .object()
+    .expect("the tank");
+    let ammo = |local: &str| {
+        mush_tactics::module::unit_of(rig.tw.world(), tank)
+            .expect("the unit")
+            .cells()
+            .find(|(addr, _)| {
+                matches!(addr, mush_tactics::CellAddr::Component { component, cell }
+                    if cell.as_str() == "ammo"
+                        && component.as_str().rsplit('.').next() == Some(local))
+            })
+            .map(|(_, cell)| (cell.current, cell.max))
+            .unwrap_or_else(|| panic!("no ammo cell on the {local}"))
+    };
+    let (charge, full) = ammo("laser");
+    assert!(
+        full > 0 && charge == full,
+        "the laser's beam charge is full: {charge} of {full}"
+    );
+    assert_eq!(
+        ammo("machine_gun").0,
+        0,
+        "the coaxial gun's magazine is empty"
+    );
 }
 
 // ---- the review fixes (docs 38a/38b, 2026-11-05) ----------------------------------------------

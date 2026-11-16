@@ -43,6 +43,7 @@
 //! passable — which leaves them out of every reach at the opening pulse and a few
 //! seconds of driving away from the first one.
 
+use crate::shipped::mount;
 use crate::support;
 
 use support::wait_until;
@@ -3252,6 +3253,10 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // the first shot's cycle arrives is accepted here and dropped by the arena.
     // Waiting for the round to disappear from the table is what makes each pass of
     // this loop one round that really left the barrel.
+    // One round a pull off the cannon's load, read off the content (doc 49 cut
+    // CC.0), so a retune of the round's pack moves no line here.
+    let cannon = mount("line_tank", "cannon");
+    assert_eq!(cannon.burst, 1, "the cannon spends one round a pull");
     let mut spent = String::new();
     for round in 1..=ROUNDS {
         for _ in 0..RETRY_BUDGET {
@@ -3275,7 +3280,7 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        let want = format!("{} of 40 round(s)", 40 - round);
+        let want = cannon.left(u32::try_from(round).expect("a round count fits"));
         spent = String::new();
         wait_until(
             STEP_TIMEOUT,
@@ -3295,7 +3300,7 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     }
     // The shooter's own cockpit is the one place the rounds are visible.
     assert!(
-        spent.contains(&format!("{} of 40 round(s)", 40 - ROUNDS)),
+        spent.contains(&cannon.left(u32::try_from(ROUNDS).expect("a round count fits"))),
         "the red tank really fired: {spent}"
     );
 
@@ -5961,11 +5966,13 @@ async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
         "the second place was not sent: {}",
         strip_ansi(&god.seen[god_mark..])
     );
-    // The round leaves the barrel at the next wake, a floor away at most.
+    // The round leaves the barrel at the next wake, a floor away at most. One
+    // burst off the cannon's load, both read off the content (doc 49 cut CC.0):
+    // whichever tank the witnesses field, its cannon is the line tank's mount.
+    let cannon = mount("line_tank", "cannon");
+    let spent = cannon.left(cannon.burst);
     wait_until(STEP_TIMEOUT, "the round to leave the barrel", async || {
-        ask_whole(&mut ada, "WEAPONSTATUS")
-            .await
-            .contains("39 of 40 round(s)")
+        ask_whole(&mut ada, "WEAPONSTATUS").await.contains(&spent)
     })
     .await;
     say(

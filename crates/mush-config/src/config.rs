@@ -152,6 +152,7 @@
 //! | `[tacsim.geology].key_dir` | absent | doc 20 SM.1: the geology key family's directory; absent, the mining layer reads disabled |
 //! | `[tacsim.surface].registry_interlock` | `true` | doc 20 SM.10 (§9.4): the Registry interlock, phase 1's only claim enforcement; `false` is refused at boot (the lever is reserved for the fight, §17) |
 //! | `[tacsim.surface].black_box_max_lines` | `4096` | doc 23 S.1 (§7): the most lines one hull's black box holds (two per excursion); past it an append is refused and paged, never truncated; 1 to 1048576; provisional |
+//! | `[tacsim.surface].ore_reroll_ic_days` | `28` | doc 48 PL.10 (Q-48-61): the IC days after which a worked-out site deposit or cluster rock re-rolls its opened reserve (28 real hours at 24:1); `0` keeps ore finite; 0 to 365; provisional |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
 //! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
@@ -983,6 +984,10 @@ impl Default for TacsimProcurementCfg {
 /// **Doc 23 cut S.1** adds `black_box_max_lines`: the most lines one hull's black box (its
 /// `log:hull.<n>` ledger, doc 23 §7) holds; an append past it is refused and paged, never
 /// truncated. A provisional default (the owner's economy-defaults rule, 2026-10-24).
+///
+/// **Doc 48 unit PL.10** adds `ore_reroll_ic_days` (Q-48-61): the IC days after which a
+/// worked-out site deposit or cluster rock re-rolls its opened reserve; `0` keeps ore finite.
+/// Provisional 28.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimSurfaceCfg {
@@ -990,6 +995,8 @@ pub struct TacsimSurfaceCfg {
     pub registry_interlock: bool,
     /// Doc 23 cut S.1: the most lines one hull's black box holds (two per excursion).
     pub black_box_max_lines: u32,
+    /// Doc 48 unit PL.10: the IC days after which a worked-out deposit re-rolls (0: never).
+    pub ore_reroll_ic_days: u16,
 }
 
 impl Default for TacsimSurfaceCfg {
@@ -997,6 +1004,7 @@ impl Default for TacsimSurfaceCfg {
         Self {
             registry_interlock: true,
             black_box_max_lines: 4_096,
+            ore_reroll_ic_days: 28,
         }
     }
 }
@@ -3047,6 +3055,10 @@ ambient_active_secs = 120
         assert!(defaulted.tacsim.surface.registry_interlock);
         // Doc 23 cut S.1: the black box's line cap, provisional.
         assert_eq!(defaulted.tacsim.surface.black_box_max_lines, 4_096);
+        // Doc 48 unit PL.10: the re-roll delay, provisional; `0` parses (finite ore).
+        assert_eq!(defaulted.tacsim.surface.ore_reroll_ic_days, 28);
+        let finite: Config = toml::from_str("[tacsim.surface]\nore_reroll_ic_days = 0").unwrap();
+        assert_eq!(finite.tacsim.surface.ore_reroll_ic_days, 0);
         let off: Config = toml::from_str("[tacsim.surface]\nregistry_interlock = false").unwrap();
         assert!(!off.tacsim.surface.registry_interlock);
         assert!(

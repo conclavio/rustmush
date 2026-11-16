@@ -586,11 +586,19 @@ fn an_unknown_key_refuses_naming_the_entry() {
 
 #[test]
 fn a_value_past_a_bound_refuses_naming_the_field() {
-    // W14's floor, on the content rather than in the decoder's own unit test.
+    // W14's floor, on the content rather than in the decoder's own unit test. The
+    // shipped cycle and the floor are both read (doc 49 cut CC.0), so a retune of
+    // the pack or of the floor moves no line here: the edit is one under the floor.
+    let pack: serde_json::Value =
+        serde_json::from_str(content::MG_COAX_JSON).expect("the shipped pack parses");
+    let shipped = pack["entries"]["tacsim.weapon.mg_coax"]["def"]["cycle_ms"]
+        .as_u64()
+        .expect("the coaxial authors a cycle");
+    let under = tacsim::definitions::weapon::CYCLE_FLOOR_MS - 1;
     let edited = tampered(
         content::MG_COAX_JSON,
-        "\"cycle_ms\": 1000",
-        "\"cycle_ms\": 999",
+        &format!("\"cycle_ms\": {shipped}"),
+        &format!("\"cycle_ms\": {under}"),
     );
     let error = tacsim::pack::load_pack(&edited).expect_err("a sub-floor cycle refuses");
     let message = error.to_string();
@@ -900,7 +908,7 @@ fn a_match_on_the_shipped_arena_is_fought_on_the_authored_ground() {
 /// Doc 16 §9's five items, the range's target (16b cut O.3), the three
 /// chassis (16b cut AE.1), the drone (16b cut AE.3) and (doc 18 cut IC2) the
 /// Dray, by the definition ids the extension packs declare.
-const FIELDED_EXTRAS: [&str; 21] = [
+const FIELDED_EXTRAS: [&str; 22] = [
     content::LINE_TANK_LASER,
     content::BIPED_MK1,
     content::LINE_TANK_THERMAL,
@@ -935,6 +943,9 @@ const FIELDED_EXTRAS: [&str; 21] = [
     content::TYCHO_LIFTER,
     // Doc 47 unit CO.10: the wrecker adds one unit schema, mounting the stock sight.
     content::TV_WRECKER,
+    // Doc 49 unit CC.6: the belt raider adds one unit schema on the corvette's hull; her
+    // mounts are `space_mount` rows, so no ground row comes with her.
+    content::RAIDER_HEAVY,
 ];
 
 /// **The stock game is unmoved, and the fielded game is it plus the five** —

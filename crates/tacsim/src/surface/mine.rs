@@ -229,6 +229,7 @@ pub fn cursor_after(
         schema: POCKET_CURSOR_SCHEMA,
         deposit,
         rows: Vec::new(),
+        reroll: None,
     });
     if next.deposit != deposit {
         return None;
@@ -262,7 +263,8 @@ pub fn cursor_after(
         }
     }
     let tidied = tidy(next)?;
-    Some((!tidied.rows.is_empty()).then_some(tidied))
+    // Doc 48 unit PL.10: a cursor with a re-roll ledger is kept with no row.
+    Some((!tidied.is_empty()).then_some(tidied))
 }
 
 /// **The lock a start writes** (lead ruling 3): `pocket`'s row inserted with nothing drawn and
@@ -279,6 +281,7 @@ pub fn cursor_locked(
         schema: POCKET_CURSOR_SCHEMA,
         deposit,
         rows: Vec::new(),
+        reroll: None,
     });
     if next.deposit != deposit {
         return None;
@@ -317,7 +320,8 @@ pub fn cursor_released(
     }
     next.rows
         .retain(|row| row.drawn_t > 0 || row.lock.is_some());
-    (!next.rows.is_empty()).then_some(next)
+    // Doc 48 unit PL.10: a cursor with a re-roll ledger is kept with no row.
+    (!next.is_empty()).then_some(next)
 }
 
 /// **The staleness rule** (lead ruling 3; §3.4; the brief's reviewer finding F13): a lock is LIVE

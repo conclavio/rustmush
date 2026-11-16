@@ -1846,6 +1846,7 @@ fn sm4b_a_second_principal_sees_no_ore_glyph() {
             schema: POCKET_CURSOR_SCHEMA,
             deposit,
             rows,
+            reroll: None,
         },
     );
     let a_site = map_frame(&mut rig, a, json!({ "view": "site" }));

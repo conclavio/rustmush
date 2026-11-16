@@ -413,3 +413,123 @@ fn rs5_a_debt_goes_delinquent_unpaid_is_reinstated_due_now_and_paid_in_one_post(
     // Paid once: a second pay is refused.
     err(&mut tw, r.runner, &format!("@debtpay {id}"));
 }
+
+/// A fresh poster with `funds` minted, and its account.
+fn poster(tw: &mut TestWorld, name: &str, funds: i64) -> (ObjId, AccountId) {
+    let who = tw.spawn_player(name);
+    ok(tw, GOD, &format!("@account/open #{}=nuyen", who.0));
+    let account = account_of(tw, who);
+    let faucet = snap(tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    ok(tw, GOD, &format!("@econ/mint {faucet}={account} {funds}"));
+    (who, account)
+}
+
+/// A hull titled to `who`, and `who`'s retrieval of it for a fee of 1; the contract.
+fn posted(tw: &mut TestWorld, who: ObjId, account: AccountId, n: usize) -> ContractId {
+    let hull = thing(tw, &format!("Wreck {n}"));
+    ok(
+        tw,
+        GOD,
+        &format!("@titleissue #{}=wod.housing #{}", hull.0, who.0),
+    );
+    ContractId(tail_number(&ok(
+        tw,
+        who,
+        &format!("@rpost #{}={} 1", hull.0, account.0),
+    )))
+}
+
+/// **Doc 48 §4.3** (the second review, doc 48b): a poster already holding §9's sixteen open
+/// contracts posts no seventeenth retrieval, and nothing is written or held.
+#[test]
+fn rs5_a_poster_at_the_issuer_cap_posts_no_retrieval() {
+    DELIVERED.store(false, Ordering::SeqCst);
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 10_000);
+    for n in 0..mush_economy::MAX_OPEN_CONTRACTS_PER_ISSUER {
+        posted(&mut tw, r.johnson, r.j_acct, n);
+    }
+    let contracts = snap(&tw).contracts().count();
+    let held = snap(&tw)
+        .account(r.j_acct)
+        .expect("acct")
+        .held_amount
+        .minor();
+    let hull = thing(&mut tw, "One too many");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue #{}=wod.housing #{}", hull.0, r.johnson.0),
+    );
+    let refused = err(
+        &mut tw,
+        r.johnson,
+        &format!("@rpost #{}={} 1", hull.0, r.j_acct.0),
+    );
+    assert!(
+        refused.contains("that issuer already has the most open contracts allowed"),
+        "{refused}"
+    );
+    assert_eq!(snap(&tw).contracts().count(), contracts, "nothing posted");
+    assert_eq!(
+        snap(&tw)
+            .account(r.j_acct)
+            .expect("acct")
+            .held_amount
+            .minor(),
+        held,
+        "nothing held"
+    );
+}
+
+/// **Doc 48 §4.3** (the second review, doc 48b): an acceptor already on §9's hundred live
+/// contracts joins no hundred-and-first retrieval, and the job stays open for anyone else.
+#[test]
+fn rs5_an_acceptor_at_the_party_cap_joins_no_retrieval() {
+    DELIVERED.store(false, Ordering::SeqCst);
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 0);
+    // Seven posters, fifteen jobs each (under their own issuer cap): 105 open jobs.
+    let per = mush_economy::MAX_OPEN_CONTRACTS_PER_ISSUER - 1;
+    let mut jobs = Vec::new();
+    for p in 0..7 {
+        let (who, account) = poster(&mut tw, &format!("Poster{p}"), 1_000);
+        for n in 0..per {
+            jobs.push(posted(&mut tw, who, account, p * per + n));
+        }
+    }
+    let cap = mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY;
+    for id in &jobs[..cap] {
+        ok(
+            &mut tw,
+            r.runner,
+            &format!("@raccept {}={}", id.0, r.r_acct.0),
+        );
+    }
+    let next = jobs[cap];
+    let refused = err(
+        &mut tw,
+        r.runner,
+        &format!("@raccept {}={}", next.0, r.r_acct.0),
+    );
+    assert!(
+        refused.contains("a party is already on the most live contracts allowed"),
+        "{refused}"
+    );
+    let c = snap(&tw).contract(next).expect("the job").clone();
+    assert!(
+        mush_economy::retrieval_acceptor(&c).is_none(),
+        "the job is still open"
+    );
+    // Anyone else may still take it.
+    let watcher_acct = account_of(&tw, r.watcher);
+    ok(
+        &mut tw,
+        r.watcher,
+        &format!("@raccept {}={}", next.0, watcher_acct.0),
+    );
+}

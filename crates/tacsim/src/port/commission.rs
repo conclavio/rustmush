@@ -18,7 +18,8 @@
 //! 4. **Vault** — a ship's hold vault on its stowage (what `+coop/enrol` does), the
 //!    beneficiary's.
 //! 5. **Emptied** — every magazine to zero (Q-39-36): the first load is a `+bay/order rearm`
-//!    from the hold. Beam charge is a cell, not a magazine, and stays full.
+//!    from the hold. Beam charge is a cell, not a magazine, and stays full: a magazine is a part
+//!    whose rounds a munitions good loads.
 //! 6. **Provenance** — the `tacsim:hull_provenance:{order}` record.
 //! 7. **Registered** — the `tacsim:owned_hull:{hull}` register row.
 //! 8. **Berthed** — a rig's yard berth row (`BerthRow` with no carrier), so `held` locks it to
@@ -730,17 +731,36 @@ fn design_label(w: &World, design: &CanonicalId) -> String {
         .map_or_else(|| design.as_str().to_owned(), |spec| spec.label.clone())
 }
 
-/// **Q-39-36: a commissioned hull's magazines are empty** — every component `ammo` cell set to
-/// zero in one plan (a no-op once they are).
+/// **Q-39-36: a commissioned hull's magazines are empty** — every magazine's `ammo` cell set to
+/// zero in one plan (a no-op once they are). A magazine is a part whose rounds a munitions good
+/// loads; beam charge (a laser's `ammo` cell, which no good loads) is a cell, not a magazine,
+/// and stays full (doc 49 §4a, from the second review, doc 48b: it was zeroed too).
 fn empty_magazines(ctx: &mut Ctx<'_>, obj: ObjId) -> Result<(), String> {
     let Some(unit) = mush_tactics::module::unit_of(ctx.w, obj) else {
         return Err("the hull has no unit".into());
     };
+    let store = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .ok_or("TacSim is not loaded")?;
+    let wanted = unit.schema().key().id.as_str();
+    let spec = store
+        .definitions()
+        .specs
+        .iter()
+        .find(|(id, _)| id.as_str() == wanted)
+        .map(|(_, spec)| spec)
+        .ok_or("the hull's design is not in the catalog")?;
+    let goods = store.goods().ok_or("the goods table is not loaded")?;
+    let magazine = |component: &mush_tactics::unit::ComponentId| {
+        crate::port::bay_work::jobs::munitions_good_of(spec, store.definitions(), goods, component)
+            .is_some()
+    };
     let ops: Vec<mush_tactics::UnitMutationOp> = unit
         .cells()
         .filter(|(addr, cell)| {
-            matches!(addr, mush_tactics::CellAddr::Component { cell: id, .. }
-                if id.as_str() == crate::definitions::unit::AMMO_CELL)
+            matches!(addr, mush_tactics::CellAddr::Component { component, cell: id }
+                if id.as_str() == crate::definitions::unit::AMMO_CELL && magazine(component))
                 && cell.current > 0
         })
         .map(|(addr, _)| mush_tactics::UnitMutationOp::SetCell {

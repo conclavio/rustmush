@@ -412,8 +412,12 @@ fn paid_entry(q: &Quote, lot: &crate::record::PaidLot, op: LotOp, plan: Value) -
 /// - a **consume entry** is an activated hold-backed quote whose contract is `Active`,
 ///   `ReadyToSettle` or `Settled` (a `Before`-only hold contract can settle before its
 ///   leg lands; the reservation's own held state, checked in the prepare, is the replay
-///   guard), destination held; unsettled first, then settled newest-first; its plan is
-///   always `null` (a hold-backed sale never reaches a governed endpoint, lead 2e);
+///   guard), destination held; unsettled first, then settled newest-first. An **exact
+///   lot's** entry carries the capacity plan for its destination, as a draw entry does,
+///   because doc 39 cut IN.2 lets a lot-transfer sale land in a governed hold (doc 48
+///   §4.3, the second review: two accepted quotes could overfill one); a pooled
+///   hold-backed sale's plan is `null`, since it never reaches a governed endpoint
+///   (lead 2e);
 /// - a **deliver entry** (doc 18 cut IC10) is walked over the actor's quotes as
 ///   **seller**: an activated, unsettled sale into a bid whose contract is `Active`,
 ///   whose cutoff `draw_by` has not passed on the real clock, and whose source the actor
@@ -479,11 +483,23 @@ fn paid_legs(
                     Some(ContractState::Settled { .. }) => true,
                     _ => continue,
                 };
+                // Doc 48 §4.3: an exact lot may land in a governed hold, so it carries the
+                // hold's plan and its prepare checks it; an oversized plan omits the entry,
+                // fail closed, as a Draw's does.
+                let plan = if lot.lot.is_some() {
+                    match capacity.and_then(|c| c.plan(world, lot.destination.0)) {
+                        None => Value::Null,
+                        Some(plan) if plan.within_bounds() => plan.0,
+                        Some(_) => continue,
+                    }
+                } else {
+                    Value::Null
+                };
                 consumes.push((
                     settled,
                     q.id,
                     contract,
-                    paid_entry(q, lot, LotOp::Consume, Value::Null),
+                    paid_entry(q, lot, LotOp::Consume, plan),
                 ));
             }
             // Doc 18 cut IC10: a sale into a bid's buyer is the house, never a player,
@@ -886,6 +902,9 @@ impl ActionProvider for MarketLotProvider {
                 {
                     return Err(rejected());
                 }
+                // Doc 48 §4.3: the capacity backstop a Draw has, against the plan the entry
+                // carries, before the lot moves.
+                self.room_for(txn, entry, destination, &commodity, quantity)?;
                 data.insert("contract".to_owned(), json!(contract.0));
                 // The lot itself goes to the buyer: the same id, grade and lineage. A
                 // replay finds no hold and refuses, so the hand-over lands once.
@@ -1077,6 +1096,51 @@ impl ActionProvider for MarketLotProvider {
 }
 
 impl MarketLotProvider {
+    /// **The capacity backstop** (doc 18 cut IC7; doc 48 §4.3 for an exact lot's Consume):
+    /// the plan a paid entry carries, resolved where a World existed, asked again inside the
+    /// bundle that moves the matter. A `null` plan is an ungoverned endpoint. The
+    /// destination's holding of a good is its pool, and for an indivisible good (a part,
+    /// which never pools) its lots too: [`held_balance`]'s reading, which the accept's
+    /// pre-check weighs. Every refusal is the pinned `LOT_REFUSED` line.
+    fn room_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        entry: &serde_json::Map<String, Value>,
+        destination: EndpointRef,
+        commodity: &CanonicalId,
+        quantity: u64,
+    ) -> Result<(), ActionError> {
+        let plan = entry.get("plan").cloned().unwrap_or(Value::Null);
+        if plan.is_null() {
+            return Ok(());
+        }
+        let Some(capacity) = &self.capacity else {
+            return Err(rejected());
+        };
+        let plan = CapacityPlan(plan);
+        if !plan.within_bounds() {
+            return Err(rejected());
+        }
+        let families = &self.families;
+        let mut read_pool = |c: &CanonicalId| -> Result<u64, CapacityReadError> {
+            let pooled = match families.pool(txn, destination, c) {
+                Ok(Some(pool)) => pool.quantity,
+                Ok(None) => 0,
+                Err(_) => return Err(CapacityReadError),
+            };
+            if !families.is_indivisible(c) {
+                return Ok(pooled);
+            }
+            families
+                .lot_quantity(txn, destination, c)
+                .map(|held| pooled.saturating_add(held))
+                .map_err(|_| CapacityReadError)
+        };
+        capacity
+            .check(&plan, commodity, quantity, &mut read_pool)
+            .map_err(|_| rejected())
+    }
+
     /// **The Draw prepare** (doc 18 cut IC7 item 6). Every refusal is the pinned
     /// `LOT_REFUSED` line, and an `ActionTxn` discards its whole mutation set on any
     /// error, so a refused Draw moves nothing and writes no receipt — the contract then
@@ -1124,30 +1188,7 @@ impl MarketLotProvider {
             return Err(rejected());
         }
         // 4. The capacity backstop, against the plan resolved where a World existed.
-        let plan = entry.get("plan").cloned().unwrap_or(Value::Null);
-        if !plan.is_null() {
-            let Some(capacity) = &self.capacity else {
-                return Err(rejected());
-            };
-            let plan = CapacityPlan(plan);
-            if !plan.within_bounds() {
-                return Err(rejected());
-            }
-            let families = &self.families;
-            let mut read_pool = |c: &CanonicalId| -> Result<u64, CapacityReadError> {
-                match families.pool(txn, destination, c) {
-                    Ok(Some(pool)) => Ok(pool.quantity),
-                    Ok(None) => Ok(0),
-                    Err(_) => Err(CapacityReadError),
-                }
-            };
-            if capacity
-                .check(&plan, commodity, quantity, &mut read_pool)
-                .is_err()
-            {
-                return Err(rejected());
-            }
-        }
+        self.room_for(txn, entry, destination, commodity, quantity)?;
         // 5. The move itself: pool quantity, storefront → buyer — no lot, no
         // `lot_census` entry, which is what every hull delivery is (§4.2).
         self.families

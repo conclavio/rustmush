@@ -281,6 +281,42 @@ fn story(venue: &str, entry: &str) {
         .into_iter()
         .find(|l| l.hull == wreck)
         .expect("she is for sale");
+    // Doc 48 §4.3 (the second review, doc 48b): a player's own contract under the sale's name,
+    // naming the house and her title, is no sale (the house never accepted it), so she stays
+    // listed and buyable. The guard used to match the name alone.
+    let griefer = rig.tw.spawn_player("Griefer");
+    let drafted = run(
+        &mut rig.tw,
+        griefer,
+        &format!("@contract/draft Recovery house resale, #{}", wreck.0),
+    );
+    assert!(drafted.contains("drafted"), "{drafted}");
+    let draft = drafted
+        .split("Contract #")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.trim_end_matches(':').parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("no contract id in {drafted}"));
+    let PrincipalId::Organization(org) = &house else {
+        panic!("Tycho is an organization");
+    };
+    let _ = run(
+        &mut rig.tw,
+        griefer,
+        &format!("@contract/party {draft}=org:#{}", org.0),
+    );
+    let _ = run(
+        &mut rig.tw,
+        griefer,
+        &format!(
+            "@contract/deliver {draft}=title #{} org:#{}->#{}",
+            wreck.0, org.0, griefer.0
+        ),
+    );
+    assert!(
+        !tacsim::port::house_sale::pending(rig.tw.world(), wreck, &house),
+        "a player's draft is no pending sale"
+    );
     let listed = run(&mut rig.tw, pilot, "+salvage/forsale");
     assert!(listed.contains(&format!("#{}", wreck.0)), "{listed}");
     let preview = run(&mut rig.tw, pilot, &format!("+salvage/buy #{}", wreck.0));
