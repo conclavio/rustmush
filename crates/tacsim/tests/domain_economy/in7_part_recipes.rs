@@ -725,8 +725,9 @@ async fn pl7_the_works_makes_a_traced_line_core_module() {
     seed_hold(&mut rig, &row, BOARDS, 2, 7_801);
     seed_hold(&mut rig, &row, STRATEGIC, 1, 7_802);
     let hold = hold_vault_of(&rig.tw, &row);
-    let floor = station_room(&rig.tw, CERES, "room.c15_maintenance");
-    put(&mut rig, captain, floor, false);
+    // The works is a room of the port: a works order is signed anywhere in it.
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    put(&mut rig, captain, exchange, false);
     let quote = run(&mut rig.tw, captain, "+works/quote module_line");
     assert!(
         quote.contains("bill 2 instrument_boards, 1 strategic_ore")
