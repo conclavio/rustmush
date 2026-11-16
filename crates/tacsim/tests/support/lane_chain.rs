@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v34 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v35 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,9 +45,38 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit PL.1 (lane v35): Occator's propellant refine taken out** — its `volatiles`
+/// mill row and the Ceres refinery it runs at — so a strip chain rebuilds a lane before v35
+/// (idempotent). The chain's head.
+pub fn strip_refine(doc: &mut Value) {
+    let Some(def) = doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("ceres_port"))
+        .and_then(|entry| entry.get_mut("def"))
+    else {
+        return;
+    };
+    if let Some(def) = def.as_object_mut() {
+        def.remove("refinery");
+    }
+    for vendor in def
+        .get_mut("vendors")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter(|vendor| vendor["org"] == "occator")
+    {
+        if let Some(mills) = vendor.get_mut("mill").and_then(Value::as_array_mut) {
+            mills.retain(|mill| mill["ore"] != "volatiles");
+        }
+    }
+}
+
 /// **Doc 47 unit CO.10 (lane v34): Occator's wrecker design taken out** of the vehicles'
-/// designs, so a strip chain rebuilds a lane before v34 (idempotent). The chain's head.
+/// designs, so a strip chain rebuilds a lane before v34 (idempotent); lane v35's
+/// [`strip_refine`] first.
 pub fn strip_wrecker(doc: &mut Value) {
+    strip_refine(doc);
     for entry in doc["entries"]
         .as_object_mut()
         .into_iter()

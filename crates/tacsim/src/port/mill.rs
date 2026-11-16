@@ -48,6 +48,16 @@
 //! at most one act a fire — a restock first, so each batch's units are listed before the
 //! next batch lands, then a batch. At most two batches and two restocks a mill an IC day.
 //!
+//! **The own-stock mill** (doc 48 unit PL.1, Q-48-23): Occator refines the water it sells into
+//! the propellant it sells, five to four, under a floor of 5,000 t of propellant (the lane's
+//! `refine` row of `volatiles`, at the Ceres refinery Occator operates). Its ore backs its own
+//! standing drawn ask, so a batch mills only units the ask no longer lists: the clerk first
+//! lowers the ask by a batch (`mush_market::shrink_ask`, the works' house purchase's rule), one
+//! act, and mills them on a later fire (`OwnStock`). The drift check and the gated Listings
+//! line read those units as drawn (`drawn`), so the gap between the draw and the batch never
+//! pages. The floor keeps the refine idle while the propellant ask holds its seed, so it only
+//! replaces what passages burn.
+//!
 //! **The restart argument.** The predicate is the durable ledger total less the durable
 //! counter, re-read every fire, so a restart never restocks twice or loses a batch. The
 //! RAM back-offs (`PortTickState::mill_refused`, `mill_attempts`, `mill_warned`, the
@@ -931,6 +941,8 @@ pub(crate) enum MillWarn {
     Refused,
     /// A batch's submission never lands.
     Stalled,
+    /// Doc 48 unit PL.1: the market refused to lower an own-stock mill's ore ask.
+    Draw,
 }
 
 /// The restock warning's runbook (O-2b).
@@ -987,6 +999,11 @@ pub(crate) fn mill_warn(
             "tacsim: a mill's batch never lands; the clerk passes it over for the rest of the IC \
              day (@tacsim/port status)"
         ),
+        MillWarn::Draw => tracing::warn!(
+            vault, ore = %key, error = detail, runbook = "@tacsim/port status",
+            "tacsim: the clerk could not lower the ask an own-stock mill draws its ore from; the \
+             mill is passed over for the rest of the IC day"
+        ),
     }
 }
 
@@ -1020,6 +1037,145 @@ fn refuse_today(
     }
 }
 
+// ---- the own-stock mill (doc 48 unit PL.1) ----------------------------------------------
+
+/// **The units the drift check and the Listings line read as drawn for a batch** (doc 48 unit
+/// PL.1): for a good one of `vendor`'s own-stock mills takes as its ore, the part of `net` (the
+/// storefront's units of it, less the units the mills made and its ask does not carry yet) over
+/// the standing listing (`listed`) and its Draws not yet drawn (`undrawn`), up to one batch —
+/// the units the clerk lowered the ask by and has not milled yet. `0` with no listing (nothing
+/// to drift against) and for any other good. Pure.
+#[must_use]
+pub(crate) fn drawn(
+    vendor: &VendorDef,
+    good: &CanonicalId,
+    net: u64,
+    listed: Option<u64>,
+    undrawn: u64,
+) -> u64 {
+    let Some(listed) = listed else {
+        return 0;
+    };
+    vendor
+        .mill
+        .iter()
+        .find(|mill| &mill.ore == good && mill.own_stock(vendor))
+        .map_or(0, |mill| {
+            net.saturating_sub(listed.saturating_add(undrawn))
+                .min(mill.batch_t)
+        })
+}
+
+/// **Whether a mill may start a batch under its floor** (doc 48 unit PL.1): no `floor_t`, or its
+/// product's storefront pool (`vault`'s, the raw balance) under it. An unreadable product pool
+/// reads as at the floor, so a fault never mills past it.
+fn under_floor(ctx: &Ctx<'_>, vault: u64, mill: &MillDef) -> bool {
+    mill.floor_t.is_none_or(|floor| {
+        crate::port_tick::read_pool(ctx, EndpointRef(VaultId(vault)), &mill.into)
+            .is_ok_and(|held| held < floor)
+    })
+}
+
+/// **What an own-stock mill's turn comes to** (doc 48 unit PL.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnStock {
+    /// The ask is down by these units, not yet milled: the batch may mill them.
+    Mill(u64),
+    /// The clerk lowered the ask (or tried to): this fire's one act.
+    Acted(Step),
+    /// Nothing is due at this mill this fire.
+    Wait,
+}
+
+/// **An own-stock mill's draw** (doc 48 unit PL.1; Q-48-23's operating arm, in the shape of the
+/// works' house purchase, `crate::port::supply`): the house's units of its ore back its own
+/// standing drawn ask, so the batch mills only units the ask no longer lists.
+///
+/// - **Drawn** — the storefront's ore (`available`, balance less holds), less the units this
+///   vendor's mills made of it and the ask does not carry yet ([`unlisted`]: Occator's ice
+///   mill's water), the listing and its Draws not yet drawn, is the units the ask was lowered
+///   by. With a listing standing and a batch of them drawn, the batch mills them
+///   ([`OwnStock::Mill`]), whatever the floor now reads: a draw once made is milled.
+/// - **The draw** — otherwise, while the product's storefront pool is under the row's
+///   `floor_t`, the IC day has a batch of room, and a live listing lists the rest of a batch,
+///   the clerk lowers that ask by the rest (`mush_market::shrink_ask`), its one act this fire.
+///   A refusal passes the mill's batch over for the rest of the IC day, warned once a boot.
+/// - **No listing** — nothing is drawn, so nothing is milled: the list step lists the pool.
+/// - **A Draw quote unsettled** on the pool — the restock's wait (a delay, never a loss): its
+///   units read twice in between, so nothing is drawn or milled until it settles or lapses.
+///
+/// **The restart argument** is the mill's: the drawn units are read off durable state every
+/// fire (the pool, the listing, the mills' ledgers and counters), so a restart between the
+/// draw and the batch mills the batch once and never lowers the ask twice. A listing that
+/// lapses after a draw and is swept is listed afresh with the whole pool, the drawn units
+/// back on sale: nothing is milled until the next draw.
+#[allow(clippy::too_many_arguments)]
+fn own_stock_step(
+    ctx: &mut Ctx<'_>,
+    state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
+    mills: &StateFamilyHandle<MillId, MillLedger>,
+    map: &PortMap,
+    vendor: &VendorDef,
+    row: &VendorRow,
+    mill: &MillDef,
+    available: u64,
+    room: u64,
+    today: i64,
+) -> OwnStock {
+    // A fault in the other mills' ledgers is the list step's to warn and skip.
+    let Ok(unlisted) = unlisted(ctx, mills, map, vendor, row, &mill.ore) else {
+        return OwnStock::Wait;
+    };
+    let reading = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|market| crate::port::stock::ask_reading(market, row.vault, &mill.ore))
+        .unwrap_or_default();
+    if reading.in_flight {
+        return OwnStock::Wait;
+    }
+    let Some((listing, listed)) = reading.listing else {
+        return OwnStock::Wait;
+    };
+    let excess = available
+        .saturating_sub(unlisted)
+        .saturating_sub(listed.saturating_add(reading.undrawn));
+    if excess >= mill.batch_t {
+        return OwnStock::Mill(excess);
+    }
+    // The validator gives every own-stock mill a floor; a row without one never draws.
+    let below_floor = mill.floor_t.is_some() && under_floor(ctx, row.vault, mill);
+    let need = mill.batch_t.saturating_sub(excess);
+    let now = ctx.w.now();
+    let live = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|market| market.listing(listing))
+        .is_some_and(|standing| !mush_market::listing_lapsed(standing, now));
+    if !below_floor || room < mill.batch_t || listed < need || !live {
+        return OwnStock::Wait;
+    }
+    let spec = mush_market::RestockSpec {
+        listing,
+        good: mill.ore.clone(),
+        units: need,
+    };
+    OwnStock::Acted(
+        match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::shrink_ask(ctx, spec)) {
+            Ok(Ok(_)) => Step::Worked,
+            Ok(Err(error)) => {
+                let detail = format!("{error:?}");
+                mill_warn(state, row.vault, &mill.ore, MillWarn::Draw, &detail);
+                refuse_today(state, row.vault, &mill.ore, MillAct::Batch, today);
+                Step::Refused
+            }
+            Err(refused) => swapped(Err(refused)),
+        },
+    )
+}
+
 /// **The mill's turn of the stock arm** (doc 20 cut SM.12a; §7.3 "The mill"; D4, D7, D8):
 /// after the intake drip and before the lapsed-bid re-post, so behind the emergency bids
 /// and the ask list step too. Two passes, in authored order (vendors, then their mill
@@ -1036,7 +1192,10 @@ fn refuse_today(
 ///   ruling on SM.12a's conformance F2; the module doc's "The restock's wait").
 /// - **(b) then a batch**: a mill whose storefront ore pool (less holds) holds a batch and
 ///   whose IC day has room submits `tacsim_port_mill` as the clerk for the ledger's next
-///   ordinal.
+///   ordinal. **An own-stock mill** (doc 48 unit PL.1, [`MillDef::own_stock`]) mills only
+///   what it has drawn off its ore's ask ([`own_stock_step`]): while its product is under
+///   its floor and its day has room, it first lowers that ask by a batch
+///   (`mush_market::shrink_ask`), one act, and mills the batch on a later fire.
 ///
 /// A refused act passes its mill's act over for the rest of the IC day
 /// (`PortTickState::mill_refused`), warned once a boot; a batch submitted
@@ -1192,6 +1351,20 @@ pub(crate) fn mill_step(
                 today,
                 mill.per_ic_day_t,
             );
+            // Doc 48 unit PL.1: an own-stock mill mills only what it drew off its own ask.
+            let available = if mill.own_stock(vendor) {
+                match own_stock_step(
+                    ctx, state, fire, clerk, &mills, map, vendor, row, mill, available, room, today,
+                ) {
+                    OwnStock::Mill(drawn) => drawn,
+                    OwnStock::Acted(step) => return Some(step),
+                    OwnStock::Wait => continue,
+                }
+            } else if under_floor(ctx, row.vault, mill) {
+                available
+            } else {
+                continue;
+            };
             if batch(available, mill.batch_t, mill.ratio, room).is_none() {
                 continue;
             }
@@ -1297,8 +1470,12 @@ pub(crate) fn mill_line_text(
     read: &MillLineRead,
 ) -> (LineState, String) {
     let head = format!("{entry} mill {org} {}", mill.ore);
+    // Doc 48 unit PL.1: a floored mill says the floor it mills under.
+    let floor = mill.floor_t.map_or_else(String::new, |floor| {
+        format!(", while {} is under {floor} t", mill.into)
+    });
     let terms = format!(
-        "{} to {}, {} t a batch, at most {} t an IC day",
+        "{} to {}, {} t a batch, at most {} t an IC day{floor}",
         mill.ratio.ore, mill.ratio.product, mill.batch_t, mill.per_ic_day_t
     );
     match read {
@@ -1726,6 +1903,7 @@ mod tests {
             ratio: FIVE_TWO,
             batch_t: 20,
             per_ic_day_t: 40,
+            floor_t: None,
         };
         let line = |read: MillLineRead| {
             mill_line_text(&cid("ceres_port"), &cid("freeport_exchange"), &mill, &read)
@@ -1808,6 +1986,79 @@ mod tests {
                      {stamp}; 7 t of ore waits; 5 to 2, 20 t a batch, at most 40 t an IC day."
                 )
             )
+        );
+    }
+
+    /// Occator's two rows as the lane authors them (doc 48 unit PL.1): the ice mill and the
+    /// own-stock refine of its water into propellant under a 5,000 t floor.
+    fn pl1_occator() -> VendorDef {
+        serde_json::from_value(json!({
+            "org": "occator",
+            "storefront": "neighborhood.ceres_freeport.item.occator_manifold",
+            "agent": "ceres_port.clerk",
+            "signatory": "neighborhood.ceres_freeport.npc.qureshi",
+            "stock": [
+                { "good": "volatiles", "qty": 9600, "grade": 50, "issue": 1 },
+                { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 }
+            ],
+            "asks": [
+                { "good": "volatiles", "price_major": 100 },
+                { "good": "propellant", "price_major": 40 }
+            ],
+            "bids": [ { "good": "ice_ore", "price_major": 35, "intake": 240 } ],
+            "mill": [
+                { "ore": "ice_ore", "into": "volatiles", "ratio": { "ore": 5, "product": 2 },
+                  "batch_t": 20, "per_ic_day_t": 40 },
+                { "kind": "refine", "ore": "volatiles", "into": "propellant",
+                  "ratio": { "ore": 5, "product": 4 }, "batch_t": 20, "per_ic_day_t": 20,
+                  "floor_t": 5000 }
+            ]
+        }))
+        .unwrap()
+    }
+
+    /// **Doc 48 unit PL.1**: only the refine is an own-stock mill, and `drawn` reads at most one
+    /// of its batches of the ask's excess, only with a listing standing, and only of its ore.
+    #[test]
+    fn pl1_drawn_reads_one_batch_of_an_own_stock_ore() {
+        let occator = pl1_occator();
+        let (ice, refine) = (&occator.mill[0], &occator.mill[1]);
+        assert!(!ice.own_stock(&occator));
+        assert!(refine.own_stock(&occator));
+        let water = cid("volatiles");
+        // The ask lowered by a batch: 20 t over the listing, read as drawn.
+        assert_eq!(drawn(&occator, &water, 9_608, Some(9_588), 0), 20);
+        // Part of a batch, and past one: at most a batch.
+        assert_eq!(drawn(&occator, &water, 9_600, Some(9_588), 0), 12);
+        assert_eq!(drawn(&occator, &water, 9_650, Some(9_588), 0), 20);
+        // Undrawn Draws are the market's, never drawn.
+        assert_eq!(drawn(&occator, &water, 9_608, Some(9_578), 10), 20);
+        assert_eq!(drawn(&occator, &water, 9_608, Some(9_598), 10), 0);
+        // No listing, an under-listed pool, another good.
+        assert_eq!(drawn(&occator, &water, 9_608, None, 0), 0);
+        assert_eq!(drawn(&occator, &water, 9_500, Some(9_588), 0), 0);
+        assert_eq!(
+            drawn(&occator, &cid("propellant"), 5_020, Some(5_000), 0),
+            0
+        );
+        assert_eq!(drawn(&occator, &cid("ice_ore"), 40, Some(20), 0), 0);
+    }
+
+    /// **Doc 48 unit PL.1**: a floored mill's line names its floor.
+    #[test]
+    fn pl1_a_floored_mill_line_names_its_floor() {
+        let occator = pl1_occator();
+        let (state, text) = mill_line_text(
+            &cid("ceres_port"),
+            &occator.org,
+            &occator.mill[1],
+            &MillLineRead::Nothing { waiting: 9_600 },
+        );
+        assert_eq!(state, LineState::Ready);
+        assert_eq!(
+            text,
+            "ceres_port mill occator volatiles: nothing milled yet; 9600 t of ore waits; 5 to 4, \
+             20 t a batch, at most 20 t an IC day, while propellant is under 5000 t."
         );
     }
 }

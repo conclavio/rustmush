@@ -1119,10 +1119,12 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// exactly two `mill` rows — the Exchange's and Occator's, with B2's figures — read from the
 /// shipped pack; the shipped lane stripped (yard and mills: doc 20 cut SM.12b's `strip_yard` runs
 /// first inside `strip_mill`) and re-signed at 13 is relay R9b's published v13, digest for
-/// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
+/// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently. Doc 39
+/// cut IN.5 adds Kasei's refine, and doc 48 unit PL.1 Occator's refine of water into
+/// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 34, "lane v34 since doc 47 unit CO.10");
+    assert_eq!(LANE_VERSION, 35, "lane v35 since doc 48 unit PL.1");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1165,15 +1167,27 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
         20,
         40,
     );
+    // Doc 48 unit PL.1: and Occator's refine of its own water into propellant, 5 : 4, 20 t a
+    // batch and an IC day.
+    let propellant = (
+        "ceres_port".to_owned(),
+        OCCATOR.to_owned(),
+        "volatiles".to_owned(),
+        "propellant".to_owned(),
+        (5, 4),
+        20,
+        20,
+    );
     assert_eq!(
         mills,
         vec![
             row(EXCHANGE, "metal_ore", "metals"),
             row(OCCATOR, "ice_ore", "volatiles"),
+            propellant,
             refine,
         ],
-        "the shipped lane's two mills, 5 : 2, and its refine, 5 : 4, 20 t a batch, at most 40 t \
-         an IC day"
+        "the shipped lane's two mills, 5 : 2, 20 t a batch, at most 40 t an IC day; Occator's \
+         refine, 5 : 4, 20 t a batch and an IC day; Kasei's, 5 : 4, at most 40 t an IC day"
     );
     let pack = load_pack(&lane_variant(13, strip_mill)).expect("the v13 shape verifies");
     assert_eq!(
@@ -3603,4 +3617,213 @@ fn sm12a_an_undrawn_draw_holds_the_restock_and_never_loses_it() {
         !warned.contains("tacsim: a mill"),
         "the wait warns nothing:\n{warned}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 48 unit PL.1: Occator's propellant refine
+// ---------------------------------------------------------------------------
+
+/// The refine's floor of propellant (the lane's `floor_t`, doc 48 unit PL.1).
+const PROPELLANT_FLOOR: u64 = 5_000;
+
+/// Buy `qty` of Occator's propellant into a fresh buyer's tank, the Draw landed and nothing
+/// fired; the purchase's contract, still to settle (its sweeps fire the clerk).
+fn buy_propellant(rig: &mut Rig, who: &str, seed: i64, name: &str, qty: u64) -> ContractId {
+    let (buyer, _) = dray_p(rig, who, seed, name);
+    top_up(&mut rig.tw, buyer, 1_000_000);
+    let listing = ask(&rig.tw, OCCATOR, "propellant").expect("the propellant ask");
+    buy_and_land(rig, buyer, listing.id, qty)
+}
+
+/// Fire and land until Occator's water ask stands at `to` (at most 24 fires); the fires made.
+fn drawn_to(rig: &mut Rig, to: u64) -> usize {
+    for n in 1..=24 {
+        fire_landing(rig);
+        if ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity) == Some(to) {
+            return n;
+        }
+    }
+    panic!("the water ask never came down to {to}");
+}
+
+/// **Doc 48 unit PL.1 (Q-48-23, Q-48-41): one full cycle of Occator's propellant refine**, on the
+/// shipped lane v35 at world rate 1.
+///
+/// 1. **At its floor the refine is idle**: Occator's propellant ask holds its 5,000 t seed, so the
+///    clerk goes idle with nothing drawn or milled, and the Mill line names the floor.
+/// 2. **The inputs bought**: a miner sells 20 t of ice ore into Occator's bid, which mills it
+///    into 8 t of water and restocks the water ask (doc 20's chain, unchanged). Still idle.
+/// 3. **Propellant bought below the floor**: a buyer takes 30 t into their tank.
+/// 4. **The draw**: the clerk lowers the water ask by one batch, 20 t, as its one act; the pool
+///    still holds the 20 t, the drift check pages nothing, the Listings line reads them as drawn
+///    and Ready, and the desk stays open.
+/// 5. **A restart between the draw and the batch**: the batch mills once (ordinal 1, 20 t of
+///    water into 16 t of propellant) and the ask is never lowered twice.
+/// 6. **The output collected and listed**: the restock raises the propellant ask by the 16 t,
+///    the counter in step; one batch an IC day, so the day ends there though propellant is
+///    still under its floor.
+/// 7. **The output bought**: a second buyer takes the 16 t the refine made.
+/// 8. **The floor**: two more IC days make two more batches, the second carrying propellant to
+///    5,002 t; on the next day the refine stays idle. Every tonne is accounted for.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pl1_occator_refines_water_into_propellant_one_full_cycle() {
+    let mut rig = stocked();
+    let vault = storefront(&rig.tw, OCCATOR);
+    // 1. At its floor the refine is idle.
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 24);
+    assert_eq!(ledger(&rig.tw, OCCATOR, "volatiles"), None);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_600)
+    );
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "propellant").map(|l| l.quantity),
+        Some(PROPELLANT_FLOOR)
+    );
+    assert_eq!(
+        mill_line(&mut rig.tw, OCCATOR, "volatiles"),
+        "  ceres_port mill occator volatiles: nothing milled yet; 9600 t of ore waits; 5 to 4, 20 t a batch, at most 20 t an IC day, while propellant is under 5000 t. [ready]"
+    );
+    // 2. The inputs bought: 20 t of ice ore into Occator's bid, milled into 8 t of water.
+    let (icer, ice_hold) = dray_p(&mut rig, "Icer", 1, "Rime Moth");
+    occator_mills(&mut rig, icer, ice_hold, 901);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_608)
+    );
+    assert_eq!(
+        ledger(&rig.tw, OCCATOR, "volatiles"),
+        None,
+        "propellant at its floor: nothing drawn"
+    );
+    // 3. Propellant bought below the floor (the Draw landed; its settlement waits for step 6).
+    let bought = buy_propellant(&mut rig, "Buyer", 3, "Long Haul", 30);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 4_970);
+    // 4. The draw: the water ask comes down by a batch, one act; the pool keeps the 20 t.
+    let fires = drawn_to(&mut rig, 9_588);
+    println!("PL.1: the draw landed {fires} fire(s) after the purchase's Draw");
+    assert_eq!(
+        ledger(&rig.tw, OCCATOR, "volatiles"),
+        None,
+        "drawn, not milled"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "volatiles"), 9_608);
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    let water = ask(&rig.tw, OCCATOR, "volatiles")
+        .expect("the water ask")
+        .id;
+    assert_eq!(
+        ask_line(&mut rig.tw, OCCATOR, "volatiles"),
+        format!(
+            "  ceres_port ask occator volatiles: listing #{water} at 100.00cr/t, 9588 t listed; the storefront holds 9608 t, 20 t drawn to be milled. [ready]"
+        )
+    );
+    enrol(&mut rig, "Newcomer", 9).expect("the desk stays open across the draw");
+    // 5. A restart between the draw and the batch: one batch, one draw.
+    reboot(&mut rig);
+    let batch = fire_until_batch(&mut rig, 24);
+    assert_eq!(
+        batch.parameters["mill"],
+        mill_id(OCCATOR, "volatiles").key_text()
+    );
+    assert_eq!(batch.parameters["ordinal"], 1);
+    let refined = ledger(&rig.tw, OCCATOR, "volatiles").expect("the refine's ledger");
+    assert_eq!(
+        (refined.batches, refined.ore_t, refined.product_t),
+        (1, 20, 16)
+    );
+    assert_eq!(refined.into, cid("propellant"));
+    assert_eq!(pool(&mut rig.tw, vault, "volatiles"), 9_588);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 4_986);
+    // 6. The output collected and listed (the restock waits for the purchase's Draw to settle,
+    //    the mill's own wait); the day's room is spent.
+    settle(&mut rig, bought);
+    fire_until_idle(&mut rig, 24);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "propellant").map(|l| l.quantity),
+        Some(4_986)
+    );
+    assert_eq!(counter(&rig.tw, OCCATOR, "volatiles"), Some(16));
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_588),
+        "one batch an IC day: no second draw today"
+    );
+    let line = mill_line(&mut rig.tw, OCCATOR, "volatiles");
+    assert!(
+        line.contains("1 batch has milled 20 t of ore into 16 t of propellant")
+            && line.ends_with("[ready]"),
+        "{line}"
+    );
+    // 7. The output bought.
+    let bought = buy_propellant(&mut rig, "Hauler", 5, "Far Reach", 16);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 4_970);
+    settle(&mut rig, bought);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_588),
+        "still no second draw today"
+    );
+    // 8. Two more IC days refill to the floor, and the next is idle.
+    for (day, made) in [(2_u64, 4_986_u64), (3, 5_002), (4, 5_002)] {
+        past_next_boundary(&mut rig, 60);
+        fire_until_idle(&mut rig, 48);
+        assert_eq!(
+            ask(&rig.tw, OCCATOR, "propellant").map(|l| l.quantity),
+            Some(made),
+            "IC day {day}"
+        );
+    }
+    let refined = ledger(&rig.tw, OCCATOR, "volatiles").expect("the refine's ledger");
+    assert_eq!(
+        (refined.batches, refined.ore_t, refined.product_t),
+        (3, 60, 48),
+        "the floor stops the refine"
+    );
+    // Every tonne: 9,600 t of water seeded, 8 t milled from ice, 60 t refined away; 5,000 t of
+    // propellant seeded, 48 t refined in, 46 t bought.
+    assert_eq!(pool(&mut rig.tw, vault, "volatiles"), 9_548);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_548)
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 5_002);
+    assert_eq!(counter(&rig.tw, OCCATOR, "volatiles"), Some(48));
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 48 unit PL.1: a floor binds an ore mill too.** On a lane whose Exchange mill names a
+/// `floor_t` of 4,000 t (its seed of concentrate), 20 t of metal ore sold waits unmilled while the
+/// concentrate ask holds its seed; once a buyer takes 10 t, the next batch mills it.
+#[test]
+fn pl1_a_floor_binds_an_ore_mill_too() {
+    let floored = lane_variant(LANE_VERSION, |doc| {
+        doc["entries"]["ceres_port"]["def"]["vendors"][0]["mill"][0]["floor_t"] =
+            serde_json::json!(4_000);
+    });
+    let mut rig = stocked_with(Roster::seeded(floored));
+    let (miner, hold) = dray_p(&mut rig, "Miner", 1, "Salt Moth");
+    let vault = storefront(&rig.tw, EXCHANGE);
+    let sale = seed_and_sell(&mut rig, miner, hold, EXCHANGE, "metal_ore", 20, 901);
+    settle(&mut rig, sale);
+    fire_until_idle(&mut rig, 24);
+    assert_eq!(
+        ledger(&rig.tw, EXCHANGE, "metal_ore"),
+        None,
+        "at its floor: nothing milled"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "metal_ore"), 20);
+    let (buyer, _) = dray_p(&mut rig, "Buyer", 3, "Long Haul");
+    top_up(&mut rig.tw, buyer, 1_000_000);
+    let metals = ask(&rig.tw, EXCHANGE, "metals").expect("the metals ask");
+    let bought = buy_and_land(&mut rig, buyer, metals.id, 10);
+    let batch = fire_until_batch(&mut rig, 24);
+    assert_eq!(batch.parameters["ordinal"], 1);
+    assert_eq!(pool(&mut rig.tw, vault, "metal_ore"), 0);
+    assert_eq!(pool(&mut rig.tw, vault, "metals"), 3_998);
+    settle(&mut rig, bought);
+    no_refused_writes(&rig.tw);
 }
