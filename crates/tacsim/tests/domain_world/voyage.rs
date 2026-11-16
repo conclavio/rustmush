@@ -3543,28 +3543,38 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
     };
 
     // 2. Inside the bubble, exchange fire by play (`step_interdictor_picket` + `+tac/beam`) so the
-    // carrier takes real `hull` and `drive` damage + a `DriveDegraded` crit, and the hostile
-    // interdictor has its drive destroyed (`0/220`, `HullStatus::DisabledDerelict`).
-    for i in 0..4 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
-        if i == 0 || i == 2 || i == 3 {
+    // carrier takes real `hull` and `drive` damage + a `DriveDegraded` crit. Doc 49 unit CC.8: a
+    // Dray's lasers no longer beam an interdictor to a derelict, so once she has taken its fire
+    // she heaves to until it stands her down, and the resolved bubble closes
+    // (`clear_resolved_bubbles` -> `check_in_space_unit`).
+    let mut hurt = false;
+    for i in 0..60 {
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
+        if i % 5 == 0 {
             let beam_out = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
             assert!(
                 beam_out.contains("Laser battery fired on"),
                 "carrier laser salvo {i}: {beam_out}"
             );
         }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig.tw, pilot, "+damage/vent");
+        hurt = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|book| book.active_for_hull(hull))
+            .and_then(|active| active.bubble.ships.get(&active.carrier_ship_id))
+            .is_some_and(|ship| {
+                ship.crits
+                    .contains(&tacsim::space::SubsystemCrit::DriveDegraded)
+                    && ship.sections[&tacsim::space::ShipSectionId::Hull].internals < 600
+            });
+        if hurt {
+            break;
         }
     }
-
-    // Fire one tick to close the resolved bubble (`clear_resolved_bubbles` -> `check_in_space_unit`).
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
+    assert!(hurt, "the interdictor's fire reached her internals");
+    let _ = heave_to_until_stood_down(&mut rig, pilot, hull);
 
     // Verify `mush_tactics::custody::check_in` cleared the deployed marker and wrote damage to `UnitStore`.
     assert!(
@@ -3591,23 +3601,18 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
         "expected +ship to report persisted combat damage from UnitStore, got: {ship_out}"
     );
 
-    // Verify the disabled interdictor derelict opened a 48 real-hour (`172,800 s`) salvage claim.
-    let bubble_book = rig
-        .tw
-        .world()
-        .module_state::<tacsim::space::SpaceBubbleBook>()
-        .expect("SpaceBubbleBook");
-    let derelict = bubble_book
-        .derelict_for_hull(interdictor_hull)
-        .expect("disabled interdictor recorded as open-epoch derelict");
-    assert!(derelict.epoch_open);
-    assert_eq!(
-        derelict.life_support_remaining_s,
-        tacsim::space::DERELICT_LIFE_SUPPORT_S
-    );
+    // Doc 49 unit CC.8: she was stood down, so the interdictor sails on and leaves no derelict.
+    // An NPC hull disabled by play is recorded as an open-epoch derelict with no salvage claim
+    // filed before `+helm/tow` in `sfr6` (the Belt Raider), and its life-support clock is
+    // `sfr8`'s; a disabled carrier's 48-hour window is part 3 below.
     assert!(
-        derelict.salvage_title_status.is_none(),
-        "disablement alone must not auto-file a salvage claim before +helm/tow (SF.R19)"
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook")
+            .derelict_for_hull(interdictor_hull)
+            .is_none(),
+        "a stood-down interdictor is no derelict"
     );
 
     // 3. Also verify that disabling a chartered carrier hull's own drive inside a bubble
@@ -3629,9 +3634,11 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
     let _ = to_ic(&mut rig, depart2_ic + leg2_1_secs);
 
     // Step ticks without returning fire until `step_interdictor_picket` disables `hull2`'s drive
-    // (`ShipDisabledDerelict`) and `settle_disabled_carrier_bubbles` settles `hull2` into `derelicts`:
+    // (`ShipDisabledDerelict`) and `settle_disabled_carrier_bubbles` settles `hull2` into `derelicts`.
+    // Doc 49 unit CC.8: on the palette's cycles that takes some tens of seconds, where the
+    // placeholder's 1 s laser took a few:
     let mut settle_heard = String::new();
-    for _ in 0..16 {
+    for _ in 0..120 {
         let next_real = rig.tw.world().now() + 1;
         rig.tw.set_now(next_real);
         let evs = rig.tw.fire_due(next_real * 1_000);
@@ -6098,7 +6105,10 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         "duplicate +helm/run must be refused by inspection_status guard"
     );
 
-    // Now charter a third hull (`Dray`) and let `step_interdictor_picket` disable its drive into a derelict:
+    // Now charter a third hull (`Dray`) and let `step_interdictor_picket` disable its drive into a
+    // derelict. Doc 49 unit CC.8: its fire comes on the palette's cycles (a spinal round every
+    // 6 s at a hull that holds her course, a 5 s laser), so it takes her some tens of seconds
+    // where the placeholder's 1 s laser took a few:
     let mut rig3 = stocked_with(Roster {
         seed_lane: Some(lane_with_interdicted_kirkwood()),
         ..Roster::default()
@@ -6114,7 +6124,7 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         &mut rig3,
         pending3.plan.depart_ic + i64::from(pending3.plan.legs[0].secs),
     );
-    for _ in 0..16 {
+    for _ in 0..120 {
         let next_real = rig3.tw.world().now() + 1;
         rig3.tw.set_now(next_real);
         let _ = rig3.tw.fire_due(next_real * 1_000);
@@ -10289,11 +10299,15 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
     let _ = run(&mut rig_combat.tw, pilot_c, "+tac/beam Interdictor Picket");
     let mut turned = false;
     let mut rear_split = false;
+    let mut fight = Vec::new();
     for _ in 0..120 {
-        let (_, submits) = one_second(&mut rig_combat, pilot_c);
+        let (heard, submits) = one_second(&mut rig_combat, pilot_c);
         land_quietly(&mut rig_combat, &submits);
-        let (stripped, drive) =
-            carrier_state(&rig_combat).expect("the interdiction is still open while she fights");
+        fight.push(format!("{:?} {}", carrier_state(&rig_combat), heard.replace('
+', " ")));
+        let Some((stripped, drive)) = carrier_state(&rig_combat) else {
+            panic!("the interdiction closed while she fought: {fight:#?}");
+        };
         if !turned && stripped {
             let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 180 0");
             let _ = run(&mut rig_combat.tw, pilot_c, "+tac/beam Interdictor Picket");
@@ -12587,6 +12601,66 @@ fn heave_to_until_stood_down(rig: &mut Rig, who: ObjId, hull: ObjId) -> (u32, St
         }
     }
     panic!("the interdictor never stood her down");
+}
+
+/// **At the Kirkwood picket, through customs, until the corvette has disabled the raider**
+/// (doc 49 unit CC.8), by play: `who` brakes `hull` to heave to, submits to inspection and is
+/// cleared; the raider lights and opens on her a few seconds later, and with `dodge` she burns
+/// across the line of its first spinal round; then the corvette's spinal rounds disable the
+/// raider once her torch has died and she holds her course. `hull` must be a Dray-P, whose
+/// leg the picket meets. Returns how many seconds the corvette took after the ruling.
+///
+/// A Dray's lasers are weak against a hull (Q-49-7) and cycle in 5 s (Q-49-19), so no story
+/// hull beams an interdictor to a derelict any more; the raider the picket's corvette disables
+/// is the derelict a story makes by play.
+fn picket_until_the_raider_is_down(rig: &mut Rig, who: ObjId, hull: ObjId, dodge: bool) -> u32 {
+    let _ = run(&mut rig.tw, who, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let (_, submits) = one_second(rig, who);
+        land_quietly(rig, &submits);
+    }
+    let _ = run(&mut rig.tw, who, "+helm/thrust 0");
+    let brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(rig, &brake);
+    let ruling = customs_ruling(rig, who, "+helm/submit");
+    assert!(ruling.contains("customs clearance granted"), "{ruling}");
+    for _ in 0..3 {
+        let (_, submits) = one_second(rig, who);
+        land_quietly(rig, &submits);
+    }
+    let _ = run(&mut rig.tw, who, "+tac/pdc auto");
+    if dodge {
+        let _ = run(&mut rig.tw, who, "+helm/thrust 600 0 1000 0");
+    }
+    for second in 1..=150 {
+        let (_, submits) = one_second(rig, who);
+        land_quietly(rig, &submits);
+        if dodge && second == 3 {
+            let _ = run(&mut rig.tw, who, "+helm/thrust 0");
+        }
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let raider_down = match book.active_for_hull(hull) {
+            Some(active) => active
+                .picket
+                .as_ref()
+                .and_then(|picket| active.bubble.ships.get(&picket.raider_ship_id))
+                .is_some_and(|raider| {
+                    matches!(
+                        raider.status,
+                        tacsim::space::HullStatus::DisabledDerelict { .. }
+                    )
+                }),
+            None => !book.derelicts.is_empty(),
+        };
+        if raider_down {
+            return second;
+        }
+    }
+    panic!("the corvette never disabled the raider");
 }
 
 /// **Doc 35 cut SF.R26b (doc 35d §9a, Q-35d-6 as ruled)** — a planned passage is flown on a

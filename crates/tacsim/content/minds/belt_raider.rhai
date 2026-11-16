@@ -2,9 +2,10 @@
 // name: Belt Raider Doctrine; role: combat; api: 10; stock: 3; rated: class I (1,500 ops a think)
 //
 // She lurks dark until the picket's radio says customs have finished with a carrier
-// (`space(v).heard`), then lights her torch. Her prey is the nearest hostile customs have
-// finished with. She opens with everything that is ready and two torpedoes, and after that
-// presses only a prey that is radiating for a fight.
+// (`space(v).heard`), then lights her torch. Her prey is a hostile customs have finished with,
+// one radiating for a fight before one that is not (doc 49 unit CC.8), and the nearest of
+// those. She opens with everything that is ready and two torpedoes, and after that presses
+// only a prey that is radiating for a fight.
 //
 // How she presses (doc 49 unit CC.8): her torch dies after the opener and she presses from
 // where she is: a salvo of two torpedoes at each reload, a spinal round at a prey that has
@@ -41,7 +42,11 @@ fn think(v, c) {
             settled = more.stop == "cleared" || more.stop == "ran";
             combat = more.emcon == "combat";
         }
-        if prey == () || (settled && !prey_settled) || (settled == prey_settled && row.range_m < prey_range) {
+        let better = prey == () ||
+            (settled && !prey_settled) ||
+            (settled == prey_settled && combat && !prey_combat) ||
+            (settled == prey_settled && combat == prey_combat && row.range_m < prey_range);
+        if better {
             prey = row.id;
             prey_range = row.range_m;
             prey_settled = settled;

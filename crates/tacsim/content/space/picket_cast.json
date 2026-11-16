@@ -17,7 +17,7 @@
     "unit": "tacsim.unit.raider_heavy",
     "overlay": "tacsim.unit.raider_heavy",
     "doctrine": "belt_raider",
-    "doctrine_sha256": "359a4698e7c3ce609dfe8a2a70a5d71205f1e3b0705b213bc370ff2ba0dc9824",
+    "doctrine_sha256": "30c626b357dad8e7ce520fb9754cb09b7e88c07738a44f7a42996c56f98261f6",
     "pos_m": [120000, 0, 0],
     "vel_mmps": [-20000, 0, 0]
   },
