@@ -1994,6 +1994,23 @@ pub(crate) fn accept_core_as(
     party: PrincipalId,
     actor: PrincipalId,
 ) -> Result<AcceptOutcome, ContractError> {
+    accept_core_backed(ctx, c, party, actor, None).map(|(outcome, _)| outcome)
+}
+
+/// [`accept_core_as`] with the party's one consideration **drawn from a hold the party
+/// already placed** (doc 48 cut EX.1a, Q-48-50: a bid's own escrow). With `backing`, the
+/// one escrow plan releases that hold, places the contract's escrow, and places the
+/// remainder again on the same account with the same purpose, beneficiary and deadline,
+/// so the money moves from the bid to the contract with no gap and no double hold.
+/// Returns the outcome and the remainder hold, if one was placed. `backing: None` is
+/// [`accept_core_as`] exactly.
+fn accept_core_backed(
+    ctx: &mut Ctx<'_>,
+    c: EconomicContract,
+    party: PrincipalId,
+    actor: PrincipalId,
+    backing: Option<&crate::record::Hold>,
+) -> Result<(AcceptOutcome, Option<HoldId>), ContractError> {
     api::require_legacy_contract(ctx, &c).map_err(ContractError::Refused)?;
     if c.state != ContractState::Offered || c.pending.is_some() {
         return Err(ContractError::State(c.id));
@@ -2013,6 +2030,12 @@ pub(crate) fn accept_core_as(
         .filter(|x| principal_key(&x.from) == principal_key(&party))
         .cloned()
         .collect();
+    // Doc 48 cut EX.1a: a backed acceptance draws exactly one consideration, from the
+    // backing hold's own account, and no more than the hold reserves.
+    let (backing_ops, remainder_op) = match backing {
+        None => (Vec::new(), None),
+        Some(hold) => backed_ops(hold, &considerations)?,
+    };
     let now = ctx.w.now();
     let mut c = c;
     c.acceptances.push(Acceptance {
@@ -2020,15 +2043,33 @@ pub(crate) fn accept_core_as(
         at: now,
         consent_hash: c.consent_hash,
     });
-    let predicted: Vec<HoldId> = {
-        let floor = ctx
-            .w
-            .module_state::<EconomyStore>()
-            .map_or(0, EconomyStore::peek_next_hold);
+    let floor = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map_or(0, EconomyStore::peek_next_hold);
+    let escrow_ops: Vec<HoldOp> = considerations
+        .iter()
+        .map(|x| HoldOp::Place {
+            account: x.account,
+            amount: x.amount,
+            // A beneficiary NOBODY acts for (`WorldAuth::acts_for` refuses every
+            // `System` principal, staff included), so this escrow is capturable
+            // and releasable only through `ContractAuth`.
+            beneficiary: Some(api::contract_principal()),
+            purpose: HoldPurpose::Escrow { contract: c.id },
+            // No deadline: the CONTRACT's deadline governs, and a hold that aged
+            // out on its own would break an agreement that was still standing.
+            expires: None,
+        })
+        .collect();
+    let predicted: Vec<HoldId> = if backing.is_none() {
         (0..considerations.len())
             .map(|i| HoldId(floor.saturating_add(u64::try_from(i).unwrap_or(u64::MAX))))
             .collect()
+    } else {
+        predict_backed(floor, &escrow_ops, remainder_op.as_ref())
     };
+    let mut remainder: Option<HoldId> = None;
     if !considerations.is_empty() {
         c.escrow.extend(predicted.iter().copied());
     }
@@ -2052,36 +2093,38 @@ pub(crate) fn accept_core_as(
         );
         plan.visibility = c.consent.visibility.clone();
         plan.description = format!("escrow for contract {}", c.id);
-        plan.hold_ops = considerations
-            .iter()
-            .map(|x| HoldOp::Place {
-                account: x.account,
-                amount: x.amount,
-                // A beneficiary NOBODY acts for (`WorldAuth::acts_for` refuses every
-                // `System` principal, staff included), so this escrow is capturable
-                // and releasable only through `ContractAuth`.
-                beneficiary: Some(api::contract_principal()),
-                purpose: HoldPurpose::Escrow { contract: c.id },
-                // No deadline: the CONTRACT's deadline governs, and a hold that aged
-                // out on its own would break an agreement that was still standing.
-                expires: None,
-            })
-            .collect();
+        plan.hold_ops = escrow_ops;
+        plan.hold_ops.extend(backing_ops);
+        plan.hold_ops.extend(remainder_op);
         let mut committed = c.clone();
         committed.revision = committed.revision.saturating_add(1);
         match api::post_with_companions(ctx, &plan, PostAuth::World, vec![committed]) {
-            Ok(PostOutcome::Posted(txid)) => ctx
-                .w
-                .module_state::<EconomyStore>()
-                .and_then(|s| s.transaction(txid).cloned())
-                .map(|t| {
-                    t.hold_effects
-                        .iter()
-                        .filter(|e| e.kind == HoldEffectKind::Placed)
-                        .map(|e| e.hold.id)
-                        .collect::<Vec<HoldId>>()
-                })
-                .unwrap_or_default(),
+            Ok(PostOutcome::Posted(txid)) => {
+                let placed: Vec<(HoldId, bool)> = ctx
+                    .w
+                    .module_state::<EconomyStore>()
+                    .and_then(|s| s.transaction(txid).cloned())
+                    .map(|t| {
+                        t.hold_effects
+                            .iter()
+                            .filter(|e| e.kind == HoldEffectKind::Placed)
+                            .map(|e| {
+                                let escrow = matches!(
+                                    e.hold.purpose,
+                                    HoldPurpose::Escrow { contract } if contract == id
+                                );
+                                (e.hold.id, escrow)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                remainder = placed.iter().find(|(_, escrow)| !escrow).map(|(h, _)| *h);
+                placed
+                    .into_iter()
+                    .filter(|(_, escrow)| *escrow)
+                    .map(|(h, _)| h)
+                    .collect()
+            }
             Ok(PostOutcome::AlreadyPosted(_)) => {
                 return Err(ContractError::Infeasible(
                     "that escrow was already placed; try again",
@@ -2089,7 +2132,7 @@ pub(crate) fn accept_core_as(
             }
             // Nothing posted, so the companion was never written either.
             Ok(PostOutcome::NeedsApproval(request)) => {
-                return Ok(AcceptOutcome::NeedsApproval(request));
+                return Ok((AcceptOutcome::NeedsApproval(request), None));
             }
             Err(e) => return Err(ContractError::Refused(e)),
         }
@@ -2112,10 +2155,57 @@ pub(crate) fn accept_core_as(
         activate(ctx, id);
     }
     ctx.gate_on_durable_ack();
-    Ok(AcceptOutcome::Accepted {
-        escrow: placed,
-        activated: full,
-    })
+    Ok((
+        AcceptOutcome::Accepted {
+            escrow: placed,
+            activated: full,
+        },
+        remainder,
+    ))
+}
+
+/// The hold ops a backed acceptance adds to its escrow plan (doc 48 cut EX.1a): the
+/// release of the backing hold, and the remainder placed again with the backing hold's
+/// own purpose, beneficiary and deadline when anything remains. Refused unless the party
+/// owes exactly one consideration, from the backing hold's own account, and no more than
+/// the hold reserves.
+fn backed_ops(
+    hold: &crate::record::Hold,
+    considerations: &[Consideration],
+) -> Result<(Vec<HoldOp>, Option<HoldOp>), ContractError> {
+    let [owed] = considerations else {
+        return Err(ContractError::NoStanding);
+    };
+    if owed.account != hold.account || owed.amount > hold.amount {
+        return Err(ContractError::NoStanding);
+    }
+    let left = hold
+        .amount
+        .checked_sub(owed.amount)
+        .ok_or(ContractError::NoStanding)?;
+    let remainder = (!left.is_zero()).then(|| HoldOp::Place {
+        account: hold.account,
+        amount: left,
+        beneficiary: hold.beneficiary.clone(),
+        purpose: hold.purpose.clone(),
+        expires: hold.expires,
+    });
+    Ok((vec![HoldOp::Release { hold: hold.id }], remainder))
+}
+
+/// The escrow hold ids a backed acceptance's plan mints (doc 48 cut EX.1a): the engine
+/// mints one id per `Place` from `floor`, in the plan's canonical hold-op order, so the
+/// escrow and the remainder are predicted in that order and the escrow ids kept.
+fn predict_backed(floor: u64, escrow: &[HoldOp], remainder: Option<&HoldOp>) -> Vec<HoldId> {
+    let mut places: Vec<(&HoldOp, bool)> = escrow.iter().map(|op| (op, true)).collect();
+    places.extend(remainder.map(|op| (op, false)));
+    places.sort_by_key(|(op, _)| crate::hash::hold_op_key(op));
+    places
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, is_escrow))| *is_escrow)
+        .map(|(i, _)| HoldId(floor.saturating_add(u64::try_from(i).unwrap_or(u64::MAX))))
+        .collect()
 }
 
 // ---- activation -----------------------------------------------------------
@@ -5067,7 +5157,7 @@ fn consideration_for(
     ctx: &Ctx<'_>,
     spec: &ConsiderationSpec,
     parties: &[PrincipalId],
-) -> Result<Consideration, ContractError> {
+) -> Result<(Consideration, bool), ContractError> {
     if spec.amount.is_zero() || spec.amount.is_negative() {
         return Err(ContractError::Infeasible(
             "a consideration must be positive",
@@ -5103,12 +5193,23 @@ fn consideration_for(
     // account whose owner is not a party. Same truth table as before for every
     // table-named vendor.
     let viewable = may_view_account(ctx.w, ctx.actor, spec.account);
+    let party = parties
+        .iter()
+        .any(|p| principal_key(p) == principal_key(&account.owner));
     let vendor = !viewable
-        && parties
-            .iter()
-            .any(|p| principal_key(p) == principal_key(&account.owner))
+        && party
         && crate::module::party_cap(ctx.w, &account.owner, crate::contract::PartyCap::Accept);
-    if !viewable && !vendor {
+    // Doc 48 cut EX.1a (Q-48-50): a party's **standing** acceptance is the other exception,
+    // and it is narrower than the vendor's: the account is admitted here only
+    // provisionally, and `offer_contract` asks the composition-frozen seam about the
+    // finished surface — this very contract, this owner — before anything is written. It
+    // is how a seller selling into a player's bid names the bid's own account.
+    let standing = !viewable
+        && !vendor
+        && party
+        && store.standing_acceptance().is_some()
+        && !matches!(account.owner, PrincipalId::System(_));
+    if !viewable && !vendor && !standing {
         return Err(ContractError::NoSuchAccount(spec.account));
     }
     if account.status != AccountStatus::Active {
@@ -5117,11 +5218,14 @@ fn consideration_for(
     if matches!(account.owner, PrincipalId::System(_)) {
         return Err(ContractError::SystemParty);
     }
-    Ok(Consideration {
-        from: account.owner.clone(),
-        account: spec.account,
-        amount: spec.amount,
-    })
+    Ok((
+        Consideration {
+            from: account.owner.clone(),
+            account: spec.account,
+            amount: spec.amount,
+        },
+        standing,
+    ))
 }
 
 /// **Draft and offer a contract in one call** on behalf of a ruleset (E6a step 1,
@@ -5203,9 +5307,16 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
         parties.push(p.clone());
     }
     let mut consideration: Vec<Consideration> = Vec::with_capacity(spec.considerations.len());
+    // Doc 48 cut EX.1a: the considerations admitted only by a party's standing, each held
+    // to the seam once the surface is built.
+    let mut by_standing: Vec<(PrincipalId, AccountId)> = Vec::new();
     for c in &spec.considerations {
-        let built = consideration_for(ctx, c, &parties)?;
+        let (built, standing) = consideration_for(ctx, c, &parties)?;
         consideration.retain(|x| x.account != built.account);
+        by_standing.retain(|(_, account)| *account != built.account);
+        if standing {
+            by_standing.push((built.from.clone(), built.account));
+        }
         consideration.push(built);
     }
     let now = ctx.w.now();
@@ -5276,6 +5387,24 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
         ));
     }
     c.id = ContractId(next);
+    // Doc 48 cut EX.1a (Q-48-50): a consideration named only by a party's standing stands
+    // only if the seam says so of this very surface, under the id it is about to take
+    // (`against: None`: naming draws nothing; the acceptance names its backing hold). One
+    // refusal for a no and an unviewable account alike, so it is no existence probe.
+    if !by_standing.is_empty() {
+        let seam = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(EconomyStore::standing_acceptance);
+        for (owner, account) in &by_standing {
+            if !seam
+                .as_ref()
+                .is_some_and(|seam| seam.stands(ctx.w, &c, owner, None))
+            {
+                return Err(ContractError::NoSuchAccount(*account));
+            }
+        }
+    }
     let attachment = scoped::prepare_attachment(ctx, &c)?;
     attachment.apply(&mut c)?;
     // The immutable preflight cannot mutate the World; this synchronous handler
@@ -5383,6 +5512,107 @@ pub fn accept_contract_as(
         return Err(ContractError::NoStanding);
     }
     accept_core_as(ctx, c, party.clone(), party.clone())
+}
+
+// ---- doc 48 cut EX.1a: standing acceptance (Q-48-50) ------------------------
+
+/// What one standing acceptance did (doc 48 cut EX.1a).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StandingAccepted {
+    /// The acceptance itself, exactly as [`accept_contract`] reports one.
+    pub outcome: AcceptOutcome,
+    /// The hold placed again for what the backing hold still reserves (a bid's
+    /// remaining intake), when the call named one and anything remains.
+    pub remainder: Option<HoldId>,
+}
+
+/// **Accept a contract under a party's standing acceptance** (doc 48 Q-48-50, cut
+/// EX.1a): a player's listing or bid is their acceptance, in advance, of any sale within
+/// its own terms, so the sale settles while they are away.
+///
+/// Bounded the way [`accept_contract_as`] is, and narrower:
+///
+/// - the composition-frozen [`crate::StandingAcceptance`] seam must say yes for **this**
+///   contract, **this** party and **this** backing hold. It is asked nothing else, and an
+///   unwired seam refuses every call;
+/// - `party` must already be a party and not the issuer (the issuer accepts in its own
+///   verb); this creates no party and no term;
+/// - the party is held to §9's per-party cap, as the retrieval join is;
+/// - the acceptance runs the same `accept_core` the command runs, and the escrow plan's
+///   actor is `party`, so the hold posts under the party's **own** debit authority and
+///   refuses on `InsufficientAvailable`;
+/// - with `against`, the party's one consideration is drawn from that hold: it must be
+///   the party's own `Held` reservation (placed by the party, not an escrow, not an
+///   engine-owned namespace) on the consideration's own account, covering it. The one
+///   escrow plan releases the hold, places the escrow, and places the remainder again,
+///   so the money is reserved throughout, once.
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] when the economy has no such live contract, `party` is
+/// not a non-issuer party, the seam is unwired or says no, or `against` is not a hold
+/// the party's consideration may be drawn from; [`ContractError::TooLarge`] at the party
+/// cap; otherwise everything `accept_core` refuses.
+pub fn accept_contract_standing(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    party: &PrincipalId,
+    against: Option<HoldId>,
+) -> Result<StandingAccepted, ContractError> {
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    };
+    if store.is_frozen() {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let seam = store
+        .standing_acceptance()
+        .ok_or(ContractError::NoStanding)?;
+    if matches!(party, PrincipalId::System(_)) {
+        return Err(ContractError::NoStanding);
+    }
+    let c = live_contract(ctx, id).ok_or(ContractError::NoStanding)?;
+    if !c.consent.parties.contains(party) || principal_key(&c.issuer) == principal_key(party) {
+        return Err(ContractError::NoStanding);
+    }
+    if !seam.stands(ctx.w, &c, party, against) {
+        return Err(ContractError::NoStanding);
+    }
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|store| party_at_cap(store, party))
+    {
+        return Err(ContractError::TooLarge(PARTY_CAP_REFUSAL));
+    }
+    let backing = match against {
+        None => None,
+        Some(hold) => Some(standing_backing(ctx.w, hold, party)?),
+    };
+    accept_core_backed(ctx, c, party.clone(), party.clone(), backing.as_ref())
+        .map(|(outcome, remainder)| StandingAccepted { outcome, remainder })
+}
+
+/// The hold a standing acceptance draws from (doc 48 cut EX.1a): live, placed by the
+/// party itself, and a reservation no engine owns — never another contract's escrow.
+/// Whether it covers the consideration is `backed_ops`' check, inside the accept.
+fn standing_backing(
+    w: &World,
+    hold: HoldId,
+    party: &PrincipalId,
+) -> Result<crate::record::Hold, ContractError> {
+    let found = w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().hold(hold).cloned())
+        .ok_or(ContractError::NoStanding)?;
+    let own = found.status.is_held()
+        && principal_key(&found.placed_by) == principal_key(party)
+        && matches!(found.purpose, HoldPurpose::Reservation { .. })
+        && !api::is_engine_owned_reservation(&found.purpose);
+    if !own {
+        return Err(ContractError::NoStanding);
+    }
+    Ok(found)
 }
 
 /// **Deliver the goods leg of a contract that has already settled** (E6c B6) — the
@@ -7006,5 +7236,81 @@ mod tests {
             })
         );
         assert!(resumed.consent_intact());
+    }
+}
+
+/// Doc 48 cut EX.1a: the backed acceptance's plan, as pure data.
+#[cfg(test)]
+mod ex1a_tests {
+    use super::*;
+    use crate::record::{Hold, HoldStatus, IdempotencyKey};
+
+    fn bid_hold(amount: i64) -> Hold {
+        Hold {
+            id: HoldId(40),
+            account: AccountId(7),
+            amount: Amount::from_minor(amount),
+            beneficiary: None,
+            purpose: HoldPurpose::Reservation {
+                kind: SmolStr::new_static("market.bid"),
+                id: 3,
+            },
+            placed_by: PrincipalId::Object(ObjId(5)),
+            holder: IdempotencyKey::new(SmolStr::new_static("market.bid"), SmolStr::new("3")),
+            expires: Some(EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 9_000,
+            }),
+            status: HoldStatus::Held,
+            last_journal_seq: 0,
+            revision: 1,
+        }
+    }
+
+    fn owed(account: u64, amount: i64) -> Consideration {
+        Consideration {
+            from: PrincipalId::Object(ObjId(5)),
+            account: AccountId(account),
+            amount: Amount::from_minor(amount),
+        }
+    }
+
+    /// The bid's hold is released and what it still reserves is placed again with its own
+    /// purpose, beneficiary and deadline; a draw of the whole hold places nothing again.
+    #[test]
+    fn ex1a_a_backed_acceptance_releases_the_bid_and_places_the_rest_again() {
+        let hold = bid_hold(5_000);
+        let (ops, rest) = backed_ops(&hold, &[owed(7, 2_000)]).expect("backed");
+        assert_eq!(ops, vec![HoldOp::Release { hold: HoldId(40) }]);
+        assert_eq!(
+            rest,
+            Some(HoldOp::Place {
+                account: AccountId(7),
+                amount: Amount::from_minor(3_000),
+                beneficiary: None,
+                purpose: hold.purpose.clone(),
+                expires: hold.expires,
+            })
+        );
+        let (_, none) = backed_ops(&hold, &[owed(7, 5_000)]).expect("the whole hold");
+        assert_eq!(none, None);
+    }
+
+    /// A backed acceptance draws exactly one consideration, from the hold's own account, and
+    /// no more than it reserves.
+    #[test]
+    fn ex1a_a_backed_acceptance_draws_only_on_its_own_holds_account() {
+        let hold = bid_hold(5_000);
+        for owes in [
+            vec![owed(8, 2_000)],
+            vec![owed(7, 5_001)],
+            Vec::new(),
+            vec![owed(7, 1), owed(9, 1)],
+        ] {
+            assert!(
+                matches!(backed_ops(&hold, &owes), Err(ContractError::NoStanding)),
+                "{owes:?}"
+            );
+        }
     }
 }

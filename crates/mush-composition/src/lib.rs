@@ -382,7 +382,10 @@ fn compose_server_modules<E>(
             .with_canon_evidence(Arc::new(self::econ_canon::CanonEvidenceReader))
             .with_party_caps(Vec::new())
             .with_party_cap_source_if(tacsim_delegate)
-            .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard));
+            .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard))
+            // Doc 48 cut EX.1a (Q-48-50): a personal listing or bid is its poster's standing
+            // acceptance; the market's one implementor checks it against each contract.
+            .with_standing_acceptance(Arc::new(mush_market::ListingAcceptance));
             let module = configure_economy(module)?;
             match launch {
                 Some(launch) => launch.configure_economy(module),

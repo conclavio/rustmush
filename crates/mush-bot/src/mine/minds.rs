@@ -567,6 +567,82 @@ pub mod walk {
     pub const LAUNCHED_DOCTRINE: &str = "flies Standard Doctrine sealed aboard.";
 }
 
+/// **The exchange's personal seller** (doc 48 cut EX.1a): `+market/post`, `+market/bid`,
+/// `+market/withdraw` and `+market/mine`, and the refusals a player hears from them and from a
+/// private offer: `mush_market::seller`. No lane reads them yet; each is held to the game's own
+/// text below, so a lane that does starts from a needle that matches.
+pub mod exchange {
+    /// `mush_market::seller::ASK_POSTED`'s head: an exact lot listed.
+    pub const ASK_POSTED: &str = "Listed for sale as #";
+    /// `mush_market::seller::POSTED_AWAY`: the listing or bid trades while its poster is away.
+    pub const POSTED_AWAY: &str = "It trades while you are away.";
+    /// `mush_market::seller::BID_POSTED`'s tail: a bid posted and escrowed.
+    pub const BID_POSTED: &str = " is held from your account.";
+    /// `mush_market::seller::FOR_ONLY`: a private offer's clause on a posted line.
+    pub const FOR_ONLY: &str = " (a private offer to ";
+    /// `mush_market::seller::PRIVATE_MARK`: a listing line's mark on a private offer.
+    pub const PRIVATE_MARK: &str = "(private offer)";
+    /// `mush_market::seller::BID_SUPPLY`: `+market/show`'s supply line for a player's bid.
+    pub const BID_SUPPLY: &str = "the bidder buys this";
+    /// `mush_market::seller::WITHDRAWN`'s tail: a listing withdrawn.
+    pub const WITHDRAWN: &str = "its goods are yours to use again.";
+    /// `mush_market::seller::BID_WITHDRAWN`'s tail: a bid withdrawn, its escrow released.
+    pub const BID_WITHDRAWN: &str = "what it still held is yours again.";
+    /// `mush_market::seller::MINE_HEAD`: `+market/mine`'s heading.
+    pub const MINE_HEAD: &str = "Your listings:";
+    /// `mush_market::seller::MINE_NONE`.
+    pub const MINE_NONE: &str = "You have nothing listed.";
+    /// `mush_market::seller::MINE_COUNT`'s tail.
+    pub const MINE_COUNT: &str = " listings a seller may.";
+    /// `mush_market::seller::NO_SUCH_LOT`.
+    pub const NO_SUCH_LOT: &str = "No such lot.";
+    /// `mush_market::seller::NO_SUCH_VAULT`.
+    pub const NO_SUCH_VAULT: &str = "No such vault.";
+    /// `mush_market::seller::LOT_HELD`.
+    pub const LOT_HELD: &str = "That lot is held for something else";
+    /// `mush_market::seller::NOT_A_LOT_GOOD`.
+    pub const NOT_A_LOT_GOOD: &str = "This market does not list that good";
+    /// `mush_market::seller::LOT_TOO_BIG`.
+    pub const LOT_TOO_BIG: &str = "larger than one listing sells";
+    /// `mush_market::seller::SELLER_FULL`: the 32-listing cap.
+    pub const SELLER_FULL: &str = "as many as a seller may. Withdraw one first.";
+    /// `mush_market::seller::NAME_VENUE`.
+    pub const NAME_VENUE: &str = "Name the venue it trades in";
+    /// `mush_market::seller::NO_CURRENCY`.
+    pub const NO_CURRENCY: &str = "trades in no currency yet";
+    /// `mush_market::seller::NO_ACCOUNT`.
+    pub const NO_ACCOUNT: &str = "You have no account in that venue's currency";
+    /// `mush_market::seller::PRIVATE_NAMES_OTHER`.
+    pub const PRIVATE_NAMES_OTHER: &str = "A private offer names one other player";
+    /// `mush_market::seller::PRIVATE_TO_OTHER`: a private offer refused to anyone but its
+    /// counterparty, at quote and at accept.
+    pub const PRIVATE_TO_OTHER: &str = "That offer is made to someone else";
+    /// `mush_market::seller::OWN_LISTING`'s head.
+    pub const OWN_LISTING: &str = "That is your own listing";
+    /// `mush_market::seller::BID_TWICE`'s head.
+    pub const BID_TWICE: &str = "You already bid for that good";
+    /// `mush_market::seller::BID_INTO_HOLD`'s head.
+    pub const BID_INTO_HOLD: &str = "A bid for bulk goods receives into a vault, not a hold";
+    /// `mush_market::seller::BID_CANNOT_COVER`'s tail.
+    pub const BID_CANNOT_COVER: &str = " available to hold for that bid";
+    /// `mush_market::seller::BID_NEEDS_APPROVAL`'s head.
+    pub const BID_NEEDS_APPROVAL: &str = "Holding that bid needs an approval";
+    /// `mush_market::seller::BID_NOT_HELD`.
+    pub const BID_NOT_HELD: &str = "That bid cannot be held right now";
+    /// `mush_market::seller::BIDDER_NOT_BUYING`.
+    pub const BIDDER_NOT_BUYING: &str = "That bid is not buying any more";
+    /// `mush_market::seller::SELLER_GONE`.
+    pub const SELLER_GONE: &str = "That seller cannot complete the sale right now";
+    /// `mush_market::seller::POST_USAGE`'s head.
+    pub const POST_USAGE: &str = "Usage: +market/post ";
+    /// `mush_market::seller::BID_USAGE`'s head.
+    pub const BID_USAGE: &str = "Usage: +market/bid ";
+    /// `mush_market::seller::WITHDRAW_USAGE`.
+    pub const WITHDRAW_USAGE: &str = "Usage: +market/withdraw <listing>";
+    /// `mush_market::seller::NO_SUCH_PLAYER`.
+    pub const NO_SUCH_PLAYER: &str = "No such player.";
+}
+
 /// **The partial needles**: rows (`family::NAME`) whose needle alone does not identify the
 /// sentence. Each needle's doc says what a reader must use beside it. A test holds this list to
 /// the table: every row whose needle is shorter than [`PARTIAL_BELOW`] characters (trimmed) is
@@ -610,6 +686,48 @@ mod tests {
     const PRACTICE_RS: &str = include_str!("../../../tacsim/src/match_/practice.rs");
     const WORDS_RS: &str = include_str!("../../../tacsim/src/minds/market_commands/words.rs");
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
+    const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
+
+    fn exchange_rows() -> Vec<Row> {
+        use super::exchange as bot;
+        use mush_market::seller as game;
+        rows!("";
+            ASK_POSTED,
+            POSTED_AWAY,
+            BID_POSTED,
+            FOR_ONLY,
+            PRIVATE_MARK,
+            BID_SUPPLY,
+            WITHDRAWN,
+            BID_WITHDRAWN,
+            MINE_HEAD,
+            MINE_NONE,
+            MINE_COUNT,
+            NO_SUCH_LOT,
+            NO_SUCH_VAULT,
+            LOT_HELD,
+            NOT_A_LOT_GOOD,
+            LOT_TOO_BIG,
+            SELLER_FULL,
+            NAME_VENUE,
+            NO_CURRENCY,
+            NO_ACCOUNT,
+            PRIVATE_NAMES_OTHER,
+            PRIVATE_TO_OTHER,
+            OWN_LISTING,
+            BID_TWICE,
+            BID_INTO_HOLD,
+            BID_CANNOT_COVER,
+            BID_NEEDS_APPROVAL,
+            BID_NOT_HELD,
+            BIDDER_NOT_BUYING,
+            SELLER_GONE,
+            POST_USAGE,
+            BID_USAGE,
+            WITHDRAW_USAGE,
+            NO_SUCH_PLAYER,
+        )
+    }
 
     fn ship_mind_rows() -> Vec<Row> {
         use super::ship_mind as bot;
@@ -871,7 +989,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 8] = [
+        let families: [(&str, Vec<Row>); 9] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -880,6 +998,7 @@ mod tests {
             ("market", market_rows()),
             ("ship_mind", ship_mind_rows()),
             ("practice", practice_rows()),
+            ("exchange", exchange_rows()),
         ];
         families
             .into_iter()
@@ -1382,6 +1501,31 @@ mod tests {
     #[test]
     fn practice_needles_are_distinct() {
         distinct(&qualified("practice", practice_rows()), &[]);
+    }
+
+    // Doc 48 cut EX.1a: the exchange's personal seller.
+    #[test]
+    fn exchange_needles_are_in_step() {
+        in_step("exchange", &exchange_rows());
+    }
+    #[test]
+    fn exchange_census() {
+        census("seller.rs", SELLER_RS, &exchange_rows(), &[]);
+    }
+    #[test]
+    fn exchange_needles_are_distinct() {
+        distinct(&qualified("exchange", exchange_rows()), &[]);
+    }
+    /// Every exchange sentence fits the 120-column floor as written (a filled line is held to
+    /// it by `mush-market`'s own `ex1a_every_new_sentence_fits_120_columns`).
+    #[test]
+    fn exchange_sentences_fit_120_columns() {
+        for (name, sentence, _) in exchange_rows() {
+            assert!(
+                sentence.chars().count() < 120,
+                "exchange::{name}: {sentence}"
+            );
+        }
     }
 
     #[test]
