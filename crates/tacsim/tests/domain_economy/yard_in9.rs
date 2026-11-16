@@ -214,6 +214,32 @@ fn rounds(rig: &Rig, unit: ObjId) -> i64 {
         .sum()
 }
 
+/// **The escort's load on `component`, read off the content** (doc 49 cut CC.0, Q-49-16):
+/// the `count_per_load` of the round the shipped `tv_escort`'s mount there fires, so a retune
+/// of the round's pack moves no line here.
+fn escort_load(component: &str) -> i64 {
+    use tacsim::definitions::unit::ComponentRole;
+    let catalog = tacsim::builtin_definitions()
+        .unwrap_or_else(|error| panic!("the shipped content binds: {error}"));
+    let key = mush_core::CanonicalId::new(tacsim::definitions::content::TV_ESCORT)
+        .unwrap_or_else(|_| panic!("{} is an id", tacsim::definitions::content::TV_ESCORT));
+    let spec = catalog
+        .specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is fielded"));
+    spec.components
+        .iter()
+        .find_map(|slot| match &slot.role {
+            ComponentRole::Weapon { weapon, .. } if slot.id.as_str() == component => {
+                catalog.weapons.get(weapon)
+            }
+            _ => None,
+        })
+        .and_then(|def| catalog.ammunition.get(&def.ammunition))
+        .map(|round| i64::from(round.count_per_load))
+        .unwrap_or_else(|| panic!("{key} carries a loaded {component}"))
+}
+
 fn name_of(rig: &Rig, obj: ObjId) -> String {
     rig.tw
         .world()
@@ -424,9 +450,11 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     let name = name_of(&rig, escort);
     let quote = run(&mut rig.tw, captain, &format!("+bay {name}"));
     eprintln!("{quote}");
+    // A whole load to rearm on the cannon, and the coaxial empty, at the content's loads.
+    let (cannon_load, coaxial_load) = (escort_load("cannon"), escort_load("machine_gun"));
     assert!(
-        quote.contains("rearm cannon (40 rounds")
-            && quote.contains("0/2000 rounds")
+        quote.contains(&format!("rearm cannon ({cannon_load} rounds"))
+            && quote.contains(&format!("0/{coaxial_load} rounds"))
             && quote.contains("Built on this floor"),
         "clean but for the rearm, her magazines empty: {quote}"
     );

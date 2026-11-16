@@ -3817,6 +3817,22 @@ fn gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair() {
         value,
     };
     let cannon = mush_tactics::ComponentId::new("cannon").expect("the cannon");
+    // Ten rounds short whatever the load (doc 49 cut CC.0): the load is the cannon's
+    // round's, read off the content, so a retune of the round's pack moves no line here.
+    let load = spec
+        .components
+        .iter()
+        .find_map(|slot| match &slot.role {
+            tacsim::definitions::unit::ComponentRole::Weapon { weapon, .. }
+                if slot.id.as_str() == "cannon" =>
+            {
+                catalog.weapons.get(weapon)
+            }
+            _ => None,
+        })
+        .and_then(|def| catalog.ammunition.get(&def.ammunition))
+        .map(|round| i64::from(round.count_per_load))
+        .expect("the line tank's cannon is loaded");
     let plan = mush_tactics::UnitMutationPlan::new(
         vec![
             section("hull", 150),
@@ -3827,7 +3843,7 @@ fn gc7_munitions_are_bought_and_carried_and_the_tariff_quotes_a_known_repair() {
                     cell: mush_tactics::CellId::new(tacsim::definitions::unit::AMMO_CELL)
                         .expect("ammo"),
                 },
-                value: 30,
+                value: load - 10,
             },
         ],
         Some(fresh.revision()),

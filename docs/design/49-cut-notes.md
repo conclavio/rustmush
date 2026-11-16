@@ -6,7 +6,8 @@ Each session edits only its own section, so two units' notes never touch the sam
 
 ## CC.0
 
-Tests and the bot's rig read content (Q-49-16). Built 2026-11-15 on `a5018131b` (PR #622's tip).
+Tests and the bot's rig read content (Q-49-16). Built 2026-11-15 on `a5018131b` (PR #622's tip),
+with main `72d5b7150` merged in.
 It changes only test files. It makes no content or kernel change, and no pin is re-blessed.
 
 **Survey.** §3.6's list was a grep. To find what a retune really breaks, I ran a probe in a
@@ -27,9 +28,9 @@ The probe ran 7,567 tests and 45 failed. They fall into four groups:
 | Group | Tests | Whose |
 |---|---|---|
 | Literal loads and cycles, and timelines built on them (17) | the sim lenses' `arena_story`, `sim_rematch` (2), `sim_units` (4), `sim_weapons`, `observer_rule` (2); `match_::cockpit::tests::ae2_…`; `domain_arena`'s `definitions::a_value_past_a_bound…`, `extensions::ae2_the_autocannon…` and `ae2_the_missile…`, `weapons::ae2_one_missile…`, `conditions::m3_a_third_slot…` and `m1b2_t1_…` | CC.0: built below |
-| The same, in files outside CC.0's row (3) | `mush-gateway`'s `arena_story_split` (its own `LOAD = 40`); `domain_world/voyage.rs` gc7 (a rearm quote of 10, from 40 less 30); `domain_economy/yard_in9.rs` (`rearm cannon (40 rounds`, `0/2000 rounds`) | see **Not built** |
-| Content pins (20) | see **Not built**: CC.2's one re-bless | CC.2 |
-| Fights on the shipped tank, by seed (5) | `report.rs`' `m5_…` (3) and `v3_…`, `replay.rs`' `i1_…`: the run must end in a kill, a ROM drop, or a pinned shot count | CC.2, with the corpus pins |
+| The same, in files outside CC.0's row (3) | `mush-gateway`'s `arena_story_split` (its own `LOAD = 40`); `domain_world/voyage.rs` gc7 (a rearm quote of 10, from 40 less 30); `domain_economy/yard_in9.rs` (`rearm cannon (40 rounds`, `0/2000 rounds`) | CC.0, on the cutting session's word: built below |
+| Content pins (20) | listed test by test in **Not built** | CC.2's one re-bless |
+| Fights on the shipped tank, by seed (5) | listed in **Not built**: the run must end in a kill, a ROM drop, or a pinned shot count | CC.2, with the corpus pins |
 
 The brief named some places that needed no change:
 - `docs/help/cockpit.md` quotes no shipped cycle or load. Its `Still cycling: 4 s to go.` and
@@ -88,33 +89,45 @@ The brief named some places that needed no change:
     500 ms for the cannon (1,200 and 6,500 ms today).
   - The lane itself still learns each cycle from the rows the rig prints, as it does live.
     `AGENTS.md`'s rule holds: game crates appear only in the fixture.
+- **Three files outside the row**, fixed on the cutting session's word:
+  - `mush-gateway/tests/split_halves/arena_story_split.rs`: `LOAD` became `load()` there too, read
+    from `tacsim::builtin_definitions()`. Like the in-process twin, it asserts the cannon's and the
+    coaxial's loads differ.
+  - `domain_world/voyage.rs` gc7: the known repair is still ten rounds short. Its cannon cell is set
+    to the content's load less ten, not to a literal 30. So the quote's rearm of 10 and its
+    111.00 cr and 92.50 cr, which price ten rounds, hold at any load of ten or more.
+  - `domain_economy/yard_in9.rs`: `escort_load(component)` reads the shipped `tv_escort`'s loads,
+    and the `+bay` quote is matched as `rearm cannon (<load> rounds` and `0/<load> rounds`. The
+    hold is still seeded with 40 and 20 units of the two rounds' goods. That covers today's loads
+    and CC.2's (24 and 600); the assertion after the rearm is only that rounds were loaded.
 
-**Tests.** All runs were on conclav.dev, in a throwaway clone at `a5018131b`, with the cut's patch
-applied:
-- **Today's values.** The four touched binaries, `tacsim`'s lib tests, `tacsim::domain_arena`,
-  `mushd::sim_lenses` and `mush-bot::arena_lane`, ran 3,673 tests and all passed.
-- **The probe, again, with the cut applied.** It ran the same 7,567 tests and 30 failed, down
-  from 45. Every one of the 30 is in **Not built**:
-  - 20 content pins;
-  - five seeded fights;
-  - three tests in files outside the row;
-  - two bot lane tests. One of them, `full_rate_on_each_guns_own_cycle`, failed on the lead's
-    literal bounds, which this cut then made read the cycle. Rerun under the probe,
-    `mush-bot::arena_lane` passes 86 of its 87; the one left is CC.10's (below). So 29 remain
-    under the probe.
+**Tests.** All runs were on conclav.dev, in a throwaway clone with the cut's patch applied. The
+first round was at `a5018131b`; the second at main `72d5b7150` (PR #623 merged in), after the
+three outside files were fixed.
+- **Today's values.** All passed:
+  - the four binaries first touched (`tacsim`'s lib tests, `tacsim::domain_arena`,
+    `mushd::sim_lenses` and `mush-bot::arena_lane`): 3,673 tests;
+  - the three re-pinned outside tests (`arena_story_split`, `voyage` gc7, `yard_in9`).
+- **The probe, again, with the whole cut applied** (second round). It ran 7,571 tests and 26
+  failed, down from 45:
+  - the 25 pins and fights listed in **Not built**;
+  - CC.10's `a_steady_wire_learns_the_lattice`.
 
-  Every CC.0-group test above passes under the probe, among them `observer_rule`'s
-  `nothing_of_the_shooting_crosses…`.
+  Every other test the first probe broke now passes under it, including the three outside files
+  and `full_rate_on_each_guns_own_cycle`. One story failed once and passed on its retry:
+  `observer_rule::ae2_a_missile_in_flight…`, "four missiles … and not one hit". That is a dice
+  outcome, not a load or a cycle, and it passed in the first round.
 - **Guards**, at today's values. All passed:
-  - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` for `tacsim`, `mushd` and
-    `mush-bot`, on the final patch;
+  - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` for `tacsim`, `mushd`,
+    `mush-bot` and `mush-gateway`, on the final patch;
   - the CI lint job's M7 memory-size pass on `tacsim`;
   - `mush-contract-tests`' `ci_policy` guards (`feature_matrix_inventory`, `panic_budget`,
     `restriction_lints`: 24 passed);
-  - `cargo doc --no-deps --document-private-items` with `-D warnings` for the three crates.
+  - `cargo doc --no-deps --document-private-items` with `-D warnings` for `tacsim`, `mushd` and
+    `mush-bot`.
 
-  The last three ran one edit earlier. That edit took an unused field out of the mushd helper,
-  which none of the three reads.
+  The last three ran in the first round. Since then the cut has changed only test files and this
+  note, none of which those three read.
 
 The probe's edits never reached this worktree. It ran in the clone, and the clone was deleted.
 
@@ -133,33 +146,41 @@ The probe's edits never reached this worktree. It ran in the clone, and the clon
   discipline assertions. CC.0 only reads the cycle under them.
 
 **Not built.**
-- **Three files outside CC.0's row** still pin the cannon's load:
-  - `crates/mush-gateway/tests/split_halves/arena_story_split.rs` has `LOAD = 40`. It is
-    `arena_story`'s gateway twin, and `load()` and `crate::shipped`'s pattern fit it as they stand.
-  - `crates/tacsim/tests/domain_world/voyage.rs` gc7 asserts a rearm quote of 10.
-  - `crates/tacsim/tests/domain_economy/yard_in9.rs` asserts `rearm cannon (40 rounds` and
-    `0/2000 rounds`.
+- **Content pins and seeded fights, for CC.2's one re-bless.** The probe moved all 25: 20 content
+  pins and five seeded fights. Each is a hash, a digest or a fight recorded on the shipped
+  content, so it re-blesses rather than reads. Paths are under `crates/tacsim/`.
 
-  CC.0 asked the session that cut it before touching them and had no answer by the PR. Each is
-  a few lines, and CC.2 meets all three at its retune.
-- **Content pins, for CC.2's one re-bless.** The probe moved all of these:
-  - `domain_arena/content.rs`' `DIGESTS`;
-  - `extensions.rs`' pins of the shipped tank's definition (`ae1`, `ae3`, `x2` to `x6`), and its
-    ordnance and laser pack pins (`ae2_the_ordnance_loads…` and `x1_…`). The ordnance test also
-    spells out the authored autocannon and rack values as a tuple, which is a content pin by
-    design;
-  - `match_::seal`'s `m5rules_default_seal_identities_are_pinned`;
-  - the registry's `C4_TRIAL_PIN` (`minds::registry::trials`);
-  - `motor.rs`' `m1a1_the_shipped_duel_hashes_as_before`, `m1b0_…` and `gc1b_…`. §3.6 guessed
-    `DUEL_HASH_AT_HEAD` would not move; the shipped duel does;
-  - `minds.rs`' `m1a5_the_production_hash_does_not_move`;
-  - `twin.rs`' three `m2_gate_a_…` tests and `M4_5_POOLED_RECORD`.
+  | File | Test | What it pins |
+  |---|---|---|
+  | `tests/domain_arena/content.rs` | `content::the_pinned_digests_are_the_shipped_ones` | `DIGESTS`, the 15 packs |
+  | `tests/domain_arena/extensions.rs` | `extensions::ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it` | the shipped tank's definition digest |
+  | `tests/domain_arena/extensions.rs` | `extensions::ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it` | the `ap_30` pack digest, and the authored autocannon and rack values as one tuple (a content pin by design) |
+  | `tests/domain_arena/extensions.rs` | `extensions::ae3_the_drone_loads_beside_the_stock_game_without_moving_it` | the shipped tank's definition digest |
+  | `tests/domain_arena/extensions.rs` | `extensions::x1_the_laser_content_loads_beside_the_stock_game_without_moving_it` | the `laser_charge` pack digest |
+  | `tests/domain_arena/extensions.rs` | `extensions::x2_the_biped_content_loads_beside_the_stock_game_without_moving_it` | the shipped tank's definition digest |
+  | `tests/domain_arena/extensions.rs` | `extensions::x3_the_thermal_content_loads_beside_the_stock_game_without_moving_it` | the shipped tank's definition digest |
+  | `tests/domain_arena/extensions.rs` | `extensions::x4_the_ecm_content_loads_beside_the_stock_game_without_moving_it` | the shipped tank's definition digest |
+  | `tests/domain_arena/extensions.rs` | `extensions::x5_the_eccm_content_loads_beside_the_stock_game_without_moving_it` | the shipped tank's definition digest |
+  | `tests/domain_arena/extensions.rs` | `extensions::x6_the_authored_heightfield_reaches_the_arena_verbatim` | the shipped tank's definition digest |
+  | `src/match_/seal.rs` | `match_::seal::m5_tests::m5rules_default_seal_identities_are_pinned` | the default seal custody identities |
+  | `src/minds/registry/trials/physical_tests.rs` | `minds::registry::trials::physical_tests::c4_a_registry_trial_ends_the_same_on_every_host` | `C4_TRIAL_PIN`: each trial's end, time and hashes |
+  | `tests/domain_arena/motor.rs` | `motor::m1a1_the_shipped_duel_hashes_as_before` | the shipped duel's hash (`DUEL_HASH_AT_HEAD`; §3.6 guessed it would not move) |
+  | `tests/domain_arena/motor.rs` | `motor::m1b0_the_production_line_hashes_do_not_move` | the shipped duel's ledger lines |
+  | `tests/domain_arena/motor.rs` | `motor::gc1b_an_ooc_match_offered_a_join_keeps_its_practice_hashes` | the shipped duel's practice hash |
+  | `tests/domain_arena/minds.rs` | `minds::m1a5_the_production_hash_does_not_move` | the production encoding pins |
+  | `tests/domain_arena/twin.rs` | `twin::m2_gate_a_on_a_mixed_pool` | the mixed pool's think counts |
+  | `tests/domain_arena/twin.rs` | `twin::m2_gate_a_over_the_authored_lance_field` | the lance field's think counts |
+  | `tests/domain_arena/twin.rs` | `twin::m2_gate_a_over_the_pooled_lanes_matches` | the pooled matches' think counts |
+  | `tests/domain_arena/twin.rs` | `twin::m4_5_the_stock_pool_over_fifteen_seeds_is_its_record` | `M4_5_POOLED_RECORD` |
+  | `tests/domain_arena/report.rs` | `report::m5_the_mind_flies_no_wreck_on_the_arenas_own_tape` | a seeded fight: the winner destroys the loser |
+  | `tests/domain_arena/report.rs` | `report::m5_the_minds_shots_are_counted_in_its_block_and_the_pilots_lines_are_unchanged` | a seeded fight's shot counts |
+  | `tests/domain_arena/report.rs` | `report::m5_the_pilots_report_carries_their_own_mind_block_and_no_other` | a seeded fight: the loser drops to the ROM on seed 2,352 |
+  | `tests/domain_arena/report.rs` | `report::v3_a_real_fight_folds_to_each_pilots_own_projection` | a seeded fight's report lines |
+  | `tests/domain_arena/replay.rs` | `replay::i1_a_real_fight_folds_to_one_objective_picture` | a seeded fight: the loser destroyed on the tape |
 
-  The arena harness baseline is an `#[ignore]`d job, so the probe did not run it.
-- **Seeded fights on the shipped tank**, for CC.2 with the corpus pins: `report.rs`' three
-  `m5_…` tests and `v3_…`, and `replay.rs`' `i1_…`. Each runs a fight by seed and pins its end: a
-  kill on the tape, the loser's drop to the ROM, or a shot count. A retune changes the fight, so
-  they re-bless like the corpus, not like a readout.
+  Two more pins are `#[ignore]`d, so the probe did not run them. CC.2 runs them by name:
+  - the arena harness baseline, `tests/harness_baseline/arena.linux.json`, through `tests/harness.rs`;
+  - `M2_CROSS_PLATFORM_PINS`, in `tests/domain_arena/minds_rhai.rs` (the D-UM-28 gate).
 - **The bot, for CC.10.** `a_steady_wire_learns_the_lattice` does not learn the cannon's cycle under
   the probe. The lane's `WEAPONSTATUS` read after a cannon shot lands 1,020 ms after the send, past
   the bot's own `CYCLE_READ_WITHIN_MS` (1,000). That is the lane's polling against a 2,000 ms
