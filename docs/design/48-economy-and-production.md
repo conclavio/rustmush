@@ -1,6 +1,6 @@
 # 48. Economy and production — one exchange for every trade, and a chain that closes, surveyed
 
-Draft 0.3, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
+Draft 0.4, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
 lanes (goods, services, the engine and money, production), with the lead spot-checking the claims
 §0 leans on:
 - the market's `Representation` and `Supply` enums;
@@ -28,7 +28,16 @@ rate per IC day is felt per real hour. Reading the other accepted figures with t
 four follow-up questions, Q-48-33 to Q-48-36 (§6.6).
 
 **Draft 0.3, the same day, records that the owner accepted all four follow-ups at their defaults.**
-Every question in this survey is now ruled.
+Every question in Draft 0.3 is ruled.
+
+**Draft 0.4, the same day, folds in an outside review** of the PR at `8ddf6ca9b` (Astra), triaged in
+[doc 48a](48a-outside-review-triage-2026-11-15.md). All fourteen of its findings held; none was
+refuted.
+- Where a ruled default was wrong in its facts, it is corrected in place and marked
+  **Correction (outside review)**. These are §5.1, §5.2, Q-48-5, Q-48-9, Q-48-11, Q-48-19, Q-48-23 and
+  Q-48-26.
+- Where a ruling needs a new choice, it gets a follow-up question: Q-48-37 to Q-48-46 (§6.7), open.
+  The ruling stands until the follow-up is answered.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -555,8 +564,19 @@ One protocol, many local venues.
   be intercepted.
 - **A private offer** is a listing with a named buyer. It generalises `+minds/resell <lic>=<player>
   price=` to every kind and stands in for a trade window.
-- **The NPCs trade on the board.** V6, V7 and V10 become quotes and acceptances, so payment and goods
-  are atomic. The acceptor whitelist becomes a role row per org in the port def.
+  - **Correction (outside review, doc 48a A-14):** hiding the listing is not enough. The quote and
+    the acceptance each refuse every principal but the named buyer.
+- **The NPCs trade on the board.** V6, V7 and V10 become quotes and acceptances. The acceptor
+  whitelist becomes a role row per org in the port def.
+  - **Correction (outside review, doc 48a A-3):** that does not make them one indivisible
+    transaction. The market's lot path is escrow, then a staged matter leg, then a fact, then the
+    economy sweep's settlement:
+    - it keeps a 600 s settlement margin for a Draw (`DRAW_SETTLE_MARGIN_SECS`);
+    - a hold-backed leg that cannot be staged is a logged risk (`trade.rs:874-886`).
+
+    What the path guarantees is that goods never move without the money in escrow, and that a missed
+    Draw refunds. Each kind admitted to the exchange states its own guarantee and has a test for it:
+    lot (Draw and hold-backed), titled asset, service, and managed title.
 
 ### 5.2 Services on the exchange
 
@@ -567,7 +587,10 @@ One protocol, many local venues.
   - New in the first wave:
     - **haul**: these goods, from here to there, by a deadline. The fact comes from inventory's
       transfer facts, if they can name a destination (unverified);
-    - **escort**: stay with this hull through this passage or field (from `sim.station.served`);
+    - **escort**: stay with this hull through this passage or field. **Correction (outside review,
+      doc 48a A-4):** `sim.station.served` cannot evidence this. It is satisfied by any seat
+      interval, a zero-length one included, and it names no protected hull and no journey. An escort
+      needs its own fact (Q-48-46);
     - **crew hire**: a seat for a wage.
 - **Open jobs.** A `Wanted` service listing any qualified principal may take. `accept_retrieval`'s
   standing-offer join is generalised to every kind, and a venue's job board is the projection of its
@@ -642,7 +665,7 @@ One protocol, many local venues.
 Every other default, Q-48-1 to Q-48-32, is accepted as written. Each amended question carries its
 decision first, with the proposed text kept under it for the record. §6.6 holds the four follow-up
 questions the amendments raised. The owner accepted all four at their defaults the same day
-(Draft 0.3).
+(Draft 0.3). §6.7 holds Q-48-37 to Q-48-46, raised by the outside review (Draft 0.4); they are open.
 
 ### 6.1 The exchange
 
@@ -684,6 +707,9 @@ questions the amendments raised. The owner accepted all four at their defaults t
 - **Alternative:** a two-sided trade window for barter.
 - **Why:** `+minds/resell <lic>=<player> price=` is already the pattern. Barter of goods for goods is
   two private offers.
+- **Correction (outside review, doc 48a A-3):** two private offers are two independent sales. A
+  party can accept one leg and decline the other, so this is not a barter. Whether to build one
+  conditional settlement for both legs is Q-48-43.
 
 **Q-48-6 — Delivery.**
 - **Proposed default:** local only: the buyer takes delivery at the venue. A remote purchase is a
@@ -714,6 +740,10 @@ questions the amendments raised. The owner accepted all four at their defaults t
 - **Alternative:** leave the NPC flows as posts, and fix only their atomicity.
 - **Why:** an NPC that trades on the board leaves a trade on the tape and a price in the history,
   which §5.3's rule reads. Off-board trades are invisible to both.
+- **Correction (outside review, doc 48a A-3):** "settle in one contract" is not "atomic". The board's
+  lot path settles by escrow, then a staged leg, then a fact, then a sweep (§5.1). The unit states and
+  tests the guarantee it gives these flows: goods never move without escrowed money, and a missed leg
+  refunds. Today's V10 fallback ("staff pay by hand") goes.
 
 **Q-48-10 — No haggling with NPCs.**
 - **Proposed default:** NPC prices are posted. An LLM-voiced NPC may choose among legal offers (D12)
@@ -733,6 +763,9 @@ questions the amendments raised. The owner accepted all four at their defaults t
 - **Alternative:** a free-text service contract settled by attestation or an adjudicator.
 - **Why:** a typed kind lets the game evidence the work. A free-text one makes every job a dispute,
   and `@contract` already offers that for anyone who wants it.
+- **Correction (outside review, doc 48a A-4, A-9):**
+  - The escort's fact is not `sim.station.served`; it is Q-48-46.
+  - A haul carries cargo liability as well as a fee; that is Q-48-42.
 
 **Q-48-12 — Open jobs.**
 - **Proposed default:** a `Wanted` service listing is a job any qualified principal may take.
@@ -812,6 +845,14 @@ questions the amendments raised. The owner accepted all four at their defaults t
 - **Alternative:** no consumption; bids refresh by timer.
 - **Why:** without a sink for goods, every bidder fills and stops. Consumption is what makes demand
   real and the haul job worth posting.
+- **Correction (outside review, doc 48a A-2):** the goods named do not match what the three bidders
+  hold, and the bidders are never refunded.
+  - The Lunar Habitat Board bids volatiles and carbon feedstock.
+  - Syrtis Bonded and Selk Townships bid structural alloys and instrument boards, so consuming
+    provisions, volatiles and propellant leaves their main stores untouched.
+  - Their treasuries (1.0M, 3.1M and 1.35M cr) are finite, with no recurring income.
+
+  Q-48-40 names each consumer's goods and its funding.
 
 **Q-48-20 — NPC haulers.**
 - **Proposed default:** after the exchange and consumption: one NPC hauling house running real hulls
@@ -853,6 +894,14 @@ questions the amendments raised. The owner accepted all four at their defaults t
 - **Alternative:** keep finite seeds with a daily restock.
 - **Why:** a restock from nowhere is a mint of matter. A producer gives each good a price that follows
   its inputs, and gives volatiles and carbon feedstock their first industrial buyers.
+- **Correction (outside review, doc 48a A-5):** carbon feedstock is itself a finite seed. Mining
+  yields `carbon_ore`, a distinct good, so a farm fed on feedstock stops when Titan's 600 t run out.
+  The default adds one process: **carbon ore to carbon feedstock** (provisional 5:4), as a works
+  recipe with public slots and as a house mill row at Titan. This also gives carbon ore its first
+  buyer outside the Exchange's dead-end bid.
+- **Correction (outside review, doc 48a A-11):** a recipe does not run itself. Each new producer lands
+  with an operating arm on the port tick, in the shape of Stickney Yards' alloy buy: it buys its
+  inputs, books its slot, collects the output and lists it. Q-48-41 gates consumption on that.
 
 **Q-48-24 — Players process their own ore.**
 - **Proposed default:** the two mills and the refine become works recipes with public slots at the
@@ -875,6 +924,11 @@ questions the amendments raised. The owner accepted all four at their defaults t
 - **Why:** player ownership of production is the step after processing one's own ore. Selling an
   existing facility needs no construction rules. **(expensive to reverse)** only in that facility
   ownership touches the industry crate's authority model.
+- **Correction (outside review, doc 48a A-1):** `@facility/terms` is not only commercial terms.
+  Besides the customer policy, it sets the whole cost model: capital, lifetime, upkeep, staff, wage
+  and margin (`mush-industry/src/commands.rs:1042-1052`). The bounds admit a running cost of 0.01 cr
+  a day (`cost.rs:67-79`). Opening it to owners, as written, would let an owner cut the costs
+  Q-48-21 charges. What an owner may set is Q-48-37; selling a facility mid-order is Q-48-45.
 
 **Q-48-27 — Cores from the chain.**
 - **Proposed default:**
@@ -989,6 +1043,137 @@ Each replaces the figure Q-48-14, Q-48-21, Q-48-18 or Q-48-19 and Q-48-22 accept
 - **Why:** these two numbers decide whether the economy floods or drains, so they should be measured,
   not guessed.
 
+### 6.7 Raised by the outside review (doc 48a)
+
+Each question answers a finding that held. Until it is ruled, the ruled default it qualifies stands,
+as corrected above.
+
+**Q-48-37 — What a facility's owner may set** (A-1).
+- **Proposed default:**
+  - The owner sets the customer policy (public or owner-only) and the margin, which is the price.
+    The margin keeps today's bounds.
+  - The cost model (capital, lifetime, upkeep, staff and wage) is authored with the facility and
+    stays staff-only.
+  - An owner lowers its running cost only by mothballing (Q-48-38), which also stops the facility
+    working.
+- **Alternative:** owners set staffing and upkeep too, with a matching loss of capacity (fewer slots)
+  and wear (a breakdown chance).
+- **Why:** a running cost is a sink only if the payer cannot set it. The alternative is a richer
+  management game, and it needs capacity and wear rules that do not exist yet.
+
+**Q-48-38 — Running costs, insolvency and recovery** (A-10).
+- **The problem:** Q-48-21 debits a facility's whole daily cost every IC day. Stickney Yards'
+  workshop, works and yard cost about 6,183 cr an IC day against a treasury of 100,000 cr. With no
+  orders, that lasts about 16 real hours.
+- **Proposed default:**
+  - **The cost follows the work.** A slot-hour worked costs its share of the daily cost, which the
+    fee already recovers with its margin. An idle slot-hour costs a standing share (provisional 10%,
+    sized by EX.9 from the census). With nothing booked, Stickney's standing cost is then about 620 cr
+    an IC day: about a week of real time on its treasury.
+  - **A house that cannot pay mothballs the facility.** It takes no new order. An open order runs to
+    completion if its escrow covers it; otherwise it is cancelled, and the customer's booking fee and
+    goods are returned. Customer goods in its stores stay the customer's and can be collected.
+  - **Unpaid cost is a debt** owed to the system account; nothing is minted. The facility reopens
+    when the house can pay 7 IC days ahead (provisional).
+- **Alternative:** keep the whole daily cost, and let houses fail.
+- **Why:** an NPC house that dies in an evening because nobody played is not a market. Tying the cost
+  to the work keeps the sink in proportion to the activity it prices.
+
+**Q-48-39 — The throttle against the price rule** (A-10).
+- **The problem:** Q-48-18 limits an NPC price to 5% an IC week, and Q-48-34 raises a house's asks
+  10% an IC week when it cannot pay. Neither says which wins.
+- **Proposed default:** the throttle is the one exception to the step limit. While a house is
+  mothballed or in debt, its asks rise 10% an IC week inside the same 50–200% band, and it posts no
+  new bids. Once it is solvent, the normal rule resumes from the throttled price at 5% an IC week.
+- **Alternative:** the throttle stays inside the 5% limit.
+- **Why:** a house in debt has to recover faster than a healthy one drifts, and the band still
+  bounds it.
+
+**Q-48-40 — Who consumes what, and how it is funded** (A-2).
+- **Proposed default:**
+  - **Each consumer consumes what it buys.** The Lunar Habitat Board consumes volatiles, carbon
+    feedstock and provisions (provisions are added to its bids). Syrtis Bonded and Selk Townships
+    consume structural alloys and instrument boards, as off-map construction demand.
+  - **The export faucet (Q-48-22) pays the consumers, not the sellers.** The consumers are the
+    off-map buyers' agents, so the faucet's money reaches players and houses only through their bids.
+    Each consumer's share of the daily budget is authored, and EX.9 sizes it so the consumer's
+    treasury holds steady at its rate of consumption.
+- **Alternative:** the faucet pays exporters directly, and staff top up the consumers.
+- **Why:** money that enters through the buyers who consume keeps demand funded, and every credit in
+  circulation was earned by a sale.
+
+**Q-48-41 — Supply before consumption** (A-11).
+- **Proposed default:**
+  - A good's consumption switches on only once its producer runs on the port tick with an operating
+    arm (Q-48-23's correction), and a story shows one full cycle: inputs bought, slot booked, output
+    collected and listed.
+  - EX.9 is gated on PL.1 and PL.2.
+  - Doc 49's CC.7, the space rearm, waits for PL.3 to produce the space munitions.
+  - At a port with no producer of a good in reach, that good's consumption waits for NPC haulers
+    (EX.10).
+- **Alternative:** switch consumption on with EX.9 and watch the census.
+- **Why:** consumption without supply is a countdown to an empty port.
+
+**Q-48-42 — Cargo liability for a haul** (A-9).
+- **Proposed default:**
+  - **The cargo travels as a held lot.** The shipper keeps ownership. The lot rides in the hauler's
+    hold, reserved to the job, so it cannot be sold, consumed or moved except by delivery, or by being
+    taken in a fight.
+  - **The shipper declares the cargo's value**, and the job shows it.
+  - **The hauler's bond is sized on the declared value, not the fee**: provisional 25%, posted at
+    acceptance. A job whose bond the hauler cannot escrow is refused to that hauler.
+  - **Non-delivery** covers cargo lost to interception or not delivered by the deadline. The bond
+    goes to the shipper and the fee is refunded. Loss beyond the bond is the shipper's risk.
+  - **Cargo insurance** is a later coverage product (the coverage family, today composed only in
+    tests).
+- **Alternative:** the hauler posts the whole declared value.
+- **Why:**
+  - Holding the lot to the job removes theft by the hauler.
+  - The bond covers the hauler's failure.
+  - A full-value bond would make every haul a capital test that only big players pass.
+
+**Q-48-43 — Barter** (A-3).
+- **Proposed default:** not in this document. Two private offers are two independent sales, and the
+  board says so. A both-or-neither barter would be one contract carrying both legs as conditions of
+  each other; it is deferred until play asks for it.
+- **Alternative:** build the conditional settlement now.
+- **Why:** the lot legs settle by facts after escrow. A two-leg contract doubles that path's failure
+  cases, for a trade that credits nearly cover.
+
+**Q-48-44 — Capacity at exchange scale** (A-14).
+- **The problem:** the market has a global cap of 64 vendors (`MAX_VENDORS`), and E4 caps 16 open
+  contracts an issuer and 100 live contracts a party.
+- **Proposed default:**
+  - A personal seller is not a vendor row, so the 64-vendor cap does not bind players. Each seller
+    holds at most 32 open listings (provisional).
+  - A listing is not a contract until it is accepted, so listings do not count against contract caps.
+  - Long service contracts (hauls, escorts, crew hire) count against their own per-issuer budget of
+    16, apart from trades, so standing jobs never block a player's trading. The 100-a-party cap stays.
+  - EX.1 measures the exchange under at least the bot cohort's load before it lands.
+- **Alternative:** raise the existing caps.
+- **Why:** the caps bound sweep work. Splitting them by kind keeps that work bounded and stops one kind
+  starving another.
+
+**Q-48-45 — Selling a facility** (A-14).
+- **Proposed default:** a facility can be sold only when it is idle: no open work order, no customer
+  goods in its stores, and no unpaid running cost. The seller's debt is settled from the sale first.
+  The buyer takes the facility's authored cost model with it (Q-48-37).
+- **Alternative:** sell with open orders, which pass to the buyer.
+- **Why:** passing live orders moves other players' escrow and goods between owners in the middle of a
+  job.
+
+**Q-48-46 — The escort's fact** (A-4).
+- **Proposed default:**
+  - An escort job names the protected hull and its journey: a passage, or a field sortie.
+  - The passage or field host writes the fact. It is satisfied when the escort stayed near the
+    protected hull (provisional: the same bubble in space, the same field in a sortie) for 90% of the
+    journey's IC time (provisional), and the protected hull arrived or withdrew.
+  - A link drop within the linkdead grace does not count against the escort.
+  - The fact fails if the protected hull is wrecked or captured, or the escort leaves the journey.
+- **Alternative:** escort by attestation only: the employer attests.
+- **Why:** an escort is paid for presence and for the outcome, and only the hosts that run passages
+  and fields can see both.
+
 ## 7. Units of work (sketch, cut after the rulings)
 
 Two chains, one writer per file set, as docs 44 to 47 ran. **EX** (the exchange and money) and **PL**
@@ -997,26 +1182,26 @@ Two chains, one writer per file set, as docs 44 to 47 ran. **EX** (the exchange 
 | Unit | What | Gate |
 |---|---|---|
 | EX.0 | `@econ/census`; the matter census's new goods | Q-48-17, Q-48-31 |
-| EX.1 | The seller: any principal lists from its own endpoint; private offers | Q-48-2, Q-48-5 |
+| EX.1 | The seller: any principal lists from its own endpoint; private offers authorised at quote and accept; the exchange-scale caps and a load test | Q-48-2, Q-48-5, Q-48-44 |
 | EX.2 | One asset-sale builder; player hull resale; core resale through CO.13 | EX.1, Q-48-7 |
 | EX.3 | NPC flows on the board, atomic; acceptor roles as data | EX.1, Q-48-9 |
 | EX.4 | Listing fee, sale cut, levy; berth fee | EX.1, Q-48-8, Q-48-15 |
 | EX.5 | The service arm; the generalised open join; retrieval, passage and survey listed | EX.1, Q-48-3, Q-48-12 |
-| EX.6 | Haul and escort kinds with their facts | EX.5, Q-48-11 |
+| EX.6 | Haul (a held lot, declared value, a bond on it) and escort (its own host-written fact) | EX.5, Q-48-11, Q-48-42, Q-48-46 |
 | EX.7 | Crew wages; player crew listings | EX.5, Q-48-14, Q-48-33 |
 | EX.8 | The NPC price rule (5% an IC week) and price history | EX.3, Q-48-18 (ruled), Q-48-35 |
-| EX.9 | NPC consumption, running costs paid, the export faucet (one unit: they balance) | EX.0, EX.8, Q-48-19, Q-48-21, Q-48-22, Q-48-34, Q-48-36 |
-| EX.10 | The NPC hauling house | EX.6, EX.9, Q-48-20 |
+| EX.9 | NPC consumption, running costs by the work with mothballing and debts, the export faucet paying the consumers (one unit: they balance) | EX.0, EX.8, **PL.1, PL.2**, Q-48-19, Q-48-21, Q-48-22, Q-48-34, Q-48-36, Q-48-38..41 |
+| EX.10 | The NPC hauling house; consumption at ports with no producer in reach | EX.6, EX.9, Q-48-20, Q-48-41 |
 | PL.0 | `MAX_GOODS` 48 → 256, one re-pin | Q-48-30 (ruled) |
-| PL.1 | Propellant from volatiles | PL.0, Q-48-23 |
-| PL.2 | Provisions, instrument boards and relay blanks get producers | PL.0, Q-48-23 |
+| PL.1 | Propellant from volatiles, with its operating arm | PL.0, Q-48-23 |
+| PL.2 | Provisions, instrument boards, relay blanks and carbon feedstock (from carbon ore) get producers, each with an operating arm | PL.0, Q-48-23 |
 | PL.3 | Munitions recipes (with doc 49's CC.5) | PL.0, Q-48-23, Q-49-4 |
 | PL.4 | Mills and the refine as works recipes | Q-48-24 |
 | PL.5 | Buying into an escrow; a House buys a hull | Q-48-28 |
 | PL.6 | The Ceres yard | Q-48-25 |
 | PL.7 | Cores from the chain; the core billed in a hull | PL.0, Q-48-27 |
 | PL.8 | The parts market | EX.3, Q-48-29 |
-| PL.9 | Facilities as titled assets | EX.2, Q-48-26 |
+| PL.9 | Facilities as titled assets; owner terms (customers, margin); sale only when idle | EX.2, Q-48-26, Q-48-37, Q-48-45 |
 
 ## 8. What this survey did not check
 

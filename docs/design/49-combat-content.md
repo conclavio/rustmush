@@ -1,8 +1,8 @@
 # 49. Combat content — the armaments, the rounds and the shot, surveyed
 
-Draft 0.4, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
+Draft 0.5, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
 lane, with the lead spot-checking the cycle figures, the cycle floor, the card presets, the slot limit
-and the free laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
+and the laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
 0.1, the same day, was the survey.
 
 **Draft 0.2, the same day, records the owner's first rulings**, made from play-testing in the arena:
@@ -32,6 +32,22 @@ now ruled. What the defaults settle:
 - **One re-bless per kernel**, with tests reading content (Q-49-16), and the bot is held to
   discipline (Q-49-17).
 
+**Draft 0.5, the same day, folds in an outside review** of the PR at `8ddf6ca9b` (Astra), triaged in
+[doc 48a](48a-outside-review-triage-2026-11-15.md). Every finding held.
+- **Corrected in place**, marked **Correction (outside review)**:
+  - §0, §3.2 and §4: laser recharge costs labour, not nothing.
+  - Q-49-8: a standing slot is standing authorisation, not a single decision.
+  - Q-49-14: choosing a round is engine work, not content.
+- **Follow-up questions**, Q-49-20 to Q-49-24 (§6.6), open:
+  - standing or single-use slots;
+  - the round choice narrowed;
+  - magazines sized by endurance;
+  - when a reserve is spent;
+  - laser modes.
+- **§7** gains a round-conservation requirement, and CC.7 a supply gate.
+
+The rulings stand until their follow-ups are answered.
+
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
 questions (§6), each with a proposed default, an alternative and a reason. **Provisional** marks a
@@ -58,7 +74,8 @@ walk through how a hit is resolved. Content file paths keep their own names.
 3. **Ammunition is a good on the ground, but nothing makes it.**
    - GC.7 added four munitions goods. Rearm draws them from a hold and charges a per-round fee.
    - No recipe outputs a round; vendors hold finite seeds.
-   - Laser recharge costs nothing.
+   - Laser recharge draws no good. It costs only labour and time: 0.25 cr a charge and 30 IC minutes
+     (corrected after the outside review, doc 48a A-8).
    - Space has no munitions goods and no rearm, and its magazines appear to refill each time a ship
      is checked out into a bubble.
 4. **The player's decision support is mostly built on the ground.** `CONTACTS`, the mount status
@@ -174,7 +191,10 @@ the two documents meet at the munitions recipes (Q-49-4, Q-48-23).
 - `+bay/order rearm` fills what is short (`src/port/bay_work/jobs.rs:80-91`). It can be done at a
   workshop, or in a carrier's bay anywhere at twice the time. It draws the rounds from the carrier's
   hold, all or nothing, and charges a per-round fee from the tariff.
-- A laser's "recharge" is a cell, not a good, and costs nothing (`jobs.rs:86`).
+- A laser's "recharge" is a cell, not a good (`jobs.rs:86`). **Correction (outside review, doc 48a
+  A-8):** it is not free. It is charged at the tariff's `cost_per_ammo_round` (25 minor a charge) and
+  takes `duration_ic_rearm_component` (1,800 IC s) like any rearm (`jobs.rs:430-433`). A full
+  500-charge refill is 125 cr before the operator's multiplier.
 
 **The goods.**
 - GC.7 added four munitions goods (`market/goods.json:166-218`; doc 36): an AP round at 12 cr, a
@@ -350,7 +370,7 @@ What they share:
      warns that slots "will out-shoot typed `FIRE`" under the placeholder cycles.
 3. **Scarcity.**
    - No round is produced.
-   - Laser recharge is free.
+   - Laser recharge costs labour only (125 cr for 500 charges), and no good.
    - Space magazines appear to refill.
    - The default card keeps no reserve.
    - Rounds are cheap against a sortie's earnings: a full HE load for the cannon is 6,000 cr.
@@ -462,6 +482,11 @@ is accepted at its default as written. Their proposed text below is the decision
   - A slot with a 10% floor and no reserve is the auto-fire the owner ruled out.
   - Removing slots from players would make the stock mind out-shoot every human, which doc 17
     already warns of.
+- **Correction (outside review, doc 48a A-7):** "no bare fire-when-ready" is true, but it is not "no
+  auto-fire". A slot on a target that stays at 80% odds clears a 35% floor at every ready moment, and
+  fires each time with no new decision. A threshold improves shot discipline; it does not remove the
+  standing trigger. The ruling (Draft 0.4) stands. The honest choice, standing or single-use
+  authorisation, is Q-49-20.
 
 **Q-49-9 — The stock mind's shot discipline.**
 - **Proposed default:** the default card keeps its reserve for answering fire, and the stock mind
@@ -562,6 +587,14 @@ is accepted at its default as written. Their proposed text below is the decision
 - **Alternative:** read penetration now, as a kernel change.
 - **Why:** a loadout choice is a decision made at the bay, before the fight, at no kernel cost.
   Penetration would re-bless the kernel for a variety the content does not need yet.
+- **Correction (outside review, doc 48a A-6):** "no kernel cost" is wrong.
+  - A mount names exactly one round (`definitions/weapon.rs:111`), so a selected round is new state
+    on the mount, with its own compatibility and reload rules.
+  - The section a round finds is chosen from the target's profile with no round in the call
+    (`arena/damage.rs:895`). "Differ in which sections they reach" therefore needs a resolver change,
+    and a re-bless of what the tape replays.
+
+  Q-49-21 narrows the proposal.
 
 **Q-49-15 — Mounts per unit.**
 - **Proposed default:** shipped ground units keep two to four mounts. Slots stay bound to the core's
@@ -617,6 +650,88 @@ is accepted at its default as written. Their proposed text below is the decision
   - The alternative widens the automatic class from "answers incoming rounds" to "answers a
     contact", which is the auto-fire the owner ruled out.
 
+### 6.6 Raised by the outside review (doc 48a)
+
+Each question answers a finding that held. Until it is ruled, the ruling it qualifies stands, as
+corrected above.
+
+**Q-49-20 — Standing or single-use slots** (A-7).
+- **The choice:** Q-49-8 kept condition slots with a judgement term. A slot still *stands*: once
+  armed, it fires at every ready moment while its terms hold, until it is disarmed. That is standing
+  authorisation. The alternative is single-use: a slot fires once and disarms.
+- **Proposed default:** single-use for a seated player, standing for a mind.
+  - A player's `FIRE <mount> WHEN …` fires once, when its terms first hold, then disarms. Re-arming
+    is the same command again.
+  - A mind keeps standing slots under its card and the absent gate. That covers a stock or Rhai mind
+    flying for a player, and a unit left on `RETURN`, `GUARD` or `HOLD`.
+- **Alternative:** standing slots for everyone, as Q-49-8 now reads.
+- **Why:**
+  - With cycles of 5 to 30 s, re-arming costs one command a cycle, and each shot is then a decision
+    the player made, which is the owner's direction.
+  - A mind stands in for an absent or delegating player. Its standing slots are bounded by its card
+    and, for an absent player, by the gate that never fires first.
+
+**Q-49-21 — The round choice, narrowed** (A-6).
+- **Proposed default:** defer the round choice. CC.11 leaves this programme, and the cannon keeps one
+  round.
+- **Alternative:** build the selected-round state now, with rounds that differ in damage only (no
+  resolver change).
+- **Why:**
+  - A damage-only pair trades one number for another and is not a real loadout decision.
+  - The version worth building, rounds that reach different sections, needs the resolver and a
+    replay re-bless. It should be scoped on its own when content asks for it.
+
+**Q-49-22 — Magazines sized by endurance** (A-13).
+- **The problem:** with the ruled cycles, the magazines §5 proposed *raise* continuous-fire endurance:
+  - cannon 240 → 360 s;
+  - coaxial gun 200 → 300 s;
+  - autocannon 240 → 400 s;
+  - missile rack 60 → 120 s.
+- **Proposed default (provisional):** size each magazine to an endurance shorter than today's.
+
+  | Mount | Rounds | Endurance |
+  |---|---|---|
+  | Cannon | 12 | 180 s |
+  | Coaxial gun | 300 (30 bursts) | 150 s |
+  | Autocannon | 54 (18 bursts) | 180 s |
+  | Missile rack | 4 | 120 s |
+
+  CC.2 measures fights at these sizes before it lands, and sets the final sizes from what it finds:
+  fight length, hits per load, how often a unit withdraws dry, and human against mind. Prices stay
+  GC.7's (Q-49-5), so a full cannon load is 1,800 cr.
+- **Alternative:** keep §5's magazines (24, 600, 120, 4) and let the measurement decide.
+- **Why:** Q-49-5's ruling puts scarcity on magazine size. What a fight feels is endurance (rounds ×
+  cycle), and with longer cycles the old counts last longer.
+
+**Q-49-23 — When a reserve is spent** (A-13).
+- **The problem:** the Line card keeps a 25% reserve, but today "dry" means no round anywhere
+  (`arena/stock_mind.rs:431-434`). A mind at its reserve therefore stops firing and never withdraws.
+- **Proposed default:**
+  - The reserve is spent only answering fire (a unit that fired on this one, as the absent gate
+    counts it) and covering a withdrawal.
+  - A unit at or under its reserve on every mount counts as dry for withdrawal.
+  - The card's text says so.
+- **Alternative:** the reserve is a soft floor that the mind may spend on a high-odds shot (65% and
+  up).
+- **Why:** a reserve exists to get the unit home. A mind that sits on it in the open is worse than one
+  that runs.
+
+**Q-49-24 — Laser modes** (A-12).
+- **The problem:** a space laser switches between offence and defence on one cooldown. The 5 s floor
+  (Q-49-19) and the automatic-defence exemption (Q-49-2, Q-49-10) are each per mount.
+- **Proposed default:**
+  - **The cycle belongs to the mode.** Offence cycles at 5 s, the floor. Defence keeps its own
+    automatic cadence.
+  - **A switch never fires early.** Switching mode starts the new mode's cycle from the switch.
+    Switching back within one offence cycle keeps the offence cooldown running, so a switch is no
+    way round the floor.
+  - **The fit names the modes.** A hull's fit says which modes each mount may use. The Dray and
+    Dray-P lasers are fitted defence-only, enforced by the fit, not by doctrine.
+  - The same rule holds for a ground laser if it ever gains a defence mode.
+- **Alternative:** one mode per mount, fixed at fit, with no switching.
+- **Why:** the exemption has to follow what the mount is doing, not what it is, and a switch must
+  never be a way round the floor.
+
 ## 7. Units of work (sketch, cut after the rulings)
 
 One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit prefix.
@@ -624,17 +739,21 @@ One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit pref
 | Unit | What | Gate |
 |---|---|---|
 | CC.0 | Tests read cycles and magazines from content, not literals; the bot's scripted rig reads content | — |
-| CC.1 | The trigger rule: a slot needs a judgement term; card floors and the Line card's reserve | Q-49-8, Q-49-9 |
-| CC.2 | The ground palette (15, 5, 10, 30 s) and the 5 s cycle floor (with the automatic-defence class); one re-bless | CC.0, CC.1, Q-49-2, Q-49-3 and Q-49-19 (ruled) |
+| CC.1 | The trigger rule: a slot needs a judgement term (single-use for a seated player under Q-49-20); card floors; the Line card's reserve and when it is spent | Q-49-8, Q-49-9, Q-49-20, Q-49-23 |
+| CC.2 | The ground palette (15, 5, 10, 30 s), magazines by endurance, and the 5 s cycle floor (with the automatic-defence class); measured fights before it lands; one re-bless | CC.0, CC.1, Q-49-2, Q-49-3 and Q-49-19 (ruled), Q-49-22 |
 | CC.3 | Ground lasers as the anti-drone fit; the laser variants keep a main gun | CC.2, Q-49-6 |
 | CC.4 | Rounds on `STATUS`; checked at 120 columns | Q-49-13 |
 | CC.5 | Munitions prices, read from doc 48's PL.3 recipes | doc 48's PL.3, Q-49-4, Q-49-5 |
-| CC.6 | Space mounts and hull fits as content packs; `raider_heavy` a unit file; mind-view maxima from content | Q-49-11 |
-| CC.7 | Space magazines persist; space munitions goods; rearm at a berth | CC.6, doc 48's PL.0 (`MAX_GOODS`), Q-49-12 |
-| CC.8 | The space palette; lasers per the lore; the three space doctrines rewritten | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled) |
+| CC.6 | Space mounts and hull fits as content packs, each mount's allowed modes in the fit; `raider_heavy` a unit file; mind-view maxima from content | Q-49-11, Q-49-24 |
+| CC.7 | Space magazines persist; space munitions goods; rearm at a berth | CC.6, doc 48's PL.0 (`MAX_GOODS`) and **PL.3 producing the space munitions** (doc 48 Q-48-41), Q-49-12 |
+| CC.8 | The space palette; lasers per the lore with the cycle per mode; the three space doctrines rewritten | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled), Q-49-24 |
 | CC.9 | Space decision support, for the player and the minds | CC.6, Q-49-13 |
-| CC.10 | The bot's discipline assertions | CC.2, Q-49-17 |
-| CC.11 | A second round for the cannon, chosen at rearm | CC.2, CC.5, Q-49-14 |
+| CC.10 | The bot's discipline assertions (and its re-arming, if slots are single-use) | CC.2, Q-49-17, Q-49-20 |
+| CC.11 | ~~A second round for the cannon, chosen at rearm~~: deferred under Q-49-21's default (engine work: selected-round state, and the resolver for section effects) | Q-49-14, Q-49-21 |
+
+**Round conservation (outside review, doc 48a A-14).** Every CC unit that moves rounds keeps them
+counted. A reload, a type change, a crash and restart, a custody move, a refit and salvage each
+conserve rounds, each with a test. The matter census counts munitions (doc 48 Q-48-31).
 
 ## 8. What this survey did not check
 
