@@ -1,6 +1,6 @@
 # 48. Economy and production — one exchange for every trade, and a chain that closes, surveyed
 
-Draft 0.1, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
+Draft 0.2, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
 lanes (goods, services, the engine and money, production), with the lead spot-checking the claims
 §0 leans on:
 - the market's `Representation` and `Supply` enums;
@@ -12,7 +12,21 @@ lanes (goods, services, the engine and money, production), with the lead spot-ch
 - the unpaid crew hire;
 - the contract caps.
 
-Anchors are file names with line numbers; line numbers drift.
+Anchors are file names with line numbers; line numbers drift. Draft 0.1, the same day, was the
+survey.
+
+**Draft 0.2, the same day, records the owner's rulings.** Every question from Q-48-1 to Q-48-32 is
+ruled. Three are amended:
+- Q-48-15: the berth fee is 5 cr an IC day.
+- Q-48-18: prices step 5% an IC week.
+- Q-48-30: `MAX_GOODS` rises to 256.
+
+Every other default is accepted as written.
+
+The reason for the first two amendments is the live clock. At 24:1 an IC day is one real hour, so a
+rate per IC day is felt per real hour. Reading the other accepted figures with that in mind raised
+four follow-up questions, Q-48-33 to Q-48-36 (§6.6). They are open, and until they are ruled the
+accepted defaults stand.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -565,7 +579,8 @@ One protocol, many local venues.
 ### 5.3 Prices and the NPC side
 
 - **An NPC house prices by a rule.** Its ask and bid move with its stock against an authored target,
-  within a band and a step limit per IC day. The reach premium sits on top. The venue keeps a bounded
+  within a band and a step limit per IC week (Q-48-18 as ruled). The reach premium sits on top. The
+  venue keeps a bounded
   price history (E8). Players price their own listings.
 - **NPC consumption.** Each port's population consumes provisions, volatiles and propellant at an
   authored daily rate, from the storefronts of the bidders who buy them. Bids then refresh because
@@ -616,6 +631,15 @@ One protocol, many local venues.
   and never posts one (D12).
 
 ## 6. Owner survey
+
+**Ruled 2026-11-15.** Three questions are amended:
+- Q-48-15: the berth fee drops to 5 cr an IC day.
+- Q-48-18: the price step is 5% an IC week, not an IC day.
+- Q-48-30: `MAX_GOODS` goes to 256, not 128.
+
+Every other default, Q-48-1 to Q-48-32, is accepted as written. Each amended question carries its
+decision first, with the proposed text kept under it for the record. §6.6 holds the four follow-up
+questions the amendments raised; they are open.
 
 ### 6.1 The exchange
 
@@ -737,7 +761,12 @@ One protocol, many local venues.
   §5.2 left the technician to E8, and this is E8.
 
 **Q-48-15 — Fees nobody pays today.**
-- **Proposed default:** a berth fee per IC day at a port, paid to the port authority org
+- **Decision (owner ruling, 2026-11-15):** keep the berth fee, so the mechanism is in the system, but
+  at **5 cr an IC day** to start (provisional; it can rise later). The owner's reasoning: at 24:1 an
+  IC day is one real hour, so the proposed 50 cr meant a player who logged off at a port came back to
+  1,200 cr owed a real day, and 8,400 cr a real week — "pretty harsh". At 5 cr that is 120 cr a real
+  day and 840 cr a real week. No customs duty, as proposed.
+- **Proposed default (as written):** a berth fee per IC day at a port, paid to the port authority org
   (provisional: 50 cr a day for a hull under 100 t). No customs duty yet; customs stays a fine.
 - **Alternative:** no berth fees.
 - **Why:** a hull parked at a port for weeks costs nothing today. A small fee gives docking a cost and
@@ -759,7 +788,11 @@ One protocol, many local venues.
 - **Why:** nobody can tune an economy they cannot see, and every other question here is a tune.
 
 **Q-48-18 — The NPC price rule.**
-- **Proposed default (provisional):**
+- **Decision (owner ruling, 2026-11-15):** the rule as proposed, but the step is **5% an IC week**,
+  not an IC day. An IC day is a real hour, and 5% an hour moves prices too fast. The band (50% to
+  200%), the reach premium and the price history stand as proposed. The history's window is raised
+  again in Q-48-35.
+- **Proposed default (provisional, as written):**
   - an NPC house's ask and bid move with its stock against an authored target, by up to 5% per IC day,
     within 50% to 200% of the authored price;
   - the reach premium stays on top;
@@ -865,7 +898,10 @@ One protocol, many local venues.
 - **Why:** twelve of thirteen parts have no buyer, so strip and scrap feed nothing.
 
 **Q-48-30 — The catalogue cap.**
-- **Proposed default:** `MAX_GOODS` from 48 to 128, in one change with its digest and count re-pins,
+- **Decision (owner ruling, 2026-11-15):** `MAX_GOODS` from 48 to **256**, in one change with its
+  re-pins, before any new good lands. The extra room costs little and saves doing this again soon.
+- **Proposed default (as written):** `MAX_GOODS` from 48 to 128, in one change with its digest and
+  count re-pins,
   before any new good lands.
 - **Alternative:** raise it as each good needs it.
 - **Why:** this document and doc 49 add at least a dozen goods. One re-pin is cheaper than six.
@@ -894,6 +930,54 @@ One protocol, many local venues.
 - **Why:** the census has to exist before anything is tuned. The exchange is the owner's question.
   Consumption without running costs and an inflow would either drain or flood the NPC accounts.
 
+### 6.6 Raised after the rulings: the other rates, read at 24:1
+
+The reason behind Q-48-15's and Q-48-18's amendments applies to four other figures the owner
+accepted. The live game runs at 24:1, so an IC day is one real hour and an IC week about seven real
+hours. Each figure is raised here with a default in the same spirit. Until it is ruled, the accepted
+default stands.
+
+**Q-48-33 — Crew wages at 24:1.**
+- **The problem:** Q-48-14 accepted 150 cr an IC day for a rating and 300 for an officer. At 24:1
+  that is 3,600 and 7,200 cr a real day for each hire, owed while the employer is offline. It is the
+  berth fee's problem, larger.
+- **Proposed default:** 10 cr an IC day for a rating and 20 for an officer (provisional). That is
+  1,680 and 3,360 cr a real week.
+- **Alternative:** keep the accepted figures, and stop the wage while a hire is off duty at a port.
+- **Why:** the ruled berth fee's reasoning; tune upward once play shows what a crew earns.
+
+**Q-48-34 — The throttle's step.**
+- **The problem:** Q-48-21 accepted "asks up 10% a day" for a house that cannot pay its running
+  costs. That is 10% a real hour, so a house in deficit doubles its asks in about seven real hours:
+  faster than a player can react, and faster than the ruled price rule moves anything else.
+- **Proposed default:** 10% an IC week, on the same clock as Q-48-18's ruled step.
+- **Alternative:** keep 10% an IC day.
+- **Why:** one clock for every price movement.
+
+**Q-48-35 — The price history's window.**
+- **The problem:** Q-48-18 accepted 28 IC days of history. That is about 28 real hours, which spans
+  only four of the ruled weekly steps.
+- **Proposed default:** 24 IC weeks (168 IC days, about one real week), bounded as before. A trader
+  coming back after a week away then sees the whole week.
+- **Alternative:** keep 28 IC days.
+- **Why:** the window should cover the time a player is likely to be away.
+
+**Q-48-36 — Consumption and the inflow are sized from the census.**
+- **The problem:** two accepted figures were not sized against the 24:1 clock.
+  - Q-48-19's consumption ("a port's seed lasts about 60 IC days with no trade") is about 2.5 real
+    days.
+  - Q-48-22's export faucet, 50,000 cr an IC day, is 1.2 million cr a real day: about 7% of the
+    lane's boot capital every real day.
+
+  Both are economy-scale rates and rightly kept in IC time, since the mills, works and running costs
+  they balance run in IC time.
+- **Proposed default:** EX.9 sets both from EX.0's census, on a measured run at 24:1. It aims to keep
+  the lane's net money change within 1% of its capital per real day (provisional). The figures above
+  are starting points only.
+- **Alternative:** keep the accepted figures and tune after launch.
+- **Why:** these two numbers decide whether the economy floods or drains, so they should be measured,
+  not guessed.
+
 ## 7. Units of work (sketch, cut after the rulings)
 
 Two chains, one writer per file set, as docs 44 to 47 ran. **EX** (the exchange and money) and **PL**
@@ -908,11 +992,11 @@ Two chains, one writer per file set, as docs 44 to 47 ran. **EX** (the exchange 
 | EX.4 | Listing fee, sale cut, levy; berth fee | EX.1, Q-48-8, Q-48-15 |
 | EX.5 | The service arm; the generalised open join; retrieval, passage and survey listed | EX.1, Q-48-3, Q-48-12 |
 | EX.6 | Haul and escort kinds with their facts | EX.5, Q-48-11 |
-| EX.7 | Crew wages; player crew listings | EX.5, Q-48-14 |
-| EX.8 | The NPC price rule and price history | EX.3, Q-48-18 |
-| EX.9 | NPC consumption, running costs paid, the export faucet (one unit: they balance) | EX.0, EX.8, Q-48-19, Q-48-21, Q-48-22 |
+| EX.7 | Crew wages; player crew listings | EX.5, Q-48-14, Q-48-33 |
+| EX.8 | The NPC price rule (5% an IC week) and price history | EX.3, Q-48-18 (ruled), Q-48-35 |
+| EX.9 | NPC consumption, running costs paid, the export faucet (one unit: they balance) | EX.0, EX.8, Q-48-19, Q-48-21, Q-48-22, Q-48-34, Q-48-36 |
 | EX.10 | The NPC hauling house | EX.6, EX.9, Q-48-20 |
-| PL.0 | `MAX_GOODS` raised, one re-pin | Q-48-30 |
+| PL.0 | `MAX_GOODS` 48 → 256, one re-pin | Q-48-30 (ruled) |
 | PL.1 | Propellant from volatiles | PL.0, Q-48-23 |
 | PL.2 | Provisions, instrument boards and relay blanks get producers | PL.0, Q-48-23 |
 | PL.3 | Munitions recipes (with doc 49's CC.5) | PL.0, Q-48-23, Q-49-4 |
