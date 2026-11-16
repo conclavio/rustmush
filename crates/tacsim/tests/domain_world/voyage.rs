@@ -5254,10 +5254,10 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
 #[test]
 fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects_forged_tape_and_tows_derelict()
  {
-    let mut rig = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    // Doc 49 unit CC.8: the derelict is the Belt Raider the Kirkwood picket's corvette disables by
+    // play (a Dray's lasers no longer beam an interdictor to one), so she sails the stocked lane,
+    // whose Kirkwood waypoint the picket holds.
+    let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
@@ -5273,11 +5273,13 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
     let total_secs = pending.plan.total_s;
 
     let _ = fire_quietly(&mut rig);
-    // Cross the interdicted Kirkwood boundary to open the tactical bubble:
+    // Cross the Kirkwood boundary to open the picket's tactical bubble:
     let _ = to_ic(&mut rig, depart_ic + leg1_secs);
 
-    // Turn 90 degrees so the interdictor's return fire hits `Right` facet, preserving `Front` facet
-    // armor (`50`) for the hard-bounce collar scrape test below, then disable `interdictor.1` by play:
+    // Turn 90 degrees so the raider's fire finds the `Right` facet, preserving `Front` facet
+    // armor for the hard-bounce collar scrape test below; clear customs, dodge the raider's first
+    // round, and let the corvette disable the raider by play. In a picket's bubble the raider
+    // holds the bubble's interdictor slot.
     let _ = run(&mut rig.tw, pilot, "+helm/heading 90,0");
     let interdictor_hull = {
         let book = rig
@@ -5289,21 +5291,7 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
             .expect("active bubble")
             .interdictor_hull
     };
-    for i in 0..4 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
-        if i == 0 || i == 2 || i == 3 {
-            let beam_out = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
-            assert!(
-                beam_out.contains("Laser battery fired on"),
-                "beam salvo {i}: {beam_out}"
-            );
-        }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig.tw, pilot, "+damage/vent");
-        }
-    }
+    let _ = picket_until_the_raider_is_down(&mut rig, pilot, hull, true);
 
     // 1. Attempting `+helm/tow` before hard-docking must be refused, and attempting `+helm/dock derelict`
     //    before closing inside the `<= 500 m` / `<= 15 m/s` collar-initiation envelope is refused:
@@ -5318,7 +5306,8 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         "docking derelict from > 500 m refused: {dock_far}"
     );
 
-    // Order `+helm/approach derelict` (holding the bubble open for salvage and closing range across 3 ticks):
+    // Order `+helm/approach derelict` (holding the bubble open for salvage and closing range until
+    // the approach is flown; the raider lies farther off than the interdictor did):
     let app_derelict = run(&mut rig.tw, pilot, "+helm/approach derelict");
     assert!(
         app_derelict.contains("Braking approach ordered toward disabled derelict"),
@@ -5326,10 +5315,24 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
     );
     let app_burn = drain(&mut rig.tw);
     land_quietly(&mut rig, &app_burn);
-    for _ in 0..3 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
+    for _ in 0..60 {
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
+        let flown = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|book| book.active_for_hull(hull))
+            .is_some_and(|active| {
+                active.bubble.torpedoes.is_empty()
+                    && !active
+                        .carriers
+                        .get(&hull)
+                        .is_some_and(|carrier| carrier.approaching_derelict)
+            });
+        if flown {
+            break;
+        }
     }
 
     // 2. Initiate a 6-DOF docking session against the disabled derelict (`+helm/dock derelict`):
@@ -7809,13 +7812,14 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     );
 
     // 3. End-to-end Story 2 (`sfr2`/`sfr7`): take rear-aspect combat damage (`hull 480/600, drive 190/250`),
-    //    disable, clamp, and tow the interdictor derelict (`+helm/tow`), dock at Stickney Yards
+    //    clamp and tow a derelict (`+helm/tow`), dock at Stickney Yards
     //    (no bounty since doc 41 cut RS.8), and run `+bay` +
-    //    `+bay/order #<hull>=all` to repair the Dray back to full (`600/600` hull, `250/250` drive):
-    let mut rig = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    //    `+bay/order #<hull>=all` to repair the Dray back to full (`600/600` hull, `250/250` drive).
+    //    Doc 49 unit CC.8: the derelict is the Belt Raider the Kirkwood picket's corvette disables
+    //    by play (a Dray's lasers no longer beam an interdictor to one), and the damage is the
+    //    raider's opening round on her stern; she sails the stocked lane, whose Kirkwood waypoint
+    //    the picket holds.
+    let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
@@ -7833,26 +7837,31 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     let _ = fire_quietly(&mut rig);
     let _ = to_ic(&mut rig, depart_ic + leg1_secs);
 
-    for i in 0..4 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
-        if i == 0 || i == 2 || i == 3 {
-            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
-        }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig.tw, pilot, "+damage/vent");
-        }
-    }
+    let _ = run(&mut rig.tw, pilot, "+helm/heading 180 0");
+    let _ = picket_until_the_raider_is_down(&mut rig, pilot, hull, false);
 
-    // Approach, 6-DOF hard-dock clamp, and tow the disabled interdictor (`+helm/tow`):
+    // Approach, 6-DOF hard-dock clamp, and tow the disabled raider (`+helm/tow`):
     let _ = run(&mut rig.tw, pilot, "+helm/approach derelict");
     let app_burn = drain(&mut rig.tw);
     land_quietly(&mut rig, &app_burn);
-    for _ in 0..3 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
+    for _ in 0..60 {
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
+        let flown = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|book| book.active_for_hull(hull))
+            .is_some_and(|active| {
+                active.bubble.torpedoes.is_empty()
+                    && !active
+                        .carriers
+                        .get(&hull)
+                        .is_some_and(|carrier| carrier.approaching_derelict)
+            });
+        if flown {
+            break;
+        }
     }
     let _ = run(&mut rig.tw, pilot, "+helm/dock derelict");
     let (session_id, challenge) = {
@@ -8620,10 +8629,10 @@ fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30
     // --- Part C: Multi-carrier bubble: `30 s` late tick advances `30,000 ms` (`30 s`), and
     //             `holding_for_salvage` on Carrier 1 does not block Carrier 2 from resuming,
     //             then expires on Carrier 1 after `SALVAGE_HOLD_TIMEOUT_WALL_S` (`60 s`) ---
-    let mut rig_mc = stocked_with(Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    });
+    // Doc 49 unit CC.8: the derelict is the Belt Raider the Kirkwood picket's corvette disables
+    // by play (a Dray's lasers no longer beam an interdictor to one), so the two carriers sail
+    // the stocked lane, whose Kirkwood waypoint the picket holds, and both clear customs.
+    let mut rig_mc = stocked();
     let (pilot_c1, row_c1) = chartered(&mut rig_mc, "PilotC1", 1);
     let pilot_c2 = self::pilot(&mut rig_mc, "PilotC2", 2);
     let _ = run(&mut rig_mc.tw, pilot_c2, "+coop/enrol Escort Hawk");
@@ -8650,18 +8659,8 @@ fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30
         .max(p2.plan.depart_ic + i64::from(p2.plan.legs[0].secs));
     let _ = to_ic(&mut rig_mc, due_ic);
 
-    // Disable the Interdictor Picket by play:
-    for i in 0..4 {
-        let next_r = rig_mc.tw.world().now() + 1;
-        rig_mc.tw.set_now(next_r);
-        let _ = rig_mc.tw.fire_due(next_r * 1_000);
-        if i == 0 || i == 2 || i == 3 {
-            let _ = run(&mut rig_mc.tw, pilot_c1, "+tac/beam Interdictor Picket");
-        }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig_mc.tw, pilot_c1, "+damage/vent");
-        }
-    }
+    // Both carriers heave to and clear customs, and the corvette disables the raider by play:
+    let _ = convoy_until_the_raider_is_down(&mut rig_mc, &[pilot_c1, pilot_c2], hull_c1, true);
 
     // 5a. Carrier 1 (`hull_c1`) orders `+helm/approach derelict`, setting `holding_for_salvage = true`
     //     on `hull_c1` with a 60 s wall deadline while Carrier 2 (`hull_c2`) does NOT hold for salvage.
@@ -10303,8 +10302,11 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
     for _ in 0..120 {
         let (heard, submits) = one_second(&mut rig_combat, pilot_c);
         land_quietly(&mut rig_combat, &submits);
-        fight.push(format!("{:?} {}", carrier_state(&rig_combat), heard.replace('
-', " ")));
+        fight.push(format!(
+            "{:?} {}",
+            carrier_state(&rig_combat),
+            heard.lines().collect::<Vec<_>>().join(" ")
+        ));
         let Some((stripped, drive)) = carrier_state(&rig_combat) else {
             panic!("the interdiction closed while she fought: {fight:#?}");
         };
@@ -10388,10 +10390,10 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_with_quarantine() {
-    let roster = || Roster {
-        seed_lane: Some(lane_with_interdicted_kirkwood()),
-        ..Roster::default()
-    };
+    // Doc 49 unit CC.8: the derelict of step 3 is the Belt Raider the Kirkwood picket's corvette
+    // disables by play (a Dray's lasers no longer beam an interdictor to one), so she sails the
+    // stocked lane, whose Kirkwood waypoint the picket holds.
+    let roster = Roster::default;
     let mut rig = stocked_with(roster());
     let (pilot_actor, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
@@ -10516,23 +10518,11 @@ fn sfr21_prepared_bubble_input_mush_sim_standing_orders_and_per_entity_store_wit
 
     // 3. Disable the interdictor to produce a `DisabledDerelict`, test unified propellant ledger
     //    on `+helm/approach derelict`, and test `OutOfGate` docking session deletion + persistence:
-    let _ = run(&mut rig.tw, pilot_actor, "+tac/lock Interdictor Picket");
-    let lock_submits = drain(&mut rig.tw);
-    land_all(&mut rig, &lock_submits);
-    for i in 0..4 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
-        if i == 0 || i == 2 || i == 3 {
-            let _ = run(&mut rig.tw, pilot_actor, "+tac/beam Interdictor Picket");
-            let beam_submits = drain(&mut rig.tw);
-            land_all(&mut rig, &beam_submits);
-        }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig.tw, pilot_actor, "+damage/vent");
-        }
-    }
-
+    // She shows herself again, clears customs, and the corvette disables the raider by play:
+    let _ = run(&mut rig.tw, pilot_actor, "+helm/emcon standard");
+    let emcon_back = drain(&mut rig.tw);
+    land_all(&mut rig, &emcon_back);
+    let _ = picket_until_the_raider_is_down(&mut rig, pilot_actor, hull, true);
     let prop_before_approach = rig
         .tw
         .world()
@@ -12607,23 +12597,43 @@ fn heave_to_until_stood_down(rig: &mut Rig, who: ObjId, hull: ObjId) -> (u32, St
 /// (doc 49 unit CC.8), by play: `who` brakes `hull` to heave to, submits to inspection and is
 /// cleared; the raider lights and opens on her a few seconds later, and with `dodge` she burns
 /// across the line of its first spinal round; then the corvette's spinal rounds disable the
-/// raider once her torch has died and she holds her course. `hull` must be a Dray-P, whose
-/// leg the picket meets. Returns how many seconds the corvette took after the ruling.
+/// raider once her torch has died and she holds her course. `hull` sails a leg the picket
+/// meets. Returns how many seconds the corvette took after the ruling.
 ///
 /// A Dray's lasers are weak against a hull (Q-49-7) and cycle in 5 s (Q-49-19), so no story
 /// hull beams an interdictor to a derelict any more; the raider the picket's corvette disables
 /// is the derelict a story makes by play.
 fn picket_until_the_raider_is_down(rig: &mut Rig, who: ObjId, hull: ObjId, dodge: bool) -> u32 {
-    let _ = run(&mut rig.tw, who, "+helm/thrust 600 -1000 0 0");
+    convoy_until_the_raider_is_down(rig, &[who], hull, dodge)
+}
+
+/// [`picket_until_the_raider_is_down`] for a convoy: each of `crews` brakes her hull and is
+/// cleared; the first dodges with `dodge`; `hull` is the one whose bubble is read.
+fn convoy_until_the_raider_is_down(
+    rig: &mut Rig,
+    crews: &[ObjId],
+    hull: ObjId,
+    dodge: bool,
+) -> u32 {
+    let who = crews[0];
+    for &crew in crews {
+        let _ = run(&mut rig.tw, crew, "+helm/thrust 600 -1000 0 0");
+    }
     for _ in 0..6 {
         let (_, submits) = one_second(rig, who);
         land_quietly(rig, &submits);
     }
-    let _ = run(&mut rig.tw, who, "+helm/thrust 0");
+    for &crew in crews {
+        let _ = run(&mut rig.tw, crew, "+helm/thrust 0");
+    }
     let brake = drain_space_and_industry(&mut rig.tw);
     land_quietly(rig, &brake);
-    let ruling = customs_ruling(rig, who, "+helm/submit");
-    assert!(ruling.contains("customs clearance granted"), "{ruling}");
+    for &crew in crews {
+        let ruling = customs_ruling(rig, crew, "+helm/submit");
+        assert!(ruling.contains("customs clearance granted"), "{ruling}");
+        let draws = drain(&mut rig.tw);
+        land_quietly(rig, &draws);
+    }
     for _ in 0..3 {
         let (_, submits) = one_second(rig, who);
         land_quietly(rig, &submits);
