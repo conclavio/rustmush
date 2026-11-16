@@ -138,7 +138,8 @@ pub const CORE_ACCEPTED: &str =
 /// The shipped hardware catalogue did not load, so the counter quotes nothing.
 pub const CORE_NO_PRICE: &str = "The fitting shop has no price list.";
 /// The importer's depot short of a die's chain goods (doc 48 unit PL.7): `{class}`, `{bill}`.
-pub const CORE_NO_STOCK: &str = "The shop has no stock to cut a Class {class} die: a die takes {bill} from the importer's depot.";
+pub const CORE_NO_STOCK: &str =
+    "The shop cannot cut a Class {class} die: it needs {bill} in the importer's depot.";
 /// The counter gave up: `{what}`.
 pub const CORE_GAVE_UP: &str =
     "The counter could not go on {what}. What you paid stands on its order; staff have been told.";
@@ -471,14 +472,18 @@ fn stocked(ctx: &Ctx<'_>, class: DieClass) -> Result<(), String> {
     if !short {
         return Ok(());
     }
-    let bill = lines
+    Err(CORE_NO_STOCK
+        .replace("{class}", roman(class))
+        .replace("{bill}", &chain_text(lines)))
+}
+
+/// A die's chain goods as the counter says them: `2 instrument_boards and 1 strategic_ore`.
+fn chain_text(lines: &[mush_industry::core_production::ChainLine]) -> String {
+    lines
         .iter()
         .map(|line| format!("{} {}", line.units, line.commodity.as_str()))
         .collect::<Vec<_>>()
-        .join(" and ");
-    Err(CORE_NO_STOCK
-        .replace("{class}", roman(class))
-        .replace("{bill}", &bill))
+        .join(" and ")
 }
 
 /// `+core/buy <class> [go]`.
@@ -1110,6 +1115,8 @@ mod tests {
             CORE_UNFIT,
             CORE_NOT_YOURS,
             CORE_END_USER,
+            CORE_NO_PRICE,
+            CORE_NO_STOCK,
         ] {
             for line in text.lines() {
                 assert!(
@@ -1118,6 +1125,20 @@ mod tests {
                     line.chars().count()
                 );
             }
+        }
+    }
+
+    /// Doc 48 unit PL.7: the depot's refusal, filled with the shipped catalogue's longest bill,
+    /// holds the floor.
+    #[test]
+    fn pl7_the_stock_refusal_holds_the_floor() {
+        let shipped = crate::hardware::PublishedHardware::shipped().expect("the shipped hardware");
+        let chain = shipped.catalogue().chain().expect("the die chain");
+        for class in [DieClass::I, DieClass::II, DieClass::III] {
+            let line = CORE_NO_STOCK
+                .replace("{class}", roman(class))
+                .replace("{bill}", &chain_text(&chain[class.index()]));
+            assert!(line.chars().count() <= 120, "{line}");
         }
     }
 
