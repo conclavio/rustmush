@@ -20,7 +20,8 @@
 //!   hulls' opened bales and the workshops' shop bales (`bales`).
 //! - **Sinks and declared losses**: every completed work order's inputs less its outputs
 //!   (`worked`: the recipes' losses, and at a yard the hull's bulk, a kit having no mass), the
-//!   mills' ore (and a process's second input, doc 48 unit PL.2) less their product (`milled`),
+//!   mills' counted inputs (the ore, and a process's further inputs, doc 48 units PL.2 and
+//!   PL.3) less their counted product (`milled`),
 //!   and the parts a commission consumed into a hull
 //!   (`built`), the parts the bay fitted into hulls (`fitted`: a fit consumes the lot and
 //!   keeps its provenance), and the bale kilograms repairs consumed into hulls (`repaired`: a
@@ -115,7 +116,8 @@ pub struct MatterCensus {
     pub bales: u64,
     /// The completed work orders' inputs less their outputs.
     pub worked: u64,
-    /// The mills' ore, and a process's second input (doc 48 unit PL.2), less their product.
+    /// The mills' counted inputs (the ore, and a process's further inputs, doc 48 units PL.2 and
+    /// PL.3) less their counted product.
     pub milled: u64,
     /// The parts commissions consumed into hulls.
     pub built: u64,
@@ -380,25 +382,21 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .saturating_add(mass(pinned.inputs()).saturating_sub(mass(pinned.outputs())));
     });
     scan(ctx, &handles.families.mills, |ledger| {
-        // A mill of the counted goods only (EX.0 counts Occator's ice mill too).
-        if !counted(&ledger.ore) {
-            return;
-        }
-        let ore = kg(&ledger.ore, ledger.ore_t);
-        // Doc 48 unit PL.2: a process consumes its second input beside the ore.
-        let with = ledger
-            .with
-            .as_ref()
-            .filter(|with| counted(&with.good))
-            .map_or(0, |with| kg(&with.good, ledger.with_t));
-        let product = if counted(&ledger.into) {
-            kg(&ledger.into, ledger.product_t)
-        } else {
-            0
+        // Every counted input in, the counted product out (EX.0 counts Occator's ice mill too):
+        // the ore and, for a process, its further inputs (doc 48 units PL.2 and PL.3).
+        let weigh = |good: &CanonicalId, units: u64| {
+            if counted(good) { kg(good, units) } else { 0 }
         };
+        let inputs = ledger
+            .with
+            .iter()
+            .zip(&ledger.with_t)
+            .fold(weigh(&ledger.ore, ledger.ore_t), |sum, (with, units)| {
+                sum.saturating_add(weigh(&with.good, *units))
+            });
         out.milled = out
             .milled
-            .saturating_add(ore.saturating_add(with).saturating_sub(product));
+            .saturating_add(inputs.saturating_sub(weigh(&ledger.into, ledger.product_t)));
     });
     // The parts the bay fitted into hulls: each lot consumed, its provenance kept.
     if let Some(bay) = w.module_state::<crate::port::bay_work::act::BayActHandles>() {

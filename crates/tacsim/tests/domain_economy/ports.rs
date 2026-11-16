@@ -1904,14 +1904,22 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 let floor = mill.floor_t.map_or_else(String::new, |floor| {
                     format!(", while {} is under {floor}", mill.into)
                 });
-                let with = mill.with.as_ref().map_or_else(String::new, |with| {
-                    format!(" with {} {} a ratio", with.per_ratio, with.good)
-                });
+                let with = if mill.with.is_empty() {
+                    String::new()
+                } else {
+                    let inputs: Vec<String> = mill
+                        .with
+                        .iter()
+                        .map(|with| format!("{} {}", with.per_ratio, with.good))
+                        .collect();
+                    format!(" with {} a ratio", inputs.join(" and "))
+                };
+                // Doc 48 unit PL.3: a process's line is headed by its product, its key.
                 want.push(format!(
                     "  {entry} mill {} {}: nothing milled yet; 0 t of ore waits; {} to {}{with}, \
                      {} t a batch, at most {} t an IC day{floor}. [ready]",
                     vendor.org,
-                    mill.ore,
+                    mill.key_good(),
                     mill.ratio.ore,
                     mill.ratio.product,
                     mill.batch_t,
@@ -1931,9 +1939,11 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // Freeport Works' strategic-ore ask and Stickney Yards' light-plant bid. Lane v33: the Yards'
     // carbon bid. Doc 48 unit PL.1 (lane v35): Occator's refine, a third Ceres mill line. Doc 48
     // unit PL.2 (lane v36): the two farms' provisions asks, Crisium's two bids and Titan's
-    // carbon-ore bid, and four mill lines (the farms, the fab and Titan's carbon mill).
+    // carbon-ore bid, and four mill lines (the farms, the fab and Titan's carbon mill). Doc 48
+    // unit PL.3 (lane v37): Stickney Yards' three space munitions asks, its alloys bid
+    // and its seven munitions processes.
     assert_eq!(
-        commerce_lines, 77,
+        commerce_lines, 88,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();

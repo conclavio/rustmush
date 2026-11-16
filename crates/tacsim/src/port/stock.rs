@@ -1374,11 +1374,15 @@ fn mill_targets(
         .mill
         .iter()
         .filter_map(|mill| {
-            let id =
-                crate::port::mill::MillId::derive(&map.pack, &map.entry, &vendor.org, &mill.ore)
-                    .ok()?;
+            let id = crate::port::mill::MillId::derive(
+                &map.pack,
+                &map.entry,
+                &vendor.org,
+                mill.key_good(),
+            )
+            .ok()?;
             let ledger = crate::port::mill::ledger_at(ctx, mills, &id).ok()??;
-            (&ledger.into == good).then(|| (mill.ore.clone(), ledger.product_t))
+            (&ledger.into == good).then(|| (mill.key_good().clone(), ledger.product_t))
         })
         .collect()
 }
