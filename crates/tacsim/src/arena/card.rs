@@ -36,7 +36,9 @@
 //!   (`line(cfg).as_reflex(cfg) == cfg`: the anchor, by construction);
 //! * [`StockCard::read_back`] — the five section lines `@mind/live` prints, one
 //!   place, with the fire-discipline section inert and its reason on a hull
-//!   with no weapons station (doc 17 §11: shown inert, never refused);
+//!   with no weapons station (doc 17 §11: shown inert, never refused), and on
+//!   an armed hull a line under the fire discipline naming its two rules (doc
+//!   49 unit CC.1);
 //! * [`CardChange`] — what `@mind/live` offers the arena: a change, never a
 //!   card.
 //!
@@ -238,11 +240,15 @@ pub struct StockCard {
     pub opening: Opening,
     // ---- fire discipline (a weapons station only) ----
     /// The least chance a slot fires at, per mille — the card's `min_odds` ×
-    /// 10; the Compact floor's 100 by default.
+    /// 10; Line's 350 (doc 49 unit CC.1, where it was the Compact floor's
+    /// 100). It rises on a mount under half its magazine
+    /// ([`StockCard::floor_for`]).
     pub min_odds_permille: u16,
     /// The aspect a slot fires at.
     pub aspect: AspectWord,
-    /// The reserve a slot keeps, per cent of the load.
+    /// The reserve a slot keeps, per cent of the load ([`StockCard::keeps`];
+    /// Line's 25 since doc 49 unit CC.1). Spent only answering fire or
+    /// covering a withdrawal (Q-49-23).
     pub reserve_pct: u32,
     /// The odds a reserve round is spent at, per cent. `[M2]`.
     pub reserve_odds_pct: u32,
@@ -280,11 +286,37 @@ pub struct StockCard {
     pub stop_unseen: bool,
 }
 
+/// **The Line card's odds floor**, per mille (doc 49 Q-49-8, unit CC.1): 35%,
+/// raised from the Compact floor's 10% so the default card carries shot
+/// discipline of its own. Provisional.
+pub const LINE_MIN_ODDS_PERMILLE: u16 = 350;
+
+/// **The Line card's reserve**, per cent of each mount's load (doc 49 Q-49-8,
+/// unit CC.1): a quarter. Spent only answering fire or covering a withdrawal
+/// (Q-49-23). Provisional.
+pub const LINE_RESERVE_PCT: u32 = 25;
+
+/// **How far a card's floor rises on a mount under half its magazine**, per
+/// mille (doc 49 Q-49-9, unit CC.1): fifteen points, so Line's 35% reads 50%
+/// there. The one rule, the same on every card and in the Standard
+/// Doctrine's script (its `arming_for`). Provisional.
+pub const LOW_MAGAZINE_RISE_PERMILLE: u16 = 150;
+
+/// **The highest the low-magazine rise takes a floor**, per mille: the
+/// `min_odds` slider's own top, 95%. A card already at or above it keeps its
+/// own floor.
+pub const RISEN_FLOOR_MAX_PERMILLE: u16 = 950;
+
 /// **The Line preset** (doc 17 §11, D-UM-44): the arena's own `cfg` read
 /// VERBATIM for every mapped term — `engage_band_permille`,
 /// `withdraw_permille`, `stand_min_permille`, `rally_ms`, `search_ms`,
 /// `hunt_after_ms` and the three weights — and section 11's defaults for the
 /// rest. On a default config it is today's machine.
+///
+/// **Doc 49 unit CC.1** (Q-49-8, Q-49-9): its fire discipline is
+/// [`LINE_MIN_ODDS_PERMILLE`] and [`LINE_RESERVE_PCT`], where it was the
+/// Compact floor and no reserve. Every other preset is written over Line, so
+/// each keeps Line's reserve unless it names its own (Sniper's 30%).
 #[must_use]
 pub fn line(cfg: &ReflexConfig) -> StockCard {
     StockCard {
@@ -297,9 +329,9 @@ pub fn line(cfg: &ReflexConfig) -> StockCard {
         screen_bearing: 0,
         screen_arc: 120,
         opening: Opening::Wait,
-        min_odds_permille: 100,
+        min_odds_permille: LINE_MIN_ODDS_PERMILLE,
         aspect: AspectWord::Any,
-        reserve_pct: 0,
+        reserve_pct: LINE_RESERVE_PCT,
         reserve_odds_pct: 75,
         prefer: Prefer::Balanced,
         weight_range: cfg.weight_range,
@@ -1069,6 +1101,40 @@ impl StockCard {
             .collect()
     }
 
+    /// **The rounds a slot keeps back on a mount of `rounds_max`** (doc 49
+    /// unit CC.1; 17b cut M1b.2's arithmetic): `reserve_pct` of the load,
+    /// rounded down, saturating at `u32::MAX`. The reserve the stock mind arms
+    /// with, and the one its withdrawal and the arena's `spent` read (Q-49-23).
+    #[must_use]
+    pub fn keeps(&self, rounds_max: u32) -> u32 {
+        let keeps = u64::from(self.reserve_pct).saturating_mul(u64::from(rounds_max)) / 100;
+        u32::try_from(keeps).unwrap_or(u32::MAX)
+    }
+
+    /// **The odds floor a slot arms at on a mount holding `rounds` of
+    /// `rounds_max`** (doc 49 Q-49-9, unit CC.1): the card's `min_odds`, and
+    /// [`LOW_MAGAZINE_RISE_PERMILLE`] above it once the mount holds under half
+    /// its load, no higher than [`RISEN_FLOOR_MAX_PERMILLE`] (a card already
+    /// above that keeps its own). A mount with no load never rises.
+    #[must_use]
+    pub fn floor_for(&self, rounds: u32, rounds_max: u32) -> u16 {
+        if u64::from(rounds).saturating_mul(2) >= u64::from(rounds_max) {
+            return self.min_odds_permille;
+        }
+        self.low_magazine_floor()
+    }
+
+    /// **The floor on a mount under half its magazine** (doc 49 Q-49-9):
+    /// [`StockCard::floor_for`]'s risen figure, per mille.
+    #[must_use]
+    pub fn low_magazine_floor(&self) -> u16 {
+        let floor = self.min_odds_permille;
+        floor
+            .saturating_add(LOW_MAGAZINE_RISE_PERMILLE)
+            .min(RISEN_FLOOR_MAX_PERMILLE)
+            .max(floor)
+    }
+
     /// **The overlay** (17b cut M1b.5; doc 17 §11, D-UM-43): `base` with the
     /// card's mapped terms written over it — the doctrine `NativeStockMind`
     /// thinks on.
@@ -1166,6 +1232,11 @@ impl StockCard {
     /// [`StockCard::as_reflex`] writes over `cfg`. On a hull with no weapons
     /// station (`armed` false) the fire-discipline line is the inert sentence
     /// and nothing else — shown, never refused (doc 17 §11).
+    ///
+    /// **Doc 49 unit CC.1** (Q-49-9, Q-49-23): on an armed hull a sixth line,
+    /// under the fire discipline, says the card's two rules — the floor a mount
+    /// under half its magazine arms at, and that the reserve is spent only
+    /// answering fire or covering a withdrawal.
     #[must_use]
     pub fn read_back(&self, cfg: &ReflexConfig, armed: bool) -> Vec<String> {
         let reflex = self.as_reflex(cfg);
@@ -1181,7 +1252,7 @@ impl StockCard {
         } else {
             "no weapons station on this hull".to_owned()
         };
-        vec![
+        let mut lines = vec![
             line(
                 "posture",
                 format!(
@@ -1229,7 +1300,23 @@ impl StockCard {
                     on_off(self.stop_unseen),
                 ),
             ),
-        ]
+        ];
+        // Doc 49 unit CC.1 (Q-49-9, Q-49-23): the two rules the fire
+        // discipline flies by, readable under its line on an armed hull.
+        if armed {
+            lines.insert(
+                2,
+                line(
+                    "",
+                    format!(
+                        "under half a magazine min_odds {}%; the reserve answers fire and covers \
+                         a withdrawal",
+                        decimal(u64::from(self.low_magazine_floor()), 10),
+                    ),
+                ),
+            );
+        }
+        lines
     }
 }
 
@@ -1275,9 +1362,12 @@ mod tests {
         assert_eq!(card.turn_s, 4);
         assert_eq!((card.screen_bearing, card.screen_arc), (0, 120));
         assert_eq!(card.opening, Opening::Wait);
-        assert_eq!(card.min_odds_permille, 100);
+        assert_eq!(card.min_odds_permille, LINE_MIN_ODDS_PERMILLE);
         assert_eq!(card.aspect, AspectWord::Any);
-        assert_eq!((card.reserve_pct, card.reserve_odds_pct), (0, 75));
+        assert_eq!(
+            (card.reserve_pct, card.reserve_odds_pct),
+            (LINE_RESERVE_PCT, 75)
+        );
         assert_eq!(card.prefer, Prefer::Balanced);
         assert_eq!(card.switch_m, 100);
         assert!(card.stop_unseen);
@@ -1716,14 +1806,13 @@ mod tests {
                 ("reserve_pct", "30")
             ])
         );
+        // Skirmisher: orbit, band 85, aspect flank, min_odds 35 — Line's own
+        // floor since doc 49 unit CC.1, so it no longer differs by it.
+        let skirmisher = preset("skirmisher", &cfg).expect("skirmisher");
+        assert_eq!(skirmisher.min_odds_permille, 350);
         assert_eq!(
-            differs(&preset("skirmisher", &cfg).expect("skirmisher")),
-            named(&[
-                ("stance", "orbit"),
-                ("band_pct", "85"),
-                ("min_odds", "35"),
-                ("aspect", "flank"),
-            ])
+            differs(&skirmisher),
+            named(&[("stance", "orbit"), ("band_pct", "85"), ("aspect", "flank"),])
         );
         // Hunter: hunt, band 60, search 60 (Line's), hunt_after 45, min_odds 30.
         let hunter = preset("hunter", &cfg).expect("hunter");
@@ -1871,8 +1960,11 @@ mod tests {
                  [M2]  turn into hits on [M2] turn 4 s [M2]  screen 000\u{b0} arc 120\u{b0} [M2]  \
                  opening wait [M2]"
                     .to_owned(),
-                "  fire discipline  min_odds 10%  aspect any  reserve 0%  reserve_odds 75% [M2]  \
+                "  fire discipline  min_odds 35%  aspect any  reserve 25%  reserve_odds 75% [M2]  \
                  ident identified"
+                    .to_owned(),
+                "                   under half a magazine min_odds 50%; the reserve answers fire \
+                 and covers a withdrawal"
                     .to_owned(),
                 "  targeting        prefer balanced (100/40/30)  switch 100 m [M2]".to_owned(),
                 "  survival         break_off 35%  fight_home 17.5%  rally 20 s".to_owned(),
@@ -1884,6 +1976,7 @@ mod tests {
             unarmed.get(1).map(String::as_str),
             Some("  fire discipline  no weapons station on this hull")
         );
+        assert_eq!(unarmed.len(), 5, "no rules line on an unarmed hull");
         // Ten `[M2]` marks for the eleven unread sliders on an armed hull
         // (`screen_bearing` and `screen_arc` share the screen's one), nine on
         // an unarmed one (its `reserve_odds` is inside the inert section).
@@ -2075,15 +2168,16 @@ mod tests {
             }
         }
         // Line, as the page quotes it shipped: closes to 70% of its reach,
-        // fires at 10% or better on any face, keeps no rounds back, breaks off
-        // under 35%, back after 20 quiet seconds, a minute's search, a minute
-        // and a half before it goes looking.
+        // fires at 35% or better on any face (50% under half a magazine),
+        // keeps a quarter of its rounds back, breaks off under 35%, back after
+        // 20 quiet seconds, a minute's search, a minute and a half before it
+        // goes looking (doc 49 unit CC.1 moved the fire terms).
         let line_card = line(&shipped);
         for (slider, reading) in [
             (Slider::BandPct, "70"),
-            (Slider::MinOdds, "10"),
+            (Slider::MinOdds, "35"),
             (Slider::Aspect, "any"),
-            (Slider::ReservePct, "0"),
+            (Slider::ReservePct, "25"),
             (Slider::BreakOffPct, "35"),
             (Slider::RallyS, "20"),
             (Slider::SearchS, "60"),
@@ -2092,5 +2186,82 @@ mod tests {
             assert_eq!(line_card.reading(slider), reading, "{}", slider.name());
         }
         assert!(help.contains("Line is the Registry's doctrine as this server runs it"));
+        // Doc 49 unit CC.1: the page says the two rules the card's text says.
+        // (The page wraps at 80 columns, so each phrase is read whitespace-folded.)
+        let folded = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for said in [
+            "fires at 35% or better on any face",
+            "50% once a gun is under half its magazine",
+            "keeps a quarter of each gun's rounds back",
+            "only to answer a unit that has fired on it, or to cover its way home",
+            "at its reserve on every gun",
+        ] {
+            assert!(folded.contains(said), "help minds does not say {said:?}");
+        }
+    }
+
+    /// **Doc 49 unit CC.1 (Q-49-8): the Line card carries shot discipline.**
+    /// Its floor is 35% and it keeps a quarter of each load, where it was the
+    /// Compact floor's 10% and no reserve; every preset written over it keeps
+    /// that reserve unless it names its own (Sniper's 30%), and the floor is
+    /// a preset's own where it names one (Hunter's 30% is under Line's).
+    #[test]
+    fn cc1_line_holds_a_thirty_five_per_cent_floor_and_a_quarter_in_reserve() {
+        let cfg = ReflexConfig::default();
+        let card = line(&cfg);
+        assert_eq!((card.min_odds_permille, card.reserve_pct), (350, 25));
+        assert_eq!(card.keeps(40), 10, "a quarter of the cannon's load");
+        assert_eq!(card.keeps(2_000), 500, "and of the coaxial gun's");
+        assert_eq!(card.keeps(6), 1, "rounded down");
+        assert_eq!(card.keeps(0), 0);
+        let mut big = card.clone();
+        big.reserve_pct = 50;
+        assert_eq!(big.keeps(u32::MAX), u32::MAX / 2, "no overflow");
+        for (name, odds, reserve) in [
+            ("sentry", 550, 25),
+            ("sniper", 650, 30),
+            ("skirmisher", 350, 25),
+            ("hunter", 300, 25),
+            ("rearguard", 500, 25),
+        ] {
+            let preset = preset(name, &cfg).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(
+                (preset.min_odds_permille, preset.reserve_pct),
+                (odds, reserve),
+                "{name}"
+            );
+        }
+        // Skirmisher now differs from Line by its stance, band and aspect
+        // alone, and still reads as itself.
+        let skirmisher = preset("skirmisher", &cfg).expect("skirmisher");
+        assert_eq!(skirmisher.name_of(&cfg), "Skirmisher");
+        assert_eq!(card.name_of(&cfg), "Line");
+    }
+
+    /// **Doc 49 unit CC.1 (Q-49-9): the floor rises under half a magazine.**
+    /// One rule on every card: fifteen points more once a mount holds under
+    /// half its load, to 95% at most, never below the card's own; at half or
+    /// over, and on a mount with no load, the card's floor.
+    #[test]
+    fn cc1_the_floor_rises_fifteen_points_under_half_a_magazine() {
+        let cfg = ReflexConfig::default();
+        let card = line(&cfg);
+        assert_eq!(card.floor_for(40, 40), 350);
+        assert_eq!(card.floor_for(20, 40), 350, "half is not under half");
+        assert_eq!(card.floor_for(19, 40), 500);
+        assert_eq!(card.floor_for(0, 40), 500);
+        assert_eq!(card.floor_for(3, 5), 350, "six of ten is over half");
+        assert_eq!(card.floor_for(2, 5), 500, "four of ten is under");
+        assert_eq!(card.floor_for(0, 0), 350, "no load never rises");
+        let sniper = preset("sniper", &cfg).expect("sniper");
+        assert_eq!(sniper.floor_for(1, 40), 800);
+        let mut high = card.clone();
+        assert_eq!(high.set("min_odds", "90"), Ok(()));
+        assert_eq!(high.floor_for(1, 40), RISEN_FLOOR_MAX_PERMILLE, "capped");
+        assert_eq!(high.set("min_odds", "95"), Ok(()));
+        assert_eq!(high.floor_for(1, 40), 950);
+        high.min_odds_permille = 990;
+        assert_eq!(high.floor_for(1, 40), 990, "never lowered");
+        assert_eq!(card.low_magazine_floor(), 500);
     }
 }

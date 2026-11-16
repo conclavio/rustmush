@@ -2261,8 +2261,15 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// nearer than it that has one, as `NativeStockMind` does (`nearer_in_line`,
 /// `STAND_TRIES`); was
 /// `a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336`.
+/// **Re-blessed by doc 49 unit CC.1** (Q-49-9, Q-49-23): dry for withdrawal
+/// is its own reading (`p.low`), taken as the doctrine's one retreat, a
+/// withdrawing hull arms with no reserve
+/// (`arming_for`'s fourth argument), and the floor rises fifteen points under
+/// half a load, as `NativeStockMind` does; `stock=3` kept; was
+/// `2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef` (doc 45
+/// unit AP.3's header bump to `api: 9`).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef";
+    "fd73e14b92563cc3ed7e914fc9096a885876d6b8618f620388e497846fed1c3b";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):

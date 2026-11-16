@@ -6904,8 +6904,10 @@ mod tests {
                 })
                 .collect()
         };
+        // Doc 49 unit CC.1: an armed hull's card reads a sixth section line,
+        // the fire discipline's two rules, under the fire discipline.
         let armed = said(&format!("@mind/live #{}", ARMED.0));
-        assert_eq!(armed.len(), 6, "{armed:?}");
+        assert_eq!(armed.len(), 7, "{armed:?}");
         assert!(
             armed
                 .first()
@@ -6915,7 +6917,7 @@ mod tests {
         assert!(
             armed
                 .get(2)
-                .is_some_and(|line| line.starts_with("  fire discipline  min_odds 10%")),
+                .is_some_and(|line| line.starts_with("  fire discipline  min_odds 35%")),
             "{armed:?}"
         );
         let unarmed = said(&format!("@mind/live #{}", UNARMED.0));

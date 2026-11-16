@@ -3613,34 +3613,45 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `14_806_315_734_231_040_912` / `abbc70ca…` / `d333c189…`,
 /// `18_435_737_973_288_515_964` / `8f1f0f70…` / `b3ed4810…`,
 /// `3_500_444_545_657_099_864` / `0d8bad3f…` / `62cbfde1…`.
+///
+/// **Doc 49 unit CC.1 re-pins all four rows** (Q-49-8, Q-49-9, Q-49-23): the stock mind holds
+/// its shot to the Line card's 35% floor (50% under half a magazine) and keeps a quarter of
+/// each load for answering fire and its withdrawal, and the Standard source and the card are
+/// folded in every seal, so the fights moved: the stopping times 180_250, 177_500, 170_000, 900_000 became
+/// 231_250, 197_500, 167_000, 900_000. The probe's 3,600 thinks and the 369098751 bitmask are as they were. Read on
+/// Linux (conclav.dev); Windows is ci.yml's same step. Were:
+/// `17_808_863_300_457_361_787` / `18bd09cf…` / `b98692b4…`,
+/// `440_362_425_077_439_412` / `b244b077…` / `a70d1073…`,
+/// `17_895_885_161_793_245_509` / `3790f74c…` / `56015f59…`,
+/// `10_945_038_470_150_213_193` / `7f5b2edf…` / `ed2ac389…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
-        180250,
-        17808863300457361787,
-        "18bd09cfb9f5c732e318e7f92caa64c2b74ad92bcfc26c5133d4e595b9690859",
-        "b98692b4b9eac968a66e33b1d67713030076626ef658d98d9384cdcbb6a2c4fb",
+        231250,
+        8600878930769356620,
+        "1db3bf2da11f5102cb43383eb33b4a0812a1a7039bd5c85375faee5bcb9d0b22",
+        "856773f114a6a174ea0dceda21131f86cf30069354d6e869ca14b1f9cf8b6cbf",
     ),
     (
         2351,
-        177500,
-        440362425077439412,
-        "b244b077f1c969228feaab17d8cb21c07f7b2fc3a9c64e444cf502a6d13de5fd",
-        "a70d1073d54b2d982c81681314cf8a6ec8a4d65c7346f9f0661a16c89c69941b",
+        197500,
+        16045798890041550467,
+        "abf650d662184245f04f013b017dfeee2cf1a31eb21cd127da0ecee1c868d837",
+        "c28ce1ec38902331c5dab162f67610784916d8897039af2124adc662e74d8447",
     ),
     (
         2352,
-        170000,
-        17895885161793245509,
-        "3790f74c619041d7e339a03fec35cf4d3d62a4cca7618b8eae38732f30e69cc6",
-        "56015f59c50fea613e1c20caf8dc949866c6db93c6c4eb112b75a29cb033498d",
+        167000,
+        11266847649557861486,
+        "ae0b11334ce91908d7cde73ad4fb77719a8717a222cd2c72289351b7366aea0f",
+        "7b82c651b9306234c83846bc191ca6d5de3bc0af0d6082ab2d1e0c0c5c31f537",
     ),
     (
         2350,
         900000,
-        10945038470150213193,
-        "7f5b2edfac73c467a5735280f3191f273802fe640499689d16ad8cbd57e2b298",
-        "ed2ac389266c0068d8487e6b8dc1bd7e60005593f89534eabe8fff6d7c29bbd9",
+        12624301693367106324,
+        "069e86699955ce342ac90e9507a918b4738e849d3a3bbfcc2fdba081a869649f",
+        "b8e97100691e0ec9e8f4c182d75650c65aef120cf73f2e2ab8ecf7213d5f1d21",
     ),
 ];
 

@@ -31,7 +31,10 @@
 //   fire      the citation `[weapon, slot]` planned beside a fresh lock, or `()`
 //   view_order, order, objective   the view's order, the OBEYED order and
 //             its objective word (`()` once ended or ignored)
-//   health, dry, ranges            the think's own readings
+//   health, dry, low, ranges       the think's own readings (`dry` T1's
+//                                  `is_dry`, which gates the arming and the
+//                                  stands; `low` T1's `at_reserve`, dry for
+//                                  withdrawal: doc 49 unit CC.1)
 //   leash_on, charge, off_leash, leash_cm, station_cm, leashed, station_on
 //                                  the supporter's leash (16b cut Z.2)
 //
@@ -113,10 +116,11 @@
 //                 the plain difference otherwise — the view's clock is the
 //                 arena clock (never below zero), so it cannot overflow;
 //   the reserve   T1's `reserve_pct.saturating_mul(rounds_max) / 100` held to
-//                 a u32: the product of two u32s can pass an INT, so a product
-//                 past `i64::MAX` (whose hundredth is past every u32) reads
-//                 4294967295 before it is formed, and the hundredth is held
-//                 at 4294967295 otherwise.
+//                 a u32: the card's schema holds `reserve_pct` to 100, so
+//                 the port reads it through `min(.., 100)` (which changes
+//                 nothing), and its product with a u32 load fits an INT and
+//                 its hundredth a u32 (doc 49 unit CC.1; until then the port
+//                 clamped a product past `i64::MAX` before forming it).
 
 // ---------------------------------------------------------------------------
 // The entry
@@ -145,7 +149,7 @@ fn think(view, card) {
         here: view.cell, reached: words[0], held: held, goal: held,
         stop: false, heading: (), lock: (), stood: (), arm_ceiling: (), fire: (),
         view_order: view.order, order: (), objective: (),
-        health: 1000, dry: false, ranges: (),
+        health: 1000, dry: false, low: false, ranges: (),
         leash_on: false, charge: (), off_leash: false, leash_cm: 0, station_cm: 0,
         leashed: false, station_on: ()
     };
@@ -179,7 +183,7 @@ fn think(view, card) {
             startup();
             // 17b cut M1b.2: a cold hull's slots are disarmed, after the
             // `Startup` — 17b cut M1b.3: where its view shows one armed.
-            arming_for(view, card, ());
+            arming_for(view, card, (), false);
             return;
         }
         "starting" => {
@@ -187,7 +191,7 @@ fn think(view, card) {
                 this.state = 0;
             }
             this.goal = p.held;
-            arming_for(view, card, ());
+            arming_for(view, card, (), false);
             return;
         }
         _ => {
@@ -408,8 +412,9 @@ fn unreachable(view, card, p) {
 // cannot end an order itself, so the three early ends write the ended
 // order's `expires_ms` to `ignore_until_ms` and it stops obeying THAT order
 // (the divergence `order_end`); the key is spent when the view carries no
-// order or an order with another deadline. Then the health, the dryness,
-// the expiry's restoration and the obeyed order with its objective.
+// order or an order with another deadline. Then the health, the dryness
+// (both of T1's tests), the expiry's restoration and the obeyed order with
+// its objective.
 fn standing_order(view, card, p) {
     let order = p.view_order;
     let deadline = if order == () { () } else {
@@ -421,12 +426,41 @@ fn standing_order(view, card, p) {
     }
     p.health = health_permille(view);
     p.dry = is_dry(view);
+    // Doc 49 unit CC.1 (Q-49-23): dry for withdrawal is its own test (T1's
+    // `at_reserve`): some row holds a load and every row holds at or under
+    // the card's reserve of it. A row is over it when `rounds * 100 >
+    // reserve * rounds_max`, which is T1's `rounds > reserve * rounds_max /
+    // 100` rounded down; the card's schema holds `reserve_pct` to 100, so the
+    // `min` changes nothing and no product overflows. It is read by the
+    // withdraw edge of a hull that has not rallied, and by a withdrawing
+    // hull's restoration and rally (a rallied hull that reaches Withdraw on
+    // this very think does so empty or by an order, which the rally reads
+    // first); an empty hull is under it at once. The arming and the stands
+    // read `p.dry`, so the reserve is spent.
+    if p.dry {
+        p.low = true;
+    } else if this.state == 4 || !this.rallied {
+        let reserve = min(card.reserve_pct, 100);
+        let loaded = false;
+        let low = true;
+        for weapon in view.weapons {
+            let rounds_max = weapon.rounds_max;
+            if weapon.rounds * 100 > reserve * rounds_max {
+                low = false;
+                break;
+            }
+            if rounds_max > 0 {
+                loaded = true;
+            }
+        }
+        p.low = loaded && low;
+    }
     // **The expiry's restoration** (`ReflexUnit::drop_to_doctrine`, read off
     // the view): a `Withdraw` no live order holds, that an order put the hull
     // in (`this.ordered`, 17b cut M4.3) and neither of its own edges would
     // have taken goes back to `Patrol`; a hurt one keeps going home, and so
     // does a released seat's seeded Withdraw (it rallies on Q.7's clock).
-    if order == () && this.state == 4 && this.ordered && !p.dry && p.health >= card.withdraw_permille {
+    if order == () && this.state == 4 && this.ordered && !p.low && p.health >= card.withdraw_permille {
         this.state = 1;
         this.target = ();
         this.ordered = false;
@@ -499,8 +533,11 @@ fn edges(view, card, p) {
         // `engage`, `support` and no order: nothing.
         _ => {}
     }
-    // ---- the `Withdraw` edges (16b cut Q.7) ----
-    if this.state != 4 && (p.dry || (!this.rallied && p.health < card.withdraw_permille)) {
+    // ---- the `Withdraw` edges (16b cut Q.7; doc 49 unit CC.1: dry for
+    //      withdrawal is `p.low`, the card's reserve on every mount, taken
+    //      as the doctrine's one retreat, as a hurt hull's is; an empty hull,
+    //      `p.dry`, breaks off whatever it has spent) ----
+    if this.state != 4 && (p.dry || (!this.rallied && (p.low || p.health < card.withdraw_permille))) {
         this.state = 4;
         this.target = ();
         p.goal = ();
@@ -1024,7 +1061,7 @@ fn withdraw_arm(view, card, p) {
         return p;
     }
     this.stand_until_ms = ();
-    if holds_a_hostile(view) || !home || p.dry || p.objective == "withdraw" {
+    if holds_a_hostile(view) || !home || p.low || p.objective == "withdraw" {
         this.quiet_since_ms = ();
         return p;
     }
@@ -1072,7 +1109,8 @@ fn stamps(view, p) {
 // heading.
 fn emit(view, card, p) {
     // 17b cut M1b.2: the slots first, after `Startup` and before `Goal`.
-    arming_for(view, card, p.arm_ceiling);
+    // Doc 49 unit CC.1 (Q-49-23): a withdrawing hull arms with no reserve.
+    arming_for(view, card, p.arm_ceiling, this.state == 4);
     let held = p.held;
     if view.immobile {
         held = ();
@@ -1107,13 +1145,16 @@ fn emit(view, card, p) {
 // after `startup()` and before the helm half — answers nothing.
 //
 //   * `ceiling` an INT — `engage_orders` was reached with a row and its
-//     gates passed: one `arm(weapon, "best", card.min_odds_permille,
-//     aspect_mask(card.aspect), keeps, 0, min(ceiling, reach) / 100)` per
-//     weapon of the first `slots()`, in component order, WHATEVER THE HEAT
-//     (the resolver holds a hot slot's shot silently and the slot stays
-//     armed: a heat skip here would put the numbering out of step with the
-//     arena's), `keeps` the card's `reserve_pct` of the weapon's
-//     `rounds_max` and `reach` the last of its `bands_cm` (0 for none);
+//     gates passed: one `arm(weapon, "best", floor, aspect_mask(card.aspect),
+//     keeps, 0, min(ceiling, reach) / 100)` per weapon of the first
+//     `slots()`, in component order, WHATEVER THE HEAT (the resolver holds a
+//     hot slot's shot silently and the slot stays armed: a heat skip here
+//     would put the numbering out of step with the arena's), `floor` the
+//     card's `min_odds_permille`, fifteen points more (to 950 at most) on a
+//     weapon under half its `rounds_max` (doc 49 unit CC.1: T1's
+//     `StockCard::floor_for`), `keeps` the card's `reserve_pct` of the
+//     weapon's `rounds_max`, or 0 while `withdrawing` (doc 49 unit CC.1),
+//     and `reach` the last of its `bands_cm` (0 for none);
 //   * `ceiling` `()` — one `disarm(())` when some row is armed, else
 //     nothing;
 //   * a hull with no weapon rows — nothing (D-UM-48).
@@ -1123,7 +1164,7 @@ fn emit(view, card, p) {
 // only for a row whose `armed` is `()` or differs in any term but the slot
 // NUMBER, which is the arena's and is not compared (T1's
 // `FrameArming::of(armed.slot, &wanted) == armed`).
-fn arming_for(view, card, ceiling) {
+fn arming_for(view, card, ceiling, withdrawing) {
     let weapons = view.weapons;
     if weapons.len() == 0 {
         return;
@@ -1141,8 +1182,15 @@ fn arming_for(view, card, ceiling) {
     // The card's terms and the slot count, read once (each read is
     // operations a think pays: 17b §1 (iv)).
     let floor = card.min_odds_permille;
+    // Doc 49 unit CC.1 (Q-49-9): under half a magazine the floor rises
+    // fifteen points, to 950 at most, never below the card's own.
+    let risen = max(min(floor + 150, 950), floor);
     let mask = aspect_mask(card.aspect);
-    let reserve = card.reserve_pct;
+    // The card's schema holds `reserve_pct` to 100 (so the `min` changes
+    // nothing): its product with a u32 load fits an INT and its hundredth a
+    // u32, so T1's saturating reserve needs no clamp here (the head's
+    // saturation). A withdrawing hull keeps none (doc 49 unit CC.1).
+    let reserve = if withdrawing { 0 } else { min(card.reserve_pct, 100) };
     let n = slots();
     for (weapon, i) in weapons {
         if i >= n {
@@ -1150,19 +1198,13 @@ fn arming_for(view, card, ceiling) {
         }
         let reach = weapon.bands_cm;
         reach = if reach.len() == 0 { 0 } else { reach[-1] };
-        // T1's saturating reserve, held to a u32 (the head's saturation);
-        // no reserve (Line's) keeps nothing, whatever the magazine.
-        let keeps = 0;
-        if reserve != 0 {
-            let rounds_max = weapon.rounds_max;
-            if rounds_max != 0 {
-                keeps = if reserve > 9223372036854775807 / rounds_max { 4294967295 } else { min(reserve * rounds_max / 100, 4294967295) };
-            }
-        }
+        // T1's reserve, `reserve_pct * rounds_max / 100` rounded down.
+        let keeps = reserve * weapon.rounds_max / 100;
         let under_m = min(ceiling, reach) / 100;
+        let odds = if weapon.rounds * 2 < weapon.rounds_max { risen } else { floor };
         let armed = weapon.armed;
-        if armed == () || armed.target != "best" || armed.min_permille != floor || armed.aspects != mask || armed.keeps != keeps || armed.min_range_m != 0 || armed.max_range_m != under_m {
-            arm(weapon.id, "best", floor, mask, keeps, 0, under_m);
+        if armed == () || armed.target != "best" || armed.min_permille != odds || armed.aspects != mask || armed.keeps != keeps || armed.min_range_m != 0 || armed.max_range_m != under_m {
+            arm(weapon.id, "best", odds, mask, keeps, 0, under_m);
         }
     }
 }

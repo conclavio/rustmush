@@ -446,11 +446,20 @@ const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !
 /// rolling digest that folds the sealed program's). The meter's figures and the think counts
 /// are equal (`docs/design/45-cut-notes.md`, AP.3). The states were `2ac0bb5770d49505`, `366ad86d479ee5d5`, `f8d70307b1c6f298` and
 /// `a1804cd413eba194`.
+///
+/// **Re-blessed by doc 49 unit CC.1** (the Line card's 35% floor and 25% reserve, the floor's
+/// rise under half a magazine, and the fire record kept in every match): every case still ends
+/// in the same elimination and is filed the same `Loss`, at 106,500 ms where it was 58,500
+/// (the stock mind holds its shots to its floor), and each row's state hash, ledger
+/// digest and result digest moved with it (`docs/design/49-cut-notes.md`, CC.1). Blessed on
+/// conclav.dev and run on Windows by hand at the same tree: the four rows equal. The rows were
+/// at 58,500 ms with the states `b96cfc871125c968`, `5d1fab14efb06d56`, `2bf92a826a6c2b3e` and
+/// `d0dabee505065909`.
 const C4_TRIAL_PINS: [&str; 4] = [
-    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=b96cfc871125c968 ledger=6ea2856883ef1c8852d5bd5157a97d634a34a0d114eabf1476d1f2d16371addf result=9dff107bc4c1febd328b2ec80a374cbc2dba1c758cb136e62ba74d3d9d4b65b4",
-    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=5d1fab14efb06d56 ledger=8e1a74777fc86285c229e7093f86bc7234d83da6f3a89b4320c9e27e8ac4ebd1 result=5b7084e80b736a6f3737b6b5b141948412f98d964e9d0cf8fea2919af0198218",
-    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=2bf92a826a6c2b3e ledger=4a798a497f93ca7849c9997513a2616b267f507631bcacdbddd0ad12a58471cb result=7dca3a15cea3e30641ac8aee5996b942e7b32dfec0a280ecc9c35df229c5b344",
-    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=58500 state=d0dabee505065909 ledger=9fa842770bbac2d7bb1f757b9f670fb5a8433e083c27f54393d235be2f65ade5 result=0cec2e8a4d95aa46e78518132306f01ac7916be4b29bfa1b5868f82add9c2d38",
+    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=ced729426116276b ledger=abf87aeaaddcedf95a56f4f0595fc6eafeb1d9e3370fb7932437dc9fc2f91c01 result=cfc91ef30b68ff449197589c6a99e8f10a59765b88c348a2859b460995ba7a46",
+    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=3f8bd777880f03af ledger=4318de5d6d531306d013285ddb22f4d57c019cac1fd52bea040a5e60a2d6d728 result=55bf70c51717130675a9a32c418d3f7bc5388ecb91ab76f70b43498257caab53",
+    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=308174fa7bc5bb9f ledger=777513f662ceb84403af3c4eb8f05a545725c3f921620b9775c5a8836424818d result=a1f52458fc98caf3d860a74e09770f7086834e909d683f60213a915d9ed388e0",
+    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=57d2ab5faca33d0d ledger=826178bd74aea641dca6381dfc0cb8c085d359912e74deb60894f7ca3a87547e result=7e68f434777057be013bf806d83991e848a704e6cc208c1a275dd9744ee6c228",
 ];
 
 /// Lower-case base-16 of `bytes`.

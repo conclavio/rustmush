@@ -613,8 +613,11 @@ thread_local! {
 ///    25. **who has fired on it** (doc 44 cut MW.7; Q-44-38):
 ///        [`crate::arena::state::UnitState::fired_on_by`] — `[1]`, the count as
 ///        `u32`, then each unit's id as `u32` in id order — and **nothing at all
-///        while it is empty**, which it is for every unit of every practice
-///        match. It decides which shot sub-item 24's rule lets through.
+///        while it is empty**, which it is for every unit nobody has fired on.
+///        It decides which shot sub-item 24's rule lets through and, since doc
+///        49 unit CC.1 (Q-49-23), which shot a slot fires under its reserve; so
+///        since that unit it is kept in every match, and every match with an
+///        impact folds it (until then it was empty in every practice match).
 ///    26. **the posture** (doc 45 unit AP.3; Q-45-4):
 ///        [`crate::arena::state::UnitState::posture`] — `[2]`, then the posture's
 ///        own byte (`crate::posture::Posture::fold_byte`) — and **nothing at all
@@ -2924,10 +2927,15 @@ mod tests {
         // **Doc 32 cut CF.0's one re-bless**: item 13 folds every party's
         // relation books and the host's end condition, so the fixture's hash
         // moved and nothing in sub-item 20 did: `0x99b0_6f95_df11_70eb` became
-        // `0x63ea_08cd_caf1_ab0e`.
+        // `0x63ea_08cd_caf1_ab0e`. **Doc 49 unit CC.1's re-bless**: the Line
+        // card's fire terms moved (a 35% floor and a 25% reserve), so the
+        // canonical card both fixture hulls check out on hashes otherwise and
+        // nothing in sub-item 20 moved: `0x63ea_08cd_caf1_ab0e` became
+        // `0xabec_28cd_9f45_b56d`.
         assert_eq!(
-            base, 0x63ea_08cd_caf1_ab0e,
-            "the CF.0 two_tanks hash (M6: 99b06f95df1170eb; M5r: 0588c49e80b6962c)"
+            base, 0xabec_28cd_9f45_b56d,
+            "the CC.1 two_tanks hash (CF.0: 63ea08cdcaf1ab0e; M6: 99b06f95df1170eb; M5r: \
+             0588c49e80b6962c)"
         );
         let probe = |profile: ActiveProfile| {
             let mut arena = two_tanks();

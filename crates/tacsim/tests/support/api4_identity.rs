@@ -23,8 +23,10 @@ impl Api4SealHashControl {
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API4 Standard source digest");
+        // Doc 49 unit CC.1: the Standard source re-blessed (the reserve's rules); was
+        // `2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef` (AP.3's).
         let api6_source = tacsim::arena::snapshot::digest_from_text(
-            "2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef",
+            "fd73e14b92563cc3ed7e914fc9096a885876d6b8618f620388e497846fed1c3b",
         )
         .expect("the observed API6 Standard source digest");
         assert!(

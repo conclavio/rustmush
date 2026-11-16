@@ -209,8 +209,21 @@ pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore
 /// API bump that added the four space kernels); CF.6b's was `3837c345…73a316`.
 /// **Re-blessed by doc 45 unit AP.3** for the header's `api: 9` alone (the mind
 /// API bump that added `View.posture`); MW.9's was `42c694ed…76e4bc`.
+/// **Re-blessed by doc 49 unit CC.1** (Q-49-9, Q-49-23) with the reserve's
+/// rules, mirrored in `NativeStockMind` and pinned by Gate A: dry for
+/// withdrawal is its own reading (`p.low`, T1's `at_reserve`, the card's
+/// reserve on every mount, read once a think where a reader can read it),
+/// which the withdraw edge, the expiry's restoration and the rally read where
+/// they read `p.dry`, and the edge takes it as the doctrine's one retreat, as
+/// it takes a hurt hull (an empty one, `p.dry`, breaks off whatever it has
+/// spent); `arming_for` takes a fourth argument, `withdrawing`, and arms a
+/// withdrawing hull with no reserve; its floor rises fifteen points on a
+/// mount under half its load; and its reserve is read through `min(.., 100)`
+/// without the old overflow clamp (the card's schema holds it to 100), a cost
+/// cut the lanes' ops budget asked for. Still 31 functions, `api: 9` and
+/// `stock: 3`; AP.3's was `2bea2391…7b5fef`.
 pub const STANDARD_SHA256: &str =
-    "2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef";
+    "fd73e14b92563cc3ed7e914fc9096a885876d6b8618f620388e497846fed1c3b";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the
@@ -1680,13 +1693,14 @@ mod tests {
     /// **The Standard Doctrine's `arming_for` alone, as a think** (17b cut
     /// M2.6): the shipped script with its entry renamed (`standard_think`)
     /// and a `think` that calls the script's own `arming_for(view, card,
-    /// this.ceiling)` — the memory carries the ceiling, an INT or `()` — so
+    /// this.ceiling, this.withdrawing)` — the memory carries the ceiling, an
+    /// INT or `()`, and whether the hull withdraws (doc 49 unit CC.1) — so
     /// T1's free `arming_for` and T2's are held equal on one view and card
     /// ([`arming`]). 31 functions, under the 32.
     fn arming_alone() -> RhaiRunner {
         use sha2::{Digest as _, Sha256};
         let source = format!(
-            "{}\nfn think(view, card) {{\n    arming_for(view, card, this.ceiling);\n}}\n",
+            "{}\nfn think(view, card) {{\n    arming_for(view, card, this.ceiling, this.withdrawing);\n}}\n",
             STANDARD_RHAI.replacen(
                 "fn think(view, card) {",
                 "fn standard_think(view, card) {",
@@ -1708,6 +1722,18 @@ mod tests {
         card: &StockCard,
         ceiling: Option<u64>,
     ) -> Vec<IntentKind> {
+        arming_as(arena, view, card, ceiling, false)
+    }
+
+    /// [`arming`] for a hull that withdraws (`withdrawing`) or does not (doc
+    /// 49 unit CC.1: a withdrawing hull arms with no reserve).
+    fn arming_as(
+        arena: &Arena,
+        view: &MindView,
+        card: &StockCard,
+        ceiling: Option<u64>,
+        withdrawing: bool,
+    ) -> Vec<IntentKind> {
         use crate::arena::mind::MemValue;
         use crate::arena::stock_mind::arming_for;
         let native = arming_for(
@@ -1717,6 +1743,7 @@ mod tests {
             crate::arena::core::ClassTable::STOCK
                 .row(crate::arena::core::CoreClass::I)
                 .slots,
+            withdrawing,
         );
         let mut memory = Memory::new();
         memory.insert(
@@ -1725,6 +1752,7 @@ mod tests {
                 MemValue::Int(i64::try_from(cm).unwrap_or(i64::MAX))
             }),
         );
+        memory.insert("withdrawing".to_owned(), MemValue::Bool(withdrawing));
         let bytes = encode_memory(&memory);
         let view = Arc::new(view.clone());
         let card = crate::minds::fixture::runtime_card(card.clone());
@@ -1755,7 +1783,10 @@ mod tests {
             "T2's arming_for faulted: {:?}",
             rhai.trace
         );
-        assert_eq!(rhai.intents, native, "T2's arming_for on {ceiling:?}");
+        assert_eq!(
+            rhai.intents, native,
+            "T2's arming_for on {ceiling:?}, withdrawing {withdrawing}"
+        );
         native
     }
 
@@ -1845,13 +1876,14 @@ mod tests {
             ]
         );
         let on_line = arming(&arena, &view, &line(&arena.arena_cfg.reflex), Some(80_000));
+        // Doc 49 unit CC.1: Line's 35% floor on a full load, a quarter kept.
         assert!(
             on_line
                 .iter()
                 .map(armed_terms)
-                .all(|cond| cond.min_permille == 100
+                .all(|cond| cond.min_permille == 350
                     && cond.aspects == ASPECTS_ANY
-                    && cond.min_rounds_left == 0)
+                    && cond.min_rounds_left == like.rounds_max / 4)
         );
         let line_card = line(&arena.arena_cfg.reflex);
         assert_eq!(arming(&arena, &view, &line_card, None), Vec::new());
@@ -1876,6 +1908,115 @@ mod tests {
             Vec::new(),
             "D-UM-48"
         );
+    }
+
+    /// **Doc 49 unit CC.1: native and Rhai agree on the reserve's rules.**
+    /// Mirror of `cc1_a_hull_at_its_reserve_withdraws_by_its_own_test_and_covers_the_withdrawal`
+    /// through both runners on every think ([`think`] holds T1 == T2): a hull
+    /// fighting on full magazines breaks off once every mount is at Line's
+    /// reserve, and not while one is over it; cornered on the way home it arms
+    /// with no reserve at the floor its magazines call for. Then
+    /// `arming_for` alone ([`arming_as`]) on a low magazine and on a full one,
+    /// withdrawing and not, on every preset: the floor's rise and the
+    /// withdrawing hull's reserve, T1 == T2.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cc1_mirror_a_hull_at_its_reserve_withdraws_and_covers_the_withdrawal() {
+        let mut arena = field(vec![
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
+        ]);
+        online(&mut arena, RED);
+        hold(&mut arena, RED, BLUE, ContactId(0x77));
+        let card = line(&arena.arena_cfg.reflex);
+        let full = view_of(&arena, RED);
+        let mut low = full.clone();
+        for weapon in &mut low.weapons {
+            weapon.rounds = card.keeps(weapon.rounds_max);
+        }
+        let mut one_over = low.clone();
+        if let Some(weapon) = one_over.weapons.first_mut() {
+            weapon.rounds += 1;
+        }
+        let mut fight = StockMemory::default();
+        let _ = think(&arena, &full, &mut fight, 1_000);
+        assert_eq!(fight.state, MachineState::Engage);
+        let mut breaks = fight.clone();
+        let _ = think(&arena, &low, &mut breaks, 2_000);
+        assert_eq!(breaks.state, MachineState::Withdraw, "dry for withdrawal");
+        let mut stays = fight.clone();
+        let _ = think(&arena, &one_over, &mut stays, 2_000);
+        assert_eq!(stays.state, MachineState::Engage, "one mount over");
+        // The one retreat: rallied, it stays at its reserve; empty, it goes.
+        let mut empty = low.clone();
+        for weapon in &mut empty.weapons {
+            weapon.rounds = 0;
+        }
+        for (magazines, state) in [
+            (&low, MachineState::Engage),
+            (&empty, MachineState::Withdraw),
+        ] {
+            let mut rallied = StockMemory {
+                rallied: true,
+                ..fight.clone()
+            };
+            let _ = think(&arena, magazines, &mut rallied, 2_000);
+            assert_eq!(rallied.state, state);
+        }
+        // Cornered on the way home, on low magazines and on full ones.
+        let ranges = view_ranges(&low, arena.arena_cfg.reflex.engage_band_permille, None);
+        for (magazines, floor) in [(&low, 500), (&full, 350)] {
+            let mut cornered = magazines.clone();
+            for row in &mut cornered.contacts {
+                row.range_m = (ranges.stand_cm / 100).saturating_sub(10);
+            }
+            let mut home = StockMemory {
+                state: MachineState::Withdraw,
+                goal: Some((1, 1)),
+                ..StockMemory::default()
+            };
+            let covering = think(&arena, &cornered, &mut home, 3_000);
+            let covered: Vec<crate::arena::conditions::FireCondition> = covering
+                .iter()
+                .filter(|kind| matches!(kind, IntentKind::Condition(Arming::Arm(_))))
+                .map(armed_terms)
+                .collect();
+            assert!(!covered.is_empty(), "{covering:?}");
+            assert!(
+                covered
+                    .iter()
+                    .all(|cond| cond.min_rounds_left == 0 && cond.min_permille == floor),
+                "{covered:?}"
+            );
+        }
+        // `arming_for` alone, both runners: every preset, low and full,
+        // withdrawing and not.
+        for name in crate::arena::card::PRESETS {
+            let Some(preset) = preset(name, &arena.arena_cfg.reflex) else {
+                panic!("the preset {name}");
+            };
+            for magazines in [&full, &low] {
+                for withdrawing in [false, true] {
+                    let arms = arming_as(&arena, magazines, &preset, Some(80_000), withdrawing);
+                    for (cond, weapon) in arms.iter().map(armed_terms).zip(&magazines.weapons) {
+                        assert_eq!(
+                            cond.min_rounds_left,
+                            if withdrawing {
+                                0
+                            } else {
+                                preset.keeps(weapon.rounds_max)
+                            },
+                            "{name}"
+                        );
+                        assert_eq!(
+                            cond.min_permille,
+                            preset.floor_for(weapon.rounds, weapon.rounds_max),
+                            "{name}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Mirror of `m1b2_t1_arms_on_the_admitting_ceiling_and_cites_only_beside_a_fresh_lock`

@@ -1190,28 +1190,36 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// The 14–1 split and `first_divergence_ms` stand; the one blue win moves from
 /// seed 2360 to seed 2355 (each a close finish the effects now decide), and
 /// nothing is `unlawful`.
+/// **Doc 49 unit CC.1 re-records it** (Q-49-8, Q-49-9, Q-49-23): the stock mind holds its shot
+/// to the Line card's 35% floor (50% under half a magazine) and keeps a quarter of each load
+/// for answering fire and its withdrawal, so every match runs longer (180,250 → 231,250 ms on
+/// seed 2350; the fifteen ends from 166,000–203,750 to 167,000–240,500), shots fall 1,488/863
+/// → 1,058/936, and the split moves 14–1 → 13–2 (blue wins seeds 2359 and 2361; seed 2355
+/// goes red). `floor_held` 0 → 1,039 (a slot held at its odds), `unwarranted` 0 → 12 (a
+/// cited fresh-lock shot refused by its own slot's reserve or floor), `fallback` 0 → 1;
+/// `first_divergence_ms` stands, and nothing is `unlawful`.
 const M4_5_POOLED_RECORD: [&str; 21] = [
-    "twin_match: seed=2350 end=elimination_red t_ms=180250",
-    "twin_match: seed=2351 end=elimination_red t_ms=177500",
-    "twin_match: seed=2352 end=elimination_red t_ms=170000",
-    "twin_match: seed=2353 end=elimination_red t_ms=179000",
-    "twin_match: seed=2354 end=elimination_red t_ms=203750",
-    "twin_match: seed=2355 end=elimination_blue t_ms=193250",
-    "twin_match: seed=2356 end=elimination_red t_ms=194500",
-    "twin_match: seed=2357 end=elimination_red t_ms=186000",
-    "twin_match: seed=2358 end=elimination_red t_ms=167000",
-    "twin_match: seed=2359 end=elimination_red t_ms=171500",
-    "twin_match: seed=2360 end=elimination_red t_ms=182750",
-    "twin_match: seed=2361 end=elimination_red t_ms=193000",
-    "twin_match: seed=2362 end=elimination_red t_ms=166000",
-    "twin_match: seed=2363 end=elimination_red t_ms=176000",
-    "twin_match: seed=2364 end=elimination_red t_ms=191750",
-    "twin_pooled: n=15 red_wins=14 blue_wins=1 draws=0",
-    "twin_divergences: tiebreak=78 line=5 reads_dead=0 landing=10306 no_line=12 fan=11 order_end=0 deg_round=0 fallback=0 cond_fire=2254 cond_stale=10 unwarranted=0 unlawful=0 floor_held=0 slot_parallel=378 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=10306 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
-    "twin_gate_b: side=red shots=1488 shots_per_min=32.676 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=1,patrol=5,approach=0,engage=19,withdraw=0,disabled=5] wrecked=5 cond_shots=1428 parallel=238",
-    "twin_gate_b: side=blue shots=863 shots_per_min=18.951 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=0,approach=1,engage=10,withdraw=0,disabled=19] wrecked=19 cond_shots=826 parallel=140",
-    "twin_gate_b_pool: path_queries=626 corner_refusals=0",
+    "twin_match: seed=2350 end=elimination_red t_ms=231250",
+    "twin_match: seed=2351 end=elimination_red t_ms=197500",
+    "twin_match: seed=2352 end=elimination_red t_ms=167000",
+    "twin_match: seed=2353 end=elimination_red t_ms=215000",
+    "twin_match: seed=2354 end=elimination_red t_ms=227750",
+    "twin_match: seed=2355 end=elimination_red t_ms=240500",
+    "twin_match: seed=2356 end=elimination_red t_ms=193750",
+    "twin_match: seed=2357 end=elimination_red t_ms=197750",
+    "twin_match: seed=2358 end=elimination_red t_ms=192000",
+    "twin_match: seed=2359 end=elimination_blue t_ms=231250",
+    "twin_match: seed=2360 end=elimination_red t_ms=200500",
+    "twin_match: seed=2361 end=elimination_blue t_ms=206000",
+    "twin_match: seed=2362 end=elimination_red t_ms=208750",
+    "twin_match: seed=2363 end=elimination_red t_ms=198750",
+    "twin_match: seed=2364 end=elimination_red t_ms=196500",
+    "twin_pooled: n=15 red_wins=13 blue_wins=2 draws=0",
+    "twin_divergences: tiebreak=83 line=17 reads_dead=0 landing=11256 no_line=19 fan=11 order_end=0 deg_round=0 fallback=1 cond_fire=1899 cond_stale=3 unwarranted=12 unlawful=0 floor_held=1039 slot_parallel=256 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=11256 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_gate_b: side=red shots=1058 shots_per_min=20.449 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=17,withdraw=0,disabled=12] wrecked=12 cond_shots=1003 parallel=129",
+    "twin_gate_b: side=blue shots=936 shots_per_min=18.091 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=7,withdraw=0,disabled=22] wrecked=22 cond_shots=896 parallel=127",
+    "twin_gate_b_pool: path_queries=602 corner_refusals=0",
 ];
 
 /// **The stock pool, pinned to its record** (17b cut M4.5; until then the
@@ -1795,18 +1803,25 @@ impl Coverage {
 /// the component effects move the fights — `pooled` 10,295 / 308 → 10,015 / 291,
 /// `mixed` 13,230 / 502 → 12,884 / 449, `lance` 7,157 / 130 → 7,260 / 126 — with
 /// no divergence on any lane.
+///
+/// **Doc 49 unit CC.1's re-bless of all three** (Q-49-8, Q-49-9, Q-49-23): the stock mind
+/// holds its shot to the Line card's 35% floor (50% under half a magazine), keeps a quarter of
+/// each load for answering fire and its withdrawal, and breaks off at it, so the fights run
+/// longer and the counts move — `pooled` 10,015 / 291 → 10,851 / 405, `mixed` 12,884 / 449 →
+/// 12,866 / 345, `lance` 7,260 / 126 → 7,142 / 159, and [`POOLED_MATCHES_WITH_STAND_IN`]
+/// 14 → 12 — with no divergence on any lane (every think compared, native against Rhai).
 const COVERAGE: [(&str, (usize, usize)); 3] = [
-    ("pooled", (10_015, 291)),
-    ("mixed", (12_884, 449)),
-    ("lance", (7_260, 126)),
+    ("pooled", (10_851, 405)),
+    ("mixed", (12_866, 345)),
+    ("lance", (7_142, 159)),
 ];
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
 /// reason at [`COVERAGE`]): the matches whose record line may move.
 /// Doc 36 cut GC.2: 11 → 12, with the re-bless of [`COVERAGE`]. Doc 40 cut
 /// FR.5: 12 → 14, with the same (§4a): a jammed or damaged core reads a class
-/// down, so more hulls finish a match on the ROM.
-const POOLED_MATCHES_WITH_STAND_IN: usize = 14;
+/// down, so more hulls finish a match on the ROM. Doc 49 unit CC.1: 14 → 12, with the same.
+const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
 
 /// **Gate A on unarmed hulls, under fire — and since 17b cut M2.6 on the
 /// armed hulls beside them** (17b cuts M2.5 and M2.6; doc 17 §17 "Gate A",

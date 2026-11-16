@@ -33,7 +33,7 @@ fn think(view, card, memory) {
     memory
 }
 fn fire_discipline(view, card, ceiling_cm) {
-    arming_for(view, card, ceiling_cm);
+    arming_for(view, card, ceiling_cm, false);
 }
 fn best_hostile(view, card) {
     let w = weights(card);
@@ -79,7 +79,7 @@ fn build(engine: &mut Engine) -> Result<Module, String> {
     // Rhai strict parsing resolves the qualified sampler name against this
     // namespace; runtime lookup uses the final module installed below.
     engine.register_static_module("stock", Module::new().into());
-    const ARMING: &str = "fn arming_for(view, card, ceiling) {";
+    const ARMING: &str = "fn arming_for(view, card, ceiling, withdrawing) {";
     if super::STANDARD_RHAI.matches(ARMING).count() != 1 {
         return Err("trusted Standard arming helper changed shape".to_owned());
     }
@@ -89,7 +89,7 @@ fn build(engine: &mut Engine) -> Result<Module, String> {
     let private = super::STANDARD_RHAI
         .replace(
             ARMING,
-            "fn arming_for(view, card, ceiling) { if stock::rules() { return; }",
+            "fn arming_for(view, card, ceiling, withdrawing) { if stock::rules() { return; }",
         )
         .replace("fn think(", "fn stock_body_private(")
         .replace("\nfn ", "\nprivate fn ");

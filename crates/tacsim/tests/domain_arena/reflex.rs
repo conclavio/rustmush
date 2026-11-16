@@ -1367,18 +1367,23 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
 /// with it: `0xd530_f06f_b89a_1de5` became `0xb805_607a_6669_4c4b` and
 /// `0x7148_c511_991c_ebd7` became `0x269a_e671_07dc_8353`, and again the lines differ from the
 /// prior pins in `hash` and in the `mind_sealed` lines' `source` alone.
+/// Doc 49 unit CC.1: the Line card's fire terms and the Standard source (the reserve's rules)
+/// moved, folded in every seal and in the card state: `0xb805_607a_6669_4c4b` became
+/// `0x8fe5_be9f_304c_4cf0` and `0x269a_e671_07dc_8353` became `0xcfe5_554c_cd01_379a`; the
+/// lines differ from the prior pins in `hash`, and in the `mind_sealed` lines' `source` and
+/// `card_digest`, alone (the field's shots did not move).
 #[test]
 fn m1a1_the_moved_motor_folds_the_same_bytes() {
     let run = replay(1_000, 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
     assert_eq!(
         run.hashes.first().copied(),
-        Some(0xb805_607a_6669_4c4b),
+        Some(0x8fe5_be9f_304c_4cf0),
         "the first substep's hash moved"
     );
     assert_eq!(
         run.hashes.last().copied(),
-        Some(0x269a_e671_07dc_8353),
+        Some(0xcfe5_554c_cd01_379a),
         "the last substep's hash moved"
     );
 }
@@ -1444,56 +1449,56 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
 /// origin says); the state is the line's parameter, never the seal's (M8a's A1), so
 /// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_J_LINES: &[&str] = &[
-    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":15508795367109575044}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"2bea23917e55807b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":15508795367109575044}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"2bea23917e55807b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":15508795367109575044}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"2bea23917e55807b","card_digest":"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":15508795367109575044}"#,
-    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":13260110756682746955}"#,
-    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":13260110756682746955}"#,
-    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":13260110756682746955}"#,
-    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":13260110756682746955}"#,
-    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":5863492673050153213}"#,
-    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":15198392841817425790}"#,
-    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":15198392841817425790}"#,
-    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":15833777370804432765}"#,
-    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":7143027861996482437}"#,
-    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":7864679607741367190}"#,
-    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":5231573486508393607}"#,
-    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":5231573486508393607}"#,
-    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":5231573486508393607}"#,
-    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":5231573486508393607}"#,
-    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":17928370306399298813}"#,
-    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":17928370306399298813}"#,
-    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":11140900927199845676}"#,
-    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":11140900927199845676}"#,
-    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":11775059245531149096}"#,
-    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":11775059245531149096}"#,
-    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":11775059245531149096}"#,
-    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":9366291001320663352}"#,
-    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":14694396111027460119}"#,
-    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":12722085496905088970}"#,
-    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":15876299301344580252}"#,
-    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":15876299301344580252}"#,
-    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":1041710824642987642}"#,
-    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":12163842474670626320}"#,
-    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":12529451176689594891}"#,
-    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":12529451176689594891}"#,
-    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":13080796355452746116}"#,
-    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":1729442272635445919}"#,
-    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":4858456329158410382}"#,
-    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":4858456329158410382}"#,
-    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":2608835954182216908}"#,
-    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":17788763176317475492}"#,
-    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":17788763176317475492}"#,
-    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":17788763176317475492}"#,
-    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":18434657158613968756}"#,
-    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":16596690126598319205}"#,
-    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":16596690126598319205}"#,
-    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":17429935752710862912}"#,
-    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":11979946148863924394}"#,
-    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":10181699130127390379}"#,
-    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":10181699130127390379}"#,
-    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":2781789092992287571}"#,
+    r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":6012192293719051140}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
+    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":10368903308009819376}"#,
+    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":10368903308009819376}"#,
+    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":10368903308009819376}"#,
+    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":10368903308009819376}"#,
+    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":5265622152951222935}"#,
+    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":5931757685407887302}"#,
+    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":5931757685407887302}"#,
+    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":3969281144592565427}"#,
+    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":2821636333770422244}"#,
+    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":11115701147842155380}"#,
+    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":1363395276921138248}"#,
+    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":1363395276921138248}"#,
+    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":1363395276921138248}"#,
+    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":1363395276921138248}"#,
+    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":618627472483050817}"#,
+    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":618627472483050817}"#,
+    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":12953719424401029954}"#,
+    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":12953719424401029954}"#,
+    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":16919822118172070201}"#,
+    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":16919822118172070201}"#,
+    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":16919822118172070201}"#,
+    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":11057419900539414223}"#,
+    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":15520245276000148969}"#,
+    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":10854983952827432064}"#,
+    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":3813403807791415087}"#,
+    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":3813403807791415087}"#,
+    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":13594547315478239484}"#,
+    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":2327682851551762844}"#,
+    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":3712983859952423900}"#,
+    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":3712983859952423900}"#,
+    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":8646196931316161694}"#,
+    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":13170711812070351813}"#,
+    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":2698260614445000554}"#,
+    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":2698260614445000554}"#,
+    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":6968681581851261695}"#,
+    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":11925220000166855180}"#,
+    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":11925220000166855180}"#,
+    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":11925220000166855180}"#,
+    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":1823967795972934296}"#,
+    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":2822783304135041422}"#,
+    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":2822783304135041422}"#,
+    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":9975025422963550372}"#,
+    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":3425749449210075070}"#,
+    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":1452456361276761085}"#,
+    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":1452456361276761085}"#,
+    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":14980473523863107482}"#,
 ];
 
 /// **17b cut M1b.0: the production line-hash pin, the reflex shots.** The (j)
@@ -2475,7 +2480,14 @@ fn t1_two_dry_sides_end_in_a_draw_and_one_dry_side_plays_on() {
 fn t1_a_round_still_in_flight_holds_the_draw_off() {
     // The last round has left the breech and has not landed: it can still decide
     // the match, so calling a draw over it would be calling a draw over a kill.
-    let mut arena = t1_q7_spent_pair(1, 0);
+    // Doc 49 unit CC.1: the mind's Line card keeps a quarter of the load (10 of
+    // 40) and the arena counts a mind at it as spent (Q-49-23), so its one round
+    // to fire is the one over its reserve: 11. Its one retreat is spent as a
+    // posture spends it (`seed_stay`), so at its reserve it stays and holds, and
+    // does not cover a withdrawal with the rest: a slow round chasing a hull
+    // that drives away would keep one in the air for the whole run.
+    let mut arena = t1_q7_spent_pair(11, 0);
+    last_round_is_the_last(&mut arena);
     // A slow round, so "in flight" outlives the pulse that fired it: the stock
     // cannon's 1,450 m/s crosses three cells in twenty milliseconds and the
     // impact is resolved inside the same substep.
@@ -2514,6 +2526,208 @@ fn t1_a_round_still_in_flight_holds_the_draw_off() {
         Some(tacsim::arena::state::EndReason::Spent),
         "the draw, and not an elimination"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 49 unit CC.1 — the reserve (Q-49-23)
+// ---------------------------------------------------------------------------
+
+/// The harmless cannon the Q.7 pair fights with: no round it fires decides the
+/// match, so each fixture below is about the magazines alone.
+fn harmless_cannon() -> WeaponSummary {
+    WeaponSummary {
+        damage: 0,
+        ..cannon()
+    }
+}
+
+/// **Doc 49 unit CC.1 (Q-49-23, the second review's sentence 4): two minds on
+/// their reserve end a simulator match as `spent`.** Two tanks a mind flies on
+/// the fixture seal's Line card, three cells apart, each presenting every band
+/// and each with a harmless cannon two rounds over its reserve (12 of 40;
+/// Line keeps a quarter). They fire on each other down to their reserves and
+/// the arena ends the match `Spent` with rounds still in both magazines, long
+/// before the match cap. Until CC.1 the Line card kept nothing and `spent`
+/// counted only empty rows, so the same pair fired to the last round; with a
+/// reserve and no sentence 4, two minds on their reserve sat facing each other
+/// until the cap (the second review's W-49-2, which today's Sniper card had).
+#[test]
+fn cc1_two_minds_on_their_reserve_end_the_match_spent_with_rounds_left() {
+    let mind = |id, team, x| {
+        seeing(
+            presenting(tank(
+                id,
+                team,
+                centre(x, 8),
+                vec![harmless_cannon()],
+                Controller::Mind,
+            )),
+            10,
+        )
+    };
+    let mut arena = arena_of(
+        vec![mind(RED, PartyId::RED, 6), mind(BLUE, PartyId::BLUE, 9)],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    for unit in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(unit) {
+            state.ammo.insert(SmolStr::new("cannon"), 12);
+        }
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut ended = None;
+    while arena.now_ms < 120_000 {
+        let out = arena.step_settled(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        if let Some(end) = out.ended {
+            ended = Some(end);
+            break;
+        }
+        wall_ms += 500;
+    }
+    let end = ended.unwrap_or_else(|| panic!("two minds on their reserve should end the match"));
+    assert_eq!(end.reason, tacsim::arena::state::EndReason::Spent);
+    for unit in [RED, BLUE] {
+        let left = arena
+            .unit(unit)
+            .map_or(0, |state| state.weapon_ammo("cannon"));
+        assert!(
+            (1..=10).contains(&left),
+            "#{} ends on its reserve with rounds left, not dry: {left}",
+            unit.0
+        );
+    }
+    let log = events(&mut arena, &mut bytes);
+    assert!(
+        count(&log, "fired") >= 4,
+        "both fired their two rounds over the reserve"
+    );
+}
+
+/// **Doc 49 unit CC.1 (Q-49-23, sentences 1 and 2): a mind at its reserve
+/// answers the unit that fired on it, and withdraws when dry by the new
+/// test.** Red, a mind on Line, holds its harmless cannon at its reserve (10 of
+/// 40) and a full carbine whose two cells do not reach blue, a seat three cells
+/// off. So red is not at its reserve on every mount, it stays to fight, and
+/// its cannon slot holds `Rounds`: for twenty seconds it fires nothing. Blue
+/// fires once on red; from then on red's reserve answers blue. Then red's
+/// carbine is set to its reserve too: red is dry for withdrawal with rounds
+/// left in both magazines, and breaks off. Until CC.1 red's cannon fired from
+/// its first think (Line kept nothing), and a hull at its reserve never broke
+/// off (only an empty one was dry).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cc1_a_mind_at_its_reserve_answers_the_unit_that_fired_on_it_and_withdraws_at_it() {
+    let mut arena = arena_of(
+        vec![
+            seeing(
+                presenting(tank(
+                    RED,
+                    PartyId::RED,
+                    centre(6, 8),
+                    vec![harmless_cannon(), carbine()],
+                    Controller::Mind,
+                )),
+                10,
+            ),
+            seeing(
+                presenting(tank(
+                    BLUE,
+                    PartyId::BLUE,
+                    centre(9, 8),
+                    vec![harmless_cannon()],
+                    Controller::Pilot,
+                )),
+                10,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), 10);
+    }
+    let rounds =
+        |arena: &Arena, weapon: &str| arena.unit(RED).map_or(0, |state| state.weapon_ammo(weapon));
+    let mut bytes: Vec<u8> = Vec::new();
+    run_settled(&mut arena, 20_000, &mut bytes);
+    assert_eq!(
+        machine_state_of(&arena, RED),
+        Some(MachineState::Engage),
+        "a full carbine: not at its reserve on every mount"
+    );
+    assert_eq!(rounds(&arena, "cannon"), 10, "the reserve holds");
+    assert_eq!(rounds(&arena, "carbine"), 40, "blue is past the carbine");
+    assert!(arena.ended.is_none());
+
+    // Blue, powered up, locks red and fires once.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.power = Power::Online;
+    }
+    let contact = draw_contact_id(SEED, BLUE, RED);
+    let intent = |arena: &Arena, kind: tacsim::arena::intents::IntentKind, seq: u64| {
+        let channel = kind.channel_required();
+        tacsim::arena::intents::Intent {
+            unit: BLUE,
+            channel,
+            epoch: arena.epochs.current(BLUE, channel),
+            kind,
+            seq,
+        }
+    };
+    let lock = intent(
+        &arena,
+        tacsim::arena::intents::IntentKind::Lock { contact },
+        1,
+    );
+    let mut wall_ms = arena.now_ms;
+    let out = arena.step_settled(wall_ms, &[], &[lock]);
+    absorb(&out, &mut bytes);
+    wall_ms += 500;
+    let fire = intent(
+        &arena,
+        tacsim::arena::intents::IntentKind::Fire {
+            weapon: SmolStr::new("cannon"),
+            slot: None,
+        },
+        2,
+    );
+    let out = arena.step_settled(wall_ms, &[], &[fire]);
+    absorb(&out, &mut bytes);
+    let blue_fired = arena
+        .unit(BLUE)
+        .map_or(0, |state| state.weapon_ammo("cannon"));
+    assert_eq!(blue_fired, 39, "blue's one round left its breech");
+    run_settled(&mut arena, 40_000, &mut bytes);
+    assert!(
+        rounds(&arena, "cannon") < 10,
+        "red's reserve answered blue: {}",
+        rounds(&arena, "cannon")
+    );
+    assert_eq!(
+        machine_state_of(&arena, RED),
+        Some(MachineState::Engage),
+        "answering, it stays"
+    );
+
+    // At its reserve on every mount, with rounds left in both: dry for
+    // withdrawal.
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), 10);
+        state.ammo.insert(SmolStr::new("carbine"), 10);
+    }
+    run_settled(&mut arena, 45_000, &mut bytes);
+    assert_eq!(
+        machine_state_of(&arena, RED),
+        Some(MachineState::Withdraw),
+        "dry for withdrawal: its reserve on every mount"
+    );
+    assert!(!stock_memory_of(&arena, RED).ordered, "its own edge");
+    assert!(rounds(&arena, "carbine") > 0, "rounds are left");
 }
 
 // ---------------------------------------------------------------------------
@@ -7286,7 +7500,10 @@ fn t1_the_search_and_the_hunt_are_one_log_at_three_cadences() {
 /// to one 120-damage hit, which ends the match by elimination before the
 /// draw. A harmless gun keeps the shots and the draw: what the fixture pins
 /// is the arena millisecond the magazines run out at, never what a round
-/// does to armour. The pair's rounds are the fixture's constants, unchanged.
+/// does to armour. The pair's rounds are the fixture's constants, unchanged
+/// but for doc 49 unit CC.1: a mind's Line card keeps a quarter of the load
+/// (10 of 40) and the arena counts a mind at it as spent (Q-49-23), so a mind's
+/// "last round" is the one over its reserve, [`OVER_THE_RESERVE`].
 fn t1_e4_spent_pair(red_rounds: u32, blue_rounds: u32, blue: Controller) -> Arena {
     let harmless = WeaponSummary {
         damage: 0,
@@ -7326,6 +7543,23 @@ fn t1_e4_spent_pair(red_rounds: u32, blue_rounds: u32, blue: Controller) -> Aren
     arena
 }
 
+/// **A mind's one round to fire** (doc 49 unit CC.1): the round over the Line
+/// card's reserve of the fixture cannon's 40, so a mind spends it and is then
+/// spent (`Arena::spent`).
+const OVER_THE_RESERVE: u32 = 11;
+
+/// **Red's mind keeps its reserve once its one round is gone** (doc 49 unit
+/// CC.1): its one retreat spent as a posture spends it
+/// (`tacsim::arena::mind::seed_stay`), so at its reserve it stays and holds its
+/// slot under it — nobody fired on it — rather than breaking off and covering
+/// the withdrawal with the rest, which a slow round would keep in the air.
+fn last_round_is_the_last(arena: &mut Arena) {
+    let Some(row) = arena.minds.get_mut(&RED) else {
+        panic!("red is a mind");
+    };
+    row.memory = tacsim::arena::mind::seed_stay(&row.memory);
+}
+
 /// The `Spent` draw, as a function nothing but the cadence can vary.
 fn t1_both_sides_dry() -> Arena {
     t1_e4_spent_pair(0, 0, Controller::Pilot)
@@ -7335,7 +7569,8 @@ fn t1_both_sides_dry() -> Arena {
 /// _draw_off`'s own fixture, so the replay is of the case the draw is held off
 /// for and not only of the easy one.
 fn t1_one_round_in_flight() -> Arena {
-    let mut arena = t1_e4_spent_pair(1, 0, Controller::Pilot);
+    let mut arena = t1_e4_spent_pair(OVER_THE_RESERVE, 0, Controller::Pilot);
+    last_round_is_the_last(&mut arena);
     if let Some(weapon) = arena
         .unit_mut(RED)
         .and_then(|state| state.weapons.first_mut())
@@ -7350,7 +7585,7 @@ fn t1_one_round_in_flight() -> Arena {
 /// after both rounds have left the breech and landed — several pulses in, at
 /// every cadence, and not on the opening substep as [`t1_both_sides_dry`]'s is.
 fn t1_both_fire_their_last() -> Arena {
-    t1_e4_spent_pair(1, 1, Controller::Mind)
+    t1_e4_spent_pair(OVER_THE_RESERVE, OVER_THE_RESERVE, Controller::Mind)
 }
 
 /// **17b cut M4.4 — `EndReason::Spent` at three cadences, on the unit mind**

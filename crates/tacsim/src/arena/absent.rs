@@ -32,8 +32,10 @@
 //! a pilot who drops (Q-44-19): there any control that names the practising pilot ends the
 //! practice before it applies (`Arena::end_practice`);
 //! [`crate::arena::state::UnitState::fired_on_by`], written at every impact, hit or miss
-//! (`Arena::resolve_impact`), in a field whose end is its host's and, in a practice match,
-//! on a hull a pilot has named a player for; the hold, which is a standing
+//! (`Arena::resolve_impact`), in every match since doc 49 unit CC.1 (it was a field whose
+//! end is its host's and, in a practice match, a hull a pilot had named a player for): the
+//! stock card's reserve is spent answering the same fire (Q-49-23), so every slot reads
+//! it (`Arena::warrant`); the hold, which is a standing
 //! order's `hold_fire` (`Arena::holds_fire`); the posture
 //! ([`crate::arena::state::UnitState::posture`]) with the cell the mind stands it on
 //! ([`crate::arena::state::UnitState::stand_at`]); and whose the unit is
@@ -523,6 +525,19 @@ impl Arena {
             .collect()
     }
 
+    /// **Whether `target`'s fire has reached `unit`, as this rule counts it** (doc 49
+    /// Q-49-23, unit CC.1): `target` has fired on `unit`, or, while `unit` stands guard, on
+    /// another unit of its player's (Q-45-8's one widening). What a slot answers under its
+    /// reserve (`Arena::warrant`), in any match: the record is kept in every one.
+    #[must_use]
+    pub(crate) fn answers_fire(&self, unit: ObjId, target: ObjId) -> bool {
+        let Some(state) = self.unit(unit) else {
+            return false;
+        };
+        state.fired_on_by.contains(&target)
+            || (self.guards(state) && self.fired_on_kin(state).contains(&target))
+    }
+
     /// **Whether the rule refuses `unit` a shot at `target`** (this module's head): the facts
     /// read off the unit, the rule [`permits`]. `None` for a unit its player flies, and for a
     /// unit this arena does not hold.
@@ -583,19 +598,17 @@ impl Arena {
     }
 
     /// **`shooter`'s fire has arrived on `target`** (this module's head), hit or miss: recorded
-    /// on the target in a field whose end is its host's, and in a practice match on a target
-    /// a pilot has named a player for by setting a posture (doc 45 unit AP.10: the practising
-    /// hull and the player's other hulls, from the pulse the word lands), and nowhere else, so
-    /// a match nobody practises in carries and hashes no byte of it. A unit's own fire on
-    /// itself records nothing.
+    /// on the target in every match (doc 49 unit CC.1, Q-49-23's sentence 2). Until that unit
+    /// it was recorded only in a field whose end is its host's and, in a practice match, on a
+    /// target a pilot had named a player for (doc 45 unit AP.10), so a match nobody practised
+    /// in carried and hashed no byte of it; the stock card's reserve is now spent answering
+    /// this fire, so a slot in any match reads it (`Arena::warrant`), and every match with an
+    /// impact folds it. A unit's own fire on itself records nothing.
     pub(crate) fn note_fired_on(&mut self, shooter: ObjId, target: ObjId) {
         if shooter == target {
             return;
         }
-        let host = self.end == crate::arena::party::EndCondition::Host;
-        if let Some(state) = self.unit_mut(target)
-            && (host || state.player.is_some())
-        {
+        if let Some(state) = self.unit_mut(target) {
             state.fired_on_by.insert(shooter);
         }
     }
