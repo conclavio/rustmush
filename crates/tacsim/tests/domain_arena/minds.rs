@@ -3480,7 +3480,8 @@ fn m1a5_the_production_hash_does_not_move() {
     // API 4 identity control there still holds. Doc 44 unit MW.9: the mind ABI moved to API 8
     // (four space kernels) and the Standard header with it; a seal folds both, so all three
     // moved again, and nothing an arena does moved with them. Doc 45 unit AP.3: the same for
-    // the move to API 9 (`View.posture`): all three moved, and nothing else.
+    // the move to API 9 (`View.posture`): all three moved, and nothing else. Doc 49 unit CC.9:
+    // the same for API 10 (`space_mount`, the space aspect); read on Linux (conclav.dev).
     let actual = [
         first_hash,
         last_hash,
@@ -3489,9 +3490,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0xb805_607a_6669_4c4b),
-            Some(0x269a_e671_07dc_8353),
-            Some(0x7698_6d0e_7b05_1087)
+            Some(0xa514_e283_3c91_a481),
+            Some(0x2761_eb45_9a09_88d7),
+            Some(0xc859_60c4_b776_63c5)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6885,15 +6886,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"2bea23917e55807b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"c544bfbd2cdcbda6\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"2bea23917e55807b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"c544bfbd2cdcbda6\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"2bea23917e55807b\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"c544bfbd2cdcbda6\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,

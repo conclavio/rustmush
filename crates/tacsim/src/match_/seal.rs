@@ -1391,13 +1391,13 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
-        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=9;stock=3");
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=10;stock=3");
         let api4_source = crate::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API 4 Standard source digest");
         let api7_source = crate::arena::snapshot::digest_from_text(
-            "2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef",
+            "c544bfbd2cdcbda6e4a9fafdec6c4cefe60f31963283edffd20af7f7ecf9375f",
         )
         .expect("the observed API 7 Standard source digest");
         assert_eq!(crate::minds::content::standard_digest().0, api7_source);
@@ -1502,25 +1502,28 @@ mod m5_tests {
         // Doc 45 unit AP.3: the mind ABI moved to API 9 (`View.posture`) and the Standard
         // header with it; all nine moved again, and the API 4 projection above still holds, so
         // no custody did. Captured on Linux.
+        // Doc 49 unit CC.9: the mind ABI moved to API 10 (`space_mount`, the space aspect) and
+        // the Standard header with it; all nine moved again, and the API 4 projection still
+        // holds, so no custody did. Captured on Linux.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             b3d768dbe02d5c9d83fa857340121ff0d64915c52b1f350cbaa6c6d53ffd7ab0",
+             eaa9e8dabeb3b0b594d2643a441af1a30843f38100b26b4f9cb6972d5fe0ba23",
             "tacsim.unit.line_tank production_fixture \
-             b3d768dbe02d5c9d83fa857340121ff0d64915c52b1f350cbaa6c6d53ffd7ab0",
+             eaa9e8dabeb3b0b594d2643a441af1a30843f38100b26b4f9cb6972d5fe0ba23",
             "tacsim.unit.line_tank production_principal \
-             70b74e0d3871c7cbfcf1e09666ba4091e3cf200ea14c66313368060a92d79377",
+             b0808c5c4a0408587333b6dedad64de2faa74a672e740c7962a95074b6531ad8",
             "tacsim.unit.heavy_mk1 fixture \
-             394ee782b94710526165243ca8c1a1666b59bf0ba11fbf915c75b2b24d4c76c5",
+             70ce5e6c2d3cc0c88be5b459de2f362596f89d070a921aedc4d80aad2f1ec358",
             "tacsim.unit.heavy_mk1 production_fixture \
-             394ee782b94710526165243ca8c1a1666b59bf0ba11fbf915c75b2b24d4c76c5",
+             70ce5e6c2d3cc0c88be5b459de2f362596f89d070a921aedc4d80aad2f1ec358",
             "tacsim.unit.heavy_mk1 production_principal \
-             c71d7e0bbca473732fedd2bbfc2a85ad9d24f31419ee5c54cfd3248449df095c",
+             667ad47810c30572198370710c7aebc298e48957c8447139b275d0792f5d8cd2",
             "tacsim.unit.target_mk1 fixture \
-             306543bb3ca74809f4ded496f1fd03dc9c5fdf42b02ec31f2f3af48665f862af",
+             68730d0f8e3fb6418d947a3d17bef9de52ad95554eeb6f21e1bc33b70ce99f44",
             "tacsim.unit.target_mk1 production_fixture \
-             306543bb3ca74809f4ded496f1fd03dc9c5fdf42b02ec31f2f3af48665f862af",
+             68730d0f8e3fb6418d947a3d17bef9de52ad95554eeb6f21e1bc33b70ce99f44",
             "tacsim.unit.target_mk1 production_principal \
-             3267b2541e8d04024cb635fc1cf3d3c7cb6139f120ef438168b84ae36acb1dc9",
+             b545c6698610a750ac5f7fcbe62bad7098e3dc763199e4bcfe593412bcd8102a",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }
