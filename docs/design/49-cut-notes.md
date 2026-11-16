@@ -192,7 +192,9 @@ packs, and **not minted**: no unit binding names them, so the definition registr
   - `FireMount`'s arm in `tests/domain_field/mw21_completion.rs`, whose match names every
     tape command.
 
-  I asked the lead first. No answer came before the push.
+  The lead approved `pack.rs`, `commands.rs` (additive, the new arms only), `applier.rs`, and
+  the raider's unit file with its pointer, pins, cast assertion and lookless row.
+  `mw21_completion.rs`'s arm came with the new tape command.
 - **No part goods** were added, so doc 48's PL.0 was not needed.
 
 **Not built.**
