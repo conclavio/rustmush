@@ -1,0 +1,182 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.space_fits",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "2959aae314632a55d781f0e07fdc9cf3836a812a1bae79d36b4fc032fa2a8119",
+    "requires": [
+      {
+        "id": "tacsim.pack.space_mounts",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.space_fit.dray": {
+      "kind": "space_fit",
+      "def": {
+        "label": "Dray bulk hauler",
+        "unit": "tacsim.unit.dray",
+        "pixel_model": "freighter",
+        "decoys": 4,
+        "rcs": {
+          "trans_dv_mmps_per_frame": 30,
+          "closure_dv_mmps_per_frame": 25,
+          "attitude_rate_mdeg_s_per_frame": 180,
+          "roll_rate_mdeg_s_per_frame": 240,
+          "damp_trans_mmps_per_frame": 15,
+          "damp_attitude_mdeg_s_per_frame": 90,
+          "damp_roll_mdeg_s_per_frame": 120,
+          "kg_per_pulse_batch": 1
+        },
+        "mounts": [
+          { "id": "laser_dorsal", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "laser_ventral", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "pdc_dorsal", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 },
+          { "id": "pdc_ventral", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 }
+        ],
+        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Q-49-25: the Dray keeps dual-mode lasers, so a sealed mind's Dray answers fire (R-47-2). A hull with no fit of its own flies this one, as the table's last arm did."
+      }
+    },
+    "tacsim.space_fit.dray_p": {
+      "kind": "space_fit",
+      "def": {
+        "label": "Dray-P prospector",
+        "unit": "tacsim.unit.dray_p",
+        "pixel_model": "freighter",
+        "decoys": 4,
+        "rcs": {
+          "trans_dv_mmps_per_frame": 32,
+          "closure_dv_mmps_per_frame": 28,
+          "attitude_rate_mdeg_s_per_frame": 195,
+          "roll_rate_mdeg_s_per_frame": 260,
+          "damp_trans_mmps_per_frame": 16,
+          "damp_attitude_mdeg_s_per_frame": 95,
+          "damp_roll_mdeg_s_per_frame": 130,
+          "kg_per_pulse_batch": 1
+        },
+        "mounts": [
+          { "id": "laser_dorsal", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "laser_ventral", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "pdc_dorsal", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 },
+          { "id": "pdc_ventral", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 }
+        ],
+        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Q-49-25: the Dray-P keeps dual-mode lasers."
+      }
+    },
+    "tacsim.space_fit.corvette": {
+      "kind": "space_fit",
+      "def": {
+        "label": "Republic Customs corvette",
+        "unit": "tacsim.unit.corvette",
+        "pixel_model": "corvette",
+        "decoys": 6,
+        "rcs": {
+          "trans_dv_mmps_per_frame": 40,
+          "closure_dv_mmps_per_frame": 35,
+          "attitude_rate_mdeg_s_per_frame": 240,
+          "roll_rate_mdeg_s_per_frame": 320,
+          "damp_trans_mmps_per_frame": 20,
+          "damp_attitude_mdeg_s_per_frame": 120,
+          "damp_roll_mdeg_s_per_frame": 160,
+          "kg_per_pulse_batch": 1
+        },
+        "mounts": [
+          { "id": "torp_bow", "mount": "tacsim.space_mount.twin_tubes", "magazine": 8 },
+          { "id": "laser_1", "mount": "tacsim.space_mount.turret_laser_short", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "laser_2", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "defence" },
+          { "id": "rail_spinal", "mount": "tacsim.space_mount.spinal_gun", "magazine": 24 },
+          { "id": "pdc_port", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 },
+          { "id": "pdc_stbd", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 }
+        ],
+        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Her first laser is the short-reach row; her second starts in defence and may switch."
+      }
+    },
+    "tacsim.space_fit.corvette_interdictor": {
+      "kind": "space_fit",
+      "def": {
+        "label": "Interdictor picket",
+        "unit": "tacsim.unit.corvette",
+        "pixel_model": "corvette",
+        "decoys": 6,
+        "rcs": {
+          "trans_dv_mmps_per_frame": 40,
+          "closure_dv_mmps_per_frame": 35,
+          "attitude_rate_mdeg_s_per_frame": 240,
+          "roll_rate_mdeg_s_per_frame": 320,
+          "damp_trans_mmps_per_frame": 20,
+          "damp_attitude_mdeg_s_per_frame": 120,
+          "damp_roll_mdeg_s_per_frame": 160,
+          "kg_per_pulse_batch": 1
+        },
+        "mounts": [
+          { "id": "torp_bow", "mount": "tacsim.space_mount.twin_tubes", "magazine": 8 },
+          { "id": "laser_1", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "laser_2", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "defence" },
+          { "id": "rail_spinal", "mount": "tacsim.space_mount.spinal_gun", "magazine": 24 },
+          { "id": "pdc_port", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 },
+          { "id": "pdc_stbd", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 }
+        ],
+        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. The corvette's hull with the dual-mode turret first, as the interdiction cutters sail; content/space/picket_cast.json names it."
+      }
+    },
+    "tacsim.space_fit.raider_heavy": {
+      "kind": "space_fit",
+      "def": {
+        "label": "Belt raider",
+        "unit": "tacsim.unit.raider_heavy",
+        "pixel_model": "raider",
+        "decoys": 6,
+        "rcs": {
+          "trans_dv_mmps_per_frame": 35,
+          "closure_dv_mmps_per_frame": 30,
+          "attitude_rate_mdeg_s_per_frame": 210,
+          "roll_rate_mdeg_s_per_frame": 280,
+          "damp_trans_mmps_per_frame": 18,
+          "damp_attitude_mdeg_s_per_frame": 105,
+          "damp_roll_mdeg_s_per_frame": 140,
+          "kg_per_pulse_batch": 1
+        },
+        "mounts": [
+          { "id": "torp_bow", "mount": "tacsim.space_mount.twin_tubes", "magazine": 8 },
+          { "id": "laser_1", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "laser_2", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "rail_spinal", "mount": "tacsim.space_mount.spinal_gun_slow", "magazine": 24 },
+          { "id": "pdc_port", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 },
+          { "id": "pdc_stbd", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 }
+        ],
+        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Two offence lasers and the low-velocity spinal gun."
+      }
+    },
+    "tacsim.space_fit.halcyon": {
+      "kind": "space_fit",
+      "def": {
+        "label": "Halcyon cruiser",
+        "unit": "tacsim.unit.halcyon",
+        "pixel_model": "halcyon",
+        "decoys": 8,
+        "rcs": {
+          "trans_dv_mmps_per_frame": 18,
+          "closure_dv_mmps_per_frame": 15,
+          "attitude_rate_mdeg_s_per_frame": 100,
+          "roll_rate_mdeg_s_per_frame": 140,
+          "damp_trans_mmps_per_frame": 9,
+          "damp_attitude_mdeg_s_per_frame": 50,
+          "damp_roll_mdeg_s_per_frame": 70,
+          "kg_per_pulse_batch": 2
+        },
+        "mounts": [
+          { "id": "torp_bow", "mount": "tacsim.space_mount.twin_tubes", "magazine": 16 },
+          { "id": "laser_dorsal", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "laser_ventral", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "rail_spinal", "mount": "tacsim.space_mount.spinal_gun", "magazine": 32 },
+          { "id": "pdc_port", "mount": "tacsim.space_mount.rotary_pd", "magazine": 4000 },
+          { "id": "pdc_stbd", "mount": "tacsim.space_mount.rotary_pd", "magazine": 4000 },
+          { "id": "pdc_dorsal", "mount": "tacsim.space_mount.rotary_pd", "magazine": 4000 },
+          { "id": "pdc_ventral", "mount": "tacsim.space_mount.rotary_pd", "magazine": 4000 }
+        ],
+        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. A mind reads her magazine's maximum as 16 and 32 from here, which the old fixed maxima of 8 and 24 shrank with each shot."
+      }
+    }
+  }
+}

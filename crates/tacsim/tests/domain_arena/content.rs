@@ -101,8 +101,9 @@ const PACK_FILES: [&str; 10] = [
 /// sentence shortened to fit the 1,024-byte bound; version 4). Was
 /// `2cdf945e…` at version 3. **Doc 39 cut IN.1** added the plants pack and moved every
 /// chassis's for its power component's `plant` (no version moved; the line tank was
-/// `2d80e63e…`).
-const DIGESTS: [(&str, &str); 15] = [
+/// `2d80e63e…`). **Doc 49 unit CC.6** added the three space packs: the belt raider's unit file,
+/// the space mount rows and the hull fits.
+const DIGESTS: [(&str, &str); 18] = [
     (
         "tacsim.pack.he_105",
         "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
@@ -166,6 +167,19 @@ const DIGESTS: [(&str, &str); 15] = [
     (
         "tacsim.mars_canyon",
         "993a507ffe1211ddb5e3811f4aaef1529970858f95c460e149280cad13424108",
+    ),
+    // Doc 49 unit CC.6 (Q-49-11): space content as data.
+    (
+        "tacsim.pack.raider_heavy",
+        "148bd49020546a2d4f6074846d35892b6d2768a12ddced672deb971a1a09421c",
+    ),
+    (
+        "tacsim.pack.space_mounts",
+        "fe5c35765fd2f254e38e1148efe7e2ab9038a43018671ba0f08dc70a7d45c7be",
+    ),
+    (
+        "tacsim.pack.space_fits",
+        "2959aae314632a55d781f0e07fdc9cf3836a812a1bae79d36b4fc032fa2a8119",
     ),
 ];
 
@@ -296,6 +310,22 @@ fn the_pinned_digests_are_the_shipped_ones() {
             pinned.get(id.as_str()).copied(),
             Some(pack.manifest().digest().to_hex().as_str()),
             "{id}'s digest moved"
+        );
+        seen += 1;
+    }
+    // Doc 49 unit CC.6: the space packs, each decoded through the rules loader, so every
+    // entry's bounds run.
+    for json in [
+        content::RAIDER_HEAVY_JSON,
+        content::SPACE_MOUNTS_JSON,
+        content::SPACE_FITS_JSON,
+    ] {
+        let pack = tacsim::pack::load_pack(json).expect("the shipped space pack verifies");
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
         );
         seen += 1;
     }
@@ -554,8 +584,9 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
     assert_eq!(
         catalog.specs.len(),
         // Doc 41 cut RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's two;
-        // doc 47 unit CO.10: twenty-two with the wrecker.
-        22,
+        // doc 47 unit CO.10: twenty-two with the wrecker; doc 49 unit CC.6: twenty-three with the
+        // belt raider.
+        23,
         "the shipped unit schemas: the line tank, doc 16 §9's five extensions, \
          the range's target, 16b cut AE.1's three chassis, 16b cut AE.3's drone, \
          doc 18 cut IC2's Dray, doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, doc 32 cut CF.6c's escort line tank, doc 35 cut SF.R12's Republic Corvette, doc 41 cut RS.1's tender \n         and cut RS.6a's crawler and lifter"
@@ -1129,10 +1160,10 @@ fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_ord
     assert_eq!(
         fielded.len(),
         // Doc 35 cut SF.R12: and the Republic Corvette (was `+ 27`); doc 41 cut RS.1: and the
-        // tender; cut RS.6a: and Tycho's crawler and lifter; doc 47 unit CO.10: and the wrecker,
-        // last.
-        stock.len() + 32,
-        "nine shipped packs and thirty-two extension files: doc 16 section 9's ten, \
+        // tender; cut RS.6a: and Tycho's crawler and lifter; doc 47 unit CO.10: and the wrecker;
+        // doc 49 unit CC.6: and the belt raider's unit file and the two space packs, last.
+        stock.len() + 35,
+        "nine shipped packs and thirty-five extension files: doc 16 section 9's ten, \
          the range's target, 16b cut AE.2's two weapons and their two rounds, \
          16b cut AE.1's three chassis, 16b cut AE.3's drone, doc 18 cut IC2's Dray and \
          doc 20 cut SM.3a's terrain vehicle and Dray-P, R7's relay station, R9b's Halcyon cruiser, \
@@ -2533,7 +2564,7 @@ fn m3_every_shipped_chassis_binds_its_core() {
     // Doc 18 cut IC2: twelve with the Dray, which fits no core (Class 0, the
     // drive ROM) — was eleven. Doc 20 cut SM.3a: fourteen with the terrain vehicle
     // and the Dray-P, neither fitting a core (Class 0, as the Dray).
-    let expected: [(&str, Fitted<'_>); 22] = [
+    let expected: [(&str, Fitted<'_>); 23] = [
         (content::LINE_TANK, line),
         (content::LINE_TANK_LASER, line),
         (content::LINE_TANK_THERMAL, line),
@@ -2578,6 +2609,8 @@ fn m3_every_shipped_chassis_binds_its_core() {
         (content::TYCHO_LIFTER, None),
         // Doc 47 unit CO.10: the wrecker, no core (Class 0, as the tender).
         (content::TV_WRECKER, None),
+        // Doc 49 unit CC.6: the belt raider, the corvette's hull, no core (as the corvette).
+        (content::RAIDER_HEAVY, None),
     ];
     assert_eq!(fielded.specs.len(), expected.len(), "every fielded chassis");
     for (entry, fitted) in expected {
@@ -3158,8 +3191,8 @@ fn ic2_the_dray_is_a_hauler_and_binds_class_zero() {
     // Dray (was `+ 1`, the Dray only).
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 11,
-        "the Dray, terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, Republic Corvette, tender, crawler, lifter and wrecker"
+        before.specs.len() + 12,
+        "the Dray, terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, Republic Corvette, tender, crawler, lifter, wrecker and belt raider"
     );
     for (id, reference) in &before.references {
         assert_eq!(
@@ -4452,8 +4485,8 @@ fn sm3a_nothing_fielded_before_the_vehicles_moved() {
     let before = Catalog::build_game(&operator, tacsim::NS).expect("the earlier content binds");
     assert_eq!(
         fielded.specs.len(),
-        before.specs.len() + 10,
-        "the terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, corvette, tender, crawler, lifter and wrecker"
+        before.specs.len() + 11,
+        "the terrain vehicle, Dray-P, relay station, Halcyon, escort line tank, corvette, tender, crawler, lifter, wrecker and belt raider"
     );
     for (id, reference) in &before.references {
         assert_eq!(

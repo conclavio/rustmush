@@ -655,17 +655,13 @@ impl SpaceShipState {
             rcs_authority: super::docking::DockingRcsAuthority::default(),
             crits: Vec::new(),
             status: HullStatus::Operational,
+            // Doc 49 unit CC.6: her mounts and decoys are her fit's
+            // (`tacsim.space_fit.dray`), laid by the overlay below.
             torpedo_tubes: Vec::new(),
-            lasers: vec![
-                LaserMount::standard_turret("laser_dorsal"),
-                LaserMount::standard_turret("laser_ventral"),
-            ],
+            lasers: Vec::new(),
             railguns: Vec::new(),
-            pdcs: vec![
-                PdcMount::standard_rotary("pdc_dorsal", 2_000),
-                PdcMount::standard_rotary("pdc_ventral", 2_000),
-            ],
-            decoys_remaining: 4,
+            pdcs: Vec::new(),
+            decoys_remaining: 0,
             active_decoy_ms: 0,
             non_prop_payload_kg: 0,
             dv_rem_mmps: 0,
@@ -1791,9 +1787,13 @@ impl LocalSpaceBubble {
     }
 
     /// Toggle a laser mount on `ship_id` between [`LaserMode::Offense`] and [`LaserMode::Defense`] (`D-35-8`).
+    ///
+    /// **A mode her fit does not allow is refused** (Q-49-24; doc 49 unit CC.6), so a laser
+    /// fitted defence-only stays in defence whoever asks.
     pub fn set_laser_mode(&mut self, ship_id: &str, laser_id: &str, mode: LaserMode) -> bool {
         if let Some(ship) = self.ships.get_mut(ship_id)
             && let Some(mount) = ship.lasers.iter_mut().find(|l| l.id == laser_id)
+            && mount.allowed_modes.allows(mode)
         {
             mount.mode = mode;
             return true;
@@ -2188,13 +2188,26 @@ impl LocalSpaceBubble {
         }
     }
 
-    /// Launch a torpedo salvo from `shooter_id` at `target_id` (`D-35-8`).
+    /// Launch a torpedo salvo from `shooter_id`'s first tube family at `target_id` (`D-35-8`).
     ///
     /// Each launched torpedo inherits `shooter`'s exact 3D velocity `vel_mmps` at launch.
     pub fn fire_torpedo_salvo(
         &mut self,
         shooter_id: &str,
         target_id: &str,
+        count: u8,
+    ) -> Vec<SpaceCombatEvent> {
+        self.fire_torpedo_salvo_from(shooter_id, target_id, None, count)
+    }
+
+    /// **Launch a salvo from the tube family `mount_id`** (doc 49 unit CC.6: each mount fires by
+    /// its id), or from her first family when `mount_id` is `None`. A family she does not carry
+    /// fires nothing.
+    pub fn fire_torpedo_salvo_from(
+        &mut self,
+        shooter_id: &str,
+        target_id: &str,
+        mount_id: Option<&str>,
         count: u8,
     ) -> Vec<SpaceCombatEvent> {
         let mut events = Vec::new();
@@ -2227,7 +2240,14 @@ impl LocalSpaceBubble {
         let Some(shooter_mut) = self.ships.get_mut(shooter_id) else {
             return events;
         };
-        let Some(tube) = shooter_mut.torpedo_tubes.first_mut() else {
+        let tube = match mount_id {
+            Some(id) => shooter_mut
+                .torpedo_tubes
+                .iter_mut()
+                .find(|tube| tube.id == id),
+            None => shooter_mut.torpedo_tubes.first_mut(),
+        };
+        let Some(tube) = tube else {
             return events;
         };
         if tube.cooldown_remaining_ms > 0 || tube.magazine_remaining == 0 {
@@ -2240,6 +2260,7 @@ impl LocalSpaceBubble {
             return events;
         }
         tube.magazine_remaining -= u16::from(salvo);
+        tube.fired_since_full = tube.fired_since_full.saturating_add(u16::from(salvo));
         tube.cooldown_remaining_ms = tube.reload_cooldown_ms;
 
         let accel = tube.accel_mps2.max(1);
@@ -2313,7 +2334,10 @@ impl LocalSpaceBubble {
         let mut shots: Vec<(u32, u16)> = Vec::new();
         if let Some(shooter_mut) = self.ships.get_mut(shooter_id) {
             for mount in &mut shooter_mut.lasers {
-                if mount.mode != LaserMode::Offense || mount.cooldown_remaining_ms > 0 {
+                if mount.mode != LaserMode::Offense
+                    || !mount.offence_allowed()
+                    || mount.cooldown_remaining_ms > 0
+                {
                     continue;
                 }
                 if shooter_mut
@@ -2375,8 +2399,19 @@ impl LocalSpaceBubble {
     ///
     /// Computes the predicted linear intercept lead point $\mathbf{r}_{\text{lead}}$ and
     /// launches an [`InFlightSlug`]. Cannot be intercepted by PDCs or lasers, but misses if
-    /// the target executes a lateral jink burn during time-of-flight!
+    /// the target executes a lateral jink burn during time-of-flight! Fires her first spinal gun.
     pub fn fire_railgun(&mut self, shooter_id: &str, target_id: &str) -> Vec<SpaceCombatEvent> {
+        self.fire_railgun_from(shooter_id, target_id, None)
+    }
+
+    /// **Fire the spinal gun `mount_id`** (doc 49 unit CC.6: each mount fires by its id), or her
+    /// first when `mount_id` is `None`. A gun she does not carry fires nothing.
+    pub fn fire_railgun_from(
+        &mut self,
+        shooter_id: &str,
+        target_id: &str,
+        mount_id: Option<&str>,
+    ) -> Vec<SpaceCombatEvent> {
         let mut events = Vec::new();
         let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
         else {
@@ -2409,7 +2444,11 @@ impl LocalSpaceBubble {
         let Some(shooter_mut) = self.ships.get_mut(shooter_id) else {
             return events;
         };
-        let Some(rg) = shooter_mut.railguns.first_mut() else {
+        let rg = match mount_id {
+            Some(id) => shooter_mut.railguns.iter_mut().find(|gun| gun.id == id),
+            None => shooter_mut.railguns.first_mut(),
+        };
+        let Some(rg) = rg else {
             return events;
         };
         if rg.cooldown_remaining_ms > 0 || rg.rounds_remaining == 0 || dist_m > rg.max_range_m {
@@ -2423,6 +2462,7 @@ impl LocalSpaceBubble {
             return events;
         }
         rg.rounds_remaining -= 1;
+        rg.fired_since_full = rg.fired_since_full.saturating_add(1);
         rg.cooldown_remaining_ms = rg.cooldown_ms;
         shooter_mut.heat_permille = shooter_mut
             .heat_permille
@@ -2465,6 +2505,28 @@ impl LocalSpaceBubble {
             flight_ms: tof_ms,
         });
         events
+    }
+
+    /// **Fire the tube family or spinal gun `mount_id`** ([`BubbleInputCommand::FireMount`];
+    /// doc 49 unit CC.6): a salvo of up to `count` from a tube family, a round from a spinal
+    /// gun, and nothing from an id she carries as neither.
+    pub fn fire_mount(
+        &mut self,
+        shooter_id: &str,
+        target_id: &str,
+        mount_id: &str,
+        count: u8,
+    ) -> Vec<SpaceCombatEvent> {
+        let Some(ship) = self.ships.get(shooter_id) else {
+            return Vec::new();
+        };
+        if ship.torpedo_tubes.iter().any(|tube| tube.id == mount_id) {
+            self.fire_torpedo_salvo_from(shooter_id, target_id, Some(mount_id), count)
+        } else if ship.railguns.iter().any(|gun| gun.id == mount_id) {
+            self.fire_railgun_from(shooter_id, target_id, Some(mount_id))
+        } else {
+            Vec::new()
+        }
     }
 
     /// Advance the bubble on **1:1 wall time** by `dt_wall_ms` while stamping
@@ -2766,7 +2828,8 @@ impl LocalSpaceBubble {
                         def_ship.heat_permille = def_ship
                             .heat_permille
                             .saturating_add(laser.heat_cost_permille);
-                        laser.cooldown_remaining_ms = laser.cooldown_ms;
+                        // Q-49-24: the cycle belongs to the mode.
+                        laser.cooldown_remaining_ms = laser.defence_cycle_ms();
                         events.push(SpaceCombatEvent::TorpedoInterceptedByLaser {
                             torpedo_id: torp.id,
                             defender_id: def_id.clone(),
@@ -3288,6 +3351,12 @@ impl LocalSpaceBubble {
                 shooter_id,
                 target_id,
             } => self.fire_railgun(shooter_id, target_id),
+            BubbleInputCommand::FireMount {
+                shooter_id,
+                target_id,
+                mount_id,
+                count,
+            } => self.fire_mount(shooter_id, target_id, mount_id, *count),
             BubbleInputCommand::StepWall {
                 dt_wall_ms,
                 ic_now_s,
@@ -3384,6 +3453,17 @@ pub enum BubbleInputCommand {
     FireRailgun {
         shooter_id: String,
         target_id: String,
+    },
+    /// **Fire one tube family or spinal gun by its id** (doc 49 unit CC.6: each mount fires by
+    /// its id): a salvo of up to `count` from a tube family, or a round from a spinal gun.
+    /// [`Self::FireTorpedoSalvo`] and [`Self::FireRailgun`] fire the first of each family, so a
+    /// hull that carries one of a family records the tape she always did; this names any
+    /// other.
+    FireMount {
+        shooter_id: String,
+        target_id: String,
+        mount_id: String,
+        count: u8,
     },
     StepWall {
         dt_wall_ms: u32,
@@ -3504,4 +3584,85 @@ fn vector_to_bearing_pitch(v: [i64; 3]) -> (f64, f64) {
     let bearing = y.atan2(x).to_degrees().rem_euclid(360.0);
     let pitch = z.atan2(horiz.max(1e-6)).to_degrees();
     (bearing, pitch)
+}
+
+/// **Doc 49 unit CC.6 (Q-49-24): the fit names a laser's modes, and each mode has its cycle.**
+#[cfg(test)]
+mod cc6_tests {
+    use super::*;
+    use crate::space::weapons::LaserModes;
+
+    #[test]
+    fn cc6_a_mode_the_fit_does_not_allow_is_refused() {
+        let mut bubble = LocalSpaceBubble::new("bubble.test.cc6", "domain.9", "Test", 1_000);
+        let mut dray = SpaceShipState::new_dray(
+            "her",
+            "Her",
+            crate::space::picket::CARRIER_PARTY,
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        if let Some(laser) = dray.lasers.first_mut() {
+            laser.allowed_modes = LaserModes {
+                offence: true,
+                defence: false,
+            };
+        }
+        bubble.insert_ship(dray);
+        assert!(
+            !bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Defense),
+            "her fit allows no defence on this laser"
+        );
+        assert!(
+            bubble.set_laser_mode("her", "laser_ventral", LaserMode::Defense),
+            "the dual-mode one switches"
+        );
+        let modes: Vec<LaserMode> = bubble
+            .ships
+            .get("her")
+            .map(|ship| ship.lasers.iter().map(|laser| laser.mode).collect())
+            .unwrap_or_default();
+        assert_eq!(modes, [LaserMode::Offense, LaserMode::Defense]);
+    }
+
+    #[test]
+    fn cc6_each_shipped_laser_mode_cycles_as_its_row_says() {
+        let row = crate::space::custody::space_mount_row("tacsim.space_mount.turret_laser")
+            .expect("the shipped turret");
+        let crate::definitions::space_mount::SpaceMountFamily::Laser(def) = &row.family else {
+            panic!("the turret is a laser");
+        };
+        let laser = crate::space::weapons::LaserMount::from_def(
+            "laser_1",
+            def,
+            LaserModes::BOTH,
+            LaserMode::Offense,
+        );
+        assert_eq!(
+            Some(laser.cooldown_ms),
+            def.modes.offence.map(|mode| mode.cycle_ms)
+        );
+        assert_eq!(
+            Some(laser.defence_cycle_ms()),
+            def.modes.defence.map(|mode| mode.cycle_ms)
+        );
+        assert_eq!(
+            laser.defence_cooldown_ms, None,
+            "one cycle for both, so her document is as it was"
+        );
+        let mut slow = def.clone();
+        slow.modes.defence = Some(crate::definitions::space_mount::LaserModeDef { cycle_ms: 500 });
+        let split = crate::space::weapons::LaserMount::from_def(
+            "laser_1",
+            &slow,
+            LaserModes::BOTH,
+            LaserMode::Defense,
+        );
+        assert_eq!(split.defence_cycle_ms(), 500);
+        assert_eq!(
+            Some(split.cooldown_ms),
+            def.modes.offence.map(|mode| mode.cycle_ms),
+            "offence keeps its own"
+        );
+    }
 }

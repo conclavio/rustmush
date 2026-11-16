@@ -8631,8 +8631,9 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
         fielded.specs.len(),
         // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
         // RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's crawler and lifter;
-        // doc 47 unit CO.10: twenty-two with the wrecker.
-        22,
+        // doc 47 unit CO.10: twenty-two with the wrecker; doc 49 unit CC.6: twenty-three with the
+        // belt raider.
+        23,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          16b cut AE.3's drone, doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle \
          and Dray-P, plus R7's relay station and R9b's Halcyon"
@@ -10159,8 +10160,9 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
         fielded.specs.len(),
         // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
         // RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's crawler and lifter;
-        // doc 47 unit CO.10: twenty-two with the wrecker.
-        22,
+        // doc 47 unit CO.10: twenty-two with the wrecker; doc 49 unit CC.6: twenty-three with the
+        // belt raider.
+        23,
         "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone, doc 18 cut \
          IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P, plus R7's relay station and R9b's Halcyon"
     );
@@ -10987,8 +10989,9 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
         fielded.specs.len(),
         // Doc 35 cut SF.R12: eighteen with the Republic Corvette (was seventeen); doc 41 cut
         // RS.1: nineteen with the tender; cut RS.6a: twenty-one with Tycho's crawler and lifter;
-        // doc 47 unit CO.10: twenty-two with the wrecker.
-        22,
+        // doc 47 unit CO.10: twenty-two with the wrecker; doc 49 unit CC.6: twenty-three with the
+        // belt raider.
+        23,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
          the drone, the Dray, the terrain vehicle and the Dray-P, plus R7's relay station and R9b's Halcyon"
     );
@@ -11091,7 +11094,8 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
             .get(&UnitClass::Capital)
             .cloned()
             .unwrap_or_default(),
-        vec!["corvette", "halcyon"]
+        // Doc 49 unit CC.6: and the belt raider, on the corvette's hull.
+        vec!["corvette", "halcyon", "raider_heavy"]
     );
     assert_eq!(
         classes
@@ -11115,7 +11119,8 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
                 || id.as_str() == content::TV_TENDER
                 || id.as_str() == content::TV_WRECKER
                 || id.as_str() == content::TYCHO_CRAWLER
-                || id.as_str() == content::TYCHO_LIFTER,
+                || id.as_str() == content::TYCHO_LIFTER
+                || id.as_str() == content::RAIDER_HEAVY,
             "{id}: only the drone, the Dray, the Dray-P, the terrain vehicle, the relay station, Halcyon, \
              the escort line tank, the corvette, the tender, the wrecker, the crawler and the lifter              write a class word"
         );

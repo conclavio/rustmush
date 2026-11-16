@@ -867,6 +867,42 @@ pub const TV_WRECKER: &str = "tacsim.unit.tv_wrecker";
 pub const EXTENSIONS_WRECKER: [(&str, &str); 1] =
     [("tacsim/content/units/tv_wrecker.json", TV_WRECKER_JSON)];
 
+/// `crates/tacsim/content/units/raider_heavy.json` (doc 49 unit CC.6; Q-49-11).
+pub const RAIDER_HEAVY_JSON: &str = include_str!("../../content/units/raider_heavy.json");
+
+/// The belt raider's pack id.
+pub const RAIDER_HEAVY_PACK: &str = "tacsim.pack.raider_heavy";
+
+/// **The belt raider** (doc 49 unit CC.6; Q-49-11): her own unit file, where a Rust overlay over
+/// the corvette stood. Her sections, drive, stowage and interior are the corvette's; her fit is
+/// `tacsim.space_fit.raider_heavy`. Class `capital`, so never fielded in a ground arena.
+pub const RAIDER_HEAVY: &str = "tacsim.unit.raider_heavy";
+
+/// **The belt raider, one unit schema and no row of its own** (doc 49 unit CC.6), fielded after
+/// every earlier table, so none moves.
+pub const EXTENSIONS_RAIDER_HEAVY: [(&str, &str); 1] =
+    [("tacsim/content/units/raider_heavy.json", RAIDER_HEAVY_JSON)];
+
+/// `crates/tacsim/content/space/mounts.json` (doc 49 unit CC.6): the space mount rows.
+pub const SPACE_MOUNTS_JSON: &str = include_str!("../../content/space/mounts.json");
+
+/// The space mount rows' pack id.
+pub const SPACE_MOUNTS_PACK: &str = "tacsim.pack.space_mounts";
+
+/// `crates/tacsim/content/space/fits.json` (doc 49 unit CC.6): each hull's fit.
+pub const SPACE_FITS_JSON: &str = include_str!("../../content/space/fits.json");
+
+/// The hull fits' pack id.
+pub const SPACE_FITS_PACK: &str = "tacsim.pack.space_fits";
+
+/// **Space content as data** (doc 49 unit CC.6; Q-49-11): the mount rows and the fits that name
+/// them, in `requires` order, fielded **last**, after every unit a fit names. Neither pack
+/// mints a definition (`crate::definitions::space_mount`), so the registry is unmoved.
+pub const EXTENSIONS_SPACE: [(&str, &str); 2] = [
+    ("tacsim/content/space/mounts.json", SPACE_MOUNTS_JSON),
+    ("tacsim/content/space/fits.json", SPACE_FITS_JSON),
+];
+
 /// `crates/tacsim/content/units/corvette.json` (doc 35b cut SF.R12).
 pub const CORVETTE_JSON: &str = include_str!("../../content/units/corvette.json");
 
@@ -1244,6 +1280,9 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_TENDER.as_slice(),
         EXTENSIONS_TYCHO.as_slice(),
         EXTENSIONS_WRECKER.as_slice(),
+        // Doc 49 unit CC.6: the belt raider's unit file, then space content as data.
+        EXTENSIONS_RAIDER_HEAVY.as_slice(),
+        EXTENSIONS_SPACE.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),
