@@ -1,6 +1,6 @@
 # 49. Combat content — the armaments, the rounds and the shot, surveyed
 
-Draft 0.3, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
+Draft 0.4, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
 lane, with the lead spot-checking the cycle figures, the cycle floor, the card presets, the slot limit
 and the free laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
 0.1, the same day, was the survey.
@@ -18,8 +18,19 @@ The 5 s floor sits above two figures §5 proposed: the ground pulse laser's 3 s 
 laser's 4 s. They are raised as Q-49-19 (§6.5).
 
 **Draft 0.3, the same day, records Q-49-19 at its default:** one 5 s floor for every mount a player
-or mind fires, on both kernels. The pulse laser and the space offence laser cycle at 5 s. Every
-other question is open.
+or mind fires, on both kernels. The pulse laser and the space offence laser cycle at 5 s.
+
+**Draft 0.4, the same day, records that every other question is accepted at its default as
+written.** These are Q-49-1, Q-49-4, Q-49-6 and Q-49-8 to Q-49-18. Every question in this survey is
+now ruled. What the defaults settle:
+- **The trigger:** a condition slot stays, but must carry a judgement term (Q-49-8). The Line card's
+  floor is 35% with a 25% reserve.
+- **Rounds are produced at the works** (Q-49-4). Read with Q-49-5's ruling, the recipes are sized so
+  a produced round costs about its GC.7 price.
+- **Lasers are the anti-drone fit on the ground** (Q-49-6), and space content moves to data (Q-49-11).
+- **Space magazines persist** and are rearmed at a berth (Q-49-12).
+- **One re-bless per kernel**, with tests reading content (Q-49-16), and the bot is held to
+  discipline (Q-49-17).
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -398,8 +409,10 @@ provisional:
 - Q-49-7 is accepted at its default.
 
 Each ruled question carries its decision first, with the proposed text kept under it for the record.
-§6.5 holds Q-49-19, raised by the floor and accepted at its default the same day (Draft 0.3). The
-other questions are open.
+§6.5 holds Q-49-19, raised by the floor and accepted at its default the same day (Draft 0.3).
+
+**Ruled 2026-11-15 (Draft 0.4):** every other question, Q-49-1, Q-49-4, Q-49-6 and Q-49-8 to Q-49-18,
+is accepted at its default as written. Their proposed text below is the decision.
 
 ### 6.1 Order and the trigger
 
@@ -471,8 +484,8 @@ other questions are open.
 **Q-49-5 — How precious a round is.**
 - **Decision (owner ruling, 2026-11-15):** **keep GC.7's prices**: AP 12 cr, a box of ball 25 cr,
   HE 150 cr, a missile 1,500 cr. "Scarcity comes from magazine size, we dont want to discourage
-  fighting." A full cannon load of 24 HE is then 3,600 cr. My reading for Q-49-4, if it is accepted:
-  the munitions recipes are sized so that a produced round costs about its GC.7 price.
+  fighting." A full cannon load of 24 HE is then 3,600 cr. Q-49-4 was accepted (Draft 0.4), so on my
+  reading the munitions recipes are sized so that a produced round costs about its GC.7 price.
 - **Proposed default (as written):** until the recipes set the price, double GC.7's prices (provisional): HE
   300 cr, AP 24 cr, a box of ball 50 cr, a missile 4,000 cr. A full main-gun load then costs about
   7,200 cr against the new 24-round magazine.
