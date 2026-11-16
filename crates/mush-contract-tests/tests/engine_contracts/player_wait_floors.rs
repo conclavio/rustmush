@@ -7,7 +7,8 @@
 //! short. This guard pins the seven the audit at `bf0b5f24` found and the owner raised, and
 //! each code cap that would otherwise hold a value under the floor, so none drifts back.
 //! Doc 41's salvage claim window, debt grace and RS.7 hold, raised by the RS window, are pinned
-//! here with RS.10's consent wait (8).
+//! here with RS.10's consent wait (8). Doc 48 §4.3's licence resale offer (12) is counted in real
+//! seconds at the live rate.
 
 use serde_json::Value;
 
@@ -211,6 +212,40 @@ fn an_absent_leaders_void_waits_at_least_28_ic_days() {
     at_least(
         "tacsim::field::standing::VOID_ABSENT_IC_S",
         tacsim::field::standing::VOID_ABSENT_IC_S,
+    );
+}
+
+/// The live game clock's rate (owner, 2026-11-11: an IC day is one real hour), for a wait
+/// counted in real seconds.
+const LIVE_IC_RATE: i64 = 24;
+
+/// 12. **Doc 48 §4.3** (the second review, doc 48b): a licence resale offer's lifetime, counted
+///     in real seconds, at the live rate — the code cap, the deployment default and the shipped
+///     example. It was 86,400 real seconds, 24 IC days.
+#[test]
+fn a_licence_resale_offer_stands_at_least_28_ic_days() {
+    for (name, real) in [
+        (
+            "managed_paid_resale::MAX_OFFER_SECONDS",
+            mush_economy::managed_paid_resale::MAX_OFFER_SECONDS,
+        ),
+        (
+            "MarketTerms::PROVISIONAL.resale_offer_seconds",
+            tacsim::launch::MarketTerms::PROVISIONAL.resale_offer_seconds,
+        ),
+    ] {
+        at_least(name, real * LIVE_IC_RATE);
+    }
+    let example: Value = serde_json::from_str(include_str!(
+        "../../../../deploy/instance/launch.json.example"
+    ))
+    .expect("launch.json.example parses");
+    let found = find(&example, "resale_offer_seconds")
+        .and_then(Value::as_i64)
+        .expect("launch.json.example names resale_offer_seconds");
+    at_least(
+        "launch.json.example resale_offer_seconds",
+        found * LIVE_IC_RATE,
     );
 }
 

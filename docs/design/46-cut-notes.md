@@ -3875,3 +3875,14 @@ ends at 12.6%, 11.3%, 11.8% and 17.1%; what is left on top of each table is the 
 **Found on the way.**
 
 - No defect in production code was found, and no production behaviour was changed.
+
+## Outside the train: one snapshot line moved by a defect fix (2026-11-15)
+
+Not a doc 46 unit, so Q-46-2's "no unit of doc 46 may re-bless" does not bind it; recorded here
+so the moved byte is explained. Doc 48 §4.3 (the second review, doc 48b) found that a licence
+resale offer stood at most 86,400 real seconds, which is 24 IC days at the live 24:1 rate, under
+the owner's 28-IC-day floor for a wait on a player's response. The fix raised
+`mush_economy::managed_paid_resale::MAX_OFFER_SECONDS` and `MarketTerms::PROVISIONAL`'s
+`resale_offer_seconds` to 100,800. `mush-economy/tests/ct0/wire_paid_resale.snap` moves one line,
+`max offer seconds = 86400` to `100800`. No digest, codec or other line moves: the family's
+`sample()` consent carries its own deadline, not the cap.

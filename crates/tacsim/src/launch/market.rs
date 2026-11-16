@@ -396,7 +396,7 @@ mod tests {
             )
         );
         check_eq!(p.clerk, ObjId(40));
-        check_eq!(p.resale_offer_seconds, 86_400);
+        check_eq!(p.resale_offer_seconds, 100_800);
         // The Registry authority, both twins on the same scope and operators.
         check_eq!(
             p.recall,
