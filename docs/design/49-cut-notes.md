@@ -851,15 +851,20 @@ The space palette and doctrines (Q-49-7, Q-49-10, Q-49-19, Q-49-24, Q-49-25, Q-4
   - `fire_picture`'s states needed no change: they read the cycle left in her current mode.
 - **The three doctrines, rewritten** (`content/minds/`; `picket_cast.json`'s three digests moved
   with them). Each reads `space_mount(v, id)` and fires only what can land:
-  - a salvo of two torpedoes at each reload;
   - a spinal round only at a hull that has held her course since the doctrine's last think (it
     remembers her velocity), since a hull that burns is not where the round was aimed;
-  - a laser in offence only while her lock lies within its reach (`lock_damage` is not `()`).
+  - a laser in offence only while her lock lies within its reach (`lock_damage` is not `()`);
+  - a salvo of two torpedoes at each reload, at a hull whose screen lets them through.
 
   Per doctrine:
-  - **Kirkwood picket:** all three at a hostile (the raider), where it fired its laser alone.
+  - **Kirkwood picket:** the spinal gun and the laser at a hostile (the raider), where it fired
+    its laser alone; its tubes only at a hull that ran the picket, a hauler, since the raider's
+    warship's screen stops a lone salvo.
   - **Interdictor:** the laser and the spinal gun at any hull that will not heave to, and the
-    tubes only at a hull radiating for a fight; its hail and heave-to logic is unchanged.
+    tubes only at a hull radiating for a fight. It closes only until its laser reaches the hull,
+    then holds its drive: `speed(n)` left standing carried it past her ever faster, and the
+    closing speed it piled up left no Dray able to heave to. Its hail and heave-to logic is
+    unchanged.
   - **Belt raider:** her opener as before; then her torch dies (`hold()`) and she presses from
     where she is. She prefers a prey radiating for a fight to one that is not, among those customs
     have finished with, and presses only the former, as before.
@@ -922,11 +927,17 @@ TESTS-PLACEHOLDER
   (65,891 B). Leaving out an idle laser's cooldown wins the bytes back; it reads back as nought.
   A binary from before this unit cannot read a laser saved without it (pre-launch: no document
   needs it).
-- **The doctrines changed behaviour beyond the lasers.** The raider's torch dying after her opener
-  and her preferring a fighting prey are behaviour changes, made because a raider that burns flat
-  out can never be hurt by a lone corvette (the dodge stays) and because a raider that presses
-  nobody let an escort she had opened on sail away. The picket's corvette now disables the raider
-  in about fifty seconds with spinal rounds, where it took about twenty-four with the old laser.
+- **The doctrines changed behaviour beyond the lasers**, each for a reason the stories showed:
+  - the raider's torch dies after her opener: a raider that burns flat out can never be hurt by a
+    lone corvette, since the dodge stays;
+  - the raider prefers a fighting prey: once a quiet carrier was the nearest cleared, she pressed
+    nobody, and an escort she had opened on sailed away (sfr18);
+  - the picket keeps its tubes for a runner: its salvos at the raider were all stopped, and their
+    thirty-second flights kept every docking under fire long after the raider was down;
+  - the interdictor holds once its laser reaches.
+
+  The picket's corvette now disables the raider in about fifty seconds with spinal rounds, where
+  it took about twenty-four with the old laser.
 - **Doc 35's SF.R stories had to change premise**, because no story hull can now make an
   interdictor derelict by play (measured: four minutes of close laser fight leave a jinking Dray
   and the interdictor both standing), and the story lint forbids writing bubble state off the
@@ -946,7 +957,8 @@ TESTS-PLACEHOLDER
   - sfr6 steps until the corvette has disabled the raider; sfr15's point-defence check starts its
     torpedoes inside the new envelope; sfr20 turns on what the interdictor's fire has done rather
     than on a tick count.
-- **Files outside the row**, each the least this needed, approval asked of the lead:
+- **Files outside the row**, each the least this needed. I asked the lead about them, and about
+  the SF.R stories' change of premise, and had no answer before opening the PR:
   - `space/weapons.rs`: the per-mode cycle's state and the switch;
   - `space/custody.rs`: CC.6's `table_before_cc6` test retired, as CC.6's hand-over asked;
   - `space/view.rs`, `space/picket.rs`: a test each whose premise the palette moved;
@@ -965,9 +977,12 @@ TESTS-PLACEHOLDER
 - **Collector drones are not soft.** A collector drone is a Dray's hull section (600 internals), so
   an offence laser takes minutes to bring one down, though Q-49-7 makes lasers the drones' answer.
   That is mining content.
-- **The Δv price of a dodge is real but small**: these hulls carry kilometres a second of change
-  of speed, so a dodge costs a few metres a second of it. A raider that burned flat out could not
-  be hurt by a lone corvette at all; the doctrine, not the price, keeps her from it.
+- **The Δv price of a dodge is real but small**: these hulls carry far more change of speed than
+  any fight spends (a Dray's, on her 6,000 km/s exhaust, runs past a thousand kilometres a
+  second), so a dodge's few metres a
+  second never bind. A raider that burned flat out could not be hurt by a lone corvette at all;
+  the doctrine, not the price, keeps her from it. Pricing the dodge so it binds is the owner's
+  call, and not this unit's.
 - **CC.7's second part** (the berth rearm) is untouched.
 
 ## CC.10
