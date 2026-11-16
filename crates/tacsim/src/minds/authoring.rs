@@ -204,6 +204,12 @@ mod tests {
                 .any(|(abi, api)| *abi == "rhai=1.26.0;api=8;stock=3" && *api == 8),
             "the ABI that API 9 replaced"
         );
+        assert!(
+            super::super::RETAINED_ABIS
+                .iter()
+                .any(|(abi, api)| *abi == "rhai=1.26.0;api=9;stock=3" && *api == 9),
+            "the ABI that API 10 replaced (doc 49 unit CC.9)"
+        );
         for (abi, api) in super::super::RETAINED_ABIS {
             let source = format!(
                 "const MIND = #{{name: \"Retained\", api: {api}, class: \"discretion\", role: \"combat\", core: \"I\"}}; fn think(v,c) {{ this.marker = 73; }}"
@@ -251,7 +257,10 @@ mod tests {
         assert!(RevisionRules.validate(&source, &envelope()).is_ok());
         assert!(
             RevisionRules
-                .validate(&source.replace("api: 9", "api: 8"), &envelope())
+                .validate(
+                    &source.replace(&format!("api: {}", super::super::API_VERSION), "api: 8"),
+                    &envelope()
+                )
                 .is_err()
         );
     }

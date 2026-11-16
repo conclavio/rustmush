@@ -3613,34 +3613,43 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `14_806_315_734_231_040_912` / `abbc70ca…` / `d333c189…`,
 /// `18_435_737_973_288_515_964` / `8f1f0f70…` / `b3ed4810…`,
 /// `3_500_444_545_657_099_864` / `0d8bad3f…` / `62cbfde1…`.
+///
+/// **Doc 49 unit CC.9 re-pins all four rows.** The mind ABI moved to API 10 (`space_mount`,
+/// the space aspect) and the Standard header with it, so every hash moved again, the float
+/// probe's with them. No fight moved: the four stopping times, the probe's 3,600 thinks and the
+/// 369098751 bitmask are as they were. Read on Linux (conclav.dev); Windows is ci.yml's same
+/// step. Were: `17_808_863_300_457_361_787` / `18bd09cf…` / `b98692b4…`,
+/// `440_362_425_077_439_412` / `b244b077…` / `a70d1073…`,
+/// `17_895_885_161_793_245_509` / `3790f74c…` / `56015f59…`,
+/// `10_945_038_470_150_213_193` / `7f5b2edf…` / `ed2ac389…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         180250,
-        17808863300457361787,
-        "18bd09cfb9f5c732e318e7f92caa64c2b74ad92bcfc26c5133d4e595b9690859",
-        "b98692b4b9eac968a66e33b1d67713030076626ef658d98d9384cdcbb6a2c4fb",
+        6979424319955744793,
+        "94096116ae363d089951ce9d38d638cef5ff2a8796b5c76abdb36641ac6243d7",
+        "256f2a982c61c31f20e7dbda16d92ccdc23e4d3d41b41a31b81c547d68445e0c",
     ),
     (
         2351,
         177500,
-        440362425077439412,
-        "b244b077f1c969228feaab17d8cb21c07f7b2fc3a9c64e444cf502a6d13de5fd",
-        "a70d1073d54b2d982c81681314cf8a6ec8a4d65c7346f9f0661a16c89c69941b",
+        16055487243381801295,
+        "1edf1d1410774ddbeee8e85e3cd869bdd179d209eaf7e0647acfdf2b3e1df306",
+        "747117c78eb2ee55b4a0de21950529bc9e4894727289d11c9984593bb35941af",
     ),
     (
         2352,
         170000,
-        17895885161793245509,
-        "3790f74c619041d7e339a03fec35cf4d3d62a4cca7618b8eae38732f30e69cc6",
-        "56015f59c50fea613e1c20caf8dc949866c6db93c6c4eb112b75a29cb033498d",
+        3235368525617475578,
+        "261f3764beb28774da497c38e5c35ec07f7e5f8474bfa236bc83ccc524856cd9",
+        "73aec74ca9bc916ac4524272f1c33aa63d967f0d89a53674663ef72add10c9d9",
     ),
     (
         2350,
         900000,
-        10945038470150213193,
-        "7f5b2edfac73c467a5735280f3191f273802fe640499689d16ad8cbd57e2b298",
-        "ed2ac389266c0068d8487e6b8dc1bd7e60005593f89534eabe8fff6d7c29bbd9",
+        16916042141164977008,
+        "312402a1caa68ca302bace8094bd1c0143ee90773e37d8c0ff9dd176bfc79d40",
+        "fe10f14d4eeb40e5a5db8e8ec3f82e002fa62418fb0621ef3fcc52715edfb749",
     ),
 ];
 

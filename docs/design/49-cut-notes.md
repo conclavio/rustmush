@@ -502,7 +502,190 @@ packs, and **not minted**: no unit binding names them, so the definition registr
 
 ## CC.9
 
-Not built.
+Space decision support (Q-49-13, space half, as corrected by doc 48b's W-49-5). Built 2026-11-15
+on main `c85a8744f`, with CC.6 (#627) merged. Space has no chance roll, so nothing here is odds:
+every figure is one the kernel already uses to decide a shot.
+
+**Survey.**
+
+- **What a player saw.** `+tac/status` printed the lock, the point-defence switch, mount counts
+  and heat. `+tac/scan` printed range, light-lag, signature and EMCON. The canopy's cowling
+  printed hull, change of speed, heat, PDC mode and EMCON. Nothing showed rounds, a cycle, a
+  laser's mode, the lock's range or which band of her hull faced the shooter. The TUI drew the
+  ground's text panel under the space canopy, which in space read "not in a cockpit".
+- **What a space mind read** (`space/view.rs`, as CC.6 left it): one row a mount it may fire,
+  with `p_permille` 850 on every row, one band of 250 km, `heat_per_shot` 0, a `ready` that
+  ignored the laser's mode, and `aspect` front on every contact.
+- **What the kernel decides a shot by** (`space/bubble.rs`, read only):
+  - an offence laser fires when its fit allows offence, it is in offence, its cycle is done,
+    the pulse would not take her heat past 1,000 per mille, and the lock lies within its reach;
+    it lands at once, `LaserMount::damage_at_range`;
+  - the spinal gun fires on its cycle, its rounds, the same heat rule and its reach; its round
+    flies `compute_railgun_lead`'s time;
+  - the tubes fire on their cycle and magazine, with no reach and no heat;
+  - the band struck is `SpaceShipState::select_facet_for_attack`: five bands, front, left,
+    right, rear and top (a hull struck from below reads left or right).
+- **The bot** reads no space line: its lanes never open a bubble (`mining_cohort.rs` notes the
+  picket's words as ones the bot does not have). So it has no space sentence table to add to.
+
+**Built.**
+
+- **One reading, `space::view::fire_picture`.** For a hull in a bubble: every mount she carries
+  (lasers, tube families, spinal guns, point-defence rotaries, each family in her fit's order),
+  and her lock while her sensors hold it. Each mount (`MountFacts`) carries:
+  - its family, a laser's mode, its rounds and what her fit stows (`magazine_max()`; a rotary's
+    drum has no maximum the kernel counts back to, so it reads rounds left);
+  - its cycle left, its reach and its heat a shot;
+  - its state, the first that holds of `down`, `empty`, `cycling`, `too_hot`, `past_reach`,
+    else `ready`. Every mount of a hull that is not operational is `down`;
+  - against a held lock within its reach, what one laser pulse lands there or how long a
+    spinal round flies there.
+
+  The lock (`LockFacts`) carries the ship, her callsign, the range and her band of five that
+  faces the shooter.
+- **The same rows on every surface.** `mush_pixel::space_cockpit::fire_rows` prints the
+  feed's `fire` object (`view::fire_feed`) as a head, a row a mount and a lock row:
+
+  ```text
+  Mount          Kind      Rounds/mode     Ready       At the lock
+  laser_dorsal   laser     offence         ready       98 a pulse
+  rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s
+  pdc_port       point def 4000 left       ready
+  Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.
+  ```
+
+  - **Line mode:** `+tac/status` prints its head line (now lock, PDC switch and heat; the mount
+    counts went, the rows replace them), then the rows two spaces in
+    (`commands::fire_status_lines`).
+  - **The cockpit feed:** `push_space_panels` adds `fire` to every `space.cockpit` keyframe
+    from a bubble. `bubble.rs`'s `cockpit_feed` is unchanged.
+  - **The pixel canopy** (the TUI's picture and the web's, through `mush-pixel-wasm`) draws
+    the rows over the cowling, bottom left, at the font's own size, coloured by what each
+    says.
+  - **The TUI:** under the space canopy and the holotank, a MOUNTS column of the rows beside
+    the comms (`cockpit_text::draw_space_panel`), in place of the ground's panel.
+- **The mind reads the same (API 10).**
+  - Its rows of `v.weapons` are built from the picture: `p_permille` is `()` (no odds;
+    the collector drone's row too), `bands_cm` is the mount's one reach (none for the tubes),
+    `heat_per_shot` is the kernel's, and `ready` is cycled, with rounds, and a laser in offence.
+    `ready_in_ms` is still the cycle left, which every shipped doctrine reads, so none of them
+    moves.
+  - New kernel `space_mount(v, id)`, a read at fee 1: one mount's `family`, `mode`, `rounds`,
+    `rounds_max`, `ready_in_ms`, `state`, `reach_m`, `heat_per_shot`, `lock_damage` and
+    `lock_flight_ms`, for every mount, point defence among them.
+  - `Contact.aspect` in a space bubble reads her band of five (`SpaceContactView::facet`);
+    on the ground it is unchanged. `ViewContact::aspect` carries the nearest of the arena's
+    four, front for top, and nothing in space reads it.
+- **The ABI bump, by record.** `API_VERSION` 10, `MIND_ABI = "rhai=1.26.0;api=10;stock=3"`,
+  `RETAINED_ABIS` gains api 9 (six rows). The stock, house and acceptance content's headers,
+  manifests and envelopes say api 10; their digests moved with the bytes:
+  - Standard Doctrine source `2bea2391…7b5fef` to `c544bfbd…f9375f` (`STANDARD_SHA256`, and
+    every pin that quotes it or its 16-hex prefix);
+  - the field pilot's source, and the three House envelopes' digests in their manifests;
+  - **the picket cast:** `content/space/picket_cast.json` names each doctrine by its SHA-256,
+    so four entries moved with their headers: the picket's, the raider's, the interdictor's and
+    the drone's. `cast.rs` holds them to the files. Until they moved, every picket story failed
+    with "the picket's bubble opens on her".
+- **Re-pinned by record**, read on Linux (conclav.dev). Each pin moved in a hash alone: no
+  fight, count, time or ledger line moved otherwise.
+
+  | Pin | What moved |
+  |---|---|
+  | `match_/seal.rs` `m5rules_default_seal_identities_are_pinned` | the nine default seal identities; the API 4 projection still holds |
+  | `tests/domain_arena/minds.rs` `m1a5_the_production_hash_does_not_move` | three state hashes |
+  | `tests/domain_arena/motor.rs` `DUEL_HASH_API6_OBSERVED`, `M1B0_DUEL_LINES` | the duel's hash; its 34 ledger lines, each in `hash` alone |
+  | `tests/domain_arena/reflex.rs` `m1a1_…`, `M1B0_J_LINES` | two substep hashes; the 50 ledger lines, each in `hash` alone |
+  | `minds/registry/trials/physical_tests.rs` `C4_TRIAL_PINS` | each row's state, ledger and result digests; every case still ends in the same elimination at 58,500 ms |
+  | `tests/domain_arena/minds_rhai.rs` `M2_CROSS_PLATFORM_PINS` (`#[ignore]`d, run by name) | the four rows' hashes; the stopping times, the 3,600 thinks and the float bitmask as they were |
+  | `tests/harness_baseline/arena.linux.json` (`#[ignore]`d, run by name) | `ledger_bytes_streamed` (1,651,236 to 1,650,975: the hash digits) and the minds lane's four `final_substep_hash` leaves; the record is `cc9_deterministic_update` |
+
+  The harness delta moved those five fields and no other field of its deterministic block. It
+  read p50 -6.3%, p99 -2.2% and window p99 -9.5%. Unlike AP.3, I did not dump the ledger line by
+  line. The evidence is the delta itself and the 84 arena ledger lines above, each of which
+  moved in `hash` alone.
+- **Help:** `docs/help/space.md`, "Reading your mounts".
+
+**Tests.**
+
+All runs were on conclav.dev, in a throwaway clone, with the unit's patch applied on
+`c85a8744f`.
+
+- **New tests:**
+  - `space::view::cc9_tests`, five tests:
+    - Halcyon's full fit, a row for each of its eight mounts; the kernel's damage at range and
+      the spinal round's flight time;
+    - the five bands, each through the picture, the mind's space row and `Contact.aspect`;
+    - what holds a mount back: a cycle, defence mode, an empty magazine, a rotary that is down
+      or out of rounds, a derelict hull, the heat ceiling (and the kernel refuses the same shot),
+      and past reach;
+    - a mind's rows: no odds, the true reach and heat, `ready` in defence; `space_mount` for
+      every mount and `()` on the ground;
+    - every `+tac/status` row within 120 columns at the widest fill on Halcyon's full fit.
+  - `mush-pixel`, three tests: the rows' words and tones with no odds; the lock row's widest
+    fill (a 32-character id, a cut callsign, `u64::MAX` metres); the canopy draws the rows inside
+    its colour budget.
+  - `mush-net-ssh`: the space panel at 120 columns prints every mount row whole, beside the
+    comms, and says so when there is no fire object.
+- **Suites, all passing:**
+  - `tacsim`'s lib tests with `domain_arena`, `domain_world` and `domain_field`: 4,108 tests,
+    every space story of doc 47 among them (`voyage.rs`, `space_ap9.rs`, `field_ap11.rs`,
+    `mw13_ship_mind.rs`, `mw21_completion.rs`, the `tick_thinks_tests.rs` return-fire tests);
+  - `mush-pixel` with `mush-net-ssh`: 632 tests;
+  - `mush-bot`'s lib tests: 536 tests;
+  - the bot job (`cargo nextest run -P ci -p mush-bot`, less its two long stories, and its doc
+    tests): 784 tests;
+  - `tacsim`'s harness binary's own tests, 24, `every_committed_baseline_agrees_on_the_deterministic_block`
+    among them;
+  - by name: `minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host`,
+    `twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool`, and the
+    harness in release, its measurement and then its delta. On the re-blessed file the delta
+    reads its deterministic block equal (106 fields) and the four minds blocks equal, with
+    p50 +0.9%, p99 +3.4% and window p99 +4.5%.
+- **Windows:** the C4 trial by hand (`cargo test -p tacsim --lib c4_a_registry_trial -j 2`)
+  reads the same four rows as Linux. The cross-platform corpus's Windows run is ci.yml's step.
+- **Guards, all passing:**
+  - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on `tacsim`,
+    `mush-pixel`, `mush-net-ssh` and `mush-bot`;
+  - the lint job's M7 memory-size pass;
+  - `mush-contract-tests`' `ci_policy` guards (`feature_matrix_inventory`, `panic_budget`,
+    `restriction_lints`) and the help lint (`engine_contracts help_commands`);
+  - rustdoc with `-D warnings`, with and without `--document-private-items`, on `tacsim`,
+    `mush-pixel` and `mush-net-ssh`.
+
+**Divergences.**
+
+- **Point defence has no row in `v.weapons`.** A mind cannot fire it (it fires on its own), so
+  "every mount" is read through `space_mount(v, id)`, which carries it, as CC.6 left the rows.
+- **A rotary's rounds have no maximum.** `PdcMount` keeps no count since full, and
+  `space/weapons.rs` is not this unit's file. The rows say `4000 left`, and `rounds_max` is `()`.
+- **The lock row's figures sit on the mount rows.** Range and band are on the lock row; the
+  damage a pulse lands and the spinal round's flight are on each laser's and spinal gun's own
+  row, as `At the lock`, so two lasers of different rows each show their own.
+- **`+tac/scan` is unchanged.** Its rows already carry range; the lock's band is on
+  `+tac/status`.
+- **Files outside the row**, each the least the ABI bump needs, which the brief called for:
+  - the API: `minds/mod.rs` (the version, the ABI, the retained list, the two name pins),
+    `kernels.rs` (`space_mount`), `api.rs` (`Contact.aspect`);
+  - the content: the shipped minds' headers, manifests and envelopes, and
+    `content/space/picket_cast.json`'s four digests;
+  - the tests that name the API or a digest: `authoring.rs`' two retained-ABI tests,
+    `acceptance.rs`, `content.rs`' digest, `tests/domain_arena/content.rs`,
+    `tests/support/api4_identity.rs` and `mush-bot/src/mine/market.rs`' draft ABI;
+  - the pins re-blessed by record (the table above): `match_/seal.rs`,
+    `minds/registry/trials/physical_tests.rs`, `tests/domain_arena/{minds,minds_rhai,motor,reflex,weapons}.rs`
+    and the harness baseline.
+- **The bot sentence table:** none added, as the bot reads no space line (Survey).
+
+**Not built.**
+
+- `+tac/torp` and `+tac/railgun` still fire the first of each family; a mount argument through
+  `FireMount` is open.
+- Doc 17's amendment log (its §3, §13 and §16 record each API) does not record API 10: this unit
+  writes only its own cut-note section.
+- Doc 17's view table and the mind help pages do not list `space_mount`, as they do not list
+  `space(v)`. `docs/help/space.md` names it.
+- **Land order with CC.2:** CC.2 re-blesses the seal, motor, minds, twin, C4 and harness pins
+  too. Whichever lands second re-pins on top of the other.
 
 ## CC.7
 

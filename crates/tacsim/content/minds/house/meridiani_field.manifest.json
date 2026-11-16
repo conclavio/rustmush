@@ -7,10 +7,10 @@
   "intended_form": "sealed",
   "declared_class": "II",
   "ops_ceiling": 3000,
-  "mind_abi": "rhai=1.26.0;api=9;stock=3",
+  "mind_abi": "rhai=1.26.0;api=10;stock=3",
   "source_sha256": "37944daed8457b782c48ab949e92a38451b6ee0406d2ec0fc7a302374804bea5",
   "source_bytes": 5441,
-  "envelope_sha256": "6b44612ce973547c59b9efdde6bbc4615c22b580b4085535b0be3582a5a7f3d3",
+  "envelope_sha256": "22f72e05fdf318f85228e35f270685ce14d496443ac7de8ed10183f31149cf57",
   "profiles": [
     {
       "name": "Field",

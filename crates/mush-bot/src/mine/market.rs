@@ -2188,7 +2188,7 @@ mod tests {
             "profiles": {"Default": {}},
             "rules": {},
             "declared_class": "I",
-            "mind_abi": "rhai=1.26.0;api=9;stock=3"
+            "mind_abi": "rhai=1.26.0;api=10;stock=3"
         });
         serde_json::from_value::<MindDraft>(draft.clone()).expect("the draft the test replaces");
         let requests = [
