@@ -693,6 +693,8 @@ pub struct ClusterTenureOrder {
 /// Build an updated [`PocketCursor`] by adding `added_t` tonnes to `prior`, filling rows of at
 /// most [`MAX_POCKET_TONNES`] (`24 t`) across strictly increasing pocket numbers `1..=64` so
 /// [`PocketCursor::check`] and `SurfaceDraws::drawn` (`initial_reserve - pool == Σ drawn`) hold.
+/// **Doc 48 unit PL.10**: the rows pack what the rock has given since its last re-roll, and the
+/// prior's re-roll ledger is kept.
 #[must_use]
 pub fn build_updated_pocket_cursor(
     deposit: OreDepositId,
@@ -700,7 +702,7 @@ pub fn build_updated_pocket_cursor(
     added_t: u64,
 ) -> Option<PocketCursor> {
     let prior_total = match prior {
-        Some(cursor) => cursor.drawn_total()?,
+        Some(cursor) => cursor.rows_drawn()?,
         None => 0,
     };
     let target_total = prior_total.checked_add(added_t)?;
@@ -729,9 +731,39 @@ pub fn build_updated_pocket_cursor(
         schema: POCKET_CURSOR_SCHEMA,
         deposit,
         rows,
+        reroll: prior.and_then(|prior| prior.reroll.clone()),
     };
     cursor.check().ok()?;
     Some(cursor)
+}
+
+/// **A cluster clerk's deposit receipts** (doc 48 unit PL.10), in the order its openings run
+/// (the authored rocks, then each rock's spectral families): `None` when `clerk` is no laid-up
+/// cluster's clerk or its cluster no longer resolves.
+#[must_use]
+pub fn cluster_receipts_of_clerk(w: &mush_core::World, clerk: ObjId) -> Option<Vec<String>> {
+    let book = w.module_state::<super::tick::SpaceBubbleBook>()?;
+    let site = book
+        .cluster_sites
+        .values()
+        .find(|site| site.clerk == clerk)?;
+    let resolved = cluster_by_id(w, &site.cluster)?;
+    Some(cluster_receipts(&resolved))
+}
+
+/// **A cluster's deposit receipts**, rock by rock and family by family (doc 48 unit PL.10).
+#[must_use]
+pub fn cluster_receipts(cluster: &ResolvedOrbitalCluster) -> Vec<String> {
+    cluster
+        .rocks()
+        .iter()
+        .flat_map(|spec| {
+            spec.spectral
+                .families()
+                .iter()
+                .map(move |family| receipt(&cluster.id, spec.letter, *family))
+        })
+        .collect()
 }
 
 /// Resolve the canonical host room for an orbital cluster's clerk, block places, and deposit openers
@@ -1258,6 +1290,8 @@ pub fn next_space_mine_work_row(
         "cursor": updated.rows,
         "clerk": draw.clerk.0,
         "space_mine": true,
+        // Doc 48 unit PL.10: the instant a draw that empties its rock records it worked out.
+        "at_ic": w.world_ic_now().at,
     });
     Some((draw.receipt.clone(), value))
 }
@@ -2236,6 +2270,18 @@ pub fn step_clusters_on_tick(ctx: &mut Ctx<'_>, now: ClockStamp) {
         }
         if ctx.authoritative_pending(clerk) {
             continue;
+        }
+        // Doc 48 unit PL.10 (Q-48-61): with no draw to land, a worked-out rock's mark or
+        // re-roll, as the cluster clerk.
+        if next_draw.is_none() {
+            let receipts = cluster_receipts(&resolved_cluster);
+            let _ = crate::surface::opening::reroll_step(
+                ctx,
+                &mut fire,
+                clerk,
+                &cluster_cid,
+                &receipts,
+            );
         }
         if let Some(draw) = next_draw
             && let Some(action) = handles.site_work.clone()

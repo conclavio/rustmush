@@ -11201,6 +11201,22 @@ fn sfr23_mining_and_sensing_remainders() {
             .is_empty(),
         "pending_space_mine_draws must be pruned empty once Block A reaches 0 t without jamming the clerk"
     );
+    // Doc 48 unit PL.10: the draw that emptied Block A recorded it worked out in its own bundle
+    // (which is why the clerk filed nothing on the third tick).
+    let block_a = mush_industry::derive_system_deposit_id(&tacsim::surface::opening::receipt(
+        &cid("kirkwood_gap_3_1"),
+        'A',
+        tacsim::surface::geology::OreFamily::Metals,
+    ))
+    .expect("a deposit id");
+    let block_a_pockets = handles(&rig.tw).families.pockets;
+    assert!(
+        typed(&mut rig.tw, &block_a_pockets, &block_a)
+            .and_then(|cursor| cursor.reroll)
+            .and_then(|ledger| ledger.worked_out_ic)
+            .is_some(),
+        "the emptying draw marks Block A worked out"
+    );
 
     // 5. Disconnect `pilot_2` (`Inbound::ConnDown` with `DisconnectKind::Lost`) while `hull_2` is in
     //    `kirkwood_gap_3_1` and verify `execute_linkdead_return_journey` launches `hull_2` back to
@@ -15575,5 +15591,231 @@ fn co12_a_store_written_before_the_cut_reads_and_is_written_apart() {
         stepped,
         "the bubble written apart comes back"
     );
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 48 unit PL.10: ore regeneration in a cluster (Q-48-61)
+// ---------------------------------------------------------------------------
+
+/// Keep a direct transaction's typed post-images for a reboot.
+fn pl10_keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
+    for op in ops {
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                rig.typed.insert((op.ns, key), value);
+            }
+            ModuleWrite::Del { key } => {
+                rig.typed.remove(&(op.ns, key));
+            }
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+}
+
+/// Industry's quarantine of `deposit`, if any.
+fn pl10_quarantine(tw: &TestWorld, deposit: mush_industry::OreDepositId) -> bool {
+    tw.world()
+        .module_state::<mush_industry::IndustryStore>()
+        .expect("the industry store")
+        .quarantine(deposit)
+        .is_some()
+}
+
+/// Fire and land (quietly) up to `fires` port fires until `read` answers.
+fn pl10_fire_until<T>(
+    rig: &mut Rig,
+    fires: u32,
+    mut read: impl FnMut(&mut TestWorld) -> Option<T>,
+) -> Option<T> {
+    for _ in 0..fires {
+        if let Some(found) = read(&mut rig.tw) {
+            return Some(found);
+        }
+        let _ = fire_quietly(rig);
+    }
+    read(&mut rig.tw)
+}
+
+/// **A worked-out cluster rock re-rolls after 28 IC days, across a restart** (doc 48 unit
+/// PL.10; Q-48-61). A chartered Dray-P flies to `pallas_inclined_belt`, whose four deposits
+/// open at 120 t a rock family. Block C's metals are worked out by hand, as its laser and drones
+/// would leave them: the pool moved whole into the hull's hold and the cursor packed to 120 t,
+/// which industry's sweep passes. The cluster clerk marks the rock worked out; the world
+/// reboots; two IC days short of the delay nothing has re-rolled; past it one re-roll lands:
+/// the rock's pool holds 120 t again, its rows are cleared, the ledger counts one and carries
+/// 120 t, and the sweep still passes. A second reboot reads it back.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pl10_a_worked_out_cluster_rock_rerolls_after_28_ic_days_across_a_restart() {
+    let mut rig = stocked_with(Roster::default());
+    let (pilot_actor, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault_id = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot_actor, desk);
+    let refit_out = run(&mut rig.tw, pilot_actor, "+coop/refit prospector");
+    assert!(refit_out.contains("Dray-P"), "refit: {refit_out}");
+    seed_pool(&mut rig, vault_id, "propellant", 80, LotId(903));
+    seed_pool(&mut rig, vault_id, "provisions", 160, LotId(904));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot_actor);
+    let cluster_out = run(
+        &mut rig.tw,
+        pilot_actor,
+        "+ship/undock pallas_inclined_belt throttle=500",
+    );
+    assert!(
+        cluster_out.contains("Pallas Inclined Belt (`pallas_inclined_belt`)"),
+        "undock to cluster output: {cluster_out}"
+    );
+    let transit_burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &transit_burn);
+    let _ = fire_quietly(&mut rig);
+    let launch_submits = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &launch_submits);
+    let arrival_ic = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull]
+        .cluster_arrival_ic_s
+        .expect("cluster_arrival_ic_s");
+    let real_s = (arrival_ic.saturating_sub(ic_now(&rig.tw)) + 3_599) / 3_600;
+    let t0 = rig.tw.world().now().saturating_add(real_s.max(6));
+    rig.tw.set_now(t0);
+    let _ = rig.tw.fire_due(t0.saturating_mul(1_000));
+    let open_submits = drain_space_and_industry(&mut rig.tw);
+    let deposit_submits: Vec<_> = open_submits
+        .iter()
+        .filter(|s| s.action.key().owner.as_str() == mush_industry::NS)
+        .cloned()
+        .collect();
+    assert_eq!(deposit_submits.len(), 4, "the four Pallas openings");
+    land_all(&mut rig, &deposit_submits);
+    land_quietly(&mut rig, &open_submits);
+
+    // Block C's metals, worked out by hand.
+    let industry = rig
+        .tw
+        .world()
+        .module_state::<mush_industry::IndustryHandles>()
+        .expect("industry handles")
+        .0
+        .clone();
+    let receipt = tacsim::surface::opening::receipt(
+        &cid("pallas_inclined_belt"),
+        'C',
+        tacsim::surface::geology::OreFamily::Metals,
+    );
+    let id = mush_industry::derive_system_deposit_id(&receipt).expect("a deposit id");
+    let opened = typed(&mut rig.tw, &industry.deposits, &id).expect("rock C is open");
+    assert_eq!(opened.initial_reserve(), 120);
+    let rock = opened.endpoint().0;
+    assert_eq!(pool(&mut rig.tw, rock, "metal_ore"), 120);
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let prepared = {
+        let mut txn = rig
+            .tw
+            .engine_mut()
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        families
+            .transfer(
+                &mut txn,
+                EndpointRef(rock),
+                EndpointRef(vault_id),
+                &cid("metal_ore"),
+                120,
+            )
+            .expect("the rock's ore moves aboard");
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .expect("installs");
+    pl10_keep(&mut rig, ops);
+    let pockets = handles(&rig.tw).families.pockets;
+    let drawn =
+        tacsim::space::mining::build_updated_pocket_cursor(id, None, 120).expect("a 120 t cursor");
+    let prepared = {
+        let mut txn = rig
+            .tw
+            .engine_mut()
+            .action_transaction(&pockets)
+            .expect("pockets transaction");
+        assert!(txn.get(&pockets, &id).expect("reads").is_none());
+        txn.insert(&pockets, &id, drawn).expect("the cursor stages");
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(install)
+        .expect("installs");
+    pl10_keep(&mut rig, ops);
+    sweep(&mut rig.tw, 61);
+    assert!(!pl10_quarantine(&rig.tw, id), "the forge is honest");
+
+    // The cluster clerk marks the rock worked out.
+    let marked_ic = pl10_fire_until(&mut rig, 6, |tw| {
+        typed(tw, &pockets, &id)
+            .and_then(|c| c.reroll)
+            .and_then(|ledger| ledger.worked_out_ic)
+    })
+    .expect("the cluster clerk marks the rock worked out");
+    let due = marked_ic + 28 * 86_400;
+
+    // A restart between the mark and its due instant (the family handle is the new boot's).
+    let mut rig = reboot_with(rig, Roster::default());
+    let pockets = handles(&rig.tw).families.pockets;
+    let _ = to_ic(&mut rig, due - 2 * 86_400);
+    let early = pl10_fire_until(&mut rig, 4, |tw| {
+        typed(tw, &pockets, &id)
+            .filter(|c| c.reroll.as_ref().is_some_and(|l| l.rerolls >= 1))
+            .map(|_| ())
+    });
+    assert!(early.is_none(), "nothing re-rolls before its delay");
+    assert_eq!(pool(&mut rig.tw, rock, "metal_ore"), 0);
+    assert!(ic_now(&rig.tw) < due);
+
+    // Past the delay: one re-roll.
+    let _ = to_ic(&mut rig, due);
+    let rerolled = pl10_fire_until(&mut rig, 6, |tw| {
+        typed(tw, &pockets, &id).filter(|c| c.reroll.as_ref().is_some_and(|l| l.rerolls == 1))
+    })
+    .expect("the rock re-rolls once its delay has run");
+    assert_eq!(
+        pool(&mut rig.tw, rock, "metal_ore"),
+        120,
+        "the rock holds its authored 120 t again"
+    );
+    assert!(rerolled.rows.is_empty());
+    assert_eq!(
+        rerolled.reroll,
+        Some(tacsim::surface::cursor::RerollLedger {
+            rerolls: 1,
+            carried_t: 120,
+            rerolled_t: 120,
+            worked_out_ic: None,
+        })
+    );
+    assert_eq!(rerolled.drawn_total(), Some(120));
+    sweep(&mut rig.tw, 61);
+    assert!(!pl10_quarantine(&rig.tw, id), "the audit holds");
+    let mut rig = reboot_with(rig, Roster::default());
+    let pockets = handles(&rig.tw).families.pockets;
+    let _ = fire_quietly(&mut rig);
+    assert_eq!(typed(&mut rig.tw, &pockets, &id), Some(rerolled));
+    assert_eq!(pool(&mut rig.tw, rock, "metal_ore"), 120);
     no_refused_writes(&rig.tw);
 }

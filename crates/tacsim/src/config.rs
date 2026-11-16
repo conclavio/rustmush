@@ -23,6 +23,7 @@
 //! | all of `[tacsim.arena]`, `[tacsim.match]`, `[tacsim.sensors]`, `[tacsim.resolution]`, `[tacsim.harness]` | parsed, **inert** (16b cut G) | the combat arena's blocks; cuts A/T/S/W/H read and validate them |
 //! | all of `[tacsim.command]` | **live** (16b cut Y.2) | doc 16 W8's span of control and order rate, held at the world where `ORDER` is admitted |
 //! | `[tacsim.surface].black_box_max_lines` | **live** (doc 23 cut S.1) | the most lines one hull's black box holds ([`SurfaceConfig`]) |
+//! | `[tacsim.surface].ore_reroll_ic_days` | **live** (doc 48 unit PL.10) | the IC days after which a worked-out site deposit or cluster rock re-rolls; `0` keeps ore finite ([`SurfaceConfig`]) |
 //!
 //! `[tacsim.recovery]` was cut 11's and was **not added at all** — *a knob that parses
 //! and configures nothing is a promise, and cut 11 has not made it yet*. **E7 residue
@@ -2321,18 +2322,25 @@ pub struct SurfaceConfig {
     /// past it is refused and paged, never truncated — `mush_core::Ledger` has no retention
     /// primitive to drop a sealed chunk with.
     pub black_box_max_lines: u32,
+    /// **Doc 48 unit PL.10 (Q-48-61)**: the IC days after which a worked-out deposit — a lane
+    /// site's (block, family) or a cluster's (rock, family) — re-rolls its opened reserve
+    /// (`crate::surface::opening`). Provisional 28 (28 real hours at 24:1); `0` keeps ore finite;
+    /// at most [`crate::surface::opening::MAX_ORE_REROLL_IC_DAYS`].
+    pub ore_reroll_ic_days: u16,
 }
 
 impl Default for SurfaceConfig {
     fn default() -> Self {
         Self {
             black_box_max_lines: DEFAULT_BLACK_BOX_MAX_LINES,
+            ore_reroll_ic_days: crate::surface::opening::DEFAULT_ORE_REROLL_IC_DAYS,
         }
     }
 }
 
 impl SurfaceConfig {
-    /// **Check `[tacsim.surface]`**: the cap is 1 to [`MAX_BLACK_BOX_MAX_LINES`].
+    /// **Check `[tacsim.surface]`**: the cap is 1 to [`MAX_BLACK_BOX_MAX_LINES`]; the re-roll
+    /// delay 0 to [`crate::surface::opening::MAX_ORE_REROLL_IC_DAYS`] IC days.
     ///
     /// # Errors
     ///
@@ -2342,6 +2350,13 @@ impl SurfaceConfig {
             return Err(format!(
                 "[tacsim.surface].black_box_max_lines must be 1 to {MAX_BLACK_BOX_MAX_LINES} (it is {})",
                 self.black_box_max_lines
+            ));
+        }
+        let most = crate::surface::opening::MAX_ORE_REROLL_IC_DAYS;
+        if self.ore_reroll_ic_days > most {
+            return Err(format!(
+                "[tacsim.surface].ore_reroll_ic_days must be 0 to {most} IC days (it is {})",
+                self.ore_reroll_ic_days
             ));
         }
         Ok(())
