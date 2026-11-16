@@ -605,6 +605,9 @@ pub struct Ask {
     pub quantity: u64,
     /// The house's trading name.
     pub house: String,
+    /// **Doc 48 cut EX.1b**: a personal ask, one exact lot sold whole, so an order takes all of
+    /// `quantity` or none of it. `false` for a house's pooled ask.
+    pub whole: bool,
 }
 
 /// **The lowest live ask for `good` at `def`** (ties to the lower listing id): every
@@ -638,10 +641,106 @@ pub fn ask_at(w: &World, def: &PortDef, map: &PortMap, good: &CanonicalId) -> Op
                 price,
                 quantity,
                 house: house_name(def, &vendor.org, None),
+                whole: false,
             });
         }
     }
     best
+}
+
+/// **The ask an offline captain's buy may take** (doc 48 cut EX.1b; Q-48-56, doc 48b G-8): the
+/// houses' lowest ask ([`ask_at`]) and, **only when the order names a ceiling**, the lowest
+/// personal ask at this venue at or under it, so an unbounded order is never drained by a
+/// player's listing. A personal ask is one exact lot sold whole, so it is a candidate only when
+/// `takes` says the order can take all of it. At an equal price the house's ask wins.
+#[must_use]
+pub fn ask_for_order(
+    w: &World,
+    def: &PortDef,
+    map: &PortMap,
+    good: &CanonicalId,
+    ceiling: Option<Amount>,
+    takes: &dyn Fn(&Ask) -> bool,
+) -> Option<Ask> {
+    let house = ask_at(w, def, map, good);
+    let Some(ceiling) = ceiling else {
+        return house;
+    };
+    let personal = personal_ask(w, def, good, ceiling, takes);
+    match (house, personal) {
+        (Some(house), Some(personal)) if personal.price.minor() < house.price.minor() => {
+            Some(personal)
+        }
+        (Some(house), _) => Some(house),
+        (None, personal) => personal,
+    }
+}
+
+/// **The lowest personal ask for `good` at `def`'s venue, at or under `ceiling`** (doc 48 cut
+/// EX.1b): a public, unlapsed exact-lot listing with no vendor row and no named buyer, that
+/// `takes` admits; ties to the lower listing id.
+fn personal_ask(
+    w: &World,
+    def: &PortDef,
+    good: &CanonicalId,
+    ceiling: Amount,
+    takes: &dyn Fn(&Ask) -> bool,
+) -> Option<Ask> {
+    let market = w.module_state::<MarketStore>()?;
+    let venue = mush_market::MarketId::new(def.venue.as_str())?;
+    let catalog = mush_economy::CatalogRef {
+        ruleset: SmolStr::new_static(crate::NS),
+        code: SmolStr::new(good.as_str()),
+    };
+    let mut best: Option<Ask> = None;
+    for listing in market.listings_for(&catalog, &venue) {
+        let open = listing.vendor == mush_market::NO_VENDOR
+            && matches!(listing.source, Supply::Lot { .. })
+            && listing.visibility == mush_market::MarketVisibility::Public
+            && listing.private_to.is_none()
+            && !lapsed(w, &listing.expires)
+            && listing.price.minor() <= ceiling.minor();
+        if !open {
+            continue;
+        }
+        let ask = Ask {
+            listing: listing.id,
+            price: listing.price,
+            quantity: listing.quantity,
+            house: seller_name(w, &listing.seller),
+            whole: true,
+        };
+        if !takes(&ask) {
+            continue;
+        }
+        let better = best.as_ref().is_none_or(|b| {
+            ask.price.minor() < b.price.minor()
+                || (ask.price == b.price && ask.listing.0 < b.listing.0)
+        });
+        if better {
+            best = Some(ask);
+        }
+    }
+    best
+}
+
+/// Whether a listing's deadline has passed on its own clock.
+fn lapsed(w: &World, deadline: &mush_economy::EconomicDeadline) -> bool {
+    let now = match deadline.clock {
+        mush_economy::EconomicClock::WorldIc => w.game_now_unix(),
+        _ => w.now(),
+    };
+    now >= deadline.at
+}
+
+/// A personal seller's name, as an order's line reads it.
+fn seller_name(w: &World, seller: &mush_org::PrincipalId) -> String {
+    match seller {
+        mush_org::PrincipalId::Object(id) => w
+            .get(*id)
+            .map_or_else(|| "a trader".to_owned(), |o| o.name.clone()),
+        _ => "a trader".to_owned(),
+    }
 }
 
 /// **The best standing bid for a good at a port.**
@@ -1289,15 +1388,8 @@ pub(crate) fn plan_queue(
             } => {
                 let label = label_of(goods, good);
                 let consumable = goods.good(good).and_then(|row| row.consumable);
-                let ask = ask_at(w, def, map, good);
-                let stock = ask.as_ref().map_or(0, |ask| {
-                    ask.quantity
-                        .saturating_sub(drawn.get(&ask.listing).copied().unwrap_or(0))
-                });
-                let price = ask.as_ref().map_or(Amount::from_minor(0), |ask| ask.price);
-                let over = max_major.is_some_and(|max| {
+                let ceiling = max_major.and_then(|max| {
                     crate::port::apply::minor_of(max, crate::port::apply::credit_scale(w))
-                        .is_some_and(|ceiling| price.minor() > ceiling)
                 });
                 let room = match room_for(goods, &readings, good) {
                     Ok(room) => room,
@@ -1351,6 +1443,21 @@ pub(crate) fn plan_queue(
                     (Qty::Units(n), _) => (*n, None),
                     (Qty::Fill | Qty::All, _) => (0, None),
                 };
+                // Doc 48 cut EX.1b (Q-48-56): the step's choice, over the projection: a personal
+                // ask only under a named ceiling, whole, and not already drawn by an earlier order.
+                let takes = |a: &Ask| {
+                    a.quantity <= want
+                        && a.quantity <= room.0
+                        && drawn.get(&a.listing).is_none_or(|n| *n == 0)
+                        && funds_units(funds_amount(funds), reserve, a.price) >= a.quantity
+                };
+                let ask = ask_for_order(w, def, map, good, ceiling.map(Amount::from_minor), &takes);
+                let stock = ask.as_ref().map_or(0, |ask| {
+                    ask.quantity
+                        .saturating_sub(drawn.get(&ask.listing).copied().unwrap_or(0))
+                });
+                let price = ask.as_ref().map_or(Amount::from_minor(0), |ask| ask.price);
+                let over = ceiling.is_some_and(|ceiling| price.minor() > ceiling);
                 // No live ask: stock alone bites (the step's rule).
                 let affordable = ask.as_ref().map_or(u64::MAX, |_| {
                     funds_units(funds_amount(funds), reserve, price)
@@ -2921,12 +3028,8 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                 (Qty::Units(n), None) => (n, None, 0),
                 (Qty::Fill | Qty::All, _) => (0, None, 0),
             };
-            let ask = ask_at(w, def, map, &good);
-            let stock = ask.as_ref().map_or(0, |a| a.quantity);
-            let price = ask.as_ref().map_or(Amount::from_minor(0), |a| a.price);
             let ceiling = max_major
                 .and_then(|m| crate::port::apply::minor_of(m, crate::port::apply::credit_scale(w)));
-            let over = ceiling.is_some_and(|c| price.minor() > c);
             let room = match room_for(goods, &readings, &good) {
                 Ok(room) => room,
                 Err(error) => {
@@ -2941,6 +3044,17 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
             let available = crate::port::credit::own_account(w, pilot)
                 .and_then(mush_economy::Account::available)
                 .unwrap_or(Amount::from_minor(0));
+            // Doc 48 cut EX.1b (Q-48-56): a personal ask only under a named ceiling, and only
+            // when the order takes its lot whole.
+            let takes = |a: &Ask| {
+                a.quantity <= want
+                    && a.quantity <= room.0
+                    && funds_units(available, reserve, a.price) >= a.quantity
+            };
+            let ask = ask_for_order(w, def, map, &good, ceiling.map(Amount::from_minor), &takes);
+            let stock = ask.as_ref().map_or(0, |a| a.quantity);
+            let price = ask.as_ref().map_or(Amount::from_minor(0), |a| a.price);
+            let over = ceiling.is_some_and(|c| price.minor() > c);
             // No live ask: the stock bound alone bites (funds cannot bind a price
             // nobody posts, and a 0 price would read as "funds", every bound that bit
             // and no other).

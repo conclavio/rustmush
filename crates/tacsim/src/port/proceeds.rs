@@ -77,6 +77,10 @@ pub const SALE_NOT_PILOT: &str =
     "Only the {name}'s chartered pilot sells out of its hold, so nothing was sold.";
 /// The payout's label on the sale contract and the line.
 pub const SHARE_LABEL: &str = "Co-op share";
+/// **Doc 48 cut EX.1b** (Q-48-56, doc 48b G-7): a personal ask from a Co-op-chartered hold is
+/// refused until the share runs on asks (EX.4).
+pub const CHARTERED_ASK: &str = "Chartered cargo cannot go on a personal ask yet. Sell it into \
+                                 a house's bid, which pays the Co-op its share.";
 /// The contract-name memo when the reference fell back to the goods table.
 pub const BASELINE_MEMO: &str = "baseline ref";
 
@@ -197,7 +201,17 @@ pub(crate) const fn takes_share(status: EnrolmentStatus) -> bool {
 /// Whether the sale's source is an enrolled hold, and if so the enrolment's frozen
 /// permille. `Err` for a live charter with dark books or another pilot.
 fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefusal> {
-    let Some(view) = governed_hold(w, sale.source) else {
+    enrolled_at(w, sale.source, sale.seller)
+}
+
+/// Whether `source` is an enrolled hold, and if so the enrolment's frozen permille; `Err` for
+/// a live charter with dark books, or one whose pilot is not `seller`.
+fn enrolled_at(
+    w: &World,
+    source: EndpointRef,
+    seller: ObjId,
+) -> Result<Option<u32>, ProceedsRefusal> {
+    let Some(view) = governed_hold(w, source) else {
         return Ok(None);
     };
     let hull = view.hull();
@@ -213,17 +227,36 @@ fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefu
     let enrolment = w
         .module_state::<TacsimStore>()
         .and_then(|s| s.enrolment_for_lease(lease.id.0))
-        .filter(|e| e.vault == sale.source.vault().0 && takes_share(e.status));
+        .filter(|e| e.vault == source.vault().0 && takes_share(e.status));
     let Some(enrolment) = enrolment else {
         return Err(refuse(SALE_BOOKS_DARK.to_owned()));
     };
-    if enrolment.pilot != sale.seller {
+    if enrolment.pilot != seller {
         return Err(refuse(SALE_NOT_PILOT.replace("{name}", &name_of(w, hull))));
     }
     Ok(Some(enrolment.share_permille))
 }
 
 impl ProceedsPolicy for CoopProceeds {
+    /// Doc 48 cut EX.1b (Q-48-56, doc 48b G-7): no personal ask from a chartered hold, since the
+    /// share runs only on sales into bids until EX.4 widens the ask path. Any other source,
+    /// and a governed hold no lease encloses, lists as before.
+    fn may_list(
+        &self,
+        w: &World,
+        seller: &PrincipalId,
+        source: EndpointRef,
+    ) -> Result<(), ProceedsRefusal> {
+        let seller = match seller {
+            PrincipalId::Object(id) => *id,
+            _ => ObjId(0),
+        };
+        match enrolled_at(w, source, seller) {
+            Ok(None) => Ok(()),
+            Ok(Some(_)) | Err(_) => Err(refuse(CHARTERED_ASK.to_owned())),
+        }
+    }
+
     fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
         let Some(house) = house_of(w, sale) else {
             // A venue no port authors: the market's own line, no cuts.
