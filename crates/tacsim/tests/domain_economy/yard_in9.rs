@@ -11,13 +11,16 @@
 //!    mark, her hold theirs; she is a register row (`tacsim.owned_hulls`) and a provenance
 //!    record, never a programme row (the applier's preflight still passes).
 //! 2. `+yard/quote tv_escort` prints the escort's bill from its design (3 t of alloys, 1 t of
-//!    fittings, the four parts) and two days; `+yard/order tv_escort` books it.
+//!    fittings, the four parts and, doc 48 unit PL.7, her line core's module) and two days;
+//!    `+yard/order tv_escort` books it.
 //! 3. `+yard/deliver` brings the bill from the Dray-P's hold in two deliveries — the bulk, then
-//!    the four part lots.
+//!    the five part lots.
 //! 4. Two IC days later `+yard/collect` writes the commission, and **staff stop it** after its
 //!    first steps (between the kit's consumption and the title); the next port fire resumes it and
 //!    it finishes: the escort stands on the workshop floor titled to them, berthed with no
 //!    carrier, its magazines empty, the kit and parts consumed, the provenance naming them.
+//!    Doc 48 unit PL.7: the core module is consumed with them, and her core is the governed
+//!    Class II core her design carries: no die was drawn for it.
 //! 5. `+bay <escort>` quotes her clean but for the rearm; `+bay/order <escort>=rearm` loads her
 //!    from the Dray-P's hold.
 //! 6. `+bay/stow <escort>=<Dray-P>` puts her in the Dray-P's bay (the register's carrier scan):
@@ -49,6 +52,49 @@ const STICKNEY: &str = "stickney_port";
 const ALLOYS: &str = "structural_alloys";
 const FITTINGS: &str = "industrial_parts";
 const DAY: i64 = 86_400;
+/// The line core's module (doc 48 unit PL.7): what the escort and the line tanks bill for their
+/// stock Class II core.
+const LINE_MODULE: &str = "tacsim.part.core.line";
+
+/// Where `lot` stands, or `None` once it is consumed.
+fn lot_at(rig: &mut Rig, lot: LotId) -> Option<mush_inventory::record::EndpointRef> {
+    let inventory = rig
+        .tw
+        .world()
+        .module_state::<tacsim::port::bay_work::act::BayActHandles>()
+        .and_then(|h| h.inventory.clone())
+        .expect("inventory");
+    crate::driving_rig::typed(&mut rig.tw, &inventory.lots, &lot).map(|l| l.endpoint())
+}
+
+/// **The yard's stock core** (doc 48 unit PL.7, Q-48-48, the owner's call): `hull` carries the
+/// governed Class II core her design names, and it is no titled object, so no die was drawn and
+/// no core title was born for it.
+fn assert_stock_core(rig: &Rig, hull: ObjId) {
+    let unit = mush_tactics::module::unit_of(rig.tw.world(), hull).expect("the unit");
+    let core = tacsim::arena::core::read_core(&unit).expect("a core");
+    assert_eq!(
+        (core.class, core.governed),
+        (tacsim::arena::core::CoreClass::II, true),
+        "a governed Class II core"
+    );
+    let economy = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy");
+    let held = rig
+        .tw
+        .world()
+        .get(hull)
+        .map(|o| o.contents.clone())
+        .unwrap_or_default();
+    assert!(
+        held.iter()
+            .all(|thing| economy.core_title_birth(*thing).ok().flatten().is_none()),
+        "no core title rides in her"
+    );
+}
 
 fn mint(rig: &mut Rig, pilot: ObjId) {
     let treasury = port_map(&rig.tw, "ceres_port")
@@ -323,6 +369,8 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
         quote.contains("3 structural_alloys, 1 industrial_parts") && quote.contains("2 IC days"),
         "{quote}"
     );
+    // Doc 48 unit PL.7 (Q-48-48): her stock core bills its module.
+    assert!(quote.contains(&format!("1 {LINE_MODULE}")), "{quote}");
     let escort_order = booked(&mut rig, captain, "+yard/order tv_escort");
 
     // ---- (3) The bill, from the Dray-P's hold, in two deliveries ----
@@ -333,7 +381,9 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
         "tacsim.part.weapon.mg_coax",
         "tacsim.part.sensor.visual_mk1",
         "tacsim.part.plant.vehicle_mk1",
+        LINE_MODULE,
     ];
+    let module_lot = LotId(9_724);
     for (i, part) in parts.iter().enumerate() {
         seed_part(
             &mut rig,
@@ -366,6 +416,11 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
         hold_pool(&mut rig.tw, hold, ALLOYS),
         0,
         "the bulk left the hold"
+    );
+    assert_eq!(
+        lot_at(&mut rig, module_lot),
+        Some(mush_inventory::record::EndpointRef(VaultId(escort_order))),
+        "the core module is in the escrow"
     );
 
     // ---- (4) Two IC days, the collect, a commission stopped by staff and resumed ----
@@ -417,8 +472,13 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     assert_eq!(rounds(&rig, escort), 0, "her magazines are empty (Q-39-36)");
     let provenance =
         tacsim::port::owned::provenance(rig.tw.world(), escort_order).expect("the provenance");
-    assert_eq!(provenance.parts.len(), 4, "{provenance:?}");
+    assert_eq!(provenance.parts.len(), 5, "{provenance:?}");
     assert_eq!(provenance.hull, escort);
+    // Doc 48 unit PL.7 (Q-48-48): the core module was consumed with the kit and the parts, and
+    // her core is the governed Class II core her design carries, outside the die quota.
+    assert!(provenance.parts.contains(&module_lot), "{provenance:?}");
+    assert_eq!(lot_at(&mut rig, module_lot), None, "the core module is consumed");
+    assert_stock_core(&rig, escort);
 
     // ---- (5) `+bay` quotes her clean but for the rearm; the rearm loads her from the hold ----
     let name = name_of(&rig, escort);
@@ -662,6 +722,7 @@ async fn ground_leg(ground: &crate::grounds_rig::Ground) {
             "tacsim.part.weapon.mg_coax",
             "tacsim.part.sensor.visual_mk1",
             "tacsim.part.plant.vehicle_mk1",
+            LINE_MODULE,
         ],
         9_810,
     )
@@ -852,6 +913,7 @@ async fn in9b_the_yard_builds_a_line_tank_and_a_scout_by_their_templates() {
             "tacsim.part.weapon.mg_coax",
             "tacsim.part.sensor.visual_mk1",
             "tacsim.part.plant.vehicle_mk1",
+            LINE_MODULE,
         ],
         9_910,
     );
@@ -865,6 +927,7 @@ async fn in9b_the_yard_builds_a_line_tank_and_a_scout_by_their_templates() {
             "tacsim.part.weapon.mg_coax",
             "tacsim.part.sensor.visual_mk1",
             "tacsim.part.plant.light_mk1",
+            "tacsim.part.core.doctrine",
         ],
         9_920,
     );
@@ -883,6 +946,17 @@ async fn in9b_the_yard_builds_a_line_tank_and_a_scout_by_their_templates() {
         );
         assert_eq!(titled(&rig, obj), PrincipalId::Object(captain));
     }
+    // Doc 48 unit PL.7: each consumed its core module, and the line tank carries her governed
+    // Class II core outside the die quota.
+    // `build` lays the parts from `lot + 2`, the module fifth.
+    for (design, module) in [("line_tank", 9_916), ("scout_mk1", 9_926)] {
+        assert_eq!(
+            lot_at(&mut rig, LotId(module)),
+            None,
+            "the {design}'s module is consumed"
+        );
+    }
+    assert_stock_core(&rig, tank.object().expect("the tank"));
     // The templated designs keep their field-ops mass.
     let mass = |design: &str| {
         let store = store(&rig.tw);
@@ -934,6 +1008,7 @@ async fn in9_a_yard_built_laser_tank_keeps_her_beam_charge() {
             "tacsim.part.weapon.mg_coax",
             "tacsim.part.sensor.visual_mk1",
             "tacsim.part.plant.vehicle_mk1",
+            LINE_MODULE,
         ],
         9_930,
     )
@@ -996,6 +1071,7 @@ async fn review_the_yard_takes_one_hull_an_order_and_quotes_her_parts() {
         "1 tacsim.part.weapon.mg_coax",
         "1 tacsim.part.sensor.visual_mk1",
         "1 tacsim.part.plant.vehicle_mk1",
+        "1 tacsim.part.core.line",
     ] {
         assert!(quote.contains(part), "the quote lists {part}: {quote}");
     }
@@ -1095,6 +1171,7 @@ async fn review_an_unpaid_storage_seizure_takes_the_hull_kit() {
         "tacsim.part.weapon.mg_coax",
         "tacsim.part.sensor.visual_mk1",
         "tacsim.part.plant.vehicle_mk1",
+        LINE_MODULE,
     ]
     .iter()
     .enumerate()

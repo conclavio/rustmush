@@ -101,6 +101,10 @@ fn thing(rig: &mut Rig, name: &str) -> ObjId {
         .expect("a thing")
 }
 
+/// What staff stock the importer's die depot with (doc 48 unit PL.7): of each chain good the
+/// dies take, tonnes.
+pub(crate) const DEPOT_STOCK: u64 = 200;
+
 /// **The governed hardware's coordinates** (the hardware flow's `provision`, ported): the Basin
 /// importer and its die-stock and factory scopes and treasuries, the die depot and the two
 /// agents' stock vaults, the fitting shop chartered `core_integration core_refit` and titled to
@@ -184,6 +188,19 @@ fn hardware(rig: &mut Rig) -> HardwareCoordinates {
                 ),
             );
         }
+    }
+    // Doc 48 unit PL.7 (Q-48-27, Q-48-48): a die takes its chain goods from the depot when it
+    // is issued, so staff stock it as the bring-up's operator would: enough for every die the
+    // stories cut.
+    let depot = vault(rig, "HardwareStock0");
+    for (n, good) in ["instrument_boards", "strategic_ore"].into_iter().enumerate() {
+        crate::driving_rig::seed_pool(
+            rig,
+            depot,
+            good,
+            DEPOT_STOCK,
+            mush_inventory::LotId(97_001 + n as u64),
+        );
     }
     let ungovern = back_room(rig, agent);
     HardwareCoordinates {

@@ -122,6 +122,9 @@ fn command(w: &mut TestWorld, actor: ObjId, line: &str) -> Result {
     }
     Ok(())
 }
+/// What staff stock the depot with at the rig's start (doc 48 unit PL.7): of each chain good,
+/// enough for every die the suite issues.
+const DEPOT_STOCK: u64 = 200;
 struct Rig {
     w: Option<TestWorld>,
     boot: Boot,
@@ -532,7 +535,53 @@ impl Rig {
                 .is_err()
         );
         r.reboot(CoreOriginMode::Active)?;
+        r.stock_depot(DEPOT_STOCK)?;
         Ok(r)
+    }
+    /// **Doc 48 unit PL.7: staff stock the importer's depot** with `units` of every good the
+    /// shipped catalogue's die chain names: a die takes its chain goods from the depot when it
+    /// is issued (Q-48-27, Q-48-48).
+    fn stock_depot(&mut self, units: u64) -> Result {
+        let families = self
+            .world()
+            .world()
+            .module_state::<crate::port::families::PortHandles>()
+            .and_then(|handles| handles.inventory.clone())
+            .ok_or("the inventory's families")?;
+        let goods: std::collections::BTreeSet<_> = PublishedHardware::shipped()?
+            .catalogue()
+            .chain()?
+            .into_iter()
+            .flatten()
+            .map(|line| line.commodity)
+            .collect();
+        let depot = mush_inventory::EndpointRef(self.deployment.depot);
+        {
+            let engine = self.world_mut().engine_mut();
+            let mut txn = engine.action_transaction(&families.pools)?;
+            for good in &goods {
+                families.credit(&mut txn, depot, good, units)?;
+            }
+            let (_, installation) = txn.prepare()?.into_parts();
+            engine.install_prepared_action(installation)?;
+        }
+        self.flush();
+        Ok(())
+    }
+    /// The depot's pool of `good`.
+    fn depot(&mut self, good: &str) -> Result<u64> {
+        let families = self
+            .world()
+            .world()
+            .module_state::<crate::port::families::PortHandles>()
+            .and_then(|handles| handles.inventory.clone())
+            .ok_or("the inventory's families")?;
+        let depot = mush_inventory::EndpointRef(self.deployment.depot);
+        let engine = self.world_mut().engine_mut();
+        let mut txn = engine.action_transaction(&families.pools)?;
+        Ok(families
+            .pool(&mut txn, depot, &mush_core::CanonicalId::new(good)?)?
+            .map_or(0, |pool| pool.quantity))
     }
     fn money(&self, id: AccountId) -> Result<(i64, i64)> {
         let account = self
@@ -569,6 +618,12 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
         r.money(r.deployment.integrator.account)?,
     ];
     let (_, die) = r.perform("industry", "issue_core_die", agent, json!({"class":"i"}))?;
+    // Doc 48 unit PL.7: the launch composition's die takes the catalogue's Class I chain (a
+    // board and a tonne of strategic ore) from the importer's depot.
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (DEPOT_STOCK - 1, DEPOT_STOCK - 1)
+    );
     let lot = serde_json::from_value::<mush_inventory::LotId>(die["lot"].clone())?;
     let (offer, _) = r.perform(
         "industry",
@@ -1758,6 +1813,10 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
         &native,
     )?;
     check_eq!(hardware.origin_policy().monthly_quotas, [64, 16, 4]);
+    // Doc 48 unit PL.7: the launch freezes the catalogue's die chain and prices.
+    let shipped = PublishedHardware::shipped()?;
+    check_eq!(hardware.origin_policy().chain, shipped.catalogue().chain()?);
+    check_eq!(hardware.payment_policy().prices, shipped.catalogue().prices());
     check_eq!(
         hardware.payment_policy().delivery,
         Some(mush_economy::core_integration::CoreDeliveryPromise::PersonalCustodyV1)

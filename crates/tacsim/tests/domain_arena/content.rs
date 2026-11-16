@@ -2796,7 +2796,7 @@ const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4).
-const GOODS_DIGEST: &str = "4515569c92957233526919381d3b5dfd1de4c8139150a86f61bac395ac6bb42a";
+const GOODS_DIGEST: &str = "dfdef8b33430fd29d9e1372c000d636599358d7b523937405ff654e858360454";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3340,8 +3340,9 @@ fn ic2_the_goods_table_is_pinned() {
     // Doc 19 cut A.8: v2 (the two moon goods); doc 20 cut SM.3a: v3 (the four
     // run-of-mine ores under `stow.ore`); doc 36 cut GC.7: v4 (the four munitions goods); doc
     // 39 cut IN.1: v5 (the thirteen parts); doc 39 cut IN.9: v6 (the five hull kits); doc 39 cut
-    // IN.9b: v7 (the nine templated designs' kits).
-    assert_eq!(table.version, 7);
+    // IN.9b: v7 (the nine templated designs' kits); doc 48 unit PL.7: v8 (the three core
+    // modules).
+    assert_eq!(table.version, 8);
     let measures: Vec<(&str, &str, &str)> = table
         .measures
         .iter()
@@ -3737,6 +3738,42 @@ fn ic2_the_goods_table_is_pinned() {
                 "stow.bulk",
                 None,
                 30_000
+            ),
+            (
+                "tacsim.part.core.doctrine",
+                "doctrine core module",
+                None,
+                GoodClass::Part,
+                "each",
+                150,
+                300,
+                "stow.bulk",
+                None,
+                3_000
+            ),
+            (
+                "tacsim.part.core.line",
+                "line core module",
+                None,
+                GoodClass::Part,
+                "each",
+                250,
+                500,
+                "stow.bulk",
+                None,
+                8_000
+            ),
+            (
+                "tacsim.part.core.command",
+                "command core module",
+                None,
+                GoodClass::Part,
+                "each",
+                500,
+                1_000,
+                "stow.bulk",
+                None,
+                25_000
             ),
             (
                 "tacsim.hull_kit.tv_escort",

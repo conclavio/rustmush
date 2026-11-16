@@ -478,6 +478,9 @@ impl GovernedHardware {
                 content: content_ref,
                 grades: deployment.grades,
                 monthly_quotas: publication.catalogue().monthly_dies(),
+                // Doc 48 unit PL.7 (Q-48-27, Q-48-48): a die takes its chain goods from the
+                // depot when it is issued.
+                chain: publication.catalogue().chain().map_err(bad)?,
             },
             mode,
         )?;
@@ -515,6 +518,8 @@ impl GovernedHardware {
             // Doc 17h cut M8b-2 (H2): the ungoverning shop also integrates heirloom and grey
             // dies, paid to its own provider. Absent at launch (doc 17h §4), so the launch's
             // payment policy keeps its digest.
+            // Doc 48 unit PL.7: the integration charges the catalogue's prices.
+            prices: publication.catalogue().prices(),
             ungoverned: deployment.ungovern.as_ref().map(|site| {
                 mush_economy::core_integration::UngovernedIntegration {
                     integrator: site.provider.clone(),

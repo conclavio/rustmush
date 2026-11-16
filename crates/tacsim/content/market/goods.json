@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -385,6 +385,45 @@
       "consumable": null,
       "reference_major": 30000,
       "note": "Doc 39 cut IN.1. The Dray's and the Dray-P's plant, 30 t: the one part a ship's crane lifts and a hold barely takes."
+    },
+    {
+      "id": "tacsim.part.core.doctrine",
+      "label": "doctrine core module",
+      "family": null,
+      "class": "part",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": { "si.mass_kg": 150, "si.volume_l": 300 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 3000,
+      "note": "Doc 48 unit PL.7 (Q-48-48). The stock Class I box a yard builds into the scout car: a governed doctrine core outside the monthly die quota, no title of its own, consumed by the commission. 150 kg crated at two cubic metres a tonne, priced at the Class I core."
+    },
+    {
+      "id": "tacsim.part.core.line",
+      "label": "line core module",
+      "family": null,
+      "class": "part",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": { "si.mass_kg": 250, "si.volume_l": 500 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 8000,
+      "note": "Doc 48 unit PL.7 (Q-48-48). The stock Class II box a yard builds into the escort, the line tanks and the bipeds: a governed line core outside the monthly die quota, no title of its own, consumed by the commission. 250 kg crated, priced at the Class II core."
+    },
+    {
+      "id": "tacsim.part.core.command",
+      "label": "command core module",
+      "family": null,
+      "class": "part",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": { "si.mass_kg": 500, "si.volume_l": 1000 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 25000,
+      "note": "Doc 48 unit PL.7 (Q-48-48). The stock Class III box a yard builds into the heavy: a governed command core outside the monthly die quota, no title of its own, consumed by the commission. 500 kg crated, priced at the Class III core."
     },
     {
       "id": "tacsim.hull_kit.tv_escort",

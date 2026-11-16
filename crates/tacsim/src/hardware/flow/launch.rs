@@ -538,6 +538,15 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
     d.mode = LaunchMode::Active;
     reboot(&mut r, &d)?;
     check!(!image.is_empty());
+    // Doc 48 unit PL.7: a die takes its chain goods from the depot, so with none there the
+    // launch's issue is refused; stocked, it plans.
+    check!(crate::test_checks::refused(r.plan(
+        "industry",
+        "issue_core_die",
+        GOD,
+        json!({"class":"i"})
+    ))?);
+    r.stock_depot(DEPOT_STOCK)?;
     check!(
         r.plan("industry", "issue_core_die", GOD, json!({"class":"i"}))
             .is_ok()

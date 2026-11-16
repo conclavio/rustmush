@@ -866,12 +866,16 @@ pub(crate) fn seed_part(
     legality: mush_tactics::field_ops::ProvenanceLegalityStatus,
 ) {
     seed_lot(rig, vault, good, 1, lot);
+    // Doc 48 unit PL.7: a core module's provenance names its core, as a made one's does.
     let definition = store(&rig.tw)
         .definitions()
         .parts
         .values()
         .find(|row| row.commodity.as_str() == good)
         .map(|row| row.row.clone())
+        .or_else(|| {
+            tacsim::port::bill::core_module_row(store(&rig.tw).definitions(), &cid(good))
+        })
         .unwrap_or_else(|| panic!("{good} is a part row"));
     let parts = rig
         .tw

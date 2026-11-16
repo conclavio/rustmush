@@ -228,14 +228,17 @@ pub(crate) fn clerk_rows(w: &World, clerk: ObjId) -> BTreeMap<String, Value> {
 }
 
 /// **The hardware row a part good is** (doc 39 cut IN.2): the catalogue's part index read
-/// backwards, any component that stocks as `good`.
+/// backwards, any component that stocks as `good`. A core module (doc 48 unit PL.7) is its core's
+/// definition: made, stocked and delivered with provenance like any part, it is never in the part
+/// index, so no bay fits it and no strip or scrap yields one.
 pub(crate) fn part_row_of(w: &World, good: &CanonicalId) -> Option<DefinitionRef> {
-    w.module_state::<TacsimStore>()?
-        .definitions()
+    let definitions = w.module_state::<TacsimStore>()?.definitions();
+    definitions
         .parts
         .values()
         .find(|row| &row.commodity == good)
         .map(|row| row.row.clone())
+        .or_else(|| crate::port::bill::core_module_row(definitions, good))
 }
 
 /// **The `n`th one-unit lot a part stock issue mints** (doc 39 cut IN.2): the issue's own lot

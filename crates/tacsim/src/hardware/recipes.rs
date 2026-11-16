@@ -111,6 +111,15 @@ impl PublishedHardware {
             definitions,
         })
     }
+    /// **The shipped publication, parsed once** (doc 48 unit PL.7): what the counter quotes and
+    /// the mass budget references, the same catalogue the launch composes its policies from.
+    /// `None` only if the shipped pack does not load, which its own test refuses.
+    #[must_use]
+    pub fn shipped_once() -> Option<&'static Self> {
+        static SHIPPED: std::sync::OnceLock<Option<PublishedHardware>> =
+            std::sync::OnceLock::new();
+        SHIPPED.get_or_init(|| Self::shipped().ok()).as_ref()
+    }
     pub fn pack(&self) -> &RulesPack {
         &self.pack
     }

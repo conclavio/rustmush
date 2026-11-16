@@ -28,7 +28,8 @@ fn shipped_hardware_pins_prices_quotas_and_bounded_hourly_schedules() -> Result 
     check_eq!(
         hardware.pack().manifest().digest().to_hex(),
         // Doc 17h cut M8b: the `core_ungovern` recipe and `ungovern_minor` joined the pack.
-        "a02575bd977a18d3b67938f45a46374428fd894b52c8962a9e52b6306b516e2c"
+        // Doc 48 unit PL.7: and the dies' chain bill.
+        "404c9588062e4e96c34a7bb8b7f8bcc3a9ad5112878f02e1ad9cbd11cbf67e5d"
     );
     check_eq!(hardware.catalogue().monthly_dies(), [64, 16, 4]);
     check_eq!(hardware.catalogue().fitting_minor(), 10_000);
@@ -68,8 +69,12 @@ fn hardware_catalogue_refuses_a_price_display_that_differs_from_money() -> Resul
         ("scale", json!(0)),
         ("instrument", json!("other.credit")),
         ("tank_minor", json!(9_999_999)),
-        ("core_minor", json!([300_000, 800_001, 2_500_000])),
-        ("integration_permille", json!(101)),
+        // Doc 48 unit PL.7: the prices are content, but bounded as the payment policy bounds
+        // them.
+        ("core_minor", json!([0, 800_000, 2_500_000])),
+        ("core_minor", json!([300_000, 800_000, 10_000_000_001_i64])),
+        ("integration_permille", json!(0)),
+        ("integration_permille", json!(1000)),
         ("fitting_minor", json!(9_999)),
         ("monthly_dies", json!([64, 0, 4])),
         ("unexpected", json!(true)),
@@ -79,6 +84,78 @@ fn hardware_catalogue_refuses_a_price_display_that_differs_from_money() -> Resul
         check!(
             serde_json::from_value::<HardwareCatalogueDef>(value).is_err(),
             "{field}"
+        );
+    }
+    Ok(())
+}
+
+/// **Doc 48 unit PL.7: the core prices and the dies' chain are content** (Q-48-27). The shipped
+/// catalogue carries the v1 prices and bills a die one board and a tonne of strategic ore at
+/// Class I, two boards and a tonne at Class II, four boards and two tonnes at Class III. A
+/// catalogue at other prices loads and answers them, which the v1 table never pinned before; a
+/// chain out of order, naming a good twice, more than four goods, zero units or the die's own
+/// commodity is refused.
+#[test]
+fn pl7_the_core_prices_and_the_die_chain_are_content() -> Result {
+    use mush_economy::core_integration::{CoreClass, CorePrices};
+    let hardware = PublishedHardware::shipped()?;
+    check_eq!(hardware.catalogue().prices(), CorePrices::V1);
+    let chain = hardware.catalogue().chain()?;
+    let bill = |lines: &[mush_industry::core_production::ChainLine]| {
+        lines
+            .iter()
+            .map(|l| (l.commodity.as_str().to_owned(), l.units))
+            .collect::<Vec<_>>()
+    };
+    let line = |good: &str, units: u64| (good.to_owned(), units);
+    check_eq!(
+        bill(&chain[0]),
+        vec![line("instrument_boards", 1), line("strategic_ore", 1)]
+    );
+    check_eq!(
+        bill(&chain[1]),
+        vec![line("instrument_boards", 2), line("strategic_ore", 1)]
+    );
+    check_eq!(
+        bill(&chain[2]),
+        vec![line("instrument_boards", 4), line("strategic_ore", 2)]
+    );
+    // Every chain good is a pooled good of the shipped table.
+    let goods = crate::definitions::goods::goods_table()?;
+    for l in chain.iter().flatten() {
+        check!(goods.good(&l.commodity).is_some(), "{} is a good", l.commodity);
+        check!(!crate::port_tick::is_part(&l.commodity), "{} pools", l.commodity);
+    }
+    // Other prices load: the catalogue is the price source, not the v1 table.
+    let mut value = body()?["entries"][CATALOGUE]["def"].clone();
+    value["core_minor"] = json!([450_000, 900_000, 3_000_000]);
+    value["integration_permille"] = json!(150);
+    let priced = serde_json::from_value::<HardwareCatalogueDef>(value)?;
+    check_eq!(priced.finished_minor(CoreClass::II), 900_000);
+    check_eq!(priced.integration_minor(CoreClass::II)?, 135_000);
+    check_eq!(priced.die_minor(CoreClass::II)?, 765_000);
+    check_eq!(
+        priced.prices(),
+        CorePrices {
+            finished_minor: [450_000, 900_000, 3_000_000],
+            integration_permille: 150,
+        }
+    );
+    let entry = |good: &str, units: u64| json!({"good": good, "units": units});
+    for wrong in [
+        json!([[entry("strategic_ore", 1), entry("instrument_boards", 1)], [], []]),
+        json!([[entry("strategic_ore", 1), entry("strategic_ore", 1)], [], []]),
+        json!([[entry("strategic_ore", 0)], [], []]),
+        json!([[entry("strategic_ore", 1_001)], [], []]),
+        json!([[entry("tacsim.electronics", 1)], [], []]),
+        json!([[entry("a", 1), entry("b", 1), entry("c", 1), entry("d", 1), entry("e", 1)], [], []]),
+        json!([[], []]),
+    ] {
+        let mut value = body()?["entries"][CATALOGUE]["def"].clone();
+        value["die_chain"] = wrong.clone();
+        check!(
+            serde_json::from_value::<HardwareCatalogueDef>(value).is_err(),
+            "{wrong}"
         );
     }
     Ok(())
