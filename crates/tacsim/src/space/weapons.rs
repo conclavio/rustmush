@@ -1,25 +1,24 @@
-//! **The 1:1 wall-time space weapon triad** (`docs/design/35-ship-free-flight-combat-and-mining.md`
-//! §6.2, `D-35-8`, `Q-35-4`).
+//! **A ship's mounts in a bubble** (`docs/design/35-ship-free-flight-combat-and-mining.md`
+//! §6.2, `D-35-8`, `Q-35-4`; doc 49 unit CC.6).
 //!
-//! All combat inside a [`super::bubble::LocalSpaceBubble`] runs on **1:1 wall time**:
-//! - **Torpedoes (`TorpedoTube`)**: Inherit launcher velocity $\mathbf{v}_{\text{ship}}$ at launch,
-//!   accelerate at $15\text{–}30\text{ g}$ ($150\text{–}300\text{ m/s}^2$) under proportional
-//!   navigation guidance with finite $\Delta v$ ($8\text{–}15\text{ km/s}$), $10\text{–}500\text{ km}$
-//!   effective range ($12\text{–}90\text{ s}$ wall-time flight), bounded by tube count and
-//!   magazine stowage (`W15`). Countered by automatic **PDCs** (`+tac/pdc auto`), **Defensive
-//!   Lasers**, **ECM/decoys**, or high-G burns that exhaust torpedo $\Delta v$.
-//! - **Energy Weapons (`LaserMount`)**: Instant hit at speed of light ($c$), $20\text{–}500\text{ km}$
-//!   range with diffraction falloff $1 / (1 + (R/R_0)^2)$, builds hull `heat_permille`, and can
-//!   be toggled per mount between [`LaserMode::Offense`] and [`LaserMode::Defense`] (`D-35-8`).
-//! - **Railguns (`RailgunMount`)**: $10\text{–}250\text{ km}$ range, unguided tungsten slug at
-//!   $v_{\text{muz}} = 15\text{–}20\text{ km/s}$ + $\mathbf{v}_{\text{ship}}$ ($1.0\text{–}15\text{ s}$
-//!   wall-time time-of-flight). **Cannot be intercepted by PDCs or lasers.** Countered by
-//!   executing a **lateral jinking burn** during time-of-flight, off the shooter's predicted
-//!   lead.
-//! - **Point-Defense Cannons (`PdcMount`)**: $0\text{–}15\text{ km}$ rotary burst envelope;
-//!   automatically engages incoming hostile torpedoes when `pdc_auto` is toggled on (`Q-35-4`).
+//! All combat inside a [`super::bubble::LocalSpaceBubble`] runs on **1:1 wall time**. A ship
+//! carries four families of mount, each built from a `space_mount` content row and her hull's
+//! `space_fit` ([`crate::definitions::space_mount`]; `crates/tacsim/content/space/`), never from
+//! numbers written here:
+//! - **Torpedo tubes ([`TorpedoTube`])**: a salvo of guided torpedoes that inherit her velocity,
+//!   bounded by the tubes, the reload and the magazine. Countered by point defence, defence-mode
+//!   lasers, decoys, or burns that exhaust a torpedo's change of speed.
+//! - **Laser turrets ([`LaserMount`])**: a pulse that lands at once, its damage falling with
+//!   range, each pulse adding hull heat. A laser works in [`LaserMode::Offense`] or
+//!   [`LaserMode::Defense`] as her fit allows (Q-49-24), each mode with its own cycle.
+//! - **Spinal guns ([`RailgunMount`])**: an unguided round point defence and lasers cannot stop.
+//!   A hull that burns during its flight is not where it was fired at.
+//! - **Point-defence rotaries ([`PdcMount`])**: bursts that stop incoming torpedoes inside their
+//!   envelope, on their own while automatic point defence is on.
 
 use serde::{Deserialize, Serialize};
+
+use crate::definitions::space_mount::{LaserDef, PointDefenceDef, SpinalDef, TubesDef};
 
 /// Operating mode for a shipboard laser mount (`D-35-8`, `Q-35-4`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +30,20 @@ pub enum LaserMode {
     Defense,
 }
 
+/// Whether a field holds nought: what a mount's document leaves out.
+const fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
+}
+
+/// **The shipped row `id`** (`crates/tacsim/content/space/mounts.json`): what the test-only
+/// `standard_*` constructors build from, so no test writes a mount's numbers of its own.
+#[cfg(test)]
+fn shipped_row(id: &str) -> &'static crate::definitions::space_mount::SpaceMountFamily {
+    &super::custody::space_mount_row(id)
+        .unwrap_or_else(|| panic!("the shipped space mounts declare `{id}`"))
+        .family
+}
+
 /// Torpedo launcher configuration and magazine state (`W15`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TorpedoTube {
@@ -39,6 +52,12 @@ pub struct TorpedoTube {
     pub tubes: u8,
     /// Remaining torpedoes in the magazine (`W15`).
     pub magazine_remaining: u16,
+    /// **Torpedoes fired since her magazine was full** (doc 49 unit CC.6): what is left and this
+    /// together are what her fit stows ([`Self::magazine_max`]), the most a mind reads it can
+    /// hold. Nought, and absent from her document, until she fires, so a hull that has not
+    /// fired saves the bytes she always did.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub fired_since_full: u16,
     /// Drive acceleration of launched torpedoes in $\text{m/s}^2$ (e.g., $200\text{ m/s}^2 \approx 20\text{ g}$).
     pub accel_mps2: i64,
     /// Total $\Delta v$ budget of each torpedo in $\text{m/s}$ (e.g., $12{,}000\text{ m/s}$).
@@ -52,19 +71,81 @@ pub struct TorpedoTube {
 }
 
 impl TorpedoTube {
-    /// Standard corvette / raider 2-tube torpedo launcher ($25\text{ g}$, $12\text{ km/s}$ $\Delta v$).
+    /// **A tube family built from its content row** (doc 49 unit CC.6), stowing `magazine`.
     #[must_use]
-    pub fn standard_twin(id: impl Into<String>, magazine: u16) -> Self {
+    pub fn from_def(id: impl Into<String>, def: &TubesDef, magazine: u16) -> Self {
         Self {
             id: id.into(),
-            tubes: 2,
+            tubes: def.salvo,
             magazine_remaining: magazine,
-            accel_mps2: 250,
-            max_dv_mps: 12_000,
-            warhead_damage: 180,
-            reload_cooldown_ms: 8_000,
+            fired_since_full: 0,
+            accel_mps2: def.accel_mps2,
+            max_dv_mps: def.dv_mps,
+            warhead_damage: def.warhead_damage,
+            reload_cooldown_ms: def.reload_ms,
             cooldown_remaining_ms: 0,
         }
+    }
+
+    /// The most the magazine holds: what her fit stows, which is what is left and what she has
+    /// fired since it was full.
+    #[must_use]
+    pub fn magazine_max(&self) -> u16 {
+        self.magazine_remaining
+            .saturating_add(self.fired_since_full)
+    }
+
+    /// The shipped twin tubes (`tacsim.space_mount.twin_tubes`), stowing `magazine`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn standard_twin(id: impl Into<String>, magazine: u16) -> Self {
+        match shipped_row("tacsim.space_mount.twin_tubes") {
+            crate::definitions::space_mount::SpaceMountFamily::Tubes(def) => {
+                Self::from_def(id, def, magazine)
+            }
+            other => panic!("twin_tubes is a {} row", other.as_str()),
+        }
+    }
+}
+
+/// **The modes a laser's fit allows** (Q-49-24: the fit names each mount's modes). Both, on a
+/// document written before doc 49 unit CC.6, and on every laser the shipped fits carry
+/// (Q-49-25: the Dray and Dray-P keep dual-mode lasers).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaserModes {
+    /// It may fire at her lock.
+    pub offence: bool,
+    /// It may stop incoming torpedoes.
+    pub defence: bool,
+}
+
+impl LaserModes {
+    /// Both modes.
+    pub const BOTH: LaserModes = LaserModes {
+        offence: true,
+        defence: true,
+    };
+
+    /// Whether the fit allows `mode`.
+    #[must_use]
+    pub const fn allows(self, mode: LaserMode) -> bool {
+        match mode {
+            LaserMode::Offense => self.offence,
+            LaserMode::Defense => self.defence,
+        }
+    }
+
+    /// Whether both are allowed: what a laser's document leaves out.
+    #[must_use]
+    pub const fn is_both(&self) -> bool {
+        self.offence && self.defence
+    }
+}
+
+impl Default for LaserModes {
+    fn default() -> Self {
+        LaserModes::BOTH
     }
 }
 
@@ -73,6 +154,11 @@ impl TorpedoTube {
 pub struct LaserMount {
     pub id: String,
     pub mode: LaserMode,
+    /// **The modes her fit allows** (Q-49-24): [`super::bubble::LocalSpaceBubble::set_laser_mode`]
+    /// refuses any other, and a laser her fit allows no offence is no mount a mind may fire.
+    /// Absent from her document when both are allowed.
+    #[serde(default, skip_serializing_if = "LaserModes::is_both")]
+    pub allowed_modes: LaserModes,
     /// Damage at zero range before diffraction falloff.
     pub base_damage: u32,
     /// Half-intensity diffraction range $R_0$ in metres (e.g., $120{,}000\text{ m}$).
@@ -83,25 +169,64 @@ pub struct LaserMount {
     pub defense_range_m: i64,
     /// Hull heat added per shot in permille (`0..=1000`).
     pub heat_cost_permille: u16,
-    /// Cooldown between pulses in wall milliseconds.
+    /// Cooldown between pulses in wall milliseconds: the offence mode's cycle.
     pub cooldown_ms: u32,
+    /// **The defence mode's cycle** (Q-49-24: the cycle belongs to the mode), when it is not
+    /// the offence mode's; `None` when the two are one cycle, as on every shipped row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defence_cooldown_ms: Option<u32>,
     pub cooldown_remaining_ms: u32,
 }
 
 impl LaserMount {
-    /// Standard dual-mode tactical laser turret ($20\text{–}500\text{ km}$ range).
+    /// **A laser built from its content row** (doc 49 unit CC.6): the modes her fit allows and
+    /// the mode a fresh hull starts in. A row with no offence mode cycles at its defence cycle.
     #[must_use]
-    pub fn standard_turret(id: impl Into<String>) -> Self {
+    pub fn from_def(
+        id: impl Into<String>,
+        def: &LaserDef,
+        allowed_modes: LaserModes,
+        mode: LaserMode,
+    ) -> Self {
+        let defence = def.modes.defence.map(|mode| mode.cycle_ms);
+        let offence = def.modes.offence.map(|mode| mode.cycle_ms);
+        let cooldown_ms = offence.or(defence).unwrap_or(0);
         Self {
             id: id.into(),
-            mode: LaserMode::Offense,
-            base_damage: 110,
-            half_range_m: 120_000,
-            max_range_m: 500_000,
-            defense_range_m: 45_000,
-            heat_cost_permille: 140,
-            cooldown_ms: 1_000,
+            mode,
+            allowed_modes,
+            base_damage: def.base_damage,
+            half_range_m: def.falloff_half_m,
+            max_range_m: def.max_range_m,
+            defense_range_m: def.defence_range_m,
+            heat_cost_permille: def.heat_per_shot_permille,
+            cooldown_ms,
+            defence_cooldown_ms: defence.filter(|cycle| *cycle != cooldown_ms),
             cooldown_remaining_ms: 0,
+        }
+    }
+
+    /// The defence mode's cycle, wall milliseconds.
+    #[must_use]
+    pub fn defence_cycle_ms(&self) -> u32 {
+        self.defence_cooldown_ms.unwrap_or(self.cooldown_ms)
+    }
+
+    /// Whether her fit lets this laser fire at her lock: whether it is a mount a mind may name.
+    #[must_use]
+    pub const fn offence_allowed(&self) -> bool {
+        self.allowed_modes.offence
+    }
+
+    /// The shipped dual-mode turret (`tacsim.space_mount.turret_laser`), starting in offence.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn standard_turret(id: impl Into<String>) -> Self {
+        match shipped_row("tacsim.space_mount.turret_laser") {
+            crate::definitions::space_mount::SpaceMountFamily::Laser(def) => {
+                Self::from_def(id, def, LaserModes::BOTH, LaserMode::Offense)
+            }
+            other => panic!("turret_laser is a {} row", other.as_str()),
         }
     }
 
@@ -135,6 +260,10 @@ pub struct RailgunMount {
     pub slug_damage: u32,
     /// Remaining tungsten slugs in magazine (`W15`).
     pub rounds_remaining: u16,
+    /// **Rounds fired since her magazine was full** (doc 49 unit CC.6), as
+    /// [`TorpedoTube::fired_since_full`] counts torpedoes.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub fired_since_full: u16,
     /// Capacitor / thermal spike per shot in permille.
     pub heat_cost_permille: u16,
     /// Capacitor recharge time in wall milliseconds.
@@ -143,18 +272,37 @@ pub struct RailgunMount {
 }
 
 impl RailgunMount {
-    /// Standard $20\text{ km/s}$ spinal railgun ($10\text{–}250\text{ km}$ range).
+    /// **A spinal gun built from its content row** (doc 49 unit CC.6), stowing `rounds`.
     #[must_use]
-    pub fn standard_spinal(id: impl Into<String>, rounds: u16) -> Self {
+    pub fn from_def(id: impl Into<String>, def: &SpinalDef, rounds: u16) -> Self {
         Self {
             id: id.into(),
-            muzzle_vel_mps: 20_000,
-            max_range_m: 250_000,
-            slug_damage: 145,
+            muzzle_vel_mps: def.muzzle_mps,
+            max_range_m: def.max_range_m,
+            slug_damage: def.round_damage,
             rounds_remaining: rounds,
-            heat_cost_permille: 220,
-            cooldown_ms: 3_000,
+            fired_since_full: 0,
+            heat_cost_permille: def.heat_per_shot_permille,
+            cooldown_ms: def.cycle_ms,
             cooldown_remaining_ms: 0,
+        }
+    }
+
+    /// The most the magazine holds: what is left and what she has fired since it was full.
+    #[must_use]
+    pub fn magazine_max(&self) -> u16 {
+        self.rounds_remaining.saturating_add(self.fired_since_full)
+    }
+
+    /// The shipped spinal gun (`tacsim.space_mount.spinal_gun`), stowing `rounds`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn standard_spinal(id: impl Into<String>, rounds: u16) -> Self {
+        match shipped_row("tacsim.space_mount.spinal_gun") {
+            crate::definitions::space_mount::SpaceMountFamily::Spinal(def) => {
+                Self::from_def(id, def, rounds)
+            }
+            other => panic!("spinal_gun is a {} row", other.as_str()),
         }
     }
 }
@@ -204,19 +352,30 @@ fn default_torpedo_max_flight_ms() -> u32 {
 }
 
 impl PdcMount {
-    /// Standard $15\text{ km}$ rotary PDC mount with 2,000 rounds, a $500\text{ ms}$ burst cycle,
-    /// and $50$ torpedo-integrity damage per burst (two bursts destroy a standard $100$-integrity torpedo).
+    /// **A point-defence rotary built from its content row** (doc 49 unit CC.6), stowing `ammo`.
     #[must_use]
-    pub fn standard_rotary(id: impl Into<String>, ammo: u32) -> Self {
+    pub fn from_def(id: impl Into<String>, def: &PointDefenceDef, ammo: u32) -> Self {
         Self {
             id: id.into(),
-            envelope_m: 15_000,
-            burst_rounds: 50,
+            envelope_m: def.envelope_m,
+            burst_rounds: def.burst_rounds,
             ammo_remaining: ammo,
             operational: true,
-            cooldown_ms: 500,
+            cooldown_ms: def.cycle_ms,
             cooldown_remaining_ms: 0,
-            damage_per_burst: 50,
+            damage_per_burst: def.damage_per_burst,
+        }
+    }
+
+    /// The shipped rotary (`tacsim.space_mount.rotary_pd`), stowing `ammo`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn standard_rotary(id: impl Into<String>, ammo: u32) -> Self {
+        match shipped_row("tacsim.space_mount.rotary_pd") {
+            crate::definitions::space_mount::SpaceMountFamily::PointDefence(def) => {
+                Self::from_def(id, def, ammo)
+            }
+            other => panic!("rotary_pd is a {} row", other.as_str()),
         }
     }
 }

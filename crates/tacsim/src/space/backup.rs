@@ -166,21 +166,28 @@ pub fn player_of(w: &World, hull: ObjId) -> Option<ObjId> {
     })
 }
 
-/// Whether `ship` carries anything she can fire: a beam, a railgun or a tube.
+/// Whether `ship` has a beam she may fire at a lock: a laser her fit allows offence (Q-49-24;
+/// doc 49 unit CC.6). A laser fitted defence-only only stops torpedoes, so it answers nobody.
+fn has_offence_beam(ship: &SpaceShipState) -> bool {
+    ship.lasers.iter().any(|laser| laser.offence_allowed())
+}
+
+/// Whether `ship` carries anything she can fire: a beam her fit lets fire at a lock, a railgun
+/// or a tube.
 fn armed(ship: &SpaceShipState) -> bool {
-    !(ship.lasers.is_empty() && ship.railguns.is_empty() && ship.torpedo_tubes.is_empty())
+    has_offence_beam(ship) || !ship.railguns.is_empty() || !ship.torpedo_tubes.is_empty()
 }
 
 /// **Whether `ship` can still defend herself** (Q-45-9, as `crate::arena::absent` reads it
-/// of a unit on the ground): she flies, her drive section stands, and she has a beam, or a
-/// railgun or a tube with a round left.
+/// of a unit on the ground): she flies, her drive section stands, and she has a beam her fit
+/// lets fire at a lock, or a railgun or a tube with a round left.
 fn can_defend(ship: &SpaceShipState) -> bool {
     ship.status == HullStatus::Operational
         && ship
             .sections
             .get(&ShipSectionId::Drive)
             .is_none_or(|drive| drive.internals > 0)
-        && (!ship.lasers.is_empty()
+        && (has_offence_beam(ship)
             || ship.railguns.iter().any(|mount| mount.rounds_remaining > 0)
             || ship
                 .torpedo_tubes
@@ -1259,6 +1266,28 @@ mod tests {
             assert_eq!(flown(Posture::Hold, ship), Posture::Hold);
             assert_eq!(flown(Posture::Return, ship), Posture::Return);
         }
+    }
+
+    /// **Doc 49 unit CC.6 (Q-49-24): "armed" reads the modes her fit allows.** A laser fitted
+    /// defence-only stops torpedoes and answers nobody, so a hull with nothing else is flown
+    /// as an unarmed one; the shipped Dray's dual-mode lasers keep her armed (Q-49-25).
+    #[test]
+    fn cc6_a_laser_fitted_defence_only_does_not_arm_her() {
+        let dual = SpaceShipState::new_dray("her", "Her", CARRIER_PARTY, [0; 3], [0; 3]);
+        assert!(
+            super::armed(&dual) && super::can_defend(&dual),
+            "Q-49-25: the Dray answers fire"
+        );
+        let mut screened = dual.clone();
+        for laser in &mut screened.lasers {
+            laser.allowed_modes = super::super::weapons::LaserModes {
+                offence: false,
+                defence: true,
+            };
+            laser.mode = super::super::weapons::LaserMode::Defense;
+        }
+        assert!(!super::armed(&screened) && !super::can_defend(&screened));
+        assert_eq!(flown(Posture::Guard, &screened), Posture::Hold);
     }
 
     /// **Doc 45 unit AP.9: a hull that stands guard takes up her player's quarrel, and

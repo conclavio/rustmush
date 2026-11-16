@@ -10773,7 +10773,8 @@ fn sfr22_authoring_ii_clusters_from_pack_sealed_minds_and_drone_excursions() {
     assert_eq!(cast.corvette.commander, "Customs Picket Commander");
     assert_eq!(cast.corvette.unit, "tacsim.unit.corvette");
     assert_eq!(cast.raider.commander, "Kaelen Vane");
-    assert_eq!(cast.raider.unit, "tacsim.unit.corvette");
+    // Doc 49 unit CC.6: the raider has her own unit file, the corvette's hull.
+    assert_eq!(cast.raider.unit, "tacsim.unit.raider_heavy");
     assert_eq!(cast.raider.overlay, "tacsim.unit.raider_heavy");
     assert_eq!(cast.interdictor.hull_name, "Interdictor Picket");
     assert_eq!(cast.interdictor.overlay, "tacsim.unit.corvette_interdictor");

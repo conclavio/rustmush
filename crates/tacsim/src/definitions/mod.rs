@@ -54,6 +54,8 @@ pub mod plant;
 pub mod resolution;
 pub mod resources;
 pub mod sensor;
+// Doc 49 unit CC.6: the space mount schema, its two entry kinds `space_mount` and `space_fit`.
+pub mod space_mount;
 /// Doc 39 cut IN.9b: the `armour_cab` and `walker_cab` class templates.
 pub mod templates;
 pub mod tools;
@@ -277,6 +279,12 @@ pub struct Catalog {
     pub budgets: BTreeMap<CanonicalId, mass::MassBudget>,
     /// The resolution tables, by entry id.
     pub resolutions: BTreeMap<CanonicalId, ResolutionDef>,
+    /// **The space mount rows, by entry id** (doc 49 unit CC.6; Q-49-11). Checked, never minted
+    /// ([`space_mount`]).
+    pub space_mounts: BTreeMap<CanonicalId, space_mount::SpaceMountDef>,
+    /// **The hull fits, by entry id** (doc 49 unit CC.6): each names its unit and its mounts,
+    /// every reference checked at the build.
+    pub space_fits: BTreeMap<CanonicalId, space_mount::SpaceFitDef>,
     /// Every minted reference, by entry id — the exact identity a persisted
     /// unit and a result record point at.
     pub references: BTreeMap<CanonicalId, DefinitionRef>,
@@ -305,6 +313,10 @@ impl Catalog {
         let mut resolutions: BTreeMap<CanonicalId, Sourced<ResolutionDef>> = BTreeMap::new();
         let mut units: BTreeMap<CanonicalId, Sourced<UnitSpec>> = BTreeMap::new();
         let mut arenas: BTreeMap<CanonicalId, Sourced<ArenaDef>> = BTreeMap::new();
+        let mut space_mounts: BTreeMap<CanonicalId, Sourced<space_mount::SpaceMountDef>> =
+            BTreeMap::new();
+        let mut space_fits: BTreeMap<CanonicalId, Sourced<space_mount::SpaceFitDef>> =
+            BTreeMap::new();
 
         // (1) Collect, refusing a duplicate id across packs and re-running each
         // entry's own bounds. `PackEntry::check` already ran at load; running it
@@ -350,6 +362,16 @@ impl Catalog {
                     PackEntry::Arena(def) => {
                         def.check(name)?;
                         insert(&mut arenas, id, &pack, version, def.clone())?;
+                    }
+                    // Doc 49 unit CC.6: a space mount row and a hull fit, checked and refused a
+                    // duplicate as every other kind is, and never minted.
+                    PackEntry::SpaceMount(def) => {
+                        def.check(name)?;
+                        insert(&mut space_mounts, id, &pack, version, def.clone())?;
+                    }
+                    PackEntry::SpaceFit(def) => {
+                        def.check(name)?;
+                        insert(&mut space_fits, id, &pack, version, def.clone())?;
                     }
                     _ => {}
                 }
@@ -443,6 +465,21 @@ impl Catalog {
             }
         }
 
+        // Doc 49 unit CC.6: a fit names a unit some loaded pack declares, and space mount rows
+        // with the magazine and the modes each row takes.
+        for (id, sourced) in &space_fits {
+            if !units.contains_key(&sourced.def.unit) {
+                return Err(DefinitionError::reference(
+                    id.as_str(),
+                    "unit",
+                    sourced.def.unit.as_str(),
+                ));
+            }
+            sourced
+                .def
+                .check_against(id.as_str(), |row| space_mounts.get(row).map(|s| &s.def))?;
+        }
+
         // (2b) Doc 18 cut IC2 (Q-18-5, D-18-45): one drive class, one law. The
         // drive table is the index over the fielded definitions, walked in id
         // order so the refusal names the same pair on every boot; a second unit
@@ -457,6 +494,14 @@ impl Catalog {
         };
         let mut out = Catalog {
             drives,
+            space_mounts: space_mounts
+                .into_iter()
+                .map(|(id, sourced)| (id, sourced.def))
+                .collect(),
+            space_fits: space_fits
+                .into_iter()
+                .map(|(id, sourced)| (id, sourced.def))
+                .collect(),
             ..Catalog::default()
         };
         let mut schemas: BTreeMap<&'static str, DefinitionRef> = BTreeMap::new();
