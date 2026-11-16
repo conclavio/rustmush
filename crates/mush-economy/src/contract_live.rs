@@ -1645,6 +1645,31 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// carry (the command renders it with §9's own words).
 const PARTY_CAP_REFUSAL: &str = "a party is already on the most live contracts allowed";
 
+/// How many open contracts one issuer may hold, as a refusal the seam can carry.
+const ISSUER_CAP_REFUSAL: &str = "that issuer already has the most open contracts allowed";
+
+/// **§9's issuer cap**: whether `issuer` already holds [`MAX_OPEN_CONTRACTS_PER_ISSUER`]
+/// non-terminal contracts, counted as `@contract/draft` and [`offer_contract`] count them.
+fn issuer_at_cap(store: &EconomyStore, issuer: &PrincipalId) -> bool {
+    store
+        .snapshot()
+        .contracts()
+        .filter(|c| &c.issuer == issuer && !c.state.is_terminal())
+        .count()
+        >= MAX_OPEN_CONTRACTS_PER_ISSUER
+}
+
+/// **§9's party cap**: whether `party` is already on [`MAX_LIVE_CONTRACTS_PER_PARTY`] live
+/// contracts, counted as the offer gate (`check_offer`) counts them.
+fn party_at_cap(store: &EconomyStore, party: &PrincipalId) -> bool {
+    store
+        .snapshot()
+        .contracts()
+        .filter(|c| c.state.is_live() && c.consent.parties.contains(party))
+        .count()
+        >= MAX_LIVE_CONTRACTS_PER_PARTY
+}
+
 /// Everything that must be true of a draft before it is offered — E4b2's gate plus
 /// E6a step 1's re-stamp rule — against the live store, with no side effect. The
 /// shared core of `@contract/offer` and the programmatic `offer_contract` seam.
@@ -5158,9 +5183,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
             .count()
     });
     if open >= MAX_OPEN_CONTRACTS_PER_ISSUER {
-        return Err(ContractError::TooLarge(
-            "that issuer already has the most open contracts allowed",
-        ));
+        return Err(ContractError::TooLarge(ISSUER_CAP_REFUSAL));
     }
     if !spec.deterministic
         && let Some(i) = spec
@@ -6443,7 +6466,8 @@ pub fn retrieval_acceptor(c: &EconomicContract) -> Option<&PrincipalId> {
 ///
 /// [`ContractError::Infeasible`] for a frozen economy, a non-positive fee or a deadline not
 /// in the future; [`ContractError::NoSuchAsset`] for a hull with no live title the poster
-/// holds; every structural refusal; whatever the escrow's acceptance refuses (the poster's
+/// holds; [`ContractError::TooLarge`] for a poster at §9's issuer or party cap; every
+/// structural refusal; whatever the escrow's acceptance refuses (the poster's
 /// funds). Nothing is written when the checks refuse; an escrow the economy refuses leaves
 /// the offered contract cancelled.
 pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<ContractId, ContractError> {
@@ -6481,6 +6505,16 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
         });
     if !titled {
         return Err(ContractError::NoSuchAsset(spec.hull));
+    }
+    // Doc 48 §4.3 (the second review, doc 48b): a retrieval is a contract, so its poster is
+    // held to §9's two caps as every other contract path holds an issuer and a party.
+    if let Some(store) = ctx.w.module_state::<EconomyStore>() {
+        if issuer_at_cap(store, &spec.poster) {
+            return Err(ContractError::TooLarge(ISSUER_CAP_REFUSAL));
+        }
+        if party_at_cap(store, &spec.poster) {
+            return Err(ContractError::TooLarge(PARTY_CAP_REFUSAL));
+        }
     }
     let now = ctx.w.now();
     let consent = ConsentSurface {
@@ -6609,6 +6643,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
 /// [`ContractError::NoStanding`] for a contract that is not a live retrieval, an acceptor who
 /// is the poster or who may not accept, or an account the acceptor does not own;
 /// [`ContractError::State`] when it already has an acceptor or is not in force;
+/// [`ContractError::TooLarge`] for an acceptor at §9's party cap;
 /// [`ContractError::Infeasible`] for a frozen economy.
 pub fn accept_retrieval(
     ctx: &mut Ctx<'_>,
@@ -6655,6 +6690,16 @@ pub fn accept_retrieval(
         || c.escrow.is_empty()
     {
         return Err(ContractError::State(id));
+    }
+    // Doc 48 §4.3 (the second review, doc 48b): joining binds the acceptor as a party, so they
+    // are held to §9's party cap. It adds no contract, so the poster's issuer cap, asked at the
+    // post, is not asked again.
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|store| party_at_cap(store, acceptor))
+    {
+        return Err(ContractError::TooLarge(PARTY_CAP_REFUSAL));
     }
     let now = ctx.w.now();
     c.consent.parties.push(acceptor.clone());

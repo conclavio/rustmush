@@ -40,7 +40,10 @@ pub const MAX_CORRELATION_BYTES: usize = 16384;
 pub const MAX_CONTRACT_BYTES: usize = 16384;
 pub const MAX_HISTORY_BYTES: usize = 32768;
 pub const MAX_HOLDER_GENERATION: u64 = 65537;
-pub const MAX_OFFER_SECONDS: i64 = 86400;
+/// The longest a paid-resale offer stands, in real seconds: 28 IC days at the live 24:1 rate,
+/// the owner's floor for any wait on a player's response (2026-11-04). It was 86,400 (24 IC
+/// days at 24:1) until doc 48 §4.3's defect fix.
+pub const MAX_OFFER_SECONDS: i64 = 100_800;
 pub const SETTLEMENT_IC_SECONDS: i64 = 259200;
 pub(crate) const NAMESPACE: &str = "market.paid_resale.v1";
 pub(crate) const OFFER: &str = "offer_paid_mind_resale";

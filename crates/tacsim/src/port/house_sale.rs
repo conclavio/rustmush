@@ -9,13 +9,15 @@
 //! when the house still holds her title, her title passing to the buyer; the house accepts
 //! through the port's party caps, and the title passes at the next settlement. **Nothing is
 //! stored**: the listing is read from where she stands and who holds her title, and a hull with
-//! a live sale contract is not offered twice.
+//! a live sale contract is not offered twice. A live sale is known by its shape, never its name
+//! ([`pending`]; doc 48 §4.3).
 
 use mush_core::{CanonicalId, CmdError, Ctx, ObjId, World};
 use mush_economy::{
-    AcceptOutcome, AccountId, Amount, ConsiderationSpec, ContractRoles, ContractSpec, Deliverable,
-    EconomicClock, EconomicDeadline, EconomicVisibility, EconomyStore, EvidenceKind, Expiry,
-    OutcomeTerms, PartyCap, PartyCapSource, PayoutShare, Share, TypedCondition,
+    AcceptOutcome, AccountId, Amount, ConsiderationSpec, ContractRoles, ContractSpec,
+    ContractState, Deliverable, EconomicClock, EconomicContract, EconomicDeadline,
+    EconomicVisibility, EconomyStore, EvidenceKind, Expiry, OutcomeTerms, PartyCap, PartyCapSource,
+    PayoutShare, Share, TypedCondition,
 };
 use mush_org::PrincipalId;
 use smol_str::SmolStr;
@@ -67,20 +69,38 @@ pub struct Listing {
     pub price_minor: u64,
 }
 
-/// The sale contract's name for `hull`, which marks it live ([`pending`]).
+/// The sale contract's name for `hull`: attribution only, never what marks a sale live.
 fn sale_name(hull: ObjId) -> SmolStr {
     SmolStr::new(format!("Recovery house resale, #{}", hull.0))
 }
 
-/// **Whether a sale of `hull` is live**: a contract of `sale_name` not yet terminal.
+/// **Whether `c` is a live sale of `hull` by `house`**, by its shape (doc 48 §4.3, from the
+/// second review, doc 48b): past its draft and not yet terminal, `house` a party that has
+/// accepted it as it stands, and a deliverable passing `hull`'s title from `house`. The name is
+/// not consulted: a contract's name is a free label anyone may draft, so matching on it let a
+/// player's own `@contract/draft` hide a hull from `+salvage/forsale` and refuse its
+/// `+salvage/buy`. Only the port's party caps accept for the house, in `+salvage/buy`, so an
+/// offer a player makes the house cannot pass for a sale either.
 #[must_use]
-pub fn pending(w: &World, hull: ObjId) -> bool {
-    let name = sale_name(hull);
+pub fn is_sale_of(c: &EconomicContract, hull: ObjId, house: &PrincipalId) -> bool {
+    !matches!(c.state, ContractState::Draft)
+        && !c.state.is_terminal()
+        && c.consent.parties.contains(house)
+        && c.accepted_by(house)
+        && c.consent.terms.deliverables.iter().any(|d| {
+            matches!(d, Deliverable::TitleTransfer { object, from, .. }
+                if *object == hull && from == house)
+        })
+}
+
+/// **Whether a sale of `hull` by `house` is live** ([`is_sale_of`]).
+#[must_use]
+pub fn pending(w: &World, hull: ObjId, house: &PrincipalId) -> bool {
     w.module_state::<EconomyStore>().is_some_and(|economy| {
         economy
             .snapshot()
             .contracts()
-            .any(|c| c.name == name && !c.state.is_terminal())
+            .any(|c| is_sale_of(c, hull, house))
     })
 }
 
@@ -206,7 +226,7 @@ fn say(ctx: &mut Ctx<'_>, text: String) {
 pub(crate) fn forsale_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let lines: Vec<String> = for_sale(ctx.w)
         .into_iter()
-        .filter(|l| !pending(ctx.w, l.hull))
+        .filter(|l| !pending(ctx.w, l.hull, &l.house))
         .map(|l| {
             FORSALE_LINE
                 .replace("{hull}", &format!("#{}", l.hull.0))
@@ -253,7 +273,7 @@ pub(crate) fn buy_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
         .ok_or_else(not_for_sale)?;
     let name = named(ctx.w, hull);
     let house = principal_name(ctx.w, &listing.house);
-    if pending(ctx.w, hull) {
+    if pending(ctx.w, hull, &listing.house) {
         return Err(CmdError::msg(SALE_PENDING.replace("{name}", &name)));
     }
     if acts_for(ctx.w, ctx.actor, &listing.house) {
@@ -368,5 +388,146 @@ mod tests {
         );
         assert_eq!(spec.deadline.map(|d| d.at), Some(1_000 + SALE_WINDOW_SECS));
         assert_eq!(spec.name, sale_name(ObjId(812)));
+    }
+
+    /// A contract `issuer` wrote, binding `parties`, delivering `deliverables`, in `state`,
+    /// accepted (as it stands) by `accepted`.
+    fn contract(
+        issuer: &PrincipalId,
+        parties: Vec<PrincipalId>,
+        deliverables: Vec<Deliverable>,
+        state: ContractState,
+        accepted: &[&PrincipalId],
+    ) -> EconomicContract {
+        let consent = mush_economy::ConsentSurface {
+            fact_consent: None,
+            managed: None,
+            parties,
+            terms: mush_economy::ContractTerms {
+                consideration: Vec::new(),
+                deliverables,
+                split: Vec::new(),
+                remainder_to: AccountId(5),
+                on_expiry: Expiry::Refund,
+                outcomes: Vec::new(),
+            },
+            conditions: Vec::new(),
+            deadline: None,
+            visibility: EconomicVisibility::Parties,
+            scope: None,
+            adjudicator: None,
+            evidence: Vec::new(),
+        };
+        let hash = mush_economy::consent_hash(issuer, &consent);
+        EconomicContract {
+            id: mush_economy::ContractId(9),
+            issuer: issuer.clone(),
+            name: sale_name(ObjId(812)),
+            consent,
+            consent_hash: hash,
+            acceptances: accepted
+                .iter()
+                .map(|party| mush_economy::Acceptance {
+                    party: (*party).clone(),
+                    at: 1_000,
+                    consent_hash: hash,
+                })
+                .collect(),
+            satisfied: Vec::new(),
+            escrow: Vec::new(),
+            state,
+            settle_attempts: 0,
+            created_at: 1_000,
+            amendments: 0,
+            generation_started_at: 1_000,
+            disputed_at: None,
+            canon_published: None,
+            roster_locked: false,
+            deposits: Vec::new(),
+            agreements: Vec::new(),
+            pending: None,
+            roles: ContractRoles::default(),
+            real_deadline_extension_secs: 0,
+            paused_real_remaining_secs: None,
+            revision: 1,
+        }
+    }
+
+    /// **Doc 48 §4.3** (the second review, doc 48b): a live sale is known by its shape. Every
+    /// contract below carries the sale's own name; only the one the house accepted, live, that
+    /// passes the hull's title from the house, is a sale.
+    #[test]
+    fn a_sale_is_its_shape_not_its_name() {
+        let hull = ObjId(812);
+        let house = PrincipalId::Organization(mush_org::OrgId(7));
+        let buyer = PrincipalId::Object(ObjId(40));
+        let title = |object: ObjId| Deliverable::TitleTransfer {
+            object,
+            from: house.clone(),
+            to: buyer.clone(),
+        };
+        let both = vec![buyer.clone(), house.clone()];
+        let sale = contract(
+            &buyer,
+            both.clone(),
+            vec![title(hull)],
+            ContractState::Active,
+            &[&buyer, &house],
+        );
+        assert!(
+            is_sale_of(&sale, hull, &house),
+            "the buyer's sale, accepted"
+        );
+        // A player's bare draft under the sale's name: the triage's griefing case.
+        let bare = contract(
+            &buyer,
+            vec![buyer.clone()],
+            Vec::new(),
+            ContractState::Draft,
+            &[],
+        );
+        assert!(!is_sale_of(&bare, hull, &house), "a bare draft");
+        // The sale's whole shape, still a draft.
+        let draft = contract(
+            &buyer,
+            both.clone(),
+            vec![title(hull)],
+            ContractState::Draft,
+            &[],
+        );
+        assert!(!is_sale_of(&draft, hull, &house), "a draft");
+        // Offered to the house, which never accepted it.
+        let offered = contract(
+            &buyer,
+            both.clone(),
+            vec![title(hull)],
+            ContractState::Offered,
+            &[&buyer],
+        );
+        assert!(
+            !is_sale_of(&offered, hull, &house),
+            "unaccepted by the house"
+        );
+        // The house's acceptance bound to another consent is no acceptance.
+        let mut stale = sale.clone();
+        for acceptance in &mut stale.acceptances {
+            acceptance.consent_hash = [0; 32];
+        }
+        assert!(!is_sale_of(&stale, hull, &house), "a void acceptance");
+        // Another hull's sale, and a finished one.
+        let other = contract(
+            &buyer,
+            both.clone(),
+            vec![title(ObjId(813))],
+            ContractState::Active,
+            &[&buyer, &house],
+        );
+        assert!(!is_sale_of(&other, hull, &house), "another hull");
+        let mut done = sale.clone();
+        done.state = ContractState::Cancelled;
+        assert!(!is_sale_of(&done, hull, &house), "terminal");
+        // Another house's sale of her title is not this house's.
+        let elsewhere = PrincipalId::Organization(mush_org::OrgId(8));
+        assert!(!is_sale_of(&sale, hull, &elsewhere), "another house");
     }
 }

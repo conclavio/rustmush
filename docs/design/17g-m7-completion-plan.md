@@ -513,7 +513,10 @@ Provisional defaults (17g section 1 ruling 6):
 - Personal renewal offer window 3 IC days, 259,200 s (17f §2.3;
   MarketTerms.renewal_offer_ic_seconds)
 - Paid-resale offer window 86,400 real seconds, the MAX_OFFER_SECONDS ceiling
-  (MarketTerms.resale_offer_seconds)
+  (MarketTerms.resale_offer_seconds). **Raised 2026-11-15** to 100,800 real seconds, 28 IC days
+  at the live 24:1 rate, ceiling and default both: 86,400 was 24 IC days, under the owner's
+  28-IC-day floor for a wait on a player's response (doc 48 §4.3, from the second review, doc
+  48b). Pinned by `engine_contracts::player_wait_floors`.
 - Pending-charter settlement window 3 IC days, 259,200 s (D-UM-40
   transfer_settle_ic_days, Q-UM-18 written default; MarketTerms.charter_settle_ic_seconds)
 - Personal term 90 IC days and Grace 3 IC days, from content::TERM_SECONDS /
