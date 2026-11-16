@@ -744,7 +744,7 @@ impl InventoryFamilies {
 
     /// **Credit several pools at one endpoint in one bundle** (doc 48 unit PL.7: the core
     /// origin's opening depot stock): each row as [`Self::credit`], the endpoint's pool census
-    /// staged once for every new pool ([`Self::stage_new_pools`]), since a second new pool at the
+    /// staged once for every new pool (`transfer_many`'s rule), since a second new pool at the
     /// same endpoint would write the census key again. The caller's bundle answers for every
     /// quantity: this mints, as `credit` does.
     ///
