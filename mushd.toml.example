@@ -468,6 +468,7 @@ max_snapshot_bytes = 7340032       # (16b cut AF.2) bytes of the largest arena s
 [tacsim.surface]                   # (doc 20 cut SM.10) surface mining's claims
 registry_interlock = true          # the Registry interlock: phase 1's only claim enforcement (doc 20 §9.4); false is refused at boot
 black_box_max_lines = 4096         # (doc 23 cut S.1) the most lines one hull's black box holds, two per excursion; provisional
+ore_reroll_ic_days = 28            # (doc 48 PL.10) IC days after which a worked-out site deposit or cluster rock re-rolls; 0 keeps ore finite; provisional
 
 [tacsim.procurement]               # (doc 17h cut M8f) a House procurement policy's defaults, provisional (Q-M8-6)
 budget_minor_per_ic_month = 200000 # minor credits a House spends on mind licences per IC calendar month (2,000cr)

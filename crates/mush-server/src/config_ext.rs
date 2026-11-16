@@ -493,6 +493,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         // and banded by `validate` below. `registry_interlock` stays the host's, refused above.
         surface: tacsim::config::SurfaceConfig {
             black_box_max_lines: cfg.surface.black_box_max_lines,
+            // Doc 48 unit PL.10: the re-roll delay, banded by `validate` below.
+            ore_reroll_ic_days: cfg.surface.ore_reroll_ic_days,
         },
         // Doc 17h cut M8f: the procurement policy's defaults, mapped straight across and banded
         // by `validate` below.
@@ -1257,6 +1259,25 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// **Doc 48 unit PL.10 (Q-48-61)**: `[tacsim.surface].ore_reroll_ic_days` maps straight
+    /// across, defaults to 28, boots at both band ends (0, finite ore; 365) and refuses 366 with
+    /// the line naming the key.
+    #[test]
+    fn pl10_the_ore_reroll_delay_maps_across_and_is_banded() {
+        let typed = tacsim_config(&TacsimCfg::default()).expect("the default boots");
+        assert_eq!(typed.surface.ore_reroll_ic_days, 28);
+        for days in [0_u16, 365] {
+            let cfg = tacsim_cfg(&format!("[tacsim.surface]\nore_reroll_ic_days = {days}\n"));
+            let typed = tacsim_config(&cfg).expect("a banded delay boots");
+            assert_eq!(typed.surface.ore_reroll_ic_days, days);
+        }
+        let cfg = tacsim_cfg("[tacsim.surface]\nore_reroll_ic_days = 366\n");
+        assert_eq!(
+            tacsim_config(&cfg).expect_err("past the band"),
+            "[tacsim.surface].ore_reroll_ic_days must be 0 to 365 IC days (it is 366)"
+        );
     }
 
     /// A directory in `pack_paths` is searched, in **sorted** order, so which pack wins
