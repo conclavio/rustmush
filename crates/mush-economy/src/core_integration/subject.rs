@@ -687,4 +687,75 @@ mod m8b2_tests {
             assert!(policy.validate().is_err());
         }
     }
+
+    /// **Doc 48 unit PL.7: the policy's prices.** The v1 table validates and is written by
+    /// absence, so a policy at it keeps its bytes; other prices are written, round-trip, and are
+    /// what the requester pays. Out-of-bounds prices refuse the policy, and a present v1 table is
+    /// refused on decode.
+    #[test]
+    fn pl7_the_policy_s_prices_are_bounded_and_written_by_absence() {
+        CorePrices::V1.validate().expect("the v1 table");
+        let value = serde_json::to_value(chartered()).expect("encodes");
+        assert!(
+            value.get("prices").is_none(),
+            "the v1 table is written by absence"
+        );
+        let priced = CorePaymentPolicy {
+            prices: CorePrices {
+                finished_minor: [450_000, 900_000, 3_000_000],
+                integration_permille: 150,
+            },
+            ..chartered()
+        };
+        priced.validate().expect("other prices validate");
+        let value = serde_json::to_value(&priced).expect("encodes");
+        assert!(value.get("prices").is_some(), "other prices are written");
+        let back: CorePaymentPolicy = serde_json::from_value(value).expect("decodes");
+        assert_eq!(back, priced);
+        assert_ne!(
+            priced.digest().expect("a digest"),
+            chartered().digest().expect("a digest")
+        );
+        assert_eq!(
+            DiePayment::SupplierStock.price(&priced.prices, CoreClass::II),
+            Amount::from_minor(900_000)
+        );
+        assert_eq!(
+            DiePayment::RequesterSupplied.price(&priced.prices, CoreClass::II),
+            Amount::from_minor(135_000)
+        );
+        for bad in [
+            CorePrices {
+                finished_minor: [0, 800_000, 2_500_000],
+                ..CorePrices::V1
+            },
+            CorePrices {
+                finished_minor: [300_000, 800_000, CorePrices::MAX_FINISHED_MINOR + 1],
+                ..CorePrices::V1
+            },
+            CorePrices {
+                integration_permille: 0,
+                ..CorePrices::V1
+            },
+            CorePrices {
+                integration_permille: 1_000,
+                ..CorePrices::V1
+            },
+            // A price whose integration share rounds to nothing.
+            CorePrices {
+                finished_minor: [5, 800_000, 2_500_000],
+                integration_permille: 100,
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+            let policy = CorePaymentPolicy {
+                prices: bad,
+                ..chartered()
+            };
+            assert!(policy.validate().is_err(), "{bad:?}");
+        }
+        let mut written = serde_json::to_value(chartered()).expect("encodes");
+        written["prices"] = serde_json::to_value(CorePrices::V1).expect("encodes");
+        assert!(serde_json::from_value::<CorePaymentPolicy>(written).is_err());
+    }
 }
