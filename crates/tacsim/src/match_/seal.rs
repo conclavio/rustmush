@@ -1514,26 +1514,28 @@ mod m5_tests {
         // holds, so no custody did. Captured on Linux.
         // Doc 49 unit CC.1: the Line card's fire terms and the Standard source (the reserve's
         // rules) moved, so all nine moved with the card and the source; the API 4 projection
-        // above moved with the card alone. Captured on Linux. They were `b3d768db…fd7ab0`, `394ee782…4c76c5`, `306543bb…f862af` (the fixture rows'; the production rows' and the principal's moved likewise).
+        // above moved with the card alone. Captured on Linux. The fixture rows were CC.9's
+        // `eaa9e8da…e0ba23`, `70ce5e6c…1ec358` and `68730d0f…e99f44`; the production rows'
+        // and the principal's moved likewise.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             68610eeb7e15f547ccbf7f3b9a980e999825da3b36a3a641aa6625f7742781f9",
+             e5b3f802072da06bd59d8c68f85a999737f0beba600c4b7fda18aa989fd51d84",
             "tacsim.unit.line_tank production_fixture \
-             68610eeb7e15f547ccbf7f3b9a980e999825da3b36a3a641aa6625f7742781f9",
+             e5b3f802072da06bd59d8c68f85a999737f0beba600c4b7fda18aa989fd51d84",
             "tacsim.unit.line_tank production_principal \
-             5efb0637421088865cff75fd8686681ea74eef008d2e793b101f3047eb10f1d0",
+             a2c605cc8db3254f264381460ab51061ee5964471e5fc3aef1cdfacf3c72819e",
             "tacsim.unit.heavy_mk1 fixture \
-             993ab7c4545f2fed108e68b721891f3761c2991175cd9c7b59e3be181492d000",
+             fee9ffcd9bcba856f04f558c45b11f959da817913d3cda18c39fb39f34a7ff50",
             "tacsim.unit.heavy_mk1 production_fixture \
-             993ab7c4545f2fed108e68b721891f3761c2991175cd9c7b59e3be181492d000",
+             fee9ffcd9bcba856f04f558c45b11f959da817913d3cda18c39fb39f34a7ff50",
             "tacsim.unit.heavy_mk1 production_principal \
-             7e449d9b2a2d13bdce49914e50eaba99e5fcbf2aa514166d9dca0f70d338570d",
+             382327debeb0320f534d9f512a7c7e711c2f8b61d77292c1f1c88b429e41b185",
             "tacsim.unit.target_mk1 fixture \
-             2812282eead991dafb2b67a49fb0820e7c6f2c5ea8e85a57d61de88363aef482",
+             c571a8c1d99f7cfb8662a80ac6169b2a296cb249dd1f4544bc856c04518735d0",
             "tacsim.unit.target_mk1 production_fixture \
-             2812282eead991dafb2b67a49fb0820e7c6f2c5ea8e85a57d61de88363aef482",
+             c571a8c1d99f7cfb8662a80ac6169b2a296cb249dd1f4544bc856c04518735d0",
             "tacsim.unit.target_mk1 production_principal \
-             97ba7cde9ce28d36e9c749d513dafbe453d8f1fe2371a20a64ff2968d6f84e61",
+             9df4fe0bbdb9eb982df95f2eb910f6eac8bf7acdea557772ba854f90c0a30ac5",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }

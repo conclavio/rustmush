@@ -462,10 +462,10 @@ const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !
 /// CC.9's, at 58,500 ms with the states `7970defd05f7722c`, `acd75c62f8ca64ff`,
 /// `514d012c9feb9a7a` and `1c4324486221d96d`.
 const C4_TRIAL_PINS: [&str; 4] = [
-    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=ced729426116276b ledger=abf87aeaaddcedf95a56f4f0595fc6eafeb1d9e3370fb7932437dc9fc2f91c01 result=cfc91ef30b68ff449197589c6a99e8f10a59765b88c348a2859b460995ba7a46",
-    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=3f8bd777880f03af ledger=4318de5d6d531306d013285ddb22f4d57c019cac1fd52bea040a5e60a2d6d728 result=55bf70c51717130675a9a32c418d3f7bc5388ecb91ab76f70b43498257caab53",
-    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=308174fa7bc5bb9f ledger=777513f662ceb84403af3c4eb8f05a545725c3f921620b9775c5a8836424818d result=a1f52458fc98caf3d860a74e09770f7086834e909d683f60213a915d9ed388e0",
-    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=57d2ab5faca33d0d ledger=826178bd74aea641dca6381dfc0cb8c085d359912e74deb60894f7ca3a87547e result=7e68f434777057be013bf806d83991e848a704e6cc208c1a275dd9744ee6c228",
+    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=f36c0170528c436a ledger=adb379af3d927a2f3e2f555afdbe4ce0487e377009a2b91204d93367d0099197 result=bb615b00224ab10901b3b6824ccaf8292f5e6c576e9e8f59fcca6412048d1872",
+    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=1a146dd84de19f37 ledger=226c00ca99c583bfbd852d2643191e7105638f58c785cf03f02aa429b7373502 result=4b333e27bc3a1307085937a7901d7ed21ffb51bdb8d133d9a506c33c6e24b428",
+    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=156f01bfa5d7d6ab ledger=1f4aee34b5a2503af76f11318abcfa860998bd77c4fb508a65aae66a588e1a88 result=4005409dca901d554c2ed66a6cc8bda90a61eff7a65458968c0eb9d6eb4a7c8b",
+    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=175e93075fc7cffe ledger=8c3dfe5bf55bdd165a963de2bf242aa385151861a1cd0c821b2c8f1d72de3ecc result=5164d66aa6948afeaf9f4174b3cd4df10cd01991dbc1b2bd1486e5eb388b90cc",
 ];
 
 /// Lower-case base-16 of `bytes`.
