@@ -4204,6 +4204,8 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
     seed_pool(&mut rig, vault_id, "provisions", 60, LotId(904));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot_actor);
+    // Doc 48 cut EX.0: the matter census counts propellant and provisions, after the seeds.
+    let matter_before = matter_terms(&mut rig.tw);
 
     let pending = undock_and_burn(&mut rig, pilot_actor, hull);
     let depart_ic = pending.plan.depart_ic;
@@ -4349,6 +4351,33 @@ fn sfr4_free_flight_decouples_debits_live_propellant_warns_return_reserve_and_re
         ship_after.contains("Stickney Yards"),
         "ship arrived and docked at Stickney Yards after autopilot recouple: {ship_after}"
     );
+    // Doc 48 cut EX.0: the departure burn, the timed burn and the autopilot's passage all spent
+    // propellant and provisions, and the census's balance held across the three. The in-flight
+    // two are the space burn receipts' totals, so `burned` grew by more than the ticket alone.
+    let matter_after = matter_terms(&mut rig.tw);
+    let ticket_kg =
+        i128::from(pending.plan.burn_t) * 1_000 + i128::from(pending.plan.crew_days) * 4;
+    assert!(
+        matter_after["burned"] - matter_before["burned"] > ticket_kg,
+        "the in-flight burns are burned too: before {matter_before:?}, after {matter_after:?}"
+    );
+    assert_eq!(
+        matter_after["balance"], matter_before["balance"],
+        "the matter census holds across the burns: before {matter_before:?}, after {matter_after:?}"
+    );
+}
+
+/// The matter census line's terms, by name (doc 48 cut EX.0).
+fn matter_terms(tw: &mut TestWorld) -> BTreeMap<String, i128> {
+    let out = run(tw, GOD, "@industry/census");
+    let line = out
+        .lines()
+        .find(|l| l.contains(tacsim::port::census::CENSUS_LINE))
+        .unwrap_or_else(|| panic!("a census line: {out}"));
+    line.split_whitespace()
+        .filter_map(|word| word.split_once('='))
+        .map(|(k, v)| (k.to_owned(), v.parse().expect("a number")))
+        .collect()
 }
 
 pub(crate) fn drain_space_and_industry(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {

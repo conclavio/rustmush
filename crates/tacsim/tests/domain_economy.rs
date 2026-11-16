@@ -65,6 +65,8 @@ mod house_arm_rs6b;
 mod house_resale_rs6c2;
 #[path = "domain_economy/house_sweep_rs6c.rs"]
 mod house_sweep_rs6c;
+#[path = "domain_economy/hull_resale_ex2.rs"]
+mod hull_resale_ex2;
 #[path = "domain_economy/in10_pools.rs"]
 mod in10_pools;
 #[path = "domain_economy/in11_matter.rs"]
@@ -95,6 +97,8 @@ mod mining;
 mod orders;
 #[path = "domain_economy/pl2_producers.rs"]
 mod pl2_producers;
+#[path = "domain_economy/pl4_works_mills.rs"]
+mod pl4_works_mills;
 #[path = "domain_economy/plans.rs"]
 mod plans;
 #[path = "domain_economy/plumbing.rs"]

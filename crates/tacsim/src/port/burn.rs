@@ -238,6 +238,23 @@ pub struct SpaceBurnReceipts {
     pub hull: ObjId,
     /// Landed burn sequences, ascending, at most [`MAX_SPACE_BURN_RECEIPTS`].
     pub landed: Vec<u32>,
+    /// **Doc 48 cut EX.0**: the reaction mass the landed burns debited, whole tonnes, ever (the
+    /// matter census's `burned`). Written in each burn's own bundle; omitted at 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub burned_t: u64,
+    /// The crew-days of provisions the landed burns debited, ever; omitted at 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub crew_days: u64,
+    /// The unlicensed strategic ore the landed burns seized at a customs picket, whole tonnes,
+    /// ever (the census's `seized`); omitted at 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub seized_t: u64,
+}
+
+/// Serde's skip for a zero total.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip signature
+const fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 impl SpaceBurnReceipts {
@@ -272,6 +289,13 @@ impl SpaceBurnReceipts {
     #[must_use]
     pub fn high_water(&self) -> u32 {
         self.landed.last().copied().unwrap_or(0)
+    }
+
+    /// Add one landed burn's debits to the running totals (doc 48 cut EX.0).
+    pub fn spend(&mut self, burn_t: u64, crew_days: u64, seized_t: u64) {
+        self.burned_t = self.burned_t.saturating_add(burn_t);
+        self.crew_days = self.crew_days.saturating_add(crew_days);
+        self.seized_t = self.seized_t.saturating_add(seized_t);
     }
 
     /// Record `seq` as landed, dropping the lowest sequence when the row is full.
@@ -604,11 +628,14 @@ impl ActionProvider for BurnProvider {
                     "the tank holds less reaction mass than the burn needs",
                 ));
             }
+            // Doc 48 cut EX.0: what this burn debits, for the receipt's running totals.
+            let spent: (u64, u64);
             if pending.seized_strategic_ore_t > 0 {
                 let strategic_ore = CanonicalId::new("strategic_ore").map_err(|_| invalid())?;
                 let (_, ore_free) =
                     pool_of(&self.inventory, txn, vault, &strategic_ore).map_err(unreadable)?;
                 let seize_t = u64::from(pending.seized_strategic_ore_t).min(ore_free);
+                spent = (0, seize_t);
                 debit_consumables(
                     &self.inventory,
                     txn,
@@ -637,12 +664,17 @@ impl ActionProvider for BurnProvider {
                     &provisions,
                     crew,
                 )?;
+                spent = (crew, 0);
             }
             let mut receipts = prior.clone().unwrap_or(SpaceBurnReceipts {
                 hull: pending.hull,
                 landed: Vec::new(),
+                burned_t: 0,
+                crew_days: 0,
+                seized_t: 0,
             });
             receipts.record(seq);
+            receipts.spend(pending.burn_t, spent.0, spent.1);
             let staged = if prior.is_some() {
                 txn.replace(&self.space_receipts, &pending.hull, receipts)
             } else {

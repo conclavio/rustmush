@@ -356,3 +356,34 @@ fn co6_the_shop_fits_only_her_own_ship_at_the_shop() {
         "nothing queued"
     );
 }
+
+/// **Doc 48 cut EX.2: a hull with a governed core fitted is not listed, for now.** Her core
+/// changes hands only through its own sale, which is not open, and the refusal says so; nothing
+/// is listed.
+#[test]
+fn ex2_a_hull_with_a_governed_core_fitted_is_not_listed_yet() {
+    let mut world = world();
+    let captain = world.pilot;
+    let (core, hull) = core_her(&mut world);
+    let exchange =
+        crate::excursions::station_room(&world.rig.tw, "ceres_port", "room.c07_exchange");
+    let _ = walk(&mut world, captain, exchange);
+    let out = run(
+        &mut world.rig.tw,
+        captain,
+        &format!("+market/post #{} price=5000000", hull.0),
+    );
+    assert!(out.contains(tacsim::port::hull_sale::HULL_CORED), "{out}");
+    // Nor is the core itself listed: a governed core sells only in its own family.
+    let out = run(
+        &mut world.rig.tw,
+        captain,
+        &format!("+market/post #{} price=5000000", core.0),
+    );
+    assert!(out.contains(mush_market::MANAGED_CORE_SALE), "{out}");
+    assert!(
+        !mush_market::asset_on_sale(world.rig.tw.world(), hull)
+            && !mush_market::asset_on_sale(world.rig.tw.world(), core),
+        "nothing was listed"
+    );
+}

@@ -106,7 +106,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "pay", "mint", "reverse", "audit", "history", "approve", "deny", "approvals",
-                "unfreeze", "alerts", "ack", "cadence",
+                "unfreeze", "alerts", "ack", "cadence", "census",
             ]
             .iter()
             .copied()
@@ -118,6 +118,12 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @econ/mint <sysacct>=<to> <amount>      mint from a system source (staff)\n\
                    @econ/reverse <txid>                    reverse a transaction (staff)\n\
                    @econ/audit                             recent journal entries (staff)\n\
+                   @econ/census [<days>]                   the money census (staff): per IC day,\n\
+                   \x20                                      each System account's mint or intake\n\
+                   \x20                                      and the holdings by category (lane,\n\
+                   \x20                                      house, org, player, other); the last\n\
+                   \x20                                      <days> rows (1-28, default 7), the day\n\
+                   \x20                                      still open, and the faucets' net mint\n\
                    @econ/history <account> [n]             what touched an account you may see\n\
                    \x20                                      n is 1-20 (default 20)\n\
                    \x20                                      your own side in full; counterparties you\n\
@@ -1865,10 +1871,13 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         econ_ack(ctx)
     } else if ctx.switches.has("cadence") {
         econ_cadence(ctx)
+    } else if ctx.switches.has("census") {
+        require_admin(ctx)?;
+        crate::census::census_cmd(ctx)
     } else {
         Err(CmdError::msg(
             "Usage: @econ/pay|mint|reverse|audit|history|approve|deny|approvals|alerts|ack|\
-             cadence|unfreeze",
+             cadence|census|unfreeze",
         ))
     }
 }

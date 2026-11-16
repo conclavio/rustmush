@@ -2402,6 +2402,18 @@ impl TowProvider {
         } else if !draw.debit.is_empty() {
             short = true;
         }
+        // Doc 48 cut EX.0: a draw's rows past its bale lines are a rearm's munitions, out of the
+        // stores into the target's magazines (the census's `loaded`), in this bundle.
+        let bale_lines = [
+            crate::surface::tender::ALLOYS,
+            crate::surface::tender::FITTINGS,
+        ];
+        for (good, take) in &taken {
+            if *take > 0 && !bale_lines.contains(&good.as_str()) {
+                let units = record.matter.loaded.entry(good.clone()).or_default();
+                *units = units.saturating_add(*take);
+            }
+        }
         if let Some(after) = draw.bale_after {
             let found = act::read_record(txn, &self.excursions, tv)?;
             let existed = found.is_some();

@@ -130,6 +130,17 @@ pub const NO_HULL: &str = "There is no such hull here.";
 pub const HELD_DARK: &str = "That hull's bay record cannot be read; staff repair it first.";
 /// An order is open.
 pub const HELD_OPEN: &str = "That hull is held for work in progress; +bay/cancel it first.";
+/// **A hull listed or under a live sale contract** (doc 48 cut EX.2, Q-48-52: no
+/// bait-and-strip): no part comes off it, none is fitted, and it is not broken up until it is
+/// sold, or the listing is withdrawn or lapses.
+pub const UNDER_SALE: &str = "That hull is up for sale; nothing comes off or goes on until she is sold or the sale is withdrawn or lapses.";
+
+/// **Whether `hull` is listed or under a live sale contract** ([`mush_market::asset_on_sale`]):
+/// the bay's sale lock (doc 48 cut EX.2).
+#[must_use]
+pub fn under_sale(w: &World, hull: ObjId) -> bool {
+    mush_market::asset_on_sale(w, hull)
+}
 /// No right.
 pub const NO_RIGHT: &str = "You hold no right to have that hull worked on.";
 /// An inventory act is still owed.
@@ -1303,6 +1314,10 @@ fn take(
     if record.scrapped_ic.is_some() {
         return Err("That hull has been scrapped.".to_owned());
     }
+    // Doc 48 cut EX.2 (Q-48-52): nothing is fitted to a hull being sold.
+    if fit.is_some() && under_sale(ctx.w, hull) {
+        return Err(UNDER_SALE.to_owned());
+    }
     let (facility, quote) = quote_here(ctx.w, hull)?;
     // Doc 41 cut RS.2 (Q-41-5, Q-CF-30): no bay work starts under a field on her site.
     if let Some(field) = field_over(ctx, &facility)
@@ -1982,6 +1997,11 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     };
     if landed >= owed.act {
         record.owed = None;
+        // Doc 48 cut EX.0: the draw's munitions left the hold as it landed (the census's `loaded`).
+        if let OwedKind::Draw { goods, .. } = &owed.kind {
+            let kg = crate::port::census::munitions_kg(ctx.w, goods);
+            record.loaded_kg = record.loaded_kg.saturating_add(kg);
+        }
         put_bay_hull(ctx, &record);
         match &owed.kind {
             OwedKind::Draw { .. } => complete(ctx, hull),

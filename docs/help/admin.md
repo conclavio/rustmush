@@ -34,6 +34,32 @@ Introspection:
   examine <object>  Controllers (and EXAMINE_ALL holders) see
                     everything: attributes, locks, flags, powers.
 
+The economy's two censuses (staff):
+
+  @econ/census [<days>]
+                    The money census, in minor units. One row per IC
+                    day: each System account that minted (a source)
+                    or took money in (a sink, such as a levy or a
+                    fee), and the holdings at the day's close by
+                    category: lane institutions, Houses, other
+                    organisations, players and everything else. Shows
+                    the last <days> rows (1 to 28, default 7), the day
+                    still open, and the window's totals: each faucet's
+                    net mint. A row closes at the first economy sweep
+                    of the next IC day; its drift is 0 unless the scan
+                    hit its bound. SIM_ADMIN or Royalty.
+  @industry/census [<good>]
+                    The matter census, in kilograms, on one line: what
+                    the deposits and the stock clerk made, what pools,
+                    lots and bales hold, and what work, mills, builds,
+                    repairs, burns (burned), rearms (loaded) and
+                    consumers (consumed) used up. It counts the chain's
+                    goods, and also volatiles, ice ore, propellant,
+                    provisions and munitions. Its balance stays the same
+                    over any window in which nothing else makes or
+                    destroys matter. With a good, it also lists where
+                    each lot of that good is.
+
 Server lifecycle:
 
   @dump             Trigger a background database snapshot (BGSAVE),

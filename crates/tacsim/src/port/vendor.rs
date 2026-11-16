@@ -517,6 +517,11 @@ pub(crate) fn put(
         .map_err(|error| format!("{id}: the core catalog: {error}"))?;
     mush_market::load_pack(ctx, crate::hardware::sale::CORE_PACK, cores)
         .map_err(|error| format!("{id}: the core catalog: {error:?}"))?;
+    // Doc 48 cut EX.2: the hulls, one asset entry a design, which a person lists a hull as.
+    let hulls = crate::port::hull_sale::catalog_entries(ctx.w)
+        .map_err(|error| format!("{id}: the hull catalog: {error}"))?;
+    mush_market::load_pack(ctx, crate::port::hull_sale::HULL_PACK, hulls)
+        .map_err(|error| format!("{id}: the hull catalog: {error:?}"))?;
     let instrument = credit()?;
     let venue = MarketId::new(def.venue.as_str())
         .ok_or_else(|| format!("{id}: venue {} is not a market id", def.venue))?;

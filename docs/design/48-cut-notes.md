@@ -6,7 +6,172 @@ Each session edits only its own section, so two units' notes never touch the sam
 
 ## EX.0
 
-Not built.
+Row: §7.1 EX.0; Q-48-17, Q-48-31, Q-48-36's census note, doc 48b W-48-6.
+
+**Survey.**
+
+- **Money.** Every instrument is zero-sum, and only System accounts may go negative (§3.4), so
+  a System account's fall over a day is that day's mint, and its rise is the fees and levies it
+  took in. No System account is marked as a faucet or a sink: every one is opened with
+  `CreditPolicy::unbounded()`, so the census tells them apart by the sign of the day's change.
+- **The journal cannot be bucketed by IC day after the fact.** An `EconomicTransaction` carries
+  only `posted_at`, in wall-clock seconds. The world timeline is re-anchored after every outage,
+  and only the last re-anchor of each generation is kept, so a past post's IC instant cannot be
+  rebuilt. The census reads balances instead: two readings bound a day.
+- **Organisations carry no kind.** Lane institutions are the port maps' `orgs` rows, and Houses
+  are the launch deployment's three `NamedHouses`. Both are tacsim's knowledge, so the money
+  census takes them through a hook.
+- **The matter census and its sinks.** Today it counts the chain's goods only
+  (`census.rs:29-31`). Five acts destroy matter outside the chain. Only the first leaves a lasting
+  amount:
+  - the departure burn: each `tacsim.ticket` keeps `burn_t` and `crew_days`, written in the
+    debit's own bundle and never deleted;
+  - the in-flight burn (`+helm/burn`, the autopilot's passage): `SpaceBurnReceipts` kept the
+    landed sequences only;
+  - the bay's rearm: its draw debits the hold, and the order keeps no amount once it closes;
+  - the field tender's rearm: likewise;
+  - the wreck's vent (`tow.rs`) and the customs ruling's seizure (`space/customs.rs`).
+- **The goods.** Munitions goods are the rows with a `munitions` entry. Propellant and provisions
+  carry a `consumable` mark. Occator's ice mill makes volatiles from `ice_ore`, which is also
+  uncounted.
+
+**Built.**
+
+- **`@econ/census [<days>]`** (`mush-economy/src/census.rs`; staff, SIM_ADMIN or Royalty):
+  - The sweep's census step (`census::sample`, from `sweep.rs`) reads every currency account
+    once when the IC day turns. A day that has not turned costs one comparison.
+  - A row is the difference between two readings: each System account that moved (a source when
+    it fell, a sink when it rose), and the holdings by category at the close (`lane`, `house`,
+    `org`, `player`, `other`).
+  - `drift` is the net mint less the holdings' change. It is 0 unless the scan stopped at its
+    bound.
+  - The verb prints the last 1 to 28 rows (default 7), the day still open, and the window's
+    totals with each faucet's net mint.
+  - Bounds: 262,144 accounts a reading, 168 rows an instrument (a real week at 24:1), and four
+    currency instruments. Lines are fitted to 120 columns.
+  - The book is economy module state and one `census` document, written once a row and read at
+    boot (`module.rs`; `boot.rs` knows the key).
+  - Categories: `MoneyCensusHook` names an organisation's category. tacsim installs
+    `port::census::money_census_hook()` (lane institutions from the port maps, the three
+    Houses). Any other organisation is `org`, a player object is `player`, and anything else is
+    `other`.
+- **The matter census** (`tacsim/src/port/census.rs`, `@industry/census`):
+  - It counts `volatiles`, `ice_ore`, propellant and provisions (by their `consumable` mark), and
+    every munitions good (by its row).
+  - New sink terms: `burned`, `loaded`, `seized` and `consumed`. `consumed` reads 0 until EX.9's
+    consumption arm writes it.
+  - The balance subtracts all four.
+  - A new source term, `rerolled` (PL.10's, by the merge-order rule): the tonnes each
+    `tacsim.pockets` re-roll ledger credited back into its deposit's pool (`rerolled_t`), weighed
+    by the deposit's good. It covers surface sites and space clusters alike, since both re-roll
+    through `surface::opening::reroll_step`.
+  - A new term is one field, one line in `balance` and one in `line`.
+  - A mill whose product is uncounted no longer subtracts that product.
+- **The writers the census reads** (approved outside the row):
+  - `BayHull.loaded_kg` (`bay_work/record.rs`): the munitions kilograms of each draw, added in
+    `bay_work::settle` as the draw lands (`census::munitions_kg`).
+  - `SpaceBurnReceipts.{burned_t, crew_days, seized_t}` (`port/burn.rs`): running totals, added
+    in the same prepare as the debit.
+  - `SiteMatter.loaded` (`surface/site_record.rs`, `surface/tow.rs`): a tender's rearm, units by
+    good, in the tend's own bundle.
+  - One line in tacsim's `register()` that installs the hook.
+- Help: the two census verbs in `help admin`, the `@econ` switch line, and `@industry/census`'s
+  own help.
+
+**Tests.**
+
+- **The money census** (`mush-economy/src/census/tests.rs`, 15 tests):
+  - the ledger's arithmetic on hand-built readings: open, close, a missed day as one row of two
+    days, the clock moving back, the row bound, drift on a partial scan, the System accounts past
+    the bound;
+  - the categories, the 120-column view (a side capped at eight lines, flags kept on a carried
+    line), the window's per-faucet totals, and the document's round trip;
+  - `@econ/census` over a `TestWorld` through the real sweep: a faucet capitalises an org the
+    test's hook names `lane` and pays two purses, a player pays a levy. Each day's mint, sink,
+    net, holdings and source and sink lines are checked, and so are the open day, the window,
+    `@econ/census 1`, a bad count and a mortal;
+  - a reboot from the economy's own documents over a book wiped in RAM, and the next day's row
+    opening from it.
+- **The matter census** (`tacsim/src/port/census.rs`, 3 tests): what is counted, the four sinks and
+  `rerolled` in the balance and the line, and the new fields encoding as before until they count.
+- **Stories** (conclav.dev, `CARGO_INCREMENTAL=0`, on main `c85a8744f`; 22 of 22 green):
+  - `domain_field::ex0_matter_sinks::ex0_the_census_holds_across_a_burn_and_a_rearm`, new: GC.8b's
+    refit run. `burned` moves by the ticket's tonnes and crew-days, `loaded` by the rearm's
+    munitions kilograms, and the balance holds. `@econ/census` files the lane's capital as `lane`.
+  - `domain_world::voyage::sfr4_free_flight…`: the balance holds across the departure, timed and
+    autopilot burns, and `burned` grows past the ticket.
+  - `domain_field::field_rs1::rs1_*`: the tender's rearm writes its units to the site.
+  - `domain_economy::deposits::pl10_a_worked_out_site_deposit_rerolls…`: across the re-roll and
+    its restart, `rerolled` grows by the deposit's reserve, and the balance holds.
+  - These re-ran green: `bay_gc8::*`, `in11_matter::*`, `house_resale_rs6c2::*` and
+    `house_sweep_rs6c::*`.
+- **Suites**: the whole of `mush-economy` (921 tests, on main `c85a8744f`), and tacsim's
+  `port::census`, `port::burn`, `port::bay_work`, `surface::site_record`, `surface::tow`,
+  `surface::tender` and `surface::cursor` unit tests (30).
+- **Guards**: every `mush-contract-tests` `ci_policy` gate (80) and the engine contracts'
+  `help_commands` and `state_slot_owners` (10); clippy and the M7 memory-size pass on both crates;
+  rustdoc.
+- **Mutations** (conclav.dev; each one is a single substitution, run against the tests named to
+  kill it), on main `c85a8744f` with this unit applied. 34 mutants in all; 28 were killed. **E1**
+  (an account that did not move kept as a flow) survived the first round, until the first ledger
+  test gained an unmoved account. The six that survive:
+  - **E5** (`partial` never set): no test reaches 262,144 accounts.
+  - **E11** (the boot's `census` key arm removed): the key then falls to the "unknown key" warning
+    and is still read by the module itself. This is equivalent: only the log line changes.
+  - **E15** (every System account named, the bound never applied): no test opens 257 System
+    accounts.
+  - **T9** (the census's read of a tender's loads): no story reads the census across a tender's
+    rearm. RS.1's story checks the site's units, but its window also opens a rig's bale, which the
+    census does not hold (below).
+  - **T15** (`munitions_kg` weighs every row of a draw, not only munitions): EX.0's rearm draws
+    munitions only. GC.8's mixed order reads no census.
+  - **T16** (a mill's product counted whatever it is): no lane mill makes an uncounted good.
+  - The rest were killed by the tests named above: `@econ/census`'s ledger, categories, view,
+    document, boot and refusals (E1–E4, E6–E10, E12–E14, E16); `counts` and the balance (T1–T5,
+    R2); the departure tickets, the bay's `loaded_kg`, the hook line and the lane classes (T6, T8,
+    T10, T13, T14, by EX.0's story); the receipt totals and their read (T7, T11, by SF.R4's); the
+    tender's units (T12, by RS.1's); and `rerolled`'s read (R1, by PL.10's).
+
+**Divergences.**
+
+- **The four writers outside the row's files**, approved by the lead on 2026-11-16: `bay_work/`
+  (the record and the landing), `port/burn.rs`, `surface/site_record.rs` with `surface/tow.rs`,
+  and `tacsim/src/lib.rs` (one line).
+- **The bay's `loaded_kg` is written where the draw lands** (`settle`), not beside `repaired_kg`
+  in `complete`. The draw has already debited the hold when `complete` runs its checks, and a
+  cancelled order gives nothing back, so counting there keeps the census whole for a cancelled
+  rearm too.
+- **The tender's rearm is kept as units by good, not kilograms.** The tow's prepare holds no
+  goods table, so the census weighs the units. `SiteMatter` is no longer `Copy`; nothing copied
+  it.
+- **A fourth sink, `seized`**: the unlicensed strategic ore an in-flight burn's picket takes. That
+  ore was already a counted good and left with no term.
+- **`ice_ore` is counted** beside the four goods Q-48-31 names, so Occator's ice mill balances.
+- **A fifth holdings category, `other`**: NPC purses and objects, beside lane institutions,
+  players, Houses and other organisations.
+- **`rerolled` is EX.0's**, because PL.10 (#625) merged first (the lead's rule). PL.7's
+  build-line fix in this file had not landed when this PR opened. If it lands first, the merge
+  keeps its line.
+- **IN.11's port-half story now allows for one staff seed**
+  (`in11_the_port_half_ore_to_parts_to_a_prospector_conserves_matter`). in5's `sail` helper seeds
+  60 t of propellant and 40 crew-days by staff hand inside the story's window. That seed is a mint
+  the census cannot see, and it was invisible while propellant went uncounted. The balance now
+  moves by exactly that seed's 60,160 kg.
+
+**Not built.**
+
+- **The wreck's vent** (`tow.rs` `vent`) and **the customs ruling's seizure**
+  (`space/customs.rs`) destroy matter and record no amount. Both are outside the approved files.
+  The census cannot see a vent now that it counts propellant, and never saw a ruling's seizure.
+- **The bale's alloys and parts in a cancelled bay order** are debited and not consumed. This gap
+  predates EX.0.
+- **A rig's bale is not a census holding.** `+tv/<n> stores open` debits a tonne each of alloys and
+  fittings into `RigRecord.bale`, which the census does not count, so the balance rises by the two
+  tonnes when the bale opens. The tender's repairs then subtract what they consume, as
+  `repaired`. This predates EX.0.
+- **Not run:** the bot census stories (mush-bot `mining_cohort::in11_*` and `rs9_story_e`,
+  `#[ignore]`d dispatch runs). They read the balance across a window that now counts propellant,
+  so a staff seed of a tank inside their window would show the same way as in IN.11's port half.
 
 ## PL.0
 
@@ -589,7 +754,235 @@ Row: §7.1 EX.1b; Q-48-49, Q-48-56; doc 48b G-6, G-7, G-8. Stacked on EX.1a (#63
 
 ## EX.2
 
-Not built.
+**Survey.**
+- **Three copies of one contract.** The market's purchase of an `asset` listing
+  (`trade::purchase_spec`'s asset arm), the Co-op buyout (`port::buyout::buyout_spec`) and a
+  recovery house's resale (`port::house_sale::sale_spec`, RS.6c-2, written as a copy of the
+  buyout's) each wrote the same contract by hand: the buyer issues and pays, the seller is the
+  one party, the price is escrowed and paid whole to the seller, the title passes at
+  settlement while the seller still holds it and the window is open, and a lapse refunds.
+- **Nobody listed an object.** Only a vendor row could carry an `asset` listing, and no
+  vendor in the content has one. EX.1a's personal seller lists exact lots only.
+- **The hold.** A hull's hold is the vault backed by her stowage (`port::ship::hold_vault`).
+  `+coop/enrol` re-owns it to the pilot, a recall re-homes it to the Trust
+  (`mush_economy::rehome_vault`), and a buyout leaves it the pilot's. Its contents are typed
+  action state: `port_tick::read_pool` reads them from a `Ctx`, and a `FactProvider`, which is
+  handed `&World`, cannot.
+- **The bay** stripped, scrapped and fitted a hull with no regard to a sale.
+- **The house-sale guard** keys on the contract's structure (`house_sale::is_sale_of`, doc 48
+  §4.3), not its name. EX.2 keeps it as it is.
+- **What Tycho resells.** A recovery house sweeps wrecks off lane sites: rigs. A rig's hopper
+  vault belongs to the vehicles principal (doc 20 §4.2, `port::vehicle`), never to the house
+  or a buyer.
+
+**Built.**
+
+*One asset sale* **(expensive to reverse).**
+- `mush_market::asset_sale_spec(&AssetSaleTerms) -> ContractSpec` is the one builder. Its
+  terms are the name, the outcome's name, the object, the seller and their account, the buyer
+  and their account, the price, the window's deadline, and a list of facts.
+- The contract: the conditions `TitleHeld { object, by: seller }`, `Before { deadline }`, then
+  one `Fact` each; one outcome on every condition, paying the seller's account
+  `Share::Exact(price)` with the title as its asset consequence; the remainder to the buyer;
+  the buyer as author and payer; deterministic; `Expiry::Refund`; `Parties` visibility; and
+  `Deliverable::TitleTransfer { object, from: seller, to: buyer }`.
+- **On it:** the market's asset purchase (`purchase_spec`, now an early return), the Co-op
+  buyout (`buyout_spec`) and a recovery house's resale (`house_sale::sale_spec`). Each passes
+  its own name, outcome and window. The buyout and house-sale shape tests
+  (`ic13_the_buyout_contract_is_the_market_asset_shape`,
+  `rs6c2_the_sale_contract_is_the_buyout_shape`) pass unchanged, as do their stories.
+- `sells_title_of(c, object)` and `live_title_sale(w, object)` read a live sale of an object's
+  title from the contract's shape.
+
+*The asset-sale seam* **(expensive to reverse).**
+- `mush_market::AssetSale`, frozen at composition by `MarketModule::with_asset_sale`, with
+  one implementor, `tacsim::port::hull_sale::HullSale`, wired in both roots by
+  `with_port_seams_if`. It answers two questions and builds no plan:
+  - `admit(ctx, object, seller) -> Option<Result<CatalogRef, String>>`: may `seller` list
+    `object` now, and as which catalogue entry. `None` for an object it does not know, `Err`
+    for its own refusal, rendered verbatim at posting.
+  - `state_digest(w, object) -> Option<u64>`: the digest a sale is priced against.
+- With no seam, no person lists an object, and every vendor asset listing is as before.
+
+*No bait-and-strip.*
+- **The pin.** A quote stamps `ObservedRevisions.state` with the seam's digest of the
+  listing's object (serde default `None`, not written when `None`). `is_current` refuses a
+  quote whose object's digest has moved, so `+market/accept` on it is `STALE_QUOTE`.
+- **The fact.** The purchase contract carries `Fact market.asset.state "{object}/{digest}"`,
+  answered by `MarketFactProvider` from the seam: satisfied while the digest holds, false once
+  it drifts or the seam stops knowing the object. A drifted sale never settles and refunds at
+  its window, as a Draw does. `accept_at` refuses an accept that would pin a fact no `market`
+  provider answers.
+- **Re-admitted.** A person's object listing is asked of the seam again at every quote and
+  every accept. A refusal there is `STALE_QUOTE` (one family, D-E6-13), so a hull laden after
+  listing is neither quoted nor bought.
+- **The bay's lock.** `bay_work::under_sale` is `mush_market::asset_on_sale`: a listing names
+  the hull, or a live contract sells her title. `+bay/strip` and `+bay/scrap`
+  (`strip::ready`) and `+bay/fit` (`take`) refuse `UNDER_SALE` before any other check that
+  could move her.
+
+*Listing a hull.*
+- `+market/post #<hull> price=<n> [to=<player>] [market=<venue>] [days=<n>]`
+  (`commands::post_object`, `seller::post_asset`). It refuses, before any write:
+  - a seller the actor may not sell as, or an object whose live, unfrozen title is not the
+    seller's (`NO_SUCH_ASSET`, one answer);
+  - a governed core itself (`MANAGED_CORE_SALE`, its own family);
+  - no seam, an object the seam does not know, or no `asset` entry for it (`NOT_LISTABLE`);
+  - the seam's own refusal;
+  - an object already listed or being sold (`ALREADY_FOR_SALE`);
+  - then EX.1a's checks: price, private offer, account, venue gate, caps.
+- The listing: `vendor: NO_VENDOR`, `source: Stock { vault: NO_VAULT }`, `object`, quantity 1,
+  the seller's own account. `record::check_personal` admits that one new shape. There is no
+  reserve leg: the seam and the pin hold the object. EX.1a's `ListingAcceptance` accepts the
+  purchase for the seller, so it settles with the seller away.
+
+*TacSim's hull seam* (`port/hull_sale.rs`).
+- **Admit:** a hull titled to the seller. First, no governed core fitted (`HULL_CORED`, for
+  now: "A hull with a governed core fitted cannot be listed yet: the core sells only through
+  its own sale, which is not open."). This is asked before her design, because a fitted core
+  rebinds her to a cored unit that no yard budget partitions. Then a ship hull (her design's
+  budget and a hull view; a rig is not one), with, in order:
+  - not held in a workshop's bay (`HULL_IN_BAY`);
+  - nothing in flight (the buyout's and recall's `in_flight_on` lines);
+  - no leased rig in her bay (`HULL_RIG_ABOARD`);
+  - an empty hold: every goods-table row that is no consumable reads zero
+    (`HULL_HOLD_LADEN`; unreadable, `HULL_HOLD_DARK`). Her fuel and stores go with her.
+
+  Admitted, she lists as `tacsim:hull.<design>`.
+- **The digest:** FNV (`declared_hash`) of her schema, sections and installed components
+  (each part, its condition and its titled asset, the core among them), never her volatile
+  cells.
+- **The catalogue:** a `tacsim.hulls` pack beside the goods and the cores
+  (`port/vendor.rs`), one `asset` entry per design the yard partitions, not stackable, with
+  no baseline.
+- **The hold goes with her:** `HullSaleObserver`, in tacsim's root and in
+  `mush-composition`'s `econ_observers()`. On a settled contract, for each `TitleTransfer`
+  whose hull's title is now the buyer's and whose hold the old holder owns, it re-homes the
+  hold to the buyer (`rehome_vault`, an organization at its root scope), in the settlement's
+  own batch. A replay finds the hold moved and does nothing.
+
+*Wiring.* tacsim's economy root gains `with_standing_acceptance(ListingAcceptance)` (EX.1b
+adds the same line; the second to merge keeps one copy).
+
+*Help and sentences.* `+market`'s help and `help exchange` gain "Listing a hull". The new
+sentences are `pub const`s: four in `mush_market::seller` (the bot's `exchange` family) and
+five in `tacsim::port::hull_sale` (a new `hull_sale` family in `mush-bot/src/mine/minds.rs`,
+with in-step, census and distinct tests). `UNDER_SALE` now says the hull is up for sale.
+
+**Tests.**
+- **The done-when, test by test** (`tacsim/tests/domain_economy/hull_resale_ex2.rs`, three
+  stories on the composed lane, and one in `domain_field/co6_cored_ship.rs`):
+  - **A player sells a hull to a player while the seller is offline, the hold moves, and a
+    strip after listing refuses:**
+    `ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her`.
+    - A first captain buys her Dray out (`+coop/buyout`) and lists her at the exchange.
+    - The listed hull refuses `+bay/strip`, `+bay/scrap` and `+bay/fit` (`UNDER_SALE`), and
+      a second listing (`ALREADY_FOR_SALE`).
+    - From then on the seller types nothing. A second captain quotes and buys her, and the
+      sale contract records the seller's standing acceptance.
+    - The next sweep pays the seller the price, passes the title and re-homes the hold to
+      the buyer. The listing is gone, the bay lock is off, the seller no longer has her helm,
+      and her own `+market/post` hears `NO_SUCH_ASSET`.
+  - **A laden hold:** `ex2_a_laden_hull_is_neither_listed_nor_quoted`. She is laden after her
+    quote, so the accept is stale and a new quote is refused. Withdrawn and posted again,
+    she hears `HULL_HOLD_LADEN`.
+  - **No bait-and-strip:** `ex2_a_hull_changed_after_the_quote_is_not_sold`. Changed after
+    her quote, the accept is stale. Changed after her purchase, the sale does not settle.
+    Past the window it is `Expired`, the buyer is refunded, and the title and hold stay the
+    seller's.
+  - **A cored hull is refused with its reason:**
+    `ex2_a_hull_with_a_governed_core_fitted_is_not_listed_yet`. After CO.6's own route to a
+    cored ship, the hull hears `HULL_CORED` and the core itself `MANAGED_CORE_SALE`. Nothing
+    is listed.
+  - **Buyout and Tycho's resale use the one builder, unchanged:** `coop`, `in10_pools`,
+    `house_resale_rs6c2` and the two shape tests pass as they were.
+- **Unit tests:**
+  - `trade.rs`: the builder's shape with and without facts; the state pin's wire.
+  - `facts.rs`: the fact against a test seam (pinned, drifted, an unknown object, malformed
+    ids, a named revision, no seam).
+  - `record.rs`: a person's object listing on the wire.
+  - `hull_sale.rs`: the catalogue code, and the refusals under 120 columns.
+- **On conclav.dev:**
+  - every mush-market and mush-economy test passes (1,169);
+  - `tacsim --test domain_economy` passes in full (593);
+  - `domain_field`'s `co6_cored_ship` passes (3);
+  - `mush-server --test commerce_composition` passes (91);
+  - the whole of `mush-bot` passes (798, the new rows' family included);
+  - `tacsim`'s lib tests over the buyout, the house sale, the bay, the vendor and the hull
+    sale pass (66).
+- **The M7 market stories** (`player_market_story`, `player_market_typed`): they fail, and fail
+  identically on base main `c85a8744f`, where EX.1a measured them: `+minds/resell <lic>=<player>`
+  queues and is refused at its prepare ("That did not go through. Nothing changed."). The
+  cause is the #623 regression in the kernel's resale offer cap. EX.2 leaves it unchanged.
+- **The gates:** on the final tree, `cargo fmt --check`; workspace clippy with
+  `-D warnings`; the M7 memory-size clippy; rustdoc with `-D warnings` on mush-market, tacsim,
+  mush-composition and mush-bot, with and without private items; `mush-contract-tests` (the
+  census, the panic budget, the restriction lints, the help-page lint, the shard names and the
+  state-slot baseline); the bot's `minds::` rows (35); mush-market and mush-economy (1,170);
+  and the stories again (51 in `domain_economy`: the hull resale, the house resale, the Co-op
+  buyout and the sale stories; 3 in `co6_cored_ship`).
+- **The mutations:** 32 run, each alone, against the tests that can see them. 23 are killed.
+  The 9 that survive:
+  - **Masked by an earlier check:**
+    - **MK2:** the quote's refusal of a person's object listing whose state the seam cannot
+      read (the seam reads every hull it admits).
+    - **MK5:** the accept's refusal when no `market` fact provider is composed (both roots
+      compose one).
+    - **MK9:** the re-admit's check that the seam still names the listing's own entry (a
+      hull's design does not change while she is listed).
+    - **TH8:** the observer's check that the old holder owns the hold (in the buyout the
+      hold is already the pilot's, and a rig has no hull view).
+    - **TH9:** the observer's check that the title is now the buyer's (a settled transfer
+      has passed it).
+    - **TH10:** `admit`'s own title check (`post_asset` checks the title first).
+  - **Not reached by any story:**
+    - **TH2:** a hull in a workshop's bay;
+    - **TH3:** something in flight on her;
+    - **TH4:** a leased rig in her bay.
+
+    Each reuses the rule the buyout and the recall already apply (`bay_work::held`,
+    `in_flight_on`, `bay_slot_word`).
+
+  The loop is `ex2-mut.py` and `ex2-mut.sh` (scratch, run on conclav.dev).
+
+**Divergences.**
+- **Files beyond the approved list:**
+  - `mush-market/src/trade.rs` (the builder, the pin, the re-admit) and `lib.rs` (exports);
+  - `tacsim/src/port/buyout.rs` and `house_sale.rs` (moved onto the builder);
+  - `tacsim/src/port/bay_work/mod.rs` and `strip.rs` (the lock);
+  - `tacsim/src/port/mod.rs` (the module line);
+  - `tacsim/tests/domain_economy.rs` (the module line);
+  - `tacsim/tests/domain_field/co6_cored_ship.rs` (one test appended: a cored hull needs the
+    M8 world's core-fitting route);
+  - `mush-bot/src/mine/minds.rs` and `docs/help/exchange.md` (the sentence rows and help the
+    brief asks for);
+  - `mush-contract-tests/state-slot-owners.toml` (the facts test's seed, named in the existing
+    reason).
+- **The story file is `hull_resale_ex2.rs`**, not `hull_resale.rs`: the shard guard refuses a
+  `domain_economy` module whose name ends with another's (`sale`).
+- **The seam answers two questions, not three.** The hold's re-home is `HullSaleObserver`'s,
+  keyed on the settled contract's `TitleTransfer` and on who owns the hold, so it covers every
+  sale of a hull's title (the market's, a house's) without a third seam method.
+- **Tycho's resale re-homes no hold.** It sells rigs, and a rig's hopper is the vehicles
+  principal's, not the house's. The observer runs on that settlement and finds no hold to
+  move. So there is no test that Tycho's resale re-homes a hold; the re-home is tested on the
+  player sale, and `rs6c2` passes unchanged with the observer wired.
+- **The pin does not cover the hold.** A fact cannot read typed pool state, so the empty hold
+  is the seam's rule at posting, quote and accept instead. Between the accept and the
+  settlement (one sweep) a seller can still put goods into the hold, and they go to the buyer
+  with it. Fuel and stores ride with her unpinned.
+- **A personal object listing reuses `Supply::Stock`** with `NO_VAULT`, not a new supply arm.
+- **A lapsed hull sale leaves her unlisted**: the purchase took the listing, as it does every
+  exhausted personal ask. The seller lists her again.
+- **The pin applies to any listing with an object the seam knows**, a vendor's too (no
+  vendor lists a hull today).
+
+**Not built.**
+- **Cored hulls.** Refused, for now: the core's own sale (doc 47's CO.13, the managed-title
+  wall) is not open.
+- **Rig resale between players.** The seam knows ship hulls only.
+- **Org sellers on the verb** (`org=`), as in EX.1a.
+- **Pinning the hold's contents or her consumables.**
 
 ## EX.2b
 
@@ -994,11 +1387,330 @@ Not built.
 
 ## PL.3
 
-Not built.
+**Survey** (at `d9d20b4a2`, PL.2's tip stacked on PL.7):
+- **The ground rounds have no producer.** GC.7's four munitions goods are a seed at Stickney
+  Yards: 4,800 AP, 400 boxes of ball, 800 HE and 120 missiles, asked at 12, 25, 150 and
+  1,500 cr. A rearm draws them and nothing refills them.
+- **There are no space munitions goods.** A space magazine refills at each check-out (doc 49
+  Q-49-12), and a space mount is no catalog weapon (`content/space/mounts.json`), so it names
+  no ammunition entry. `MAX_GOODS` is 256, so the catalogue has room.
+- **Why PL.2's process row could not make seven goods at one vendor:**
+  1. A mill ledger was keyed by its ore (`MillId::derive(pack, entry, org, ore)`). Seven
+     processes off one alloys pool would share one ledger.
+  2. A vendor took at most four mill rows (`MAX_VENDOR_MILLS`).
+  3. A process took one further input. Q-49-4's bill has three goods.
+- **The Yards' inputs.**
+  - They bid carbon ore (lane v33), with a 20 t seed, and strategic ore.
+  - They cannot bid volatiles. The Yards are Stickney's emergency org, and doc 19's rule
+    (`PortDef::check_emergency`) refuses an emergency org that asks or bids any of its goods
+    (provisions, volatiles, propellant). No other Stickney vendor can host the processes: the
+    munitions asks are the Yards', Kasei asks propellant and the commissary asks provisions.
+- **The works.** Every recipe that requires `tacsim.works` is offered at the Ceres and Stickney
+  works. A quote's fee is the work units at the slot-hour rate plus the margin, about 44.10 cr a
+  work unit at either.
+
+**Built:**
+1. **A process is keyed by its product** (`port/def.rs` `MillDef::key_good`,
+   `port/mill.rs` `MillLedger.process`).
+   - A process ledger derives its id from `into`, not `ore`. Mill and refine rows keep the ore
+     key, so no existing ledger moves.
+   - The warnings, refusals, attempt keys, `mill_listed` counters and the Mill line's head all
+     read `key_good`. The line head is `stickney_port mill stickney_yards ammo_he_105:`.
+   - `check_vendor_mills` refuses a key authored twice ("mill {key} is authored twice").
+2. **A process takes up to two further inputs** (`MillDef.with`, now a list, `MAX_MILL_WITH`
+   2).
+   - Each is a good the vendor bids or asks: not the ore, not the product, not twice, and
+     `per_ratio` 1..=100.
+   - In JSON it is one object or a list (`one_or_many`); one entry serializes as an object, so
+     PL.2's rows keep their bytes.
+   - The ledger keeps one total per further input (`MillLedger.with_t`), and the ledger's check
+     conserves each under the ratio.
+   - The draw reads each input on its own. A bought input must hold its batch's worth; the first
+     short own-stock input is drawn next.
+   - The Mill line names them: "with 1 carbon_ore a ratio" at the Yards, and "with 1
+     carbon_ore and 1 volatiles a ratio" for a row with two (the two-input story).
+3. **A vendor takes up to eight mill rows** (`MAX_VENDOR_MILLS`, was 4).
+4. **Goods table v9** (`content/market/goods.json`), three space munitions goods, all family
+   munitions and `stow.bulk`. Masses and prices are provisional.
+
+   | Good | Unit | Mass | Volume | Price | Loads |
+   |---|---|---|---|---|---|
+   | `torpedo` | round | 400 kg | 600 L | 4,000 cr | `tacsim.ammunition.torpedo`, 1 a round |
+   | `spinal_round` | round | 120 kg | 150 L | 600 cr | `tacsim.ammunition.spinal_round`, 1 a round |
+   | `pd_box` | box | 80 kg | 120 L | 250 cr | `tacsim.ammunition.pd_rotary`, 500 a box |
+
+5. **Recipe pack v4** (`INDUSTRY_RECIPES_VERSION` 4), seven munitions recipes. Each takes a
+   tonne each of structural alloys, carbon ore and volatiles, requires `tacsim.works`, and pools
+   its output.
+6. **Lane v37**, Stickney Yards (provisional figures):
+   - **Seven house processes**, one per munitions good. Each takes 1 t of alloys and 1 t of its
+     carbon ore a batch, at most one batch an IC day, with its seed as its floor. The outputs
+     are the recipes' (table below).
+   - **An alloys bid** at 460 cr: intake 10 t, refreshing 2 t an IC day up to 10. No port with
+     a route to Stickney asks alloys, so the bid is filled from Kasei's ask next door (450): its
+     10 cr a tonne margin is what moves a trader, at most 20 cr an IC day after the first fill.
+   - **Space stock and asks:** 8 torpedoes at 4,000 cr, 48 spinal rounds at 600 and 12
+     point-defence boxes at 250, all on the yard board.
+7. **The lane bump.** Lane v36 → v37 and relay v27 → v28 (re-signed), and
+   `support::lane_chain::strip_munitions` as the strip chain's new head (`strip_producers` calls
+   it). Pins moved:
+   - `LANE_VERSION`, `lane.rs`' `LANE_DIGEST`, `cost_lane.rs`' `SHIPPED_LANE_DIGEST`, and the
+     version asserts in `mill.rs`, `drones.rs`, `sites.rs` and `stations.rs`;
+   - `relay_registry.rs`' relay digest and kept-world versions, `boot_parity.rs`' relay version;
+   - the goods table's `GOODS_DIGEST`, its rows and version; `content_studio.rs`' goods count
+     (52);
+   - `mill::sm12a_strip_mill_rebuilds_the_published_v13` (the shipped mill list) and
+     `ports::ic3_the_readiness_report_lists_every_binding_and_flags_the_rate` (88 commerce
+     lines);
+   - `port::gauges`' hold lists (three new bulk rows).
+
+**The cost arithmetic** (Q-49-5 read with Q-49-4: a produced round costs about its GC.7 price).
+A recipe's cost is its bill at the lane's asks plus the quoted fee, over its rounds:
+- **The bill:** alloys 450 cr (Kasei), carbon ore 60 cr (Freeport Works) and water 100 cr
+  (Occator), 610 cr in all.
+- **The fee:** about 44.10 cr a work unit at the Ceres works: 122 units quote 5,380 cr and 168
+  quote 7,408 cr (the story's quotes).
+- **The sizing:** every good but the torpedo carries 6,000 cr of rounds a batch at its price. So
+  (6,000 − 610) / 44.10 ≈ 122 work units, and the output count is 6,000 cr over the price. The
+  torpedo's two rounds are 8,000 cr, so 168 work units.
+
+| Recipe | Rounds | Work units | Bill + fee | A round | Price |
+|---|---|---|---|---|---|
+| `ap_30` | 500 | 122 | 5,990 cr | 11.98 cr | 12 |
+| `ball_762` | 240 | 122 | 5,990 cr | 24.96 cr | 25 |
+| `he_105` | 40 | 122 | 5,990 cr | 149.75 cr | 150 |
+| `missile` | 4 | 122 | 5,990 cr | 1,497.50 cr | 1,500 |
+| `torpedo` | 2 | 168 | 8,018 cr | 4,009.00 cr | 4,000 |
+| `spinal_round` | 10 | 122 | 5,990 cr | 599.00 cr | 600 |
+| `pd_box` | 24 | 122 | 5,990 cr | 249.58 cr | 250 |
+
+Each lands within 0.25% of its price, the torpedo over (+0.23%) and the rest under (−0.17%).
+
+**The house's arithmetic:** a Yards batch is 1 t of alloys at its own bid (460 cr) and 1 t of
+carbon ore at its bid (60 cr), 520 cr, into 6,000 cr of rounds at the asks (8,000 cr for
+torpedoes). The house books no works time, as PL.1's refine and PL.2's processes do not.
+
+**Rates** (provisional; at 24:1 an IC day is a real hour):
+- Each process makes at most one batch an IC day, 24 a real day. Its floor binds first: a
+  process only replaces rounds bought below its seed.
+- The alloys bid binds next. After its first 10 t it refreshes 2 t an IC day, so across all
+  seven processes at most two batches an IC day, 48 a real day.
+- Carbon ore binds last. The Yards' 20 t seed runs 20 batches. Their carbon bid (60 cr, lane
+  v33) equals Freeport Works' ask at Ceres, so no haul pays to refill it; it is unchanged here
+  (Not built, below).
+- An HE batch is 40 rounds, a cannon's 24-round load and two-thirds of another.
+
+**Conservation** (doc 49 §7's requirement). Rounds are conserved: a round is minted only by a
+seed, a mill batch or a work order, and leaves the goods only by a rearm. The terms EX.0 must
+count:
+- **Sources of rounds:**
+  - the seed, the stock clerk's mints (`tacsim.port_stock` receipts);
+  - a process batch, `product_t` on its `tacsim.port_mill` ledger, keyed by the round's good
+    (`MillLedger.process`);
+  - a completed work order of a munitions recipe, its pooled outputs times its quantity.
+- **What a round becomes:** a rearm moves units of a munitions good into a magazine,
+  `ceil(rounds / rounds_per_unit)` units (`port/bay_work/jobs.rs`' `Rearm`, `surface/tender.rs`).
+  A magazine's rounds leave by firing, the only true sink. Space rearm is CC.7's.
+- **The inputs consumed:**
+  - a process batch's ore, `ore_t` of alloys, and its further inputs, `with_t` of carbon ore;
+  - a work order's bill, alloys, carbon ore and volatiles times its quantity.
+- **The census today** (`port/census.rs`) counts the chain's goods and not munitions. Its mill
+  scan reads `counted(&ledger.ore)` and subtracts the product's mass whether it is counted or
+  not. For a munitions process it books `milled` as the alloys' mass less the rounds' (1,000 kg
+  less 840 kg for an HE batch), and it misses the carbon ore. EX.0's terms for a process ledger
+  are the counted inputs' kilograms (`ore_t` and each `with_t`) less the product's only where
+  the product is counted.
+
+**Tests** (run on conclav.dev):
+- **New:**
+  - `domain_economy` `mill::pl3_stickney_yards_makes_he_and_lists_it` runs one full cycle on a
+    lane whose Yards seed 760 HE, forty under the floor:
+    1. With only its carbon ore in the storefront, nothing is made.
+    2. A tonne of alloys delivered in kind, the HE process takes it and a tonne of carbon ore
+       and makes 40 rounds. The HE ask is restocked to 800 and its counter is 40. No other
+       process runs, and nothing pages drift. The Mill line reads "1 to 40 with 1 carbon_ore a
+       ratio".
+    3. Nothing moves the next IC day.
+  - `mill::pl3_a_process_debits_each_of_two_further_inputs` runs the three-input bill on a lane
+    variant whose Stickney has no emergency block and whose Yards bid water. The alloys alone
+    make nothing; the water bought, one batch debits each of the three goods and records both
+    further inputs.
+  - `mill::pl3_the_munitions_recipes_cost_about_their_prices` quotes all seven recipes at the
+    Ceres works and holds each within 1% of its price (the table above).
+  - `lane::pl3_strip_munitions_rebuilds_the_published_v36` (v36's digest `a38bdfa0…`,
+    idempotent).
+  - `tacsim` lib: `port::def::tests::pl3_processes_share_an_ore_and_take_two_further_inputs`:
+    two processes sharing an ore are accepted, two of one product are refused ("mill metals is
+    authored twice"), two further inputs are accepted and three refused, an input named twice
+    is refused, and a product that is an own-stock mill's ore is refused as a key authored
+    twice.
+- **Pins moved, besides the lane bump's:**
+  - the goods table's rows (`domain_arena` `content::ic2_the_goods_table_is_pinned`): the three
+    space rows, and every ground munitions good names a shipped ammunition while the space
+    rounds name none;
+  - the goods catalogue counts, 52: `capacity::ic2_the_catalog_rows_derive_from_the_goods_table`
+    and the content studio's catalogue (lib and mush-server);
+  - the hold's load cells, three zero cells more: `port::gauges`' lib tests,
+    `coop::ic6_the_gauges_read_the_hold_pools` and mush-server's
+    `ic_slice_loop::ic12_part_one_a_leg_by_hand`;
+  - the stock rows minted, 22 (Stickney 12): `commerce::ic8_the_ticks_seed_every_pool_exactly_once`,
+    `ic8_a_reboot_mid_seed_re_mints_nothing` and `ic8_a_world_on_lane_v2_takes_v3_by_the_shelf`;
+  - the orderable goods' list, `orders::ic11_the_verbs_edit_the_plan`;
+  - the web client's `sky_chart.json` (the Yards' alloys bid) and `site/site_map.json` (four
+    `at_ic` stamps 42 s later), re-blessed with `TACSIM_BLESS=1`.
+- **Two harness fixes the phase shift exposed.** The Yards' clerk mints three more rows, lists
+  three more asks and posts one more bid before the ports read Ready, seven fires of 6 s. A rig
+  that sets its rate after stocking therefore starts its rate generation 42 real seconds later,
+  so every later IC instant moves by 41,958 IC seconds:
+  - `claims::sm10_a_block_with_no_deposits_is_claimed_like_any_other` and
+    `sm10_a_stake_reads_the_same_whatever_the_block_holds` compare what a staker hears in two
+    worlds. The rig's idle return (`tv::IDLE_HOME`) and its panel refresh land a day after its
+    last act; on the base the barren world's deposit opening ran 16 fires and caught it, and
+    on the shifted phase it ran 10 and missed it. `claim_lines` now drops the rig's own
+    reports as it drops the economy's notices: no claim line turns on them.
+  - `cost_lane::sm12c_a_restart_inside_the_cohort_changes_nothing` reboots arm B at arm A's first
+    quiet point. On the shifted phase that point (IC 117,456) fell on the fire where an Occator
+    yard rig's mining cycle landed: its run went on (cycle 2 to 3, next due past the warm), so
+    `cohort_quiet`'s projection clause, which compared only whether a run and an act exist,
+    read it quiet. The rig's projection and Occator's mined tally are written the next fire,
+    arm B's first warm fire. The clause now compares the projection's run view with
+    `RunView::of` the record's run, as the tick writes it.
+- **Green:**
+  - the whole `tacsim` lib (2,394);
+  - `domain_economy`, `domain_world` and `cost_lane` (886), `domain_field`, `domain_arena` and
+    `harness` (1,472), mush-server `split_boundary` and `commerce_composition` (318) and
+    mush-bot (791), on the tree before the last pins; every failure there is a pin or harness
+    fix above, each rerun green on the final tree (the economy set touched, 128; `cost_lane`,
+    12; the server's `ic_slice_loop`, 12; the arena and field reruns, 72; the chart, 7).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  memory-size pass, rustdoc `-D warnings --document-private-items`, and the contract guards'
+  feature census, panic budget and restriction lints (24).
+- **Mutations:** eight, all killed.
+  1. A process keyed by its ore (`key_good`): the def tests refuse the shipped lane.
+  2. A process ledger's id by its ore: both PL.3 stories and PL.2's Titan story.
+  3. No duplicate-key check: `pl3_processes_share_an_ore…` and `sm12a_each_mill_rule…`.
+  4. No further input debited: the HE story, the two-input story and the Titan story.
+  5. Only the first further input debited: the two-input story.
+  6. Readiness reading only the first further input: the two-input story.
+  7. The floor gate off: the HE story and the Titan story.
+  8. Seven mill rows a vendor: `sm12a_each_mill_rule_refuses_with_its_sentence`, which pins
+     the bound at eight.
+
+**Divergences:**
+- **The house bill has two inputs, not three.** The Yards' seven processes take alloys and
+  carbon ore. Stickney's emergency rule (doc 19 §6, `PortDef::check_emergency`) bars the Yards,
+  its emergency org, from bidding volatiles, and the starting session ruled on 2026-11-16 to
+  keep that rule unchanged. Player bookings at the works keep Q-49-4's three-input bill.
+  Volatiles already have industrial buyers in PL.1's propellant refine at Occator and PL.2's
+  farms, so Q-49-4's "first industrial buyer" reason holds.
+- **`pd_box` is 80 kg** (provisional), so a batch of 24 boxes (1,920 kg) passes the mass rule
+  under the house's two tonnes of inputs.
+- **The space rounds name ammunition ids with no catalog entry.** A space mount is no catalog
+  weapon, so `torpedo`, `spinal_round` and `pd_box` name `tacsim.ammunition.torpedo`,
+  `spinal_round` and `pd_rotary`, which CC.7's berth rearm binds. The goods table's test now
+  holds that every ground munitions good names a shipped ammunition and every space round names
+  none.
+- **The house books no works slot.** It is a house process on the stock clerk's turn, as PL.1's
+  refine and PL.2's processes are. The works' own house order (`works.rs` `house_collect`) is not
+  booked for goods.
+
+**Not built:**
+- **CC.7's space rearm and magazine loading.** The space goods are stocked and asked, and nothing
+  draws them yet.
+- **The census terms above.** They are EX.0's.
+- **Prices do not follow the supply.** The asks stay at GC.7's prices and PL.3's provisional
+  ones; EX.8 and EX.9 own the market's response.
+- **The Yards' carbon bid pays no haul.** At 60 cr it equals Freeport Works' ask, so once the
+  20 t seed is milled the house waits on a carbon sale nobody profits from. Repricing a bid
+  authored before PL.3 (lane v33) is left to EX.8's tuning.
+- **The Yards have no water.** If a later ruling lets the emergency org bid, the house bill can
+  take the recipes' three inputs with a lane bump, no code change.
 
 ## PL.4
 
-Not built.
+**Survey** (at `14483cbdf`, PL.3's tip):
+- **The houses' three conversions** are mill rows on the stock clerk's turn, house-only:
+  - the Freeport Exchange's metal mill at Ceres, metal ore into metals, 5 : 2;
+  - Occator's ice mill at Ceres, ice ore into water, 5 : 2 (beside PL.1's refine of water into
+    propellant);
+  - Kasei's refine at Stickney, metals into structural alloys, 5 : 4.
+- **No works recipe takes an ore.** The pack's 25 rows make parts, fittings, feedstock, modules
+  and munitions. A player with ore can only sell it into a house's bid.
+- **The works** at Ceres (Freeport Works) and at Stickney offer every recipe that requires
+  `tacsim.works` as a public slot. A booking runs quote, order, deliver, collect
+  (`port/works.rs`). Its fee is the cost model's.
+- **The cost model at the Ceres works:** 3,000,000 cr capital over 25 years (328.77 cr a day),
+  2% upkeep (164.38), and 8 staff at 150 (1,200). That is 1,693.15 cr a day over 2 slots × 24
+  hours, so 35.27 cr a slot-hour; the 25% margin makes 44.09 cr a work unit. A quote rounds the
+  fee up to the whole credit. The booking fee (one slot-day before margin, 847 cr) is held and
+  comes back at collection.
+
+**Built:**
+1. **Recipe pack v5** (`INDUSTRY_RECIPES_VERSION` 5, re-signed), three conversions at the houses'
+   ratios, pooled, each requiring `tacsim.works`, so each is a public slot at both works:
+
+   | Recipe | Bill | Output | Work units | Fee | The house's spread a batch |
+   |---|---|---|---|---|---|
+   | `metals` | 10 t metal ore | 4 t metals | 2 | 89 cr | 100 cr (the Exchange: 4 × 200 − 10 × 70) |
+   | `volatiles` | 20 t ice ore | 8 t water | 2 | 89 cr | 100 cr (Occator: 8 × 100 − 20 × 35) |
+   | `structural_alloys` | 5 t metals | 4 t alloys | 9 | 397 cr | 400 cr (Kasei: 4 × 450 − 5 × 280) |
+
+2. **The houses' mill rows are unchanged.** The lane is not touched: no version bump, no strip
+   step and no fixture.
+
+**Sizing** (provisional; at 24:1 an IC day is a real hour):
+- **The rule: the fee is about the house's own spread.** Each recipe's fee lands within one work
+  unit under what the house makes on the same batch at its own port's prices: its bid for the
+  input and its ask for the output. Milling your own ore at the works then costs about what
+  selling the ore and buying the product back costs at that port. It pays where the house's bid
+  is full (the Exchange takes 240 t of metal ore at a time) or where the product sells dearer:
+  metals bid 280 at Stickney, water 190 to 200 at Stickney, Luna and Deimos.
+- **Why the batches differ.** The ratios are the houses'. The ore batches are the smallest whole
+  multiples whose fee stays under the spread at two or more work units: 5 t of ice makes only
+  25 cr of spread, under one work unit's 44.09. A one-unit recipe would also quote "(1 work
+  units)".
+- **Slot times**, a work unit being one slot-hour:
+  - a 100 t hold of metal ore is ten `metals` batches, 20 work units: 20 IC hours, 50 real
+    minutes;
+  - its 40 t of metals refine in eight `structural_alloys` batches, 72 work units: three IC days,
+    three real hours;
+  - the houses' own rows mill 40 t of ore an IC day each, so a slot is slower than a house mill
+    for ore and about a third of Kasei's refine rate.
+
+**Tests** (run on conclav.dev):
+- **New** (`domain_economy` `pl4_works_mills`, reusing PL.2's works harness, whose helpers are
+  now `pub(crate)`):
+  - `pl4_a_captain_mills_metal_ore_at_the_works_then_refines_the_metals` (13 s): at Ceres,
+    with 20 t of metal ore in the docked hold:
+    1. `+works/quote metals 2` bills 20 t for four work units.
+    2. The order is booked, the ore delivered and the works run; the captain collects 8 t of
+       metals.
+    3. `+works/quote structural_alloys` bills 5 t of metals for nine work units. Booked,
+       delivered, run and collected, the hold holds 4 t of alloys and 3 t of metals.
+    4. The Exchange's metal mill, Occator's ice mill and refine, and Kasei's refine are the
+       lane's as before.
+  - `pl4_each_conversion_costs_about_its_houses_spread`: the three quotes at the Ceres works
+    give fees of 89, 89 and 397 cr against the houses' 100, 100 and 400.
+- **Green:** the whole `domain_economy` binary (603, every works and mill story among them), the
+  `tacsim` lib (2,394), and mush-server `split_boundary` and `commerce_composition` (318).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  memory-size pass, rustdoc `-D warnings --document-private-items`, and the contract guards'
+  feature census, panic budget and restriction lints (24).
+- **Mutations** (content, each re-signed so the pack loads):
+  1. `metals` at three work units: both stories (the quote's units; a 133 cr fee over the
+     house's 100).
+  2. `structural_alloys` making five tonnes: the mill-and-refine story (the hold's alloys).
+
+**Divergences:**
+- **The houses' rows stay house processes.** Q-48-24's "the NPC mill rows stay as the houses'
+  own processes": they book no slot and pay no fee, as before.
+- **The ore recipes' batches are larger than the houses' ratios' least terms** (10 : 4 and
+  20 : 8). Sizing above.
+
+**Not built:**
+- **PL.5's escrow buying** waits on EX.3 and is not started here.
+- **Prices do not follow the new supply.** A player's milled metals and water sell into the same
+  bids; EX.8 and EX.9 own the market's response.
 
 ## PL.5
 

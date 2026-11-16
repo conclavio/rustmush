@@ -78,7 +78,8 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 48 unit PL.1: v35, Occator's propellant refine and the Ceres refinery (was `9e78ca9a…` at
 /// v34).
 /// Doc 48 unit PL.2: v36, the farms, the fab and Titan's carbon mill (was `4db678a2…` at v35).
-const LANE_DIGEST: &str = "a38bdfa0eadb11746c2089c5aac9186128433d4029c8a1a14c0d55cea74a6f92";
+/// Doc 48 unit PL.3: v37, Stickney Yards' munitions processes (was `a38bdfa0…` at v36).
+const LANE_DIGEST: &str = "f668f7110fc7b406dfa529033a39999bbfdde3c354de58980695bc7f76dc02a3";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -358,9 +359,29 @@ fn floor_strip_licence_grace_rebuilds_the_published_v29() {
     );
 }
 
-/// **Doc 48 unit PL.2: `strip_producers` rebuilds the published v35** — the shipped v36 less the
-/// farms, the fab and Titan's carbon mill (their rows, bids and provisions asks), re-signed at
-/// 35, is PL.1's lane digest.
+/// **Doc 48 unit PL.3: `strip_munitions` rebuilds the published v36** — the shipped v37 less
+/// Stickney Yards' munitions processes, its two new bids and its space munitions rows, re-signed
+/// at 36, is PL.2's lane digest.
+#[test]
+fn pl3_strip_munitions_rebuilds_the_published_v36() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 36.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_munitions(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_munitions(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v36 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "a38bdfa0eadb11746c2089c5aac9186128433d4029c8a1a14c0d55cea74a6f92"
+    );
+}
+
+/// **Doc 48 unit PL.2: `strip_producers` rebuilds the published v35** — the shipped lane less the
+/// munitions (v37), the farms, the fab and Titan's carbon mill (their rows, bids and provisions
+/// asks), re-signed at 35, is PL.1's lane digest.
 #[test]
 fn pl2_strip_producers_rebuilds_the_published_v35() {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
@@ -485,8 +506,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        36,
-        "lane v36 since doc 48 unit PL.2 (v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        37,
+        "lane v37 since doc 48 unit PL.3 (v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

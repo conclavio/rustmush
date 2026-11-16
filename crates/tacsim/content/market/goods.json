@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -645,6 +645,48 @@
       "consumable": null,
       "reference_major": 1,
       "note": "Doc 39 cut IN.9b: the Mk2 biped's kit, buildable once its class template gives it a cab and a locker (§4.13); 39 t of alloys and 17 t of fittings over 3 yard days."
+    },
+    {
+      "id": "torpedo",
+      "label": "space torpedoes, canistered",
+      "family": "munitions",
+      "class": "trade",
+      "ledger_unit": "round",
+      "quote_unit": "round",
+      "measures": { "si.mass_kg": 400, "si.volume_l": 600 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 4000,
+      "munitions": { "ammunition": "tacsim.ammunition.torpedo", "rounds_per_unit": 1 },
+      "note": "Doc 48 unit PL.3 (doc 49 Q-49-12): the twin tubes' round, a guided strike torpedo of about 400 kg in a 600 L canister (provisional). 4,000 cr a round, so a salvo of two is 8,000 cr; a works batch makes two (recipes v4). CC.7's berth rearm draws it."
+    },
+    {
+      "id": "spinal_round",
+      "label": "spinal gun rounds",
+      "family": "munitions",
+      "class": "trade",
+      "ledger_unit": "round",
+      "quote_unit": "round",
+      "measures": { "si.mass_kg": 120, "si.volume_l": 150 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 600,
+      "munitions": { "ammunition": "tacsim.ammunition.spinal_round", "rounds_per_unit": 1 },
+      "note": "Doc 48 unit PL.3 (doc 49 Q-49-12): the spinal gun's hull-killer slug and charge, about 120 kg crated (provisional). 600 cr a round makes the 24-round magazine 14,400 cr; a works batch makes ten. CC.7's berth rearm draws it."
+    },
+    {
+      "id": "pd_box",
+      "label": "point-defence rounds, boxed",
+      "family": "munitions",
+      "class": "trade",
+      "ledger_unit": "box",
+      "quote_unit": "box",
+      "measures": { "si.mass_kg": 80, "si.volume_l": 120 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 250,
+      "munitions": { "ammunition": "tacsim.ammunition.pd_rotary", "rounds_per_unit": 500 },
+      "note": "Doc 48 unit PL.3 (doc 49 Q-49-12, Q-49-10): 500 linked rotary rounds, about 80 kg boxed (provisional; a batch of 24 boxes weighs 1,920 kg, under the two tonnes the Yards' house process takes). 250 cr a box makes the rotaries' 3,000-round load six boxes, 1,500 cr; a works batch makes 24 boxes. CC.7's berth rearm draws it."
     }
   ]
 }

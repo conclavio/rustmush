@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v36 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v37 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,12 +45,44 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit PL.3 (lane v37): Stickney Yards' munitions taken out** — its seven munitions
+/// processes, its alloys bid, and its torpedo, spinal-round and point-defence stock
+/// rows and asks — so a strip chain rebuilds a lane before v37 (idempotent). The chain's head.
+pub fn strip_munitions(doc: &mut Value) {
+    const SPACE: [&str; 3] = ["torpedo", "spinal_round", "pd_box"];
+    let Some(vendor) = doc
+        .get_mut("entries")
+        .and_then(|entries| entries.get_mut("stickney_port"))
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("vendors"))
+        .and_then(Value::as_array_mut)
+        .and_then(|vendors| {
+            vendors
+                .iter_mut()
+                .find(|vendor| vendor["org"] == "stickney_yards")
+        })
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    vendor.remove("mill");
+    for rows in ["stock", "asks"] {
+        if let Some(rows) = vendor.get_mut(rows).and_then(Value::as_array_mut) {
+            rows.retain(|row| !SPACE.iter().any(|good| row["good"] == *good));
+        }
+    }
+    if let Some(bids) = vendor.get_mut("bids").and_then(Value::as_array_mut) {
+        bids.retain(|bid| bid["good"] != "structural_alloys");
+    }
+}
+
 /// **Doc 48 unit PL.2 (lane v36): the house processes taken out** — the Lunar Habitat Board's
 /// farm (its provisions stock, ask and mill), Crisium Instruments' fab (its strategic-ore and
 /// metals bids and mill) and Titan Concession's farm and carbon mill (its provisions stock and
 /// ask, its carbon-ore bid and both mill rows) — so a strip chain rebuilds a lane before v36
-/// (idempotent). The chain's head.
+/// (idempotent); lane v37's [`strip_munitions`] first.
 pub fn strip_producers(doc: &mut Value) {
+    strip_munitions(doc);
     for (entry, org) in [
         ("luna_port", "habitat_board"),
         ("luna_port", "crisium_instruments"),

@@ -516,7 +516,7 @@ pub struct SiteRecord {
 }
 
 /// **A site's matter terms** ([`SiteRecord::matter`]), kilograms, ever.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteMatter {
     /// Bale kilograms a tender's repairs consumed into hulls here (a sink).
@@ -526,13 +526,18 @@ pub struct SiteMatter {
     /// in the census; the sub-tonne under the whole tonnes is the declared loss, §4.6).
     #[serde(default)]
     pub scrapped_kg: u64,
+    /// **The munitions a tender's rearms drew from the stores here, units by good, ever** (doc 48
+    /// cut EX.0; a sink, the census's `loaded`). Units, not kilograms: the tow's prepare holds no
+    /// goods table, so the census weighs them. Omitted while empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub loaded: std::collections::BTreeMap<mush_core::CanonicalId, u64>,
 }
 
 impl SiteMatter {
     /// Whether nothing moved (serde's skip).
     #[must_use]
-    pub const fn is_fresh(&self) -> bool {
-        self.repaired_kg == 0 && self.scrapped_kg == 0
+    pub fn is_fresh(&self) -> bool {
+        self.repaired_kg == 0 && self.scrapped_kg == 0 && self.loaded.is_empty()
     }
 }
 
