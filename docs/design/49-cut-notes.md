@@ -367,7 +367,35 @@ applied.
   | `domain_arena/minds_rhai.rs` `m2_the_twin_corpus_hashes_the_same_on_every_host` | `M2_CROSS_PLATFORM_PINS` | stopping times 180,250 / 177,500 / 170,000 → 231,250 / 197,500 / 167,000 (900,000 unmoved); the float probe's thinks and bitmask unmoved; read on Linux |
   | `tests/harness_baseline/arena.linux.json` | twelve deterministic leaves, by record (`cc1_deterministic_update`) | the minds lanes' four final hashes; `fill_authored`'s thinks, landings, condition fires and drops; the arena lane's ledger bytes. Timing gate live and inside it (p50 −1.6%, p99 +1.0%, window p99 +3.7%) |
 
-CC1_BOUND_PLACEHOLDER
+- **The Rhai think's cost, and the lanes' bounds, set by record** (`tests/domain_arena/twin.rs`).
+  CC.1 took the twin lanes' costliest Rhai think past the 1,200 operations-plus-fees STOP that
+  17b cut M2.5 set on the mixed and pooled lanes. Max, with p99 in brackets, measured on
+  conclav.dev:
+
+  | Lane | main | CC.1 as first built | CC.1 after its cost pass | Bound |
+  |---|---|---|---|---|
+  | mixed | 1,168 (1,006) | 1,319 (1,158) | 1,275 (1,114) | 1,200 → **1,350** |
+  | pooled | 1,195 (1,057) | 1,346 (1,202) | 1,302 (1,158) | 1,200 → **1,350** |
+  | lance | 1,308 (1,246) | 1,468 (1,415) | 1,424 (1,371) | none → **1,450** |
+
+  - **The cost pass** (behaviour unchanged, Gate A at 0 divergences on every lane, still 31
+    functions):
+    - the reserve read once a think, only where a reader can read it;
+    - `arming_for`'s reserve read without its overflow clamp. The card's schema holds it to 100,
+      so the clamp never changed a value. This saved about 60 a think.
+    - A fully lazy read, at each reader, measured worse (lance 1,486), so it was not kept.
+  - **Where the peak is.** A print of every think past 1,250 showed the costliest are Engage
+    thinks under an Engage order, on 7- to 12-row views, taking a fresh lock and citing a shot.
+    Fees are only 72 to 90 of each; the rest is script. The cornered withdraw stand is not among
+    them. Its two `best_hostile` scans and two `line_to` traces are the line fallback's two
+    distinct queries, and `entry_cell` runs once a think.
+  - **Why lance stayed over 1,350.** CC.1's own code costs about 50 on that think, so lance would
+    sit near 1,375 even at zero. The rest is the ruled behaviour: longer fights, more rows.
+  - **The ruling.** The lead set the target at 1,350 (90% of class I's 1,500); lance could not
+    reach it inside CC.1. The owner ruled on 2026-11-16, "Guard at 1,450": mixed and pooled
+    bounded at 1,350 (`TWO_TANK_THINK_BOUND`), lance at 1,450 (`LANCE_THINK_BOUND`, its first
+    bound).
+  - **The follow-up unit CC.1b** cuts the Engage path's cost toward 1,350 on every lane.
 - **Guards**, on the final tree:
   - `cargo fmt -p tacsim --check`;
   - `cargo clippy -p tacsim --all-targets -- -D warnings`;
@@ -375,7 +403,15 @@ CC1_BOUND_PLACEHOLDER
   - `cargo doc -p tacsim --no-deps --document-private-items` with `-D warnings`.
 
   The contract tests (`engine_contracts`, `ci_policy`, the help-page lint) passed in the probe and
-  re-ran in the final sweep.
+  in the whole-workspace sweep.
+- **The whole-workspace sweep** (`gate.yml`, `kind=sweep` on conclav-dev, run 43825750857, before
+  the bounds): 12,740 tests.
+  - Three failed: the mixed and pooled twin lanes on the old 1,200 bound, and
+    `mushd::sim_lenses` `observer_rule::m5_the_mind_object_names_nothing_but_the_pilots_own_seal`.
+    That one pinned Line's 10% and now reads `LINE_MIN_ODDS_PERMILLE`.
+  - The probe had failed it too, but its retry group's `TRY 2 FAIL` slipped past my filter.
+  - `observer_rule::nothing_about_an_undetected_unit_crosses_on_any_surface` failed once and
+    passed on retry, in the load-sensitive group.
 
 **Divergences.**
 - **The reserve's break-off is the doctrine's one retreat** (my reading of Q-49-23 with doc

@@ -1816,6 +1816,21 @@ const COVERAGE: [(&str, (usize, usize)); 3] = [
     ("lance", (7_142, 159)),
 ];
 
+/// **The two-tank lanes' bound on a Rhai think's operations plus fees**, the
+/// pooled and the mixed lanes' (a max past it is a STOP): 17b cut M2.5's 1,200
+/// until doc 49 unit CC.1, the owner's ruling of 2026-11-16, 1,350 (90% of class
+/// I's 1,500). CC.1's discipline (the Line card's floor and reserve, the
+/// withdrawal at the reserve) took their peaks from 1,195 (pooled) and 1,168
+/// (mixed) to 1,302 and 1,275; the follow-up unit CC.1b cuts the Engage path's
+/// cost back toward this bound on every lane.
+const TWO_TANK_THINK_BOUND: u64 = 1_350;
+
+/// **The lance lane's bound on a Rhai think's operations plus fees** (a max past
+/// it is a STOP): none until doc 49 unit CC.1, the owner's ruling of 2026-11-16
+/// ("Guard at 1,450"). Its twelve-row views are the costliest: main peaked at
+/// 1,308, CC.1 at 1,424, under class I's 1,500 by 76; CC.1b aims it at 1,350.
+const LANCE_THINK_BOUND: u64 = 1_450;
+
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
 /// reason at [`COVERAGE`]): the matches whose record line may move.
 /// Doc 36 cut GC.2: 11 → 12, with the re-bless of [`COVERAGE`]. Doc 40 cut
@@ -1852,7 +1867,7 @@ const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
 ///   (`m2_mirror_the_withdraw_dwell_and_the_rally`,
 ///   `m2_mirror_the_disabled_edge_rewrites_the_fourteen_keys`);
 /// * the Rhai thinks' operations plus fees, p50/p99/max, printed against
-///   class I's 1,500 (a max over 1,200 is a STOP) and Class 0's 400 (D-UM-35:
+///   class I's 1,500 (a max over [`TWO_TANK_THINK_BOUND`] is a STOP) and Class 0's 400 (D-UM-35:
 ///   where §18's `minds_stock_ci` runs Standard Doctrine; a max over it is a
 ///   forward STOP for 17b cuts M3/M4, reported, not asserted).
 #[test]
@@ -2003,8 +2018,8 @@ fn m2_gate_a_on_a_mixed_pool() {
         "no unarmed hull thought at the Disabled edge"
     );
     assert!(
-        max <= 1_200,
-        "a think of {max} ops and fees: past 1,200 is a STOP"
+        max <= TWO_TANK_THINK_BOUND,
+        "a think of {max} ops and fees: past {TWO_TANK_THINK_BOUND} is a STOP"
     );
 }
 
@@ -2027,7 +2042,7 @@ fn m2_gate_a_on_a_mixed_pool() {
 ///   — T1's shots and rate, `cond_fire`, `slot_parallel` and the rest — the
 ///   free proof that `Twin` is T1;
 /// * the Rhai thinks' operations plus fees, p50/p99/max, printed against
-///   class I's 1,500 (past 1,200 is a STOP — the bound 17b cut M2.5's armed
+///   class I's 1,500 (past [`TWO_TANK_THINK_BOUND`] is a STOP — the bound 17b cut M2.5's armed
 ///   report held, which this lane replaces) and Class 0's 400 (a forward STOP
 ///   for 17b cuts M3/M4, reported).
 ///
@@ -2114,8 +2129,8 @@ fn m2_gate_a_over_the_pooled_lanes_matches() {
     // thinks on with no weapon row, and those thinks are compared too.
     assert!(thinks > 0 && armed > 0, "the pool's mind hulls are armed");
     assert!(
-        max <= 1_200,
-        "a think of {max} ops and fees: past 1,200 is a STOP"
+        max <= TWO_TANK_THINK_BOUND,
+        "a think of {max} ops and fees: past {TWO_TANK_THINK_BOUND} is a STOP"
     );
 }
 
@@ -2444,7 +2459,8 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
 /// function expression depth it compiles at and its widest scope; the
 /// lane's wall time. A think past 1,500 or a third `line_to` is a fault the
 /// asserting twin refuses, so this lane's green already bounds both; the
-/// 1,200 bound the two-tank lanes assert is NOT held here — this lane's
+/// two-tank lanes' bound is NOT held here, its own [`LANCE_THINK_BOUND`] is (doc 49
+/// unit CC.1, the first bound this lane has held) — this lane's
 /// costliest think is 1,265 with 160 thinks past 1,200 (2026-10-10, 17b
 /// cut M4.7's sweep at `dd4483dd`; the row cut of 17b cut M4.5c moved
 /// them from 1,278 / 273). History: at 17b cut M2.6 it was 1,274 with 273 past 1,200 (the
@@ -2598,6 +2614,10 @@ fn m2_gate_a_over_the_authored_lance_field() {
         "m2_gate_a_lance_script: functions={functions} max_fn_expr_depth={depth} \
          widest_scope={width} ({widest}) wall_ms={}",
         started.elapsed().as_millis()
+    );
+    assert!(
+        max <= LANCE_THINK_BOUND,
+        "a think of {max} ops and fees: past {LANCE_THINK_BOUND} is a STOP"
     );
     assert!(thinks > 0 && ordered_thinks > 0 && ordered_lines > 0);
     for objective in ["engage", "hold"] {
