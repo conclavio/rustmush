@@ -4625,6 +4625,18 @@ impl TuiApp {
                 &[("MATCH", &status), ("SHOTS", &shots), ("WRECKS", &wrecks)],
                 &|w| self.scrollback_rows(w),
             );
+        } else if matches!(
+            self.pixel.kind(),
+            PictureKind::SpaceCockpit | PictureKind::Holotank
+        ) {
+            // Doc 49 unit CC.9: the space cockpit's own panel, the fire rows over the comms.
+            let space = self
+                .panels
+                .get(mush_pixel::space_cockpit::SPACE_COCKPIT_FEED)
+                .cloned();
+            cockpit_text::draw_space_panel(frame, areas.panel, space.as_ref(), &|w| {
+                self.scrollback_rows(w)
+            });
         } else if self.pixel.kind() == PictureKind::Chart {
             let sky = self.panels.get(CHART_FEED).cloned().unwrap_or(Value::Null);
             cockpit_text::draw_chart_panel(

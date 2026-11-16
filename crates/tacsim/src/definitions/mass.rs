@@ -58,8 +58,8 @@ pub const fn core_kg(class: CoreClass) -> u64 {
     }
 }
 
-/// The core's reference, minor units: the line tank's basis at 3 / 8 / 25 %
-/// ([`mush_economy::core_integration::CoreClass::finished_minor`]).
+/// The core's reference, minor units: the hardware catalogue's finished price (doc 48 unit PL.7:
+/// the core prices are content; the shipped table is 3 / 8 / 25 % of the line tank's basis).
 #[must_use]
 pub fn core_minor(class: CoreClass) -> u64 {
     use mush_economy::core_integration::CoreClass as Made;
@@ -69,7 +69,9 @@ pub fn core_minor(class: CoreClass) -> u64 {
         CoreClass::II => Made::II,
         CoreClass::III => Made::III,
     };
-    u64::try_from(made.finished_minor()).unwrap_or(0)
+    crate::hardware::PublishedHardware::shipped_once()
+        .and_then(|hardware| u64::try_from(hardware.catalogue().finished_minor(made)).ok())
+        .unwrap_or(0)
 }
 
 /// **The structure's share of the remainder**, per mille, by class (§4.8); `None` for a class

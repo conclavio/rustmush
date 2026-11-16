@@ -85,7 +85,7 @@ Vacuum detection resolves through light-lagged infrared propagation, comparing t
 +tac/lock <contact|off>
 ```
 
-- `+tac/status` (or bare `+tac`) shows tactical mounts, active locks, and sensor status.
+- `+tac/status` (or bare `+tac`) shows your lock, point-defence mode and heat, then one row a mount and a row for the lock (see "Reading your mounts" below).
 - `+tac/scan` runs a passive/active infrared sensor pass with light-lag across the active space bubble.
 - `+tac/lock <contact|off>` acquires or clears a fire-control lock on a detected contact.
 - `+tac/hail <contact|port>[=<message>]` sends a radio hail from any bridge station. In a bubble it goes to a contact on your scope; from free flight or a cluster it goes to an open port. The range is measured, and a hail to a distant port arrives after the light has crossed (minutes between Ceres and Mars). At most four of your hails are in flight at once.
@@ -107,6 +107,33 @@ Space engagements combine three offensive mount classes with distinct flight pro
 - `+tac/pdc <auto|manual|point|offense>` configures point-defence autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire.
 
 When fire disables a hull's drive or structure, the vessel remains in place as an open-epoch derelict with its flight recorder and cargo intact for salvage and towing.
+
+### Reading your mounts
+
+Space has no chance roll. A mount that reads `ready` fires when you tell it to, and an offence laser that fires lands, with less damage the farther off its mark is. Torpedoes and the spinal gun's round fly to their mark, and a hull that burns while they fly can be elsewhere when they arrive. So the rows show facts, not odds. `+tac/status`, the pilot canopy's lower-left panel and the terminal client's MOUNTS column under the canopy or the holotank show the same rows:
+
+```text
+Mount          Kind      Rounds/mode     Ready       At the lock
+laser_dorsal   laser     offence         ready       98 a pulse
+laser_ventral  laser     defence         in 0.6 s    98 a pulse
+torp_bow       tubes     16/16           ready
+rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s
+pdc_port       point def 4000 left       ready
+Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.
+```
+
+- **Rounds/mode** shows the rounds left of what your fit stows. A laser keeps no magazine, so it shows its mode: `offence` fires at your lock, and `defence` stops incoming torpedoes on its own. Switch with `+tac/pdc offense` or `+tac/pdc point`. Point defence shows the rounds left in its drum.
+- **Ready** shows `ready`, how long the mount's cycle has to run, or what holds it back: `empty`, `down` (damage has put a rotary out of action), `too hot` (one more shot would take your heat past its ceiling), or `past reach` (your lock lies beyond the mount's reach).
+- **At the lock** shows, for a lock your sensors hold within the mount's reach, the damage one laser pulse lands at that range, and how long a spinal round takes to fly there. The longer it flies, the more time she has to burn out of its path.
+- **The lock row** shows how far off your lock is, and which of her five hull bands faces you: `front`, `left`, `right`, `rear` or `top`. That band takes what you land. If your sensors lose her, the row says so.
+
+A ship mind reads the same figures: `space_mount(v, id)` gives one of her mounts, and in a bubble `Contact.aspect` gives the band of five.
+
+### Magazines
+
+Your ship's magazines are hers to keep. The torpedoes, spinal rounds and point-defence rounds she fires stay fired: when the fight ends her magazines hold what she left in them, and they still hold it at the next fight and after a server restart. A bay repair mends her and does not rearm her. `+tac/status` shows what each magazine holds.
+
+A patrol is resupplied. The customs corvette and the belt raider you meet on a leg sail with full magazines every time, whatever an earlier fight cost them.
 
 ---
 

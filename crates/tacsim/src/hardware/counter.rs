@@ -43,7 +43,7 @@ use mush_economy::AccountId;
 use mush_economy::core_integration::{CoreClass, EndUserStanding, end_user_standing};
 use mush_industry::core_production::DieClass;
 use mush_industry::core_production::counter::{self, CounterView};
-use mush_inventory::LotId;
+use mush_inventory::{LotId, record::EndpointRef};
 use mush_org::PrincipalId;
 use serde_json::{Value, json};
 
@@ -135,6 +135,11 @@ pub const CORE_FITTED: &str = "The fitters have put {core} in the {hull}.";
 /// The acceptance landed: `{what}`, `{hours}`.
 pub const CORE_ACCEPTED: &str =
     "The counter has your payment; the shop works {hours} IC hours on {what}.";
+/// The shipped hardware catalogue did not load, so the counter quotes nothing.
+pub const CORE_NO_PRICE: &str = "The fitting shop has no price list.";
+/// The importer's depot short of a die's chain goods (doc 48 unit PL.7): `{class}`, `{bill}`.
+pub const CORE_NO_STOCK: &str =
+    "The shop cannot cut a Class {class} die: it needs {bill} in the importer's depot.";
 /// The counter gave up: `{what}`.
 pub const CORE_GAVE_UP: &str =
     "The counter could not go on {what}. What you paid stands on its order; staff have been told.";
@@ -428,6 +433,59 @@ fn status(ctx: &mut Ctx<'_>, shop: &Shop) {
     }
 }
 
+/// **The importer's depot holds a die's chain goods** (doc 48 unit PL.7; Q-48-27, Q-48-48): a
+/// die of `class` takes them from the depot when it is issued, so the counter refuses an order
+/// it could not cut a die for. An integration of the class already offered to the actor needs no
+/// new die (a restart's request picks it up), so it is not asked.
+fn stocked(ctx: &Ctx<'_>, class: DieClass) -> Result<(), String> {
+    let offered = counter::view(ctx.w, ctx.actor)
+        .unwrap_or_default()
+        .integrations
+        .iter()
+        .any(|line| {
+            line.class == class
+                && line
+                    .order
+                    .as_ref()
+                    .is_none_or(|order| !order.cancelled && !order.delivered)
+        });
+    if offered {
+        return Ok(());
+    }
+    let Some(depot) = ctx
+        .w
+        .module_state::<crate::launch::registration::LaunchService>()
+        .map(|service| service.0.deployment().hardware.depot)
+    else {
+        return Err(CORE_NOT_OPEN.to_owned());
+    };
+    let chain = crate::hardware::PublishedHardware::shipped_once()
+        .ok_or(CORE_NO_PRICE)?
+        .catalogue()
+        .chain()
+        .map_err(|_| CORE_NO_PRICE.to_owned())?;
+    let lines = &chain[class.index()];
+    let short = lines.iter().any(|line| {
+        crate::port_tick::read_pool(ctx, EndpointRef(depot), &line.commodity).unwrap_or(0)
+            < line.units
+    });
+    if !short {
+        return Ok(());
+    }
+    Err(CORE_NO_STOCK
+        .replace("{class}", roman(class))
+        .replace("{bill}", &chain_text(lines)))
+}
+
+/// A die's chain goods as the counter says them: `2 instrument_boards and 1 strategic_ore`.
+fn chain_text(lines: &[mush_industry::core_production::ChainLine]) -> String {
+    lines
+        .iter()
+        .map(|line| format!("{} {}", line.units, line.commodity.as_str()))
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
 /// `+core/buy <class> [go]`.
 fn buy(ctx: &mut Ctx<'_>, body: &str, go: bool) -> Result<(), String> {
     let class = match body.to_ascii_uppercase().as_str() {
@@ -445,8 +503,13 @@ fn buy(ctx: &mut Ctx<'_>, body: &str, go: bool) -> Result<(), String> {
         return Err(CORE_END_USER.to_owned());
     }
     let (payer, available) = wallet(ctx)?;
-    let price = core_class(class).finished_minor();
+    // Doc 48 unit PL.7: the catalogue's price, which the launch's payment policy charges.
+    let price = crate::hardware::PublishedHardware::shipped_once()
+        .ok_or(CORE_NO_PRICE)?
+        .catalogue()
+        .finished_minor(core_class(class));
     afford(ctx, price, available)?;
+    stocked(ctx, class)?;
     let price_text = money_minor(ctx, price);
     if !go {
         say(
@@ -1052,6 +1115,8 @@ mod tests {
             CORE_UNFIT,
             CORE_NOT_YOURS,
             CORE_END_USER,
+            CORE_NO_PRICE,
+            CORE_NO_STOCK,
         ] {
             for line in text.lines() {
                 assert!(
@@ -1060,6 +1125,20 @@ mod tests {
                     line.chars().count()
                 );
             }
+        }
+    }
+
+    /// Doc 48 unit PL.7: the depot's refusal, filled with the shipped catalogue's longest bill,
+    /// holds the floor.
+    #[test]
+    fn pl7_the_stock_refusal_holds_the_floor() {
+        let shipped = crate::hardware::PublishedHardware::shipped().expect("the shipped hardware");
+        let chain = shipped.catalogue().chain().expect("the die chain");
+        for class in [DieClass::I, DieClass::II, DieClass::III] {
+            let line = CORE_NO_STOCK
+                .replace("{class}", roman(class))
+                .replace("{bill}", &chain_text(&chain[class.index()]));
+            assert!(line.chars().count() <= 120, "{line}");
         }
     }
 

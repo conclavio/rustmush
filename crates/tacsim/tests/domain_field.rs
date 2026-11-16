@@ -155,6 +155,8 @@ mod mw13_ship_mind;
 mod mw21_completion;
 #[path = "domain_field/one_picture.rs"]
 mod one_picture;
+#[path = "domain_field/pl7_cores.rs"]
+mod pl7_cores;
 #[path = "domain_field/review_36a.rs"]
 mod review_36a;
 #[path = "domain_field/salvage_close.rs"]

@@ -4521,18 +4521,18 @@ async fn sm12b_a_kept_v13_star_takes_lane_v24_and_relay_v15() {
         .to_owned();
     let applied = rig.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
     assert!(
-        applied.contains(&format!("Applied {lane}@34: ")),
+        applied.contains(&format!("Applied {lane}@36: ")),
         "{plan}\n{applied}"
     );
     assert!(!applied.contains("STOPPED"), "{applied}");
-    assert_eq!(rig.latched(lane), Some(34));
+    assert_eq!(rig.latched(lane), Some(36));
 
     // Relay v15 differs from v2 only in its manifest: staff have nothing to apply.
     let plan = rig.run(GOD, &format!("@atlas/pack plan {relay}"));
     assert!(plan.contains("Nothing to do."), "{plan}");
     rig.flush().await;
     rig.restart().await.unwrap();
-    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(34), Some(2)));
+    assert_eq!((rig.latched(lane), rig.latched(relay)), (Some(36), Some(2)));
     assert_eq!(rig.registry(), original);
     assert_eq!(
         rig.story(),
@@ -4545,13 +4545,13 @@ async fn sm12b_a_kept_v13_star_takes_lane_v24_and_relay_v15() {
         mush_content::load_pack(tacsim::relay_content::JSON).unwrap(),
     ])
     .await;
-    assert_eq!(rig.latched(relay), Some(25));
+    assert_eq!(rig.latched(relay), Some(27));
     assert_eq!(rig.registry(), original);
     rig.flush().await;
     rig.restart().await.unwrap();
     assert_eq!(
         (rig.latched(lane), rig.latched(relay)),
-        (Some(34), Some(25))
+        (Some(36), Some(27))
     );
     assert_eq!(rig.registry(), original);
     assert_eq!(rig.operator_org(), org);
@@ -4756,7 +4756,7 @@ async fn oduya_kept_ceres_v2_and_relay_v4_upgrade_without_replacing_the_live_sta
     .await;
     assert_eq!(
         (rig.latched(ceres), rig.latched(relay)),
-        (Some(4), Some(25))
+        (Some(4), Some(27))
     );
     assert_eq!(rig.registry(), original);
     rig.flush().await;
@@ -4818,8 +4818,10 @@ fn r10_public_star_content_digests_are_pinned() {
             // at v20; IN.11 holds v21). Doc 39 cut IN.11: v23, re-signed to require lane v32
             // (was `98be89c1…` at v22). The owner's IN.11 house-restock ruling: v24, re-signed
             // to require lane v33 (was `727c74f4…` at v23). Doc 47 unit CO.10: v25, re-signed
-            // to require lane v34 (was `5debfb2c…` at v24).
-            "d0cfd311037f512a0e83e4ac92da9e316ae8262dc0d0f4a01bb9b0c3e2472452",
+            // to require lane v34 (was `5debfb2c…` at v24). Doc 48 unit PL.1: v26, re-signed to
+            // require lane v35 (was `d0cfd311…` at v25). Doc 48 unit PL.2: v27, re-signed to
+            // require lane v36 (was `d2888b91…` at v26).
+            "96f30bbebb1c793695abd98c9764f5635bc1f12e96a1785fbe0c8f1395b77768",
         ),
     ];
     let packs = tacsim::relay_content::packs().unwrap();

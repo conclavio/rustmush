@@ -637,6 +637,31 @@ pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
         })
 }
 
+/// **Every hull whose hold `actor` may trade from** (doc 48 cut EX.1b; Q-48-49, doc 48b G-6):
+/// [`helm_of`]'s every candidate, not only its first — the fleet hull, the ferry, the live
+/// charter, every programme row titled to them and every commissioned hull they may take out —
+/// each its hold's officer may trade (`owned::may_trade_hold`), in id order, once each.
+#[must_use]
+pub fn trade_hulls(w: &World, actor: ObjId) -> Vec<ObjId> {
+    let mut hulls: Vec<ObjId> = Vec::new();
+    hulls.extend(crate::relay_mobile::assigned_hull(w, actor));
+    hulls.extend(crate::port::pools::ferry_hull(w, actor));
+    hulls.extend(live_charter(w, actor).map(|charter| charter.hull));
+    let owner = PrincipalId::Object(actor);
+    if let Some(port) = programme_port(w) {
+        hulls.extend(
+            programme_rows(w, &port)
+                .map(|row| ObjId(row.hull))
+                .filter(|hull| titled_to(w, *hull, &owner)),
+        );
+    }
+    hulls.extend(crate::port::owned::helm_hulls(w, actor));
+    hulls.sort_unstable();
+    hulls.dedup();
+    hulls.retain(|hull| crate::port::owned::may_trade_hold(w, *hull, actor));
+    hulls
+}
+
 /// The programme hull eligible for a player's mining services. Charter holders
 /// keep the existing books and buyout-pending checks; a title holder is authorized
 /// by the current economic title, independently of the old enrolment document.

@@ -396,6 +396,10 @@ pub struct TacsimStore {
     /// ([`crate::port::bay_work::BayHull`]): its berth and its open or last repair order.
     /// Persisted through [`put_bay_hull`]; an unreadable one holds its hull.
     pub(crate) bay_hulls: BTreeMap<ObjId, crate::port::bay_work::BayHullState>,
+    /// **Doc 48 cut EX.1b** — `tacsim:locker:{player}:{venue}`: each player's locker at a venue
+    /// ([`crate::port::locker::Locker`]). Persisted through [`put_locker`]; an unreadable one is
+    /// skipped loudly (its vault stands, so nothing in it is lost).
+    pub(crate) lockers: BTreeMap<(ObjId, smol_str::SmolStr), crate::port::locker::Locker>,
     /// **Doc 39 cut IN.8** — `tacsim:shopbale:{port}`: each workshop's shop bale
     /// ([`crate::port::bay_work::ShopBale`]), `None` when its document will not read (the
     /// workshop then scraps and takes back nothing until staff repair it). Persisted through
@@ -2336,6 +2340,48 @@ pub(crate) fn put_security(ctx: &mut Ctx<'_>, record: &crate::surface::security:
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+// ---- Doc 48 cut EX.1b: the venue lockers -------------------------------------------------
+
+/// **Write a venue locker's record** (doc 48 cut EX.1b): the slot, then its document.
+pub(crate) fn put_locker(ctx: &mut Ctx<'_>, record: &crate::port::locker::Locker) {
+    let key = crate::port::locker::locker_key(record.player, &record.venue);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store
+            .lockers
+            .insert((record.player, record.venue.clone()), record.clone());
+    }
+    match serde_json::to_value(record) {
+        Ok(value) => push_op(
+            ctx.out,
+            ModuleWrite::JsonSet {
+                key: key.into(),
+                value,
+            },
+        ),
+        Err(error) => tracing::error!(%key, %error, "tacsim: a locker record did not serialize"),
+    }
+}
+
+/// A locker's record at boot: skipped loudly when it will not read or disagrees with its key.
+fn load_locker(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
+    let Some((player, venue)) = crate::port::locker::locker_key_owner(key) else {
+        tracing::warn!(%key, "tacsim: a locker record has an unreadable key; skipped");
+        return;
+    };
+    match serde_json::from_value::<crate::port::locker::Locker>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|record| record.check().map(|()| record))
+    {
+        Ok(record) if record.player == player && record.venue == venue => {
+            store.lockers.insert((player, venue), record);
+        }
+        Ok(_) => tracing::error!(%key, "tacsim: a locker record disagrees with its key; skipped"),
+        Err(error) => {
+            tracing::error!(%key, %error, "tacsim: a locker record is unreadable; skipped")
+        }
+    }
+}
+
 /// **Install a hull's bay record and queue its document** (doc 36 cut GC.8): the RAM row,
 /// then one whole-document `JsonSet` ([`put_tv_lease`]'s shape).
 pub(crate) fn put_bay_hull(ctx: &mut Ctx<'_>, record: &crate::port::bay_work::BayHull) {
@@ -2926,6 +2972,9 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 tracing::error!(%key, "tacsim: a shop bale is unreadable; its workshop scraps nothing until staff repair it");
             }
             store.shop_bales.insert(port, bale);
+        } else if key.starts_with(crate::port::locker::LOCKER_PREFIX) {
+            // Doc 48 cut EX.1b: a venue locker's record.
+            load_locker(&mut store, key, value);
         } else if key.starts_with(crate::port::bay_work::BAY_PREFIX) {
             // Doc 36 cut GC.8. The claim is the KEY's (the R8 rule): a bay record that will
             // not read holds its hull (no berth, stow or order) until staff repair it.

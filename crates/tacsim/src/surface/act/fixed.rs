@@ -1294,7 +1294,8 @@ mod pl0_tests {
         }
     }
 
-    /// A test catalogue with 70 bulk goods: the shipped 23 and 47 test copies of `metals`.
+    /// A test catalogue with at least 70 bulk goods: the shipped ones (23 at PL.0; 26 since doc 48
+    /// unit PL.7's three core modules) and 47 test copies of `metals`.
     fn seventy_bulk() -> GoodsTable {
         let table = GoodsTable::load("goods.json", &padded(47))
             .unwrap_or_else(|error| panic!("the test catalogue loads: {error}"));
@@ -1303,7 +1304,7 @@ mod pl0_tests {
             .iter()
             .filter(|good| good.stowage.as_str() == "stow.bulk")
             .count();
-        assert_eq!(bulk, 70, "the test catalogue's bulk goods");
+        assert!(bulk >= 70, "the test catalogue's bulk goods: {bulk}");
         table
     }
 
@@ -1315,8 +1316,9 @@ mod pl0_tests {
     }
 
     /// **An unload weighs a hold under a 70-bulk-good catalogue** (doc 48 cut PL.0's second
-    /// done-when): the Dray-P hold's ore compartment accepts 74 goods (70 bulk, 4 ore), more
-    /// than the 64 the old plan list was capped at, and the prepare's weigh takes them all. It
+    /// done-when): the Dray-P hold's ore compartment accepts every bulk good and the four ores
+    /// (74 at PL.0, 77 since PL.7), more than the 64 the old plan list was capped at, and the
+    /// prepare's weigh takes them all. It
     /// counts goods no hopper carries: with 1 t of each of the 47 test goods aboard (47 t,
     /// 18,800 L of the hold's 86,000 kg and 103,200 L) the hold takes 39 t of metal ore and not
     /// 40, where a weigh over the hopper's ores alone would take 86.
@@ -1330,7 +1332,13 @@ mod pl0_tests {
             &cid("metal_ore"),
         )
         .expect("the Dray-P hold has one ore compartment");
-        assert_eq!(hold_goods(&table, &compartment).count(), 74);
+        let bulk = table
+            .goods
+            .iter()
+            .filter(|good| good.stowage.as_str() == "stow.bulk")
+            .count();
+        assert_eq!(hold_goods(&table, &compartment).count(), bulk + 4);
+        assert!(bulk + 4 > 64, "past the old list's cap");
         let aboard = |good: &CanonicalId| -> Result<u64, ActionError> {
             Ok(u64::from(good.as_str().starts_with("pl0_bulk_")))
         };

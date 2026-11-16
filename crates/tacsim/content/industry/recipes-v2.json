@@ -1,5 +1,28 @@
 {
   "entries": {
+    "carbon_feedstock": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "carbon_ore",
+            "units": 5
+          }
+        ],
+        "label": "Carbon feedstock pressing",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "carbon_feedstock",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 4
+      },
+      "kind": "recipe"
+    },
     "fittings": {
       "def": {
         "inputs": [
@@ -24,6 +47,87 @@
           "tacsim.works"
         ],
         "work_units": 6
+      },
+      "kind": "recipe"
+    },
+    "module_command": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 4
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 2
+          }
+        ],
+        "label": "Command core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.command",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 96
+      },
+      "kind": "recipe"
+    },
+    "module_doctrine": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 1
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 1
+          }
+        ],
+        "label": "Doctrine core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.doctrine",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 24
+      },
+      "kind": "recipe"
+    },
+    "module_line": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 1
+          }
+        ],
+        "label": "Line core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.line",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 48
       },
       "kind": "recipe"
     },
@@ -408,10 +512,10 @@
     }
   },
   "manifest": {
-    "digest": "503cc2403c98532f67f126c54e68fbdba5155b218dea8fad9b2f5ad47edb84e1",
+    "digest": "39f326f0df7108e79e91ba06d54dcce7e428966a11d37db21f93123604985b23",
     "id": "tacsim.industry.recipes",
     "kind": "rules_definition",
     "requires": [],
-    "version": 2
+    "version": 3
   }
 }

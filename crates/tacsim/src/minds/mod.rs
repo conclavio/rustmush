@@ -205,7 +205,13 @@ pub use sealed::{
 /// the posture the unit's player left on it (`return`, `guard` or `hold`), the
 /// same word on the ground and in a space bubble. Taken with the frame (10);
 /// the snapshot format stands. The ABI this replaced joins [`RETAINED_ABIS`].
-pub const API_VERSION: u32 = 9;
+///
+/// **10 since doc 49 unit CC.9** (Q-49-13, as corrected by doc 48b's W-49-5): a space mind
+/// reads the kernel's own figures for every mount. One kernel, `space_mount(v, id)`, carries a
+/// mount's mode, state, reach and what it does to her lock; `Contact.aspect` reads the five
+/// space bands in a bubble; and a space row of `v.weapons` carries no odds, its true reach, heat and
+/// readiness. The frame and the snapshot format stand.
+pub const API_VERSION: u32 = 10;
 
 /// **The stock content's version** (doc 17 Â§13): the `stock=` part of
 /// [`MIND_ABI`]; version 3 distinguishes replacement detachment orders from
@@ -216,7 +222,7 @@ pub const STOCK_VERSION: u32 = 3;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=9;stock=3";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=10;stock=3";
 
 /// **Every ABI a revision may have been saved or filed under before this one**, each with
 /// its `api=` number (doc 45 unit AP.3; doc 17 §13, §16): the Registry's first, API 4, and
@@ -231,12 +237,13 @@ pub const MIND_ABI: &str = "rhai=1.26.0;api=9;stock=3";
 /// not here is refused for ever, so **an ABI move adds the ABI it replaces**:
 /// `every_abi_since_the_registry_opened_is_retained` fails until it does. API 1 to 3 predate
 /// the Registry and no revision carries them.
-pub const RETAINED_ABIS: [(&str, u32); 5] = [
+pub const RETAINED_ABIS: [(&str, u32); 6] = [
     ("rhai=1.26.0;api=4;stock=2", 4),
     ("rhai=1.26.0;api=5;stock=2", 5),
     ("rhai=1.26.0;api=6;stock=3", 6),
     ("rhai=1.26.0;api=7;stock=3", 7),
     ("rhai=1.26.0;api=8;stock=3", 8),
+    ("rhai=1.26.0;api=9;stock=3", 9),
 ];
 
 /// The first API a revision could be saved under: the Registry's opening (17b cut M6).
@@ -973,7 +980,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=9;stock=3");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=10;stock=3");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -1087,7 +1094,7 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 286] = [
+    const PINNED: [&str; 287] = [
         "type View",
         "type Objective",
         "type Motor",
@@ -1319,6 +1326,7 @@ mod tests {
         "rand",
         "space",
         "space_contact",
+        "space_mount",
         "course",
         "course_of",
         "lands_ms",
@@ -1377,7 +1385,7 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 250] = [
+    const CALLS: [(&str, &str); 251] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.cell", "v.cell"),
@@ -1609,6 +1617,7 @@ mod tests {
         ("rand", "rand(10)"),
         ("space", "space(v)"),
         ("space_contact", "space_contact(v, v.lock)"),
+        ("space_mount", "space_mount(v, \"cannon\")"),
         ("course", "course(90000, 45000)"),
         ("course_of", "course_of(0, 100, 100)"),
         ("lands_ms", "lands_ms()"),

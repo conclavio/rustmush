@@ -957,7 +957,7 @@ fn commerce_lines(
                 );
                 continue;
             };
-            let clause = if milled > 0 {
+            let mut clause = if milled > 0 {
                 format!(", {milled} {unit} milled and not yet listed")
             } else {
                 String::new()
@@ -966,6 +966,18 @@ fn commerce_lines(
                 .map(|m| crate::port::stock::ask_reading(m, row.vault, good))
                 .unwrap_or_default();
             let undrawn = reading.undrawn;
+            // Doc 48 unit PL.1: the batch an own-stock mill drew off this ask and has not milled.
+            let drawn = crate::port::mill::drawn(
+                vendor,
+                good,
+                net,
+                reading.listing.map(|(_, q)| q),
+                undrawn,
+            );
+            if drawn > 0 {
+                clause = format!("{clause}, {drawn} {unit} drawn to be milled");
+            }
+            let net = net.saturating_sub(drawn);
             match reading.listing {
                 Some((listing, q)) => {
                     let price = market

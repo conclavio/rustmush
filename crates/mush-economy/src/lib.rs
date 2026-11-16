@@ -205,6 +205,10 @@ pub use contract::{
     owner_home, principal_token,
 };
 pub use contract_live::accept_contract_as;
+// Doc 48 cut EX.1a (Q-48-50): standing acceptance, a listing's or bid's poster accepting
+// in advance within the listing's own terms.
+pub use contract::StandingAcceptance;
+pub use contract_live::{StandingAccepted, accept_contract_standing};
 pub use fold::FoldState;
 pub use keys::{IDEM_PREFIX, IdemDoc, idem_key, is_idem_key};
 pub use module::{

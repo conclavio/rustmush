@@ -150,6 +150,8 @@ async fn in11_a_restart_between_consumption_and_title_finishes_the_hull_once() {
         "tacsim.part.weapon.mg_coax",
         "tacsim.part.sensor.visual_mk1",
         "tacsim.part.plant.vehicle_mk1",
+        // Doc 48 unit PL.7: her stock core's module, billed and consumed like a part.
+        "tacsim.part.core.line",
     ]
     .iter()
     .enumerate()

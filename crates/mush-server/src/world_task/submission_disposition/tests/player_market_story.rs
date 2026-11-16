@@ -541,6 +541,10 @@ fn paid_prefix(licence: &str, form: &str) -> String {
 fn owner_prefix(filed: &str) -> String {
     format!("  filed {filed:<8}  {:<9}  {:<20}  ", "owner", "sentinel")
 }
+/// A licence resale offer's whole window in minutes, at the provisional term the story runs on:
+/// 1,680 since #623 raised it to 100,800 real seconds (28 IC days at 24:1). A pending charter
+/// offer keeps its own 1,440.
+const RESALE_MINUTES: i64 = tacsim::launch::MarketTerms::PROVISIONAL.resale_offer_seconds / 60;
 /// A named offer's line (`OFFER`, `CHARTER_OFFER`): `head`, a whole number of
 /// minutes left from `lowest` to `highest`, then `tail`.
 fn offered(line: &str, head: &str, tail: &str, lowest: i64, highest: i64) -> bool {
@@ -1038,8 +1042,8 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
                 l,
                 &format!("{head}0.21cr; the offer is open "),
                 " more minutes.",
-                1_400,
-                1_440
+                RESALE_MINUTES - 40,
+                RESALE_MINUTES
             ))
             && listed.get(1).map(String::as_str)
                 == Some(
@@ -1049,8 +1053,8 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
                 l,
                 &format!("{head}5cr; the offer is open "),
                 " more minutes.",
-                1_400,
-                1_440
+                RESALE_MINUTES - 40,
+                RESALE_MINUTES
             ))
             && listed.get(3).map(String::as_str)
                 == Some(format!("Accept it with +minds/resell/accept {sealed} price=5.").as_str()),

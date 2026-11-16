@@ -709,6 +709,19 @@ impl Provider {
                 )
                 .map_err(bad)?;
             c.matches_lot(&lot)?;
+            // Doc 48 unit PL.7 (Q-48-27, Q-48-48): the die's chain goods leave the importer's
+            // depot in this same bundle, so a die is issued only when they are there, and the
+            // quota is spent only when they are.
+            for line in c.policy.chain_of(c.class) {
+                f.inventory
+                    .debit(
+                        txn,
+                        EndpointRef(c.policy.depot),
+                        &line.commodity,
+                        line.units,
+                    )
+                    .map_err(|_| Error::Unavailable)?;
+            }
             txn.insert(&f.certificates, &c.key(), c.clone())
                 .map_err(bad)?;
             let (quota, exists) = quota.ok_or(Error::Integrity)?;
@@ -721,6 +734,17 @@ impl Provider {
             txn.replace(&f.deployment, &(), after).map_err(bad)?;
         } else {
             txn.insert(&f.deployment, &(), after).map_err(bad)?;
+            // Doc 48 unit PL.7: the depot's opening stock, once, in the initialization's bundle.
+            let opening = &self.runtime.config.policy.opening;
+            if !opening.is_empty() {
+                let rows: Vec<_> = opening
+                    .iter()
+                    .map(|line| (line.commodity.clone(), line.units))
+                    .collect();
+                f.inventory
+                    .credit_many(txn, EndpointRef(self.runtime.config.policy.depot), &rows)
+                    .map_err(|_| Error::Unavailable)?;
+            }
         }
         Ok(AuthoritativeActionOutput::new(RulesValue::new(self.outcome.clone(),json!({"operation":operation,"lot":certificate.as_ref().map(|c|c.lot),"class":class})).map_err(bad)?)
    .with_definitions(vec![self.runtime.actions[if self.initialize{0}else{1}].clone(),self.outcome.clone(),self.runtime.config.policy.content.clone()]).with_eligible_witnesses(vec![inv.principal().clone()]))

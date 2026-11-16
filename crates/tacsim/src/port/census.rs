@@ -20,7 +20,8 @@
 //!   hulls' opened bales and the workshops' shop bales (`bales`).
 //! - **Sinks and declared losses**: every completed work order's inputs less its outputs
 //!   (`worked`: the recipes' losses, and at a yard the hull's bulk, a kit having no mass), the
-//!   mills' ore less their product (`milled`), and the parts a commission consumed into a hull
+//!   mills' ore (and a process's second input, doc 48 unit PL.2) less their product (`milled`),
+//!   and the parts a commission consumed into a hull
 //!   (`built`), the parts the bay fitted into hulls (`fitted`: a fit consumes the lot and
 //!   keeps its provenance), and the bale kilograms repairs consumed into hulls (`repaired`: a
 //!   workshop's or carrier bay's on the hull's bay record, a tender's on its site's record).
@@ -43,9 +44,9 @@
 //! `scrapped`; EX.0 added `rerolled` and the last four; the durable matter ledger stays parked.
 //! A new term is one field, one line in [`balance`](crate::port::census::MatterCensus::balance)
 //! and one in [`line`](crate::port::census::MatterCensus::line). Each commission also prints one
-//! `tacsim.matter_build` line: the inputs (the bill's bulk, its parts and its core) against the
-//! hull's dry mass and the bill's declared waste, which holds `inputs = hull + waste` at every
-//! build.
+//! `tacsim.matter_build` line: the inputs (the bill's bulk and its parts, a stock core's module
+//! among them, doc 48 unit PL.7) against the hull's dry mass and the bill's declared waste, which
+//! holds `inputs = hull + waste` at every build.
 //!
 //! **The goods counted**: the chain's (the ores, the refined goods and the parts) and, since
 //! EX.0, the consumables ([`COUNTED_BULK`](crate::port::census::COUNTED_BULK): volatiles and
@@ -114,7 +115,7 @@ pub struct MatterCensus {
     pub bales: u64,
     /// The completed work orders' inputs less their outputs.
     pub worked: u64,
-    /// The mills' ore less their product.
+    /// The mills' ore, and a process's second input (doc 48 unit PL.2), less their product.
     pub milled: u64,
     /// The parts commissions consumed into hulls.
     pub built: u64,
@@ -384,12 +385,20 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             return;
         }
         let ore = kg(&ledger.ore, ledger.ore_t);
+        // Doc 48 unit PL.2: a process consumes its second input beside the ore.
+        let with = ledger
+            .with
+            .as_ref()
+            .filter(|with| counted(&with.good))
+            .map_or(0, |with| kg(&with.good, ledger.with_t));
         let product = if counted(&ledger.into) {
             kg(&ledger.into, ledger.product_t)
         } else {
             0
         };
-        out.milled = out.milled.saturating_add(ore.saturating_sub(product));
+        out.milled = out
+            .milled
+            .saturating_add(ore.saturating_add(with).saturating_sub(product));
     });
     // The parts the bay fitted into hulls: each lot consumed, its provenance kept.
     if let Some(bay) = w.module_state::<crate::port::bay_work::act::BayActHandles>() {
@@ -454,9 +463,9 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .alloys_t
             .saturating_add(bill.fittings_t)
             .saturating_mul(1_000);
-        let inputs = bulk
-            .saturating_add(parts)
-            .saturating_add(bill.budget.core_kg);
+        // Doc 48 unit PL.7: a stock core is billed as its core module, one of the part lines, so
+        // the core's kilograms are in `parts` already (a coreless design has none).
+        let inputs = bulk.saturating_add(parts);
         out.builds.push((
             record.order,
             inputs,

@@ -1060,7 +1060,14 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// Works (the new org), which stocks and asks carbon ore; **v31 since the player-response floor**
 /// (owner rule, 2026-11-04; doc 20's cut notes): the Freeport Registry licence's `grace_ic_days`
 /// 3 → 28 (v30 is doc 39 cut IN.11's, open beside it); **v34 since doc 47 unit CO.10**: Occator's
-/// wrecker design (`vehicles.designs`: two `tv_wrecker` rigs, `+tv/lease wrecker`). The port readiness report
+/// wrecker design (`vehicles.designs`: two `tv_wrecker` rigs, `+tv/lease wrecker`); **v35 since doc
+/// 48 unit PL.1**: Occator's refine of water into propellant (a `kind: refine` mill row of its own
+/// `volatiles` ask, five to four, 20 t a batch and an IC day, under a 5,000 t `floor_t` of
+/// propellant) and the Ceres refinery Occator operates for it, at the Pressure Lobby; **v36 since doc
+/// 48 unit PL.2**: the house processes (`kind: process` mill rows) — the Lunar Habitat Board's farm
+/// and Titan Concession's of water and carbon feedstock into provisions, Crisium Instruments' fab
+/// of strategic ore and metals into instrument boards with its two bids — and Titan Concession's
+/// carbon-ore mill into feedstock with its carbon-ore bid, and the two farms' provisions asks. The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///
@@ -1074,7 +1081,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), lane v35 ↔ relay v26 (doc 48 unit PL.1), lane v36 ↔ relay v27 (doc 48 unit PL.2), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -1085,7 +1092,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 34;
+pub const LANE_VERSION: u32 = 36;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1093,10 +1100,12 @@ pub const LANE_SOURCES: [(&str, &str); 1] = [("tacsim/content/lane/ceres_phobos.
 /// **The industry recipes' pack id** (doc 39 cut IN.5, §4.3): the works' menu — `fittings`
 /// (five tonnes of alloys and one of carbon ore into five of fittings, six work units, pooled);
 /// IN.7 adds the part recipes at v2 (the mounts, the sights, the pods and the plants, each
-/// `output_lots: each`, so the works arm commissions them).
+/// `output_lots: each`, so the works arm commissions them); doc 48 unit PL.2 adds
+/// `carbon_feedstock` at v3 (five tonnes of carbon ore pressed into four of feedstock, four work
+/// units, pooled; provisional).
 pub const INDUSTRY_RECIPES_PACK: &str = "tacsim.industry.recipes";
 /// The pack's shipped version.
-pub const INDUSTRY_RECIPES_VERSION: u32 = 2;
+pub const INDUSTRY_RECIPES_VERSION: u32 = 3;
 /// `crates/tacsim/content/industry/recipes-v2.json`.
 pub const INDUSTRY_RECIPES_JSON: &str = include_str!("../../content/industry/recipes-v2.json");
 /// The outbound route: Ceres Freeport by Kirkwood Depot to Stickney Yards.

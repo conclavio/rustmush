@@ -25,18 +25,20 @@ pub enum CoreClass {
     III,
 }
 impl CoreClass {
+    /// **The v1 table's finished price** ([`CorePrices::V1`]): the prices the shipped hardware
+    /// catalogue carries, kept as the test reference and the policy's serialization default. The
+    /// native protocol never reads it: an integration charges its policy's
+    /// [`CorePaymentPolicy::prices`] (doc 48 unit PL.7, Q-48-27).
     pub const fn finished_minor(self) -> i64 {
-        match self {
-            Self::I => 300_000,
-            Self::II => 800_000,
-            Self::III => 2_500_000,
-        }
+        CorePrices::V1.finished_minor(self)
     }
+    /// The v1 table's integration fee ([`Self::finished_minor`]'s rule).
     pub const fn integration_minor(self) -> i64 {
-        self.finished_minor() / 10
+        CorePrices::V1.integration_minor(self)
     }
+    /// The v1 table's die price ([`Self::finished_minor`]'s rule).
     pub const fn die_minor(self) -> i64 {
-        self.finished_minor() - self.integration_minor()
+        CorePrices::V1.die_minor(self)
     }
     pub const fn catalog_index(self) -> usize {
         match self {
@@ -44,6 +46,73 @@ impl CoreClass {
             Self::II => 1,
             Self::III => 2,
         }
+    }
+}
+
+/// **The governed cores' prices** (doc 48 unit PL.7, Q-48-27: "`CoreClass` prices become
+/// content"): each class's finished price in minor units, and the integration's share of it,
+/// per mille. The rest is the die's, paid to the supplier when the die is its stock. Trusted
+/// composition takes them from the hardware catalogue and freezes them in the
+/// [`CorePaymentPolicy`], so every intent retains the prices it was accepted at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorePrices {
+    pub finished_minor: [i64; 3],
+    pub integration_permille: u16,
+}
+impl CorePrices {
+    /// **The v1 table** (doc 17f M7): 3,000, 8,000 and 25,000 credits, a tenth of each to the
+    /// integration. The shipped catalogue's prices, and what a policy that names none carries.
+    pub const V1: Self = Self {
+        finished_minor: [300_000, 800_000, 2_500_000],
+        integration_permille: 100,
+    };
+    /// The highest finished price a class may carry, minor units (a hundred million credits).
+    pub const MAX_FINISHED_MINOR: i64 = 10_000_000_000;
+    #[must_use]
+    pub const fn finished_minor(&self, class: CoreClass) -> i64 {
+        self.finished_minor[class.catalog_index()]
+    }
+    /// The integration fee: the finished price's per-mille share, rounded down.
+    #[must_use]
+    pub const fn integration_minor(&self, class: CoreClass) -> i64 {
+        self.finished_minor(class)
+            .saturating_mul(self.integration_permille as i64)
+            / 1000
+    }
+    /// The die's price: the finished price less the integration fee.
+    #[must_use]
+    pub const fn die_minor(&self, class: CoreClass) -> i64 {
+        self.finished_minor(class)
+            .saturating_sub(self.integration_minor(class))
+    }
+    /// Every class priced in `1..=MAX_FINISHED_MINOR`, the share in `1..=999` per mille, and both
+    /// halves of every price at least one minor unit. The classes need not ascend.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] naming nothing more.
+    pub fn validate(&self) -> Result<(), Error> {
+        if !(1..=999).contains(&self.integration_permille)
+            || self
+                .finished_minor
+                .iter()
+                .any(|n| !(1..=Self::MAX_FINISHED_MINOR).contains(n))
+        {
+            return Err(Error::Invalid);
+        }
+        for class in [CoreClass::I, CoreClass::II, CoreClass::III] {
+            if self.integration_minor(class) < 1 || self.die_minor(class) < 1 {
+                return Err(Error::Invalid);
+            }
+        }
+        Ok(())
+    }
+    fn v1() -> Self {
+        Self::V1
+    }
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+    fn is_v1(&self) -> bool {
+        *self == Self::V1
     }
 }
 
@@ -141,6 +210,11 @@ pub struct CorePaymentPolicy {
     /// without it keeps its bytes and digest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ungoverned: Option<UngovernedIntegration>,
+    /// **The prices an integration charges** (doc 48 unit PL.7): the hardware catalogue's.
+    /// Written only when they differ from [`CorePrices::V1`], so a policy at the v1 prices keeps
+    /// its bytes and digest.
+    #[serde(skip_serializing_if = "CorePrices::is_v1")]
+    pub prices: CorePrices,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,6 +238,18 @@ struct PolicyWire {
     delivery: Option<CoreDeliveryPromise>,
     #[serde(default, deserialize_with = "present_ungoverned")]
     ungoverned: Option<UngovernedIntegration>,
+    #[serde(default = "CorePrices::v1", deserialize_with = "present_prices")]
+    prices: CorePrices,
+}
+/// A present `prices` must differ from the v1 table, which is written by absence.
+fn present_prices<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CorePrices, D::Error> {
+    let prices = CorePrices::deserialize(d)?;
+    if prices.is_v1() {
+        return Err(serde::de::Error::custom(
+            "the v1 prices are written by absence",
+        ));
+    }
+    Ok(prices)
 }
 fn present_ungoverned<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -189,6 +275,7 @@ impl<'de> Deserialize<'de> for CorePaymentPolicy {
             recipe: w.recipe,
             delivery: w.delivery,
             ungoverned: w.ungoverned,
+            prices: w.prices,
             catalogs: w.catalogs.map(|c| CatalogRef {
                 ruleset: c.ruleset,
                 code: c.code,
@@ -210,6 +297,7 @@ impl CorePaymentPolicy {
         {
             return Err(Error::Invalid);
         }
+        self.prices.validate()?;
         // The shop is its own organization, factory and container (fix round 1, L2 and L4):
         // nothing of the chartered site is the back room's.
         if let Some(u) = &self.ungoverned
@@ -353,10 +441,11 @@ pub(crate) enum DiePayment {
     Uncertified,
 }
 impl DiePayment {
-    pub(crate) const fn price(self, class: CoreClass) -> Amount {
+    /// What the requester pays at `prices` (doc 48 unit PL.7: the policy's, never the v1 table).
+    pub(crate) const fn price(self, prices: &CorePrices, class: CoreClass) -> Amount {
         Amount::from_minor(match self {
-            Self::SupplierStock => class.finished_minor(),
-            Self::RequesterSupplied | Self::Uncertified => class.integration_minor(),
+            Self::SupplierStock => prices.finished_minor(class),
+            Self::RequesterSupplied | Self::Uncertified => prices.integration_minor(class),
         })
     }
 }
@@ -504,6 +593,7 @@ mod m8b2_tests {
             }),
             delivery: None,
             ungoverned: None,
+            prices: CorePrices::V1,
         }
     }
     fn composed() -> CorePaymentPolicy {
@@ -558,7 +648,7 @@ mod m8b2_tests {
             "no shop, no uncertified die"
         );
         assert_eq!(
-            DiePayment::Uncertified.price(CoreClass::III),
+            DiePayment::Uncertified.price(&CorePrices::V1, CoreClass::III),
             Amount::from_minor(CoreClass::III.integration_minor())
         );
         assert_eq!(
@@ -596,5 +686,76 @@ mod m8b2_tests {
             };
             assert!(policy.validate().is_err());
         }
+    }
+
+    /// **Doc 48 unit PL.7: the policy's prices.** The v1 table validates and is written by
+    /// absence, so a policy at it keeps its bytes; other prices are written, round-trip, and are
+    /// what the requester pays. Out-of-bounds prices refuse the policy, and a present v1 table is
+    /// refused on decode.
+    #[test]
+    fn pl7_the_policy_s_prices_are_bounded_and_written_by_absence() {
+        CorePrices::V1.validate().expect("the v1 table");
+        let value = serde_json::to_value(chartered()).expect("encodes");
+        assert!(
+            value.get("prices").is_none(),
+            "the v1 table is written by absence"
+        );
+        let priced = CorePaymentPolicy {
+            prices: CorePrices {
+                finished_minor: [450_000, 900_000, 3_000_000],
+                integration_permille: 150,
+            },
+            ..chartered()
+        };
+        priced.validate().expect("other prices validate");
+        let value = serde_json::to_value(&priced).expect("encodes");
+        assert!(value.get("prices").is_some(), "other prices are written");
+        let back: CorePaymentPolicy = serde_json::from_value(value).expect("decodes");
+        assert_eq!(back, priced);
+        assert_ne!(
+            priced.digest().expect("a digest"),
+            chartered().digest().expect("a digest")
+        );
+        assert_eq!(
+            DiePayment::SupplierStock.price(&priced.prices, CoreClass::II),
+            Amount::from_minor(900_000)
+        );
+        assert_eq!(
+            DiePayment::RequesterSupplied.price(&priced.prices, CoreClass::II),
+            Amount::from_minor(135_000)
+        );
+        for bad in [
+            CorePrices {
+                finished_minor: [0, 800_000, 2_500_000],
+                ..CorePrices::V1
+            },
+            CorePrices {
+                finished_minor: [300_000, 800_000, CorePrices::MAX_FINISHED_MINOR + 1],
+                ..CorePrices::V1
+            },
+            CorePrices {
+                integration_permille: 0,
+                ..CorePrices::V1
+            },
+            CorePrices {
+                integration_permille: 1_000,
+                ..CorePrices::V1
+            },
+            // A price whose integration share rounds to nothing.
+            CorePrices {
+                finished_minor: [5, 800_000, 2_500_000],
+                integration_permille: 100,
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+            let policy = CorePaymentPolicy {
+                prices: bad,
+                ..chartered()
+            };
+            assert!(policy.validate().is_err(), "{bad:?}");
+        }
+        let mut written = serde_json::to_value(chartered()).expect("encodes");
+        written["prices"] = serde_json::to_value(CorePrices::V1).expect("encodes");
+        assert!(serde_json::from_value::<CorePaymentPolicy>(written).is_err());
     }
 }

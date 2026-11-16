@@ -469,6 +469,10 @@ pub struct EconomyStore {
     /// The composition-frozen dispute veto (doc 18 cut IC14 row 7). `None` is the
     /// pre-IC14 behaviour exactly: any party may dispute a live contract.
     pub(crate) dispute_guard: Option<Arc<dyn crate::contract::DisputeGuard>>,
+    /// Doc 48 cut EX.1a (Q-48-50): the composition-frozen standing-acceptance seam.
+    /// `None` is the pre-EX.1a behaviour exactly: no party's acceptance stands in
+    /// advance, and `accept_contract_standing` refuses every call.
+    pub(crate) standing_acceptance: Option<Arc<dyn crate::contract::StandingAcceptance>>,
     /// The wiring-frozen canon read seam (E6b, DL-09). `None` is the pre-E6b
     /// behaviour: the RAM tail alone, and nothing across a restart.
     pub(crate) canon_evidence: crate::attest::CanonEvidenceSeam,
@@ -812,6 +816,7 @@ impl EconomyStore {
             party_caps: Arc::default(),
             party_cap_source: None,
             dispute_guard: None,
+            standing_acceptance: None,
             canon_evidence: None,
             canon_boot_scan_done: false,
             canon_rescanning: false,
@@ -1177,6 +1182,14 @@ impl EconomyStore {
     #[must_use]
     pub(crate) fn dispute_guard(&self) -> Option<Arc<dyn crate::contract::DisputeGuard>> {
         self.dispute_guard.clone()
+    }
+    /// The standing-acceptance seam, if one was wired (doc 48 cut EX.1a) — an `Arc`
+    /// clone, so it can be asked after the store borrow ends.
+    #[must_use]
+    pub(crate) fn standing_acceptance(
+        &self,
+    ) -> Option<Arc<dyn crate::contract::StandingAcceptance>> {
+        self.standing_acceptance.clone()
     }
     /// Count one refusal against `actor` (E6b, C16). Bounded by
     /// [`MAX_REFUSAL_ACTORS`]: at the cap the least recently refused actor is
@@ -1741,6 +1754,8 @@ struct EconomyModuleState {
     party_cap_source: Option<Arc<dyn crate::contract::PartyCapSource>>,
     /// Doc 18 cut IC14 row 7: the composition-frozen dispute veto.
     dispute_guard: Option<Arc<dyn crate::contract::DisputeGuard>>,
+    /// Doc 48 cut EX.1a: the composition-frozen standing-acceptance seam.
+    standing_acceptance: Option<Arc<dyn crate::contract::StandingAcceptance>>,
 }
 
 impl std::fmt::Debug for EconomyModule {
@@ -1784,6 +1799,7 @@ impl std::fmt::Debug for EconomyModule {
             .field("party_caps", &self.state.party_caps)
             .field("party_cap_source", &self.state.party_cap_source)
             .field("dispute_guard", &self.state.dispute_guard)
+            .field("standing_acceptance", &self.state.standing_acceptance)
             .finish()
     }
 }
@@ -2239,6 +2255,25 @@ impl EconomyModule {
         self.state.dispute_guard = Some(guard);
         self
     }
+
+    /// **Wire the standing-acceptance seam** (doc 48 Q-48-50, cut EX.1a), in the
+    /// [`Self::with_dispute_guard`] shape: composition-frozen, and asked only by
+    /// [`crate::accept_contract_standing`], never by `@contract/accept`.
+    ///
+    /// The seam answers yes or no for one contract, one party and the hold its
+    /// consideration is drawn from. It grants no money authority: the acceptance runs
+    /// `accept_core`, and the escrow posts under the party's own debit authority and
+    /// refuses when the account is short. The one implementor is the market's
+    /// `ListingAcceptance`: a listing or bid is its poster's standing acceptance within
+    /// its own terms, revoked by withdrawal. Omitting it is the pre-EX.1a behaviour.
+    #[must_use]
+    pub fn with_standing_acceptance(
+        mut self,
+        seam: Arc<dyn crate::contract::StandingAcceptance>,
+    ) -> EconomyModule {
+        self.state.standing_acceptance = Some(seam);
+        self
+    }
 }
 
 /// **The one party-capability predicate** (E6b DL-11, extended by doc 18 §4.1/§4.7
@@ -2609,6 +2644,7 @@ impl GameModule for EconomyModule {
         store.party_caps = self.state.party_caps.clone();
         store.party_cap_source = self.state.party_cap_source.clone();
         store.dispute_guard = self.state.dispute_guard.clone();
+        store.standing_acceptance = self.state.standing_acceptance.clone();
         store.canon_evidence = self.state.canon_evidence.clone();
         // Doc 13 W2: the window's count bound, now that the config is in.
         let evicted = store.evict_window(ctx.w.now());

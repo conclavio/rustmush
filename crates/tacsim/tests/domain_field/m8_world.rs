@@ -101,6 +101,10 @@ fn thing(rig: &mut Rig, name: &str) -> ObjId {
         .expect("a thing")
 }
 
+/// The importer's die depot's opening stock (doc 48 unit PL.7): of each chain good the dies
+/// take, tonnes.
+pub(crate) const DEPOT_STOCK: u64 = 200;
+
 /// **The governed hardware's coordinates** (the hardware flow's `provision`, ported): the Basin
 /// importer and its die-stock and factory scopes and treasuries, the die depot and the two
 /// agents' stock vaults, the fitting shop chartered `core_integration core_refit` and titled to
@@ -191,6 +195,16 @@ fn hardware(rig: &mut Rig) -> HardwareCoordinates {
         bay: None,
         // Doc 47 CO.13: the fitting shop buys stored cores back at the launch's rate.
         buy_back_permille: Some(tacsim::hardware::sale::BUY_BACK_PERMILLE),
+        // Doc 48 unit PL.7 (Q-48-27, Q-48-48): a die takes its chain goods from the depot when it
+        // is issued, so the deployment opens the depot with stock, as the bring-up's does:
+        // enough for every die the stories cut.
+        depot_stock: ["instrument_boards", "strategic_ore"]
+            .into_iter()
+            .map(|good| mush_industry::core_production::ChainLine {
+                commodity: mush_core::CanonicalId::new(good).expect("a good"),
+                units: DEPOT_STOCK,
+            })
+            .collect(),
         importer: basin,
         stock_scope,
         depot: vault(rig, "HardwareStock0"),

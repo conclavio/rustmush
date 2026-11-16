@@ -15864,3 +15864,120 @@ fn pl10_a_worked_out_cluster_rock_rerolls_after_28_ic_days_across_a_restart() {
     assert_eq!(pool(&mut rig.tw, rock, "metal_ore"), 120);
     no_refused_writes(&rig.tw);
 }
+
+/// `f` under a staff context, and the durable writes it made (`support::place_cm_keeping`'s
+/// shape): `support::with_ctx` drops its outbox, and a reboot must see the unit's document.
+fn with_ctx_keeping<T>(
+    tw: &mut TestWorld,
+    f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T,
+) -> (T, Vec<mush_core::ModuleOp>) {
+    let mut out = mush_core::Outbox::new();
+    let answer = {
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        f(&mut ctx)
+    };
+    let ops = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    (answer, ops)
+}
+
+/// **Doc 49 unit CC.7 (Q-49-12): a hull's magazines persist across check-in, a full engine
+/// restart and check-out.** A chartered Dray is checked out into a bubble's custody, her point
+/// defence fires 300 rounds, and she is checked in. After a restart her unit still holds what she
+/// left, and the next check-out loads it: every round is conserved, and nothing refilled her.
+#[test]
+fn cc7_a_hulls_magazines_survive_check_in_a_restart_and_check_out() {
+    let roster = Roster::default();
+    let mut rig = stocked_with(roster);
+    let (_pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let rounds = |ship: &tacsim::space::bubble::SpaceShipState| -> Vec<(String, u32)> {
+        ship.pdcs
+            .iter()
+            .map(|pd| (pd.id.clone(), pd.ammo_remaining))
+            .collect()
+    };
+    let at_ic = rig.tw.world().world_ic_now().at;
+    let check_out = |ctx: &mut mush_core::Ctx<'_>| {
+        tacsim::space::check_out_space_unit(
+            ctx,
+            hull,
+            "domain.9",
+            1,
+            format!("hull.{}", hull.0),
+            "Salt Moth",
+            tacsim::space::picket::CARRIER_PARTY,
+            [0; 3],
+            [0; 3],
+        )
+        .expect("she checks out")
+    };
+
+    let (full, ops) = with_ctx_keeping(&mut rig.tw, |ctx| {
+        let mut ship = check_out(ctx);
+        let full = rounds(&ship);
+        assert!(
+            ship.pdcs.len() >= 2 && ship.pdcs[0].ammo_remaining > 300,
+            "the Dray carries point defence: {full:?}"
+        );
+        ship.pdcs[0].ammo_remaining -= 300;
+        tacsim::space::check_in_space_unit(ctx, hull, &ship, at_ic).expect("she checks in");
+        (full, rounds(&ship))
+    });
+    let (full, spent) = full;
+    assert_eq!(spent[0].1, full[0].1 - 300);
+    let kept = BTreeMap::from([(spent[0].0.clone(), spent[0].1)]);
+    assert_eq!(
+        tacsim::space::custody::kept_magazines(
+            mush_tactics::module::unit_of(rig.tw.world(), hull).expect("her unit")
+        ),
+        kept,
+        "check-in keeps the one magazine short of her fit"
+    );
+    // The world's own writes first (the charter's unit document among them), then the check-in's,
+    // which are newer.
+    let earlier = rig.tw.take_module_ops();
+    fold_module_ops_into(&mut rig.store, earlier);
+    fold_module_ops_into(&mut rig.store, ops);
+
+    let mut rig = reboot_with(rig, roster);
+    let unit = mush_tactics::module::unit_of(rig.tw.world(), hull)
+        .cloned()
+        .expect("her unit after the restart");
+    assert_eq!(
+        tacsim::space::custody::kept_magazines(&unit),
+        kept,
+        "her unit keeps it across the restart"
+    );
+    let (again, ops) = with_ctx_keeping(&mut rig.tw, |ctx| {
+        let ship = check_out(ctx);
+        let again = rounds(&ship);
+        tacsim::space::check_in_space_unit(ctx, hull, &ship, at_ic).expect("she checks in");
+        again
+    });
+    assert_eq!(
+        again, spent,
+        "every round conserved across check-in, restart and check-out"
+    );
+    assert_ne!(again, full, "nothing refilled her");
+    let earlier = rig.tw.take_module_ops();
+    fold_module_ops_into(&mut rig.store, earlier);
+    fold_module_ops_into(&mut rig.store, ops);
+    no_refused_writes(&rig.tw);
+}

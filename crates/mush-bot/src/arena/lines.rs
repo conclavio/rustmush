@@ -386,6 +386,10 @@ pub enum Line {
         range_m: u32,
         bearing_deg: u32,
     },
+    /// `  rounds cannon 39/40, machine_gun 1990/2000` — each mount's rounds
+    /// left over its full load, in the tank's own order (the game's doc 49 cut
+    /// CC.4). Before the heat row; only for a platform that carries a mount.
+    StatusRounds { mounts: Vec<(String, u32, u32)> },
     /// `  heat 40 of 100, OVERHEATED`
     StatusHeat {
         heat: u32,
@@ -942,6 +946,11 @@ fn status_row(body: &str) -> Option<Line> {
             bearing_deg: degrees(bearing)?,
         });
     }
+    // A section that is itself called `rounds` falls through to the section
+    // reading below: only a whole row of `id left/full` cells is this one.
+    if let Some(line) = body.strip_prefix("rounds ").and_then(rounds_row) {
+        return Some(line);
+    }
     if let Some(rest) = body.strip_prefix("heat ") {
         let (rest, overheated) = match rest.strip_suffix(", OVERHEATED") {
             Some(rest) => (rest, true),
@@ -985,6 +994,21 @@ fn status_row(body: &str) -> Option<Line> {
         condition: condition.to_owned(),
         internals,
     })
+}
+
+/// `STATUS`'s rounds row after its `rounds `: `cannon 39/40, machine_gun
+/// 1990/2000` — one `id left/full` cell or more, joined by `, `.
+fn rounds_row(rest: &str) -> Option<Line> {
+    let mut mounts = Vec::new();
+    for cell in rest.split(", ") {
+        let (id, count) = cell.split_once(' ')?;
+        let (left, full) = count.split_once('/')?;
+        if !is_id(id) {
+            return None;
+        }
+        mounts.push((id.to_owned(), uint(left)?, uint(full)?));
+    }
+    Some(Line::StatusRounds { mounts })
 }
 
 /// A four-space facet run: `front 400/400  left 250/250`.
@@ -2157,6 +2181,7 @@ pub fn answer_to(line: &Line) -> Option<AnswerTo> {
         | Line::StatusHead(_)
         | Line::StatusPosition { .. }
         | Line::StatusNearestSpot { .. }
+        | Line::StatusRounds { .. }
         | Line::StatusHeat { .. }
         | Line::StatusReceiver { .. }
         | Line::StatusEmcon { .. }
@@ -2530,6 +2555,41 @@ mod tests {
                 range_m: 120,
                 bearing_deg: 45
             }
+        );
+        // The game's doc 49 cut CC.4: each mount's rounds, one row.
+        assert_eq!(
+            classify("  rounds cannon 39/40, machine_gun 1990/2000, missiles 0/6"),
+            Line::StatusRounds {
+                mounts: vec![
+                    ("cannon".into(), 39, 40),
+                    ("machine_gun".into(), 1990, 2000),
+                    ("missiles".into(), 0, 6)
+                ]
+            }
+        );
+        assert_eq!(
+            classify("  rounds laser 500/500"),
+            Line::StatusRounds {
+                mounts: vec![("laser".into(), 500, 500)]
+            }
+        );
+        // A section called `rounds` is still a section; a row with a cell that
+        // is not `id left/full` is not this row.
+        assert_eq!(
+            classify("  rounds  intact"),
+            Line::StatusSection {
+                id: "rounds".into(),
+                condition: "intact".into(),
+                internals: None
+            }
+        );
+        assert_eq!(
+            classify("  rounds cannon 39/40, machine_gun"),
+            Line::Other("rounds cannon 39/40, machine_gun".into())
+        );
+        assert_eq!(
+            classify("  rounds cannon 39 of 40"),
+            Line::Other("rounds cannon 39 of 40".into())
         );
         assert_eq!(
             classify("  heat 100 of 100, OVERHEATED"),

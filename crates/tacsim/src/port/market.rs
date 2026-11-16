@@ -45,7 +45,7 @@ use crate::port::apply::room_by_key;
 use crate::port::capacity::{
     self, Admission, Compartment, Load, compartment_for, format_m3, format_tonnes,
 };
-use crate::port::coop::{helm_of, name_of, port_name};
+use crate::port::coop::{helm_of, name_of, port_name, trade_hulls};
 use crate::port::def::{PortDef, room_key};
 use crate::port::map::{PortMap, PortMapState};
 use crate::port::readiness::report_ports;
@@ -74,6 +74,16 @@ pub const HOLD_NOT_HERE: &str =
 /// The governed hold is not the asker's charter hull's.
 pub const NOT_YOUR_CHARTER: &str =
     "That hold is not on your charter, so it cannot load here. Nothing was charged.";
+/// **Doc 48 cut EX.1b**: a locker loads only at its own venue, and only its owner's (`{port}`).
+pub const LOCKER_ELSEWHERE: &str =
+    "That locker is not yours at {port}, so it cannot load here. Nothing was charged.";
+/// **Doc 48 cut EX.1b** (Q-48-49, doc 48b G-6): a venue no port authors trades only where it
+/// stands, and the asker is not there (`{venue}`).
+pub const NOT_AT_VENUE: &str =
+    "The {venue} market trades where it stands, and you are not there. Nothing was charged.";
+/// A venue no port authors and the game places nowhere (`{venue}`): it cannot trade.
+pub const VENUE_UNPLACED: &str =
+    "The {venue} market has no place to trade in, so it cannot trade. Nothing was charged.";
 
 /// The plan's schema version.
 pub const HOLD_PLAN_VERSION: u8 = 1;
@@ -167,10 +177,9 @@ fn refusal(line: String) -> VenueRefusal {
 /// hull is the actor's (its title or live charter, cut IC13's `helm_of`), and it is docked at the port whose venue this
 /// is.
 fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
-    // Doc 47 cut CO.9: a House's pilot flies her; only its officer trades her hold.
-    if helm_of(w, actor).is_none_or(|helm| helm.hull != hull)
-        || !crate::port::owned::may_trade_hold(w, hull, actor)
-    {
+    // Doc 47 cut CO.9: a House's pilot flies her; only its officer trades her hold. Doc 48 cut
+    // EX.1b: any hull whose hold they may trade, not only their first.
+    if !trade_hulls(w, actor).contains(&hull) {
         return Err(refusal(NOT_YOUR_CHARTER.to_owned()));
     }
     let port = port_name(def);
@@ -213,6 +222,52 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
     }
 }
 
+/// Whether `hull` is docked at `def`'s port.
+fn docked_at(w: &World, hull: ObjId, def: &PortDef) -> bool {
+    matches!(berth_of(w, hull), Berth::Docked { def: there, .. } if there.venue == def.venue)
+}
+
+/// **The hull a trade at a port delivers into** (doc 48 cut EX.1b; Q-48-49): among the hulls
+/// whose hold the actor may trade (`hulls`, in id order, each with whether it is docked at this
+/// port), the first docked here; failing that, the actor's helm hull (`helm`) wherever it lies,
+/// so the gate can say why it cannot load.
+#[must_use]
+pub fn choose_hull(hulls: &[(ObjId, bool)], helm: Option<ObjId>) -> Option<ObjId> {
+    hulls
+        .iter()
+        .find(|(_, docked)| *docked)
+        .map(|(hull, _)| *hull)
+        .or(helm)
+}
+
+/// **Where a venue no port authors stands** (doc 48 cut EX.1b): the launch deployment's
+/// counter, its room. A station's or a site's venue gets its row here when one exists.
+#[must_use]
+pub fn venue_room(w: &World, venue: &MarketId) -> Option<ObjId> {
+    let launch = w.module_state::<crate::launch::registration::LaunchService>()?;
+    let counter = &launch.0.deployment().venue;
+    (&counter.name == venue).then_some(counter.room)
+}
+
+/// **The location gate of a venue no port authors** (doc 48 cut EX.1b): admitted only when
+/// the asker stands in the venue's room, present in person. A venue the game places nowhere
+/// refuses.
+fn placed_admit(
+    w: &World,
+    actor: ObjId,
+    venue: &MarketId,
+    presence: Presence,
+) -> Result<(), VenueRefusal> {
+    let Some(room) = venue_room(w, venue) else {
+        return Err(refusal(VENUE_UNPLACED.replace("{venue}", venue.as_str())));
+    };
+    let here = w.get(actor).and_then(|o| o.location);
+    if presence != Presence::Here || here != Some(room) {
+        return Err(refusal(NOT_AT_VENUE.replace("{venue}", venue.as_str())));
+    }
+    Ok(())
+}
+
 // ---- the venue gate ------------------------------------------------------------
 
 /// **The port presence gate** (doc 18 §4.3 "Presence", D-18-12; lead rulings L10,
@@ -235,17 +290,31 @@ impl VenueGate for PortVenueGate {
         venue: &MarketId,
         presence: Presence,
     ) -> Option<EndpointRef> {
-        port_of_venue(w, venue)?;
-        let charter = helm_of(w, actor)?;
-        // Doc 47 cut CO.9: a House's pilot without office trades nothing from her hold.
-        if !crate::port::owned::may_trade_hold(w, charter.hull, actor) {
-            return None;
-        }
+        let (def, _) = port_of_venue(w, venue)?;
+        let hulls = trade_hulls(w, actor);
         match presence {
-            // L10: the charter hull's hold wherever the hull lies; `admit` says why it
-            // may not load, in the gate's own words.
-            Presence::Here => hold_of(w, charter.hull),
-            Presence::Ship(hull) => (charter.hull == hull).then(|| hold_of(w, hull)).flatten(),
+            // Doc 48 cut EX.1b (Q-48-49): chosen by presence, the hull docked at this port
+            // whose hold they may trade; failing that, L10's helm hull wherever it lies, so
+            // `admit` says why it may not load, in the gate's own words.
+            Presence::Here => {
+                let here: Vec<(ObjId, bool)> = hulls
+                    .iter()
+                    .map(|hull| (*hull, docked_at(w, *hull, def)))
+                    .collect();
+                let helm = helm_of(w, actor)
+                    .map(|helm| helm.hull)
+                    .filter(|hull| hulls.contains(hull));
+                if let Some(hull) = choose_hull(&here, None) {
+                    return hold_of(w, hull);
+                }
+                // Doc 48 cut EX.1b: no hold of theirs docked here, so their locker at this
+                // venue when it is open; else the helm hull, so `admit` says why.
+                if let Some(locker) = crate::port::locker::locker_of(w, actor, venue) {
+                    return Some(EndpointRef(mush_economy::VaultId(locker.vault)));
+                }
+                helm.and_then(|hull| hold_of(w, hull))
+            }
+            Presence::Ship(hull) => hulls.contains(&hull).then(|| hold_of(w, hull)).flatten(),
         }
     }
 
@@ -258,8 +327,9 @@ impl VenueGate for PortVenueGate {
         presence: Presence,
     ) -> Result<(), VenueRefusal> {
         let Some((def, _)) = port_of_venue(w, venue) else {
-            // A venue no port authors is ungoverned.
-            return Ok(());
+            // Doc 48 cut EX.1b (Q-48-49, doc 48b G-6): a venue no port authors no longer fails
+            // open. It trades only where the game places it, under the asker's own presence.
+            return placed_admit(w, actor, venue, presence);
         };
         if presence == Presence::Here {
             let here = w
@@ -269,6 +339,13 @@ impl VenueGate for PortVenueGate {
             if here.as_ref() != Some(venue) {
                 return Err(refusal(NOT_IN_PORT.replace("{port}", &port_name(def))));
             }
+        }
+        if let Some(endpoint) = endpoint
+            && crate::port::locker::is_locker(w, endpoint)
+            && crate::port::locker::locker_of(w, actor, venue)
+                .is_none_or(|locker| locker.vault != endpoint.vault().0)
+        {
+            return Err(refusal(LOCKER_ELSEWHERE.replace("{port}", &port_name(def))));
         }
         match (endpoint, presence) {
             (Some(endpoint), _) => match governed_hold(w, endpoint) {
@@ -475,6 +552,14 @@ pub struct PortCapacity;
 
 impl CapacityProvider for PortCapacity {
     fn plan(&self, w: &World, endpoint: EndpointRef) -> Option<CapacityPlan> {
+        // Doc 48 cut EX.1b (Q-48-49, doc 48b G-6): a venue locker is capacity-bound, never free
+        // storage; it is not a governed hold (no hull's checks apply), but it has a plan.
+        if crate::port::locker::is_locker(w, endpoint) {
+            let value = crate::port::locker::locker_plan()
+                .and_then(|plan| serde_json::to_value(plan).ok())
+                .unwrap_or(serde_json::Value::Null);
+            return Some(CapacityPlan(value));
+        }
         let view = governed_hold(w, endpoint)?;
         // A plan that will not form is still a governed endpoint: an unreadable plan
         // refuses at the check (never an ungoverned answer for a hull's hold).
@@ -716,6 +801,38 @@ pub fn capacity_line(
 mod tests {
     use super::*;
     use crate::definitions::LogisticsDef;
+
+    /// Doc 48 cut EX.1b (Q-48-49): the first hull docked at this port wins, whatever the helm
+    /// says; with none docked here, the helm hull, so the gate can say why it cannot load.
+    #[test]
+    fn ex1b_the_endpoint_is_the_hull_docked_where_the_actor_is() {
+        let (a, b, c) = (ObjId(5), ObjId(9), ObjId(12));
+        assert_eq!(
+            choose_hull(&[(a, false), (b, true), (c, true)], Some(a)),
+            Some(b)
+        );
+        assert_eq!(choose_hull(&[(a, false), (b, false)], Some(a)), Some(a));
+        assert_eq!(choose_hull(&[(a, false)], None), None);
+        assert_eq!(choose_hull(&[], Some(c)), Some(c));
+    }
+
+    /// Doc 48 cut EX.1b (Q-48-49, doc 48b G-6): a venue no port authors and the game places
+    /// nowhere refuses, in its own words; it no longer fails open.
+    #[test]
+    fn ex1b_an_unplaced_venue_refuses() {
+        let w = mush_core::World::default();
+        let venue = MarketId::new("drifting.bazaar").expect("venue");
+        for presence in [Presence::Here, Presence::Ship(ObjId(3))] {
+            let refused = PortVenueGate
+                .admit(&w, ObjId(7), &venue, None, presence)
+                .expect_err("an unplaced venue refuses");
+            assert_eq!(
+                refused.line,
+                VENUE_UNPLACED.replace("{venue}", "drifting.bazaar")
+            );
+        }
+        assert_eq!(venue_room(&w, &venue), None);
+    }
 
     fn cid(text: &str) -> CanonicalId {
         CanonicalId::new(text).expect("id")

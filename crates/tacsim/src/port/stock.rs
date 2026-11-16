@@ -228,14 +228,17 @@ pub(crate) fn clerk_rows(w: &World, clerk: ObjId) -> BTreeMap<String, Value> {
 }
 
 /// **The hardware row a part good is** (doc 39 cut IN.2): the catalogue's part index read
-/// backwards, any component that stocks as `good`.
+/// backwards, any component that stocks as `good`. A core module (doc 48 unit PL.7) is its core's
+/// definition: made, stocked and delivered with provenance like any part, it is never in the part
+/// index, so no bay fits it and no strip or scrap yields one.
 pub(crate) fn part_row_of(w: &World, good: &CanonicalId) -> Option<DefinitionRef> {
-    w.module_state::<TacsimStore>()?
-        .definitions()
+    let definitions = w.module_state::<TacsimStore>()?.definitions();
+    definitions
         .parts
         .values()
         .find(|row| &row.commodity == good)
         .map(|row| row.row.clone())
+        .or_else(|| crate::port::bill::core_module_row(definitions, good))
 }
 
 /// **The `n`th one-unit lot a part stock issue mints** (doc 39 cut IN.2): the issue's own lot
@@ -950,6 +953,14 @@ pub(crate) fn stock_step(
                 .unwrap_or_default();
             // Doc 39 cut IN.5: a works' house purchase lowered the ask by the lot it is moving.
             let net = net.saturating_sub(crate::port::supply::moving(ctx, row.vault, &ask.good));
+            // Doc 48 unit PL.1: and an own-stock mill by the batch it has drawn and not milled.
+            let net = net.saturating_sub(crate::port::mill::drawn(
+                vendor,
+                &ask.good,
+                net,
+                reading.listing.map(|(_, listed)| listed),
+                reading.undrawn,
+            ));
             if drifts(net, &reading) && state.paged.insert((row.vault, ask.good.clone())) {
                 tracing::error!(
                     vault = row.vault,

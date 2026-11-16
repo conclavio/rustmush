@@ -251,8 +251,25 @@ impl FactoryRig {
     fn new_delivery(reverse: bool, delivery: bool) -> Result<Box<Self>> {
         Self::new_options(reverse, delivery, false)
     }
-    #[inline(never)]
     fn new_options(reverse: bool, delivery: bool, refits: bool) -> Result<Box<Self>> {
+        Self::build(
+            reverse,
+            delivery,
+            refits,
+            mush_economy::core_integration::CorePrices::V1,
+        )
+    }
+    /// Doc 48 unit PL.7: a factory composed at `prices`, not the v1 table.
+    fn new_priced(prices: mush_economy::core_integration::CorePrices) -> Result<Box<Self>> {
+        Self::build(false, false, false, prices)
+    }
+    #[inline(never)]
+    fn build(
+        reverse: bool,
+        delivery: bool,
+        refits: bool,
+        prices: mush_economy::core_integration::CorePrices,
+    ) -> Result<Box<Self>> {
         let mut r = Rig::new(true)?;
         let operator = r.policy.agents[1].actor;
         let certificate = r.issue(operator, 2, DieClass::I)?;
@@ -375,6 +392,7 @@ impl FactoryRig {
             output_container: container,
             recipe: recipe.reference()?,
             catalogs: [catalog("i"), catalog("ii"), catalog("iii")],
+            prices,
         };
         let factory = CoreFactoryConfig::new(
             CoreOriginMode::Initialize,
@@ -868,6 +886,50 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
         f.restart(CoreOriginMode::Active)?;
         check_eq!(f.order(id)?, complete);
     }
+    Ok(())
+}
+/// **Doc 48 unit PL.7: an integration charges its policy's prices** (Q-48-27, "`CoreClass`
+/// prices become content"). A factory composed at 4,500cr for Class I with a 15 % integration
+/// share holds 4,500cr at the acceptance and, at the completion, pays the supplier 3,825cr and
+/// the integrator 675cr: the policy's split, not the v1 table's 3,000cr, 2,700cr and 300cr.
+#[test]
+fn pl7_an_integration_charges_its_policy_s_prices() -> Result {
+    let prices = mush_economy::core_integration::CorePrices {
+        finished_minor: [450_000, 900_000, 3_000_000],
+        integration_permille: 150,
+    };
+    let mut f = FactoryRig::new_priced(prices)?;
+    let before = f.balance(f.payer)?;
+    let id = f.accepted()?;
+    check_eq!(f.balance(f.payer)?, (before.0, Amount::from_minor(450_000)));
+    let _ = f.commit(3, f.buyer, 22, FactoryRig::order_parameters(id))?;
+    f.advance(id, 24)?;
+    f.advance(id, 25)?;
+    let _ = f.commit(5, f.buyer, 26, FactoryRig::order_parameters(id))?;
+    check_eq!(
+        f.balance(f.payer)?,
+        (
+            before
+                .0
+                .checked_sub(Amount::from_minor(450_000))
+                .ok_or("balance")?,
+            Amount::from_minor(0)
+        )
+    );
+    check_eq!(
+        f.balance(f.composition.factory.payment.supplier.account)?.0,
+        Amount::from_minor(382_500)
+    );
+    check_eq!(
+        f.balance(f.composition.factory.payment.integrator.account)?
+            .0,
+        Amount::from_minor(67_500)
+    );
+    // The policy carries the prices it was composed at; the order keeps them across a boot.
+    check_eq!(f.composition.factory.payment.prices, prices);
+    let complete = f.order(id)?;
+    f.restart(CoreOriginMode::Active)?;
+    check_eq!(f.order(id)?, complete);
     Ok(())
 }
 #[test]

@@ -1445,3 +1445,30 @@ fn paid_follow_survives_two_actual_holder_transfers_and_new_renewal_consents() -
     }
     Ok(())
 }
+
+/// **The regression of #623** (doc 48 §4.3): the kernel's Offer audit holds a resale offer's
+/// lifetime to the kernel's bound, the one `mush_economy::managed_paid_resale::MAX_OFFER_SECONDS`
+/// is. An offer that stands the whole bound (100,800 real seconds, 28 IC days at 24:1) prepares
+/// and installs; one a second longer is refused. The audit kept its own 86,400 when the
+/// economy's copy was raised, and refused every offer at the new default.
+#[test]
+fn an_offer_standing_the_whole_resale_bound_prepares_and_one_past_it_refuses() -> TestResult {
+    let bound = crate::action_state::player_wait::MAX_RESALE_OFFER_SECONDS;
+    assert_eq!(bound, 100_800, "28 IC days at 24:1, in real seconds");
+    let mut f = fixture()?;
+    let mut past = offer_row(&f, token(10), 8);
+    let at = past["terms"]["offered_at_utc"].as_i64().ok_or("offered")?;
+    past["terms"]["expires_at_utc"] = json!(at + bound + 1);
+    let refused = offer_prepared(&mut f, token(10), past, None)
+        .err()
+        .ok_or("an offer a second past the bound prepared")?;
+    assert!(
+        format!("{refused:?}").contains("resale terms differ"),
+        "{refused:?}"
+    );
+    let mut f = fixture()?;
+    let mut whole = offer_row(&f, token(10), 8);
+    whole["terms"]["expires_at_utc"] = json!(at + bound);
+    publish_offer_row(&mut f, token(10), whole)?;
+    Ok(())
+}

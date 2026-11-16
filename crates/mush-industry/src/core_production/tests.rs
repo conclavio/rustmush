@@ -21,7 +21,7 @@ use mush_core::{
     ModuleWrite, ObjId, ObjKind, Outbox, PerceivedRef, Registrar, RequestUid, ScopedIdempotencyKey,
 };
 use mush_economy::{EconomyModule, EconomyStore};
-use mush_inventory::{Grade, InventoryHandleCell, InventoryModule, Lineage};
+use mush_inventory::{EndpointRef, Grade, InventoryHandleCell, InventoryModule, Lineage};
 use mush_org::{
     AccessPolicy, CapabilityId, OrgAction, OrgModule, OrgMutationOp, OrgMutationPlan, OrgScopeId,
     OrgStore, PolicyEffect, PolicyRule, PolicySubject, PrincipalId, ScopeSelector,
@@ -231,8 +231,25 @@ impl Rig {
             .clone();
         Ok(())
     }
-    #[inline(never)]
     fn initialized(grant: bool) -> Result<Box<Self>> {
+        Self::initialized_with(grant, Default::default(), Vec::new())
+    }
+    /// Doc 48 unit PL.7: an Origin whose dies consume `chain` from the depot.
+    fn with_chain(chain: [Vec<ChainLine>; 3]) -> Result<Box<Self>> {
+        Self::with_stock(chain, Vec::new())
+    }
+    /// Doc 48 unit PL.7: and whose initialization stocks the depot with `opening`.
+    fn with_stock(chain: [Vec<ChainLine>; 3], opening: Vec<ChainLine>) -> Result<Box<Self>> {
+        let mut r = Self::initialized_with(true, chain, opening)?;
+        r.activate()?;
+        Ok(r)
+    }
+    #[inline(never)]
+    fn initialized_with(
+        grant: bool,
+        chain: [Vec<ChainLine>; 3],
+        opening: Vec<ChainLine>,
+    ) -> Result<Box<Self>> {
         let mut w = TestWorld::with_modules(modules(None));
         w.world_mut().set_now(1000);
         w.world_mut().set_game_clock(mush_core::clock::GameClock {
@@ -303,6 +320,8 @@ impl Rig {
             content,
             grades,
             monthly_quotas: [2, 2, 2],
+            chain,
+            opening,
         };
         if grant {
             for actor in [GOD, agent] {
@@ -419,6 +438,29 @@ impl Rig {
         self.ack(1, actor, n, parameters, p)?;
         Ok(self.cert(n)?.clone())
     }
+    /// Staff's stock of `units` of `good` in the depot, through the inventory's own credit, kept
+    /// in the boot so a cold start reads it.
+    fn stock_depot(&mut self, good: &str, units: u64) -> Result {
+        let families = self.runtime.families.inventory.clone();
+        let engine = self.w.engine_mut();
+        let prepared = {
+            let mut txn = engine.action_transaction(&families.pools)?;
+            families.credit(&mut txn, EndpointRef(self.policy.depot), &id(good)?, units)?;
+            txn.prepare()?
+        };
+        let (ops, install) = prepared.into_parts();
+        engine.install_prepared_action(install)?;
+        fold_module_ops_into(&mut self.boot, ops);
+        Ok(())
+    }
+    /// The depot's pool of `good`.
+    fn depot(&mut self, good: &str) -> Result<u64> {
+        let families = self.runtime.families.inventory.clone();
+        let mut txn = self.w.engine_mut().action_transaction(&families.pools)?;
+        Ok(families
+            .pool(&mut txn, EndpointRef(self.policy.depot), &id(good)?)?
+            .map_or(0, |pool| pool.quantity))
+    }
     fn cert(&self, n: u8) -> Result<&DieCertificate> {
         Ok(self
             .w
@@ -519,6 +561,216 @@ fn actual_origin_issuance_is_atomic_and_replays_exact_inventory_and_certificate(
         Some(c)
     );
     check!(r.cold(r.boot.clone(), None).is_err());
+    Ok(())
+}
+fn chain_line(good: &str, units: u64) -> Result<ChainLine> {
+    Ok(ChainLine {
+        commodity: id(good)?,
+        units,
+    })
+}
+/// **Doc 48 unit PL.7: a die consumes its chain goods at issue** (Q-48-27, Q-48-48). The
+/// policy bills a Class I die one board and one tonne of strategic ore, and a Class II die two
+/// boards and one tonne. The depot holds three boards and one tonne.
+///
+/// - The Class I die takes its board and tonne from the depot in the issue's own bundle, and
+///   its certificate names what it consumed and where from.
+/// - The Class II die, one tonne of ore short, is refused. Nothing is written: no certificate,
+///   no lot, no quota spent, the boards still in the depot.
+/// - Stocked a tonne, the same die issues, and the depot is empty.
+/// - A cold start reads the depot and both certificates as they were.
+#[test]
+fn pl7_a_die_consumes_its_chain_goods_at_issue() -> Result {
+    let first = vec![
+        chain_line("instrument_boards", 1)?,
+        chain_line("strategic_ore", 1)?,
+    ];
+    let second = vec![
+        chain_line("instrument_boards", 2)?,
+        chain_line("strategic_ore", 1)?,
+    ];
+    let mut r = Rig::with_chain([first.clone(), second.clone(), Vec::new()])?;
+    let agent = r.policy.agents[1].actor;
+    r.stock_depot("instrument_boards", 3)?;
+    r.stock_depot("strategic_ore", 1)?;
+    let one = r.issue(agent, 2, DieClass::I)?;
+    check_eq!(one.consumed(), first.as_slice());
+    check_eq!(one.depot(), r.policy.depot);
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (2, 0)
+    );
+    let revision = r.w.engine().action_state().revision();
+    check!(r.prepare(1, agent, 3, json!({"class":"ii"})).is_err());
+    check_eq!(r.issued(), 1);
+    check_eq!(r.w.engine().action_state().revision(), revision);
+    check!(r.cert(3).is_err());
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (2, 0)
+    );
+    r.stock_depot("strategic_ore", 1)?;
+    let two = r.issue(agent, 4, DieClass::II)?;
+    check_eq!(two.consumed(), second.as_slice());
+    check_eq!(two.ordinal, 1, "the refused issue spent no quota");
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (0, 0)
+    );
+    // A class whose line is empty consumes nothing.
+    let three = r.issue(agent, 5, DieClass::III)?;
+    check!(three.consumed().is_empty());
+    check_eq!(r.issued(), 3);
+    let mut cold = r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
+    let h = cold
+        .world()
+        .module_state::<TestHandles>()
+        .ok_or("handles")?
+        .0
+        .clone();
+    for (n, c) in [(2, &one), (4, &two)] {
+        check_eq!(
+            cold.engine()
+                .action_state()
+                .get(&h.families.certificates, &token(n).to_hex())?,
+            Some(c)
+        );
+    }
+    let mut txn = cold
+        .engine_mut()
+        .action_transaction(&h.families.inventory.pools)?;
+    check_eq!(
+        h.families
+            .inventory
+            .pool(
+                &mut txn,
+                EndpointRef(r.policy.depot),
+                &id("instrument_boards")?
+            )?
+            .map(|pool| pool.quantity),
+        Some(0)
+    );
+    Ok(())
+}
+/// **Doc 48 unit PL.7: the initialization stocks the depot once** with the policy's opening
+/// stock, two new pools in its one bundle, so the first dies are cut from it. A cold start reads
+/// it; the index retains the amounts. Bounds: at most eight goods, each 1 to 100,000 units, in
+/// order, never the die's commodity.
+#[test]
+fn pl7_the_initialization_stocks_the_depot() -> Result {
+    let opening = vec![
+        chain_line("instrument_boards", 5)?,
+        chain_line("strategic_ore", 3)?,
+    ];
+    let mut r = Rig::with_stock(
+        [
+            vec![
+                chain_line("instrument_boards", 2)?,
+                chain_line("strategic_ore", 1)?,
+            ],
+            Vec::new(),
+            Vec::new(),
+        ],
+        opening.clone(),
+    )?;
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (5, 3)
+    );
+    let index =
+        r.w.world()
+            .module_state::<CoreProductionState>()
+            .and_then(|s| s.index.clone())
+            .ok_or("the index")?;
+    check_eq!(index.initialize_policy.opening, opening);
+    let agent = r.policy.agents[1].actor;
+    r.issue(agent, 2, DieClass::I)?;
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (3, 2)
+    );
+    let mut cold = r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
+    let h = cold
+        .world()
+        .module_state::<TestHandles>()
+        .ok_or("handles")?
+        .0
+        .clone();
+    let mut txn = cold
+        .engine_mut()
+        .action_transaction(&h.families.inventory.pools)?;
+    check_eq!(
+        h.families
+            .inventory
+            .pool(&mut txn, EndpointRef(r.policy.depot), &id("strategic_ore")?)?
+            .map(|pool| pool.quantity),
+        Some(2)
+    );
+    drop(txn);
+    let with = |lines: Vec<ChainLine>| OriginPolicy {
+        opening: lines,
+        ..r.policy.clone()
+    };
+    with(
+        (0..8)
+            .map(|n| chain_line(&format!("good_{n}"), 100_000))
+            .collect::<Result<Vec<_>>>()?,
+    )
+    .validate()?;
+    for bad in [
+        (0..9)
+            .map(|n| chain_line(&format!("good_{n}"), 1))
+            .collect::<Result<Vec<_>>>()?,
+        vec![chain_line("strategic_ore", 100_001)?],
+        vec![
+            chain_line("strategic_ore", 1)?,
+            chain_line("instrument_boards", 1)?,
+        ],
+        vec![chain_line(config::DIE_COMMODITY, 1)?],
+    ] {
+        check!(with(bad).validate().is_err());
+    }
+    Ok(())
+}
+/// **Doc 48 unit PL.7: the chain bill's bounds.** Each class's lines are strictly ascending (one
+/// good once), at most four, each 1 to 1,000 units, never the die's own commodity. A policy
+/// with no chain writes no `chain` key, so its bytes and digest are as before.
+#[test]
+fn pl7_the_chain_bill_is_bounded_and_written_by_presence() -> Result {
+    let r = Rig::new(true)?;
+    let plain = serde_json::to_value(&r.policy)?;
+    check!(plain.get("chain").is_none());
+    let back: OriginPolicy = serde_json::from_value(plain)?;
+    check_eq!(back, r.policy);
+    let with = |lines: Vec<ChainLine>| OriginPolicy {
+        chain: [lines, Vec::new(), Vec::new()],
+        ..r.policy.clone()
+    };
+    let good = with(vec![
+        chain_line("instrument_boards", 1)?,
+        chain_line("strategic_ore", 1_000)?,
+    ]);
+    good.validate()?;
+    let round: OriginPolicy = serde_json::from_value(serde_json::to_value(&good)?)?;
+    check_eq!(round, good);
+    for bad in [
+        vec![
+            chain_line("strategic_ore", 1)?,
+            chain_line("instrument_boards", 1)?,
+        ],
+        vec![
+            chain_line("strategic_ore", 1)?,
+            chain_line("strategic_ore", 1)?,
+        ],
+        vec![chain_line("strategic_ore", 0)?],
+        vec![chain_line("strategic_ore", 1_001)?],
+        vec![chain_line(config::DIE_COMMODITY, 1)?],
+        (0..5)
+            .map(|n| chain_line(&format!("good_{n}"), 1))
+            .collect::<Result<Vec<_>>>()?,
+    ] {
+        check!(with(bad).validate().is_err());
+    }
     Ok(())
 }
 #[test]

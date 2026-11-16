@@ -1082,6 +1082,9 @@ fn e7r2_p1_a_lot_listing_re_enters_through_its_wire_and_a_bad_grade_refuses_on_l
             at: 9_999,
         },
         revision: 1,
+        account: None,
+        private_to: None,
+        escrow: None,
     };
     let good = serde_json::to_value(&built).expect("a lot listing serializes");
     let listing: mush_market::Listing =
