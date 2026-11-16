@@ -6,10 +6,12 @@
 // she keeps in it that she has hailed, and the hostile she fights and its velocity when she
 // last looked.
 //
-// Against a hostile she fires what can hurt it (doc 49 unit CC.8): a salvo of two torpedoes
-// at each reload; a spinal round only at a hull that has held its course since she last
-// looked, since a hull that burns is not where the round was aimed; and her laser only
-// within its reach. Her second laser stands in defence, as her fit starts it.
+// Against a hostile she fires what can hurt it (doc 49 unit CC.8): a spinal round only at a
+// hull that has held its course since she last looked, since a hull that burns is not where
+// the round was aimed; her laser only within its reach; and a salvo of two torpedoes at each
+// reload only at a hull that ran the picket, a hauler whose screen lets them through (a
+// warship's, the raider's, stops a lone salvo). Her second laser stands in defence, as her fit
+// starts it.
 fn think(v, c) {
     let hostile = ();
     let hostile_range = 0;
@@ -61,8 +63,10 @@ fn think(v, c) {
                 continue;
             }
             if m.family == "tubes" {
-                fire(w.id, 1);
-                fire(w.id, 1);
+                if hostile_ran {
+                    fire(w.id, 1);
+                    fire(w.id, 1);
+                }
             } else if m.family == "spinal" {
                 if steady && m.lock_flight_ms != () {
                     fire(w.id, 1);

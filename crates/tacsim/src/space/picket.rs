@@ -2109,18 +2109,15 @@ mod tests {
                 .get(&picket.raider_ship_id)
                 .is_some_and(SpaceShipState::is_burning)
         );
-        // Doc 49 unit CC.8: the corvette screens with her tubes, so beside the raider's two
-        // at the carrier her own salvo of two is out at the raider.
-        let at = |target: &str| {
+        // Doc 49 unit CC.8: the corvette keeps her torpedoes for a hull that ran her picket
+        // (the raider's warship's screen stops a lone salvo), so the two out are the raider's.
+        assert!(
             bubble
                 .torpedoes
                 .iter()
-                .filter(|torpedo| torpedo.target_id == target)
-                .count()
-        };
-        assert_eq!(at("hull.10"), 2);
-        assert_eq!(at(&picket.raider_ship_id), 2);
-        assert_eq!(bubble.torpedoes.len(), 4);
+                .all(|torpedo| torpedo.target_id == "hull.10")
+        );
+        assert_eq!(bubble.torpedoes.len(), 2);
         assert_eq!(bubble.railgun_slugs.len(), 1);
         assert!(ambush_events.iter().any(|e| matches!(
             e,

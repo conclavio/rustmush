@@ -1587,9 +1587,7 @@ fn cc8_a_corvette_disables_a_dray_that_dodges() {
                     SpaceCombatEvent::RailgunFired { target_id, .. } if target_id == her => {
                         rounds += 1;
                     }
-                    SpaceCombatEvent::RailgunDodgedByJink { target_id, .. }
-                        if target_id == her =>
-                    {
+                    SpaceCombatEvent::RailgunDodgedByJink { target_id, .. } if target_id == her => {
                         dodged += 1;
                     }
                     SpaceCombatEvent::RailgunHit { target_id, .. } if target_id == her => {
@@ -1614,89 +1612,24 @@ fn cc8_a_corvette_disables_a_dray_that_dodges() {
         disabled && ship.status != HullStatus::Operational,
         "the corvette disables her: rounds {rounds}, dodged {dodged}, torpedoes in {torpedoes_in}"
     );
-    assert!(rounds > 0, "the corvette fires her spinal gun at a hull that holds her course");
+    assert!(
+        rounds > 0,
+        "the corvette fires her spinal gun at a hull that holds her course"
+    );
     assert_eq!(struck_by_round, 0, "every spinal round is dodged");
     assert!(dodged > 0, "rounds {rounds}, dodged {dodged}");
     assert!(
         ship.delta_v_mps < dv_before,
         "her dodging cost her change of speed"
     );
-    assert!(torpedoes_in > 0, "the torpedoes leak through a hauler's screen");
-    let corvette = active.bubble.ships.get(INTERDICTOR).expect("the interdictor");
+    assert!(
+        torpedoes_in > 0,
+        "the torpedoes leak through a hauler's screen"
+    );
+    let corvette = active
+        .bubble
+        .ships
+        .get(INTERDICTOR)
+        .expect("the interdictor");
     assert_eq!(corvette.status, HullStatus::Operational);
-}
-
-/// CC.8 diagnostic (temporary): the picket fight and an interdictor against a beaming Dray,
-/// step by step.
-#[test]
-#[ignore = "cc8 diagnostic"]
-fn cc8_diag_fights() {
-    use crate::space::bubble::SpaceCombatEvent;
-    let tw = world_with_posture(CARRIER, crate::posture::Posture::Return);
-    let (active, linkdead) = picket_encounter();
-    let raider = active.picket.as_ref().map(|p| p.raider_ship_id.clone()).expect("raider");
-    let corvette = active.picket.as_ref().map(|p| p.corvette_ship_id.clone()).expect("corvette");
-    let mut run = Run { active, linkdead, log: Vec::new() };
-    let host = ThinkHost::inline();
-    let never = |_: u32| 0_u32;
-    let mut wall = 100;
-    for step in 0..180 {
-        let before = run.log.len();
-        run = drive(&run, &host, tw.world(), 1, wall, WhileHeld::NeverHeld, None, &never);
-        wall += 1;
-        let cmds: Vec<String> = run.log[before..]
-            .iter()
-            .filter_map(|e| match &e.command {
-                BubbleInputCommand::StepWall { .. } => None,
-                other => Some(format!("{other:?}").chars().take(90).collect()),
-            })
-            .collect();
-        let r = &run.active.bubble.ships[&raider];
-        let c = &run.active.bubble.ships[&corvette];
-        let d = &run.active.bubble.ships["hull.10"];
-        let int = |s: &SpaceShipState| -> Vec<u32> { s.sections.values().map(|x| x.internals).collect() };
-        eprintln!(
-            "PICKET {step} raider {:?} v{:?} thr{:?} int{:?} | corv {:?} int{:?} | dray {:?} int{:?} | torps {} slugs {} | {}",
-            r.status, r.vel_mmps, r.thrust_mmps2, int(r), c.status, int(c), d.status, int(d),
-            run.active.bubble.torpedoes.len(), run.active.bubble.railgun_slugs.len(),
-            cmds.join(" ; ")
-        );
-    }
-
-    // An interdictor against a Dray that beams her every second from 18 km.
-    let (mut active, _) = interdiction_encounter();
-    for id in ["hull.20", "hull.21"] {
-        active.bubble.ships.remove(id);
-    }
-    let mut dray = SpaceShipState::new_dray("hull.21", "Salt Moth", CARRIER_PARTY, [18_000, 0, 0], [-25_000, 0, 0]);
-    dray.emcon = EmconPosture::Standard;
-    let across = dray.max_accel_mmps2;
-    active.bubble.insert_ship(dray);
-    active.bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, Some(Mark::Hostile));
-    active.bubble.set_party_relation(INTERDICTOR_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
-    let mut linkdead = BTreeMap::new();
-    let paused = std::collections::BTreeSet::new();
-    let orders = mush_sim::tick::StandingOrderBook::default();
-    let tw = TestWorld::new();
-    for wall in 1..=240_i64 {
-        let _ = active.tape.record_and_apply(
-            &mut active.bubble,
-            BubbleInputCommand::FireOffensiveLasers { shooter_id: "hull.21".into(), target_id: "interdictor.5.1".into() },
-        );
-        let side = if (wall / 4) % 2 == 0 { across } else { -across };
-        let _ = active.tape.record_and_apply(
-            &mut active.bubble,
-            BubbleInputCommand::CommandBurnMmps2 { ship_id: "hull.21".into(), thrust_mmps2: [0, side, 0], force_into_reserve: true },
-        );
-        let tick = BubbleTick { frozen: false, wall_now_s: wall, ic_now_s: 1_000 + wall * 24, paused_hulls: &paused, standing_orders: &orders, host: &host, store: None, w: tw.world() };
-        let mut out = BubbleTickOut::default();
-        let stepped = step_bubble(&mut active, &tick, &mut linkdead, &mut out);
-        let evs: Vec<String> = out.combat_reports.iter().flat_map(|r| r.4.iter()).filter(|e| !matches!(e, SpaceCombatEvent::TorpedoLaunched{..})).map(|e| format!("{e:?}").chars().take(70).collect()).collect();
-        let i = &active.bubble.ships["interdictor.5.1"];
-        let d = &active.bubble.ships["hull.21"];
-        let int = |s: &SpaceShipState| -> Vec<u32> { s.sections.values().map(|x| x.internals).collect() };
-        let armour = |s: &SpaceShipState| -> u32 { s.sections.values().flat_map(|x| x.facets.values()).sum() };
-        eprintln!("INTERDICT {wall} stepped {stepped} int {:?} {:?} a{} | dray {:?} {:?} a{} | {}", i.status, int(i), armour(i), d.status, int(d), armour(d), evs.join(" ; "));
-        if i.status != HullStatus::Operational || d.status != HullStatus::Operational { break; }
-    }
 }

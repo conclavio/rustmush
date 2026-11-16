@@ -6,7 +6,7 @@
     "unit": "tacsim.unit.corvette",
     "overlay": "tacsim.unit.corvette",
     "doctrine": "kirkwood_picket",
-    "doctrine_sha256": "57a6870d55c6fd1425ed5735b8bdaf9be677934c45e5d62853d46925110f2940",
+    "doctrine_sha256": "00dad81833f56d4b97759e0b9081e9487fb03221cbce1e74096488c6ece9d77e",
     "pos_m": [-6000, 400, 0],
     "vel_mmps": [13800, 0, 0]
   },
@@ -28,7 +28,7 @@
     "unit": "tacsim.unit.corvette",
     "overlay": "tacsim.unit.corvette_interdictor",
     "doctrine": "interdictor_patrol",
-    "doctrine_sha256": "ee17f74a8e6cf06e647a970416cebfd723ed9d4de5c62d82264f006881916576",
+    "doctrine_sha256": "319726a3fcdb4979264b18bf8090cdc3975ced97826ab02ee25914810c418a75",
     "pos_m": [18000, 0, 0],
     "vel_mmps": [-20000, 0, 0]
   },

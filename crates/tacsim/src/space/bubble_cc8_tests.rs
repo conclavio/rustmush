@@ -123,9 +123,9 @@ pub(super) fn measure(
     let mut ic = 1_000;
     for _ in 0..1_200 {
         let ready = bubble.ships.get("shooter").is_some_and(|ship| {
-            ship.torpedo_tubes.first().is_some_and(|tube| {
-                tube.cooldown_remaining_ms == 0 && tube.magazine_remaining > 0
-            })
+            ship.torpedo_tubes
+                .first()
+                .is_some_and(|tube| tube.cooldown_remaining_ms == 0 && tube.magazine_remaining > 0)
         });
         let screen_up = bubble
             .ships
@@ -247,8 +247,11 @@ pub(super) fn measure_spinal(range_m: i64, dodge: bool) -> SpinalOutcome {
             }
         }
     }
-    outcome.dv_spent_mps =
-        dv_before - bubble.ships.get("screen").map_or(dv_before, |ship| ship.delta_v_mps);
+    outcome.dv_spent_mps = dv_before
+        - bubble
+            .ships
+            .get("screen")
+            .map_or(dv_before, |ship| ship.delta_v_mps);
     outcome
 }
 
@@ -317,8 +320,14 @@ fn cc8_measure_the_screens() {
         for (geometry, range_m, closing) in GEOMETRIES {
             for screen in SCREENS {
                 for posture in [Posture::AsFitted, Posture::Braced] {
-                    let outcome =
-                        measure("tacsim.unit.corvette", screen, posture, range_m, closing, knobs);
+                    let outcome = measure(
+                        "tacsim.unit.corvette",
+                        screen,
+                        posture,
+                        range_m,
+                        closing,
+                        knobs,
+                    );
                     let label = format!(
                         "{geometry} | {} {posture:?}",
                         screen.trim_start_matches("tacsim.unit.")
@@ -344,7 +353,10 @@ fn cc8_measure_the_screens() {
         }
     }
     println!("== offence pulse");
-    for key in ["tacsim.space_mount.turret_laser", "tacsim.space_mount.turret_laser_short"] {
+    for key in [
+        "tacsim.space_mount.turret_laser",
+        "tacsim.space_mount.turret_laser_short",
+    ] {
         let laser = laser_of(key);
         let by_range: Vec<String> = [0, 10_000, 25_000, 45_000, 60_000, 100_000, 120_000, 150_000]
             .iter()
@@ -385,9 +397,23 @@ fn cc8_every_shipped_fit_flies_the_ruled_palette() {
             assert_eq!(gun.magazine_max(), stowed, "{key} {}", gun.id);
         }
         for laser in &ship.lasers {
-            assert_eq!(laser.cycle_ms(LaserMode::Offense), 5_000, "{key} {}", laser.id);
-            assert_eq!(laser.cycle_ms(LaserMode::Defense), 4_000, "{key} {}", laser.id);
-            assert!(laser.allowed_modes.is_both(), "{key} {}: dual-mode", laser.id);
+            assert_eq!(
+                laser.cycle_ms(LaserMode::Offense),
+                5_000,
+                "{key} {}",
+                laser.id
+            );
+            assert_eq!(
+                laser.cycle_ms(LaserMode::Defense),
+                4_000,
+                "{key} {}",
+                laser.id
+            );
+            assert!(
+                laser.allowed_modes.is_both(),
+                "{key} {}: dual-mode",
+                laser.id
+            );
         }
         for pd in &ship.pdcs {
             assert_eq!(pd.cooldown_ms, 500, "{key} {}", pd.id);
@@ -398,7 +424,9 @@ fn cc8_every_shipped_fit_flies_the_ruled_palette() {
     for key in HAULERS {
         let ship = stock_hull(key, "her", admitted_party(0), [0; 3], [0; 3]);
         assert!(
-            ship.lasers.iter().all(|laser| laser.mode == LaserMode::Offense),
+            ship.lasers
+                .iter()
+                .all(|laser| laser.mode == LaserMode::Offense),
             "{key}"
         );
     }
@@ -423,13 +451,19 @@ fn cc8_an_offence_laser_is_short_and_weak_against_a_hull() {
     let crate::definitions::space_mount::SpaceMountFamily::Spinal(spinal) = &spinal.family else {
         panic!("the spinal gun");
     };
-    for key in ["tacsim.space_mount.turret_laser", "tacsim.space_mount.turret_laser_short"] {
+    for key in [
+        "tacsim.space_mount.turret_laser",
+        "tacsim.space_mount.turret_laser_short",
+    ] {
         let laser = laser_of(key);
         assert!(laser.max_range_m < spinal.max_range_m, "{key}");
         let close = laser.damage_at_range(0);
         assert!(laser.damage_at_range(26_000) * 2 < close, "{key}");
         assert_eq!(laser.damage_at_range(laser.max_range_m + 1), 0, "{key}");
-        assert!(close * 3 < spinal.round_damage, "{key}: weak beside a spinal round");
+        assert!(
+            close * 3 < spinal.round_damage,
+            "{key}: weak beside a spinal round"
+        );
     }
     let turret = laser_of("tacsim.space_mount.turret_laser");
     assert!(turret.damage_at_range(crate::space::picket::RAIDER_AMBUSH_RANGE_M) <= 2);
@@ -463,13 +497,25 @@ fn first_laser(bubble: &LocalSpaceBubble) -> &crate::space::weapons::LaserMount 
 #[test]
 fn cc8_a_switch_starts_the_new_modes_cycle_and_never_fires_early() {
     let mut bubble = dray_bubble();
-    assert_eq!(first_laser(&bubble).cooldown_remaining_ms, 0, "ready in offence");
+    assert_eq!(
+        first_laser(&bubble).cooldown_remaining_ms,
+        0,
+        "ready in offence"
+    );
     assert!(bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Defense));
-    assert_eq!(first_laser(&bubble).cooldown_remaining_ms, 4_000, "the defence cycle starts");
+    assert_eq!(
+        first_laser(&bubble).cooldown_remaining_ms,
+        4_000,
+        "the defence cycle starts"
+    );
     let _ = bubble.step_wall_ms_at(3_750, 1_001);
     assert_eq!(first_laser(&bubble).cooldown_remaining_ms, 250);
     let _ = bubble.step_wall_ms_at(250, 1_002);
-    assert_eq!(first_laser(&bubble).cooldown_remaining_ms, 0, "ready in defence");
+    assert_eq!(
+        first_laser(&bubble).cooldown_remaining_ms,
+        0,
+        "ready in defence"
+    );
     // Back to offence, long after her last offence pulse: a whole offence cycle.
     assert!(bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Offense));
     assert_eq!(first_laser(&bubble).cooldown_remaining_ms, 5_000);
@@ -501,7 +547,11 @@ fn cc8_switching_back_within_one_offence_cycle_keeps_the_offence_cooldown() {
             .count()
     };
     assert_eq!(hits(&bubble.fire_offensive_lasers("her", "target")), 2);
-    assert_eq!(first_laser(&bubble).cooldown_remaining_ms, 5_000, "the 5 s floor");
+    assert_eq!(
+        first_laser(&bubble).cooldown_remaining_ms,
+        5_000,
+        "the 5 s floor"
+    );
     let _ = bubble.step_wall_ms_at(1_000, 1_001);
     assert!(bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Defense));
     assert_eq!(first_laser(&bubble).offence_left_ms, 4_000);
@@ -514,7 +564,11 @@ fn cc8_switching_back_within_one_offence_cycle_keeps_the_offence_cooldown() {
     );
     // The other laser never left offence: it is on the same footing.
     let _ = bubble.step_wall_ms_at(2_250, 1_003);
-    assert_eq!(hits(&bubble.fire_offensive_lasers("her", "target")), 0, "not early");
+    assert_eq!(
+        hits(&bubble.fire_offensive_lasers("her", "target")),
+        0,
+        "not early"
+    );
     let _ = bubble.step_wall_ms_at(250, 1_004);
     assert_eq!(
         hits(&bubble.fire_offensive_lasers("her", "target")),

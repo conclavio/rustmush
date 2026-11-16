@@ -14,7 +14,8 @@
 // What she fires (doc 49 unit CC.8): her laser within its reach; a spinal round at a hull
 // that has held its course since her last think, since a hull that burns is not where the
 // round was aimed; and a salvo of two torpedoes at each reload, only at a hull radiating for
-// a fight. Her second laser stands in defence, as her fit starts it.
+// a fight. Her second laser stands in defence, as her fit starts it. She closes only until
+// her laser reaches the hull, and holds her drive from there.
 fn think(v, c) {
     let target = ();
     let target_range = 0;
@@ -93,7 +94,21 @@ fn think(v, c) {
         return;
     }
 
-    if !("closing" in this) || this.closing != true {
+    // She closes until her laser reaches the hull, then holds her drive there: a burn left
+    // standing would carry her past it, ever faster (doc 49 unit CC.8).
+    let reaches = false;
+    for w in v.weapons {
+        let m = space_mount(v, w.id);
+        if m != () && m.family == "laser" && m.mode == "offence" && m.lock_damage != () {
+            reaches = true;
+        }
+    }
+    if reaches {
+        if !("closing" in this) || this.closing != false {
+            this.closing = false;
+            hold();
+        }
+    } else if !("closing" in this) || this.closing != true {
         this.closing = true;
         speed(1000);
     }

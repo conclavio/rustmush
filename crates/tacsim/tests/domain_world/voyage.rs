@@ -3405,7 +3405,11 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
     assert_eq!(completed.closed_ic_s, resume_ic);
     // Each fire stepped it once, a second at a time but for the capped jump: the four seconds,
     // the jump, and the seconds she spent heaving to (doc 49 unit CC.8).
-    assert!(completed.steps > 5, "she heaved to over further steps: {}", completed.steps);
+    assert!(
+        completed.steps > 5,
+        "she heaved to over further steps: {}",
+        completed.steps
+    );
     assert!(u64::from(completed.steps) <= 5 + heave_ticks);
     assert_eq!(
         completed.wall_elapsed_ms,
@@ -3650,13 +3654,15 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
         "expected derelict narration for hull2, got: {settle_heard}"
     );
 
-    // Hull2 was NOT deleted; its `TacticalUnit` is checked back in with `drive destroyed` and open epoch.
+    // Hull2 was NOT deleted; its `TacticalUnit` is checked back in with a section destroyed and
+    // open epoch. Doc 49 unit CC.8: the interdictor's spinal rounds, split across her stern,
+    // take her hull before her drive (read by record; the placeholder laser took the drive).
     assert!(rig.tw.world().get(hull2).is_some());
     assert!(mush_sim::deployed::mark_of(rig.tw.world(), hull2).is_none());
     let ship2_out = run(&mut rig.tw, pilot2, "+ship");
     assert!(
-        ship2_out.contains("drive destroyed"),
-        "expected +ship for disabled carrier to show `drive destroyed`, got: {ship2_out}"
+        ship2_out.contains("hull destroyed"),
+        "expected +ship for disabled carrier to show `hull destroyed`, got: {ship2_out}"
     );
 
     let bubble_book = rig
@@ -6326,23 +6332,6 @@ fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quara
             .and_then(tacsim::TacsimStore::space_state)
             .expect("persisted space_state");
         let doc_bytes_at_600 = serde_json::to_vec(state_600).expect("json").len();
-        {
-            let text = serde_json::to_string(state_600).expect("json");
-            let v: serde_json::Value = serde_json::from_str(&text).expect("v");
-            eprintln!("CC8DIAG defence_cooldown_ms x{} offence_left_ms x{} torpedoes x{} slug x{}", text.matches("defence_cooldown_ms").count(), text.matches("offence_left_ms").count(), text.matches("\"remaining_dv_mmps\"").count(), text.matches("aimed_lead_pos_m").count());
-            fn walk(v: &serde_json::Value, path: String, depth: usize) {
-                let n = serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
-                if n > 1500 && depth < 6 {
-                    eprintln!("CC8DIAG {path} {n}");
-                    match v {
-                        serde_json::Value::Object(m) => for (k, x) in m { walk(x, format!("{path}.{k}"), depth + 1); },
-                        serde_json::Value::Array(a) => for (i, x) in a.iter().enumerate() { walk(x, format!("{path}[{i}]"), depth + 1); },
-                        _ => {}
-                    }
-                }
-            }
-            walk(&v, String::new(), 0);
-        }
         assert!(
             doc_bytes_at_600 <= doc_bytes_at_200 + 8_192 && doc_bytes_at_600 < 65_536,
             "ten-minute heave-to must keep tacsim:space:state bounded: 200s={doc_bytes_at_200}B, 600s={doc_bytes_at_600}B"
@@ -7933,13 +7922,10 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
 
     // Confirm rear-split combat damage was written to *Salt Moth*'s `TacticalUnit` (`drive` and `hull` both damaged):
     let ship_damaged = run(&mut rig.tw, pilot, "+ship");
-    // Doc 44 unit MW.9: the interdictor's first think is its hail, so one volley fewer lands in
-    // the four ticks than when it fired from the first (`drive 64/250, hull 418/600`). Doc 44
-    // unit MW.11: its second think waits for the hail to be answered, so one fewer again
-    // (`drive 118/250, hull 471/600`): each step is one volley, 54 off the drive and 53 off
-    // the hull.
+    // Doc 49 unit CC.8: the damage is the raider's opening spinal round on her stern, read by
+    // record (it was the interdictor's volleys, `drive 172/250, hull 524/600`).
     assert!(
-        ship_damaged.contains("Damage: drive 172/250, hull 524/600."),
+        ship_damaged.contains("Damage: drive 207/250, hull 558/600."),
         "expected rear-split combat damage on docked Dray: {ship_damaged}"
     );
 
@@ -10311,7 +10297,8 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
         let active = book.active_for_hull(hull_c)?;
         let ship = active.bubble.ships.get(&active.carrier_ship_id)?;
         Some((
-            ship.crits.contains(&tacsim::space::SubsystemCrit::PdcOffline),
+            ship.crits
+                .contains(&tacsim::space::SubsystemCrit::PdcOffline),
             ship.sections[&tacsim::space::ShipSectionId::Drive].internals,
         ))
     };
