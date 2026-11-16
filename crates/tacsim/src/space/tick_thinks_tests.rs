@@ -1491,3 +1491,130 @@ fn co2_beside_a_sealed_mind_the_house_default_lands_its_shots_and_nothing_else()
     assert_eq!(lock.as_deref(), Some(raider.as_str()));
     assert_eq!(beams, vec![raider]);
 }
+
+/// **Doc 49 unit CC.8 (Q-49-26): a corvette disables a Dray that dodges.**
+///
+/// The interdictor, flown by her shipped doctrine, takes a Dray 160 km off that is radiating
+/// for a fight and will not heave to. The Dray's pilot dodges: whenever a spinal round is in
+/// flight at her she burns across its line, and otherwise coasts. Every spinal round the
+/// interdictor fires is dodged, and each dodge costs the Dray change of speed; the
+/// interdictor fires one only when she has held her course. Her torpedoes, a salvo of two at
+/// each reload, leak through the Dray's hauler's screen, and the Dray is disabled. The
+/// interdictor takes no harm.
+#[test]
+fn cc8_a_corvette_disables_a_dray_that_dodges() {
+    use crate::space::bubble::SpaceCombatEvent;
+
+    const INTERDICTOR: &str = "interdictor.5.1";
+    let mut bubble = LocalSpaceBubble::new("bubble.cc8.dodge", "domain.5", "Test", 1_000);
+    let mut interdictor = SpaceShipState::new_corvette(
+        INTERDICTOR,
+        "Interdictor Picket",
+        INTERDICTOR_PARTY,
+        [0, 0, 0],
+        [0, 0, 0],
+    );
+    super::super::custody::apply_space_unit_overlay(
+        &mut interdictor,
+        &super::super::custody::space_unit_overlay_for_id("tacsim.unit.corvette_interdictor"),
+    );
+    bubble.insert_ship(interdictor);
+    let entry = carrier_entry(RUNNER, CARRIER_PARTY);
+    let her = entry.ship_id.clone();
+    let mut dray =
+        SpaceShipState::new_dray(&her, "Salt Moth", CARRIER_PARTY, [160_000, 0, 0], [0, 0, 0]);
+    dray.emcon = EmconPosture::ActiveCombat;
+    let dv_before = dray.delta_v_mps;
+    let across = dray.max_accel_mmps2;
+    bubble.insert_ship(dray);
+    bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, Some(Mark::Hostile));
+    bubble.set_party_relation(INTERDICTOR_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
+    let mut carriers = BTreeMap::new();
+    carriers.insert(RUNNER, entry);
+    let mut active = active_over(
+        bubble,
+        DomainId(5),
+        carriers,
+        None,
+        (ObjId(900), INTERDICTOR.to_owned()),
+    );
+    let mut linkdead = BTreeMap::new();
+    let tw = TestWorld::new();
+    let host = ThinkHost::inline();
+    let paused = std::collections::BTreeSet::new();
+    let orders = mush_sim::tick::StandingOrderBook::default();
+
+    let (mut rounds, mut dodged, mut struck_by_round, mut torpedoes_in) = (0, 0, 0, 0);
+    let mut disabled = false;
+    for wall in 1..=240_i64 {
+        // Her pilot: across the line of any round in flight at her, else coast.
+        let coming = active
+            .bubble
+            .railgun_slugs
+            .iter()
+            .any(|slug| slug.target_id == her);
+        let thrust_mmps2 = if coming { [0, across, 0] } else { [0, 0, 0] };
+        let _ = active.tape.record_and_apply(
+            &mut active.bubble,
+            BubbleInputCommand::CommandBurnMmps2 {
+                ship_id: her.clone(),
+                thrust_mmps2,
+                force_into_reserve: true,
+            },
+        );
+        let tick = BubbleTick {
+            frozen: false,
+            wall_now_s: wall,
+            ic_now_s: 1_000 + wall * 24,
+            paused_hulls: &paused,
+            standing_orders: &orders,
+            host: &host,
+            store: None,
+            w: tw.world(),
+        };
+        let mut out = BubbleTickOut::default();
+        assert!(step_bubble(&mut active, &tick, &mut linkdead, &mut out));
+        for report in out.combat_reports {
+            for event in report.4 {
+                match event {
+                    SpaceCombatEvent::RailgunFired { target_id, .. } if target_id == her => {
+                        rounds += 1;
+                    }
+                    SpaceCombatEvent::RailgunDodgedByJink { target_id, .. }
+                        if target_id == her =>
+                    {
+                        dodged += 1;
+                    }
+                    SpaceCombatEvent::RailgunHit { target_id, .. } if target_id == her => {
+                        struck_by_round += 1;
+                    }
+                    SpaceCombatEvent::TorpedoHit { target_id, .. } if target_id == her => {
+                        torpedoes_in += 1;
+                    }
+                    SpaceCombatEvent::ShipDisabledDerelict { ship_id, .. } if ship_id == her => {
+                        disabled = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if disabled {
+            break;
+        }
+    }
+    let ship = active.bubble.ships.get(&her).expect("her ship");
+    assert!(
+        disabled && ship.status != HullStatus::Operational,
+        "the corvette disables her: rounds {rounds}, dodged {dodged}, torpedoes in {torpedoes_in}"
+    );
+    assert!(rounds > 0, "the corvette fires her spinal gun at a hull that holds her course");
+    assert_eq!(struck_by_round, 0, "every spinal round is dodged");
+    assert!(dodged > 0, "rounds {rounds}, dodged {dodged}");
+    assert!(
+        ship.delta_v_mps < dv_before,
+        "her dodging cost her change of speed"
+    );
+    assert!(torpedoes_in > 0, "the torpedoes leak through a hauler's screen");
+    let corvette = active.bubble.ships.get(INTERDICTOR).expect("the interdictor");
+    assert_eq!(corvette.status, HullStatus::Operational);
+}

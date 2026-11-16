@@ -3,7 +3,7 @@
     "id": "tacsim.pack.space_mounts",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "fe5c35765fd2f254e38e1148efe7e2ab9038a43018671ba0f08dc70a7d45c7be",
+    "digest": "e6f36a20c83af8980d3dd4cc3c502ae4a741f14846cfb8c58c0fb547e86354cd",
     "requires": []
   },
   "entries": {
@@ -20,7 +20,7 @@
             "warhead_damage": 180
           }
         },
-        "note": "Doc 49 unit CC.6: the numbers the Rust table carried, unchanged (25 g, 12 km/s of change of speed, an 8 s reload). The magazine is the fit's. CC.8 retunes the space palette."
+        "note": "Doc 49 unit CC.8: the space palette's tubes, an 8 s reload and a salvo of two (25 g, 12 km/s of change of speed). The magazine is the fit's, and it persists (CC.7). A warship's screen stops a lone salvo; a hauler's lets one round in two through at range."
       }
     },
     "tacsim.space_mount.turret_laser": {
@@ -29,18 +29,18 @@
         "label": "Dual-mode turret laser",
         "family": {
           "laser": {
-            "base_damage": 110,
-            "falloff_half_m": 120000,
-            "max_range_m": 500000,
+            "base_damage": 30,
+            "falloff_half_m": 25000,
+            "max_range_m": 150000,
             "defence_range_m": 45000,
             "heat_per_shot_permille": 140,
             "modes": {
-              "offence": { "cycle_ms": 1000 },
-              "defence": { "cycle_ms": 1000 }
+              "offence": { "cycle_ms": 5000 },
+              "defence": { "cycle_ms": 4000 }
             }
           }
         },
-        "note": "Doc 49 unit CC.6: the numbers the Rust table carried, unchanged. Both modes share the one 1 s cycle the kernel had; Q-49-24 gives each mode its own, and CC.8 sets offence at the 5 s floor (Q-49-19) with the switch rules."
+        "note": "Doc 49 unit CC.8 (Q-49-7, Q-49-19, Q-49-24, Q-49-26): offence is short and weak against a hull, for drones, collectors and soft targets, at the 5 s floor. Past 25 km a pulse does under half its close-range damage, and at 120 km a point. Defence stops a torpedo inside 45 km on its own automatic cycle of 4 s (provisional): the longest at which one laser in defence and two rotaries stop a lone salvo at every range measured."
       }
     },
     "tacsim.space_mount.turret_laser_short": {
@@ -49,18 +49,18 @@
         "label": "Short-reach heavy turret laser",
         "family": {
           "laser": {
-            "base_damage": 180,
-            "falloff_half_m": 120000,
-            "max_range_m": 160000,
+            "base_damage": 45,
+            "falloff_half_m": 25000,
+            "max_range_m": 100000,
             "defence_range_m": 45000,
             "heat_per_shot_permille": 140,
             "modes": {
-              "offence": { "cycle_ms": 1000 },
-              "defence": { "cycle_ms": 1000 }
+              "offence": { "cycle_ms": 5000 },
+              "defence": { "cycle_ms": 4000 }
             }
           }
         },
-        "note": "Doc 49 unit CC.6: the customs corvette's first laser, which the Rust table wrote as the turret with 180 damage and a 160 km reach. Its own row, so no fit overrides a number."
+        "note": "Doc 49 unit CC.8: the customs corvette's first laser, heavier and shorter than the turret and as weak against a hull at range. Offence at the 5 s floor; defence on the turret's 4 s automatic cycle (provisional). Its own row, so no fit overrides a number."
       }
     },
     "tacsim.space_mount.spinal_gun": {
@@ -73,10 +73,10 @@
             "max_range_m": 250000,
             "round_damage": 145,
             "heat_per_shot_permille": 220,
-            "cycle_ms": 3000
+            "cycle_ms": 6000
           }
         },
-        "note": "Doc 49 unit CC.6: the numbers the Rust table carried, unchanged. Point defence and lasers cannot stop its round; a hull that burns during the flight is not where it was fired at."
+        "note": "Doc 49 unit CC.8: the space palette's spinal gun, a 6 s cycle; the fit stows 24 rounds, which persist (CC.7). Point defence and lasers cannot stop its round. A hull that burns during the flight is not where the round was aimed, so dodging stays, and costs her change of speed."
       }
     },
     "tacsim.space_mount.spinal_gun_slow": {
@@ -89,10 +89,10 @@
             "max_range_m": 250000,
             "round_damage": 145,
             "heat_per_shot_permille": 220,
-            "cycle_ms": 3000
+            "cycle_ms": 6000
           }
         },
-        "note": "Doc 49 unit CC.6: the belt raider's, which the Rust table wrote as the spinal gun at 12 km/s. Its own row, so no fit overrides a number."
+        "note": "Doc 49 unit CC.8: the belt raider's low-velocity spinal gun (12 km/s), on the palette's 6 s cycle. Its own row, so no fit overrides a number."
       }
     },
     "tacsim.space_mount.rotary_pd": {
@@ -101,13 +101,13 @@
         "label": "Point-defence rotary",
         "family": {
           "point_defence": {
-            "envelope_m": 15000,
+            "envelope_m": 4000,
             "burst_rounds": 50,
             "cycle_ms": 500,
             "damage_per_burst": 50
           }
         },
-        "note": "Doc 49 unit CC.6: the numbers the Rust table carried, unchanged. Two bursts stop a torpedo, which leaves the tube at an integrity of 100. Automatic by D-35-8 (Q-49-10)."
+        "note": "Doc 49 unit CC.8 (Q-49-10, Q-49-26): automatic by D-35-8, a burst every 0.5 s. Two bursts stop a torpedo, which leaves the tube at an integrity of 100. The envelope is the last 4 km of a torpedo's run (provisional; it was 15 km), so two rotaries alone stop one round of a salvo that arrives at speed, and a hauler's screen leaks."
       }
     }
   }

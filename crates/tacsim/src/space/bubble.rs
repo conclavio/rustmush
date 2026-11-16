@@ -1790,12 +1790,16 @@ impl LocalSpaceBubble {
     ///
     /// **A mode her fit does not allow is refused** (Q-49-24; doc 49 unit CC.6), so a laser
     /// fitted defence-only stays in defence whoever asks.
+    ///
+    /// **A switch never fires early** (Q-49-24; doc 49 unit CC.8): the new mode's cycle starts
+    /// from the switch, and switching back to offence within one offence cycle keeps what was
+    /// left of it ([`LaserMount::switch_mode`]).
     pub fn set_laser_mode(&mut self, ship_id: &str, laser_id: &str, mode: LaserMode) -> bool {
         if let Some(ship) = self.ships.get_mut(ship_id)
             && let Some(mount) = ship.lasers.iter_mut().find(|l| l.id == laser_id)
             && mount.allowed_modes.allows(mode)
         {
-            mount.mode = mode;
+            mount.switch_mode(mode);
             return true;
         }
         false
@@ -2661,7 +2665,7 @@ impl LocalSpaceBubble {
                 t.cooldown_remaining_ms = t.cooldown_remaining_ms.saturating_sub(step_ms);
             }
             for l in &mut ship.lasers {
-                l.cooldown_remaining_ms = l.cooldown_remaining_ms.saturating_sub(step_ms);
+                l.cool(step_ms);
             }
             for r in &mut ship.railguns {
                 r.cooldown_remaining_ms = r.cooldown_remaining_ms.saturating_sub(step_ms);

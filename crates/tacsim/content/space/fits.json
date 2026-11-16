@@ -3,7 +3,7 @@
     "id": "tacsim.pack.space_fits",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "2959aae314632a55d781f0e07fdc9cf3836a812a1bae79d36b4fc032fa2a8119",
+    "digest": "41cd5f26417dbb0f0dfda4d9f635b30c9d4a953b83be1c6d4101c60924f92758",
     "requires": [
       {
         "id": "tacsim.pack.space_mounts",
@@ -35,7 +35,7 @@
           { "id": "pdc_dorsal", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 },
           { "id": "pdc_ventral", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 }
         ],
-        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Q-49-25: the Dray keeps dual-mode lasers, so a sealed mind's Dray answers fire (R-47-2). A hull with no fit of its own flies this one, as the table's last arm did."
+        "note": "Doc 49 unit CC.8. Q-49-25: the Dray keeps dual-mode lasers, starting in offence, so a sealed mind's Dray answers fire (R-47-2). Her screen is a hauler's: two rotaries alone let one round of a salvo in two through at range, unless she puts her lasers in defence and gives up her answer. A hull with no fit of its own flies this one."
       }
     },
     "tacsim.space_fit.dray_p": {
@@ -61,7 +61,7 @@
           { "id": "pdc_dorsal", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 },
           { "id": "pdc_ventral", "mount": "tacsim.space_mount.rotary_pd", "magazine": 2000 }
         ],
-        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Q-49-25: the Dray-P keeps dual-mode lasers."
+        "note": "Doc 49 unit CC.8. Q-49-25: the Dray-P keeps dual-mode lasers, starting in offence; her screen is a hauler's, as the Dray's."
       }
     },
     "tacsim.space_fit.corvette": {
@@ -89,7 +89,7 @@
           { "id": "pdc_port", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 },
           { "id": "pdc_stbd", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 }
         ],
-        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Her first laser is the short-reach row; her second starts in defence and may switch."
+        "note": "Doc 49 unit CC.8: her first laser is the heavier short-reach row; her second starts in defence and may switch. One laser in defence and two rotaries stop a lone salvo: a warship's screen."
       }
     },
     "tacsim.space_fit.corvette_interdictor": {
@@ -117,7 +117,7 @@
           { "id": "pdc_port", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 },
           { "id": "pdc_stbd", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 }
         ],
-        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. The corvette's hull with the dual-mode turret first, as the interdiction cutters sail; content/space/picket_cast.json names it."
+        "note": "Doc 49 unit CC.8: the corvette's hull with the dual-mode turret first, as the interdiction cutters sail; her second laser starts in defence. content/space/picket_cast.json names it."
       }
     },
     "tacsim.space_fit.raider_heavy": {
@@ -140,12 +140,12 @@
         "mounts": [
           { "id": "torp_bow", "mount": "tacsim.space_mount.twin_tubes", "magazine": 8 },
           { "id": "laser_1", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
-          { "id": "laser_2", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "offence" },
+          { "id": "laser_2", "mount": "tacsim.space_mount.turret_laser", "modes": ["offence", "defence"], "mode": "defence" },
           { "id": "rail_spinal", "mount": "tacsim.space_mount.spinal_gun_slow", "magazine": 24 },
           { "id": "pdc_port", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 },
           { "id": "pdc_stbd", "mount": "tacsim.space_mount.rotary_pd", "magazine": 3000 }
         ],
-        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. Two offence lasers and the low-velocity spinal gun."
+        "note": "Doc 49 unit CC.8: an offence laser, a second that starts in defence (both dual-mode, as the customs corvette's), and the low-velocity spinal gun. Her screen is a warship's."
       }
     },
     "tacsim.space_fit.halcyon": {
@@ -175,7 +175,7 @@
           { "id": "pdc_dorsal", "mount": "tacsim.space_mount.rotary_pd", "magazine": 4000 },
           { "id": "pdc_ventral", "mount": "tacsim.space_mount.rotary_pd", "magazine": 4000 }
         ],
-        "note": "Doc 49 unit CC.6: the Rust table's fit, unchanged. A mind reads her magazine's maximum as 16 and 32 from here, which the old fixed maxima of 8 and 24 shrank with each shot."
+        "note": "Doc 49 unit CC.8: four rotaries stop a lone salvo with both lasers in offence: a warship's screen. Her spinal gun stows 32, the cruiser's own figure beside the palette's 24, and a mind reads 16 and 32 as her maxima."
       }
     }
   }

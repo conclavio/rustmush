@@ -6,7 +6,7 @@
     "unit": "tacsim.unit.corvette",
     "overlay": "tacsim.unit.corvette",
     "doctrine": "kirkwood_picket",
-    "doctrine_sha256": "74438beeb9c65d3cdf030c16a8e9ef8f9938c344944af4d812c7a943d700e881",
+    "doctrine_sha256": "57a6870d55c6fd1425ed5735b8bdaf9be677934c45e5d62853d46925110f2940",
     "pos_m": [-6000, 400, 0],
     "vel_mmps": [13800, 0, 0]
   },
@@ -17,7 +17,7 @@
     "unit": "tacsim.unit.raider_heavy",
     "overlay": "tacsim.unit.raider_heavy",
     "doctrine": "belt_raider",
-    "doctrine_sha256": "3502035645801e99d14c7578b53b7c22f8556ff427732844bb82990dcca60c42",
+    "doctrine_sha256": "c2dbf3677b3243247db9c9ab6b94c212c3153a50fc3afbaf68418023e5897ccb",
     "pos_m": [120000, 0, 0],
     "vel_mmps": [-20000, 0, 0]
   },
@@ -28,7 +28,7 @@
     "unit": "tacsim.unit.corvette",
     "overlay": "tacsim.unit.corvette_interdictor",
     "doctrine": "interdictor_patrol",
-    "doctrine_sha256": "731c9adc10abc1783074dbcde37e983331c1c921b0203b53696b9c7ed56c8585",
+    "doctrine_sha256": "ee17f74a8e6cf06e647a970416cebfd723ed9d4de5c62d82264f006881916576",
     "pos_m": [18000, 0, 0],
     "vel_mmps": [-20000, 0, 0]
   },

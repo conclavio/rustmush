@@ -1,4 +1,4 @@
-// Interdictor Patrol — Waypoint Interdictor Picket Doctrine (SF.R14, D-35-1, D-35-17; doc 44 MW.9, MW.11)
+// Interdictor Patrol — Waypoint Interdictor Picket Doctrine (SF.R14, D-35-1, D-35-17; doc 44 MW.9, MW.11; doc 49 CC.8)
 // name: Interdictor Patrol Doctrine; role: combat; api: 10; stock: 3; rated: class I (1,500 ops a think)
 //
 // She takes the nearest hull that is still hostile to her. The first think she holds it, she
@@ -10,6 +10,11 @@
 // closes on and fires at. A hull that comes under the heave-to speed is stood down by the
 // bubble's host, hull by hull, and reads neutral from then on; with nobody left hostile she
 // cuts her drive and holds station, showing herself at STANDARD.
+//
+// What she fires (doc 49 unit CC.8): her laser within its reach; a spinal round at a hull
+// that has held its course since her last think, since a hull that burns is not where the
+// round was aimed; and a salvo of two torpedoes at each reload, only at a hull radiating for
+// a fight. Her second laser stands in defence, as her fit starts it.
 fn think(v, c) {
     let target = ();
     let target_range = 0;
@@ -37,15 +42,20 @@ fn think(v, c) {
     let more = space_contact(v, target);
     let known = "target" in this && this.target == target;
     let slowing = false;
+    let steady = false;
     let combat = false;
     if s != () && more != () {
         combat = more.emcon == "combat";
         if known {
             // Her change of velocity, against her drift past this hull.
-            let turn = (more.vx_cms - this.vx) * (more.vx_cms - s.vx_cms)
-                + (more.vy_cms - this.vy) * (more.vy_cms - s.vy_cms)
-                + (more.vz_cms - this.vz) * (more.vz_cms - s.vz_cms);
+            let dvx = more.vx_cms - this.vx;
+            let dvy = more.vy_cms - this.vy;
+            let dvz = more.vz_cms - this.vz;
+            let turn = dvx * (more.vx_cms - s.vx_cms)
+                + dvy * (more.vy_cms - s.vy_cms)
+                + dvz * (more.vz_cms - s.vz_cms);
             slowing = turn < 0;
+            steady = dvx == 0 && dvy == 0 && dvz == 0;
         }
         this.vx = more.vx_cms;
         this.vy = more.vy_cms;
@@ -88,12 +98,20 @@ fn think(v, c) {
         speed(1000);
     }
     for w in v.weapons {
-        if w.ready_in_ms != 0 {
+        let m = space_mount(v, w.id);
+        if m == () || m.state != "ready" {
             continue;
         }
-        if w.id == "laser_1" {
-            fire(w.id, 1);
-        } else if w.id == "torp_bow" && combat && w.rounds == w.rounds_max {
+        if m.family == "tubes" {
+            if combat {
+                fire(w.id, 1);
+                fire(w.id, 1);
+            }
+        } else if m.family == "spinal" {
+            if steady && m.lock_flight_ms != () {
+                fire(w.id, 1);
+            }
+        } else if m.mode == "offence" && m.lock_damage != () {
             fire(w.id, 1);
         }
     }
