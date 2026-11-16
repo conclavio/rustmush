@@ -703,11 +703,36 @@ impl Server {
             Some(_) => "  band 1 of 3  62% to hit",
             None => "",
         };
-        let rounds = match self.magazine {
-            Some(size) => format!("{} of {size}", self.rounds_shown(weapon, size)),
-            None => "30 of 40".into(),
-        };
-        format!("{weapon}{short}  {state}  {rounds} round(s){chance}")
+        let (left, size) = self.rounds_of(weapon);
+        format!("{weapon}{short}  {state}  {left} of {size} round(s){chance}")
+    }
+
+    /// One gun's `(left, full)`, as its row and `STATUS`'s rounds row print it:
+    /// the magazine knob's, or the rig's own `30 of 40`.
+    fn rounds_of(&self, weapon: &str) -> (u32, u32) {
+        match self.magazine {
+            Some(size) => (self.rounds_shown(weapon, size), size),
+            None => (30, 40),
+        }
+    }
+
+    /// `STATUS`'s rounds row (the game's doc 49 cut CC.4), with its leading
+    /// newline: each gun the tank still carries, in its order, before the
+    /// sections. Empty once it carries none, as the game prints no row then.
+    fn rounds_line(&self) -> String {
+        let cells: Vec<String> = ["cannon", "machine_gun"]
+            .into_iter()
+            .filter(|weapon| !self.lost.contains(*weapon))
+            .map(|weapon| {
+                let (left, size) = self.rounds_of(weapon);
+                format!("{weapon} {left}/{size}")
+            })
+            .collect();
+        if cells.is_empty() {
+            String::new()
+        } else {
+            format!("\n  rounds {}", cells.join(", "))
+        }
     }
 
     /// The answer to one typed line: its echo first, as the PTY does.
@@ -828,10 +853,11 @@ impl Server {
                     Some(track) => format!("\n  {track}  destroyed  internals 0/24"),
                     None => String::new(),
                 };
+                let rounds = self.rounds_line();
                 self.say(
                     3,
                     &format!(
-                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°{held}\n  at {x} m east, {y} m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°\n  hull  {condition}  internals {left}/{max}\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140{track}"
+                        "Callsign RA.\nRed Tank 1: power online, {speed} kph, heading {heading:03}°{held}\n  at {x} m east, {y} m north; scope holds a hostile\n  nearest spot: The Ford (A), 400 m at 090°{rounds}\n  hull  {condition}  internals {left}/{max}\n    front 400/400  left 250/250  right 250/250  rear 150/150\n  turret  intact\n    front 350/350  left 220/220  right 220/220  rear 140/140{track}"
                     ),
                 );
             }
