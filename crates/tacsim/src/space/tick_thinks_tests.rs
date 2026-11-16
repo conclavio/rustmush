@@ -1521,13 +1521,14 @@ fn cc8_a_corvette_disables_a_dray_that_dodges() {
     bubble.insert_ship(interdictor);
     let entry = carrier_entry(RUNNER, CARRIER_PARTY);
     let her = entry.ship_id.clone();
-    // Running on, well over the heave-to speed, so the host never stands her down.
+    // Closing on the interdictor, well over the heave-to speed, so the host never stands her
+    // down as the interdictor closes in turn.
     let mut dray = SpaceShipState::new_dray(
         &her,
         "Salt Moth",
         CARRIER_PARTY,
         [160_000, 0, 0],
-        [25_000, 0, 0],
+        [-25_000, 0, 0],
     );
     dray.emcon = EmconPosture::ActiveCombat;
     let dv_before = dray.delta_v_mps;
@@ -1667,8 +1668,9 @@ fn cc8_diag_fights() {
     for id in ["hull.20", "hull.21"] {
         active.bubble.ships.remove(id);
     }
-    let mut dray = SpaceShipState::new_dray("hull.21", "Salt Moth", CARRIER_PARTY, [18_000, 0, 0], [25_000, 0, 0]);
-    dray.emcon = EmconPosture::ActiveCombat;
+    let mut dray = SpaceShipState::new_dray("hull.21", "Salt Moth", CARRIER_PARTY, [18_000, 0, 0], [-25_000, 0, 0]);
+    dray.emcon = EmconPosture::Standard;
+    let across = dray.max_accel_mmps2;
     active.bubble.insert_ship(dray);
     active.bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, Some(Mark::Hostile));
     active.bubble.set_party_relation(INTERDICTOR_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
@@ -1680,6 +1682,11 @@ fn cc8_diag_fights() {
         let _ = active.tape.record_and_apply(
             &mut active.bubble,
             BubbleInputCommand::FireOffensiveLasers { shooter_id: "hull.21".into(), target_id: "interdictor.5.1".into() },
+        );
+        let side = if (wall / 4) % 2 == 0 { across } else { -across };
+        let _ = active.tape.record_and_apply(
+            &mut active.bubble,
+            BubbleInputCommand::CommandBurnMmps2 { ship_id: "hull.21".into(), thrust_mmps2: [0, side, 0], force_into_reserve: true },
         );
         let tick = BubbleTick { frozen: false, wall_now_s: wall, ic_now_s: 1_000 + wall * 24, paused_hulls: &paused, standing_orders: &orders, host: &host, store: None, w: tw.world() };
         let mut out = BubbleTickOut::default();

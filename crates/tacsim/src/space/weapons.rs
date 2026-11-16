@@ -180,7 +180,10 @@ pub struct LaserMount {
     /// the offence mode's; `None` when the two are one cycle, as on every shipped row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defence_cooldown_ms: Option<u32>,
-    /// The cycle left in her current mode, wall milliseconds.
+    /// The cycle left in her current mode, wall milliseconds. Absent from her document when
+    /// nought (doc 49 unit CC.8): an idle laser saves the bytes her per-mode cycle costs, so a
+    /// long heave-to's saved space state keeps under its 64 KiB budget.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub cooldown_remaining_ms: u32,
     /// **Her offence cycle, still running behind a switch to defence** (Q-49-24; doc 49 unit
     /// CC.8): what was left of it when she switched, counting down while she stands in

@@ -6,10 +6,10 @@
 // finished with. She opens with everything that is ready and two torpedoes, and after that
 // presses only a prey that is radiating for a fight.
 //
-// How she presses (doc 49 unit CC.8): a salvo of two torpedoes at each reload, a spinal round
-// at a prey that has held its course since her last think (a hull that burns is not where the
-// round was aimed), and her laser within its reach. Her second laser stands in defence, as
-// her fit starts it.
+// How she presses (doc 49 unit CC.8): her torch dies after the opener and she presses from
+// where she is: a salvo of two torpedoes at each reload, a spinal round at a prey that has
+// held its course since her last think (a hull that burns is not where the round was aimed),
+// and her laser within its reach. Her second laser stands in defence, as her fit starts it.
 fn think(v, c) {
     if !("stage" in this) {
         this.stage = 0;
@@ -79,6 +79,7 @@ fn think(v, c) {
         return;
     }
 
+    hold();
     if prey_settled && prey_combat {
         for w in v.weapons {
             let m = space_mount(v, w.id);
