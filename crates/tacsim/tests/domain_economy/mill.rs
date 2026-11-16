@@ -4067,6 +4067,19 @@ const MUNITIONS: [(&str, &str, u64, u64, u64); 7] = [
     ("pd_box", "pd_box", 24, 122, 250),
 ];
 
+/// The matter census's balance (`@industry/census`), kilograms.
+fn census_balance(tw: &mut TestWorld) -> i128 {
+    let out = run(tw, GOD, "@industry/census");
+    out.lines()
+        .find(|l| l.contains(tacsim::port::census::CENSUS_LINE))
+        .and_then(|l| {
+            l.split_whitespace()
+                .find_map(|word| word.strip_prefix("balance="))
+        })
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("a census line: {out}"))
+}
+
 /// **Doc 48 unit PL.3: Stickney Yards makes HE and lists it** (Q-49-4; Q-48-23's operating arm).
 /// On a lane whose Yards seed 760 HE rounds, forty under the HE process's floor of 800 (the
 /// stand-in for rounds rearmed away):
@@ -4108,7 +4121,15 @@ fn pl3_stickney_yards_makes_he_and_lists_it() {
 
     // 2. The alloys bought, the HE made and listed.
     seed_pool(&mut rig, vault, "structural_alloys", 1, LotId(9_201));
+    let before = census_balance(&mut rig.tw);
     fire_until_idle(&mut rig, 48);
+    // Doc 48 cut EX.0: the matter census holds across the batch, both inputs in and the rounds
+    // out, the difference the declared loss (`milled`).
+    assert_eq!(
+        census_balance(&mut rig.tw),
+        before,
+        "the munitions process conserves matter"
+    );
     let made = he(&rig.tw).expect("the HE process ran");
     assert_eq!(
         (

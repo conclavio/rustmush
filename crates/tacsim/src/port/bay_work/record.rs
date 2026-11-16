@@ -198,6 +198,11 @@ pub struct BayHull {
     /// scrap. Omitted at 0.
     #[serde(default, skip_serializing_if = "is_zero_kg")]
     pub scrapped_kg: u64,
+    /// **The munitions kilograms the bay's draws took out of the hold for this hull's
+    /// magazines, ever** (doc 48 cut EX.0, Q-48-31): written as each draw lands, so
+    /// `@industry/census` sums rearms as a sink (`loaded`). Omitted at 0.
+    #[serde(default, skip_serializing_if = "is_zero_kg")]
+    pub loaded_kg: u64,
 }
 
 /// Serde's skip for a zero kilogram count.
@@ -356,6 +361,7 @@ impl BayHull {
             held_for: None,
             repaired_kg: 0,
             scrapped_kg: 0,
+            loaded_kg: 0,
         }
     }
 

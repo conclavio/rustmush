@@ -448,6 +448,9 @@ async fn pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cy
     sell(&mut rig, captain, LUNA, CRISIUM, METALS, 4);
 
     // ---- (4) The processes run on the tick; the output collected and listed ----
+    // Doc 48 cut EX.0: the matter census holds across them, each process's ore and second input
+    // in, its product out, the difference the declared loss (`milled`).
+    let balance = crate::in11_matter::census(&mut rig)["balance"];
     for _ in 0..48 {
         if counter(&rig, LUNA, HABITAT, PROVISIONS) == Some(1_000)
             && counter(&rig, LUNA, CRISIUM, BOARDS) == Some(4)
@@ -456,6 +459,11 @@ async fn pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cy
         }
         fire_landing(&mut rig);
     }
+    assert_eq!(
+        crate::in11_matter::census(&mut rig)["balance"],
+        balance,
+        "the processes conserve matter"
+    );
     let farm = ledger(&mut rig, LUNA, HABITAT, PROVISIONS).expect("the farm ran");
     assert_eq!(
         (

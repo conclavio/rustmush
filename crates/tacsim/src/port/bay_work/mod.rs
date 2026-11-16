@@ -1997,6 +1997,11 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     };
     if landed >= owed.act {
         record.owed = None;
+        // Doc 48 cut EX.0: the draw's munitions left the hold as it landed (the census's `loaded`).
+        if let OwedKind::Draw { goods, .. } = &owed.kind {
+            let kg = crate::port::census::munitions_kg(ctx.w, goods);
+            record.loaded_kg = record.loaded_kg.saturating_add(kg);
+        }
         put_bay_hull(ctx, &record);
         match &owed.kind {
             OwedKind::Draw { .. } => complete(ctx, hull),

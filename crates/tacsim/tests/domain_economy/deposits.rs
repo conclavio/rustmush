@@ -2174,6 +2174,19 @@ fn fire_until<T>(
 /// **Work one deposit out by hand**, as its mining would leave it: its whole pool moved into the
 /// site's spoil (a conserved transfer) and its cursor drawn to every ore pocket's tonnes, read
 /// independently through the chart's field ground; both kept for a reboot.
+/// The matter census line's terms, by name (doc 48 cut EX.0).
+fn matter_terms(tw: &mut TestWorld) -> BTreeMap<String, i128> {
+    let out = run(tw, GOD, "@industry/census");
+    let line = out
+        .lines()
+        .find(|l| l.contains(tacsim::port::census::CENSUS_LINE))
+        .unwrap_or_else(|| panic!("a census line: {out}"));
+    line.split_whitespace()
+        .filter_map(|word| word.split_once('='))
+        .map(|(k, v)| (k.to_owned(), v.parse().expect("a number")))
+        .collect()
+}
+
 fn work_out(rig: &mut Rig, entry: &str, row: &OpeningRow) {
     let (spec, body, _, _) = ground_of(&mut rig.tw, entry);
     let (gross, pockets) = block_truth(&spec, &body, row.letter, row.family, 1_000);
@@ -2272,6 +2285,8 @@ fn pl10_a_worked_out_site_deposit_rerolls_after_28_ic_days_across_a_restart() {
         None,
         "the forge is honest"
     );
+    // Doc 48 cut EX.0: the matter census across the re-roll.
+    let matter_before = matter_terms(&mut rig.tw);
     set_rate(&mut rig.tw, 3_600);
     // The clerk looks once an IC hour (a port fire is six at this rate): the mark lands.
     let marked_ic = fire_until(&mut rig, 6, |tw| {
@@ -2326,6 +2341,25 @@ fn pl10_a_worked_out_site_deposit_rerolls_after_28_ic_days_across_a_restart() {
     );
     sweep(&mut rig.tw, 61);
     assert_eq!(quarantine_of(&rig.tw, row.deposit), None, "the audit holds");
+    // Doc 48 cut EX.0: the re-roll's credit is the census's `rerolled` source, so the balance
+    // holds while the ground fills again.
+    let matter_after = matter_terms(&mut rig.tw);
+    let kg_per_t = i128::from(
+        tacsim::definitions::goods::goods_table()
+            .ok()
+            .and_then(|goods| goods.good(&row.good).and_then(|g| g.mass_kg_per_unit()))
+            .expect("the ore's mass"),
+    );
+    assert_eq!(
+        matter_after["rerolled"] - matter_before["rerolled"],
+        i128::from(row.gross_t) * kg_per_t,
+        "the re-roll's tonnes: before {matter_before:?}, after {matter_after:?}"
+    );
+    assert_eq!(
+        matter_after["balance"], matter_before["balance"],
+        "the matter census holds across the re-roll: before {matter_before:?}, after \
+         {matter_after:?}"
+    );
     // A second reboot reads it back, and nothing marks a deposit with ore in it.
     let mut rig = reboot(rig);
     for _ in 0..4 {
