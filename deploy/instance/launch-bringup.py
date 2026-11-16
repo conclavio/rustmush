@@ -119,6 +119,16 @@ MARKET_TERMS = {
     "resale_offer_seconds": 100800,
     "charter_settle_ic_seconds": 259200,
 }
+# Doc 48 unit PL.7 (Q-48-27, Q-48-48): a certified die takes its chain goods from the Basin
+# die depot when it is issued (the hardware catalogue's `die_chain`: Class I, II and III take
+# 1+1, 2+1 and 4+2 t of instrument boards and strategic ore). The origin's Initialize credits
+# the depot with this opening stock once. Provisional (the owner's economy rule of 2026-10-24):
+# one month of the full quota (64, 16 and 4 dies), 112 t of boards and 88 t of ore. Nothing
+# refills the depot after it.
+DEPOT_STOCK = [
+    {"commodity": "instrument_boards", "units": 112},
+    {"commodity": "strategic_ore", "units": 88},
+]
 TRUST = "Co-op First Captain Trust"
 # The counter's door (doc 44 unit MW.19). The counter is a room the bring-up
 # digs, and a dug room has no exit: until this, no player could walk to it, so
@@ -956,6 +966,7 @@ def identities(box, staff):
             "supplier_account": supplier,
             "integrator": {"account": integrator, "organization": basin, "scope": factory_scope},
             "factory": shop, "output_container": output,
+            "depot_stock": DEPOT_STOCK,
             "ungovern": {
                 "provider": {"account": back_account, "organization": tether, "scope": backroom},
                 "factory": back_shop, "output_container": back_output},

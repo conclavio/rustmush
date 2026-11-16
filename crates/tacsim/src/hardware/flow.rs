@@ -122,9 +122,23 @@ fn command(w: &mut TestWorld, actor: ObjId, line: &str) -> Result {
     }
     Ok(())
 }
-/// What staff stock the depot with at the rig's start (doc 48 unit PL.7): of each chain good,
-/// enough for every die the suite issues.
+/// The depot's opening stock (doc 48 unit PL.7): of each chain good, enough for every die the
+/// suite issues.
 const DEPOT_STOCK: u64 = 200;
+/// `units` of every good the shipped catalogue's die chain names, as a deployment's opening stock.
+fn depot_stock(units: u64) -> Result<Vec<mush_industry::core_production::ChainLine>> {
+    let goods: std::collections::BTreeSet<_> = PublishedHardware::shipped()?
+        .catalogue()
+        .chain()?
+        .into_iter()
+        .flatten()
+        .map(|line| line.commodity)
+        .collect();
+    Ok(goods
+        .into_iter()
+        .map(|commodity| mush_industry::core_production::ChainLine { commodity, units })
+        .collect())
+}
 struct Rig {
     w: Option<TestWorld>,
     boot: Boot,
@@ -460,6 +474,8 @@ impl Rig {
         let deployment = HardwareDeployment {
             bay: None,
             buy_back_permille: None,
+            // Doc 48 unit PL.7: the depot opens with the dies' chain goods.
+            depot_stock: depot_stock(DEPOT_STOCK)?,
             ungovern: Some(super::UngoverningSite {
                 provider: ScopedCoreAccount {
                     account: shop_account,
@@ -535,40 +551,7 @@ impl Rig {
                 .is_err()
         );
         r.reboot(CoreOriginMode::Active)?;
-        r.stock_depot(DEPOT_STOCK)?;
         Ok(r)
-    }
-    /// **Doc 48 unit PL.7: staff stock the importer's depot** with `units` of every good the
-    /// shipped catalogue's die chain names: a die takes its chain goods from the depot when it
-    /// is issued (Q-48-27, Q-48-48).
-    fn stock_depot(&mut self, units: u64) -> Result {
-        let families = self
-            .world()
-            .world()
-            .module_state::<crate::port::families::PortHandles>()
-            .and_then(|handles| handles.inventory.clone())
-            .ok_or("the inventory's families")?;
-        let goods: std::collections::BTreeSet<_> = PublishedHardware::shipped()?
-            .catalogue()
-            .chain()?
-            .into_iter()
-            .flatten()
-            .map(|line| line.commodity)
-            .collect();
-        let depot = mush_inventory::EndpointRef(self.deployment.depot);
-        // One transaction a good: each new pool writes the endpoint's pool census, and a
-        // transaction writes one key once.
-        for good in &goods {
-            let engine = self.world_mut().engine_mut();
-            let mut txn = engine.action_transaction(&families.pools)?;
-            families
-                .credit(&mut txn, depot, good, units)
-                .map_err(|e| format!("staff's stock of {good}: {e}"))?;
-            let (_, installation) = txn.prepare()?.into_parts();
-            engine.install_prepared_action(installation)?;
-        }
-        self.flush();
-        Ok(())
     }
     /// The depot's pool of `good`.
     fn depot(&mut self, good: &str) -> Result<u64> {

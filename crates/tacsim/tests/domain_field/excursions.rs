@@ -1147,7 +1147,7 @@ pub(crate) fn hold_vault(tw: &TestWorld, row: &HullRow) -> VaultId {
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (additive; the inventory's own
 /// path, staff's hand).
-pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
     let endpoint = EndpointRef(vault);
     let good = cid(good);
     let families = rig

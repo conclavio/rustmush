@@ -734,6 +734,17 @@ impl Provider {
             txn.replace(&f.deployment, &(), after).map_err(bad)?;
         } else {
             txn.insert(&f.deployment, &(), after).map_err(bad)?;
+            // Doc 48 unit PL.7: the depot's opening stock, once, in the initialization's bundle.
+            let opening = &self.runtime.config.policy.opening;
+            if !opening.is_empty() {
+                let rows: Vec<_> = opening
+                    .iter()
+                    .map(|line| (line.commodity.clone(), line.units))
+                    .collect();
+                f.inventory
+                    .credit_many(txn, EndpointRef(self.runtime.config.policy.depot), &rows)
+                    .map_err(|_| Error::Unavailable)?;
+            }
         }
         Ok(AuthoritativeActionOutput::new(RulesValue::new(self.outcome.clone(),json!({"operation":operation,"lot":certificate.as_ref().map(|c|c.lot),"class":class})).map_err(bad)?)
    .with_definitions(vec![self.runtime.actions[if self.initialize{0}else{1}].clone(),self.outcome.clone(),self.runtime.config.policy.content.clone()]).with_eligible_witnesses(vec![inv.principal().clone()]))

@@ -32,6 +32,10 @@ pub struct ChainLine {
 pub const MAX_CHAIN_LINES: usize = 4;
 /// The most units one chain line consumes.
 pub const MAX_CHAIN_UNITS: u64 = 1_000;
+/// The most goods the depot's opening stock names.
+pub const MAX_OPENING_LINES: usize = 8;
+/// The most units of one good the depot's opening stock holds.
+pub const MAX_OPENING_UNITS: u64 = 100_000;
 /// The die lots' own commodity, which no chain line may name.
 pub(crate) const DIE_COMMODITY: &str = "tacsim.electronics";
 
@@ -53,6 +57,22 @@ pub struct OriginPolicy {
     /// none, and then not written, so such a policy keeps its bytes and digest.
     #[serde(default, skip_serializing_if = "no_chain")]
     pub chain: [Vec<ChainLine>; 3],
+    /// **The depot's opening stock** (doc 48 unit PL.7): the chain goods the origin's
+    /// `Initialize` credits into [`Self::depot`] once, so a launched world can cut its first dies.
+    /// The amounts are the deployment's. The origin's index retains them (its
+    /// `initialize_policy`), which is the census's source for them. Empty when the composition
+    /// names none, and then not written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opening: Vec<ChainLine>,
+}
+/// Lines in strictly ascending commodity order (one good once, canonical bytes), at most
+/// `max_lines`, each 1 to `max_units`, never the die's own commodity.
+fn lines_ok(lines: &[ChainLine], max_lines: usize, max_units: u64) -> bool {
+    lines.len() <= max_lines
+        && lines
+            .iter()
+            .all(|l| (1..=max_units).contains(&l.units) && l.commodity.as_str() != DIE_COMMODITY)
+        && lines.windows(2).all(|w| w[0].commodity < w[1].commodity)
 }
 fn no_chain(chain: &[Vec<ChainLine>; 3]) -> bool {
     chain.iter().all(Vec::is_empty)
@@ -72,18 +92,13 @@ impl OriginPolicy {
         {
             return Err(Error::Invalid);
         }
-        // Each class's lines: bounded, in strictly ascending commodity order (so one good is
-        // named once and the bytes are canonical), never the die's own commodity.
-        for lines in &self.chain {
-            if lines.len() > MAX_CHAIN_LINES
-                || lines.iter().any(|l| {
-                    !(1..=MAX_CHAIN_UNITS).contains(&l.units)
-                        || l.commodity.as_str() == DIE_COMMODITY
-                })
-                || lines.windows(2).any(|w| w[0].commodity >= w[1].commodity)
-            {
-                return Err(Error::Invalid);
-            }
+        if !self
+            .chain
+            .iter()
+            .all(|lines| lines_ok(lines, MAX_CHAIN_LINES, MAX_CHAIN_UNITS))
+            || !lines_ok(&self.opening, MAX_OPENING_LINES, MAX_OPENING_UNITS)
+        {
+            return Err(Error::Invalid);
         }
         Ok(())
     }

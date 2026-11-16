@@ -232,16 +232,24 @@ impl Rig {
         Ok(())
     }
     fn initialized(grant: bool) -> Result<Box<Self>> {
-        Self::initialized_with(grant, Default::default())
+        Self::initialized_with(grant, Default::default(), Vec::new())
     }
     /// Doc 48 unit PL.7: an Origin whose dies consume `chain` from the depot.
     fn with_chain(chain: [Vec<ChainLine>; 3]) -> Result<Box<Self>> {
-        let mut r = Self::initialized_with(true, chain)?;
+        Self::with_stock(chain, Vec::new())
+    }
+    /// Doc 48 unit PL.7: and whose initialization stocks the depot with `opening`.
+    fn with_stock(chain: [Vec<ChainLine>; 3], opening: Vec<ChainLine>) -> Result<Box<Self>> {
+        let mut r = Self::initialized_with(true, chain, opening)?;
         r.activate()?;
         Ok(r)
     }
     #[inline(never)]
-    fn initialized_with(grant: bool, chain: [Vec<ChainLine>; 3]) -> Result<Box<Self>> {
+    fn initialized_with(
+        grant: bool,
+        chain: [Vec<ChainLine>; 3],
+        opening: Vec<ChainLine>,
+    ) -> Result<Box<Self>> {
         let mut w = TestWorld::with_modules(modules(None));
         w.world_mut().set_now(1000);
         w.world_mut().set_game_clock(mush_core::clock::GameClock {
@@ -313,6 +321,7 @@ impl Rig {
             grades,
             monthly_quotas: [2, 2, 2],
             chain,
+            opening,
         };
         if grant {
             for actor in [GOD, agent] {
@@ -641,6 +650,86 @@ fn pl7_a_die_consumes_its_chain_goods_at_issue() -> Result {
             .map(|pool| pool.quantity),
         Some(0)
     );
+    Ok(())
+}
+/// **Doc 48 unit PL.7: the initialization stocks the depot once** with the policy's opening
+/// stock, two new pools in its one bundle, so the first dies are cut from it. A cold start reads
+/// it; the index retains the amounts. Bounds: at most eight goods, each 1 to 100,000 units, in
+/// order, never the die's commodity.
+#[test]
+fn pl7_the_initialization_stocks_the_depot() -> Result {
+    let opening = vec![
+        chain_line("instrument_boards", 5)?,
+        chain_line("strategic_ore", 3)?,
+    ];
+    let mut r = Rig::with_stock(
+        [
+            vec![
+                chain_line("instrument_boards", 2)?,
+                chain_line("strategic_ore", 1)?,
+            ],
+            Vec::new(),
+            Vec::new(),
+        ],
+        opening.clone(),
+    )?;
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (5, 3)
+    );
+    let index =
+        r.w.world()
+            .module_state::<CoreProductionState>()
+            .and_then(|s| s.index.clone())
+            .ok_or("the index")?;
+    check_eq!(index.initialize_policy.opening, opening);
+    let agent = r.policy.agents[1].actor;
+    r.issue(agent, 2, DieClass::I)?;
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (3, 2)
+    );
+    let mut cold = r.cold(r.boot.clone(), Some(CoreOriginMode::Active))?;
+    let h = cold
+        .world()
+        .module_state::<TestHandles>()
+        .ok_or("handles")?
+        .0
+        .clone();
+    let mut txn = cold
+        .engine_mut()
+        .action_transaction(&h.families.inventory.pools)?;
+    check_eq!(
+        h.families
+            .inventory
+            .pool(&mut txn, EndpointRef(r.policy.depot), &id("strategic_ore")?)?
+            .map(|pool| pool.quantity),
+        Some(2)
+    );
+    drop(txn);
+    let with = |lines: Vec<ChainLine>| OriginPolicy {
+        opening: lines,
+        ..r.policy.clone()
+    };
+    with(
+        (0..8)
+            .map(|n| chain_line(&format!("good_{n}"), 100_000))
+            .collect::<Result<Vec<_>>>()?,
+    )
+    .validate()?;
+    for bad in [
+        (0..9)
+            .map(|n| chain_line(&format!("good_{n}"), 1))
+            .collect::<Result<Vec<_>>>()?,
+        vec![chain_line("strategic_ore", 100_001)?],
+        vec![
+            chain_line("strategic_ore", 1)?,
+            chain_line("instrument_boards", 1)?,
+        ],
+        vec![chain_line(config::DIE_COMMODITY, 1)?],
+    ] {
+        check!(with(bad).validate().is_err());
+    }
     Ok(())
 }
 /// **Doc 48 unit PL.7: the chain bill's bounds.** Each class's lines are strictly ascending (one
