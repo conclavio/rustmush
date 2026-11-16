@@ -62,3 +62,14 @@ content without one kernel.
 
 A ruled default that the review showed was wrong in its facts is corrected in place. A ruled default
 that needs a new choice gets a follow-up question; the ruling stands until that is answered.
+
+## 4. The owner's rulings on the follow-ups (2026-11-15)
+
+- **Doc 48 Draft 0.5:** Q-48-37 to Q-48-46 all at their defaults.
+- **Doc 49 Draft 0.6:**
+  - Q-49-20 takes its alternative, and **the "no auto-fire" rule is unwound**: slots stand for
+    players and minds alike. In the owner's words: "that's just tedious and defeats the purpose".
+    A-7's point therefore stands as a description of the mechanic, not as a defect.
+  - Q-49-22 takes its alternative: the magazine counts stay 24, 600, 120 and 4. A-13's endurance
+    figures stay on record for CC.2's measurement.
+  - Q-49-21, Q-49-23 and Q-49-24 are at their defaults.

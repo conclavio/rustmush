@@ -1,6 +1,6 @@
 # 49. Combat content — the armaments, the rounds and the shot, surveyed
 
-Draft 0.5, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
+Draft 0.6, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
 lane, with the lead spot-checking the cycle figures, the cycle floor, the card presets, the slot limit
 and the laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
 0.1, the same day, was the survey.
@@ -48,6 +48,22 @@ now ruled. What the defaults settle:
 
 The rulings stand until their follow-ups are answered.
 
+**Draft 0.6, the same day, records the owner's rulings on the follow-ups. Every question in this survey,
+Q-49-1 to Q-49-24, is now ruled.**
+- **Q-49-20: the alternative, and the "no auto-fire" rule is unwound.** In the owner's words: "that's
+  just tedious and defeats the purpose, let's just unwind the 'no auto-fire' rule". Condition slots
+  stand for players and minds alike: once armed, a slot fires at each ready moment while its terms
+  hold. The 2026-10-02 direction keeps its first two parts (several-second cycles, precious rounds).
+- **Q-49-22: the alternative.** The magazine counts stay as they stood: 24, 600, 120 and 4 ("i was
+  okay with them as they stood, lets not change the counts").
+- **Q-49-21, Q-49-23 and Q-49-24:** at their defaults. Round choice is deferred; the reserve is spent
+  only answering fire or covering a withdrawal; each laser mode has its own cycle, with the Dray's
+  lasers fitted defence-only.
+
+My reading of what the unwinding leaves, not the owner's words: Q-49-8's judgement term and the
+Line card's floor and reserve stand as shot discipline for the default card, no longer as a ban on
+automatic fire. Q-49-19's 5 s floor for both lasers stands on its own two reasons.
+
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
 questions (§6), each with a proposed default, an alternative and a reason. **Provisional** marks a
@@ -88,7 +104,7 @@ walk through how a hit is resolved. Content file paths keep their own names.
    - The stock mind arms one slot per mount at a 10% odds floor and keeps no reserve.
    - The external bot fires every gun at full rate.
    - Under the owner's "no auto-fire" direction, that is the question this survey cannot settle
-     alone.
+     alone. (Ruled: the owner unwound the "no auto-fire" rule on 2026-11-15, Q-49-20, and slots stand.)
 6. **The setting says lasers are anti-drone, but the content does not follow it.**
    - The lore rule: lasers are extremely effective against drones and weak against hard targets.
    - Yet the ground has a laser tank and a laser biped.
@@ -110,6 +126,9 @@ direction the owner set has three parts:
 - ammunition made more precious, so a player waits for the good shot instead of firing each time
   the timer lapses;
 - no auto-fire and no fire-when-ready queue.
+
+**Unwound on 2026-11-15 (Q-49-20):** the owner withdrew the third part. A standing condition slot is
+the game's mechanic. The first two parts stand.
 
 What the engine should support is the decision: the odds for a contact, the target's aspect and the
 ammunition left. It should not support the trigger.
@@ -401,8 +420,8 @@ The proposal in one paragraph:
 - Retune the stock mind's default card and the bot to the new palette.
 - Variety (a second round type for the main gun, a reading for penetration) comes after, as content.
 
-**The ground palette.** The cycles are ruled (Q-49-3, 2026-11-15). The magazines are as proposed and
-provisional:
+**The ground palette.** The cycles are ruled (Q-49-3, 2026-11-15). The magazines are as proposed,
+and Q-49-22 kept them:
 
 | Mount | Cycle now → ruled | Magazine now → proposed | Note |
 |---|---|---|---|
@@ -649,13 +668,23 @@ is accepted at its default as written. Their proposed text below is the decision
   - One floor across both kernels is one rule to read.
   - The alternative widens the automatic class from "answers incoming rounds" to "answers a
     contact", which is the auto-fire the owner ruled out.
+  - (Draft 0.6: the "no auto-fire" rule is unwound, Q-49-20. The ruling stands on the first two
+    reasons.)
 
 ### 6.6 Raised by the outside review (doc 48a)
 
-Each question answers a finding that held. Until it is ruled, the ruling it qualifies stands, as
-corrected above.
+Each question answers a finding that held.
+
+**Ruled 2026-11-15 (Draft 0.6):**
+- Q-49-20 and Q-49-22 take their alternatives; Q-49-20's ruling unwinds the "no auto-fire" rule.
+- Q-49-21, Q-49-23 and Q-49-24 are at their defaults.
+
+Each question carries its decision first.
 
 **Q-49-20 — Standing or single-use slots** (A-7).
+- **Decision (owner ruling, 2026-11-15):** **standing slots for everyone**, the alternative. The owner
+  unwound the "no auto-fire" rule: "that's just tedious and defeats the purpose". Single-use slots
+  are not built.
 - **The choice:** Q-49-8 kept condition slots with a judgement term. A slot still *stands*: once
   armed, it fires at every ready moment while its terms hold, until it is disarmed. That is standing
   authorisation. The alternative is single-use: a slot fires once and disarms.
@@ -672,6 +701,7 @@ corrected above.
     and, for an absent player, by the gate that never fires first.
 
 **Q-49-21 — The round choice, narrowed** (A-6).
+- **Decision (owner ruling, 2026-11-15):** the default, accepted.
 - **Proposed default:** defer the round choice. CC.11 leaves this programme, and the cannon keeps one
   round.
 - **Alternative:** build the selected-round state now, with rounds that differ in damage only (no
@@ -682,6 +712,10 @@ corrected above.
     replay re-bless. It should be scoped on its own when content asks for it.
 
 **Q-49-22 — Magazines sized by endurance** (A-13).
+- **Decision (owner ruling, 2026-11-15):** **the counts stay as they stood**: 24, 600, 120 and 4, the
+  alternative. "I was okay with them as they stood, lets not change the counts." My reading: CC.2
+  still measures fights (length, hits per load, dry withdrawals, human against mind) and reports
+  them. It changes no count without the owner.
 - **The problem:** with the ruled cycles, the magazines §5 proposed *raise* continuous-fire endurance:
   - cannon 240 → 360 s;
   - coaxial gun 200 → 300 s;
@@ -704,6 +738,7 @@ corrected above.
   cycle), and with longer cycles the old counts last longer.
 
 **Q-49-23 — When a reserve is spent** (A-13).
+- **Decision (owner ruling, 2026-11-15):** the default, accepted.
 - **The problem:** the Line card keeps a 25% reserve, but today "dry" means no round anywhere
   (`arena/stock_mind.rs:431-434`). A mind at its reserve therefore stops firing and never withdraws.
 - **Proposed default:**
@@ -717,6 +752,7 @@ corrected above.
   that runs.
 
 **Q-49-24 — Laser modes** (A-12).
+- **Decision (owner ruling, 2026-11-15):** the default, accepted.
 - **The problem:** a space laser switches between offence and defence on one cooldown. The 5 s floor
   (Q-49-19) and the automatic-defence exemption (Q-49-2, Q-49-10) are each per mount.
 - **Proposed default:**
@@ -739,8 +775,8 @@ One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit pref
 | Unit | What | Gate |
 |---|---|---|
 | CC.0 | Tests read cycles and magazines from content, not literals; the bot's scripted rig reads content | — |
-| CC.1 | The trigger rule: a slot needs a judgement term (single-use for a seated player under Q-49-20); card floors; the Line card's reserve and when it is spent | Q-49-8, Q-49-9, Q-49-20, Q-49-23 |
-| CC.2 | The ground palette (15, 5, 10, 30 s), magazines by endurance, and the 5 s cycle floor (with the automatic-defence class); measured fights before it lands; one re-bless | CC.0, CC.1, Q-49-2, Q-49-3 and Q-49-19 (ruled), Q-49-22 |
+| CC.1 | The slot rule: standing slots (Q-49-20) carrying a judgement term; card floors; the Line card's reserve and when it is spent | Q-49-8, Q-49-9, Q-49-20, Q-49-23 (ruled) |
+| CC.2 | The ground palette (15, 5, 10, 30 s) with magazines 24 / 600 / 120 / 4, and the 5 s cycle floor (with the automatic-defence class); measured fights reported, no count changed without the owner; one re-bless | CC.0, CC.1, Q-49-2, Q-49-3, Q-49-19 and Q-49-22 (ruled) |
 | CC.3 | Ground lasers as the anti-drone fit; the laser variants keep a main gun | CC.2, Q-49-6 |
 | CC.4 | Rounds on `STATUS`; checked at 120 columns | Q-49-13 |
 | CC.5 | Munitions prices, read from doc 48's PL.3 recipes | doc 48's PL.3, Q-49-4, Q-49-5 |
@@ -748,7 +784,7 @@ One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit pref
 | CC.7 | Space magazines persist; space munitions goods; rearm at a berth | CC.6, doc 48's PL.0 (`MAX_GOODS`) and **PL.3 producing the space munitions** (doc 48 Q-48-41), Q-49-12 |
 | CC.8 | The space palette; lasers per the lore with the cycle per mode; the three space doctrines rewritten | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled), Q-49-24 |
 | CC.9 | Space decision support, for the player and the minds | CC.6, Q-49-13 |
-| CC.10 | The bot's discipline assertions (and its re-arming, if slots are single-use) | CC.2, Q-49-17, Q-49-20 |
+| CC.10 | The bot's discipline assertions | CC.2, Q-49-17 |
 | CC.11 | ~~A second round for the cannon, chosen at rearm~~: deferred under Q-49-21's default (engine work: selected-round state, and the resolver for section effects) | Q-49-14, Q-49-21 |
 
 **Round conservation (outside review, doc 48a A-14).** Every CC unit that moves rounds keeps them
