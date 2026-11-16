@@ -258,7 +258,208 @@ so a site's clerk files the mark.
 
 ## EX.1a
 
-Not built.
+**Survey.**
+- **Who sold.** Only a vendor row: an org registered by staff. `list_goods` wrote the seller
+  as `Organization(vendor.org)`, and every quote and accept path looked the vendor row up.
+- **Who accepted.** The market accepted for a seller through `accept_contract_as`, which asks
+  `party_cap(principal, PartyCap::Accept)`. That cap covers a whole principal: it comes from
+  a table frozen at composition or from tacsim's content source, and nothing in it can name a
+  listing. So mush-market alone could not accept for an offline player. The starting session
+  approved a seam in `mush-economy` and one line in `mush-composition` (Divergences).
+- **Bids.** `post_wanted` escrowed nothing. On a sale into a bid, the seller names the
+  bidder's account as the consideration, and `offer_contract`'s `consideration_for` refused
+  an account the issuer cannot view unless its owner held the party cap. So a seller could
+  not even name a player bidder's account.
+- **The hold clock.** An exact lot's hold has no clock of its own: `lot::hold_standing` reads
+  the lot hold and the listing's own deadline. Even so, `list_goods` cut every lot listing to
+  `hold_ttl_real_secs`, 7 IC days, which is 7 real hours at 24:1.
+- **Vendor ids** are allocated from 0, so 0 cannot mark "no vendor row".
+
+**Built.**
+
+*The seller model* **(expensive to reverse).**
+- **A personal listing** names no vendor row and carries its seller's own account:
+  - `Listing.vendor` is `NO_VENDOR` (`VendorId(u64::MAX)`, which `alloc_vendor` never mints);
+  - `Listing.account` is the seller's own live account in the venue's currency.
+  - The wire takes exactly one of the two, a vendor row or an account (`record::check_personal`).
+- **The seller** is any principal the actor may sell as: themself, or an organization they
+  act for that may trade. The player verbs sell as the player.
+- **No vendor row is made.** The listings are indexed by seller (`MarketStore::by_personal`)
+  and capped at `MAX_LISTINGS_PER_SELLER` (32, provisional), asks and bids together. The cap
+  is checked on post and again on load, as the per-vendor cap is.
+- **A personal ask** is one exact lot only (Q-48-49; `Supply::Lot { lot: Some(_) }`).
+  - The market's lot action holds the lot for the listing, as IN.2's vendor lot listings are.
+  - Pooled personal asks are refused on the wire and at posting.
+  - The catalogue entry is found from the lot's own commodity.
+- **A personal bid** is a `Supply::Wanted` listing whose `Listing.escrow` names a reservation
+  hold on the bidder's own account:
+  - purpose `Reservation { kind: "market.bid", id: <listing> }`;
+  - amount `price × quantity`, placed at posting under the bidder's own debit authority
+    (`seller::post_bid`);
+  - it expires at the listing's own deadline, so the economy's sweep releases it at expiry.
+  - Withdrawal releases it (`withdraw_listing` → `seller::release_bid_escrow`).
+  - Bids are players' only in this cut.
+- **A private offer** sets `Listing.private_to` (a person) and is `Hidden`.
+  - Only its seller, its counterparty and staff see it (`may_view_listing`).
+  - Anyone else is refused, in the offer's own words where they can see it:
+    - at the quote (`trade::quote`);
+    - at the accept (`trade::accept_at`, before every other check on the quote);
+    - by the standing acceptance;
+    - for a bid, at `+market/sell` (`trade::bid_buyer`).
+
+*The party-cap shape* **(expensive to reverse).**
+- **mush-economy.**
+  - The trait is `StandingAcceptance::stands(w, contract, party, against) -> bool`. It is wired
+    once by `EconomyModule::with_standing_acceptance` and has one implementor,
+    `mush_market::ListingAcceptance`, wired in `mush-composition` beside `SaleDisputeGuard`.
+  - **The accept** is `accept_contract_standing(ctx, id, party, against) -> StandingAccepted`.
+    - It refuses when the seam is unwired or says no, when `party` is not a party or is the
+      issuer, and at §9's per-party cap.
+    - It runs `accept_core` with the party as the plan's actor, so the escrow posts under the
+      party's own debit authority.
+  - **With `against`**, the one escrow plan does three things (`accept_core_backed`,
+    `backed_ops`), so the money is reserved throughout and once:
+    - releases the bid's hold;
+    - places the sale's escrow;
+    - places the remainder again, with the same purpose, beneficiary and deadline.
+  - **The backing hold** must be the party's own: `Held`, placed by the party, a
+    `Reservation`, in no engine-owned namespace, on the consideration's own account, and
+    covering it (`standing_backing`).
+  - **At the offer**, `consideration_for` admits an account the issuer cannot view, when its
+    owner is a party, only provisionally. `offer_contract` then asks the seam about the
+    finished draft, under the id it is about to take, with `against: None`. That is how a
+    seller names a player bid's account.
+- **mush-market's `ListingAcceptance`** answers yes only for a market quote's contract whose
+  listing still stands:
+  - The listing must be present (a withdrawal deletes it, which revokes the acceptance),
+    personal, its seller trading, not lapsed, at the quote's revision and price, and carrying
+    at least the quote's quantity. `party` must be its seller.
+  - **An ask:**
+    - the buyer is the issuer;
+    - every consideration is the buyer's, summing to price × quantity;
+    - every outcome pays the seller's own account exactly that;
+    - no backing hold.
+  - **A bid:**
+    - the party is the quote's buyer, and a private bid's counterparty is the seller;
+    - its one consideration is (the bid's account, price × quantity);
+    - the backing is none on the draft at the offer, and exactly the bid's escrow at the
+      acceptance.
+- **The trade paths.**
+  - `accept_at` accepts a personal ask by standing (`against: None`).
+  - `sell_into_bid` writes a personal bid's sale quote before the offer, under the peeked
+    contract id, so the offer-time question can find it. It then accepts by standing against
+    `listing.escrow` and writes the remainder hold back as the bid's escrow.
+  - A personal bid drawn to nothing is deleted, not kept as an exhausted marker.
+  - A refunded sale does not restore a personal bid's intake: the refund returns the sale's
+    escrow to the bidder's available balance, not to the bid's hold.
+
+*Hold renewal* (Q-48-54's first point).
+- An exact-lot listing, a vendor's or a personal one, is no longer cut to the reservation's
+  clock.
+- A personal listing stands 14 real days by default (`days=` up to 90).
+
+*The verbs.*
+- `+market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>]`.
+- `+market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] [market=<venue>] [days=<n>]`.
+- `+market/withdraw <listing>`.
+- `+market/mine`.
+- **The venue** is `market=`, or the venue of the room the actor stands in. Its currency is
+  its first vendor's (the market's one-instrument-a-venue rule).
+- **Help:** the `+market` command help, and a new topic, `help exchange`
+  (`docs/help/exchange.md`).
+- **Sentences:** every new player sentence is a `pub const` in `mush_market::seller`. The bot
+  table has a new `exchange` family in `crates/mush-bot/src/mine/minds.rs`, with in-step,
+  census (over `seller.rs`), distinct and 120-column tests.
+
+**Tests.**
+- **The gates:** `crates/mush-market/tests/ex1a.rs` (18 tests), plus unit tests in `record.rs`
+  (wire rules), `store.rs` (the per-seller trim on load) and `contract_live.rs`
+  (`backed_ops`).
+- **The done-when, test by test:**
+  - A player lists an exact lot, and another buys it while the seller types nothing:
+    `ex1a_a_player_lists_an_exact_lot_and_another_buys_it_while_the_seller_is_away`.
+  - A bid escrows at posting and fills, converting in one plan with no gap and no double hold:
+    `ex1a_a_bid_escrows_at_posting_and_fills_in_one_plan`.
+  - A private offer is refused to a third party at quote and at accept, the accept case
+    through a hand-edited quote across a reboot:
+    `ex1a_a_private_offer_is_refused_to_a_third_party_at_quote` and `…_at_accept`.
+  - A listing outlives 7 real hours (personal and vendor):
+    `ex1a_a_listing_outlives_seven_real_hours`.
+  - The caps: `ex1a_a_seller_holds_at_most_32_listings`,
+    `ex1a_the_store_ceiling_holds_under_32_sellers_load`,
+    `ex1a_the_party_cap_binds_a_player_seller` and
+    `ex1a_the_issuer_cap_binds_a_player_selling_into_bids`.
+- **The standing acceptance's guards:**
+  - `ex1a_the_standing_acceptance_holds_a_bid_to_its_terms`: a stale revision, a withdrawn
+    listing, a third party, the other party, no backing, a foreign hold, a price or
+    quantity mismatch, and a consideration mismatch.
+  - `…_an_ask_to_its_terms`.
+  - `ex1a_a_listing_whose_terms_moved_under_its_quote_is_refused_at_accept`.
+  - `ex1a_a_backing_hold_that_is_not_the_bid_is_refused`.
+  - `ex1a_an_unlanded_sale_into_a_bid_refunds_and_the_bid_is_not_restored`.
+- **The load:** 32 sellers (more than the 30-hull harness cohort) fill the 1,024 ceiling. On
+  conclav.dev, in a debug build:
+  - the fill took 1.34 s;
+  - `+market/list` at the ceiling took 122 µs;
+  - one sweep fire took 533 µs.
+
+  The 1,025th listing is refused, and a withdrawal frees a place that is then taken.
+- **Existing tests, on conclav.dev:**
+  - every mush-market and mush-economy test passes (1,166);
+  - `mush-server --test commerce_composition` passes (91, including `ic_slice_loop`, the IC
+    trade run);
+  - `tacsim --test domain_economy` passes (589);
+  - the M7 market stories: M7_RESULT.
+- **The gates:** `cargo fmt --check`, workspace clippy with `-D warnings`, the M7 memory-size
+  clippy, rustdoc with `-D warnings` on the touched crates, `mush-contract-tests` (200: the
+  census, the panic budget, the restriction lints and the help-page lint), and the bot's
+  `minds::` tests (32).
+- **The mutations:** 50 run, each alone, against the EX.1a tests. 37 are killed. The 13 that
+  survive are defence in depth, each masked by a check that runs before it:
+  - **S1:** `stands`' listing seller equals the party (the quote's own party checks).
+  - **S2:** `stands`' seller still trading (`quote` and `accept_at` check first).
+  - **S3:** `stands`' listing lapse (`is_current`, and `sell_into_bid`'s step 3).
+  - **S9, S16:** `stands`' private-offer checks (the quote and accept checks, and a
+    stranger cannot see a private bid).
+  - **S10:** `stands`' one-consideration rule for a bid (the market builds one).
+  - **T5:** `sell_into_bid`'s `bid_funds` pre-check (`standing_backing` refuses the same).
+  - **E4:** the backing hold's placer (no test path makes a Reservation hold on a player's
+    account by someone else).
+  - **E6:** the party cap at the standing accept (`offer_contract` counts it first).
+  - **E7:** the issuer refusal (the market never asks standing of the issuer).
+  - **E8, E9:** the offer-time question, and the seam-wired flag on the consideration
+    (`consideration_for` admits only a party's own account, and the market builds true
+    drafts).
+
+  The loop is `ex1a-mut.py` and `ex1a-mut.sh` (scratch, run on conclav.dev).
+
+**Divergences.**
+- **Files outside mush-market, approved by the starting session:**
+  - `mush-economy/src/contract.rs`, `contract_live.rs`, `module.rs` and `lib.rs`, each
+    addition in its own block;
+  - `mush-composition/src/lib.rs` (one line).
+- **Files outside mush-market that the brief's done-when asks for:**
+  - `mush-bot/src/mine/minds.rs` (the sentence table);
+  - `docs/help/exchange.md` (the help topic).
+- **The seam also answers at the offer**, of the draft contract with `against: None`, when a
+  seller names a player bid's account. The trait's signature is the one approved.
+- **tacsim's own composition root** (`tacsim/src/composition/mod.rs`) is not wired, so a
+  personal listing refuses there, failing closed. EX.1b wires it when it builds the venue
+  side.
+- **A personal bid's intake is not restored** on a refunded sale.
+- **The API admits an org seller for asks**; the verbs do not yet.
+
+**Not built.**
+- **EX.1b's venue side:** the endpoint by presence, locker vaults, the non-port gate, the
+  Co-op share on every sale, offline buys, and the seam in tacsim's root.
+- **An offline seller's lapsed exact lot stays held until they withdraw it.** The market's
+  sweep cannot stage a holder's release. tacsim's `release_lapsed_hold` makes it for port
+  houses. With the 14-day default the window is long.
+- **Renewal for pooled lot holds**, the port counters' (no inventory renew op exists).
+- **`org=` on the verbs**, and org bidders.
+- **Fees (EX.4), one asset sale (EX.2) and services (EX.5).** EX.4's sale cut and levy must
+  widen `ListingAcceptance`'s ask rule, which today requires every outcome to pay the
+  seller's own account the whole price.
 
 ## EX.1b
 

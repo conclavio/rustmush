@@ -53,7 +53,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: "+market".into(),
             shape: ArgShape::EqPair,
             switches: [
-                "list", "show", "depth", "quote", "accept", "sell", "orders", "vendors",
+                "list", "show", "depth", "quote", "accept", "sell", "orders", "vendors", "post",
+                "bid", "withdraw", "mine",
             ]
             .iter()
             .copied()
@@ -100,7 +101,21 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    deposit the goods into its vault (@vault/deposit). It buys CUSTODY, so \
                    your title record survives the sale.\n\
                    +market/orders                     your own open quotes and deals.\n\
-                   +market/vendors                    who is trading."
+                   +market/vendors                    who is trading.\n\
+                   +market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>]\n\
+                   \x20                                 list one exact lot you hold for sale, at \
+                   a price per unit (split it to size first with @inv/split). The lot is held \
+                   for the listing, and a buyer's purchase settles while you are away. With \
+                   to=, it is a private offer: only that player sees it or may buy it.\n\
+                   +market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] \
+                   [market=<venue>] [days=<n>]\n\
+                   \x20                                 post a bid. The whole price is held from \
+                   your account at once and drawn as sellers fill it, while you are away; \
+                   with to=, only that player may sell into it.\n\
+                   +market/withdraw <listing>         take one of your own listings or bids \
+                   down: the lot is yours to use again, and a bid's unspent hold comes back.\n\
+                   +market/mine                       your own listings and bids. help exchange \
+                   has the whole of it."
                 .into(),
             ..CommandSpec::default()
         },
@@ -211,6 +226,14 @@ fn market_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         orders(ctx)
     } else if ctx.switches.has("vendors") {
         vendors(ctx)
+    } else if ctx.switches.has("post") {
+        post(ctx)
+    } else if ctx.switches.has("bid") {
+        bid(ctx)
+    } else if ctx.switches.has("withdraw") {
+        withdraw(ctx)
+    } else if ctx.switches.has("mine") {
+        mine(ctx)
     } else {
         list(ctx)
     }
@@ -304,13 +327,21 @@ pub(crate) fn vendor_instrument_of(
         .map(|a| a.instrument.clone())
 }
 
-/// The instrument a listing settles in.
+/// The instrument a listing settles in: its vendor's, or a personal listing's own
+/// account's (doc 48 cut EX.1a).
 #[must_use]
 pub(crate) fn listing_instrument(
     w: &mush_core::World,
     l: &crate::record::Listing,
 ) -> Option<mush_economy::InstrumentId> {
-    vendor_instrument_of(w, l.vendor)
+    match l.account {
+        Some(account) => w
+            .module_state::<mush_economy::EconomyStore>()?
+            .snapshot()
+            .account(account)
+            .map(|a| a.instrument.clone()),
+        None => vendor_instrument_of(w, l.vendor),
+    }
 }
 
 /// The instrument a quote settles in: its listing's while the listing stands, and the
@@ -322,14 +353,19 @@ pub(crate) fn quote_instrument(
     q: &crate::record::Quote,
 ) -> Option<mush_economy::InstrumentId> {
     let store = w.module_state::<MarketStore>()?;
-    let vendor = store
-        .listing(q.listing)
-        .map(|l| l.vendor)
-        .or_else(|| match &q.seller {
-            mush_org::PrincipalId::Organization(org) => store.vendor_of_org(*org).map(|v| v.id),
-            mush_org::PrincipalId::Object(_) | mush_org::PrincipalId::System(_) => None,
-        })?;
-    vendor_instrument_of(w, vendor)
+    // Doc 48 cut EX.1a: a personal listing's own account names its instrument, and a
+    // sold one (an exact lot's listing goes with its sale) the venue's.
+    if let Some(listing) = store.listing(q.listing) {
+        return listing_instrument(w, listing);
+    }
+    let vendor = match &q.seller {
+        mush_org::PrincipalId::Organization(org) => store.vendor_of_org(*org).map(|v| v.id),
+        mush_org::PrincipalId::Object(_) | mush_org::PrincipalId::System(_) => None,
+    };
+    match vendor {
+        Some(vendor) => vendor_instrument_of(w, vendor),
+        None => market_instrument(w, &q.market),
+    }
 }
 
 /// The instrument a venue trades in: that of its first vendor by id. One instrument
@@ -364,11 +400,8 @@ pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String 
         .module_state::<MarketStore>()
         .and_then(|s| s.entry_of(&l.catalog).map(|e| e.name.to_string()))
         .unwrap_or_else(|| l.catalog.code.to_string());
-    let shop = ctx
-        .w
-        .module_state::<MarketStore>()
-        .and_then(|s| s.vendor(l.vendor).map(|v| v.name.to_string()))
-        .unwrap_or_default();
+    // Doc 48 cut EX.1a: a personal listing names its seller.
+    let shop = crate::seller::seller_name(ctx.w, l);
     // **The row advertises the price the deal executes at** (independent verify fold,
     // D4): a maker's spread moved `Quote.price`, and this line read `Listing.price`
     // unmoved, so `+market/list` advertised a price nobody pays.
@@ -377,22 +410,25 @@ pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String 
     // Doc 18 cut IC8: a standing bid is demand, rendered as such, with " — not buying"
     // when the bidder's own account cannot fund one unit (or cannot be read).
     if l.source.is_wanted() {
-        let funded = ctx
-            .w
-            .module_state::<MarketStore>()
-            .and_then(|s| s.vendor(l.vendor))
-            .and_then(|v| {
-                ctx.w
-                    .module_state::<mush_economy::EconomyStore>()?
-                    .snapshot()
-                    .account(v.account)
-                    .map(|a| {
-                        a.posted_balance
-                            .minor()
-                            .saturating_sub(a.held_amount.minor())
-                    })
-            })
-            .is_some_and(|available| available >= price.minor());
+        // Doc 48 cut EX.1a: a personal bid is funded while its own escrow covers a unit.
+        let personal = l.is_personal() && crate::seller::bid_funds(ctx.w, l, 1);
+        let funded = personal
+            || ctx
+                .w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.vendor(l.vendor))
+                .and_then(|v| {
+                    ctx.w
+                        .module_state::<mush_economy::EconomyStore>()?
+                        .snapshot()
+                        .account(v.account)
+                        .map(|a| {
+                            a.posted_balance
+                                .minor()
+                                .saturating_sub(a.held_amount.minor())
+                        })
+                })
+                .is_some_and(|available| available >= price.minor());
         // Doc 18 cut IC10: an exhausted bid stands at quantity 0 and is not buying.
         let funded = funded && l.quantity > 0;
         return format!(
@@ -415,9 +451,10 @@ pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String 
         } else {
             format!(" at {shop}")
         },
-        match l.visibility {
-            MarketVisibility::Public => "",
-            MarketVisibility::Hidden => " (hidden)",
+        match (l.visibility, l.private_to.is_some()) {
+            (MarketVisibility::Public, _) => "",
+            (MarketVisibility::Hidden, true) => crate::seller::PRIVATE_MARK,
+            (MarketVisibility::Hidden, false) => " (hidden)",
         }
     )
 }
@@ -446,6 +483,8 @@ fn show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // already held — which is the honest thing a reserving listing says — and
         // learns no endpoint, no commodity id and no other principal's inventory.
         Supply::Lot { .. } => "held stock, reserved for this listing".to_string(),
+        // Doc 48 cut EX.1a: a personal bid is escrowed, and its bidder buys.
+        Supply::Wanted { .. } if l.is_personal() => crate::seller::BID_SUPPLY.to_string(),
         // Doc 18 cut IC8: a standing bid — opaque like the lot handles.
         Supply::Wanted { .. } => "a standing bid; the house buys this".to_string(),
     };
@@ -961,6 +1000,281 @@ fn sell(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Err(e) => Err(refuse_market(ctx, &e)),
     }
+}
+
+// ---- doc 48 cut EX.1a: the personal seller's verbs --------------------------------
+
+/// The `key=value` words a personal-seller verb takes after its first word: `price=`,
+/// `qty=`, `into=`, `to=`, `market=`, `days=`. An unknown word, or one given twice, is
+/// `None` (the usage line).
+#[derive(Clone, Debug, Default)]
+struct SellerWords {
+    price: Option<i64>,
+    qty: Option<u64>,
+    into: Option<u64>,
+    to: Option<String>,
+    market: Option<String>,
+    days: Option<i64>,
+}
+
+fn seller_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<SellerWords> {
+    let mut out = SellerWords::default();
+    for word in words {
+        let (key, value) = word.split_once('=')?;
+        let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
+        let digits = value.strip_prefix('#').unwrap_or(value);
+        let fresh = match key.to_ascii_lowercase().as_str() {
+            "price" => out.price.replace(value.parse::<i64>().ok()?).is_none(),
+            "qty" => out.qty.replace(value.parse::<u64>().ok()?).is_none(),
+            "into" => out.into.replace(digits.parse::<u64>().ok()?).is_none(),
+            "to" => out.to.replace(value.to_owned()).is_none(),
+            "market" => out.market.replace(value.to_owned()).is_none(),
+            "days" => out
+                .days
+                .replace(value.parse::<i64>().ok().filter(|d| *d > 0)?)
+                .is_none(),
+            _ => return None,
+        };
+        if !fresh {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// The venue a personal listing trades in (`market=`, else the venue of the room the
+/// actor stands in) and its currency.
+fn seller_venue(
+    ctx: &Ctx<'_>,
+    named: Option<&str>,
+) -> Result<(MarketId, mush_economy::InstrumentId), &'static str> {
+    let market = match named {
+        Some(name) => MarketId::new(name),
+        None => gate_venue(ctx),
+    }
+    .ok_or(crate::seller::NAME_VENUE)?;
+    let instrument = market_instrument(ctx.w, &market).ok_or(crate::seller::NO_CURRENCY)?;
+    Ok((market, instrument))
+}
+
+/// `to=<player>`: a player by name or `#dbref`.
+fn named_player(ctx: &Ctx<'_>, name: &str) -> Option<mush_org::PrincipalId> {
+    let who = match name.strip_prefix('#').and_then(parse_u64) {
+        Some(n) => {
+            let id = mush_core::ObjId(u32::try_from(n).ok()?);
+            ctx.w
+                .get(id)
+                .filter(|o| matches!(o.kind, mush_core::ObjKind::Player))
+                .map(|_| id)
+        }
+        None => ctx.w.resolve_player(name),
+    }?;
+    Some(mush_org::PrincipalId::Object(who))
+}
+
+/// The private-offer clause a posted line carries.
+fn for_only(ctx: &Ctx<'_>, to: Option<&mush_org::PrincipalId>) -> String {
+    match to {
+        Some(mush_org::PrincipalId::Object(who)) => crate::seller::FOR_ONLY.replace(
+            "{who}",
+            &ctx.w
+                .get(*who)
+                .map(|o| o.name.to_string())
+                .unwrap_or_default(),
+        ),
+        _ => String::new(),
+    }
+}
+
+/// `+market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>]` — list one
+/// exact lot (doc 48 cut EX.1a; Q-48-49).
+fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let mut words = raw.split_whitespace();
+    let lot = words.next().and_then(mush_inventory::LotId::parse);
+    let parsed = seller_words(words);
+    let (Some(lot), Some(parsed)) = (lot, parsed) else {
+        return Err(CmdError::msg(crate::seller::POST_USAGE));
+    };
+    if parsed.qty.is_some() || parsed.into.is_some() {
+        return Err(CmdError::msg(crate::seller::POST_USAGE));
+    }
+    let Some(price) = parsed.price else {
+        return Err(CmdError::msg(crate::seller::POST_USAGE));
+    };
+    let (market, instrument) = match seller_venue(ctx, parsed.market.as_deref()) {
+        Ok(venue) => venue,
+        Err(line) => return Err(CmdError::msg(line)),
+    };
+    let private_to = match parsed.to.as_deref() {
+        None => None,
+        Some(name) => match named_player(ctx, name) {
+            Some(who) => Some(who),
+            None => return Err(CmdError::msg(crate::seller::NO_SUCH_PLAYER)),
+        },
+    };
+    let spec = crate::seller::PersonalAsk {
+        seller: mush_org::PrincipalId::Object(ctx.actor),
+        market,
+        instrument: instrument.clone(),
+        lot,
+        price: Amount::from_minor(price),
+        private_to: private_to.clone(),
+        ttl_secs: parsed
+            .days
+            .map_or(crate::seller::PERSONAL_LISTING_TTL_SECS, |d| {
+                d.saturating_mul(86_400)
+            }),
+    };
+    let id = match crate::seller::post_ask(ctx, spec) {
+        Ok(id) => id,
+        Err(e) => return Err(refuse_market(ctx, &e)),
+    };
+    let listing = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(id).cloned());
+    let (name, qty) = listing.as_ref().map_or((String::new(), 0), |l| {
+        (
+            ctx.w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.entry_of(&l.catalog).map(|e| e.name.to_string()))
+                .unwrap_or_else(|| l.catalog.code.to_string()),
+            l.quantity,
+        )
+    });
+    let listing_id = id.0.to_string();
+    let posted = crate::seller::ASK_POSTED
+        .replace("{listing}", &listing_id)
+        .replace("{qty}", &qty.to_string())
+        .replace("{name}", &name)
+        .replace(
+            "{price}",
+            &money(ctx.w, Some(&instrument), Amount::from_minor(price)),
+        )
+        .replace("{to}", &for_only(ctx, private_to.as_ref()));
+    let away = crate::seller::POSTED_AWAY.replace("{listing}", &listing_id);
+    lines(ctx, vec![posted, away]);
+    Ok(())
+}
+
+/// `+market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>]
+/// [market=<venue>] [days=<n>]` — post a bid, escrowed at once (doc 48 cut EX.1a;
+/// Q-48-50).
+fn bid(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let mut words = raw.split_whitespace();
+    let catalog = words.next().and_then(parse_catalog);
+    let parsed = seller_words(words);
+    let (Some(catalog), Some(parsed)) = (catalog, parsed) else {
+        return Err(CmdError::msg(crate::seller::BID_USAGE));
+    };
+    let (Some(price), Some(quantity), Some(into)) = (parsed.price, parsed.qty, parsed.into) else {
+        return Err(CmdError::msg(crate::seller::BID_USAGE));
+    };
+    let (market, instrument) = match seller_venue(ctx, parsed.market.as_deref()) {
+        Ok(venue) => venue,
+        Err(line) => return Err(CmdError::msg(line)),
+    };
+    let private_to = match parsed.to.as_deref() {
+        None => None,
+        Some(name) => match named_player(ctx, name) {
+            Some(who) => Some(who),
+            None => return Err(CmdError::msg(crate::seller::NO_SUCH_PLAYER)),
+        },
+    };
+    let spec = crate::seller::PersonalBid {
+        bidder: mush_org::PrincipalId::Object(ctx.actor),
+        market,
+        instrument: instrument.clone(),
+        catalog: catalog.clone(),
+        into: mush_inventory::EndpointRef(mush_economy::VaultId(into)),
+        price: Amount::from_minor(price),
+        quantity,
+        private_to: private_to.clone(),
+        ttl_secs: parsed
+            .days
+            .map_or(crate::seller::PERSONAL_LISTING_TTL_SECS, |d| {
+                d.saturating_mul(86_400)
+            }),
+    };
+    let id = match crate::seller::post_bid(ctx, spec) {
+        Ok(id) => id,
+        Err(e) => return Err(refuse_market(ctx, &e)),
+    };
+    let name = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.entry_of(&catalog).map(|e| e.name.to_string()))
+        .unwrap_or_else(|| catalog.code.to_string());
+    let total = i64::try_from(quantity)
+        .ok()
+        .and_then(|q| price.checked_mul(q))
+        .map_or(Amount::ZERO, Amount::from_minor);
+    let listing_id = id.0.to_string();
+    let posted = crate::seller::BID_POSTED
+        .replace("{listing}", &listing_id)
+        .replace("{qty}", &quantity.to_string())
+        .replace("{name}", &name)
+        .replace(
+            "{price}",
+            &money(ctx.w, Some(&instrument), Amount::from_minor(price)),
+        )
+        .replace("{total}", &money(ctx.w, Some(&instrument), total))
+        .replace("{to}", &for_only(ctx, private_to.as_ref()));
+    let away = crate::seller::POSTED_AWAY.replace("{listing}", &listing_id);
+    lines(ctx, vec![posted, away]);
+    Ok(())
+}
+
+/// `+market/withdraw <listing>` — take one's own listing or bid down (doc 48 cut EX.1a).
+fn withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let raw = ctx.args.raw().trim().to_string();
+    let mut words = raw.split_whitespace();
+    let (Some(id), None) = (
+        words.next().and_then(parse_u64).map(ListingId),
+        words.next(),
+    ) else {
+        return Err(CmdError::msg(crate::seller::WITHDRAW_USAGE));
+    };
+    match crate::seller::withdraw_own(ctx, id) {
+        Ok(listing) => {
+            let line = if listing.source.is_wanted() {
+                crate::seller::BID_WITHDRAWN
+            } else {
+                crate::seller::WITHDRAWN
+            };
+            info(ctx, line.replace("{listing}", &id.0.to_string()));
+            Ok(())
+        }
+        Err(e) => Err(refuse_market(ctx, &e)),
+    }
+}
+
+/// `+market/mine` — one's own listings and bids (doc 48 cut EX.1a).
+fn mine(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let me = mush_org::PrincipalId::Object(ctx.actor);
+    let mine: Vec<crate::record::Listing> = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|s| s.personal_listings_of(&me).cloned().collect())
+        .unwrap_or_default();
+    if mine.is_empty() {
+        info(ctx, crate::seller::MINE_NONE);
+        return Ok(());
+    }
+    let mut out = vec![crate::seller::MINE_HEAD.to_string()];
+    out.extend(mine.iter().map(|l| listing_line(ctx, l)));
+    out.push(
+        crate::seller::MINE_COUNT
+            .replace("{n}", &mine.len().to_string())
+            .replace("{cap}", &crate::record::MAX_LISTINGS_PER_SELLER.to_string()),
+    );
+    lines(ctx, out);
+    Ok(())
 }
 
 fn orders(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

@@ -203,8 +203,14 @@ pub fn is_current(ctx: &Ctx<'_>, q: &Quote) -> bool {
         return false;
     }
     // A retired vendor and a halted maker both stop honouring quotes; both are
-    // declared facts about the seller, and neither is a probe.
-    if store.vendor(listing.vendor).is_none_or(|v| !v.is_trading()) {
+    // declared facts about the seller, and neither is a probe. Doc 48 cut EX.1a: a
+    // personal seller has no vendor row, and stops honouring them when it may no longer
+    // trade (a person gone, an organization DL-06 has stopped).
+    if listing.is_personal() {
+        if !crate::seller::personal_trading(ctx.w, listing) {
+            return false;
+        }
+    } else if store.vendor(listing.vendor).is_none_or(|v| !v.is_trading()) {
         return false;
     }
     if let Supply::Market { source } = listing.source {
@@ -297,17 +303,36 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
     if listing.source.is_wanted() {
         return Err(MarketError::bad(WANTED_IS_A_BID));
     }
-    let Some(vendor) = ctx
-        .w
-        .module_state::<MarketStore>()
-        .and_then(|s| s.vendor(listing.vendor).cloned())
-    else {
-        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
-    };
-    // A retired vendor and an organization DL-06 has stopped both refuse the same way —
-    // one `STALE_QUOTE`, one family (independent verify fold, M4).
-    if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
-        return Err(MarketError::bad(STALE_QUOTE));
+    // Doc 48 cut EX.1a (Q-48-5, doc 48a A-14): a private offer is quoted to its one buyer
+    // and nobody else. Its seller and staff may see it; neither may take it up.
+    if listing.private_to.as_ref().is_some_and(|to| *to != buyer) {
+        return Err(MarketError::bad(crate::seller::PRIVATE_TO_OTHER));
+    }
+    if listing.is_personal() {
+        // A personal seller has no vendor row (Q-48-44). Their own listing is theirs to
+        // withdraw, not to buy; and a seller gone stops honouring it, as a retired vendor
+        // does.
+        if mush_economy::acts_for(ctx.w, ctx.actor, &listing.seller) {
+            return Err(MarketError::bad(
+                crate::seller::OWN_LISTING.replace("{listing}", &listing.id.0.to_string()),
+            ));
+        }
+        if !crate::seller::personal_trading(ctx.w, &listing) {
+            return Err(MarketError::bad(STALE_QUOTE));
+        }
+    } else {
+        let Some(vendor) = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.vendor(listing.vendor).cloned())
+        else {
+            return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+        };
+        // A retired vendor and an organization DL-06 has stopped both refuse the same
+        // way — one `STALE_QUOTE`, one family (independent verify fold, M4).
+        if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
+            return Err(MarketError::bad(STALE_QUOTE));
+        }
     }
     // **The presence gate** (doc 18 §4.3, cut IC7): a governed venue says in its own
     // words why the asker cannot trade there, and no quote is written. No gate is the
@@ -650,6 +675,18 @@ pub fn accept_at(
     {
         return Err(MarketError::bad(WANTED_IS_A_BID));
     }
+    // Doc 48 cut EX.1a (Q-48-5, doc 48a A-14): the accept refuses anyone but a private
+    // offer's one buyer, in its own words and before anything else about the quote,
+    // whatever quote they hold.
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(q.listing))
+        .and_then(|l| l.private_to.as_ref())
+        .is_some_and(|to| *to != q.buyer)
+    {
+        return Err(MarketError::bad(crate::seller::PRIVATE_TO_OTHER));
+    }
     // One refusal for every stale reason (D-E6-13): lapsed, re-priced, re-versioned,
     // sold out, halted, retired. Deterministic, and it re-prices nothing.
     if !is_current(ctx, &q) {
@@ -662,10 +699,24 @@ pub fn accept_at(
     else {
         return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
     };
-    let Some(vendor) = ctx
+    // Doc 48 cut EX.1a (Q-48-44): a personal seller has no vendor row; its listing names
+    // its own account.
+    let vendor = if listing.is_personal() {
+        None
+    } else {
+        let Some(vendor) = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.vendor(listing.vendor).cloned())
+        else {
+            return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
+        };
+        Some(vendor)
+    };
+    let Some(payee) = ctx
         .w
         .module_state::<MarketStore>()
-        .and_then(|s| s.vendor(listing.vendor).cloned())
+        .and_then(|s| crate::seller::seller_account(s, &listing))
     else {
         return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
     };
@@ -681,7 +732,11 @@ pub fn accept_at(
     // organization may settle what it already agreed to and may not agree to more; a
     // `Suspended` or `Closed` one may do neither. Fail closed, exactly as
     // `Vendor::is_trading` does.
-    if !crate::api::org_may_trade(ctx.w, vendor.org) {
+    let trading = match &vendor {
+        Some(vendor) => crate::api::org_may_trade(ctx.w, vendor.org),
+        None => crate::seller::personal_trading(ctx.w, &listing),
+    };
+    if !trading {
         return Err(MarketError::bad(STALE_QUOTE));
     }
     // ---- doc 18 cut IC7: what matter this sells, and the presence gate ----
@@ -724,7 +779,7 @@ pub fn accept_at(
             return Err(MarketError::bad(STALE_QUOTE));
         }
     }
-    let Some(instrument) = crate::api::account_instrument(ctx, vendor.account) else {
+    let Some(instrument) = crate::api::account_instrument(ctx, payee) else {
         return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
     };
     // **The goods leg, before any money moves** (independent verify fold, M1). The
@@ -784,7 +839,7 @@ pub fn accept_at(
     let spec = purchase_spec(
         &q,
         &listing,
-        &vendor,
+        payee,
         representation,
         buyer_account,
         accepted_at,
@@ -831,14 +886,35 @@ pub fn accept_at(
     // places the vendor's escrow (there is none here — it owes no consideration) under
     // the org account's own authority, and still refuses when the org cannot stand
     // behind the deal.
-    let vendor_principal = PrincipalId::Organization(vendor.org);
-    match mush_economy::accept_contract_as(ctx, contract, &vendor_principal) {
-        Ok(AcceptOutcome::Accepted { .. }) => {}
-        Ok(AcceptOutcome::NeedsApproval(_)) | Err(_) => {
-            let _ = mush_economy::cancel_contract(ctx, contract);
-            return Err(MarketError::bad(
-                "That vendor cannot complete the sale right now. Nothing was agreed.",
-            ));
+    //
+    // Doc 48 cut EX.1a (Q-48-50): a personal seller accepts by **standing**: the listing
+    // is their acceptance within its own terms, which the composition-frozen
+    // `ListingAcceptance` checks against this very contract, so the sale settles while
+    // they are away. They owe nothing, so nothing of theirs is escrowed.
+    match &vendor {
+        Some(vendor) => {
+            let vendor_principal = PrincipalId::Organization(vendor.org);
+            match mush_economy::accept_contract_as(ctx, contract, &vendor_principal) {
+                Ok(AcceptOutcome::Accepted { .. }) => {}
+                Ok(AcceptOutcome::NeedsApproval(_)) | Err(_) => {
+                    let _ = mush_economy::cancel_contract(ctx, contract);
+                    return Err(MarketError::bad(
+                        "That vendor cannot complete the sale right now. Nothing was agreed.",
+                    ));
+                }
+            }
+        }
+        None => {
+            match mush_economy::accept_contract_standing(ctx, contract, &listing.seller, None) {
+                Ok(mush_economy::StandingAccepted {
+                    outcome: AcceptOutcome::Accepted { .. },
+                    ..
+                }) => {}
+                Ok(_) | Err(_) => {
+                    let _ = mush_economy::cancel_contract(ctx, contract);
+                    return Err(MarketError::bad(crate::seller::SELLER_GONE));
+                }
+            }
         }
     }
     // ---- E7r2: P1 — the matter leg, at the SAME serialization point ----
@@ -1092,7 +1168,9 @@ fn commit_quantity(ctx: &mut Ctx<'_>, listing: &Listing, quantity: u64) {
         return;
     }
     let left = listing.quantity.saturating_sub(quantity);
-    if left == 0 && !listing.source.is_wanted() {
+    // Doc 48 cut EX.1a: a personal bid drawn to nothing holds nothing more, so it goes
+    // (no house readiness report reads a player's exhausted marker).
+    if left == 0 && (!listing.source.is_wanted() || listing.is_personal()) {
         crate::store::del_listing(ctx, listing.id);
         return;
     }
@@ -1169,6 +1247,12 @@ fn restore_quantity(ctx: &mut Ctx<'_>, q: &Quote) {
         // vendor did not already have.
         return;
     };
+    // Doc 48 cut EX.1a: a personal bid is not restored. The refund returned the sale's
+    // escrow to the bidder's available balance, not to the bid's hold, so the intake it
+    // would restore is no longer backed.
+    if listing.is_personal() && listing.source.is_wanted() {
+        return;
+    }
     put_listing(
         ctx,
         Listing {
@@ -1187,7 +1271,7 @@ fn restore_quantity(ctx: &mut Ctx<'_>, q: &Quote) {
 fn purchase_spec(
     q: &Quote,
     listing: &Listing,
-    vendor: &Vendor,
+    payee: mush_economy::AccountId,
     representation: Representation,
     buyer_account: mush_economy::AccountId,
     now: i64,
@@ -1291,7 +1375,7 @@ fn purchase_spec(
             name: SmolStr::new_static("delivered"),
             when,
             payouts: vec![PayoutShare {
-                to: vendor.account,
+                to: payee,
                 share: Share::Exact(total),
             }],
             expense_treatment: mush_economy::ExpenseTreatment::None,
@@ -1774,6 +1858,100 @@ pub(crate) fn delivery_pending(ctx: &Ctx<'_>, q: &Quote) -> bool {
     !matches!(ctx.action_state(&families.applied, marker), Ok(Some(_)))
 }
 
+/// **Who buys through a standing bid** (doc 18 cut IC10; doc 48 cut EX.1a): a house's
+/// vendor row, paying from its available balance, or a personal bidder, paying from the
+/// bid's own escrow.
+enum BidBuyer {
+    /// A staff-registered vendor organization's bid.
+    House(Vendor),
+    /// A personal bid (no vendor row).
+    Personal,
+}
+
+/// The bid's buyer, and whether the actor may sell into it: a house that trades; or a
+/// personal bidder who may still trade, whose bid is not the actor's own, and which, when
+/// private, names the actor (doc 48 cut EX.1a, Q-48-5).
+fn bid_buyer(ctx: &Ctx<'_>, listing: &Listing) -> Result<BidBuyer, MarketError> {
+    if listing.is_personal() {
+        if mush_economy::acts_for(ctx.w, ctx.actor, &listing.seller) {
+            return Err(MarketError::bad(
+                crate::seller::OWN_LISTING.replace("{listing}", &listing.id.0.to_string()),
+            ));
+        }
+        if listing
+            .private_to
+            .as_ref()
+            .is_some_and(|to| *to != PrincipalId::Object(ctx.actor))
+        {
+            return Err(MarketError::bad(crate::seller::PRIVATE_TO_OTHER));
+        }
+        if !crate::seller::personal_trading(ctx.w, listing) {
+            return Err(MarketError::bad(crate::seller::BIDDER_NOT_BUYING));
+        }
+        return Ok(BidBuyer::Personal);
+    }
+    let Some(vendor) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.vendor(listing.vendor).cloned())
+    else {
+        return Err(MarketError::bad(NOT_BUYING));
+    };
+    if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
+        return Err(MarketError::bad(NOT_BUYING));
+    }
+    Ok(BidBuyer::House(vendor))
+}
+
+/// What a personal bid's escrow still holds, in minor units, or `None` when the hold is
+/// gone (doc 48 cut EX.1a).
+fn escrow_of(ctx: &Ctx<'_>, listing: &Listing) -> Option<i64> {
+    let escrow = listing.escrow?;
+    ctx.w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .hold(escrow)
+        .filter(|h| h.status.is_held())
+        .map(|h| h.amount.minor())
+}
+
+/// **Room for a personal bid's goods** (doc 48 cut EX.1a; Q-48-49): bulk goods are poured
+/// into a governed hold only from its port's own counters ([`crate::seller::BID_INTO_HOLD`];
+/// `post_bid` refuses the same, this is the belt), and the capacity pre-check a purchase
+/// into an endpoint makes ([`lot_precheck`]'s), before any money moves.
+fn personal_bid_room(
+    ctx: &Ctx<'_>,
+    vault: mush_economy::VaultId,
+    commodity: &mush_core::CanonicalId,
+    quantity: u64,
+) -> Result<(), MarketError> {
+    let destination = mush_inventory::EndpointRef(vault);
+    if let Some(gate) = crate::module::venue_gate(ctx.w)
+        && gate.governed(ctx.w, destination)
+        && !crate::module::sells_as_lots(ctx.w, commodity)
+    {
+        return Err(MarketError::bad(crate::seller::BID_INTO_HOLD));
+    }
+    if let Some(capacity) = crate::module::capacity_provider(ctx.w)
+        && let Some(plan) = capacity.plan(ctx.w, destination)
+    {
+        if !plan.within_bounds() {
+            return Err(MarketError::bad(CAPACITY_UNREADABLE));
+        }
+        let mut read_pool = |c: &mush_core::CanonicalId| {
+            crate::lot::held_balance(ctx, destination, c).map_err(|()| CapacityReadError)
+        };
+        match capacity.check(&plan, commodity, quantity, &mut read_pool) {
+            Ok(()) => {}
+            Err(CapacityRefusal::Refused { line, .. }) => return Err(MarketError::bad(line)),
+            Err(CapacityRefusal::Unreadable) => {
+                return Err(MarketError::bad(CAPACITY_UNREADABLE));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A vendor account's available balance — posted minus held, the list row's own
 /// arithmetic — or `None` when it cannot be read.
 fn available_of(ctx: &Ctx<'_>, account: mush_economy::AccountId) -> Option<i64> {
@@ -1977,16 +2155,7 @@ pub fn bid_take(
     };
     let commodity = commodity.0;
     // 2.
-    let Some(vendor) = ctx
-        .w
-        .module_state::<MarketStore>()
-        .and_then(|s| s.vendor(listing.vendor).cloned())
-    else {
-        return Err(MarketError::bad(NOT_BUYING));
-    };
-    if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
-        return Err(MarketError::bad(NOT_BUYING));
-    }
+    let bidder = bid_buyer(ctx, &listing)?;
     // 3.
     if crate::projection::lapsed(listing.expires.at, listing.expires.clock, ctx.w.now()) {
         return Err(MarketError::bad(BID_LAPSED));
@@ -2018,9 +2187,14 @@ pub fn bid_take(
     }
     // 11.
     let held = held_for_sale(ctx, actor, source, &commodity)?;
-    // The house's fundable units (step 10's funds, read as a count).
+    // The house's fundable units (step 10's funds, read as a count): a vendor's
+    // available balance, or a personal bid's escrow (doc 48 cut EX.1a).
     let price = listing.price.minor();
-    let house_units = match available_of(ctx, vendor.account) {
+    let funds = match &bidder {
+        BidBuyer::House(vendor) => available_of(ctx, vendor.account),
+        BidBuyer::Personal => escrow_of(ctx, &listing),
+    };
+    let house_units = match funds {
         Some(available) if price > 0 && available > 0 => {
             u64::try_from(available / price).unwrap_or(0)
         }
@@ -2035,7 +2209,7 @@ pub fn bid_take(
     Ok(BidTake {
         listing: listing.id,
         name,
-        house: vendor.name.to_string(),
+        house: crate::seller::seller_name(ctx.w, &listing),
         price: listing.price,
         remaining: listing.quantity,
         held,
@@ -2090,17 +2264,9 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     };
     let commodity = commodity.0;
-    // 2. The house trades.
-    let Some(vendor) = ctx
-        .w
-        .module_state::<MarketStore>()
-        .and_then(|s| s.vendor(listing.vendor).cloned())
-    else {
-        return Err(MarketError::bad(NOT_BUYING));
-    };
-    if !vendor.is_trading() || !crate::api::org_may_trade(ctx.w, vendor.org) {
-        return Err(MarketError::bad(NOT_BUYING));
-    }
+    // 2. The house trades (doc 48 cut EX.1a: or the personal bidder may, and the seller
+    // may sell into it: not their own bid, and the one seller a private bid names).
+    let bidder = bid_buyer(ctx, &listing)?;
     // 3. The deadline.
     if crate::projection::lapsed(listing.expires.at, listing.expires.clock, ctx.w.now()) {
         return Err(MarketError::bad(BID_LAPSED));
@@ -2161,14 +2327,25 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
     if !mush_economy::has_fact_provider(ctx.w, mush_inventory::NS) {
         return Err(MarketError::bad(UNSETTLEABLE));
     }
-    // 10. The house can fund the whole sale.
+    // 10. The house can fund the whole sale. Doc 48 cut EX.1a: a personal bid pays out of
+    // its own escrow, which must still cover it.
     let gross = i64::try_from(quantity)
         .ok()
         .and_then(|q| listing.price.minor().checked_mul(q))
         .map(Amount::from_minor)
         .ok_or_else(|| MarketError::bad(UNSETTLEABLE))?;
-    if available_of(ctx, vendor.account).is_none_or(|available| available < gross.minor()) {
-        return Err(MarketError::bad(UNFUNDED));
+    match &bidder {
+        BidBuyer::House(vendor) => {
+            if available_of(ctx, vendor.account).is_none_or(|available| available < gross.minor()) {
+                return Err(MarketError::bad(UNFUNDED));
+            }
+        }
+        BidBuyer::Personal => {
+            if !crate::seller::bid_funds(ctx.w, &listing, quantity) {
+                return Err(MarketError::bad(crate::seller::BIDDER_NOT_BUYING));
+            }
+            personal_bid_room(ctx, vault, &commodity, quantity)?;
+        }
     }
     // 11. Over-selling: the pool, less every sale from it still in flight.
     let held = held_for_sale(ctx, actor, source, &commodity)?;
@@ -2195,7 +2372,14 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         None
     };
     // 12. The seller's account, in the house's instrument.
-    let Some(instrument) = crate::api::account_instrument(ctx, vendor.account) else {
+    let Some(payer) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| crate::seller::seller_account(s, &listing))
+    else {
+        return Err(MarketError::bad(UNSETTLEABLE));
+    };
+    let Some(instrument) = crate::api::account_instrument(ctx, payer) else {
         return Err(MarketError::bad(UNSETTLEABLE));
     };
     let Some(seller_account) = principal_account(ctx, &instrument, &seller) else {
@@ -2204,7 +2388,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         ));
     };
     // 13. Standing sales against this house, and the store's own caps.
-    let house = PrincipalId::Organization(vendor.org);
+    let house = listing.seller.clone();
     let standing = ctx
         .w
         .module_state::<MarketStore>()
@@ -2315,7 +2499,8 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         &SaleShape {
             quote,
             listing: &listing,
-            vendor: &vendor,
+            buyer: &house,
+            buyer_account: payer,
             seller: actor,
             seller_account,
             gross,
@@ -2326,17 +2511,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         },
         proceeds.memo.as_ref(),
     );
-    let contract = mush_economy::offer_contract(ctx, spec).map_err(MarketError::Contract)?;
-    if contract.0 != peeked {
-        let _ = mush_economy::cancel_contract(ctx, contract);
-        tracing::error!(
-            contract = contract.0,
-            peeked,
-            "market: a sale contract was minted under another id than the one its marker names"
-        );
-        return Err(MarketError::bad(UNSETTLEABLE));
-    }
-    // 17. The quote, written before either acceptance (R9a).
+    // 17. The quote, built before the offer (R9a writes it before either acceptance).
     let paid = PaidLot {
         kind: PaidKind::Deliver,
         source: LotEndpoint(source),
@@ -2345,7 +2520,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         grade: 0,
         accepted_at,
         draw_by: Some(cutoff),
-        marker: Some(marker),
+        marker: Some(marker.clone()),
         lot: sold_lot,
     };
     let mut q = Quote {
@@ -2374,7 +2549,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             at: deadline,
         },
         availability: None,
-        contract: Some(contract),
+        contract: Some(ContractId(peeked)),
         settled: None,
         lot: Some(paid.clone()),
         drawn_at: None,
@@ -2382,6 +2557,36 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         basis: proceeds.basis,
         revision: 1,
     };
+    // Doc 48 cut EX.1a (Q-48-50): the economy asks a personal bidder's standing of the
+    // finished surface at the offer, and the standing finds the deal by its quote, so the
+    // quote is written first, under the id the offer is about to mint; a refused offer
+    // takes it back.
+    let personal = matches!(bidder, BidBuyer::Personal);
+    if personal {
+        put_quote(ctx, q.clone());
+    }
+    let contract = match mush_economy::offer_contract(ctx, spec) {
+        Ok(contract) => contract,
+        Err(e) => {
+            if personal {
+                del_quote(ctx, quote);
+            }
+            return Err(MarketError::Contract(e));
+        }
+    };
+    if contract.0 != peeked {
+        let _ = mush_economy::cancel_contract(ctx, contract);
+        if personal {
+            del_quote(ctx, quote);
+        }
+        tracing::error!(
+            contract = contract.0,
+            peeked,
+            "market: a sale contract was minted under another id than the one its marker names"
+        );
+        return Err(MarketError::bad(UNSETTLEABLE));
+    }
+    q.contract = Some(contract);
     put_quote(ctx, q.clone());
     // 18. The seller accepts in the verb — the economy needs every party, the issuer
     // included (doc 18 §4.3's "no seller accept" is no step asked of the seller).
@@ -2409,11 +2614,31 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
     // when the contract is offered (step 16's `offer_contract`), not here: past it
     // the seller hears the economy's own cap refusal and nothing is drafted (doc 20b
     // RK-1 corrected this note, which said the accept below refused).
-    match mush_economy::accept_contract_as(ctx, contract, &house) {
-        Ok(AcceptOutcome::Accepted { .. }) => {}
-        Ok(AcceptOutcome::NeedsApproval(_)) | Err(_) => {
-            let _ = mush_economy::cancel_contract(ctx, contract);
-            return Err(MarketError::bad(HOUSE_CANNOT_PAY));
+    //
+    // Doc 48 cut EX.1a (Q-48-50): a personal bidder accepts by **standing**, and only
+    // against its own escrowed bid: the one escrow plan releases the bid's hold, places
+    // this sale's escrow and places the rest of the bid again, so the bid draws as it
+    // fills. The bid's escrow is the new hold from here.
+    let mut listing = listing;
+    match &bidder {
+        BidBuyer::House(_) => match mush_economy::accept_contract_as(ctx, contract, &house) {
+            Ok(AcceptOutcome::Accepted { .. }) => {}
+            Ok(AcceptOutcome::NeedsApproval(_)) | Err(_) => {
+                let _ = mush_economy::cancel_contract(ctx, contract);
+                return Err(MarketError::bad(HOUSE_CANNOT_PAY));
+            }
+        },
+        BidBuyer::Personal => {
+            match mush_economy::accept_contract_standing(ctx, contract, &house, listing.escrow) {
+                Ok(mush_economy::StandingAccepted {
+                    outcome: AcceptOutcome::Accepted { .. },
+                    remainder,
+                }) => listing.escrow = remainder,
+                Ok(_) | Err(_) => {
+                    let _ = mush_economy::cancel_contract(ctx, contract);
+                    return Err(MarketError::bad(crate::seller::BIDDER_NOT_BUYING));
+                }
+            }
         }
     }
     // 20. The one deliver leg, through the builder every re-stage uses.
@@ -2437,7 +2662,6 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
         sold_generic(
             ctx,
             &listing,
-            &vendor,
             &instrument,
             quantity,
             gross,
@@ -2495,7 +2719,11 @@ fn proceeds_valid(
 struct SaleShape<'a> {
     quote: QuoteId,
     listing: &'a Listing,
-    vendor: &'a Vendor,
+    /// The bidding principal: a house organization, or a personal bidder (doc 48 cut
+    /// EX.1a).
+    buyer: &'a PrincipalId,
+    /// What it pays from: the vendor's account, or the personal bid's own.
+    buyer_account: mush_economy::AccountId,
     seller: ObjId,
     seller_account: mush_economy::AccountId,
     gross: Amount,
@@ -2531,9 +2759,9 @@ fn sale_spec(s: &SaleShape<'_>, memo: Option<&SmolStr>) -> ContractSpec {
     ContractSpec {
         name: sale_name(s.quote, s.listing.id, memo),
         scope: None,
-        parties: vec![PrincipalId::Organization(s.vendor.org)],
+        parties: vec![s.buyer.clone()],
         considerations: vec![ConsiderationSpec {
-            account: s.vendor.account,
+            account: s.buyer_account,
             amount: s.gross,
         }],
         outcomes: vec![OutcomeTerms {
@@ -2543,7 +2771,7 @@ fn sale_spec(s: &SaleShape<'_>, memo: Option<&SmolStr>) -> ContractSpec {
             expense_treatment: mush_economy::ExpenseTreatment::None,
             asset_consequences: Vec::new(),
         }],
-        remainder_to: s.vendor.account,
+        remainder_to: s.buyer_account,
         conditions: vec![
             TypedCondition::Before { deadline },
             TypedCondition::Fact {
@@ -2562,7 +2790,7 @@ fn sale_spec(s: &SaleShape<'_>, memo: Option<&SmolStr>) -> ContractSpec {
         visibility: EconomicVisibility::Parties,
         roles: ContractRoles {
             author: Some(PrincipalId::Object(s.seller)),
-            payer: Some(PrincipalId::Organization(s.vendor.org)),
+            payer: Some(s.buyer.clone()),
             representative: None,
             facilitator: None,
         },
@@ -2576,7 +2804,6 @@ fn sale_spec(s: &SaleShape<'_>, memo: Option<&SmolStr>) -> ContractSpec {
 fn sold_generic(
     ctx: &Ctx<'_>,
     listing: &Listing,
-    vendor: &Vendor,
     instrument: &InstrumentId,
     quantity: u64,
     gross: Amount,
@@ -2596,7 +2823,7 @@ fn sold_generic(
     SOLD_GENERIC
         .replace("{qty}", &quantity.to_string())
         .replace("{name}", &name)
-        .replace("{shop}", &vendor.name)
+        .replace("{shop}", &crate::seller::seller_name(ctx.w, listing))
         .replace("{price}", &money(listing.price))
         .replace("{gross}", &money(gross))
         .replace("{cuts}", &cut_text)

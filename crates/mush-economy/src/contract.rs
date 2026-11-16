@@ -1101,6 +1101,34 @@ pub trait DisputeGuard: Send + Sync + std::fmt::Debug {
     ) -> Option<&'static str>;
 }
 
+// ---- doc 48 cut EX.1a: standing acceptance (Q-48-50) ------------------------
+
+/// **A party's standing acceptance of one contract** (doc 48 Q-48-50, cut EX.1a).
+///
+/// A player who lists goods, or posts a bid, agrees in advance to any sale within the
+/// listing's own terms, so the sale settles while they are away. [`PartyCap::Accept`] is
+/// principal-wide and cannot say that. This seam is narrower: it answers yes or no for
+/// one named contract, one named party and the hold the party's consideration is drawn
+/// from, and nothing else. It builds no plan and takes no callback.
+///
+/// It confers no money authority. The acceptance it admits runs the same `accept_core`
+/// `@contract/accept` runs, and the escrow posts under the party's own debit authority
+/// ([`crate::accept_contract_standing`]). Composition-frozen like
+/// [`DisputeGuard`]: wired by [`crate::EconomyModule::with_standing_acceptance`], and
+/// the one implementor is `mush_market::ListingAcceptance`.
+pub trait StandingAcceptance: Send + Sync + std::fmt::Debug {
+    /// Whether `party`'s standing acceptance covers `contract` exactly, with its
+    /// consideration drawn from `against` when it names a hold (a bid's own escrow).
+    /// Total; reads `w` only.
+    fn stands(
+        &self,
+        w: &mush_core::World,
+        contract: &EconomicContract,
+        party: &PrincipalId,
+        against: Option<HoldId>,
+    ) -> bool;
+}
+
 /// The owned canonical token of a principal — the key of the wiring-frozen
 /// party-capability table, because `PrincipalId` is `Hash`-but-not-`Ord` (E6b).
 #[must_use]
