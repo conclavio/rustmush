@@ -366,7 +366,7 @@ applied.
   | `domain_arena/twin.rs` `m4_5_the_stock_pool_over_fifteen_seeds_is_its_record` | `M4_5_POOLED_RECORD` | matches run longer (seed 2350's 180,250 → 231,250 ms), the split 14–1 → 13–2, shots 1,488/863 → 1,058/936, `floor_held` 0 → 1,039, `unwarranted` 0 → 12 |
   | `domain_arena/twin.rs` Gate A's three lanes | `COVERAGE`, `POOLED_MATCHES_WITH_STAND_IN` | pooled 10,015/291 → 10,851/405, mixed 12,884/449 → 12,866/345, lance 7,260/126 → 7,142/159, 14 → 12; 0 divergences |
   | `domain_arena/minds_rhai.rs` `m2_the_twin_corpus_hashes_the_same_on_every_host` | `M2_CROSS_PLATFORM_PINS` | stopping times 180,250 / 177,500 / 170,000 → 231,250 / 197,500 / 167,000 (900,000 unmoved); the float probe's thinks and bitmask unmoved; read on Linux |
-  | `tests/harness_baseline/arena.linux.json` | twelve deterministic leaves, by record (`cc1_deterministic_update`) | the minds lanes' four final hashes; `fill_authored`'s thinks, landings, condition fires and drops; the arena lane's ledger bytes. Timing gate live and inside it (p50 −1.6%, p99 +1.0%, window p99 +3.7%) |
+  | `tests/harness_baseline/arena.linux.json` | twelve deterministic leaves, by record (`cc1_deterministic_update`) | the minds lanes' four final hashes; `fill_authored`'s thinks, landings, condition fires and drops; the arena lane's ledger bytes. Timing gate live and inside it on the merged tree (p50 −2.2%, p99 +7.7%, window p99 +10.8%) |
 
 - **The Rhai think's cost, and the lanes' bounds, set by record** (`tests/domain_arena/twin.rs`).
   CC.1 took the twin lanes' costliest Rhai think past the 1,200 operations-plus-fees STOP that
