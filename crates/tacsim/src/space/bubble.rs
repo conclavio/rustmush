@@ -3650,8 +3650,22 @@ mod cc6_tests {
             Some(laser.defence_cycle_ms()),
             def.modes.defence.map(|mode| mode.cycle_ms)
         );
+        // Doc 49 unit CC.8: the shipped turret's two modes cycle apart, so her document
+        // carries the defence cycle; a row whose modes share one cycle leaves it out.
         assert_eq!(
-            laser.defence_cooldown_ms, None,
+            laser.defence_cooldown_ms,
+            def.modes.defence.map(|mode| mode.cycle_ms)
+        );
+        let mut shared = def.clone();
+        shared.modes.defence = def.modes.offence;
+        let one = crate::space::weapons::LaserMount::from_def(
+            "laser_1",
+            &shared,
+            LaserModes::BOTH,
+            LaserMode::Offense,
+        );
+        assert_eq!(
+            one.defence_cooldown_ms, None,
             "one cycle for both, so her document is as it was"
         );
         let mut slow = def.clone();

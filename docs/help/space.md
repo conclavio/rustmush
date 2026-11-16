@@ -101,7 +101,7 @@ Space engagements combine three offensive mount classes with distinct flight pro
 +tac/pdc <auto|manual|point|offense>
 ```
 
-- `+tac/beam [<contact>]` fires offensive laser mounts at a detected hostile contact (speed-of-light hit within mount range, up to `160 km` on a corvette laser; draws capacitor charge and builds hull heat).
+- `+tac/beam [<contact>]` fires your lasers in offence at a detected hostile contact. A pulse lands at once within the laser's reach (`150 km` on a turret, `100 km` on the customs corvette's heavier laser), but does little to a hull: half its close-range damage at `25 km`, a point or two past `100 km`. Lasers are for drones and soft targets; the torpedoes and the spinal gun hurt a hull. A laser in offence cycles in `5 s`, and each pulse builds hull heat.
 - `+tac/torp [<contact>[=<count>]]` launches a torpedo salvo (default `1`) at a detected hostile contact (`10–500 km` envelope, accelerating under 3D proportional navigation before ballistic coast).
 - `+tac/railgun [<contact>]` fires spinal or turret railguns at a detected hostile contact along a world-frame lead solution (`10–250 km` envelope; countered by lateral jinking thrust during time-of-flight).
 - `+tac/pdc <auto|manual|point|offense>` configures point-defence autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire.
@@ -114,15 +114,15 @@ Space has no chance roll. A mount that reads `ready` fires when you tell it to, 
 
 ```text
 Mount          Kind      Rounds/mode     Ready       At the lock
-laser_dorsal   laser     offence         ready       98 a pulse
-laser_ventral  laser     defence         in 0.6 s    98 a pulse
+laser_dorsal   laser     offence         ready       7 a pulse
+laser_ventral  laser     defence         in 0.6 s    7 a pulse
 torp_bow       tubes     16/16           ready
 rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s
 pdc_port       point def 4000 left       ready
 Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.
 ```
 
-- **Rounds/mode** shows the rounds left of what your fit stows. A laser keeps no magazine, so it shows its mode: `offence` fires at your lock, and `defence` stops incoming torpedoes on its own. Switch with `+tac/pdc offense` or `+tac/pdc point`. Point defence shows the rounds left in its drum.
+- **Rounds/mode** shows the rounds left of what your fit stows. A laser keeps no magazine, so it shows its mode: `offence` fires at your lock, and `defence` stops incoming torpedoes inside `45 km` on its own, on its own `4 s` cycle. Switch with `+tac/pdc offense` or `+tac/pdc point`; your fit says which modes each laser may take. A switch never fires early: the new mode's cycle starts when you switch, so a laser switched to defence stops nothing for `4 s`, and one switched to offence waits `5 s`. Switch back to offence within `5 s` of its last offence pulse and it keeps what was left of that cycle instead. Point defence shows the rounds left in its drum; a rotary fires a burst every `0.5 s` at a torpedo in its last `4 km`.
 - **Ready** shows `ready`, how long the mount's cycle has to run, or what holds it back: `empty`, `down` (damage has put a rotary out of action), `too hot` (one more shot would take your heat past its ceiling), or `past reach` (your lock lies beyond the mount's reach).
 - **At the lock** shows, for a lock your sensors hold within the mount's reach, the damage one laser pulse lands at that range, and how long a spinal round takes to fly there. The longer it flies, the more time she has to burn out of its path.
 - **The lock row** shows how far off your lock is, and which of her five hull bands faces you: `front`, `left`, `right`, `rear` or `top`. That band takes what you land. If your sensors lose her, the row says so.

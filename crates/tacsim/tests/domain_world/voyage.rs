@@ -6286,6 +6286,23 @@ fn sfr10_tempo_and_persistence_budget_steps_late_ticks_bounds_10m_heave_to_quara
             .and_then(tacsim::TacsimStore::space_state)
             .expect("persisted space_state");
         let doc_bytes_at_600 = serde_json::to_vec(state_600).expect("json").len();
+        {
+            let text = serde_json::to_string(state_600).expect("json");
+            let v: serde_json::Value = serde_json::from_str(&text).expect("v");
+            eprintln!("CC8DIAG defence_cooldown_ms x{} offence_left_ms x{} torpedoes x{} slug x{}", text.matches("defence_cooldown_ms").count(), text.matches("offence_left_ms").count(), text.matches("\"remaining_dv_mmps\"").count(), text.matches("aimed_lead_pos_m").count());
+            fn walk(v: &serde_json::Value, path: String, depth: usize) {
+                let n = serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
+                if n > 1500 && depth < 6 {
+                    eprintln!("CC8DIAG {path} {n}");
+                    match v {
+                        serde_json::Value::Object(m) => for (k, x) in m { walk(x, format!("{path}.{k}"), depth + 1); },
+                        serde_json::Value::Array(a) => for (i, x) in a.iter().enumerate() { walk(x, format!("{path}[{i}]"), depth + 1); },
+                        _ => {}
+                    }
+                }
+            }
+            walk(&v, String::new(), 0);
+        }
         assert!(
             doc_bytes_at_600 <= doc_bytes_at_200 + 8_192 && doc_bytes_at_600 < 65_536,
             "ten-minute heave-to must keep tacsim:space:state bounded: 200s={doc_bytes_at_200}B, 600s={doc_bytes_at_600}B"
