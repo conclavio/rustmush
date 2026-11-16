@@ -158,3 +158,14 @@ All held or partly held. Each doc's §8 now carries its answers instead of "not 
 As in 48a: a ruled default that was wrong in fact is corrected in place. A ruling that needs a new
 choice, or that a finding would reverse, gets a follow-up question, and the ruling stands until that
 question is answered.
+
+## 7. The owner's rulings on the follow-ups (2026-11-15)
+
+All twenty were accepted at their defaults ("Yes, at defaults"): doc 48 Draft 0.7 and doc 49
+Draft 0.8.
+- **Q-49-25** keeps the Dray's and Dray-P's lasers dual-mode, so W-49-1's finding is answered and
+  R-47-2 keeps a live hull. It supersedes the "defence-only" fit in Q-49-7 and Q-49-24.
+- **Q-49-29** drops the judgement term on player slots, superseding part of Q-49-8.
+- The rest are at their defaults, including the owner's own calls in Q-48-48, Q-48-60 and Q-48-61.
+
+The live defects are fixed in their own session and PR, apart from these documents.

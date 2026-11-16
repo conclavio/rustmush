@@ -1,6 +1,6 @@
 # 49. Combat content — the armaments, the rounds and the shot, surveyed
 
-Draft 0.7, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
+Draft 0.8, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
 lane, with the lead spot-checking the cycle figures, the cycle floor, the card presets, the slot limit
 and the laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
 0.1, the same day, was the survey.
@@ -23,7 +23,8 @@ or mind fires, on both kernels. The pulse laser and the space offence laser cycl
 **Draft 0.4, the same day, records that every other question is accepted at its default as
 written.** These are Q-49-1, Q-49-4, Q-49-6 and Q-49-8 to Q-49-18. Every question in this survey is
 now ruled. What the defaults settle:
-- **The trigger:** a condition slot stays, but must carry a judgement term (Q-49-8). The Line card's
+- **The trigger:** a condition slot stays, but must carry a judgement term (Q-49-8; the term on
+  player slots was later dropped by Q-49-29). The Line card's
   floor is 35% with a 25% reserve.
 - **Rounds are produced at the works** (Q-49-4). Read with Q-49-5's ruling, the recipes are sized so
   a produced round costs about its GC.7 price.
@@ -61,6 +62,19 @@ is triaged in [doc 48b](48b-second-review-triage-2026-11-15.md), with five verif
 - **§4a** lists the live defects found.
 - **Follow-ups Q-49-25 to Q-49-29 (§6.7), open.** Two of them, Q-49-25 and Q-49-29, would reverse
   part of an earlier ruling, so they are the owner's to decide.
+
+**Draft 0.8, the same day, records that the owner accepted all five follow-ups at their defaults.**
+Every question in this survey, Q-49-1 to Q-49-29, is ruled. Two of them supersede part of an earlier
+ruling, and each superseded ruling says so:
+- **Q-49-25:** the Dray and Dray-P keep dual-mode lasers (offence short and weak, per Q-49-7), so
+  R-47-2 keeps its live hull. This replaces the "defence-only" fit in Q-49-7 and Q-49-24.
+- **Q-49-29:** player slots carry no judgement term and are bounded by the Compact floor alone. The
+  stock card keeps its floor and reserve. This replaces part of Q-49-8.
+
+The other three are now decisions too:
+- **Q-49-26:** CC.8 measures a lone shooter against each screen and sets the defence cycle.
+- **Q-49-27:** the combat kernel reduces a beam's damage against armour.
+- **Q-49-28:** heat refuses a shot that would cross the ceiling.
 - **Q-49-20: the alternative, and the "no auto-fire" rule is unwound.** In the owner's words: "that's
   just tedious and defeats the purpose, let's just unwind the 'no auto-fire' rule". Condition slots
   stand for players and minds alike: once armed, a slot fires at each ready moment while its terms
@@ -537,6 +551,9 @@ is accepted at its default as written. Their proposed text below is the decision
   cycle alone keeps the old fight at a slower pace; the magazine alone keeps the cadence tax.
 
 **Q-49-8 — Is a condition slot the decision or the trigger?**
+- **Superseded in part (Q-49-29, Draft 0.8):** player slots carry no judgement term and are bounded
+  by the Compact floor alone. The stock card keeps its floor and reserve as shot discipline. (Q-49-20
+  had already unwound the "no auto-fire" rule.)
 - **Proposed default:** keep `FIRE <mount> WHEN …`, because it is the player writing the decision
   ahead, and the absent-player and mind work stand on it. But:
   - a slot must carry at least one judgement term beyond readiness (an odds floor or an aspect);
@@ -628,7 +645,9 @@ many units, and the works time carries the price, as the mount parts already do:
   world facts chosen to bound the engine. A tank that kills tanks with a laser undoes it.
 
 **Q-49-7 — Space lasers.**
-- **Decision (owner ruling, 2026-11-15):** the default, accepted as written.
+- **Decision (owner ruling, 2026-11-15):** the default, accepted as written. **Superseded in part
+  (Q-49-25, Draft 0.8):** the Dray and Dray-P keep dual-mode lasers, not defence-only. The rest
+  stands: offence lasers are short-reach and weak against a hull.
 - **Proposed default:** the same fact holds in space. An offence laser has a short reach and does
   little to a hull; it is for drones, collectors, torpedoes and soft targets. The starter haulers
   (Dray, Dray-P) carry defence mode only.
@@ -838,7 +857,9 @@ can today.
    (`arena/damage.rs:1714-1739`), so the simulator's `spent` draw still ends such a match.
 
 **Q-49-24 — Laser modes** (A-12).
-- **Decision (owner ruling, 2026-11-15):** the default, accepted.
+- **Decision (owner ruling, 2026-11-15):** the default, accepted. **Superseded in part (Q-49-25,
+  Draft 0.8):** the Dray's lasers are not fitted defence-only. The cycle per mode and the switch
+  rules stand.
 - **The problem:** a space laser switches between offence and defence on one cooldown. The 5 s floor
   (Q-49-19) and the automatic-defence exemption (Q-49-2, Q-49-10) are each per mount.
 - **Proposed default:**
@@ -856,10 +877,12 @@ can today.
 
 ### 6.7 Raised by the second review (doc 48b)
 
-Each question answers a finding that held. Until it is ruled, the ruling it qualifies stands, as
-corrected above.
+Each question answers a finding that held.
 
-**Q-49-25 — The Dray's lasers** (W-49-1). *This would reverse part of Q-49-7 and Q-49-24.*
+**Ruled 2026-11-15: all five at their defaults (Draft 0.8).** Each one's proposed text below is now the
+decision. Q-49-25 and Q-49-29 supersede part of Q-49-7, Q-49-24 and Q-49-8, as marked there.
+
+**Q-49-25 — The Dray's lasers** (W-49-1). *Ruled at the default: supersedes part of Q-49-7 and Q-49-24.*
 - **The problem:** a defence-only Dray cannot answer fire at all. Point defence and defence-mode
   lasers only stop incoming rounds (`space/bubble.rs:2315`, `:2797-2822`), and the Dray has no tubes
   and no spinal gun.
@@ -918,7 +941,7 @@ corrected above.
   60), and heat stays as it is.
 - **Why:** the laser needs one real limit, and heat is the one its lore names.
 
-**Q-49-29 — The judgement term after the unwinding** (W-49-6). *This would reverse part of Q-49-8.*
+**Q-49-29 — The judgement term after the unwinding** (W-49-6). *Ruled at the default: supersedes part of Q-49-8.*
 - **The problem:** Q-49-8 asked every slot to carry a judgement term so that no bare fire-when-ready
   existed. Q-49-20 has since unwound the "no auto-fire" rule, and the term is easy to meet with
   "aspect = front, side, rear".
@@ -935,14 +958,14 @@ One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit pref
 | Unit | What | Gate |
 |---|---|---|
 | CC.0 | Tests read cycles and magazines from content, not literals; the bot's scripted rig reads content | — |
-| CC.1 | The slot rule: standing slots (Q-49-20) carrying a judgement term; card floors; the Line card's reserve and when it is spent, with Q-49-23's four sentences | Q-49-8, Q-49-9, Q-49-20, Q-49-23 (ruled), Q-49-29 |
+| CC.1 | The slot rule: standing slots (Q-49-20); player slots bounded by the Compact floor alone (Q-49-29); card floors; the Line card's reserve and when it is spent, with Q-49-23's four sentences | Q-49-8, Q-49-9, Q-49-20, Q-49-23 (ruled), Q-49-29 |
 | CC.2 | The ground palette (15, 5, 10, 30 s) with magazines 24 / 600 / 120 / 4, and the 5 s cycle floor (with the automatic-defence class); measured fights reported (hits per load, match length against the 900 s cap), the harness window lengthened, no count changed without the owner; one re-bless | CC.0, CC.1, Q-49-2, Q-49-3, Q-49-19 and Q-49-22 (ruled) |
 | CC.3 | Ground lasers as the anti-drone fit; the laser variants keep a main gun; what limits the laser; the yard keeps a laser's charge full (§4a) | CC.2, Q-49-6, Q-49-27, Q-49-28 |
 | CC.4 | Rounds on `STATUS`; checked at 120 columns | Q-49-13 |
 | CC.5 | Munitions prices, read from doc 48's PL.3 recipes | doc 48's PL.3, Q-49-4, Q-49-5 |
 | CC.6 | Space mounts and hull fits as content packs, in the same pack format with **its own space mount schema** (range past 100 km, modes, falloff, salvo size, point-defence envelope), each mount's allowed modes in the fit; `raider_heavy` a unit file; mind-view maxima from content | Q-49-11, Q-49-24, doc 48's PL.0 if it adds part goods (each with a recipe and a vendor seed); one row per mount, each fireable by its id; mind views read the fit's modes |
 | CC.7 | Space magazines persist; space munitions goods; rearm at a berth; says whether NPC cast hulls respawn full | CC.6, doc 48's PL.0 (`MAX_GOODS`) and **PL.3 producing the space munitions** (doc 48 Q-48-41), Q-49-12 |
-| CC.8 | The space palette; lasers per the lore with the cycle per mode; the three space doctrines rewritten; one shooter's magazine measured against each screen | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled), Q-49-24, Q-49-25, Q-49-26 |
+| CC.8 | The space palette; lasers per the lore with the cycle per mode, the Dray's kept dual-mode (Q-49-25); the three space doctrines rewritten; one shooter's magazine measured against each screen | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled), Q-49-24, Q-49-25, Q-49-26 |
 | CC.9 | Space decision support, for the player and the minds | CC.6, Q-49-13 |
 | CC.10 | The bot's discipline assertions; its exchange and halt windows derived from content | CC.2, Q-49-17 |
 | CC.11 | ~~A second round for the cannon, chosen at rearm~~: deferred under Q-49-21's default (engine work: selected-round state, and the resolver for section effects) | Q-49-14, Q-49-21 |

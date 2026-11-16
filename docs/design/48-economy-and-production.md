@@ -1,6 +1,6 @@
 # 48. Economy and production — one exchange for every trade, and a chain that closes, surveyed
 
-Draft 0.6, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
+Draft 0.7, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
 lanes (goods, services, the engine and money, production), with the lead spot-checking the claims
 §0 leans on:
 - the market's `Representation` and `Supply` enums;
@@ -50,7 +50,13 @@ is triaged in [doc 48b](48b-second-review-triage-2026-11-15.md), with five verif
   §3.2, §4.1, §5.1, §5.2, §5.6, Q-48-2, -3, -15, -21, -27, -28, -29, -30, -35, -38, -42, -43, -44
   and -46.
 - §4.3 lists the live defects the review found.
-- Choices the findings need are the follow-ups Q-48-47 to Q-48-61 (§6.8), open.
+- Choices the findings need are the follow-ups Q-48-47 to Q-48-61 (§6.8).
+
+**Draft 0.7, the same day, records that the owner accepted all fifteen follow-ups at their
+defaults.** Every question in this survey, Q-48-1 to Q-48-61, is ruled. Among the owner's own calls:
+- yard-built combat hulls keep a governed Class II core outside the monthly die quota (Q-48-48);
+- facility staff stay at 150 cr an IC day (Q-48-60);
+- a worked-out deposit re-rolls after 28 IC days (Q-48-61).
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -726,7 +732,7 @@ decision first, with the proposed text kept under it for the record. §6.6 holds
 questions the amendments raised. The owner accepted all four at their defaults the same day
 (Draft 0.3). §6.7 holds Q-48-37 to Q-48-46, raised by the outside review (Draft 0.4); the owner accepted all
 ten at their defaults (Draft 0.5). §6.8 holds Q-48-47 to Q-48-61, raised by the second review
-(Draft 0.6); they are open.
+(Draft 0.6); the owner accepted all fifteen at their defaults (Draft 0.7).
 
 ### 6.1 The exchange
 
@@ -1327,8 +1333,10 @@ posted. The seat fact's key cannot be named in advance (`mush-sim/src/seat.rs:10
 
 ### 6.8 Raised by the second review (doc 48b)
 
-Each question answers a finding that held. Until it is ruled, the ruling it qualifies stands, as
-corrected above.
+Each question answers a finding that held.
+
+**Ruled 2026-11-15: all fifteen at their defaults (Draft 0.7).** Each one's proposed text below is
+now the decision.
 
 **Q-48-47 — Core resale to a player** (W-48-1a).
 - **Proposed default:** a second closed plan beside CO.13's buy-back: a named buyer only; the buyer's
