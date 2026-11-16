@@ -1734,6 +1734,11 @@ pub fn picket_cast_book() -> Option<&'static PicketCastBook> {
     PICKET_CAST.as_ref()
 }
 
+/// Lay the cast's own fits on the corvette and the raider, and their stance.
+///
+/// **A patrol is resupplied** (doc 49 unit CC.7; Q-49-12): the fit's overlay lays every mount
+/// anew, so each cast hull sails with full magazines at every spawn, whatever her unit kept from
+/// an earlier fight. A player's hull keeps what she left (`super::custody::kept_magazines`).
 fn configure_corvette_and_raider_ships(corvette: &mut SpaceShipState, raider: &mut SpaceShipState) {
     let (corvette_overlay, raider_overlay) = if let Some(cast) = picket_cast_book() {
         (cast.corvette.overlay.as_str(), cast.raider.overlay.as_str())
@@ -1926,6 +1931,54 @@ mod tests {
     use super::*;
     use crate::arena::party::Relation;
     use crate::space::bubble::BubbleInputCommand;
+
+    /// **Doc 49 unit CC.7: a patrol is resupplied.** A cast hull whose unit kept spent
+    /// magazines from an earlier fight sails full again: the cast's fit is laid anew at every
+    /// spawn.
+    #[test]
+    fn cc7_a_cast_hull_sails_full_whatever_her_unit_kept() {
+        let spent = |ship: &mut SpaceShipState| {
+            for tube in &mut ship.torpedo_tubes {
+                tube.magazine_remaining = 0;
+                tube.fired_since_full = 8;
+            }
+            for gun in &mut ship.railguns {
+                gun.rounds_remaining = 1;
+            }
+            for pd in &mut ship.pdcs {
+                pd.ammo_remaining = 10;
+            }
+        };
+        let mut corvette = SpaceShipState::new_corvette(
+            "customs.1.1",
+            "Corvette",
+            CUSTOMS_CORVETTE_PARTY,
+            [0; 3],
+            [0; 3],
+        );
+        let mut raider =
+            SpaceShipState::new_corvette("raider.1.1", "Raider", BELT_RAIDER_PARTY, [0; 3], [0; 3]);
+        spent(&mut corvette);
+        spent(&mut raider);
+        configure_corvette_and_raider_ships(&mut corvette, &mut raider);
+        for ship in [&corvette, &raider] {
+            assert!(!ship.torpedo_tubes.is_empty() && !ship.pdcs.is_empty());
+            assert!(
+                ship.torpedo_tubes
+                    .iter()
+                    .all(|tube| tube.magazine_remaining > 0 && tube.fired_since_full == 0),
+                "{}",
+                ship.id
+            );
+            assert!(ship.railguns.iter().all(|gun| gun.rounds_remaining > 1));
+            assert!(ship.pdcs.iter().all(|pd| pd.ammo_remaining > 10));
+            assert!(
+                crate::space::custody::spent_magazines(ship).is_empty(),
+                "{}: every magazine as her fit stows it",
+                ship.id
+            );
+        }
+    }
 
     #[test]
     fn kirkwood_picket_and_belt_raider_rhai_doctrines_run_on_rhai_runner_without_faults() {
