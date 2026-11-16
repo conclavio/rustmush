@@ -732,10 +732,9 @@ in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged
     `m8_world.rs` and `driving_rig.rs`.
 - **`commission.rs` is unchanged.** The commission's consumption already consumes every lot in
   the escrow, so the module needs no new step.
-- **Stacked on PL.1 (#628), in the lead's land order (#628, then PL.2, then PL.7).** PL.1's
-  branch is merged in. PL.2, the lane chain's one writer, adds goods rows too. So this unit's
-  three module goods and three recipes go on top of PL.2's branch once its PR opens, and the PR
-  then stacks on it. That is owed below.
+- **Stacked on PL.1 (#628), in the lead's land order: #628, then PL.7, then PL.2.** PL.1's branch
+  is merged in. PL.2, the lane chain's one writer, merges this branch and lays its own goods and
+  recipe rows on top of this unit's, re-pinning the goods digest and counts on its side.
 - **PL.0's unload test** (`surface/act/fixed.rs`) counted the shipped bulk goods exactly. It now
   counts them relative to the shipped table, with the same 47 test goods and the same weigh.
 - **`CoreClass::finished_minor()` and its siblings stay**, as the v1 table's names, so the
@@ -752,8 +751,6 @@ in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged
 - `scripts/launch-bringup-acceptance.sh` checks no core buy, so it is unchanged.
 
 **Not built:**
-- **The rows on PL.2.** The module goods and recipes are to be re-laid on PL.2's branch when its
-  PR opens, re-pinning the goods digest and counts over PL.2's rows.
 - **No NPC hauls boards or ore to the depot.** Its supply is the lane's or EX.9's, as for every
   finite seed (§3.7).
 - **The census's terms** are EX.0's to add: the `cored` sink and the depot's opening stock as
