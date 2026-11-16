@@ -129,6 +129,12 @@ Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.
 
 A ship mind reads the same figures: `space_mount(v, id)` gives one of her mounts, and in a bubble `Contact.aspect` gives the band of five.
 
+### Magazines
+
+Your ship's magazines are hers to keep. The torpedoes, spinal rounds and point-defence rounds she fires stay fired: when the fight ends her magazines hold what she left in them, and they still hold it at the next fight and after a server restart. A bay repair mends her and does not rearm her. `+tac/status` shows what each magazine holds.
+
+A patrol is resupplied. The customs corvette and the belt raider you meet on a leg sail with full magazines every time, whatever an earlier fight cost them.
+
 ---
 
 ## Asteroid Mining (`+mine`)

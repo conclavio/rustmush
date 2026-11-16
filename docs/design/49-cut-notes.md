@@ -689,7 +689,112 @@ All runs were on conclav.dev, in a throwaway clone, with the unit's patch applie
 
 ## CC.7
 
-Not built.
+Space magazines persist (Q-49-12; Q-49-10's magazines). Part 1 was built 2026-11-16, stacked on
+CC.9 (`claude/cc9-space-decision-support-ab821d`, PR #634). Part 2, the berth rearm, waits on doc
+48's PL.3 (PR #635) and is listed under **Not built**.
+
+**Survey.**
+
+- **Check-out refilled every magazine.** `space_ship_from_tactical_unit_with_spec` builds a ship
+  from her fit's overlay, every mount full. Check-in (`build_space_damage_mutation_plan`) wrote
+  sections, facets, heat, conditions and the `tacsim.space.subsystems` capability (crits,
+  stripped rotaries, `slow_pct`), but no magazine. So every fight began full.
+- **A bay repair clears the subsystem record.** `port/bay_work/jobs.rs` revokes
+  `tacsim.space.subsystems` when it mends a hull. Magazines kept there would have refilled at
+  every repair.
+- **The cast was already resupplied, by construction.**
+  - `spawn_kirkwood_picket_ships_in_world` makes a fresh hull and unit for the corvette and the
+    raider at each spawn (`create_stock_space_unit_in_world` refuses an object that already holds a
+    unit).
+  - After check-out, `configure_corvette_and_raider_ships` lays the cast's fit overlay anew.
+  - An unclaimed cast hull is destroyed after its bubble (`destroy_unclaimed_npc_hull`).
+- **The census.** EX.0 (#631, open) counts a round out of the census once a rearm loads it into
+  a magazine (`loaded`). A magazine is not a holding, so keeping it across check-ins moves no
+  census term; part 2's draws will.
+- **Persistence.**
+  - While a bubble runs, the ship lives in the saved bubble state. CC.6's `fired_since_full`
+    already rides it, skip-when-default, so a restart mid-bubble keeps her rounds (`voyage.rs`'s
+    sfr8 holds that state bit-identical across a restart).
+  - Outside a bubble, her durable form is her `TacticalUnit` document in the unit store.
+
+**Built.**
+
+- **`tacsim.space.magazines` (`SPACE_MAGAZINES_CAPABILITY`),** a capability of her unit of its
+  own: `{"rounds": {mount id: rounds left}}` for each tube family, spinal gun and point-defence
+  rotary short of what her fit stows.
+  - **Check-in** writes it (`spent_magazines`) and revokes it when every magazine is full. A hull
+    that never fired gains nothing, so her unit is the bytes it always was.
+  - **Check-out** loads it onto the ship her fit built (`kept_magazines`, `load_kept_magazines`).
+    Each magazine keeps what was left and never more than her fit stows. A tube family's or
+    spinal gun's `fired_since_full` becomes what the fit stows less that, so a mind still reads
+    the fit's maximum. An id she no longer carries is ignored.
+  - It is not a key of `tacsim.space.subsystems`, so a bay repair leaves it alone.
+- **The cast:** `configure_corvette_and_raider_ships` now says why each spawn sails full, and a
+  test holds it.
+- **Help:** `docs/help/space.md`, "Magazines": what she fires stays fired, through a restart; a
+  bay repair is not a rearm; a patrol is resupplied.
+
+**Tests.**
+
+Runs were on conclav.dev, with the unit's patch applied on CC.9's tip (`3d8d118b2`).
+
+- **New tests**, all on Halcyon's stock unit (torpedoes, spinal rounds and point defence):
+  - `space::custody::cc7_tests` (five):
+    - check-in keeps exactly the magazines short of her fit, and check-out loads them: every
+      round conserved, the fit's maximum still read, and a second check-in idempotent;
+    - a full hull gains no capability, and a hull rearmed to full drops it;
+    - a restart: her unit's serde round trip, its durable form, keeps the rounds;
+    - a bay repair (revoking `tacsim.space.subsystems`) conserves them;
+    - a kept count never loads past her fit, and an unknown mount id is ignored.
+  - `space::picket::tests::cc7_a_cast_hull_sails_full_whatever_her_unit_kept`: a cast hull
+    with spent magazines sails full after the cast's fit is laid.
+  - `tests/domain_world/voyage.rs`, the story
+    `cc7_a_hulls_magazines_survive_check_in_a_restart_and_check_out`:
+    1. a chartered Dray is checked out and her point defence fires 300 rounds;
+    2. she is checked in by the real `check_out_space_unit` and `check_in_space_unit`;
+    3. the store is folded and the engine rebooted;
+    4. her unit still keeps the magazine, and the next check-out loads it: the rounds are
+       conserved, and nothing refilled her.
+- **Suites, all passing:**
+  - `tacsim`'s lib tests with `domain_world`, `domain_field` and `domain_economy`: 3,573 tests,
+    the space stories among them. 3,572 passed on the first run. The new story failed: its rig
+    folded the check-in's writes before the world's older ones, so the charter's unit document
+    won. With the order fixed it passes, run on its own;
+  - the bot job (`cargo nextest run -P ci -p mush-bot`, less its two long stories, and its doc
+    tests): 784 tests.
+- **Guards, all passing:**
+  - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on `tacsim`;
+  - the lint job's M7 memory-size pass;
+  - `mush-contract-tests`' `ci_policy` guards and the help lint;
+  - rustdoc with `-D warnings`, in both modes.
+
+**Divergences.**
+
+- **The fit's stow is read from the fit her hull flies** (`space_unit_overlay_for_id` of her
+  `hull_class`), the one check-out builds her from. A retune that shrinks a magazine clamps what
+  she kept to the new stow at her next check-out, so a content change can lose rounds. Rounds are
+  conserved across play, not across a retune.
+- **`port/bay_work/jobs.rs` and the census are untouched.** Keeping magazines in a capability of
+  their own needed no change there.
+- **Files outside the row:** `tests/domain_world/voyage.rs` gains the one story below, with a
+  local helper that keeps a staff context's durable writes.
+
+**Not built.**
+
+- **Part 2, the berth rearm** (Q-49-12), waits on doc 48's PL.3 (#635), which adds the space
+  munitions goods. Until it lands, **nothing refills a player's space magazines**: what a hull
+  fires is gone. The rearm is a follow-up PR: a new file in `tacsim/src/port/` that draws
+  torpedoes, spinal rounds and point-defence boxes from the hold or the port, at the goods' cost
+  plus a labour fee, like the ground's `+bay/order rearm`. It fills to `magazine_max()`, sets
+  `fired_since_full` to nought, and rewrites or revokes `tacsim.space.magazines`. Its draws are
+  EX.0's `loaded`.
+- **A refit refills.** `+coop/refit` re-instantiates the unit (`mush_tactics::module`'s
+  re-instantiate route, `port/refit.rs`), which drops every capability, the kept magazines and
+  the subsystem record among them. A refit therefore rearms for free. Fixing that belongs with
+  the refit's owner.
+- **The interdictor** is cast in `space/tick.rs`, which is not this unit's file. It sails full
+  the same way: a fresh unit at each spawn, and its overlay laid anew after check-out. No test
+  here holds it.
 
 ## CC.8
 
