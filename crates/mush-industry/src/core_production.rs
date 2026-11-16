@@ -17,7 +17,8 @@ pub(crate) mod provider;
 mod records;
 pub mod uncertified;
 pub use config::{
-    CoreOriginConfig, CoreOriginMode, OriginAgent, OriginPolicy, origin_content_descriptor,
+    ChainLine, CoreOriginConfig, CoreOriginMode, MAX_CHAIN_LINES, MAX_CHAIN_UNITS, OriginAgent,
+    OriginPolicy, origin_content_descriptor,
 };
 pub(crate) use provider::Runtime;
 pub use records::{CertifiedOrigin, DieCertificate, DieCertificates, DieClass, DieSource};

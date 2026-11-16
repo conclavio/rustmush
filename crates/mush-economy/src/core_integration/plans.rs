@@ -49,7 +49,7 @@ impl FundingIntent {
             .account)
     }
     pub fn price(&self) -> Amount {
-        self.payment.price(self.subject.class)
+        self.payment.price(&self.policy.prices, self.subject.class)
     }
 }
 /// Exact immutable Core output facts, captured only from the real opaque
@@ -244,13 +244,13 @@ pub(super) fn terminal(
         });
         lines.push(RequestedLine {
             account: intent.integrator_account()?,
-            delta: Amount::from_minor(intent.subject.class.integration_minor()),
+            delta: Amount::from_minor(intent.policy.prices.integration_minor(intent.subject.class)),
             memo: "core integration".into(),
         });
         if intent.payment == DiePayment::SupplierStock {
             lines.push(RequestedLine {
                 account: intent.policy.supplier.account,
-                delta: Amount::from_minor(intent.subject.class.die_minor()),
+                delta: Amount::from_minor(intent.policy.prices.die_minor(intent.subject.class)),
                 memo: "certified die".into(),
             });
         }

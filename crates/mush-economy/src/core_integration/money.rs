@@ -414,10 +414,15 @@ impl AuthEval for CoreAuth<'_> {
         }
         self.phase == Transition::Complete
             && ((self.intent.integrator_account() == Ok(account.id)
-                && delta.minor() == self.intent.subject.class.integration_minor())
+                && delta.minor()
+                    == self
+                        .intent
+                        .policy
+                        .prices
+                        .integration_minor(self.intent.subject.class))
                 || (self.intent.payment == super::subject::DiePayment::SupplierStock
                     && account.id == self.intent.policy.supplier.account
-                    && delta.minor() == self.intent.subject.class.die_minor()))
+                    && delta.minor() == self.intent.policy.prices.die_minor(self.intent.subject.class)))
     }
     fn authorize_hold(&self, actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
         if actor != &PrincipalId::System(self.intent.policy.issuer.clone())

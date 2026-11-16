@@ -709,6 +709,19 @@ impl Provider {
                 )
                 .map_err(bad)?;
             c.matches_lot(&lot)?;
+            // Doc 48 unit PL.7 (Q-48-27, Q-48-48): the die's chain goods leave the importer's
+            // depot in this same bundle, so a die is issued only when they are there, and the
+            // quota is spent only when they are.
+            for line in c.policy.chain_of(c.class) {
+                f.inventory
+                    .debit(
+                        txn,
+                        EndpointRef(c.policy.depot),
+                        &line.commodity,
+                        line.units,
+                    )
+                    .map_err(|_| Error::Unavailable)?;
+            }
             txn.insert(&f.certificates, &c.key(), c.clone())
                 .map_err(bad)?;
             let (quota, exists) = quota.ok_or(Error::Integrity)?;

@@ -20,6 +20,21 @@ pub struct OriginAgent {
     pub actor: ObjId,
     pub stock: VaultId,
 }
+/// **One chain good a die consumes when it is issued** (doc 48 unit PL.7; Q-48-27, Q-48-48):
+/// a pooled commodity and its units, taken from the importer's depot.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainLine {
+    pub commodity: mush_core::CanonicalId,
+    pub units: u64,
+}
+/// The most chain lines one class's die consumes.
+pub const MAX_CHAIN_LINES: usize = 4;
+/// The most units one chain line consumes.
+pub const MAX_CHAIN_UNITS: u64 = 1_000;
+/// The die lots' own commodity, which no chain line may name.
+pub(crate) const DIE_COMMODITY: &str = "tacsim.electronics";
+
 /// Trusted composition data, retained in each receipt for historical reconstruction.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +46,16 @@ pub struct OriginPolicy {
     pub content: DefinitionRef,
     pub grades: [Grade; 3],
     pub monthly_quotas: [u16; 3],
+    /// **The chain goods a die of each class consumes when it is issued** (doc 48 unit PL.7),
+    /// Class I, II and III in order, debited from [`Self::depot`] in the issue's bundle. Every
+    /// certificate retains its policy, so the goods a die consumed are read back from it
+    /// ([`super::DieCertificate::consumed`]). Empty for every class when the composition names
+    /// none, and then not written, so such a policy keeps its bytes and digest.
+    #[serde(default, skip_serializing_if = "no_chain")]
+    pub chain: [Vec<ChainLine>; 3],
+}
+fn no_chain(chain: &[Vec<ChainLine>; 3]) -> bool {
+    chain.iter().all(Vec::is_empty)
 }
 impl OriginPolicy {
     pub fn validate(&self) -> Result<(), Error> {
@@ -47,7 +72,25 @@ impl OriginPolicy {
         {
             return Err(Error::Invalid);
         }
+        // Each class's lines: bounded, in strictly ascending commodity order (so one good is
+        // named once and the bytes are canonical), never the die's own commodity.
+        for lines in &self.chain {
+            if lines.len() > MAX_CHAIN_LINES
+                || lines.iter().any(|l| {
+                    !(1..=MAX_CHAIN_UNITS).contains(&l.units)
+                        || l.commodity.as_str() == DIE_COMMODITY
+                })
+                || lines.windows(2).any(|w| w[0].commodity >= w[1].commodity)
+            {
+                return Err(Error::Invalid);
+            }
+        }
         Ok(())
+    }
+    /// The chain goods a die of `class` consumes at issue.
+    #[must_use]
+    pub fn chain_of(&self, class: super::DieClass) -> &[ChainLine] {
+        &self.chain[class.index()]
     }
     pub(crate) fn action(&self, initialize: bool) -> Result<DefinitionDescriptor, ModError> {
         self.validate().map_err(mod_error)?;
