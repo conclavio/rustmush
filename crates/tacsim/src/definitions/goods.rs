@@ -55,8 +55,18 @@ pub const GOODS_DIGEST_DOMAIN: &str = "tacsim.goods.v1";
 /// The most measures the registry may name.
 pub const MAX_MEASURES: usize = 8;
 
-/// The most rows the table may carry (48 since doc 39 cut IN.9: a hull kit a buildable design).
-pub const MAX_GOODS: usize = 48;
+/// The most rows the table may carry (48 since doc 39 cut IN.9: a hull kit a buildable design;
+/// 256 since doc 48 cut PL.0, Q-48-30: room for docs 48 and 49's goods and those after them).
+/// Raising it moves no pin: [`goods_digest`] hashes `goods.json`, never this bound.
+pub const MAX_GOODS: usize = 256;
+
+// Doc 48 cut PL.0: an endpoint pools every catalogue good. The pool count is taken on create and
+// never freed (an emptied pool keeps its book and its lineage), so a hold that has ever held one
+// of every good must still take the next one. A larger catalogue moves the inventory cap with it.
+const _: () = assert!(
+    MAX_GOODS <= mush_inventory::MAX_POOLS_PER_ENDPOINT,
+    "an endpoint must be able to pool every catalogue good"
+);
 
 /// The longest ledger or quote unit word, bytes.
 pub const MAX_UNIT_BYTES: usize = 16;
@@ -636,4 +646,65 @@ pub fn goods_digest(bytes: &str) -> Result<DefinitionDigest, DefinitionError> {
 /// `crates/tacsim/tests/content.rs` pins the table.
 pub fn goods_table() -> Result<GoodsTable, DefinitionError> {
     GoodsTable::load("goods.json", GOODS_JSON)
+}
+
+/// Doc 48 cut PL.0's test catalogues: the shipped table padded with test goods.
+#[cfg(test)]
+pub(crate) mod pl0_tests {
+    use super::*;
+
+    /// **The shipped table plus `extra` test bulk goods**, each a copy of `metals` (bulk
+    /// stowage, metals family) under the id `pl0_bulk_NNN`, so the rows differ only in name.
+    pub(crate) fn padded(extra: usize) -> String {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(GOODS_JSON).expect("the shipped table parses");
+        let goods = doc["goods"].as_array_mut().expect("a goods array");
+        let template = goods
+            .iter()
+            .find(|good| good["id"] == "metals")
+            .cloned()
+            .expect("the metals row");
+        for n in 0..extra {
+            let mut row = template.clone();
+            row["id"] = serde_json::Value::from(format!("pl0_bulk_{n:03}"));
+            row["label"] = serde_json::Value::from(format!("test bulk good {n}"));
+            goods.push(row);
+        }
+        doc.to_string()
+    }
+
+    fn shipped_rows() -> usize {
+        goods_table().expect("the shipped table loads").goods.len()
+    }
+
+    /// **A catalogue of 100 goods loads** (doc 48 cut PL.0's first done-when; Q-48-30): the
+    /// shipped rows padded to 100 load (refused at 48 before), and the market's catalogue rows
+    /// derive from every one of them.
+    #[test]
+    fn pl0_a_catalogue_of_100_goods_loads() {
+        let table = GoodsTable::load("goods.json", &padded(100 - shipped_rows()))
+            .unwrap_or_else(|error| panic!("100 goods load: {error}"));
+        assert_eq!(table.goods.len(), 100);
+        let entries = table
+            .catalog_entries()
+            .unwrap_or_else(|error| panic!("100 catalogue rows derive: {error}"));
+        assert_eq!(entries.len(), 100);
+    }
+
+    /// **The cap is 256 goods** (Q-48-30): a full catalogue loads and one more refuses. (That
+    /// the bound fits the inventory's per-endpoint pool cap is asserted at compile time.)
+    #[test]
+    fn pl0_the_catalogue_holds_256_goods_and_no_more() {
+        let full = GoodsTable::load("goods.json", &padded(256 - shipped_rows()))
+            .unwrap_or_else(|error| panic!("256 goods load: {error}"));
+        assert_eq!(full.goods.len(), 256);
+        let error = GoodsTable::load("goods.json", &padded(257 - shipped_rows()))
+            .expect_err("257 goods refuse");
+        assert!(
+            error
+                .to_string()
+                .contains("the goods table carries 1 to 256 goods; 257 is not"),
+            "{error}"
+        );
+    }
 }

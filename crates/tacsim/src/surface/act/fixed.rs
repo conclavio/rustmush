@@ -88,8 +88,13 @@ pub(super) struct FillFixed {
 /// **An unload's server facts, as the start's offer fixes them** (doc 20 cut SM.8; the brief's
 /// 3.7, decisions R4, R15 and R16): the vaults, both variants the prepare may run, the hull's
 /// hold plan (so the prepare weighs with the one table and compartment the preview did, with no
-/// World), the goods the hold's ore compartment accepts (table order) and the hull's other rigs
-/// (their hoppers and runs are the reservation the prepare re-reads in its transaction).
+/// World) and the hull's other rigs (their hoppers and runs are the reservation the prepare
+/// re-reads in its transaction).
+///
+/// **Doc 48 cut PL.0**: the plan names the hopper's goods only (the variants' goods and each
+/// sibling hopper's). It no longer lists every good the hold's ore compartment accepts: the
+/// prepare derives that list from the plan's own table ([`hold_goods`]), so the offer does not
+/// grow with the catalogue and no pool cap bounds it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct UnloadFixed {
@@ -100,9 +105,64 @@ pub(super) struct UnloadFixed {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) queued: Option<QueuedFixed>,
     pub(super) plan: crate::port::market::HoldPlan,
-    pub(super) goods_of_hold: Vec<CanonicalId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) siblings: Vec<Sibling>,
+}
+
+/// **The goods an unload weighs the hold over** (doc 48 cut PL.0): every good of `table` that
+/// `compartment` accepts, in table order. The hold's room is the compartment's limits less
+/// everything already in it, and anything the compartment accepts may be there (bought at a
+/// market, or left by an earlier unload). So the weigh reads them all, not only the goods a
+/// hopper carries. `ActionTxn` has no scan, so the list is named, and the table bounds it
+/// ([`crate::definitions::goods::MAX_GOODS`]).
+pub(super) fn hold_goods<'t>(
+    table: &'t crate::definitions::GoodsTable,
+    compartment: &crate::port::capacity::Compartment,
+) -> impl Iterator<Item = &'t CanonicalId> {
+    table
+        .goods
+        .iter()
+        .filter(|good| compartment.accepts.contains(&good.stowage))
+        .map(|good| &good.id)
+}
+
+/// **Whether the hold's room admits an unload's goods** (doc 20 cut SM.8's re-check in the
+/// prepare, factored by doc 48 cut PL.0): the hold's contents over [`hold_goods`] read through
+/// `held` (a pool's quantity, 0 when absent), less the siblings' `reserved` loads, then each of
+/// `goods` taken from the room in turn. `Ok(false)` when one does not fit; `Err` when a pool will
+/// not read or the room will not weigh.
+pub(super) fn hold_admits(
+    table: &crate::definitions::GoodsTable,
+    compartment: &crate::port::capacity::Compartment,
+    held: &mut dyn FnMut(&CanonicalId) -> Result<u64, ActionError>,
+    reserved: &[BTreeMap<CanonicalId, u64>],
+    goods: &BTreeMap<CanonicalId, u64>,
+) -> Result<bool, ActionError> {
+    let weigh = || {
+        port_error(
+            ActionErrorCode::Integrity,
+            "the hold's room cannot be weighed",
+        )
+    };
+    let mut contents: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+    for good in hold_goods(table, compartment) {
+        let quantity = held(good)?;
+        if quantity > 0 {
+            contents.insert(good.clone(), quantity);
+        }
+    }
+    let mut room = crate::port::capacity::room_less(table, compartment, &contents, reserved)
+        .map_err(|_| weigh())?;
+    for (good, qty) in goods {
+        let fits = crate::port::capacity::units_in(table, compartment, &room, good)
+            .map_err(|_| weigh())?;
+        if fits < *qty {
+            return Ok(false);
+        }
+        crate::port::capacity::take_room(table, compartment, &mut room, good, *qty)
+            .map_err(|_| weigh())?;
+    }
+    Ok(true)
 }
 
 /// **The hand variant**: the operator's `+tv/unload go` order for the rig's next ordinal.
@@ -423,13 +483,6 @@ pub(super) fn unload_fixed(engine: &mush_core::Engine, actor: ObjId, rig: &RigAt
             goods,
         });
     }
-    let goods_of_hold: Vec<CanonicalId> = room
-        .goods
-        .goods
-        .iter()
-        .filter(|good| room.compartment.accepts.contains(&good.stowage))
-        .map(|good| good.id.clone())
-        .collect();
     let hand = match (order, &hand_plan) {
         (Some(order), Some(Ok(_))) => Some(HandFixed {
             ordinal: next,
@@ -492,7 +545,6 @@ pub(super) fn unload_fixed(engine: &mush_core::Engine, actor: ObjId, rig: &RigAt
             hand,
             queued,
             plan: room.plan,
-            goods_of_hold,
             siblings,
         }),
         plan: None,
@@ -1218,4 +1270,148 @@ pub(crate) fn write_record(
         txn.insert(family, &key, record)
     };
     staged.map_err(|_| port_error(ActionErrorCode::Integrity, "the rig record did not stage"))
+}
+
+/// Doc 48 cut PL.0: the unload over a catalogue with 70 bulk goods.
+#[cfg(test)]
+mod pl0_tests {
+    use super::*;
+    use crate::definitions::goods::pl0_tests::padded;
+    use crate::definitions::{GoodsTable, LogisticsDef};
+
+    fn cid(word: &str) -> CanonicalId {
+        CanonicalId::new(word).expect("an id")
+    }
+
+    fn dray_p() -> LogisticsDef {
+        let pack = crate::pack::load_pack(crate::definitions::content::DRAY_P_JSON)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        match pack.entry(&cid(crate::definitions::content::DRAY_P)) {
+            Some(crate::pack::PackEntry::Unit(spec)) => {
+                spec.logistics.clone().expect("the Dray-P's logistics")
+            }
+            _ => panic!("the Dray-P unit"),
+        }
+    }
+
+    /// A test catalogue with 70 bulk goods: the shipped 23 and 47 test copies of `metals`.
+    fn seventy_bulk() -> GoodsTable {
+        let table = GoodsTable::load("goods.json", &padded(47))
+            .unwrap_or_else(|error| panic!("the test catalogue loads: {error}"));
+        let bulk = table
+            .goods
+            .iter()
+            .filter(|good| good.stowage.as_str() == "stow.bulk")
+            .count();
+        assert_eq!(bulk, 70, "the test catalogue's bulk goods");
+        table
+    }
+
+    fn ores() -> BTreeMap<CanonicalId, u64> {
+        ["metal_ore", "ice_ore", "carbon_ore", "strategic_ore"]
+            .into_iter()
+            .map(|ore| (cid(ore), 1))
+            .collect()
+    }
+
+    /// **An unload weighs a hold under a 70-bulk-good catalogue** (doc 48 cut PL.0's second
+    /// done-when): the Dray-P hold's ore compartment accepts 74 goods (70 bulk, 4 ore), more
+    /// than the 64 the old plan list was capped at, and the prepare's weigh takes them all. It
+    /// counts goods no hopper carries: with 1 t of each of the 47 test goods aboard (47 t,
+    /// 18,800 L of the hold's 86,000 kg and 103,200 L) the hold takes 39 t of metal ore and not
+    /// 40, where a weigh over the hopper's ores alone would take 86.
+    #[test]
+    fn pl0_an_unload_weighs_a_hold_under_70_bulk_goods() {
+        let table = seventy_bulk();
+        let plan = crate::port::market::stowage_plan(&dray_p()).expect("the Dray-P's stowage plan");
+        let compartment = crate::port::capacity::compartment_for(
+            &table,
+            &crate::port::market::plan_compartments(&plan),
+            &cid("metal_ore"),
+        )
+        .expect("the Dray-P hold has one ore compartment");
+        assert_eq!(hold_goods(&table, &compartment).count(), 74);
+        let aboard = |good: &CanonicalId| -> Result<u64, ActionError> {
+            Ok(u64::from(good.as_str().starts_with("pl0_bulk_")))
+        };
+        let weigh = |ore: u64| {
+            hold_admits(
+                &table,
+                &compartment,
+                &mut |good| aboard(good),
+                &[],
+                &BTreeMap::from([(cid("metal_ore"), ore)]),
+            )
+            .unwrap_or_else(|error| panic!("the hold weighs: {error:?}"))
+        };
+        assert!(weigh(39), "39 t of metal ore fit beside the 47 t aboard");
+        assert!(!weigh(40), "40 t do not: every bulk good aboard counts");
+        // The siblings' reservations still come off the room.
+        let reserved = [BTreeMap::from([(cid("metal_ore"), 1)])];
+        let admits = hold_admits(
+            &table,
+            &compartment,
+            &mut |good| aboard(good),
+            &reserved,
+            &BTreeMap::from([(cid("metal_ore"), 39)]),
+        )
+        .unwrap_or_else(|error| panic!("the hold weighs: {error:?}"));
+        assert!(!admits, "a sibling's ton is held back");
+        // An unreadable pool is an error, never an empty hold.
+        let unread = hold_admits(
+            &table,
+            &compartment,
+            &mut |_| {
+                Err(port_error(
+                    ActionErrorCode::Integrity,
+                    "the hold cannot be read",
+                ))
+            },
+            &[],
+            &ores(),
+        );
+        assert!(unread.is_err());
+    }
+
+    /// **The unload plan names the hopper's goods only** (doc 48 cut PL.0): a hand variant over
+    /// the four ores and three sibling hoppers encodes in well under a sixteenth of
+    /// `MAX_ACTION_PARAMETER_BYTES`, the same at any catalogue size, since it lists none of the
+    /// hold's goods; a plan that still carries the old hold list is refused.
+    #[test]
+    fn pl0_the_unload_plan_names_only_the_hoppers_goods() {
+        let plan = crate::port::market::stowage_plan(&dray_p()).expect("the Dray-P's stowage plan");
+        let hoppers: Vec<CanonicalId> = ores().into_keys().collect();
+        let fixed = UnloadFixed {
+            hopper: 101,
+            hold: 102,
+            hand: Some(HandFixed {
+                ordinal: 1,
+                how: UnloadHow::Whole,
+                qty: None,
+                goods: ores(),
+            }),
+            queued: None,
+            plan,
+            siblings: (0..3_u32)
+                .map(|n| Sibling {
+                    tv: ObjId(900 + n),
+                    hopper: 200 + u64::from(n),
+                    goods: hoppers.clone(),
+                })
+                .collect(),
+        };
+        let bytes = serde_json::to_vec(&fixed).expect("the plan encodes");
+        assert!(
+            bytes.len() < mush_core::MAX_ACTION_PARAMETER_BYTES / 16,
+            "{} bytes",
+            bytes.len()
+        );
+        let text = String::from_utf8(bytes).expect("utf-8");
+        assert!(!text.contains("\"metals\""), "no hold list: {text}");
+        let mut old: serde_json::Value = serde_json::from_str(&text).expect("json");
+        old["goods_of_hold"] = serde_json::json!(["metals", "metal_ore"]);
+        assert!(serde_json::from_value::<UnloadFixed>(old).is_err());
+        let back: UnloadFixed = serde_json::from_str(&text).expect("the plan decodes");
+        assert_eq!(back, fixed);
+    }
 }
