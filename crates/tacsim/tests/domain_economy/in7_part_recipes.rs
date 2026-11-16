@@ -708,3 +708,108 @@ async fn in7_strategic_ore_boards_and_fittings_become_ten_sights_at_stickney() {
 fn unit_exists(rig: &Rig, hull: ObjId) -> bool {
     mush_tactics::module::unit_of(rig.tw.world(), hull).is_some()
 }
+
+/// **Doc 48 unit PL.7: the works makes a traced line core module** (Q-48-48). A captain at Ceres
+/// with two tonnes of instrument boards and one of strategic ore in her Dray-P's hold (staff's
+/// seed: the chain's goods) quotes `module_line`, books it at Freeport Works, delivers the bill,
+/// and the works runs its 48 hours. The arm commissions the output as a traced part: one lot with
+/// a `Manufactured` row naming the order and the works and, for its row, the line core's
+/// definition. `+works/collect` puts it in her hold, a lot the yard takes for an escort's or a
+/// line tank's bill.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pl7_the_works_makes_a_traced_line_core_module() {
+    const MODULE: &str = "tacsim.part.core.line";
+    let mut rig = stocked();
+    let (captain, row) = prospector(&mut rig, "Maker", 2, "Short Ox");
+    mint(&mut rig, captain);
+    seed_hold(&mut rig, &row, BOARDS, 2, 7_801);
+    seed_hold(&mut rig, &row, STRATEGIC, 1, 7_802);
+    let hold = hold_vault_of(&rig.tw, &row);
+    let floor = station_room(&rig.tw, CERES, "room.c15_maintenance");
+    put(&mut rig, captain, floor, false);
+    let quote = run(&mut rig.tw, captain, "+works/quote module_line");
+    assert!(
+        quote.contains("bill 2 instrument_boards, 1 strategic_ore")
+            && quote.contains("(48 work units)"),
+        "{quote}"
+    );
+    let before: Vec<u64> = store(&rig.tw)
+        .works_contracts()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    let booked = works(&mut rig, captain, "+works/order module_line", 1);
+    assert!(booked.contains("booked at the works"), "{booked}");
+    let id = store(&rig.tw)
+        .works_contracts()
+        .into_iter()
+        .map(|c| c.id)
+        .find(|id| !before.contains(id))
+        .expect("the order");
+    for (good, units) in [(BOARDS, 2), (STRATEGIC, 1)] {
+        works(
+            &mut rig,
+            captain,
+            &format!("+works/deliver {id}={good} {units}"),
+            1,
+        );
+    }
+    assert_eq!(
+        (
+            hold_pool(&mut rig.tw, hold, BOARDS),
+            hold_pool(&mut rig.tw, hold, STRATEGIC)
+        ),
+        (0, 0),
+        "the bill left the hold"
+    );
+    let start = ic_now(&rig.tw);
+    for hour in 1..=72 {
+        let done = order_of(&mut rig, id).is_some_and(|o| {
+            matches!(
+                o.state(),
+                mush_industry::WorkOrderState::AwaitingDelivery
+                    | mush_industry::WorkOrderState::Completed { .. }
+            )
+        });
+        if done {
+            break;
+        }
+        ic_to(&mut rig, start + hour * 3_600);
+    }
+    for _ in 0..6 {
+        if contract(&rig, id).delivered_ic.is_some() {
+            break;
+        }
+        let _ = works_fire(&mut rig);
+    }
+    let delivered = contract(&rig, id);
+    assert!(delivered.delivered_ic.is_some(), "{delivered:?}");
+    let (facility, order) = (delivered.facility, delivered.order.expect("the work order"));
+    for _ in 0..10 {
+        let _ = works_fire(&mut rig);
+        if !bay_owes(&rig, facility) && !lots_at(&mut rig, VaultId(id), MODULE).is_empty() {
+            break;
+        }
+    }
+    let made = lots_at(&mut rig, VaultId(id), MODULE);
+    assert_eq!(made.len(), 1, "one module: {made:?}");
+    assert_eq!(made[0].quantity(), 1);
+    let traced = provenance(&mut rig, made[0].id()).expect("a provenance row");
+    assert_eq!(traced.origin, PartOrigin::Manufactured { order, facility });
+    assert_eq!(
+        traced.definition.key().id.as_str(),
+        "tacsim.core.line",
+        "a core module's row is its core"
+    );
+    let collected = works(&mut rig, captain, &format!("+works/collect {id}"), 2);
+    assert!(
+        collected.contains(tacsim::port::works::INTO_HOLD),
+        "{collected}"
+    );
+    assert_eq!(
+        lots_at(&mut rig, hold, MODULE).len(),
+        1,
+        "the module in her hold: {collected}"
+    );
+    no_refused_writes(&rig.tw);
+}
