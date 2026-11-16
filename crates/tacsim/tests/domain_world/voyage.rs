@@ -3294,6 +3294,14 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
     // (`boundary_ic + leg2_secs + 1_000_000 > depart_ic + total_secs`) while the bubble is active.
     // Do 4 one-second real fires first (exchanging fire with `interdictor.1`), then jump past
     // `leg2_secs + 1_000_000` IC seconds on the 5th fire.
+    //
+    // Doc 49 unit CC.8: a Dray's lasers are weak against a hull (Q-49-7) and cycle in 5 s
+    // (Q-49-19), so she no longer beams the interdictor to a derelict in four seconds. She
+    // fires on it, and heaves to: she burns against her drift past it from the first second,
+    // so it holds its fire and its drive for her, and once she is under the heave-to speed it
+    // stands her down and the bubble closes.
+    let heave = run(&mut rig.tw, pilot, "+helm/thrust 1000 -1000 0 0 force");
+    assert!(heave.contains("Helm thrust set"), "{heave}");
     for i in 0..4 {
         let next_real = rig.tw.world().now() + 1;
         rig.tw.set_now(next_real);
@@ -3357,17 +3365,26 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
     let (replayed, _) = active_paused.tape.replay();
     assert_eq!(replayed.state_hash(), active_paused.bubble.state_hash());
 
-    // 3. Deliver the finishing `+tac/beam` salvo to disable the interdictor by play and fire one tick to close the bubble and resume leg 2.
+    // 3. She fires once more, and keeps burning against her drift until the interdictor stands
+    //    her down (doc 49 unit CC.8); a tick at a time until the bubble closes and leg 2 resumes.
     let finish_beam = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
     assert!(
         finish_beam.contains("Laser battery fired on"),
-        "finishing salvo disables interdictor by play: {finish_beam}"
+        "a last salvo before she is stood down: {finish_beam}"
     );
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let clear_events = rig.tw.fire_due(next_real * 1_000);
+    let mut heave_ticks = 0_u64;
+    let mut clear_heard = String::new();
+    while heave_ticks < 120 {
+        heave_ticks += 1;
+        let next_real = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_real);
+        let clear_events = rig.tw.fire_due(next_real * 1_000);
+        clear_heard = said(&rig.tw, &clear_events, pilot);
+        if clear_heard.contains("[SPACE] Interdiction contact cleared") {
+            break;
+        }
+    }
     let resume_ic = ic_now(&rig.tw);
-    let clear_heard = said(&rig.tw, &clear_events, pilot);
     assert!(
         clear_heard.contains(
             "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed."
@@ -3386,10 +3403,13 @@ fn sfr1_interdicted_leg_promotes_pauses_leg_timer_steps_wall_bubble_and_resumes_
         .expect("completed bubble archived");
     assert_eq!(completed.opened_ic_s, boundary_ic);
     assert_eq!(completed.closed_ic_s, resume_ic);
-    assert_eq!(completed.steps, 5);
+    // Each fire stepped it once, a second at a time but for the capped jump: the four seconds,
+    // the jump, and the seconds she spent heaving to (doc 49 unit CC.8).
+    assert!(completed.steps > 5, "she heaved to over further steps: {}", completed.steps);
+    assert!(u64::from(completed.steps) <= 5 + heave_ticks);
     assert_eq!(
         completed.wall_elapsed_ms,
-        4 * u64::from(tacsim::space::COMBAT_STEP_WALL_MS)
+        u64::from(completed.steps - 1) * u64::from(tacsim::space::COMBAT_STEP_WALL_MS)
             + u64::from(tacsim::space::MAX_BUBBLE_TICK_STEP_MS),
     );
 
@@ -5107,53 +5127,40 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
         "{jink_out}"
     );
 
-    for i in 0..24 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
-        if i == 2 {
-            let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
-        }
-    }
-
-    // Verify the 120 km railgun slug missed *Salt Moth* due to the lateral jink, and the Corvette's
-    // `KIRKWOOD_PICKET_RHAI` (`laser_1` + `rail_spinal`) disabled the Belt Raider into `DisabledDerelict`
-    // while the Raider's 2 torpedoes are still being screened!
-    {
-        let bubble_book = rig
-            .tw
-            .world()
-            .module_state::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let active = bubble_book
-            .active_for_hull(hull)
-            .expect("active bubble while torpedoes are still in flight");
-        let (_, replayed_events) = active.tape.replay();
-        assert!(
-            replayed_events.iter().any(|e| matches!(
-                e,
-                tacsim::space::SpaceCombatEvent::RailgunDodgedByJink { .. }
-            )),
-            "120 km railgun slug completed its flight window and missed after lateral jink (RailgunDodgedByJink)"
-        );
-        assert!(
-            matches!(
-                active.bubble.ships[&raider_ship_id].status,
-                tacsim::space::HullStatus::DisabledDerelict { .. }
-            ),
-            "Republic Customs Corvette disabled Belt Raider by play (`KIRKWOOD_PICKET_RHAI`)"
-        );
-    }
-
-    // Continue stepping ticks so the Corvette's defensive laser and Carrier PDCs finish intercepting
-    // the Raider's 2-torpedo salvo and `clear_resolved_bubbles` closes the Kirkwood bubble and
-    // resumes *Salt Moth*'s `CarrierJourney` to Stickney Yards!
+    // Doc 49 unit CC.8: the corvette's laser no longer reaches the raider at 120 km, and her
+    // torpedoes are stopped by the raider's warship's screen. Once the raider's torch dies
+    // after her opener she holds her course, and the corvette's spinal rounds disable her:
+    // about fifty seconds, where the 1 s, 180-a-pulse laser of the placeholder palette took
+    // under twenty-four. Step until the bubble closes, reading the fight as it goes.
+    let mut dodged = false;
+    let mut raider_down = false;
     let mut resume_heard = String::new();
-    for _ in 0..40 {
+    for i in 0..120 {
         let next_real = rig.tw.world().now() + 1;
         rig.tw.set_now(next_real);
         let evs = rig.tw.fire_due(next_real * 1_000);
+        if i == 2 {
+            let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+        }
         let heard = said(&rig.tw, &evs, pilot);
+        if let Some(active) = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|book| book.active_for_hull(hull))
+        {
+            let (_, replayed_events) = active.tape.replay();
+            dodged |= replayed_events.iter().any(|e| {
+                matches!(
+                    e,
+                    tacsim::space::SpaceCombatEvent::RailgunDodgedByJink { .. }
+                )
+            });
+            raider_down |= matches!(
+                active.bubble.ships[&raider_ship_id].status,
+                tacsim::space::HullStatus::DisabledDerelict { .. }
+            );
+        }
         if heard.contains(
             "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed.",
         ) {
@@ -5161,6 +5168,24 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
             break;
         }
     }
+
+    // The 120 km railgun slug missed *Salt Moth* for her lateral jink, and the Corvette's
+    // `KIRKWOOD_PICKET_RHAI` disabled the Belt Raider into `DisabledDerelict` with spinal rounds
+    // (doc 49 unit CC.8); then `clear_resolved_bubbles` closed the Kirkwood bubble and resumed
+    // *Salt Moth*'s `CarrierJourney` to Stickney Yards.
+    assert!(
+        dodged,
+        "120 km railgun slug completed its flight window and missed after lateral jink (RailgunDodgedByJink)"
+    );
+    assert!(
+        raider_down
+            || rig
+                .tw
+                .world()
+                .module_state::<tacsim::space::SpaceBubbleBook>()
+                .is_some_and(|book| !book.derelicts.is_empty()),
+        "Republic Customs Corvette disabled Belt Raider by play (`KIRKWOOD_PICKET_RHAI`)"
+    );
     assert!(
         resume_heard.contains(
             "[SPACE] Interdiction contact cleared; local bubble closed and transit burn resumed."
@@ -5964,21 +5989,11 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         "pilot under fire in bubble must be refused +helm/dock: {dock_under_fire}"
     );
 
-    // Disable the interdictor by play, close range, and resume Leg 2 to Stickney Yards:
-    for i in 0..4 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
-        if i == 0 || i == 2 || i == 3 {
-            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
-        }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig.tw, pilot, "+damage/vent");
-        }
-    }
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
+    // End the interdiction by play and resume Leg 2 to Stickney Yards: she fires on it, then
+    // heaves to until it stands her down (doc 49 unit CC.8: a Dray's lasers no longer beam an
+    // interdictor to a derelict):
+    let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+    let _ = heave_to_until_stood_down(&mut rig, pilot, hull);
 
     // Mid-leg (far from Stickney Yards), `+helm/dock stickney` is refused by the range/envelope gate:
     let dock_mid_leg = run(&mut rig.tw, pilot, "+helm/dock stickney");
@@ -6499,22 +6514,11 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
         "in-bubble propellant_kg reduced by Tsiolkovsky burn: {prop_kg_after_jink} < {initial_bubble_prop_kg}"
     );
 
-    // 3. Close the bubble by disabling the interdictor, then decouple and recouple across the
-    //    interdicted Kirkwood leg to re-enter a bubble, and verify `propellant_kg` does NOT refill:
-    for i in 0..4 {
-        let next_real = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_real);
-        let _ = rig.tw.fire_due(next_real * 1_000);
-        if i == 0 || i == 2 || i == 3 {
-            let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
-        }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig.tw, pilot, "+damage/vent");
-        }
-    }
-    let next_real = rig.tw.world().now() + 1;
-    rig.tw.set_now(next_real);
-    let _ = rig.tw.fire_due(next_real * 1_000);
+    // 3. Close the bubble (she fires on the interdictor, then heaves to and is stood down: doc
+    //    49 unit CC.8), then decouple and recouple across the interdicted Kirkwood leg to
+    //    re-enter a bubble, and verify `propellant_kg` does NOT refill:
+    let _ = run(&mut rig.tw, pilot, "+tac/beam Interdictor Picket");
+    let _ = heave_to_until_stood_down(&mut rig, pilot, hull);
     assert!(
         rig.tw
             .world()
@@ -6522,7 +6526,7 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
             .expect("SpaceBubbleBook")
             .active_for_hull(hull)
             .is_none(),
-        "bubble closed after interdictor disabled"
+        "bubble closed after the interdictor stood her down"
     );
 
     // Decouple into free flight before the Kirkwood boundary, verify rated drive cap and
@@ -7469,21 +7473,9 @@ fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_pi
 
     // 6. Clear the 2-ship interdiction on `rig2`, fly to `ceres_halo`, and launch 2 collector drones
     //    (`+mine/drones 2 B`) to verify `DroneSortieState` carries `ExcursionId` + verified `MindSeal`
-    //    (`drone_mining.rhai`) and steps `mind_think_seq` on the tick:
-    for i in 0..4 {
-        let next_r = rig2.tw.world().now() + 1;
-        rig2.tw.set_now(next_r);
-        let _ = rig2.tw.fire_due(next_r * 1_000);
-        if i == 0 || i == 2 || i == 3 {
-            let _ = run(&mut rig2.tw, pilot2, "+tac/beam Interdictor Picket");
-        }
-        if i == 1 || i == 2 {
-            let _ = run(&mut rig2.tw, pilot2, "+damage/vent");
-        }
-    }
-    let next_r = rig2.tw.world().now() + 1;
-    rig2.tw.set_now(next_r);
-    let _ = rig2.tw.fire_due(next_r * 1_000);
+    //    (`drone_mining.rhai`) and steps `mind_think_seq` on the tick. Doc 49 unit CC.8: she
+    //    clears it by heaving to until the interdictor stands her down.
+    let _ = heave_to_until_stood_down(&mut rig2, pilot2, hull2);
 
     let lic2 = run(&mut rig2.tw, pilot2, "+licence/buy go");
     assert!(lic2.contains("Freeport Registry"), "{lic2}");
@@ -7712,7 +7704,9 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     assert_eq!(roundtripped.heat_permille, 420);
 
     // 2. Verify stripping a PDC mount (`SubsystemCrit::PdcOffline`, `operational = false`) opens a
-    //    real gap in the point-defense screen (`step_pdc_intercepts`):
+    //    real gap in the point-defense screen (`step_pdc_intercepts`). Doc 49 unit CC.8: the
+    //    torpedoes start inside the rotaries' 4 km envelope (it was 15 km), as they started
+    //    inside the old one:
     let mut bubble_full_pdc =
         tacsim::space::LocalSpaceBubble::new("b.pdc.full", "kirkwood", "PDC Test", 1_000);
     let mut ship_full = tacsim::space::SpaceShipState::new_dray(
@@ -7731,7 +7725,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
                 id: idx,
                 shooter_id: "attacker".to_owned(),
                 target_id: "defender".to_owned(),
-                pos_m: [5_000, 0, 0],
+                pos_m: [3_500, 0, 0],
                 pos_rem_um: [0, 0, 0],
                 vel_mmps: [-1_000_000, 0, 0],
                 accel_mps2: 120,
@@ -7775,7 +7769,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
                 id: idx,
                 shooter_id: "attacker".to_owned(),
                 target_id: "defender".to_owned(),
-                pos_m: [5_000, 0, 0],
+                pos_m: [3_500, 0, 0],
                 pos_rem_um: [0, 0, 0],
                 vel_mmps: [-1_000_000, 0, 0],
                 accel_mps2: 120,
@@ -10270,31 +10264,51 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
         pending_c.plan.depart_ic + i64::from(pending_c.plan.legs[0].secs),
     );
 
-    // Turn bow (`+helm/heading 0 0`) across ticks 0..2 so the Interdictor Picket's second volley
-    // penetrates `Front` (`internal_dmg >= 25`) and strips `pdc_dorsal` offline (`PdcOffline`), then
-    // turn stern (`+helm/heading 180 0`) so subsequent hits split `hull` / `drive` on `Rear`.
-    // Doc 44 unit MW.9: its first think is its hail, so its volleys land on ticks 1, 2 and 3.
-    // Doc 44 unit MW.11: its second think waits for the hail to be answered, so they land on
-    // ticks 2, 3 and 4, and the turn to stern, the later beams and the vents are a tick later
-    // with them.
+    // Turn bow (`+helm/heading 0 0`) so the Interdictor Picket's fire penetrates `Front` and
+    // strips a point-defence mount offline (`PdcOffline`), then turn stern (`+helm/heading 180 0`)
+    // so later hits split `hull` / `drive` on `Rear`.
+    //
+    // Doc 49 unit CC.8: the interdictor's fire comes on its own cycles now (a spinal round at a
+    // hull that holds her course, every 6 s; a 5 s laser), not a volley a second, so the story
+    // turns on what her fire has done rather than on a tick count; and since a Dray's lasers no
+    // longer beam an interdictor to a derelict, she ends the fight by heaving to until it stands
+    // her down.
+    let carrier_state = |rig: &Rig| -> Option<(bool, u32)> {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()?;
+        let active = book.active_for_hull(hull_c)?;
+        let ship = active.bubble.ships.get(&active.carrier_ship_id)?;
+        Some((
+            ship.crits.contains(&tacsim::space::SubsystemCrit::PdcOffline),
+            ship.sections[&tacsim::space::ShipSectionId::Drive].internals,
+        ))
+    };
     let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 0 0");
-    for i in 0..5 {
-        let next_real = rig_combat.tw.world().now() + 1;
-        rig_combat.tw.set_now(next_real);
-        let _ = rig_combat.tw.fire_due(next_real * 1_000);
-        if i == 3 {
+    let _ = run(&mut rig_combat.tw, pilot_c, "+tac/beam Interdictor Picket");
+    let mut turned = false;
+    let mut rear_split = false;
+    for _ in 0..120 {
+        let (_, submits) = one_second(&mut rig_combat, pilot_c);
+        land_quietly(&mut rig_combat, &submits);
+        let (stripped, drive) =
+            carrier_state(&rig_combat).expect("the interdiction is still open while she fights");
+        if !turned && stripped {
             let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 180 0");
-        }
-        if i == 0 || i == 3 || i == 4 {
             let _ = run(&mut rig_combat.tw, pilot_c, "+tac/beam Interdictor Picket");
-        }
-        if i == 2 || i == 3 {
             let _ = run(&mut rig_combat.tw, pilot_c, "+damage/vent");
+            turned = true;
+        } else if turned && drive < 250 {
+            rear_split = true;
+            break;
         }
     }
-    let next_real = rig_combat.tw.world().now() + 1;
-    rig_combat.tw.set_now(next_real);
-    let _ = rig_combat.tw.fire_due(next_real * 1_000);
+    assert!(
+        turned && rear_split,
+        "the interdictor's fire stripped a mount from the bow and then reached her drive from astern"
+    );
+    let _ = heave_to_until_stood_down(&mut rig_combat, pilot_c, hull_c);
     assert!(
         rig_combat
             .tw
@@ -10303,7 +10317,7 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
             .unwrap()
             .active_for_hull(hull_c)
             .is_none(),
-        "interdiction bubble must close after disabling the Interdictor Picket"
+        "interdiction bubble must close once the Interdictor Picket stands her down"
     );
 
     // Check that `hull_c`'s checked-in `TacticalUnit` has both `drive` and `hull` rear-split damage
@@ -12545,6 +12559,34 @@ fn one_second(rig: &mut Rig, who: ObjId) -> (String, Vec<AuthoritativeSubmit>) {
     let events = rig.tw.fire_due(t.saturating_mul(1_000));
     let heard = said(&rig.tw, &events, who);
     (heard, drain_space_and_industry(&mut rig.tw))
+}
+
+/// **Heave `hull` to beside the interdictor until it stands her down** (doc 49 unit CC.8):
+/// `who` burns her against her drift past it, a tick a wall second, her burns landed, until
+/// the bubble has closed. While she slows it holds its fire and its drive for her; under the
+/// heave-to speed it stands her down, and with nobody left hostile her bubble closes.
+///
+/// A Dray's lasers are weak against a hull (Q-49-7) and cycle in 5 s (Q-49-19): she no
+/// longer beams an interdictor to a derelict in a few seconds, as she did on the placeholder
+/// palette, so this is how a story ends an interdiction by play. Returns how many ticks it
+/// took and what `who` heard on the last.
+fn heave_to_until_stood_down(rig: &mut Rig, who: ObjId, hull: ObjId) -> (u32, String) {
+    let heave = run(&mut rig.tw, who, "+helm/thrust 1000 -1000 0 0 force");
+    assert!(heave.contains("Helm thrust set"), "{heave}");
+    for tick in 1..=180 {
+        let (heard, submits) = one_second(rig, who);
+        land_quietly(rig, &submits);
+        let open = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|book| book.active_for_hull(hull))
+            .is_some();
+        if !open {
+            return (tick, heard);
+        }
+    }
+    panic!("the interdictor never stood her down");
 }
 
 /// **Doc 35 cut SF.R26b (doc 35d §9a, Q-35d-6 as ruled)** — a planned passage is flown on a
