@@ -298,7 +298,177 @@ Not built.
 
 ## PL.1
 
-Not built.
+**Survey** (at `0123f796c`, PL.0's tip):
+- **The mills.** A mill is a vendor's `mill` row (`MillDef`, `port/def.rs`), at most four a
+  vendor, ratio at most 100. `check_vendor_mills` required the ore to be one of the vendor's
+  **bids** and the product one of its asks, and a vendor never asks and bids one good. A
+  cross-family conversion is a `kind: refine` row, which needs the port's `refinery` block,
+  operated by that vendor (`check_refinery`); only Stickney had one (Kasei's).
+- **The arm.** The stock clerk's turn (`stock_step`) runs `mill::mill_step` after the intake drip:
+  a restock first (the product's drawn ask raised by the units milled and not yet listed, with
+  the vendor row's `mill_listed` counter in the same outbox), else a batch (`tacsim_port_mill`:
+  ore debited and product credited at one storefront under the `tacsim.port_mill` ledger). One
+  act a fire.
+- **Occator at Ceres.** It stocks 9,600 t of water and 5,000 t of propellant and asks both
+  (100 cr and 40 cr a tonne). It bids for ice ore (intake 240 t, 40 t a day) and mills it 5 : 2,
+  20 t a batch and 40 t an IC day. Volatiles and propellant are different families.
+- **Does the clerk already do this for a mill row? No.** Three things stood in the way:
+  1. the ore had to be a bid, and Occator asks volatiles;
+  2. a batch debits the storefront pool, and Occator's water backs its standing Draw listing,
+     so milling it would leave the listing unbacked (an oversell, paged as drift);
+  3. Ceres had no refinery.
+
+  So `port/mill.rs` needed a change: an own-stock draw, in the shape of the works' house
+  purchase (`port/supply.rs`: lower the seller's ask first with `mush_market::shrink_ask`, then
+  move the goods).
+- **Burns.** A Dray departure burns about 37–41 t (doc 18: the `coast_hauler` law, 105‰ of
+  departure mass). Five propellant rows of 5,000 t are the only supply; nothing makes any.
+  `mush_market::MAX_QUANTITY` (100,000) bounds a listing.
+- **Goods.** Propellant and volatiles exist in `goods.json`. **PL.1 adds no goods row** (PL.7
+  adds the next one).
+
+**Built:**
+1. **Occator's refine** (lane v35). A second `mill` row at Occator: `kind: refine`, `volatiles`
+   into `propellant`, **5 : 4**, `batch_t` 20, `per_ic_day_t` 20, `floor_t` 5,000. **The figures
+   are provisional:**
+   - 16 t of propellant an IC day, 384 t a real day at rate 24: about nine Dray departures'
+     burns.
+   - At most 480 t of water a real day, against the ice mill's 384 t a real day at full drip.
+   - The floor is the seed: the refine only replaces what is bought, so the ask never floods.
+     It runs dry only when burns outrun it for long: at twice its rate (about 18 departures a
+     real day) the 5,000 t last about 13 real days.
+2. **The Ceres refinery.** A `refinery` block, operator Occator, room
+   `ceres_freeport.room.c02_pressure` (the Pressure Lobby), capability `smelt`, cost 3,000,000 cr
+   over 30 years, upkeep 20‰, six staff at 150 cr, margin 0 (provisional; Kasei's shape).
+3. **`MillDef.floor_t`** (optional, skipped when absent, so the ore mills re-encode
+   byte-identically): any mill, an ore mill too, starts a batch only while its product's
+   storefront pool holds less. An unreadable product pool reads as at the floor. The Mill line
+   names it ("while propellant is under 5000 t").
+4. **The own-stock mill** (`MillDef::own_stock`): a row whose ore is one of the vendor's own
+   asks. `check_vendor_mills` accepts the ore as a bid or an ask, the product as another ask,
+   and requires an own-stock mill to name a `floor_t` (1..=`MAX_QUANTITY`).
+5. **The draw** (`mill.rs`, `own_stock_step`, on the mill's batch pass):
+   - **Drawn:** the ore pool less the other mills' unlisted units, the listing and its undrawn
+     Draws. With a listing standing and a batch drawn, the batch mills it, whatever the floor
+     reads now.
+   - **The draw:** otherwise, with the product under its floor, a batch of room today and a live
+     listing that lists the rest of a batch, the clerk lowers the ask by the rest, as its one act.
+     A refusal passes the mill over for the IC day and warns once a boot (`MillWarn::Draw`).
+   - **Waits:** no listing; a Draw quote unsettled on the pool (the restock's wait).
+   - **The restart argument** is the mill's: everything is read off durable state each fire.
+6. **The drift check and the Listings line** net the drawn batch out (`mill::drawn`, at most one
+   batch, and only with a listing standing). The line names it ("20 t drawn to be milled") and
+   reads Ready, so the desk stays open across the draw.
+7. **The lane bump.** Lane v34 → v35 and relay v25 → v26 (re-signed, requiring lane v35, entries
+   unchanged). `support::lane_chain::strip_refine` is the strip chain's new head (`strip_wrecker`
+   calls it). Pins moved: `LANE_VERSION`, `lane.rs`' `LANE_DIGEST` and
+   `ic2_the_lane_pack_is_pinned`, `cost_lane.rs`' `SHIPPED_LANE_DIGEST` and its version asserts,
+   the version asserts in `mill.rs`, `drones.rs`, `sites.rs` and `stations.rs`,
+   `relay_registry.rs`' relay digest and kept-world versions, and `boot_parity.rs`' relay version.
+   Three story pins moved with the new rows: `mill::sm12a_strip_mill_rebuilds_the_published_v13`
+   (the shipped mill list), `ports::ic3_the_readiness_report_lists_every_binding_and_flags_the_rate`
+   (68 commerce lines, the floor in the Mill line) and
+   `ports::ic3_port_entries_refuse_what_the_applier_cannot_bind` (the v2 shape drops the refinery
+   with the vendors). `def::tests::sm12b_each_yard_rule_refuses_with_its_sentence`'s mill-less
+   case now drops the ice mill alone. mush-server's `commerce_composition` suite bunkers at Ceres,
+   so its refine runs there:
+   - `ic_slice_loop` and `ic_buyout_dormancy` land Ceres's clerk with the house's acts in
+     `drain_players`, as IN.5 did for Stickney's;
+   - `ic_slice_loop`'s "seeded − sold = remaining" checks count the refine's water and
+     propellant off its ledger and counter (`occator_refined`, beside `kasei_refined`).
+
+**Tests** (run on conclav.dev):
+- **New:**
+  - `domain_economy` `mill::pl1_occator_refines_water_into_propellant_one_full_cycle` (4 s, the
+    shipped lane at world rate 1). It runs:
+    1. At the seed the refine is idle, and the Mill line names the floor.
+    2. 20 t of ice ore is sold into Occator's bid and milled into 8 t of water (9,608 t listed).
+    3. 30 t of propellant is bought.
+    4. The water ask comes down by 20 t in one act, the pool still holding them. No drift pages,
+       the Listings line reads "20 t drawn to be milled" and Ready, and `+coop/enrol` still
+       works.
+    5. After a restart, one batch (ordinal 1, 20 t into 16 t), and the ask is not lowered twice.
+    6. The restock lists the 16 t (counter 16), and the day's room allows no second draw.
+    7. A second buyer takes the 16 t.
+    8. Two more IC days refill to 5,002 t, and the next day is idle.
+
+    The last assertions: three batches, 60 t into 48 t; water at 9,548 t, pool and listing alike;
+    propellant at 5,002 t.
+  - `mill::pl1_a_floor_binds_an_ore_mill_too` (3 s). The Exchange's ore mill is floored at its
+    seed by a lane variant: its sold ore waits unmilled, and once 10 t of concentrate is bought,
+    it mills.
+  - `tacsim` lib: `port::mill::tests::pl1_drawn_reads_one_batch_of_an_own_stock_ore` and
+    `pl1_a_floored_mill_line_names_its_floor`. `port::def::tests::sm12a_each_mill_rule_refuses_with_its_sentence`
+    is extended with the own-stock rules.
+  - `lane::pl1_strip_refine_rebuilds_the_published_v34`: v34's digest `9e78ca9a…`, idempotent.
+- **Unchanged and green:**
+  - the whole `tacsim` lib (2,365);
+  - the `domain_economy`, `domain_world` and `cost_lane` binaries whole (874 tests); the only
+    failures were the three pins above, since fixed;
+  - `domain_field`, `domain_arena` and `harness` (1,471). `field_rs1`'s two tender-tow stories
+    (Ahuna, Urvara) failed once at load 55, beside another session's sweep, and passed alone on
+    this tree (62 s and 64 s);
+  - every SM.12a mill story, the month of milling included;
+  - mush-server `split_boundary`'s `relay_registry`, `boot_parity` and `content_studio` (91),
+    and `commerce_composition` whole (91), after the two fixes above;
+  - mush-bot (791).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets` (on the
+  final tree), the M7
+  memory-size pass on `tacsim`, rustdoc `-D warnings --document-private-items`, and
+  `mush-contract-tests`' feature census, panic budget and restriction lints (24).
+- **Mutations** (each fails the stories or the unit tests):
+  1. milling without the draw;
+  2. no floor on the draw;
+  3. no day's room on the draw;
+  4. `drawn` always 0;
+  5. `own_stock` always false;
+  6. the drift check without the netting;
+  7. the Listings line without the netting;
+  8. an own-stock row without a floor accepted;
+  9. the floor ignored on an ore mill.
+
+**Divergences:**
+- **No works slot is booked.** Q-48-41 asks for "inputs bought, slot booked, output collected and
+  listed". The refine is a house mill row, as Kasei's refine is (`port/plant.rs`: the refinery
+  holds "one slot never booked"). Its daily rate is its capacity. The cycle the story shows is:
+  ice bought into Occator's bid, milled into water, water drawn off its ask, refined, the
+  propellant listed and bought. Works recipes with public slots are PL.4's (Q-48-24).
+- **The floor is new.** The brief asked only for a sized rate. A fixed rate either floods the ask
+  with no traffic or drains it under heavy traffic, and an active refine would have changed the
+  Ceres clerk's acts in every story from boot. The floor is the alloy buy's shape (a works buys
+  below its floor) and keeps the refine idle until propellant is bought. **Its 5,000 t, the seed,
+  is provisional**, like the rate.
+- **Three edits beyond the brief's files**, approved by the starting session before they were
+  made, each general rather than Occator's:
+  1. **`port/def.rs`:** `MillDef.floor_t` (optional, skipped when absent, so the existing rows
+     encode as before) and `check_vendor_mills` admitting an ore that is one of the vendor's own
+     asks, for any vendor. Only `MillDef` and its check changed; EX.3's acceptor rows come later.
+  2. **`port/readiness.rs`:** the gated Listings line nets out the batch drawn and not yet milled.
+  3. **The lane's Ceres `refinery` block** (operator `occator`, room `c02_pressure`). Ceres had no
+     plant room, so the Pressure Lobby, the free room nearest the berths, is a stand-in. The
+     freight deck's tank gallery (Ceres atlas, cut P-F) is the natural home, and moving it is a
+     lane edit.
+
+  `port/stock.rs`'s drift check nets the same batch; that file is the stock clerk's mill arm,
+  which the brief already allowed. PL.2's farm, fab and feedstock mill can use the floor and the
+  own-stock ore on any vendor as they stand.
+
+**Not built:**
+- **The prices invert the refine.** Five tonnes of water at Occator's ask (500 cr) make four of
+  propellant at its ask (160 cr). No money moves, since it is Occator's own stock, but a player's
+  refine at PL.4 would lose money. EX.8's price rule, or a retune, is the remedy.
+- **No floor on the water.** Under heavy burns the refine draws up to 480 t of water a real day,
+  past the ice mill's 384 t. EX.9 balances consumption against supply.
+- **The census.** The refine is a `tacsim.port_mill` ledger (`volatiles` into `propellant`).
+  EX.0's matter census counts a mill only by `counted(&ledger.ore)`. Once it counts volatiles
+  and propellant, `milled` takes the refine's 4 t lost per batch (noted for EX.0 in the session
+  notes).
+- **Other excess readers.** `supply.rs` and `pools.rs` compute a seller's excess without the
+  drawn batch. No works buys Occator's water today. If one ever does, its purchase could take a
+  drawn batch, and the refine would draw again.
+- **Untested waits.** No story covers the draw's wait while a Draw quote on the water pool is
+  unsettled, or a refused draw. The first copies the restock's wait, which
+  `sm12a_an_undrawn_draw_holds_the_restock_and_never_loses_it` covers; neither was mutated.
 
 ## PL.2
 
