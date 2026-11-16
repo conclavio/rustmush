@@ -1616,11 +1616,24 @@ fn ore_block(tw: &mut TestWorld, entry: &str) -> char {
     best.0
 }
 
-/// The lines of `text` that are not the economy's own notices nor the submission's echo.
+/// The lines of `text` that are not the economy's own notices, the submission's echo nor the
+/// rig's own reports. Doc 48 unit PL.3: the rig's panel refresh and its idle return
+/// ([`tacsim::port::tv::IDLE_HOME`]) land a day after its last act wherever the settle's
+/// IC phase puts them, which no claim line turns on (a lane whose stocking takes a few fires
+/// more moved them across a settle's end).
 fn claim_lines(text: &str) -> String {
+    let idle = tacsim::port::tv::IDLE_HOME
+        .split("{n}")
+        .nth(1)
+        .and_then(|rest| rest.split("{site}").next())
+        .expect("the idle return's words");
     text.lines()
         .filter(|line| {
-            !line.starts_with("Contract #") && *line != "Queued." && !line.trim().is_empty()
+            !line.starts_with("Contract #")
+                && *line != "Queued."
+                && !line.trim().is_empty()
+                && !line.starts_with("[panel ")
+                && !(line.starts_with("Rig ") && line.contains(idle))
         })
         .collect::<Vec<_>>()
         .join("\n")
