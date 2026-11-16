@@ -28,7 +28,13 @@ pub const MAX_LOT_PARENTS: usize = 16;
 /// ever walks an unbounded chain to decide whether the next link is legal.
 pub const MAX_LINEAGE_DEPTH: u32 = 32;
 /// Largest number of distinct commodities one endpoint may pool (§7).
-pub const MAX_POOLS_PER_ENDPOINT: usize = 64;
+///
+/// 256 since doc 48 cut PL.0 (64 before): sized to the game's goods catalogue cap
+/// (`tacsim::definitions::goods::MAX_GOODS`, Q-48-30, which asserts it at compile time). The
+/// count is taken on create and never freed, because an emptied pool is still a pool: its
+/// reservation book and its lineage root live on. So an endpoint that has ever held one of
+/// every catalogue good must still be able to take the next delivery.
+pub const MAX_POOLS_PER_ENDPOINT: usize = 256;
 /// Reservation time-to-live, in IC days (§7). Stamped from `Ctx::world_ic_now`.
 pub const RESERVATION_TTL_IC_DAYS: i64 = 7;
 /// The same figure in IC seconds, which is what a `ClockStamp` counts.

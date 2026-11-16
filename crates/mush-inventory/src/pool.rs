@@ -2641,3 +2641,97 @@ pub fn reservation_id_text(
     mush_core::IdempotencyKeyText::parse_canonical(id.0.to_hex())
         .map_err(|_| InventoryError::Identity)
 }
+
+#[cfg(test)]
+mod pl0_tests {
+    use super::{InventoryError, InventoryFamilies};
+    use crate::record::{EndpointRef, InventoryRecordError};
+    use crate::{InventoryHandles, InventoryModule};
+    use mush_core::{ActionTxn, CanonicalId, Engine};
+    use mush_economy::VaultId;
+    use mush_testkit::TestWorld;
+
+    /// Q-48-30's catalogue cap, `tacsim::definitions::goods::MAX_GOODS`.
+    const CATALOGUE: usize = 256;
+
+    fn good(n: usize) -> CanonicalId {
+        CanonicalId::new(format!("pl0.good_{n:03}")).expect("a test good")
+    }
+
+    /// One inventory-owned bundle, installed when the body succeeds; an `Err` installs nothing.
+    fn bundle(
+        engine: &mut Engine,
+        families: &InventoryFamilies,
+        body: impl FnOnce(&mut ActionTxn<'_>) -> Result<(), InventoryError>,
+    ) -> Result<(), InventoryError> {
+        let prepared = {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory transaction");
+            body(&mut txn)?;
+            txn.prepare().expect("prepares")
+        };
+        let (_, install) = prepared.into_parts();
+        engine.install_prepared_action(install).expect("installs");
+        Ok(())
+    }
+
+    fn census(engine: &mut Engine, families: &InventoryFamilies, at: EndpointRef) -> u32 {
+        let mut txn = engine
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        txn.get(&families.census, &at)
+            .expect("the census reads")
+            .map_or(0, |count| count.get())
+    }
+
+    /// **Doc 48 cut PL.0 (Q-48-30): one endpoint pools a whole catalogue.** 256 distinct goods,
+    /// each opened by its own bundle, all land (the 65th refused before); an emptied pool still
+    /// counts, because it is still a pool; the 257th good refuses and writes nothing; and the
+    /// emptied pool takes stock again, since crediting an existing pool counts nothing.
+    #[test]
+    fn pl0_an_endpoint_pools_a_whole_catalogue() {
+        let mut world = TestWorld::with_modules(vec![Box::new(InventoryModule::new())]);
+        let families = world
+            .world()
+            .module_state::<InventoryHandles>()
+            .expect("inventory publishes its handles")
+            .0
+            .clone();
+        let engine = world.engine_mut();
+        let at = EndpointRef(VaultId(1));
+        for n in 0..CATALOGUE {
+            bundle(engine, &families, |txn| {
+                families.credit(txn, at, &good(n), 1).map(|_| ())
+            })
+            .unwrap_or_else(|error| panic!("good {n} pools: {error}"));
+        }
+        assert_eq!(census(engine, &families, at), 256);
+        bundle(engine, &families, |txn| {
+            families.debit(txn, at, &good(0), 1).map(|_| ())
+        })
+        .expect("the first pool empties");
+        assert_eq!(
+            census(engine, &families, at),
+            256,
+            "an emptied pool still counts"
+        );
+        let refused = bundle(engine, &families, |txn| {
+            families.credit(txn, at, &good(256), 1).map(|_| ())
+        })
+        .expect_err("the 257th distinct good refuses");
+        assert!(
+            matches!(
+                refused,
+                InventoryError::Record(InventoryRecordError::EndpointPools { max: 256 })
+            ),
+            "{refused}"
+        );
+        assert_eq!(census(engine, &families, at), 256, "it wrote nothing");
+        bundle(engine, &families, |txn| {
+            families.credit(txn, at, &good(0), 3).map(|_| ())
+        })
+        .expect("the emptied pool takes stock again");
+        assert_eq!(census(engine, &families, at), 256);
+    }
+}

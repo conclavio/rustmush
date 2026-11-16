@@ -2099,9 +2099,14 @@ impl SurfaceActProvider {
             .site
             .clone()
             .ok_or_else(|| invalid("an act's plan names its site"))?;
+        // Doc 48 cut PL.0: the plan names the hopper's goods only (the hold's are derived from
+        // its table below), so no pool cap bounds it; a sibling's hopper names catalogue goods.
         if fixed.siblings.len()
             > usize::try_from(crate::definitions::logistics::MAX_BAY_ITEMS).unwrap_or(usize::MAX)
-            || fixed.goods_of_hold.len() > mush_inventory::MAX_POOLS_PER_ENDPOINT
+            || fixed
+                .siblings
+                .iter()
+                .any(|sibling| sibling.goods.len() > crate::definitions::goods::MAX_GOODS)
         {
             return Err(invalid(
                 "an unload's plan names a bounded set of rigs and goods",
@@ -2182,17 +2187,6 @@ impl SurfaceActProvider {
                 integrity("the hold's plan cannot be read")
             })?;
             let hold = EndpointRef(VaultId(fixed.hold));
-            let mut contents: BTreeMap<CanonicalId, u64> = BTreeMap::new();
-            for good in &fixed.goods_of_hold {
-                let held = self
-                    .inventory
-                    .pool(txn, hold, good)
-                    .map_err(|_| integrity("the hold cannot be read"))?
-                    .map_or(0, |pool| pool.quantity);
-                if held > 0 {
-                    contents.insert(good.clone(), held);
-                }
-            }
             let mut reserved: Vec<BTreeMap<CanonicalId, u64>> = Vec::new();
             for sibling in &fixed.siblings {
                 let mut theirs: BTreeMap<CanonicalId, u64> = BTreeMap::new();
@@ -2214,17 +2208,17 @@ impl SurfaceActProvider {
                 }
                 reserved.push(theirs);
             }
-            let mut room =
-                crate::port::capacity::room_less(table, &compartment, &contents, &reserved)
-                    .map_err(|_| integrity("the hold's room cannot be weighed"))?;
-            for (good, qty) in &goods {
-                let fits = crate::port::capacity::units_in(table, &compartment, &room, good)
-                    .map_err(|_| integrity("the hold's room cannot be weighed"))?;
-                if fits < *qty {
-                    return Err(changed());
-                }
-                crate::port::capacity::take_room(table, &compartment, &mut room, good, *qty)
-                    .map_err(|_| integrity("the hold's room cannot be weighed"))?;
+            // Doc 48 cut PL.0: the hold's contents over every good its ore compartment accepts,
+            // derived from the plan's table (`hold_goods`), never a list the offer carried.
+            let inventory = &self.inventory;
+            let mut held = |good: &CanonicalId| {
+                inventory
+                    .pool(txn, hold, good)
+                    .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                    .map_err(|_| integrity("the hold cannot be read"))
+            };
+            if !hold_admits(table, &compartment, &mut held, &reserved, &goods)? {
+                return Err(changed());
             }
         }
         // 6. The write: the act (a queued unload that moves nothing is a 0 s act, told once —
