@@ -39,6 +39,7 @@
 //! boot's own write, which a login does not order; only the hatch line waits for
 //! the module's first tick.
 
+use crate::shipped::mount;
 use crate::support;
 
 use support::{STEP_TIMEOUT, wait_until};
@@ -96,8 +97,11 @@ const BLUE_MUSTER_M: i64 = 2_495;
 const BLUE_CLOSE_X_CM: i64 = 6_500;
 const BLUE_CLOSE_Y_CM: i64 = 93_500;
 
-/// The cannon's authored load (`ammunition/he_105.json`).
-const LOAD: i64 = 40;
+/// The cannon's authored load (`ammunition/he_105.json`), read off the content
+/// (doc 49 cut CC.0, Q-49-16), so a retune of the round's pack moves no line here.
+fn load() -> i64 {
+    i64::from(mount("line_tank", "cannon").magazine)
+}
 
 /// The line every witness in the centre reads when a match is settled.
 const OVER: &str = "is over";
@@ -725,7 +729,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     let survivor = ask_whole(&mut god, &format!("@unit/show #{red}")).await;
     let left = cell_current(&survivor, "component/cannon/ammo");
     assert!(
-        left < LOAD,
+        left < load(),
         "the winner's magazine is down after {shots} shot(s): {survivor}"
     );
 
@@ -788,7 +792,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
         );
         assert_eq!(
             cell_current(&seen, "component/cannon/ammo"),
-            LOAD,
+            load(),
             "{who} did not come back with a full magazine: {seen}"
         );
         assert!(
@@ -827,7 +831,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     );
     let seen = ask(&mut bo, "WEAPONSTATUS", "cannon").await;
     assert!(
-        seen.contains(&format!("{LOAD} of {LOAD} round(s)")),
+        seen.contains(&mount("line_tank", "cannon").full()),
         "the formerly destroyed tank's cannon is not full: {seen}"
     );
     // And it is a tank again, not a hulk: it starts up and takes an order.
@@ -1083,12 +1087,12 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     let rounds = seen
         .lines()
         .find(|line| line.trim_start().starts_with("cannon"))
-        .and_then(|line| line.split_once(&format!(" of {LOAD} round(s)")))
+        .and_then(|line| line.split_once(&format!(" of {} round(s)", load())))
         .and_then(|(head, _)| head.split_whitespace().last())
         .and_then(|count| count.parse::<i64>().ok())
         .unwrap_or_else(|| panic!("no cannon count in: {seen}"));
     assert!(
-        rounds <= LOAD - 13,
+        rounds <= load() - 13,
         "the rounds staff spent before the check-out were put back: {seen}"
     );
     let easting = easting_m(&mut bo).await;
@@ -1120,7 +1124,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     assert_eq!(easting_m(&mut bo).await, BLUE_MUSTER_M);
     let seen = ask_whole(&mut bo, "WEAPONSTATUS").await;
     assert!(
-        seen.contains(&format!("{LOAD} of {LOAD} round(s)")),
+        seen.contains(&mount("line_tank", "cannon").full()),
         "the reset put the magazine back after the resumed match ended: {seen}"
     );
     say(&mut ada, "SIM ABORT", "aborts match").await;

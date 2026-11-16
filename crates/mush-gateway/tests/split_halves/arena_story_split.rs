@@ -112,8 +112,42 @@ const MUSTER: &str = "The Proving Ground";
 const RED_CELL: (i64, i64, u32) = (90, 97, 90_000);
 const BLUE_CELL: (i64, i64, u32) = (94, 97, 270_000);
 
-/// The cannon's authored load (`ammunition/he_105.json`).
-const LOAD: i64 = 40;
+/// The cannon's authored load (`ammunition/he_105.json`), read off the shipped
+/// content (doc 49 cut CC.0, Q-49-16), so a retune of the round's pack moves no
+/// line here, as in the in-process twin.
+///
+/// [`cannon_rounds`] tells the cannon's row from the coaxial's by the load alone,
+/// so the two loads must differ; this says so rather than misreading a row.
+fn load() -> i64 {
+    use tacsim::definitions::unit::ComponentRole;
+    let catalog = tacsim::builtin_definitions()
+        .unwrap_or_else(|error| panic!("the shipped content binds: {error}"));
+    let key = mush_core::CanonicalId::new(tacsim::definitions::content::LINE_TANK)
+        .unwrap_or_else(|_| panic!("{} is an id", tacsim::definitions::content::LINE_TANK));
+    let spec = catalog
+        .specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is fielded"));
+    let load_of = |component: &str| -> u32 {
+        spec.components
+            .iter()
+            .find_map(|slot| match &slot.role {
+                ComponentRole::Weapon { weapon, .. } if slot.id.as_str() == component => {
+                    catalog.weapons.get(weapon)
+                }
+                _ => None,
+            })
+            .and_then(|def| catalog.ammunition.get(&def.ammunition))
+            .map(|round| round.count_per_load)
+            .unwrap_or_else(|| panic!("{key} carries a loaded {component}"))
+    };
+    let (cannon, coaxial) = (load_of("cannon"), load_of("machine_gun"));
+    assert_ne!(
+        cannon, coaxial,
+        "the cannon's row is told from the coaxial's by its load"
+    );
+    i64::from(cannon)
+}
 /// How many shots the fight is allowed before the test calls it — a ceiling for
 /// the tail of the front facet table's distribution (about ten hits through 400
 /// cm of glacis and 200 of hull internals) and not a budget the ordinary run
@@ -542,7 +576,7 @@ fn designator_classed(listing: &str, class: &str) -> Option<String> {
 
 /// The cannon's rounds, off a `WEAPONSTATUS` listing.
 fn cannon_rounds(listing: &str) -> Option<i64> {
-    let needle = format!(" of {LOAD} round(s)");
+    let needle = format!(" of {} round(s)", load());
     listing
         .lines()
         .rfind(|line| line.contains(&needle))
@@ -733,7 +767,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         // See the in-process twin: a `FIRE` accepted by the cockpit against a frame
         // one pulse behind and refused by the arena against its own `ready_at_ms` is
         // a round that went nowhere, and the tally is put back rather than counted.
-        let want = LOAD - shots;
+        let want = load() - shots;
         let mut cockpit = true;
         let mut confirmed = false;
         for _ in 0..16 {
@@ -773,11 +807,12 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         !readings.is_empty(),
         "the cockpit never showed a round count after a shot"
     );
+    let load = load();
     for (fired, rounds) in &readings {
         assert_eq!(
             fired + rounds,
-            LOAD,
-            "after {fired} shot(s) the cockpit showed {rounds} of {LOAD} rounds"
+            load,
+            "after {fired} shot(s) the cockpit showed {rounds} of {load} rounds"
         );
     }
 

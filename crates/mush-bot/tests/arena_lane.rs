@@ -396,6 +396,35 @@ struct Server {
 /// The transient the cut AM.1 knobs answer with.
 const TRANSIENT: &str = "The world is committing another action; please retry in a moment.";
 
+/// **Each of the line tank's mounts and its cycle, off the shipped content**
+/// (doc 49 cut CC.0): the component the rig's rows name (`cannon`,
+/// `machine_gun`) and its mount pack's `cycle_ms`. The rig's tank is the line
+/// tank, the one `SIM START` fields by default.
+fn shipped_cycles() -> BTreeMap<String, u64> {
+    use tacsim::definitions::unit::ComponentRole;
+    let catalog = tacsim::builtin_definitions()
+        .unwrap_or_else(|error| panic!("the shipped content binds: {error}"));
+    let key = mush_core::CanonicalId::new(tacsim::definitions::content::LINE_TANK)
+        .unwrap_or_else(|_| panic!("{} is an id", tacsim::definitions::content::LINE_TANK));
+    let spec = catalog
+        .specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is fielded"));
+    spec.components
+        .iter()
+        .filter_map(|slot| match &slot.role {
+            ComponentRole::Weapon { weapon, .. } => {
+                let def = catalog
+                    .weapons
+                    .get(weapon)
+                    .unwrap_or_else(|| panic!("{weapon} is in the catalog"));
+                Some((slot.id.as_str().to_owned(), u64::from(def.cycle_ms)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl Server {
     fn new() -> Server {
         Server {
@@ -602,9 +631,19 @@ impl Server {
             .collect()
     }
 
-    /// A gun's cycle, as the scripted guns have it.
+    /// A gun's cycle, as the shipped line tank's mount packs author it (doc 49
+    /// cut CC.0, Q-49-17; it was 6,000 ms for the cannon and 1,000 ms for the
+    /// rest, written in). The scripted server stands in for the game, so it
+    /// reads the game's content, and a retune moves the rig with it. The lane
+    /// reads none of this: it learns each cycle off the rows the rig prints,
+    /// as it does against the live game.
     fn cycle_ms(weapon: &str) -> u64 {
-        if weapon == "cannon" { 6_000 } else { 1_000 }
+        static CYCLES: std::sync::OnceLock<BTreeMap<String, u64>> = std::sync::OnceLock::new();
+        let cycles = CYCLES.get_or_init(shipped_cycles);
+        cycles
+            .get(weapon)
+            .copied()
+            .unwrap_or_else(|| panic!("the line tank carries no mount {weapon}: {cycles:?}"))
     }
 
     /// Whether the gun's last shot is still waiting for its pulse: as of the
@@ -619,8 +658,8 @@ impl Server {
     /// frame before the shot's pulse shows the gun as it was then: ready (the
     /// `FIRE` passed the pre-check on it), its round not yet gone.
     fn cycle_left(&self, weapon: &str) -> Option<u64> {
-        let cycle = Server::cycle_ms(weapon);
         let fired = *self.fired.get(weapon)?;
+        let cycle = Server::cycle_ms(weapon);
         let at = self.frame();
         (fired <= at && at < fired + cycle).then(|| fired + cycle - at)
     }
@@ -2970,11 +3009,13 @@ fn a_withdraw_is_cleared_when_the_commander_stops() {
 
 // -- cut AL.1: full cadence ---------------------------------------------------------
 
-/// The lead's own bounds on the machine gun's and the cannon's median gap,
-/// offline with no pulse (16c's AL entry: its figures, not constants of the
-/// bot's).
-const LEAD_MG_P50_MS: u64 = 1_200;
-const LEAD_CANNON_P50_MS: u64 = 6_500;
+/// The lead's own margins over the machine gun's and the cannon's cycle for
+/// their median gap, offline with no pulse (16c's AL entry: its figures, not
+/// constants of the bot's). The entry wrote them as 1 200 and 6 500 ms over
+/// the rig's 1 000 and 6 000; doc 49 cut CC.0 keeps the margins over the cycle
+/// the rig reads off the content ([`Server::cycle_ms`]).
+const LEAD_MG_OVER_CYCLE_MS: u64 = 200;
+const LEAD_CANNON_OVER_CYCLE_MS: u64 = 500;
 /// The arena's own lattice (the bot's transcripts: its notices arrive on a
 /// 250 ms lattice within a match), for the lattice rig.
 const LATTICE_MS: u64 = 250;
@@ -3083,7 +3124,8 @@ fn full_rate(pulse_ms: Option<u64>) -> (Run, u64) {
 
 /// **The lead's assertion** (cut AL.1): with the scripted cockpit's pulse
 /// unset, so the bot's own schedule is all that is measured, the machine gun's
-/// median gap is at most 1 200 ms and the cannon's at most 6 500, by the
+/// median gap is at most its cycle and 200 ms and the cannon's at most its
+/// cycle and 500 (1 200 and 6 500 ms at the cut's cycles), by the
 /// lead's count of the `FIRE` lines and by the shots that left; at most one
 /// `FIRE` line in ten of each gun is refused as still cycling (in
 /// [`full_rate`]); and each gun fires at least once a cycle, the slack's
@@ -3092,14 +3134,16 @@ fn full_rate(pulse_ms: Option<u64>) -> (Run, u64) {
 fn full_rate_on_each_guns_own_cycle() {
     let (run, start) = full_rate(None);
     let (fire, shot) = both_gaps(&run, start);
+    let lead_mg_p50_ms = Server::cycle_ms("machine_gun") + LEAD_MG_OVER_CYCLE_MS;
+    let lead_cannon_p50_ms = Server::cycle_ms("cannon") + LEAD_CANNON_OVER_CYCLE_MS;
     for (count_name, gaps) in [("FIRE lines", &fire), ("shots", &shot)] {
         let p50 = |w: &str| gaps.get(w).map_or(u64::MAX, |g| g.p50_ms);
         assert!(
-            p50("machine_gun") <= LEAD_MG_P50_MS,
+            p50("machine_gun") <= lead_mg_p50_ms,
             "{count_name}: {gaps:?}"
         );
         assert!(
-            p50("cannon") <= LEAD_CANNON_P50_MS,
+            p50("cannon") <= lead_cannon_p50_ms,
             "{count_name}: {gaps:?}"
         );
     }
@@ -6111,10 +6155,14 @@ fn the_lattice_at_the_live_edge() {
         mg.p50_ms <= mg_off.p50_ms + TICK_MS,
         "on {shot:?}; off {off_shot:?}"
     );
-    assert!(mg.p50_ms <= 1_000 + 2 * LATTICE_MS, "{shot:?}");
-    assert!(mg.p90_ms <= 1_000 + 2 * LATTICE_MS, "{shot:?}");
+    let mg_cycle = Server::cycle_ms("machine_gun");
+    assert!(mg.p50_ms <= mg_cycle + 2 * LATTICE_MS, "{shot:?}");
+    assert!(mg.p90_ms <= mg_cycle + 2 * LATTICE_MS, "{shot:?}");
     let cannon = shot.get("cannon").expect("cannon shots");
-    assert!(cannon.p50_ms <= 6_000 + 2 * LATTICE_MS, "{shot:?}");
+    assert!(
+        cannon.p50_ms <= Server::cycle_ms("cannon") + 2 * LATTICE_MS,
+        "{shot:?}"
+    );
     assert!(
         gun(run.lane.picture(), "machine_gun").is_some_and(|w| w.on_lattice),
         "{:?}",
@@ -6249,7 +6297,10 @@ fn a_steady_wire_learns_the_lattice() {
     let (fire, shot) = both_gaps(&run, start);
     println!("steady wire: FIRE lines {fire:?}; shots {shot:?}; round trip {rtt:?}");
     let mg = shot.get("machine_gun").expect("machine-gun shots");
-    assert!(mg.p50_ms <= 1_000 + 2 * LATTICE_MS + TICK_MS, "{shot:?}");
+    assert!(
+        mg.p50_ms <= Server::cycle_ms("machine_gun") + 2 * LATTICE_MS + TICK_MS,
+        "{shot:?}"
+    );
 }
 
 /// **A round trip over the bound keeps AL's clock** (cut AO.2; the 200 ms

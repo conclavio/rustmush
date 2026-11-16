@@ -586,11 +586,19 @@ fn an_unknown_key_refuses_naming_the_entry() {
 
 #[test]
 fn a_value_past_a_bound_refuses_naming_the_field() {
-    // W14's floor, on the content rather than in the decoder's own unit test.
+    // W14's floor, on the content rather than in the decoder's own unit test. The
+    // shipped cycle and the floor are both read (doc 49 cut CC.0), so a retune of
+    // the pack or of the floor moves no line here: the edit is one under the floor.
+    let pack: serde_json::Value =
+        serde_json::from_str(content::MG_COAX_JSON).expect("the shipped pack parses");
+    let shipped = pack["entries"]["tacsim.weapon.mg_coax"]["def"]["cycle_ms"]
+        .as_u64()
+        .expect("the coaxial authors a cycle");
+    let under = tacsim::definitions::weapon::CYCLE_FLOOR_MS - 1;
     let edited = tampered(
         content::MG_COAX_JSON,
-        "\"cycle_ms\": 1000",
-        "\"cycle_ms\": 999",
+        &format!("\"cycle_ms\": {shipped}"),
+        &format!("\"cycle_ms\": {under}"),
     );
     let error = tacsim::pack::load_pack(&edited).expect_err("a sub-floor cycle refuses");
     let message = error.to_string();
