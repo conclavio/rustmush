@@ -556,12 +556,14 @@ impl Rig {
             .map(|line| line.commodity)
             .collect();
         let depot = mush_inventory::EndpointRef(self.deployment.depot);
-        {
+        // One transaction a good: each new pool writes the endpoint's pool census, and a
+        // transaction writes one key once.
+        for good in &goods {
             let engine = self.world_mut().engine_mut();
             let mut txn = engine.action_transaction(&families.pools)?;
-            for good in &goods {
-                families.credit(&mut txn, depot, good, units)?;
-            }
+            families
+                .credit(&mut txn, depot, good, units)
+                .map_err(|e| format!("staff's stock of {good}: {e}"))?;
             let (_, installation) = txn.prepare()?.into_parts();
             engine.install_prepared_action(installation)?;
         }

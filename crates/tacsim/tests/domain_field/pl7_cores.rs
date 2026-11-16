@@ -144,14 +144,20 @@ fn pl7_a_core_takes_its_die_s_chain_goods_from_the_depot() {
         (DEPOT_STOCK - 2, 0),
         "two boards and the tonne of ore went into the die"
     );
-    // A restart reads the depot as it was left, and the work goes on.
+    // A restart reads the depot as it was left. The counter's request was RAM and is gone; the
+    // depot holds no ore for another die, but the order under way needs none, so asking again
+    // picks it up and no second die is cut.
     let mut world = world.reboot();
     assert_eq!(
         (depot(&mut world, BOARDS), depot(&mut world, ORE)),
         (DEPOT_STOCK - 2, 0)
     );
-    assert!(
-        at_work(&world, captain),
-        "the order stands after the restart"
+    let again = run(&mut world.rig.tw, captain, "+core/buy II go");
+    assert!(again.contains("The counter takes your order"), "{again}");
+    let _ = pump(&mut world, captain, 60, |w| at_work(w, w.pilot));
+    assert_eq!(
+        depot(&mut world, BOARDS),
+        DEPOT_STOCK - 2,
+        "the order under way cut no second die"
     );
 }
