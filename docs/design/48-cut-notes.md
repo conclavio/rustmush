@@ -323,8 +323,8 @@ Not built.
 ## PL.7
 
 Cores from the chain (Q-48-27, with doc 48b W-48-1c's correction, and Q-48-48). Built
-2026-11-15 on `claude/pl7-cores-from-chain-f210f4`, stacked on PL.0 (#624), main at `72d5b7150`
-merged in.
+2026-11-15 on `claude/pl7-cores-from-chain-f210f4`, cut from PL.0's branch (#624). Main was merged
+in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged.
 
 **Survey** (at `0123f796c` and `72d5b7150`):
 - **The die.** `issue_core_die` is industry's origin provider (`core_production/provider.rs`). It
@@ -535,8 +535,11 @@ merged in.
     `m8_world.rs` and `driving_rig.rs`.
 - **`commission.rs` is unchanged.** The commission's consumption already consumes every lot in
   the escrow, so the module needs no new step.
-- **Not stacked on PL.1.** PL.1's branch touches neither `goods.json` nor `recipes-v2.json` (its
-  refine is a lane mill row). The two branches share only `port/stock.rs`, on other lines.
+- **Not stacked on PL.1 (#628).** PL.1's branch touches neither `goods.json` nor
+  `recipes-v2.json` (its refine is a lane mill row). The two branches share only `port/stock.rs`,
+  on other lines, so either can merge first.
+- **PL.0's unload test** (`surface/act/fixed.rs`) counted the shipped bulk goods exactly. It now
+  counts them relative to the shipped table, with the same 47 test goods and the same weigh.
 - **`CoreClass::finished_minor()` and its siblings stay**, as the v1 table's names, so the
   stories that read a price (CO.6's, CO.13's, `m8_end_user`) are unchanged. No production path
   reads them.
