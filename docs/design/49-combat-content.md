@@ -1,6 +1,6 @@
 # 49. Combat content — the armaments, the rounds and the shot, surveyed
 
-Draft 0.8, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
+Draft 0.9, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
 lane, with the lead spot-checking the cycle figures, the cycle floor, the card presets, the slot limit
 and the laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
 0.1, the same day, was the survey.
@@ -75,6 +75,10 @@ The other three are now decisions too:
 - **Q-49-26:** CC.8 measures a lone shooter against each screen and sets the defence cycle.
 - **Q-49-27:** the combat kernel reduces a beam's damage against armour.
 - **Q-49-28:** heat refuses a shot that would cross the ceiling.
+
+**Draft 0.9, the same day, cuts the units** (§7) on the owner's word. There are ten: CC.0 to CC.4 and
+CC.6 to CC.10. CC.5 is folded into doc 48's PL.3, and CC.11 is deferred. Each is in a wave and a
+one-writer chain, with one empty section in [49-cut-notes.md](49-cut-notes.md).
 - **Q-49-20: the alternative, and the "no auto-fire" rule is unwound.** In the owner's words: "that's
   just tedious and defeats the purpose, let's just unwind the 'no auto-fire' rule". Condition slots
   stand for players and minds alike: once armed, a slot fires at each ready moment while its terms
@@ -951,28 +955,81 @@ decision. Q-49-25 and Q-49-29 supersede part of Q-49-7, Q-49-24 and Q-49-8, as m
 - **Why:** the rule's reason is gone, and a rule that one phrase satisfies costs a sentence of help
   text for nothing.
 
-## 7. Units of work (sketch, cut after the rulings)
+## 7. Units of work (cut 2026-11-15)
 
-One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit prefix.
+Cut on the owner's word ("Cut the units") from Draft 0.8, once every question was ruled. Each unit
+has one session. A session writes only its own section of [the cut notes](49-cut-notes.md) and the
+files its row owns. Where two units touch one file, the chain below orders them, and the second cuts
+from the first's merged tip.
 
-| Unit | What | Gate |
-|---|---|---|
-| CC.0 | Tests read cycles and magazines from content, not literals; the bot's scripted rig reads content | — |
-| CC.1 | The slot rule: standing slots (Q-49-20); player slots bounded by the Compact floor alone (Q-49-29); card floors; the Line card's reserve and when it is spent, with Q-49-23's four sentences | Q-49-8, Q-49-9, Q-49-20, Q-49-23 (ruled), Q-49-29 |
-| CC.2 | The ground palette (15, 5, 10, 30 s) with magazines 24 / 600 / 120 / 4, and the 5 s cycle floor (with the automatic-defence class); measured fights reported (hits per load, match length against the 900 s cap), the harness window lengthened, no count changed without the owner; one re-bless | CC.0, CC.1, Q-49-2, Q-49-3, Q-49-19 and Q-49-22 (ruled) |
-| CC.3 | Ground lasers as the anti-drone fit; the laser variants keep a main gun; what limits the laser; the yard keeps a laser's charge full (§4a) | CC.2, Q-49-6, Q-49-27, Q-49-28 |
-| CC.4 | Rounds on `STATUS`; checked at 120 columns | Q-49-13 |
-| CC.5 | Munitions prices, read from doc 48's PL.3 recipes | doc 48's PL.3, Q-49-4, Q-49-5 |
-| CC.6 | Space mounts and hull fits as content packs, in the same pack format with **its own space mount schema** (range past 100 km, modes, falloff, salvo size, point-defence envelope), each mount's allowed modes in the fit; `raider_heavy` a unit file; mind-view maxima from content | Q-49-11, Q-49-24, doc 48's PL.0 if it adds part goods (each with a recipe and a vendor seed); one row per mount, each fireable by its id; mind views read the fit's modes |
-| CC.7 | Space magazines persist; space munitions goods; rearm at a berth; says whether NPC cast hulls respawn full | CC.6, doc 48's PL.0 (`MAX_GOODS`) and **PL.3 producing the space munitions** (doc 48 Q-48-41), Q-49-12 |
-| CC.8 | The space palette; lasers per the lore with the cycle per mode, the Dray's kept dual-mode (Q-49-25); the three space doctrines rewritten; one shooter's magazine measured against each screen | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled), Q-49-24, Q-49-25, Q-49-26 |
-| CC.9 | Space decision support, for the player and the minds | CC.6, Q-49-13 |
-| CC.10 | The bot's discipline assertions; its exchange and halt windows derived from content | CC.2, Q-49-17 |
-| CC.11 | ~~A second round for the cannon, chosen at rearm~~: deferred under Q-49-21's default (engine work: selected-round state, and the resolver for section effects) | Q-49-14, Q-49-21 |
+The rules for every unit:
+- Combat work is described at the level of game mechanics (the owner's rule of 2026-11-02).
+- Test what changed, run the contract guards before the first push, and open the PR only when it is
+  landable, opened ready.
+- A re-bless is made once a kernel, by record.
+- A unit that adds a player-facing sentence adds it to the mush-bot sentence table, within 120
+  columns.
+
+### 7.1 The units
+
+| Unit | What | Owns (one writer) | Waits on | Done when |
+|---|---|---|---|---|
+| **CC.0** | Tests and the bot's rig read content (Q-49-16) | readout tests in `crates/tacsim/tests/`, `crates/mushd/tests/sim_lenses/`, the cockpit tests; `crates/mush-bot/tests/arena_lane.rs`'s scripted rig; numbers quoted in `docs/help/cockpit.md` and the web cockpit fixtures | — | Changing a cycle or a magazine in a pack needs no test edit beyond the content pins, and the bot's scripted rig reads its cycles from content |
+| **CC.1** | Slots and the stock mind's discipline (Q-49-8, -9, -20, -23, -29) | `tacsim/src/arena/card.rs`, `stock_mind.rs`, `conditions.rs`, `absent.rs`, `damage.rs` (`spent`); `content/minds/standard.rhai`; `tacsim/src/minds/content.rs` | CC.0 | Slots stand. A player's slot is bounded by the Compact floor alone. The Line card holds a 35% floor and a 25% reserve, and its floor rises below half a magazine. Q-49-23's four sentences are built. Native and Rhai agree, and the Standard Doctrine's digest is re-blessed keeping `stock=3`. Two minds on their reserve end a match as `spent` |
+| **CC.2** | The ground palette and the floor (Q-49-2, -3, -19, -22) | `content/weapons/`, `content/ammunition/`, `content/units/`; `tacsim/src/definitions/weapon.rs` (the 5 s floor and an automatic-defence class); the arena harness baseline and corpus pins; `tests/harness.rs`'s window | CC.1 | Cannon 15 s, coaxial gun 5 s, autocannon 10 s, missile rack 30 s, pulse laser 5 s. Magazines 24 / 600 / 120 / 4. One re-bless. The cut note reports measured fights (hits per load, match length against the 900 s cap, dry withdrawals, human against mind); no count changes without the owner |
+| **CC.3** | The ground laser (Q-49-6, -27, -28) | `tacsim/src/arena/damage.rs` (beam against armour), `heat.rs` and `weapons.rs` (heat refuses); `content/weapons/laser_mk1.json`, `units/line_tank_laser.json`, `biped_mk2.json` | CC.2, the defect PR (the laser's charge) | A beam's damage is reduced against a section's armour and full against its internals. A shot that would cross the heat ceiling is refused, so sustained fire locks out now and then. A drone falls quickly; a tank does not. The laser variants carry a main gun. Rounds are conserved; kernel re-bless |
+| **CC.4** | Rounds on `STATUS` (Q-49-13, ground) | `tacsim/src/match_/cockpit/weapons_fire.rs` (the status line); `docs/help/cockpit.md` | CC.0 | `STATUS` shows each mount's rounds in one short field, within 120 columns at its widest fill |
+| **CC.6** | Space content as data (Q-49-11, -24, -25) | `tacsim/src/space/weapons.rs`, `custody.rs`, `view.rs`, `backup.rs`, `bubble.rs` (fire by id); a space mount schema in `tacsim/src/definitions/`; new space content packs | doc 48's PL.0, if it adds part goods | See "CC.6's done-when" below. **(expensive to reverse)** |
+| **CC.9** | Space decision support (Q-49-13, space) | `tacsim/src/space/commands.rs` (`+tac/status`); `crates/mush-pixel/src/space_cockpit.rs`; the TUI cockpit; `space/view.rs` | CC.6 | Per mount: rounds, mode and ready. For the locked contact: range, five-band aspect, offence-laser damage at that range, the spinal round's flight time. No odds. Minds read the same; 120 columns |
+| **CC.7** | Space magazines persist (Q-49-12) | `tacsim/src/space/custody.rs` (check-in writes magazines); the berth rearm in `tacsim/src/port/` | CC.9, doc 48's PL.3 | Magazines survive check-out and check-in. A berth rearms from PL.3's space munitions goods. NPC cast hulls respawn full, said in the help. Rounds are conserved |
+| **CC.8** | The space palette and doctrines (Q-49-7, -10, -19, -24, -25, -26) | the space content packs; `space/bubble.rs` (cycle per mode, switch rules); `content/minds/kirkwood_picket.rhai`, `interdictor_patrol.rhai`, `belt_raider.rhai` | CC.7 | See "CC.8's done-when" below |
+| **CC.10** | The bot (Q-49-17) | `crates/mush-bot/` | CC.2 | The bot fires only above its floor and keeps its reserve. Its exchange and halt windows are derived from content. The bot lanes are green |
+
+**CC.6's done-when.**
+- Space mounts and fits load from content, in the same pack format with a space mount schema: range
+  past 100 km, modes, falloff, salvo size and the point-defence envelope.
+- `raider_heavy` is a unit file.
+- Each mount is a row that fires by its id.
+- The mind view's maxima come from content, and `armed` and the view read the modes the fit allows.
+- The Dray stays dual-mode.
+- Any part goods it adds each have a recipe and a vendor seed.
+
+**CC.8's done-when.**
+- The offence laser cycles at 5 s, short-reach and weak against a hull. The Dray keeps dual mode, and
+  each mode has its own cycle with the switch rules.
+- One shooter's full magazine is measured against each stock screen, and the defence cycle is set so
+  a warship's screen stops a lone salvo and a hauler's leaks.
+- The three doctrines are rewritten.
+- A story shows a corvette disabling a Dray that dodges.
+- Doc 47's space stories pass.
+
+**Not units:**
+- **CC.5**, munitions prices, is folded into doc 48's PL.3, which sizes the recipes to GC.7's prices.
+- **CC.11**, round choice, is deferred (Q-49-21).
 
 **Round conservation (outside review, doc 48a A-14).** Every CC unit that moves rounds keeps them
 counted. A reload, a type change, a crash and restart, a custody move, a refit and salvage each
-conserve rounds, each with a test. The matter census counts munitions (doc 48 Q-48-31).
+conserve rounds, each with a test. The matter census counts munitions (doc 48 Q-48-31, EX.0).
+
+### 7.2 Waves
+
+- **Wave 0, now:** CC.0.
+- **Wave 1:** CC.1, CC.4 and CC.6, with CC.6 after doc 48's PL.0 if it adds part goods.
+- **Wave 2:** CC.2 and CC.9.
+- **Wave 3:**
+  - CC.3, after the defect PR;
+  - CC.10;
+  - CC.7, after doc 48's PL.3.
+- **Wave 4:** CC.8.
+
+### 7.3 The one-writer chains
+
+| Files | Units in order |
+|---|---|
+| `tacsim/src/arena/`, the ground content packs, `content/minds/standard.rhai`, the arena harness baseline | CC.1 → CC.2 → CC.3 |
+| `tacsim/src/match_/cockpit/weapons_fire.rs` | CC.4 (CC.0 edits only its tests) |
+| `tacsim/src/space/`, the space packs, the space doctrines | CC.6 → CC.9 → CC.7 → CC.8 |
+| `crates/mush-bot/` | CC.10 |
 
 ## 8. What this survey did not check, and what the second review answered
 

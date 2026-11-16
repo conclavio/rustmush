@@ -1,6 +1,6 @@
 # 48. Economy and production — one exchange for every trade, and a chain that closes, surveyed
 
-Draft 0.7, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
+Draft 0.8, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
 lanes (goods, services, the engine and money, production), with the lead spot-checking the claims
 §0 leans on:
 - the market's `Representation` and `Supply` enums;
@@ -57,6 +57,10 @@ defaults.** Every question in this survey, Q-48-1 to Q-48-61, is ruled. Among th
 - yard-built combat hulls keep a governed Class II core outside the monthly die quota (Q-48-48);
 - facility staff stay at 150 cr an IC day (Q-48-60);
 - a worked-out deposit re-rolls after 28 IC days (Q-48-61).
+
+**Draft 0.8, the same day, cuts the units** (§7) on the owner's word. There are 24: EX.0 to EX.10
+(EX.1 and EX.2 each split in two) and PL.0 to PL.10. Each is in a wave and a one-writer chain, with
+one empty section in [48-cut-notes.md](48-cut-notes.md).
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -1497,35 +1501,90 @@ now the decision.
 - **Why:** at 24:1 the closed chain closes only until the ore runs out. A re-roll keeps mining a
   job, not a one-off.
 
-## 7. Units of work (sketch, cut after the rulings)
+## 7. Units of work (cut 2026-11-15)
 
-Two chains, one writer per file set, as docs 44 to 47 ran. **EX** (the exchange and money) and **PL**
-(production) are unused as unit prefixes.
+Cut on the owner's word ("Cut the units") from Draft 0.7, once every question was ruled. Each unit
+has one session. A session writes only its own section of [the cut notes](48-cut-notes.md) and the
+files its row owns. Where two units touch one file, the chain below orders them, and the second cuts
+from the first's merged tip.
 
-| Unit | What | Gate |
-|---|---|---|
-| EX.0 | `@econ/census`; the matter census's new goods, with declared sink terms (consumed, burned, fired; doc 48b W-48-6) | Q-48-17, Q-48-31 |
-| EX.1 | The seller: any principal lists from its own endpoint; private offers authorised at quote and accept; exact lots only, with the hold checked at prepare (§4.3); standing acceptance; any tradeable hold by presence; the exchange-scale caps and a load test | Q-48-2, Q-48-5, Q-48-44, Q-48-49, Q-48-50, Q-48-54, Q-48-56 |
-| EX.2 | One asset-sale builder; player hull resale with the hold and fitted core, and no bait-and-strip | EX.1, Q-48-7, Q-48-52 |
-| EX.2b | Core resale to a player: a second closed plan, a kernel image change (CO.13-sized) | EX.2, Q-48-47 |
-| EX.3 | NPC flows on the board, atomic; acceptor roles as data | EX.1, Q-48-9 |
-| EX.4 | Listing fee, sale cut, levy; berth fee | EX.1, Q-48-8, Q-48-15 |
-| EX.5 | The service arm; the generalised open join (escrowing the provider's bond, checking both caps, org acceptors); retrieval, passage and survey listed | EX.1, Q-48-3, Q-48-12, Q-48-58 |
-| EX.6 | Haul (a held lot, declared value, a bond on it) and escort (its own host-written fact) | EX.5, Q-48-11, Q-48-42, Q-48-46 |
-| EX.7 | Crew wages; player crew listings | EX.5, Q-48-14, Q-48-33 |
-| EX.8 | The NPC price rule (5% an IC week) and price history as its own bounded series | EX.3, Q-48-18 (ruled), Q-48-35 |
-| EX.9 | NPC consumption, running costs by the work with mothballing and debts, the export faucet paying the consumers (one unit: they balance) | EX.0, EX.8, **PL.1, PL.2**, Q-48-19, Q-48-21, Q-48-22, Q-48-34, Q-48-36, Q-48-38..41 |
-| EX.10 | The NPC hauling house; consumption at ports with no producer in reach | EX.6, EX.9, Q-48-20, Q-48-41 |
-| PL.0 | `MAX_GOODS` 48 → 256 (no pin moves); the unload plan takes the hopper's goods and an empty pool frees its count, so `+tv/unload` survives past 64 goods (doc 48b G-5) | Q-48-30 (ruled) |
-| PL.1 | Propellant from volatiles, with its operating arm | PL.0, Q-48-23 |
-| PL.2 | Provisions, instrument boards, relay blanks (`MAX_PAIRS` 8 is a Rust cap to lift, and a `relay_blank` good to add) and carbon feedstock (from carbon ore) get producers, each with an operating arm | PL.0, Q-48-23 |
-| PL.3 | Munitions recipes (with doc 49's CC.5) | PL.0, Q-48-23, Q-49-4 |
-| PL.4 | Mills and the refine as works recipes | Q-48-24 |
-| PL.5 | Buying into an escrow (V7's seller and price generalised); a House buys a hull once it has income | Q-48-28 |
-| PL.6 | The Ceres yard | Q-48-25 |
-| PL.7 | Cores from the chain at die issue; a core-module good for stock-cored designs | PL.0, Q-48-27, Q-48-48 |
-| PL.8 | The parts market | EX.3, Q-48-29 |
-| PL.9 | Facilities as titled assets; owner terms (customers, margin); sale only when idle; what a sale moves, the owner-held lane rule, the fee pinned at booking | EX.2, Q-48-26, Q-48-37, Q-48-45, Q-48-53 |
+**Before the exchange units:** the six live defects from §4.3 and doc 49 §4a are being fixed in their
+own session and PR. EX.1a, EX.2, EX.5 and PL.9 touch the same lines, so they start after that PR has
+merged.
+
+**The rule for every unit**, from docs 43 and 47: test what changed, run the contract guards before
+the first push, and open the PR only when it is landable, opened ready. A unit that adds a
+player-facing sentence adds it to the mush-bot sentence table and keeps it under 120 columns.
+
+### 7.1 The units
+
+| Unit | What | Owns (one writer) | Waits on | Done when |
+|---|---|---|---|---|
+| **EX.0** | The money census and the matter census's sink terms (Q-48-17, Q-48-31) | `crates/mush-economy/src/` (a new census module and staff verb); `crates/tacsim/src/port/census.rs` | — | `@econ/census` prints sources, sinks and holdings by category per IC day, with the System faucets' net mint. The matter census balances with `consumed`, `burned` and `fired` terms, and counts volatiles, propellant, provisions and munitions, on a story that burns and fires |
+| **PL.0** | The goods cap and the pool cap (Q-48-30) | `tacsim/src/definitions/goods.rs`; `mush-inventory/src/pool.rs` and `record.rs` (pool count); `tacsim/src/surface/act/fixed.rs` and `providers.rs` (unload plan) | — | A catalogue of 100 test goods loads. `+tv/unload` works with 70 bulk goods catalogued: the unload plan takes the hopper's goods, and an emptied pool frees its count. No pin moves except goods-count tests |
+| **PL.10** | Ore regeneration (Q-48-61) | `tacsim/src/surface/opening.rs`; `tacsim/src/space/mining.rs` | — | A worked-out surface site and a worked-out cluster re-roll after 28 IC days (provisional), across a restart |
+| **EX.1a** | The seller, in the market (Q-48-2, -5, -44, -49, -50, -54) | `crates/mush-market/` (`record.rs`, `api.rs`, `trade.rs`, `lot.rs`, `commands.rs`) | the defect PR | Any principal lists exact lots from an endpoint it may trade. A listing is the seller's standing acceptance (a party cap scoped to the listing). A bid escrows price × quantity at posting. A private offer is refused at quote and accept to anyone but its buyer. A listing's lot hold renews while it stands. Caps: 32 listings a seller, and the 1,024 global ceiling load-tested with the bot cohort **(expensive to reverse)** |
+| **EX.1b** | The seller, at the venue (Q-48-49, -56) | `tacsim/src/port/market.rs`, `coop.rs`, `proceeds.rs`, `executor.rs`, `orders.rs` | EX.1a | The endpoint is any hold the actor may trade, chosen by presence. A locker vault opens on first use, capacity-bound, at 1 cr an IC day a tonne. Non-port venues are gated by location. The Co-op share applies on every sale from a chartered hold. An offline buy reads house asks only, unless it names a ceiling |
+| **EX.2** | One asset sale, and hull resale (Q-48-7, -52) | `mush-market/src/trade.rs` (the builder); `tacsim/src/port/buyout.rs`, `house_sale.rs`; `port/bay_work/` (the sale lock) | EX.1a, the defect PR | Buyout, Tycho's resale and a player-to-player hull sale use one builder, and their existing stories pass. The hold's vault re-homes and must be empty. The quote pins a hull-state digest, and settlement refuses on drift. Strip, scrap and fit are refused on a hull under a live sale |
+| **EX.2b** | Core resale to a player (Q-48-47; the core leg of Q-48-52) | `crates/mush-core/src/core_sale.rs`; `crates/mush-economy/src/registry_filing/core_sale.rs`; `tacsim/src/hardware/sale.rs` | EX.2 | A stored core sells to a named player, the money escrowed at acceptance, with lines for seller, venue and levy. A cored hull's listing carries the core leg. The boot audit pairs the records, and the surviving mutations are named. A closed family, CO.13's size **(expensive to reverse)** |
+| **EX.3** | NPC flows on the board (Q-48-9) | `tacsim/src/port/supply.rs`, `pools.rs`, `bay_work/scrap.rs`; `port/def.rs` (acceptor role rows replacing `PortPartyCaps`' list) | EX.1b | V6, V7 and V10 each leave a trade on the tape and keep the stated guarantee, tested by a failed leg that refunds. The "staff pay by hand" fallback is gone |
+| **EX.4** | Fees and obligations at 24:1 (Q-48-8, -15, -54, -55) | `mush-market/` (listing fee, sale cut, levy); `mush-economy/src/obligation.rs` (a player-owed class: grace of at least 28 periods, arrears as a one-term debt, reinstating on funding); `tacsim/src/port/` (berth fee and lien) | EX.1a, EX.2 | The listing fee is charged once a listing. A hull at a berth owes 5 cr an IC day, and a House's hull at its home port owes nothing. A week offline accrues 840 cr as arrears, not Delinquent. A lien collects at the hull's next sale at that port. Undocking is never blocked before 28 IC days |
+| **EX.5** | The service arm and open jobs (Q-48-3, -11, -12, -58) | `mush-market/src/record.rs` (a `Service` representation); `mush-economy/src/contract_live.rs` (the generalised join); `tacsim/src/surface/retrieval.rs`, `port/passenger/`, `port/survey.rs` | EX.1a, EX.4, the defect PR | Retrieval, passage and survey list on the board as typed kinds. A stranger joins a `Wanted` service, the join escrowing the provider's bond and checking both contract caps. Org members with the capability accept for their org. Deadlines run from acceptance for jobs |
+| **EX.6** | Haul and escort (Q-48-11, -42, -46, -57) | new `tacsim/src/services/haul.rs` and `escort.rs`; the delivery verb (`mush-inventory` derived marker); the passage and field host hooks | EX.5 | A haul moves a held lot reserved to the job (`reserve_for`, outliving the job), with declared value capped at reference × quantity and a 25% bond. At the deadline, cargo still aboard stays held and goes back to the shipper. The escort's fact is written by the host (90% of the journey near the hull; linkdead grace; fails on wreck or capture). A story each |
+| **EX.7** | Crew wages (Q-48-14, -33) | `tacsim/src/detachment/crew/` | EX.4, EX.5 | A hire owes 10 cr (rating) or 20 cr (officer) an IC day, under EX.4's grace. A player lists themselves for crew hire. The technician duty is a kind |
+| **EX.8** | The NPC price rule and price history (Q-48-18, -35, -39) | `tacsim/src/port/price.rs`, `stock.rs`; `mush-market/` (a history series apart from the trade tape) | EX.3 | An NPC ask and bid move with stock by at most 5% an IC week, within 50–200%, with the reach premium on top. The throttle's 10% an IC week is the one exception. `+market/history` shows 24 IC weeks per venue and good |
+| **PL.1** | Propellant from volatiles (Q-48-23) | the lane chain (below) | PL.0 | Occator mills volatiles into propellant 5:4 with an operating arm, and a story shows one full cycle (inputs bought, slot booked, output collected and listed) |
+| **PL.2** | Provisions, boards, carbon feedstock and relay blanks get producers (Q-48-23) | the lane chain; `tacsim/src/relay_foundry.rs` (lifting `MAX_PAIRS`) | PL.1 | Each producer has an operating arm and a one-cycle story: provisions at Luna and Titan farms, boards at a Luna fab, carbon ore to feedstock at the works and at Titan, relay blanks by recipe |
+| **PL.3** | Munitions, ground and space (Q-49-4, -5, -12) | the lane chain | PL.2 | Each munitions good, including new space goods (torpedoes, spinal rounds, point-defence boxes), has a works recipe whose output count and works time land a produced round near its GC.7 price. The census conserves rounds |
+| **PL.4** | Mills and the refine as works recipes (Q-48-24) | the lane chain | PL.3 | A player books a public slot and mills their own ore at the house ratios and the cost-model fee |
+| **PL.5** | Buying into an escrow (Q-48-28) | `tacsim/src/port/pools.rs`, `works.rs`; the lane (a boards and strategic-ore ask at Stickney) | EX.3, PL.4 | V7's seller and price serve any buyer. A House with funds orders a Dray with no hold |
+| **PL.6** | The Ceres yard (Q-48-25) | the lane chain; `tacsim/src/port/plant.rs` | PL.5 | Ceres builds the light hulls: Dray, Dray-P, prospector, escort, tender and wrecker |
+| **PL.7** | Cores from the chain (Q-48-27, -48) | `crates/mush-industry/src/core_production/`; `tacsim/src/port/bill.rs`, `commission.rs`; `hardware/content.rs` | PL.0 | Chain goods are consumed at die issue. A stock-cored design bills one core-module good, consumed at commission; its core stays Class II, outside the quota. `CoreClass` prices are content |
+| **PL.8** | The parts market (Q-48-29) | the lane chain; `tacsim/src/port/stock.rs`, `bay_work/` | EX.3, PL.6 | Workshops list the parts they strip or scrap. Each part good has an NPC bid at 600‰ for intact, cool, unfitted, unheld parts; a damaged part goes to scrap |
+| **PL.9** | Facilities as titled assets (Q-48-26, -37, -45, -53) | `crates/mush-industry/src/facility.rs`, `store.rs`, `commands.rs`; `tacsim/src/port/plant.rs`, `works.rs` | EX.2, PL.7, the defect PR | A facility has a title. Its owner sets customers and margin only. The fee is pinned at booking. A sale moves owner, stores vault and payee, only when idle. The lane applies an owner-held facility without reverting it. The relay foundry, the programme workshops and medical rooms are not sellable, and a sold yard stays public |
+| **EX.9** | The balance (Q-48-19, -21, -22, -34, -36, -38..41, -55, -59, -60) | a new consumption arm in `tacsim/src/port/`; `mush-industry/src/cost.rs` (debits); `port/stock.rs`, `supply.rs`; the House stipend in `deploy/instance/launch-bringup.py` | EX.0, EX.8, PL.1, PL.2, PL.9 | See "EX.9's done-when" below |
+| **EX.10** | The NPC hauling house (Q-48-20, -41) | a new hauler arm in `tacsim/src/port/`; the voyage path | EX.6, EX.9 | NPC hulls run between ports when a price gap pays, and can be intercepted. Consumption at a port with no producer in reach switches on |
+
+**EX.9's done-when.**
+- Consumers consume what they buy, and the Habitat Board adds provisions.
+- Running costs follow the work: payroll included, a 10% idle share, all of it to a system sink.
+- A house that cannot pay mothballs, takes escrow-covered orders, and repays its debt from the
+  margin. A mill-run facility pays per batch. Staff wages stay 150 cr an IC day.
+- The export faucet pays the consumers and a House stipend.
+- A measured multi-day run at 24:1 on conclav.dev holds the lane's net money change within 1% of
+  its capital per real day.
+
+**The lane chain** is `tacsim/content/lane/ceres_phobos.json`, `content/industry/recipes-v2.json`
+and `content/market/goods.json`. All three are one-writer files that bump the lane version and
+re-pin its strip step and digests, so their units run one at a time: PL.1, PL.2, PL.3, PL.4, PL.5's
+rows, PL.6, PL.8. Later, EX.8's stock targets and EX.9's consumption rows.
+
+### 7.2 Waves
+
+- **Wave 0, now:** EX.0, PL.0, PL.10. Each stands alone in its own files.
+- **Wave 1, after the defect PR and PL.0:** EX.1a, and PL.1 (opening the lane chain).
+- **Wave 2:** EX.1b, EX.2, EX.4; the lane chain continues with PL.2, PL.3, PL.4; and PL.7.
+- **Wave 3:** EX.2b, EX.3, EX.5, PL.9.
+- **Wave 4:** EX.6, EX.7, EX.8, PL.5, PL.6, PL.8.
+- **Wave 5:** EX.9.
+- **Wave 6:** EX.10.
+
+Doc 49's units run beside these. Their only edges with this document:
+- PL.0 before CC.6 if CC.6 adds part goods;
+- PL.3 before CC.7;
+- the lane chain shares no file with the combat packs.
+
+### 7.3 The one-writer chains
+
+| Files | Units in order |
+|---|---|
+| `crates/mush-market/` | EX.1a → EX.2 (the builder) → EX.4 (fees) → EX.5 (service arm) → EX.8 (history) |
+| `tacsim/src/port/market.rs`, `coop.rs`, `proceeds.rs`, `executor.rs` | EX.1b → EX.3 |
+| `mush-economy/src/contract_live.rs`, `obligation.rs` | EX.4 → EX.5 → EX.7 |
+| `mush-core/src/core_sale.rs`, `registry_filing/core_sale.rs` | EX.2b |
+| `crates/mush-industry/` | PL.7 → PL.9 → EX.9 |
+| The lane chain | PL.1 → PL.2 → PL.3 → PL.4 → PL.5 → PL.6 → PL.8 → EX.8 → EX.9 |
+| `tacsim/src/port/pools.rs`, `supply.rs`, `stock.rs` | EX.3 → PL.5 → EX.8 → EX.9 |
 
 ## 8. What this survey did not check, and what the second review answered
 
