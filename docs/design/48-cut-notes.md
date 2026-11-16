@@ -240,7 +240,13 @@ Not built.
    (the shipped mill list), `ports::ic3_the_readiness_report_lists_every_binding_and_flags_the_rate`
    (68 commerce lines, the floor in the Mill line) and
    `ports::ic3_port_entries_refuse_what_the_applier_cannot_bind` (the v2 shape drops the refinery
-   with the vendors).
+   with the vendors). `def::tests::sm12b_each_yard_rule_refuses_with_its_sentence`'s mill-less
+   case now drops the ice mill alone. mush-server's `commerce_composition` suite bunkers at Ceres,
+   so its refine runs there:
+   - `ic_slice_loop` and `ic_buyout_dormancy` land Ceres's clerk with the house's acts in
+     `drain_players`, as IN.5 did for Stickney's;
+   - `ic_slice_loop`'s "seeded − sold = remaining" checks count the refine's water and
+     propellant off its ledger and counter (`occator_refined`, beside `kasei_refined`).
 
 **Tests** (run on conclav.dev):
 - **New:**
@@ -267,11 +273,18 @@ Not built.
     is extended with the own-stock rules.
   - `lane::pl1_strip_refine_rebuilds_the_published_v34`: v34's digest `9e78ca9a…`, idempotent.
 - **Unchanged and green:**
+  - the whole `tacsim` lib (2,365);
   - the `domain_economy`, `domain_world` and `cost_lane` binaries whole (874 tests); the only
     failures were the three pins above, since fixed;
+  - `domain_field`, `domain_arena` and `harness` (1,471). `field_rs1`'s two tender-tow stories
+    (Ahuna, Urvara) failed once at load 55, beside another session's sweep, and passed alone on
+    this tree (62 s and 64 s);
   - every SM.12a mill story, the month of milling included;
-  - mush-server `split_boundary`'s `relay_registry`, `boot_parity` and `content_studio` (91).
-- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  - mush-server `split_boundary`'s `relay_registry`, `boot_parity` and `content_studio` (91),
+    and `commerce_composition` whole (91), after the two fixes above;
+  - mush-bot (791).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets` (on the
+  final tree), the M7
   memory-size pass on `tacsim`, rustdoc `-D warnings --document-private-items`, and
   `mush-contract-tests`' feature census, panic budget and restriction lints (24).
 - **Mutations** (each fails the stories or the unit tests):
