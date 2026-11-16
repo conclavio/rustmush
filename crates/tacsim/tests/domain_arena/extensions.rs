@@ -10368,11 +10368,13 @@ fn ae2_outcome(
 }
 
 /// **Three rounds a pull, each its own draw** (16b cut AE.2; doc 16 §3.5 step
-/// 4's burst): the scout car's autocannon spends three rounds of its 240 and
-/// starts its 3,000 ms cycle; how many land is one binomial sample drawn once
+/// 4's burst): the scout car's autocannon spends three rounds of its load and
+/// starts its cycle; how many land is one binomial sample drawn once
 /// under `burst:<seq>` — a count from nought to three, and every count reachable
 /// as the chance moves; every landed round carries 20 into one `hit` line
 /// through `apply_hit`; and a last pull with two rounds left fires the two.
+/// The loads and the cycle are read off the car's own mounts, as the content
+/// authors them (doc 49 cut CC.0; 240 rounds and 3,000 ms when cut AE.2 shipped).
 #[test]
 fn ae2_the_autocannon_is_a_burst_of_three_and_each_round_is_its_own_draw() {
     let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
@@ -10384,16 +10386,33 @@ fn ae2_the_autocannon_is_a_burst_of_three_and_each_round_is_its_own_draw() {
         definition(&[]),
         tacsim::arena::state::Controller::Pilot,
     );
+    let (autocannon, coaxial) = {
+        let state = arena.unit(RED).expect("the car");
+        let mount = |id: &str| {
+            state
+                .weapon(id)
+                .cloned()
+                .unwrap_or_else(|| panic!("the car carries {id}"))
+        };
+        (mount("autocannon"), mount("machine_gun"))
+    };
     let at = arena.now_ms;
     let seq = arena
         .resolve_fire(RED, "autocannon", at)
         .expect("the burst is accepted");
     let state = arena.unit(RED).expect("the car");
-    assert_eq!(state.weapon_ammo("autocannon"), 237, "three of 240 spent");
-    assert_eq!(state.weapon_ready_at_ms("autocannon"), at + 3_000);
+    assert_eq!(
+        state.weapon_ammo("autocannon"),
+        autocannon.count_per_load - 3,
+        "three of the load spent"
+    );
+    assert_eq!(
+        state.weapon_ready_at_ms("autocannon"),
+        at + i64::from(autocannon.cycle_ms)
+    );
     assert_eq!(
         state.weapon_ammo("machine_gun"),
-        2_000,
+        coaxial.count_per_load,
         "the coaxial is its own magazine"
     );
     let shot = arena.shot(seq).cloned().expect("the burst in flight");
@@ -10522,12 +10541,20 @@ fn ae2_the_missile_lands_where_the_target_was() {
     assert_eq!(shot.fired_at_ms, at);
     assert_eq!(shot.impact_at_ms, at + 6_000, "250 m/s over 1.5 km");
     assert_eq!((shot.rounds, shot.damage), (1, 350));
+    // The loads and the rack's cycle off the heavy's own mounts, as the content
+    // authors them (doc 49 cut CC.0; six rounds and 10,000 ms when cut AE.2
+    // shipped, the cannon's load 40).
     let state = arena.unit(RED).expect("the heavy");
-    assert_eq!(state.weapon_ammo("missiles"), 5);
-    assert_eq!(state.weapon_ready_at_ms("missiles"), at + 10_000);
+    let cannon_load = state
+        .weapon("cannon")
+        .map(|cannon| cannon.count_per_load)
+        .expect("the heavy carries a cannon");
+    let ready_at = at + i64::from(rack.cycle_ms);
+    assert_eq!(state.weapon_ammo("missiles"), rack.count_per_load - 1);
+    assert_eq!(state.weapon_ready_at_ms("missiles"), ready_at);
     assert_eq!(
         state.weapon_ammo("cannon"),
-        40,
+        cannon_load,
         "the rack is its own magazine"
     );
     let due: Vec<(i64, DueKind)> = arena
@@ -10546,7 +10573,7 @@ fn ae2_the_missile_lands_where_the_target_was() {
         vec![
             (at + 6_000, DueKind::Impact { shot_seq: seq }),
             (
-                at + 10_000,
+                ready_at,
                 DueKind::WeaponReady {
                     unit: RED,
                     weapon: SmolStr::new("missiles"),

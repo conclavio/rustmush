@@ -43,6 +43,7 @@
 //!   simulator). So the sweep tests the other machine's **object name** and
 //!   **type word**, and not a pilot's name.
 
+use crate::shipped::mount;
 use crate::support;
 
 use support::{STEP_TIMEOUT, wait_until};
@@ -103,8 +104,11 @@ const EAST_MDEG: u32 = 90_000;
 const WEST_MDEG: u32 = 270_000;
 
 /// The cannon's authored load (`ammunition/he_105.json`), which is what "at
-/// spec" means for a `line_tank`'s magazine.
-const LOAD: i64 = 40;
+/// spec" means for a `line_tank`'s magazine; read off the content (doc 49 cut
+/// CC.0, Q-49-16), so a retune of the round's pack moves no line here.
+fn load() -> i64 {
+    i64::from(mount("line_tank", "cannon").magazine)
+}
 
 /// Session-owned brackets also frame a line refused before parser dispatch.
 const REPLY_PREFIX: &str = "<<< sim-units reply";
@@ -856,7 +860,7 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
         );
         assert_eq!(
             cell_current(&seen, "component/cannon/ammo"),
-            LOAD,
+            load(),
             "{who} did not come back with a full magazine: {seen}"
         );
         assert!(
@@ -1058,9 +1062,11 @@ async fn o2_a_pilot_in_the_ecm_tank_switches_the_pod_off_and_the_tape_says_so() 
 /// once they are aboard each pilot's `STATUS` prints its own chassis — the
 /// car's pair of wheels, the heavy's pair of tracks — and `WEAPONSTATUS` its own
 /// guns: since 16b cut AE.2 the car's two rows, the autocannon and then the
-/// coaxial (`machine_gun (mg)  ready  2000 of 2000 round(s)`), and the heavy's
-/// three, the cannon, the coaxial and the rack. From the moment either climbed
-/// in, neither session saw the other machine's type word or its object name.
+/// coaxial (`machine_gun (mg)  ready  N of N round(s)`), and the heavy's
+/// three, the cannon, the coaxial and the rack, each a full load (doc 49 cut
+/// CC.0: the loads are read off the content, [`crate::shipped`]). From the
+/// moment either climbed in, neither session saw the other machine's type word
+/// or its object name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ae1_two_pilots_field_the_scout_car_and_the_heavy_tank() {
     let server = boot("sim-units-ae1").await;
@@ -1126,9 +1132,13 @@ async fn ae1_two_pilots_field_the_scout_car_and_the_heavy_tank() {
     // Each pilot's own guns. **16b cut AE.2** gave the car its autocannon,
     // first in component order, and the heavy its rack: two rows and three.
     let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
+    let car = (
+        mount("scout_mk1", "autocannon"),
+        mount("scout_mk1", "machine_gun"),
+    );
     assert!(
-        seen.contains("autocannon  ready  240 of 240 round(s)")
-            && seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)"),
+        seen.contains(&format!("autocannon  ready  {}", car.0.full()))
+            && seen.contains(&format!("machine_gun (mg)  ready  {}", car.1.full())),
         "the car's two guns: {seen}"
     );
     assert!(
@@ -1139,9 +1149,16 @@ async fn ae1_two_pilots_field_the_scout_car_and_the_heavy_tank() {
     );
     let seen = ask_whole(&mut bo, "WEAPONSTATUS").await;
     assert!(
-        seen.contains("cannon  ready  40 of 40 round(s)")
-            && seen.contains("machine_gun (mg)  ready  2000 of 2000 round(s)")
-            && seen.contains("missiles  ready  6 of 6 round(s)"),
+        seen.contains(&format!(
+            "cannon  ready  {}",
+            mount("heavy_mk1", "cannon").full()
+        )) && seen.contains(&format!(
+            "machine_gun (mg)  ready  {}",
+            mount("heavy_mk1", "machine_gun").full()
+        )) && seen.contains(&format!(
+            "missiles  ready  {}",
+            mount("heavy_mk1", "missiles").full()
+        )),
         "the heavy's three guns: {seen}"
     );
 
@@ -1185,8 +1202,9 @@ fn lines_of<'a>(events: &'a [Value], kind: &str, unit: u32) -> Vec<&'a Value> {
 /// Bo, types the bare `FIRE` and reads `Firing autocannon.` — HEAD's rule, the
 /// cannon if carried else the first weapon, on a car whose author listed the
 /// autocannon first — and a pulse later the arena has accepted it: her
-/// `WEAPONSTATUS` reads three of 240 spent, and the tape a `fired` line of three
-/// rounds from the autocannon.
+/// `WEAPONSTATUS` reads one burst spent (three of 240 as cut AE.2 shipped them),
+/// and the tape a `fired` line of one burst from the autocannon. Doc 49 cut CC.0
+/// reads the loads and the burst off the content ([`crate::shipped`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
     let server = boot("sim-units-ae2").await;
@@ -1226,16 +1244,29 @@ async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
             .unwrap_or_else(|| panic!("no `{row}` in the heavy's WEAPONSTATUS: {seen}"))
     };
     let rows = [
-        at("cannon  ready  40 of 40 round(s)"),
-        at("machine_gun (mg)  ready  2000 of 2000 round(s)"),
-        at("missiles  ready  6 of 6 round(s)"),
+        at(&format!(
+            "cannon  ready  {}",
+            mount("heavy_mk1", "cannon").full()
+        )),
+        at(&format!(
+            "machine_gun (mg)  ready  {}",
+            mount("heavy_mk1", "machine_gun").full()
+        )),
+        at(&format!(
+            "missiles  ready  {}",
+            mount("heavy_mk1", "missiles").full()
+        )),
     ];
     assert!(
         rows.windows(2).all(|pair| pair[0] < pair[1]),
         "the heavy's rows are not in component order: {seen}"
     );
 
-    // The car's bare `FIRE`.
+    // The car's bare `FIRE`: one pull spends the autocannon's burst.
+    let (autocannon, coaxial) = (
+        mount("scout_mk1", "autocannon"),
+        mount("scout_mk1", "machine_gun"),
+    );
     let contact = wait_for_contact(&mut ada).await;
     let locking = ada.mark();
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
@@ -1243,9 +1274,9 @@ async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
     let fired = ada.mark();
     framed_line(&mut ada, "FIRE").await;
     ada.expect_after(fired, "Firing autocannon.").await;
-    let seen = poll_whole(&mut ada, "WEAPONSTATUS", "237 of 240 round(s)").await;
+    let seen = poll_whole(&mut ada, "WEAPONSTATUS", &autocannon.left(autocannon.burst)).await;
     assert!(
-        seen.contains("machine_gun (mg)") && seen.contains("2000 of 2000 round(s)"),
+        seen.contains("machine_gun (mg)") && seen.contains(&coaxial.full()),
         "the coaxial is untouched: {seen}"
     );
     assert!(
@@ -1272,7 +1303,7 @@ async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
                 event.get("rounds").and_then(Value::as_u64)
             ))
             .collect::<Vec<_>>(),
-        vec![(Some("autocannon"), Some(3))],
+        vec![(Some("autocannon"), Some(u64::from(autocannon.burst)))],
         "{bursts:?}"
     );
     no_sixteen_digit_word(&strip_ansi(&ada.seen));
@@ -1294,7 +1325,8 @@ async fn ae2_the_scout_car_fires_its_autocannon_and_the_heavy_carries_a_rack() {
 /// the rack cycling and aborts it. Her
 /// `WEAPONSTATUS` is three rows, verbatim; she holds the target as `BA`, locks
 /// it and types `FIRE missiles`, reads `Firing missiles.`, is told the outcome
-/// at the impact, and reads the rack cycling with five of six left. The tape's
+/// at the impact, and reads the rack cycling with one round gone (five of six
+/// as cut AE.2 shipped it; doc 49 cut CC.0 reads the loads off the content). The tape's
 /// `impact` for that shot is 2,000 arena ms after its `fired`: 50,000 cm at
 /// 25,000 cm/s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1344,14 +1376,19 @@ async fn ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds
     ada.expect("Good hunting").await;
     power_up(&mut ada).await;
 
-    // Three rows, verbatim.
+    // Three rows, verbatim, each a full load off the content.
+    let (cannon, coaxial, rack) = (
+        mount("heavy_mk1", "cannon"),
+        mount("heavy_mk1", "machine_gun"),
+        mount("heavy_mk1", "missiles"),
+    );
     let seen = poll_whole(&mut ada, "WEAPONSTATUS", "missiles").await;
     for row in [
-        "cannon  ready  40 of 40 round(s)",
-        "machine_gun (mg)  ready  2000 of 2000 round(s)",
-        "missiles  ready  6 of 6 round(s)",
+        format!("cannon  ready  {}", cannon.full()),
+        format!("machine_gun (mg)  ready  {}", coaxial.full()),
+        format!("missiles  ready  {}", rack.full()),
     ] {
-        assert!(seen.contains(row), "no `{row}`: {seen}");
+        assert!(seen.contains(&row), "no `{row}`: {seen}");
     }
 
     // The rack.
@@ -1382,11 +1419,11 @@ async fn ae2_a_heavy_on_the_range_fires_its_rack_and_the_round_lands_two_seconds
     );
     let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
     assert!(
-        seen.contains("missiles  cycling (") && seen.contains("5 of 6 round(s)"),
-        "the rack is cycling with five left: {seen}"
+        seen.contains("missiles  cycling (") && seen.contains(&rack.left(rack.burst)),
+        "the rack is cycling with one round gone: {seen}"
     );
     assert!(
-        seen.contains("cannon  ready  40 of 40 round(s)"),
+        seen.contains(&format!("cannon  ready  {}", cannon.full())),
         "the cannon is its own magazine: {seen}"
     );
 

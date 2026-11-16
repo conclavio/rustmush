@@ -753,9 +753,9 @@ fn d2_choose_weapon_takes_the_id_the_short_name_and_the_prefix() {
     ));
 }
 
-/// **16b cut AE.2**: the weapon rows a fielded unit type's frame carries, in
-/// component order, loaded and ready — what `FIRE` chooses among.
-fn fielded_rows(entry: &str) -> Vec<WeaponRow> {
+/// The mounts a fielded unit type carries, in component order, as the content
+/// authors them (16b cut AE.2; doc 49 cut CC.0 reads its loads and cycles here).
+fn fielded_summaries(entry: &str) -> Vec<crate::arena::state::WeaponSummary> {
     let catalog = crate::definitions::Catalog::build_fielded(&[], crate::NS)
         .unwrap_or_else(|error| panic!("the fielded content binds: {error}"));
     let key = mush_core::CanonicalId::new(entry).unwrap_or_else(|_| panic!("{entry}"));
@@ -765,6 +765,12 @@ fn fielded_rows(entry: &str) -> Vec<WeaponRow> {
     let cells = crate::definitions::to_tactical_unit(spec, binding, ObjId(31))
         .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
     crate::match_::weapon_summaries(&catalog, &cells)
+}
+
+/// **16b cut AE.2**: the weapon rows a fielded unit type's frame carries, in
+/// component order, loaded and ready — what `FIRE` chooses among.
+fn fielded_rows(entry: &str) -> Vec<WeaponRow> {
+    fielded_summaries(entry)
         .into_iter()
         .map(|weapon| WeaponRow {
             rounds: i64::from(weapon.count_per_load),
@@ -772,6 +778,17 @@ fn fielded_rows(entry: &str) -> Vec<WeaponRow> {
             ..weapon_row(&weapon.id)
         })
         .collect()
+}
+
+/// **One fielded mount's load and cycle, off the content** (doc 49 cut CC.0,
+/// Q-49-16): `(count_per_load, cycle_ms)` of the mount `id` on `entry`, so a
+/// retune of a mount or round pack moves no line of the tests that read it.
+fn fielded_mount(entry: &str, id: &str) -> (i64, i64) {
+    fielded_summaries(entry)
+        .into_iter()
+        .find(|weapon| weapon.id == id)
+        .map(|weapon| (i64::from(weapon.count_per_load), i64::from(weapon.cycle_ms)))
+        .unwrap_or_else(|| panic!("{entry} carries no mount {id}"))
 }
 
 /// **16b cut AE.2**: `FIRE`'s default is the content author's choice by
@@ -813,7 +830,13 @@ fn ae2_the_bare_fire_is_the_authors_choice_by_component_order() {
     assert_eq!(weapon_initials("autocannon"), None);
     assert_eq!(weapon_initials("missiles"), None);
 
-    // The rows, in the existing format.
+    // The rows, in the existing format, each a full load. The loads and the
+    // rack's cycle are the content's (doc 49 cut CC.0), so a retune of a pack
+    // moves no line here; the format is what this pins.
+    let full = |entry: &str, id: &str| {
+        let (load, _) = fielded_mount(entry, id);
+        format!("{load} of {load} round(s)")
+    };
     let scout = fielded_rows(content::SCOUT_MK1);
     assert_eq!(
         scout
@@ -821,8 +844,14 @@ fn ae2_the_bare_fire_is_the_authors_choice_by_component_order() {
             .map(|row| row.render(&scout))
             .collect::<Vec<_>>(),
         vec![
-            "autocannon  ready  240 of 240 round(s)",
-            "machine_gun (mg)  ready  2000 of 2000 round(s)",
+            format!(
+                "autocannon  ready  {}",
+                full(content::SCOUT_MK1, "autocannon")
+            ),
+            format!(
+                "machine_gun (mg)  ready  {}",
+                full(content::SCOUT_MK1, "machine_gun")
+            ),
         ]
     );
     let mut heavy = fielded_rows(content::HEAVY_MK1);
@@ -832,19 +861,28 @@ fn ae2_the_bare_fire_is_the_authors_choice_by_component_order() {
             .map(|row| row.render(&heavy))
             .collect::<Vec<_>>(),
         vec![
-            "cannon  ready  40 of 40 round(s)",
-            "machine_gun (mg)  ready  2000 of 2000 round(s)",
-            "missiles  ready  6 of 6 round(s)",
+            format!("cannon  ready  {}", full(content::HEAVY_MK1, "cannon")),
+            format!(
+                "machine_gun (mg)  ready  {}",
+                full(content::HEAVY_MK1, "machine_gun")
+            ),
+            format!("missiles  ready  {}", full(content::HEAVY_MK1, "missiles")),
         ]
     );
+    // The rack one round in, its whole cycle to go: the seconds rounded up.
+    let (rack_load, rack_cycle) = fielded_mount(content::HEAVY_MK1, "missiles");
     if let Some(rack) = heavy.iter_mut().find(|row| row.id == "missiles") {
         rack.ready = false;
-        rack.ready_in_ms = 10_000;
-        rack.rounds = 5;
+        rack.ready_in_ms = rack_cycle;
+        rack.rounds = rack_load - 1;
     }
     assert_eq!(
-        heavy.get(2).map(|row| row.render(&heavy)).as_deref(),
-        Some("missiles  cycling (10 s)  5 of 6 round(s)")
+        heavy.get(2).map(|row| row.render(&heavy)),
+        Some(format!(
+            "missiles  cycling ({} s)  {} of {rack_load} round(s)",
+            (rack_cycle + 999) / 1_000,
+            rack_load - 1
+        ))
     );
 }
 

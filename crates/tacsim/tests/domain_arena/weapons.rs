@@ -3377,11 +3377,21 @@ fn ae2_one_missile_at_three_cadences_lands_at_one_millisecond_with_one_outcome()
         "from where the heavy stands at the impact, the wall blocks the line"
     );
 
-    // (4) The autocannon: three bursts.
-    let script = ae2_script("autocannon", &[5_000, 10_000, 15_000]);
+    // (4) The autocannon: three bursts. Doc 49 cut CC.0: the pulls are spaced by
+    // the car's own cycle rounded up to the coarsest cadence (5,000 ms, so 5,000
+    // apart at the cut's 3,000), so each finds the gun ready, and the load they
+    // draw on is the content's (240 when cut AE.2 shipped).
+    let autocannon = ae2_arena(SCOUT_MK1, (8, 4, 0, 0), (8, 24, 90_000, 0))
+        .unit(RED)
+        .and_then(|state| state.weapon("autocannon").cloned())
+        .expect("the car carries the autocannon");
+    let step = (i64::from(autocannon.cycle_ms) + 4_999) / 5_000 * 5_000;
+    let pulls = [5_000, 5_000 + step, 5_000 + 2 * step];
+    let until = 5_000 + 3 * step;
+    let script = ae2_script("autocannon", &pulls);
     let events = ae2_three(
         "the autocannon",
-        20_000,
+        until,
         &|| ae2_arena(SCOUT_MK1, (8, 4, 0, 0), (8, 24, 90_000, 0)),
         &script,
     );
@@ -3393,9 +3403,10 @@ fn ae2_one_missile_at_three_cadences_lands_at_one_millisecond_with_one_outcome()
         vec![Some(3), Some(3), Some(3)]
     );
     let mut arena = ae2_arena(SCOUT_MK1, (8, 4, 0, 0), (8, 24, 90_000, 0));
-    let _ = replay(&mut arena, 1_000, 20_000, &script);
+    let _ = replay(&mut arena, 1_000, until, &script);
     assert_eq!(
         arena.unit(RED).map(|state| state.weapon_ammo("autocannon")),
-        Some(231)
+        Some(autocannon.count_per_load - 9),
+        "three bursts of three off the load"
     );
 }

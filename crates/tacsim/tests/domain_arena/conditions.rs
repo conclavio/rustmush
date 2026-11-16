@@ -2551,10 +2551,11 @@ fn m3_the_count_is_told_in_two_lines_on_a_degraded_heavy() {
 /// and three armings in one pulse — the machine gun (S1), the missiles (S2)
 /// and the cannon, which takes **S3**, a slot the fixed two-wide row never
 /// had. Each arming's evaluation fires at once at 5,000; the cannon's second
-/// shot from S3 lands at exactly `5,000 + cycle_ms` = 11,000 — MID-PULSE at
-/// the 5,000 ms cadence — and its third at 17,000 (mid-pulse again), the
-/// missiles' second from S2 at 15,000. Run to 20,000 (a pulse end at every
-/// cadence). One
+/// shot from S3 lands at exactly `5,000 + cycle_ms` (11,000 at the cut's 6,000
+/// ms — MID-PULSE at the 5,000 ms cadence) and its third a cycle later, the
+/// missiles' second from S2 at `5,000` plus theirs. Run to a pulse end at every
+/// cadence past those (20,000 at the cut's cycles; doc 49 cut CC.0 reads both
+/// cycles off the content and sizes the run from them). One
 /// event list and one hash sequence at 5,000 / 1,000 / 500 ms and on the
 /// task's own wakes, and the row is six wide on every drive.
 #[test]
@@ -2586,23 +2587,43 @@ fn m3_a_third_slot_fires_on_its_weapon_ready_millisecond_at_three_cadences() {
             ),
         ]
     };
-    let run = at_every_drive(make, 20_000, script);
+    // Doc 49 cut CC.0: the two cycles are the heavy's own, off the content, and
+    // the run is long enough for the cannon's second and third shots and the
+    // rack's second, ending on a pulse at every cadence (a multiple of 5,000).
+    // Shots are compared before the end, so none rides on the last pulse.
+    let cycle_of = |id: &str| -> i64 {
+        shipped_heavy(None)
+            .weapons
+            .iter()
+            .find(|weapon| weapon.id == id)
+            .map(|weapon| i64::from(weapon.cycle_ms))
+            .unwrap_or_else(|| panic!("the heavy carries {id}"))
+    };
+    let (cannon_cycle, rack_cycle) = (cycle_of("cannon"), cycle_of("missiles"));
+    let until = (5_000 + (2 * cannon_cycle).max(rack_cycle)) / 5_000 * 5_000 + 5_000;
+    let run = at_every_drive(make, until, script);
     let shots = cond_shots(&run);
     let of_slot = |slot: u64| -> Vec<i64> {
         shots
             .iter()
-            .filter(|(_, on, _)| *on == slot)
+            .filter(|(t_ms, on, _)| *on == slot && *t_ms < until)
             .map(|(t_ms, _, _)| *t_ms)
+            .collect()
+    };
+    let every = |cycle: i64| -> Vec<i64> {
+        (0..)
+            .map(|n| 5_000 + n * cycle)
+            .take_while(|t_ms| *t_ms < until)
             .collect()
     };
     assert_eq!(
         of_slot(3),
-        vec![5_000, 11_000, 17_000],
+        every(cannon_cycle),
         "S3's cannon at the arming and at each WeaponReady: {shots:?}"
     );
     assert_eq!(
         of_slot(2),
-        vec![5_000, 15_000],
+        every(rack_cycle),
         "S2's missiles at the arming and at their WeaponReady: {shots:?}"
     );
     assert_eq!(
@@ -2625,7 +2646,7 @@ fn m3_a_third_slot_fires_on_its_weapon_ready_millisecond_at_three_cadences() {
     );
     // The row, six wide on every drive (the arena at the end of one).
     let mut arena = make();
-    let _ = replay(&mut arena, Drive::Every(500), 20_000, &script());
+    let _ = replay(&mut arena, Drive::Every(500), until, &script());
     assert_eq!(arena.conditions.slots(RED).len(), 6);
     assert_eq!(arena.conditions.slot_of(RED, "cannon"), Some(3));
 }
@@ -4524,15 +4545,26 @@ fn laser_catalog() -> tacsim::definitions::Catalog {
 /// `line_tank` at (9, 8) facing west, seated, every consequence taken off its
 /// profile so no hit ends the match; red handed blue as a classified row.
 /// Answers the arena and red's authored sink.
+///
+/// **Red's two cycles are the field's own** ([`LASER_FIELD_CYCLES`]; doc 49 cut
+/// CC.0): the field's timeline ([`COOLS_AT`], [`UNLOCKS_AT`]) is built on the
+/// laser's 2,000 ms and the coaxial's 1,000 ms, so the fixture holds them, and a
+/// retune of the mount packs does not move the scenario.
 fn laser_field() -> (Arena, u32) {
     let catalog = laser_catalog();
-    let red = minded(shipped_unit(
+    let mut red = shipped_unit(
         &catalog,
         tacsim::definitions::content::LINE_TANK_LASER,
         RED,
         PartyId::RED,
         facing(5, 8, 90_000),
-    ));
+    );
+    for weapon in &mut red.weapons {
+        if let Some((_, cycle_ms)) = LASER_FIELD_CYCLES.iter().find(|(id, _)| weapon.id == *id) {
+            weapon.cycle_ms = *cycle_ms;
+        }
+    }
+    let red = minded(red);
     let mut blue = shipped_unit(
         &catalog,
         tacsim::definitions::content::LINE_TANK,
@@ -4582,6 +4614,10 @@ fn laser_field() -> (Arena, u32) {
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     (arena, sink)
 }
+
+/// **The laser field's two cycles**, the ones its timeline is built on (the
+/// shipped packs' when 17b cut M1b.2 wrote it; doc 49 cut CC.0 holds them here).
+const LASER_FIELD_CYCLES: [(&str, u32); 2] = [("laser", 2_000), ("machine_gun", 1_000)];
 
 /// When the laser field's sink comes back on.
 const COOLS_AT: i64 = 10_000;
