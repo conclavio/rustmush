@@ -193,8 +193,11 @@ fn hardware(rig: &mut Rig) -> HardwareCoordinates {
     // is issued, so staff stock it as the bring-up's operator would: enough for every die the
     // stories cut.
     let depot = vault(rig, "HardwareStock0");
-    for (n, good) in ["instrument_boards", "strategic_ore"].into_iter().enumerate() {
-        crate::driving_rig::seed_pool(
+    for (n, good) in ["instrument_boards", "strategic_ore"]
+        .into_iter()
+        .enumerate()
+    {
+        crate::excursions::seed_pool(
             rig,
             depot,
             good,

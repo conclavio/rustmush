@@ -138,8 +138,7 @@ pub const CORE_ACCEPTED: &str =
 /// The shipped hardware catalogue did not load, so the counter quotes nothing.
 pub const CORE_NO_PRICE: &str = "The fitting shop has no price list.";
 /// The importer's depot short of a die's chain goods (doc 48 unit PL.7): `{class}`, `{bill}`.
-pub const CORE_NO_STOCK: &str =
-    "The shop has no stock to cut a Class {class} die: a die takes {bill} from the importer's depot.";
+pub const CORE_NO_STOCK: &str = "The shop has no stock to cut a Class {class} die: a die takes {bill} from the importer's depot.";
 /// The counter gave up: `{what}`.
 pub const CORE_GAVE_UP: &str =
     "The counter could not go on {what}. What you paid stands on its order; staff have been told.";

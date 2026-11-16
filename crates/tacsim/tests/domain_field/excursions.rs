@@ -753,7 +753,7 @@ pub(crate) fn next_token() -> [u8; 16] {
 }
 
 /// Keep a prepared bundle's typed post-images for a reboot.
-fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
+pub(crate) fn keep(rig: &mut Rig, ops: Vec<mush_core::ModuleOp>) {
     // Doc 17h cut M8a: the typed post-images are kept for the reboot's hydration as before;
     // a plain module record (the Roll's setup receipt, `initialize_commerce`'s) goes to the
     // boot data the reboot loads, the split the production store loader makes.
@@ -1147,7 +1147,7 @@ pub(crate) fn hold_vault(tw: &TestWorld, row: &HullRow) -> VaultId {
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (additive; the inventory's own
 /// path, staff's hand).
-fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+pub(crate) fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
     let endpoint = EndpointRef(vault);
     let good = cid(good);
     let families = rig

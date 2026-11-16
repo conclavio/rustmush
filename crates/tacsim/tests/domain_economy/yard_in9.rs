@@ -477,7 +477,11 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     // Doc 48 unit PL.7 (Q-48-48): the core module was consumed with the kit and the parts, and
     // her core is the governed Class II core her design carries, outside the die quota.
     assert!(provenance.parts.contains(&module_lot), "{provenance:?}");
-    assert_eq!(lot_at(&mut rig, module_lot), None, "the core module is consumed");
+    assert_eq!(
+        lot_at(&mut rig, module_lot),
+        None,
+        "the core module is consumed"
+    );
     assert_stock_core(&rig, escort);
 
     // ---- (5) `+bay` quotes her clean but for the rearm; the rearm loads her from the hold ----

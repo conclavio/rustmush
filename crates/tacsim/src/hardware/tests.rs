@@ -123,8 +123,16 @@ fn pl7_the_core_prices_and_the_die_chain_are_content() -> Result {
     // Every chain good is a pooled good of the shipped table.
     let goods = crate::definitions::goods::goods_table()?;
     for l in chain.iter().flatten() {
-        check!(goods.good(&l.commodity).is_some(), "{} is a good", l.commodity);
-        check!(!crate::port_tick::is_part(&l.commodity), "{} pools", l.commodity);
+        check!(
+            goods.good(&l.commodity).is_some(),
+            "{} is a good",
+            l.commodity
+        );
+        check!(
+            !crate::port_tick::is_part(&l.commodity),
+            "{} pools",
+            l.commodity
+        );
     }
     // Other prices load: the catalogue is the price source, not the v1 table.
     let mut value = body()?["entries"][CATALOGUE]["def"].clone();
@@ -143,12 +151,30 @@ fn pl7_the_core_prices_and_the_die_chain_are_content() -> Result {
     );
     let entry = |good: &str, units: u64| json!({"good": good, "units": units});
     for wrong in [
-        json!([[entry("strategic_ore", 1), entry("instrument_boards", 1)], [], []]),
-        json!([[entry("strategic_ore", 1), entry("strategic_ore", 1)], [], []]),
+        json!([
+            [entry("strategic_ore", 1), entry("instrument_boards", 1)],
+            [],
+            []
+        ]),
+        json!([
+            [entry("strategic_ore", 1), entry("strategic_ore", 1)],
+            [],
+            []
+        ]),
         json!([[entry("strategic_ore", 0)], [], []]),
         json!([[entry("strategic_ore", 1_001)], [], []]),
         json!([[entry("tacsim.electronics", 1)], [], []]),
-        json!([[entry("a", 1), entry("b", 1), entry("c", 1), entry("d", 1), entry("e", 1)], [], []]),
+        json!([
+            [
+                entry("a", 1),
+                entry("b", 1),
+                entry("c", 1),
+                entry("d", 1),
+                entry("e", 1)
+            ],
+            [],
+            []
+        ]),
         json!([[], []]),
     ] {
         let mut value = body()?["entries"][CATALOGUE]["def"].clone();

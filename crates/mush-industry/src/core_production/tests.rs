@@ -633,7 +633,11 @@ fn pl7_a_die_consumes_its_chain_goods_at_issue() -> Result {
     check_eq!(
         h.families
             .inventory
-            .pool(&mut txn, EndpointRef(r.policy.depot), &id("instrument_boards")?)?
+            .pool(
+                &mut txn,
+                EndpointRef(r.policy.depot),
+                &id("instrument_boards")?
+            )?
             .map(|pool| pool.quantity),
         Some(0)
     );
@@ -661,8 +665,14 @@ fn pl7_the_chain_bill_is_bounded_and_written_by_presence() -> Result {
     let round: OriginPolicy = serde_json::from_value(serde_json::to_value(&good)?)?;
     check_eq!(round, good);
     for bad in [
-        vec![chain_line("strategic_ore", 1)?, chain_line("instrument_boards", 1)?],
-        vec![chain_line("strategic_ore", 1)?, chain_line("strategic_ore", 1)?],
+        vec![
+            chain_line("strategic_ore", 1)?,
+            chain_line("instrument_boards", 1)?,
+        ],
+        vec![
+            chain_line("strategic_ore", 1)?,
+            chain_line("strategic_ore", 1)?,
+        ],
         vec![chain_line("strategic_ore", 0)?],
         vec![chain_line("strategic_ore", 1_001)?],
         vec![chain_line(config::DIE_COMMODITY, 1)?],

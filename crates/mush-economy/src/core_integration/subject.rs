@@ -245,7 +245,9 @@ struct PolicyWire {
 fn present_prices<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CorePrices, D::Error> {
     let prices = CorePrices::deserialize(d)?;
     if prices.is_v1() {
-        return Err(serde::de::Error::custom("the v1 prices are written by absence"));
+        return Err(serde::de::Error::custom(
+            "the v1 prices are written by absence",
+        ));
     }
     Ok(prices)
 }

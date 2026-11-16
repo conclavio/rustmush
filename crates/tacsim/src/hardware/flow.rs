@@ -1816,7 +1816,10 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
     // Doc 48 unit PL.7: the launch freezes the catalogue's die chain and prices.
     let shipped = PublishedHardware::shipped()?;
     check_eq!(hardware.origin_policy().chain, shipped.catalogue().chain()?);
-    check_eq!(hardware.payment_policy().prices, shipped.catalogue().prices());
+    check_eq!(
+        hardware.payment_policy().prices,
+        shipped.catalogue().prices()
+    );
     check_eq!(
         hardware.payment_policy().delivery,
         Some(mush_economy::core_integration::CoreDeliveryPromise::PersonalCustodyV1)

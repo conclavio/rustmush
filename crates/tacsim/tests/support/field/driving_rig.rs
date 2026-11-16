@@ -873,9 +873,7 @@ pub(crate) fn seed_part(
         .values()
         .find(|row| row.commodity.as_str() == good)
         .map(|row| row.row.clone())
-        .or_else(|| {
-            tacsim::port::bill::core_module_row(store(&rig.tw).definitions(), &cid(good))
-        })
+        .or_else(|| tacsim::port::bill::core_module_row(store(&rig.tw).definitions(), &cid(good)))
         .unwrap_or_else(|| panic!("{good} is a part row"));
     let parts = rig
         .tw

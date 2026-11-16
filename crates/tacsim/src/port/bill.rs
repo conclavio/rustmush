@@ -293,7 +293,11 @@ mod tests {
         ] {
             let b = bill(design);
             assert_eq!(b.core_module.as_ref(), Some(&line), "{design}'s module");
-            assert_eq!(b.part_lines().get(&line), Some(&1), "{design} bills it once");
+            assert_eq!(
+                b.part_lines().get(&line),
+                Some(&1),
+                "{design} bills it once"
+            );
             let lots: u64 = b.part_lines().values().sum();
             assert_eq!(lots, b.parts.len() as u64 + 1, "{design}'s lots");
         }

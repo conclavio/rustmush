@@ -116,8 +116,7 @@ impl PublishedHardware {
     /// `None` only if the shipped pack does not load, which its own test refuses.
     #[must_use]
     pub fn shipped_once() -> Option<&'static Self> {
-        static SHIPPED: std::sync::OnceLock<Option<PublishedHardware>> =
-            std::sync::OnceLock::new();
+        static SHIPPED: std::sync::OnceLock<Option<PublishedHardware>> = std::sync::OnceLock::new();
         SHIPPED.get_or_init(|| Self::shipped().ok()).as_ref()
     }
     pub fn pack(&self) -> &RulesPack {
