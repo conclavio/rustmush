@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v35 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v36 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,58 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit PL.2 (lane v36): the house processes taken out** — the Lunar Habitat Board's
+/// farm (its provisions stock, ask and mill), Crisium Instruments' fab (its strategic-ore and
+/// metals bids and mill) and Titan Concession's farm and carbon mill (its provisions stock and
+/// ask, its carbon-ore bid and both mill rows) — so a strip chain rebuilds a lane before v36
+/// (idempotent). The chain's head.
+pub fn strip_producers(doc: &mut Value) {
+    for (entry, org) in [
+        ("luna_port", "habitat_board"),
+        ("luna_port", "crisium_instruments"),
+        ("titan_port", "titan_concession"),
+    ] {
+        let Some(vendor) = doc
+            .get_mut("entries")
+            .and_then(|entries| entries.get_mut(entry))
+            .and_then(|entry| entry.get_mut("def"))
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+            .and_then(|vendors| vendors.iter_mut().find(|vendor| vendor["org"] == org))
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        match org {
+            // The farm's whole storefront side: it bought, and listed nothing, before v36.
+            "habitat_board" => {
+                vendor.remove("stock");
+                vendor.remove("asks");
+                vendor.remove("mill");
+            }
+            // The fab's two bids and its process: Crisium only sold boards before v36.
+            "crisium_instruments" => {
+                vendor.remove("bids");
+                vendor.remove("mill");
+            }
+            _ => {
+                vendor.remove("bids");
+                vendor.remove("mill");
+                for rows in ["stock", "asks"] {
+                    if let Some(rows) = vendor.get_mut(rows).and_then(Value::as_array_mut) {
+                        rows.retain(|row| row["good"] != "provisions");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// **Doc 48 unit PL.1 (lane v35): Occator's propellant refine taken out** — its `volatiles`
 /// mill row and the Ceres refinery it runs at — so a strip chain rebuilds a lane before v35
-/// (idempotent). The chain's head.
+/// (idempotent); lane v36's [`strip_producers`] first.
 pub fn strip_refine(doc: &mut Value) {
+    strip_producers(doc);
     let Some(def) = doc
         .get_mut("entries")
         .and_then(|entries| entries.get_mut("ceres_port"))

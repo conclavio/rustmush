@@ -1,5 +1,28 @@
 {
   "entries": {
+    "carbon_feedstock": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "carbon_ore",
+            "units": 5
+          }
+        ],
+        "label": "Carbon feedstock pressing",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "carbon_feedstock",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 4
+      },
+      "kind": "recipe"
+    },
     "fittings": {
       "def": {
         "inputs": [
@@ -408,10 +431,10 @@
     }
   },
   "manifest": {
-    "digest": "503cc2403c98532f67f126c54e68fbdba5155b218dea8fad9b2f5ad47edb84e1",
+    "digest": "de2efd8469cdc2142ebac7ca486017d8d482d2a1e162343a2530e7a9c21561ff",
     "id": "tacsim.industry.recipes",
     "kind": "rules_definition",
     "requires": [],
-    "version": 2
+    "version": 3
   }
 }
