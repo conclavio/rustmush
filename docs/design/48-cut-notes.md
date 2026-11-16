@@ -685,7 +685,275 @@ Not built.
 
 ## PL.7
 
-Not built.
+Cores from the chain (Q-48-27, with doc 48b W-48-1c's correction, and Q-48-48). Built
+2026-11-15 on `claude/pl7-cores-from-chain-f210f4`, cut from PL.0's branch (#624). Main was merged
+in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged.
+
+**Survey** (at `0123f796c` and `72d5b7150`):
+- **The die.** `issue_core_die` is industry's origin provider (`core_production/provider.rs`). It
+  checks the importer, its scope, the **depot** and the agent's stock vault live
+  (`authority.rs` `check`), spends the month's quota, writes a `DieCertificate` and mints one
+  `tacsim.electronics` lot into the agent's stock. Nothing is drawn from the depot: it is
+  checked and never read. Every certificate retains the whole `OriginPolicy`.
+- **Integration** takes exactly one input lot, the die (doc 48b W-48-1c). Nothing in it changes.
+- **The prices.** `CoreClass::{finished,integration,die}_minor` were `const fn`s in
+  `mush-economy` (`subject.rs:28-40`). The funding hold, the completion's two lines and the
+  money check all read them (`plans.rs:51`, `:247-253`; `money.rs:417-420`). The hardware
+  catalogue carried `core_minor` too, but `validate` required it to equal the constants and the
+  line tank's 3/8/25 % (`hardware/content.rs:171-182`). So a price could not move without a code
+  change.
+- **The stock cores.** Eight yard designs carry one: the escort, five line tanks and two bipeds
+  (Class II line core), the scout (Class I) and the heavy (Class III). The escort and the line
+  tanks are not the only ones, as W-48-1c read. `DesignBill.core` was read and billed nowhere.
+  `commission` creates the unit from its design, so the core comes with it: governed, untitled,
+  no die.
+- **The commission's consumption** (`works.rs` `consume`) consumes every lot in the escrow, the
+  kit first. A part line billed like a part is consumed there with no new code.
+- **A part needs a row.** A made part gets its provenance from `stock.rs` `part_row_of`, the
+  catalogue's part index read backwards. The index holds no core, on purpose: a core in it
+  would let a bay fit, a strip take, or a scrap yield one.
+
+**Built:**
+1. **A die consumes its chain goods at issue** (`mush-industry`).
+   - `OriginPolicy.chain: [Vec<ChainLine>; 3]`, Class I, II, III.
+   - Each class takes at most four lines, in strictly ascending commodity order, 1 to 1,000
+     units each, never `tacsim.electronics`.
+   - The field is written only when non-empty, so a policy without one keeps its bytes and
+     digest (the industry `.snap` files did not move).
+   - The issue's prepare debits each line from the depot (`InventoryFamilies::debit`), in the
+     bundle that writes the certificate, the quota and the lot.
+   - Short, the whole issue is refused and writes nothing: no certificate, no lot, no quota
+     spent. Integration still takes one die lot; the kernel is not touched.
+   - `DieCertificate::consumed()` and `::depot()` read the bill back from the retained policy.
+2. **The shipped die chain** is content: `governed_hardware.json` `die_chain` (provisional):
+
+   | Class | instrument boards | strategic ore |
+   |---|---|---|
+   | I | 1 t | 1 t |
+   | II | 2 t | 1 t |
+   | III | 4 t | 2 t |
+
+   - The pack is re-signed (`404c9588…`).
+   - The launch composition freezes it into the origin policy
+     (`hardware/composition.rs`).
+   - At 64/16/4 dies a month, a full month takes 112 t of boards and 88 t of ore.
+3. **`CoreClass` prices are content** (`mush-economy` `CorePrices`).
+   - `CorePaymentPolicy.prices` holds `{finished_minor: [i64; 3], integration_permille}`. It is
+     bounded: each price 1 to 10¹⁰ minor, the share 1 to 999 ‰, both halves at least one minor
+     unit.
+   - The funding hold, the completion's integrator and supplier lines, and the money check read
+     it.
+   - It is written only when it differs from `CorePrices::V1`, so a policy at the shipped
+     prices keeps its bytes and digest.
+   - The hardware catalogue's `core_minor` and `integration_permille` are the source. Their
+     validation is now the policy's bounds, not the v1 table.
+   - The launch freezes them into the payment policy. The counter quotes them, and the mass
+     budget's core reference reads them (`PublishedHardware::shipped_once`).
+   - `CoreClass::finished_minor()` and its siblings stay, as the v1 table's names, for tests.
+4. **The counter refuses an order the depot cannot cut a die for** (`hardware/counter.rs`).
+   - `+core/buy` refuses with `CORE_NO_STOCK`, which names the bill, after the price refusals.
+   - It does not ask when an integration of the class is already offered to the player: that
+     order needs no new die, and a restart's request picks it up.
+5. **A stock-cored design bills one core module** (`port/bill.rs`).
+   - `DesignBill.core_module`: the core `tacsim.core.<name>` stocks as the part good
+     `tacsim.part.core.<name>`. It is one of `part_lines()`, so the order bills it, the yard
+     takes it as a lot, and the commission consumes it with the kit and the parts.
+   - A design whose stock core has no module good in the goods table now has no bill: a stock
+     core is never free.
+   - The hull's core stays the governed core its design carries, outside the quota: no die is
+     drawn and no title is born (the owner's call).
+6. **The three module goods** (`goods.json`, v8): `tacsim.part.core.doctrine`, `.line` and
+   `.command`.
+   - Each is a part of its core's mass (150, 250 and 500 kg, crated at two cubic metres a tonne)
+     and priced at its core (3,000cr, 8,000cr and 25,000cr).
+   - Three works recipes make them (`recipes-v2.json`, re-signed): `module_doctrine`,
+     `module_line` and `module_command` take the die's own chain bill (1+1, 2+1 and 4+2 t of
+     boards and ore) in 24, 48 and 96 work units, one module a batch, at either works.
+   - A made or stocked module's provenance names its core's definition (`stock.rs`
+     `part_row_of`, through `bill::core_module_row`). The part index still holds no core, so no
+     bay fits a module and no strip or scrap yields one.
+7. **The depot's opening stock** (the lead's ruling: a launched server must not refuse
+   `+core/buy`).
+   - `OriginPolicy.opening` holds up to eight goods, each 1 to 100,000 units, in order. The
+     origin's one `Initialize` credits it into the depot, in its own bundle.
+   - It lands through a new `InventoryFamilies::credit_many`, because two new pools at one
+     endpoint in one bundle would write the endpoint's pool census twice.
+   - The deployment names it: `HardwareCoordinates.depot_stock`, written only when non-empty,
+     so a deployment without it keeps its digest. The composition checks that each is a pooled
+     good of the shipped table.
+   - `deploy/instance/launch-bringup.py` writes it (`DEPOT_STOCK`), and so do
+     `launch.json.example` and `deploy/README.md`'s step 7.
+   - The origin's index retains it (`initialize_policy.opening`): the census's source for it.
+8. **The census's build line** (`port/census.rs`, one line, outside this unit's files): the
+   module is among the parts, so `inputs` no longer adds `core_kg` a second time.
+
+**Tests** (run on conclav.dev):
+- **New:**
+  - `mush-industry` `core_production::tests::pl7_a_die_consumes_its_chain_goods_at_issue`
+  - `mush-industry` `core_production::tests::pl7_the_chain_bill_is_bounded_and_written_by_presence`
+  - `mush-industry` `core_production::integration_tests::pl7_an_integration_charges_its_policy_s_prices`
+  - `tacsim` `hardware::tests::pl7_the_core_prices_and_the_die_chain_are_content`
+  - `tacsim` `hardware::counter::tests::pl7_the_stock_refusal_holds_the_floor`
+  - `tacsim` `port::bill::tests::pl7_a_stock_cored_design_bills_its_core_module`
+  - `tacsim` `domain_field` `pl7_cores::pl7_a_core_takes_its_die_s_chain_goods_from_the_depot`
+    (the combined M8 world, about 15 s). The depot's ore taken out, `+core/buy II` and
+    `+core/buy II go` are both refused and name the bill. Nothing is queued or paid, and the stock
+    agent's own `issue_core_die` is refused too. A tonne back, the order goes in and the die takes
+    two boards and the tonne. After a restart the depot reads the same. With no ore left for a
+    second die, asking again picks the order up and cuts none.
+  - `tacsim` `domain_economy` `in7_part_recipes::pl7_the_works_makes_a_traced_line_core_module`.
+    `module_line` is quoted, booked at Freeport Works, delivered and run for 48 hours. The arm
+    commissions one module lot with a `Manufactured` row whose definition is `tacsim.core.line`,
+    and `+works/collect` puts it in the hold.
+  - `mush-industry` `core_production::tests::pl7_the_initialization_stocks_the_depot`. The
+    `Initialize` opens two pools in one bundle, the index retains the amounts, the first die
+    draws on them, and a cold start reads them. The opening stock's bounds are checked too.
+  - `mush-inventory` `pool::pl0_tests::pl7_credit_many_opens_several_pools_in_one_bundle`.
+    `credit` twice in one bundle refuses. `credit_many` opens both pools, counts them once, and
+    credits an existing pool beside a new one. A doubled or zero row is refused and writes
+    nothing.
+- **Extended:**
+  - `domain_economy` `yard_in9`:
+    - The main story's escort is quoted with `1 tacsim.part.core.line`. Its five lots come from the
+      hold, and the module is in the escrow and then consumed. The provenance names five parts,
+      and her core is the governed Class II her design carries, with no core title in her.
+    - IN.9b's line tank and scout, the laser tank and the ground leg's escort each lay and consume
+      their module. The tank's core is checked the same way.
+    - The review quote lists the module, and the seizure's escrow holds one.
+  - `domain_economy` `in11_matter::in11_a_restart_between_consumption_and_title_finishes_the_hull_once`:
+    the escort's escrow holds the module. `balance` and every build line's
+    `inputs = hull + waste` hold.
+  - `hardware::flow`:
+    - The rig's deployment opens the depot (`depot_stock`, 200 t of each chain good), so its
+      `Initialize` stocks it.
+    - The shipped manufacture story checks that its Class I die took a board and a tonne.
+    - The launch test checks that the composed policies carry the catalogue's chain and prices.
+    - The named-launch test opens the depot through the launch deployment's `depot_stock`, as
+      the bring-up does. After the Active boot the depot holds it, and the first die plans.
+  - The M8 rig opens the depot the same way, through its coordinates' `depot_stock`
+    (`m8_world::DEPOT_STOCK`), so CO.6's and CO.13's stories run on the bring-up's path. And
+    `driving_rig::seed_part` gives a seeded module its core's provenance.
+- **Re-pinned** (content moved; nothing else):
+  - the hardware pack's digest;
+  - the goods table (v8, its digest, and the three rows in `ic2_the_goods_table_is_pinned`);
+  - the market catalogue's count (`capacity::ic2_the_catalog_rows_derive_from_the_goods_table`,
+    46 to 49);
+  - the studio's goods count (`mush-server` `split_boundary` `content_studio`, 46 to 49).
+  - The hardware catalogue's refusal test now refuses out-of-bounds prices, not prices that
+    differ from the v1 table.
+- **Unchanged and green:**
+  - CO.6's two stories (`co6_cored_ship`), CO.13's (`c4_hardware::co13_a_stored_core_is_sold_with_its_title`),
+    CO.4's, `c4_story_4` and `m8_end_user`, with their files untouched;
+  - all of `mush-economy` and `mush-industry` (1,169 tests), their `ct0` snapshots included:
+    no `.snap` moved, because a policy at the v1 prices and with no chain writes the same bytes;
+  - `tacsim`'s `hardware::`, `port::bill`, `port::census`, `port::stock` and `definitions::`
+    lib tests (62);
+  - `mush-contract-tests` (200).
+- **On base**, every new test fails: the new ones do not compile (no `CorePrices`, no
+  `OriginPolicy.chain`, no `DesignBill.core_module`, no `CORE_NO_STOCK`). The extended yard
+  stories fail their new assertions: the quote names no module, and the module lot is left in
+  the escrow. The mutations below show each change's test failing without the change.
+- **Gate:**
+  - clippy `-D warnings` on `mush-economy`, `mush-industry`, `tacsim` and `mush-server`, all
+    targets;
+  - the CI lint job's M7 memory-size pass on the first three and `tacsim`;
+  - rustdoc `-D warnings --document-private-items`;
+  - `mush-contract-tests` (200).
+  - The whole-workspace sweep (`gate.yml`, `kind=sweep` on conclav-dev, run 43803540797, at
+    `757c359f5`) ran 12,718 tests. 12,715 passed, plus the bot's 791. Three failed, all from
+    the content added, and all are fixed since: the studio's goods count; PL.0's unload test,
+    which counted bulk goods exactly (now relative to the shipped table, with the same 47 test
+    goods and the same weigh); and this unit's works story, which stood in the works' own room
+    rather than a port room. They pass on conclav.dev.
+- **Mutations**, each applied alone in a throwaway clone on conclav.dev, its tests run (the loop
+  is `pl7-muts.py` in the group's notes folder):
+
+  | # | Mutation | Caught by |
+  |---|---|---|
+  | M1 | the issue debits nothing | `pl7_a_die_consumes_its_chain_goods_at_issue` |
+  | M2 | the issue debits the agent's stock, not the depot | the same |
+  | M3 | the chain's order check removed | `pl7_the_chain_bill_is_bounded_and_written_by_presence` |
+  | M4 | the die-commodity check removed | the same |
+  | M5 | the requester pays the v1 price | `pl7_an_integration_charges_its_policy_s_prices` |
+  | M6 | the integrator's line at the v1 fee | the same |
+  | M7 | the money check at the v1 die price | the same |
+  | M8 | the policy's prices unvalidated | `pl7_the_policy_s_prices_are_bounded_and_written_by_absence` (economy; added after the first loop had no economy test for it) |
+  | M9 | the catalogue's prices unbounded | `hardware_catalogue_refuses_a_price_display_that_differs_from_money` |
+  | M10 | the catalogue's chain order unchecked | `pl7_the_core_prices_and_the_die_chain_are_content` |
+  | M11 | the launch composes no die chain | three `hardware::flow` tests (the shipped manufacture's depot, the named launch's empty depot, the composed policy) |
+  | M12 | the launch composes the v1 prices | `pl7_the_launch_composes_the_catalogue_s_prices_and_chain`. It **survived** the first loop, since the shipped prices are the v1 table; the test composes a re-signed catalogue at other prices through a new seam (`GovernedHardware::prepare_with`, `PublishedHardware::from_source`) |
+  | M13 | the counter asks no stock | `pl7_a_core_takes_its_die_s_chain_goods_from_the_depot` |
+  | M14 | the counter asks stock of an order under way | the same (the restart's request) |
+  | M15 | the bill names no core module | `pl7_a_stock_cored_design_bills_its_core_module` |
+  | M16 | the part lines leave the module out | the same |
+  | M17 | a core with no module good billed free | the same |
+  | M18 | a made core module has no row (`part_row_of`) | `pl7_the_works_makes_a_traced_line_core_module` |
+  | M19 | the census counts the core twice | `in11_a_restart_between_consumption_and_title_finishes_the_hull_once` |
+
+  None survives.
+
+**Divergences:**
+- **One core-module good a class, not one good.** W-48-1c named the escort and the line tanks.
+  But the scout (Class I), the bipeds (Class II) and the heavy (Class III) also build at the yard
+  with stock cores. So each core class has its own module, at its core's mass (150, 250 and
+  500 kg, §4.8) and price. A single good would have priced a Class III core like a Class II, and
+  broken the bill's matter balance.
+- **"Its core stays Class II"** is read as "its core stays the class its design carries, outside
+  the quota". The escort, the line tanks and the bipeds keep a Class II core; the scout keeps
+  Class I and the heavy Class III. **For the owner:** a yard-built heavy carries a governed
+  Class III core outside the quota and outside MW.23's end-user registration, for a 25,000cr
+  module. Before PL.7 it carried that core for nothing. Cheap to reverse (content: drop the
+  heavy's row, or give it a Class II core).
+- **The chain goods leave the depot, not the agent's stock vault.** The depot is the importer's
+  vault, and the origin checks it live (owner, scope, the agent's right to take from it) but
+  never read it. The die lot is minted into the agent's stock, as before.
+- **The die chain is a content table beside the prices**, not a recipe: integration still takes
+  one die lot, and the die is still a quota issue. The core-module recipes take the same goods,
+  so a stock core consumes what a die does.
+- **Files outside the unit's list:**
+  - `mush-inventory` `pool.rs`: the new `credit_many`, and `stage_new_pools`, its census step,
+    taken out of `transfer_many` unchanged so the two share it.
+  - `deploy/instance/launch-bringup.py`, `launch.json.example` and `deploy/README.md`: the
+    depot's opening stock, on the lead's ruling.
+  - The `HardwareCoordinates` literals in `mush-server`'s two tests (`depot_stock: Vec::new()`).
+  - `port/census.rs`: one line (the build line's `core_kg`). EX.0's terms are in the group's notes
+    folder (`pl7-census-terms-for-ex0.md`).
+  - `port/stock.rs` `part_row_of`: a core module's row is its core's definition. Without it a
+    made module has no provenance, and the yard refuses it.
+  - `definitions/mass.rs` `core_minor`: the core reference reads the catalogue.
+  - Test support also changed: `excursions.rs` (`keep` made `pub(crate)`),
+    `m8_world.rs` and `driving_rig.rs`.
+- **`commission.rs` is unchanged.** The commission's consumption already consumes every lot in
+  the escrow, so the module needs no new step.
+- **Stacked on PL.1 (#628), in the lead's land order: #628, then PL.7, then PL.2.** PL.1's branch
+  is merged in. PL.2, the lane chain's one writer, merges this branch and lays its own goods and
+  recipe rows on top of this unit's, re-pinning the goods digest and counts on its side.
+- **PL.0's unload test** (`surface/act/fixed.rs`) counted the shipped bulk goods exactly. It now
+  counts them relative to the shipped table, with the same 47 test goods and the same weigh.
+- **`CoreClass::finished_minor()` and its siblings stay**, as the v1 table's names, so the
+  stories that read a price (CO.6's, CO.13's, `m8_end_user`) are unchanged. No production path
+  reads them.
+
+**What the next go-live (MW.3) gets:**
+- The bring-up writes the deployment's `depot_stock`: 112 t of instrument boards and 88 t of
+  strategic ore. That is one month of the full quota (64 Class I, 16 Class II, 4 Class III
+  dies). It is provisional, named so in the script.
+- The origin's initialize action credits it to the Basin die depot once.
+- After it, nothing refills the depot. `+core/buy` refuses `CORE_NO_STOCK`, naming the bill,
+  once the depot cannot cut a die. Refilling is EX.9's or the lane's.
+- `scripts/launch-bringup-acceptance.sh` checks no core buy, so it is unchanged.
+
+**Not built:**
+- **No NPC hauls boards or ore to the depot.** Its supply is the lane's or EX.9's, as for every
+  finite seed (§3.7).
+- **The census's terms** are EX.0's to add: the `cored` sink and the depot's opening stock as
+  a source, both named in the notes folder.
+- **CO.13's buy-back baseline** (`hardware/sale.rs`, the market's core catalogue entries and the
+  quote) still reads the v1 table. That is EX.2b's closed `core_sale` family. At the shipped
+  prices the two agree.
+- **Heirloom and grey dies** (staff issues) consume no chain goods. They are not made from the
+  chain.
+- **No vendor stocks core modules.** A module is made at a works from boards and ore.
 
 ## PL.8
 

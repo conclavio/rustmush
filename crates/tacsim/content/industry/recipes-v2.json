@@ -50,6 +50,87 @@
       },
       "kind": "recipe"
     },
+    "module_command": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 4
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 2
+          }
+        ],
+        "label": "Command core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.command",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 96
+      },
+      "kind": "recipe"
+    },
+    "module_doctrine": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 1
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 1
+          }
+        ],
+        "label": "Doctrine core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.doctrine",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 24
+      },
+      "kind": "recipe"
+    },
+    "module_line": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 1
+          }
+        ],
+        "label": "Line core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.line",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 48
+      },
+      "kind": "recipe"
+    },
     "mount_105": {
       "def": {
         "inputs": [
@@ -431,7 +512,7 @@
     }
   },
   "manifest": {
-    "digest": "de2efd8469cdc2142ebac7ca486017d8d482d2a1e162343a2530e7a9c21561ff",
+    "digest": "057a7038033dd3a0ca0281be0d3ee8a3fe4559813c5802c03121cf9e06cbdc6f",
     "id": "tacsim.industry.recipes",
     "kind": "rules_definition",
     "requires": [],

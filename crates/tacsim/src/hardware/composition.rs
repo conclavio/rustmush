@@ -28,6 +28,22 @@ use mush_org::{OrgId, OrgScopeId, SystemPrincipalId};
 use mush_tactics::{ComponentId, TacticsModule};
 use std::{collections::BTreeSet, sync::Arc};
 
+/// **The depot's opening stock, checked against the goods table** (doc 48 unit PL.7): each a
+/// pooled good the shipped table holds; the origin policy bounds the rest.
+fn depot_stock(
+    deployment: &HardwareDeployment,
+) -> Result<Vec<mush_industry::core_production::ChainLine>, ModError> {
+    let goods = crate::definitions::goods::goods_table().map_err(bad)?;
+    for line in &deployment.depot_stock {
+        if goods.good(&line.commodity).is_none() || crate::port_tick::is_part(&line.commodity) {
+            return Err(bad(format!(
+                "the depot's opening stock names {}, which is no pooled good",
+                line.commodity
+            )));
+        }
+    }
+    Ok(deployment.depot_stock.clone())
+}
 fn bad(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
 }
@@ -59,6 +75,10 @@ pub struct HardwareDeployment {
     /// catalogue baseline the integrator pays for a stored core with its title
     /// ([`super::sale::BUY_BACK_PERMILLE`] is the launch's). Absent, no shop buys cores.
     pub buy_back_permille: Option<u32>,
+    /// **The die depot's opening stock** (doc 48 unit PL.7): chain goods the origin's
+    /// `Initialize` credits into [`Self::depot`] once, so a launched world can cut its first
+    /// dies. Empty, the depot opens empty.
+    pub depot_stock: Vec<mush_industry::core_production::ChainLine>,
 }
 
 /// **A refit bay** (doc 31 cut UD.4b): who is paid, where, and from which stores.
@@ -441,6 +461,18 @@ impl GovernedHardware {
         deployment: HardwareDeployment,
         filing: &InitialFilingPolicy,
     ) -> Result<Self, ModError> {
+        let publication = Box::new(PublishedHardware::shipped().map_err(bad)?);
+        Self::prepare_with(layer, mode, deployment, filing, publication)
+    }
+    /// [`Self::prepare`] from `publication` in place of the shipped hardware (doc 48 unit PL.7:
+    /// a test composes a catalogue at other prices and chain, and reads them back).
+    pub(crate) fn prepare_with(
+        layer: &TacsimRuleset,
+        mode: CoreOriginMode,
+        deployment: HardwareDeployment,
+        filing: &InitialFilingPolicy,
+        publication: Box<PublishedHardware>,
+    ) -> Result<Self, ModError> {
         if !layer.config().enabled || layer.governed_hardware.is_some() {
             return Err(bad(
                 "governed hardware requires one explicitly enabled composition",
@@ -455,7 +487,7 @@ impl GovernedHardware {
                 "hardware grade identities or actual native issuer disagree",
             ));
         }
-        let publication = PublishedHardware::shipped().map_err(bad)?;
+        let publication = *publication;
         let (family, rig, ship) = families(layer)?;
         // Built before the deployment's fields move into the origin and payment policies.
         let fitting = launch_fitting_policy(
@@ -465,6 +497,7 @@ impl GovernedHardware {
             &InstrumentId::new(crate::economy::CREDIT).ok_or_else(|| bad("credit identity"))?,
         )?;
         let content = origin_content_descriptor(deployment.grades)?;
+        let opening = depot_stock(&deployment)?;
         let mut defs = DefinitionRegistryBuilder::new();
         let content_ref = defs
             .register(OwnerId::new(crate::NS).map_err(bad)?, content.clone())
@@ -478,6 +511,10 @@ impl GovernedHardware {
                 content: content_ref,
                 grades: deployment.grades,
                 monthly_quotas: publication.catalogue().monthly_dies(),
+                // Doc 48 unit PL.7 (Q-48-27, Q-48-48): a die takes its chain goods from the
+                // depot when it is issued.
+                chain: publication.catalogue().chain().map_err(bad)?,
+                opening,
             },
             mode,
         )?;
@@ -515,6 +552,8 @@ impl GovernedHardware {
             // Doc 17h cut M8b-2 (H2): the ungoverning shop also integrates heirloom and grey
             // dies, paid to its own provider. Absent at launch (doc 17h §4), so the launch's
             // payment policy keeps its digest.
+            // Doc 48 unit PL.7: the integration charges the catalogue's prices.
+            prices: publication.catalogue().prices(),
             ungoverned: deployment.ungovern.as_ref().map(|site| {
                 mush_economy::core_integration::UngovernedIntegration {
                     integrator: site.provider.clone(),

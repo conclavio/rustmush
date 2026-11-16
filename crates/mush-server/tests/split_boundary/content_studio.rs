@@ -190,8 +190,8 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
     // with the thirteen parts; doc 39 cut IN.9: thirty-four with the five hull kits; doc 41 cut
     // RS.6a: thirty-six with Tycho's two.
     // Doc 39 cut IN.9b: forty-five with the nine templated designs' kits; doc 47 unit CO.10b:
-    // forty-six with the wrecker's.
-    assert_eq!(goods.len(), 46, "expected 46 goods from goods.json");
+    // forty-six with the wrecker's; doc 48 unit PL.7: forty-nine with the three core modules.
+    assert_eq!(goods.len(), 49, "expected 49 goods from goods.json");
 
     // 2. Read tacsim.crew.ceres over the split IPC boundary
     let read_resp = invoke_over_ipc(

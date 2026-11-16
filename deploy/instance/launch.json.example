@@ -68,7 +68,17 @@
       "scope": 32
     },
     "factory": 752,
-    "output_container": 753
+    "output_container": 753,
+    "depot_stock": [
+      {
+        "commodity": "instrument_boards",
+        "units": 112
+      },
+      {
+        "commodity": "strategic_ore",
+        "units": 88
+      }
+    ]
   },
   "market": {
     "clerk": 749,

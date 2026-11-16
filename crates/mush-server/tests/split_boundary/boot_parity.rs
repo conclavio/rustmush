@@ -1531,6 +1531,7 @@ fn format_two_launch() -> tacsim::launch::LaunchDeployment {
             ungovern: None,
             bay: None,
             buy_back_permille: None,
+            depot_stock: Vec::new(),
         },
         market: Some(PlayerMarket {
             clerk: ObjId(40),

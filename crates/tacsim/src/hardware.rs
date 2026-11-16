@@ -15,7 +15,8 @@ pub use composition::{
     RefitBay, UngoverningSite,
 };
 pub use content::{
-    CATALOGUE, HardwareCatalogueDef, HardwareProcess, HardwareRecipeDef, PACK, VERSION,
+    CATALOGUE, DieChainLine, HardwareCatalogueDef, HardwareProcess, HardwareRecipeDef, PACK,
+    VERSION,
 };
 pub use recipes::PublishedHardware;
 
