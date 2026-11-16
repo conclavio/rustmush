@@ -167,6 +167,7 @@ pub mod house_arm;
 pub mod house_sale;
 pub mod house_sweep;
 pub mod hull;
+pub mod hull_sale;
 pub mod interface;
 pub mod licence;
 pub mod map;

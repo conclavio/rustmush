@@ -1,0 +1,302 @@
+//! **A hull sold player to player** (doc 48 cut EX.2; Q-48-7, -52).
+//!
+//! The market lists a person's titled object through its asset-sale seam
+//! ([`mush_market::AssetSale`]); this is TacSim's one implementor, [`HullSale`], and it knows
+//! ship hulls only. `+market/post #<hull> price=<n>` lists one; a buyer's purchase is the one
+//! asset sale every venue writes ([`mush_market::asset_sale_spec`], the Co-op buyout's and the
+//! recovery houses' shape), accepted by the listing as its seller's standing acceptance, so it
+//! settles with the seller away.
+//!
+//! - **What may be listed** ([`admit`], asked at posting and again at every quote and
+//!   purchase): a ship hull titled to the seller, with **no governed core fitted** (for now: a
+//!   governed core changes hands only through its own sale, which is not open, [`HULL_CORED`]),
+//!   not in a workshop's bay, with nothing in flight on her, no leased rig in her bay and an
+//!   **empty hold** (every goods-table row that is no consumable reads zero; her fuel and stores
+//!   go with her).
+//! - **What a sale is priced against** ([`state_digest`]): her schema, sections and
+//!   installed components (each part, its condition and its titled asset, the core among them),
+//!   never her volatile cells. A strip, a scrap or a fit after the quote changes it, and the
+//!   sale's `market.asset.state` fact turns false: the quote lapses, or the contract refunds at
+//!   its window. The bay refuses those works on a hull under a live listing or sale anyway
+//!   ([`crate::port::bay_work::UNDER_SALE`]).
+//! - **Her hold goes with her** ([`HullSaleObserver`]): when a settled contract passes a hull's
+//!   title, her hold vault, if the old title holder owned it, is re-homed to the new one in the
+//!   same settlement's batch. A Co-op buyout leaves the hold where it is (the pilot already owns
+//!   it), and a recovery house's resale sells a rig, whose hopper is the vehicles principal's.
+//!
+//! [`admit`]: mush_market::AssetSale::admit
+//! [`state_digest`]: mush_market::AssetSale::state_digest
+
+use mush_core::{Ctx, ObjId, World};
+use mush_economy::{
+    CatalogRef, ContractStateKind, Deliverable, EconomicEvent, EconomyObserver, EconomyStore,
+};
+use mush_inventory::record::EndpointRef;
+use mush_org::{OrgScopeId, PrincipalId};
+use smol_str::SmolStr;
+
+use crate::store::TacsimStore;
+
+/// **The hulls' catalogue pack** (doc 48 cut EX.2): one `asset` entry per design the yard
+/// partitions, loaded beside the goods ([`crate::port::vendor`]).
+pub const HULL_PACK: &str = "tacsim.hulls";
+/// A hull entry's code: this prefix, then the design's id.
+pub const HULL_CODE_PREFIX: &str = "hull.";
+
+/// **A cored hull** (doc 48 cut EX.2, for now): a governed core has no open sale of its own.
+pub const HULL_CORED: &str = "A hull with a governed core fitted cannot be listed yet: the core sells only through its own sale, which is not open.";
+/// A laden hold: `{name}`.
+pub const HULL_HOLD_LADEN: &str =
+    "The {name}'s hold must be empty before she is listed; her hold goes to the buyer with her.";
+/// A hold that does not read: `{name}`.
+pub const HULL_HOLD_DARK: &str = "The {name}'s hold cannot be read just now; nothing was listed.";
+/// In a workshop's bay: `{name}`.
+pub const HULL_IN_BAY: &str = "The {name} is in a workshop's bay; stow her before she is listed.";
+/// A leased rig in her bay: `{n}`, `{name}`.
+pub const HULL_RIG_ABOARD: &str =
+    "Rig {n} is still in the {name}'s bay; return it to Occator before she is listed.";
+
+/// **The catalogue entry for `design`'s hulls** (doc 48 cut EX.2).
+#[must_use]
+pub fn catalog_of(design: &str) -> CatalogRef {
+    CatalogRef {
+        ruleset: SmolStr::new_static(crate::NS),
+        code: SmolStr::new(format!("{HULL_CODE_PREFIX}{design}")),
+    }
+}
+
+/// **The hulls' catalogue entries** (doc 48 cut EX.2): one `asset` per design the yard
+/// partitions, never stackable, with no baseline (a hull's price is its seller's; the design's
+/// reference is `crate::definitions::mass::reference_price_minor`'s, read live).
+///
+/// # Errors
+/// An entry that does not decode.
+pub fn catalog_entries(w: &World) -> Result<Vec<mush_market::CatalogEntry>, String> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Ok(Vec::new());
+    };
+    store
+        .definitions()
+        .budgets
+        .keys()
+        .map(|design| {
+            let catalog = catalog_of(design.as_str());
+            let value = serde_json::json!({
+                "catalog": {"ruleset": catalog.ruleset, "code": catalog.code},
+                "pack": HULL_PACK,
+                "definition_version": 1,
+                "name": format!("{} hull", design.as_str()),
+                "legality": "legal",
+                "representation": "asset",
+                "stackable": false,
+                "tags": ["hull"],
+            });
+            serde_json::from_value(value).map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+/// **TacSim's asset-sale seam** (doc 48 cut EX.2): ship hulls only.
+#[derive(Debug, Default)]
+pub struct HullSale;
+
+impl mush_market::AssetSale for HullSale {
+    fn admit(
+        &self,
+        ctx: &Ctx<'_>,
+        object: ObjId,
+        seller: &PrincipalId,
+    ) -> Option<Result<CatalogRef, String>> {
+        let w: &World = ctx.w;
+        if crate::port::house_sweep::title_of(w, object).as_ref() != Some(seller) {
+            return None;
+        }
+        // First, before her design is looked up: a governed core rebinds her to a cored unit,
+        // which no yard budget partitions, and she hears why she is refused all the same.
+        if cored(w, object) {
+            return Some(Err(HULL_CORED.to_owned()));
+        }
+        let (design, _) = crate::definitions::mass::hull_budget(w, object)?;
+        // A ship hull: one with a hull view (a rig is no ship hull, and is not listed here).
+        let view = crate::port::ship::hull_view(w, object)?;
+        let name = w
+            .get(object)
+            .map(|o| o.name.to_string())
+            .unwrap_or_default();
+        let line = |text: &str| text.replace("{name}", &name);
+        if crate::port::bay_work::held(w, object) {
+            return Some(Err(line(HULL_IN_BAY)));
+        }
+        let Some(hold) = crate::port::ship::hold_vault(w, &view) else {
+            return Some(Err(line(HULL_HOLD_DARK)));
+        };
+        // `in_flight_on` asks after the pilot's own open sales; a seller that is no person has
+        // none, and the hull itself never sells, so it stands in.
+        let pilot = match seller {
+            PrincipalId::Object(o) => *o,
+            _ => object,
+        };
+        if let Some((_, refusal)) = crate::port::buyout::in_flight_on(w, object, pilot, hold, &name)
+        {
+            return Some(Err(refusal));
+        }
+        if let Some(n) = crate::port::tv::bay_slot_word(w, &view) {
+            return Some(Err(HULL_RIG_ABOARD
+                .replace("{n}", &n)
+                .replace("{name}", &name)));
+        }
+        let Some(goods) = w.module_state::<TacsimStore>().and_then(TacsimStore::goods) else {
+            return Some(Err(line(HULL_HOLD_DARK)));
+        };
+        for good in goods.goods.iter().filter(|g| g.consumable.is_none()) {
+            match crate::port_tick::read_pool(ctx, EndpointRef(hold), &good.id) {
+                Ok(0) => {}
+                Ok(_) => return Some(Err(line(HULL_HOLD_LADEN))),
+                Err(_) => return Some(Err(line(HULL_HOLD_DARK))),
+            }
+        }
+        Some(Ok(catalog_of(design.as_str())))
+    }
+
+    fn state_digest(&self, w: &World, object: ObjId) -> Option<u64> {
+        crate::definitions::mass::hull_budget(w, object)?;
+        let unit = mush_tactics::module::unit_of(w, object)?;
+        let sections: Vec<_> = unit.sections().collect();
+        let components: Vec<_> = unit.components().collect();
+        let text = serde_json::to_string(&(unit.schema(), sections, components)).ok()?;
+        Some(mush_market::declared_hash(&text))
+    }
+}
+
+/// **Whether `hull` has a governed core fitted**: its fitted core is one the economy manages.
+#[must_use]
+pub fn cored(w: &World, hull: ObjId) -> bool {
+    crate::minds::registry_inspection::seizure::fitted_core(w, hull).is_some_and(|core| {
+        w.module_state::<EconomyStore>()
+            .is_some_and(|s| s.is_managed_core(core))
+    })
+}
+
+/// **Her hold goes with her** (doc 48 cut EX.2): on a settled contract, each hull whose title it
+/// passed has her hold vault re-homed from the old title holder to the new one
+/// ([`mush_economy::rehome_vault`]), in the settlement's own batch. Only a hold the old holder
+/// owned moves; a hold already the buyer's (a Co-op buyout's) or anyone else's stays. A replayed
+/// settlement finds the hold already moved and does nothing. Never panics.
+#[derive(Debug, Default)]
+pub struct HullSaleObserver;
+
+impl EconomyObserver for HullSaleObserver {
+    fn on_economic_event(&self, ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
+        let EconomicEvent::ContractChanged {
+            id,
+            state: ContractStateKind::Settled,
+            ..
+        } = ev
+        else {
+            return;
+        };
+        let transfers: Vec<(ObjId, PrincipalId, PrincipalId)> = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().contract(*id))
+            .map(|c| {
+                c.consent
+                    .terms
+                    .deliverables
+                    .iter()
+                    .filter_map(|d| match d {
+                        Deliverable::TitleTransfer { object, from, to } => {
+                            Some((*object, from.clone(), to.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (hull, from, to) in transfers {
+            rehome_hold(ctx, hull, &from, &to);
+        }
+    }
+}
+
+/// Re-home `hull`'s hold from `from` to `to`, when the title is `to`'s now and `from` owns it.
+fn rehome_hold(ctx: &mut Ctx<'_>, hull: ObjId, from: &PrincipalId, to: &PrincipalId) {
+    if crate::port::house_sweep::title_of(ctx.w, hull).as_ref() != Some(to) {
+        return;
+    }
+    let Some(vault) = crate::port::ship::hull_view(ctx.w, hull)
+        .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view))
+        .and_then(|id| {
+            ctx.w
+                .module_state::<EconomyStore>()?
+                .snapshot()
+                .vault(id)
+                .cloned()
+        })
+    else {
+        return;
+    };
+    if vault.owner != *from {
+        return;
+    }
+    let scope = scope_of(ctx.w, to);
+    if !mush_economy::rehome_vault(ctx, vault.id, to.clone(), scope, vault.name.clone()) {
+        tracing::error!(
+            hull = hull.0,
+            vault = vault.id.0,
+            "tacsim: a sold hull's hold vault was not re-homed to her buyer; staff re-own it by hand"
+        );
+    }
+}
+
+/// A new owner's vault scope: an organization's root scope (on a port map, else its own
+/// record's), none for a person.
+fn scope_of(w: &World, owner: &PrincipalId) -> Option<OrgScopeId> {
+    let PrincipalId::Organization(org) = owner else {
+        return None;
+    };
+    w.module_state::<TacsimStore>()
+        .and_then(|store| {
+            store
+                .port_maps()
+                .flat_map(|map| map.orgs.values())
+                .find(|row| row.org == org.0)
+                .map(|row| OrgScopeId(row.root_scope))
+        })
+        .or_else(|| {
+            w.module_state::<mush_org::OrgStore>()?
+                .state()
+                .org(*org)
+                .map(|record| record.root_scope)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ex2_a_hull_entry_is_its_design_under_the_pack_prefix() {
+        let c = catalog_of("tacsim.unit.dray");
+        assert_eq!(c.ruleset.as_str(), crate::NS);
+        assert_eq!(c.code.as_str(), "hull.tacsim.unit.dray");
+    }
+
+    #[test]
+    fn ex2_the_refusals_say_why_and_the_cored_one_says_for_now() {
+        assert!(HULL_CORED.contains("cannot be listed yet"), "{HULL_CORED}");
+        assert!(
+            HULL_CORED.contains("its own sale, which is not open"),
+            "{HULL_CORED}"
+        );
+        for line in [
+            HULL_CORED,
+            HULL_HOLD_LADEN,
+            HULL_HOLD_DARK,
+            HULL_IN_BAY,
+            HULL_RIG_ABOARD,
+        ] {
+            assert!(line.chars().count() < 120, "{line}");
+        }
+    }
+}

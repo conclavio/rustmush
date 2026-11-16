@@ -26,6 +26,23 @@ A buyer quotes it with `+market/quote`, and takes it up with `+market/accept`
 into a vault of their own. Their payment is held first, the lot itself moves to
 them, and you are paid once the deal settles. You do not need to be there.
 
+## Listing a hull
+
+`+market/post #<hull> price=<n> [to=<player>] [market=<venue>] [days=<n>]`
+
+lists a hull whose title you hold, at one price for the whole of her. Her hold
+must be empty (her fuel and stores go with her), she must be out of the bay,
+with nothing in flight and no leased rig aboard. A hull with a governed core
+fitted cannot be listed yet: the core sells only through its own sale, which
+is not open.
+
+While she is listed, and while a purchase of her is settling, the bay will not
+strip her, scrap her or fit anything to her. A buyer is quoted on her as she
+stands; if she changes after that, the quote no longer stands, and a purchase
+made on it does not settle, and its price goes back to the buyer a day later.
+When the sale settles her title passes to the buyer, and her hold goes with
+her.
+
 ## Posting a bid
 
 `+market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] [market=<venue>] [days=<n>]`

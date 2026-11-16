@@ -28,14 +28,12 @@
 //! neither charter nor title, so board, undock and the queue refuse (owner item O6).
 
 use mush_core::{CmdError, Ctx, ObjId, World};
+use mush_economy::AccountId;
 use mush_economy::{
-    AcceptOutcome, Amount, ConsiderationSpec, ContractError, ContractId, ContractRoles,
-    ContractSpec, ContractState, ContractStateKind, EconomicClock, EconomicDeadline,
-    EconomicSchedule, EconomicVisibility, EconomyError, EconomyStore, EvidenceKind, Expiry,
-    GracePolicy, LeaseEnd, LeaseKey, LeaseSpec, ObligationTemplate, OutcomeTerms, PartyCap,
-    PartyCapSource, PayoutShare, Share, TypedCondition,
+    AcceptOutcome, Amount, ContractError, ContractId, ContractSpec, ContractState,
+    ContractStateKind, EconomicClock, EconomicSchedule, EconomyError, EconomyStore, GracePolicy,
+    LeaseEnd, LeaseKey, LeaseSpec, ObligationTemplate, PartyCap, PartyCapSource,
 };
-use mush_economy::{AccountId, Deliverable};
 use mush_inventory::record::EndpointRef;
 use mush_market::MarketStore;
 use mush_org::PrincipalId;
@@ -160,8 +158,9 @@ fn named(template: &str, e: &Enrolment) -> String {
         .replace("{mark}", &e.mark)
 }
 
-/// **The buyout contract** (D-18-21's shape; the market's `Representation::Asset`
-/// arm): pure, so the shape is tested without a world.
+/// **The buyout contract** (D-18-21's shape): the market's one asset sale (doc 48 cut EX.2,
+/// [`mush_market::asset_sale_spec`]), the Trust selling and the pilot buying. Pure, so the
+/// shape is tested without a world.
 #[must_use]
 #[allow(clippy::too_many_arguments)] // the contract's eight facts, each named
 pub(crate) fn buyout_spec(
@@ -174,56 +173,18 @@ pub(crate) fn buyout_spec(
     price: Amount,
     now: i64,
 ) -> ContractSpec {
-    let window = EconomicDeadline {
-        clock: EconomicClock::RealUtc,
-        at: now.saturating_add(BUYOUT_WINDOW_SECS),
-    };
-    let me = PrincipalId::Object(pilot);
-    ContractSpec {
+    mush_market::asset_sale_spec(&mush_market::AssetSaleTerms {
         name: SmolStr::new(format!("First Captain buyout, {mark}")),
-        // `None`: the pilot is the issuer, so the Trust's issuer cap is untouched.
-        scope: None,
-        parties: vec![trust.clone()],
-        considerations: vec![ConsiderationSpec {
-            account: pilot_account,
-            amount: price,
-        }],
-        outcomes: vec![OutcomeTerms {
-            name: SmolStr::new_static("bought out"),
-            when: vec![0, 1],
-            payouts: vec![PayoutShare {
-                to: trust_account,
-                share: Share::Exact(price),
-            }],
-            expense_treatment: mush_economy::ExpenseTreatment::None,
-            asset_consequences: vec![0],
-        }],
-        remainder_to: pilot_account,
-        conditions: vec![
-            TypedCondition::TitleHeld {
-                object: hull,
-                by: trust.clone(),
-            },
-            TypedCondition::Before { deadline: window },
-        ],
-        adjudicator: None,
-        evidence: vec![EvidenceKind::TitleHeld, EvidenceKind::Before],
-        deadline: Some(window),
-        on_expiry: Expiry::Refund,
-        visibility: EconomicVisibility::Parties,
-        roles: ContractRoles {
-            author: Some(me.clone()),
-            payer: Some(me.clone()),
-            representative: None,
-            facilitator: None,
-        },
-        deterministic: true,
-        deliverables: vec![Deliverable::TitleTransfer {
-            object: hull,
-            from: trust.clone(),
-            to: me,
-        }],
-    }
+        outcome: SmolStr::new_static("bought out"),
+        object: hull,
+        seller: trust.clone(),
+        seller_account: trust_account,
+        buyer: PrincipalId::Object(pilot),
+        buyer_account: pilot_account,
+        price,
+        deadline: now.saturating_add(BUYOUT_WINDOW_SECS),
+        facts: Vec::new(),
+    })
 }
 
 /// **Cancel the verb's own buyout offer** (lead ruling L7; reviewer F5): `true` only
@@ -859,6 +820,10 @@ pub(crate) fn relet(ctx: &mut Ctx<'_>, e: &Enrolment, attempt: u8, give_up: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mush_economy::{
+        ConsiderationSpec, Deliverable, EconomicDeadline, EconomicVisibility, EvidenceKind, Expiry,
+        PayoutShare, Share, TypedCondition,
+    };
 
     /// Doc 18 cut IC13 item 4: the buyout is the market's asset-purchase shape.
     #[test]
