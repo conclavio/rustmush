@@ -512,7 +512,7 @@
     }
   },
   "manifest": {
-    "digest": "057a7038033dd3a0ca0281be0d3ee8a3fe4559813c5802c03121cf9e06cbdc6f",
+    "digest": "39f326f0df7108e79e91ba06d54dcce7e428966a11d37db21f93123604985b23",
     "id": "tacsim.industry.recipes",
     "kind": "rules_definition",
     "requires": [],
