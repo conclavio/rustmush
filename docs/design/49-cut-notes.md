@@ -798,7 +798,177 @@ Runs were on conclav.dev, with the unit's patch applied on CC.9's tip (`3d8d118b
 
 ## CC.8
 
-Not built.
+The space palette and doctrines (Q-49-7, Q-49-10, Q-49-19, Q-49-24, Q-49-25, Q-49-26). Built
+2026-11-16 on main `b4254e826`, with CC.6 (#627), CC.9 (#634) and CC.7's first part (#640) merged.
+
+**Survey.**
+
+- **What a lone shooter did to a screen, on the values CC.6 carried** (measured, see "The screen
+  measurement" below): every stock screen stopped all eight torpedoes of a lone corvette's
+  magazine, at 60, 150 and 300 km standing off and on a 6 km/s closing pass. Two rotaries alone
+  stopped both rounds of every salvo, so no defence cycle could make a hauler's screen leak while
+  their 15 km envelope stood. That is doc 48b's W-49-4, confirmed.
+- **The cycles.** One cooldown served both of a laser's modes: a switch changed the mode and
+  nothing else, so a laser idle in defence fired the moment it was switched to offence.
+- **The doctrines** fired as §3.4 (corrected) says: the picket its laser, the interdictor its laser
+  and at most one torpedo a check-out, the raider her opener and then lasers and her spinal gun.
+  Every one of them leaned on a 500 km, 110-a-pulse laser on a 1 s cycle.
+- **The stories leaned on it too.** Doc 35's SF.R stories in `voyage.rs` had a chartered Dray
+  beam the interdictor to a derelict in four seconds, and the picket's corvette laser the raider
+  to one in twenty-four. On the ruled palette no story hull can do either; see Divergences.
+- **The geometry doc 47's stories fly.** The raider ambushes from 120 km, closing at 20 m/s
+  (`content/space/picket_cast.json`), and AP.9's and CO.2's stories assert that the Dray's
+  answer *arrives* on her. That sets the offence laser's reach (Divergences).
+- **`speed(n)` in space is a standing burn**, not a speed goal: after her opener the raider
+  burned flat out for the rest of the fight, past 1 km/s, so she never held a course.
+
+**Built.**
+
+- **The palette** (`content/space/mounts.json`, `fits.json`, re-signed; `DIGESTS` re-pinned):
+
+  | Mount | Cycle | Reach | What it does | Note |
+  |---|---|---|---|---|
+  | Twin torpedo tubes | 8 s reload, a salvo of two | to 500 km | 180 a round | as before; magazines 8 (16 on Halcyon), persisting (CC.7) |
+  | Turret laser, offence | **5 s** (the floor, Q-49-19) | **150 km** | **30** close in, 15 at 25 km, 7 at 45 km, 1 past 100 km | was 110 at 1 s to 500 km |
+  | Customs corvette's heavier laser, offence | **5 s** | **100 km** | **45** close in, 22 at 25 km, 2 at 100 km | was 180 at 1 s to 160 km |
+  | Either laser, defence | **4 s, automatic** (provisional) | 45 km | stops a torpedo | Q-49-10, Q-49-24 |
+  | Spinal gun (and the raider's slower one) | **6 s** | 250 km | 145 a round | 24 rounds (32 on Halcyon) |
+  | Point-defence rotary | 0.5 s, automatic | **4 km** (provisional) | two bursts stop a torpedo | was 15 km |
+
+  Every laser stays dual-mode (Q-49-25). The Dray and Dray-P start both in offence, to answer
+  fire; the corvette, the interdictor and now the belt raider start their second in defence; Halcyon
+  starts both in offence and screens with four rotaries.
+- **The cycle per mode and the switch rules** (`space/bubble.rs`'s `set_laser_mode`, through
+  `LaserMount::switch_mode` and `cool` in `space/weapons.rs`):
+  - each mode fires on its own cycle: an offence pulse starts the 5 s cycle, a torpedo stopped in
+    defence starts the defence cycle;
+  - a switch never fires early: the new mode's cycle starts from the switch, so a laser switched
+    to defence stops nothing for 4 s and one switched to offence waits 5 s;
+  - her offence cycle keeps running behind a switch to defence (`offence_left_ms`, absent from her
+    document when nought), so switching back within one offence cycle keeps what was left of it,
+    neither a fresh cycle nor none: a switch is no way round the floor;
+  - the fit names each laser's modes, and a mode it does not allow is refused (CC.6's rule, kept).
+  - `fire_picture`'s states needed no change: they read the cycle left in her current mode.
+- **The three doctrines, rewritten** (`content/minds/`; `picket_cast.json`'s three digests moved
+  with them). Each reads `space_mount(v, id)` and fires only what can land:
+  - a salvo of two torpedoes at each reload;
+  - a spinal round only at a hull that has held her course since the doctrine's last think (it
+    remembers her velocity), since a hull that burns is not where the round was aimed;
+  - a laser in offence only while her lock lies within its reach (`lock_damage` is not `()`).
+
+  Per doctrine:
+  - **Kirkwood picket:** all three at a hostile (the raider), where it fired its laser alone.
+  - **Interdictor:** the laser and the spinal gun at any hull that will not heave to, and the
+    tubes only at a hull radiating for a fight; its hail and heave-to logic is unchanged.
+  - **Belt raider:** her opener as before; then her torch dies (`hold()`) and she presses from
+    where she is. She prefers a prey radiating for a fight to one that is not, among those customs
+    have finished with, and presses only the former, as before.
+- **Help:** `docs/help/space.md`, `+tac/beam` and "Reading your mounts": the reach and the falloff
+  in words, the per-mode cycles, the switch rules, the rotary's envelope.
+
+**The screen measurement** (Q-49-26). A lone corvette fires her whole tube magazine, a salvo of
+two at each reload, at each stock hull as her fit lays her screen ("as fitted"), and again with
+every laser in defence ("braced"). Ranges: 30, 60, 150 and 300 km standing off, and a pass from
+200 km closing at 6 km/s. `space::bubble::cc8_tests::cc8_measure_the_screens` prints the table
+(`--ignored --nocapture`; `CC8_SWEEP=1` adds the sweep).
+
+| Stock screen | As fitted, 30 and 60 km | As fitted, 150 km, 300 km and the closing pass | Braced |
+|---|---|---|---|
+| Dray, Dray-P (haulers) | stops all eight | **lets one round of each salvo through**: four of eight land, and the fourth disables her | stops all eight; she has nothing left to answer with |
+| Customs corvette, interdictor, belt raider | stops all eight | stops all eight | stops all eight |
+| Halcyon | stops all eight | stops all eight (four rotaries) | stops all eight |
+
+- **The defence cycle, 4 s, provisional.** Swept at 3, 4, 5 and 6 s: at 3 s and 4 s every warship's
+  screen stops a lone salvo at every range measured; at 5 s and 6 s a warship lets one round
+  through on the closing pass. 4 s is the longest that holds.
+- **The rotary's envelope, 4 km, provisional.** At 15 km a hauler's two rotaries stop everything
+  whatever the defence cycle, which is the review's finding. At 5 km a hauler leaks only at
+  300 km; at 3 km and 4 km she leaks from 150 km out. Close in her screen holds, since slow rounds
+  give the rotaries time.
+- **The spinal gun's dodge stays, priced in her change of speed** (24 rounds at a Dray): a Dray
+  that coasts takes every round at every range; one that burns across the line while a round
+  flies dodges all 24 from 60 km out (none at 30 km), and spends 71 m/s (at 60 km) to 107 m/s of
+  her change of speed doing it.
+- **The offence laser** at the raider's ambush range of 120 km lands a point a pulse: the Dray's
+  answer arrives, and does little.
+- **Decoys are not counted.** A decoy is the pilot's to launch (`+tac/decoy`) and spoofs one round
+  each: a Dray carries four.
+
+**The story** (`space::tick::thinks_tests::cc8_a_corvette_disables_a_dray_that_dodges`): the
+interdictor, flown by its shipped doctrine, takes a Dray 160 km off who is radiating for a fight
+and will not heave to. Her pilot burns across the line of every spinal round in flight at her.
+Every round is dodged, each dodge costs her change of speed, and the doctrine fires only when she
+has held her course; her hauler's screen lets the torpedoes through, and she is disabled. The
+interdictor takes no harm.
+
+**Tests.**
+
+TESTS-PLACEHOLDER
+
+**Divergences.**
+
+- **The rotary's envelope moved**, beyond the defence cycle Q-49-26 names: measured, no defence
+  cycle can make a hauler's screen leak while two rotaries alone stop every salvo (above).
+- **The offence laser's reach is 150 km** (100 km on the corvette's heavier laser), not "short" in
+  tens of kilometres. The raider ambushes from 120 km in doc 47's stories (AP.9, CO.2), which assert
+  that a Dray's answer arrives on her; a shorter reach would weaken the Dray answering fire, which
+  this unit may not do. The laser is short against the spinal gun's 250 km and the old 500 km,
+  and weak: past 25 km a pulse does under half its close-range damage, past 100 km a point.
+- **The belt raider's second laser starts in defence**, so her screen is a warship's.
+- **Halcyon's spinal gun stows 32**, its own fit's figure, beside the palette's 24.
+- **A laser's `cooldown_remaining_ms` is left out of her document when nought.** The per-mode
+  cycle put `defence_cooldown_ms` on every laser in every copy of a bubble's saved state, and a
+  ten-minute heave-to's document grew past the 64 KiB budget `voyage.rs`'s sfr10 holds it to
+  (65,891 B). Leaving out an idle laser's cooldown wins the bytes back; it reads back as nought.
+  A binary from before this unit cannot read a laser saved without it (pre-launch: no document
+  needs it).
+- **The doctrines changed behaviour beyond the lasers.** The raider's torch dying after her opener
+  and her preferring a fighting prey are behaviour changes, made because a raider that burns flat
+  out can never be hurt by a lone corvette (the dodge stays) and because a raider that presses
+  nobody let an escort she had opened on sail away. The picket's corvette now disables the raider
+  in about fifty seconds with spinal rounds, where it took about twenty-four with the old laser.
+- **Doc 35's SF.R stories had to change premise**, because no story hull can now make an
+  interdictor derelict by play (measured: four minutes of close laser fight leave a jinking Dray
+  and the interdictor both standing), and the story lint forbids writing bubble state off the
+  command path. Each change is by play:
+  - where a story needed only the interdiction to end (sfr1, sfr9, sfr11, sfr14, sfr20), the
+    pilot fires on the interdictor and then heaves to until it stands her down
+    (`heave_to_until_stood_down`), as MW.9's story does; sfr1's step counts are read from the run;
+  - where a story needed a derelict to dock with, tow or salvage (sfr7, sfr15's third part,
+    sfr17's part C, sfr21), she sails the stocked lane, clears the Kirkwood picket's customs, and
+    the corvette disables the raider (`picket_until_the_raider_is_down`,
+    `convoy_until_the_raider_is_down`); in a picket's bubble the raider holds the bubble's
+    interdictor slot;
+  - sfr2's first part takes the interdictor's fire, then heaves to; its NPC-derelict assertions
+    are sfr6's and sfr8's, which still make one by play;
+  - where the NPC disables a carrier (sfr2's third part, sfr9's last), the window widened: on the
+    palette's cycles it takes some tens of seconds, where the 1 s laser took a few;
+  - sfr6 steps until the corvette has disabled the raider; sfr15's point-defence check starts its
+    torpedoes inside the new envelope; sfr20 turns on what the interdictor's fire has done rather
+    than on a tick count.
+- **Files outside the row**, each the least this needed, approval asked of the lead:
+  - `space/weapons.rs`: the per-mode cycle's state and the switch;
+  - `space/custody.rs`: CC.6's `table_before_cc6` test retired, as CC.6's hand-over asked;
+  - `space/view.rs`, `space/picket.rs`: a test each whose premise the palette moved;
+  - `space/tick_thinks_tests.rs`: the story;
+  - `content/space/picket_cast.json`: the three digests;
+  - `tests/domain_arena/content.rs`: the two pack signatures;
+  - `tests/domain_world/voyage.rs`: the SF.R stories above;
+  - `docs/help/space.md`.
+
+**Not built.**
+
+- **Firing one laser alone.** Naming any laser still fires every ready laser in offence, as one
+  battery (CC.6's divergence).
+- **A mind cannot switch a laser's mode**: the mind API has no verb for it, so the switch rules
+  bind players (`+tac/pdc point|offense`). The house default's Dray answers in offence.
+- **Collector drones are not soft.** A collector drone is a Dray's hull section (600 internals), so
+  an offence laser takes minutes to bring one down, though Q-49-7 makes lasers the drones' answer.
+  That is mining content.
+- **The Δv price of a dodge is real but small**: these hulls carry kilometres a second of change
+  of speed, so a dodge costs a few metres a second of it. A raider that burned flat out could not
+  be hurt by a lone corvette at all; the doctrine, not the price, keeps her from it.
+- **CC.7's second part** (the berth rearm) is untouched.
 
 ## CC.10
 
