@@ -573,16 +573,20 @@ would break D11 only as a global book, and Q-46-3 only as a runtime engine. §5 
   `money::place` and submits, skipping `@wo/submit`'s policy-revision check (`commands.rs:1294-1302`).
   `money.rs:220-229` reads the fee at that moment. A staff re-term today, or an owner's margin change
   under Q-48-37, reprices orders already quoted, and an unfunded one is cancelled with its booking fee
-  forfeit.
+  forfeit. **Fixed 2026-11-15** (the doc 48b fix PR): the arm checks the policy revision at its
+  submit, and a re-termed facility cancels the order with the booking fee and the bill returned.
+  Q-48-53's fee pin is not built.
 - **A hold-backed Consume skips the capacity check.** Its entries carry no plan (`mush-market/src/lot.rs:486`)
   and its prepare does not check the hold (`:873-903`), unlike a Draw (`:1126-1150`). Two accepted
-  exact-lot quotes can overfill a governed hold. The comment at `:415-416` is stale.
-- **The house-sale guard matches by name** (above, §3.2).
+  exact-lot quotes can overfill a governed hold. The comment at `:415-416` is stale. **Fixed 2026-11-15** (the doc 48b fix PR).
+- **The house-sale guard matches by name** (above, §3.2). **Fixed 2026-11-15** (the doc 48b fix PR). It keys on the
+  contract's shape: live, the house a party that accepted it, the hull's title from the house.
 - **The retrieval path checks neither contract cap.** `post_retrieval` and `accept_retrieval` check
   neither the 16 open contracts an issuer nor the 100 live contracts a party
-  (`contract_live.rs:6555-6556`, `:6603-6667`).
+  (`contract_live.rs:6555-6556`, `:6603-6667`). **Fixed 2026-11-15** (the doc 48b fix PR).
 - **The licence resale offer's limit is 86,400 real seconds** (`mush-market/src/mind_paid_resale/offer.rs:24`).
-  That is 24 IC days, under the owner's 28-IC-day minimum for a wait on a player.
+  That is 24 IC days, under the owner's 28-IC-day minimum for a wait on a player. **Fixed 2026-11-15** (the doc 48b fix PR). The cap
+  and the provisional default are 100,800 real seconds, 28 IC days at 24:1.
 - **CO.13's integrator account starts at 0 cr** (`deploy/instance/launch-bringup.py:918-929`). The
   buy-back has no money to pay with until it is funded.
 

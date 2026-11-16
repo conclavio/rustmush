@@ -573,3 +573,98 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
     );
     assert_eq!(hold_pool(&mut rig.tw, stranger_hold, FITTINGS), 0);
 }
+
+/// **Doc 48 §4.3 (the second review, doc 48b): a works re-termed after a booking cancels the
+/// order at the arm's submit, rather than charge it terms it was never quoted.** A captain books
+/// a fittings batch at the Stickney works and staff then raise the works' margin
+/// (`@facility/terms`, a policy revision). When the bill is covered, the arm finds the order's
+/// pinned policy revision stale, as `@wo/submit` would, and the facility cancels it: no fee is
+/// held at the new terms, the booking fee is released rather than forfeit, nothing is paid to the
+/// Yards, and the bill comes back to the docked hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn in3_a_works_re_termed_after_a_booking_cancels_it_and_returns_the_booking_fee() {
+    let mut rig = stocked_tuned(|cfg| {
+        cfg.packs.push(tacsim::PackSource {
+            name: "<test tacsim.test.works>".into(),
+            bytes: recipes(),
+        });
+    });
+    let (captain, row) = prospector(&mut rig, "Hauler", 1, "Long Ox");
+    let account = mint(&mut rig, captain);
+    seed_hold(&mut rig, &row, ALLOYS, 5, 9_600);
+    sail_to_stickney(&mut rig, &[(captain, &row, 9_500)]);
+    let hold = hold_vault_of(&rig.tw, &row);
+    let counter = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    let works = station_room(&rig.tw, STICKNEY, "room.p15_maintenance");
+    rig.tw
+        .world_mut()
+        .move_to(captain, counter)
+        .expect("to the counter");
+    let yards_account = port_map(&rig.tw, STICKNEY).orgs[&cid("stickney_yards")]
+        .account
+        .map(AccountId)
+        .expect("the Yards' account");
+    let before = money(&rig, account);
+    let (yards_before, _) = money(&rig, yards_account);
+
+    // Booked: the escrow and the booking fee, held.
+    let id = booked(&mut rig, captain, "+works/order fittings_batch");
+    let booking = i64::try_from(contract(&rig, id).booking_minor).expect("fits");
+    assert!(booking > 0, "a player's order holds a booking fee");
+    assert_eq!(money(&rig, account), (before.0, before.1 + booking));
+
+    // Staff re-term the works after the quote: its margin up 100 per mille.
+    let cost = rig
+        .tw
+        .world()
+        .module_state::<mush_industry::IndustryStore>()
+        .and_then(|s| s.facility(works))
+        .and_then(|f| f.cost().copied())
+        .expect("a priced works");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@facility/terms #{}=public {}/{}/{}/{}/{}/{}",
+            works.0,
+            cost.capital_major,
+            cost.lifetime_years,
+            cost.upkeep_permille,
+            cost.staff,
+            cost.wage_major,
+            cost.margin_permille + 100
+        ),
+    );
+    assert!(out.contains("policy revision"), "{out}");
+
+    // The bill delivered: on the next fire the arm finds the order stale and cancels it.
+    let out = typed_in(
+        &mut rig,
+        captain,
+        &format!("+works/deliver {id}={ALLOYS} 5"),
+        1,
+    );
+    assert!(out.contains("moves into order"), "{out}");
+    settle(&mut rig, 3);
+    swept(&mut rig);
+    assert_eq!(
+        *order_of(&mut rig, id).state(),
+        WorkOrderState::Cancelled,
+        "the facility cancelled the stale order rather than submit it"
+    );
+    let c = contract(&rig, id);
+    assert!(c.stale, "{c:?}");
+    assert_eq!(c.closed, Some(Close::Cancelled), "{c:?}");
+    assert_eq!(hold_pool(&mut rig.tw, hold, ALLOYS), 5, "the bill is back");
+    assert_eq!(
+        money(&rig, account),
+        before,
+        "the booking fee is released, not forfeit, and no fee was held at the new terms"
+    );
+    assert_eq!(
+        money(&rig, yards_account).0,
+        yards_before,
+        "nothing is paid to the Yards"
+    );
+}

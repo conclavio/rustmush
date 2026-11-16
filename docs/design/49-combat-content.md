@@ -461,7 +461,8 @@ What they share:
 - **The yard zeroes a ground laser's charge.** `empty_magazines` (`port/commission.rs:735-761`) runs
   at the Emptied step (`:590-593`), which CO.9's House seeds also pass through. It zeroes every
   component's `ammo` cell, the laser's 500 charges included. That breaks Q-39-36 ("beam charge is
-  full") and the module's own header (`:20-21`). (Doc 48b G-10(3).)
+  full") and the module's own header (`:20-21`). (Doc 48b G-10(3).) **Fixed 2026-11-15** (the doc
+  48b fix PR): the Emptied step empties only a part whose ammunition a munitions good loads.
 - **Space minds see only the first mount of each family** (`space/view.rs:341-367`).
   - `.max(8)` and `.max(24)` report the larger of rounds left and 8 (or 24), so Halcyon's maximum
     shrinks with each shot.

@@ -332,6 +332,11 @@ pub struct WorksContract {
     pub owed: Option<WorksAct>,
     /// How it closed.
     pub closed: Option<Close>,
+    /// **Doc 48 §4.3** (the second review, doc 48b): the facility re-termed after the booking,
+    /// so the arm cancelled the order at its submit rather than charge terms nobody quoted. Its
+    /// booking fee comes back rather than being forfeit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 impl WorksContract {
@@ -1125,6 +1130,7 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
         acts: 0,
         owed: None,
         closed: None,
+        stale: false,
     };
     put(ctx, &contract);
     Ok(contract)
@@ -1789,6 +1795,42 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
             if !covered {
                 return;
             }
+            // Doc 48 §4.3 (the second review, doc 48b): the arm's submit is `@wo/submit`'s, so it
+            // asks `@wo/submit`'s policy re-check. `money::place` reads the fee live, so an order
+            // whose facility was re-termed since its booking would be charged terms it was never
+            // quoted: the facility cancels it instead, and the requester, who did nothing wrong,
+            // has the booking fee and the bill back.
+            if facility.policy_revision() != order.policy_revision() {
+                if !c.stale {
+                    c.stale = true;
+                    put(ctx, c);
+                    let back = if c.booking_minor > 0 {
+                        format!(
+                            "the booking fee {} and the bill come back",
+                            cr(ctx, c.booking_minor)
+                        )
+                    } else {
+                        "the bill comes back".to_owned()
+                    };
+                    ctx.out.info(
+                        c.requester,
+                        format!(
+                            "Order {}: the {} changed its terms after your booking, so it \
+                             cancels the order; {back} to you.",
+                            c.id,
+                            c.front.word()
+                        ),
+                    );
+                }
+                submit_as(
+                    ctx,
+                    c.requester,
+                    IndustryVerb::WoCancel,
+                    json!({ "order": WorkOrderId(id).to_string() }),
+                    "works.stale",
+                );
+                return;
+            }
             let slots = free
                 .entry(c.facility)
                 .or_insert_with(|| slots_free(ctx, &facility));
@@ -1888,7 +1930,8 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
             charge_storage(ctx, c, &facility, payee, now);
         }
         WorkOrderState::Cancelled | WorkOrderState::Failed => {
-            let forfeit = *order.state() == WorkOrderState::Cancelled;
+            // A facility's cancel of a stale order (doc 48 §4.3) forfeits nothing.
+            let forfeit = *order.state() == WorkOrderState::Cancelled && !c.stale;
             let _ = mush_industry::money::settle_booking(ctx, c.id, payee.filter(|_| forfeit));
             return_bill(ctx, c, &facility);
         }

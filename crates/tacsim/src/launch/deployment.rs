@@ -324,7 +324,7 @@ pub struct MarketTerms {
     /// 1..=`MAX_RENEWAL_OFFER_IC_SECONDS` (28 IC days).
     pub renewal_offer_ic_seconds: i64,
     /// How long a paid-resale offer stands, in real seconds.
-    /// 1..=`MAX_OFFER_SECONDS` (one real day).
+    /// 1..=`MAX_OFFER_SECONDS` (28 IC days at the live 24:1 rate).
     pub resale_offer_seconds: i64,
     /// The pending-charter settlement window, in IC seconds (D-UM-40's
     /// `transfer_settle_ic_days`, Q-UM-18).
@@ -343,8 +343,9 @@ impl MarketTerms {
         // 28 IC days (17f §2.3's 3, raised by the owner's rule of 2026-11-04: a timer
         // waiting on an absent player's response allows at least 28 IC days).
         renewal_offer_ic_seconds: 2_419_200,
-        // One real day, `MAX_OFFER_SECONDS`.
-        resale_offer_seconds: 86_400,
+        // 28 IC days at the live 24:1 rate, `MAX_OFFER_SECONDS` (one real day until doc 48
+        // §4.3's defect fix: the owner's 28-IC-day floor for a wait on a player's response).
+        resale_offer_seconds: 100_800,
         // 3 IC days (D-UM-40, Q-UM-18's default).
         charter_settle_ic_seconds: 259_200,
     };

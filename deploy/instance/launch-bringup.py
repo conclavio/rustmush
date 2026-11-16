@@ -116,7 +116,7 @@ MARKET_TERMS = {
     "renewal_price_minor": 40000,
     "quote_seconds": 300,
     "renewal_offer_ic_seconds": 2419200,
-    "resale_offer_seconds": 86400,
+    "resale_offer_seconds": 100800,
     "charter_settle_ic_seconds": 259200,
 }
 TRUST = "Co-op First Captain Trust"
