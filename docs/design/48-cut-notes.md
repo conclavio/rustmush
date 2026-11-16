@@ -912,7 +912,89 @@ count:
 
 ## PL.4
 
-Not built.
+**Survey** (at `14483cbdf`, PL.3's tip):
+- **The houses' three conversions** are mill rows on the stock clerk's turn, house-only:
+  - the Freeport Exchange's metal mill at Ceres, metal ore into metals, 5 : 2;
+  - Occator's ice mill at Ceres, ice ore into water, 5 : 2 (beside PL.1's refine of water into
+    propellant);
+  - Kasei's refine at Stickney, metals into structural alloys, 5 : 4.
+- **No works recipe takes an ore.** The pack's 25 rows make parts, fittings, feedstock, modules
+  and munitions. A player with ore can only sell it into a house's bid.
+- **The works** at Ceres (Freeport Works) and at Stickney offer every recipe that requires
+  `tacsim.works` as a public slot. A booking runs quote, order, deliver, collect
+  (`port/works.rs`). Its fee is the cost model's.
+- **The cost model at the Ceres works:** 3,000,000 cr capital over 25 years (328.77 cr a day),
+  2% upkeep (164.38), and 8 staff at 150 (1,200). That is 1,693.15 cr a day over 2 slots × 24
+  hours, so 35.27 cr a slot-hour; the 25% margin makes 44.09 cr a work unit. A quote rounds the
+  fee up to the whole credit. The booking fee (one slot-day before margin, 847 cr) is held and
+  comes back at collection.
+
+**Built:**
+1. **Recipe pack v5** (`INDUSTRY_RECIPES_VERSION` 5, re-signed), three conversions at the houses'
+   ratios, pooled, each requiring `tacsim.works`, so each is a public slot at both works:
+
+   | Recipe | Bill | Output | Work units | Fee | The house's spread a batch |
+   |---|---|---|---|---|---|
+   | `metals` | 10 t metal ore | 4 t metals | 2 | 89 cr | 100 cr (the Exchange: 4 × 200 − 10 × 70) |
+   | `volatiles` | 20 t ice ore | 8 t water | 2 | 89 cr | 100 cr (Occator: 8 × 100 − 20 × 35) |
+   | `structural_alloys` | 5 t metals | 4 t alloys | 9 | 397 cr | 400 cr (Kasei: 4 × 450 − 5 × 280) |
+
+2. **The houses' mill rows are unchanged.** The lane is not touched: no version bump, no strip
+   step and no fixture.
+
+**Sizing** (provisional; at 24:1 an IC day is a real hour):
+- **The rule: the fee is about the house's own spread.** Each recipe's fee lands within one work
+  unit under what the house makes on the same batch at its own port's prices: its bid for the
+  input and its ask for the output. Milling your own ore at the works then costs about what
+  selling the ore and buying the product back costs at that port. It pays where the house's bid
+  is full (the Exchange takes 240 t of metal ore at a time) or where the product sells dearer:
+  metals bid 280 at Stickney, water 190 to 200 at Stickney, Luna and Deimos.
+- **Why the batches differ.** The ratios are the houses'. The ore batches are the smallest whole
+  multiples whose fee stays under the spread at two or more work units: 5 t of ice makes only
+  25 cr of spread, under one work unit's 44.09. A one-unit recipe would also quote "(1 work
+  units)".
+- **Slot times**, a work unit being one slot-hour:
+  - a 100 t hold of metal ore is ten `metals` batches, 20 work units: 20 IC hours, 50 real
+    minutes;
+  - its 40 t of metals refine in eight `structural_alloys` batches, 72 work units: three IC days,
+    three real hours;
+  - the houses' own rows mill 40 t of ore an IC day each, so a slot is slower than a house mill
+    for ore and about a third of Kasei's refine rate.
+
+**Tests** (run on conclav.dev):
+- **New** (`domain_economy` `pl4_works_mills`, reusing PL.2's works harness, whose helpers are
+  now `pub(crate)`):
+  - `pl4_a_captain_mills_metal_ore_at_the_works_then_refines_the_metals` (13 s): at Ceres,
+    with 20 t of metal ore in the docked hold:
+    1. `+works/quote metals 2` bills 20 t for four work units.
+    2. The order is booked, the ore delivered and the works run; the captain collects 8 t of
+       metals.
+    3. `+works/quote structural_alloys` bills 5 t of metals for nine work units. Booked,
+       delivered, run and collected, the hold holds 4 t of alloys and 3 t of metals.
+    4. The Exchange's metal mill, Occator's ice mill and refine, and Kasei's refine are the
+       lane's as before.
+  - `pl4_each_conversion_costs_about_its_houses_spread`: the three quotes at the Ceres works
+    give fees of 89, 89 and 397 cr against the houses' 100, 100 and 400.
+- **Green:** the whole `domain_economy` binary (603, every works and mill story among them), the
+  `tacsim` lib (2,394), and mush-server `split_boundary` and `commerce_composition` (318).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  memory-size pass, rustdoc `-D warnings --document-private-items`, and the contract guards'
+  feature census, panic budget and restriction lints (24).
+- **Mutations** (content, each re-signed so the pack loads):
+  1. `metals` at three work units: both stories (the quote's units; a 133 cr fee over the
+     house's 100).
+  2. `structural_alloys` making five tonnes: the mill-and-refine story (the hold's alloys).
+
+**Divergences:**
+- **The houses' rows stay house processes.** Q-48-24's "the NPC mill rows stay as the houses'
+  own processes": they book no slot and pay no fee, as before.
+- **The ore recipes' batches are larger than the houses' ratios' least terms** (10 : 4 and
+  20 : 8). Sizing above.
+
+**Not built:**
+- **PL.5's escrow buying** waits on EX.3 and is not started here.
+- **Prices do not follow the new supply.** A player's milled metals and water sell into the same
+  bids; EX.8 and EX.9 own the market's response.
 
 ## PL.5
 

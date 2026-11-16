@@ -1108,10 +1108,14 @@ pub const LANE_SOURCES: [(&str, &str); 1] = [("tacsim/content/lane/ceres_phobos.
 /// units, pooled; provisional); doc 48 unit PL.3 adds the seven munitions rows at v4 (`ap_30`,
 /// `ball_762`, `he_105`, `missile`, `torpedo`, `spinal_round`, `pd_box`: a tonne each of alloys,
 /// carbon ore and water, sized by output count and work units so a produced round costs about
-/// its GC.7 price; provisional).
+/// its GC.7 price; provisional); doc 48 unit PL.4 adds the houses' three conversions at v5, at
+/// their ratios (`metals`: ten tonnes of metal ore into four of metals, two work units;
+/// `volatiles`: twenty tonnes of ice ore into eight of water, two work units;
+/// `structural_alloys`: five tonnes of metals into four of alloys, nine work units; pooled, each
+/// fee about the house's own spread; provisional).
 pub const INDUSTRY_RECIPES_PACK: &str = "tacsim.industry.recipes";
 /// The pack's shipped version.
-pub const INDUSTRY_RECIPES_VERSION: u32 = 4;
+pub const INDUSTRY_RECIPES_VERSION: u32 = 5;
 /// `crates/tacsim/content/industry/recipes-v2.json`.
 pub const INDUSTRY_RECIPES_JSON: &str = include_str!("../../content/industry/recipes-v2.json");
 /// The outbound route: Ceres Freeport by Kirkwood Depot to Stickney Yards.
