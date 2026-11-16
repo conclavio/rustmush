@@ -953,6 +953,13 @@ pub(super) fn status(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitError>
             if let Some(line) = nearest_spot_line(&spots, &frame.pose, cell_cm) {
                 lines.push(line);
             }
+            // **Doc 49 cut CC.4** (Q-49-13): each mount's rounds, on a line of its
+            // own after the position and only for a platform that carries a mount —
+            // what is left, at a glance, on the line a pilot reads most. Off the
+            // frame's own mount rows, which the arena writes; the pilot's own tank.
+            if let Some(line) = WeaponRow::rounds_line(&frame_weapons(frame)) {
+                lines.push(line);
+            }
             // **16b cut X.1**: a line of its own, and only for a platform that
             // carries heat.
             if let Some(heat) = frame.heat {
@@ -1429,6 +1436,34 @@ impl WeaponRow {
             "{named}  {ready}  {} of {} round(s){band}{chance}",
             self.rounds, self.rounds_max
         )
+    }
+
+    /// **`STATUS`'s rounds row** (doc 49 cut CC.4, Q-49-13), or `None` for a
+    /// platform that carries no mount, which prints no row — as a platform with
+    /// no heat prints no heat row.
+    ///
+    /// Two spaces in, `rounds`, then each mount's rounds left over its full
+    /// load, by its id, in component order and joined by commas:
+    /// `  rounds cannon 39/40, machine_gun 1990/2000, missiles 6/6`. The id is
+    /// the one [`WeaponRow::render`] opens with, so the row and `WEAPONSTATUS`
+    /// name a mount alike; the `left/full` pair is the one the section rows
+    /// below it print for internals and armour.
+    ///
+    /// **One row, never wrapped.** At its widest fill — the shipped unit with
+    /// the most mounts, each at its full load — it is under sixty columns, half
+    /// the 120-column floor, and the cockpit tests hold every fielded unit type's
+    /// fill under that floor off the content. It is not wrapped as the facet
+    /// runs are: a four-space continuation is a facet run to a line reader.
+    #[must_use]
+    pub fn rounds_line(rows: &[WeaponRow]) -> Option<String> {
+        if rows.is_empty() {
+            return None;
+        }
+        let cells: Vec<String> = rows
+            .iter()
+            .map(|row| format!("{} {}/{}", row.id, row.rounds, row.rounds_max))
+            .collect();
+        Some(format!("  rounds {}", cells.join(", ")))
     }
 }
 

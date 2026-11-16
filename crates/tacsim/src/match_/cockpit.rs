@@ -1229,10 +1229,12 @@ fn cockpit_help(verb: &str) -> String {
         // 16b cut D.2 (`T-77`): the callsign is `STATUS`'s first line and the
         // help did not mention it, so a pilot asked "who is RA?" had nowhere to
         // be sent; and cut D.1 replaced the arena's global tempo on the third
-        // line with this platform's own scope.
+        // line with this platform's own scope. Doc 49 cut CC.4 (Q-49-13): and
+        // each mount's rounds, on a line of their own.
         _ => "STATUS              your callsign, power, speed, heading, position, the named spot \
-              nearest you, what your own scope holds, your pod's switch if you carry one, and \
-              your armour and internals section by section."
+              nearest you, what your own scope holds, each mount's rounds left over its full \
+              load, your pod's switch if you carry one, and your armour and internals section \
+              by section."
             .to_owned(),
     }
 }

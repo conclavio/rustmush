@@ -467,6 +467,12 @@ pub struct Own {
     pub jammed: bool,
     /// The jamming pod's switch, on a tank that carries one.
     pub emcon: Option<bool>,
+    /// **Each mount's `(id, left, full)` off the last `STATUS` rounds row** (the
+    /// game's doc 49 cut CC.4), in the tank's own order; empty until one is
+    /// read this match. Read by nothing yet: the rounds the pilot acts on stay
+    /// in [`Picture::weapons`], off `WEAPONSTATUS`, whose rows the stale-ready
+    /// guard reads against the acks.
+    pub rounds: Vec<(String, u32, u32)>,
 }
 
 /// One fix on a contact: where its plot put it, and how far to trust that.
@@ -943,6 +949,7 @@ fn is_status_form(line: &Line) -> bool {
             | Line::StatusHead(_)
             | Line::StatusPosition { .. }
             | Line::StatusNearestSpot { .. }
+            | Line::StatusRounds { .. }
             | Line::StatusHeat { .. }
             | Line::StatusReceiver { .. }
             | Line::StatusEmcon { .. }
@@ -1343,6 +1350,11 @@ impl Picture {
                         plotted_m,
                     },
                 );
+                self.status_row(now_ms);
+            }
+            Line::StatusRounds { mounts } => {
+                journal = false;
+                self.own.rounds = mounts.clone();
                 self.status_row(now_ms);
             }
             Line::StatusHeat {
@@ -3196,6 +3208,49 @@ mod tests {
         // printed none, so the first block's stay.
         p.settle(7_000);
         assert!(p.own.sections.contains_key("hull"));
+    }
+
+    /// **The game's doc 49 cut CC.4**: `STATUS`'s rounds row stands between the
+    /// position and the sections. It is a row of the block, so the block stays
+    /// open through it and the sections after it still apply; it is read into
+    /// [`Own::rounds`] and moves no gun of [`Picture::weapons`]. Outside a
+    /// block it changes nothing, as every other `STATUS` row.
+    #[test]
+    fn the_rounds_row_is_a_row_of_the_status_block() {
+        let mut p = Picture::default();
+        let applied = feed(
+            &mut p,
+            &[
+                (0, "Callsign RA."),
+                (0, "Red Tank 1: power online, 0 kph, heading 000°"),
+                (0, "  at 1000 m east, 975 m north; scope clear"),
+                (0, "  rounds cannon 39/40, machine_gun 1990/2000"),
+                (0, "  hull  damaged  internals 30/60"),
+                (0, "    front 400/400  left 250/250"),
+            ],
+        );
+        assert!(applied.iter().all(|a| !a.journal));
+        assert!(
+            p.open.status.is_some(),
+            "the rounds row kept the block open"
+        );
+        assert_eq!(
+            p.own.rounds,
+            vec![
+                ("cannon".to_owned(), 39, 40),
+                ("machine_gun".to_owned(), 1990, 2000)
+            ]
+        );
+        assert!(p.weapons.is_empty(), "no gun is made from the row");
+        p.settle(1_000);
+        assert_eq!(p.own.sections["hull"].internals, Some((30, 60)));
+        assert_eq!(p.own.sections["hull"].facets["left"], (250, 250));
+
+        // Outside an open block the row is someone else's words.
+        let mut p = Picture::default();
+        let applied = feed(&mut p, &[(0, "  rounds cannon 1/40")]);
+        assert!(applied[0].journal);
+        assert!(p.own.rounds.is_empty());
     }
 
     #[test]

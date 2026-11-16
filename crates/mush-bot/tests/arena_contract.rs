@@ -759,6 +759,50 @@ fn every_notice() -> Vec<FrameNotice> {
 // (1) The formatters
 // ---------------------------------------------------------------------------
 
+/// **`STATUS`'s rounds row at its widest fill** (the game's doc 49 cut CC.4):
+/// the heavy, the shipped unit with the most mounts, each at the full load its
+/// content fields it with. The game's own formatter prints it, the 120-column
+/// renderer leaves it one line, and the bot reads every mount back.
+#[test]
+fn the_rounds_row_at_its_widest_fill_is_one_line_the_bot_reads() {
+    let catalog = tacsim::builtin_definitions()
+        .unwrap_or_else(|error| panic!("the shipped content binds: {error}"));
+    let entry = tacsim::definitions::content::HEAVY_MK1;
+    let key = mush_core::CanonicalId::new(entry).unwrap_or_else(|_| panic!("{entry} is an id"));
+    let (Some(spec), Some(binding)) = (catalog.specs.get(&key), catalog.bindings.get(&key)) else {
+        panic!("{entry} is fielded")
+    };
+    let cells = tacsim::definitions::to_tactical_unit(spec, binding, ObjId(31))
+        .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+    let rows: Vec<cockpit::WeaponRow> = tacsim::match_::weapon_summaries(&catalog, &cells)
+        .into_iter()
+        .map(|mount| cockpit::WeaponRow {
+            id: mount.id.clone(),
+            ready: true,
+            ready_in_ms: 0,
+            rounds: i64::from(mount.count_per_load),
+            rounds_max: i64::from(mount.count_per_load),
+            range_band: None,
+            p_permille: None,
+            heat_per_shot: 0,
+            armed: None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 3, "the heavy's three mounts");
+    let line = cockpit::WeaponRow::rounds_line(&rows).expect("the heavy carries mounts");
+    assert!(line.chars().count() < 120, "{line}");
+    let mut reader = Reader::new();
+    let read = reader.say(&line);
+    let mounts: Vec<(String, u32, u32)> = rows
+        .iter()
+        .map(|row| {
+            let load = u32::try_from(row.rounds_max).unwrap_or(u32::MAX);
+            (row.id.to_string(), load, load)
+        })
+        .collect();
+    assert_eq!(read, vec![Line::StatusRounds { mounts }], "{line:?}");
+}
+
 #[test]
 fn the_parser_reads_what_the_cockpit_formatters_print() {
     let frame = frame();
@@ -1048,6 +1092,19 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
         reader.one(&nearest),
         Line::StatusNearestSpot { letter: 'B', .. }
     ));
+    // The game's doc 49 cut CC.4: each mount's rounds, off the frame's own rows.
+    let rounds = cockpit::WeaponRow::rounds_line(&cockpit::frame_weapons(&frame))
+        .expect("the frame carries mounts");
+    let mounts = vec![
+        ("cannon".to_owned(), 14, 20),
+        ("machine_gun".to_owned(), 380, 500),
+    ];
+    assert_eq!(
+        reader.one(&rounds),
+        Line::StatusRounds {
+            mounts: mounts.clone()
+        }
+    );
     assert_eq!(
         reader.one(&cockpit::receiver_line(Receiver {
             budget: 15,
@@ -1078,6 +1135,7 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
     assert_eq!(own.callsign.as_deref(), Some("RA"));
     assert!(own.jammed);
     assert_eq!(own.emcon, Some(false));
+    assert_eq!(own.rounds, mounts);
     for section in &frame.sections {
         let read = &own.sections[section.id.as_str()];
         assert_eq!(read.condition, section.condition.as_str());

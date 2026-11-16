@@ -886,6 +886,91 @@ fn ae2_the_bare_fire_is_the_authors_choice_by_component_order() {
     );
 }
 
+/// **Doc 49 cut CC.4** (Q-49-13): `STATUS`'s rounds row at its widest fill.
+///
+/// Every fielded unit type that instantiates, each mount at its full load off
+/// the content (cut CC.0, so a retune moves no line here): the row names every
+/// mount in component order with its `left/full`, and is under the 120-column
+/// floor. The widest fill is the heavy's three mounts. A platform with no mount
+/// prints no row, and a spent mount reads its own `left`.
+#[test]
+fn cc4_the_rounds_row_at_its_widest_fill_is_under_120_columns() {
+    use crate::definitions::content;
+    let catalog = crate::definitions::Catalog::build_fielded(&[], crate::NS)
+        .unwrap_or_else(|error| panic!("the fielded content binds: {error}"));
+    let mut armed: Vec<String> = Vec::new();
+    let mut widest: Option<(String, String)> = None;
+    for (key, spec) in &catalog.specs {
+        let Some(binding) = catalog.bindings.get(key) else {
+            continue;
+        };
+        // A unit type that does not instantiate is never in an arena, so it
+        // never reads `STATUS`.
+        let Ok(cells) = crate::definitions::to_tactical_unit(spec, binding, ObjId(31)) else {
+            continue;
+        };
+        let rows: Vec<WeaponRow> = crate::match_::weapon_summaries(&catalog, &cells)
+            .into_iter()
+            .map(|mount| WeaponRow {
+                rounds: i64::from(mount.count_per_load),
+                rounds_max: i64::from(mount.count_per_load),
+                ..weapon_row(&mount.id)
+            })
+            .collect();
+        let Some(line) = WeaponRow::rounds_line(&rows) else {
+            assert!(rows.is_empty(), "{key} carries a mount and printed no row");
+            continue;
+        };
+        let cells = rows
+            .iter()
+            .map(|row| format!("{} {}/{}", row.id, row.rounds_max, row.rounds_max))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(line, format!("  rounds {cells}"), "{key}");
+        let width = line.chars().count();
+        assert!(width < 120, "{key}: {width} columns: {line}");
+        armed.push(key.to_string());
+        if widest
+            .as_ref()
+            .is_none_or(|(_, held)| width > held.chars().count())
+        {
+            widest = Some((key.to_string(), line));
+        }
+    }
+    for entry in [
+        content::LINE_TANK,
+        content::SCOUT_MK1,
+        content::HEAVY_MK1,
+        content::BIPED_MK1,
+        content::LINE_TANK_LASER,
+    ] {
+        assert!(armed.iter().any(|key| key == entry), "{entry}: {armed:?}");
+    }
+    let (entry, line) = widest.unwrap_or_else(|| panic!("no fielded unit carries a mount"));
+    assert_eq!(entry, content::HEAVY_MK1, "the widest fill: {line}");
+    for id in ["cannon", "machine_gun", "missiles"] {
+        let (load, _) = fielded_mount(content::HEAVY_MK1, id);
+        assert!(line.contains(&format!("{id} {load}/{load}")), "{line}");
+    }
+
+    // A platform with no mount prints no row.
+    assert_eq!(WeaponRow::rounds_line(&[]), None);
+    // A spent mount reads its own left; the others are untouched.
+    let mut heavy = fielded_rows(content::HEAVY_MK1);
+    let (cannon, _) = fielded_mount(content::HEAVY_MK1, "cannon");
+    let (coaxial, _) = fielded_mount(content::HEAVY_MK1, "machine_gun");
+    let (rack, _) = fielded_mount(content::HEAVY_MK1, "missiles");
+    if let Some(row) = heavy.iter_mut().find(|row| row.id == "missiles") {
+        row.rounds = 0;
+    }
+    assert_eq!(
+        WeaponRow::rounds_line(&heavy),
+        Some(format!(
+            "  rounds cannon {cannon}/{cannon}, machine_gun {coaxial}/{coaxial}, missiles 0/{rack}"
+        ))
+    );
+}
+
 /// **`B-17`**: the row advertises a short name only where it is one.
 #[test]
 fn d2_a_weapon_row_opens_its_short_name_only_when_it_is_unshared() {

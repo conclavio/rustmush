@@ -207,7 +207,111 @@ Not built.
 
 ## CC.4
 
-Not built.
+Rounds on `STATUS` (Q-49-13, the ground half). Built 2026-11-15 on main `c85a8744f`, with CC.0
+(#626) merged. It changes no content, no kernel and no pin.
+
+**Survey.**
+- `STATUS` (`weapons_fire.rs`, `status`) printed no rounds. The frame already carried each
+  mount's rounds and full load (`frame.weapons`), which the mount status rows, the TUI cockpit and
+  the pixel cockpit read.
+- The widest shipped fill is the heavy (`heavy_mk1`). It carries three mounts: the cannon, the
+  coaxial gun (`machine_gun`) and the missile rack (`missiles`). Every other armed unit carries
+  two. Its row at full load is 58 columns today, and 56 under CC.2's magazines.
+- The bot closes an open `STATUS` block at the first line it does not know as one of the block's
+  rows (`picture.rs`, `is_status_form`). It reads every section row after that as nobody's. A row
+  the bot could not classify would have cost it its own sections, so the row needed a `Line`
+  variant of its own, not only a needle.
+- Two help texts list what `STATUS` says: `help cockpit`'s row, and the in-game `help STATUS` line
+  (`cockpit.rs`, `cockpit_help`).
+
+**Built.**
+- **The row**, `WeaponRow::rounds_line(rows)` in `weapons_fire.rs`:
+  `  rounds cannon 39/40, machine_gun 1990/2000, missiles 6/6`.
+  - Two spaces in, then each mount by its id with `left/full`, in component order, joined by
+    commas. A platform with no mount prints no row, as one with no heat prints no heat row.
+  - It hangs on `WeaponRow`, which the cockpit already exports, so `cockpit.rs`' export list is
+    unchanged.
+- **`STATUS`** prints it after the position and the nearest spot, and before the heat. It reads
+  the held frame's mount rows (`frame_weapons`): the pilot's own tank, which the arena writes.
+- **Help.**
+  - `docs/help/cockpit.md`'s `STATUS` row says what the line holds, and gives its shape with
+    placeholders. No shipped load is quoted (CC.0's rule).
+  - `cockpit_help("status")` says it too. Its pinned clause, `, your pod's switch if you carry
+    one`, is kept.
+- **The bot** (`crates/mush-bot/`):
+  - `lines.rs`: `Line::StatusRounds { mounts }`. `status_row` reads it before the section reading,
+    so a section called `rounds` still reads as a section. The answer table lists it.
+  - `picture.rs`: it is a row of the block (`is_status_form`), so the block stays open through it.
+    It is read into `Own::rounds`, which nothing reads yet. It moves nothing in
+    `Picture::weapons`: those rounds come off the mount status rows, which the stale-ready guard
+    reads against the acks.
+  - The scripted rig's `STATUS` (`tests/arena_lane.rs`) prints the row, from the same figures its
+    mount rows print (`rounds_of`). Every lane test that reads the rig's sections now reads them
+    through the row.
+
+**Tests.**
+- **`match_::cockpit::tests::cc4_the_rounds_row_at_its_widest_fill_is_under_120_columns`.** It
+  takes every fielded unit type that instantiates, each mount at its load off the content. For
+  each, the row names every mount as `load/load`, in order, under 120 columns. It also checks:
+  - the widest fill is the heavy's;
+  - a spent mount reads its own left;
+  - a platform with no mount gets no row.
+- **`domain_arena`'s
+  `cockpit::cc4_status_shows_each_mounts_rounds_within_120_columns_at_its_widest_fill`.** A heavy
+  is fielded with `SIM UNIT heavy_mk1` in a running match. It checks:
+  - the frame carries the content's loads;
+  - `STATUS` has exactly one rounds row, equal to the row built from the content, before the
+    section rows;
+  - every line of the reply is under 120 columns.
+
+  It builds its expected row without the cockpit's formatter, so it compiles on the base tree and
+  fails there.
+- **mush-bot.**
+  - `lines`: the row, a one-mount row, a section called `rounds`, and two rows that are not it.
+  - `picture::the_rounds_row_is_a_row_of_the_status_block`: the sections after the row still
+    apply, and a row outside a block changes nothing.
+  - `arena_contract`'s parser test reads the formatter's row off the hand-built frame, through the
+    120-column renderer, into `Own::rounds`.
+  - `arena_contract::the_rounds_row_at_its_widest_fill_is_one_line_the_bot_reads` renders the
+    heavy's content fill as one line and reads every mount back.
+- **Runs**, on conclav.dev in a throwaway clone:
+  - **On the base tree**, with only the `domain_arena` story applied, the story fails. Its check
+    that the frame carries the content's loads passes, then it finds no rounds row in `STATUS`.
+  - **With the cut:**
+    - `tacsim`'s lib tests and `domain_arena`: 3,516 passed;
+    - the bot job (`mush-bot` without the mining cohort and `arena_mind_isolation`): 786 passed,
+      `m5_4_the_mind_lines_read_as_the_bot_reads_them` among them;
+    - `mushd`'s sim lenses: 95 passed;
+    - `mush-contract-tests`: 200 passed, the help lint and the `ci_policy` guards (census, panic
+      budget, restriction lints) among them.
+  - **Guards**, all passed:
+    - `cargo fmt --check` for `tacsim` and `mush-bot`;
+    - `cargo clippy --all-targets -- -D warnings` for both;
+    - the CI lint job's M7 memory-size pass on `tacsim`;
+    - `cargo doc --no-deps --document-private-items` with `-D warnings` for both.
+
+  After the run, only two things changed: the help row's wording (it adds no command-shaped
+  word) and this note.
+
+**Divergences.**
+- **A row of its own**, not a field added to another row. The head row carries the object's name,
+  which can be any length, so a field there could not be bounded by content. A row of its own is
+  the shape heat, the receiver and the pod switch already take. Its width depends only on mount
+  ids and loads, which the test reads from content.
+- **Mount ids, not short names.** `mg` is shorter, but a short name is a fact about the whole
+  platform (`weapon_short_of`). The bot can read `STATUS` before any mount status reply has told
+  it the short names. The id is what the mount status rows open with.
+- **Not wrapped.** The facet runs wrap; this row does not, because a four-space continuation reads
+  as a facet run to a line reader. The unit test fails on the day the content fields a unit whose
+  row would reach 120 columns.
+- **Outside the row's file**, on the brief's word for the help and the tests:
+  - the in-game help line in `cockpit.rs`;
+  - the tests, in `match_/cockpit/tests.rs` and `tests/domain_arena/cockpit.rs` (appended).
+
+**Not built.**
+- Space decision support: CC.9's.
+- The bot does not act on `Own::rounds`. CC.10's discipline (Q-49-17) can read it.
+- The TUI and web status panes are unchanged: they already show each mount's rounds off the frame.
 
 ## CC.6
 
