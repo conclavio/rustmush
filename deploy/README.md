@@ -1045,7 +1045,12 @@ Every id below is the one your world printed; replace every id in the example.
 7. Write `launch.json` from `instance/launch.json.example` with
    `"mode": "initialize"` and the real ids. `registry_issuer` names the system
    principal the launch issues under (the example's `hardware.factory`); choose
-   it once per world.
+   it once per world. `hardware.depot_stock` is the die depot's opening stock
+   (doc 48 unit PL.7): a certified die takes its chain goods (instrument boards
+   and strategic ore) from the depot when it is issued, and the origin's
+   initialize action credits this stock once. The example's 112 t of boards and
+   88 t of ore are one month of the full quota, provisional. Leave it out and the
+   depot opens empty, so `+core/buy` refuses until the depot is stocked.
 8. Make `launch_path` live for that instance (the owner's choice, above) and
    boot. It boots Initialize.
 9. For each operator, as #1:

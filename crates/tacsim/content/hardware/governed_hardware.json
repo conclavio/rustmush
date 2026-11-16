@@ -4,7 +4,7 @@
     "version": 1,
     "kind": "rules_definition",
     "requires": [],
-    "digest": "a02575bd977a18d3b67938f45a46374428fd894b52c8962a9e52b6306b516e2c"
+    "digest": "404c9588062e4e96c34a7bb8b7f8bcc3a9ad5112878f02e1ad9cbd11cbf67e5d"
   },
   "entries": {
     "tacsim.hardware.catalogue": {
@@ -27,6 +27,20 @@
           64,
           16,
           4
+        ],
+        "die_chain": [
+          [
+            { "good": "instrument_boards", "units": 1 },
+            { "good": "strategic_ore", "units": 1 }
+          ],
+          [
+            { "good": "instrument_boards", "units": 2 },
+            { "good": "strategic_ore", "units": 1 }
+          ],
+          [
+            { "good": "instrument_boards", "units": 4 },
+            { "good": "strategic_ore", "units": 2 }
+          ]
         ]
       }
     },

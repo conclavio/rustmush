@@ -678,34 +678,7 @@ impl InventoryFamilies {
                 },
             ));
         }
-        let mut seen = std::collections::BTreeSet::new();
-        for (commodity, _) in moves {
-            if !seen.insert(commodity) {
-                return Err(InventoryError::DuplicateCommodity);
-            }
-        }
-        // Which destination pairs are new: counted before any write, so the
-        // census is one staged mutation for the whole bundle.
-        let mut fresh = Vec::with_capacity(moves.len());
-        for (commodity, _) in moves {
-            let (_, pair) = self.load_pair(txn, to, commodity)?;
-            fresh.push(pair.is_none());
-        }
-        let new_pools = fresh.iter().filter(|is_new| **is_new).count();
-        if new_pools > 0 {
-            let n = u32::try_from(new_pools).map_err(|_| {
-                InventoryError::Record(InventoryRecordError::EndpointPools {
-                    max: crate::record::MAX_POOLS_PER_ENDPOINT,
-                })
-            })?;
-            let existing = txn.get(&self.census, &to)?.copied();
-            let next = existing.unwrap_or_default().checked_add_n(n)?;
-            if existing.is_some() {
-                txn.replace(&self.census, &to, next)?;
-            } else {
-                txn.insert(&self.census, &to, next)?;
-            }
-        }
+        let fresh = self.stage_new_pools(txn, to, moves)?;
         let mut out = Vec::with_capacity(moves.len());
         for ((commodity, amount), is_new) in moves.iter().zip(fresh) {
             self.debit(txn, from, commodity, *amount)?;
@@ -726,6 +699,91 @@ impl InventoryFamilies {
                 moved: *amount,
                 ..moved
             });
+        }
+        Ok(out)
+    }
+
+    /// **Which of `rows`' pools at `to` are new, with the census staged for them once** (the rule
+    /// [`Self::transfer_many`] and [`Self::credit_many`] share): each commodity named once, the
+    /// new pairs counted before any write, and `inventory.census` written once for all of them,
+    /// because one `ActionTxn` writes a key once. Answers, a row each, whether its pool is new.
+    fn stage_new_pools(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        to: EndpointRef,
+        rows: &[(CanonicalId, u64)],
+    ) -> Result<Vec<bool>, InventoryError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for (commodity, _) in rows {
+            if !seen.insert(commodity) {
+                return Err(InventoryError::DuplicateCommodity);
+            }
+        }
+        let mut fresh = Vec::with_capacity(rows.len());
+        for (commodity, _) in rows {
+            let (_, pair) = self.load_pair(txn, to, commodity)?;
+            fresh.push(pair.is_none());
+        }
+        let new_pools = fresh.iter().filter(|is_new| **is_new).count();
+        if new_pools > 0 {
+            let n = u32::try_from(new_pools).map_err(|_| {
+                InventoryError::Record(InventoryRecordError::EndpointPools {
+                    max: crate::record::MAX_POOLS_PER_ENDPOINT,
+                })
+            })?;
+            let existing = txn.get(&self.census, &to)?.copied();
+            let next = existing.unwrap_or_default().checked_add_n(n)?;
+            if existing.is_some() {
+                txn.replace(&self.census, &to, next)?;
+            } else {
+                txn.insert(&self.census, &to, next)?;
+            }
+        }
+        Ok(fresh)
+    }
+
+    /// **Credit several pools at one endpoint in one bundle** (doc 48 unit PL.7: the core
+    /// origin's opening depot stock): each row as [`Self::credit`], the endpoint's pool census
+    /// staged once for every new pool (`transfer_many`'s rule), since a second new pool at the
+    /// same endpoint would write the census key again. The caller's bundle answers for every
+    /// quantity: this mints, as `credit` does.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::ZeroQuantity`] for no rows or a zero row,
+    /// [`InventoryError::DuplicateCommodity`] for a commodity named twice,
+    /// [`InventoryRecordError::EndpointPools`] past the cap, and every refusal of the credit;
+    /// **nothing is written on an error**.
+    pub fn credit_many(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        to: EndpointRef,
+        rows: &[(CanonicalId, u64)],
+    ) -> Result<Vec<Moved>, InventoryError> {
+        if rows.is_empty() || rows.iter().any(|(_, amount)| *amount == 0) {
+            return Err(InventoryError::Record(InventoryRecordError::ZeroQuantity));
+        }
+        if rows.len() > crate::record::MAX_POOLS_PER_ENDPOINT {
+            return Err(InventoryError::Record(
+                InventoryRecordError::EndpointPools {
+                    max: crate::record::MAX_POOLS_PER_ENDPOINT,
+                },
+            ));
+        }
+        let fresh = self.stage_new_pools(txn, to, rows)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for ((commodity, amount), is_new) in rows.iter().zip(fresh) {
+            let census = if is_new {
+                CensusWrite::Staged
+            } else {
+                CensusWrite::Write
+            };
+            out.push(self.apply_counted(
+                txn,
+                to,
+                commodity,
+                ResourceOperation::Increase { amount: *amount },
+                census,
+            )?);
         }
         Ok(out)
     }
@@ -2733,5 +2791,74 @@ mod pl0_tests {
         })
         .expect("the emptied pool takes stock again");
         assert_eq!(census(engine, &families, at), 256);
+    }
+
+    /// **Doc 48 unit PL.7: several new pools at one endpoint in one bundle.** `credit` twice in
+    /// one transaction refuses (the second new pool writes the census key again); `credit_many`
+    /// opens both, counts them once, and credits an existing pool beside a new one. A commodity
+    /// named twice, or a zero row, is refused and writes nothing.
+    #[test]
+    fn pl7_credit_many_opens_several_pools_in_one_bundle() {
+        let mut world = TestWorld::with_modules(vec![Box::new(InventoryModule::new())]);
+        let families = world
+            .world()
+            .module_state::<InventoryHandles>()
+            .expect("inventory publishes its handles")
+            .0
+            .clone();
+        let engine = world.engine_mut();
+        let at = EndpointRef(VaultId(7));
+        let twice = bundle(engine, &families, |txn| {
+            families.credit(txn, at, &good(0), 1)?;
+            families.credit(txn, at, &good(1), 1).map(|_| ())
+        });
+        assert!(twice.is_err(), "two new pools by `credit` in one bundle");
+        assert_eq!(census(engine, &families, at), 0, "it wrote nothing");
+        bundle(engine, &families, |txn| {
+            families
+                .credit_many(txn, at, &[(good(0), 2), (good(1), 3)])
+                .map(|_| ())
+        })
+        .expect("both pools open");
+        assert_eq!(census(engine, &families, at), 2);
+        bundle(engine, &families, |txn| {
+            families
+                .credit_many(txn, at, &[(good(0), 1), (good(2), 4)])
+                .map(|_| ())
+        })
+        .expect("an existing pool beside a new one");
+        assert_eq!(census(engine, &families, at), 3);
+        let mut txn = engine
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        let quantity = |txn: &mut ActionTxn<'_>, n: usize| {
+            families
+                .pool(txn, at, &good(n))
+                .expect("the pool reads")
+                .map_or(0, |pool| pool.quantity)
+        };
+        assert_eq!(
+            (
+                quantity(&mut txn, 0),
+                quantity(&mut txn, 1),
+                quantity(&mut txn, 2)
+            ),
+            (3, 3, 4)
+        );
+        drop(txn);
+        for rows in [vec![(good(3), 1), (good(3), 1)], vec![(good(3), 0)], vec![]] {
+            assert!(
+                bundle(engine, &families, |txn| families
+                    .credit_many(txn, at, &rows)
+                    .map(|_| ()))
+                .is_err(),
+                "{rows:?}"
+            );
+        }
+        assert_eq!(
+            census(engine, &families, at),
+            3,
+            "the refusals wrote nothing"
+        );
     }
 }

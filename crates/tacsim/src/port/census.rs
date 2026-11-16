@@ -25,8 +25,9 @@
 //! `balance` = `stock` + `opened` + `scrapped` − `in_ground` − `pools` − `lots` − `bales` −
 //! `worked` − `milled` − `built` − `fitted` − `repaired` (the owner's IN.11 rulings of
 //! 2026-11-05 added the last and `scrapped`; the durable matter ledger stays parked). Each commission also prints one `tacsim.matter_build` line: the inputs
-//! (the bill's bulk, its parts and its core) against the hull's dry mass and the bill's declared
-//! waste, which holds `inputs = hull + waste` at every build. The chain's goods are the ores,
+//! (the bill's bulk and its parts, a stock core's module among them, doc 48 unit PL.7) against
+//! the hull's dry mass and the bill's declared waste, which holds `inputs = hull + waste` at
+//! every build. The chain's goods are the ores,
 //! the refined goods and the parts; volatiles, propellant, provisions and munitions are not
 //! counted (they burn and fire, outside the chain).
 
@@ -345,9 +346,9 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .alloys_t
             .saturating_add(bill.fittings_t)
             .saturating_mul(1_000);
-        let inputs = bulk
-            .saturating_add(parts)
-            .saturating_add(bill.budget.core_kg);
+        // Doc 48 unit PL.7: a stock core is billed as its core module, one of the part lines, so
+        // the core's kilograms are in `parts` already (a coreless design has none).
+        let inputs = bulk.saturating_add(parts);
         out.builds.push((
             record.order,
             inputs,

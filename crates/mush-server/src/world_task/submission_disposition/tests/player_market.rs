@@ -1089,6 +1089,7 @@ pub(super) async fn launch_world(
             ungovern: None,
             bay: None,
             buy_back_permille: None,
+            depot_stock: Vec::new(),
         },
         market: Some(PlayerMarket {
             clerk,

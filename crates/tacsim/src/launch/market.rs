@@ -244,6 +244,7 @@ mod tests {
                 ungovern: None,
                 bay: None,
                 buy_back_permille: None,
+                depot_stock: Vec::new(),
             },
             market: None,
             procurement: Vec::new(),

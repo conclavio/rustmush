@@ -27,7 +27,7 @@ pub use receipt::{
 };
 pub use subject::{
     CORE3_ENTITLEMENT, CoreClass, CoreDeliveryPromise, CoreFundingSubject, CorePaymentPolicy,
-    DieSource, IntegrationSite, ScopedCoreAccount, UngovernedIntegration,
+    CorePrices, DieSource, IntegrationSite, ScopedCoreAccount, UngovernedIntegration,
 };
 
 use mush_core::CommitToken;

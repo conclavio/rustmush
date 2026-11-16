@@ -101,9 +101,20 @@ impl HardwareRecipeDef {
     }
 }
 
+/// **One chain good a die consumes when it is issued** (doc 48 unit PL.7; Q-48-27, Q-48-48):
+/// the hardware catalogue's word for industry's [`mush_industry::core_production::ChainLine`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DieChainLine {
+    pub good: String,
+    pub units: u64,
+}
+
 /// Versioned launch prices in centicredits, not rounded display strings.
-/// The current native protocol fixes these same v1 prices. A pack cannot change
-/// the displayed quote without also changing that financial protocol.
+/// **The core prices are content** (doc 48 unit PL.7, Q-48-27): `core_minor` and
+/// `integration_permille` are frozen into the economy's payment policy at composition, and the
+/// native protocol charges the policy's. The shipped values are the v1 table's
+/// ([`mush_economy::core_integration::CorePrices::V1`]).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct HardwareCatalogueDef {
     format: u16,
@@ -118,6 +129,10 @@ pub struct HardwareCatalogueDef {
     /// Provisional per the owner's economy rule: the fitting fee.
     ungovern_minor: i64,
     monthly_dies: [u16; 3],
+    /// **The chain goods a die of each class consumes when it is issued** (doc 48 unit PL.7),
+    /// Class I, II and III, taken from the importer's depot. Provisional (the owner's economy
+    /// rule of 2026-10-24).
+    die_chain: [Vec<DieChainLine>; 3],
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +147,7 @@ struct CatalogueWire {
     fitting_minor: i64,
     ungovern_minor: i64,
     monthly_dies: [u16; 3],
+    die_chain: [Vec<DieChainLine>; 3],
 }
 impl<'de> Deserialize<'de> for HardwareCatalogueDef {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -147,6 +163,7 @@ impl<'de> Deserialize<'de> for HardwareCatalogueDef {
             fitting_minor: w.fitting_minor,
             ungovern_minor: w.ungovern_minor,
             monthly_dies: w.monthly_dies,
+            die_chain: w.die_chain,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -159,7 +176,6 @@ impl HardwareCatalogueDef {
             || self.scale != crate::economy::CREDIT_SCALE
             || self.tank != crate::definitions::core_replacement::LINE_II
             || self.tank_minor != 10_000_000
-            || self.integration_permille != 100
             || self.fitting_minor != mush_economy::core_refit::FITTING_MINOR
             || !(1..=self.tank_minor).contains(&self.ungovern_minor)
             || self.monthly_dies.iter().any(|n| !(1..=1024).contains(n))
@@ -168,19 +184,66 @@ impl HardwareCatalogueDef {
                 "catalogue differs from the v1 credit or fitting protocol",
             ));
         }
-        for (index, (class, percent)) in CLASSES.into_iter().zip([3, 8, 25]).enumerate() {
-            let reference = self.tank_minor.checked_mul(percent).map(|n| n / 100);
-            if reference != Some(self.core_minor[index])
-                || self.core_minor[index] != class.finished_minor()
-                || self.integration_minor(class)? != class.integration_minor()
-                || self.die_minor(class)? != class.die_minor()
-            {
+        // Doc 48 unit PL.7: the prices are the catalogue's own, bounded as the economy's policy
+        // bounds them, and no longer pinned to the tank's percentages or the v1 table.
+        self.prices()
+            .validate()
+            .map_err(|_| bad("core prices out of bounds or a half below one minor unit"))?;
+        self.chain()?;
+        Ok(())
+    }
+    /// **The prices the economy's payment policy freezes** (doc 48 unit PL.7).
+    #[must_use]
+    pub const fn prices(&self) -> mush_economy::core_integration::CorePrices {
+        mush_economy::core_integration::CorePrices {
+            finished_minor: self.core_minor,
+            integration_permille: self.integration_permille,
+        }
+    }
+    /// **Each class's die chain as industry's lines** (doc 48 unit PL.7), in the catalogue's
+    /// order; refused when a class names more than four goods, a good twice or out of order, a
+    /// unit count outside 1 to 1,000, or the die lots' own commodity.
+    ///
+    /// # Errors
+    /// The sentence naming the bound broken.
+    pub fn chain(
+        &self,
+    ) -> Result<[Vec<mush_industry::core_production::ChainLine>; 3], DefinitionError> {
+        use mush_industry::core_production::{ChainLine, MAX_CHAIN_LINES, MAX_CHAIN_UNITS};
+        let class = |lines: &Vec<DieChainLine>| -> Result<Vec<ChainLine>, DefinitionError> {
+            if lines.len() > MAX_CHAIN_LINES {
+                return Err(bad("a die's chain names at most four goods"));
+            }
+            let lines = lines
+                .iter()
+                .map(|line| {
+                    let commodity = mush_core::CanonicalId::new(line.good.as_str())
+                        .map_err(|_| bad("a die's chain good is not an id"))?;
+                    if !(1..=MAX_CHAIN_UNITS).contains(&line.units)
+                        || commodity.as_str() == "tacsim.electronics"
+                    {
+                        return Err(bad(
+                            "a die's chain line takes 1 to 1,000 units of a good not the die's",
+                        ));
+                    }
+                    Ok(ChainLine {
+                        commodity,
+                        units: line.units,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if lines.windows(2).any(|w| w[0].commodity >= w[1].commodity) {
                 return Err(bad(
-                    "core prices differ from the tank percentages or native split",
+                    "a die's chain names each good once, in ascending order",
                 ));
             }
-        }
-        Ok(())
+            Ok(lines)
+        };
+        Ok([
+            class(&self.die_chain[0])?,
+            class(&self.die_chain[1])?,
+            class(&self.die_chain[2])?,
+        ])
     }
     pub fn finished_minor(&self, class: CoreClass) -> i64 {
         self.core_minor[class.catalog_index()]
