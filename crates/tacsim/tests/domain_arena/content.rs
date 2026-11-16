@@ -2262,7 +2262,7 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// `STAND_TRIES`); was
 /// `a37766b55993879fecb78e4cb3e1470b27df617d7e7a5b3b8a6971c24b6e5336`.
 const STANDARD_DOCTRINE_SHA256: &str =
-    "2bea23917e55807b6157b0daf13dc8f4d12343978d9a258dde38d680bc7b5fef";
+    "c544bfbd2cdcbda6e4a9fafdec6c4cefe60f31963283edffd20af7f7ecf9375f";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2318,7 +2318,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
         MindManifest {
             name: "Standard Doctrine".to_owned(),
             role: "combat".to_owned(),
-            api: 9,
+            api: 10,
             stock: 3,
             rated_class: "I".to_owned(),
             ops_ceiling: 1_500,
@@ -2332,7 +2332,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
     assert!(
         header.starts_with("// Standard Doctrine \u{2014} the combat role's stock mind")
             && header.contains(
-                "name: Standard Doctrine; role: combat; api: 9; stock: 3; rated: class I \
+                "name: Standard Doctrine; role: combat; api: 10; stock: 3; rated: class I \
                  (1,500 ops a think)"
             )
             && header.contains("T1 is the oracle (Gate A)"),
@@ -2829,7 +2829,7 @@ const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4).
-const GOODS_DIGEST: &str = "4515569c92957233526919381d3b5dfd1de4c8139150a86f61bac395ac6bb42a";
+const GOODS_DIGEST: &str = "dfdef8b33430fd29d9e1372c000d636599358d7b523937405ff654e858360454";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3373,8 +3373,9 @@ fn ic2_the_goods_table_is_pinned() {
     // Doc 19 cut A.8: v2 (the two moon goods); doc 20 cut SM.3a: v3 (the four
     // run-of-mine ores under `stow.ore`); doc 36 cut GC.7: v4 (the four munitions goods); doc
     // 39 cut IN.1: v5 (the thirteen parts); doc 39 cut IN.9: v6 (the five hull kits); doc 39 cut
-    // IN.9b: v7 (the nine templated designs' kits).
-    assert_eq!(table.version, 7);
+    // IN.9b: v7 (the nine templated designs' kits); doc 48 unit PL.7: v8 (the three core
+    // modules).
+    assert_eq!(table.version, 8);
     let measures: Vec<(&str, &str, &str)> = table
         .measures
         .iter()
@@ -3770,6 +3771,42 @@ fn ic2_the_goods_table_is_pinned() {
                 "stow.bulk",
                 None,
                 30_000
+            ),
+            (
+                "tacsim.part.core.doctrine",
+                "doctrine core module",
+                None,
+                GoodClass::Part,
+                "each",
+                150,
+                300,
+                "stow.bulk",
+                None,
+                3_000
+            ),
+            (
+                "tacsim.part.core.line",
+                "line core module",
+                None,
+                GoodClass::Part,
+                "each",
+                250,
+                500,
+                "stow.bulk",
+                None,
+                8_000
+            ),
+            (
+                "tacsim.part.core.command",
+                "command core module",
+                None,
+                GoodClass::Part,
+                "each",
+                500,
+                1_000,
+                "stow.bulk",
+                None,
+                25_000
             ),
             (
                 "tacsim.hull_kit.tv_escort",

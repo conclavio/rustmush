@@ -734,6 +734,30 @@
         "minds.stock_authored.final_substep_hash": "1771993770098865287",
         "minds.ceiling_authored.final_substep_hash": "1115581876497461230"
       }
+    },
+    "cc9_deterministic_update": {
+      "cut": "doc 49 CC.9, the mind ABI at API 10",
+      "recorded_utc": "2026-11-15T09:30:00Z",
+      "measured_revision": "doc 49 CC.9 (PR against main), its tree applied as a patch on main at c85a8744fd86eeba0457ef7b7be239c40db5a996",
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev (by hand as ghrunner, nice 10, HOSTNAME unset)"
+      ],
+      "reason": "CC.9 gives a space mind the kernel's own figures for every mount: one kernel, space_mount(v, id), and Contact.aspect reading the five space bands in a bubble. That raises the mind API to 10: MIND_ABI is rhai=1.26.0;api=10;stock=3, and minds/content.rs re-blessed the Standard Doctrine's source identity for its header alone (2bea2391 to c544bfbd). A seal's digest covers its ABI and its source, and the arena folds every seal into its state hash, so every state hash moved: the minds lane's four final_substep_hash leaves, and the hash value on every line of the arena lane's ledger. A ledger line writes that value as a decimal, so the stream is 261 bytes shorter (1651236 to 1650975; the chunk count is unchanged). The delta at this revision moved these five fields and no other field of the deterministic block; no count moved, and nothing the harness flies is a space bubble. The ledger was not dumped line by line this time: the evidence is the delta itself, and the arena tests' 84 pinned ledger lines, which moved in hash alone. A deterministic-only update, as the AP.3 record before it.",
+      "timing_policy": "TS.21's timings and host (conclav.dev) retained; no threshold or host comparison changed. On the same run the delta read p50 -6.3%, p99 -2.2% and window p99 -9.5%, inside 20%.",
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.ceiling_authored.final_substep_hash"
+      ],
+      "previous": {
+        "counters.ledger_bytes_streamed": 1651236,
+        "minds.fill_authored.final_substep_hash": "16090300274155741832",
+        "minds.stock_ci.final_substep_hash": "8502901592418194973",
+        "minds.stock_authored.final_substep_hash": "3144024366270822576",
+        "minds.ceiling_authored.final_substep_hash": "477923012376592334"
+      }
     }
   },
   "classes": {
@@ -779,7 +803,7 @@
     "frames_per_pulse_mean": 21.192,
     "held_at_end": 7,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 1651236,
+    "ledger_bytes_streamed": 1650975,
     "ledger_chunks": 103,
     "moving_at_end": 123
   },
@@ -819,7 +843,7 @@
       "fees_total": 9600,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "477923012376592334",
+      "final_substep_hash": "3955123433926006784",
       "inline_thinks": 1754,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -925,7 +949,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "16090300274155741832",
+      "final_substep_hash": "1276768147413685515",
       "inline_thinks": 1671,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -967,7 +991,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "3144024366270822576",
+      "final_substep_hash": "15526934564291010868",
       "inline_thinks": 1683,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -1000,7 +1024,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "8502901592418194973",
+      "final_substep_hash": "13541495908707932622",
       "inline_thinks": 1691,
       "jitter_ms": 250,
       "jitter_per_mille": 250,

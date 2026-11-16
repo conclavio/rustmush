@@ -411,6 +411,20 @@ pub trait ProceedsPolicy: Send + Sync + std::fmt::Debug {
     /// One sale into a bid settled: called exactly once per sale, from the market's
     /// settlement ear after its own idempotency check. Default: nothing.
     fn settled(&self, _ctx: &mut Ctx<'_>, _sale: &SettledSale<'_>) {}
+    /// **May `seller` post a personal ask from `source`?** (doc 48 cut EX.1b): asked once at
+    /// posting, after the venue gate, reading `w` only. Default: yes, so a composition whose
+    /// policy does not answer is unchanged.
+    ///
+    /// # Errors
+    /// The policy's own refusal line; nothing is listed.
+    fn may_list(
+        &self,
+        _w: &mush_core::World,
+        _seller: &PrincipalId,
+        _source: mush_inventory::EndpointRef,
+    ) -> Result<(), ProceedsRefusal> {
+        Ok(())
+    }
 }
 
 /// The market [`GameModule`].

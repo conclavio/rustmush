@@ -20,6 +20,25 @@ pub struct OriginAgent {
     pub actor: ObjId,
     pub stock: VaultId,
 }
+/// **One chain good a die consumes when it is issued** (doc 48 unit PL.7; Q-48-27, Q-48-48):
+/// a pooled commodity and its units, taken from the importer's depot.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainLine {
+    pub commodity: mush_core::CanonicalId,
+    pub units: u64,
+}
+/// The most chain lines one class's die consumes.
+pub const MAX_CHAIN_LINES: usize = 4;
+/// The most units one chain line consumes.
+pub const MAX_CHAIN_UNITS: u64 = 1_000;
+/// The most goods the depot's opening stock names.
+pub const MAX_OPENING_LINES: usize = 8;
+/// The most units of one good the depot's opening stock holds.
+pub const MAX_OPENING_UNITS: u64 = 100_000;
+/// The die lots' own commodity, which no chain line may name.
+pub(crate) const DIE_COMMODITY: &str = "tacsim.electronics";
+
 /// Trusted composition data, retained in each receipt for historical reconstruction.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +50,32 @@ pub struct OriginPolicy {
     pub content: DefinitionRef,
     pub grades: [Grade; 3],
     pub monthly_quotas: [u16; 3],
+    /// **The chain goods a die of each class consumes when it is issued** (doc 48 unit PL.7),
+    /// Class I, II and III in order, debited from [`Self::depot`] in the issue's bundle. Every
+    /// certificate retains its policy, so the goods a die consumed are read back from it
+    /// ([`super::DieCertificate::consumed`]). Empty for every class when the composition names
+    /// none, and then not written, so such a policy keeps its bytes and digest.
+    #[serde(default, skip_serializing_if = "no_chain")]
+    pub chain: [Vec<ChainLine>; 3],
+    /// **The depot's opening stock** (doc 48 unit PL.7): the chain goods the origin's
+    /// `Initialize` credits into [`Self::depot`] once, so a launched world can cut its first dies.
+    /// The amounts are the deployment's. The origin's index retains them (its
+    /// `initialize_policy`), which is the census's source for them. Empty when the composition
+    /// names none, and then not written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opening: Vec<ChainLine>,
+}
+/// Lines in strictly ascending commodity order (one good once, canonical bytes), at most
+/// `max_lines`, each 1 to `max_units`, never the die's own commodity.
+fn lines_ok(lines: &[ChainLine], max_lines: usize, max_units: u64) -> bool {
+    lines.len() <= max_lines
+        && lines
+            .iter()
+            .all(|l| (1..=max_units).contains(&l.units) && l.commodity.as_str() != DIE_COMMODITY)
+        && lines.windows(2).all(|w| w[0].commodity < w[1].commodity)
+}
+fn no_chain(chain: &[Vec<ChainLine>; 3]) -> bool {
+    chain.iter().all(Vec::is_empty)
 }
 impl OriginPolicy {
     pub fn validate(&self) -> Result<(), Error> {
@@ -47,7 +92,20 @@ impl OriginPolicy {
         {
             return Err(Error::Invalid);
         }
+        if !self
+            .chain
+            .iter()
+            .all(|lines| lines_ok(lines, MAX_CHAIN_LINES, MAX_CHAIN_UNITS))
+            || !lines_ok(&self.opening, MAX_OPENING_LINES, MAX_OPENING_UNITS)
+        {
+            return Err(Error::Invalid);
+        }
         Ok(())
+    }
+    /// The chain goods a die of `class` consumes at issue.
+    #[must_use]
+    pub fn chain_of(&self, class: super::DieClass) -> &[ChainLine] {
+        &self.chain[class.index()]
     }
     pub(crate) fn action(&self, initialize: bool) -> Result<DefinitionDescriptor, ModError> {
         self.validate().map_err(mod_error)?;

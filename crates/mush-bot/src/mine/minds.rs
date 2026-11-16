@@ -667,6 +667,30 @@ pub mod hull_sale {
     pub const HULL_RIG_ABOARD: &str = "return it to Occator before she is listed.";
 }
 
+/// **The exchange at the venue** (doc 48 cut EX.1b): a player's locker (`+locker`,
+/// `tacsim::port::locker`) and the venue gate's new refusals (`tacsim::port::market`). No lane
+/// reads them yet; each is held to the game's own text below.
+pub mod venue {
+    /// `tacsim::port::locker::LOCKER_OPENED`'s tail: a locker opened.
+    pub const LOCKER_OPENED: &str = "Goods you buy here with no hold docked go into it.";
+    /// `tacsim::port::locker::LOCKER_ALREADY`'s tail.
+    pub const LOCKER_ALREADY: &str = " is already open.";
+    /// `tacsim::port::locker::LOCKER_NO_VENUE`.
+    pub const LOCKER_NO_VENUE: &str = "There is no market here to keep a locker at.";
+    /// `tacsim::port::locker::LOCKER_SHOW`'s tail: what a locker holds and owes.
+    pub const LOCKER_SHOW: &str = " owed (collection starts later).";
+    /// `tacsim::port::locker::LOCKER_NONE`'s tail.
+    pub const LOCKER_NONE: &str = "+locker/open opens one.";
+    /// `tacsim::port::market::NOT_AT_VENUE`'s tail: a non-port venue, away from it.
+    pub const NOT_AT_VENUE: &str = " market trades where it stands, and you are not there.";
+    /// `tacsim::port::market::VENUE_UNPLACED`'s tail: a venue the game places nowhere.
+    pub const VENUE_UNPLACED: &str = " market has no place to trade in, so it cannot trade.";
+    /// `tacsim::port::market::LOCKER_ELSEWHERE`'s head: another venue's or player's locker.
+    pub const LOCKER_ELSEWHERE: &str = "That locker is not yours at ";
+    /// `tacsim::port::proceeds::CHARTERED_ASK`'s head: no personal ask from a chartered hold.
+    pub const CHARTERED_ASK: &str = "Chartered cargo cannot go on a personal ask yet.";
+}
+
 /// **The partial needles**: rows (`family::NAME`) whose needle alone does not identify the
 /// sentence. Each needle's doc says what a reader must use beside it. A test holds this list to
 /// the table: every row whose needle is shorter than [`PARTIAL_BELOW`] characters (trimmed) is
@@ -712,6 +736,35 @@ mod tests {
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
     const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
+
+    fn venue_rows() -> Vec<Row> {
+        use super::venue as bot;
+        let mut rows = {
+            use tacsim::port::locker as game;
+            rows!("";
+                LOCKER_OPENED,
+                LOCKER_ALREADY,
+                LOCKER_NO_VENUE,
+                LOCKER_SHOW,
+                LOCKER_NONE,
+            )
+        };
+        rows.extend({
+            use tacsim::port::market as game;
+            rows!("";
+                NOT_AT_VENUE,
+                VENUE_UNPLACED,
+                LOCKER_ELSEWHERE,
+            )
+        });
+        rows.extend({
+            use tacsim::port::proceeds as game;
+            rows!("";
+                CHARTERED_ASK,
+            )
+        });
+        rows
+    }
 
     fn exchange_rows() -> Vec<Row> {
         use super::exchange as bot;
@@ -1030,7 +1083,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 10] = [
+        let families: [(&str, Vec<Row>); 11] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1041,6 +1094,7 @@ mod tests {
             ("practice", practice_rows()),
             ("exchange", exchange_rows()),
             ("hull_sale", hull_sale_rows()),
+            ("venue", venue_rows()),
         ];
         families
             .into_iter()
@@ -1064,7 +1118,6 @@ mod tests {
         ("EXCURSION_FAMILY", "a store family name, never printed"),
         ("TV_REC_PREFIX", "a store key prefix, never printed"),
     ];
-    /// `ship_mind.rs`.
     /// `hull_sale.rs`.
     const HULL_SALE_EXCLUDED: &[(&str, &str)] = &[
         (
@@ -1076,6 +1129,7 @@ mod tests {
             "a hull entry's catalogue-code prefix, not a sentence",
         ),
     ];
+    /// `ship_mind.rs`.
     const SHIP_MIND_EXCLUDED: &[(&str, &str)] = &[(
         "MIND_SWITCH",
         "the switch a player types (+ship/mind), not a sentence the game prints",
@@ -1587,6 +1641,28 @@ mod tests {
     fn hull_sale_needles_are_distinct() {
         distinct(&qualified("hull_sale", hull_sale_rows()), &[]);
     }
+    // Doc 48 cut EX.1b: the exchange at the venue.
+    #[test]
+    fn venue_needles_are_in_step() {
+        in_step("venue", &venue_rows());
+    }
+    #[test]
+    fn venue_needles_are_distinct() {
+        distinct(&qualified("venue", venue_rows()), &[]);
+    }
+    /// Every venue sentence fits the 120-column floor with its longest venue word filled in.
+    #[test]
+    fn venue_sentences_fit_120_columns() {
+        for (name, sentence, _) in venue_rows() {
+            let filled = sentence
+                .replace("{venue}", "launch.counter")
+                .replace("{port}", "Stickney Yards")
+                .replace("{tonnes}", "20.0")
+                .replace("{owed}", "1,234,567.89 cr");
+            assert!(filled.chars().count() < 120, "venue::{name}: {filled}");
+        }
+    }
+
     /// Every exchange sentence fits the 120-column floor as written (a filled line is held to
     /// it by `mush-market`'s own `ex1a_every_new_sentence_fits_120_columns`).
     #[test]

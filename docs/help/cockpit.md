@@ -47,9 +47,14 @@ Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
                       check-out.
   STATUS              your callsign — and that you are on the range, when you
                       are — power, speed, heading, position, the named
-                      spot nearest you, what your own scope holds, your pod's
-                      switch if you carry one, and your armour and internals
-                      section by section. If you chose
+                      spot nearest you, what your own scope holds, the rounds
+                      each of your mounts has left, your pod's switch if you
+                      carry one, and your armour and internals section by
+                      section. The rounds are one line, each mount's left
+                      over its full load, in the order your machine carries
+                      them:
+                      `rounds cannon <left>/<full>, machine_gun <left>/<full>`.
+                      If you chose
                       a chassis with `SIM UNIT`, the second line brackets it
                       — `Red Tank 1 [biped_mk1]: …` —
                       because a pod's tank keeps the pod's own name whatever is

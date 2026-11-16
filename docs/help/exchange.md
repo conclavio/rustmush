@@ -75,3 +75,21 @@ gives its hold back on its own when it lapses.
 
 You may hold at most 32 listings and bids at once, and the whole board holds
 at most 1,024. When the board is full, try later.
+
+## Where your goods go
+
+A purchase at a port goes into the hold of a hull of yours that is docked
+there. It need not be your first hull, only one whose hold you may trade from.
+
+With no hull of yours docked there, it goes into your locker at that market.
+`+locker/open` opens one where you stand, and `+locker` shows what it holds and
+owes. A locker holds 20 t and 40 m3, and owes 1 cr an IC day for each tonne
+it holds. Nothing collects that yet.
+
+A market that belongs to no port, such as a counter, trades only with people
+standing at it.
+
+## Chartered cargo
+
+Goods in a Co-op chartered hold cannot go on a personal ask yet. Sell them
+into a house's bid instead, which pays the Co-op its share.

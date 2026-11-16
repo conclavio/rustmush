@@ -1,5 +1,5 @@
 // Collector Drone — Orbital Cluster Mining Sortie Doctrine (SF.R14, D-35-13, D-35-17; doc 44 MW.12)
-// name: Collector Drone Doctrine; role: mining; api: 9; stock: 3; rated: class I (1,500 ops a think)
+// name: Collector Drone Doctrine; role: mining; api: 10; stock: 3; rated: class I (1,500 ops a think)
 //
 // A drone flies its own sortie: out to the rock, lift until its hold is full or the rock is
 // done, and home. What it brings back is what it lifted and carried into its bay.

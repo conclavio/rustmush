@@ -3028,7 +3028,8 @@ fn a8_the_moon_ports_stock_list_and_bid() {
             }
         }
     }
-    assert_eq!(moon_rows, 10, "Luna 4, Deimos 2, Titan 4");
+    // Doc 48 unit PL.2 (lane v36): the two farms' provisions rows, at Luna and Titan.
+    assert_eq!(moon_rows, 12, "Luna 5, Deimos 2, Titan 5");
     // The reference rows' listings are live.
     for (entry, org, good) in [
         ("luna_port", "crisium_instruments", "instrument_boards"),
@@ -3042,14 +3043,26 @@ fn a8_the_moon_ports_stock_list_and_bid() {
     // Every port reads Ready, the bid-only houses included.
     let (ready, out) = stock_ready(&mut rig.tw);
     assert!(ready, "{out}");
-    for line in [
-        "luna_port vendor habitat_board: Lunar Habitat Board, storefront vault #",
-        "deimos_port vendor syrtis_bonded: Syrtis Bonded Imports, storefront vault #",
-        "titan_port vendor selk_townships: Selk Townships Board, storefront vault #",
+    // Doc 48 unit PL.2: the Lunar Habitat Board seeds its farm's provisions, so it is no longer
+    // a bid-only house.
+    for (line, rows) in [
+        (
+            "luna_port vendor habitat_board: Lunar Habitat Board, storefront vault #",
+            "1 of 1",
+        ),
+        (
+            "deimos_port vendor syrtis_bonded: Syrtis Bonded Imports, storefront vault #",
+            "0 of 0",
+        ),
+        (
+            "titan_port vendor selk_townships: Selk Townships Board, storefront vault #",
+            "0 of 0",
+        ),
     ] {
         assert!(
             out.lines()
-                .any(|l| l.contains(line) && l.ends_with("0 of 0 stock rows seeded. [ready]")),
+                .any(|l| l.contains(line)
+                    && l.ends_with(&format!("{rows} stock rows seeded. [ready]"))),
             "{line}\n{out}"
         );
     }
@@ -3059,7 +3072,7 @@ fn a8_the_moon_ports_stock_list_and_bid() {
         let (_, queued) = fire(&mut rig);
         assert!(queued.is_empty(), "a further fire submitted {queued:?}");
     }
-    assert_eq!(minted.len(), 10);
+    assert_eq!(minted.len(), 12);
     for (id, receipt) in &minted {
         assert_eq!(
             typed(&mut rig.tw, &handles.families.port_stock, id).as_ref(),

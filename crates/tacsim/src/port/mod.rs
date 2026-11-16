@@ -170,6 +170,7 @@ pub mod hull;
 pub mod hull_sale;
 pub mod interface;
 pub mod licence;
+pub mod locker;
 pub mod map;
 pub mod market;
 /// Doc 36 cut GC.13: a port's medical room, opened as a `medical` facility crew treatment reads.

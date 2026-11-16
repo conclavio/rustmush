@@ -1899,9 +1899,17 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         // nothing milled yet reads Ready (reported, never gated).
         for vendor in &def.vendors {
             for mill in &vendor.mill {
+                // Doc 48 unit PL.1: a floored mill (Occator's refine) names its floor. Doc 48
+                // unit PL.2: a process names its second input.
+                let floor = mill.floor_t.map_or_else(String::new, |floor| {
+                    format!(", while {} is under {floor}", mill.into)
+                });
+                let with = mill.with.as_ref().map_or_else(String::new, |with| {
+                    format!(" with {} {} a ratio", with.per_ratio, with.good)
+                });
                 want.push(format!(
-                    "  {entry} mill {} {}: nothing milled yet; 0 t of ore waits; {} to {}, {} t \
-                     a batch, at most {} t an IC day. [ready]",
+                    "  {entry} mill {} {}: nothing milled yet; 0 t of ore waits; {} to {}{with}, \
+                     {} t a batch, at most {} t an IC day{floor}. [ready]",
                     vendor.org,
                     mill.ore,
                     mill.ratio.ore,
@@ -1921,9 +1929,11 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // Co-op and Stickney Yards. Doc 39 cut IN.5: Freeport Works' vendor and carbon ask lines,
     // and Kasei's refine. Doc 39 cut IN.7: Stickney Yards' strategic-ore bid. Doc 39 cut IN.11:
     // Freeport Works' strategic-ore ask and Stickney Yards' light-plant bid. Lane v33: the Yards'
-    // carbon bid.
+    // carbon bid. Doc 48 unit PL.1 (lane v35): Occator's refine, a third Ceres mill line. Doc 48
+    // unit PL.2 (lane v36): the two farms' provisions asks, Crisium's two bids and Titan's
+    // carbon-ore bid, and four mill lines (the farms, the fab and Titan's carbon mill).
     assert_eq!(
-        commerce_lines, 67,
+        commerce_lines, 77,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();
@@ -2356,13 +2366,15 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
     // vendors loads — the rule is scoped to an entry with vendors, so the published v2
     // (references, no vendors) keeps loading. Doc 19 cut A.4b: an emergency block needs
     // a vendor to post from, so the v2 shape has none. Doc 20 cut SM.12b: a yard delivers to a
-    // mill row, which lives on a vendor, so the v2 shape has no yard either (`strip_yard`).
+    // mill row, which lives on a vendor, so the v2 shape has no yard either (`strip_yard`). Doc
+    // 48 unit PL.1: nor a refinery, which is the operator of a vendor's refine row.
     assert_eq!(
         refusal(|doc| {
             support::drones::strip_yard(doc);
             if let Some(def) = doc["entries"]["ceres_port"]["def"].as_object_mut() {
                 def.remove("vendors");
                 def.remove("emergency");
+                def.remove("refinery");
             }
             doc["entries"]["ceres_port"]["def"]["programme"]["reference"]["metals"] =
                 json!("ceres_port/coop");

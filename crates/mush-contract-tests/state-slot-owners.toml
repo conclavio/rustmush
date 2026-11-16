@@ -1690,3 +1690,14 @@ takes the account id from `economy`'s allocator before `mush_economy::open_accou
 writes it through the economy module's own path, the `port/apply.rs` precedent.
 The site refuses when the slot is absent.
 """
+
+[[site]]
+path = "crates/tacsim/src/port/locker.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 48 cut EX.1b, for the `port/coop.rs` row's reason: a player's venue locker takes its
+vault id from `economy`'s allocator before `mush_economy::create_vault` writes it through
+the economy module's own path. The site refuses when the slot is absent.
+"""

@@ -207,7 +207,111 @@ Not built.
 
 ## CC.4
 
-Not built.
+Rounds on `STATUS` (Q-49-13, the ground half). Built 2026-11-15 on main `c85a8744f`, with CC.0
+(#626) merged. It changes no content, no kernel and no pin.
+
+**Survey.**
+- `STATUS` (`weapons_fire.rs`, `status`) printed no rounds. The frame already carried each
+  mount's rounds and full load (`frame.weapons`), which the mount status rows, the TUI cockpit and
+  the pixel cockpit read.
+- The widest shipped fill is the heavy (`heavy_mk1`). It carries three mounts: the cannon, the
+  coaxial gun (`machine_gun`) and the missile rack (`missiles`). Every other armed unit carries
+  two. Its row at full load is 58 columns today, and 56 under CC.2's magazines.
+- The bot closes an open `STATUS` block at the first line it does not know as one of the block's
+  rows (`picture.rs`, `is_status_form`). It reads every section row after that as nobody's. A row
+  the bot could not classify would have cost it its own sections, so the row needed a `Line`
+  variant of its own, not only a needle.
+- Two help texts list what `STATUS` says: `help cockpit`'s row, and the in-game `help STATUS` line
+  (`cockpit.rs`, `cockpit_help`).
+
+**Built.**
+- **The row**, `WeaponRow::rounds_line(rows)` in `weapons_fire.rs`:
+  `  rounds cannon 39/40, machine_gun 1990/2000, missiles 6/6`.
+  - Two spaces in, then each mount by its id with `left/full`, in component order, joined by
+    commas. A platform with no mount prints no row, as one with no heat prints no heat row.
+  - It hangs on `WeaponRow`, which the cockpit already exports, so `cockpit.rs`' export list is
+    unchanged.
+- **`STATUS`** prints it after the position and the nearest spot, and before the heat. It reads
+  the held frame's mount rows (`frame_weapons`): the pilot's own tank, which the arena writes.
+- **Help.**
+  - `docs/help/cockpit.md`'s `STATUS` row says what the line holds, and gives its shape with
+    placeholders. No shipped load is quoted (CC.0's rule).
+  - `cockpit_help("status")` says it too. Its pinned clause, `, your pod's switch if you carry
+    one`, is kept.
+- **The bot** (`crates/mush-bot/`):
+  - `lines.rs`: `Line::StatusRounds { mounts }`. `status_row` reads it before the section reading,
+    so a section called `rounds` still reads as a section. The answer table lists it.
+  - `picture.rs`: it is a row of the block (`is_status_form`), so the block stays open through it.
+    It is read into `Own::rounds`, which nothing reads yet. It moves nothing in
+    `Picture::weapons`: those rounds come off the mount status rows, which the stale-ready guard
+    reads against the acks.
+  - The scripted rig's `STATUS` (`tests/arena_lane.rs`) prints the row, from the same figures its
+    mount rows print (`rounds_of`). Every lane test that reads the rig's sections now reads them
+    through the row.
+
+**Tests.**
+- **`match_::cockpit::tests::cc4_the_rounds_row_at_its_widest_fill_is_under_120_columns`.** It
+  takes every fielded unit type that instantiates, each mount at its load off the content. For
+  each, the row names every mount as `load/load`, in order, under 120 columns. It also checks:
+  - the widest fill is the heavy's;
+  - a spent mount reads its own left;
+  - a platform with no mount gets no row.
+- **`domain_arena`'s
+  `cockpit::cc4_status_shows_each_mounts_rounds_within_120_columns_at_its_widest_fill`.** A heavy
+  is fielded with `SIM UNIT heavy_mk1` in a running match. It checks:
+  - the frame carries the content's loads;
+  - `STATUS` has exactly one rounds row, equal to the row built from the content, before the
+    section rows;
+  - every line of the reply is under 120 columns.
+
+  It builds its expected row without the cockpit's formatter, so it compiles on the base tree and
+  fails there.
+- **mush-bot.**
+  - `lines`: the row, a one-mount row, a section called `rounds`, and two rows that are not it.
+  - `picture::the_rounds_row_is_a_row_of_the_status_block`: the sections after the row still
+    apply, and a row outside a block changes nothing.
+  - `arena_contract`'s parser test reads the formatter's row off the hand-built frame, through the
+    120-column renderer, into `Own::rounds`.
+  - `arena_contract::the_rounds_row_at_its_widest_fill_is_one_line_the_bot_reads` renders the
+    heavy's content fill as one line and reads every mount back.
+- **Runs**, on conclav.dev in a throwaway clone:
+  - **On the base tree**, with only the `domain_arena` story applied, the story fails. Its check
+    that the frame carries the content's loads passes, then it finds no rounds row in `STATUS`.
+  - **With the cut:**
+    - `tacsim`'s lib tests and `domain_arena`: 3,516 passed;
+    - the bot job (`mush-bot` without the mining cohort and `arena_mind_isolation`): 786 passed,
+      `m5_4_the_mind_lines_read_as_the_bot_reads_them` among them;
+    - `mushd`'s sim lenses: 95 passed;
+    - `mush-contract-tests`: 200 passed, the help lint and the `ci_policy` guards (census, panic
+      budget, restriction lints) among them.
+  - **Guards**, all passed:
+    - `cargo fmt --check` for `tacsim` and `mush-bot`;
+    - `cargo clippy --all-targets -- -D warnings` for both;
+    - the CI lint job's M7 memory-size pass on `tacsim`;
+    - `cargo doc --no-deps --document-private-items` with `-D warnings` for both.
+
+  After the run, only two things changed: the help row's wording (it adds no command-shaped
+  word) and this note.
+
+**Divergences.**
+- **A row of its own**, not a field added to another row. The head row carries the object's name,
+  which can be any length, so a field there could not be bounded by content. A row of its own is
+  the shape heat, the receiver and the pod switch already take. Its width depends only on mount
+  ids and loads, which the test reads from content.
+- **Mount ids, not short names.** `mg` is shorter, but a short name is a fact about the whole
+  platform (`weapon_short_of`). The bot can read `STATUS` before any mount status reply has told
+  it the short names. The id is what the mount status rows open with.
+- **Not wrapped.** The facet runs wrap; this row does not, because a four-space continuation reads
+  as a facet run to a line reader. The unit test fails on the day the content fields a unit whose
+  row would reach 120 columns.
+- **Outside the row's file**, on the brief's word for the help and the tests:
+  - the in-game help line in `cockpit.rs`;
+  - the tests, in `match_/cockpit/tests.rs` and `tests/domain_arena/cockpit.rs` (appended).
+
+**Not built.**
+- Space decision support: CC.9's.
+- The bot does not act on `Own::rounds`. CC.10's discipline (Q-49-17) can read it.
+- The TUI and web status panes are unchanged: they already show each mount's rounds off the frame.
 
 ## CC.6
 
@@ -398,11 +502,299 @@ packs, and **not minted**: no unit binding names them, so the definition registr
 
 ## CC.9
 
-Not built.
+Space decision support (Q-49-13, space half, as corrected by doc 48b's W-49-5). Built 2026-11-15
+on main `c85a8744f`, with CC.6 (#627) merged. Space has no chance roll, so nothing here is odds:
+every figure is one the kernel already uses to decide a shot.
+
+**Survey.**
+
+- **What a player saw.** `+tac/status` printed the lock, the point-defence switch, mount counts
+  and heat. `+tac/scan` printed range, light-lag, signature and EMCON. The canopy's cowling
+  printed hull, change of speed, heat, PDC mode and EMCON. Nothing showed rounds, a cycle, a
+  laser's mode, the lock's range or which band of her hull faced the shooter. The TUI drew the
+  ground's text panel under the space canopy, which in space read "not in a cockpit".
+- **What a space mind read** (`space/view.rs`, as CC.6 left it): one row a mount it may fire,
+  with `p_permille` 850 on every row, one band of 250 km, `heat_per_shot` 0, a `ready` that
+  ignored the laser's mode, and `aspect` front on every contact.
+- **What the kernel decides a shot by** (`space/bubble.rs`, read only):
+  - an offence laser fires when its fit allows offence, it is in offence, its cycle is done,
+    the pulse would not take her heat past 1,000 per mille, and the lock lies within its reach;
+    it lands at once, `LaserMount::damage_at_range`;
+  - the spinal gun fires on its cycle, its rounds, the same heat rule and its reach; its round
+    flies `compute_railgun_lead`'s time;
+  - the tubes fire on their cycle and magazine, with no reach and no heat;
+  - the band struck is `SpaceShipState::select_facet_for_attack`: five bands, front, left,
+    right, rear and top (a hull struck from below reads left or right).
+- **The bot** reads no space line: its lanes never open a bubble (`mining_cohort.rs` notes the
+  picket's words as ones the bot does not have). So it has no space sentence table to add to.
+
+**Built.**
+
+- **One reading, `space::view::fire_picture`.** For a hull in a bubble: every mount she carries
+  (lasers, tube families, spinal guns, point-defence rotaries, each family in her fit's order),
+  and her lock while her sensors hold it. Each mount (`MountFacts`) carries:
+  - its family, a laser's mode, its rounds and what her fit stows (`magazine_max()`; a rotary's
+    drum has no maximum the kernel counts back to, so it reads rounds left);
+  - its cycle left, its reach and its heat a shot;
+  - its state, the first that holds of `down`, `empty`, `cycling`, `too_hot`, `past_reach`,
+    else `ready`. Every mount of a hull that is not operational is `down`;
+  - against a held lock within its reach, what one laser pulse lands there or how long a
+    spinal round flies there.
+
+  The lock (`LockFacts`) carries the ship, her callsign, the range and her band of five that
+  faces the shooter.
+- **The same rows on every surface.** `mush_pixel::space_cockpit::fire_rows` prints the
+  feed's `fire` object (`view::fire_feed`) as a head, a row a mount and a lock row:
+
+  ```text
+  Mount          Kind      Rounds/mode     Ready       At the lock
+  laser_dorsal   laser     offence         ready       98 a pulse
+  rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s
+  pdc_port       point def 4000 left       ready
+  Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.
+  ```
+
+  - **Line mode:** `+tac/status` prints its head line (now lock, PDC switch and heat; the mount
+    counts went, the rows replace them), then the rows two spaces in
+    (`commands::fire_status_lines`).
+  - **The cockpit feed:** `push_space_panels` adds `fire` to every `space.cockpit` keyframe
+    from a bubble. `bubble.rs`'s `cockpit_feed` is unchanged.
+  - **The pixel canopy** (the TUI's picture and the web's, through `mush-pixel-wasm`) draws
+    the rows over the cowling, bottom left, at the font's own size, coloured by what each
+    says.
+  - **The TUI:** under the space canopy and the holotank, a MOUNTS column of the rows beside
+    the comms (`cockpit_text::draw_space_panel`), in place of the ground's panel.
+- **The mind reads the same (API 10).**
+  - Its rows of `v.weapons` are built from the picture: `p_permille` is `()` (no odds;
+    the collector drone's row too), `bands_cm` is the mount's one reach (none for the tubes),
+    `heat_per_shot` is the kernel's, and `ready` is cycled, with rounds, and a laser in offence.
+    `ready_in_ms` is still the cycle left, which every shipped doctrine reads, so none of them
+    moves.
+  - New kernel `space_mount(v, id)`, a read at fee 1: one mount's `family`, `mode`, `rounds`,
+    `rounds_max`, `ready_in_ms`, `state`, `reach_m`, `heat_per_shot`, `lock_damage` and
+    `lock_flight_ms`, for every mount, point defence among them.
+  - `Contact.aspect` in a space bubble reads her band of five (`SpaceContactView::facet`);
+    on the ground it is unchanged. `ViewContact::aspect` carries the nearest of the arena's
+    four, front for top, and nothing in space reads it.
+- **The ABI bump, by record.** `API_VERSION` 10, `MIND_ABI = "rhai=1.26.0;api=10;stock=3"`,
+  `RETAINED_ABIS` gains api 9 (six rows). The stock, house and acceptance content's headers,
+  manifests and envelopes say api 10; their digests moved with the bytes:
+  - Standard Doctrine source `2bea2391…7b5fef` to `c544bfbd…f9375f` (`STANDARD_SHA256`, and
+    every pin that quotes it or its 16-hex prefix);
+  - the field pilot's source, and the three House envelopes' digests in their manifests;
+  - **the picket cast:** `content/space/picket_cast.json` names each doctrine by its SHA-256,
+    so four entries moved with their headers: the picket's, the raider's, the interdictor's and
+    the drone's. `cast.rs` holds them to the files. Until they moved, every picket story failed
+    with "the picket's bubble opens on her".
+- **Re-pinned by record**, read on Linux (conclav.dev). Each pin moved in a hash alone: no
+  fight, count, time or ledger line moved otherwise.
+
+  | Pin | What moved |
+  |---|---|
+  | `match_/seal.rs` `m5rules_default_seal_identities_are_pinned` | the nine default seal identities; the API 4 projection still holds |
+  | `tests/domain_arena/minds.rs` `m1a5_the_production_hash_does_not_move` | three state hashes |
+  | `tests/domain_arena/motor.rs` `DUEL_HASH_API6_OBSERVED`, `M1B0_DUEL_LINES` | the duel's hash; its 34 ledger lines, each in `hash` alone |
+  | `tests/domain_arena/reflex.rs` `m1a1_…`, `M1B0_J_LINES` | two substep hashes; the 50 ledger lines, each in `hash` alone |
+  | `minds/registry/trials/physical_tests.rs` `C4_TRIAL_PINS` | each row's state, ledger and result digests; every case still ends in the same elimination at 58,500 ms |
+  | `tests/domain_arena/minds_rhai.rs` `M2_CROSS_PLATFORM_PINS` (`#[ignore]`d, run by name) | the four rows' hashes; the stopping times, the 3,600 thinks and the float bitmask as they were |
+  | `tests/harness_baseline/arena.linux.json` (`#[ignore]`d, run by name) | `ledger_bytes_streamed` (1,651,236 to 1,650,975: the hash digits) and the minds lane's four `final_substep_hash` leaves; the record is `cc9_deterministic_update` |
+
+  The harness delta moved those five fields and no other field of its deterministic block. It
+  read p50 -6.3%, p99 -2.2% and window p99 -9.5%. Unlike AP.3, I did not dump the ledger line by
+  line. The evidence is the delta itself and the 84 arena ledger lines above, each of which
+  moved in `hash` alone.
+- **Help:** `docs/help/space.md`, "Reading your mounts".
+
+**Tests.**
+
+All runs were on conclav.dev, in a throwaway clone, with the unit's patch applied on
+`c85a8744f`.
+
+- **New tests:**
+  - `space::view::cc9_tests`, five tests:
+    - Halcyon's full fit, a row for each of its eight mounts; the kernel's damage at range and
+      the spinal round's flight time;
+    - the five bands, each through the picture, the mind's space row and `Contact.aspect`;
+    - what holds a mount back: a cycle, defence mode, an empty magazine, a rotary that is down
+      or out of rounds, a derelict hull, the heat ceiling (and the kernel refuses the same shot),
+      and past reach;
+    - a mind's rows: no odds, the true reach and heat, `ready` in defence; `space_mount` for
+      every mount and `()` on the ground;
+    - every `+tac/status` row within 120 columns at the widest fill on Halcyon's full fit.
+  - `mush-pixel`, three tests: the rows' words and tones with no odds; the lock row's widest
+    fill (a 32-character id, a cut callsign, `u64::MAX` metres); the canopy draws the rows inside
+    its colour budget.
+  - `mush-net-ssh`: the space panel at 120 columns prints every mount row whole, beside the
+    comms, and says so when there is no fire object.
+- **Suites, all passing:**
+  - `tacsim`'s lib tests with `domain_arena`, `domain_world` and `domain_field`: 4,108 tests,
+    every space story of doc 47 among them (`voyage.rs`, `space_ap9.rs`, `field_ap11.rs`,
+    `mw13_ship_mind.rs`, `mw21_completion.rs`, the `tick_thinks_tests.rs` return-fire tests);
+  - `mush-pixel` with `mush-net-ssh`: 632 tests;
+  - `mush-bot`'s lib tests: 536 tests;
+  - the bot job (`cargo nextest run -P ci -p mush-bot`, less its two long stories, and its doc
+    tests): 784 tests;
+  - `tacsim`'s harness binary's own tests, 24, `every_committed_baseline_agrees_on_the_deterministic_block`
+    among them;
+  - by name: `minds_rhai::m2_the_twin_corpus_hashes_the_same_on_every_host`,
+    `twin::m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool`, and the
+    harness in release, its measurement and then its delta. On the re-blessed file the delta
+    reads its deterministic block equal (106 fields) and the four minds blocks equal, with
+    p50 +0.9%, p99 +3.4% and window p99 +4.5%.
+- **Windows:** the C4 trial by hand (`cargo test -p tacsim --lib c4_a_registry_trial -j 2`)
+  reads the same four rows as Linux. The cross-platform corpus's Windows run is ci.yml's step.
+- **Guards, all passing:**
+  - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on `tacsim`,
+    `mush-pixel`, `mush-net-ssh` and `mush-bot`;
+  - the lint job's M7 memory-size pass;
+  - `mush-contract-tests`' `ci_policy` guards (`feature_matrix_inventory`, `panic_budget`,
+    `restriction_lints`) and the help lint (`engine_contracts help_commands`);
+  - rustdoc with `-D warnings`, with and without `--document-private-items`, on `tacsim`,
+    `mush-pixel` and `mush-net-ssh`.
+
+**Divergences.**
+
+- **Point defence has no row in `v.weapons`.** A mind cannot fire it (it fires on its own), so
+  "every mount" is read through `space_mount(v, id)`, which carries it, as CC.6 left the rows.
+- **A rotary's rounds have no maximum.** `PdcMount` keeps no count since full, and
+  `space/weapons.rs` is not this unit's file. The rows say `4000 left`, and `rounds_max` is `()`.
+- **The lock row's figures sit on the mount rows.** Range and band are on the lock row; the
+  damage a pulse lands and the spinal round's flight are on each laser's and spinal gun's own
+  row, as `At the lock`, so two lasers of different rows each show their own.
+- **`+tac/scan` is unchanged.** Its rows already carry range; the lock's band is on
+  `+tac/status`.
+- **Files outside the row**, each the least the ABI bump needs, which the brief called for:
+  - the API: `minds/mod.rs` (the version, the ABI, the retained list, the two name pins),
+    `kernels.rs` (`space_mount`), `api.rs` (`Contact.aspect`);
+  - the content: the shipped minds' headers, manifests and envelopes, and
+    `content/space/picket_cast.json`'s four digests;
+  - the tests that name the API or a digest: `authoring.rs`' two retained-ABI tests,
+    `acceptance.rs`, `content.rs`' digest, `tests/domain_arena/content.rs`,
+    `tests/support/api4_identity.rs` and `mush-bot/src/mine/market.rs`' draft ABI;
+  - the pins re-blessed by record (the table above): `match_/seal.rs`,
+    `minds/registry/trials/physical_tests.rs`, `tests/domain_arena/{minds,minds_rhai,motor,reflex,weapons}.rs`
+    and the harness baseline.
+- **The bot sentence table:** none added, as the bot reads no space line (Survey).
+
+**Not built.**
+
+- `+tac/torp` and `+tac/railgun` still fire the first of each family; a mount argument through
+  `FireMount` is open.
+- Doc 17's amendment log (its §3, §13 and §16 record each API) does not record API 10: this unit
+  writes only its own cut-note section.
+- Doc 17's view table and the mind help pages do not list `space_mount`, as they do not list
+  `space(v)`. `docs/help/space.md` names it.
+- **Land order with CC.2:** CC.2 re-blesses the seal, motor, minds, twin, C4 and harness pins
+  too. Whichever lands second re-pins on top of the other.
 
 ## CC.7
 
-Not built.
+Space magazines persist (Q-49-12; Q-49-10's magazines). Part 1 was built 2026-11-16, stacked on
+CC.9 (`claude/cc9-space-decision-support-ab821d`, PR #634). Part 2, the berth rearm, waits on doc
+48's PL.3 (PR #635) and is listed under **Not built**.
+
+**Survey.**
+
+- **Check-out refilled every magazine.** `space_ship_from_tactical_unit_with_spec` builds a ship
+  from her fit's overlay, every mount full. Check-in (`build_space_damage_mutation_plan`) wrote
+  sections, facets, heat, conditions and the `tacsim.space.subsystems` capability (crits,
+  stripped rotaries, `slow_pct`), but no magazine. So every fight began full.
+- **A bay repair clears the subsystem record.** `port/bay_work/jobs.rs` revokes
+  `tacsim.space.subsystems` when it mends a hull. Magazines kept there would have refilled at
+  every repair.
+- **The cast was already resupplied, by construction.**
+  - `spawn_kirkwood_picket_ships_in_world` makes a fresh hull and unit for the corvette and the
+    raider at each spawn (`create_stock_space_unit_in_world` refuses an object that already holds a
+    unit).
+  - After check-out, `configure_corvette_and_raider_ships` lays the cast's fit overlay anew.
+  - An unclaimed cast hull is destroyed after its bubble (`destroy_unclaimed_npc_hull`).
+- **The census.** EX.0 (#631, open) counts a round out of the census once a rearm loads it into
+  a magazine (`loaded`). A magazine is not a holding, so keeping it across check-ins moves no
+  census term; part 2's draws will.
+- **Persistence.**
+  - While a bubble runs, the ship lives in the saved bubble state. CC.6's `fired_since_full`
+    already rides it, skip-when-default, so a restart mid-bubble keeps her rounds (`voyage.rs`'s
+    sfr8 holds that state bit-identical across a restart).
+  - Outside a bubble, her durable form is her `TacticalUnit` document in the unit store.
+
+**Built.**
+
+- **`tacsim.space.magazines` (`SPACE_MAGAZINES_CAPABILITY`),** a capability of her unit of its
+  own: `{"rounds": {mount id: rounds left}}` for each tube family, spinal gun and point-defence
+  rotary short of what her fit stows.
+  - **Check-in** writes it (`spent_magazines`) and revokes it when every magazine is full. A hull
+    that never fired gains nothing, so her unit is the bytes it always was.
+  - **Check-out** loads it onto the ship her fit built (`kept_magazines`, `load_kept_magazines`).
+    Each magazine keeps what was left and never more than her fit stows. A tube family's or
+    spinal gun's `fired_since_full` becomes what the fit stows less that, so a mind still reads
+    the fit's maximum. An id she no longer carries is ignored.
+  - It is not a key of `tacsim.space.subsystems`, so a bay repair leaves it alone.
+- **The cast:** `configure_corvette_and_raider_ships` now says why each spawn sails full, and a
+  test holds it.
+- **Help:** `docs/help/space.md`, "Magazines": what she fires stays fired, through a restart; a
+  bay repair is not a rearm; a patrol is resupplied.
+
+**Tests.**
+
+Runs were on conclav.dev, with the unit's patch applied on CC.9's tip (`3d8d118b2`).
+
+- **New tests**, all on Halcyon's stock unit (torpedoes, spinal rounds and point defence):
+  - `space::custody::cc7_tests` (five):
+    - check-in keeps exactly the magazines short of her fit, and check-out loads them: every
+      round conserved, the fit's maximum still read, and a second check-in idempotent;
+    - a full hull gains no capability, and a hull rearmed to full drops it;
+    - a restart: her unit's serde round trip, its durable form, keeps the rounds;
+    - a bay repair (revoking `tacsim.space.subsystems`) conserves them;
+    - a kept count never loads past her fit, and an unknown mount id is ignored.
+  - `space::picket::tests::cc7_a_cast_hull_sails_full_whatever_her_unit_kept`: a cast hull
+    with spent magazines sails full after the cast's fit is laid.
+  - `tests/domain_world/voyage.rs`, the story
+    `cc7_a_hulls_magazines_survive_check_in_a_restart_and_check_out`:
+    1. a chartered Dray is checked out and her point defence fires 300 rounds;
+    2. she is checked in by the real `check_out_space_unit` and `check_in_space_unit`;
+    3. the store is folded and the engine rebooted;
+    4. her unit still keeps the magazine, and the next check-out loads it: the rounds are
+       conserved, and nothing refilled her.
+- **Suites, all passing:**
+  - `tacsim`'s lib tests with `domain_world`, `domain_field` and `domain_economy`: 3,573 tests,
+    the space stories among them. 3,572 passed on the first run. The new story failed: its rig
+    folded the check-in's writes before the world's older ones, so the charter's unit document
+    won. With the order fixed it passes, run on its own;
+  - the bot job (`cargo nextest run -P ci -p mush-bot`, less its two long stories, and its doc
+    tests): 784 tests.
+- **Guards, all passing:**
+  - `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` on `tacsim`;
+  - the lint job's M7 memory-size pass;
+  - `mush-contract-tests`' `ci_policy` guards and the help lint;
+  - rustdoc with `-D warnings`, in both modes.
+
+**Divergences.**
+
+- **The fit's stow is read from the fit her hull flies** (`space_unit_overlay_for_id` of her
+  `hull_class`), the one check-out builds her from. A retune that shrinks a magazine clamps what
+  she kept to the new stow at her next check-out, so a content change can lose rounds. Rounds are
+  conserved across play, not across a retune.
+- **`port/bay_work/jobs.rs` and the census are untouched.** Keeping magazines in a capability of
+  their own needed no change there.
+- **Files outside the row:** `tests/domain_world/voyage.rs` gains the one story below, with a
+  local helper that keeps a staff context's durable writes.
+
+**Not built.**
+
+- **Part 2, the berth rearm** (Q-49-12), waits on doc 48's PL.3 (#635), which adds the space
+  munitions goods. Until it lands, **nothing refills a player's space magazines**: what a hull
+  fires is gone. The rearm is a follow-up PR: a new file in `tacsim/src/port/` that draws
+  torpedoes, spinal rounds and point-defence boxes from the hold or the port, at the goods' cost
+  plus a labour fee, like the ground's `+bay/order rearm`. It fills to `magazine_max()`, sets
+  `fired_since_full` to nought, and rewrites or revokes `tacsim.space.magazines`. Its draws are
+  EX.0's `loaded`.
+- **A refit refills.** `+coop/refit` re-instantiates the unit (`mush_tactics::module`'s
+  re-instantiate route, `port/refit.rs`), which drops every capability, the kept magazines and
+  the subsystem record among them. A refit therefore rearms for free. Fixing that belongs with
+  the refit's owner.
+- **The interdictor** is cast in `space/tick.rs`, which is not this unit's file. It sails full
+  the same way: a fresh unit at each spawn, and its overlay laid anew after check-out. No test
+  here holds it.
 
 ## CC.8
 
