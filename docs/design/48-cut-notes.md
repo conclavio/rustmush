@@ -466,7 +466,126 @@ so a site's clerk files the mark.
 
 ## EX.1b
 
-Not built.
+Row: §7.1 EX.1b; Q-48-49, Q-48-56; doc 48b G-6, G-7, G-8. Stacked on EX.1a (#632).
+
+**Survey.**
+- **The endpoint.** `PortVenueGate::endpoint_for` took the actor's helm hull: `helm_of`'s
+  `.min()` over the programme rows and the titled hulls (`coop.rs:602-638`). `hull_admits`
+  refused any other hull. So a captain with two hulls could only ever trade into the first,
+  wherever it lay.
+- **Off-hold storage was free.** `PortCapacity::plan` answers only for a hull's hold
+  (`governed_hold`), so every other vault had no plan and no limit (`market.rs:477`). A player
+  without a hull had no endpoint at all.
+- **The gate failed open.** `PortVenueGate::admit` returned `Ok` for a venue no port authors
+  (`market.rs:258-263`). The only such venue today is the launch counter, and its own gate
+  (`launch/venue.rs`) calls `PortVenueGate.admit` first, then checks its room.
+- **The Co-op share.** mush-market asks `ProceedsPolicy` only on a sale into a bid
+  (`trade.rs:2429`). EX.1a's `ListingAcceptance` requires an ask's outcomes to pay the seller
+  the whole price. Posting asks tacsim only `gate.admit(actor, venue, Some(lot endpoint))`,
+  the same call a purchase into that hold makes.
+- **The offline buy.** `ask_at` reads the authored vendors' storefront asks only
+  (`executor.rs:614-645`), so a personal ask was out of reach. Q-48-56 keeps it that way unless
+  the order names a ceiling.
+
+**Built.**
+- **The endpoint by presence** (`coop.rs` `trade_hulls`, `market.rs` `choose_hull`):
+  - every hull whose hold the actor may trade (the fleet hull, the ferry, the live charter, the
+    titled programme rows, every commissioned hull), each held to `may_trade_hold`;
+  - a trade at a port delivers into the first of those docked there; failing that, the actor's
+    locker at the venue; failing that, the helm hull, so the gate's refusal still names it;
+  - `hull_admits` admits any of them.
+- **Venue lockers** (`port/locker.rs`, `+locker`):
+  - one vault per player and venue, backed by a container: a locker object in LIMBO owned by
+    the player, so the economy's built-in custody provider serves it. A vault is a locker when a
+    locker record names it, and it is never a hull's hold;
+  - opened by `+locker/open` where the player stands; `+locker` shows what it holds and owes;
+  - capacity-bound: the capacity plan of a locker vault is one compartment that takes any
+    stowage, held to 20 t and 40 m³ (provisional);
+  - what it owes: 1 cr an IC day per started tonne (provisional, the berth's rate), accrued in
+    whole IC days onto the record's `owed_minor` when `+locker` shows it. Nothing collects it.
+  - The record is `tacsim:locker:{player}:{venue}` in the store's own block; an unreadable one
+    is skipped loudly, and its vault stands.
+  - A locker loads only at its own venue and only for its owner (`LOCKER_ELSEWHERE`).
+- **The location gate** (`market.rs` `placed_admit`, `venue_room`): a venue no port authors
+  trades only with an asker standing in its room, in person. Today that room is the launch
+  deployment's counter. A venue the game places nowhere is refused (`VENUE_UNPLACED`).
+- **No personal ask from a chartered hold** (`proceeds.rs` `CoopProceeds::may_list`): the
+  posting is refused with `CHARTERED_ASK` while the hold is Co-op-enrolled; any other source
+  lists as before. mush-market's `ProceedsPolicy` gains `may_list`, defaulting to `Ok`, called
+  once in `seller::post_ask` after the gate.
+- **The offline buy** (`executor.rs` `ask_for_order`): the houses' lowest ask, and, only when the
+  order names `max=`, the lowest personal ask at or under it. A personal ask is one exact lot
+  sold whole, so it is a candidate only when the order wants all of it and the hold's room and
+  the pilot's funds cover it. At an equal price the house wins. The `+ship/orders` preview makes
+  the same choice.
+- **tacsim's own root** wires EX.1a's `with_standing_acceptance(ListingAcceptance)` beside the
+  market's other economy seams, so a personal listing stands in tacsim's compositions too.
+- Help: `help exchange` gains where goods go, lockers, counters and chartered cargo; `+locker`
+  has its own help. The bot's sentence table has a `venue` family.
+
+**Tests.** (conclav.dev, `CARGO_INCREMENTAL=0`, on EX.1a's head `c9e37c57c` with this unit.)
+- **Unit:** `port::market` (`ex1b_the_endpoint_is_the_hull_docked_where_the_actor_is`,
+  `ex1b_an_unplaced_venue_refuses`) and `port::locker` (the accrual by started tonne and whole IC
+  day, the key, the capacity plan refusing 21 t). With the existing `port::{market, locker,
+  executor, proceeds, coop, orders}` tests, 43 pass.
+- **Stories** (`tacsim/tests/domain_economy/ex1b_venue.rs`):
+  - `ex1b_a_hull_less_player_buys_into_their_locker`: `+locker` before and after
+    `+locker/open`; the record across a restart; a purchase with no hull lands in the locker;
+    18 t more is refused at 20 t; two IC days later `+locker` shows 6 cr owed.
+  - `ex1b_a_chartered_hold_cannot_post_a_personal_ask`: a lot in a Co-op-chartered hold is
+    refused with `CHARTERED_ASK`; the same captain's locker lot lists.
+  - `ex1b_an_offline_buy_takes_a_players_ask_only_under_a_ceiling`: with a player's two-tonne
+    lot listed under the house's price, `buy metals 2` takes the house's ask; `buy metals 1
+    max=<player's price>` takes nothing (the lot is sold whole and the house is over the
+    ceiling); `buy metals 2 max=<player's price>` takes the lot, whole, into the hold.
+- **Existing, green:** all of mush-market (258); `mush-server --test commerce_composition` (91,
+  the mind commerce through the launch counter's gate); tacsim's `orders::*`,
+  `in5_production::*`, `bay_gc8::*` and `in11_matter::*` stories; the bot's `minds::` tests (35,
+  with the new `venue` family in step, distinct and under 120 columns).
+- **The M7 market stories** (`player_market_story`, `player_market_typed`) were **not
+  verifiable**: they are red on main from #623's regression, and its fix had not landed when
+  this PR opened. The counter they trade at is the one venue `placed_admit` places; the 91
+  composition tests that trade there pass.
+- **Gates:** `cargo fmt --check`; clippy `--all-targets -D warnings` on tacsim, mush-market and
+  mush-bot; the M7 memory-size clippy; rustdoc `-D warnings`; `mush-contract-tests`' `ci_policy`
+  (80) and `help_commands` / `state_slot_owners` (10).
+- **Mutations:** 18, each alone, against the tests named to kill it; 12 killed. The six that
+  survive:
+  - **M2** (the docked-hull choice skipped): every story's actor has one hull, so the helm
+    fallback lands in the same hold.
+  - **M3** (`hull_admits` admits any hull): `endpoint_for` offers only the actor's own holds,
+    and the market's `may_take` refuses another's vault first.
+  - **M4** (the counter's location check): the launch counter's own gate repeats it.
+  - **M9** (another's or another venue's locker): `may_take` refuses another's vault first; the
+    other-venue case has no story.
+  - **M13** (a personal ask winning a tie with the house): no story prices them equal.
+  - **M14** (a personal ask over the ceiling): the story's ceiling equals the player's price.
+
+**Divergences.**
+- **Files outside the row's five, approved by the lead:**
+  - `tacsim/src/composition/mod.rs`: the standing-acceptance line;
+  - `tacsim/src/port/locker.rs`, new, and its `mod` line in `port/mod.rs`;
+  - `tacsim/src/store.rs`: the locker map, its boot load and its put, in their own block;
+  - `tacsim/src/commands.rs`: `+locker`'s registration, one statement;
+  - `mush-market/src/module.rs` (`ProceedsPolicy::may_list`) and `mush-market/src/seller.rs`
+    (its one call in `post_ask`);
+  - `docs/help/exchange.md` and `mush-bot/src/mine/minds.rs` (the sentences);
+  - `mush-contract-tests`' `state-slot-owners.toml` (the locker's vault id from the economy's
+    allocator, `coop.rs`'s precedent) and `legacy-handlers.toml` (`+locker`'s row).
+- **A locker opens with `+locker/open`**, not silently on first use: the gate that would see the
+  first use is read-only and cannot create a vault.
+- **What a locker owes accrues when it is shown**, at the tonnes held then, in whole IC days. A
+  daily pass would measure each day's own contents; EX.4's player-owed obligation replaces it.
+- **The endpoint falls back to the helm hull** after the locker, so a captain whose only hull
+  is elsewhere still reads the gate's refusal naming it.
+
+**Not built.**
+- **The Co-op share on a personal ask** (G-7). It is refused at posting instead. The hook is
+  EX.4's: `accept_at` (`mush-market/src/trade.rs:2429`'s sale-into-bid path is the only one that
+  asks `ProceedsPolicy`) must ask the policy for a personal ask from a governed hold, and
+  `ListingAcceptance`'s ask rule must admit the policy's share row.
+- **Collecting the locker's charge**: EX.4.
+- **Station and site venues**: none exists; `venue_room` is where each gets its row.
 
 ## EX.2
 

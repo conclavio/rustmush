@@ -336,6 +336,12 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
         )
         .map_err(|r| MarketError::bad(r.line))?;
     }
+    // Doc 48 cut EX.1b (Q-48-56): the proceeds policy may refuse an ask from its source.
+    if let Some(policy) = crate::module::proceeds_policy(ctx.w) {
+        policy
+            .may_list(ctx.w, &spec.seller, endpoint)
+            .map_err(|r| MarketError::bad(r.line))?;
+    }
     check_caps(ctx.w, &spec.seller)?;
     let ttl = spec.ttl_secs.clamp(60, crate::api::MAX_LISTING_TTL_SECS);
     let now = ctx.w.now();

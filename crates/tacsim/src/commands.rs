@@ -176,6 +176,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::census::census_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // Doc 48 cut EX.1b: `+locker`, a player's locker at the venue they stand in.
+    reg.command(
+        crate::port::locker::locker_spec(),
+        Arc::new(crate::port::locker::locker_cmd),
+    )?;
     // ---- Doc 18 cut IC3 (§4.1): `+credit`, a ReadOnly group of its own ----
     //
     // The `@corridor` bracket's pattern: the class is declared before the
