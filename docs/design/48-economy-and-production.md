@@ -1,6 +1,6 @@
 # 48. Economy and production — one exchange for every trade, and a chain that closes, surveyed
 
-Draft 0.2, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
+Draft 0.3, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
 lanes (goods, services, the engine and money, production), with the lead spot-checking the claims
 §0 leans on:
 - the market's `Representation` and `Supply` enums;
@@ -25,8 +25,10 @@ Every other default is accepted as written.
 
 The reason for the first two amendments is the live clock. At 24:1 an IC day is one real hour, so a
 rate per IC day is felt per real hour. Reading the other accepted figures with that in mind raised
-four follow-up questions, Q-48-33 to Q-48-36 (§6.6). They are open, and until they are ruled the
-accepted defaults stand.
+four follow-up questions, Q-48-33 to Q-48-36 (§6.6).
+
+**Draft 0.3, the same day, records that the owner accepted all four follow-ups at their defaults.**
+Every question in this survey is now ruled.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -639,7 +641,8 @@ One protocol, many local venues.
 
 Every other default, Q-48-1 to Q-48-32, is accepted as written. Each amended question carries its
 decision first, with the proposed text kept under it for the record. §6.6 holds the four follow-up
-questions the amendments raised; they are open.
+questions the amendments raised. The owner accepted all four at their defaults the same day
+(Draft 0.3).
 
 ### 6.1 The exchange
 
@@ -790,8 +793,8 @@ questions the amendments raised; they are open.
 **Q-48-18 — The NPC price rule.**
 - **Decision (owner ruling, 2026-11-15):** the rule as proposed, but the step is **5% an IC week**,
   not an IC day. An IC day is a real hour, and 5% an hour moves prices too fast. The band (50% to
-  200%), the reach premium and the price history stand as proposed. The history's window is raised
-  again in Q-48-35.
+  200%), the reach premium and the price history stand as proposed. The history's window became
+  24 IC weeks under Q-48-35.
 - **Proposed default (provisional, as written):**
   - an NPC house's ask and bid move with its stock against an authored target, by up to 5% per IC day,
     within 50% to 200% of the authored price;
@@ -934,8 +937,16 @@ questions the amendments raised; they are open.
 
 The reason behind Q-48-15's and Q-48-18's amendments applies to four other figures the owner
 accepted. The live game runs at 24:1, so an IC day is one real hour and an IC week about seven real
-hours. Each figure is raised here with a default in the same spirit. Until it is ruled, the accepted
-default stands.
+hours. Each figure is raised here with a default in the same spirit.
+
+**Ruled 2026-11-15: all four at their defaults** ("Yes, at defaults"). The figures that now stand:
+- Crew wages: 10 cr an IC day for a rating, 20 for an officer.
+- The throttle: 10% an IC week.
+- Price history: 24 IC weeks.
+- Consumption and the export faucet: sized by EX.9 from EX.0's census on a measured run at 24:1, to
+  within 1% of the lane's capital per real day.
+
+Each replaces the figure Q-48-14, Q-48-21, Q-48-18 or Q-48-19 and Q-48-22 accepted.
 
 **Q-48-33 — Crew wages at 24:1.**
 - **The problem:** Q-48-14 accepted 150 cr an IC day for a rating and 300 for an officer. At 24:1
