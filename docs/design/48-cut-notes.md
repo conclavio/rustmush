@@ -307,14 +307,22 @@ Not built.
 - **The floor is new.** The brief asked only for a sized rate. A fixed rate either floods the ask
   with no traffic or drains it under heavy traffic, and an active refine would have changed the
   Ceres clerk's acts in every story from boot. The floor is the alloy buy's shape (a works buys
-  below its floor) and keeps the refine idle until propellant is bought.
-- **Files outside the brief's list**, all mill integration: `port/def.rs` (`MillDef.floor_t`, the
-  own-stock rule), `port/readiness.rs` (the Listings line's netting) and `port/stock.rs`'s drift
-  check. The starting session approved them before they were touched, with the rule general,
-  not Occator's.
-- **The refinery's room is a stand-in.** Ceres has no plant room; the Pressure Lobby is the free
-  room nearest the berths. The freight deck's tank gallery (Ceres atlas, cut P-F) is the natural
-  home, and moving it is a lane edit.
+  below its floor) and keeps the refine idle until propellant is bought. **Its 5,000 t, the seed,
+  is provisional**, like the rate.
+- **Three edits beyond the brief's files**, approved by the starting session before they were
+  made, each general rather than Occator's:
+  1. **`port/def.rs`:** `MillDef.floor_t` (optional, skipped when absent, so the existing rows
+     encode as before) and `check_vendor_mills` admitting an ore that is one of the vendor's own
+     asks, for any vendor. Only `MillDef` and its check changed; EX.3's acceptor rows come later.
+  2. **`port/readiness.rs`:** the gated Listings line nets out the batch drawn and not yet milled.
+  3. **The lane's Ceres `refinery` block** (operator `occator`, room `c02_pressure`). Ceres had no
+     plant room, so the Pressure Lobby, the free room nearest the berths, is a stand-in. The
+     freight deck's tank gallery (Ceres atlas, cut P-F) is the natural home, and moving it is a
+     lane edit.
+
+  `port/stock.rs`'s drift check nets the same batch; that file is the stock clerk's mill arm,
+  which the brief already allowed. PL.2's farm, fab and feedstock mill can use the floor and the
+  own-stock ore on any vendor as they stand.
 
 **Not built:**
 - **The prices invert the refine.** Five tonnes of water at Occator's ask (500 cr) make four of
