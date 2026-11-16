@@ -409,7 +409,10 @@ so a site's clerk files the mark.
   - `mush-server --test commerce_composition` passes (91, including `ic_slice_loop`, the IC
     trade run);
   - `tacsim --test domain_economy` passes (589);
-  - the M7 market stories: M7_RESULT.
+  - the M7 market stories (`player_market_story`, `player_market_typed`) fail, and fail
+    identically on base main `c85a8744f` without this change. In both, `+minds/resell <lic>=<player>`
+    queues and is refused at its prepare ("That did not go through. Nothing changed.").
+    That failure is pre-existing and is reported as a follow-up; EX.1a leaves it unchanged.
 - **The gates:** `cargo fmt --check`, workspace clippy with `-D warnings`, the M7 memory-size
   clippy, rustdoc with `-D warnings` on the touched crates, `mush-contract-tests` (200: the
   census, the panic budget, the restriction lints and the help-page lint), and the bot's
