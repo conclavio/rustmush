@@ -641,6 +641,30 @@ pub mod exchange {
     pub const WITHDRAW_USAGE: &str = "Usage: +market/withdraw <listing>";
     /// `mush_market::seller::NO_SUCH_PLAYER`.
     pub const NO_SUCH_PLAYER: &str = "No such player.";
+    /// `mush_market::seller::ASSET_POSTED`'s middle (doc 48 cut EX.2): a hull listed.
+    pub const ASSET_POSTED: &str = " up for sale as #";
+    /// `mush_market::seller::NO_SUCH_ASSET` (doc 48 cut EX.2).
+    pub const NO_SUCH_ASSET: &str = "No such asset.";
+    /// `mush_market::seller::NOT_LISTABLE` (doc 48 cut EX.2).
+    pub const NOT_LISTABLE: &str = "That is not something this market lists for you.";
+    /// `mush_market::seller::ALREADY_FOR_SALE`'s head (doc 48 cut EX.2).
+    pub const ALREADY_FOR_SALE: &str = "That is already up for sale";
+}
+
+/// **A hull listed on the exchange** (doc 48 cut EX.2): what `+market/post #<hull>` refuses in
+/// the game's words, `tacsim::port::hull_sale`. No lane reads them yet; each is held to the
+/// game's own text below.
+pub mod hull_sale {
+    /// `tacsim::port::hull_sale::HULL_CORED`: a governed core fitted, refused for now.
+    pub const HULL_CORED: &str = "governed core fitted cannot be listed yet";
+    /// `tacsim::port::hull_sale::HULL_HOLD_LADEN`.
+    pub const HULL_HOLD_LADEN: &str = "hold must be empty before she is listed";
+    /// `tacsim::port::hull_sale::HULL_HOLD_DARK`'s tail.
+    pub const HULL_HOLD_DARK: &str = "hold cannot be read just now; nothing was listed.";
+    /// `tacsim::port::hull_sale::HULL_IN_BAY`'s tail.
+    pub const HULL_IN_BAY: &str = "stow her before she is listed.";
+    /// `tacsim::port::hull_sale::HULL_RIG_ABOARD`'s tail.
+    pub const HULL_RIG_ABOARD: &str = "return it to Occator before she is listed.";
 }
 
 /// **The exchange at the venue** (doc 48 cut EX.1b): a player's locker (`+locker`,
@@ -711,6 +735,7 @@ mod tests {
     const WORDS_RS: &str = include_str!("../../../tacsim/src/minds/market_commands/words.rs");
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
     const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
+    const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
 
     fn venue_rows() -> Vec<Row> {
         use super::venue as bot;
@@ -779,6 +804,22 @@ mod tests {
             BID_USAGE,
             WITHDRAW_USAGE,
             NO_SUCH_PLAYER,
+            ASSET_POSTED,
+            NO_SUCH_ASSET,
+            NOT_LISTABLE,
+            ALREADY_FOR_SALE,
+        )
+    }
+
+    fn hull_sale_rows() -> Vec<Row> {
+        use super::hull_sale as bot;
+        use tacsim::port::hull_sale as game;
+        rows!("";
+            HULL_CORED,
+            HULL_HOLD_LADEN,
+            HULL_HOLD_DARK,
+            HULL_IN_BAY,
+            HULL_RIG_ABOARD,
         )
     }
 
@@ -1042,7 +1083,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 10] = [
+        let families: [(&str, Vec<Row>); 11] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1052,6 +1093,7 @@ mod tests {
             ("ship_mind", ship_mind_rows()),
             ("practice", practice_rows()),
             ("exchange", exchange_rows()),
+            ("hull_sale", hull_sale_rows()),
             ("venue", venue_rows()),
         ];
         families
@@ -1075,6 +1117,17 @@ mod tests {
     const EXCURSION_EXCLUDED: &[(&str, &str)] = &[
         ("EXCURSION_FAMILY", "a store family name, never printed"),
         ("TV_REC_PREFIX", "a store key prefix, never printed"),
+    ];
+    /// `hull_sale.rs`.
+    const HULL_SALE_EXCLUDED: &[(&str, &str)] = &[
+        (
+            "HULL_PACK",
+            "the hulls' catalogue pack name, not a sentence the game prints",
+        ),
+        (
+            "HULL_CODE_PREFIX",
+            "a hull entry's catalogue-code prefix, not a sentence",
+        ),
     ];
     /// `ship_mind.rs`.
     const SHIP_MIND_EXCLUDED: &[(&str, &str)] = &[(
@@ -1569,6 +1622,24 @@ mod tests {
     #[test]
     fn exchange_needles_are_distinct() {
         distinct(&qualified("exchange", exchange_rows()), &[]);
+    }
+    // Doc 48 cut EX.2: a hull listed on the exchange.
+    #[test]
+    fn hull_sale_needles_are_in_step() {
+        in_step("hull_sale", &hull_sale_rows());
+    }
+    #[test]
+    fn hull_sale_census() {
+        census(
+            "hull_sale.rs",
+            HULL_SALE_RS,
+            &hull_sale_rows(),
+            HULL_SALE_EXCLUDED,
+        );
+    }
+    #[test]
+    fn hull_sale_needles_are_distinct() {
+        distinct(&qualified("hull_sale", hull_sale_rows()), &[]);
     }
     // Doc 48 cut EX.1b: the exchange at the venue.
     #[test]

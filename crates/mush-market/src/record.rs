@@ -55,6 +55,10 @@ const _: () = assert!(MAX_LISTINGS_PER_SELLER <= MAX_LISTINGS);
 /// `checked_add` refuses at the ceiling first), so no vendor row can ever answer it,
 /// and every reader that asks the vendor table about a personal listing reads none.
 pub const NO_VENDOR: VendorId = VendorId(u64::MAX);
+/// **The vault a personal asset listing names** (doc 48 cut EX.2): a titled object a person
+/// sells sits in no storefront, and its sale moves the title, never a vault's contents, so
+/// its `Supply::Stock` names this, which no vault ever is.
+pub const NO_VAULT: VaultId = VaultId(u64::MAX);
 /// The most quotes the whole store holds — open offers and trade-tape rows alike.
 pub const MAX_QUOTES: usize = 2_048;
 /// The most **settled trade-tape rows** the whole store holds, across every pair.
@@ -898,14 +902,18 @@ fn check_personal(w: &ListingWire) -> Result<(), RecordError> {
         ));
     }
     if personal {
+        // Doc 48 cut EX.2: or one titled object, from no storefront.
         let shaped = match &w.source {
-            Supply::Lot { lot, .. } => lot.is_some() && w.escrow.is_none(),
-            Supply::Wanted { .. } => w.escrow.is_some(),
-            Supply::Stock { .. } | Supply::Market { .. } | Supply::Procurement { .. } => false,
+            Supply::Lot { lot, .. } => lot.is_some() && w.escrow.is_none() && w.object.is_none(),
+            Supply::Wanted { .. } => w.escrow.is_some() && w.object.is_none(),
+            Supply::Stock { vault } => {
+                *vault == NO_VAULT && w.object.is_some() && w.escrow.is_none()
+            }
+            Supply::Market { .. } | Supply::Procurement { .. } => false,
         };
-        if !shaped || w.object.is_some() || w.draw == Some(true) {
+        if !shaped || w.draw == Some(true) {
             return Err(RecordError(
-                "a personal listing sells one exact lot or is an escrowed bid",
+                "a personal listing sells one exact lot or one titled object, or is an escrowed bid",
             ));
         }
     } else if w.escrow.is_some() {
@@ -960,7 +968,19 @@ pub struct ObservedRevisions {
     /// more an oracle than the listing's own revision is.
     #[serde(default)]
     pub source: Option<u64>,
+    /// **The digest of the titled object's state the quote was priced against** (doc 48 cut
+    /// EX.2, Q-48-52), from the composition's asset-sale seam: a hull's fitted parts, their
+    /// condition and its core. `None` when the listing conveys no object the seam knows.
+    /// The quote lapses when the state drifts, and the purchase contract settles only on this
+    /// digest (`market.asset.state`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<u64>,
 }
+
+/// The `market.asset.state` fact kind (doc 48 cut EX.2): true while a titled object's state
+/// is still the digest a sale pinned. Answered by [`crate::MarketFactProvider`] from the
+/// composition's asset-sale seam; id `"{object}/{digest}"`.
+pub const FACT_ASSET_STATE: &str = "market.asset.state";
 
 /// A stable, declaration-only hash — the same FNV-1a E6b's fence uses, so the two
 /// layers stamp the same declared fact the same way.
@@ -1945,6 +1965,36 @@ mod tests {
             !loads_listing(v),
             "a vendor's bid escrows nothing of its own"
         );
+    }
+
+    /// **A person's titled object on the wire** (doc 48 cut EX.2): one object from no vault,
+    /// one unit, no escrow. The same shape with no object, from a real vault, or escrowed does
+    /// not load.
+    #[test]
+    fn ex2_a_personal_object_listing_names_its_object_and_no_vault() {
+        let object = || {
+            let mut v = personal_json();
+            v["source"] = serde_json::json!({ "stock": { "vault": NO_VAULT.0 } });
+            v["object"] = serde_json::json!(42);
+            v["quantity"] = serde_json::json!(1);
+            v
+        };
+        let listed: Listing = serde_json::from_value(object()).expect("a hull listing loads");
+        assert!(listed.is_personal());
+        assert_eq!(listed.object, Some(ObjId(42)));
+        let round: Listing =
+            serde_json::from_value(serde_json::to_value(&listed).expect("serializes"))
+                .expect("back");
+        assert_eq!(round, listed, "the wire is lossless");
+        let mut v = object();
+        v["object"] = serde_json::Value::Null;
+        assert!(!loads_listing(v), "no object");
+        let mut v = object();
+        v["source"] = serde_json::json!({ "stock": { "vault": 3 } });
+        assert!(!loads_listing(v), "a real vault");
+        let mut v = object();
+        v["escrow"] = serde_json::json!(40);
+        assert!(!loads_listing(v), "escrowed");
     }
 
     #[test]

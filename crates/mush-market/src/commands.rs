@@ -107,6 +107,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    a price per unit (split it to size first with @inv/split). The lot is held \
                    for the listing, and a buyer's purchase settles while you are away. With \
                    to=, it is a private offer: only that player sees it or may buy it.\n\
+                   +market/post #<hull> price=<n> [to=<player>] [market=<venue>] [days=<n>]\n\
+                   \x20                                 list a hull whose title you hold, at one \
+                   price. Her hold must be empty and her core ungoverned; the bay will not \
+                   strip, scrap or fit her while she is for sale; the sale settles only on the \
+                   state the buyer was quoted, and her hold goes with her.\n\
                    +market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] \
                    [market=<venue>] [days=<n>]\n\
                    \x20                                 post a bid. The whole price is held from \
@@ -1093,6 +1098,10 @@ fn for_only(ctx: &Ctx<'_>, to: Option<&mush_org::PrincipalId>) -> String {
 /// exact lot (doc 48 cut EX.1a; Q-48-49).
 fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_string();
+    // Doc 48 cut EX.2: `#<object>` lists one titled object (a hull).
+    if raw.starts_with('#') {
+        return post_object(ctx, &raw);
+    }
     let mut words = raw.split_whitespace();
     let lot = words.next().and_then(mush_inventory::LotId::parse);
     let parsed = seller_words(words);
@@ -1151,6 +1160,73 @@ fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .replace("{listing}", &listing_id)
         .replace("{qty}", &qty.to_string())
         .replace("{name}", &name)
+        .replace(
+            "{price}",
+            &money(ctx.w, Some(&instrument), Amount::from_minor(price)),
+        )
+        .replace("{to}", &for_only(ctx, private_to.as_ref()));
+    let away = crate::seller::POSTED_AWAY.replace("{listing}", &listing_id);
+    lines(ctx, vec![posted, away]);
+    Ok(())
+}
+
+/// `+market/post #<object> price=<n> [to=<player>] [market=<venue>] [days=<n>]` — list one
+/// titled object you hold (doc 48 cut EX.2; Q-48-7, -52).
+fn post_object(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
+    let mut words = raw.split_whitespace();
+    let object = words
+        .next()
+        .and_then(|w| w.strip_prefix('#'))
+        .and_then(parse_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .map(mush_core::ObjId);
+    let parsed = seller_words(words);
+    let (Some(object), Some(parsed)) = (object, parsed) else {
+        return Err(CmdError::msg(crate::seller::POST_USAGE));
+    };
+    if parsed.qty.is_some() || parsed.into.is_some() {
+        return Err(CmdError::msg(crate::seller::POST_USAGE));
+    }
+    let Some(price) = parsed.price else {
+        return Err(CmdError::msg(crate::seller::POST_USAGE));
+    };
+    let (market, instrument) = match seller_venue(ctx, parsed.market.as_deref()) {
+        Ok(venue) => venue,
+        Err(line) => return Err(CmdError::msg(line)),
+    };
+    let private_to = match parsed.to.as_deref() {
+        None => None,
+        Some(name) => match named_player(ctx, name) {
+            Some(who) => Some(who),
+            None => return Err(CmdError::msg(crate::seller::NO_SUCH_PLAYER)),
+        },
+    };
+    let spec = crate::seller::PersonalAssetAsk {
+        seller: mush_org::PrincipalId::Object(ctx.actor),
+        market,
+        instrument: instrument.clone(),
+        object,
+        price: Amount::from_minor(price),
+        private_to: private_to.clone(),
+        ttl_secs: parsed
+            .days
+            .map_or(crate::seller::PERSONAL_LISTING_TTL_SECS, |d| {
+                d.saturating_mul(86_400)
+            }),
+    };
+    let id = match crate::seller::post_asset(ctx, spec) {
+        Ok(id) => id,
+        Err(e) => return Err(refuse_market(ctx, &e)),
+    };
+    let name = ctx
+        .w
+        .get(object)
+        .map(|o| o.name.to_string())
+        .unwrap_or_default();
+    let listing_id = id.0.to_string();
+    let posted = crate::seller::ASSET_POSTED
+        .replace("{name}", &name)
+        .replace("{listing}", &listing_id)
         .replace(
             "{price}",
             &money(ctx.w, Some(&instrument), Amount::from_minor(price)),

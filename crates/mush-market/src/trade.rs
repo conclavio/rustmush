@@ -202,6 +202,10 @@ pub fn is_current(ctx: &Ctx<'_>, q: &Quote) -> bool {
     if artefact_stamp(entry.representation, &q.catalog) != q.observed.artefact {
         return false;
     }
+    // Doc 48 cut EX.2 (Q-48-52): the titled object is still in the state the quote priced.
+    if asset_state(ctx.w, listing) != q.observed.state {
+        return false;
+    }
     // A retired vendor and a halted maker both stop honouring quotes; both are
     // declared facts about the seller, and neither is a probe. Doc 48 cut EX.1a: a
     // personal seller has no vendor row, and stops honouring them when it may no longer
@@ -368,6 +372,16 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
     }) {
         return Err(MarketError::bad(STALE_QUOTE));
     }
+    // Doc 48 cut EX.2 (Q-48-52): the titled object's state, pinned on the quote. A person's
+    // object is listed only through the seam, so a personal listing whose object the seam no
+    // longer answers for cannot be priced at all.
+    let observed_state = asset_state(ctx.w, &listing);
+    if listing.is_personal() && listing.object.is_some() && observed_state.is_none() {
+        return Err(MarketError::bad(STALE_QUOTE));
+    }
+    if !asset_admitted(ctx, &listing) {
+        return Err(MarketError::bad(STALE_QUOTE));
+    }
     let unit = price_for(&listing, ctx.w.module_state::<MarketStore>());
     let total = Amount::from_minor(
         unit.minor()
@@ -509,6 +523,7 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
                 listing: listing.revision,
                 artefact: artefact_stamp(entry.representation, &listing.catalog),
                 source: observed_source,
+                state: observed_state,
             },
             expires: EconomicDeadline {
                 clock: EconomicClock::RealUtc,
@@ -699,6 +714,10 @@ pub fn accept_at(
     else {
         return Err(MarketError::NoStanding(NO_SUCH_QUOTE));
     };
+    // Doc 48 cut EX.2: the seam still admits a person's titled object, as the same entry.
+    if !asset_admitted(ctx, &listing) {
+        return Err(MarketError::bad(STALE_QUOTE));
+    }
     // Doc 48 cut EX.1a (Q-48-44): a personal seller has no vendor row; its listing names
     // its own account.
     let vendor = if listing.is_personal() {
@@ -823,6 +842,11 @@ pub fn accept_at(
         ),
         Some(LotMatter::Hold { .. }) | None => None,
     };
+    // Doc 48 cut EX.2: a sale pinned to its object's state settles on the market's own
+    // fact, so somebody must answer it (the Draw's precheck).
+    if q.observed.state.is_some() && !mush_economy::has_fact_provider(ctx.w, crate::store::NS) {
+        return Err(MarketError::bad(UNDELIVERABLE));
+    }
     if let Some(why) = crate::module::cannot_deliver(ctx, &q, representation) {
         tracing::info!(
             quote = q.id.0,
@@ -1278,6 +1302,30 @@ fn purchase_spec(
     draw: Option<(QuoteId, i64)>,
 ) -> ContractSpec {
     let total = q.total();
+    // Doc 48 cut EX.2 (Q-48-7): an asset sold for itself, now, is the one asset sale every
+    // venue writes.
+    if let (None, Representation::Asset, Some(object)) = (draw, representation, listing.object)
+        && !matches!(listing.source, Supply::Procurement { .. })
+    {
+        return asset_sale_spec(&AssetSaleTerms {
+            name: SmolStr::new(format!("market purchase #{}", q.id.0)),
+            outcome: SmolStr::new_static("delivered"),
+            object,
+            seller: listing.seller.clone(),
+            seller_account: payee,
+            buyer: q.buyer.clone(),
+            buyer_account,
+            price: total,
+            deadline: now.saturating_add(DEAL_WINDOW_SECS),
+            // Doc 48 cut EX.2 (Q-48-52): it settles only on the state the quote priced.
+            facts: q
+                .observed
+                .state
+                .map(|digest| asset_state_fact(object, digest))
+                .into_iter()
+                .collect(),
+        });
+    }
     // Doc 18 cut IC7: a Draw sale's window is `DRAW_WINDOW_SECS` (real), and every
     // other sale's is `DEAL_WINDOW_SECS`, exactly as before.
     let deadline_at = match draw {
@@ -1319,27 +1367,6 @@ fn purchase_spec(
         (Supply::Procurement { lead }, _, _) => {
             (vec![TypedCondition::Before { deadline: *lead }], Vec::new())
         }
-        (_, Representation::Asset, Some(object)) => (
-            vec![
-                TypedCondition::TitleHeld {
-                    object,
-                    by: listing.seller.clone(),
-                },
-                TypedCondition::Before {
-                    deadline: EconomicDeadline {
-                        clock: EconomicClock::RealUtc,
-                        at: now.saturating_add(DEAL_WINDOW_SECS),
-                    },
-                },
-            ],
-            // **Both parties must have accepted** before title moves (D-E3-12), which
-            // is E4b2's own rule on a `TitleTransfer` and needs nothing from here.
-            vec![Deliverable::TitleTransfer {
-                object,
-                from: listing.seller.clone(),
-                to: q.buyer.clone(),
-            }],
-        ),
         _ => (
             vec![TypedCondition::Before {
                 deadline: EconomicDeadline {
@@ -1404,6 +1431,170 @@ fn purchase_spec(
         deterministic: true,
         deliverables,
     }
+}
+
+// ---- doc 48 cut EX.2: one asset sale --------------------------------------------
+
+/// **One asset sale's terms** (doc 48 cut EX.2, Q-48-7): what the market's asset arm, the
+/// Co-op buyout (`tacsim::port::buyout`) and the recovery houses' resale
+/// (`tacsim::port::house_sale`) each hand [`asset_sale_spec`]. Before EX.2 the contract was
+/// written out three times, by hand, in the three places.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetSaleTerms {
+    /// The contract's name: attribution only, never what marks a sale live.
+    pub name: SmolStr,
+    /// The one outcome's name.
+    pub outcome: SmolStr,
+    /// The titled object sold.
+    pub object: ObjId,
+    /// Who holds its title and sells it: the contract's one party.
+    pub seller: PrincipalId,
+    /// Where the whole price is paid.
+    pub seller_account: mush_economy::AccountId,
+    /// Who buys it: the issuer, the author and the payer.
+    pub buyer: PrincipalId,
+    /// What the price is escrowed from, and any remainder returned to.
+    pub buyer_account: mush_economy::AccountId,
+    /// The price, the whole of it.
+    pub price: Amount,
+    /// When the deal lapses (real seconds); past it the escrow is refunded.
+    pub deadline: i64,
+    /// Settlement conditions after the title and the window, each a deterministic fact
+    /// (EX.2's hull-state pin is one).
+    pub facts: Vec<mush_economy::ExternalRef>,
+}
+
+/// **The one asset sale** (doc 48 cut EX.2, Q-48-7; D-18-21's shape): the buyer issues and
+/// pays, the price escrowed from their account and paid whole to the seller's; the title
+/// passes seller → buyer at settlement, which needs the seller still holding it, the
+/// window still open and every listed fact true. Deterministic: nobody's word settles it.
+/// Past the window the escrow is refunded. Pure, so its shape is tested without a world.
+#[must_use]
+pub fn asset_sale_spec(sale: &AssetSaleTerms) -> ContractSpec {
+    let window = EconomicDeadline {
+        clock: EconomicClock::RealUtc,
+        at: sale.deadline,
+    };
+    let mut conditions = vec![
+        TypedCondition::TitleHeld {
+            object: sale.object,
+            by: sale.seller.clone(),
+        },
+        TypedCondition::Before { deadline: window },
+    ];
+    let mut evidence = vec![EvidenceKind::TitleHeld, EvidenceKind::Before];
+    for fact in &sale.facts {
+        conditions.push(TypedCondition::Fact { fact: fact.clone() });
+        evidence.push(EvidenceKind::Fact);
+    }
+    ContractSpec {
+        name: sale.name.clone(),
+        // `None`: the buyer is the issuer, so the seller's issuer cap is untouched.
+        scope: None,
+        parties: vec![sale.seller.clone()],
+        considerations: vec![ConsiderationSpec {
+            account: sale.buyer_account,
+            amount: sale.price,
+        }],
+        outcomes: vec![OutcomeTerms {
+            name: sale.outcome.clone(),
+            when: (0..conditions.len()).collect(),
+            payouts: vec![PayoutShare {
+                to: sale.seller_account,
+                share: Share::Exact(sale.price),
+            }],
+            expense_treatment: mush_economy::ExpenseTreatment::None,
+            asset_consequences: vec![0],
+        }],
+        remainder_to: sale.buyer_account,
+        conditions,
+        adjudicator: None,
+        evidence,
+        deadline: Some(window),
+        on_expiry: Expiry::Refund,
+        visibility: EconomicVisibility::Parties,
+        roles: ContractRoles {
+            author: Some(sale.buyer.clone()),
+            payer: Some(sale.buyer.clone()),
+            representative: None,
+            facilitator: None,
+        },
+        deterministic: true,
+        // **Both parties must have accepted** before title moves (D-E3-12), E4b2's own rule
+        // on a `TitleTransfer`.
+        deliverables: vec![Deliverable::TitleTransfer {
+            object: sale.object,
+            from: sale.seller.clone(),
+            to: sale.buyer.clone(),
+        }],
+    }
+}
+
+/// **Whether a person's titled-object listing still stands with the game** (doc 48 cut EX.2):
+/// the asset-sale seam admits the object for its seller now, as the listing's own entry (her
+/// hold still empty, no governed core fitted, nothing in flight). Asked at every quote and
+/// purchase, as the digest is; any other listing answers `true`.
+fn asset_admitted(ctx: &Ctx<'_>, listing: &Listing) -> bool {
+    let Some(object) = listing.object.filter(|_| listing.is_personal()) else {
+        return true;
+    };
+    crate::module::asset_sale(ctx.w)
+        .and_then(|seam| seam.admit(ctx, object, &listing.seller))
+        .is_some_and(|admitted| admitted.is_ok_and(|entry| entry == listing.catalog))
+}
+
+/// **Whether `c` sells `object`'s title** (doc 48 cut EX.2, Q-48-52): live (past its draft,
+/// not terminal) and passing `object`'s title. Keyed on the contract's shape, never its
+/// name. The bay refuses strip, scrap and fit while one stands (`tacsim::port::bay_work`).
+#[must_use]
+pub fn sells_title_of(c: &mush_economy::EconomicContract, object: ObjId) -> bool {
+    !matches!(c.state, ContractState::Draft)
+        && !c.state.is_terminal()
+        && c.consent
+            .terms
+            .deliverables
+            .iter()
+            .any(|d| matches!(d, Deliverable::TitleTransfer { object: o, .. } if *o == object))
+}
+
+/// **The digest of a listing's titled object's state** (doc 48 cut EX.2), from the
+/// composition's asset-sale seam: `None` for a listing that conveys no object, an object the
+/// seam does not know, or no seam.
+#[must_use]
+pub fn asset_state(w: &mush_core::World, listing: &Listing) -> Option<u64> {
+    let object = listing.object?;
+    crate::module::asset_sale(w)?.state_digest(w, object)
+}
+
+/// The `market.asset.state` fact a sale pinned to `object` at `digest` settles on.
+#[must_use]
+pub fn asset_state_fact(object: ObjId, digest: u64) -> mush_economy::ExternalRef {
+    mush_economy::ExternalRef {
+        provider: SmolStr::new_static(crate::store::NS),
+        kind: SmolStr::new_static(crate::record::FACT_ASSET_STATE),
+        id: SmolStr::new(format!("{}/{digest}", object.0)),
+        revision: None,
+    }
+}
+
+/// **Whether `object` is on sale** (doc 48 cut EX.2, Q-48-52: the bay's lock): a listing
+/// names it, or a live contract sells its title.
+#[must_use]
+pub fn asset_on_sale(w: &mush_core::World, object: ObjId) -> bool {
+    w.module_state::<MarketStore>()
+        .is_some_and(|s| s.listings.values().any(|l| l.object == Some(object)))
+        || live_title_sale(w, object).is_some()
+}
+
+/// **The live sale of `object`'s title, if any** ([`sells_title_of`]): a walk over the
+/// economy's contracts, which its own per-issuer and per-party caps already bound.
+#[must_use]
+pub fn live_title_sale(w: &mush_core::World, object: ObjId) -> Option<ContractId> {
+    w.module_state::<EconomyStore>()?
+        .snapshot()
+        .contracts()
+        .find(|c| sells_title_of(c, object))
+        .map(|c| c.id)
 }
 
 // ---- +market/sell: the player-side offer to a vendor ------------------------
@@ -2543,6 +2734,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             listing: listing.revision,
             artefact: None,
             source: None,
+            state: None,
         },
         expires: EconomicDeadline {
             clock: EconomicClock::RealUtc,
@@ -3291,6 +3483,112 @@ fn lapsed_page_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The one asset sale's shape** (doc 48 cut EX.2, Q-48-7; D-18-21): the buyer issues,
+    /// authors and pays; the seller is the one party; the price is escrowed whole from the
+    /// buyer and paid whole to the seller once the seller still holds the title, the window is
+    /// open and every pinned fact is true; the title passes seller to buyer; deterministic; a
+    /// lapsed window refunds.
+    #[test]
+    fn ex2_the_one_asset_sale_is_the_buyout_shape_with_its_facts() {
+        let seller = PrincipalId::Object(ObjId(3));
+        let buyer = PrincipalId::Object(ObjId(4));
+        let (sa, ba) = (mush_economy::AccountId(30), mush_economy::AccountId(40));
+        let pin = asset_state_fact(ObjId(9), 77);
+        let terms = AssetSaleTerms {
+            name: SmolStr::new_static("a sale"),
+            outcome: SmolStr::new_static("sold"),
+            object: ObjId(9),
+            seller: seller.clone(),
+            seller_account: sa,
+            buyer: buyer.clone(),
+            buyer_account: ba,
+            price: Amount::from_minor(500),
+            deadline: 1_000,
+            facts: vec![pin.clone()],
+        };
+        let spec = asset_sale_spec(&terms);
+        assert_eq!(spec.parties, vec![seller.clone()]);
+        assert_eq!(spec.scope, None, "the buyer issues");
+        assert_eq!(spec.roles.author, Some(buyer.clone()));
+        assert_eq!(spec.roles.payer, Some(buyer.clone()));
+        assert_eq!(spec.considerations.len(), 1);
+        assert_eq!(spec.considerations[0].account, ba);
+        assert_eq!(spec.considerations[0].amount, Amount::from_minor(500));
+        let window = EconomicDeadline {
+            clock: EconomicClock::RealUtc,
+            at: 1_000,
+        };
+        assert_eq!(
+            spec.conditions,
+            vec![
+                TypedCondition::TitleHeld {
+                    object: ObjId(9),
+                    by: seller.clone(),
+                },
+                TypedCondition::Before { deadline: window },
+                TypedCondition::Fact { fact: pin },
+            ]
+        );
+        assert_eq!(
+            spec.evidence,
+            vec![
+                EvidenceKind::TitleHeld,
+                EvidenceKind::Before,
+                EvidenceKind::Fact
+            ]
+        );
+        assert_eq!(spec.outcomes.len(), 1);
+        let outcome = &spec.outcomes[0];
+        assert_eq!(outcome.when, vec![0, 1, 2], "every condition");
+        assert_eq!(outcome.payouts.len(), 1);
+        assert_eq!(outcome.payouts[0].to, sa);
+        assert_eq!(
+            outcome.payouts[0].share,
+            Share::Exact(Amount::from_minor(500))
+        );
+        assert_eq!(outcome.asset_consequences, vec![0]);
+        assert_eq!(spec.remainder_to, ba);
+        assert_eq!(spec.deadline, Some(window));
+        assert_eq!(spec.on_expiry, Expiry::Refund);
+        assert!(spec.deterministic);
+        assert_eq!(spec.adjudicator, None);
+        assert_eq!(
+            spec.deliverables,
+            vec![Deliverable::TitleTransfer {
+                object: ObjId(9),
+                from: seller,
+                to: buyer,
+            }]
+        );
+        // With no facts, exactly the title and the window.
+        let bare = asset_sale_spec(&AssetSaleTerms {
+            facts: Vec::new(),
+            ..terms
+        });
+        assert_eq!(bare.conditions.len(), 2);
+        assert_eq!(bare.outcomes[0].when, vec![0, 1]);
+    }
+
+    /// **The quote's state pin rides the wire only when set** (doc 48 cut EX.2): a quote
+    /// written before EX.2 reads with no pin, and one with none writes no `state` key.
+    #[test]
+    fn ex2_the_state_pin_is_optional_on_the_wire() {
+        let old: crate::record::ObservedRevisions = serde_json::from_value(serde_json::json!({
+            "definition_version": 1, "listing": 2, "artefact": null
+        }))
+        .expect("an old stamp reads");
+        assert_eq!(old.state, None);
+        let text = serde_json::to_string(&old).expect("writes");
+        assert!(!text.contains("state"), "{text}");
+        let pinned = crate::record::ObservedRevisions {
+            state: Some(77),
+            ..old
+        };
+        let text = serde_json::to_string(&pinned).expect("writes");
+        let back: crate::record::ObservedRevisions = serde_json::from_str(&text).expect("reads");
+        assert_eq!(back.state, Some(77));
+    }
 
     /// Doc 18 cut IC14 row 13: the lapsed-quote page says "could not confirm" when it
     /// could not, for both kinds; the confirmed texts are the IC7 / IC10 ones.

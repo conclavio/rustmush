@@ -589,7 +589,235 @@ Row: §7.1 EX.1b; Q-48-49, Q-48-56; doc 48b G-6, G-7, G-8. Stacked on EX.1a (#63
 
 ## EX.2
 
-Not built.
+**Survey.**
+- **Three copies of one contract.** The market's purchase of an `asset` listing
+  (`trade::purchase_spec`'s asset arm), the Co-op buyout (`port::buyout::buyout_spec`) and a
+  recovery house's resale (`port::house_sale::sale_spec`, RS.6c-2, written as a copy of the
+  buyout's) each wrote the same contract by hand: the buyer issues and pays, the seller is the
+  one party, the price is escrowed and paid whole to the seller, the title passes at
+  settlement while the seller still holds it and the window is open, and a lapse refunds.
+- **Nobody listed an object.** Only a vendor row could carry an `asset` listing, and no
+  vendor in the content has one. EX.1a's personal seller lists exact lots only.
+- **The hold.** A hull's hold is the vault backed by her stowage (`port::ship::hold_vault`).
+  `+coop/enrol` re-owns it to the pilot, a recall re-homes it to the Trust
+  (`mush_economy::rehome_vault`), and a buyout leaves it the pilot's. Its contents are typed
+  action state: `port_tick::read_pool` reads them from a `Ctx`, and a `FactProvider`, which is
+  handed `&World`, cannot.
+- **The bay** stripped, scrapped and fitted a hull with no regard to a sale.
+- **The house-sale guard** keys on the contract's structure (`house_sale::is_sale_of`, doc 48
+  §4.3), not its name. EX.2 keeps it as it is.
+- **What Tycho resells.** A recovery house sweeps wrecks off lane sites: rigs. A rig's hopper
+  vault belongs to the vehicles principal (doc 20 §4.2, `port::vehicle`), never to the house
+  or a buyer.
+
+**Built.**
+
+*One asset sale* **(expensive to reverse).**
+- `mush_market::asset_sale_spec(&AssetSaleTerms) -> ContractSpec` is the one builder. Its
+  terms are the name, the outcome's name, the object, the seller and their account, the buyer
+  and their account, the price, the window's deadline, and a list of facts.
+- The contract: the conditions `TitleHeld { object, by: seller }`, `Before { deadline }`, then
+  one `Fact` each; one outcome on every condition, paying the seller's account
+  `Share::Exact(price)` with the title as its asset consequence; the remainder to the buyer;
+  the buyer as author and payer; deterministic; `Expiry::Refund`; `Parties` visibility; and
+  `Deliverable::TitleTransfer { object, from: seller, to: buyer }`.
+- **On it:** the market's asset purchase (`purchase_spec`, now an early return), the Co-op
+  buyout (`buyout_spec`) and a recovery house's resale (`house_sale::sale_spec`). Each passes
+  its own name, outcome and window. The buyout and house-sale shape tests
+  (`ic13_the_buyout_contract_is_the_market_asset_shape`,
+  `rs6c2_the_sale_contract_is_the_buyout_shape`) pass unchanged, as do their stories.
+- `sells_title_of(c, object)` and `live_title_sale(w, object)` read a live sale of an object's
+  title from the contract's shape.
+
+*The asset-sale seam* **(expensive to reverse).**
+- `mush_market::AssetSale`, frozen at composition by `MarketModule::with_asset_sale`, with
+  one implementor, `tacsim::port::hull_sale::HullSale`, wired in both roots by
+  `with_port_seams_if`. It answers two questions and builds no plan:
+  - `admit(ctx, object, seller) -> Option<Result<CatalogRef, String>>`: may `seller` list
+    `object` now, and as which catalogue entry. `None` for an object it does not know, `Err`
+    for its own refusal, rendered verbatim at posting.
+  - `state_digest(w, object) -> Option<u64>`: the digest a sale is priced against.
+- With no seam, no person lists an object, and every vendor asset listing is as before.
+
+*No bait-and-strip.*
+- **The pin.** A quote stamps `ObservedRevisions.state` with the seam's digest of the
+  listing's object (serde default `None`, not written when `None`). `is_current` refuses a
+  quote whose object's digest has moved, so `+market/accept` on it is `STALE_QUOTE`.
+- **The fact.** The purchase contract carries `Fact market.asset.state "{object}/{digest}"`,
+  answered by `MarketFactProvider` from the seam: satisfied while the digest holds, false once
+  it drifts or the seam stops knowing the object. A drifted sale never settles and refunds at
+  its window, as a Draw does. `accept_at` refuses an accept that would pin a fact no `market`
+  provider answers.
+- **Re-admitted.** A person's object listing is asked of the seam again at every quote and
+  every accept. A refusal there is `STALE_QUOTE` (one family, D-E6-13), so a hull laden after
+  listing is neither quoted nor bought.
+- **The bay's lock.** `bay_work::under_sale` is `mush_market::asset_on_sale`: a listing names
+  the hull, or a live contract sells her title. `+bay/strip` and `+bay/scrap`
+  (`strip::ready`) and `+bay/fit` (`take`) refuse `UNDER_SALE` before any other check that
+  could move her.
+
+*Listing a hull.*
+- `+market/post #<hull> price=<n> [to=<player>] [market=<venue>] [days=<n>]`
+  (`commands::post_object`, `seller::post_asset`). It refuses, before any write:
+  - a seller the actor may not sell as, or an object whose live, unfrozen title is not the
+    seller's (`NO_SUCH_ASSET`, one answer);
+  - a governed core itself (`MANAGED_CORE_SALE`, its own family);
+  - no seam, an object the seam does not know, or no `asset` entry for it (`NOT_LISTABLE`);
+  - the seam's own refusal;
+  - an object already listed or being sold (`ALREADY_FOR_SALE`);
+  - then EX.1a's checks: price, private offer, account, venue gate, caps.
+- The listing: `vendor: NO_VENDOR`, `source: Stock { vault: NO_VAULT }`, `object`, quantity 1,
+  the seller's own account. `record::check_personal` admits that one new shape. There is no
+  reserve leg: the seam and the pin hold the object. EX.1a's `ListingAcceptance` accepts the
+  purchase for the seller, so it settles with the seller away.
+
+*TacSim's hull seam* (`port/hull_sale.rs`).
+- **Admit:** a hull titled to the seller. First, no governed core fitted (`HULL_CORED`, for
+  now: "A hull with a governed core fitted cannot be listed yet: the core sells only through
+  its own sale, which is not open."). This is asked before her design, because a fitted core
+  rebinds her to a cored unit that no yard budget partitions. Then a ship hull (her design's
+  budget and a hull view; a rig is not one), with, in order:
+  - not held in a workshop's bay (`HULL_IN_BAY`);
+  - nothing in flight (the buyout's and recall's `in_flight_on` lines);
+  - no leased rig in her bay (`HULL_RIG_ABOARD`);
+  - an empty hold: every goods-table row that is no consumable reads zero
+    (`HULL_HOLD_LADEN`; unreadable, `HULL_HOLD_DARK`). Her fuel and stores go with her.
+
+  Admitted, she lists as `tacsim:hull.<design>`.
+- **The digest:** FNV (`declared_hash`) of her schema, sections and installed components
+  (each part, its condition and its titled asset, the core among them), never her volatile
+  cells.
+- **The catalogue:** a `tacsim.hulls` pack beside the goods and the cores
+  (`port/vendor.rs`), one `asset` entry per design the yard partitions, not stackable, with
+  no baseline.
+- **The hold goes with her:** `HullSaleObserver`, in tacsim's root and in
+  `mush-composition`'s `econ_observers()`. On a settled contract, for each `TitleTransfer`
+  whose hull's title is now the buyer's and whose hold the old holder owns, it re-homes the
+  hold to the buyer (`rehome_vault`, an organization at its root scope), in the settlement's
+  own batch. A replay finds the hold moved and does nothing.
+
+*Wiring.* tacsim's economy root gains `with_standing_acceptance(ListingAcceptance)` (EX.1b
+adds the same line; the second to merge keeps one copy).
+
+*Help and sentences.* `+market`'s help and `help exchange` gain "Listing a hull". The new
+sentences are `pub const`s: four in `mush_market::seller` (the bot's `exchange` family) and
+five in `tacsim::port::hull_sale` (a new `hull_sale` family in `mush-bot/src/mine/minds.rs`,
+with in-step, census and distinct tests). `UNDER_SALE` now says the hull is up for sale.
+
+**Tests.**
+- **The done-when, test by test** (`tacsim/tests/domain_economy/hull_resale_ex2.rs`, three
+  stories on the composed lane, and one in `domain_field/co6_cored_ship.rs`):
+  - **A player sells a hull to a player while the seller is offline, the hold moves, and a
+    strip after listing refuses:**
+    `ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her`.
+    - A first captain buys her Dray out (`+coop/buyout`) and lists her at the exchange.
+    - The listed hull refuses `+bay/strip`, `+bay/scrap` and `+bay/fit` (`UNDER_SALE`), and
+      a second listing (`ALREADY_FOR_SALE`).
+    - From then on the seller types nothing. A second captain quotes and buys her, and the
+      sale contract records the seller's standing acceptance.
+    - The next sweep pays the seller the price, passes the title and re-homes the hold to
+      the buyer. The listing is gone, the bay lock is off, the seller no longer has her helm,
+      and her own `+market/post` hears `NO_SUCH_ASSET`.
+  - **A laden hold:** `ex2_a_laden_hull_is_neither_listed_nor_quoted`. She is laden after her
+    quote, so the accept is stale and a new quote is refused. Withdrawn and posted again,
+    she hears `HULL_HOLD_LADEN`.
+  - **No bait-and-strip:** `ex2_a_hull_changed_after_the_quote_is_not_sold`. Changed after
+    her quote, the accept is stale. Changed after her purchase, the sale does not settle.
+    Past the window it is `Expired`, the buyer is refunded, and the title and hold stay the
+    seller's.
+  - **A cored hull is refused with its reason:**
+    `ex2_a_hull_with_a_governed_core_fitted_is_not_listed_yet`. After CO.6's own route to a
+    cored ship, the hull hears `HULL_CORED` and the core itself `MANAGED_CORE_SALE`. Nothing
+    is listed.
+  - **Buyout and Tycho's resale use the one builder, unchanged:** `coop`, `in10_pools`,
+    `house_resale_rs6c2` and the two shape tests pass as they were.
+- **Unit tests:**
+  - `trade.rs`: the builder's shape with and without facts; the state pin's wire.
+  - `facts.rs`: the fact against a test seam (pinned, drifted, an unknown object, malformed
+    ids, a named revision, no seam).
+  - `record.rs`: a person's object listing on the wire.
+  - `hull_sale.rs`: the catalogue code, and the refusals under 120 columns.
+- **On conclav.dev:**
+  - every mush-market and mush-economy test passes (1,169);
+  - `tacsim --test domain_economy` passes in full (593);
+  - `domain_field`'s `co6_cored_ship` passes (3);
+  - `mush-server --test commerce_composition` passes (91);
+  - the whole of `mush-bot` passes (798, the new rows' family included);
+  - `tacsim`'s lib tests over the buyout, the house sale, the bay, the vendor and the hull
+    sale pass (66).
+- **The M7 market stories** (`player_market_story`, `player_market_typed`): they fail, and fail
+  identically on base main `c85a8744f`, where EX.1a measured them: `+minds/resell <lic>=<player>`
+  queues and is refused at its prepare ("That did not go through. Nothing changed."). The
+  cause is the #623 regression in the kernel's resale offer cap. EX.2 leaves it unchanged.
+- **The gates:** on the final tree, `cargo fmt --check`; workspace clippy with
+  `-D warnings`; the M7 memory-size clippy; rustdoc with `-D warnings` on mush-market, tacsim,
+  mush-composition and mush-bot, with and without private items; `mush-contract-tests` (the
+  census, the panic budget, the restriction lints, the help-page lint, the shard names and the
+  state-slot baseline); the bot's `minds::` rows (35); mush-market and mush-economy (1,170);
+  and the stories again (51 in `domain_economy`: the hull resale, the house resale, the Co-op
+  buyout and the sale stories; 3 in `co6_cored_ship`).
+- **The mutations:** 32 run, each alone, against the tests that can see them. 23 are killed.
+  The 9 that survive:
+  - **Masked by an earlier check:**
+    - **MK2:** the quote's refusal of a person's object listing whose state the seam cannot
+      read (the seam reads every hull it admits).
+    - **MK5:** the accept's refusal when no `market` fact provider is composed (both roots
+      compose one).
+    - **MK9:** the re-admit's check that the seam still names the listing's own entry (a
+      hull's design does not change while she is listed).
+    - **TH8:** the observer's check that the old holder owns the hold (in the buyout the
+      hold is already the pilot's, and a rig has no hull view).
+    - **TH9:** the observer's check that the title is now the buyer's (a settled transfer
+      has passed it).
+    - **TH10:** `admit`'s own title check (`post_asset` checks the title first).
+  - **Not reached by any story:**
+    - **TH2:** a hull in a workshop's bay;
+    - **TH3:** something in flight on her;
+    - **TH4:** a leased rig in her bay.
+
+    Each reuses the rule the buyout and the recall already apply (`bay_work::held`,
+    `in_flight_on`, `bay_slot_word`).
+
+  The loop is `ex2-mut.py` and `ex2-mut.sh` (scratch, run on conclav.dev).
+
+**Divergences.**
+- **Files beyond the approved list:**
+  - `mush-market/src/trade.rs` (the builder, the pin, the re-admit) and `lib.rs` (exports);
+  - `tacsim/src/port/buyout.rs` and `house_sale.rs` (moved onto the builder);
+  - `tacsim/src/port/bay_work/mod.rs` and `strip.rs` (the lock);
+  - `tacsim/src/port/mod.rs` (the module line);
+  - `tacsim/tests/domain_economy.rs` (the module line);
+  - `tacsim/tests/domain_field/co6_cored_ship.rs` (one test appended: a cored hull needs the
+    M8 world's core-fitting route);
+  - `mush-bot/src/mine/minds.rs` and `docs/help/exchange.md` (the sentence rows and help the
+    brief asks for);
+  - `mush-contract-tests/state-slot-owners.toml` (the facts test's seed, named in the existing
+    reason).
+- **The story file is `hull_resale_ex2.rs`**, not `hull_resale.rs`: the shard guard refuses a
+  `domain_economy` module whose name ends with another's (`sale`).
+- **The seam answers two questions, not three.** The hold's re-home is `HullSaleObserver`'s,
+  keyed on the settled contract's `TitleTransfer` and on who owns the hold, so it covers every
+  sale of a hull's title (the market's, a house's) without a third seam method.
+- **Tycho's resale re-homes no hold.** It sells rigs, and a rig's hopper is the vehicles
+  principal's, not the house's. The observer runs on that settlement and finds no hold to
+  move. So there is no test that Tycho's resale re-homes a hold; the re-home is tested on the
+  player sale, and `rs6c2` passes unchanged with the observer wired.
+- **The pin does not cover the hold.** A fact cannot read typed pool state, so the empty hold
+  is the seam's rule at posting, quote and accept instead. Between the accept and the
+  settlement (one sweep) a seller can still put goods into the hold, and they go to the buyer
+  with it. Fuel and stores ride with her unpinned.
+- **A personal object listing reuses `Supply::Stock`** with `NO_VAULT`, not a new supply arm.
+- **A lapsed hull sale leaves her unlisted**: the purchase took the listing, as it does every
+  exhausted personal ask. The seller lists her again.
+- **The pin applies to any listing with an object the seam knows**, a vendor's too (no
+  vendor lists a hull today).
+
+**Not built.**
+- **Cored hulls.** Refused, for now: the core's own sale (doc 47's CO.13, the managed-title
+  wall) is not open.
+- **Rig resale between players.** The seam knows ship hulls only.
+- **Org sellers on the verb** (`org=`), as in EX.1a.
+- **Pinning the hold's contents or her consumables.**
 
 ## EX.2b
 

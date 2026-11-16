@@ -162,11 +162,12 @@ pub use lot::{
     listing_holder_text, listing_reservation, release_lapsed_hold,
 };
 pub use module::{
-    AvailabilityProvider, CapacityPlan, CapacityProvider, CapacityReadError, CapacityRefusal,
-    CatalogSource, DeliveryOrder, DeliveryProvider, DrawReceipts, MAX_CAPACITY_PLAN_BYTES,
-    MAX_PROCEEDS_MEMO_BYTES, MAX_SALE_LINE_BYTES, MarketModule, MarketObserver, Presence, Proceeds,
-    ProceedsPolicy, ProceedsRefusal, SWEEP_PERIOD_SECS, SWEEP_TAG, SaleTerms, SettledSale,
-    VenueGate, VenueRefusal, draw_receipts, lot_supply, venue_gate,
+    AssetSale, AvailabilityProvider, CapacityPlan, CapacityProvider, CapacityReadError,
+    CapacityRefusal, CatalogSource, DeliveryOrder, DeliveryProvider, DrawReceipts,
+    MAX_CAPACITY_PLAN_BYTES, MAX_PROCEEDS_MEMO_BYTES, MAX_SALE_LINE_BYTES, MarketModule,
+    MarketObserver, Presence, Proceeds, ProceedsPolicy, ProceedsRefusal, SWEEP_PERIOD_SECS,
+    SWEEP_TAG, SaleTerms, SettledSale, VenueGate, VenueRefusal, asset_sale, draw_receipts,
+    lot_supply, venue_gate,
 };
 pub use projection::{
     DEPTH_BUCKETS, DEPTH_QUANTITY_STEP, DepthBucket, PROJECTION_VISIT, PROJECTION_WINDOW_SECS,
@@ -183,11 +184,21 @@ pub use record::{
     Quote, RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, check_entry,
     declared_hash,
 };
+// Doc 48 cut EX.2: the asset-state fact and a personal object listing's no-vault mark.
+pub use record::{FACT_ASSET_STATE, NO_VAULT};
 // Doc 48 cut EX.1a: the personal seller's API and its standing acceptance.
-pub use seller::{ListingAcceptance, PersonalAsk, PersonalBid, post_ask, post_bid, withdraw_own};
+pub use seller::{
+    ListingAcceptance, PersonalAsk, PersonalAssetAsk, PersonalBid, post_ask, post_asset, post_bid,
+    withdraw_own,
+};
 pub use store::{
     MARKET_PAGE, MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MAX_TRADES_PER_PAIR, META_KEY, MarketStore,
     NS, catalog_key, listing_key, load, owner, quote_key, source_key, vendor_key,
+};
+// Doc 48 cut EX.2: the one asset sale.
+pub use trade::{
+    AssetSaleTerms, asset_on_sale, asset_sale_spec, asset_state, asset_state_fact, live_title_sale,
+    sells_title_of,
 };
 pub use trade::{
     BID_LAPSED, BUY_NEEDS_APPROVAL, BUY_NOT_AGREED, BidSale, BidSaleRequest, BidTake, CANNOT_COVER,

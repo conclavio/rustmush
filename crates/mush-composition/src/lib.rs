@@ -502,6 +502,8 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
             self.with_venue_gate(Arc::new(tacsim::port::market::PortVenueGate))
                 .with_capacity_provider(Arc::new(tacsim::port::market::PortCapacity))
                 .with_proceeds_policy(Arc::new(tacsim::port::proceeds::CoopProceeds))
+                // Doc 48 cut EX.2: a person lists a hull through the market.
+                .with_asset_sale(Arc::new(tacsim::port::hull_sale::HullSale))
         } else {
             self
         }
@@ -546,6 +548,8 @@ fn econ_observers() -> Vec<Arc<dyn mush_economy::EconomyObserver>> {
         Arc::new(self::econ_alerts::StaffAlerts::default()),
         Arc::new(mush_market::MarketObserver),
         Arc::new(tacsim::port::coop::CoopObserver),
+        // Doc 48 cut EX.2: a sold hull's hold goes with her.
+        Arc::new(tacsim::port::hull_sale::HullSaleObserver),
     ]
 }
 

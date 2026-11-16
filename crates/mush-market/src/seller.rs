@@ -115,7 +115,7 @@ pub const BIDDER_NOT_BUYING: &str = "That bid is not buying any more, so nothing
 pub const SELLER_GONE: &str = "That seller cannot complete the sale right now. Nothing was agreed.";
 /// The `+market/post` grammar.
 pub const POST_USAGE: &str =
-    "Usage: +market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>]";
+    "Usage: +market/post <lot>|#<object> price=<n> [to=<player>] [market=<venue>] [days=<n>]";
 /// The `+market/bid` grammar.
 pub const BID_USAGE: &str = "Usage: +market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] \
      [market=<venue>] [days=<n>]";
@@ -123,6 +123,14 @@ pub const BID_USAGE: &str = "Usage: +market/bid <ruleset>:<code> qty=<n> price=<
 pub const WITHDRAW_USAGE: &str = "Usage: +market/withdraw <listing>";
 /// A named player who is not found.
 pub const NO_SUCH_PLAYER: &str = "No such player.";
+/// Doc 48 cut EX.2: a titled object put up for sale: `{name}`, `{listing}`, `{price}`, `{to}`.
+pub const ASSET_POSTED: &str = "Put the {name} up for sale as #{listing} at {price}{to}.";
+/// Doc 48 cut EX.2: the existence-hiding answer for an object the seller holds no live title to.
+pub const NO_SUCH_ASSET: &str = "No such asset.";
+/// Doc 48 cut EX.2: an object the market does not list for a person.
+pub const NOT_LISTABLE: &str = "That is not something this market lists for you.";
+/// Doc 48 cut EX.2: an object already listed or already being sold.
+pub const ALREADY_FOR_SALE: &str = "That is already up for sale; one listing or sale at a time.";
 
 /// The default window a personal listing stands for, in real seconds: fourteen real days,
 /// the market's default (336 IC days at 24:1).
@@ -414,6 +422,148 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
         let at = store.sweeps;
         store.reserve_staged.insert(id, at);
     }
+    Ok(id)
+}
+
+// ---- doc 48 cut EX.2: one titled object -----------------------------------------
+
+/// What [`post_asset`] lists (doc 48 cut EX.2).
+#[derive(Clone, Debug)]
+pub struct PersonalAssetAsk {
+    /// Who sells: the actor, or an organization the actor acts for.
+    pub seller: PrincipalId,
+    /// The venue.
+    pub market: MarketId,
+    /// The venue's currency, which the seller is paid in.
+    pub instrument: InstrumentId,
+    /// The titled object sold (a hull).
+    pub object: ObjId,
+    /// The whole price.
+    pub price: Amount,
+    /// A private offer's one buyer.
+    pub private_to: Option<PrincipalId>,
+    /// How long it stands, in real seconds (clamped to `60..=MAX_LISTING_TTL_SECS`).
+    pub ttl_secs: i64,
+}
+
+/// **List one titled object** (doc 48 cut EX.2; Q-48-7, -52): the seller's own live,
+/// unfrozen title, admitted by the composition's asset-sale seam as one catalogue entry
+/// (a hull: no fitted governed core, an empty hold, no work in progress). The listing names
+/// [`crate::NO_VAULT`] and the object; a purchase is the one asset sale
+/// ([`crate::asset_sale_spec`]), pinned to the state the quote priced.
+///
+/// Refused before any write: a seller the actor may not sell as, or an object they hold no
+/// live title to (one answer, [`NO_SUCH_ASSET`]); a governed core (it sells only in its own
+/// family); no seam, a seam that does not know the object, or no asset entry for it
+/// ([`NOT_LISTABLE`]); the seam's own refusal; an object already listed or being sold
+/// ([`ALREADY_FOR_SALE`]); a non-positive price; a private offer naming nobody else; no account
+/// in the venue's currency; the venue gate; the caps.
+///
+/// # Errors
+///
+/// [`MarketError`]; render it with [`crate::refuse_market`].
+pub fn post_asset(ctx: &mut Ctx<'_>, spec: PersonalAssetAsk) -> Result<ListingId, MarketError> {
+    let actor = ctx.actor;
+    if !may_sell_as(ctx.w, actor, &spec.seller) {
+        return Err(MarketError::NoStanding(NO_SUCH_ASSET));
+    }
+    let held = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().asset(spec.object).cloned())
+        .is_some_and(|a| {
+            a.title_owner == spec.seller
+                && a.lifecycle == mush_economy::AssetLifecycle::Active
+                && !a.frozen
+        });
+    if !held || !is_live_object(ctx.w, spec.object) {
+        return Err(MarketError::NoStanding(NO_SUCH_ASSET));
+    }
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.is_managed_core(spec.object))
+    {
+        return Err(MarketError::bad(crate::trade::MANAGED_CORE_SALE));
+    }
+    let Some(seam) = crate::module::asset_sale(ctx.w) else {
+        return Err(MarketError::bad(NOT_LISTABLE));
+    };
+    let catalog = match seam.admit(ctx, spec.object, &spec.seller) {
+        None => return Err(MarketError::bad(NOT_LISTABLE)),
+        Some(Err(line)) => return Err(MarketError::bad(line)),
+        Some(Ok(catalog)) => catalog,
+    };
+    let Some(entry) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.entry_of(&catalog).cloned())
+        .filter(|e| e.representation == Representation::Asset)
+    else {
+        return Err(MarketError::bad(NOT_LISTABLE));
+    };
+    if crate::trade::asset_on_sale(ctx.w, spec.object) {
+        return Err(MarketError::bad(ALREADY_FOR_SALE));
+    }
+    if spec.price.minor() <= 0 {
+        return Err(MarketError::bad("A listing asks a positive price."));
+    }
+    check_private(ctx.w, &spec.seller, spec.private_to.as_ref())?;
+    let Some(account) = principal_account(ctx, &spec.instrument, &spec.seller) else {
+        return Err(MarketError::bad(NO_ACCOUNT));
+    };
+    if let Some(gate) = crate::module::venue_gate(ctx.w) {
+        gate.admit(
+            ctx.w,
+            actor,
+            &spec.market,
+            None,
+            crate::module::Presence::Here,
+        )
+        .map_err(|r| MarketError::bad(r.line))?;
+    }
+    check_caps(ctx.w, &spec.seller)?;
+    let ttl = spec.ttl_secs.clamp(60, crate::api::MAX_LISTING_TTL_SECS);
+    let now = ctx.w.now();
+    let Some(id) = ctx
+        .w
+        .module_state_mut::<MarketStore>()
+        .and_then(MarketStore::alloc_listing)
+    else {
+        return Err(MarketError::bad("The listing-id allocator is exhausted."));
+    };
+    put_listing(
+        ctx,
+        Listing {
+            id,
+            seller: spec.seller,
+            vendor: NO_VENDOR,
+            market: spec.market,
+            catalog: entry.catalog.clone(),
+            definition_version: entry.definition_version,
+            source: Supply::Stock {
+                vault: crate::record::NO_VAULT,
+            },
+            object: Some(spec.object),
+            price: spec.price,
+            quantity: 1,
+            visibility: if spec.private_to.is_some() {
+                MarketVisibility::Hidden
+            } else {
+                MarketVisibility::Public
+            },
+            expires: EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: now.saturating_add(ttl),
+            },
+            revision: 1,
+            draw: Some(false),
+            account: Some(account),
+            private_to: spec.private_to,
+            escrow: None,
+        },
+    );
+    persist_meta(ctx);
     Ok(id)
 }
 
