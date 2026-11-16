@@ -72,7 +72,7 @@ fn lot_at(rig: &mut Rig, lot: LotId) -> Option<mush_inventory::record::EndpointR
 /// no core title was born for it.
 fn assert_stock_core(rig: &Rig, hull: ObjId) {
     let unit = mush_tactics::module::unit_of(rig.tw.world(), hull).expect("the unit");
-    let core = tacsim::arena::core::read_core(&unit).expect("a core");
+    let core = tacsim::arena::core::read_core(unit).expect("a core");
     assert_eq!(
         (core.class, core.governed),
         (tacsim::arena::core::CoreClass::II, true),
