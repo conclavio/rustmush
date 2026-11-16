@@ -122,6 +122,23 @@ fn command(w: &mut TestWorld, actor: ObjId, line: &str) -> Result {
     }
     Ok(())
 }
+/// The depot's opening stock (doc 48 unit PL.7): of each chain good, enough for every die the
+/// suite issues.
+const DEPOT_STOCK: u64 = 200;
+/// `units` of every good the shipped catalogue's die chain names, as a deployment's opening stock.
+fn depot_stock(units: u64) -> Result<Vec<mush_industry::core_production::ChainLine>> {
+    let goods: std::collections::BTreeSet<_> = PublishedHardware::shipped()?
+        .catalogue()
+        .chain()?
+        .into_iter()
+        .flatten()
+        .map(|line| line.commodity)
+        .collect();
+    Ok(goods
+        .into_iter()
+        .map(|commodity| mush_industry::core_production::ChainLine { commodity, units })
+        .collect())
+}
 struct Rig {
     w: Option<TestWorld>,
     boot: Boot,
@@ -457,6 +474,8 @@ impl Rig {
         let deployment = HardwareDeployment {
             bay: None,
             buy_back_permille: None,
+            // Doc 48 unit PL.7: the depot opens with the dies' chain goods.
+            depot_stock: depot_stock(DEPOT_STOCK)?,
             ungovern: Some(super::UngoverningSite {
                 provider: ScopedCoreAccount {
                     account: shop_account,
@@ -534,6 +553,21 @@ impl Rig {
         r.reboot(CoreOriginMode::Active)?;
         Ok(r)
     }
+    /// The depot's pool of `good`.
+    fn depot(&mut self, good: &str) -> Result<u64> {
+        let families = self
+            .world()
+            .world()
+            .module_state::<crate::port::families::PortHandles>()
+            .and_then(|handles| handles.inventory.clone())
+            .ok_or("the inventory's families")?;
+        let depot = mush_inventory::EndpointRef(self.deployment.depot);
+        let engine = self.world_mut().engine_mut();
+        let mut txn = engine.action_transaction(&families.pools)?;
+        Ok(families
+            .pool(&mut txn, depot, &mush_core::CanonicalId::new(good)?)?
+            .map_or(0, |pool| pool.quantity))
+    }
     fn money(&self, id: AccountId) -> Result<(i64, i64)> {
         let account = self
             .world()
@@ -569,6 +603,12 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
         r.money(r.deployment.integrator.account)?,
     ];
     let (_, die) = r.perform("industry", "issue_core_die", agent, json!({"class":"i"}))?;
+    // Doc 48 unit PL.7: the launch composition's die takes the catalogue's Class I chain (a
+    // board and a tonne of strategic ore) from the importer's depot.
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (DEPOT_STOCK - 1, DEPOT_STOCK - 1)
+    );
     let lot = serde_json::from_value::<mush_inventory::LotId>(die["lot"].clone())?;
     let (offer, _) = r.perform(
         "industry",
@@ -1745,6 +1785,48 @@ async fn m8b2_grey_dies_integrate_as_ungoverned_cores_of_their_class() -> Result
     Ok(())
 }
 
+/// **Doc 48 unit PL.7: the launch composes the catalogue's prices and die chain**, whatever
+/// they are. A catalogue re-signed at 4,500, 9,000 and 30,000cr with a 15 % integration share,
+/// and a Class II die that takes three boards, composes a payment policy at those prices and an
+/// origin policy with that chain: neither is the v1 table.
+#[tokio::test(flavor = "current_thread")]
+async fn pl7_the_launch_composes_the_catalogue_s_prices_and_chain() -> Result {
+    use mush_economy::core_integration::CorePrices;
+    let r = Rig::new()?;
+    let native = filing(&r.deployment)?;
+    let mut pack: Value = serde_json::from_str(super::recipes::SOURCE)?;
+    let def = &mut pack["entries"][super::CATALOGUE]["def"];
+    def["core_minor"] = json!([450_000, 900_000, 3_000_000]);
+    def["integration_permille"] = json!(150);
+    def["die_chain"][1] = json!([{"good": "instrument_boards", "units": 3}]);
+    pack["manifest"]["digest"] = json!("0".repeat(64));
+    let parsed = mush_content::parse_pack(&serde_json::to_string(&pack)?)?;
+    pack["manifest"]["digest"] = json!(parsed.computed_digest()?.to_hex());
+    let publication = PublishedHardware::from_source(&serde_json::to_string(&pack)?)?;
+    let hardware = GovernedHardware::prepare_with(
+        &layer(),
+        CoreOriginMode::Active,
+        r.deployment.clone(),
+        &native,
+        Box::new(publication),
+    )?;
+    check_eq!(
+        hardware.payment_policy().prices,
+        CorePrices {
+            finished_minor: [450_000, 900_000, 3_000_000],
+            integration_permille: 150,
+        }
+    );
+    check_eq!(
+        hardware.origin_policy().chain[1],
+        vec![mush_industry::core_production::ChainLine {
+            commodity: mush_core::CanonicalId::new("instrument_boards")?,
+            units: 3,
+        }]
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_refusal() -> Result {
     let mut r = Rig::new()?;
@@ -1758,6 +1840,13 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
         &native,
     )?;
     check_eq!(hardware.origin_policy().monthly_quotas, [64, 16, 4]);
+    // Doc 48 unit PL.7: the launch freezes the catalogue's die chain and prices.
+    let shipped = PublishedHardware::shipped()?;
+    check_eq!(hardware.origin_policy().chain, shipped.catalogue().chain()?);
+    check_eq!(
+        hardware.payment_policy().prices,
+        shipped.catalogue().prices()
+    );
     check_eq!(
         hardware.payment_policy().delivery,
         Some(mush_economy::core_integration::CoreDeliveryPromise::PersonalCustodyV1)

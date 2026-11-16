@@ -194,6 +194,18 @@ impl DieCertificate {
     pub fn class(&self) -> DieClass {
         self.class
     }
+    /// **The chain goods this die consumed when it was issued** (doc 48 unit PL.7): its retained
+    /// policy's lines for its class, debited from that policy's depot in the issue's bundle.
+    /// Summed over every certificate, the census's sink for the dies.
+    #[must_use]
+    pub fn consumed(&self) -> &[super::ChainLine] {
+        self.policy.chain_of(self.class)
+    }
+    /// The vault the chain goods were taken from: the retained policy's depot.
+    #[must_use]
+    pub fn depot(&self) -> mush_economy::VaultId {
+        self.policy.depot
+    }
     /// The die lot the certificate issued.
     #[must_use]
     pub fn lot(&self) -> LotId {

@@ -1429,13 +1429,13 @@ const M1B0_SEAT_LINES: &[PinnedLine] = &[
     ),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
         5_969_464_250_357_495_379,
     ),
     (
         0,
-        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
+        r#"{"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine"}"#,
         &[],
         5_969_464_250_357_495_379,
     ),

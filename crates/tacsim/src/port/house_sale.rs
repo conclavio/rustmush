@@ -14,10 +14,8 @@
 
 use mush_core::{CanonicalId, CmdError, Ctx, ObjId, World};
 use mush_economy::{
-    AcceptOutcome, AccountId, Amount, ConsiderationSpec, ContractRoles, ContractSpec,
-    ContractState, Deliverable, EconomicClock, EconomicContract, EconomicDeadline,
-    EconomicVisibility, EconomyStore, EvidenceKind, Expiry, OutcomeTerms, PartyCap, PartyCapSource,
-    PayoutShare, Share, TypedCondition,
+    AcceptOutcome, AccountId, Amount, ContractSpec, ContractState, Deliverable, EconomicContract,
+    EconomyStore, PartyCap, PartyCapSource,
 };
 use mush_org::PrincipalId;
 use smol_str::SmolStr;
@@ -148,7 +146,9 @@ pub fn for_sale(w: &World) -> Vec<Listing> {
     listings
 }
 
-/// **The sale contract** (the buyout's shape): pure, so the shape is tested without a world.
+/// **The sale contract**: the market's one asset sale (doc 48 cut EX.2,
+/// [`mush_market::asset_sale_spec`]; the buyout's shape), the house selling. Pure, so the
+/// shape is tested without a world.
 #[must_use]
 pub(crate) fn sale_spec(
     buyer_account: AccountId,
@@ -156,57 +156,18 @@ pub(crate) fn sale_spec(
     buyer: ObjId,
     now: i64,
 ) -> ContractSpec {
-    let window = EconomicDeadline {
-        clock: EconomicClock::RealUtc,
-        at: now.saturating_add(SALE_WINDOW_SECS),
-    };
-    let me = PrincipalId::Object(buyer);
-    let price = Amount::from_minor(i64::try_from(listing.price_minor).unwrap_or(i64::MAX));
-    ContractSpec {
+    mush_market::asset_sale_spec(&mush_market::AssetSaleTerms {
         name: sale_name(listing.hull),
-        // `None`: the buyer is the issuer, so the house's issuer cap is untouched.
-        scope: None,
-        parties: vec![listing.house.clone()],
-        considerations: vec![ConsiderationSpec {
-            account: buyer_account,
-            amount: price,
-        }],
-        outcomes: vec![OutcomeTerms {
-            name: SmolStr::new_static("sold"),
-            when: vec![0, 1],
-            payouts: vec![PayoutShare {
-                to: listing.account,
-                share: Share::Exact(price),
-            }],
-            expense_treatment: mush_economy::ExpenseTreatment::None,
-            asset_consequences: vec![0],
-        }],
-        remainder_to: buyer_account,
-        conditions: vec![
-            TypedCondition::TitleHeld {
-                object: listing.hull,
-                by: listing.house.clone(),
-            },
-            TypedCondition::Before { deadline: window },
-        ],
-        adjudicator: None,
-        evidence: vec![EvidenceKind::TitleHeld, EvidenceKind::Before],
-        deadline: Some(window),
-        on_expiry: Expiry::Refund,
-        visibility: EconomicVisibility::Parties,
-        roles: ContractRoles {
-            author: Some(me.clone()),
-            payer: Some(me.clone()),
-            representative: None,
-            facilitator: None,
-        },
-        deterministic: true,
-        deliverables: vec![Deliverable::TitleTransfer {
-            object: listing.hull,
-            from: listing.house.clone(),
-            to: me,
-        }],
-    }
+        outcome: SmolStr::new_static("sold"),
+        object: listing.hull,
+        seller: listing.house.clone(),
+        seller_account: listing.account,
+        buyer: PrincipalId::Object(buyer),
+        buyer_account,
+        price: Amount::from_minor(i64::try_from(listing.price_minor).unwrap_or(i64::MAX)),
+        deadline: now.saturating_add(SALE_WINDOW_SECS),
+        facts: Vec::new(),
+    })
 }
 
 /// A name for `who`.
@@ -355,6 +316,7 @@ pub(crate) fn buy_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mush_economy::{ContractRoles, EconomicVisibility, Expiry, TypedCondition};
 
     #[test]
     fn rs6c2_the_sale_contract_is_the_buyout_shape() {

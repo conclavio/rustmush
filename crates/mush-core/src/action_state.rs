@@ -45,6 +45,10 @@ pub mod player_wait {
     /// A bay, core or core-integration refit's reservation, accepted to expiry (was 7 IC
     /// days).
     pub const REFIT_RESERVATION_SECONDS: i64 = 28 * 24 * 60 * 60;
+    /// The longest a paid licence resale offer stands, in **real** seconds: 28 IC days at the
+    /// live 24:1 rate, 28 real hours (doc 48 §4.3; it was 86,400, 24 IC days). The kernel's
+    /// offer audit reads it, and `mush_economy::managed_paid_resale::MAX_OFFER_SECONDS` is it.
+    pub const MAX_RESALE_OFFER_SECONDS: i64 = 28 * 60 * 60;
 }
 
 /// **The kernel's bounds on a mind licence's term**, in world-IC seconds. The

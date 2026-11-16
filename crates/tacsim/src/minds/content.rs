@@ -209,6 +209,8 @@ pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore
 /// API bump that added the four space kernels); CF.6b's was `3837c345…73a316`.
 /// **Re-blessed by doc 45 unit AP.3** for the header's `api: 9` alone (the mind
 /// API bump that added `View.posture`); MW.9's was `42c694ed…76e4bc`.
+/// **Re-blessed by doc 49 unit CC.9** for the header's `api: 10` alone (the mind API bump that
+/// gave a space mind the kernel's own figures for every mount); AP.3's was `2bea2391…7b5fef`.
 /// **Re-blessed by doc 49 unit CC.1** (Q-49-9, Q-49-23) with the reserve's
 /// rules, mirrored in `NativeStockMind` and pinned by Gate A: dry for
 /// withdrawal is its own reading (`p.low`, T1's `at_reserve`, the card's
@@ -220,10 +222,10 @@ pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore
 /// withdrawing hull with no reserve; its floor rises fifteen points on a
 /// mount under half its load; and its reserve is read through `min(.., 100)`
 /// without the old overflow clamp (the card's schema holds it to 100), a cost
-/// cut the lanes' ops budget asked for. Still 31 functions, `api: 9` and
-/// `stock: 3`; AP.3's was `2bea2391…7b5fef`.
+/// cut the lanes' ops budget asked for. Still 31 functions, `api: 10` and
+/// `stock: 3`; CC.9's was `c544bfbd…f9375f`.
 pub const STANDARD_SHA256: &str =
-    "fd73e14b92563cc3ed7e914fc9096a885876d6b8618f620388e497846fed1c3b";
+    "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the

@@ -455,11 +455,15 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
 /// cut IN.5: Stickney's clerk too, which refines Kasei's concentrate and stocks the works.
 async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
     let mut house = tacsim::port::yard::dispatchers(rig.tw.world());
-    house.extend(
-        port_map(&rig.tw, "stickney_port")
-            .clerk
-            .map(|clerk| ObjId(clerk.thing)),
-    );
+    // Doc 48 unit PL.1: Ceres's clerk too, which refines Occator's water once propellant is
+    // bought below its floor.
+    for port in ["stickney_port", "ceres_port"] {
+        house.extend(
+            port_map(&rig.tw, port)
+                .clerk
+                .map(|clerk| ObjId(clerk.thing)),
+        );
+    }
     let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
         .into_iter()
         .partition(|submit| house.contains(&submit.actor));
@@ -781,6 +785,30 @@ fn kasei_refined(tw: &TestWorld) -> u64 {
 
 /// Kasei's refine ledger (doc 39 cut IN.5).
 fn kasei_refine(tw: &TestWorld) -> Option<tacsim::port::mill::MillLedger> {
+    refine_ledger(tw, "stickney_port", "kasei", "metals")
+}
+
+/// **Occator's refine of water into propellant** (doc 48 unit PL.1), from its ledger and its
+/// counter: `(water milled, propellant made, propellant listed)`. It runs while propellant is
+/// bought below its floor, so a story that bunkers at Ceres sees it.
+fn occator_refined(tw: &TestWorld) -> (u64, u64, u64) {
+    let (water, fuel) = refine_ledger(tw, "ceres_port", "occator", "volatiles")
+        .map_or((0, 0), |ledger| (ledger.ore_t, ledger.product_t));
+    let listed = port_map(tw, "ceres_port").vendors[&cid("occator")]
+        .mill_listed
+        .get(&cid("volatiles"))
+        .copied()
+        .unwrap_or(0);
+    (water, fuel, listed)
+}
+
+/// The ledger of `org`'s mill of `ore` at `port`.
+fn refine_ledger(
+    tw: &TestWorld,
+    port: &str,
+    org: &str,
+    ore: &str,
+) -> Option<tacsim::port::mill::MillLedger> {
     let handle = tw
         .world()
         .module_state::<tacsim::port::PortHandles>()
@@ -788,13 +816,8 @@ fn kasei_refine(tw: &TestWorld) -> Option<tacsim::port::mill::MillLedger> {
         .families
         .mills
         .clone();
-    let id = tacsim::port::mill::MillId::derive(
-        &cid(LANE_PACK),
-        &cid("stickney_port"),
-        &cid("kasei"),
-        &cid("metals"),
-    )
-    .expect("a mill id");
+    let id = tacsim::port::mill::MillId::derive(&cid(LANE_PACK), &cid(port), &cid(org), &cid(ore))
+        .expect("a mill id");
     tw.engine()
         .action_state()
         .get(&handle, &id)
@@ -1340,6 +1363,10 @@ async fn ic12_part_one_a_leg_by_hand() {
         cell("ammo_ball_762", 0),
         cell("ammo_he_105", 0),
         cell("ammo_missile", 0),
+        // Doc 48 unit PL.3: the space munitions.
+        cell("torpedo", 0),
+        cell("spinal_round", 0),
+        cell("pd_box", 0),
         format!(
             "    TOTAL: {} t · {} m³",
             tacsim::port::capacity::format_tonnes(mass),
@@ -1732,8 +1759,6 @@ async fn ic12_part_one_a_leg_by_hand() {
     let coop_store = VaultId(ceres.vendors[&cid("coop")].vault);
     for (listing, seeded, bought) in [
         (metals_ask, metals_seeded, metals),
-        (ice_ask, ice_seeded, ice),
-        (fuel_ask, fuel_seeded, fuel),
         (food_ask, food_seeded, food),
     ] {
         assert_eq!(listed_qty(&rig.tw, listing), Some(seeded - bought));
@@ -1742,13 +1767,25 @@ async fn ic12_part_one_a_leg_by_hand() {
         pool(&mut rig.tw, exchange_store, "metals"),
         metals_seeded - metals
     );
-    assert_eq!(
-        pool(&mut rig.tw, occator_store, "volatiles"),
-        ice_seeded - ice
+    // Doc 48 unit PL.1: the fuel bought took Occator's propellant under its floor, so its refine
+    // milled water into propellant meanwhile. The water pool is down by what it milled and the
+    // water ask by at most one batch more (drawn and not yet milled); the propellant pool is up
+    // by what it made and the propellant ask by what it listed.
+    let (water_milled, fuel_made, fuel_listed) = occator_refined(&rig.tw);
+    let water = pool(&mut rig.tw, occator_store, "volatiles");
+    assert_eq!(water, ice_seeded - ice - water_milled);
+    let water_listed = listed_qty(&rig.tw, ice_ask).expect("the water ask stands");
+    assert!(
+        water - water_listed <= 20,
+        "at most one batch drawn: {water} t held, {water_listed} t listed"
     );
     assert_eq!(
         pool(&mut rig.tw, occator_store, "propellant"),
-        fuel_seeded - fuel
+        fuel_seeded - fuel + fuel_made
+    );
+    assert_eq!(
+        listed_qty(&rig.tw, fuel_ask),
+        Some(fuel_seeded - fuel + fuel_listed)
     );
     assert_eq!(
         pool(&mut rig.tw, coop_store, "provisions"),
@@ -2371,6 +2408,20 @@ async fn ic12_part_two_the_queue_runs_the_return() {
         .copied()
         .unwrap_or(0);
     let works_bought = works_alloys(&mut rig.tw) - works_at_stock;
+    // Doc 48 unit PL.1: and Occator's water ask fell by what its refine drew (the water it
+    // milled, and a batch drawn and not yet milled: the pool's units the ask does not list),
+    // its propellant ask rose by what the refine listed; neither is a sale.
+    let (water_milled, _, fuel_listed) = occator_refined(&rig.tw);
+    let occator_store = VaultId(port_map(&rig.tw, "ceres_port").vendors[&cid("occator")].vault);
+    let water_unlisted = ceres_asks
+        .iter()
+        .find(|(_, good, _)| good == "volatiles")
+        .map_or(0, |(id, _, _)| {
+            pool(&mut rig.tw, occator_store, "volatiles").saturating_sub(remaining[&id.0])
+        });
+    let water_drawn = water_milled + water_unlisted;
+    let water_sold = bought(&ceres_asks, "volatiles") - i64::try_from(water_drawn).expect("fits");
+    let fuel_sold = bought(&ceres_asks, "propellant") + i64::try_from(fuel_listed).expect("fits");
     let bought = |asks: &[(ListingId, String, u64)], good: &str| -> u64 {
         let mut sold = bought(asks, good);
         if good == "structural_alloys" {
@@ -2380,8 +2431,8 @@ async fn ic12_part_two_the_queue_runs_the_return() {
         u64::try_from(sold).expect("a sale is never negative")
     };
     assert_eq!(bought(&ceres_asks, "metals"), outfit.metals);
-    assert_eq!(bought(&ceres_asks, "volatiles"), outfit.ice);
-    assert_eq!(bought(&ceres_asks, "propellant"), outfit.fuel);
+    assert_eq!(u64::try_from(water_sold).ok(), Some(outfit.ice));
+    assert_eq!(u64::try_from(fuel_sold).ok(), Some(outfit.fuel));
     assert_eq!(bought(&ceres_asks, "provisions"), outfit.food);
     assert_eq!(
         pool(&mut rig.tw, kasei_store, "metals") + kasei_refined(&rig.tw),

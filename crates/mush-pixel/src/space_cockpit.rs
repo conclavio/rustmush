@@ -166,6 +166,162 @@ fn num(v: Option<&Value>) -> Option<f64> {
     v.and_then(Value::as_f64)
 }
 
+// ---------------------------------------------------------------------------
+// Doc 49 unit CC.9: the fire rows
+// ---------------------------------------------------------------------------
+
+/// **The fire rows' head** (doc 49 unit CC.9): the columns every mount row is laid in.
+pub const FIRE_HEAD: &str = "Mount          Kind      Rounds/mode     Ready       At the lock";
+
+/// The widest a lock row's callsign is printed, characters: a longer one is cut, so the row
+/// stays within the 120-column floor.
+pub const FIRE_LABEL_MAX: usize = 20;
+
+/// **What a fire row says at a glance** (doc 49 unit CC.9), for the colour a surface gives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FireTone {
+    /// The column head.
+    Head,
+    /// A mount that fires now.
+    Ready,
+    /// A mount whose cycle is running.
+    Cycling,
+    /// A mount held back by something a wait does not cure on its own: empty, down, too
+    /// hot or past reach.
+    Held,
+    /// The lock's row.
+    Lock,
+}
+
+/// **One fire row**: its words and its tone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FireRow {
+    /// The row, without any indent.
+    pub text: String,
+    /// What it says at a glance.
+    pub tone: FireTone,
+}
+
+/// Milliseconds as seconds to a tenth, rounded up, so a cycle with time left never reads
+/// nought: `2.4 s`.
+#[must_use]
+pub fn tenths(ms: u64) -> String {
+    let tenths = ms.div_ceil(100);
+    format!("{}.{} s", tenths / 10, tenths % 10)
+}
+
+/// Metres as kilometres to a tenth, rounded down: `42.0 km`.
+#[must_use]
+pub fn kilometres(m: u64) -> String {
+    format!("{}.{} km", m / 1_000, (m % 1_000) / 100)
+}
+
+fn word<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(Value::as_str)
+}
+
+fn whole(v: &Value, key: &str) -> Option<u64> {
+    v.get(key).and_then(Value::as_u64)
+}
+
+/// One mount's row: its id, its kind, its rounds (or a laser's mode), when it is ready, and
+/// what it does to the lock.
+fn mount_row(mount: &Value) -> FireRow {
+    let id = word(mount, "id").unwrap_or("?");
+    let kind = match word(mount, "family").unwrap_or("?") {
+        "point_defence" => "point def",
+        other => other,
+    };
+    let held = match (
+        word(mount, "mode"),
+        whole(mount, "rounds"),
+        whole(mount, "rounds_max"),
+    ) {
+        (Some(mode), _, _) => mode.to_owned(),
+        (None, Some(left), Some(max)) => format!("{left}/{max}"),
+        (None, Some(left), None) => format!("{left} left"),
+        (None, None, _) => "-".to_owned(),
+    };
+    let state = word(mount, "state").unwrap_or("?");
+    let (ready, tone) = match state {
+        "ready" => ("ready".to_owned(), FireTone::Ready),
+        "cycling" => (
+            format!("in {}", tenths(whole(mount, "ready_in_ms").unwrap_or(0))),
+            FireTone::Cycling,
+        ),
+        "too_hot" => ("too hot".to_owned(), FireTone::Held),
+        "past_reach" => ("past reach".to_owned(), FireTone::Held),
+        other => (other.to_owned(), FireTone::Held),
+    };
+    let fact = if let Some(damage) = whole(mount, "damage") {
+        format!("{damage} a pulse")
+    } else if let Some(ms) = whole(mount, "flight_ms") {
+        format!("flies {}", tenths(ms))
+    } else {
+        String::new()
+    };
+    let text = format!("{id:<14} {kind:<9} {held:<15} {ready:<11} {fact}");
+    FireRow {
+        text: text.trim_end().to_owned(),
+        tone,
+    }
+}
+
+/// The lock's row: how far off she is and the band of her hull that faces you.
+fn lock_row(fire: &Value) -> FireRow {
+    let text = match (
+        word(fire, "lock_id"),
+        fire.get("lock").filter(|lock| !lock.is_null()),
+    ) {
+        (_, Some(lock)) => {
+            let label: String = word(lock, "label")
+                .unwrap_or("")
+                .chars()
+                .take(FIRE_LABEL_MAX)
+                .collect();
+            format!(
+                "Lock {} ({label}): {}, her {} band faces you.",
+                word(lock, "id").unwrap_or("?"),
+                kilometres(whole(lock, "range_m").unwrap_or(0)),
+                word(lock, "facet").unwrap_or("?"),
+            )
+        }
+        (Some(id), None) => format!("Lock {id}: not held by your sensors."),
+        (None, None) => "No lock.".to_owned(),
+    };
+    FireRow {
+        text,
+        tone: FireTone::Lock,
+    }
+}
+
+/// **The fire rows** (doc 49 unit CC.9) of the `space.cockpit` feed's `fire` object: the head,
+/// one row a mount, then the lock's. What line mode's `+tac/status`, the TUI's space panel and
+/// this canopy print, the same words on each, every row within the 120-column floor.
+///
+/// A mount row reads its id, its kind, its rounds left of what her fit stows (a laser's mode
+/// instead, as a laser keeps no magazine), whether it is ready or how long its cycle has to run
+/// (or what holds it back: `empty`, `down`, `too hot`, `past reach`), and, against a lock her
+/// sensors hold within its reach, what one laser pulse lands there or how long a spinal round
+/// flies there. The lock row reads how far off she is and the band of her hull that faces you,
+/// of five. Space has no chance roll, so no row carries odds.
+#[must_use]
+pub fn fire_rows(fire: &Value) -> Vec<FireRow> {
+    let mut rows = vec![FireRow {
+        text: FIRE_HEAD.to_owned(),
+        tone: FireTone::Head,
+    }];
+    rows.extend(
+        fire.get("mounts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(mount_row),
+    );
+    rows.push(lock_row(fire));
+    rows
+}
+
 fn wrap_signed_deg(deg: f64) -> f64 {
     let w = (deg + 180.0).rem_euclid(360.0) - 180.0;
     if w == -180.0 { 180.0 } else { w }
@@ -423,9 +579,46 @@ pub fn draw_space_cockpit(frame: &mut Frame, cockpit: &Value, feeds: &dyn Feeds,
     // 6. Bridge canopy structural struts & cowling instrument strip
     draw_canopy_frame_and_cowling(frame, cockpit, (cam_yaw, cam_pitch), s, sc);
 
+    // 6b. Doc 49 unit CC.9: the fire rows over the cowling, bottom left
+    draw_fire_panel(frame, cockpit, s);
+
     // 7. Top-left Mini 3D Holo-Tank inset
     let inset_side = (w.min(h) / 4).max(48);
     draw_holotank_inset(frame, (8 * s, 16 * s, inset_side, inset_side), feeds, look);
+}
+
+/// **The fire rows over the cowling** (doc 49 unit CC.9): [`fire_rows`] of the feed's `fire`
+/// object, at the font's own size so every row fits a 640-pixel canopy, coloured by its tone.
+/// A feed without one (outside a bubble) draws nothing here.
+fn draw_fire_panel(frame: &mut Frame, cockpit: &Value, s: i64) {
+    let Some(fire) = cockpit.get("fire").filter(|fire| fire.is_object()) else {
+        return;
+    };
+    let rows = fire_rows(fire);
+    let (w, h) = (frame.width() as i64, frame.height() as i64);
+    let line_h = 9;
+    let widest = rows
+        .iter()
+        .map(|row| row.text.chars().count() as i64)
+        .max()
+        .unwrap_or(0)
+        * 6;
+    let panel_w = (widest + 8).min(w - 12 * s).max(0);
+    let panel_h = rows.len() as i64 * line_h + 6;
+    let x = 6 * s;
+    let y = (h - 22 * s - panel_h - 2 * s).max(14 * s);
+    fill_rect(frame, x, y, panel_w, panel_h, STRUT_FILL);
+    outline_rect(frame, x, y, panel_w, panel_h, BORDER);
+    for (i, row) in rows.iter().enumerate() {
+        let col = match row.tone {
+            FireTone::Head => DIM,
+            FireTone::Ready => GOOD,
+            FireTone::Cycling => TEXT,
+            FireTone::Held => WARN,
+            FireTone::Lock => LOCK,
+        };
+        let _ = text(frame, x + 4, y + 4 + i as i64 * line_h, &row.text, col, 1);
+    }
 }
 
 fn draw_starfield_star(frame: &mut Frame, x: i64, y: i64, tier: u64) {
@@ -667,5 +860,159 @@ mod tests {
             (10..=64).contains(&colours),
             "expected rich space cockpit within 256-colour limit, got {colours}"
         );
+    }
+
+    /// A fire object as `tacsim::space::view::fire_feed` writes it: two lasers (one cycling in
+    /// defence), the tubes, a spinal gun part spent and cycling, a point-defence rotary, and a
+    /// lock with her top band toward you.
+    fn fire_fixture() -> Value {
+        json!({
+            "mounts": [
+                {"id": "laser_dorsal", "family": "laser", "mode": "offence",
+                 "ready_in_ms": 0, "state": "ready", "damage": 98},
+                {"id": "laser_ventral", "family": "laser", "mode": "defence",
+                 "ready_in_ms": 600, "state": "cycling", "damage": 98},
+                {"id": "torp_bow", "family": "tubes", "rounds": 16, "rounds_max": 16,
+                 "ready_in_ms": 0, "state": "ready"},
+                {"id": "rail_spinal", "family": "spinal", "rounds": 31, "rounds_max": 32,
+                 "ready_in_ms": 2_350, "state": "cycling", "flight_ms": 2_101},
+                {"id": "pdc_port", "family": "point_defence", "rounds": 4_000,
+                 "ready_in_ms": 0, "state": "ready"}
+            ],
+            "lock_id": "raider.7.1",
+            "lock": {"id": "raider.7.1", "label": "Belt Raider", "range_m": 42_050,
+                     "facet": "top"}
+        })
+    }
+
+    /// **Doc 49 unit CC.9: a row a mount, then the lock, and no odds.** Rounds of what her fit
+    /// stows (a laser's mode instead), ready or the cycle left, what a pulse lands at the lock
+    /// and how long a spinal round flies there; the lock's range and her band of five.
+    #[test]
+    fn cc9_the_fire_rows_read_rounds_mode_ready_and_the_lock_with_no_odds() {
+        let rows = fire_rows(&fire_fixture());
+        let text: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
+        assert_eq!(
+            text,
+            [
+                FIRE_HEAD,
+                "laser_dorsal   laser     offence         ready       98 a pulse",
+                "laser_ventral  laser     defence         in 0.6 s    98 a pulse",
+                "torp_bow       tubes     16/16           ready",
+                "rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s",
+                "pdc_port       point def 4000 left       ready",
+                "Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.",
+            ]
+        );
+        let tones: Vec<FireTone> = rows.iter().map(|row| row.tone).collect();
+        assert_eq!(
+            tones,
+            [
+                FireTone::Head,
+                FireTone::Ready,
+                FireTone::Cycling,
+                FireTone::Ready,
+                FireTone::Cycling,
+                FireTone::Ready,
+                FireTone::Lock,
+            ]
+        );
+        for row in &text {
+            let low = row.to_ascii_lowercase();
+            assert!(
+                !row.contains('%') && !low.contains("odds") && !low.contains("chance"),
+                "{row}"
+            );
+        }
+        // A cycle with time left never reads nought; a lock her sensors lost, and none.
+        assert_eq!(tenths(1), "0.1 s");
+        let mut lost = fire_fixture();
+        lost["lock"] = Value::Null;
+        assert_eq!(
+            fire_rows(&lost).last().map(|row| row.text.clone()),
+            Some("Lock raider.7.1: not held by your sensors.".to_owned())
+        );
+        lost["lock_id"] = Value::Null;
+        assert_eq!(
+            fire_rows(&lost).last().map(|row| row.text.clone()),
+            Some("No lock.".to_owned())
+        );
+        // Held back: what holds it is the word.
+        let held = json!({"mounts": [
+            {"id": "a", "family": "spinal", "rounds": 0, "rounds_max": 32,
+             "ready_in_ms": 0, "state": "empty"},
+            {"id": "b", "family": "laser", "mode": "offence", "ready_in_ms": 0,
+             "state": "too_hot"},
+            {"id": "c", "family": "laser", "mode": "offence", "ready_in_ms": 0,
+             "state": "past_reach"},
+            {"id": "d", "family": "point_defence", "rounds": 9, "ready_in_ms": 0,
+             "state": "down"}
+        ]});
+        let words: Vec<String> = fire_rows(&held)[1..5]
+            .iter()
+            .map(|row| {
+                assert_eq!(row.tone, FireTone::Held);
+                row.text[41..].trim().to_owned()
+            })
+            .collect();
+        assert_eq!(words, ["empty", "too hot", "past reach", "down"]);
+    }
+
+    /// **Doc 49 unit CC.9: the lock row within the 120-column floor at its widest fill**, two
+    /// spaces in as `+tac/status` prints it: a 32-character bubble id (`customs.` and two
+    /// ten-digit numbers is 29), a callsign past [`FIRE_LABEL_MAX`], the farthest range a
+    /// `u64` holds.
+    #[test]
+    fn cc9_the_lock_row_fits_120_columns_at_its_widest_fill() {
+        let fire = json!({
+            "mounts": [],
+            "lock_id": "x".repeat(32),
+            "lock": {"id": "x".repeat(32), "label": "W".repeat(40), "range_m": u64::MAX,
+                     "facet": "front"}
+        });
+        let rows = fire_rows(&fire);
+        let lock = &rows.last().expect("the lock row").text;
+        assert!(lock.contains(&"W".repeat(FIRE_LABEL_MAX)) && !lock.contains(&"W".repeat(21)));
+        assert!(
+            2 + lock.chars().count() <= 120,
+            "{}: {lock}",
+            lock.chars().count()
+        );
+        assert!(2 + FIRE_HEAD.len() <= 120);
+    }
+
+    /// **Doc 49 unit CC.9: the canopy draws the fire rows over its cowling** when the feed
+    /// carries them, inside the colour budget, and nothing more without them.
+    #[test]
+    fn cc9_the_canopy_draws_the_fire_rows_when_the_feed_carries_them() {
+        let draw = |fire: Option<Value>| {
+            let mut cockpit = json!({
+                "callsign": "UNS-HALCYON",
+                "yaw_deg": 0.0,
+                "pitch_deg": 0.0,
+                "roll_deg": 0.0,
+                "contacts": []
+            });
+            if let Some(fire) = fire {
+                cockpit["fire"] = fire;
+            }
+            let mut feeds = HashMap::new();
+            feeds.insert(SPACE_COCKPIT_FEED.to_owned(), cockpit);
+            let mut frame = Frame::new(640, 480);
+            assert!(SpaceCockpitPicture::new().draw(&mut frame, &feeds, &Look::default()));
+            frame
+        };
+        let bare = draw(None);
+        let with = draw(Some(fire_fixture()));
+        assert_ne!(bare.hash(), with.hash(), "the rows are drawn");
+        let colours = with.count_colours(256);
+        assert!((10..=64).contains(&colours), "{colours}");
+        // The widest row fits the 640-pixel canopy at the font's own size.
+        let widest = fire_rows(&fire_fixture())
+            .iter()
+            .map(|row| row.text.chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(widest * 6 + 8 <= 640 - 24, "{widest}");
     }
 }

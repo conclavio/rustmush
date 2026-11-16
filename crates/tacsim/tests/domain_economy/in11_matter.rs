@@ -150,6 +150,8 @@ async fn in11_a_restart_between_consumption_and_title_finishes_the_hull_once() {
         "tacsim.part.weapon.mg_coax",
         "tacsim.part.sensor.visual_mk1",
         "tacsim.part.plant.vehicle_mk1",
+        // Doc 48 unit PL.7: her stock core's module, billed and consumed like a part.
+        "tacsim.part.core.line",
     ]
     .iter()
     .enumerate()
@@ -654,9 +656,14 @@ async fn in11_the_port_half_ore_to_parts_to_a_prospector_conserves_matter() {
     // ---- The window closes ----
     let after = census(&mut rig);
     eprintln!("in11 port half before {before:?}\nin11 port half after {after:?}");
+    // Doc 48 cut EX.0: the census counts propellant and provisions now, and `sail` seeds the tank
+    // (60 t) and the locker (40 crew-days at 4 kg) by staff hand inside the window: a mint the
+    // census cannot see, so the balance moves by exactly that seed and no more.
+    let seeded = 60 * 1_000 + 40 * 4;
     assert_eq!(
-        before["balance"], after["balance"],
-        "matter is neither made nor lost"
+        before["balance"] - seeded,
+        after["balance"],
+        "matter is neither made nor lost, but for the sail's staff seed"
     );
     let build = builds(&mut rig);
     assert!(

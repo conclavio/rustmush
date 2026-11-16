@@ -71,6 +71,11 @@ fn ready(ctx: &mut Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Fa
     if record.scrapped_ic.is_some() {
         return Err("That hull has been scrapped.".to_owned());
     }
+    // Doc 48 cut EX.2 (Q-48-52): no bait-and-strip; a hull being sold is neither stripped
+    // nor broken up.
+    if super::under_sale(ctx.w, hull) {
+        return Err(super::UNDER_SALE.to_owned());
+    }
     let facility = super::facility_of(ctx.w, hull)?;
     if facility.class != FacilityClass::Workshop {
         return Err(

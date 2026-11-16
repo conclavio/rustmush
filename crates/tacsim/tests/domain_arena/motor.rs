@@ -80,9 +80,11 @@ const DUEL_HASH_AT_HEAD: u64 = 0x7712_b6dd_5551_dea8;
 // Doc 44 unit MW.9: re-pinned for the mind ABI's move to API 8 and the Standard header's with
 // it (a seal folds both); it was 16080728793682240297. The name keeps the API it was first
 // observed under. Doc 45 unit AP.3: re-pinned for the move to API 9 (`View.posture`) and the
-// header's with it; it was 1616282248418535522. Doc 49 unit CC.1: re-pinned for the Line card's
-// fire terms (folded with the card in every seal and in the arena's card state) and the
-// Standard source (the reserve's rules); it was 8545700201896415367. The duel fires no shot in
+// header's with it; it was 1616282248418535522. Doc 49 unit CC.9: re-pinned for the move to
+// API 10 (`space_mount`, the space aspect); it was 8545700201896415367. Doc 49 unit CC.1:
+// re-pinned for the Line card's fire terms (folded with the card in every seal and in the
+// arena's card state) and the Standard source (the reserve's rules); it was
+// 14436676478520681413 (CC.9's). The duel fires no shot in
 // its minute, so no fight moved: [`M1B0_DUEL_LINES`]' 34 lines differ only in `hash`.
 const DUEL_HASH_API6_OBSERVED: u64 = 7435271664670994559;
 
@@ -313,10 +315,10 @@ fn gc1b_an_ooc_match_offered_a_join_keeps_its_practice_hashes() {
 /// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_DUEL_LINES: &[&str] = &[
     r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":8373834874218490679}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":3,"sortie":3,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":7,"sortie":7,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
-    r#"{"seq":5,"t_ms":0,"kind":"mind_sealed","unit":8,"sortie":8,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":3,"sortie":3,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":7,"sortie":7,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
+    r#"{"seq":5,"t_ms":0,"kind":"mind_sealed","unit":8,"sortie":8,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":8373834874218490679}"#,
     r#"{"seq":6,"t_ms":258,"kind":"detected","viewer":8,"contact":8314046734819043908,"target":7,"hash":18281399317773031225}"#,
     r#"{"seq":7,"t_ms":421,"kind":"detected","viewer":3,"contact":5844251635052541762,"target":4,"hash":18281399317773031225}"#,
     r#"{"seq":8,"t_ms":482,"kind":"detected","viewer":4,"contact":5992554990774319474,"target":3,"hash":18281399317773031225}"#,

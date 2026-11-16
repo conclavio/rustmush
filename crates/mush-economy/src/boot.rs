@@ -428,6 +428,8 @@ fn parse_documents(
         } else if crate::keys::is_idem_key(key) {
             // Doc 13: read on demand through the store-read seam, never at boot;
             // the loader skips the prefix, a test rig may hand them over.
+        } else if key == crate::census::CENSUS_KEY {
+            // Doc 48 cut EX.0: the money census's book; the module reads it itself.
         } else if key == mush_core::BOOT_MANIFEST_KEY {
             // J4: loader-owned; the production loader strips it, a test rig
             // may hand it over with the rest.

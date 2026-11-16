@@ -899,7 +899,13 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
     // current rate, so what the page advertises as for sale is what the hold still
     // backs; `trade::is_current` and `trade::quote` read the hold itself as well,
     // which is what holds when the rate moves after the listing is written.
+    //
+    // Doc 48 cut EX.1a (Q-48-54's first point): only a **pooled** lot listing is cut. An
+    // exact lot's hold is the lot's own and has no clock (`lot::hold_standing`), so a
+    // lot-transfer listing stands for its own window; before EX.1a it was cut to seven IC
+    // days, seven real hours at 24:1.
     if lot_leg.is_some()
+        && spec.source.exact_lot().is_none()
         && let Some(cap) = crate::lot::hold_ttl_real_secs(ctx.w)
     {
         ttl = ttl.min(cap).max(1);
@@ -933,6 +939,9 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             },
             revision: 1,
             draw: Some(draws),
+            account: None,
+            private_to: None,
+            escrow: None,
         },
     );
     persist_meta(ctx);
@@ -1086,6 +1095,8 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
     if let Some(leg) = leg {
         crate::lot::stage(ctx, &leg);
     }
+    // Doc 48 cut EX.1a: a personal bid gives back what its escrow still holds.
+    crate::seller::release_bid_escrow(ctx, &listing);
     Ok(())
 }
 
@@ -1447,6 +1458,9 @@ pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, Mar
             revision: 1,
             // Doc 18 cut IC14 row 14: a standing bid never draws.
             draw: Some(false),
+            account: None,
+            private_to: None,
+            escrow: None,
         },
     );
     persist_meta(ctx);
@@ -1510,6 +1524,11 @@ pub fn may_view_listing(w: &World, viewer: ObjId, l: &Listing) -> bool {
         return true;
     }
     if mush_economy::acts_for(w, viewer, &l.seller) {
+        return true;
+    }
+    // Doc 48 cut EX.1a (Q-48-5): a private offer is `Hidden`, and its one counterparty may
+    // see it.
+    if l.private_to.as_ref() == Some(&PrincipalId::Object(viewer)) {
         return true;
     }
     if !matches!(l.visibility, MarketVisibility::Public) {

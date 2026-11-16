@@ -94,6 +94,13 @@ pub struct HardwareCoordinates {
     /// `launch_deployment` identity and its digest are as before; absent, no shop buys cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buy_back_permille: Option<u32>,
+    /// **The die depot's opening stock** (doc 48 unit PL.7): chain goods the origin's
+    /// `Initialize` credits into `depot` once, so the launch can cut its first dies (a die takes
+    /// its chain goods from the depot). The bring-up names it. Skipped when empty, so every
+    /// deployment that names none, its `launch_deployment` identity and its digest are as
+    /// before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depot_stock: Vec<mush_industry::core_production::ChainLine>,
 }
 
 /// **A refit bay's coordinates** (doc 31 cut UD.4b): the deployment's serializable twin of
@@ -161,6 +168,7 @@ impl HardwareCoordinates {
                 max_fee_minor: b.max_fee_minor,
             }),
             buy_back_permille: self.buy_back_permille,
+            depot_stock: self.depot_stock.clone(),
         }
     }
 }

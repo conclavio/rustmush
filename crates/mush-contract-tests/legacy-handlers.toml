@@ -210,6 +210,12 @@ family = "tacsim.licence"
 note = "doc 20 cut SM.5 (section 9.1, D-20-12, Q-20-2): the Freeport Registry's prospecting licence. +licence and +licence/show are pure reads (the actor's gateway account's tacsim:licence: record and its entitlement account). /buy previews and writes nothing; /buy go is ONE command: mush_economy::open_account opens the pilot's unscoped tacsim.licence.freeport Entitlement account if absent, offer_contract + accept_contract (as the pilot) + accept_contract_as (the Registry, through the port party-cap source) make one Public fee contract into the Registry's account that the economy sweep settles and CanonEvidenceBridge chronicles, and tacsim writes one bounded whole-document tacsim:licence:<gateway account> record (deny_unknown_fields, identity rule, an unreadable one bars only its account). The lapse is read at the next act; no tick writes it. No authoritative submission. Future family: the licence as a typed per-account record."
 
 [[handler]]
+name = "+locker"
+category = "legacy-post-image"
+family = "tacsim.locker"
+note = "Doc 48 cut EX.1b (Q-48-49): a player's locker at the venue they stand in. +locker is a read of the actor's own locker record (what it holds and owes) that also accrues the owed charge in whole IC days, rewriting the one bounded whole-document tacsim:locker:<player>:<venue> record when a day has passed. +locker/open, at a venue room only, makes the locker once: a Thing in LIMBO owned by the player as the container backing, the economy's create_vault (its id from the economy allocator) and the record. No economy post, no authoritative submission. Future family: the locker as a typed per-player record."
+
+[[handler]]
 name = "+map"
 category = "legacy-post-image"
 family = "atlas.window"

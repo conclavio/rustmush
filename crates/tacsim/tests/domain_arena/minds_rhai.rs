@@ -3614,16 +3614,27 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `18_435_737_973_288_515_964` / `8f1f0f70…` / `b3ed4810…`,
 /// `3_500_444_545_657_099_864` / `0d8bad3f…` / `62cbfde1…`.
 ///
-/// **Doc 49 unit CC.1 re-pins all four rows** (Q-49-8, Q-49-9, Q-49-23): the stock mind holds
-/// its shot to the Line card's 35% floor (50% under half a magazine) and keeps a quarter of
-/// each load for answering fire and its withdrawal, and the Standard source and the card are
-/// folded in every seal, so the fights moved: the stopping times 180_250, 177_500, 170_000, 900_000 became
-/// 231_250, 197_500, 167_000, 900_000. The probe's 3,600 thinks and the 369098751 bitmask are as they were. Read on
-/// Linux (conclav.dev); Windows is ci.yml's same step. Were:
+/// **Doc 49 unit CC.9 re-pins all four rows.** The mind ABI moved to API 10 (`space_mount`,
+/// the space aspect) and the Standard header with it, so every hash moved again, the float
+/// probe's with them. No fight moved: the four stopping times, the probe's 3,600 thinks and the
+/// 369098751 bitmask are as they were. Read on Linux (conclav.dev); Windows is ci.yml's same
+/// step. Were:
 /// `17_808_863_300_457_361_787` / `18bd09cf…` / `b98692b4…`,
 /// `440_362_425_077_439_412` / `b244b077…` / `a70d1073…`,
 /// `17_895_885_161_793_245_509` / `3790f74c…` / `56015f59…`,
 /// `10_945_038_470_150_213_193` / `7f5b2edf…` / `ed2ac389…`.
+///
+/// **Doc 49 unit CC.1 re-pins all four rows** (Q-49-8, Q-49-9, Q-49-23): the stock mind holds
+/// its shot to the Line card's 35% floor (50% under half a magazine) and keeps a quarter of
+/// each load for answering fire and its withdrawal, and the Standard source and the card are
+/// folded in every seal, so the fights moved: the stopping times 180,250, 177,500, 170,000 and
+/// 900,000 became 231,250, 197,500, 167,000 and 900,000. The probe's 3,600 thinks and the
+/// 369098751 bitmask are as they were. Read on Linux (conclav.dev); Windows is ci.yml's same
+/// step. Were:
+/// `6_979_424_319_955_744_793` / `94096116…` / `256f2a98…`,
+/// `16_055_487_243_381_801_295` / `1edf1d14…` / `747117c7…`,
+/// `3_235_368_525_617_475_578` / `261f3764…` / `73aec74c…`,
+/// `16_916_042_141_164_977_008` / `312402a1…` / `fe10f14d…` (CC.9's).
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,

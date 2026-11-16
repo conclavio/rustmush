@@ -224,6 +224,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             ungovern: None,
             bay: None,
             buy_back_permille: None,
+            depot_stock: Vec::new(),
         },
         market,
         procurement: Vec::new(),
@@ -518,6 +519,8 @@ fn operator(d: &LaunchDeployment) -> Result<ObjId> {
 #[tokio::test(flavor = "current_thread")]
 async fn named_launch_real_initialization_cold_activation_and_private_import() -> Result {
     let (mut r, mut d) = setup()?;
+    // Doc 48 unit PL.7: the deployment opens the die depot with stock, as the bring-up's does.
+    d.hardware.depot_stock = super::depot_stock(DEPOT_STOCK)?;
     reboot(&mut r, &d)?;
     check!(crate::test_checks::refused(r.plan(
         "industry",
@@ -538,6 +541,11 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
     d.mode = LaunchMode::Active;
     reboot(&mut r, &d)?;
     check!(!image.is_empty());
+    // Doc 48 unit PL.7: the Initialize stocked the depot once, so the launch's first die plans.
+    check_eq!(
+        (r.depot("instrument_boards")?, r.depot("strategic_ore")?),
+        (DEPOT_STOCK, DEPOT_STOCK)
+    );
     check!(
         r.plan("industry", "issue_core_die", GOD, json!({"class":"i"}))
             .is_ok()

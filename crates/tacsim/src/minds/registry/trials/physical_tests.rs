@@ -447,14 +447,20 @@ const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !
 /// are equal (`docs/design/45-cut-notes.md`, AP.3). The states were `2ac0bb5770d49505`, `366ad86d479ee5d5`, `f8d70307b1c6f298` and
 /// `a1804cd413eba194`.
 ///
+/// **Re-blessed by doc 49 unit CC.9** (the mind ABI at API 10, `space_mount` and the space
+/// aspect): each row's state hash, ledger digest and result digest moved again, and nothing
+/// else; every case still ends in the same elimination at 58,500 ms. Read on Linux
+/// (conclav.dev). The states were `b96cfc871125c968`, `5d1fab14efb06d56`, `2bf92a826a6c2b3e`
+/// and `d0dabee505065909`.
+///
 /// **Re-blessed by doc 49 unit CC.1** (the Line card's 35% floor and 25% reserve, the floor's
 /// rise under half a magazine, and the fire record kept in every match): every case still ends
 /// in the same elimination and is filed the same `Loss`, at 106,500 ms where it was 58,500
 /// (the stock mind holds its shots to its floor), and each row's state hash, ledger
 /// digest and result digest moved with it (`docs/design/49-cut-notes.md`, CC.1). Blessed on
 /// conclav.dev and run on Windows by hand at the same tree: the four rows equal. The rows were
-/// at 58,500 ms with the states `b96cfc871125c968`, `5d1fab14efb06d56`, `2bf92a826a6c2b3e` and
-/// `d0dabee505065909`.
+/// CC.9's, at 58,500 ms with the states `7970defd05f7722c`, `acd75c62f8ca64ff`,
+/// `514d012c9feb9a7a` and `1c4324486221d96d`.
 const C4_TRIAL_PINS: [&str; 4] = [
     "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=ced729426116276b ledger=abf87aeaaddcedf95a56f4f0595fc6eafeb1d9e3370fb7932437dc9fc2f91c01 result=cfc91ef30b68ff449197589c6a99e8f10a59765b88c348a2859b460995ba7a46",
     "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=3f8bd777880f03af ledger=4318de5d6d531306d013285ddb22f4d57c019cac1fd52bea040a5e60a2d6d728 result=55bf70c51717130675a9a32c418d3f7bc5388ecb91ab76f70b43498257caab53",

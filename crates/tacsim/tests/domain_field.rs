@@ -67,6 +67,8 @@ mod crew_treatment;
 mod driving;
 #[path = "domain_field/escort_lease.rs"]
 mod escort_lease;
+#[path = "domain_field/ex0_matter_sinks.rs"]
+mod ex0_matter_sinks;
 #[path = "domain_field/excursions.rs"]
 mod excursions;
 #[path = "domain_field/field_ap1.rs"]
@@ -153,6 +155,8 @@ mod mw13_ship_mind;
 mod mw21_completion;
 #[path = "domain_field/one_picture.rs"]
 mod one_picture;
+#[path = "domain_field/pl7_cores.rs"]
+mod pl7_cores;
 #[path = "domain_field/review_36a.rs"]
 mod review_36a;
 #[path = "domain_field/salvage_close.rs"]

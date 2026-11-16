@@ -53,7 +53,8 @@ pub(super) fn terms(v: &Value) -> Result<(), ActionStateError> {
     if num(v, "format")? != 1
         || seller == buyer
         || signed(v, "price")? <= 0
-        || !(1..=86400).contains(&duration)
+        || !(1..=i128::from(crate::action_state::player_wait::MAX_RESALE_OFFER_SECONDS))
+            .contains(&duration)
         || signed(v, "settle_seconds")? != 259200
     {
         return Err(refused("resale terms differ"));

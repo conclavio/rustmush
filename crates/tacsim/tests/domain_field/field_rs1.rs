@@ -389,6 +389,17 @@ async fn tender_on(ground: &Ground) {
         10 + 12 + 35,
         "the census's repaired kilograms"
     );
+    // Doc 48 cut EX.0: and the rounds the rearm drew, by good (the census's `loaded`).
+    assert_eq!(
+        site_record_at(&mut rig, ground.entry)
+            .expect("the site's record")
+            .matter
+            .loaded
+            .get(&mush_core::CanonicalId::new("ammo_he_105").expect("a good"))
+            .copied(),
+        Some(u64::try_from(short.min(20)).expect("rounds")),
+        "the census's loaded units"
+    );
     let shown = run(&mut rig.tw, a, "+tv/2 stores");
     let left = 20 - u64::try_from(short.min(20)).expect("rounds");
     assert!(

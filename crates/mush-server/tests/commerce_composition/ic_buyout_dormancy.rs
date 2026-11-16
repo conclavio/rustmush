@@ -442,10 +442,12 @@ async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
     let mut house = tacsim::port::yard::dispatchers(rig.tw.world());
     // Doc 39 cut IN.5: Stickney's clerk has daily acts of its own (Kasei's refresh, the works'
     // house purchases, the refine), so a fire that crosses an IC day queues one beside a hop's.
-    if let PortMapState::Present(map) =
-        store(&rig.tw).port_map(&cid(LANE_PACK), &cid("stickney_port"))
-    {
-        house.extend(map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)));
+    // Doc 48 unit PL.1: and Ceres's, whose clerk refines Occator's water once propellant is
+    // bought below its floor.
+    for port in ["stickney_port", "ceres_port"] {
+        if let PortMapState::Present(map) = store(&rig.tw).port_map(&cid(LANE_PACK), &cid(port)) {
+            house.extend(map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)));
+        }
     }
     let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
         .into_iter()

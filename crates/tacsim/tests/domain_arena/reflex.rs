@@ -1367,9 +1367,13 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
 /// with it: `0xd530_f06f_b89a_1de5` became `0xb805_607a_6669_4c4b` and
 /// `0x7148_c511_991c_ebd7` became `0x269a_e671_07dc_8353`, and again the lines differ from the
 /// prior pins in `hash` and in the `mind_sealed` lines' `source` alone.
+/// Doc 49 unit CC.9: the mind ABI moved to API 10 (`space_mount`, the space aspect) and the
+/// Standard header with it: `0xb805_607a_6669_4c4b` became `0xa514_e283_3c91_a481` and
+/// `0x269a_e671_07dc_8353` became `0x2761_eb45_9a09_88d7`; the 50 lines differ from the prior
+/// pins in `hash` alone.
 /// Doc 49 unit CC.1: the Line card's fire terms and the Standard source (the reserve's rules)
-/// moved, folded in every seal and in the card state: `0xb805_607a_6669_4c4b` became
-/// `0x8fe5_be9f_304c_4cf0` and `0x269a_e671_07dc_8353` became `0xcfe5_554c_cd01_379a`; the
+/// moved, folded in every seal and in the card state: `0xa514_e283_3c91_a481` became
+/// `0x8fe5_be9f_304c_4cf0` and `0x2761_eb45_9a09_88d7` became `0xcfe5_554c_cd01_379a`; the
 /// lines differ from the prior pins in `hash`, and in the `mind_sealed` lines' `source` and
 /// `card_digest`, alone (the field's shots did not move).
 #[test]
@@ -1450,9 +1454,9 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
 /// no seal digest and no `hash` moved, and every other byte is equal.
 const M1B0_J_LINES: &[&str] = &[
     r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":6012192293719051140}"#,
-    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
-    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
-    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"fd73e14b92563cc3","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
+    r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
+    r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
+    r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"eec3f6687aa0129d","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":6012192293719051140}"#,
     r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":10368903308009819376}"#,
     r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":10368903308009819376}"#,
     r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":10368903308009819376}"#,

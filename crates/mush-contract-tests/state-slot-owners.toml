@@ -1200,8 +1200,10 @@ reason = """
 Doc 18 cut IC10 (an IC7 residual): the `#[cfg(test)] mod tests` inside the
 market's fact provider seeds a `MarketStore` holding one Draw quote onto a bare
 world, so `MarketFactProvider::resolve`'s id parsing and revision arms can be
-exercised with nothing else composed. Test-only, and the slot is the market's
-own; the composed path is `Registrar::state` in `MarketModule::register`.
+exercised with nothing else composed. Doc 48 cut EX.2's test there seeds one
+the same way, its tables holding a test asset-sale seam, for the
+`market.asset.state` fact. Test-only, and the slot is the market's own; the
+composed path is `Registrar::state` in `MarketModule::register`.
 """
 
 [[site]]
@@ -1687,4 +1689,15 @@ credit account is never refused for want of one (the carried-debt rule) — the 
 takes the account id from `economy`'s allocator before `mush_economy::open_account`
 writes it through the economy module's own path, the `port/apply.rs` precedent.
 The site refuses when the slot is absent.
+"""
+
+[[site]]
+path = "crates/tacsim/src/port/locker.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 48 cut EX.1b, for the `port/coop.rs` row's reason: a player's venue locker takes its
+vault id from `economy`'s allocator before `mush_economy::create_vault` writes it through
+the economy module's own path. The site refuses when the slot is absent.
 """

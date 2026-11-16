@@ -42,6 +42,23 @@ pub const MAX_CATALOG_ENTRIES: usize = 4_096;
 pub const MAX_LISTINGS_PER_VENDOR: usize = 64;
 /// The most listings the whole store holds.
 pub const MAX_LISTINGS: usize = 1_024;
+/// **The most open listings one personal seller holds** (doc 48 Q-48-44, cut EX.1a;
+/// provisional): asks and bids together. A personal seller is not a vendor row, so the
+/// 64-vendor cap never binds a player, and this is what bounds one instead. At 32 a
+/// seller, 32 sellers fill [`MAX_LISTINGS`]; the load test holds both ceilings.
+pub const MAX_LISTINGS_PER_SELLER: usize = 32;
+/// The listings a full set of personal sellers fills is the whole store, so the
+/// per-seller cap can never exceed it (doc 48 cut EX.1a).
+const _: () = assert!(MAX_LISTINGS_PER_SELLER <= MAX_LISTINGS);
+/// **The vendor id a personal listing names** (doc 48 cut EX.1a, Q-48-44: "a personal
+/// seller is not a vendor row"). `MarketStore::alloc_vendor` never mints it (its
+/// `checked_add` refuses at the ceiling first), so no vendor row can ever answer it,
+/// and every reader that asks the vendor table about a personal listing reads none.
+pub const NO_VENDOR: VendorId = VendorId(u64::MAX);
+/// **The vault a personal asset listing names** (doc 48 cut EX.2): a titled object a person
+/// sells sits in no storefront, and its sale moves the title, never a vault's contents, so
+/// its `Supply::Stock` names this, which no vault ever is.
+pub const NO_VAULT: VaultId = VaultId(u64::MAX);
 /// The most quotes the whole store holds — open offers and trade-tape rows alike.
 pub const MAX_QUOTES: usize = 2_048;
 /// The most **settled trade-tape rows** the whole store holds, across every pair.
@@ -717,7 +734,38 @@ pub struct Listing {
     /// drop every kept listing.
     #[serde(default)]
     pub draw: Option<bool>,
+    /// **A personal seller's own account** (doc 48 cut EX.1a, Q-48-2): what an ask is
+    /// paid into and a bid is escrowed from. `Some` exactly on a personal listing, whose
+    /// `vendor` is [`NO_VENDOR`]; a vendor listing's account is its vendor row's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<AccountId>,
+    /// **A private offer's one counterparty** (doc 48 Q-48-5, cut EX.1a): the only
+    /// principal who may quote and accept an ask, or sell into a bid. A private listing
+    /// is `Hidden`, so it is in no projection, and only its seller, this principal and
+    /// staff may see it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_to: Option<PrincipalId>,
+    /// **A personal bid's escrow** (doc 48 Q-48-50, cut EX.1a): the bidder's own
+    /// reservation hold, `price × quantity` of the intake still wanted. Placed at
+    /// posting, drawn as the bid fills (each sale's acceptance releases it and places the
+    /// remainder again in one plan), and released at withdrawal or expiry. `Some`
+    /// exactly on a personal `Supply::Wanted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow: Option<mush_economy::HoldId>,
 }
+
+impl Listing {
+    /// Whether a personal seller listed it (doc 48 cut EX.1a): no vendor row, the
+    /// seller's own account on the listing.
+    #[must_use]
+    pub const fn is_personal(&self) -> bool {
+        self.account.is_some()
+    }
+}
+
+/// The hold purpose a personal bid's escrow carries (doc 48 cut EX.1a):
+/// `Reservation { kind: BID_ESCROW_KIND, id: <listing> }`.
+pub const BID_ESCROW_KIND: &str = "market.bid";
 
 #[derive(Clone, Debug, Deserialize)]
 struct ListingWire {
@@ -741,6 +789,12 @@ struct ListingWire {
     revision: u64,
     #[serde(default)]
     draw: Option<bool>,
+    #[serde(default)]
+    account: Option<AccountId>,
+    #[serde(default)]
+    private_to: Option<PrincipalId>,
+    #[serde(default)]
+    escrow: Option<mush_economy::HoldId>,
 }
 
 impl TryFrom<ListingWire> for Listing {
@@ -812,6 +866,7 @@ impl TryFrom<ListingWire> for Listing {
                 return Err(RecordError("a standing bid names no object"));
             }
         }
+        check_personal(&w)?;
         Ok(Listing {
             id: ListingId(w.id),
             seller: w.seller,
@@ -827,8 +882,54 @@ impl TryFrom<ListingWire> for Listing {
             expires: w.expires,
             revision: w.revision,
             draw: w.draw,
+            account: w.account,
+            private_to: w.private_to,
+            escrow: w.escrow,
         })
     }
+}
+
+/// **The personal seller's wire rules** (doc 48 cut EX.1a): a personal listing names
+/// [`NO_VENDOR`] and its seller's own account, and nothing else does; it is an exact lot
+/// (Q-48-49) or an escrowed bid (Q-48-50), never a counter, a maker, a procurement, a
+/// pooled lot or an object; a bid carries its escrow and an ask none; and a private
+/// offer is `Hidden`, names a person, and never the seller.
+fn check_personal(w: &ListingWire) -> Result<(), RecordError> {
+    let personal = w.account.is_some();
+    if personal != (w.vendor == NO_VENDOR.0) {
+        return Err(RecordError(
+            "a listing names a vendor row or a personal account, exactly one",
+        ));
+    }
+    if personal {
+        // Doc 48 cut EX.2: or one titled object, from no storefront.
+        let shaped = match &w.source {
+            Supply::Lot { lot, .. } => lot.is_some() && w.escrow.is_none() && w.object.is_none(),
+            Supply::Wanted { .. } => w.escrow.is_some() && w.object.is_none(),
+            Supply::Stock { vault } => {
+                *vault == NO_VAULT && w.object.is_some() && w.escrow.is_none()
+            }
+            Supply::Market { .. } | Supply::Procurement { .. } => false,
+        };
+        if !shaped || w.draw == Some(true) {
+            return Err(RecordError(
+                "a personal listing sells one exact lot or one titled object, or is an escrowed bid",
+            ));
+        }
+    } else if w.escrow.is_some() {
+        return Err(RecordError("only a personal bid carries an escrow"));
+    }
+    if let Some(to) = &w.private_to {
+        if !matches!(to, PrincipalId::Object(_)) || *to == w.seller {
+            return Err(RecordError(
+                "a private offer names one person who is not its seller",
+            ));
+        }
+        if w.visibility != MarketVisibility::Hidden {
+            return Err(RecordError("a private offer is hidden"));
+        }
+    }
+    Ok(())
 }
 
 // ---- quotes (§5.2, D-E6-13) ------------------------------------------------
@@ -867,7 +968,19 @@ pub struct ObservedRevisions {
     /// more an oracle than the listing's own revision is.
     #[serde(default)]
     pub source: Option<u64>,
+    /// **The digest of the titled object's state the quote was priced against** (doc 48 cut
+    /// EX.2, Q-48-52), from the composition's asset-sale seam: a hull's fitted parts, their
+    /// condition and its core. `None` when the listing conveys no object the seam knows.
+    /// The quote lapses when the state drifts, and the purchase contract settles only on this
+    /// digest (`market.asset.state`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<u64>,
 }
+
+/// The `market.asset.state` fact kind (doc 48 cut EX.2): true while a titled object's state
+/// is still the digest a sale pinned. Answered by [`crate::MarketFactProvider`] from the
+/// composition's asset-sale seam; id `"{object}/{digest}"`.
+pub const FACT_ASSET_STATE: &str = "market.asset.state";
 
 /// A stable, declaration-only hash — the same FNV-1a E6b's fence uses, so the two
 /// layers stamp the same declared fact the same way.
@@ -1795,5 +1908,118 @@ mod tests {
         assert!(!loads(sale_quote(draw.clone(), share, 0)));
         assert!(!loads(sale_quote(draw.clone(), serde_json::json!([]), 5)));
         assert!(loads(sale_quote(draw, serde_json::json!([]), 0)));
+    }
+
+    // ---- doc 48 cut EX.1a: the personal seller's wire rules ----
+
+    fn personal_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": 7, "seller": { "Object": 5 }, "vendor": NO_VENDOR.0, "market": "luna",
+            "catalog": { "ruleset": "ex1a", "code": "iron" },
+            "source": { "lot": { "endpoint": 3, "commodity": "iron", "grade": 2, "lot": 161 } },
+            "price": 700, "quantity": 10, "expires": { "clock": "RealUtc", "at": 10 },
+            "account": 9,
+        })
+    }
+
+    fn loads_listing(v: serde_json::Value) -> bool {
+        serde_json::from_value::<Listing>(v).is_ok()
+    }
+
+    #[test]
+    fn ex1a_a_personal_listing_names_its_own_account_and_no_vendor_row() {
+        let ask: Listing = serde_json::from_value(personal_json()).expect("a personal ask loads");
+        assert!(ask.is_personal());
+        let round: Listing =
+            serde_json::from_value(serde_json::to_value(&ask).expect("serializes")).expect("back");
+        assert_eq!(round, ask, "the wire is lossless");
+        // An account with a vendor row, and the sentinel with no account.
+        let mut v = personal_json();
+        v["vendor"] = serde_json::json!(1);
+        assert!(!loads_listing(v));
+        let mut v = personal_json();
+        v["account"] = serde_json::Value::Null;
+        assert!(!loads_listing(v));
+        // A personal ask is one exact lot: not pooled, not a counter, not an object.
+        let mut v = personal_json();
+        v["source"]["lot"]["lot"] = serde_json::Value::Null;
+        assert!(!loads_listing(v));
+        let mut v = personal_json();
+        v["source"] = serde_json::json!({ "stock": { "vault": 3 } });
+        assert!(!loads_listing(v));
+        // A personal bid carries its escrow; an ask and a vendor listing none.
+        let bid = |escrow: Option<u64>| {
+            let mut v = personal_json();
+            v["source"] = serde_json::json!({ "wanted": { "vault": 3, "commodity": "iron", "min_grade": 0 } });
+            v["escrow"] = serde_json::json!(escrow);
+            v
+        };
+        assert!(loads_listing(bid(Some(40))));
+        assert!(!loads_listing(bid(None)));
+        let mut v = personal_json();
+        v["escrow"] = serde_json::json!(40);
+        assert!(!loads_listing(v));
+        let mut v = wanted_json(5);
+        v["escrow"] = serde_json::json!(40);
+        assert!(
+            !loads_listing(v),
+            "a vendor's bid escrows nothing of its own"
+        );
+    }
+
+    /// **A person's titled object on the wire** (doc 48 cut EX.2): one object from no vault,
+    /// one unit, no escrow. The same shape with no object, from a real vault, or escrowed does
+    /// not load.
+    #[test]
+    fn ex2_a_personal_object_listing_names_its_object_and_no_vault() {
+        let object = || {
+            let mut v = personal_json();
+            v["source"] = serde_json::json!({ "stock": { "vault": NO_VAULT.0 } });
+            v["object"] = serde_json::json!(42);
+            v["quantity"] = serde_json::json!(1);
+            v
+        };
+        let listed: Listing = serde_json::from_value(object()).expect("a hull listing loads");
+        assert!(listed.is_personal());
+        assert_eq!(listed.object, Some(ObjId(42)));
+        let round: Listing =
+            serde_json::from_value(serde_json::to_value(&listed).expect("serializes"))
+                .expect("back");
+        assert_eq!(round, listed, "the wire is lossless");
+        let mut v = object();
+        v["object"] = serde_json::Value::Null;
+        assert!(!loads_listing(v), "no object");
+        let mut v = object();
+        v["source"] = serde_json::json!({ "stock": { "vault": 3 } });
+        assert!(!loads_listing(v), "a real vault");
+        let mut v = object();
+        v["escrow"] = serde_json::json!(40);
+        assert!(!loads_listing(v), "escrowed");
+    }
+
+    #[test]
+    fn ex1a_a_private_offer_is_hidden_and_names_another_person() {
+        let private = |to: serde_json::Value, visibility: &str| {
+            let mut v = personal_json();
+            v["private_to"] = to;
+            v["visibility"] = serde_json::json!(visibility);
+            v
+        };
+        assert!(loads_listing(private(
+            serde_json::json!({ "Object": 6 }),
+            "hidden"
+        )));
+        assert!(!loads_listing(private(
+            serde_json::json!({ "Object": 6 }),
+            "public"
+        )));
+        assert!(!loads_listing(private(
+            serde_json::json!({ "Object": 5 }),
+            "hidden"
+        )));
+        assert!(!loads_listing(private(
+            serde_json::json!({ "Organization": 2 }),
+            "hidden"
+        )));
     }
 }

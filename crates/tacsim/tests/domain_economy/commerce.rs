@@ -876,8 +876,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     // five and Stickney Yards' thirteen, which are never pools; doc 39 cut IN.5: Freeport Works'
     // carbon row; doc 39 cut IN.7: the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
-    // Yards' carbon row.
-    assert_eq!(all.len(), 19, "Ceres 10 and Stickney 9");
+    // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
+    assert_eq!(all.len(), 22, "Ceres 10 and Stickney 12");
     for (id, receipt) in all
         .iter()
         .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
@@ -930,8 +930,8 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
-    // Yards' carbon row.
-    assert_eq!(all.len(), 19);
+    // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
+    assert_eq!(all.len(), 22);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
     for (_, receipt) in all
@@ -2584,8 +2584,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
-    // Yards' carbon row.
-    assert_eq!(receipts(&mut rig.tw).len(), 19);
+    // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
+    assert_eq!(receipts(&mut rig.tw).len(), 22);
     no_refused_writes(&rig.tw);
 }
 
@@ -3028,7 +3028,8 @@ fn a8_the_moon_ports_stock_list_and_bid() {
             }
         }
     }
-    assert_eq!(moon_rows, 10, "Luna 4, Deimos 2, Titan 4");
+    // Doc 48 unit PL.2 (lane v36): the two farms' provisions rows, at Luna and Titan.
+    assert_eq!(moon_rows, 12, "Luna 5, Deimos 2, Titan 5");
     // The reference rows' listings are live.
     for (entry, org, good) in [
         ("luna_port", "crisium_instruments", "instrument_boards"),
@@ -3042,14 +3043,26 @@ fn a8_the_moon_ports_stock_list_and_bid() {
     // Every port reads Ready, the bid-only houses included.
     let (ready, out) = stock_ready(&mut rig.tw);
     assert!(ready, "{out}");
-    for line in [
-        "luna_port vendor habitat_board: Lunar Habitat Board, storefront vault #",
-        "deimos_port vendor syrtis_bonded: Syrtis Bonded Imports, storefront vault #",
-        "titan_port vendor selk_townships: Selk Townships Board, storefront vault #",
+    // Doc 48 unit PL.2: the Lunar Habitat Board seeds its farm's provisions, so it is no longer
+    // a bid-only house.
+    for (line, rows) in [
+        (
+            "luna_port vendor habitat_board: Lunar Habitat Board, storefront vault #",
+            "1 of 1",
+        ),
+        (
+            "deimos_port vendor syrtis_bonded: Syrtis Bonded Imports, storefront vault #",
+            "0 of 0",
+        ),
+        (
+            "titan_port vendor selk_townships: Selk Townships Board, storefront vault #",
+            "0 of 0",
+        ),
     ] {
         assert!(
             out.lines()
-                .any(|l| l.contains(line) && l.ends_with("0 of 0 stock rows seeded. [ready]")),
+                .any(|l| l.contains(line)
+                    && l.ends_with(&format!("{rows} stock rows seeded. [ready]"))),
             "{line}\n{out}"
         );
     }
@@ -3059,7 +3072,7 @@ fn a8_the_moon_ports_stock_list_and_bid() {
         let (_, queued) = fire(&mut rig);
         assert!(queued.is_empty(), "a further fire submitted {queued:?}");
     }
-    assert_eq!(minted.len(), 10);
+    assert_eq!(minted.len(), 12);
     for (id, receipt) in &minted {
         assert_eq!(
             typed(&mut rig.tw, &handles.families.port_stock, id).as_ref(),

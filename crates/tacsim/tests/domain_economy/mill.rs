@@ -1119,10 +1119,12 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// exactly two `mill` rows — the Exchange's and Occator's, with B2's figures — read from the
 /// shipped pack; the shipped lane stripped (yard and mills: doc 20 cut SM.12b's `strip_yard` runs
 /// first inside `strip_mill`) and re-signed at 13 is relay R9b's published v13, digest for
-/// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently.
+/// digest; and `strip_mill` removes exactly those two rows and the yard, idempotently. Doc 39
+/// cut IN.5 adds Kasei's refine, and doc 48 unit PL.1 Occator's refine of water into
+/// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 34, "lane v34 since doc 47 unit CO.10");
+    assert_eq!(LANE_VERSION, 37, "lane v37 since doc 48 unit PL.3");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1165,15 +1167,97 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
         20,
         40,
     );
+    // Doc 48 unit PL.1: and Occator's refine of its own water into propellant, 5 : 4, 20 t a
+    // batch and an IC day.
+    let propellant = (
+        "ceres_port".to_owned(),
+        OCCATOR.to_owned(),
+        "volatiles".to_owned(),
+        "propellant".to_owned(),
+        (5, 4),
+        20,
+        20,
+    );
+    // Doc 48 unit PL.2: and the house processes and Titan's carbon mill — the two farms (water
+    // into crew-days of provisions, 5 : 1000), Crisium's fab (strategic ore into boards, 1 : 2)
+    // and Titan Concession's carbon ore into feedstock (5 : 4).
+    let at = |entry: &str, org: &str, ore: &str, into: &str, ratio, batch_t, per_ic_day_t| {
+        (
+            entry.to_owned(),
+            org.to_owned(),
+            ore.to_owned(),
+            into.to_owned(),
+            ratio,
+            batch_t,
+            per_ic_day_t,
+        )
+    };
+    let yards = |into: &str, product: u32| {
+        at(
+            "stickney_port",
+            "stickney_yards",
+            "structural_alloys",
+            into,
+            (1, product),
+            1,
+            1,
+        )
+    };
     assert_eq!(
         mills,
         vec![
             row(EXCHANGE, "metal_ore", "metals"),
             row(OCCATOR, "ice_ore", "volatiles"),
+            propellant,
+            at(
+                "luna_port",
+                "habitat_board",
+                "volatiles",
+                "provisions",
+                (5, 1000),
+                5,
+                5
+            ),
+            at(
+                "luna_port",
+                "crisium_instruments",
+                "strategic_ore",
+                "instrument_boards",
+                (1, 2),
+                2,
+                2
+            ),
             refine,
+            // Doc 48 unit PL.3: Stickney Yards' seven munitions processes, all of alloys.
+            yards("ammo_ap_30", 500),
+            yards("ammo_ball_762", 240),
+            yards("ammo_he_105", 40),
+            yards("ammo_missile", 4),
+            yards("torpedo", 2),
+            yards("spinal_round", 10),
+            yards("pd_box", 24),
+            at(
+                "titan_port",
+                "titan_concession",
+                "carbon_ore",
+                "carbon_feedstock",
+                (5, 4),
+                20,
+                20
+            ),
+            at(
+                "titan_port",
+                "titan_concession",
+                "volatiles",
+                "provisions",
+                (5, 1000),
+                5,
+                5
+            ),
         ],
-        "the shipped lane's two mills, 5 : 2, and its refine, 5 : 4, 20 t a batch, at most 40 t \
-         an IC day"
+        "the shipped lane's two mills, 5 : 2, 20 t a batch, at most 40 t an IC day; Occator's \
+         refine, 5 : 4, 20 t a batch and an IC day; Kasei's, 5 : 4, at most 40 t an IC day; the \
+         farms, the fab and Titan's carbon mill"
     );
     let pack = load_pack(&lane_variant(13, strip_mill)).expect("the v13 shape verifies");
     assert_eq!(
@@ -1895,6 +1979,9 @@ fn occator_ledger(at: i64, vault: VaultId, clerk: ObjId) -> Value {
             ore_t: 20,
             product_t: 8,
         }],
+        with: Vec::new(),
+        with_t: Vec::new(),
+        process: false,
     })
     .expect("a ledger serializes")
 }
@@ -2573,7 +2660,9 @@ fn sm12a_only_the_mill_restocks() {
 /// **Doc 35 cut SF.R26c**: `.debit(` once in `space/customs.rs`, the customs picket's seizure —
 /// unlicensed `strategic_ore` taken out of a hull's hold in the ruling's own transaction: matter
 /// leaving the world, never made. It is the draw that used to ride the burn's second debit
-/// (`PendingSpaceBurn::seized_strategic_ore_t`), moved, not added.
+/// (`PendingSpaceBurn::seized_strategic_ore_t`), moved, not added. **Doc 48 unit PL.2**: a second
+/// `.debit(` in the mill, a process's second input consumed in the batch's bundle beside the
+/// ore: matter turned into the product, never made.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2603,7 +2692,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
         vec![
             ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
-            ("tacsim/src/port/mill.rs".to_owned(), 1),
+            ("tacsim/src/port/mill.rs".to_owned(), 2),
             ("tacsim/src/space/customs.rs".to_owned(), 1),
             ("tacsim/src/surface/tow.rs".to_owned(), 3),
         ]
@@ -3603,4 +3692,613 @@ fn sm12a_an_undrawn_draw_holds_the_restock_and_never_loses_it() {
         !warned.contains("tacsim: a mill"),
         "the wait warns nothing:\n{warned}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 48 unit PL.1: Occator's propellant refine
+// ---------------------------------------------------------------------------
+
+/// The refine's floor of propellant (the lane's `floor_t`, doc 48 unit PL.1).
+const PROPELLANT_FLOOR: u64 = 5_000;
+
+/// Buy `qty` of Occator's propellant into a fresh buyer's tank, the Draw landed and nothing
+/// fired; the purchase's contract, still to settle (its sweeps fire the clerk).
+fn buy_propellant(rig: &mut Rig, who: &str, seed: i64, name: &str, qty: u64) -> ContractId {
+    let (buyer, _) = dray_p(rig, who, seed, name);
+    top_up(&mut rig.tw, buyer, 1_000_000);
+    let listing = ask(&rig.tw, OCCATOR, "propellant").expect("the propellant ask");
+    buy_and_land(rig, buyer, listing.id, qty)
+}
+
+/// Fire and land until Occator's water ask stands at `to` (at most 24 fires); the fires made.
+fn drawn_to(rig: &mut Rig, to: u64) -> usize {
+    for n in 1..=24 {
+        fire_landing(rig);
+        if ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity) == Some(to) {
+            return n;
+        }
+    }
+    panic!("the water ask never came down to {to}");
+}
+
+/// **Doc 48 unit PL.1 (Q-48-23, Q-48-41): one full cycle of Occator's propellant refine**, on the
+/// shipped lane v35 at world rate 1.
+///
+/// 1. **At its floor the refine is idle**: Occator's propellant ask holds its 5,000 t seed, so the
+///    clerk goes idle with nothing drawn or milled, and the Mill line names the floor.
+/// 2. **The inputs bought**: a miner sells 20 t of ice ore into Occator's bid, which mills it
+///    into 8 t of water and restocks the water ask (doc 20's chain, unchanged). Still idle.
+/// 3. **Propellant bought below the floor**: a buyer takes 30 t into their tank.
+/// 4. **The draw**: the clerk lowers the water ask by one batch, 20 t, as its one act; the pool
+///    still holds the 20 t, the drift check pages nothing, the Listings line reads them as drawn
+///    and Ready, and the desk stays open.
+/// 5. **A restart between the draw and the batch**: the batch mills once (ordinal 1, 20 t of
+///    water into 16 t of propellant) and the ask is never lowered twice.
+/// 6. **The output collected and listed**: the restock raises the propellant ask by the 16 t,
+///    the counter in step; one batch an IC day, so the day ends there though propellant is
+///    still under its floor.
+/// 7. **The output bought**: a second buyer takes the 16 t the refine made.
+/// 8. **The floor**: two more IC days make two more batches, the second carrying propellant to
+///    5,002 t; on the next day the refine stays idle. Every tonne is accounted for.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pl1_occator_refines_water_into_propellant_one_full_cycle() {
+    let mut rig = stocked();
+    let vault = storefront(&rig.tw, OCCATOR);
+    // 1. At its floor the refine is idle.
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 24);
+    assert_eq!(ledger(&rig.tw, OCCATOR, "volatiles"), None);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_600)
+    );
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "propellant").map(|l| l.quantity),
+        Some(PROPELLANT_FLOOR)
+    );
+    assert_eq!(
+        mill_line(&mut rig.tw, OCCATOR, "volatiles"),
+        "  ceres_port mill occator volatiles: nothing milled yet; 9600 t of ore waits; 5 to 4, 20 t a batch, at most 20 t an IC day, while propellant is under 5000. [ready]"
+    );
+    // 2. The inputs bought: 20 t of ice ore into Occator's bid, milled into 8 t of water.
+    let (icer, ice_hold) = dray_p(&mut rig, "Icer", 1, "Rime Moth");
+    occator_mills(&mut rig, icer, ice_hold, 901);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_608)
+    );
+    assert_eq!(
+        ledger(&rig.tw, OCCATOR, "volatiles"),
+        None,
+        "propellant at its floor: nothing drawn"
+    );
+    // 3. Propellant bought below the floor (the Draw landed; its settlement waits for step 6).
+    let bought = buy_propellant(&mut rig, "Buyer", 3, "Long Haul", 30);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 4_970);
+    // 4. The draw: the water ask comes down by a batch, one act; the pool keeps the 20 t.
+    let fires = drawn_to(&mut rig, 9_588);
+    println!("PL.1: the draw landed {fires} fire(s) after the purchase's Draw");
+    assert_eq!(
+        ledger(&rig.tw, OCCATOR, "volatiles"),
+        None,
+        "drawn, not milled"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "volatiles"), 9_608);
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    let water = ask(&rig.tw, OCCATOR, "volatiles")
+        .expect("the water ask")
+        .id;
+    assert_eq!(
+        ask_line(&mut rig.tw, OCCATOR, "volatiles"),
+        format!(
+            "  ceres_port ask occator volatiles: listing #{water} at 100.00cr/t, 9588 t listed; the storefront holds 9608 t, 20 t drawn to be milled. [ready]"
+        )
+    );
+    enrol(&mut rig, "Newcomer", 9).expect("the desk stays open across the draw");
+    // 5. A restart between the draw and the batch: one batch, one draw.
+    reboot(&mut rig);
+    let batch = fire_until_batch(&mut rig, 24);
+    assert_eq!(
+        batch.parameters["mill"],
+        mill_id(OCCATOR, "volatiles").key_text()
+    );
+    assert_eq!(batch.parameters["ordinal"], 1);
+    let refined = ledger(&rig.tw, OCCATOR, "volatiles").expect("the refine's ledger");
+    assert_eq!(
+        (refined.batches, refined.ore_t, refined.product_t),
+        (1, 20, 16)
+    );
+    assert_eq!(refined.into, cid("propellant"));
+    assert_eq!(pool(&mut rig.tw, vault, "volatiles"), 9_588);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 4_986);
+    // 6. The output collected and listed (the restock waits for the purchase's Draw to settle,
+    //    the mill's own wait); the day's room is spent.
+    settle(&mut rig, bought);
+    fire_until_idle(&mut rig, 24);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "propellant").map(|l| l.quantity),
+        Some(4_986)
+    );
+    assert_eq!(counter(&rig.tw, OCCATOR, "volatiles"), Some(16));
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_588),
+        "one batch an IC day: no second draw today"
+    );
+    let line = mill_line(&mut rig.tw, OCCATOR, "volatiles");
+    assert!(
+        line.contains("1 batch has milled 20 t of ore into 16 t of propellant")
+            && line.ends_with("[ready]"),
+        "{line}"
+    );
+    // 7. The output bought.
+    let bought = buy_propellant(&mut rig, "Hauler", 5, "Far Reach", 16);
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 4_970);
+    settle(&mut rig, bought);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_588),
+        "still no second draw today"
+    );
+    // 8. Two more IC days refill to the floor, and the next is idle.
+    for (day, made) in [(2_u64, 4_986_u64), (3, 5_002), (4, 5_002)] {
+        past_next_boundary(&mut rig, 60);
+        fire_until_idle(&mut rig, 48);
+        assert_eq!(
+            ask(&rig.tw, OCCATOR, "propellant").map(|l| l.quantity),
+            Some(made),
+            "IC day {day}"
+        );
+    }
+    let refined = ledger(&rig.tw, OCCATOR, "volatiles").expect("the refine's ledger");
+    assert_eq!(
+        (refined.batches, refined.ore_t, refined.product_t),
+        (3, 60, 48),
+        "the floor stops the refine"
+    );
+    // Every tonne: 9,600 t of water seeded, 8 t milled from ice, 60 t refined away; 5,000 t of
+    // propellant seeded, 48 t refined in, 46 t bought.
+    assert_eq!(pool(&mut rig.tw, vault, "volatiles"), 9_548);
+    assert_eq!(
+        ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
+        Some(9_548)
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "propellant"), 5_002);
+    assert_eq!(counter(&rig.tw, OCCATOR, "volatiles"), Some(48));
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 48 unit PL.1: a floor binds an ore mill too.** On a lane whose Exchange mill names a
+/// `floor_t` of 4,000 t (its seed of concentrate), 20 t of metal ore sold waits unmilled while the
+/// concentrate ask holds its seed; once a buyer takes 10 t, the next batch mills it.
+#[test]
+fn pl1_a_floor_binds_an_ore_mill_too() {
+    let floored = lane_variant(LANE_VERSION, |doc| {
+        doc["entries"]["ceres_port"]["def"]["vendors"][0]["mill"][0]["floor_t"] =
+            serde_json::json!(4_000);
+    });
+    let mut rig = stocked_with(Roster::seeded(floored));
+    let (miner, hold) = dray_p(&mut rig, "Miner", 1, "Salt Moth");
+    let vault = storefront(&rig.tw, EXCHANGE);
+    let sale = seed_and_sell(&mut rig, miner, hold, EXCHANGE, "metal_ore", 20, 901);
+    settle(&mut rig, sale);
+    fire_until_idle(&mut rig, 24);
+    assert_eq!(
+        ledger(&rig.tw, EXCHANGE, "metal_ore"),
+        None,
+        "at its floor: nothing milled"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "metal_ore"), 20);
+    let (buyer, _) = dray_p(&mut rig, "Buyer", 3, "Long Haul");
+    top_up(&mut rig.tw, buyer, 1_000_000);
+    let metals = ask(&rig.tw, EXCHANGE, "metals").expect("the metals ask");
+    let bought = buy_and_land(&mut rig, buyer, metals.id, 10);
+    let batch = fire_until_batch(&mut rig, 24);
+    assert_eq!(batch.parameters["ordinal"], 1);
+    assert_eq!(pool(&mut rig.tw, vault, "metal_ore"), 0);
+    assert_eq!(pool(&mut rig.tw, vault, "metals"), 3_998);
+    settle(&mut rig, bought);
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 48 unit PL.2: Titan's farm and carbon mill
+// ---------------------------------------------------------------------------
+
+const TITAN: &str = "titan_port";
+const CONCESSION: &str = "titan_concession";
+
+/// `org`'s storefront vault at `entry`.
+fn storefront_at(tw: &TestWorld, entry: &str, org: &str) -> VaultId {
+    VaultId(port_map(tw, entry).vendors[&cid(org)].vault)
+}
+
+/// The quantity `org`'s drawn ask of `good` at `entry` lists, if it stands.
+fn listed_at(tw: &TestWorld, entry: &str, org: &str, good: &str) -> Option<u64> {
+    let market = market(tw);
+    market
+        .lot_listing_of(EndpointRef(storefront_at(tw, entry, org)), &cid(good))
+        .and_then(|id| market.listing(id))
+        .map(|listing| listing.quantity)
+}
+
+/// The ledger of `org`'s mill of `ore` at `entry`, as the engine holds it.
+fn ledger_at(tw: &TestWorld, entry: &str, org: &str, ore: &str) -> Option<MillLedger> {
+    let id = MillId::derive(&lane_id(), &cid(entry), &cid(org), &cid(ore)).expect("a mill id");
+    tw.engine()
+        .action_state()
+        .get(&mill_handle(tw), &id)
+        .ok()
+        .flatten()
+        .cloned()
+}
+
+/// **Doc 48 unit PL.2: Titan's farm draws its own water and feedstock, and the carbon mill
+/// refills the feedstock** (Q-48-23's correction: a farm fed on a finite seed of feedstock would
+/// stop when it ran out). On a lane whose Titan Concession seeds 990 crew-days of provisions, ten
+/// under its farm's floor (the stand-in for a sale: no story flies to Titan):
+///
+/// 1. From boot the farm draws a batch of each input off the house's own asks (5 t of water,
+///    1 t of feedstock), makes 1,000 crew-days, and lists them; at 1,990 crew-days it stops. No
+///    drift pages across the draws, and the Mill line names the second input.
+/// 2. The feedstock ask is now a tonne under its own floor, so 20 t of carbon ore delivered into
+///    the carbon-ore bid's pool in kind (a miner's sale's units) are milled into 16 t of
+///    feedstock and listed, and the carbon mill stops at 615 t.
+/// 3. The next IC day nothing moves: both products are at or above their floors.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pl2_titan_farm_draws_its_own_stock_and_the_carbon_mill_refills_it() {
+    let under = lane_variant(LANE_VERSION, |doc| {
+        for vendor in doc["entries"][TITAN]["def"]["vendors"]
+            .as_array_mut()
+            .expect("Titan's vendors")
+        {
+            if vendor["org"] == CONCESSION {
+                for row in vendor["stock"].as_array_mut().expect("its stock") {
+                    if row["good"] == "provisions" {
+                        row["qty"] = serde_json::json!(990);
+                    }
+                }
+            }
+        }
+    });
+    let mut rig = stocked_with(Roster::seeded(under));
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 48);
+    let vault = storefront_at(&rig.tw, TITAN, CONCESSION);
+
+    // 1. The farm ran from its own stock, once.
+    let farm = ledger_at(&rig.tw, TITAN, CONCESSION, "provisions").expect("the farm ran");
+    assert_eq!(
+        (
+            farm.batches,
+            farm.ore_t,
+            farm.product_t,
+            farm.with_t.clone()
+        ),
+        (1, 5, 1_000, vec![1]),
+        "5 t of water and 1 t of feedstock into 1,000 crew-days"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 1_990);
+    assert_eq!(
+        listed_at(&rig.tw, TITAN, CONCESSION, "provisions"),
+        Some(1_990)
+    );
+    for (good, left) in [("volatiles", 1_795), ("carbon_feedstock", 599)] {
+        assert_eq!(
+            pool(&mut rig.tw, vault, good),
+            left,
+            "{good} drawn and milled"
+        );
+        assert_eq!(
+            listed_at(&rig.tw, TITAN, CONCESSION, good),
+            Some(left),
+            "{good}'s ask carries the rest"
+        );
+    }
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    let line = line(&mut rig.tw, "titan_port mill titan_concession provisions:");
+    assert!(
+        line.contains("1 batch has milled 5 t of ore into 1000 provisions")
+            && line.contains("5 to 1000 with 1 carbon_feedstock a ratio")
+            && line.contains("while provisions is under 1000")
+            && line.ends_with("[ready]"),
+        "{line}"
+    );
+    assert!(
+        ledger_at(&rig.tw, TITAN, CONCESSION, "carbon_ore").is_none(),
+        "no carbon ore yet"
+    );
+
+    // 2. Carbon ore in, feedstock out to its floor.
+    seed_pool(&mut rig, vault, "carbon_ore", 20, LotId(9_101));
+    fire_until_idle(&mut rig, 48);
+    let carbon = ledger_at(&rig.tw, TITAN, CONCESSION, "carbon_ore").expect("the carbon mill ran");
+    assert_eq!(
+        (
+            carbon.batches,
+            carbon.ore_t,
+            carbon.product_t,
+            carbon.with_t.len()
+        ),
+        (1, 20, 16, 0),
+        "five to four"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "carbon_ore"), 0);
+    assert_eq!(pool(&mut rig.tw, vault, "carbon_feedstock"), 615);
+    assert_eq!(
+        listed_at(&rig.tw, TITAN, CONCESSION, "carbon_feedstock"),
+        Some(615)
+    );
+
+    // 3. At their floors, nothing moves the next IC day.
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 48);
+    assert_eq!(
+        ledger_at(&rig.tw, TITAN, CONCESSION, "provisions").map(|l| l.batches),
+        Some(1)
+    );
+    assert_eq!(
+        ledger_at(&rig.tw, TITAN, CONCESSION, "carbon_ore").map(|l| l.batches),
+        Some(1)
+    );
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 48 unit PL.3: munitions, ground and space
+// ---------------------------------------------------------------------------
+
+const STICKNEY: &str = "stickney_port";
+const YARDS: &str = "stickney_yards";
+
+/// **The munitions the works makes, and what a batch of each is** (recipes v4): the recipe, the
+/// good, the rounds a batch makes, its work units, and the good's GC.7 (or PL.3) price, credits.
+const MUNITIONS: [(&str, &str, u64, u64, u64); 7] = [
+    ("ap_30", "ammo_ap_30", 500, 122, 12),
+    ("ball_762", "ammo_ball_762", 240, 122, 25),
+    ("he_105", "ammo_he_105", 40, 122, 150),
+    ("missile", "ammo_missile", 4, 122, 1_500),
+    ("torpedo", "torpedo", 2, 168, 4_000),
+    ("spinal_round", "spinal_round", 10, 122, 600),
+    ("pd_box", "pd_box", 24, 122, 250),
+];
+
+/// The matter census's balance (`@industry/census`), kilograms.
+fn census_balance(tw: &mut TestWorld) -> i128 {
+    let out = run(tw, GOD, "@industry/census");
+    out.lines()
+        .find(|l| l.contains(tacsim::port::census::CENSUS_LINE))
+        .and_then(|l| {
+            l.split_whitespace()
+                .find_map(|word| word.strip_prefix("balance="))
+        })
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("a census line: {out}"))
+}
+
+/// **Doc 48 unit PL.3: Stickney Yards makes HE and lists it** (Q-49-4; Q-48-23's operating arm).
+/// On a lane whose Yards seed 760 HE rounds, forty under the HE process's floor of 800 (the
+/// stand-in for rounds rearmed away):
+///
+/// 1. With only its own carbon ore in the storefront, nothing is made: a process waits for every
+///    input bought.
+/// 2. A tonne of alloys delivered into its bid's pool in kind (a trader's sale's units), the HE
+///    process takes a tonne of alloys and a tonne of its carbon ore (the house's two-input bill;
+///    Stickney's emergency rule keeps the Yards from bidding water) and makes 40 rounds; the HE
+///    ask is restocked to 800, its counter in step, and nothing pages drift. No other munitions
+///    process runs: each stands at its floor.
+/// 3. The next IC day nothing moves.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pl3_stickney_yards_makes_he_and_lists_it() {
+    let short = lane_variant(LANE_VERSION, |doc| {
+        for vendor in doc["entries"][STICKNEY]["def"]["vendors"]
+            .as_array_mut()
+            .expect("Stickney's vendors")
+        {
+            if vendor["org"] == YARDS {
+                for row in vendor["stock"].as_array_mut().expect("its stock") {
+                    if row["good"] == "ammo_he_105" {
+                        row["qty"] = serde_json::json!(760);
+                    }
+                }
+            }
+        }
+    });
+    let mut rig = stocked_with(Roster::seeded(short));
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 48);
+    let vault = storefront_at(&rig.tw, STICKNEY, YARDS);
+    let he = |tw: &TestWorld| ledger_at(tw, STICKNEY, YARDS, "ammo_he_105");
+
+    // 1. Its own carbon alone makes nothing.
+    assert_eq!(pool(&mut rig.tw, vault, "carbon_ore"), 20);
+    assert!(he(&rig.tw).is_none(), "no alloys bought yet");
+
+    // 2. The alloys bought, the HE made and listed.
+    seed_pool(&mut rig, vault, "structural_alloys", 1, LotId(9_201));
+    let before = census_balance(&mut rig.tw);
+    fire_until_idle(&mut rig, 48);
+    // Doc 48 cut EX.0: the matter census holds across the batch, both inputs in and the rounds
+    // out, the difference the declared loss (`milled`).
+    assert_eq!(
+        census_balance(&mut rig.tw),
+        before,
+        "the munitions process conserves matter"
+    );
+    let made = he(&rig.tw).expect("the HE process ran");
+    assert_eq!(
+        (
+            made.batches,
+            made.ore_t,
+            made.product_t,
+            made.with_t.clone()
+        ),
+        (1, 1, 40, vec![1]),
+        "a tonne each of alloys and carbon ore into 40 rounds"
+    );
+    assert!(made.process, "keyed by its product");
+    for (good, left) in [
+        ("structural_alloys", 0),
+        ("carbon_ore", 19),
+        ("ammo_he_105", 800),
+    ] {
+        assert_eq!(pool(&mut rig.tw, vault, good), left, "{good}");
+    }
+    assert_eq!(
+        listed_at(&rig.tw, STICKNEY, YARDS, "ammo_he_105"),
+        Some(800)
+    );
+    assert_eq!(
+        port_map(&rig.tw, STICKNEY).vendors[&cid(YARDS)]
+            .mill_listed
+            .get(&cid("ammo_he_105"))
+            .copied(),
+        Some(40)
+    );
+    for (_, good, _, _, _) in MUNITIONS {
+        if good != "ammo_he_105" {
+            assert!(
+                ledger_at(&rig.tw, STICKNEY, YARDS, good).is_none(),
+                "{good} at its floor"
+            );
+        }
+    }
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    let line = line(
+        &mut rig.tw,
+        "stickney_port mill stickney_yards ammo_he_105:",
+    );
+    assert!(
+        line.contains("1 batch has milled 1 t of ore into 40 ammo_he_105")
+            && line.contains("1 to 40 with 1 carbon_ore a ratio")
+            && line.ends_with("[ready]"),
+        "{line}"
+    );
+
+    // 3. At its floor, nothing the next IC day.
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 48);
+    assert_eq!(he(&rig.tw).map(|l| l.batches), Some(1));
+    no_refused_writes(&rig.tw);
+}
+
+/// **Doc 48 unit PL.3: a process takes two further inputs** (`MAX_MILL_WITH`). The shipped Yards
+/// cannot bid water (Stickney's emergency rule), so on a lane variant whose Stickney has no
+/// emergency block, whose Yards bid water and whose processes take the works recipes' full bill
+/// (alloys with carbon ore and water), and whose Yards seed 760 HE:
+///
+/// 1. A tonne of alloys bought, nothing is made: the water is not in yet.
+/// 2. A tonne of water bought, the HE process takes a tonne of each of the three goods into 40
+///    rounds, both further inputs on its ledger, and the Mill line names both.
+#[test]
+fn pl3_a_process_debits_each_of_two_further_inputs() {
+    let three = lane_variant(LANE_VERSION, |doc| {
+        let def = &mut doc["entries"][STICKNEY]["def"];
+        def.as_object_mut()
+            .expect("Stickney's def")
+            .remove("emergency");
+        for vendor in def["vendors"].as_array_mut().expect("Stickney's vendors") {
+            if vendor["org"] != YARDS {
+                continue;
+            }
+            for row in vendor["stock"].as_array_mut().expect("its stock") {
+                if row["good"] == "ammo_he_105" {
+                    row["qty"] = serde_json::json!(760);
+                }
+            }
+            vendor["bids"]
+                .as_array_mut()
+                .expect("its bids")
+                .push(serde_json::json!({
+                    "good": "volatiles", "price_major": 190, "intake": 10,
+                    "boards": ["exchange", "yard"]
+                }));
+            for row in vendor["mill"].as_array_mut().expect("its mill") {
+                row["with"] = serde_json::json!([
+                    { "good": "carbon_ore", "per_ratio": 1 },
+                    { "good": "volatiles", "per_ratio": 1 }
+                ]);
+            }
+        }
+    });
+    let mut rig = stocked_with(Roster::seeded(three));
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 48);
+    let vault = storefront_at(&rig.tw, STICKNEY, YARDS);
+    let he = |tw: &TestWorld| ledger_at(tw, STICKNEY, YARDS, "ammo_he_105");
+
+    // 1. The alloys alone, with the carbon ore, make nothing.
+    seed_pool(&mut rig, vault, "structural_alloys", 1, LotId(9_211));
+    fire_until_idle(&mut rig, 48);
+    assert!(he(&rig.tw).is_none(), "no water bought yet");
+
+    // 2. The water bought, each of the three goods debited.
+    seed_pool(&mut rig, vault, "volatiles", 1, LotId(9_212));
+    fire_until_idle(&mut rig, 48);
+    let made = he(&rig.tw).expect("the HE process ran");
+    assert_eq!(
+        (made.batches, made.product_t, made.with_t.clone()),
+        (1, 40, vec![1, 1]),
+        "a tonne each of alloys, carbon ore and water into 40 rounds"
+    );
+    for (good, left) in [
+        ("structural_alloys", 0),
+        ("carbon_ore", 19),
+        ("volatiles", 0),
+        ("ammo_he_105", 800),
+    ] {
+        assert_eq!(pool(&mut rig.tw, vault, good), left, "{good}");
+    }
+    let line = line(
+        &mut rig.tw,
+        "stickney_port mill stickney_yards ammo_he_105:",
+    );
+    assert!(
+        line.contains("1 to 40 with 1 carbon_ore and 1 volatiles a ratio"),
+        "{line}"
+    );
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    no_refused_writes(&rig.tw);
+}
+
+/// The quote's fee, credits, from `+works/quote`'s line (`…; fee 5380.00cr; booking fee …`).
+fn quoted_fee(quote: &str) -> f64 {
+    quote
+        .split(tacsim::port::works::FEE_CLAUSE)
+        .nth(1)
+        .and_then(|rest| rest.split("cr").next())
+        .and_then(|fee| fee.trim().parse().ok())
+        .unwrap_or_else(|| panic!("a fee in {quote}"))
+}
+
+/// **Doc 48 unit PL.3: each munitions recipe costs about its good's price** (Q-49-5's ruling read
+/// with Q-49-4): at the Ceres works, every munitions recipe quotes its bill — a tonne each of
+/// alloys, carbon ore and water — and its work units; the bill at the lane's asks (alloys 450 at
+/// Kasei, carbon ore 60 at Freeport Works, water 100 at Occator) and the quoted fee, over the
+/// batch's rounds, land within 1% of the good's price.
+#[test]
+fn pl3_the_munitions_recipes_cost_about_their_prices() {
+    let mut rig = stocked();
+    let (pilot, _) = chartered(&mut rig, "Smith", 1, "Long Ox");
+    let bill = 450.0 + 60.0 + 100.0;
+    for (recipe, good, rounds, units, price) in MUNITIONS {
+        let quote = run(&mut rig.tw, pilot, &format!("+works/quote {recipe}"));
+        assert!(
+            quote.contains("bill 1 structural_alloys, 1 carbon_ore, 1 volatiles")
+                && quote.contains(&format!("({units} work units)")),
+            "{recipe}: {quote}"
+        );
+        #[allow(clippy::cast_precision_loss)]
+        let each = (bill + quoted_fee(&quote)) / rounds as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let off = (each - price as f64).abs() / price as f64;
+        println!("PL.3: {recipe} makes {rounds} {good} at {each:.2} cr each (price {price})");
+        assert!(off < 0.01, "{recipe}: {each:.2} cr a round against {price}");
+    }
+    no_refused_writes(&rig.tw);
 }

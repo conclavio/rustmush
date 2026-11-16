@@ -1392,13 +1392,13 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
-        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=9;stock=3");
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=10;stock=3");
         let api4_source = crate::arena::snapshot::digest_from_text(
             "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
         )
         .expect("the retained API 4 Standard source digest");
         let api7_source = crate::arena::snapshot::digest_from_text(
-            "fd73e14b92563cc3ed7e914fc9096a885876d6b8618f620388e497846fed1c3b",
+            "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91",
         )
         .expect("the observed API 7 Standard source digest");
         assert_eq!(crate::minds::content::standard_digest().0, api7_source);
@@ -1509,6 +1509,9 @@ mod m5_tests {
         // Doc 45 unit AP.3: the mind ABI moved to API 9 (`View.posture`) and the Standard
         // header with it; all nine moved again, and the API 4 projection above still holds, so
         // no custody did. Captured on Linux.
+        // Doc 49 unit CC.9: the mind ABI moved to API 10 (`space_mount`, the space aspect) and
+        // the Standard header with it; all nine moved again, and the API 4 projection still
+        // holds, so no custody did. Captured on Linux.
         // Doc 49 unit CC.1: the Line card's fire terms and the Standard source (the reserve's
         // rules) moved, so all nine moved with the card and the source; the API 4 projection
         // above moved with the card alone. Captured on Linux. They were `b3d768db…fd7ab0`, `394ee782…4c76c5`, `306543bb…f862af` (the fixture rows'; the production rows' and the principal's moved likewise).

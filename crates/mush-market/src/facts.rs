@@ -42,6 +42,9 @@ impl FactProvider for MarketFactProvider {
     }
 
     fn resolve(&self, w: &World, kind: &str, id: &str, revision: Option<u64>) -> Option<FactState> {
+        if kind == crate::record::FACT_ASSET_STATE {
+            return asset_state(w, id, revision);
+        }
         // A receipt is written once and never amended, so any named revision other
         // than 1 is a reference to a world this crate never had.
         if kind != FACT_LOT_DRAWN || revision.is_some_and(|revision| revision != 1) {
@@ -72,6 +75,26 @@ impl FactProvider for MarketFactProvider {
             at,
         })
     }
+}
+
+/// **`market.asset.state`** (doc 48 cut EX.2, Q-48-52): `"{object}/{digest}"` is satisfied
+/// while the composition's asset-sale seam reads `object`'s state at `digest`, and stands
+/// unsatisfied once it drifts, so a sale pinned to it never settles on another state and
+/// refunds at its window. Unknown (`None`) for a malformed id, a named revision, or no seam.
+fn asset_state(w: &World, id: &str, revision: Option<u64>) -> Option<FactState> {
+    if revision.is_some() {
+        return None;
+    }
+    let (object, digest) = id.split_once('/')?;
+    let object = mush_core::ObjId(object.parse::<u32>().ok()?);
+    let digest = digest.parse::<u64>().ok()?;
+    let now = crate::module::asset_sale(w)?.state_digest(w, object);
+    Some(FactState {
+        satisfied: now == Some(digest),
+        actor: None,
+        // Not known: the state has stood since before the sale, at no moment the seam keeps.
+        at: 0,
+    })
 }
 
 #[cfg(test)]
@@ -131,6 +154,77 @@ mod tests {
                 .resolve(&w, "market.lot.other", "7/100", None)
                 .is_none()
         );
+    }
+
+    /// Doc 48 cut EX.2: a seam that knows one object, #9, at a digest the test moves.
+    #[derive(Debug)]
+    struct Pinned(std::sync::atomic::AtomicU64);
+
+    impl crate::module::AssetSale for Pinned {
+        fn admit(
+            &self,
+            _: &mush_core::Ctx<'_>,
+            _: mush_core::ObjId,
+            _: &PrincipalId,
+        ) -> Option<Result<mush_economy::CatalogRef, String>> {
+            None
+        }
+        fn state_digest(&self, _: &World, object: mush_core::ObjId) -> Option<u64> {
+            (object == mush_core::ObjId(9))
+                .then(|| self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    /// **The asset-state fact holds while the state does** (doc 48 cut EX.2, Q-48-52): true at
+    /// the pinned digest, false once it drifts or for an object the seam no longer knows (a
+    /// sale pinned to it never settles), and unknown for a malformed id, a named revision, or
+    /// a world with no seam.
+    #[test]
+    fn ex2_the_asset_state_fact_holds_while_the_state_does() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let pinned = Arc::new(Pinned(AtomicU64::new(41)));
+        let mut w = World::new_minimal();
+        let mut store = MarketStore::default();
+        store.tables.asset_sale = Some(pinned.clone());
+        w.module_state_insert(store);
+        let provider = MarketFactProvider;
+        let fact = crate::trade::asset_state_fact(mush_core::ObjId(9), 41);
+        assert_eq!(fact.provider.as_str(), NS);
+        assert_eq!(fact.kind.as_str(), crate::record::FACT_ASSET_STATE);
+        assert_eq!(fact.id.as_str(), "9/41");
+        assert_eq!(fact.revision, None);
+        let answer = |w: &World, id: &str, revision: Option<u64>| {
+            provider.resolve(w, crate::record::FACT_ASSET_STATE, id, revision)
+        };
+        assert!(
+            answer(&w, "9/41", None).is_some_and(|f| f.satisfied),
+            "as pinned"
+        );
+        pinned.0.store(42, Ordering::SeqCst);
+        assert!(
+            answer(&w, "9/41", None).is_some_and(|f| !f.satisfied),
+            "drifted"
+        );
+        assert!(
+            answer(&w, "9/42", None).is_some_and(|f| f.satisfied),
+            "the new state"
+        );
+        assert!(
+            answer(&w, "8/42", None).is_some_and(|f| !f.satisfied),
+            "unknown object"
+        );
+        for bad in ["9", "x/42", "9/x", "9/42/1", "", "/42"] {
+            assert!(
+                answer(&w, bad, None).is_none(),
+                "{bad:?} must answer nothing"
+            );
+        }
+        assert!(answer(&w, "9/42", Some(1)).is_none(), "a named revision");
+        let mut bare = World::new_minimal();
+        let store = MarketStore::default();
+        bare.module_state_insert(store);
+        assert!(answer(&bare, "9/42", None).is_none(), "no seam");
     }
 
     #[test]

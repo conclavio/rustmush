@@ -2491,8 +2491,9 @@ mod tests {
                 // Doc 36 cut GC.7: sixteen with the four munitions goods; doc 39 cut IN.1:
                 // twenty-nine with the thirteen parts; doc 39 cut IN.9: thirty-four with the
                 // five hull kits; doc 41 cut RS.6a: thirty-six with Tycho's two; doc 47 unit
-                // CO.10b: and the wrecker's kit.
-                .is_some_and(|a| a.len() == 46)
+                // CO.10b: and the wrecker's kit; doc 48 unit PL.7: forty-nine with the three core
+                // modules; doc 48 unit PL.3: fifty-two with the three space munitions.
+                .is_some_and(|a| a.len() == 52)
         );
 
         // Read + Check a shipped campaign_seed pack (`tacsim.crew.ceres`) and a standalone table (`market/goods.json`)

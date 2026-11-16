@@ -1,7 +1,7 @@
 {
   "name": "Interdictor Patrol Doctrine",
   "role": "combat",
-  "api": 9,
+  "api": 10,
   "stock": 3,
   "rated_class": "I",
   "ops_ceiling": 1500

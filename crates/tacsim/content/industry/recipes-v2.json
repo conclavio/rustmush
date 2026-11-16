@@ -1,5 +1,90 @@
 {
   "entries": {
+    "ap_30": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          },
+          {
+            "commodity": "volatiles",
+            "units": 1
+          }
+        ],
+        "label": "30 mm AP rounds",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "ammo_ap_30",
+            "units": 500
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 122
+      },
+      "kind": "recipe"
+    },
+    "ball_762": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          },
+          {
+            "commodity": "volatiles",
+            "units": 1
+          }
+        ],
+        "label": "7.62 mm ball, boxed",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "ammo_ball_762",
+            "units": 240
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 122
+      },
+      "kind": "recipe"
+    },
+    "carbon_feedstock": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "carbon_ore",
+            "units": 5
+          }
+        ],
+        "label": "Carbon feedstock pressing",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "carbon_feedstock",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 4
+      },
+      "kind": "recipe"
+    },
     "fittings": {
       "def": {
         "inputs": [
@@ -24,6 +109,172 @@
           "tacsim.works"
         ],
         "work_units": 6
+      },
+      "kind": "recipe"
+    },
+    "he_105": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          },
+          {
+            "commodity": "volatiles",
+            "units": 1
+          }
+        ],
+        "label": "105 mm HE rounds",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "ammo_he_105",
+            "units": 40
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 122
+      },
+      "kind": "recipe"
+    },
+    "metals": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "metal_ore",
+            "units": 10
+          }
+        ],
+        "label": "Metal ore milling",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "metals",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 2
+      },
+      "kind": "recipe"
+    },
+    "missile": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          },
+          {
+            "commodity": "volatiles",
+            "units": 1
+          }
+        ],
+        "label": "Anti-armour missiles",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "ammo_missile",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 122
+      },
+      "kind": "recipe"
+    },
+    "module_command": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 4
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 2
+          }
+        ],
+        "label": "Command core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.command",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 96
+      },
+      "kind": "recipe"
+    },
+    "module_doctrine": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 1
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 1
+          }
+        ],
+        "label": "Doctrine core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.doctrine",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 24
+      },
+      "kind": "recipe"
+    },
+    "module_line": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "instrument_boards",
+            "units": 2
+          },
+          {
+            "commodity": "strategic_ore",
+            "units": 1
+          }
+        ],
+        "label": "Line core module",
+        "output_lots": "each",
+        "outputs": [
+          {
+            "commodity": "tacsim.part.core.line",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 48
       },
       "kind": "recipe"
     },
@@ -132,6 +383,37 @@
           "tacsim.works"
         ],
         "work_units": 24
+      },
+      "kind": "recipe"
+    },
+    "pd_box": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          },
+          {
+            "commodity": "volatiles",
+            "units": 1
+          }
+        ],
+        "label": "Point-defence rounds, boxed",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "pd_box",
+            "units": 24
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 122
       },
       "kind": "recipe"
     },
@@ -405,13 +687,121 @@
         "work_units": 60
       },
       "kind": "recipe"
+    },
+    "spinal_round": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          },
+          {
+            "commodity": "volatiles",
+            "units": 1
+          }
+        ],
+        "label": "Spinal gun rounds",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "spinal_round",
+            "units": 10
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 122
+      },
+      "kind": "recipe"
+    },
+    "structural_alloys": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "metals",
+            "units": 5
+          }
+        ],
+        "label": "Alloy refining",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 9
+      },
+      "kind": "recipe"
+    },
+    "torpedo": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 1
+          },
+          {
+            "commodity": "carbon_ore",
+            "units": 1
+          },
+          {
+            "commodity": "volatiles",
+            "units": 1
+          }
+        ],
+        "label": "Space torpedoes",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "torpedo",
+            "units": 2
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 168
+      },
+      "kind": "recipe"
+    },
+    "volatiles": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "ice_ore",
+            "units": 20
+          }
+        ],
+        "label": "Ice ore milling",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "volatiles",
+            "units": 8
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 2
+      },
+      "kind": "recipe"
     }
   },
   "manifest": {
-    "digest": "503cc2403c98532f67f126c54e68fbdba5155b218dea8fad9b2f5ad47edb84e1",
+    "digest": "f0696744e0c75a46d46be0c2dba678519d4ed8759d111560d32cad8ec4f26579",
     "id": "tacsim.industry.recipes",
     "kind": "rules_definition",
     "requires": [],
-    "version": 2
+    "version": 5
   }
 }

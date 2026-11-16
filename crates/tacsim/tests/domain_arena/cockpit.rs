@@ -20429,3 +20429,87 @@ async fn ap10_a_link_lost_while_practising_leaves_a_link_dead_pilots_hull() {
     );
     rig.say(1, "sim abort");
 }
+
+/// **Doc 49 cut CC.4** (Q-49-13): `STATUS` carries each mount's rounds in one
+/// row, at its widest fill, under the 120-column floor.
+///
+/// The widest fill is the heavy, the shipped unit with the most mounts, at the
+/// full load it is fielded with. The row is built here off the content (cut
+/// CC.0's reading, so a retune moves no line), not off the cockpit's own
+/// formatter, and the arena's frame carries the same loads. Every line of the
+/// reply is under the floor, the row stands before the section rows, and
+/// `STATUS` says it exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cc4_status_shows_each_mounts_rounds_within_120_columns_at_its_widest_fill() {
+    let catalog = tacsim::builtin_definitions()
+        .unwrap_or_else(|error| panic!("the shipped content binds: {error}"));
+    let entry = tacsim::definitions::content::HEAVY_MK1;
+    let key = mush_core::CanonicalId::new(entry).unwrap_or_else(|_| panic!("{entry} is an id"));
+    let (Some(spec), Some(binding)) = (catalog.specs.get(&key), catalog.bindings.get(&key)) else {
+        panic!("{entry} is fielded")
+    };
+    let cells = tacsim::definitions::to_tactical_unit(spec, binding, ObjId(31))
+        .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+    let loads: Vec<(String, u32)> = match_::weapon_summaries(&catalog, &cells)
+        .into_iter()
+        .map(|mount| (mount.id.to_string(), mount.count_per_load))
+        .collect();
+    let ids: Vec<&str> = loads.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["cannon", "machine_gun", "missiles"],
+        "the heavy's mounts"
+    );
+    let expected = format!(
+        "  rounds {}",
+        loads
+            .iter()
+            .map(|(id, load)| format!("{id} {load}/{load}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim unit heavy_mk1");
+    assert!(said.contains("will field heavy_mk1"), "{said}");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let framed: Vec<(String, u32)> = rig
+        .held_frame(0)
+        .weapons
+        .iter()
+        .map(|mount| (mount.id.to_string(), mount.rounds_max))
+        .collect();
+    assert_eq!(framed, loads, "the frame carries the content's loads");
+
+    let said = rig.say(0, "status");
+    let lines: Vec<&str> = said.lines().collect();
+    let rows: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("  rounds "))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(rows.len(), 1, "one rounds row: {said}");
+    assert_eq!(lines[rows[0]], expected, "{said}");
+    let first_section = lines
+        .iter()
+        .position(|line| line.starts_with("  turret  ") || line.starts_with("  hull  "))
+        .unwrap_or_else(|| panic!("no section rows: {said}"));
+    assert!(
+        rows[0] < first_section,
+        "the row stands before the sections: {said}"
+    );
+    for line in &lines {
+        let width = line.chars().count();
+        assert!(width < 120, "{width} columns: {line}");
+    }
+    rig.say(1, "sim abort");
+}

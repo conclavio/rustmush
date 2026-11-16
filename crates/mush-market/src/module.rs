@@ -104,6 +104,42 @@ pub trait DeliveryProvider: Send + Sync + std::fmt::Debug {
     }
 }
 
+// ---- doc 48 cut EX.2: the asset-sale seam (Q-48-52) ---------------------------
+
+/// **What the game says about a titled object a person sells** (doc 48 cut EX.2, Q-48-52)
+/// **(expensive to reverse)**.
+///
+/// A titled object is more than its title: a hull carries its fitted parts, their condition,
+/// its core and its hold, and only the game knows them. The seam answers two questions and
+/// nothing else, and builds no plan:
+///
+/// - **may `seller` list `object` now, and as which catalogue entry** ([`AssetSale::admit`]),
+///   asked when the listing is posted and again at every quote and purchase. A hull with a
+///   fitted governed core, a laden hold or work in progress is refused in the game's own words
+///   at posting; a listing the seam no longer admits is a stale quote;
+/// - **the digest of `object`'s state a sale is priced against** ([`AssetSale::state_digest`]).
+///   A quote pins it; the quote lapses and the purchase contract's `market.asset.state` fact
+///   turns false when the state drifts, so a sale settles only on the state it was priced at
+///   (no bait-and-strip), and a drifted sale refunds at its window.
+///
+/// Composition-frozen like the other seams here; with none installed, no person lists a titled
+/// object and every vendor asset listing is exactly as before.
+pub trait AssetSale: Send + Sync + std::fmt::Debug {
+    /// Whether `seller` may list `object` now: `None` for an object this seam does not know,
+    /// `Some(Err(line))` the game's refusal, rendered verbatim, `Some(Ok(entry))` listable as
+    /// that catalogue entry.
+    fn admit(
+        &self,
+        ctx: &Ctx<'_>,
+        object: ObjId,
+        seller: &mush_org::PrincipalId,
+    ) -> Option<Result<mush_economy::CatalogRef, String>>;
+
+    /// The digest of `object`'s state a sale is priced against, or `None` for an object this
+    /// seam does not know. Total; reads `w` only.
+    fn state_digest(&self, w: &mush_core::World, object: ObjId) -> Option<u64>;
+}
+
 // ---- doc 18 cut IC7: the content-port seams ---------------------------------
 //
 // The market adds three composition-frozen hooks of its own — the presence gate, the
@@ -375,6 +411,20 @@ pub trait ProceedsPolicy: Send + Sync + std::fmt::Debug {
     /// One sale into a bid settled: called exactly once per sale, from the market's
     /// settlement ear after its own idempotency check. Default: nothing.
     fn settled(&self, _ctx: &mut Ctx<'_>, _sale: &SettledSale<'_>) {}
+    /// **May `seller` post a personal ask from `source`?** (doc 48 cut EX.1b): asked once at
+    /// posting, after the venue gate, reading `w` only. Default: yes, so a composition whose
+    /// policy does not answer is unchanged.
+    ///
+    /// # Errors
+    /// The policy's own refusal line; nothing is listed.
+    fn may_list(
+        &self,
+        _w: &mush_core::World,
+        _seller: &PrincipalId,
+        _source: mush_inventory::EndpointRef,
+    ) -> Result<(), ProceedsRefusal> {
+        Ok(())
+    }
 }
 
 /// The market [`GameModule`].
@@ -389,6 +439,8 @@ pub struct MarketModule {
 
 #[derive(Default)]
 struct MarketModuleState {
+    /// Doc 48 cut EX.2: the asset-sale seam. `None` = no person lists a titled object.
+    asset_sale: Option<Arc<dyn AssetSale>>,
     catalogs: Vec<Arc<dyn CatalogSource>>,
     availability: Vec<Arc<dyn AvailabilityProvider>>,
     delivery: Vec<Arc<dyn DeliveryProvider>>,
@@ -566,6 +618,15 @@ impl MarketModule {
         self
     }
 
+    /// Freeze the **asset-sale seam** (doc 48 cut EX.2, Q-48-52): the game's answer about a
+    /// titled object a person lists. **Unwired, no person lists a titled object.** The one
+    /// implementor is tacsim's `port::hull_sale::HullSale`.
+    #[must_use]
+    pub fn with_asset_sale(mut self, seam: Arc<dyn AssetSale>) -> MarketModule {
+        self.state.asset_sale = Some(seam);
+        self
+    }
+
     /// Freeze the **capacity hook** (doc 18 §4.3 "The capacity function"; cut IC7).
     /// Asked in the accept pre-check and again as the backstop inside the Draw's
     /// prepare. **Unwired is no capacity rule.** The tacsim implementation is IC8's.
@@ -605,6 +666,8 @@ pub(crate) struct MarketTables {
     /// Doc 18 cut IC7 item 6: the market-owned draw-receipt family, registered with the
     /// lot action (so `None` exactly when no lot supply is composed).
     pub(crate) draws: Option<DrawReceipts>,
+    /// Doc 48 cut EX.2: the asset-sale seam, when the composition installed one.
+    pub(crate) asset_sale: Option<Arc<dyn AssetSale>>,
 }
 
 /// The draw-receipt family's handle type (doc 18 cut IC7 item 6).
@@ -667,6 +730,7 @@ impl GameModule for MarketModule {
                 capacity: self.state.capacity.clone(),
                 proceeds: self.state.proceeds.clone(),
                 draws: draws.clone(),
+                asset_sale: self.state.asset_sale.clone(),
             },
             ..MarketStore::default()
         });
@@ -1072,6 +1136,12 @@ pub fn lot_supply(w: &mush_core::World) -> Option<mush_inventory::InventoryFamil
 #[must_use]
 pub fn venue_gate(w: &mush_core::World) -> Option<Arc<dyn VenueGate>> {
     w.module_state::<MarketStore>()?.tables.venue_gate.clone()
+}
+
+/// **The asset-sale seam, when the composition installed one** (doc 48 cut EX.2).
+#[must_use]
+pub fn asset_sale(w: &mush_core::World) -> Option<Arc<dyn AssetSale>> {
+    w.module_state::<MarketStore>()?.tables.asset_sale.clone()
 }
 
 /// **The capacity hook, when the composition installed one** (doc 18 §4.3, cut IC7).

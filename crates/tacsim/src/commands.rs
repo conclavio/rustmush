@@ -165,9 +165,12 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    the chain's sources (opened deposits, the stock clerk's mints, remains \
                    scrap's alloys), its holdings (pools, lots, bales) and its sinks (work \
                    orders' losses, mills', the parts built into hulls and fitted by the bay, the \
-                   bale kilograms repairs consumed) on one tacsim.matter_census line, \
-                   then one tacsim.matter_build line a commission. Its balance holds still \
-                   across any window in which nothing else makes or destroys matter.\n\
+                   bale kilograms repairs consumed, the propellant and provisions burns spent, \
+                   the munitions rearms loaded, what consumers used up) on one \
+                   tacsim.matter_census line, then one tacsim.matter_build line a commission. \
+                   It counts the chain's goods and the volatiles, ice ore, propellant, \
+                   provisions and munitions. Its balance holds still across any window in \
+                   which nothing else makes or destroys matter.\n\
                    @industry/census <good>             (staff) and one tacsim.matter_lot line a \
                    lot of that good: its vault, the vault's name and owner."
                 .into(),
@@ -176,6 +179,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::census::census_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // Doc 48 cut EX.1b: `+locker`, a player's locker at the venue they stand in.
+    reg.command(
+        crate::port::locker::locker_spec(),
+        Arc::new(crate::port::locker::locker_cmd),
+    )?;
     // ---- Doc 18 cut IC3 (§4.1): `+credit`, a ReadOnly group of its own ----
     //
     // The `@corridor` bracket's pattern: the class is declared before the

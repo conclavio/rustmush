@@ -113,8 +113,13 @@ pub struct MarketStore {
     pub(crate) live: BTreeSet<ListingId>,
     /// **(catalog, market) → listings**, the projection's own walk (filter, then take).
     pub(crate) by_pair: BTreeMap<(CatalogRef, MarketId), BTreeSet<ListingId>>,
-    /// **vendor → listings**, what `MAX_LISTINGS_PER_VENDOR` bounds.
+    /// **vendor → listings**, what `MAX_LISTINGS_PER_VENDOR` bounds. A personal listing
+    /// names no vendor row and is not in it (doc 48 cut EX.1a).
     pub(crate) by_vendor: BTreeMap<VendorId, BTreeSet<ListingId>>,
+    /// **personal seller → listings** (doc 48 cut EX.1a), keyed by
+    /// `mush_economy::principal_token` as `by_buyer` is: what
+    /// [`crate::MAX_LISTINGS_PER_SELLER`] bounds.
+    pub(crate) by_personal: BTreeMap<SmolStr, BTreeSet<ListingId>>,
     /// **E7r2 P1 — `(inventory endpoint, commodity)` → the live lot listings on it.**
     ///
     /// The one-live-listing-per-lot index. It is a *re-derived projection* like every
@@ -400,11 +405,36 @@ impl MarketStore {
             .filter(|l| l.source.lot().is_some())
     }
 
+    /// How many listings the whole store holds — what [`crate::MAX_LISTINGS`] bounds
+    /// (doc 48 cut EX.1a: the load test reads it).
+    #[must_use]
+    pub fn listing_count(&self) -> usize {
+        self.listings.len()
+    }
     /// How many listings this vendor holds open — what `MAX_LISTINGS_PER_VENDOR`
     /// bounds.
     #[must_use]
     pub fn listings_of_vendor(&self, vendor: VendorId) -> usize {
         self.by_vendor.get(&vendor).map_or(0, BTreeSet::len)
+    }
+    /// How many personal listings this seller holds — asks and bids, lapsed ones not yet
+    /// withdrawn included — what [`crate::MAX_LISTINGS_PER_SELLER`] bounds (doc 48 cut
+    /// EX.1a).
+    #[must_use]
+    pub fn listings_of_seller(&self, seller: &PrincipalId) -> usize {
+        self.by_personal
+            .get(&mush_economy::principal_token(seller))
+            .map_or(0, BTreeSet::len)
+    }
+    /// One personal seller's listings, in id order (doc 48 cut EX.1a).
+    pub fn personal_listings_of<'a>(
+        &'a self,
+        seller: &PrincipalId,
+    ) -> impl Iterator<Item = &'a Listing> {
+        self.by_personal
+            .get(&mush_economy::principal_token(seller))
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|id| self.listings.get(id)))
     }
     /// The open listings of one `(catalog, market)` pair, in id order — the
     /// projection's own walk, filtered before it is taken.
@@ -580,6 +610,7 @@ impl MarketStore {
             .collect();
         self.by_pair = BTreeMap::new();
         self.by_vendor = BTreeMap::new();
+        self.by_personal = BTreeMap::new();
         // E7r2 P1: only a LIVE lot listing holds a pool, so only a live one is
         // indexed — a sold-out row has already had its reservation consumed. Doc 18 cut
         // IC7: a Draw listing (`Supply::Stock` on a lot entry) sits on its storefront
@@ -600,7 +631,14 @@ impl MarketStore {
                 .entry((l.catalog.clone(), l.market.clone()))
                 .or_default()
                 .insert(l.id);
-            self.by_vendor.entry(l.vendor).or_default().insert(l.id);
+            if l.is_personal() {
+                self.by_personal
+                    .entry(mush_economy::principal_token(&l.seller))
+                    .or_default()
+                    .insert(l.id);
+            } else {
+                self.by_vendor.entry(l.vendor).or_default().insert(l.id);
+            }
         }
         for (endpoint, commodity, id) in pools {
             self.by_lot_pool
@@ -649,6 +687,7 @@ impl MarketStore {
             && probe.live == self.live
             && probe.by_pair == self.by_pair
             && probe.by_vendor == self.by_vendor
+            && probe.by_personal == self.by_personal
             && probe.by_lot_pool == self.by_lot_pool
             && probe.by_buyer == self.by_buyer
             && probe.by_seller == self.by_seller
@@ -1068,6 +1107,26 @@ fn trim_on_load(store: &mut MarketStore) {
         );
         store.listings.remove(&id);
     }
+    // Doc 48 cut EX.1a: the per-seller cap re-runs on load too, the newest past it
+    // skipped, exactly as the per-vendor cap is.
+    let over_seller: Vec<ListingId> = store
+        .by_personal
+        .values()
+        .flat_map(|ids| {
+            ids.iter().rev().take(
+                ids.len()
+                    .saturating_sub(crate::record::MAX_LISTINGS_PER_SELLER),
+            )
+        })
+        .copied()
+        .collect();
+    for id in over_seller {
+        tracing::warn!(
+            listing = id.0,
+            "market: past the per-seller listing cap on load; skipped"
+        );
+        store.listings.remove(&id);
+    }
     let pairs: Vec<(CatalogRef, MarketId)> = store.trades.keys().cloned().collect();
     for (catalog, market) in pairs {
         for id in store.overflow_trades(&catalog, &market) {
@@ -1437,5 +1496,36 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Doc 48 cut EX.1a: the per-seller cap re-runs on load, the newest past it skipped,
+    /// and a personal listing is in no vendor's index.
+    #[test]
+    fn ex1a_the_per_seller_cap_reruns_on_load() {
+        let personal = |id: u64| {
+            serde_json::json!({
+                "id": id, "seller": { "Object": 5 }, "vendor": crate::record::NO_VENDOR.0,
+                "market": "luna", "catalog": { "ruleset": "ex1a", "code": "iron" },
+                "source": { "lot": { "endpoint": 3, "commodity": "iron", "grade": 2, "lot": id } },
+                "price": 700, "quantity": 1, "expires": { "clock": "RealUtc", "at": 10_000 },
+                "account": 9,
+            })
+        };
+        let cap = crate::record::MAX_LISTINGS_PER_SELLER as u64;
+        let kv: Vec<(SmolStr, serde_json::Value)> = (0..=cap)
+            .map(|id| (SmolStr::new(format!("market:listing:{id}")), personal(id)))
+            .collect();
+        let store = load(&kv);
+        let seller = PrincipalId::Object(ObjId(5));
+        assert_eq!(
+            store.listings_of_seller(&seller),
+            crate::record::MAX_LISTINGS_PER_SELLER
+        );
+        assert!(
+            store.listing(ListingId(cap)).is_none(),
+            "the newest past the cap"
+        );
+        assert_eq!(store.listings_of_vendor(crate::record::NO_VENDOR), 0);
+        assert!(store.indexes_agree());
     }
 }

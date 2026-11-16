@@ -2419,7 +2419,9 @@ fn sm5_strip_ore_rebuilds_the_published_v10() {
 /// one, each with its refresh; no other vendor bids, asks or stocks an ore good but Freeport
 /// Works, which stocks and asks carbon ore for the works (doc 39 cut IN.5), and Stickney Yards,
 /// which bids strategic ore for the sights (doc 39 cut IN.7) and stocks and bids carbon ore for
-/// the Stickney works (lane v33, the owner's IN.11 house-restock ruling).
+/// the Stickney works (lane v33, the owner's IN.11 house-restock ruling). Doc 48 unit PL.2 (lane
+/// v36): Crisium Instruments bids strategic ore for its fab at Luna, and Titan Concession carbon
+/// ore for its carbon mill.
 #[test]
 fn sm5_only_ceres_bids_ore() {
     let pack = lane();
@@ -2478,6 +2480,15 @@ fn sm5_only_ceres_bids_ore() {
             ceres("freeport_exchange", "carbon_ore", 50, 120, 20, 120),
             ceres("freeport_exchange", "strategic_ore", 600, 12, 2, 12),
             ceres("occator", "ice_ore", 35, 240, 40, 240),
+            // Doc 48 unit PL.2: Crisium's fab takes strategic ore with metals into boards.
+            (
+                "luna_port".to_owned(),
+                "crisium_instruments".to_owned(),
+                "strategic_ore".to_owned(),
+                650,
+                12,
+                Some((2, 12)),
+            ),
             // Doc 39 cut IN.7 (Q-39-31): Stickney Yards bids the strategic ore the sights eat.
             (
                 "stickney_port".to_owned(),
@@ -2495,6 +2506,15 @@ fn sm5_only_ceres_bids_ore() {
                 60,
                 20,
                 Some((2, 20)),
+            ),
+            // Doc 48 unit PL.2: Titan Concession's carbon mill presses carbon ore into feedstock.
+            (
+                "titan_port".to_owned(),
+                "titan_concession".to_owned(),
+                "carbon_ore".to_owned(),
+                55,
+                120,
+                Some((20, 120)),
             ),
         ]
     );

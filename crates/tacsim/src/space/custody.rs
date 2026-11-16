@@ -65,6 +65,93 @@ use crate::surface::salvage::SalvageCustody;
 /// `check_in_space_unit` / `check_out_space_unit` (`D-35-1`, `SF.R20`).
 pub const SPACE_SUBSYSTEMS_CAPABILITY: &str = "tacsim.space.subsystems";
 
+/// **The capability a hull's magazines persist under** (doc 49 unit CC.7; Q-49-12): the rounds
+/// left in each of her tube families, spinal guns and point-defence rotaries that is short of
+/// what her fit stows, by mount id, written at check-in and read at check-out, so what she fired
+/// stays fired across fights, a restart and a custody move.
+///
+/// It is its own capability, not a key of [`SPACE_SUBSYSTEMS_CAPABILITY`], because a bay repair
+/// clears that one (`crate::port::bay_work::jobs`): a repair is not a rearm. A hull whose
+/// magazines are all full carries none, so her unit is the bytes it always was.
+pub const SPACE_MAGAZINES_CAPABILITY: &str = "tacsim.space.magazines";
+
+/// The key of [`SPACE_MAGAZINES_CAPABILITY`]'s data that holds the rounds by mount id.
+const MAGAZINE_ROUNDS_KEY: &str = "rounds";
+
+/// **The rounds left in each of `ship`'s magazines that is short of what her fit stows**, by
+/// mount id (doc 49 unit CC.7): her tube families, spinal guns and point-defence rotaries. What
+/// her fit stows is read from the fit her hull flies ([`space_unit_overlay_for_id`]), the one
+/// check-out builds her from; a mount her fit no longer has is left out.
+#[must_use]
+pub fn spent_magazines(ship: &SpaceShipState) -> BTreeMap<String, u32> {
+    let full = space_unit_overlay_for_id(&ship.hull_class);
+    let mut spent = BTreeMap::new();
+    for tube in &ship.torpedo_tubes {
+        if let Some(stow) = full.torpedo_tubes.iter().find(|t| t.id == tube.id)
+            && tube.magazine_remaining != stow.magazine_remaining
+        {
+            spent.insert(tube.id.clone(), u32::from(tube.magazine_remaining));
+        }
+    }
+    for gun in &ship.railguns {
+        if let Some(stow) = full.railguns.iter().find(|g| g.id == gun.id)
+            && gun.rounds_remaining != stow.rounds_remaining
+        {
+            spent.insert(gun.id.clone(), u32::from(gun.rounds_remaining));
+        }
+    }
+    for pd in &ship.pdcs {
+        if let Some(stow) = full.pdcs.iter().find(|p| p.id == pd.id)
+            && pd.ammo_remaining != stow.ammo_remaining
+        {
+            spent.insert(pd.id.clone(), pd.ammo_remaining);
+        }
+    }
+    spent
+}
+
+/// **Load `ship`'s magazines from what her unit kept** (doc 49 unit CC.7): `rounds` by mount id,
+/// onto a ship built full from her fit. Each magazine keeps what was left, never more than her
+/// fit stows; a tube family's or spinal gun's count since full is what her fit stows less that,
+/// so a mind still reads the maximum her fit stows. An id she does not carry is ignored.
+pub fn load_kept_magazines(ship: &mut SpaceShipState, rounds: &BTreeMap<String, u32>) {
+    for tube in &mut ship.torpedo_tubes {
+        if let Some(&left) = rounds.get(&tube.id) {
+            let stow = tube.magazine_max();
+            let left = u16::try_from(left).unwrap_or(u16::MAX).min(stow);
+            tube.magazine_remaining = left;
+            tube.fired_since_full = stow - left;
+        }
+    }
+    for gun in &mut ship.railguns {
+        if let Some(&left) = rounds.get(&gun.id) {
+            let stow = gun.magazine_max();
+            let left = u16::try_from(left).unwrap_or(u16::MAX).min(stow);
+            gun.rounds_remaining = left;
+            gun.fired_since_full = stow - left;
+        }
+    }
+    for pd in &mut ship.pdcs {
+        if let Some(&left) = rounds.get(&pd.id) {
+            pd.ammo_remaining = left.min(pd.ammo_remaining);
+        }
+    }
+}
+
+/// The rounds `unit` kept in [`SPACE_MAGAZINES_CAPABILITY`], by mount id; empty when it kept
+/// none (every magazine full).
+#[must_use]
+pub fn kept_magazines(unit: &TacticalUnit) -> BTreeMap<String, u32> {
+    mush_tactics::CapabilityId::new(SPACE_MAGAZINES_CAPABILITY)
+        .ok()
+        .and_then(|id| {
+            unit.capability(&mush_tactics::CapabilityKey { id, source: None })
+                .and_then(|cap| cap.data().get(MAGAZINE_ROUNDS_KEY).cloned())
+        })
+        .and_then(|rounds| serde_json::from_value(rounds).ok())
+        .unwrap_or_default()
+}
+
 /// Space-only hull parameters that do not exist on [`UnitSpec`] (`D-35-1`, `35b` §4 & §8 `SF.R15`):
 /// 6-DOF RCS thruster authority, her mounts, and the `mush-pixel` 3D model archetype.
 ///
@@ -670,6 +757,12 @@ pub fn space_ship_from_tactical_unit_with_spec(
         }
     }
 
+    // Doc 49 unit CC.7 (Q-49-12): her magazines hold what she left in them, not a free refill.
+    let kept = kept_magazines(unit);
+    if !kept.is_empty() {
+        load_kept_magazines(&mut ship, &kept);
+    }
+
     ship.recompute_drive_accel();
 
     if ship
@@ -863,6 +956,7 @@ pub fn build_space_damage_mutation_plan(
             .map_err(FieldOpsError::Unit)?,
         source: None,
     };
+    let mut cap_ops = Vec::new();
     let cap_op = if has_subsystem_state {
         let cap_schema = before
             .capabilities()
@@ -893,11 +987,45 @@ pub fn build_space_damage_mutation_plan(
         None
     };
 
-    if let Some(op) = cap_op {
+    cap_ops.extend(cap_op);
+
+    // 7. Doc 49 unit CC.7 (Q-49-12): the rounds left in every magazine short of what her fit
+    //    stows, so what she fired stays fired. A hull whose magazines are all full keeps none.
+    let spent = spent_magazines(ship);
+    let magazines_key = mush_tactics::CapabilityKey {
+        id: mush_tactics::CapabilityId::new(SPACE_MAGAZINES_CAPABILITY)
+            .map_err(FieldOpsError::Unit)?,
+        source: None,
+    };
+    if spent.is_empty() {
+        if before.capability(&magazines_key).is_some() {
+            cap_ops.push(UnitMutationOp::RevokeCapability { key: magazines_key });
+        }
+    } else {
+        let cap_schema = before
+            .capabilities()
+            .next()
+            .and_then(|k| before.capability(k))
+            .map(|rv| rv.schema().clone())
+            .unwrap_or_else(|| before.schema().clone());
+        let rules = mush_core::RulesValue::new(
+            cap_schema,
+            serde_json::json!({ MAGAZINE_ROUNDS_KEY: spent }),
+        )
+        .map_err(|_| FieldOpsError::Unit(mush_tactics::UnitError::EmptyId))?;
+        if before.capability(&magazines_key) != Some(&rules) {
+            cap_ops.push(UnitMutationOp::GrantCapability {
+                key: magazines_key,
+                rules,
+            });
+        }
+    }
+
+    if !cap_ops.is_empty() {
         let mut combined_ops = plan_opt
             .as_ref()
             .map_or_else(Vec::new, |p| p.ops().to_vec());
-        combined_ops.push(op);
+        combined_ops.extend(cap_ops);
         let new_plan = UnitMutationPlan::new(
             combined_ops,
             Some(before.revision()),
@@ -1702,5 +1830,194 @@ mod content_tests {
         );
         before.hull_class = crate::definitions::content::RAIDER_HEAVY.to_owned();
         assert_eq!(ship, before, "she flies as the overlaid corvette flew");
+    }
+}
+
+/// **Doc 49 unit CC.7: her magazines persist** (Q-49-12). What she fired stays fired: check-in
+/// keeps the rounds left in every magazine short of what her fit stows, and check-out loads
+/// them, so the rounds are conserved across check-in, check-out, a restart and a bay repair.
+#[cfg(test)]
+mod cc7_tests {
+    use super::*;
+    use crate::space::picket::CARRIER_PARTY;
+
+    /// Halcyon's stock unit and spec, and her ship as check-out builds it.
+    fn halcyon() -> (TacticalUnit, UnitSpec, SpaceShipState) {
+        let (unit, spec) =
+            instantiate_stock_space_unit(ObjId(77), "tacsim.unit.halcyon").expect("her unit");
+        let ship = out(&unit);
+        (unit, spec, ship)
+    }
+
+    fn out(unit: &TacticalUnit) -> SpaceShipState {
+        space_ship_from_tactical_unit(unit, "hull.77", "Halcyon", CARRIER_PARTY, [0; 3], [0; 3])
+            .expect("her ship")
+    }
+
+    /// Every round in her magazines, by mount id.
+    fn rounds(ship: &SpaceShipState) -> BTreeMap<String, u32> {
+        let mut all = BTreeMap::new();
+        for tube in &ship.torpedo_tubes {
+            all.insert(tube.id.clone(), u32::from(tube.magazine_remaining));
+        }
+        for gun in &ship.railguns {
+            all.insert(gun.id.clone(), u32::from(gun.rounds_remaining));
+        }
+        for pd in &ship.pdcs {
+            all.insert(pd.id.clone(), pd.ammo_remaining);
+        }
+        all
+    }
+
+    /// She fires five torpedoes, twelve spinal rounds and 900 point-defence rounds.
+    fn spend(ship: &mut SpaceShipState) {
+        let tube = &mut ship.torpedo_tubes[0];
+        tube.magazine_remaining -= 5;
+        tube.fired_since_full += 5;
+        let gun = &mut ship.railguns[0];
+        gun.rounds_remaining -= 12;
+        gun.fired_since_full += 12;
+        ship.pdcs[0].ammo_remaining -= 900;
+    }
+
+    fn check_in(unit: &TacticalUnit, spec: &UnitSpec, ship: &SpaceShipState) -> TacticalUnit {
+        build_space_damage_mutation_plan(unit, ship, Some(spec), 60_000)
+            .expect("her check-in plan")
+            .0
+    }
+
+    #[test]
+    fn cc7_check_in_keeps_what_she_fired_and_check_out_loads_it() {
+        let (unit, spec, mut ship) = halcyon();
+        assert!(kept_magazines(&unit).is_empty(), "a fresh hull keeps none");
+        let full = rounds(&ship);
+        spend(&mut ship);
+        let before = rounds(&ship);
+        assert_ne!(before, full);
+
+        let after = check_in(&unit, &spec, &ship);
+        let kept = kept_magazines(&after);
+        assert_eq!(
+            kept,
+            BTreeMap::from([
+                ("pdc_port".to_owned(), full["pdc_port"] - 900),
+                ("rail_spinal".to_owned(), full["rail_spinal"] - 12),
+                ("torp_bow".to_owned(), full["torp_bow"] - 5),
+            ]),
+            "only the magazines short of her fit"
+        );
+
+        // Check-out loads what she left: every round conserved, and a mind still reads the
+        // maximum her fit stows.
+        let again = out(&after);
+        assert_eq!(
+            rounds(&again),
+            before,
+            "rounds conserved across check-in and out"
+        );
+        assert_eq!(
+            again.torpedo_tubes[0].magazine_max(),
+            u16::try_from(full["torp_bow"]).expect("fits")
+        );
+        assert_eq!(
+            again.railguns[0].magazine_max(),
+            u16::try_from(full["rail_spinal"]).expect("fits")
+        );
+        // A second check-in with nothing fired moves nothing.
+        let twice = check_in(&after, &spec, &again);
+        assert_eq!(kept_magazines(&twice), kept);
+        assert_eq!(rounds(&out(&twice)), before);
+    }
+
+    #[test]
+    fn cc7_a_full_hull_keeps_nothing_and_a_refilled_one_drops_what_it_kept() {
+        let (unit, spec, mut ship) = halcyon();
+        let untouched = check_in(&unit, &spec, &ship);
+        assert!(
+            kept_magazines(&untouched).is_empty(),
+            "a full hull's unit carries no magazine record"
+        );
+        assert_eq!(
+            untouched.capabilities().count(),
+            unit.capabilities().count(),
+            "and gains no capability"
+        );
+        let full = rounds(&ship);
+        spend(&mut ship);
+        let spent = check_in(&unit, &spec, &ship);
+        assert!(!kept_magazines(&spent).is_empty());
+        // Rearmed to full: the record goes, and check-out builds her full.
+        let mut rearmed = out(&spent);
+        for tube in &mut rearmed.torpedo_tubes {
+            tube.magazine_remaining = tube.magazine_max();
+            tube.fired_since_full = 0;
+        }
+        for gun in &mut rearmed.railguns {
+            gun.rounds_remaining = gun.magazine_max();
+            gun.fired_since_full = 0;
+        }
+        rearmed.pdcs[0].ammo_remaining = full["pdc_port"];
+        let dropped = check_in(&spent, &spec, &rearmed);
+        assert!(kept_magazines(&dropped).is_empty());
+        assert_eq!(rounds(&out(&dropped)), full);
+    }
+
+    /// A restart reads her unit from its document: what she kept is in it.
+    #[test]
+    fn cc7_a_restart_keeps_her_magazines() {
+        let (unit, spec, mut ship) = halcyon();
+        spend(&mut ship);
+        let before = rounds(&ship);
+        let after = check_in(&unit, &spec, &ship);
+        let document = serde_json::to_value(&after).expect("her unit encodes");
+        let restored: TacticalUnit = serde_json::from_value(document).expect("and decodes");
+        assert_eq!(kept_magazines(&restored), kept_magazines(&after));
+        assert_eq!(
+            rounds(&out(&restored)),
+            before,
+            "rounds conserved across a restart"
+        );
+    }
+
+    /// A bay repair clears her subsystem record (`crate::port::bay_work::jobs`); it is not a
+    /// rearm, so it leaves her magazines as they were.
+    #[test]
+    fn cc7_a_bay_repair_is_not_a_rearm() {
+        let (unit, spec, mut ship) = halcyon();
+        spend(&mut ship);
+        ship.crits.push(SubsystemCrit::SensorDegraded);
+        let before = rounds(&ship);
+        let after = check_in(&unit, &spec, &ship);
+        let subsystems = mush_tactics::CapabilityKey {
+            id: mush_tactics::CapabilityId::new(SPACE_SUBSYSTEMS_CAPABILITY).expect("an id"),
+            source: None,
+        };
+        assert!(after.capability(&subsystems).is_some());
+        let repair = UnitMutationPlan::new(
+            vec![UnitMutationOp::RevokeCapability { key: subsystems }],
+            Some(after.revision()),
+            None,
+        )
+        .expect("the repair's plan");
+        let repaired = apply(&after, &repair, 61_000).expect("it applies").0;
+        assert_eq!(rounds(&out(&repaired)), before, "a repair conserves rounds");
+    }
+
+    /// A magazine never loads more than her fit stows, and an id she does not carry is ignored:
+    /// a fit that shrank (a retune) or lost a mount does not mint rounds.
+    #[test]
+    fn cc7_what_she_kept_never_loads_past_her_fit() {
+        let (_, _, mut ship) = halcyon();
+        let full = rounds(&ship);
+        load_kept_magazines(
+            &mut ship,
+            &BTreeMap::from([
+                ("torp_bow".to_owned(), 1_000_000),
+                ("pdc_port".to_owned(), u32::MAX),
+                ("no_such_mount".to_owned(), 3),
+            ]),
+        );
+        assert_eq!(rounds(&ship), full);
+        assert_eq!(ship.torpedo_tubes[0].fired_since_full, 0);
     }
 }
