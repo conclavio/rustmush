@@ -1124,7 +1124,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 35, "lane v35 since doc 48 unit PL.1");
+    assert_eq!(LANE_VERSION, 36, "lane v36 since doc 48 unit PL.2");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1178,16 +1178,67 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
         20,
         20,
     );
+    // Doc 48 unit PL.2: and the house processes and Titan's carbon mill — the two farms (water
+    // into crew-days of provisions, 5 : 1000), Crisium's fab (strategic ore into boards, 1 : 2)
+    // and Titan Concession's carbon ore into feedstock (5 : 4).
+    let at = |entry: &str, org: &str, ore: &str, into: &str, ratio, batch_t, per_ic_day_t| {
+        (
+            entry.to_owned(),
+            org.to_owned(),
+            ore.to_owned(),
+            into.to_owned(),
+            ratio,
+            batch_t,
+            per_ic_day_t,
+        )
+    };
     assert_eq!(
         mills,
         vec![
             row(EXCHANGE, "metal_ore", "metals"),
             row(OCCATOR, "ice_ore", "volatiles"),
             propellant,
+            at(
+                "luna_port",
+                "habitat_board",
+                "volatiles",
+                "provisions",
+                (5, 1000),
+                5,
+                5
+            ),
+            at(
+                "luna_port",
+                "crisium_instruments",
+                "strategic_ore",
+                "instrument_boards",
+                (1, 2),
+                2,
+                2
+            ),
             refine,
+            at(
+                "titan_port",
+                "titan_concession",
+                "carbon_ore",
+                "carbon_feedstock",
+                (5, 4),
+                20,
+                20
+            ),
+            at(
+                "titan_port",
+                "titan_concession",
+                "volatiles",
+                "provisions",
+                (5, 1000),
+                5,
+                5
+            ),
         ],
         "the shipped lane's two mills, 5 : 2, 20 t a batch, at most 40 t an IC day; Occator's \
-         refine, 5 : 4, 20 t a batch and an IC day; Kasei's, 5 : 4, at most 40 t an IC day"
+         refine, 5 : 4, 20 t a batch and an IC day; Kasei's, 5 : 4, at most 40 t an IC day; the \
+         farms, the fab and Titan's carbon mill"
     );
     let pack = load_pack(&lane_variant(13, strip_mill)).expect("the v13 shape verifies");
     assert_eq!(
@@ -1909,6 +1960,8 @@ fn occator_ledger(at: i64, vault: VaultId, clerk: ObjId) -> Value {
             ore_t: 20,
             product_t: 8,
         }],
+        with: None,
+        with_t: 0,
     })
     .expect("a ledger serializes")
 }
@@ -2587,7 +2640,9 @@ fn sm12a_only_the_mill_restocks() {
 /// **Doc 35 cut SF.R26c**: `.debit(` once in `space/customs.rs`, the customs picket's seizure —
 /// unlicensed `strategic_ore` taken out of a hull's hold in the ruling's own transaction: matter
 /// leaving the world, never made. It is the draw that used to ride the burn's second debit
-/// (`PendingSpaceBurn::seized_strategic_ore_t`), moved, not added.
+/// (`PendingSpaceBurn::seized_strategic_ore_t`), moved, not added. **Doc 48 unit PL.2**: a second
+/// `.debit(` in the mill, a process's second input consumed in the batch's bundle beside the
+/// ore: matter turned into the product, never made.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2617,7 +2672,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
         vec![
             ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
-            ("tacsim/src/port/mill.rs".to_owned(), 1),
+            ("tacsim/src/port/mill.rs".to_owned(), 2),
             ("tacsim/src/space/customs.rs".to_owned(), 1),
             ("tacsim/src/surface/tow.rs".to_owned(), 3),
         ]
@@ -3684,7 +3739,7 @@ fn pl1_occator_refines_water_into_propellant_one_full_cycle() {
     );
     assert_eq!(
         mill_line(&mut rig.tw, OCCATOR, "volatiles"),
-        "  ceres_port mill occator volatiles: nothing milled yet; 9600 t of ore waits; 5 to 4, 20 t a batch, at most 20 t an IC day, while propellant is under 5000 t. [ready]"
+        "  ceres_port mill occator volatiles: nothing milled yet; 9600 t of ore waits; 5 to 4, 20 t a batch, at most 20 t an IC day, while propellant is under 5000. [ready]"
     );
     // 2. The inputs bought: 20 t of ice ore into Occator's bid, milled into 8 t of water.
     let (icer, ice_hold) = dray_p(&mut rig, "Icer", 1, "Rime Moth");
@@ -3825,5 +3880,145 @@ fn pl1_a_floor_binds_an_ore_mill_too() {
     assert_eq!(pool(&mut rig.tw, vault, "metal_ore"), 0);
     assert_eq!(pool(&mut rig.tw, vault, "metals"), 3_998);
     settle(&mut rig, bought);
+    no_refused_writes(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 48 unit PL.2: Titan's farm and carbon mill
+// ---------------------------------------------------------------------------
+
+const TITAN: &str = "titan_port";
+const CONCESSION: &str = "titan_concession";
+
+/// `org`'s storefront vault at `entry`.
+fn storefront_at(tw: &TestWorld, entry: &str, org: &str) -> VaultId {
+    VaultId(port_map(tw, entry).vendors[&cid(org)].vault)
+}
+
+/// The quantity `org`'s drawn ask of `good` at `entry` lists, if it stands.
+fn listed_at(tw: &TestWorld, entry: &str, org: &str, good: &str) -> Option<u64> {
+    let market = market(tw);
+    market
+        .lot_listing_of(EndpointRef(storefront_at(tw, entry, org)), &cid(good))
+        .and_then(|id| market.listing(id))
+        .map(|listing| listing.quantity)
+}
+
+/// The ledger of `org`'s mill of `ore` at `entry`, as the engine holds it.
+fn ledger_at(tw: &TestWorld, entry: &str, org: &str, ore: &str) -> Option<MillLedger> {
+    let id = MillId::derive(&lane_id(), &cid(entry), &cid(org), &cid(ore)).expect("a mill id");
+    tw.engine()
+        .action_state()
+        .get(&mill_handle(tw), &id)
+        .ok()
+        .flatten()
+        .cloned()
+}
+
+/// **Doc 48 unit PL.2: Titan's farm draws its own water and feedstock, and the carbon mill
+/// refills the feedstock** (Q-48-23's correction: a farm fed on a finite seed of feedstock would
+/// stop when it ran out). On a lane whose Titan Concession seeds 990 crew-days of provisions, ten
+/// under its farm's floor (the stand-in for a sale: no story flies to Titan):
+///
+/// 1. From boot the farm draws a batch of each input off the house's own asks (5 t of water,
+///    1 t of feedstock), makes 1,000 crew-days, and lists them; at 1,990 crew-days it stops. No
+///    drift pages across the draws, and the Mill line names the second input.
+/// 2. The feedstock ask is now a tonne under its own floor, so 20 t of carbon ore delivered into
+///    the carbon-ore bid's pool in kind (a miner's sale's units) are milled into 16 t of
+///    feedstock and listed, and the carbon mill stops at 615 t.
+/// 3. The next IC day nothing moves: both products are at or above their floors.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pl2_titan_farm_draws_its_own_stock_and_the_carbon_mill_refills_it() {
+    let under = lane_variant(LANE_VERSION, |doc| {
+        for vendor in doc["entries"][TITAN]["def"]["vendors"]
+            .as_array_mut()
+            .expect("Titan's vendors")
+        {
+            if vendor["org"] == CONCESSION {
+                for row in vendor["stock"].as_array_mut().expect("its stock") {
+                    if row["good"] == "provisions" {
+                        row["qty"] = serde_json::json!(990);
+                    }
+                }
+            }
+        }
+    });
+    let mut rig = stocked_with(Roster::seeded(under));
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 48);
+    let vault = storefront_at(&rig.tw, TITAN, CONCESSION);
+
+    // 1. The farm ran from its own stock, once.
+    let farm = ledger_at(&rig.tw, TITAN, CONCESSION, "volatiles").expect("the farm ran");
+    assert_eq!(
+        (farm.batches, farm.ore_t, farm.product_t, farm.with_t),
+        (1, 5, 1_000, 1),
+        "5 t of water and 1 t of feedstock into 1,000 crew-days"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 1_990);
+    assert_eq!(
+        listed_at(&rig.tw, TITAN, CONCESSION, "provisions"),
+        Some(1_990)
+    );
+    for (good, left) in [("volatiles", 1_795), ("carbon_feedstock", 599)] {
+        assert_eq!(
+            pool(&mut rig.tw, vault, good),
+            left,
+            "{good} drawn and milled"
+        );
+        assert_eq!(
+            listed_at(&rig.tw, TITAN, CONCESSION, good),
+            Some(left),
+            "{good}'s ask carries the rest"
+        );
+    }
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
+    let line = line(&mut rig.tw, "titan_port mill titan_concession volatiles:");
+    assert!(
+        line.contains("1 batch has milled 5 t of ore into 1000 provisions")
+            && line.contains("5 to 1000 with 1 carbon_feedstock a ratio")
+            && line.contains("while provisions is under 1000")
+            && line.ends_with("[ready]"),
+        "{line}"
+    );
+    assert!(
+        ledger_at(&rig.tw, TITAN, CONCESSION, "carbon_ore").is_none(),
+        "no carbon ore yet"
+    );
+
+    // 2. Carbon ore in, feedstock out to its floor.
+    seed_pool(&mut rig, vault, "carbon_ore", 20, LotId(9_101));
+    fire_until_idle(&mut rig, 48);
+    let carbon = ledger_at(&rig.tw, TITAN, CONCESSION, "carbon_ore").expect("the carbon mill ran");
+    assert_eq!(
+        (
+            carbon.batches,
+            carbon.ore_t,
+            carbon.product_t,
+            carbon.with_t
+        ),
+        (1, 20, 16, 0),
+        "five to four"
+    );
+    assert_eq!(pool(&mut rig.tw, vault, "carbon_ore"), 0);
+    assert_eq!(pool(&mut rig.tw, vault, "carbon_feedstock"), 615);
+    assert_eq!(
+        listed_at(&rig.tw, TITAN, CONCESSION, "carbon_feedstock"),
+        Some(615)
+    );
+
+    // 3. At their floors, nothing moves the next IC day.
+    past_next_boundary(&mut rig, 60);
+    fire_until_idle(&mut rig, 48);
+    assert_eq!(
+        ledger_at(&rig.tw, TITAN, CONCESSION, "volatiles").map(|l| l.batches),
+        Some(1)
+    );
+    assert_eq!(
+        ledger_at(&rig.tw, TITAN, CONCESSION, "carbon_ore").map(|l| l.batches),
+        Some(1)
+    );
+    assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
     no_refused_writes(&rig.tw);
 }

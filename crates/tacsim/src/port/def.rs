@@ -78,6 +78,9 @@ pub const MAX_VENDOR_MILLS: usize = 4;
 /// The most tonnes of ore (and so of product) one mill ratio may name (doc 20
 /// cut SM.12a): `1 <= product <= ore <= MAX_MILL_RATIO`.
 pub const MAX_MILL_RATIO: u32 = 100;
+/// **Doc 48 unit PL.2**: the most units of product one ratio of a `process` may make, in the
+/// product's own unit (crew-days of provisions from tonnes of water); the mass rule bounds it.
+pub const MAX_PROCESS_PRODUCT: u32 = 10_000;
 /// The most capital one institution may be authored with, in major units.
 pub const MAX_PORT_CAPITAL_MAJOR: u64 = 100_000_000;
 /// **The largest one capital tranche may be**, in major units (D-18-14): an
@@ -1187,6 +1190,13 @@ pub enum MillKind {
     Mill,
     /// A good into another family's, at a refinery (doc 39's refine).
     Refine,
+    /// **Doc 48 unit PL.2 (Q-48-23): a house process** — one or two goods into a good of any
+    /// family and any unit (a habitat farm's water and carbon into crew-days of provisions, a fab's
+    /// strategic ore and metals into instrument boards). The family rule does not bind it; the
+    /// mass rule does (`check_ports`: the product never outweighs its inputs). It needs no
+    /// facility block: the house runs it at its own storefront, as the refine is the refinery's
+    /// one slot never booked.
+    Process,
 }
 
 impl MillKind {
@@ -1195,11 +1205,35 @@ impl MillKind {
     pub const fn is_mill(&self) -> bool {
         matches!(self, Self::Mill)
     }
+
+    /// Whether this is a `refine`, the kind that needs the port's refinery.
+    #[must_use]
+    pub const fn is_refine(&self) -> bool {
+        matches!(self, Self::Refine)
+    }
+
+    /// Whether this is a `process`, the kind that may name a second input.
+    #[must_use]
+    pub const fn is_process(&self) -> bool {
+        matches!(self, Self::Process)
+    }
+}
+
+/// **A process's second input** (doc 48 unit PL.2): `per_ratio` units of `good` consumed with
+/// each ratio of the row's ore, `1..=`[`MAX_MILL_RATIO`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MillWith {
+    /// The good: one of the vendor's bids or asks, neither the ore nor the product.
+    pub good: CanonicalId,
+    /// Units of it a ratio consumes.
+    pub per_ratio: u32,
 }
 
 /// **A mill's ratio** (doc 20 cut SM.12a; §7.3's "5 : 2"): `ore` tonnes of ore
 /// make `product` tonnes of product, `1 <= product <= ore <= MAX_MILL_RATIO`
-/// ([`MAX_MILL_RATIO`]).
+/// ([`MAX_MILL_RATIO`]). Doc 48 unit PL.2: a `process` counts both in the goods' own units, the
+/// product up to [`MAX_PROCESS_PRODUCT`], bound by mass rather than by `product <= ore`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MillRatio {
@@ -1304,14 +1338,38 @@ pub struct MillDef {
     /// re-encode byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub floor_t: Option<u64>,
+    /// **Doc 48 unit PL.2: a process's second input**, consumed beside the ore, `per_ratio` units
+    /// a ratio. Only a `process` names one. Skipped when absent, so the other rows re-encode
+    /// byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<MillWith>,
 }
 
 impl MillDef {
-    /// **Whether this is an own-stock mill** of `vendor` (doc 48 unit PL.1): its ore is one
-    /// of the vendor's asks, drawn off that ask, not a good it bids for.
+    /// **Whether this is an own-stock mill** of `vendor` (doc 48 unit PL.1): one of its inputs
+    /// (the ore, or doc 48 unit PL.2's second input) is one of the vendor's asks, drawn off
+    /// that ask, not a good it bids for.
     #[must_use]
     pub fn own_stock(&self, vendor: &VendorDef) -> bool {
-        vendor.asks.iter().any(|ask| ask.good == self.ore)
+        self.inputs()
+            .iter()
+            .any(|(good, _)| vendor.asks.iter().any(|ask| &ask.good == *good))
+    }
+
+    /// **The goods one batch consumes and how many of each** (doc 48 unit PL.2): the ore's
+    /// `batch_t`, then the second input's `per_ratio` for each of the batch's ratios. Saturating,
+    /// as the validator bounds every figure.
+    #[must_use]
+    pub fn inputs(&self) -> Vec<(&CanonicalId, u64)> {
+        let mut inputs = vec![(&self.ore, self.batch_t)];
+        if let Some(with) = &self.with {
+            let ratios = self
+                .batch_t
+                .checked_div(u64::from(self.ratio.ore))
+                .unwrap_or(0);
+            inputs.push((&with.good, ratios.saturating_mul(u64::from(with.per_ratio))));
+        }
+        inputs
     }
 }
 
@@ -1784,7 +1842,7 @@ impl PortDef {
         let refiners: Vec<&CanonicalId> = self
             .vendors
             .iter()
-            .filter(|vendor| vendor.mill.iter().any(|mill| !mill.kind.is_mill()))
+            .filter(|vendor| vendor.mill.iter().any(|mill| mill.kind.is_refine()))
             .map(|vendor| &vendor.org)
             .collect();
         let Some(refinery) = &self.refinery else {
@@ -2307,9 +2365,7 @@ impl PortDef {
         }
         for mill in &vendor.mill {
             let ore = &mill.ore;
-            // Doc 48 unit PL.1: or one it asks itself (an own-stock mill), which names a floor.
-            let own_stock = asks.contains(ore);
-            if !bids.contains(ore) && !own_stock {
+            if !bids.contains(ore) && !asks.contains(ore) {
                 return Err(format!(
                     "vendor {org}: mill {ore}: the ore must be a good this vendor bids or asks"
                 ));
@@ -2320,6 +2376,33 @@ impl PortDef {
                     mill.into
                 ));
             }
+            // Doc 48 unit PL.2: a process's second input, a good the vendor bids or asks, neither
+            // the ore nor the product.
+            if let Some(with) = &mill.with {
+                if !mill.kind.is_process() {
+                    return Err(format!(
+                        "vendor {org}: mill {ore}: only a process names a second input"
+                    ));
+                }
+                let good = &with.good;
+                if (!bids.contains(good) && !asks.contains(good))
+                    || good == ore
+                    || *good == mill.into
+                {
+                    return Err(format!(
+                        "vendor {org}: mill {ore}: its second input {good} must be another good \
+                         this vendor bids or asks"
+                    ));
+                }
+                if with.per_ratio == 0 || with.per_ratio > MAX_MILL_RATIO {
+                    return Err(format!(
+                        "vendor {org}: mill {ore}: its second input is 1..={MAX_MILL_RATIO} units \
+                         a ratio"
+                    ));
+                }
+            }
+            // Doc 48 unit PL.1: an input it asks itself (an own-stock mill) names a floor.
+            let own_stock = mill.own_stock(vendor);
             match mill.floor_t {
                 None if own_stock => {
                     return Err(format!(
@@ -2336,7 +2419,21 @@ impl PortDef {
                 _ => {}
             }
             let ratio = mill.ratio;
-            if ratio.product == 0 || ratio.product > ratio.ore || ratio.ore > MAX_MILL_RATIO {
+            if mill.kind.is_process() {
+                // Doc 48 unit PL.2: a process counts in the goods' own units; `check_ports`
+                // bounds it by mass.
+                if ratio.ore == 0
+                    || ratio.ore > MAX_MILL_RATIO
+                    || ratio.product == 0
+                    || ratio.product > MAX_PROCESS_PRODUCT
+                {
+                    return Err(format!(
+                        "vendor {org}: mill {ore}: a process's ratio is 1..={MAX_MILL_RATIO} units \
+                         of ore to 1..={MAX_PROCESS_PRODUCT} of product"
+                    ));
+                }
+            } else if ratio.product == 0 || ratio.product > ratio.ore || ratio.ore > MAX_MILL_RATIO
+            {
                 return Err(format!(
                     "vendor {org}: mill {ore}: the ratio is 1..={MAX_MILL_RATIO} tonnes of ore to \
                      1..=that many of product"
@@ -2916,6 +3013,27 @@ pub fn check_ports(
                     return fail(format!(
                         "vendor {}: mill {}: {} and {} are not one family's goods",
                         vendor.org, mill.ore, mill.ore, mill.into
+                    ));
+                }
+            }
+            // Doc 48 unit PL.2: a process is bound by mass, not family: a ratio's product never
+            // outweighs the ore and the second input it consumes.
+            for mill in vendor.mill.iter().filter(|mill| mill.kind.is_process()) {
+                let kg = |good: &CanonicalId, units: u32| {
+                    goods
+                        .good(good)
+                        .and_then(crate::definitions::goods::GoodDef::mass_kg_per_unit)
+                        .map(|kg| u128::from(kg) * u128::from(units))
+                };
+                let taken = kg(&mill.ore, mill.ratio.ore).and_then(|ore| match &mill.with {
+                    Some(with) => kg(&with.good, with.per_ratio).map(|with| ore + with),
+                    None => Some(ore),
+                });
+                let made = kg(&mill.into, mill.ratio.product);
+                if !matches!((taken, made), (Some(taken), Some(made)) if made <= taken) {
+                    return fail(format!(
+                        "vendor {}: mill {}: a process's product outweighs its inputs",
+                        vendor.org, mill.ore
                     ));
                 }
             }
@@ -3881,6 +3999,7 @@ mod tests {
             batch_t,
             per_ic_day_t: per_day_t,
             floor_t: None,
+            with: None,
         }
     }
 
@@ -4066,6 +4185,142 @@ mod tests {
             family(sm12a_mill("ice_ore", "metals", (5, 2), 20, 40)),
             "stickney_port: vendor kasei: mill ice_ore: ice_ore and metals are not one family's \
              goods"
+        );
+    }
+
+    /// A process row of `ore` into `into`, with `with` a second input.
+    fn pl2_process(
+        ore: &str,
+        into: &str,
+        ratio: (u32, u32),
+        with: Option<(&str, u32)>,
+        floor_t: Option<u64>,
+    ) -> MillDef {
+        MillDef {
+            kind: MillKind::Process,
+            with: with.map(|(good, per_ratio)| MillWith {
+                good: cid(good),
+                per_ratio,
+            }),
+            floor_t,
+            ..sm12a_mill(ore, into, ratio, 5, 5)
+        }
+    }
+
+    /// **Doc 48 unit PL.2**: each process rule refuses at load with its sentence, whole (the
+    /// Exchange's shape: asks `metals` and `volatiles`, bids `metal_ore` and `ice_ore`).
+    #[test]
+    fn pl2_each_process_rule_refuses_with_its_sentence() {
+        let with = |mills: Vec<MillDef>| {
+            let mut def = port();
+            def.vendors.push(sm12a_vendor(mills));
+            refused(&def)
+        };
+        // Bought inputs, a product in another unit, no floor needed.
+        assert_eq!(
+            with(vec![pl2_process(
+                "ice_ore",
+                "volatiles",
+                (5, 1_000),
+                Some(("metal_ore", 1)),
+                None
+            )]),
+            "accepted"
+        );
+        // Only a process names a second input.
+        assert_eq!(
+            with(vec![MillDef {
+                kind: MillKind::Mill,
+                ..pl2_process("ice_ore", "volatiles", (5, 2), Some(("metal_ore", 1)), None)
+            }]),
+            "vendor coop: mill ice_ore: only a process names a second input"
+        );
+        // The second input another good the vendor bids or asks.
+        for good in ["ice_ore", "volatiles", "carbon_ore"] {
+            assert_eq!(
+                with(vec![pl2_process(
+                    "ice_ore",
+                    "volatiles",
+                    (5, 2),
+                    Some((good, 1)),
+                    None
+                )]),
+                format!(
+                    "vendor coop: mill ice_ore: its second input {good} must be another good \
+                     this vendor bids or asks"
+                ),
+                "{good}"
+            );
+        }
+        for per_ratio in [0, MAX_MILL_RATIO + 1] {
+            assert_eq!(
+                with(vec![pl2_process(
+                    "ice_ore",
+                    "volatiles",
+                    (5, 2),
+                    Some(("metal_ore", per_ratio)),
+                    None
+                )]),
+                "vendor coop: mill ice_ore: its second input is 1..=100 units a ratio",
+                "{per_ratio}"
+            );
+        }
+        // A process's ratio, in the goods' own units.
+        for bad in [(0, 1), (101, 1), (5, 0), (5, MAX_PROCESS_PRODUCT + 1)] {
+            assert_eq!(
+                with(vec![pl2_process("ice_ore", "volatiles", bad, None, None)]),
+                "vendor coop: mill ice_ore: a process's ratio is 1..=100 units of ore to \
+                 1..=10000 of product",
+                "{bad:?}"
+            );
+        }
+        // A second input the vendor asks makes an own-stock process: it names a floor.
+        assert_eq!(
+            with(vec![pl2_process(
+                "ice_ore",
+                "metals",
+                (5, 2),
+                Some(("volatiles", 1)),
+                None
+            )]),
+            "vendor coop: mill ice_ore: a mill of a good this vendor asks names a floor_t"
+        );
+        assert_eq!(
+            with(vec![pl2_process(
+                "ice_ore",
+                "metals",
+                (5, 2),
+                Some(("volatiles", 1)),
+                Some(4_000)
+            )]),
+            "accepted"
+        );
+    }
+
+    /// **Doc 48 unit PL.2**: a process is bound by mass at load, the product never outweighing
+    /// its inputs, and needs no refinery; the shipped processes are accepted.
+    #[test]
+    fn pl2_a_process_never_outweighs_its_inputs() {
+        assert_eq!(sm12b_lane(&|_| {}), "accepted");
+        let farm = |product: u32| {
+            move |doc: &mut serde_json::Value| {
+                for vendor in doc["entries"]["luna_port"]["def"]["vendors"]
+                    .as_array_mut()
+                    .into_iter()
+                    .flatten()
+                {
+                    if vendor["org"] == "habitat_board" {
+                        vendor["mill"][0]["ratio"]["product"] = serde_json::json!(product);
+                    }
+                }
+            }
+        };
+        // 5 t of water and 1 t of feedstock weigh 6,000 kg: 1,500 crew-days at 4 kg, no more.
+        assert_eq!(sm12b_lane(&farm(1_500)), "accepted");
+        assert_eq!(
+            sm12b_lane(&farm(1_501)),
+            "port entry luna_port: vendor habitat_board: mill volatiles: a process's product \
+             outweighs its inputs"
         );
     }
 

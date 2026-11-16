@@ -91,6 +91,8 @@ mod mill;
 mod mining;
 #[path = "domain_economy/orders.rs"]
 mod orders;
+#[path = "domain_economy/pl2_producers.rs"]
+mod pl2_producers;
 #[path = "domain_economy/plans.rs"]
 mod plans;
 #[path = "domain_economy/plumbing.rs"]

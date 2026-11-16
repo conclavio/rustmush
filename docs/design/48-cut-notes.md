@@ -676,7 +676,202 @@ Not built.
 
 ## PL.2
 
-Not built.
+**Survey** (at `ba203074e`, PL.1's tip with main `c85a8744f` merged):
+- **The seeds with no producer.**
+  - Provisions: five rows of 2,600 crew-days.
+  - Instrument boards: 2,080 t at Crisium Instruments, Luna.
+  - Carbon feedstock: 600 t at Titan Concession, beside 1,800 t of water.
+  - Relay blanks: 8, minted once.
+- **The buyers already there.**
+  - The Lunar Habitat Board bids for water (4,100 t at 195) and feedstock (300 t at 380), with
+    no stock and no asks.
+  - Crisium stocks and asks boards and bids for nothing.
+  - Titan Concession stocks and asks feedstock, water and propellant.
+  - Neither Luna nor Titan authors a facility block, and their atlases have no plant room.
+- **Why a PL.1 mill row could not make these goods:**
+  1. A row takes one input. The farm takes water and feedstock, the fab strategic ore and metals.
+  2. Its ratio is tonnes to tonnes with `product <= ore`. A crew-day is 4 kg, so a tonne of
+     inputs makes about 250 of them.
+  3. A cross-family conversion is a `refine`, and `check_refinery` allows one refiner a port,
+     the refinery's operator. Luna would have two: the farm and the fab.
+- **The works.**
+  - A house order exists: the beneficiary is the facility's owner, the bill comes from its
+    stores, and the arm collects into the stores (`works.rs` `house_collect`).
+  - Nothing books one for goods: `pools.rs` books yard orders for the Trust only.
+  - A works' stores are a vendor's storefront only where the works room is that storefront
+    (Freeport Works).
+  - Recipes are capability-gated: all 14 require `tacsim.works`, so a new row is offered at the
+    Ceres and Stickney works.
+- **The relay foundry** (`relay_foundry.rs`):
+  - Blanks are no good: they are a pool of 8 credited once by `+relaypair/stock` (:358-373).
+  - Boot fails when a blank pool stands with no stock receipt (:508-515).
+  - `MAX_PAIRS` (8) bounds the receipt book, but the real ceiling is the relay registry: 32
+    nodes and 64 pairs (`mush-sim/src/relay.rs:20-21`). Each private pair takes two nodes and
+    the public star five, so at most about 13 pairs can ever be installed.
+
+**Built:**
+1. **`kind: process`** (`port/def.rs`, `MillKind::Process`), a house process:
+   - one or two goods into a good of any family and any unit;
+   - bound by mass, not by family: `check_ports` refuses a product that outweighs its inputs,
+     by the goods' `si.mass_kg`;
+   - its ratio counts in the goods' own units: ore 1..=100, product 1..=10,000
+     (`MAX_PROCESS_PRODUCT`);
+   - it needs no refinery: `check_refinery` now ties only `refine` rows.
+2. **`MillDef.with`** (optional, skipped when absent): a process's second input, `per_ratio`
+   units a ratio.
+   - It must be a good the vendor bids or asks, neither the ore nor the product.
+   - Only a process names one.
+   - An input the vendor asks makes the row own-stock, so it names a floor (PL.1's rule, now over
+     either input). `MillDef::inputs` lists a batch's goods and their units.
+3. **The mill takes two inputs** (`port/mill.rs`):
+   - **The batch:** it debits the second input in the same bundle as the ore. The ledger keeps
+     the input and its total (`MillLedger.with`, `with_t`, both skipped when absent), checked to
+     conserve under the ratio. A changed second input is refused like a changed product (D9).
+   - **The draw:** each input is read on its own. A bought input must hold its batch's worth.
+     An asked input is drawn off its own ask, one act a fire, and the first short one is drawn
+     next. A draw starts under the floor; one under way finishes whatever the floor reads.
+   - **The drift check and the Listings line** net each own-stock input's drawn batch (`drawn`
+     sums the allowances).
+   - **The Mill line** names the second input. It gives a process's product in its own unit
+     ("1000 provisions") and drops the unit after the floor.
+4. **Lane v36** (provisional figures):
+   - **The Lunar Habitat Board's farm.** A process of water into provisions with feedstock,
+     5 : 1,000 with 1 t of feedstock a ratio, 5 t of water a batch and an IC day, floor 1,000.
+     Its inputs are its existing bids. It gains a provisions ask at 10 and a stock row of 1,000.
+   - **Crisium Instruments' fab.** A process of strategic ore into boards with metals, 1 : 2 with
+     2 t of metals a ratio, 2 t of ore a batch and an IC day, floor 2,080 (the seed). It gains
+     two bids: strategic ore at 650 (intake 12, 2 a day) and metals at 260 (intake 40, 8 a day).
+   - **Titan Concession's carbon mill.** A mill of carbon ore into feedstock, 5 : 4, 20 t a
+     batch and an IC day, floor 600 (the seed), with a carbon-ore bid at 55 (intake 120, 20 a
+     day). This closes the second review's finding that the farm would eat a finite seed.
+   - **Titan Concession's farm.** The Luna farm's figures, drawn off its own water and
+     feedstock asks, with a provisions ask at 20 and a stock row of 1,000.
+5. **The carbon press** (recipe pack v3, `INDUSTRY_RECIPES_VERSION` 3): `carbon_feedstock`, 5 t
+   of carbon ore into 4 t of feedstock, 4 work units, pooled. It is a public slot at both works.
+   PL.2 is stacked on PL.7 (#629), whose three core-module recipes joined the pack at v2. v3
+   carries them, re-signed over the four new rows together.
+6. **The lane bump.** Lane v35 → v36, relay v26 → v27, and
+   `support::lane_chain::strip_producers` as the strip chain's new head (`strip_refine` calls
+   it). Pins moved:
+   - `LANE_VERSION`, `lane.rs`' `LANE_DIGEST` and `ic2_the_lane_pack_is_pinned`;
+   - `cost_lane.rs`' `SHIPPED_LANE_DIGEST` and its version asserts;
+   - the version asserts in `mill.rs`, `drones.rs`, `sites.rs` and `stations.rs`;
+   - `relay_registry.rs`' relay digest and kept-world versions, `boot_parity.rs`' relay
+     version;
+   - `mill::sm12a_strip_mill_rebuilds_the_published_v13` (the shipped mill list),
+     `mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter` (the mill's second
+     `.debit(`), and `ports::ic3_the_readiness_report_lists_every_binding_and_flags_the_rate`
+     (77 commerce lines).
+
+**Rates** (provisional; at 24:1 an IC day is a real hour):
+- Each farm makes at most 1,000 crew-days an IC day, 24,000 a real day. A passage burns its
+  occupants times its days, about 20 to 40 crew-days. So the floor, not the rate, binds: a farm
+  only replaces what is bought.
+  - Titan's draws are at most 120 t of water and 24 t of feedstock a real day.
+  - The Habitat Board's bids are one-time intakes (no refresh), so the Luna farm stops buying
+    once they fill.
+- The fab makes at most 4 t of boards an IC day, 96 a real day, and its bids drip 2 t of ore
+  and 8 t of metals an IC day.
+- Titan's carbon mill makes at most 16 t of feedstock an IC day (384 a real day), fed by its
+  bid's 20 t a day.
+- Value at the asks: a farm batch's inputs are worth 1,355 cr at Luna's bids and
+  10,000 cr as provisions. The fab's are worth 2,340 cr and its boards 3,600 cr.
+
+**Tests** (run on conclav.dev):
+- **New:**
+  - `domain_economy` `pl2_producers::pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cycle`
+    (13 s) runs the full cycle at Luna:
+    1. At Ceres the captain quotes, orders, delivers and collects the carbon press: 5 t of ore
+       becomes 4 t of feedstock, through `+works`.
+    2. At Luna, water and strategic ore are sold into the bids, and the farm and the fab stay
+       idle at their floors.
+    3. A crew-day and a tonne are bought under the floors. Still no batch is queued without the
+       second inputs.
+    4. Feedstock and metals are sold. One farm batch (5 t and 1 t into 1,000 crew-days) and one
+       fab batch (2 t and 4 t into 4 t) follow, the asks are restocked to 1,999 and 2,083, and
+       nothing pages drift.
+    5. A crew-day and a tonne are bought off the restocked asks.
+  - `mill::pl2_titan_farm_draws_its_own_stock_and_the_carbon_mill_refills_it` (3 s) runs
+    Titan on its lane variant:
+    1. The farm draws 5 t of water and 1 t of feedstock off its own asks, batches once and
+       lists 1,990 crew-days. The Mill line names the second input and the floor.
+    2. 20 t of carbon ore is milled into 16 t of feedstock and listed at 615.
+    3. Nothing moves the next IC day.
+  - `lane::pl2_strip_producers_rebuilds_the_published_v35`: v35's digest `4db678a2…`,
+    idempotent.
+  - `tacsim` lib:
+    - `port::def::tests::pl2_each_process_rule_refuses_with_its_sentence`;
+    - `pl2_a_process_never_outweighs_its_inputs` (1,500 crew-days of 6 t accepted, 1,501
+      refused, the shipped lane accepted with no Luna refinery);
+    - `port::mill::tests::pl2_drawn_reads_each_input_of_an_own_stock_process`;
+    - `pl2_a_process_ledger_conserves_its_second_input`;
+    - `pl2_a_process_line_names_its_second_input`.
+- **Pins moved, besides the lane bump's:**
+  - `plumbing::sm5_only_ceres_bids_ore` (Crisium's and Titan's ore bids);
+  - `commerce::a8_the_moon_ports_stock_list_and_bid` (12 moon stock rows; the Habitat Board
+    no longer bid-only);
+  - the web client's `web/src/lib/fixtures/chart/sky_chart.json`, re-blessed with
+    `TACSIM_BLESS=1`: the chart lists Crisium's two new bids.
+- **Green on the final tree:**
+  - the whole `tacsim` lib (2,389);
+  - `domain_economy`, `domain_world` and `cost_lane` (882; the five failures were the pins
+    above, since fixed);
+  - `domain_field`, `domain_arena` and `harness` (1,471);
+  - mush-server `split_boundary` and `commerce_composition` (318);
+  - mush-bot (791).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  memory-size pass, rustdoc `-D warnings --document-private-items`, and the contract guards'
+  feature census, panic budget and restriction lints (24).
+- **Mutations:** seven killed and one survived.
+  - Killed:
+    1. the second input not debited;
+    2. a bought second input not awaited;
+    3. `drawn` counting only the ore;
+    4. the draw reading only the ore;
+    5. no mass rule;
+    6. a second input on any kind;
+    7. the refinery tying a process.
+  - Survived: the ledger's second-input total not accumulating (`with_t`). It fails closed: the
+    ledger's own check refuses the second batch, and every story runs one batch a process.
+
+**Divergences:**
+- **Relay blanks are not built here.** The starting session approved the split on 2026-11-16, and
+  PL.2b waits for the owner's call on how many relay pairs the world gets (Not built, below).
+- **No works slot is booked, and the farms and the fab have no facility.**
+  - They are house processes on the stock clerk's turn, as PL.1's refine is.
+  - Luna and Titan have no plant rooms in their atlases.
+  - A facility for each is PL.9's (facilities as titled assets) or later.
+- **New starting stock:** 1,000 crew-days of provisions each at the Habitat Board and Titan
+  Concession. A farm's ask needs a stock row, and a seed at the floor keeps the farm idle until
+  provisions are bought, so no existing story moves from boot.
+- **The Titan story runs on a lane variant** with Titan's provisions seed at 990, ten under the
+  floor, and the carbon ore delivered in kind. No story flies to Titan: the leg fits the tank
+  only throttled (`moon_ports.rs`' `a8_titan_fits_the_tank_only_throttled`). The Luna story
+  flies, sells and buys through the player's commands.
+- **The Mill line's wording:** the unit after the floor is dropped for every mill ("while
+  propellant is under 5000"), since a farm's floor is in crew-days. PL.1's story and unit test
+  moved with it.
+
+**Not built:**
+- **Relay blanks: PL.2b, waiting for the owner's call.** The ceiling is the relay registry, not
+  `MAX_PAIRS` (8, `relay_foundry.rs:26`). The registry allows 32 nodes and 64 pairs
+  (`mush-sim/src/relay.rs:20-21`); each private pair takes two nodes and the public star five,
+  so about 13 pairs can ever be installed. How many pairs the world gets is a design call. PL.2b
+  fixes two findings once that is ruled:
+  - **Boot fails on a blank pool with no stock receipt** (`relay_foundry.rs:508-515`). A
+    produced blank delivered into the foundry vault before `+relaypair/stock` would stop the
+    boot.
+  - **`ic_slice_loop`'s r9a and r9b stories pin the blank counts**
+    (`mush-server/tests/commerce_composition/ic_slice_loop.rs`,
+    `r9a_paid_manufacture_survives_restart_and_installs_once` and
+    `r9b_fleet_front_real_refit_passage_and_carrier_loss`), with 8 blanks then 7.
+- **The census.** A process ledger consumes two goods. Once EX.0 counts the chain's goods,
+  `milled` for a process ledger is `ore_t` of the ore plus `with_t` of the second input, less
+  `product_t` of the product, in kilograms. Its mill scan reads `counted(&ledger.ore)` only.
+- **Refreshes and prices:** the Habitat Board's bids do not refresh, and no price follows the
+  new supply. Both are EX.8's and EX.9's.
+- **A process's ledger tail** (`recent`) keeps the ore and the product per batch, not the second
+  input. The second input's per-batch figure follows from the ratio.
 
 ## PL.3
 
