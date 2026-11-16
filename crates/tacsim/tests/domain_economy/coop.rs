@@ -728,6 +728,10 @@ fn load_cells(indent: &str) -> Vec<String> {
         format!("{indent}7.62 mm ball, boxed: 0 t · 0.0 m³"),
         format!("{indent}105 mm HE rounds: 0 t · 0.0 m³"),
         format!("{indent}anti-armour missiles, canistered: 0 t · 0.0 m³"),
+        // Doc 48 unit PL.3: the space munitions, three more zero cells.
+        format!("{indent}space torpedoes, canistered: 0 t · 0.0 m³"),
+        format!("{indent}spinal gun rounds: 0 t · 0.0 m³"),
+        format!("{indent}point-defence rounds, boxed: 0 t · 0.0 m³"),
         format!("{indent}TOTAL: 100 t · 120.0 m³"),
         format!("{indent}LIMIT: 100 t · 120 m³"),
         format!("{indent}FULL: mass and packed volume"),

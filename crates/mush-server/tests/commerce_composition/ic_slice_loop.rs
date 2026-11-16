@@ -1363,6 +1363,10 @@ async fn ic12_part_one_a_leg_by_hand() {
         cell("ammo_ball_762", 0),
         cell("ammo_he_105", 0),
         cell("ammo_missile", 0),
+        // Doc 48 unit PL.3: the space munitions.
+        cell("torpedo", 0),
+        cell("spinal_round", 0),
+        cell("pd_box", 0),
         format!(
             "    TOTAL: {} t · {} m³",
             tacsim::port::capacity::format_tonnes(mass),

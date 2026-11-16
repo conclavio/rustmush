@@ -301,30 +301,30 @@ pub struct MillLedger {
     pub day_ore_t: u64,
     /// The last batches, oldest first, at most [`MAX_RECENT_BATCHES`].
     pub recent: Vec<MillBatch>,
-    /// **Doc 48 unit PL.2: a process's second input**, fixed for the ledger's life as the
-    /// product and the ratio are. Omitted when absent, so the other ledgers re-encode
-    /// byte-identically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub with: Option<MillWith>,
-    /// Units of the second input consumed in all; 0, and omitted, without one.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub with_t: u64,
-}
-
-/// Whether a total is zero (the serde skip of [`MillLedger::with_t`]).
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip signature
-fn is_zero(n: &u64) -> bool {
-    *n == 0
+    /// **Doc 48 unit PL.2: a process's further inputs**, fixed for the ledger's life as the
+    /// product and the ratio are (doc 48 unit PL.3: up to `MAX_MILL_WITH`). Omitted when there
+    /// is none, so the other ledgers re-encode byte-identically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with: Vec<MillWith>,
+    /// Units of each further input consumed in all, in `with`'s order; omitted without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with_t: Vec<u64>,
+    /// **Doc 48 unit PL.3: a process's ledger**, keyed by its product, not its ore
+    /// (`MillDef::key_good`). Omitted when false, so the other ledgers re-encode byte-identically.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub process: bool,
 }
 
 impl MillLedger {
-    /// This ledger's mill id, re-derived from `(pack, entry, org, ore)`.
+    /// This ledger's mill id, re-derived from `(pack, entry, org, key)`: the key the ore, or
+    /// for a process's ledger (doc 48 unit PL.3) the product.
     ///
     /// # Errors
     ///
     /// As [`MillId::derive`].
     pub fn mill_id(&self) -> Result<MillId, String> {
-        MillId::derive(&self.pack, &self.entry, &self.org, &self.ore)
+        let key = if self.process { &self.into } else { &self.ore };
+        MillId::derive(&self.pack, &self.entry, &self.org, key)
     }
 
     /// The ledger's invariants: at least one batch; a ratio in bounds; the totals
@@ -357,14 +357,14 @@ impl MillLedger {
         if !conserves(self.ore_t, self.product_t, ratio) {
             return Err("a mill ledger's totals conserve under its ratio".to_owned());
         }
-        let with_conserves = match &self.with {
-            None => self.with_t == 0,
-            Some(with) => {
+        let with_conserves = self.with.len() == self.with_t.len()
+            && self.with.len() <= crate::port::def::MAX_MILL_WITH
+            && (self.with.is_empty() || self.process)
+            && self.with.iter().zip(&self.with_t).all(|(with, total)| {
                 with.per_ratio > 0
-                    && u128::from(self.with_t) * u128::from(ratio.ore)
+                    && u128::from(*total) * u128::from(ratio.ore)
                         == u128::from(self.ore_t) * u128::from(with.per_ratio)
-            }
-        };
+            });
         if !with_conserves {
             return Err(
                 "a mill ledger's second input conserves under its ratio, and is 0 without one"
@@ -516,7 +516,7 @@ fn mill_rows(w: &World, clerk: ObjId) -> serde_json::Map<String, Value> {
             continue;
         };
         for mill in &vendor.mill {
-            let Ok(id) = MillId::derive(&map.pack, &map.entry, &vendor.org, &mill.ore) else {
+            let Ok(id) = MillId::derive(&map.pack, &map.entry, &vendor.org, mill.key_good()) else {
                 continue;
             };
             let mut fixed = json!({
@@ -532,11 +532,21 @@ fn mill_rows(w: &World, clerk: ObjId) -> serde_json::Map<String, Value> {
                 "vault": row.vault,
                 "clerk": clerk.0,
             });
-            // Doc 48 unit PL.2: a process's second input rides the row; absent otherwise, so
-            // the other rows' offers are unchanged.
-            if let (Some(with), Some(fixed)) = (&mill.with, fixed.as_object_mut()) {
-                fixed.insert("with_good".to_owned(), json!(with.good.as_str()));
-                fixed.insert("with_per_ratio".to_owned(), json!(with.per_ratio));
+            // Doc 48 unit PL.2: a process's further inputs ride the row, and (PL.3) that it is a
+            // process, keyed by its product; absent otherwise, so the other rows' offers are
+            // unchanged.
+            if let Some(fixed) = fixed.as_object_mut()
+                && mill.kind.is_process()
+            {
+                fixed.insert("process".to_owned(), json!(true));
+                let with: Vec<Value> = mill
+                    .with
+                    .iter()
+                    .map(|with| json!({ "good": with.good.as_str(), "per_ratio": with.per_ratio }))
+                    .collect();
+                if !with.is_empty() {
+                    fixed.insert("with".to_owned(), Value::Array(with));
+                }
             }
             rows.insert(id.key_text(), fixed);
         }
@@ -658,17 +668,30 @@ impl ActionProvider for MillProvider {
         let per_ic_day_t = number(row, "per_ic_day_t")?;
         let vault = number(row, "vault")?;
         let clerk = u32::try_from(number(row, "clerk")?).map_err(|_| invalid())?;
-        // Doc 48 unit PL.2: a process's second input, both keys or neither.
-        let with = match (row.get("with_good"), row.get("with_per_ratio")) {
-            (None, None) => None,
-            (Some(_), Some(_)) => Some(MillWith {
-                good: canonical(row, "with_good")?,
-                per_ratio: u32::try_from(number(row, "with_per_ratio")?)
-                    .ok()
-                    .filter(|per| *per > 0)
-                    .ok_or_else(invalid)?,
-            }),
-            _ => return Err(invalid()),
+        // Doc 48 unit PL.3: a process, keyed by its product; its further inputs (PL.2), each a
+        // good and a positive count a ratio, at most `MAX_MILL_WITH`.
+        let process = match row.get("process") {
+            None => false,
+            Some(flag) => flag.as_bool().ok_or_else(invalid)?,
+        };
+        let with = match row.get("with") {
+            None => Vec::new(),
+            Some(list) => list
+                .as_array()
+                .filter(|list| process && list.len() <= crate::port::def::MAX_MILL_WITH)
+                .ok_or_else(invalid)?
+                .iter()
+                .map(|entry| {
+                    let entry = entry.as_object().ok_or_else(invalid)?;
+                    Ok(MillWith {
+                        good: canonical(entry, "good")?,
+                        per_ratio: u32::try_from(number(entry, "per_ratio")?)
+                            .ok()
+                            .filter(|per| *per > 0)
+                            .ok_or_else(invalid)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, mush_core::ActionError>>()?,
         };
         // 3. The row is the acting clerk's.
         let actor = invocation.actor();
@@ -678,8 +701,9 @@ impl ActionProvider for MillProvider {
                 "that mill is another clerk's",
             ));
         }
-        // 4. The key re-derived from the row itself.
-        let id = MillId::derive(&pack, &port, &org, &ore).map_err(|_| {
+        // 4. The key re-derived from the row itself (doc 48 unit PL.3: a process's product).
+        let key_good = if process { &into } else { &ore };
+        let id = MillId::derive(&pack, &port, &org, key_good).map_err(|_| {
             port_error(
                 ActionErrorCode::Integrity,
                 "the mill identity cannot be derived",
@@ -745,31 +769,32 @@ impl ActionProvider for MillProvider {
         // 10. One whole batch, or nothing is due.
         let nothing = || port_error(ActionErrorCode::Conflict, "nothing is due at that mill");
         let milled = batch(available, batch_t, ratio, room).ok_or_else(nothing)?;
-        // Doc 48 unit PL.2: and a process's second input, the batch's ratios' worth of it.
-        let with_units = match &with {
-            None => 0,
-            Some(with) => milled
-                .ore_t
-                .checked_div(u64::from(ratio.ore))
-                .and_then(|ratios| ratios.checked_mul(u64::from(with.per_ratio)))
-                .ok_or_else(nothing)?,
-        };
-        if let Some(with) = &with {
+        // Doc 48 unit PL.2: and each of a process's further inputs, the batch's ratios' worth.
+        let ratios = milled
+            .ore_t
+            .checked_div(u64::from(ratio.ore))
+            .ok_or_else(nothing)?;
+        let mut with_units = Vec::with_capacity(with.len());
+        for input in &with {
+            let units = ratios
+                .checked_mul(u64::from(input.per_ratio))
+                .ok_or_else(nothing)?;
             let held = self
                 .inventory
-                .available(txn, endpoint, &with.good)
+                .available(txn, endpoint, &input.good)
                 .map_err(|_| {
                     port_error(
                         ActionErrorCode::ProviderRejected,
                         "the mill's second input cannot be read",
                     )
                 })?;
-            if held < with_units {
+            if held < units {
                 return Err(nothing());
             }
+            with_units.push(units);
         }
-        // 11. The ore (and a process's second input) debited, then the product credited, at the
-        // one storefront.
+        // 11. The ore (and a process's further inputs) debited, then the product credited, at
+        // the one storefront.
         let refused = |_| {
             port_error(
                 ActionErrorCode::ProviderRejected,
@@ -779,9 +804,9 @@ impl ActionProvider for MillProvider {
         self.inventory
             .debit(txn, endpoint, &ore, milled.ore_t)
             .map_err(refused)?;
-        if let Some(with) = &with {
+        for (input, units) in with.iter().zip(&with_units) {
             self.inventory
-                .debit(txn, endpoint, &with.good, with_units)
+                .debit(txn, endpoint, &input.good, *units)
                 .map_err(refused)?;
         }
         self.inventory
@@ -825,11 +850,18 @@ impl ActionProvider for MillProvider {
         // The audit tail keeps the last sixteen: the oldest drops first.
         let excess = recent.len().saturating_sub(MAX_RECENT_BATCHES);
         recent.drain(..excess);
-        let with_t = prior
-            .as_ref()
-            .map_or(0, |ledger| ledger.with_t)
-            .checked_add(with_units)
-            .ok_or_else(overflow)?;
+        let with_t = with_units
+            .iter()
+            .enumerate()
+            .map(|(n, units)| {
+                prior
+                    .as_ref()
+                    .and_then(|ledger| ledger.with_t.get(n).copied())
+                    .unwrap_or(0)
+                    .checked_add(*units)
+                    .ok_or_else(overflow)
+            })
+            .collect::<Result<Vec<u64>, _>>()?;
         let ledger = MillLedger {
             pack,
             entry: port,
@@ -847,6 +879,7 @@ impl ActionProvider for MillProvider {
             recent,
             with,
             with_t,
+            process,
         };
         ledger.check().map_err(|_| {
             port_error(
@@ -937,22 +970,22 @@ pub(crate) fn owed(
     mill: &MillDef,
 ) -> Result<Option<(CanonicalId, u64)>, MillRead> {
     let unreadable = || MillRead::Unreadable {
-        ore: mill.ore.clone(),
+        ore: mill.key_good().clone(),
     };
-    let id =
-        MillId::derive(&map.pack, &map.entry, &vendor.org, &mill.ore).map_err(|_| unreadable())?;
+    let id = MillId::derive(&map.pack, &map.entry, &vendor.org, mill.key_good())
+        .map_err(|_| unreadable())?;
     let ledger = ledger_at(ctx, mills, &id).map_err(|()| unreadable())?;
-    let counter = row.mill_listed.get(&mill.ore).copied().unwrap_or(0);
+    let counter = row.mill_listed.get(mill.key_good()).copied().unwrap_or(0);
     match ledger {
         None if counter > 0 => Err(MillRead::Counter {
-            ore: mill.ore.clone(),
+            ore: mill.key_good().clone(),
             good: mill.into.clone(),
         }),
         None => Ok(None),
         Some(ledger) => match ledger.product_t.checked_sub(counter) {
             Some(units) => Ok(Some((ledger.into, units))),
             None => Err(MillRead::Counter {
-                ore: mill.ore.clone(),
+                ore: mill.key_good().clone(),
                 good: ledger.into,
             }),
         },
@@ -981,7 +1014,7 @@ pub(crate) fn unlisted(
         match owed(ctx, mills, map, vendor, row, mill) {
             Ok(Some((owed_good, units))) if &owed_good == good => {
                 total = total.checked_add(units).ok_or_else(|| MillRead::Counter {
-                    ore: mill.ore.clone(),
+                    ore: mill.key_good().clone(),
                     good: good.clone(),
                 })?;
             }
@@ -1307,8 +1340,8 @@ fn own_stock_step(
             Ok(Ok(_)) => Step::Worked,
             Ok(Err(error)) => {
                 let detail = format!("{error:?}");
-                mill_warn(state, row.vault, &mill.ore, MillWarn::Draw, &detail);
-                refuse_today(state, row.vault, &mill.ore, MillAct::Batch, today);
+                mill_warn(state, row.vault, mill.key_good(), MillWarn::Draw, &detail);
+                refuse_today(state, row.vault, mill.key_good(), MillAct::Batch, today);
                 Step::Refused
             }
             Err(refused) => swapped(Err(refused)),
@@ -1369,13 +1402,13 @@ pub(crate) fn mill_step(
             continue;
         }
         for mill in &vendor.mill {
-            if refused_today(state, row.vault, &mill.ore, MillAct::Restock, today) {
+            if refused_today(state, row.vault, mill.key_good(), MillAct::Restock, today) {
                 continue;
             }
             let (good, units) = match owed(ctx, &mills, map, vendor, row, mill) {
                 Err(error) => {
                     mill_warn(state, row.vault, error.ore(), error.warn(), "");
-                    refuse_today(state, row.vault, &mill.ore, MillAct::Restock, today);
+                    refuse_today(state, row.vault, mill.key_good(), MillAct::Restock, today);
                     continue;
                 }
                 Ok(None | Some((_, 0))) => continue,
@@ -1407,13 +1440,16 @@ pub(crate) fn mill_step(
             // 12a-M7: the next map before any write, so a counter overflow writes nothing.
             let mut next = map.clone();
             let counted = next.vendors.get_mut(&vendor.org).and_then(|next_row| {
-                let counter = next_row.mill_listed.entry(mill.ore.clone()).or_insert(0);
+                let counter = next_row
+                    .mill_listed
+                    .entry(mill.key_good().clone())
+                    .or_insert(0);
                 *counter = counter.checked_add(units)?;
                 Some(())
             });
             if counted.is_none() {
-                mill_warn(state, row.vault, &mill.ore, MillWarn::Counter, "");
-                refuse_today(state, row.vault, &mill.ore, MillAct::Restock, today);
+                mill_warn(state, row.vault, mill.key_good(), MillWarn::Counter, "");
+                refuse_today(state, row.vault, mill.key_good(), MillAct::Restock, today);
                 continue;
             }
             let spec = mush_market::RestockSpec {
@@ -1428,15 +1464,23 @@ pub(crate) fn mill_step(
                     Ok(Ok(_)) => {
                         // One outbox (D1): the listing above, the counter here.
                         crate::store::put_port_map(ctx, &next);
-                        state
-                            .mill_refused
-                            .remove(&(row.vault, mill.ore.clone(), MillAct::Restock));
+                        state.mill_refused.remove(&(
+                            row.vault,
+                            mill.key_good().clone(),
+                            MillAct::Restock,
+                        ));
                         Step::Worked
                     }
                     Ok(Err(error)) => {
                         let detail = format!("{error:?}");
-                        mill_warn(state, row.vault, &mill.ore, MillWarn::Refused, &detail);
-                        refuse_today(state, row.vault, &mill.ore, MillAct::Restock, today);
+                        mill_warn(
+                            state,
+                            row.vault,
+                            mill.key_good(),
+                            MillWarn::Refused,
+                            &detail,
+                        );
+                        refuse_today(state, row.vault, mill.key_good(), MillAct::Restock, today);
                         Step::Refused
                     }
                     Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
@@ -1455,19 +1499,19 @@ pub(crate) fn mill_step(
         };
         let endpoint = EndpointRef(VaultId(row.vault));
         for mill in &vendor.mill {
-            if refused_today(state, row.vault, &mill.ore, MillAct::Batch, today) {
+            if refused_today(state, row.vault, mill.key_good(), MillAct::Batch, today) {
                 continue;
             }
-            let Ok(id) = MillId::derive(&map.pack, &map.entry, &vendor.org, &mill.ore) else {
-                mill_warn(state, row.vault, &mill.ore, MillWarn::Unreadable, "");
-                refuse_today(state, row.vault, &mill.ore, MillAct::Batch, today);
+            let Ok(id) = MillId::derive(&map.pack, &map.entry, &vendor.org, mill.key_good()) else {
+                mill_warn(state, row.vault, mill.key_good(), MillWarn::Unreadable, "");
+                refuse_today(state, row.vault, mill.key_good(), MillAct::Batch, today);
                 continue;
             };
             let ledger = match ledger_at(ctx, &mills, &id) {
                 Ok(ledger) => ledger,
                 Err(()) => {
-                    mill_warn(state, row.vault, &mill.ore, MillWarn::Unreadable, "");
-                    refuse_today(state, row.vault, &mill.ore, MillAct::Batch, today);
+                    mill_warn(state, row.vault, mill.key_good(), MillWarn::Unreadable, "");
+                    refuse_today(state, row.vault, mill.key_good(), MillAct::Batch, today);
                     continue;
                 }
             };
@@ -1475,14 +1519,14 @@ pub(crate) fn mill_step(
             if ledger.as_ref().is_some_and(|ledger| {
                 ledger.ratio != mill.ratio || ledger.into != mill.into || ledger.with != mill.with
             }) {
-                mill_warn(state, row.vault, &mill.ore, MillWarn::Terms, "");
-                refuse_today(state, row.vault, &mill.ore, MillAct::Batch, today);
+                mill_warn(state, row.vault, mill.key_good(), MillWarn::Terms, "");
+                refuse_today(state, row.vault, mill.key_good(), MillAct::Batch, today);
                 continue;
             }
             // The pool, not the ledger: its own warning (keyed and worded apart), and no
             // refused mark, so the batch is tried again next fire.
             let Ok(available) = crate::port_tick::read_available(ctx, endpoint, &mill.ore) else {
-                mill_warn(state, row.vault, &mill.ore, MillWarn::Storefront, "");
+                mill_warn(state, row.vault, mill.key_good(), MillWarn::Storefront, "");
                 continue;
             };
             let room = room_today(
@@ -1518,7 +1562,7 @@ pub(crate) fn mill_step(
             // The attempt rule (lead ruling L24's, the stock mint's shape): an advanced
             // ledger clears the entry; the same ordinal submitted `MAX_MILL_ATTEMPTS` times
             // with nothing in flight passes the mill's batch over for the rest of the day.
-            let attempt_key = (row.vault, mill.ore.clone());
+            let attempt_key = (row.vault, mill.key_good().clone());
             let attempts = match state.mill_attempts.get(&attempt_key) {
                 Some((recorded, attempts)) if *recorded == ordinal => *attempts,
                 Some(_) => {
@@ -1529,8 +1573,8 @@ pub(crate) fn mill_step(
             };
             if attempts >= MAX_MILL_ATTEMPTS && !ctx.authoritative_pending(clerk) {
                 state.mill_attempts.remove(&attempt_key);
-                refuse_today(state, row.vault, &mill.ore, MillAct::Batch, today);
-                mill_warn(state, row.vault, &mill.ore, MillWarn::Stalled, "");
+                refuse_today(state, row.vault, mill.key_good(), MillAct::Batch, today);
+                mill_warn(state, row.vault, mill.key_good(), MillWarn::Stalled, "");
                 continue;
             }
             let key_text = id.key_text();
@@ -1610,15 +1654,22 @@ pub(crate) fn mill_line_text(
     mill: &MillDef,
     read: &MillLineRead,
 ) -> (LineState, String) {
-    let head = format!("{entry} mill {org} {}", mill.ore);
+    let head = format!("{entry} mill {org} {}", mill.key_good());
     // Doc 48 unit PL.1: a floored mill says the floor it mills under. Doc 48 unit PL.2: a
     // process says its second input.
     let floor = mill.floor_t.map_or_else(String::new, |floor| {
         format!(", while {} is under {floor}", mill.into)
     });
-    let with = mill.with.as_ref().map_or_else(String::new, |with| {
-        format!(" with {} {} a ratio", with.per_ratio, with.good)
-    });
+    let with = if mill.with.is_empty() {
+        String::new()
+    } else {
+        let inputs: Vec<String> = mill
+            .with
+            .iter()
+            .map(|with| format!("{} {}", with.per_ratio, with.good))
+            .collect();
+        format!(" with {} a ratio", inputs.join(" and "))
+    };
     let terms = format!(
         "{} to {}{with}, {} t a batch, at most {} t an IC day{floor}",
         mill.ratio.ore, mill.ratio.product, mill.batch_t, mill.per_ic_day_t
@@ -1705,7 +1756,7 @@ fn mill_line_read(
     else {
         return MillLineRead::Unreadable;
     };
-    let Ok(id) = MillId::derive(&map.pack, &map.entry, &vendor.org, &mill.ore) else {
+    let Ok(id) = MillId::derive(&map.pack, &map.entry, &vendor.org, mill.key_good()) else {
         return MillLineRead::Unreadable;
     };
     let Ok(ledger) = ledger_at(ctx, &mills, &id) else {
@@ -1927,8 +1978,9 @@ mod tests {
                 ore_t: 20,
                 product_t: 8,
             }],
-            with: None,
-            with_t: 0,
+            with: Vec::new(),
+            with_t: Vec::new(),
+            process: false,
         }
     }
 
@@ -2058,7 +2110,7 @@ mod tests {
             batch_t: 20,
             per_ic_day_t: 40,
             floor_t: None,
-            with: None,
+            with: Vec::new(),
         };
         let line = |read: MillLineRead| {
             mill_line_text(&cid("ceres_port"), &cid("freeport_exchange"), &mill, &read)
@@ -2283,7 +2335,7 @@ mod tests {
     /// ratio, and a ledger without one keeps none; a product past the ore is in bounds.
     #[test]
     fn pl2_a_process_ledger_conserves_its_second_input() {
-        let farm = |with_t: u64, with: Option<MillWith>| {
+        let farm = |with_t: Vec<u64>, with: Vec<MillWith>| {
             let at = 7 * IC_DAY + 60;
             MillLedger {
                 ore: cid("volatiles"),
@@ -2303,40 +2355,48 @@ mod tests {
                 }],
                 with,
                 with_t,
+                process: true,
                 ..ledger(at)
             }
         };
         let per = |per_ratio| {
-            Some(MillWith {
+            vec![MillWith {
                 good: cid("carbon_feedstock"),
                 per_ratio,
-            })
+            }]
         };
-        assert_eq!(farm(1, per(1)).check(), Ok(()));
+        assert_eq!(farm(vec![1], per(1)).check(), Ok(()));
         assert!(
-            farm(2, per(1))
+            farm(vec![2], per(1))
                 .check()
                 .is_err_and(|e| e.contains("second input conserves"))
         );
         assert!(
-            farm(1, None)
+            farm(vec![1], Vec::new())
                 .check()
                 .is_err_and(|e| e.contains("0 without one"))
         );
         assert!(
-            farm(0, per(0))
+            farm(vec![0], per(0))
                 .check()
                 .is_err_and(|e| e.contains("second input conserves"))
         );
+        // Doc 48 unit PL.3: further inputs belong to a process's ledger only, one total each.
+        let mut not_a_process = farm(vec![1], per(1));
+        not_a_process.process = false;
+        assert!(not_a_process.check().is_err());
+        assert!(farm(Vec::new(), per(1)).check().is_err());
         // The wire omits the second input when there is none (the ore mills' bytes unchanged).
         let wire = serde_json::to_value(ledger(60)).unwrap();
         assert!(
             wire.get("with").is_none() && wire.get("with_t").is_none(),
             "{wire}"
         );
-        let wire = serde_json::to_value(farm(1, per(1))).unwrap();
-        assert_eq!(wire["with"]["per_ratio"], 1);
-        assert_eq!(wire["with_t"], 1);
+        assert!(wire.get("process").is_none(), "{wire}");
+        let wire = serde_json::to_value(farm(vec![1], per(1))).unwrap();
+        assert_eq!(wire["with"][0]["per_ratio"], 1);
+        assert_eq!(wire["with_t"][0], 1);
+        assert_eq!(wire["process"], true);
     }
 
     /// **Doc 48 unit PL.2**: a process's Mill line names its second input and its product in
@@ -2362,7 +2422,7 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "titan_port mill titan_concession volatiles: 1 batch has milled 5 t of ore into \
+                "titan_port mill titan_concession provisions: 1 batch has milled 5 t of ore into \
                  1000 provisions, the last at {stamp}; 1795 t of ore waits; 5 to 1000 with 1 \
                  carbon_feedstock a ratio, 5 t a batch, at most 5 t an IC day, while provisions \
                  is under 1000."

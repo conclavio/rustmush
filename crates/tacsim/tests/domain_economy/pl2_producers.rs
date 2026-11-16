@@ -58,7 +58,7 @@ fn market(rig: &Rig) -> &MarketStore {
         .expect("the market")
 }
 
-fn mint(rig: &mut Rig, pilot: ObjId) {
+pub(crate) fn mint(rig: &mut Rig, pilot: ObjId) {
     let treasury = port_map(&rig.tw, CERES).treasury.expect("a treasury");
     let account = tacsim::port::credit::own_account(rig.tw.world(), pilot)
         .map(|a| a.id.0)
@@ -90,7 +90,7 @@ fn listed(rig: &Rig, entry: &str, org: &str, good: &str) -> Option<u64> {
         .map(|listing| listing.quantity)
 }
 
-/// The ledger of `org`'s mill of `ore` at `entry`.
+/// The ledger of `org`'s mill keyed by `key` at `entry` (a process's product, doc 48 unit PL.3).
 fn ledger(rig: &mut Rig, entry: &str, org: &str, ore: &str) -> Option<MillLedger> {
     let handle = rig
         .tw
@@ -104,7 +104,7 @@ fn ledger(rig: &mut Rig, entry: &str, org: &str, ore: &str) -> Option<MillLedger
     typed(&mut rig.tw, &handle, &id)
 }
 
-/// `org`'s `mill_listed` counter for its mill of `ore` at `entry`.
+/// `org`'s `mill_listed` counter for its mill keyed by `key` at `entry`.
 fn counter(rig: &Rig, entry: &str, org: &str, ore: &str) -> Option<u64> {
     port_map(&rig.tw, entry).vendors[&cid(org)]
         .mill_listed
@@ -194,7 +194,7 @@ fn settle(rig: &mut Rig, contract: ContractId) {
 
 /// **Every due production occurrence**, landed as the server's schedule driver lands it
 /// (IN.3's and IN.5's `produce`).
-fn produce(rig: &mut Rig) {
+pub(crate) fn produce(rig: &mut Rig) {
     for _ in 0..4_096 {
         let page = rig
             .tw
@@ -238,7 +238,7 @@ fn produce(rig: &mut Rig) {
 }
 
 /// Every submission staged (industry's included), landed in order; the refusals.
-fn pump(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn pump(rig: &mut Rig) -> Vec<String> {
     let mut queued = Vec::new();
     while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
         queued.push(*submit);
@@ -254,7 +254,7 @@ fn pump(rig: &mut Rig) -> Vec<String> {
 }
 
 /// One port fire (6 s on), production landed, everything staged landed.
-fn works_fire(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn works_fire(rig: &mut Rig) -> Vec<String> {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -263,7 +263,7 @@ fn works_fire(rig: &mut Rig) -> Vec<String> {
 }
 
 /// The IC clock to `target`, everything staged on the way landed (production included).
-fn ic_to(rig: &mut Rig, target: i64) {
+pub(crate) fn ic_to(rig: &mut Rig, target: i64) {
     let rate = i64::from(crate::driving_rig::world_rate(&rig.tw).max(1));
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = ((ahead + rate - 1) / rate).max(1);
@@ -275,7 +275,7 @@ fn ic_to(rig: &mut Rig, target: i64) {
 }
 
 /// A `+works` command, its submissions landed and `fires` works fires after it.
-fn works(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
+pub(crate) fn works(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
     let out = run(&mut rig.tw, who, line);
     let refused = pump(rig);
     assert!(refused.is_empty(), "{line}: {refused:?}\n{out}");
@@ -285,7 +285,7 @@ fn works(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
     out
 }
 
-fn order_of(rig: &mut Rig, id: u64) -> Option<mush_industry::WorkOrder> {
+pub(crate) fn order_of(rig: &mut Rig, id: u64) -> Option<mush_industry::WorkOrder> {
     let order = contract(rig, id).order?;
     let families = rig
         .tw
@@ -301,7 +301,7 @@ fn order_of(rig: &mut Rig, id: u64) -> Option<mush_industry::WorkOrder> {
     )
 }
 
-fn contract(rig: &Rig, id: u64) -> WorksContract {
+pub(crate) fn contract(rig: &Rig, id: u64) -> WorksContract {
     match store(&rig.tw).works_contract(id) {
         Some(WorksState::Present(c)) => (**c).clone(),
         other => panic!("contract {id}: {other:?}"),
@@ -442,31 +442,36 @@ async fn pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cy
         batches += fire_landing(&mut rig);
     }
     assert_eq!(batches, 0, "no batch without the second input");
-    assert!(ledger(&mut rig, LUNA, HABITAT, WATER).is_none());
-    assert!(ledger(&mut rig, LUNA, CRISIUM, STRATEGIC).is_none());
+    assert!(ledger(&mut rig, LUNA, HABITAT, PROVISIONS).is_none());
+    assert!(ledger(&mut rig, LUNA, CRISIUM, BOARDS).is_none());
     sell(&mut rig, captain, LUNA, HABITAT, FEEDSTOCK, 1);
     sell(&mut rig, captain, LUNA, CRISIUM, METALS, 4);
 
     // ---- (4) The processes run on the tick; the output collected and listed ----
     for _ in 0..48 {
-        if counter(&rig, LUNA, HABITAT, WATER) == Some(1_000)
-            && counter(&rig, LUNA, CRISIUM, STRATEGIC) == Some(4)
+        if counter(&rig, LUNA, HABITAT, PROVISIONS) == Some(1_000)
+            && counter(&rig, LUNA, CRISIUM, BOARDS) == Some(4)
         {
             break;
         }
         fire_landing(&mut rig);
     }
-    let farm = ledger(&mut rig, LUNA, HABITAT, WATER).expect("the farm ran");
+    let farm = ledger(&mut rig, LUNA, HABITAT, PROVISIONS).expect("the farm ran");
     assert_eq!(
-        (farm.batches, farm.ore_t, farm.product_t, farm.with_t),
-        (1, 5, 1_000, 1),
+        (
+            farm.batches,
+            farm.ore_t,
+            farm.product_t,
+            farm.with_t.clone()
+        ),
+        (1, 5, 1_000, vec![1]),
         "5 t of water and 1 t of feedstock into 1,000 crew-days"
     );
     assert_eq!(farm.into, cid(PROVISIONS));
-    let fab = ledger(&mut rig, LUNA, CRISIUM, STRATEGIC).expect("the fab ran");
+    let fab = ledger(&mut rig, LUNA, CRISIUM, BOARDS).expect("the fab ran");
     assert_eq!(
-        (fab.batches, fab.ore_t, fab.product_t, fab.with_t),
-        (1, 2, 4, 4),
+        (fab.batches, fab.ore_t, fab.product_t, fab.with_t.clone()),
+        (1, 2, 4, vec![4]),
         "2 t of strategic ore and 4 t of metals into 4 t of boards"
     );
     assert_eq!(
@@ -502,8 +507,8 @@ async fn pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cy
     for _ in 0..6 {
         fire_landing(&mut rig);
     }
-    let farm = ledger(&mut rig, LUNA, HABITAT, WATER).expect("the farm's ledger");
-    let fab = ledger(&mut rig, LUNA, CRISIUM, STRATEGIC).expect("the fab's ledger");
+    let farm = ledger(&mut rig, LUNA, HABITAT, PROVISIONS).expect("the farm's ledger");
+    let fab = ledger(&mut rig, LUNA, CRISIUM, BOARDS).expect("the fab's ledger");
     assert_eq!(
         (farm.batches, fab.batches),
         (1, 1),

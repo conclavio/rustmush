@@ -876,8 +876,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     // five and Stickney Yards' thirteen, which are never pools; doc 39 cut IN.5: Freeport Works'
     // carbon row; doc 39 cut IN.7: the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
-    // Yards' carbon row.
-    assert_eq!(all.len(), 19, "Ceres 10 and Stickney 9");
+    // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
+    assert_eq!(all.len(), 22, "Ceres 10 and Stickney 12");
     for (id, receipt) in all
         .iter()
         .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
@@ -930,8 +930,8 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
-    // Yards' carbon row.
-    assert_eq!(all.len(), 19);
+    // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
+    assert_eq!(all.len(), 22);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
     for (_, receipt) in all
@@ -2584,8 +2584,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     // eighteen part rows; doc 39 cut IN.5: thirty-five with Freeport Works' carbon row; doc 39
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
-    // Yards' carbon row.
-    assert_eq!(receipts(&mut rig.tw).len(), 19);
+    // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
+    assert_eq!(receipts(&mut rig.tw).len(), 22);
     no_refused_writes(&rig.tw);
 }
 

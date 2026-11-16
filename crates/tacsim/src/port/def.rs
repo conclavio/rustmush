@@ -73,8 +73,9 @@ pub const MAX_PORT_VENDORS: usize = 16;
 /// The most stock, ask or bid rows one vendor may author (24 since doc 39 cut IN.6: Stickney
 /// Yards stocks the thirteen part rows beside its five bulk goods).
 pub const MAX_VENDOR_ROWS: usize = 24;
-/// The most mill rows one vendor may author (doc 20 cut SM.12a).
-pub const MAX_VENDOR_MILLS: usize = 4;
+/// The most mill rows one vendor may author (doc 20 cut SM.12a; doc 48 unit PL.3: 4 → 8, so
+/// Stickney Yards' seven munitions processes fit).
+pub const MAX_VENDOR_MILLS: usize = 8;
 /// The most tonnes of ore (and so of product) one mill ratio may name (doc 20
 /// cut SM.12a): `1 <= product <= ore <= MAX_MILL_RATIO`.
 pub const MAX_MILL_RATIO: u32 = 100;
@@ -1338,16 +1339,55 @@ pub struct MillDef {
     /// re-encode byte-identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub floor_t: Option<u64>,
-    /// **Doc 48 unit PL.2: a process's second input**, consumed beside the ore, `per_ratio` units
-    /// a ratio. Only a `process` names one. Skipped when absent, so the other rows re-encode
+    /// **Doc 48 unit PL.2: a process's further inputs**, consumed beside the ore, `per_ratio`
+    /// units a ratio each; at most [`MAX_MILL_WITH`] (doc 48 unit PL.3: a munitions bill takes
+    /// three goods). Only a `process` names any. One reads and writes as an object (lane v36's
+    /// rows), several as a list; skipped when there is none, so the other rows re-encode
     /// byte-identically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub with: Option<MillWith>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "one_or_many")]
+    pub with: Vec<MillWith>,
+}
+
+/// The most further inputs one process names (doc 48 unit PL.3), so a process takes three goods.
+pub const MAX_MILL_WITH: usize = 2;
+
+/// **A process's further inputs on the wire** (doc 48 unit PL.3): one as an object, several as a
+/// list.
+mod one_or_many {
+    use super::MillWith;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        One(MillWith),
+        Many(Vec<MillWith>),
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<MillWith>, D::Error> {
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::One(one) => vec![one],
+            Wire::Many(many) => many,
+        })
+    }
+
+    #[allow(clippy::ptr_arg)] // serde's `with` signature
+    pub(super) fn serialize<S: Serializer>(
+        with: &Vec<MillWith>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match with.as_slice() {
+            [one] => one.serialize(serializer),
+            many => many.serialize(serializer),
+        }
+    }
 }
 
 impl MillDef {
     /// **Whether this is an own-stock mill** of `vendor` (doc 48 unit PL.1): one of its inputs
-    /// (the ore, or doc 48 unit PL.2's second input) is one of the vendor's asks, drawn off
+    /// (the ore, or doc 48 unit PL.2's further inputs) is one of the vendor's asks, drawn off
     /// that ask, not a good it bids for.
     #[must_use]
     pub fn own_stock(&self, vendor: &VendorDef) -> bool {
@@ -1357,19 +1397,34 @@ impl MillDef {
     }
 
     /// **The goods one batch consumes and how many of each** (doc 48 unit PL.2): the ore's
-    /// `batch_t`, then the second input's `per_ratio` for each of the batch's ratios. Saturating,
-    /// as the validator bounds every figure.
+    /// `batch_t`, then each further input's `per_ratio` for each of the batch's ratios.
+    /// Saturating, as the validator bounds every figure.
     #[must_use]
     pub fn inputs(&self) -> Vec<(&CanonicalId, u64)> {
-        let mut inputs = vec![(&self.ore, self.batch_t)];
-        if let Some(with) = &self.with {
-            let ratios = self
-                .batch_t
-                .checked_div(u64::from(self.ratio.ore))
-                .unwrap_or(0);
-            inputs.push((&with.good, ratios.saturating_mul(u64::from(with.per_ratio))));
+        let ratios = self
+            .batch_t
+            .checked_div(u64::from(self.ratio.ore))
+            .unwrap_or(0);
+        std::iter::once((&self.ore, self.batch_t))
+            .chain(
+                self.with
+                    .iter()
+                    .map(|with| (&with.good, ratios.saturating_mul(u64::from(with.per_ratio)))),
+            )
+            .collect()
+    }
+
+    /// **The good a mill is keyed by** (doc 48 unit PL.3): a mill's or a refine's ore, as since
+    /// doc 20, so every such ledger keeps its id; a process's product, so several processes may
+    /// share an ore (Stickney Yards' munitions all take alloys). It names the mill's ledger
+    /// (`crate::port::mill::MillId`), its `mill_listed` counter and its readiness line.
+    #[must_use]
+    pub fn key_good(&self) -> &CanonicalId {
+        if self.kind.is_process() {
+            &self.into
+        } else {
+            &self.ore
         }
-        inputs
     }
 }
 
@@ -2352,9 +2407,18 @@ impl PortDef {
                 "vendor {org}: at most {MAX_VENDOR_MILLS} mill rows"
             ));
         }
-        let mut ores: BTreeSet<&CanonicalId> = BTreeSet::new();
-        if let Some(mill) = vendor.mill.iter().find(|mill| !ores.insert(&mill.ore)) {
-            return Err(format!("vendor {org}: mill {} is authored twice", mill.ore));
+        // Doc 48 unit PL.3: each row by the good it is keyed by — a mill's ore, a process's
+        // product — so processes may share an ore, and a process's product is no mill's ore.
+        let mut keys: BTreeSet<&CanonicalId> = BTreeSet::new();
+        if let Some(mill) = vendor
+            .mill
+            .iter()
+            .find(|mill| !keys.insert(mill.key_good()))
+        {
+            return Err(format!(
+                "vendor {org}: mill {} is authored twice",
+                mill.key_good()
+            ));
         }
         let mut intos: BTreeSet<&CanonicalId> = BTreeSet::new();
         if let Some(mill) = vendor.mill.iter().find(|mill| !intos.insert(&mill.into)) {
@@ -2376,18 +2440,27 @@ impl PortDef {
                     mill.into
                 ));
             }
-            // Doc 48 unit PL.2: a process's second input, a good the vendor bids or asks, neither
-            // the ore nor the product.
-            if let Some(with) = &mill.with {
-                if !mill.kind.is_process() {
-                    return Err(format!(
-                        "vendor {org}: mill {ore}: only a process names a second input"
-                    ));
-                }
+            // Doc 48 unit PL.2: a process's further inputs, each a good the vendor bids or asks,
+            // neither the ore nor the product nor another further input; at most
+            // `MAX_MILL_WITH` of them (doc 48 unit PL.3).
+            if !mill.with.is_empty() && !mill.kind.is_process() {
+                return Err(format!(
+                    "vendor {org}: mill {ore}: only a process names a second input"
+                ));
+            }
+            if mill.with.len() > MAX_MILL_WITH {
+                return Err(format!(
+                    "vendor {org}: mill {ore}: a process names at most {MAX_MILL_WITH} further \
+                     inputs"
+                ));
+            }
+            let mut further: BTreeSet<&CanonicalId> = BTreeSet::new();
+            for with in &mill.with {
                 let good = &with.good;
                 if (!bids.contains(good) && !asks.contains(good))
                     || good == ore
                     || *good == mill.into
+                    || !further.insert(good)
                 {
                     return Err(format!(
                         "vendor {org}: mill {ore}: its second input {good} must be another good \
@@ -3025,10 +3098,14 @@ pub fn check_ports(
                         .and_then(crate::definitions::goods::GoodDef::mass_kg_per_unit)
                         .map(|kg| u128::from(kg) * u128::from(units))
                 };
-                let taken = kg(&mill.ore, mill.ratio.ore).and_then(|ore| match &mill.with {
-                    Some(with) => kg(&with.good, with.per_ratio).map(|with| ore + with),
-                    None => Some(ore),
-                });
+                let taken = mill
+                    .with
+                    .iter()
+                    .fold(kg(&mill.ore, mill.ratio.ore), |taken, with| {
+                        taken
+                            .zip(kg(&with.good, with.per_ratio))
+                            .map(|(taken, with)| taken + with)
+                    });
                 let made = kg(&mill.into, mill.ratio.product);
                 if !matches!((taken, made), (Some(taken), Some(made)) if made <= taken) {
                     return fail(format!(
@@ -3999,7 +4076,7 @@ mod tests {
             batch_t,
             per_ic_day_t: per_day_t,
             floor_t: None,
-            with: None,
+            with: Vec::new(),
         }
     }
 
@@ -4042,7 +4119,7 @@ mod tests {
         // At most four rows.
         assert_eq!(
             with(vec![lane(); MAX_VENDOR_MILLS + 1]),
-            "vendor coop: at most 4 mill rows"
+            "vendor coop: at most 8 mill rows"
         );
         // An ore named twice; a product named twice.
         assert_eq!(
@@ -4198,10 +4275,13 @@ mod tests {
     ) -> MillDef {
         MillDef {
             kind: MillKind::Process,
-            with: with.map(|(good, per_ratio)| MillWith {
-                good: cid(good),
-                per_ratio,
-            }),
+            with: with
+                .map(|(good, per_ratio)| MillWith {
+                    good: cid(good),
+                    per_ratio,
+                })
+                .into_iter()
+                .collect(),
             floor_t,
             ..sm12a_mill(ore, into, ratio, 5, 5)
         }
@@ -4294,6 +4374,64 @@ mod tests {
                 Some(4_000)
             )]),
             "accepted"
+        );
+    }
+
+    /// **Doc 48 unit PL.3**: processes are keyed by their products, so several may share an ore;
+    /// a process takes at most two further inputs, each named once; a process's product is no
+    /// other row's key (an own-stock mill's ore). The Exchange's shape: asks `metals` and
+    /// `volatiles`, bids `metal_ore` and `ice_ore`.
+    #[test]
+    fn pl3_processes_share_an_ore_and_take_two_further_inputs() {
+        let with = |mills: Vec<MillDef>| {
+            let mut def = port();
+            def.vendors.push(sm12a_vendor(mills));
+            refused(&def)
+        };
+        let of_ice =
+            |into: &str| pl2_process("ice_ore", into, (5, 2), Some(("metal_ore", 1)), None);
+        // Two processes of one ore, each into its own product.
+        assert_eq!(
+            with(vec![of_ice("metals"), of_ice("volatiles")]),
+            "accepted"
+        );
+        assert_eq!(
+            with(vec![of_ice("metals"), of_ice("metals")]),
+            "vendor coop: mill metals is authored twice"
+        );
+        // Two further inputs; a third; one named twice.
+        let mut two = of_ice("metals");
+        two.with.push(MillWith {
+            good: cid("volatiles"),
+            per_ratio: 1,
+        });
+        two.floor_t = Some(4_000);
+        assert_eq!(with(vec![two.clone()]), "accepted");
+        let mut three = two.clone();
+        three.with.push(MillWith {
+            good: cid("metals"),
+            per_ratio: 1,
+        });
+        assert_eq!(
+            with(vec![three]),
+            "vendor coop: mill ice_ore: a process names at most 2 further inputs"
+        );
+        let mut twice = two;
+        twice.with[1].good = cid("metal_ore");
+        assert_eq!(
+            with(vec![twice]),
+            "vendor coop: mill ice_ore: its second input metal_ore must be another good this \
+             vendor bids or asks"
+        );
+        // A process's product that is an own-stock mill's ore: one key, authored twice.
+        let refine = MillDef {
+            kind: MillKind::Refine,
+            floor_t: Some(4_000),
+            ..sm12a_mill("volatiles", "metals", (5, 4), 20, 40)
+        };
+        assert_eq!(
+            with(vec![refine, of_ice("volatiles")]),
+            "vendor coop: mill volatiles is authored twice"
         );
     }
 

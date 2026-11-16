@@ -994,11 +994,330 @@ Not built.
 
 ## PL.3
 
-Not built.
+**Survey** (at `d9d20b4a2`, PL.2's tip stacked on PL.7):
+- **The ground rounds have no producer.** GC.7's four munitions goods are a seed at Stickney
+  Yards: 4,800 AP, 400 boxes of ball, 800 HE and 120 missiles, asked at 12, 25, 150 and
+  1,500 cr. A rearm draws them and nothing refills them.
+- **There are no space munitions goods.** A space magazine refills at each check-out (doc 49
+  Q-49-12), and a space mount is no catalog weapon (`content/space/mounts.json`), so it names
+  no ammunition entry. `MAX_GOODS` is 256, so the catalogue has room.
+- **Why PL.2's process row could not make seven goods at one vendor:**
+  1. A mill ledger was keyed by its ore (`MillId::derive(pack, entry, org, ore)`). Seven
+     processes off one alloys pool would share one ledger.
+  2. A vendor took at most four mill rows (`MAX_VENDOR_MILLS`).
+  3. A process took one further input. Q-49-4's bill has three goods.
+- **The Yards' inputs.**
+  - They bid carbon ore (lane v33), with a 20 t seed, and strategic ore.
+  - They cannot bid volatiles. The Yards are Stickney's emergency org, and doc 19's rule
+    (`PortDef::check_emergency`) refuses an emergency org that asks or bids any of its goods
+    (provisions, volatiles, propellant). No other Stickney vendor can host the processes: the
+    munitions asks are the Yards', Kasei asks propellant and the commissary asks provisions.
+- **The works.** Every recipe that requires `tacsim.works` is offered at the Ceres and Stickney
+  works. A quote's fee is the work units at the slot-hour rate plus the margin, about 44.10 cr a
+  work unit at either.
+
+**Built:**
+1. **A process is keyed by its product** (`port/def.rs` `MillDef::key_good`,
+   `port/mill.rs` `MillLedger.process`).
+   - A process ledger derives its id from `into`, not `ore`. Mill and refine rows keep the ore
+     key, so no existing ledger moves.
+   - The warnings, refusals, attempt keys, `mill_listed` counters and the Mill line's head all
+     read `key_good`. The line head is `stickney_port mill stickney_yards ammo_he_105:`.
+   - `check_vendor_mills` refuses a key authored twice ("mill {key} is authored twice").
+2. **A process takes up to two further inputs** (`MillDef.with`, now a list, `MAX_MILL_WITH`
+   2).
+   - Each is a good the vendor bids or asks: not the ore, not the product, not twice, and
+     `per_ratio` 1..=100.
+   - In JSON it is one object or a list (`one_or_many`); one entry serializes as an object, so
+     PL.2's rows keep their bytes.
+   - The ledger keeps one total per further input (`MillLedger.with_t`), and the ledger's check
+     conserves each under the ratio.
+   - The draw reads each input on its own. A bought input must hold its batch's worth; the first
+     short own-stock input is drawn next.
+   - The Mill line names them: "with 1 carbon_ore a ratio" at the Yards, and "with 1
+     carbon_ore and 1 volatiles a ratio" for a row with two (the two-input story).
+3. **A vendor takes up to eight mill rows** (`MAX_VENDOR_MILLS`, was 4).
+4. **Goods table v9** (`content/market/goods.json`), three space munitions goods, all family
+   munitions and `stow.bulk`. Masses and prices are provisional.
+
+   | Good | Unit | Mass | Volume | Price | Loads |
+   |---|---|---|---|---|---|
+   | `torpedo` | round | 400 kg | 600 L | 4,000 cr | `tacsim.ammunition.torpedo`, 1 a round |
+   | `spinal_round` | round | 120 kg | 150 L | 600 cr | `tacsim.ammunition.spinal_round`, 1 a round |
+   | `pd_box` | box | 80 kg | 120 L | 250 cr | `tacsim.ammunition.pd_rotary`, 500 a box |
+
+5. **Recipe pack v4** (`INDUSTRY_RECIPES_VERSION` 4), seven munitions recipes. Each takes a
+   tonne each of structural alloys, carbon ore and volatiles, requires `tacsim.works`, and pools
+   its output.
+6. **Lane v37**, Stickney Yards (provisional figures):
+   - **Seven house processes**, one per munitions good. Each takes 1 t of alloys and 1 t of its
+     carbon ore a batch, at most one batch an IC day, with its seed as its floor. The outputs
+     are the recipes' (table below).
+   - **An alloys bid** at 460 cr: intake 10 t, refreshing 2 t an IC day up to 10. No port with
+     a route to Stickney asks alloys, so the bid is filled from Kasei's ask next door (450): its
+     10 cr a tonne margin is what moves a trader, at most 20 cr an IC day after the first fill.
+   - **Space stock and asks:** 8 torpedoes at 4,000 cr, 48 spinal rounds at 600 and 12
+     point-defence boxes at 250, all on the yard board.
+7. **The lane bump.** Lane v36 → v37 and relay v27 → v28 (re-signed), and
+   `support::lane_chain::strip_munitions` as the strip chain's new head (`strip_producers` calls
+   it). Pins moved:
+   - `LANE_VERSION`, `lane.rs`' `LANE_DIGEST`, `cost_lane.rs`' `SHIPPED_LANE_DIGEST`, and the
+     version asserts in `mill.rs`, `drones.rs`, `sites.rs` and `stations.rs`;
+   - `relay_registry.rs`' relay digest and kept-world versions, `boot_parity.rs`' relay version;
+   - the goods table's `GOODS_DIGEST`, its rows and version; `content_studio.rs`' goods count
+     (52);
+   - `mill::sm12a_strip_mill_rebuilds_the_published_v13` (the shipped mill list) and
+     `ports::ic3_the_readiness_report_lists_every_binding_and_flags_the_rate` (88 commerce
+     lines);
+   - `port::gauges`' hold lists (three new bulk rows).
+
+**The cost arithmetic** (Q-49-5 read with Q-49-4: a produced round costs about its GC.7 price).
+A recipe's cost is its bill at the lane's asks plus the quoted fee, over its rounds:
+- **The bill:** alloys 450 cr (Kasei), carbon ore 60 cr (Freeport Works) and water 100 cr
+  (Occator), 610 cr in all.
+- **The fee:** about 44.10 cr a work unit at the Ceres works: 122 units quote 5,380 cr and 168
+  quote 7,408 cr (the story's quotes).
+- **The sizing:** every good but the torpedo carries 6,000 cr of rounds a batch at its price. So
+  (6,000 − 610) / 44.10 ≈ 122 work units, and the output count is 6,000 cr over the price. The
+  torpedo's two rounds are 8,000 cr, so 168 work units.
+
+| Recipe | Rounds | Work units | Bill + fee | A round | Price |
+|---|---|---|---|---|---|
+| `ap_30` | 500 | 122 | 5,990 cr | 11.98 cr | 12 |
+| `ball_762` | 240 | 122 | 5,990 cr | 24.96 cr | 25 |
+| `he_105` | 40 | 122 | 5,990 cr | 149.75 cr | 150 |
+| `missile` | 4 | 122 | 5,990 cr | 1,497.50 cr | 1,500 |
+| `torpedo` | 2 | 168 | 8,018 cr | 4,009.00 cr | 4,000 |
+| `spinal_round` | 10 | 122 | 5,990 cr | 599.00 cr | 600 |
+| `pd_box` | 24 | 122 | 5,990 cr | 249.58 cr | 250 |
+
+Each lands within 0.25% of its price, the torpedo over (+0.23%) and the rest under (−0.17%).
+
+**The house's arithmetic:** a Yards batch is 1 t of alloys at its own bid (460 cr) and 1 t of
+carbon ore at its bid (60 cr), 520 cr, into 6,000 cr of rounds at the asks (8,000 cr for
+torpedoes). The house books no works time, as PL.1's refine and PL.2's processes do not.
+
+**Rates** (provisional; at 24:1 an IC day is a real hour):
+- Each process makes at most one batch an IC day, 24 a real day. Its floor binds first: a
+  process only replaces rounds bought below its seed.
+- The alloys bid binds next. After its first 10 t it refreshes 2 t an IC day, so across all
+  seven processes at most two batches an IC day, 48 a real day.
+- Carbon ore binds last. The Yards' 20 t seed runs 20 batches. Their carbon bid (60 cr, lane
+  v33) equals Freeport Works' ask at Ceres, so no haul pays to refill it; it is unchanged here
+  (Not built, below).
+- An HE batch is 40 rounds, a cannon's 24-round load and two-thirds of another.
+
+**Conservation** (doc 49 §7's requirement). Rounds are conserved: a round is minted only by a
+seed, a mill batch or a work order, and leaves the goods only by a rearm. The terms EX.0 must
+count:
+- **Sources of rounds:**
+  - the seed, the stock clerk's mints (`tacsim.port_stock` receipts);
+  - a process batch, `product_t` on its `tacsim.port_mill` ledger, keyed by the round's good
+    (`MillLedger.process`);
+  - a completed work order of a munitions recipe, its pooled outputs times its quantity.
+- **What a round becomes:** a rearm moves units of a munitions good into a magazine,
+  `ceil(rounds / rounds_per_unit)` units (`port/bay_work/jobs.rs`' `Rearm`, `surface/tender.rs`).
+  A magazine's rounds leave by firing, the only true sink. Space rearm is CC.7's.
+- **The inputs consumed:**
+  - a process batch's ore, `ore_t` of alloys, and its further inputs, `with_t` of carbon ore;
+  - a work order's bill, alloys, carbon ore and volatiles times its quantity.
+- **The census today** (`port/census.rs`) counts the chain's goods and not munitions. Its mill
+  scan reads `counted(&ledger.ore)` and subtracts the product's mass whether it is counted or
+  not. For a munitions process it books `milled` as the alloys' mass less the rounds' (1,000 kg
+  less 840 kg for an HE batch), and it misses the carbon ore. EX.0's terms for a process ledger
+  are the counted inputs' kilograms (`ore_t` and each `with_t`) less the product's only where
+  the product is counted.
+
+**Tests** (run on conclav.dev):
+- **New:**
+  - `domain_economy` `mill::pl3_stickney_yards_makes_he_and_lists_it` runs one full cycle on a
+    lane whose Yards seed 760 HE, forty under the floor:
+    1. With only its carbon ore in the storefront, nothing is made.
+    2. A tonne of alloys delivered in kind, the HE process takes it and a tonne of carbon ore
+       and makes 40 rounds. The HE ask is restocked to 800 and its counter is 40. No other
+       process runs, and nothing pages drift. The Mill line reads "1 to 40 with 1 carbon_ore a
+       ratio".
+    3. Nothing moves the next IC day.
+  - `mill::pl3_a_process_debits_each_of_two_further_inputs` runs the three-input bill on a lane
+    variant whose Stickney has no emergency block and whose Yards bid water. The alloys alone
+    make nothing; the water bought, one batch debits each of the three goods and records both
+    further inputs.
+  - `mill::pl3_the_munitions_recipes_cost_about_their_prices` quotes all seven recipes at the
+    Ceres works and holds each within 1% of its price (the table above).
+  - `lane::pl3_strip_munitions_rebuilds_the_published_v36` (v36's digest `a38bdfa0…`,
+    idempotent).
+  - `tacsim` lib: `port::def::tests::pl3_processes_share_an_ore_and_take_two_further_inputs`:
+    two processes sharing an ore are accepted, two of one product are refused ("mill metals is
+    authored twice"), two further inputs are accepted and three refused, an input named twice
+    is refused, and a product that is an own-stock mill's ore is refused as a key authored
+    twice.
+- **Pins moved, besides the lane bump's:**
+  - the goods table's rows (`domain_arena` `content::ic2_the_goods_table_is_pinned`): the three
+    space rows, and every ground munitions good names a shipped ammunition while the space
+    rounds name none;
+  - the goods catalogue counts, 52: `capacity::ic2_the_catalog_rows_derive_from_the_goods_table`
+    and the content studio's catalogue (lib and mush-server);
+  - the hold's load cells, three zero cells more: `port::gauges`' lib tests,
+    `coop::ic6_the_gauges_read_the_hold_pools` and mush-server's
+    `ic_slice_loop::ic12_part_one_a_leg_by_hand`;
+  - the stock rows minted, 22 (Stickney 12): `commerce::ic8_the_ticks_seed_every_pool_exactly_once`,
+    `ic8_a_reboot_mid_seed_re_mints_nothing` and `ic8_a_world_on_lane_v2_takes_v3_by_the_shelf`;
+  - the orderable goods' list, `orders::ic11_the_verbs_edit_the_plan`;
+  - the web client's `sky_chart.json` (the Yards' alloys bid) and `site/site_map.json` (four
+    `at_ic` stamps 42 s later), re-blessed with `TACSIM_BLESS=1`.
+- **Two harness fixes the phase shift exposed.** The Yards' clerk mints three more rows, lists
+  three more asks and posts one more bid before the ports read Ready, seven fires of 6 s. A rig
+  that sets its rate after stocking therefore starts its rate generation 42 real seconds later,
+  so every later IC instant moves by 41,958 IC seconds:
+  - `claims::sm10_a_block_with_no_deposits_is_claimed_like_any_other` and
+    `sm10_a_stake_reads_the_same_whatever_the_block_holds` compare what a staker hears in two
+    worlds. The rig's idle return (`tv::IDLE_HOME`) and its panel refresh land a day after its
+    last act; on the base the barren world's deposit opening ran 16 fires and caught it, and
+    on the shifted phase it ran 10 and missed it. `claim_lines` now drops the rig's own
+    reports as it drops the economy's notices: no claim line turns on them.
+  - `cost_lane::sm12c_a_restart_inside_the_cohort_changes_nothing` reboots arm B at arm A's first
+    quiet point. On the shifted phase that point (IC 117,456) fell on the fire where an Occator
+    yard rig's mining cycle landed: its run went on (cycle 2 to 3, next due past the warm), so
+    `cohort_quiet`'s projection clause, which compared only whether a run and an act exist,
+    read it quiet. The rig's projection and Occator's mined tally are written the next fire,
+    arm B's first warm fire. The clause now compares the projection's run view with
+    `RunView::of` the record's run, as the tick writes it.
+- **Green:**
+  - the whole `tacsim` lib (2,394);
+  - `domain_economy`, `domain_world` and `cost_lane` (886), `domain_field`, `domain_arena` and
+    `harness` (1,472), mush-server `split_boundary` and `commerce_composition` (318) and
+    mush-bot (791), on the tree before the last pins; every failure there is a pin or harness
+    fix above, each rerun green on the final tree (the economy set touched, 128; `cost_lane`,
+    12; the server's `ic_slice_loop`, 12; the arena and field reruns, 72; the chart, 7).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  memory-size pass, rustdoc `-D warnings --document-private-items`, and the contract guards'
+  feature census, panic budget and restriction lints (24).
+- **Mutations:** eight, all killed.
+  1. A process keyed by its ore (`key_good`): the def tests refuse the shipped lane.
+  2. A process ledger's id by its ore: both PL.3 stories and PL.2's Titan story.
+  3. No duplicate-key check: `pl3_processes_share_an_ore…` and `sm12a_each_mill_rule…`.
+  4. No further input debited: the HE story, the two-input story and the Titan story.
+  5. Only the first further input debited: the two-input story.
+  6. Readiness reading only the first further input: the two-input story.
+  7. The floor gate off: the HE story and the Titan story.
+  8. Seven mill rows a vendor: `sm12a_each_mill_rule_refuses_with_its_sentence`, which pins
+     the bound at eight.
+
+**Divergences:**
+- **The house bill has two inputs, not three.** The Yards' seven processes take alloys and
+  carbon ore. Stickney's emergency rule (doc 19 §6, `PortDef::check_emergency`) bars the Yards,
+  its emergency org, from bidding volatiles, and the starting session ruled on 2026-11-16 to
+  keep that rule unchanged. Player bookings at the works keep Q-49-4's three-input bill.
+  Volatiles already have industrial buyers in PL.1's propellant refine at Occator and PL.2's
+  farms, so Q-49-4's "first industrial buyer" reason holds.
+- **`pd_box` is 80 kg** (provisional), so a batch of 24 boxes (1,920 kg) passes the mass rule
+  under the house's two tonnes of inputs.
+- **The space rounds name ammunition ids with no catalog entry.** A space mount is no catalog
+  weapon, so `torpedo`, `spinal_round` and `pd_box` name `tacsim.ammunition.torpedo`,
+  `spinal_round` and `pd_rotary`, which CC.7's berth rearm binds. The goods table's test now
+  holds that every ground munitions good names a shipped ammunition and every space round names
+  none.
+- **The house books no works slot.** It is a house process on the stock clerk's turn, as PL.1's
+  refine and PL.2's processes are. The works' own house order (`works.rs` `house_collect`) is not
+  booked for goods.
+
+**Not built:**
+- **CC.7's space rearm and magazine loading.** The space goods are stocked and asked, and nothing
+  draws them yet.
+- **The census terms above.** They are EX.0's.
+- **Prices do not follow the supply.** The asks stay at GC.7's prices and PL.3's provisional
+  ones; EX.8 and EX.9 own the market's response.
+- **The Yards' carbon bid pays no haul.** At 60 cr it equals Freeport Works' ask, so once the
+  20 t seed is milled the house waits on a carbon sale nobody profits from. Repricing a bid
+  authored before PL.3 (lane v33) is left to EX.8's tuning.
+- **The Yards have no water.** If a later ruling lets the emergency org bid, the house bill can
+  take the recipes' three inputs with a lane bump, no code change.
 
 ## PL.4
 
-Not built.
+**Survey** (at `14483cbdf`, PL.3's tip):
+- **The houses' three conversions** are mill rows on the stock clerk's turn, house-only:
+  - the Freeport Exchange's metal mill at Ceres, metal ore into metals, 5 : 2;
+  - Occator's ice mill at Ceres, ice ore into water, 5 : 2 (beside PL.1's refine of water into
+    propellant);
+  - Kasei's refine at Stickney, metals into structural alloys, 5 : 4.
+- **No works recipe takes an ore.** The pack's 25 rows make parts, fittings, feedstock, modules
+  and munitions. A player with ore can only sell it into a house's bid.
+- **The works** at Ceres (Freeport Works) and at Stickney offer every recipe that requires
+  `tacsim.works` as a public slot. A booking runs quote, order, deliver, collect
+  (`port/works.rs`). Its fee is the cost model's.
+- **The cost model at the Ceres works:** 3,000,000 cr capital over 25 years (328.77 cr a day),
+  2% upkeep (164.38), and 8 staff at 150 (1,200). That is 1,693.15 cr a day over 2 slots × 24
+  hours, so 35.27 cr a slot-hour; the 25% margin makes 44.09 cr a work unit. A quote rounds the
+  fee up to the whole credit. The booking fee (one slot-day before margin, 847 cr) is held and
+  comes back at collection.
+
+**Built:**
+1. **Recipe pack v5** (`INDUSTRY_RECIPES_VERSION` 5, re-signed), three conversions at the houses'
+   ratios, pooled, each requiring `tacsim.works`, so each is a public slot at both works:
+
+   | Recipe | Bill | Output | Work units | Fee | The house's spread a batch |
+   |---|---|---|---|---|---|
+   | `metals` | 10 t metal ore | 4 t metals | 2 | 89 cr | 100 cr (the Exchange: 4 × 200 − 10 × 70) |
+   | `volatiles` | 20 t ice ore | 8 t water | 2 | 89 cr | 100 cr (Occator: 8 × 100 − 20 × 35) |
+   | `structural_alloys` | 5 t metals | 4 t alloys | 9 | 397 cr | 400 cr (Kasei: 4 × 450 − 5 × 280) |
+
+2. **The houses' mill rows are unchanged.** The lane is not touched: no version bump, no strip
+   step and no fixture.
+
+**Sizing** (provisional; at 24:1 an IC day is a real hour):
+- **The rule: the fee is about the house's own spread.** Each recipe's fee lands within one work
+  unit under what the house makes on the same batch at its own port's prices: its bid for the
+  input and its ask for the output. Milling your own ore at the works then costs about what
+  selling the ore and buying the product back costs at that port. It pays where the house's bid
+  is full (the Exchange takes 240 t of metal ore at a time) or where the product sells dearer:
+  metals bid 280 at Stickney, water 190 to 200 at Stickney, Luna and Deimos.
+- **Why the batches differ.** The ratios are the houses'. The ore batches are the smallest whole
+  multiples whose fee stays under the spread at two or more work units: 5 t of ice makes only
+  25 cr of spread, under one work unit's 44.09. A one-unit recipe would also quote "(1 work
+  units)".
+- **Slot times**, a work unit being one slot-hour:
+  - a 100 t hold of metal ore is ten `metals` batches, 20 work units: 20 IC hours, 50 real
+    minutes;
+  - its 40 t of metals refine in eight `structural_alloys` batches, 72 work units: three IC days,
+    three real hours;
+  - the houses' own rows mill 40 t of ore an IC day each, so a slot is slower than a house mill
+    for ore and about a third of Kasei's refine rate.
+
+**Tests** (run on conclav.dev):
+- **New** (`domain_economy` `pl4_works_mills`, reusing PL.2's works harness, whose helpers are
+  now `pub(crate)`):
+  - `pl4_a_captain_mills_metal_ore_at_the_works_then_refines_the_metals` (13 s): at Ceres,
+    with 20 t of metal ore in the docked hold:
+    1. `+works/quote metals 2` bills 20 t for four work units.
+    2. The order is booked, the ore delivered and the works run; the captain collects 8 t of
+       metals.
+    3. `+works/quote structural_alloys` bills 5 t of metals for nine work units. Booked,
+       delivered, run and collected, the hold holds 4 t of alloys and 3 t of metals.
+    4. The Exchange's metal mill, Occator's ice mill and refine, and Kasei's refine are the
+       lane's as before.
+  - `pl4_each_conversion_costs_about_its_houses_spread`: the three quotes at the Ceres works
+    give fees of 89, 89 and 397 cr against the houses' 100, 100 and 400.
+- **Green:** the whole `domain_economy` binary (603, every works and mill story among them), the
+  `tacsim` lib (2,394), and mush-server `split_boundary` and `commerce_composition` (318).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  memory-size pass, rustdoc `-D warnings --document-private-items`, and the contract guards'
+  feature census, panic budget and restriction lints (24).
+- **Mutations** (content, each re-signed so the pack loads):
+  1. `metals` at three work units: both stories (the quote's units; a 133 cr fee over the
+     house's 100).
+  2. `structural_alloys` making five tonnes: the mill-and-refine story (the hold's alloys).
+
+**Divergences:**
+- **The houses' rows stay house processes.** Q-48-24's "the NPC mill rows stay as the houses'
+  own processes": they book no slot and pay no fee, as before.
+- **The ore recipes' batches are larger than the houses' ratios' least terms** (10 : 4 and
+  20 : 8). Sizing above.
+
+**Not built:**
+- **PL.5's escrow buying** waits on EX.3 and is not started here.
+- **Prices do not follow the new supply.** A player's milled metals and water sell into the same
+  bids; EX.8 and EX.9 own the market's response.
 
 ## PL.5
 
