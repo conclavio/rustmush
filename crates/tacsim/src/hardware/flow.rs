@@ -1802,6 +1802,48 @@ async fn m8b2_grey_dies_integrate_as_ungoverned_cores_of_their_class() -> Result
     Ok(())
 }
 
+/// **Doc 48 unit PL.7: the launch composes the catalogue's prices and die chain**, whatever
+/// they are. A catalogue re-signed at 4,500, 9,000 and 30,000cr with a 15 % integration share,
+/// and a Class II die that takes three boards, composes a payment policy at those prices and an
+/// origin policy with that chain: neither is the v1 table.
+#[tokio::test(flavor = "current_thread")]
+async fn pl7_the_launch_composes_the_catalogue_s_prices_and_chain() -> Result {
+    use mush_economy::core_integration::CorePrices;
+    let r = Rig::new()?;
+    let native = filing(&r.deployment)?;
+    let mut pack: Value = serde_json::from_str(super::recipes::SOURCE)?;
+    let def = &mut pack["entries"][super::CATALOGUE]["def"];
+    def["core_minor"] = json!([450_000, 900_000, 3_000_000]);
+    def["integration_permille"] = json!(150);
+    def["die_chain"][1] = json!([{"good": "instrument_boards", "units": 3}]);
+    pack["manifest"]["digest"] = json!("0".repeat(64));
+    let parsed = mush_content::parse_pack(&serde_json::to_string(&pack)?)?;
+    pack["manifest"]["digest"] = json!(parsed.computed_digest()?.to_hex());
+    let publication = PublishedHardware::from_source(&serde_json::to_string(&pack)?)?;
+    let hardware = GovernedHardware::prepare_with(
+        &layer(),
+        CoreOriginMode::Active,
+        r.deployment.clone(),
+        &native,
+        Box::new(publication),
+    )?;
+    check_eq!(
+        hardware.payment_policy().prices,
+        CorePrices {
+            finished_minor: [450_000, 900_000, 3_000_000],
+            integration_permille: 150,
+        }
+    );
+    check_eq!(
+        hardware.origin_policy().chain[1],
+        vec![mush_industry::core_production::ChainLine {
+            commodity: mush_core::CanonicalId::new("instrument_boards")?,
+            units: 3,
+        }]
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_refusal() -> Result {
     let mut r = Rig::new()?;

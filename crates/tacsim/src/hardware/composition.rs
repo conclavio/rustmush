@@ -441,6 +441,18 @@ impl GovernedHardware {
         deployment: HardwareDeployment,
         filing: &InitialFilingPolicy,
     ) -> Result<Self, ModError> {
+        let publication = Box::new(PublishedHardware::shipped().map_err(bad)?);
+        Self::prepare_with(layer, mode, deployment, filing, publication)
+    }
+    /// [`Self::prepare`] from `publication` in place of the shipped hardware (doc 48 unit PL.7:
+    /// a test composes a catalogue at other prices and chain, and reads them back).
+    pub(crate) fn prepare_with(
+        layer: &TacsimRuleset,
+        mode: CoreOriginMode,
+        deployment: HardwareDeployment,
+        filing: &InitialFilingPolicy,
+        publication: Box<PublishedHardware>,
+    ) -> Result<Self, ModError> {
         if !layer.config().enabled || layer.governed_hardware.is_some() {
             return Err(bad(
                 "governed hardware requires one explicitly enabled composition",
@@ -455,7 +467,7 @@ impl GovernedHardware {
                 "hardware grade identities or actual native issuer disagree",
             ));
         }
-        let publication = PublishedHardware::shipped().map_err(bad)?;
+        let publication = *publication;
         let (family, rig, ship) = families(layer)?;
         // Built before the deployment's fields move into the origin and payment policies.
         let fitting = launch_fitting_policy(

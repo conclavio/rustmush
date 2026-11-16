@@ -45,7 +45,12 @@ pub struct PublishedHardware {
 }
 impl PublishedHardware {
     pub fn shipped() -> Result<Self, DefinitionError> {
-        let pack = crate::pack::load_pack(SOURCE).map_err(bad)?;
+        Self::from_source(SOURCE)
+    }
+    /// **The publication of `source`** (doc 48 unit PL.7): [`Self::shipped`]'s checks over
+    /// another signed pack of the same identity, so a test can compose other prices.
+    pub(crate) fn from_source(source: &str) -> Result<Self, DefinitionError> {
+        let pack = crate::pack::load_pack(source).map_err(bad)?;
         if pack.manifest().id().as_str() != PACK
             || pack.manifest().version() != VERSION
             || pack.entries().len() != 4
