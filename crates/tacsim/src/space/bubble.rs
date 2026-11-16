@@ -3666,3 +3666,7 @@ mod cc6_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "bubble_cc8_tests.rs"]
+mod cc8_tests;
