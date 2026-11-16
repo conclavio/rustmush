@@ -39,6 +39,9 @@ use smol_str::SmolStr;
 use crate::arena::party::PartyId;
 use crate::definitions::Catalog;
 use crate::definitions::logistics::DriveLaw;
+use crate::definitions::space_mount::{
+    LaserModeWord, SpaceFitDef, SpaceMountDef, SpaceMountFamily,
+};
 use crate::definitions::unit::{
     ARMOR_CELL, Consequence, HEAT_CELL, HEAT_SINK_CELL, INTERNALS_CELL, UnitSpec,
 };
@@ -52,7 +55,9 @@ use crate::space::bubble::{
     SpaceCombatEvent, SpaceSectionConsequence, SpaceShipState, SubsystemCrit,
 };
 use crate::space::docking::DockingRcsAuthority;
-use crate::space::weapons::{LaserMode, LaserMount, PdcMount, RailgunMount, TorpedoTube};
+use crate::space::weapons::{
+    LaserMode, LaserModes, LaserMount, PdcMount, RailgunMount, TorpedoTube,
+};
 use crate::surface::salvage::SalvageCustody;
 
 /// Capability id used to persist space-only subsystem crits (`PdcOffline`, `SensorDegraded`,
@@ -61,9 +66,14 @@ use crate::surface::salvage::SalvageCustody;
 pub const SPACE_SUBSYSTEMS_CAPABILITY: &str = "tacsim.space.subsystems";
 
 /// Space-only hull parameters that do not exist on [`UnitSpec`] (`D-35-1`, `35b` §4 & §8 `SF.R15`):
-/// 6-DOF RCS thruster authority, weapon/point-defense mounts, and `mush-pixel` 3D model archetype.
+/// 6-DOF RCS thruster authority, her mounts, and the `mush-pixel` 3D model archetype.
+///
+/// **Built from her hull's fit** (doc 49 unit CC.6; Q-49-11): a `space_fit` entry in
+/// `crates/tacsim/content/space/fits.json`, whose mounts name the `space_mount` rows of
+/// `content/space/mounts.json` ([`crate::definitions::space_mount`]). No number is written here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpaceUnitOverlay {
+    /// The unit her fit is for.
     pub unit_id: &'static str,
     pub rcs_authority: DockingRcsAuthority,
     pub torpedo_tubes: Vec<TorpedoTube>,
@@ -74,178 +84,130 @@ pub struct SpaceUnitOverlay {
     pub pixel_model: &'static str,
 }
 
-/// Look up the canonical [`SpaceUnitOverlay`] for `unit_entry_id` (`D-35-1`, `SF.R15`, `SF.R22`).
+/// **The fit a hull with no fit of her own flies** (doc 49 unit CC.6): the Dray's, as the Rust
+/// table's last arm was.
+pub const DEFAULT_SPACE_FIT: &str = "tacsim.space_fit.dray";
+
+/// The prefix of a unit id: an overlay key `tacsim.unit.<name>` names the fit
+/// `tacsim.space_fit.<name>`.
+const UNIT_PREFIX: &str = "tacsim.unit.";
+
+/// The prefix of a fit's entry id.
+const FIT_PREFIX: &str = "tacsim.space_fit.";
+
+/// **The fit `key` names** (doc 49 unit CC.6): a unit id or an overlay key
+/// (`tacsim.unit.corvette_interdictor`, as `content/space/picket_cast.json` writes it) names
+/// `tacsim.space_fit.<name>`, after a fitted core's chassis is read as its chassis; any other key
+/// is read as a fit id. `None` when the shipped content has no such fit, or did not load.
+#[must_use]
+pub fn space_fit_for_id(key: &str) -> Option<&'static SpaceFitDef> {
+    let base = crate::definitions::core_replacement::surface_chassis(key);
+    let fit_id = match base.strip_prefix(UNIT_PREFIX) {
+        Some(name) => format!("{FIT_PREFIX}{name}"),
+        None => base.to_owned(),
+    };
+    let fit_id = CanonicalId::new(fit_id).ok()?;
+    fielded_space_catalog()?.space_fits.get(&fit_id)
+}
+
+/// **The shipped space mount row `id`** (`tacsim.space_mount.turret_laser`; doc 49 unit CC.6).
+#[must_use]
+pub fn space_mount_row(id: &str) -> Option<&'static SpaceMountDef> {
+    let id = CanonicalId::new(id).ok()?;
+    fielded_space_catalog()?.space_mounts.get(&id)
+}
+
+/// Her start mode, as the space kernel reads it.
+const fn laser_mode(word: Option<LaserModeWord>, allowed: LaserModes) -> LaserMode {
+    match word {
+        Some(LaserModeWord::Defence) => LaserMode::Defense,
+        Some(LaserModeWord::Offence) => LaserMode::Offense,
+        None if allowed.offence => LaserMode::Offense,
+        None => LaserMode::Defense,
+    }
+}
+
+/// **The overlay `fit` builds** (doc 49 unit CC.6): each mount from its row, in the fit's order
+/// within each family, stowing the fit's magazine; each laser with the modes the fit allows.
+fn overlay_from_fit(catalog: &'static Catalog, fit: &'static SpaceFitDef) -> SpaceUnitOverlay {
+    let mut overlay = SpaceUnitOverlay {
+        unit_id: fit.unit.as_str(),
+        rcs_authority: DockingRcsAuthority {
+            trans_dv_mmps_per_frame: fit.rcs.trans_dv_mmps_per_frame,
+            closure_dv_mmps_per_frame: fit.rcs.closure_dv_mmps_per_frame,
+            attitude_rate_mdeg_s_per_frame: fit.rcs.attitude_rate_mdeg_s_per_frame,
+            roll_rate_mdeg_s_per_frame: fit.rcs.roll_rate_mdeg_s_per_frame,
+            damp_trans_mmps_per_frame: fit.rcs.damp_trans_mmps_per_frame,
+            damp_attitude_mdeg_s_per_frame: fit.rcs.damp_attitude_mdeg_s_per_frame,
+            damp_roll_mdeg_s_per_frame: fit.rcs.damp_roll_mdeg_s_per_frame,
+            kg_per_pulse_batch: fit.rcs.kg_per_pulse_batch,
+        },
+        torpedo_tubes: Vec::new(),
+        lasers: Vec::new(),
+        railguns: Vec::new(),
+        pdcs: Vec::new(),
+        decoys_remaining: fit.decoys,
+        pixel_model: fit.pixel_model.as_str(),
+    };
+    for mount in &fit.mounts {
+        // The catalogue build checked every row a fit names, so a miss is content that did not
+        // build, and this mount is not carried.
+        let Some(row) = catalog.space_mounts.get(&mount.mount) else {
+            continue;
+        };
+        let id = mount.id.as_str();
+        let stowed = mount.magazine.unwrap_or(0);
+        let stowed_u16 = u16::try_from(stowed).unwrap_or(u16::MAX);
+        match &row.family {
+            SpaceMountFamily::Tubes(def) => overlay
+                .torpedo_tubes
+                .push(TorpedoTube::from_def(id, def, stowed_u16)),
+            SpaceMountFamily::Laser(def) => {
+                let allowed = LaserModes {
+                    offence: mount.allows(LaserModeWord::Offence),
+                    defence: mount.allows(LaserModeWord::Defence),
+                };
+                overlay.lasers.push(LaserMount::from_def(
+                    id,
+                    def,
+                    allowed,
+                    laser_mode(mount.mode, allowed),
+                ));
+            }
+            SpaceMountFamily::Spinal(def) => overlay
+                .railguns
+                .push(RailgunMount::from_def(id, def, stowed_u16)),
+            SpaceMountFamily::PointDefence(def) => {
+                overlay.pdcs.push(PdcMount::from_def(id, def, stowed));
+            }
+        }
+    }
+    overlay
+}
+
+/// Look up the canonical [`SpaceUnitOverlay`] for `unit_entry_id` (`D-35-1`, `SF.R15`, `SF.R22`):
+/// the overlay of the fit it names ([`space_fit_for_id`]), or of [`DEFAULT_SPACE_FIT`] for a
+/// hull with no fit of her own. With no shipped content at all (a build that cannot happen past
+/// `crates/tacsim/tests/domain_arena/content.rs`) she carries nothing.
 #[must_use]
 pub fn space_unit_overlay_for_id(unit_entry_id: &str) -> SpaceUnitOverlay {
-    let base_id = crate::definitions::core_replacement::surface_chassis(unit_entry_id);
-    match base_id {
-        "tacsim.unit.corvette" => SpaceUnitOverlay {
-            unit_id: "tacsim.unit.corvette",
-            rcs_authority: DockingRcsAuthority {
-                trans_dv_mmps_per_frame: 40,
-                closure_dv_mmps_per_frame: 35,
-                attitude_rate_mdeg_s_per_frame: 240,
-                roll_rate_mdeg_s_per_frame: 320,
-                damp_trans_mmps_per_frame: 20,
-                damp_attitude_mdeg_s_per_frame: 120,
-                damp_roll_mdeg_s_per_frame: 160,
-                kg_per_pulse_batch: 1,
-            },
-            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 8)],
-            lasers: vec![
-                LaserMount {
-                    max_range_m: 160_000,
-                    base_damage: 180,
-                    ..LaserMount::standard_turret("laser_1")
-                },
-                LaserMount {
-                    mode: LaserMode::Defense,
-                    defense_range_m: 45_000,
-                    ..LaserMount::standard_turret("laser_2")
-                },
-            ],
-            railguns: vec![RailgunMount::standard_spinal("rail_spinal", 24)],
-            pdcs: vec![
-                PdcMount::standard_rotary("pdc_port", 3_000),
-                PdcMount::standard_rotary("pdc_stbd", 3_000),
-            ],
-            decoys_remaining: 6,
-            pixel_model: "corvette",
-        },
-        "tacsim.unit.raider_heavy" => SpaceUnitOverlay {
-            unit_id: "tacsim.unit.raider_heavy",
-            rcs_authority: DockingRcsAuthority {
-                trans_dv_mmps_per_frame: 35,
-                closure_dv_mmps_per_frame: 30,
-                attitude_rate_mdeg_s_per_frame: 210,
-                roll_rate_mdeg_s_per_frame: 280,
-                damp_trans_mmps_per_frame: 18,
-                damp_attitude_mdeg_s_per_frame: 105,
-                damp_roll_mdeg_s_per_frame: 140,
-                kg_per_pulse_batch: 1,
-            },
-            torpedo_tubes: vec![TorpedoTube {
-                tubes: 2,
-                max_dv_mps: 12_000,
-                accel_mps2: 250,
-                ..TorpedoTube::standard_twin("torp_bow", 8)
-            }],
-            lasers: vec![
-                LaserMount::standard_turret("laser_1"),
-                LaserMount::standard_turret("laser_2"),
-            ],
-            railguns: vec![RailgunMount {
-                max_range_m: 250_000,
-                muzzle_vel_mps: 12_000,
-                ..RailgunMount::standard_spinal("rail_spinal", 24)
-            }],
-            pdcs: vec![
-                PdcMount::standard_rotary("pdc_port", 3_000),
-                PdcMount::standard_rotary("pdc_stbd", 3_000),
-            ],
-            decoys_remaining: 6,
-            pixel_model: "raider",
-        },
-        "tacsim.unit.corvette_interdictor" => SpaceUnitOverlay {
-            unit_id: "tacsim.unit.corvette",
-            rcs_authority: DockingRcsAuthority {
-                trans_dv_mmps_per_frame: 40,
-                closure_dv_mmps_per_frame: 35,
-                attitude_rate_mdeg_s_per_frame: 240,
-                roll_rate_mdeg_s_per_frame: 320,
-                damp_trans_mmps_per_frame: 20,
-                damp_attitude_mdeg_s_per_frame: 120,
-                damp_roll_mdeg_s_per_frame: 160,
-                kg_per_pulse_batch: 1,
-            },
-            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 8)],
-            lasers: vec![
-                LaserMount::standard_turret("laser_1"),
-                LaserMount {
-                    mode: LaserMode::Defense,
-                    ..LaserMount::standard_turret("laser_2")
-                },
-            ],
-            railguns: vec![RailgunMount::standard_spinal("rail_spinal", 24)],
-            pdcs: vec![
-                PdcMount::standard_rotary("pdc_port", 3_000),
-                PdcMount::standard_rotary("pdc_stbd", 3_000),
-            ],
-            decoys_remaining: 6,
-            pixel_model: "corvette",
-        },
-        "tacsim.unit.halcyon" => SpaceUnitOverlay {
-            unit_id: "tacsim.unit.halcyon",
-            rcs_authority: DockingRcsAuthority {
-                trans_dv_mmps_per_frame: 18,
-                closure_dv_mmps_per_frame: 15,
-                attitude_rate_mdeg_s_per_frame: 100,
-                roll_rate_mdeg_s_per_frame: 140,
-                damp_trans_mmps_per_frame: 9,
-                damp_attitude_mdeg_s_per_frame: 50,
-                damp_roll_mdeg_s_per_frame: 70,
-                kg_per_pulse_batch: 2,
-            },
-            torpedo_tubes: vec![TorpedoTube::standard_twin("torp_bow", 16)],
-            lasers: vec![
-                LaserMount::standard_turret("laser_dorsal"),
-                LaserMount::standard_turret("laser_ventral"),
-            ],
-            railguns: vec![RailgunMount::standard_spinal("rail_spinal", 32)],
-            pdcs: vec![
-                PdcMount::standard_rotary("pdc_port", 4_000),
-                PdcMount::standard_rotary("pdc_stbd", 4_000),
-                PdcMount::standard_rotary("pdc_dorsal", 4_000),
-                PdcMount::standard_rotary("pdc_ventral", 4_000),
-            ],
-            decoys_remaining: 8,
-            pixel_model: "halcyon",
-        },
-        "tacsim.unit.dray_p" => SpaceUnitOverlay {
-            unit_id: "tacsim.unit.dray_p",
-            rcs_authority: DockingRcsAuthority {
-                trans_dv_mmps_per_frame: 32,
-                closure_dv_mmps_per_frame: 28,
-                attitude_rate_mdeg_s_per_frame: 195,
-                roll_rate_mdeg_s_per_frame: 260,
-                damp_trans_mmps_per_frame: 16,
-                damp_attitude_mdeg_s_per_frame: 95,
-                damp_roll_mdeg_s_per_frame: 130,
-                kg_per_pulse_batch: 1,
-            },
-            torpedo_tubes: Vec::new(),
-            lasers: vec![
-                LaserMount::standard_turret("laser_dorsal"),
-                LaserMount::standard_turret("laser_ventral"),
-            ],
-            railguns: Vec::new(),
-            pdcs: vec![
-                PdcMount::standard_rotary("pdc_dorsal", 2_000),
-                PdcMount::standard_rotary("pdc_ventral", 2_000),
-            ],
-            decoys_remaining: 4,
-            pixel_model: "freighter",
-        },
+    let fit = space_fit_for_id(unit_entry_id).or_else(|| space_fit_for_id(DEFAULT_SPACE_FIT));
+    match (fielded_space_catalog(), fit) {
+        (Some(catalog), Some(fit)) => overlay_from_fit(catalog, fit),
         _ => SpaceUnitOverlay {
             unit_id: "tacsim.unit.dray",
             rcs_authority: DockingRcsAuthority::default(),
             torpedo_tubes: Vec::new(),
-            lasers: vec![
-                LaserMount::standard_turret("laser_dorsal"),
-                LaserMount::standard_turret("laser_ventral"),
-            ],
+            lasers: Vec::new(),
             railguns: Vec::new(),
-            pdcs: vec![
-                PdcMount::standard_rotary("pdc_dorsal", 2_000),
-                PdcMount::standard_rotary("pdc_ventral", 2_000),
-            ],
-            decoys_remaining: 4,
+            pdcs: Vec::new(),
+            decoys_remaining: 0,
             pixel_model: "freighter",
         },
     }
 }
 
-/// Apply [`SpaceUnitOverlay`] RCS authority and weapon/PDC mounts to `ship` (`D-35-1`, `SF.R15`).
+/// Apply [`SpaceUnitOverlay`] RCS authority and mounts to `ship` (`D-35-1`, `SF.R15`).
 pub fn apply_space_unit_overlay(ship: &mut SpaceShipState, overlay: &SpaceUnitOverlay) {
     ship.rcs_authority = overlay.rcs_authority;
     ship.torpedo_tubes = overlay.torpedo_tubes.clone();
@@ -306,7 +268,15 @@ pub const ALL_SHIP_SECTIONS: [ShipSectionId; 3] = [
 fn fielded_space_catalog() -> Option<&'static Catalog> {
     static CATALOG: OnceLock<Option<Catalog>> = OnceLock::new();
     CATALOG
-        .get_or_init(|| Catalog::build_fielded(&[], "tacsim").ok())
+        .get_or_init(|| {
+            Catalog::build_fielded(&[], "tacsim")
+                .map_err(|error| {
+                    // Doc 49 unit CC.6: every hull's fit is in this catalogue, so say why
+                    // none carries a mount (once: the cell holds the answer).
+                    tracing::error!(%error, "tacsim: the shipped space content does not build");
+                })
+                .ok()
+        })
         .as_ref()
 }
 
@@ -507,7 +477,11 @@ pub fn space_ship_from_tactical_unit_with_spec(
 ) -> Result<SpaceShipState, FieldOpsError> {
     let base_id =
         crate::definitions::core_replacement::surface_chassis(unit.schema().key().id.as_str());
-    let mut ship = if base_id == "tacsim.unit.corvette" {
+    // Doc 49 unit CC.6: the belt raider's unit file is the corvette's hull, so she is built as
+    // the corvette was built before she had one.
+    let mut ship = if base_id == "tacsim.unit.corvette"
+        || base_id == crate::definitions::content::RAIDER_HEAVY
+    {
         SpaceShipState::new_corvette(ship_id, callsign, party, pos_m, vel_mmps)
     } else {
         SpaceShipState::new_dray(ship_id, callsign, party, pos_m, vel_mmps)
@@ -1443,5 +1417,290 @@ pub fn ensure_space_hull_titled(ctx: &mut Ctx<'_>, hull: ObjId, owner: ObjId) {
             issuer,
             None,
         );
+    }
+}
+
+/// **Doc 49 unit CC.6: space content is data, and the shipped values are the Rust table's.**
+#[cfg(test)]
+mod content_tests {
+    use super::*;
+
+    #[allow(clippy::too_many_arguments)]
+    fn rcs(
+        t: i64,
+        c: i64,
+        a: i32,
+        r: i32,
+        dt: i64,
+        da: i32,
+        dr: i32,
+        kg: u32,
+    ) -> DockingRcsAuthority {
+        DockingRcsAuthority {
+            trans_dv_mmps_per_frame: t,
+            closure_dv_mmps_per_frame: c,
+            attitude_rate_mdeg_s_per_frame: a,
+            roll_rate_mdeg_s_per_frame: r,
+            damp_trans_mmps_per_frame: dt,
+            damp_attitude_mdeg_s_per_frame: da,
+            damp_roll_mdeg_s_per_frame: dr,
+            kg_per_pulse_batch: kg,
+        }
+    }
+
+    fn tubes(id: &str, magazine: u16) -> TorpedoTube {
+        TorpedoTube {
+            id: id.to_owned(),
+            tubes: 2,
+            magazine_remaining: magazine,
+            fired_since_full: 0,
+            accel_mps2: 250,
+            max_dv_mps: 12_000,
+            warhead_damage: 180,
+            reload_cooldown_ms: 8_000,
+            cooldown_remaining_ms: 0,
+        }
+    }
+
+    fn laser(id: &str, mode: LaserMode, base_damage: u32, max_range_m: i64) -> LaserMount {
+        LaserMount {
+            id: id.to_owned(),
+            mode,
+            allowed_modes: LaserModes::BOTH,
+            base_damage,
+            half_range_m: 120_000,
+            max_range_m,
+            defense_range_m: 45_000,
+            heat_cost_permille: 140,
+            cooldown_ms: 1_000,
+            defence_cooldown_ms: None,
+            cooldown_remaining_ms: 0,
+        }
+    }
+
+    fn turret(id: &str) -> LaserMount {
+        laser(id, LaserMode::Offense, 110, 500_000)
+    }
+
+    fn spinal(id: &str, rounds: u16, muzzle_vel_mps: i64) -> RailgunMount {
+        RailgunMount {
+            id: id.to_owned(),
+            muzzle_vel_mps,
+            max_range_m: 250_000,
+            slug_damage: 145,
+            rounds_remaining: rounds,
+            fired_since_full: 0,
+            heat_cost_permille: 220,
+            cooldown_ms: 3_000,
+            cooldown_remaining_ms: 0,
+        }
+    }
+
+    fn rotary(id: &str, ammo: u32) -> PdcMount {
+        PdcMount {
+            id: id.to_owned(),
+            envelope_m: 15_000,
+            burst_rounds: 50,
+            ammo_remaining: ammo,
+            operational: true,
+            cooldown_ms: 500,
+            cooldown_remaining_ms: 0,
+            damage_per_burst: 50,
+        }
+    }
+
+    /// **The Rust table as it stood before doc 49 unit CC.6**, written out value by value, so
+    /// the content that replaced it is held to every number (the unit is the format, not the
+    /// retune).
+    fn table_before_cc6(key: &str) -> SpaceUnitOverlay {
+        let corvette_rcs = rcs(40, 35, 240, 320, 20, 120, 160, 1);
+        let dray_lasers = vec![turret("laser_dorsal"), turret("laser_ventral")];
+        match key {
+            "tacsim.unit.corvette" => SpaceUnitOverlay {
+                unit_id: "tacsim.unit.corvette",
+                rcs_authority: corvette_rcs,
+                torpedo_tubes: vec![tubes("torp_bow", 8)],
+                lasers: vec![
+                    laser("laser_1", LaserMode::Offense, 180, 160_000),
+                    laser("laser_2", LaserMode::Defense, 110, 500_000),
+                ],
+                railguns: vec![spinal("rail_spinal", 24, 20_000)],
+                pdcs: vec![rotary("pdc_port", 3_000), rotary("pdc_stbd", 3_000)],
+                decoys_remaining: 6,
+                pixel_model: "corvette",
+            },
+            "tacsim.unit.raider_heavy" => SpaceUnitOverlay {
+                unit_id: "tacsim.unit.raider_heavy",
+                rcs_authority: rcs(35, 30, 210, 280, 18, 105, 140, 1),
+                torpedo_tubes: vec![tubes("torp_bow", 8)],
+                lasers: vec![turret("laser_1"), turret("laser_2")],
+                railguns: vec![spinal("rail_spinal", 24, 12_000)],
+                pdcs: vec![rotary("pdc_port", 3_000), rotary("pdc_stbd", 3_000)],
+                decoys_remaining: 6,
+                pixel_model: "raider",
+            },
+            "tacsim.unit.corvette_interdictor" => SpaceUnitOverlay {
+                unit_id: "tacsim.unit.corvette",
+                rcs_authority: corvette_rcs,
+                torpedo_tubes: vec![tubes("torp_bow", 8)],
+                lasers: vec![
+                    turret("laser_1"),
+                    laser("laser_2", LaserMode::Defense, 110, 500_000),
+                ],
+                railguns: vec![spinal("rail_spinal", 24, 20_000)],
+                pdcs: vec![rotary("pdc_port", 3_000), rotary("pdc_stbd", 3_000)],
+                decoys_remaining: 6,
+                pixel_model: "corvette",
+            },
+            "tacsim.unit.halcyon" => SpaceUnitOverlay {
+                unit_id: "tacsim.unit.halcyon",
+                rcs_authority: rcs(18, 15, 100, 140, 9, 50, 70, 2),
+                torpedo_tubes: vec![tubes("torp_bow", 16)],
+                lasers: dray_lasers,
+                railguns: vec![spinal("rail_spinal", 32, 20_000)],
+                pdcs: vec![
+                    rotary("pdc_port", 4_000),
+                    rotary("pdc_stbd", 4_000),
+                    rotary("pdc_dorsal", 4_000),
+                    rotary("pdc_ventral", 4_000),
+                ],
+                decoys_remaining: 8,
+                pixel_model: "halcyon",
+            },
+            "tacsim.unit.dray_p" => SpaceUnitOverlay {
+                unit_id: "tacsim.unit.dray_p",
+                rcs_authority: rcs(32, 28, 195, 260, 16, 95, 130, 1),
+                torpedo_tubes: Vec::new(),
+                lasers: dray_lasers,
+                railguns: Vec::new(),
+                pdcs: vec![rotary("pdc_dorsal", 2_000), rotary("pdc_ventral", 2_000)],
+                decoys_remaining: 4,
+                pixel_model: "freighter",
+            },
+            _ => SpaceUnitOverlay {
+                unit_id: "tacsim.unit.dray",
+                rcs_authority: DockingRcsAuthority::default(),
+                torpedo_tubes: Vec::new(),
+                lasers: dray_lasers,
+                railguns: Vec::new(),
+                pdcs: vec![rotary("pdc_dorsal", 2_000), rotary("pdc_ventral", 2_000)],
+                decoys_remaining: 4,
+                pixel_model: "freighter",
+            },
+        }
+    }
+
+    #[test]
+    fn cc6_every_shipped_fit_carries_the_rust_tables_values() {
+        for key in [
+            "tacsim.unit.dray",
+            "tacsim.unit.dray_p",
+            "tacsim.unit.corvette",
+            "tacsim.unit.corvette_interdictor",
+            "tacsim.unit.raider_heavy",
+            "tacsim.unit.halcyon",
+            // A hull with no fit of her own flies the Dray's, as the table's last arm did.
+            "tacsim.unit.tv_prospector",
+            "tacsim.unit.no_such_hull",
+        ] {
+            assert_eq!(
+                space_unit_overlay_for_id(key),
+                table_before_cc6(key),
+                "{key}: the fit is the Rust table's"
+            );
+        }
+        assert!(
+            space_fit_for_id("tacsim.unit.tv_prospector").is_none(),
+            "the prospector has no fit of her own"
+        );
+    }
+
+    #[test]
+    fn cc6_every_shipped_laser_is_dual_mode_and_the_dray_may_answer_fire() {
+        // Q-49-25: the Dray and Dray-P keep dual-mode lasers, so R-47-2 keeps its live hull.
+        let catalog = fielded_space_catalog().expect("the shipped content builds");
+        assert_eq!(catalog.space_fits.len(), 6, "six shipped fits");
+        assert_eq!(catalog.space_mounts.len(), 6, "six shipped mount rows");
+        for (id, fit) in &catalog.space_fits {
+            for mount in &fit.mounts {
+                let row = catalog
+                    .space_mounts
+                    .get(&mount.mount)
+                    .expect("a shipped row");
+                if matches!(row.family, SpaceMountFamily::Laser(_)) {
+                    assert!(
+                        mount.allows(LaserModeWord::Offence)
+                            && mount.allows(LaserModeWord::Defence),
+                        "{id}: {} is dual-mode",
+                        mount.id
+                    );
+                }
+            }
+        }
+        for dray in ["tacsim.unit.dray", "tacsim.unit.dray_p"] {
+            let overlay = space_unit_overlay_for_id(dray);
+            assert_eq!(overlay.lasers.len(), 2, "{dray}: two lasers");
+            assert!(
+                overlay
+                    .lasers
+                    .iter()
+                    .all(|laser| laser.offence_allowed() && laser.mode == LaserMode::Offense),
+                "{dray}: both start in offence and may fire at a lock"
+            );
+        }
+    }
+
+    #[test]
+    fn cc6_a_fitted_cores_chassis_flies_its_chassiss_fit() {
+        assert_eq!(
+            space_unit_overlay_for_id(crate::definitions::core_replacement::SHIP_I),
+            space_unit_overlay_for_id("tacsim.unit.dray")
+        );
+    }
+
+    #[test]
+    fn cc6_the_belt_raider_is_her_own_unit_on_the_corvettes_hull() {
+        let raider = unit_spec_for_id(crate::definitions::content::RAIDER_HEAVY)
+            .expect("the raider's unit file is fielded");
+        let corvette = unit_spec_for_id("tacsim.unit.corvette").expect("the corvette");
+        assert_eq!(
+            raider.sections, corvette.sections,
+            "the corvette's sections"
+        );
+        assert_eq!(raider.facets, corvette.facets);
+        assert_eq!(
+            raider.logistics, corvette.logistics,
+            "her drive and stowage"
+        );
+        let (unit, _) =
+            instantiate_stock_space_unit(ObjId(77), crate::definitions::content::RAIDER_HEAVY)
+                .expect("she binds");
+        let (corvette_unit, _) =
+            instantiate_stock_space_unit(ObjId(78), "tacsim.unit.corvette").expect("it binds");
+        let ship = space_ship_from_tactical_unit(
+            &unit,
+            "raider",
+            "Belt Raider",
+            crate::space::picket::BELT_RAIDER_PARTY,
+            [0, 0, 0],
+            [0, 0, 0],
+        )
+        .expect("she flies");
+        let mut before = space_ship_from_tactical_unit(
+            &corvette_unit,
+            "raider",
+            "Belt Raider",
+            crate::space::picket::BELT_RAIDER_PARTY,
+            [0, 0, 0],
+            [0, 0, 0],
+        )
+        .expect("it flies");
+        // Before CC.6 the raider was a corvette unit with this overlay laid on it.
+        apply_space_unit_overlay(
+            &mut before,
+            &space_unit_overlay_for_id("tacsim.unit.raider_heavy"),
+        );
+        before.hull_class = crate::definitions::content::RAIDER_HEAVY.to_owned();
+        assert_eq!(ship, before, "she flies as the overlaid corvette flew");
     }
 }

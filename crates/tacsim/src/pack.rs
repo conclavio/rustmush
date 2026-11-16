@@ -248,6 +248,12 @@ pub enum PackEntry {
     /// instantiates (a domain, orgs, accounts, obligations) exactly as an arena
     /// does.
     Port(crate::port::PortDef),
+    /// **Doc 49 unit CC.6** — one space mount row (Q-49-11): a family and every number the
+    /// space kernel reads off it. Checked at load, never minted.
+    SpaceMount(crate::definitions::space_mount::SpaceMountDef),
+    /// **Doc 49 unit CC.6** — one hull's fit: the unit it fits and its mounts, each with its
+    /// id, its row, its magazine and a laser's allowed modes (Q-49-24). Checked, never minted.
+    SpaceFit(crate::definitions::space_mount::SpaceFitDef),
 }
 
 impl PackEntry {
@@ -274,6 +280,8 @@ impl PackEntry {
             PackEntry::Resolution(_) => "resolution",
             PackEntry::Arena(_) => "arena",
             PackEntry::Port(_) => "port",
+            PackEntry::SpaceMount(_) => "space_mount",
+            PackEntry::SpaceFit(_) => "space_fit",
         }
     }
 
@@ -315,6 +323,10 @@ impl PackEntry {
             // Checked in `from_content`'s per-entry loop, where the entry id is
             // in scope (doc 18 cut IC3).
             PackEntry::Port(_) => {}
+            // Doc 49 unit CC.6: the space kinds re-run their own bounds; a fit's references
+            // are the catalogue build's.
+            PackEntry::SpaceMount(def) => def.check(&def.label).map_err(definition_error)?,
+            PackEntry::SpaceFit(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Commodity(def) => {
                 if too_long(&def.label) {
                     return Err(PackError::LabelTooLong {
@@ -1424,8 +1436,9 @@ fn place_clusters_fault(
 ///
 /// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight; 17b cut M3.1
 /// the fifteenth, `core` (doc 17 §9); doc 18 cut IC3 the sixteenth, `port`
-/// (doc 18 §4.7); doc 39 cut IN.1 the nineteenth, `plant` (Q-39-35).
-pub const OWNED_KINDS: [&str; 19] = [
+/// (doc 18 §4.7); doc 39 cut IN.1 the nineteenth, `plant` (Q-39-35); doc 49 unit CC.6 the
+/// twentieth and twenty-first, `space_mount` and `space_fit` (Q-49-11).
+pub const OWNED_KINDS: [&str; 21] = [
     "commodity",
     "recipe",
     "hardware_recipe",
@@ -1445,6 +1458,8 @@ pub const OWNED_KINDS: [&str; 19] = [
     "resolution",
     "arena",
     "port",
+    "space_mount",
+    "space_fit",
 ];
 
 /// One definition refusal as a pack refusal (16b cut C.2).
@@ -1702,6 +1717,8 @@ impl RulesPack {
                         | PackEntry::Core(_)
                         | PackEntry::Plant(_)
                         | PackEntry::Resolution(_)
+                        | PackEntry::SpaceMount(_)
+                        | PackEntry::SpaceFit(_)
                 )
             );
             if misplaced {

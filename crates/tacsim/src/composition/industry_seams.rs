@@ -91,7 +91,8 @@ impl SystemOpener for SiteOpener {
 }
 
 /// **The surface provider's draws** (doc 20 §3.4, D11): a `tacsim.surface` deposit's
-/// `tacsim.pockets` cursor total — absent is 0 (nothing drawn yet), a cursor of another
+/// `tacsim.pockets` cursor total, net of its re-rolls (doc 48 unit PL.10:
+/// `PocketCursor::audit_drawn`) — absent is 0 (nothing drawn yet), a cursor of another
 /// deposit or an unreadable one is `None` (industry then quarantines the block, fail closed).
 pub struct SurfaceDraws;
 
@@ -108,7 +109,8 @@ impl ExternalDraws for SurfaceDraws {
             .clone();
         match ctx.action_state(&pockets, &deposit.id()) {
             Ok(None) => Some(0),
-            Ok(Some(cursor)) if cursor.deposit == deposit.id() => cursor.drawn_total(),
+            // Doc 48 unit PL.10: net of what the deposit's re-rolls credited back.
+            Ok(Some(cursor)) if cursor.deposit == deposit.id() => cursor.audit_drawn(),
             Ok(Some(_)) => {
                 tracing::error!(
                     deposit = %deposit.id(),

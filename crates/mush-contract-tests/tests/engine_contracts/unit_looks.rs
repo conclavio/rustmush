@@ -62,6 +62,10 @@ const LOOKLESS: &[(&str, &str)] = &[
         "tacsim.unit.corvette",
         "a space customs patrol cutter (doc 35b cut SF.R12), never in the ground arena: space tactical uses section rows, with no arena sprite",
     ),
+    (
+        "tacsim.unit.raider_heavy",
+        "the belt raider (doc 49 unit CC.6), the corvette's hull, never in the ground arena: space tactical uses section rows, with no arena sprite",
+    ),
 ];
 
 /// One shipped unit type's rules, as far as a look needs them.

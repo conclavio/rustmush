@@ -14,7 +14,7 @@
     "commander": "Kaelen Vane",
     "organization": "Kirkwood Corsairs",
     "hull_name": "Belt Raider",
-    "unit": "tacsim.unit.corvette",
+    "unit": "tacsim.unit.raider_heavy",
     "overlay": "tacsim.unit.raider_heavy",
     "doctrine": "belt_raider",
     "doctrine_sha256": "aa74a43b2575a0f11dc5597b6a636f47bc6d02a8c1f2cf25dbeb8baa7de0ca31",

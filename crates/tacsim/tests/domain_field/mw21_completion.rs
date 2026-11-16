@@ -364,7 +364,9 @@ fn names(command: &BubbleInputCommand, ship: &str) -> bool {
         | C::SetOre { ship_id, .. } => ship_id == ship,
         C::FireTorpedoSalvo { shooter_id, .. }
         | C::FireOffensiveLasers { shooter_id, .. }
-        | C::FireRailgun { shooter_id, .. } => shooter_id == ship,
+        | C::FireRailgun { shooter_id, .. }
+        // Doc 49 unit CC.6: a tube family or spinal gun fired by its id.
+        | C::FireMount { shooter_id, .. } => shooter_id == ship,
         C::StepWall { .. } => false,
     }
 }

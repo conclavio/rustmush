@@ -4,9 +4,11 @@
 //! and **the lock's one home** (a [`PocketLock`] on a row; SM.7 writes it).
 //!
 //! It is industry's `ExternalDraws` answer: the composed `SurfaceDraws`
-//! (`crate::composition::industry_seams`) reports [`PocketCursor::drawn_total`], and industry's
+//! (`crate::composition::industry_seams`) reports [`PocketCursor::audit_drawn`], and industry's
 //! 60 s sweep checks `initial_reserve − pool == Σ drawn` for every surface deposit, closing
-//! the whole block on a mismatch. Written in the **same bundle** as every draw from the
+//! the whole block on a mismatch. **Doc 48 unit PL.10** adds the deposit's re-roll ledger
+//! ([`RerollLedger`]): a worked-out deposit re-rolls, its pool credited and its rows cleared in
+//! one bundle, and the ledger keeps both the audit and the never-falling total true. Written in the **same bundle** as every draw from the
 //! deposit's pool — SM.6's worked transfer (`tacsim_site_work`) inserts it; SM.7's cycles
 //! update it — so the invariant holds from the first sweep.
 //!
@@ -51,6 +53,62 @@ pub struct PocketCursor {
     pub deposit: OreDepositId,
     /// One row per pocket drawn or locked, pocket numbers strictly increasing.
     pub rows: Vec<CursorRow>,
+    /// **The deposit's re-rolls** (doc 48 unit PL.10; Q-48-61): absent until the deposit is
+    /// first worked out, so a cursor that never was encodes as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reroll: Option<RerollLedger>,
+}
+
+/// **A deposit's re-roll ledger** (doc 48 unit PL.10; Q-48-61): a worked-out deposit re-rolls
+/// after `[tacsim.surface].ore_reroll_ic_days`. A re-roll credits the deposit's pool with its
+/// opened reserve again and clears the rows (a locked row stays, with nothing drawn), in one
+/// bundle; the tonnes the cleared rows held move into `carried_t`, so [`PocketCursor::drawn_total`]
+/// never falls (the claim renewal's worked tonnes read it), and the tonnes credited into
+/// `rerolled_t`, so industry's audit reads [`PocketCursor::audit_drawn`] and
+/// `initial_reserve − pool == audit_drawn` holds across every re-roll.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RerollLedger {
+    /// Re-rolls landed: the counter (the next is `rerolls + 1`).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub rerolls: u32,
+    /// Σ `drawn_t` of the rows the re-rolls cleared.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub carried_t: u64,
+    /// Σ the tonnes the re-rolls credited into the deposit's pool.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub rerolled_t: u64,
+    /// The IC instant the deposit's clerk recorded it worked out since its last re-roll, if
+    /// it has: the re-roll is due `ore_reroll_ic_days` after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worked_out_ic: Option<i64>,
+}
+
+const fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+const fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+impl RerollLedger {
+    /// The ledger's own invariants: nothing carried or credited before the first re-roll, and
+    /// never more credited than carried (a re-roll lands only at an empty pool, where the audit
+    /// says the rows and the carry hold at least the reserve it credits).
+    ///
+    /// # Errors
+    ///
+    /// The rule broken, in words.
+    pub fn check(&self) -> Result<(), String> {
+        if self.rerolls == 0 && (self.carried_t != 0 || self.rerolled_t != 0) {
+            return Err("a deposit carries re-rolled tonnes before its first re-roll".to_owned());
+        }
+        if self.rerolled_t > self.carried_t {
+            return Err("a deposit's re-rolls credited more than they carried".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// **One pocket's row**: its number in the block and the tonnes drawn from it.
@@ -123,15 +181,47 @@ impl PocketCursor {
                 ));
             }
         }
+        if let Some(ledger) = &self.reroll {
+            ledger.check()?;
+        }
         Ok(())
     }
 
-    /// Σ `drawn_t`, checked (64 rows of 24 t cannot overflow, but the sum is checked anyway).
+    /// Σ `drawn_t` of the rows: what the deposit has given since its last re-roll (all of it,
+    /// when it never re-rolled). Checked (64 rows of 24 t cannot overflow, but the sum is
+    /// checked anyway).
     #[must_use]
-    pub fn drawn_total(&self) -> Option<u64> {
+    pub fn rows_drawn(&self) -> Option<u64> {
         self.rows
             .iter()
             .try_fold(0_u64, |sum, row| sum.checked_add(u64::from(row.drawn_t)))
+    }
+
+    /// **Every tonne the deposit has ever given**: the rows and what its re-rolls carried
+    /// (doc 48 unit PL.10). It never falls, so a block's worked tonnes this term (the claim
+    /// renewal's floor) and a filed space draw's expected total read it across a re-roll.
+    #[must_use]
+    pub fn drawn_total(&self) -> Option<u64> {
+        let carried = self.reroll.as_ref().map_or(0, |ledger| ledger.carried_t);
+        self.rows_drawn()?.checked_add(carried)
+    }
+
+    /// **What industry's audit holds against the deposit** (doc 20 §3.4; doc 48 unit PL.10):
+    /// [`Self::drawn_total`] less what the re-rolls credited back, so `initial_reserve − pool
+    /// == audit_drawn` across every re-roll. `None` past a bound, which the audit reads as
+    /// unanswered (the block closes, fail closed).
+    #[must_use]
+    pub fn audit_drawn(&self) -> Option<u64> {
+        let rerolled = self.reroll.as_ref().map_or(0, |ledger| ledger.rerolled_t);
+        self.drawn_total()?.checked_sub(rerolled)
+    }
+
+    /// **Whether the record holds nothing worth keeping**: no row and no re-roll ledger. A
+    /// cursor that is empty is deleted; one with a ledger and no row is kept, or the deposit
+    /// would forget its re-rolls.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty() && self.reroll.is_none()
     }
 
     /// The row for `pocket`, if any.
@@ -176,6 +266,7 @@ mod tests {
             schema: POCKET_CURSOR_SCHEMA,
             deposit: OreDepositId(7),
             rows,
+            reroll: None,
         }
     }
 
@@ -237,6 +328,58 @@ mod tests {
         assert_eq!(cursor_key_parse(&cursor_key_text(&id)), Some(id));
         assert_eq!(cursor_key_parse("00ABCDEF01234567"), None);
         assert_eq!(cursor_key_parse("abc"), None);
+    }
+
+    /// **Doc 48 unit PL.10: the ledger's wire and totals.** A cursor with no ledger encodes as it
+    /// did before the ledger existed (no `reroll` key), and one with a ledger round-trips; the
+    /// totals carry and net; the ledger's check refuses a carry before any re-roll and a credit
+    /// past the carry; a ledger with no row is not empty.
+    #[test]
+    fn pl10_the_ledger_is_skipped_when_absent_and_checked_when_present() {
+        let plain = cursor(vec![row(1, 3)]);
+        assert_eq!(
+            serde_json::to_value(&plain).expect("encodes"),
+            serde_json::json!({ "schema": 1, "deposit": 7, "rows": [{ "pocket": 1, "drawn_t": 3 }] })
+        );
+        let mut rerolled = cursor(vec![row(1, 3)]);
+        rerolled.reroll = Some(RerollLedger {
+            rerolls: 2,
+            carried_t: 60,
+            rerolled_t: 60,
+            worked_out_ic: None,
+        });
+        let wire = serde_json::to_value(&rerolled).expect("encodes");
+        assert_eq!(
+            wire["reroll"],
+            serde_json::json!({ "rerolls": 2, "carried_t": 60, "rerolled_t": 60 })
+        );
+        assert_eq!(
+            serde_json::from_value::<PocketCursor>(wire).expect("decodes"),
+            rerolled
+        );
+        assert_eq!(rerolled.rows_drawn(), Some(3));
+        assert_eq!(rerolled.drawn_total(), Some(63));
+        assert_eq!(rerolled.audit_drawn(), Some(3));
+        assert!(rerolled.check().is_ok());
+        assert_eq!(plain.drawn_total(), plain.audit_drawn());
+        let mut early = cursor(Vec::new());
+        early.reroll = Some(RerollLedger {
+            carried_t: 1,
+            ..RerollLedger::default()
+        });
+        assert!(early.check().is_err(), "carried before a re-roll");
+        let mut over = rerolled.clone();
+        if let Some(ledger) = over.reroll.as_mut() {
+            ledger.rerolled_t = 61;
+        }
+        assert!(over.check().is_err(), "credited past the carry");
+        let mut kept = cursor(Vec::new());
+        assert!(kept.is_empty());
+        kept.reroll = Some(RerollLedger {
+            worked_out_ic: Some(5),
+            ..RerollLedger::default()
+        });
+        assert!(!kept.is_empty() && kept.check().is_ok());
     }
 
     /// The wire is strict.

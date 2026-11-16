@@ -51,3 +51,8 @@ mod sim_units;
 mod sim_weapons;
 #[path = "sim_lenses/typeahead.rs"]
 mod typeahead;
+
+// Doc 49 cut CC.0 (Q-49-16): the shipped mounts' loads and cycles, read off the
+// content for the lenses that assert them. A helper module, not a former file.
+#[path = "sim_lenses/shipped.rs"]
+mod shipped;

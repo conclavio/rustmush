@@ -29,6 +29,7 @@
 //! (16b cut T.3) is what carries the placement into the match: *the unit's own world
 //! pose when it is on the window and its cell is free*.
 
+use crate::shipped::mount;
 use crate::support;
 
 use support::{STEP_TIMEOUT, wait_until};
@@ -531,9 +532,11 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         "a contact is never named by its object: {seen}"
     );
 
-    // Before the lock, `WEAPONSTATUS` is a full load and no band.
+    // Before the lock, `WEAPONSTATUS` is a full load and no band. The load is the
+    // content's (doc 49 cut CC.0), so a retune of the round's pack moves no line here.
+    let cannon = mount("line_tank", "cannon");
     let seen = ask(&mut ada, "WEAPONSTATUS", "cannon").await;
-    assert!(seen.contains("40 of 40 round(s)"), "{seen}");
+    assert!(seen.contains(&cannon.full()), "{seen}");
     assert!(seen.contains("ready"), "{seen}");
     assert!(!seen.contains("Locked on"), "{seen}");
 
@@ -578,14 +581,20 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
 
     // The shooter: a round down, and cycling. The second `FIRE` is refused for the
     // cycle and not for the lock, which is the arena's own `ready_at_ms` speaking.
-    let spent = poll(&mut ada, "WEAPONSTATUS", "cannon", "39 of 40 round(s)").await;
+    let spent = poll(
+        &mut ada,
+        "WEAPONSTATUS",
+        "cannon",
+        &cannon.left(cannon.burst),
+    )
+    .await;
     assert!(spent.contains("cycling"), "{spent}");
     let seen = ask(&mut ada, "FIRE", "Still cycling").await;
     assert!(!seen.contains("No lock"), "the lock is still held: {seen}");
 
     // The target: untouched in the magazine, and ready. Damage is below.
     let seen = ask(&mut bo, "WEAPONSTATUS", "cannon").await;
-    assert!(seen.contains("40 of 40 round(s)"), "{seen}");
+    assert!(seen.contains(&cannon.full()), "{seen}");
     assert!(seen.contains("ready"), "{seen}");
     assert!(
         !seen.contains("Locked on"),

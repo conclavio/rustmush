@@ -107,6 +107,7 @@
 //! `arena_def::opening_pose` (16b cut T.3) is what carries the placement into the
 //! match. `observer_rule.rs` uses the same device for the same reason.
 
+use crate::shipped::mount;
 use crate::support;
 
 use support::{STEP_TIMEOUT, wait_until};
@@ -166,8 +167,22 @@ const BLUE_CELL: (i64, i64) = (152, 97);
 /// apart that doc 16 §3.4's one-unit-per-cell rule never comes into it.
 const STOP_AT_M: i64 = 1_085;
 
-/// The cannon's authored load (`ammunition/he_105.json`).
-const LOAD: i64 = 40;
+/// The cannon's authored load (`ammunition/he_105.json`), read off the content
+/// (doc 49 cut CC.0, Q-49-16), so a retune of the round's pack moves no line here.
+///
+/// [`cannon_rounds`] tells the cannon's row from the coaxial's by the load alone,
+/// so the two loads must differ; this says so rather than misreading a row.
+fn load() -> i64 {
+    let (cannon, coaxial) = (
+        mount("line_tank", "cannon"),
+        mount("line_tank", "machine_gun"),
+    );
+    assert_ne!(
+        cannon.magazine, coaxial.magazine,
+        "the cannon's row is told from the coaxial's by its load"
+    );
+    i64::from(cannon.magazine)
+}
 
 /// How many shots the fight is allowed before the test calls it.
 ///
@@ -566,10 +581,11 @@ async fn read_cannon_rounds(term: &mut Term) -> Option<i64> {
 }
 
 /// The cannon's rounds, off a `WEAPONSTATUS` listing: `cannon  ready  39 of 40
-/// round(s)  band 1 of 2` answers `39`. The coaxial's belt is two thousand, so
-/// the load is what tells the two rows apart.
+/// round(s)  band 1 of 2` answers `39` (at the load cut C shipped). The
+/// coaxial's belt is another size, so the load is what tells the two rows apart
+/// ([`load`] holds them apart).
 fn cannon_rounds(listing: &str) -> Option<i64> {
-    let needle = format!(" of {LOAD} round(s)");
+    let needle = format!(" of {} round(s)", load());
     listing
         .lines()
         .rfind(|line| line.contains(&needle))
@@ -1144,7 +1160,10 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // (7) The lock, its percentage, and the fight.
     // -----------------------------------------------------------------
     let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
-    assert!(seen.contains("40 of 40 round(s)"), "{seen}");
+    assert!(
+        seen.contains(&mount("line_tank", "cannon").full()),
+        "{seen}"
+    );
     assert!(!seen.contains("Locked on"), "{seen}");
 
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
@@ -1214,7 +1233,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         // nowhere, so the tally is put back and the loop tries again. It is the one
         // place this test has to know that the cockpit is a mirror and not the
         // truth.
-        let want = LOAD - shots;
+        let want = load() - shots;
         let mut cockpit = true;
         let mut confirmed = false;
         for _ in 0..16 {
@@ -1250,11 +1269,12 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         "the cockpit never showed a round count after a shot ({shots} fired):\n{}",
         tail(&strip_ansi(&ada.seen))
     );
+    let load = load();
     for (fired, rounds) in &readings {
         assert_eq!(
             fired + rounds,
-            LOAD,
-            "after {fired} shot(s) the cockpit showed {rounds} of {LOAD} rounds"
+            load,
+            "after {fired} shot(s) the cockpit showed {rounds} of {load} rounds"
         );
     }
 
@@ -1632,7 +1652,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     assert!(fired_rounds > 0, "the black box records no shot at all");
     assert_eq!(
         fired_rounds + left,
-        LOAD,
+        load,
         "rounds fired ({fired_rounds}) plus rounds left ({left}) is the load"
     );
     // The test's own count is what the *cockpit* accepted; the ledger's is what the
