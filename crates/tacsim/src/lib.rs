@@ -853,6 +853,7 @@ impl GameModule for TacsimRuleset {
         // Doc 20 cut SM.10 (D5): the claim orders the tenure authority re-plans at the offer, RAM
         // only (the `ActOrders` precedent).
         reg.state(port::claims::ClaimOrders::default());
+        reg.state(port::census::money_census_hook()); // Doc 48 cut EX.0: Q-48-17's categories
         reg.state(
             match_::mind_tape::TapeStore::new(self.cfg.arena.tape_retained_max_bytes)
                 .map_err(|e| ModError::msg(e.to_string()))?,

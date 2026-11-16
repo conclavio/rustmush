@@ -146,6 +146,7 @@ mod observer;
 mod api;
 pub mod bloom;
 mod boot;
+pub mod census;
 pub mod checkpoint;
 mod commands;
 mod config;

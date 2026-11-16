@@ -143,6 +143,8 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // session held across a restart never triggers the reconnect hook. Deliver every
     // standing queue whose owner is connected right now, bounded per fire.
     crate::notice::deliver_connected(ctx);
+    // Doc 48 cut EX.0: the money census reads every account once when an IC day turns.
+    crate::census::sample(ctx);
     stamp_sweep(ctx, now, ic_now);
 }
 

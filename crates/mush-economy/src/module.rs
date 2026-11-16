@@ -2284,6 +2284,8 @@ impl GameModule for EconomyModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.state(EconomyStore::default());
+        // Doc 48 cut EX.0: the money census's book, read and written by the sweep only.
+        reg.state(crate::census::CensusBook::default());
         for provider in self.state.facts.iter() {
             provider.register_scoped(reg)?;
         }
@@ -2492,6 +2494,8 @@ impl GameModule for EconomyModule {
                 .map_err(|_| ModError::msg("bay refit definitions already captured"))?;
         }
         let fetch_ms = data.fetch_ms;
+        // Doc 48 cut EX.0: the money census's document, read before the boot consumes `data`.
+        let census = crate::census::CensusBook::load(&data.kv);
         let started = std::time::Instant::now();
         let tail_max = if self.state.config.tx_tail_max == 0 {
             DEFAULT_TX_TAIL_MAX
@@ -2618,6 +2622,9 @@ impl GameModule for EconomyModule {
         *ctx.w
             .module_state_mut::<EconomyStore>()
             .expect("economy store slot") = store;
+        if let Some(book) = ctx.w.module_state_mut::<crate::census::CensusBook>() {
+            *book = census;
+        }
         // SP1 (D-LBK-7): adopt or create every declared cadence, now that the store is
         // live and before any layered module (housing, the WoD layer) looks its
         // campaign clock up by name.

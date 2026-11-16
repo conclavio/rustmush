@@ -67,6 +67,8 @@ mod crew_treatment;
 mod driving;
 #[path = "domain_field/escort_lease.rs"]
 mod escort_lease;
+#[path = "domain_field/ex0_matter_sinks.rs"]
+mod ex0_matter_sinks;
 #[path = "domain_field/excursions.rs"]
 mod excursions;
 #[path = "domain_field/field_ap1.rs"]
