@@ -745,10 +745,18 @@ with in-step, census and distinct tests). `UNDER_SALE` now says the hull is up f
   - the whole of `mush-bot` passes (798, the new rows' family included);
   - `tacsim`'s lib tests over the buyout, the house sale, the bay, the vendor and the hull
     sale pass (66).
-- **The M7 market stories** (`player_market_story`, `player_market_typed`): they fail, and fail
-  identically on base main `c85a8744f`, where EX.1a measured them: `+minds/resell <lic>=<player>`
-  queues and is refused at its prepare ("That did not go through. Nothing changed."). The
-  cause is the #623 regression in the kernel's resale offer cap. EX.2 leaves it unchanged.
+- **The M7 market stories** (`player_market_story`, `player_market_typed`): both pass on the
+  tree merged with main `b4254e826`, which has #636's fix to the kernel's resale offer cap.
+  Before that merge they failed exactly as on base main `c85a8744f`: `+minds/resell` was
+  refused at its prepare.
+- **After the merge with main** (`b4254e826`: EX.1b, #636, PL.2, PL.7, CC.4, CC.7, CC.9), on
+  conclav.dev, these pass:
+  - the format check, the bot's `minds::` rows (38), `mush-contract-tests` and workspace clippy;
+  - mush-market and mush-economy (1,171);
+  - `tacsim --test domain_economy` in full (603, EX.1b's venue stories included);
+  - `co6_cored_ship` (3);
+  - `commerce_composition` (91);
+  - the M7 stories (2).
 - **The gates:** on the final tree, `cargo fmt --check`; workspace clippy with
   `-D warnings`; the M7 memory-size clippy; rustdoc with `-D warnings` on mush-market, tacsim,
   mush-composition and mush-bot, with and without private items; `mush-contract-tests` (the
