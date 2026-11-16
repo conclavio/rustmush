@@ -629,11 +629,8 @@ Not built.
     ledger's own check refuses the second batch, and every story runs one batch a process.
 
 **Divergences:**
-- **Relay blanks are not built here** (the starting session was told, 2026-11-16).
-  - Lifting `MAX_PAIRS` past about 13 needs an owner call on the relay registry's 32 nodes.
-  - A produced blank delivered before `+relaypair/stock` would stop boot.
-  - `ic_slice_loop`'s r9a and r9b stories pin the blank counts.
-  - PL.2b, stacked on this PR, takes them.
+- **Relay blanks are not built here.** The starting session approved the split on 2026-11-16, and
+  PL.2b waits for the owner's call on how many relay pairs the world gets (Not built, below).
 - **No works slot is booked, and the farms and the fab have no facility.**
   - They are house processes on the stock clerk's turn, as PL.1's refine is.
   - Luna and Titan have no plant rooms in their atlases.
@@ -650,7 +647,18 @@ Not built.
   moved with it.
 
 **Not built:**
-- **Relay blanks** (PL.2b, above).
+- **Relay blanks: PL.2b, waiting for the owner's call.** The ceiling is the relay registry, not
+  `MAX_PAIRS` (8, `relay_foundry.rs:26`). The registry allows 32 nodes and 64 pairs
+  (`mush-sim/src/relay.rs:20-21`); each private pair takes two nodes and the public star five,
+  so about 13 pairs can ever be installed. How many pairs the world gets is a design call. PL.2b
+  fixes two findings once that is ruled:
+  - **Boot fails on a blank pool with no stock receipt** (`relay_foundry.rs:508-515`). A
+    produced blank delivered into the foundry vault before `+relaypair/stock` would stop the
+    boot.
+  - **`ic_slice_loop`'s r9a and r9b stories pin the blank counts**
+    (`mush-server/tests/commerce_composition/ic_slice_loop.rs`,
+    `r9a_paid_manufacture_survives_restart_and_installs_once` and
+    `r9b_fleet_front_real_refit_passage_and_carrier_loss`), with 8 blanks then 7.
 - **The census.** A process ledger consumes two goods. Once EX.0 counts the chain's goods,
   `milled` for a process ledger is `ore_t` of the ore plus `with_t` of the second input, less
   `product_t` of the product, in kilograms. Its mill scan reads `counted(&ledger.ore)` only.
