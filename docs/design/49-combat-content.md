@@ -1,8 +1,21 @@
 # 49. Combat content — the armaments, the rounds and the shot, surveyed
 
-Draft 0.1, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
+Draft 0.2, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
 lane, with the lead spot-checking the cycle figures, the cycle floor, the card presets, the slot limit
-and the free laser recharge. Anchors are file names with line numbers; line numbers drift.
+and the free laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
+0.1, the same day, was the survey.
+
+**Draft 0.2, the same day, records the owner's first rulings**, made from play-testing in the arena:
+"the shots happen too fast".
+- **Q-49-2:** the cycle floor is **5 s**.
+- **Q-49-3:** the cannon cycles at **15 s**, the coaxial gun at **5 s**, the autocannon at **10 s**,
+  and the missile rack stays at **30 s**.
+- **Q-49-5:** GC.7's prices stay. In the owner's words: "scarcity comes from magazine size, we dont
+  want to discourage fighting".
+- **Q-49-7:** accepted at its default.
+
+The 5 s floor sits above two figures §5 proposed: the ground pulse laser's 3 s and the space offence
+laser's 4 s. They are raised as Q-49-19 (§6.5). Every other question is open.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -353,26 +366,35 @@ The proposal in one paragraph:
 - Retune the stock mind's default card and the bot to the new palette.
 - Variety (a second round type for the main gun, a reading for penetration) comes after, as content.
 
-**A provisional ground palette.** These are numbers to start from, not to wait on (Q-49-3):
+**The ground palette.** The cycles are ruled (Q-49-3, 2026-11-15). The magazines are as proposed and
+provisional:
 
-| Mount | Cycle now → proposed | Magazine now → proposed | Note |
+| Mount | Cycle now → ruled | Magazine now → proposed | Note |
 |---|---|---|---|
-| 105 mm cannon | 6 s → **8 s** | 40 → **24** HE | the main decision of a duel |
-| coaxial gun | 1 s → **4 s**, bursts of 10 | 2,000 → **600** (60 bursts) | anti-drone and soft targets |
-| 30 mm autocannon | 3 s → **5 s**, bursts of 3 | 240 → **120** (40 bursts) | the scout's main gun |
+| 105 mm cannon | 6 s → **15 s** | 40 → **24** HE (six minutes of fire) | the main decision of a duel |
+| coaxial gun | 1 s → **5 s**, bursts of 10 | 2,000 → **600** (60 bursts) | anti-drone and soft targets |
+| 30 mm autocannon | 3 s → **10 s**, bursts of 3 | 240 → **120** (40 bursts) | the scout's main gun |
 | missile rack | 10 s → **30 s** | 6 → **4** | rare, decisive |
-| pulse laser | 2 s → **3 s**, heat as now | charges as now | anti-drone only (Q-49-6) |
+| pulse laser | 2 s → 3 s proposed, **under the 5 s floor**: 5 s under Q-49-19 | charges as now | anti-drone only (Q-49-6) |
 
 **A provisional space palette** (Q-49-12), once space is data:
 
 | Mount | Proposed | Note |
 |---|---|---|
 | twin torpedo tubes | 8 s reload as now; magazine persists, rearmed at a berth | strike |
-| offence laser | 4 s; short reach; weak against a hull | point defence and soft targets only (Q-49-7) |
+| offence laser | 4 s proposed, **under the 5 s floor**: 5 s under Q-49-19; short reach; weak against a hull | point defence and soft targets only (Q-49-7, ruled) |
 | spinal gun | 6 s; 24 rounds persist | the hull-killer |
 | point-defence rotaries | 0.5 s automatic as now; 3,000 rounds persist | automatic by ruling D-35-8 (Q-49-10) |
 
 ## 6. Owner survey
+
+**First rulings 2026-11-15:**
+- Q-49-2 and Q-49-3 are amended (the 5 s floor; cycles of 15, 5, 10 and 30 s).
+- Q-49-5 takes the alternative (GC.7's prices stay).
+- Q-49-7 is accepted at its default.
+
+Each ruled question carries its decision first, with the proposed text kept under it for the record.
+§6.5 holds Q-49-19, raised by the floor. The other questions are open.
 
 ### 6.1 Order and the trigger
 
@@ -385,7 +407,12 @@ The proposal in one paragraph:
   keeps each diff readable, and the trigger rule decides what the retune is for.
 
 **Q-49-2 — The cycle floor.**
-- **Proposed default:** raise the engine floor for a mount a player or mind fires from 1 s to
+- **Decision (owner ruling, 2026-11-15):** raise the floor further, to **5 s** to start. From
+  play-testing in the arena: "the shots happen too fast". My reading, not the owner's words: the
+  automatic-defence class the default proposed stands, and the owner changed only the number. Point
+  defence and defence-mode lasers keep their own floor (Q-49-10). At 5 s the cadence tax (the 250 ms
+  lattice plus typing time) is about a twentieth of a cycle.
+- **Proposed default (as written):** raise the engine floor for a mount a player or mind fires from 1 s to
   **3 s** (provisional). Add a content class for **automatic defence mounts** (point defence,
   defence-mode lasers), which keeps its own floor because nobody types them.
 - **Alternative:** keep the 1 s floor and change only the content.
@@ -393,7 +420,11 @@ The proposal in one paragraph:
   the mechanical reason the owner gave, and at 3 s it is under a tenth of a cycle.
 
 **Q-49-3 — The ground palette.**
-- **Proposed default:** §5's table, provisional: cannon 8 s and 24 rounds, coaxial gun 4 s bursts
+- **Decision (owner ruling, 2026-11-15):** the cannon cycles at **15 s**, the coaxial gun at
+  **5 s**, the autocannon at **10 s**, and the missile rack stays at **30 s**. My reading, not the
+  owner's words: the magazines stay as proposed (24, 600, 120 and 4), since Q-49-5's ruling puts
+  scarcity on magazine size. §5's table carries the ruled cycles. The pulse laser is Q-49-19's.
+- **Proposed default (as written):** §5's table, provisional: cannon 8 s and 24 rounds, coaxial gun 4 s bursts
   and 600 rounds, autocannon 5 s and 120, missile rack 30 s and 4.
 - **Alternative:** keep the cycles and cut only the magazines.
 - **Why:** both halves of the direction (several-second cycles, precious rounds) are needed. The
@@ -433,7 +464,11 @@ The proposal in one paragraph:
   that follows its inputs, and gives volatiles their first industrial buyer.
 
 **Q-49-5 — How precious a round is.**
-- **Proposed default:** until the recipes set the price, double GC.7's prices (provisional): HE
+- **Decision (owner ruling, 2026-11-15):** **keep GC.7's prices**: AP 12 cr, a box of ball 25 cr,
+  HE 150 cr, a missile 1,500 cr. "Scarcity comes from magazine size, we dont want to discourage
+  fighting." A full cannon load of 24 HE is then 3,600 cr. My reading for Q-49-4, if it is accepted:
+  the munitions recipes are sized so that a produced round costs about its GC.7 price.
+- **Proposed default (as written):** until the recipes set the price, double GC.7's prices (provisional): HE
   300 cr, AP 24 cr, a box of ball 50 cr, a missile 4,000 cr. A full main-gun load then costs about
   7,200 cr against the new 24-round magazine.
 - **Alternative:** keep GC.7's prices; let the smaller magazines alone make rounds scarce.
@@ -470,6 +505,7 @@ The proposal in one paragraph:
   world facts chosen to bound the engine. A tank that kills tanks with a laser undoes it.
 
 **Q-49-7 — Space lasers.**
+- **Decision (owner ruling, 2026-11-15):** the default, accepted as written.
 - **Proposed default:** the same fact holds in space. An offence laser has a short reach and does
   little to a hull; it is for drones, collectors, torpedoes and soft targets. The starter haulers
   (Dray, Dray-P) carry defence mode only.
@@ -542,6 +578,25 @@ The proposal in one paragraph:
 - **Why:** an IC field has several parties and carriers to rearm at. A draw word fits a duel, not a
   field.
 
+### 6.5 Raised after the rulings
+
+**Q-49-19 — The floor's reach: the two lasers under 5 s.**
+- **The problem:** §5 proposed the ground pulse laser at 3 s and the space offence laser at 4 s. Both
+  are under the ruled 5 s floor. A player or a mind fires both, so neither is an automatic-defence
+  mount, and the floor binds them.
+- **Proposed default:** one 5 s floor for every mount a player or a mind fires, on both kernels. The
+  pulse laser and the space offence laser cycle at 5 s. The spinal gun (6 s) and the torpedo tubes
+  (8 s) already clear it. Only automatic defence (point defence, defence-mode lasers) keeps its own
+  floor.
+- **Alternative:** make the ground pulse laser an automatic anti-drone mount that fires at drones on
+  its own, exempt from the floor, like point defence.
+- **Why:**
+  - The lore makes the laser the anti-drone fit everything carries, and at 5 s it still deals with a
+    drone in a pass.
+  - One floor across both kernels is one rule to read.
+  - The alternative widens the automatic class from "answers incoming rounds" to "answers a
+    contact", which is the auto-fire the owner ruled out.
+
 ## 7. Units of work (sketch, cut after the rulings)
 
 One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit prefix.
@@ -550,13 +605,13 @@ One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit pref
 |---|---|---|
 | CC.0 | Tests read cycles and magazines from content, not literals; the bot's scripted rig reads content | — |
 | CC.1 | The trigger rule: a slot needs a judgement term; card floors and the Line card's reserve | Q-49-8, Q-49-9 |
-| CC.2 | The ground palette and the cycle floor (with the automatic-defence class); one re-bless | CC.0, CC.1, Q-49-2, Q-49-3 |
+| CC.2 | The ground palette (15, 5, 10, 30 s) and the 5 s cycle floor (with the automatic-defence class); one re-bless | CC.0, CC.1, Q-49-2 and Q-49-3 (ruled), Q-49-19 |
 | CC.3 | Ground lasers as the anti-drone fit; the laser variants keep a main gun | CC.2, Q-49-6 |
 | CC.4 | Rounds on `STATUS`; checked at 120 columns | Q-49-13 |
 | CC.5 | Munitions prices, read from doc 48's PL.3 recipes | doc 48's PL.3, Q-49-4, Q-49-5 |
 | CC.6 | Space mounts and hull fits as content packs; `raider_heavy` a unit file; mind-view maxima from content | Q-49-11 |
 | CC.7 | Space magazines persist; space munitions goods; rearm at a berth | CC.6, doc 48's PL.0 (`MAX_GOODS`), Q-49-12 |
-| CC.8 | The space palette; lasers per the lore; the three space doctrines rewritten | CC.6, CC.7, Q-49-7 |
+| CC.8 | The space palette; lasers per the lore; the three space doctrines rewritten | CC.6, CC.7, Q-49-7 (ruled), Q-49-19 |
 | CC.9 | Space decision support, for the player and the minds | CC.6, Q-49-13 |
 | CC.10 | The bot's discipline assertions | CC.2, Q-49-17 |
 | CC.11 | A second round for the cannon, chosen at rearm | CC.2, CC.5, Q-49-14 |
