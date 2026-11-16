@@ -335,6 +335,9 @@ struct Opts {
     /// The storefront pool, and the Draw listing's quantity (`None`: no listing).
     pool: u64,
     draw: Option<u64>,
+    /// Doc 48 §4.3: iron is indivisible (a part, one identified lot that never pools), and
+    /// no pool is seeded, so a test lays exact lots of its own.
+    parts: bool,
 }
 
 impl Default for Opts {
@@ -346,6 +349,7 @@ impl Default for Opts {
             probe_delegate: false,
             pool: 100,
             draw: Some(100),
+            parts: false,
         }
     }
 }
@@ -410,11 +414,16 @@ fn rig_with(opts: Opts) -> Rig {
     let mut tw = TestWorld::with_modules(vec![
         Box::new(mush_org::OrgModule::new()),
         Box::new(economy),
-        Box::new(
-            InventoryModule::new()
+        Box::new({
+            let inventory = InventoryModule::new()
                 .with_quantity_delegates(delegates)
-                .with_handle_cell(Arc::clone(&cell)),
-        ),
+                .with_handle_cell(Arc::clone(&cell));
+            if opts.parts {
+                inventory.with_indivisible_goods(Arc::new(IronIsAPart))
+            } else {
+                inventory
+            }
+        }),
         Box::new(market),
         Box::new(Probe),
     ]);
@@ -527,9 +536,11 @@ fn rig_with(opts: Opts) -> Rig {
         c.port_seller = Some(org);
     }
 
-    // The stock, rooted.
-    seed_rooted_pool(&mut tw, &families, shop, opts.pool, LotId(0xb1));
-    seed_rooted_pool(&mut tw, &families, depot, 50, LotId(0xb2));
+    // The stock, rooted (a part never pools, so the exact-lot rig seeds none).
+    if !opts.parts {
+        seed_rooted_pool(&mut tw, &families, shop, opts.pool, LotId(0xb1));
+        seed_rooted_pool(&mut tw, &families, depot, 50, LotId(0xb2));
+    }
     let listing = opts.draw.map(|qty| {
         let said = ok(
             &mut tw,
@@ -1615,6 +1626,112 @@ fn ic7_a_lot_listing_whose_reserve_never_lands_is_withdrawn_after_the_grace() {
         swept, grace,
         "kept through the grace, withdrawn at the sweep that ends it"
     );
+}
+
+// ---- 10b: two exact lots into one governed hold (doc 48 §4.3) -------------------------
+
+/// Iron is a part in the exact-lot rig: one identified lot, never pooled, which a hold's
+/// room counts through its lot tally.
+#[derive(Debug)]
+struct IronIsAPart;
+
+impl mush_inventory::IndivisibleGoods for IronIsAPart {
+    fn indivisible(&self, commodity: &mush_core::CanonicalId) -> bool {
+        commodity.as_str() == "iron"
+    }
+}
+
+/// One exact lot of `qty` iron laid in the depot and listed whole by the vendor; the
+/// listing's hold on it landed with `token`.
+fn exact_listing(r: &mut Rig, lot: LotId, qty: u64, token: u8) -> ListingId {
+    let (families, depot) = (r.families.clone(), r.depot);
+    apply(&mut r.tw, &families, |txn| {
+        families
+            .mint_origin(
+                txn,
+                depot,
+                &commodity("iron"),
+                qty,
+                Grade::new(2).expect("grade"),
+                ExternalRef {
+                    provider: "test".into(),
+                    kind: "seed".into(),
+                    id: format!("{lot}").into(),
+                    revision: None,
+                },
+                lot,
+            )
+            .map(|_| ())
+    })
+    .expect("the lot is laid in the depot");
+    let before: Vec<ListingId> = market_of(&r.tw).lot_listings().map(|l| l.id).collect();
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GOOD} price=700 qty={qty} endpoint={} lot={lot}",
+            r.vendor.0,
+            depot.vault().0
+        ),
+    );
+    land(&mut r.tw, token).expect("the listing's hold on its lot lands");
+    market_of(&r.tw)
+        .lot_listings()
+        .map(|l| l.id)
+        .find(|id| !before.contains(id))
+        .expect("the exact-lot listing")
+}
+
+/// **Two accepted exact-lot quotes cannot overfill one governed hold** (doc 48 §4.3, from
+/// the second review, doc 48b). A lot-transfer sale may land in a governed hold (doc 39
+/// cut IN.2), and each accept's pre-check reads the hold as it stands, so two quotes
+/// accepted before either hand-over lands both pass it. The first to land fills the hold
+/// to 60 of 100; the second's Consume is refused at its prepare by the capacity backstop a
+/// Draw has, reading the landed lot through the hold's lot tally, and its lot stays in the
+/// depot, held for its listing.
+#[test]
+fn ic7_a_second_exact_lot_over_the_limit_is_refused_at_its_prepare() {
+    let mut r = rig_with(Opts {
+        capacity: Some(100),
+        draw: None,
+        parts: true,
+        ..Opts::default()
+    });
+    let (lot_a, lot_b) = (LotId(0xd1), LotId(0xd2));
+    let a = exact_listing(&mut r, lot_a, 60, 0xd1);
+    let b = exact_listing(&mut r, lot_b, 60, 0xd2);
+    let qa = quote(&mut r.tw, r.pat, a, 60);
+    ok(&mut r.tw, r.pat, &format!("+market/accept {}", qa.0));
+    let leg_a = take(&mut r.tw);
+    let qb = quote(&mut r.tw, r.pat, b, 60);
+    ok(&mut r.tw, r.pat, &format!("+market/accept {}", qb.0));
+    land(&mut r.tw, 0xd3).expect("B's lot lands in the empty hold");
+    let lot_at = |tw: &mut TestWorld, families: &InventoryFamilies, lot: LotId| {
+        read(tw, families, |txn| {
+            txn.get(&families.lots, &lot)
+                .ok()
+                .flatten()
+                .map(mush_inventory::Lot::endpoint)
+        })
+    };
+    assert_eq!(lot_at(&mut r.tw, &r.families, lot_b), Some(r.pat_hold));
+    let refused = land_submit(&mut r.tw, &leg_a, 0xd4)
+        .expect_err("A's lot would overfill the hold and is refused at its prepare");
+    assert!(refused.starts_with("prepare:"), "{refused}");
+    assert_eq!(
+        r.cfg.lock().expect("cfg").last_check,
+        Some(Err(CapacityRefusal::Refused {
+            fits: 40,
+            line: packed_line(60, 100, 60),
+        })),
+        "the prepare read B's landed lot through the lot tally and refused on volume"
+    );
+    assert_eq!(
+        lot_at(&mut r.tw, &r.families, lot_a),
+        Some(r.depot),
+        "A's lot stays in the depot"
+    );
+    assert_eq!(live_lots(&mut r.tw, &r.families, r.pat_hold), 1);
 }
 
 // ---- 11: the party-cap source -------------------------------------------------------------

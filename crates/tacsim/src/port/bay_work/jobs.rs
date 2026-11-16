@@ -284,6 +284,21 @@ fn section_points(unit: &TacticalUnit, section: &SectionId) -> u64 {
         })
 }
 
+/// **The munitions good that loads `component`'s rounds** (doc 36 cut GC.7), or `None` for a
+/// part whose ammunition no good loads: beam charge, which is a cell and not a magazine
+/// (Q-39-36), recharged by the bay's own charge.
+#[must_use]
+pub(crate) fn munitions_good_of<'a>(
+    spec: &UnitSpec,
+    catalog: &Catalog,
+    goods: &'a GoodsTable,
+    component: &ComponentId,
+) -> Option<&'a CanonicalId> {
+    ammunition_of(spec, catalog, component)
+        .and_then(|ammunition| goods.munitions_for(ammunition.as_str()))
+        .map(|good| &good.id)
+}
+
 /// The ammunition a weapon part loads, through its spec row and the catalog's weapon table.
 fn ammunition_of<'a>(
     spec: &UnitSpec,

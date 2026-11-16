@@ -19,7 +19,7 @@ max subject bytes = 8192
 max correlation bytes = 16384
 max contract bytes = 16384
 max history bytes = 32768
-max offer seconds = 86400
+max offer seconds = 100800
 settlement seconds = 259200
 max holder generation = 65537
 
