@@ -196,7 +196,8 @@ The probe's edits never reached this worktree. It ran in the clone, and the clon
 ## CC.1
 
 Slots and the stock mind's discipline (Q-49-8, Q-49-9, Q-49-20, Q-49-23, Q-49-29). Built
-2026-11-15 on main `c85a8744f` (CC.0 and CC.6 merged in).
+2026-11-15 on main `c85a8744f` (CC.0 and CC.6 merged in), with main `73d05678b` merged on
+2026-11-16 (CC.9's API 10 among it). Every pin below was re-read on the merged tree.
 
 **Survey.**
 - **Slots stand (Q-49-20).** Nothing in the tree made a slot single-use, so nothing needed
