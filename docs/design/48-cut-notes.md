@@ -579,7 +579,19 @@ in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged
    - A made or stocked module's provenance names its core's definition (`stock.rs`
      `part_row_of`, through `bill::core_module_row`). The part index still holds no core, so no
      bay fits a module and no strip or scrap yields one.
-7. **The census's build line** (`port/census.rs`, one line, outside this unit's files): the
+7. **The depot's opening stock** (the lead's ruling: a launched server must not refuse
+   `+core/buy`).
+   - `OriginPolicy.opening` holds up to eight goods, each 1 to 100,000 units, in order. The
+     origin's one `Initialize` credits it into the depot, in its own bundle.
+   - It lands through a new `InventoryFamilies::credit_many`, because two new pools at one
+     endpoint in one bundle would write the endpoint's pool census twice.
+   - The deployment names it: `HardwareCoordinates.depot_stock`, written only when non-empty,
+     so a deployment without it keeps its digest. The composition checks that each is a pooled
+     good of the shipped table.
+   - `deploy/instance/launch-bringup.py` writes it (`DEPOT_STOCK`), and so do
+     `launch.json.example` and `deploy/README.md`'s step 7.
+   - The origin's index retains it (`initialize_policy.opening`): the census's source for it.
+8. **The census's build line** (`port/census.rs`, one line, outside this unit's files): the
    module is among the parts, so `inputs` no longer adds `core_kg` a second time.
 
 **Tests** (run on conclav.dev):
@@ -600,6 +612,13 @@ in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged
     `module_line` is quoted, booked at Freeport Works, delivered and run for 48 hours. The arm
     commissions one module lot with a `Manufactured` row whose definition is `tacsim.core.line`,
     and `+works/collect` puts it in the hold.
+  - `mush-industry` `core_production::tests::pl7_the_initialization_stocks_the_depot`. The
+    `Initialize` opens two pools in one bundle, the index retains the amounts, the first die
+    draws on them, and a cold start reads them. The opening stock's bounds are checked too.
+  - `mush-inventory` `pool::pl0_tests::pl7_credit_many_opens_several_pools_in_one_bundle`.
+    `credit` twice in one bundle refuses. `credit_many` opens both pools, counts them once, and
+    credits an existing pool beside a new one. A doubled or zero row is refused and writes
+    nothing.
 - **Extended:**
   - `domain_economy` `yard_in9`:
     - The main story's escort is quoted with `1 tacsim.part.core.line`. Its five lots come from the
@@ -612,11 +631,14 @@ in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged
     the escort's escrow holds the module. `balance` and every build line's
     `inputs = hull + waste` hold.
   - `hardware::flow`:
-    - The rig stocks the depot (`DEPOT_STOCK`, 200 t of each chain good, one transaction a good).
+    - The rig's deployment opens the depot (`depot_stock`, 200 t of each chain good), so its
+      `Initialize` stocks it.
     - The shipped manufacture story checks that its Class I die took a board and a tonne.
     - The launch test checks that the composed policies carry the catalogue's chain and prices.
-    - The named-launch test checks that an empty depot refuses the issue and a stocked one plans it.
-  - The M8 rig stocks the depot the same way (`m8_world::DEPOT_STOCK`), and
+    - The named-launch test opens the depot through the launch deployment's `depot_stock`, as
+      the bring-up does. After the Active boot the depot holds it, and the first die plans.
+  - The M8 rig opens the depot the same way, through its coordinates' `depot_stock`
+    (`m8_world::DEPOT_STOCK`), so CO.6's and CO.13's stories run on the bring-up's path. And
     `driving_rig::seed_part` gives a seeded module its core's provenance.
 - **Re-pinned** (content moved; nothing else):
   - the hardware pack's digest;
@@ -695,33 +717,47 @@ in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged
 - **The die chain is a content table beside the prices**, not a recipe: integration still takes
   one die lot, and the die is still a quota issue. The core-module recipes take the same goods,
   so a stock core consumes what a die does.
-- **Three files outside the unit's list:**
+- **Files outside the unit's list:**
+  - `mush-inventory` `pool.rs`: the new `credit_many`, and `stage_new_pools`, its census step,
+    taken out of `transfer_many` unchanged so the two share it.
+  - `deploy/instance/launch-bringup.py`, `launch.json.example` and `deploy/README.md`: the
+    depot's opening stock, on the lead's ruling.
+  - The `HardwareCoordinates` literals in `mush-server`'s two tests (`depot_stock: Vec::new()`).
   - `port/census.rs`: one line (the build line's `core_kg`). EX.0's terms are in the group's notes
     folder (`pl7-census-terms-for-ex0.md`).
   - `port/stock.rs` `part_row_of`: a core module's row is its core's definition. Without it a
     made module has no provenance, and the yard refuses it.
   - `definitions/mass.rs` `core_minor`: the core reference reads the catalogue.
-  - Test support also changed: `excursions.rs` (`seed_pool` and `keep` made `pub(crate)`),
+  - Test support also changed: `excursions.rs` (`keep` made `pub(crate)`),
     `m8_world.rs` and `driving_rig.rs`.
 - **`commission.rs` is unchanged.** The commission's consumption already consumes every lot in
   the escrow, so the module needs no new step.
-- **Not stacked on PL.1 (#628).** PL.1's branch touches neither `goods.json` nor
-  `recipes-v2.json` (its refine is a lane mill row). The two branches share only `port/stock.rs`,
-  on other lines, so either can merge first.
+- **Stacked on PL.1 (#628), in the lead's land order (#628, then PL.2, then PL.7).** PL.1's
+  branch is merged in. PL.2, the lane chain's one writer, adds goods rows too. So this unit's
+  three module goods and three recipes go on top of PL.2's branch once its PR opens, and the PR
+  then stacks on it. That is owed below.
 - **PL.0's unload test** (`surface/act/fixed.rs`) counted the shipped bulk goods exactly. It now
   counts them relative to the shipped table, with the same 47 test goods and the same weigh.
 - **`CoreClass::finished_minor()` and its siblings stay**, as the v1 table's names, so the
   stories that read a price (CO.6's, CO.13's, `m8_end_user`) are unchanged. No production path
   reads them.
 
+**What the next go-live (MW.3) gets:**
+- The bring-up writes the deployment's `depot_stock`: 112 t of instrument boards and 88 t of
+  strategic ore. That is one month of the full quota (64 Class I, 16 Class II, 4 Class III
+  dies). It is provisional, named so in the script.
+- The origin's initialize action credits it to the Basin die depot once.
+- After it, nothing refills the depot. `+core/buy` refuses `CORE_NO_STOCK`, naming the bill,
+  once the depot cannot cut a die. Refilling is EX.9's or the lane's.
+- `scripts/launch-bringup-acceptance.sh` checks no core buy, so it is unchanged.
+
 **Not built:**
-- **The bring-up's depot stock** (`deploy/instance/launch-bringup.py` makes the Basin die depot
-  and stocks nothing). Until an operator stocks it, `+core/buy` refuses `CORE_NO_STOCK` on the
-  launch. This is a `deploy/` change, left to the owner, as CO.6 left the shop's placement.
-  Cheap to reverse.
+- **The rows on PL.2.** The module goods and recipes are to be re-laid on PL.2's branch when its
+  PR opens, re-pinning the goods digest and counts over PL.2's rows.
 - **No NPC hauls boards or ore to the depot.** Its supply is the lane's or EX.9's, as for every
   finite seed (§3.7).
-- **The census's die sink** (`cored`) is EX.0's to add; the term is named in the notes folder.
+- **The census's terms** are EX.0's to add: the `cored` sink and the depot's opening stock as
+  a source, both named in the notes folder.
 - **CO.13's buy-back baseline** (`hardware/sale.rs`, the market's core catalogue entries and the
   quote) still reads the v1 table. That is EX.2b's closed `core_sale` family. At the shipped
   prices the two agree.
