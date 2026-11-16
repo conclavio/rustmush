@@ -751,10 +751,14 @@ pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
             .and_then(|b| b.active_for_hull(hull))
             .map(|active| {
                 let own_ship_id = active.carrier_ship_id_for(hull);
-                (
-                    active.bubble.holotank_feed(own_ship_id),
-                    active.bubble.cockpit_feed(own_ship_id),
-                )
+                let mut cockpit = active.bubble.cockpit_feed(own_ship_id);
+                // Doc 49 unit CC.9: her mounts and her lock, the rows `+tac/status` prints.
+                if let Some(picture) = super::view::fire_picture(&active.bubble, own_ship_id)
+                    && let Some(feed) = cockpit.as_object_mut()
+                {
+                    feed.insert("fire".into(), super::view::fire_feed(&picture));
+                }
+                (active.bubble.holotank_feed(own_ship_id), cockpit)
             })
             .or_else(|| build_tier1_space_panel_payloads(ctx.w, hull));
         let dock_json = book
@@ -3772,23 +3776,34 @@ fn tac_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(ship) = active.bubble.ships.get(active.carrier_ship_id_for(hull)) else {
         return Err(CmdError::msg("Carrier ship state missing from bubble."));
     };
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "tacsim.space",
-        format!(
-            "Tactical status aboard {} ({}): lock={}, PDC auto={}, lasers={}, railguns={}, torpedo tubes={}, heat={}‰/1000‰.",
-            display_name(ctx.w, hull),
-            ship.id,
-            ship.locked_target_id.as_deref().unwrap_or("none"),
-            if ship.pdc_auto { "on" } else { "off" },
-            ship.lasers.len(),
-            ship.railguns.len(),
-            ship.torpedo_tubes.len(),
-            ship.heat_permille,
-        ),
-    );
+    let mut lines = vec![format!(
+        "Tactical status aboard {} ({}): lock={}, PDC auto={}, heat={}‰/1000‰.",
+        display_name(ctx.w, hull),
+        ship.id,
+        ship.locked_target_id.as_deref().unwrap_or("none"),
+        if ship.pdc_auto { "on" } else { "off" },
+        ship.heat_permille,
+    )];
+    // Doc 49 unit CC.9: a row a mount, then the lock, as the canopy and the TUI print them.
+    if let Some(picture) = super::view::fire_picture(&active.bubble, &ship.id) {
+        lines.extend(fire_status_lines(&picture));
+    }
+    for line in lines {
+        ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    }
     push_space_panels(ctx, hull);
     Ok(())
+}
+
+/// **`+tac/status`'s fire rows** (doc 49 unit CC.9): `mush_pixel::space_cockpit::fire_rows` of
+/// the same `fire` object the cockpit feed carries, each indented two spaces, every one within
+/// the 120-column floor. Space has no chance roll, so no row carries odds.
+#[must_use]
+pub fn fire_status_lines(picture: &super::view::FirePicture) -> Vec<String> {
+    mush_pixel::space_cockpit::fire_rows(&super::view::fire_feed(picture))
+        .into_iter()
+        .map(|row| format!("  {}", row.text))
+        .collect()
 }
 
 fn tac_scan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

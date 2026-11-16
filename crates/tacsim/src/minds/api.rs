@@ -789,10 +789,21 @@ fn register_contact(api: &mut Registrar<'_>) {
             opt(row.fatal.as_ref(), |fatal| words(fatal.iter()))
         })
     });
-    // D-UM-26: an aspect read is a read of the plot, fee 1.
+    // D-UM-26: an aspect read is a read of the plot, fee 1. Doc 49 unit CC.9 (API 10): in a
+    // space bubble it is the band of the contact's hull a shot from her strikes, one of five
+    // (`front`, `left`, `right`, `rear`, `top`), not the arena's four.
     getter!(api, "Contact", "aspect", |c: &mut Contact| {
         charge(FEE_READ);
-        on(c, |row| word(row.aspect.as_str()))
+        let space = c.0.space.clone();
+        on(c, |row| {
+            match space
+                .as_deref()
+                .and_then(|space| space.contacts.get(&row.id))
+            {
+                Some(space_row) => word(space_row.facet.id_str()),
+                None => word(row.aspect.as_str()),
+            }
+        })
     });
     // D-UM-26: an odds read, fee 1 — the row's figure for that weapon, `()`
     // for a weapon the row carries none for (outside the odds rows, an

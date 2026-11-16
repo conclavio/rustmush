@@ -240,6 +240,65 @@ pub fn draw_chart_panel(
     );
 }
 
+/// What the space panel's mounts column says when the feed has no fire rows: outside a
+/// space bubble, or before the first frame.
+pub const NO_SPACE_FIRE: &str = "No mounts to show: you are not aboard a ship in a space bubble.";
+
+/// **The space panel's fire rows** (doc 49 unit CC.9): [`mush_pixel::space_cockpit::fire_rows`]
+/// of the `space.cockpit` feed's `fire` object, the words `+tac/status` prints, coloured by
+/// what each says at a glance. No row carries odds: space has no chance roll.
+#[must_use]
+pub fn space_fire_lines(space: Option<&Value>) -> Vec<Line<'static>> {
+    use mush_pixel::space_cockpit::{FireTone, fire_rows};
+    let Some(fire) = space
+        .and_then(|feed| feed.get("fire"))
+        .filter(|fire| fire.is_object())
+    else {
+        return vec![dim(NO_SPACE_FIRE)];
+    };
+    fire_rows(fire)
+        .into_iter()
+        .map(|row| {
+            let style = match row.tone {
+                FireTone::Head => Style::default().fg(Color::DarkGray),
+                FireTone::Ready => Style::default().fg(Color::Green),
+                FireTone::Cycling => Style::default(),
+                FireTone::Held => Style::default().fg(Color::Yellow),
+                FireTone::Lock => Style::default().add_modifier(Modifier::BOLD),
+            };
+            Line::from(Span::styled(row.text, style))
+        })
+        .collect()
+}
+
+/// **The space cockpit's text panel** (doc 49 unit CC.9): under the canopy or the holotank,
+/// the fire rows ([`space_fire_lines`] of the `space.cockpit` feed, `space`) beside the comms
+/// (`comms(w)`, the scrollback's tail). A mount row is at most 67 columns at its widest fill,
+/// so at the 120-column floor it never wraps; the lock row wraps inside its column.
+pub fn draw_space_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    space: Option<&Value>,
+    comms: &dyn Fn(usize) -> Vec<Line<'static>>,
+) {
+    if area.height < 2 {
+        return;
+    }
+    let [left, right] = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+        .spacing(1)
+        .areas(area);
+    column(frame, left, "MOUNTS", space_fire_lines(space), true);
+    let block = header("COMMS");
+    let inner = block.inner(right);
+    frame.render_widget(block, right);
+    let lines = comms(usize::from(inner.width));
+    let skip = lines.len().saturating_sub(usize::from(inner.height));
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
+        inner,
+    );
+}
+
 /// One titled pane of [`draw_replay_panel`]: its title and its rows at a
 /// width and height.
 pub type TitledPane<'a> = (&'a str, &'a dyn Fn(u16, u16) -> PaneRows);
@@ -1137,5 +1196,74 @@ mod tests {
         );
         let text = draw(None);
         assert!(text.contains(NOT_IN_A_COCKPIT), "{text}");
+    }
+
+    /// **Doc 49 unit CC.9: the space panel at the 120-column floor.** Under the canopy, the
+    /// mounts column prints the fire rows `+tac/status` prints, each mount row whole (no row
+    /// is cut or wrapped at 120 columns), beside the comms; with no fire rows it says so. No
+    /// row carries odds.
+    #[test]
+    fn cc9_the_space_panel_prints_every_mount_row_whole_at_120_columns() {
+        let space = serde_json::json!({
+            "callsign": "Halcyon",
+            "fire": {
+                "mounts": [
+                    {"id": "laser_dorsal", "family": "laser", "mode": "offence",
+                     "ready_in_ms": 0, "state": "ready", "damage": 98},
+                    {"id": "laser_ventral", "family": "laser", "mode": "defence",
+                     "ready_in_ms": 3_600_000, "state": "cycling", "damage": 100_000},
+                    {"id": "torp_bow", "family": "tubes", "rounds": 65_535,
+                     "rounds_max": 65_535, "ready_in_ms": 0, "state": "ready"},
+                    {"id": "rail_spinal", "family": "spinal", "rounds": 31,
+                     "rounds_max": 32, "ready_in_ms": 2_350, "state": "cycling",
+                     "flight_ms": 60_000},
+                    {"id": "pdc_port", "family": "point_defence", "rounds": 1_000_000,
+                     "ready_in_ms": 0, "state": "ready"},
+                    {"id": "pdc_stbd", "family": "point_defence", "rounds": 4_000,
+                     "ready_in_ms": 0, "state": "down"},
+                    {"id": "pdc_dorsal", "family": "point_defence", "rounds": 4_000,
+                     "ready_in_ms": 0, "state": "ready"},
+                    {"id": "pdc_ventral", "family": "point_defence", "rounds": 4_000,
+                     "ready_in_ms": 0, "state": "ready"}
+                ],
+                "lock_id": "raider.7.1",
+                "lock": {"id": "raider.7.1", "label": "Belt Raider", "range_m": 42_050,
+                         "facet": "top"}
+            }
+        });
+        let rows: Vec<String> = texts(&space_fire_lines(Some(&space)));
+        assert_eq!(rows.len(), 10, "the head, eight mounts, the lock");
+        let draw = |feed: Option<&Value>| {
+            let backend = ratatui::backend::TestBackend::new(120, 14);
+            let mut term = ratatui::Terminal::new(backend).expect("terminal");
+            term.draw(|f| {
+                draw_space_panel(f, f.area(), feed, &|_| Vec::new());
+            })
+            .expect("draw");
+            let buf = term.backend().buffer().clone();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let screen = draw(Some(&space));
+        for row in &rows[..9] {
+            assert!(
+                screen.iter().any(|line| line.contains(row.as_str())),
+                "{row:?} whole on {screen:#?}"
+            );
+        }
+        let text = screen.join("\n");
+        assert!(text.contains("MOUNTS") && text.contains("COMMS"), "{text}");
+        assert!(
+            text.contains("her top band"),
+            "the lock row, wrapped: {text}"
+        );
+        assert!(!text.contains('%'), "no odds: {text}");
+        let text = draw(None).join("\n");
+        assert!(text.contains(NO_SPACE_FIRE), "{text}");
     }
 }

@@ -40,9 +40,11 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use super::bubble::{EmconPosture, HullStatus, LocalSpaceBubble, SpaceShipState, SubsystemCrit};
+use super::bubble::{
+    EmconPosture, FacetBand, HullStatus, LocalSpaceBubble, SpaceShipState, SubsystemCrit,
+};
 use super::picket::{HEAVE_TO_REL_VEL_MMPS, relative_speed_3d_mmps};
-use super::weapons::isqrt_i128;
+use super::weapons::{LaserMode, compute_railgun_lead, isqrt_i128};
 use crate::arena::mind::{MindView, ViewContact};
 use crate::arena::perception::{Aspect, FrameCondition, FrameNotice, Receiver as FrameReceiver};
 use crate::arena::state::{Classification, ContactId, Designator, MatchMode, Power};
@@ -113,6 +115,9 @@ pub struct SpaceContactView {
     pub stop: Stop,
     /// The emission posture its signature reads as.
     pub emcon: EmconPosture,
+    /// **The band of its hull that faces her** (doc 49 unit CC.9): the band a shot from her
+    /// strikes, one of five, `top` among them. A script reads it as `Contact.aspect`.
+    pub facet: FacetBand,
 }
 
 /// **What a mind reads of its own hull in space beyond the arena's view.**
@@ -143,6 +148,9 @@ pub struct SpaceView {
     pub heard: Stop,
     /// Each held contact's row, by the id the arena's row carries.
     pub contacts: BTreeMap<ContactId, SpaceContactView>,
+    /// **Every mount she carries** (doc 49 unit CC.9), point defence among them, as
+    /// [`fire_picture`] reads them: what a script reads through `space_mount(v, id)`.
+    pub mounts: Vec<MountFacts>,
 }
 
 /// **One observer's contact numbers** (the file head): the number each ship was given the
@@ -326,56 +334,419 @@ fn cms(vel_mmps: [i64; 3]) -> [i64; 3] {
 /// row reads full.
 pub const LASER_ROW_ROUNDS: u32 = 100;
 
+// ---------------------------------------------------------------------------
+// Doc 49 unit CC.9: what her mounts and her lock read before a shot
+// ---------------------------------------------------------------------------
+
+/// The most a hull's heat may reach, per mille: a shot that would take her past it is not
+/// taken (`super::bubble::LocalSpaceBubble::fire_offensive_lasers`, `fire_railgun_from`).
+pub const HEAT_CEILING_PERMILLE: u16 = 1_000;
+
+/// **What a mount is** (doc 49 unit CC.9): the word the cockpit and a mind read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MountFamily {
+    /// A laser turret: a pulse that lands at once, its damage falling with range.
+    Laser,
+    /// Torpedo tubes: a salvo of flown rounds.
+    Tubes,
+    /// A spinal gun: one flown round, unguided.
+    Spinal,
+    /// A point-defence rotary: bursts that stop incoming torpedoes, on their own.
+    PointDefence,
+}
+
+impl MountFamily {
+    /// The word: `laser`, `tubes`, `spinal`, `point_defence`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MountFamily::Laser => "laser",
+            MountFamily::Tubes => "tubes",
+            MountFamily::Spinal => "spinal",
+            MountFamily::PointDefence => "point_defence",
+        }
+    }
+}
+
+/// **Whether a mount fires now, or the first thing that holds it back** (doc 49 unit CC.9).
+/// Read in the order the variants are written; the first that holds is the mount's state.
+/// Space has no chance roll (Q-49-13, as corrected by doc 48b's W-49-5): a mount that reads
+/// [`MountState::Ready`] fires when it is told to, and an offence laser that fires lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MountState {
+    /// Out of action: a point-defence rotary that damage has put down, or any mount of a hull
+    /// that is no longer operational.
+    Down,
+    /// No rounds left, or too few for one burst.
+    Empty,
+    /// Its cycle has not finished.
+    Cycling,
+    /// One more shot would take her heat past [`HEAT_CEILING_PERMILLE`].
+    TooHot,
+    /// Her lock lies past its reach.
+    PastReach,
+    /// It fires now.
+    Ready,
+}
+
+impl MountState {
+    /// The word: `down`, `empty`, `cycling`, `too_hot`, `past_reach`, `ready`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MountState::Down => "down",
+            MountState::Empty => "empty",
+            MountState::Cycling => "cycling",
+            MountState::TooHot => "too_hot",
+            MountState::PastReach => "past_reach",
+            MountState::Ready => "ready",
+        }
+    }
+}
+
+/// **What a mount does to her lock at the lock's range** (doc 49 unit CC.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtLock {
+    /// A laser her fit lets fire at a lock: the damage one pulse lands at that range.
+    Damage(u32),
+    /// A spinal gun: how long its round flies to her lock, milliseconds.
+    FlightMs(u32),
+}
+
+/// **One mount, as the cockpit and a mind read it** (doc 49 unit CC.9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MountFacts {
+    /// Its id on the hull: what the commands and a mind's `fire` name.
+    pub id: SmolStr,
+    /// What it is.
+    pub family: MountFamily,
+    /// A laser's mode; `None` for every other mount.
+    pub mode: Option<LaserMode>,
+    /// Whether her fit lets it fire at a lock: every laser her fit allows offence, every tube
+    /// family and every spinal gun. Point defence fires on its own.
+    pub fires_at_lock: bool,
+    /// Rounds left; `None` for a laser, which keeps no magazine.
+    pub rounds: Option<u32>,
+    /// What her fit stows: the most the magazine holds. `None` for a laser, and for a
+    /// point-defence rotary, whose drum the kernel does not count back to full.
+    pub rounds_max: Option<u32>,
+    /// How long until its cycle has finished, milliseconds; nought when it has.
+    pub ready_in_ms: u32,
+    /// Whether it fires now, or what holds it back.
+    pub state: MountState,
+    /// How far it reaches, metres: a laser's and a spinal gun's reach, a point-defence
+    /// rotary's envelope. `None` for the tubes: a torpedo flies until it reaches her or its
+    /// flight ends.
+    pub reach_m: Option<i64>,
+    /// What one shot adds to her heat, per mille of [`HEAT_CEILING_PERMILLE`].
+    pub heat_per_shot: u16,
+    /// What it does to her lock at the lock's range, when her sensors hold the lock and it
+    /// lies within the mount's reach; `None` for the tubes and point defence.
+    pub at_lock: Option<AtLock>,
+}
+
+impl MountFacts {
+    /// **Whether its cycle has finished and it has what it needs to fire at a lock**: rounds
+    /// left, and a laser in offence. What a mind's row of `v.weapons` reads as `ready`, as the
+    /// ground's does; heat and reach are read on their own ([`Self::state`]).
+    #[must_use]
+    pub fn cycled(&self) -> bool {
+        self.ready_in_ms == 0
+            && !matches!(self.state, MountState::Down | MountState::Empty)
+            && self.mode != Some(LaserMode::Defense)
+    }
+}
+
+/// **Her lock, as her sensors hold it** (doc 49 unit CC.9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockFacts {
+    /// The locked ship's id in the bubble: what `+tac/lock` names.
+    pub ship_id: String,
+    /// The name it answers to.
+    pub callsign: String,
+    /// How far off it is, metres.
+    pub range_m: u64,
+    /// The band of her hull that faces the observer: the band a shot from here strikes.
+    pub facet: FacetBand,
+}
+
+/// **What a hull reads of her mounts and her lock before a shot** (doc 49 unit CC.9): one
+/// reading, which `+tac/status`, the cockpit feed and the space mind's view all print or read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirePicture {
+    /// Every mount she carries: her lasers, her tube families, her spinal guns and her
+    /// point-defence rotaries, each family in her fit's order.
+    pub mounts: Vec<MountFacts>,
+    /// The ship her lock names, whether or not her sensors still hold it.
+    pub lock_id: Option<String>,
+    /// The locked ship, when her sensors hold it.
+    pub lock: Option<LockFacts>,
+}
+
+/// The distance from `from` to `to`, whole metres, as the bubble's fire measures it.
+fn distance_m(from: [i64; 3], to: [i64; 3]) -> u64 {
+    let d = [0, 1, 2].map(|axis| i128::from(to[axis]) - i128::from(from[axis]));
+    u64::try_from(isqrt_i128(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])).unwrap_or(u64::MAX)
+}
+
+/// **The fire picture of `ship_id` in `bubble`** (doc 49 unit CC.9), or `None` for a ship the
+/// bubble does not hold. Every figure is the kernel's own: the cycle left, the magazine and
+/// what her fit stows, the laser's mode, the heat refusal, a laser's damage at range
+/// ([`super::weapons::LaserMount::damage_at_range`]), a spinal round's flight
+/// ([`compute_railgun_lead`]) and the band of the target's hull a shot from here strikes
+/// ([`SpaceShipState::select_facet_for_attack`]).
+#[must_use]
+pub fn fire_picture(bubble: &LocalSpaceBubble, ship_id: &str) -> Option<FirePicture> {
+    let ship = bubble.ships.get(ship_id)?;
+    let target = ship
+        .locked_target_id
+        .as_deref()
+        .and_then(|id| bubble.ships.get(id))
+        .filter(|target| {
+            target.id != ship.id
+                && super::commands::is_bubble_ship_detected(ship, target, bubble.ic_timestamp_s)
+        });
+    Some(ship_picture(ship, target))
+}
+
+/// [`fire_picture`] of `ship`, whose lock her sensors hold as `target` (`None` with no lock
+/// held).
+fn ship_picture(ship: &SpaceShipState, target: Option<&SpaceShipState>) -> FirePicture {
+    let lock_id = ship.locked_target_id.clone();
+    let lock = target.map(|target| LockFacts {
+        ship_id: target.id.clone(),
+        callsign: target.callsign.clone(),
+        range_m: distance_m(ship.pos_m, target.pos_m),
+        facet: target.select_facet_for_attack(ship.pos_m),
+    });
+    let range_m = lock
+        .as_ref()
+        .map(|lock| i64::try_from(lock.range_m).unwrap_or(i64::MAX));
+    let too_hot = |heat: u16| ship.heat_permille.saturating_add(heat) > HEAT_CEILING_PERMILLE;
+
+    let mut mounts = Vec::new();
+    for laser in &ship.lasers {
+        let damage = range_m
+            .filter(|_| laser.offence_allowed())
+            .map(|range| laser.damage_at_range(range));
+        let state = if laser.cooldown_remaining_ms > 0 {
+            MountState::Cycling
+        } else if laser.mode == LaserMode::Defense {
+            MountState::Ready
+        } else if too_hot(laser.heat_cost_permille) {
+            MountState::TooHot
+        } else if damage == Some(0) {
+            MountState::PastReach
+        } else {
+            MountState::Ready
+        };
+        mounts.push(MountFacts {
+            id: SmolStr::new(&laser.id),
+            family: MountFamily::Laser,
+            mode: Some(laser.mode),
+            fires_at_lock: laser.offence_allowed(),
+            rounds: None,
+            rounds_max: None,
+            ready_in_ms: laser.cooldown_remaining_ms,
+            state,
+            reach_m: Some(laser.max_range_m),
+            heat_per_shot: laser.heat_cost_permille,
+            at_lock: damage.filter(|damage| *damage > 0).map(AtLock::Damage),
+        });
+    }
+    for tube in &ship.torpedo_tubes {
+        let state = if tube.magazine_remaining == 0 {
+            MountState::Empty
+        } else if tube.cooldown_remaining_ms > 0 {
+            MountState::Cycling
+        } else {
+            MountState::Ready
+        };
+        mounts.push(MountFacts {
+            id: SmolStr::new(&tube.id),
+            family: MountFamily::Tubes,
+            mode: None,
+            fires_at_lock: true,
+            rounds: Some(u32::from(tube.magazine_remaining)),
+            rounds_max: Some(u32::from(tube.magazine_max())),
+            ready_in_ms: tube.cooldown_remaining_ms,
+            state,
+            reach_m: None,
+            heat_per_shot: 0,
+            at_lock: None,
+        });
+    }
+    for gun in &ship.railguns {
+        let in_reach = range_m.map(|range| range <= gun.max_range_m);
+        let state = if gun.rounds_remaining == 0 {
+            MountState::Empty
+        } else if gun.cooldown_remaining_ms > 0 {
+            MountState::Cycling
+        } else if too_hot(gun.heat_cost_permille) {
+            MountState::TooHot
+        } else if in_reach == Some(false) {
+            MountState::PastReach
+        } else {
+            MountState::Ready
+        };
+        let flight = target.filter(|_| in_reach == Some(true)).map(|target| {
+            compute_railgun_lead(
+                ship.pos_m,
+                ship.vel_mmps,
+                target.pos_m,
+                target.vel_mmps,
+                gun.muzzle_vel_mps,
+            )
+            .1
+        });
+        mounts.push(MountFacts {
+            id: SmolStr::new(&gun.id),
+            family: MountFamily::Spinal,
+            mode: None,
+            fires_at_lock: true,
+            rounds: Some(u32::from(gun.rounds_remaining)),
+            rounds_max: Some(u32::from(gun.magazine_max())),
+            ready_in_ms: gun.cooldown_remaining_ms,
+            state,
+            reach_m: Some(gun.max_range_m),
+            heat_per_shot: gun.heat_cost_permille,
+            at_lock: flight.map(AtLock::FlightMs),
+        });
+    }
+    for pd in &ship.pdcs {
+        let state = if !pd.operational {
+            MountState::Down
+        } else if pd.ammo_remaining < u32::from(pd.burst_rounds) {
+            MountState::Empty
+        } else if pd.cooldown_remaining_ms > 0 {
+            MountState::Cycling
+        } else {
+            MountState::Ready
+        };
+        mounts.push(MountFacts {
+            id: SmolStr::new(&pd.id),
+            family: MountFamily::PointDefence,
+            mode: None,
+            fires_at_lock: false,
+            rounds: Some(pd.ammo_remaining),
+            rounds_max: None,
+            ready_in_ms: pd.cooldown_remaining_ms,
+            state,
+            reach_m: Some(pd.envelope_m),
+            heat_per_shot: 0,
+            at_lock: None,
+        });
+    }
+    // A hull that is not operational fires nothing (every fire path refuses her): each of her
+    // mounts is out of action.
+    if ship.status != HullStatus::Operational {
+        for mount in &mut mounts {
+            mount.state = MountState::Down;
+        }
+    }
+    FirePicture {
+        mounts,
+        lock_id,
+        lock,
+    }
+}
+
+/// **The fire picture as the `space.cockpit` feed's `fire` object** (doc 49 unit CC.9): what
+/// `mush_pixel::space_cockpit::fire_rows` prints, on the canopy, in the TUI's space panel and
+/// in `+tac/status`. No field carries odds: space has no chance roll.
+#[must_use]
+pub fn fire_feed(picture: &FirePicture) -> serde_json::Value {
+    let mounts: Vec<serde_json::Value> = picture
+        .mounts
+        .iter()
+        .map(|mount| {
+            let mut row = serde_json::json!({
+                "id": mount.id.as_str(),
+                "family": mount.family.as_str(),
+                "ready_in_ms": mount.ready_in_ms,
+                "state": mount.state.as_str(),
+            });
+            if let Some(mode) = mount.mode {
+                row["mode"] = serde_json::json!(laser_mode_word(mode));
+            }
+            if let Some(left) = mount.rounds {
+                row["rounds"] = serde_json::json!(left);
+            }
+            if let Some(max) = mount.rounds_max {
+                row["rounds_max"] = serde_json::json!(max);
+            }
+            match mount.at_lock {
+                Some(AtLock::Damage(damage)) => row["damage"] = serde_json::json!(damage),
+                Some(AtLock::FlightMs(ms)) => row["flight_ms"] = serde_json::json!(ms),
+                None => {}
+            }
+            row
+        })
+        .collect();
+    let lock = picture.lock.as_ref().map(|lock| {
+        serde_json::json!({
+            "id": lock.ship_id,
+            "label": lock.callsign,
+            "range_m": lock.range_m,
+            "facet": lock.facet.id_str(),
+        })
+    });
+    serde_json::json!({
+        "mounts": mounts,
+        "lock_id": picture.lock_id,
+        "lock": lock,
+    })
+}
+
+/// A laser's mode as the cockpit and a mind read it: `offence` or `defence`.
+#[must_use]
+pub const fn laser_mode_word(mode: LaserMode) -> &'static str {
+    match mode {
+        LaserMode::Offense => "offence",
+        LaserMode::Defense => "defence",
+    }
+}
+
 /// **The mounts a mind may fire, as the rows a script reads them by** (doc 49 unit CC.6: one row
 /// a mount, each fired by its id): every laser her fit lets fire at her lock (Q-49-24), then
 /// every tube family, then every spinal gun, each family in her fit's order; then a drone's
 /// collector. A magazine's maximum is what her fit stows ([`super::weapons::TorpedoTube::magazine_max`]),
 /// so it does not shrink as she fires. Point defence fires on its own and has no row.
-fn weapon_rows(observer: &SpaceShipState) -> Vec<FrameWeapon> {
-    let row = |id: &str, ready: bool, ready_in_ms: u32, rounds: u32, rounds_max: u32| FrameWeapon {
-        id: SmolStr::new(id),
-        ready,
-        ready_in_ms: i64::from(ready_in_ms),
-        rounds,
-        rounds_max,
-        range_band: None,
-        p_permille: Some(850),
-        bands_cm: vec![25_000_000],
-        heat_per_shot: 0,
-        armed: None,
-    };
-    let mut weapons = Vec::new();
-    for laser in observer
-        .lasers
+///
+/// **Doc 49 unit CC.9: every figure is the kernel's own** ([`fire_picture`]). `ready` is
+/// [`MountFacts::cycled`]: a laser in defence is not ready to fire at a lock. There are no odds
+/// (`p_permille` is `None`): a mount that is ready, under her heat ceiling and within reach
+/// fires, and an offence laser that fires lands. `bands_cm` is the mount's one reach (none for
+/// the tubes), and `heat_per_shot` what a shot adds to her heat, per mille of the ceiling that
+/// [`SpaceView::mounts`]' `too_hot` reads.
+fn weapon_rows(observer: &SpaceShipState, picture: &FirePicture) -> Vec<FrameWeapon> {
+    let mut weapons: Vec<FrameWeapon> = picture
+        .mounts
         .iter()
-        .filter(|laser| laser.offence_allowed())
-    {
-        weapons.push(row(
-            &laser.id,
-            laser.cooldown_remaining_ms == 0,
-            laser.cooldown_remaining_ms,
-            LASER_ROW_ROUNDS,
-            LASER_ROW_ROUNDS,
-        ));
-    }
-    for tube in &observer.torpedo_tubes {
-        weapons.push(row(
-            &tube.id,
-            tube.cooldown_remaining_ms == 0 && tube.magazine_remaining > 0,
-            tube.cooldown_remaining_ms,
-            u32::from(tube.magazine_remaining),
-            u32::from(tube.magazine_max()),
-        ));
-    }
-    for rail in &observer.railguns {
-        weapons.push(row(
-            &rail.id,
-            rail.cooldown_remaining_ms == 0 && rail.rounds_remaining > 0,
-            rail.cooldown_remaining_ms,
-            u32::from(rail.rounds_remaining),
-            u32::from(rail.magazine_max()),
-        ));
-    }
+        .filter(|mount| mount.fires_at_lock)
+        .map(|mount| {
+            let rounds = mount.rounds.unwrap_or(LASER_ROW_ROUNDS);
+            let rounds_max = mount.rounds_max.unwrap_or(LASER_ROW_ROUNDS);
+            FrameWeapon {
+                id: mount.id.clone(),
+                ready: mount.cycled(),
+                ready_in_ms: i64::from(mount.ready_in_ms),
+                rounds,
+                rounds_max,
+                range_band: None,
+                p_permille: None,
+                bands_cm: mount
+                    .reach_m
+                    .map(|reach| {
+                        u32::try_from(reach.saturating_mul(100).max(0)).unwrap_or(u32::MAX)
+                    })
+                    .into_iter()
+                    .collect(),
+                heat_per_shot: u32::from(mount.heat_per_shot),
+                armed: None,
+            }
+        })
+        .collect();
     // Doc 44 unit MW.12 (Q-44-27): a collector drone's one mount is its collector, and the
     // row is how its mind reads the hold. `rounds` is the lifts the hold still has room
     // for and `rounds_max` the lifts a whole hold takes; it is ready when it has cycled and
@@ -388,7 +759,8 @@ fn weapon_rows(observer: &SpaceShipState) -> Vec<FrameWeapon> {
             rounds: kit.lifts_left(),
             rounds_max: kit.hold_cap_kg / super::bubble::COLLECTOR_LIFT_KG,
             range_band: None,
-            p_permille: Some(1_000),
+            // Doc 49 unit CC.9: no odds anywhere in space; a lift that is ready lands.
+            p_permille: None,
             bands_cm: vec![
                 u32::try_from(super::bubble::COLLECTOR_REACH_M.saturating_mul(100))
                     .unwrap_or(u32::MAX),
@@ -398,6 +770,19 @@ fn weapon_rows(observer: &SpaceShipState) -> Vec<FrameWeapon> {
         });
     }
     weapons
+}
+
+/// **The arena's word for a space facet band** (doc 49 unit CC.9). The arena's four sectors
+/// cannot say `top`, so a top band reads `front` here. Nothing in space reads this field: a
+/// script reads the five bands through `Contact.aspect`, which answers [`SpaceContactView::facet`]
+/// in a space view.
+const fn ground_aspect(facet: FacetBand) -> Aspect {
+    match facet {
+        FacetBand::Front | FacetBand::Top => Aspect::Front,
+        FacetBand::Left => Aspect::Left,
+        FacetBand::Right => Aspect::Right,
+        FacetBand::Rear => Aspect::Rear,
+    }
 }
 
 /// **The view `ship_id` reads inside `bubble`** (the file head), and the ship each of its
@@ -411,6 +796,7 @@ pub fn space_mind_view(
     situation: &Situation,
 ) -> Option<(MindView, BTreeMap<ContactId, String>)> {
     let observer = bubble.ships.get(ship_id)?;
+    let picture = fire_picture(bubble, ship_id)?;
 
     let mut contact_map = BTreeMap::new();
     let mut contacts = Vec::new();
@@ -457,6 +843,8 @@ pub fn space_mind_view(
         } else {
             SmolStr::new_static("far")
         };
+        // Doc 49 unit CC.9: the band of her hull a shot from here strikes, of five.
+        let facet = other.select_facet_for_attack(observer.pos_m);
         rows.insert(
             cid,
             SpaceContactView {
@@ -464,6 +852,7 @@ pub fn space_mind_view(
                 vel_cms: cms(other.vel_mmps),
                 stop: situation.stop_of(&other.id),
                 emcon: other.emcon,
+                facet,
             },
         );
         contacts.push(ViewContact {
@@ -485,7 +874,8 @@ pub fn space_mind_view(
             cell: Some((8, 8)),
             condition: None::<FrameCondition>,
             fatal: Some(Vec::new()),
-            aspect: Aspect::Front,
+            aspect: ground_aspect(facet),
+            // Space has no chance roll, so no row carries odds (Q-49-13 as corrected).
             odds: Vec::new(),
             // Doc 44 unit MW.12: a rock that bears no ore reads as a hull that is done.
             reads_dead: Some(other.status != HullStatus::Operational || other.is_spent_rock()),
@@ -512,6 +902,7 @@ pub fn space_mind_view(
             .filter(|id| contact_map.contains_key(id)),
         heard: situation.heard(),
         contacts: rows,
+        mounts: picture.mounts.clone(),
     };
 
     let t_ms = i64::try_from(bubble.wall_elapsed_ms).unwrap_or(i64::MAX);
@@ -559,7 +950,7 @@ pub fn space_mind_view(
             .as_deref()
             .and_then(|locked| book.held(locked))
             .filter(|id| contact_map.contains_key(id)),
-        weapons: weapon_rows(observer),
+        weapons: weapon_rows(observer, &picture),
         rules: Vec::new(),
         order: None,
         t_ms,
@@ -919,6 +1310,11 @@ mod cc6_tests {
         rows.iter().map(|row| row.id.as_str()).collect()
     }
 
+    /// Her rows with no lock held (doc 49 unit CC.9 reads them through her picture).
+    fn rows(ship: &SpaceShipState) -> Vec<FrameWeapon> {
+        weapon_rows(ship, &ship_picture(ship, None))
+    }
+
     fn halcyon() -> SpaceShipState {
         let mut ship =
             SpaceShipState::new_corvette("halcyon", "Halcyon", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
@@ -936,12 +1332,12 @@ mod cc6_tests {
         // Both lasers (the second starts in defence and may switch), the tubes, the spinal
         // gun; point defence fires on its own and has no row.
         assert_eq!(
-            ids(&weapon_rows(&corvette)),
+            ids(&rows(&corvette)),
             ["laser_1", "laser_2", "torp_bow", "rail_spinal"]
         );
         let dray = SpaceShipState::new_dray("d", "Dray", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
         assert_eq!(
-            ids(&weapon_rows(&dray)),
+            ids(&rows(&dray)),
             ["laser_dorsal", "laser_ventral"],
             "Q-49-25: both of the Dray's lasers"
         );
@@ -960,7 +1356,7 @@ mod cc6_tests {
         ));
         bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, Some(Mark::Hostile));
         let max = |bubble: &LocalSpaceBubble, id: &str| {
-            weapon_rows(bubble.ships.get("halcyon").expect("her ship"))
+            rows(bubble.ships.get("halcyon").expect("her ship"))
                 .into_iter()
                 .find(|row| row.id == id)
                 .map(|row| (row.rounds, row.rounds_max))
@@ -996,6 +1392,379 @@ mod cc6_tests {
             };
             laser.mode = super::super::weapons::LaserMode::Defense;
         }
-        assert_eq!(ids(&weapon_rows(&dray)), ["laser_ventral"]);
+        assert_eq!(ids(&rows(&dray)), ["laser_ventral"]);
+    }
+}
+
+/// **Doc 49 unit CC.9: what her mounts and her lock read before a shot, and the mind reads the
+/// same.** Space has no chance roll (Q-49-13 as corrected by doc 48b's W-49-5): the figures are
+/// the kernel's own, and nothing a mind or a player reads is odds.
+#[cfg(test)]
+mod cc9_tests {
+    use super::*;
+    use crate::arena::party::Mark;
+    use crate::space::picket::{BELT_RAIDER_PARTY, CARRIER_PARTY};
+
+    fn halcyon() -> SpaceShipState {
+        let mut ship =
+            SpaceShipState::new_corvette("halcyon", "Halcyon", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
+        super::super::custody::apply_space_unit_overlay(
+            &mut ship,
+            &super::super::custody::space_unit_overlay_for_id("tacsim.unit.halcyon"),
+        );
+        ship
+    }
+
+    /// Halcyon and a raider at `at`, hot and radiating so her sensors hold it, locked.
+    fn field(at: [i64; 3]) -> LocalSpaceBubble {
+        let mut bubble = LocalSpaceBubble::new("bubble.test.cc9", "domain.9", "Test", 1_000);
+        let mut ship = halcyon();
+        ship.locked_target_id = Some("raider".to_owned());
+        bubble.insert_ship(ship);
+        let mut raider =
+            SpaceShipState::new_corvette("raider", "Belt Raider", BELT_RAIDER_PARTY, at, [0, 0, 0]);
+        raider.emcon = EmconPosture::ActiveCombat;
+        raider.heat_permille = 600;
+        bubble.insert_ship(raider);
+        bubble.set_party_relation(CARRIER_PARTY, BELT_RAIDER_PARTY, Some(Mark::Hostile));
+        bubble
+    }
+
+    fn held(bubble: &LocalSpaceBubble) -> bool {
+        super::super::commands::is_bubble_ship_detected(
+            &bubble.ships["halcyon"],
+            &bubble.ships["raider"],
+            bubble.ic_timestamp_s,
+        )
+    }
+
+    fn mount<'a>(picture: &'a FirePicture, id: &str) -> &'a MountFacts {
+        picture
+            .mounts
+            .iter()
+            .find(|mount| mount.id == id)
+            .unwrap_or_else(|| panic!("she carries {id}"))
+    }
+
+    #[test]
+    fn cc9_every_mount_reads_its_rounds_mode_and_ready_and_the_lock_its_range_and_band() {
+        let bubble = field([-60_000, 0, 0]);
+        assert!(held(&bubble), "the rig's raider is one her sensors hold");
+        let picture = fire_picture(&bubble, "halcyon").expect("her picture");
+        let ids: Vec<&str> = picture
+            .mounts
+            .iter()
+            .map(|mount| mount.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "laser_dorsal",
+                "laser_ventral",
+                "torp_bow",
+                "rail_spinal",
+                "pdc_port",
+                "pdc_stbd",
+                "pdc_dorsal",
+                "pdc_ventral"
+            ],
+            "Halcyon's full fit: every mount, point defence among them"
+        );
+        let ship = &bubble.ships["halcyon"];
+        let dorsal = mount(&picture, "laser_dorsal");
+        assert_eq!(dorsal.mode, Some(LaserMode::Offense));
+        assert_eq!((dorsal.rounds, dorsal.rounds_max), (None, None));
+        assert_eq!(dorsal.state, MountState::Ready);
+        assert_eq!(
+            dorsal.at_lock,
+            Some(AtLock::Damage(ship.lasers[0].damage_at_range(60_000))),
+            "the kernel's own damage at range"
+        );
+        let spinal = mount(&picture, "rail_spinal");
+        assert_eq!(
+            (spinal.rounds, spinal.rounds_max),
+            (Some(32), Some(32)),
+            "what her fit stows"
+        );
+        let target = &bubble.ships["raider"];
+        let (_, flight) = compute_railgun_lead(
+            ship.pos_m,
+            ship.vel_mmps,
+            target.pos_m,
+            target.vel_mmps,
+            ship.railguns[0].muzzle_vel_mps,
+        );
+        assert!(flight > 0);
+        assert_eq!(spinal.at_lock, Some(AtLock::FlightMs(flight)));
+        assert_eq!(mount(&picture, "torp_bow").rounds, Some(16));
+        assert_eq!(mount(&picture, "torp_bow").at_lock, None);
+        assert_eq!(mount(&picture, "pdc_port").rounds, Some(4_000));
+        let lock = picture.lock.as_ref().expect("the lock is held");
+        assert_eq!((lock.range_m, lock.facet), (60_000, FacetBand::Front));
+        assert_eq!(picture.lock_id.as_deref(), Some("raider"));
+    }
+
+    /// The five bands: the band of her hull a shot from here strikes, top among them, as the
+    /// kernel's own facet rule picks it, on the picture, on the mind's space row and through
+    /// `Contact.aspect`.
+    #[test]
+    fn cc9_the_lock_reads_her_band_of_five_and_a_mind_reads_the_same() {
+        use crate::minds::fixture::{context_on, eval_in, shown};
+        for (at, band) in [
+            ([-60_000, 0, 0], FacetBand::Front),
+            ([60_000, 0, 0], FacetBand::Rear),
+            ([0, -60_000, 0], FacetBand::Right),
+            ([0, 60_000, 0], FacetBand::Left),
+            ([0, 0, -60_000], FacetBand::Top),
+        ] {
+            let bubble = field(at);
+            assert!(held(&bubble), "{at:?}");
+            let picture = fire_picture(&bubble, "halcyon").expect("her picture");
+            assert_eq!(picture.lock.as_ref().map(|lock| lock.facet), Some(band));
+            let mut book = ContactBook::default();
+            let (view, _) = space_mind_view(
+                &bubble,
+                "halcyon",
+                ObjId(7),
+                &mut book,
+                &Situation::open(1_000),
+            )
+            .expect("her view");
+            let row = &view.space.as_deref().expect("space").contacts[&view.contacts[0].id];
+            assert_eq!(row.facet, band);
+            assert!(view.contacts[0].odds.is_empty(), "no odds in space");
+            let read = eval_in(context_on(view), "v.contacts[0].aspect").expect("reads");
+            assert_eq!(shown(&read), format!("{:?}", band.id_str()), "{at:?}");
+        }
+    }
+
+    /// What holds a mount back is the first that holds, by the kernel's own rules: the cycle,
+    /// the magazine, the heat ceiling, the reach, a defence mode, a rotary that is down.
+    #[test]
+    fn cc9_a_mount_reads_what_holds_it_back() {
+        let mut bubble = field([-60_000, 0, 0]);
+        {
+            let ship = bubble.ships.get_mut("halcyon").expect("her");
+            ship.lasers[0].cooldown_remaining_ms = 2_350;
+            ship.lasers[1].mode = LaserMode::Defense;
+            ship.railguns[0].rounds_remaining = 0;
+            ship.railguns[0].fired_since_full = 32;
+            ship.torpedo_tubes[0].cooldown_remaining_ms = 4_000;
+            ship.pdcs[0].operational = false;
+            ship.pdcs[1].ammo_remaining = 0;
+        }
+        let picture = fire_picture(&bubble, "halcyon").expect("her picture");
+        let dorsal = mount(&picture, "laser_dorsal");
+        assert_eq!(
+            (dorsal.state, dorsal.ready_in_ms),
+            (MountState::Cycling, 2_350)
+        );
+        let ventral = mount(&picture, "laser_ventral");
+        assert_eq!(
+            (ventral.mode, ventral.state),
+            (Some(LaserMode::Defense), MountState::Ready),
+            "a laser in defence is ready to stop a torpedo"
+        );
+        assert!(!ventral.cycled(), "and not to fire at her lock");
+        let spinal = mount(&picture, "rail_spinal");
+        assert_eq!(
+            (spinal.state, spinal.rounds, spinal.rounds_max),
+            (MountState::Empty, Some(0), Some(32))
+        );
+        assert_eq!(mount(&picture, "torp_bow").state, MountState::Cycling);
+        assert_eq!(mount(&picture, "pdc_port").state, MountState::Down);
+        assert_eq!(mount(&picture, "pdc_stbd").state, MountState::Empty);
+        // A hull disabled to a derelict fires nothing: every mount is down.
+        let mut wreck = bubble.clone();
+        wreck.ships.get_mut("halcyon").expect("her").status = HullStatus::DisabledDerelict {
+            epoch_open: true,
+            life_support_remaining_s: 60,
+        };
+        let picture = fire_picture(&wreck, "halcyon").expect("her picture");
+        assert!(
+            picture
+                .mounts
+                .iter()
+                .all(|mount| mount.state == MountState::Down)
+        );
+
+        // One more pulse would cross her heat ceiling: the kernel does not take it.
+        {
+            let ship = bubble.ships.get_mut("halcyon").expect("her");
+            ship.lasers[0].cooldown_remaining_ms = 0;
+            ship.lasers[1].cooldown_remaining_ms = 1_000;
+            ship.heat_permille = HEAT_CEILING_PERMILLE - ship.lasers[0].heat_cost_permille + 1;
+        }
+        let picture = fire_picture(&bubble, "halcyon").expect("her picture");
+        assert_eq!(mount(&picture, "laser_dorsal").state, MountState::TooHot);
+        assert!(
+            bubble.fire_offensive_lasers("halcyon", "raider").is_empty(),
+            "the kernel refuses the same shot"
+        );
+
+        // Past a mount's reach: the lock as far off as her sensors still hold her.
+        let reach = bubble.ships["halcyon"].lasers[0].max_range_m;
+        let far = field([-(reach + 1_000), 0, 0]);
+        if held(&far) {
+            let picture = fire_picture(&far, "halcyon").expect("her picture");
+            assert_eq!(mount(&picture, "laser_dorsal").state, MountState::PastReach);
+            assert_eq!(mount(&picture, "laser_dorsal").at_lock, None);
+            assert_eq!(mount(&picture, "rail_spinal").state, MountState::PastReach);
+            assert_eq!(mount(&picture, "rail_spinal").at_lock, None);
+        } else {
+            // The lock lost: no lock figures at all, and the mounts read their own state.
+            let picture = fire_picture(&far, "halcyon").expect("her picture");
+            assert_eq!(picture.lock, None);
+            assert_eq!(picture.lock_id.as_deref(), Some("raider"));
+            assert!(picture.mounts.iter().all(|mount| mount.at_lock.is_none()));
+        }
+    }
+
+    /// A mind reads the same: its rows of `v.weapons` carry no odds, the true reach, heat and
+    /// readiness, and `space_mount(v, id)` reads every mount, point defence among them.
+    #[test]
+    fn cc9_a_space_mind_reads_the_kernels_figures_for_every_mount() {
+        use crate::minds::fixture::{context_on, eval_in, shown};
+        let mut bubble = field([-60_000, 0, 0]);
+        bubble.ships.get_mut("halcyon").expect("her").lasers[1].mode = LaserMode::Defense;
+        let mut book = ContactBook::default();
+        let (view, _) = space_mind_view(
+            &bubble,
+            "halcyon",
+            ObjId(7),
+            &mut book,
+            &Situation::open(1_000),
+        )
+        .expect("her view");
+        let ship = &bubble.ships["halcyon"];
+        for row in &view.weapons {
+            assert_eq!(row.p_permille, None, "{}: no odds in space", row.id);
+        }
+        let row = |id: &str| {
+            view.weapons
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("a row for {id}"))
+        };
+        assert_eq!(
+            row("laser_dorsal").bands_cm,
+            [u32::try_from(ship.lasers[0].max_range_m * 100).expect("fits")]
+        );
+        assert_eq!(
+            row("laser_dorsal").heat_per_shot,
+            u32::from(ship.lasers[0].heat_cost_permille)
+        );
+        assert!(row("laser_dorsal").ready);
+        assert!(!row("laser_ventral").ready, "in defence");
+        assert_eq!(
+            row("laser_ventral").ready_in_ms,
+            0,
+            "its cycle has finished"
+        );
+        assert_eq!(
+            row("rail_spinal").bands_cm,
+            [u32::try_from(ship.railguns[0].max_range_m * 100).expect("fits")]
+        );
+        assert!(
+            row("torp_bow").bands_cm.is_empty(),
+            "the tubes declare no reach"
+        );
+        assert!(
+            view.weapons.iter().all(|row| !row.id.starts_with("pdc")),
+            "point defence fires on its own"
+        );
+
+        let read = |expr: &str| shown(&eval_in(context_on(view.clone()), expr).expect(expr));
+        let damage = ship.lasers[0].damage_at_range(60_000);
+        assert_eq!(read("space_mount(v, \"laser_dorsal\").family"), "\"laser\"");
+        assert_eq!(read("space_mount(v, \"laser_dorsal\").mode"), "\"offence\"");
+        assert_eq!(
+            read("space_mount(v, \"laser_ventral\").mode"),
+            "\"defence\""
+        );
+        assert_eq!(read("space_mount(v, \"laser_dorsal\").state"), "\"ready\"");
+        assert_eq!(
+            read("space_mount(v, \"laser_dorsal\").lock_damage"),
+            damage.to_string()
+        );
+        assert_eq!(read("space_mount(v, \"laser_dorsal\").rounds"), "()");
+        assert_eq!(read("space_mount(v, \"rail_spinal\").rounds_max"), "32");
+        assert_ne!(read("space_mount(v, \"rail_spinal\").lock_flight_ms"), "()");
+        assert_eq!(read("space_mount(v, \"torp_bow\").reach_m"), "()");
+        assert_eq!(
+            read("space_mount(v, \"pdc_port\").family"),
+            "\"point_defence\""
+        );
+        assert_eq!(read("space_mount(v, \"pdc_port\").rounds"), "4000");
+        assert_eq!(read("space_mount(v, \"no_such_mount\")"), "()");
+        // On the ground there is no space mount.
+        assert_eq!(
+            shown(
+                &eval_in(
+                    context_on(crate::minds::fixture::view()),
+                    "space_mount(v, \"cannon\")"
+                )
+                .expect("reads")
+            ),
+            "()"
+        );
+    }
+
+    /// **The 120-column floor at the widest fill on Halcyon's full fit**: every row
+    /// `+tac/status` prints, two spaces in, with every field at the widest it can be: a cycle
+    /// of an hour left, a full magazine at the type's bound, a pulse at the damage bound and a
+    /// spinal round at its longest flight.
+    #[test]
+    fn cc9_every_status_row_fits_120_columns_at_the_widest_fill() {
+        use crate::definitions::space_mount::{
+            MAX_PD_MAGAZINE, MAX_SPACE_CYCLE_MS, MAX_SPACE_DAMAGE,
+        };
+        // A pulse lands its whole damage inside a kilometre; a slow round flies longest far off.
+        let mut lines = Vec::new();
+        for at in [[-900, 0, 0], [-60_000, 0, 0]] {
+            let mut bubble = field(at);
+            assert!(held(&bubble), "{at:?}");
+            let ship = bubble.ships.get_mut("halcyon").expect("her");
+            for laser in &mut ship.lasers {
+                laser.cooldown_remaining_ms = MAX_SPACE_CYCLE_MS;
+                laser.base_damage = MAX_SPACE_DAMAGE;
+            }
+            for tube in &mut ship.torpedo_tubes {
+                tube.cooldown_remaining_ms = MAX_SPACE_CYCLE_MS;
+                tube.magazine_remaining = u16::MAX;
+            }
+            for gun in &mut ship.railguns {
+                gun.cooldown_remaining_ms = MAX_SPACE_CYCLE_MS;
+                gun.rounds_remaining = u16::MAX;
+                gun.muzzle_vel_mps = 1_000;
+            }
+            for pd in &mut ship.pdcs {
+                pd.cooldown_remaining_ms = MAX_SPACE_CYCLE_MS;
+                pd.ammo_remaining = MAX_PD_MAGAZINE;
+            }
+            let picture = fire_picture(&bubble, "halcyon").expect("her picture");
+            let rows = super::super::commands::fire_status_lines(&picture);
+            assert_eq!(rows.len(), 10, "the head, eight mounts, the lock");
+            lines.extend(rows);
+        }
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 120,
+                "{} columns: {line}",
+                line.chars().count()
+            );
+        }
+        for needle in [
+            "in 3600.0 s",
+            "100000 a pulse",
+            "65535/65535",
+            "1000000 left",
+            "flies 60.0 s",
+        ] {
+            assert!(
+                lines.iter().any(|line| line.contains(needle)),
+                "{needle}: {lines:#?}"
+            );
+        }
     }
 }

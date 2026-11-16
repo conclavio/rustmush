@@ -615,6 +615,21 @@ pub(crate) fn register(api: &mut Registrar<'_>) {
             space_contact_map,
         )
     });
+    // Doc 49 unit CC.9 (API 10): one mount of hers in a space bubble, a read, fee 1.
+    function!(api, "space_mount", |v: &mut View,
+                                   id: ImmutableString|
+     -> Dynamic {
+        charge(FEE_READ);
+        opt(
+            v.0.space.as_deref().and_then(|space| {
+                space
+                    .mounts
+                    .iter()
+                    .find(|mount| mount.id.as_str() == id.as_str())
+            }),
+            space_mount_map,
+        )
+    });
     function!(api, "course", |bearing_mdeg: INT,
                               elevation_mdeg: INT|
      -> INT {
@@ -676,6 +691,42 @@ fn space_contact_map(row: &crate::space::view::SpaceContactView) -> Dynamic {
         "emcon".into(),
         word(crate::space::view::emcon_word(row.emcon)),
     );
+    Dynamic::from_map(map)
+}
+
+/// **`space_mount(v, id)`** — one of the hull's own mounts in a space bubble, by its id, as a
+/// map; `()` on the ground and for an id she does not carry (doc 49 unit CC.9). Every mount
+/// is there, point defence among them, though only those she may fire have a row in `v.weapons`:
+/// `family` (`laser`, `tubes`, `spinal`, `point_defence`), `mode` (a laser's `offence` or
+/// `defence`, else `()`), `rounds` and `rounds_max` (`()` for a laser; `rounds_max` is `()`
+/// for point defence too), `ready_in_ms` (its cycle left), `state` (`ready`, or the first of
+/// `down`, `empty`, `cycling`, `too_hot`, `past_reach` that holds it back), `reach_m` (`()`
+/// for the tubes), `heat_per_shot` (per mille of her heat ceiling), and against her lock
+/// while her sensors hold it within the mount's reach, `lock_damage` (a laser's damage one
+/// pulse lands there) and `lock_flight_ms` (how long a spinal round flies there), each `()`
+/// otherwise. Space has no chance roll, so nothing here is odds.
+fn space_mount_map(mount: &crate::space::view::MountFacts) -> Dynamic {
+    use crate::space::view::{AtLock, laser_mode_word};
+    let mut map = mush_mind::rhai::Map::new();
+    map.insert("id".into(), word(mount.id.as_str()));
+    map.insert("family".into(), word(mount.family.as_str()));
+    map.insert(
+        "mode".into(),
+        opt(mount.mode, |mode| word(laser_mode_word(mode))),
+    );
+    map.insert("rounds".into(), opt(mount.rounds, int));
+    map.insert("rounds_max".into(), opt(mount.rounds_max, int));
+    map.insert("ready_in_ms".into(), int(mount.ready_in_ms));
+    map.insert("state".into(), word(mount.state.as_str()));
+    map.insert("reach_m".into(), opt(mount.reach_m, int));
+    map.insert("heat_per_shot".into(), int(mount.heat_per_shot));
+    let (damage, flight) = match mount.at_lock {
+        Some(AtLock::Damage(damage)) => (Some(damage), None),
+        Some(AtLock::FlightMs(ms)) => (None, Some(ms)),
+        None => (None, None),
+    };
+    map.insert("lock_damage".into(), opt(damage, int));
+    map.insert("lock_flight_ms".into(), opt(flight, int));
     Dynamic::from_map(map)
 }
 
