@@ -1,6 +1,6 @@
 # 49. Combat content — the armaments, the rounds and the shot, surveyed
 
-Draft 0.6, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
+Draft 0.7, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by one read-only
 lane, with the lead spot-checking the cycle figures, the cycle floor, the card presets, the slot limit
 and the laser recharge. Anchors are file names with line numbers; line numbers drift. Draft
 0.1, the same day, was the survey.
@@ -50,6 +50,17 @@ The rulings stand until their follow-ups are answered.
 
 **Draft 0.6, the same day, records the owner's rulings on the follow-ups. Every question in this survey,
 Q-49-1 to Q-49-24, is now ruled.**
+
+**Draft 0.7, the same day, folds in a second outside review** of the PR at `8ddf6ca9b` (Gemini). It
+is triaged in [doc 48b](48b-second-review-triage-2026-11-15.md), with five verification lanes against
+`b1b4c57f6`.
+- **Corrected in place**, marked **Correction (second review)**:
+  - §0, §3.1, §3.2, §3.4, §3.6 and §4;
+  - Q-49-4, Q-49-8, Q-49-13;
+  - Q-49-23, whose ruling needs four more sentences to work.
+- **§4a** lists the live defects found.
+- **Follow-ups Q-49-25 to Q-49-29 (§6.7), open.** Two of them, Q-49-25 and Q-49-29, would reverse
+  part of an earlier ruling, so they are the owner's to decide.
 - **Q-49-20: the alternative, and the "no auto-fire" rule is unwound.** In the owner's words: "that's
   just tedious and defeats the purpose, let's just unwind the 'no auto-fire' rule". Condition slots
   stand for players and minds alike: once armed, a slot fires at each ready moment while its terms
@@ -90,8 +101,9 @@ walk through how a hit is resolved. Content file paths keep their own names.
 3. **Ammunition is a good on the ground, but nothing makes it.**
    - GC.7 added four munitions goods. Rearm draws them from a hold and charges a per-round fee.
    - No recipe outputs a round; vendors hold finite seeds.
-   - Laser recharge draws no good. It costs only labour and time: 0.25 cr a charge and 30 IC minutes
-     (corrected after the outside review, doc 48a A-8).
+   - Laser recharge draws no good. At a port's workshop it costs labour and time: 0.25 cr a charge and
+     30 IC minutes (corrected after the outside review, doc 48a A-8). In a carrier's bay away from
+     port it is free and takes twice the time (Q-41-7; doc 48b W-49-8b).
    - Space has no munitions goods and no rearm, and its magazines appear to refill each time a ship
      is checked out into a bubble.
 4. **The player's decision support is mostly built on the ground.** `CONTACTS`, the mount status
@@ -183,7 +195,7 @@ the two documents meet at the munitions recipes (Q-49-4, Q-48-23).
 |---|---|---|---|---|---|---|
 | `line_tank` and its `_ecm`, `_eccm`, `_thermal` variants | simulator; IC field (raiders, `field/raiders.json`) | 105 mm cannon | 6 s | 40 HE | 1.5 / 3 km | the main gun against armour |
 | same | same | coaxial gun | **1 s**, bursts of 10 | 2,000 (200 bursts) | 0.6 / 1.2 km | infantry and drones; wears tracks down |
-| `line_tank_laser`, `biped_mk2` | simulator | pulse laser + coaxial gun | 2 s, three shots then a heat wait | 500 charges | 1.2 / 2.4 km | the pack note: "what you wear a tank down with" |
+| `line_tank_laser`, `biped_mk2` | simulator | pulse laser + coaxial gun | 2 s; the pack notes say "three shots then a heat wait", but heat never refuses a shot in play (see below) | 500 charges | 1.2 / 2.4 km | the pack note: "what you wear a tank down with" |
 | `scout_mk1` | simulator | 30 mm autocannon + coaxial gun | 3 s, bursts of 3 | 240 (80 bursts) | 1 / 2 km | the scout's main gun |
 | `heavy_mk1` | simulator | cannon + coaxial gun + missile rack | rack 10 s | 6 | weak inside 0.6 km / 3 km | armour; slow flight, a mover can walk out from under it |
 | `biped_mk1` | simulator | cannon + coaxial gun | as above | as above | as above | |
@@ -202,6 +214,12 @@ the two documents meet at the munitions recipes (Q-49-4, Q-48-23).
   wrecker, both Tycho units, `conduct_carrier`, `relay_station`.
 - Space: the collector drones.
 
+**Correction (second review, doc 48b W-49-3a):** the laser's heat does not limit it. A shot that would cross the
+heat ceiling is capped, not refused (`arena/heat.rs:115-127`, `:160-162`). The only refusal is at the
+ceiling itself (`arena/weapons.rs:1116-1122`). At the shipped cooling rate the cell is below the
+ceiling at every ready moment, at today's 2 s and at the ruled 5 s alike. The test that shows "three
+shots then a wait" fires them with no time passing. What limits the laser is Q-49-28.
+
 ### 3.2 Ammunition
 
 **Ground.**
@@ -213,7 +231,9 @@ the two documents meet at the munitions recipes (Q-49-4, Q-48-23).
 - A laser's "recharge" is a cell, not a good (`jobs.rs:86`). **Correction (outside review, doc 48a
   A-8):** it is not free. It is charged at the tariff's `cost_per_ammo_round` (25 minor a charge) and
   takes `duration_ic_rearm_component` (1,800 IC s) like any rearm (`jobs.rs:430-433`). A full
-  500-charge refill is 125 cr before the operator's multiplier.
+  500-charge refill is 125 cr before the operator's multiplier. **Correction (second review, doc 48b W-49-8b):** that
+  is the workshop's price. In a carrier's bay away from port there is no fee and no good drawn, and
+  the job takes twice the time (`port/bay_work/mod.rs:37`, `:179`; `command.rs:250-269`; Q-41-7).
 
 **The goods.**
 - GC.7 added four munitions goods (`market/goods.json:166-218`; doc 36): an AP round at 12 cr, a
@@ -302,9 +322,12 @@ default carries almost none.
 `stock::fire_discipline` (`src/minds/mod.rs:1337-1353`).
 
 **The space doctrines.**
-- The belt raider opens with every ready mount and two torpedoes, then presses with everything
-  except torpedoes (`content/minds/belt_raider.rhai:49-70`).
-- The interdictor fires its laser every think and torpedoes only from a full magazine.
+- The belt raider opens with every ready mount and two torpedoes (`content/minds/belt_raider.rhai:49-70`).
+  **Correction (second review, doc 48b W-49-4):** after the opener it fires lasers and the spinal gun only at a
+  prey that customs have finished with and that is radiating for a fight.
+- The interdictor fires its first laser when ready, and at most one torpedo a check-out, only at a
+  hull radiating for a fight. It never fires the spinal gun (`interdictor_patrol.rhai:90-99`;
+  `space/applier.rs:680-682`; `space/view.rs:350-357`). (Corrected, second review.)
 - The picket fires its laser whenever it is ready.
 
 **Absent units.**
@@ -340,6 +363,14 @@ does (`crates/mush-bot/tests/arena_lane.rs:2296-2360`).
 and sensor loss (doc 35d).
 
 ### 3.6 What is pinned to the placeholder numbers
+
+- **The minds** (second review, doc 48b G-13).
+  - A change to the stock doctrine's behaviour re-blesses the Standard Doctrine's digest pin
+    (`minds/content.rs:212`) and its native twin's parity, keeping `stock=3`, as M2.6, M4.3 and CF.6b
+    did.
+  - A new field in the mind's view is a mind API bump, with the old ABI retained and re-rated
+    (`minds/mod.rs:221-240`).
+  - `content/minds/standard.rhai` uses 31 of its 32 functions.
 
 - **Content signatures.** `DIGESTS` pins 15 packs (`tacsim/tests/domain_arena/content.rs:105`).
   Each unit pack names the versions it needs, so a round-pack edit re-signs the pack, every unit that
@@ -406,7 +437,25 @@ What they share:
 7. **Authoring.** Only the ground has a designer-editable format. Space mounts and `raider_heavy`
    live in Rust.
 8. **Mount count.** The scale target allowed 2 to 10 mounts a unit. Shipped ground units carry 2 or
-   3, Class I gives two slots, and the stock mind cannot fire a mount past its slots.
+   3, Class I gives two slots, and the stock mind cannot fire a mount past its slots. (Second review,
+   checked: the stock mind thinks at the lesser of its own Class I and the hull's core, so it arms two
+   slots on every shipped chassis. A seated pilot, or a sealed mind of a higher class, gets the hull's
+   figure: 4 for the line core, 6 for the command core; `arena/core.rs:483-516`.)
+
+## 4a. Defects found by the reviews (for the fix thread)
+
+- **The yard zeroes a ground laser's charge.** `empty_magazines` (`port/commission.rs:735-761`) runs
+  at the Emptied step (`:590-593`), which CO.9's House seeds also pass through. It zeroes every
+  component's `ammo` cell, the laser's 500 charges included. That breaks Q-39-36 ("beam charge is
+  full") and the module's own header (`:20-21`). (Doc 48b G-10(3).)
+- **Space minds see only the first mount of each family** (`space/view.rs:341-367`).
+  - `.max(8)` and `.max(24)` report the larger of rounds left and 8 (or 24), so Halcyon's maximum
+    shrinks with each shot.
+  - A second tube family or spinal gun could not fire (`space/bubble.rs:2230`, `:2412`), though no
+    shipped hull carries one.
+  - `space/backup.rs:170-189` and `view.rs:341-348` read "armed" without the laser's mode.
+
+  (Doc 48b G-11, W-49-1.)
 
 ## 5. The shape proposed
 
@@ -507,6 +556,14 @@ is accepted at its default as written. Their proposed text below is the decision
   standing trigger. The ruling (Draft 0.4) stands. The honest choice, standing or single-use
   authorisation, is Q-49-20.
 
+**Correction (second review, doc 48b W-49-6):** "no slot may arm below the card's floor" holds only for the stock card.
+A player's cockpit reads no card, and a custom Rhai card has no stock card. Both are bounded by the
+match's Compact floor alone, 10% (`match_/cockpit/weapons_fire.rs:278-282`;
+`arena/runtime_card.rs:169-173`; `arena/conditions.rs:568-573`). And "aspect = front, side, rear"
+meets the judgement-term rule while meaning every aspect (`arena/rules.rs:321-340`). Since Q-49-20
+unwound the "no auto-fire" rule, whether players keep the term at all is Q-49-29. ("Flank" in §3.4's
+card table is the card's own word, `AspectWord::Flank`, and is correct.)
+
 **Q-49-9 — The stock mind's shot discipline.**
 - **Proposed default:** the default card keeps its reserve for answering fire, and the stock mind
   raises its odds floor as the magazine falls below half (one rule, readable in the card's text).
@@ -524,6 +581,10 @@ is accepted at its default as written. Their proposed text below is the decision
 - **Alternative:** keep rounds as a finite vendor good with a daily refresh.
 - **Why:** a finite seed is either exhausted or refilled from nowhere. A recipe gives rounds a price
   that follows its inputs, and gives volatiles their first industrial buyer.
+
+**Correction (second review, doc 48b W-49-8a):** tonne-sized inputs do not contradict GC.7's prices. A batch outputs
+many units, and the works time carries the price, as the mount parts already do: `mount_105` turns
+4 t of inputs worth about 1,600 cr into a 28,000 cr mount over 120 work units (`recipes-v2.json`).
 
 **Q-49-5 — How precious a round is.**
 - **Decision (owner ruling, 2026-11-15):** **keep GC.7's prices**: AP 12 cr, a box of ball 25 cr,
@@ -595,6 +656,18 @@ is accepted at its default as written. Their proposed text below is the decision
 - **Alternative:** ground `STATUS` only.
 - **Why:** waiting for the good shot needs the player to see the odds and what is left at a glance.
   `STATUS` is the line a player reads most. The 120-column floor holds.
+
+**Correction (second review, doc 48b W-49-5):** space has no chance roll, so it has no odds to show.
+- An offence laser lands whenever it is ready, in reach and under its heat limit, with damage falling
+  with range (`space/weapons.rs:108-123`).
+- The spinal round and torpedoes are flown objects.
+- Space has five facet bands, including top (`space/bubble.rs:949-995`), against the ground's four
+  sectors.
+
+So the space cockpit shows, per mount, its rounds left, its laser mode and when it is ready. For the
+locked contact it shows range, the band of her hull facing the player (five bands), offence-laser
+damage at that range, and the spinal round's flight time. Space minds read the same, for every mount,
+instead of today's constants (`space/view.rs:335`, `:477`).
 
 **Q-49-14 — Round choice per mount.**
 - **Proposed default:**
@@ -751,6 +824,19 @@ Each question carries its decision first.
 - **Why:** a reserve exists to get the unit home. A mind that sits on it in the open is worse than one
   that runs.
 
+**Correction (second review, doc 48b W-49-2):** the ruling needs four more sentences to work. Without them two minds on
+their reserve can sit facing each other until the match cap; the Sniper card's 30% reserve already
+can today.
+1. **Dry for withdrawal is its own test.** `is_dry` also gates arming (`arena/stock_mind.rs:1947-1949`;
+   `standard.rhai:640`, `:681`, `:723`), and it is a public kernel. Reusing it would stop the reserve
+   ever being spent.
+2. **Answering fire is decided in the slot check.** A shot under the reserve is allowed when its
+   target is in `fired_on_by`. That needs `note_fired_on` to record in every match, not only in
+   host-ended fields (`arena/absent.rs:585-600`), which moves the arena hash.
+3. **A withdrawing mind arms with no reserve**, native and Rhai.
+4. **`spent()` counts a unit at or under its reserve on every mount as spent**
+   (`arena/damage.rs:1714-1739`), so the simulator's `spent` draw still ends such a match.
+
 **Q-49-24 — Laser modes** (A-12).
 - **Decision (owner ruling, 2026-11-15):** the default, accepted.
 - **The problem:** a space laser switches between offence and defence on one cooldown. The 5 s floor
@@ -768,6 +854,80 @@ Each question carries its decision first.
 - **Why:** the exemption has to follow what the mount is doing, not what it is, and a switch must
   never be a way round the floor.
 
+### 6.7 Raised by the second review (doc 48b)
+
+Each question answers a finding that held. Until it is ruled, the ruling it qualifies stands, as
+corrected above.
+
+**Q-49-25 — The Dray's lasers** (W-49-1). *This would reverse part of Q-49-7 and Q-49-24.*
+- **The problem:** a defence-only Dray cannot answer fire at all. Point defence and defence-mode
+  lasers only stop incoming rounds (`space/bubble.rs:2315`, `:2797-2822`), and the Dray has no tubes
+  and no spinal gun.
+  - Ship cores exist only for the Dray (`definitions/core_replacement.rs:191-202`), so R-47-2 (a
+    sealed-mind ship answers fire) would have no hull in live play.
+  - R-47-3 would go quiet for it too: GUARD drops to HOLD on an unarmed hull (`arena/absent.rs:645-651`).
+  - Tests and stories assert a Dray answering: `space_ap9.rs:514-548`, `field_ap11.rs:1428-1430`,
+    four in `tick_thinks_tests.rs`, and six "Laser battery fired on" lines in `voyage.rs`.
+- **Proposed default:** the Dray and Dray-P keep dual-mode lasers. Q-49-7 already makes every offence
+  laser short-reach and weak against a hull, and the Dray stays limited by having no tubes and no
+  spinal gun.
+- **Alternative:** defence-only, as ruled. R-47-2 then has no live hull until a second ship-core
+  family exists, and the tests above are rewritten to "she cannot answer; GUARD reads HOLD".
+- **Why:** defence-only empties a ruling made the day before, on the only hull that can carry a
+  sealed mind.
+
+**Q-49-26 — Can a lone ship hurt an alert, screened hull?** (W-49-4).
+- **The problem:** with the shipped values, any stock screen stops a lone shooter's two-round salvos
+  (`space/weapons.rs:57-68`; `space/bubble.rs:2757-2778`, `:2800-2822`). The spinal gun misses any
+  hull that burns during its flight and hits any hull that coasts, with no roll between
+  (`space/custody.rs:418-425`; dodging costs Δv, `bubble.rs:2554-2582`). Only the offence laser
+  always lands, and Q-49-7 makes it short and weak. Q-49-24's defence-only fit would make the starter
+  hauler the best-screened hull in the game.
+- **Proposed default:**
+  - CC.8 measures one shooter's full magazine against each stock screen.
+  - It sets the defence cycle, the knob Q-49-24 created, so a warship's screen stops a lone salvo and
+    a hauler's leaks.
+  - The spinal gun's dodge stays, priced in Δv.
+  - A story shows a corvette disabling a Dray that dodges.
+- **Alternative:** torpedoes stay a saturation round that needs several shooters, and the screens stay
+  as they are.
+- **Why:** today one hull's torpedoes never land on any armed hull. That goes against the owner's
+  view that "there should be lots the Dray can't do".
+
+**Q-49-27 — The ground laser against armour and drones** (W-49-3b).
+- **The problem:**
+  - A drone takes 5 charges from the front (4 from the rear), and a coaxial burst already does as
+    much.
+  - Each round does one fixed damage figure. So a charge strong enough to kill drones fast would
+    out-damage the cannon against armour per minute, which Q-49-6's lore forbids.
+- **Proposed default:** the combat kernel counts a beam's damage reduced against a section's armour
+  and in full against its internals, a kernel change with a re-bless. The laser is then weak against a
+  tank and quick against a drone.
+- **Alternative:** content only. The laser stays weaker per minute than the cannon on every target,
+  and a drone takes several charges.
+- **Why:** one damage figure cannot be both weak against armour and strong against drones.
+
+**Q-49-28 — What limits the ground laser** (W-49-3a, G-12).
+- **The problem:** heat never refuses a shot at a 5 s cycle (§3.1's correction). The charge refills
+  free in a carrier's bay away from port, and 500 charges is about 42 minutes of fire.
+- **Proposed default:** heat refuses. A shot that would cross the ceiling is refused, not capped (a
+  kernel change in `arena/heat.rs` with a re-bless), and the laser packs' heat is tuned so sustained
+  fire locks out for a cycle now and then. The charge store stays 500. Q-41-7's free recharge away from
+  port stands.
+- **Alternative:** content only. The charge store becomes a magazine like the others (provisional
+  60), and heat stays as it is.
+- **Why:** the laser needs one real limit, and heat is the one its lore names.
+
+**Q-49-29 — The judgement term after the unwinding** (W-49-6). *This would reverse part of Q-49-8.*
+- **The problem:** Q-49-8 asked every slot to carry a judgement term so that no bare fire-when-ready
+  existed. Q-49-20 has since unwound the "no auto-fire" rule, and the term is easy to meet with
+  "aspect = front, side, rear".
+- **Proposed default:** drop the term for player slots, which are bounded by the Compact floor alone.
+  The stock card keeps its floor and reserve as shot discipline.
+- **Alternative:** keep the term everywhere, as ruled.
+- **Why:** the rule's reason is gone, and a rule that one phrase satisfies costs a sentence of help
+  text for nothing.
+
 ## 7. Units of work (sketch, cut after the rulings)
 
 One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit prefix.
@@ -775,27 +935,31 @@ One writer per file chain, as docs 44 to 47 ran. **CC** is unused as a unit pref
 | Unit | What | Gate |
 |---|---|---|
 | CC.0 | Tests read cycles and magazines from content, not literals; the bot's scripted rig reads content | — |
-| CC.1 | The slot rule: standing slots (Q-49-20) carrying a judgement term; card floors; the Line card's reserve and when it is spent | Q-49-8, Q-49-9, Q-49-20, Q-49-23 (ruled) |
-| CC.2 | The ground palette (15, 5, 10, 30 s) with magazines 24 / 600 / 120 / 4, and the 5 s cycle floor (with the automatic-defence class); measured fights reported, no count changed without the owner; one re-bless | CC.0, CC.1, Q-49-2, Q-49-3, Q-49-19 and Q-49-22 (ruled) |
-| CC.3 | Ground lasers as the anti-drone fit; the laser variants keep a main gun | CC.2, Q-49-6 |
+| CC.1 | The slot rule: standing slots (Q-49-20) carrying a judgement term; card floors; the Line card's reserve and when it is spent, with Q-49-23's four sentences | Q-49-8, Q-49-9, Q-49-20, Q-49-23 (ruled), Q-49-29 |
+| CC.2 | The ground palette (15, 5, 10, 30 s) with magazines 24 / 600 / 120 / 4, and the 5 s cycle floor (with the automatic-defence class); measured fights reported (hits per load, match length against the 900 s cap), the harness window lengthened, no count changed without the owner; one re-bless | CC.0, CC.1, Q-49-2, Q-49-3, Q-49-19 and Q-49-22 (ruled) |
+| CC.3 | Ground lasers as the anti-drone fit; the laser variants keep a main gun; what limits the laser; the yard keeps a laser's charge full (§4a) | CC.2, Q-49-6, Q-49-27, Q-49-28 |
 | CC.4 | Rounds on `STATUS`; checked at 120 columns | Q-49-13 |
 | CC.5 | Munitions prices, read from doc 48's PL.3 recipes | doc 48's PL.3, Q-49-4, Q-49-5 |
-| CC.6 | Space mounts and hull fits as content packs, each mount's allowed modes in the fit; `raider_heavy` a unit file; mind-view maxima from content | Q-49-11, Q-49-24 |
-| CC.7 | Space magazines persist; space munitions goods; rearm at a berth | CC.6, doc 48's PL.0 (`MAX_GOODS`) and **PL.3 producing the space munitions** (doc 48 Q-48-41), Q-49-12 |
-| CC.8 | The space palette; lasers per the lore with the cycle per mode; the three space doctrines rewritten | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled), Q-49-24 |
+| CC.6 | Space mounts and hull fits as content packs, in the same pack format with **its own space mount schema** (range past 100 km, modes, falloff, salvo size, point-defence envelope), each mount's allowed modes in the fit; `raider_heavy` a unit file; mind-view maxima from content | Q-49-11, Q-49-24, doc 48's PL.0 if it adds part goods (each with a recipe and a vendor seed); one row per mount, each fireable by its id; mind views read the fit's modes |
+| CC.7 | Space magazines persist; space munitions goods; rearm at a berth; says whether NPC cast hulls respawn full | CC.6, doc 48's PL.0 (`MAX_GOODS`) and **PL.3 producing the space munitions** (doc 48 Q-48-41), Q-49-12 |
+| CC.8 | The space palette; lasers per the lore with the cycle per mode; the three space doctrines rewritten; one shooter's magazine measured against each screen | CC.6, CC.7, Q-49-7 and Q-49-19 (ruled), Q-49-24, Q-49-25, Q-49-26 |
 | CC.9 | Space decision support, for the player and the minds | CC.6, Q-49-13 |
-| CC.10 | The bot's discipline assertions | CC.2, Q-49-17 |
+| CC.10 | The bot's discipline assertions; its exchange and halt windows derived from content | CC.2, Q-49-17 |
 | CC.11 | ~~A second round for the cannon, chosen at rearm~~: deferred under Q-49-21's default (engine work: selected-round state, and the resolver for section effects) | Q-49-14, Q-49-21 |
 
 **Round conservation (outside review, doc 48a A-14).** Every CC unit that moves rounds keeps them
 counted. A reload, a type change, a crash and restart, a custody move, a refit and salvage each
 conserve rounds, each with a test. The matter census counts munitions (doc 48 Q-48-31).
 
-## 8. What this survey did not check
+## 8. What this survey did not check, and what the second review answered
 
-- What the player's space cockpit shows before a shot.
-- Whether the server's substep is fixed at 250 ms or derived from the tempo configuration
-  (`arena/clock.rs:669-679`).
-- That space magazines refill at check-out, end to end (§3.2 reads it from the code paths).
-- Whether simulator units always start a match with full magazines (tests assert it at the start;
-  not traced).
+The second review answered each item; doc 48b §5 has the evidence.
+- **The player's space cockpit:** `+tac/status` shows mount counts and heat, `+tac/scan` range and
+  EMCON, and the feed an inbound torpedo's time to impact. Nothing shows rounds, cooldowns, modes or
+  aspect (`space/commands.rs:3775-3834`; `mush-pixel/src/space_cockpit.rs:510-590`).
+- **The substep:** derived, the smaller of 250 ms and a cell's crossing time, floored at 50 ms. It is
+  250 ms at every shipped speed (`arena/clock.rs:669-680`).
+- **Space magazines refill at check-out, end to end:** the mounts are rebuilt from the Rust fit table
+  at each check-out, and check-in writes no magazine (`space/custody.rs:516`, `:722-940`).
+- **Simulator starts:** player pods reset to full on the way into Idle (`match_/reset.rs`,
+  `lobby.rs:1583`). Staff `@arena/start` takes a unit's current cells (`match_/mod.rs:1235-1237`).

@@ -1,6 +1,6 @@
 # 48. Economy and production — one exchange for every trade, and a chain that closes, surveyed
 
-Draft 0.5, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
+Draft 0.6, 2026-11-15, docs only. Surveyed against `origin/main` at `b1b4c57f6` by four read-only
 lanes (goods, services, the engine and money, production), with the lead spot-checking the claims
 §0 leans on:
 - the market's `Representation` and `Supply` enums;
@@ -41,6 +41,16 @@ refuted.
 
 **Draft 0.5, the same day, records that the owner accepted all ten follow-ups at their defaults.**
 Every question in this survey, Q-48-1 to Q-48-46, is ruled.
+
+**Draft 0.6, the same day, folds in a second outside review** of the PR at `8ddf6ca9b` (Gemini). It
+is triaged in [doc 48b](48b-second-review-triage-2026-11-15.md), with five verification lanes against
+`b1b4c57f6`.
+- Most of its findings held; about ten were refuted, and some were already addressed by Draft 0.4.
+- Facts the rulings got wrong are corrected in place, marked **Correction (second review)**:
+  §3.2, §4.1, §5.1, §5.2, §5.6, Q-48-2, -3, -15, -21, -27, -28, -29, -30, -35, -38, -42, -43, -44
+  and -46.
+- §4.3 lists the live defects the review found.
+- Choices the findings need are the follow-ups Q-48-47 to Q-48-61 (§6.8), open.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5 and
 [doc 44](44-minds-wired-through-the-game.md) used. It sets out what exists, then asks the owner
@@ -232,7 +242,10 @@ touched; the composition root only names `"market"`.
 - The asset-sale contract is written three times: `purchase_spec`, `buyout_spec` and
   `house_sale::sale_spec`. Buyout's own doc calls itself "the market's Asset arm".
 - There are four listing types and seven price sources.
-- Each venue has its own replay guard; V9 has none.
+- Each venue has its own replay guard. **Correction (second review, doc 48b W-48-8):** V9's guard is
+  `house_sale::pending`, which matches an open contract by its *name* alone, any issuer, any state
+  (`port/house_sale.rs:76-85`). A player's free `@contract/draft` with that name hides a Tycho hull
+  from `+salvage/forsale` and refuses `/buy` (§4.3).
 
 **Extension cost today.**
 - A new **lot good** is data: a `goods.json` row and lane rows, then V1, V2 and V4 work unchanged.
@@ -496,6 +509,15 @@ the proof. They already carry most of the game's trade, but with four limits:
 
 **The closed layer.** Doc 46 ruled these stay closed and are not to become one engine. That stands
 here; nothing in this proposal touches them except to let the exchange route to them.
+**Correction (second review, doc 48b W-48-1):** that last clause is too strong. Three rulings also change closed
+families, each a closed-family edit sized as CO.13 was, not an "opening":
+- Q-48-7: core resale to a player. The core sale admits no player buyer, as a kernel image rule
+  (`mush-core/src/core_sale.rs:222-227`) and a closed two-line plan with no holds
+  (`mush-economy/src/registry_filing/core_sale.rs:118-131`, `:386-389`).
+- Q-48-3: a managed licence on an open listing.
+- Q-48-27: the core billed through the yard.
+
+They are Q-48-47 and Q-48-48.
 
 **The venues.** These are about thirty fronts, each with its own verbs, host record, clerk tick,
 windows, recognizer and price source. Some of them are the game's texture: a retrieval job is not a
@@ -540,12 +562,41 @@ would break D11 only as a global book, and Q-46-3 only as a runtime engine. §5 
   - `port/price.rs:30-31` says emergency bids are not built; they are.
   - `contract_live.rs:5103` names a `+run/post` caller that does not exist.
 
+**Found by the second review (doc 48b), live in the tree, for the fix thread:**
+- **The works arm charges the live fee, not the quoted one.** `works.rs:1799-1823` calls
+  `money::place` and submits, skipping `@wo/submit`'s policy-revision check (`commands.rs:1294-1302`).
+  `money.rs:220-229` reads the fee at that moment. A staff re-term today, or an owner's margin change
+  under Q-48-37, reprices orders already quoted, and an unfunded one is cancelled with its booking fee
+  forfeit.
+- **A hold-backed Consume skips the capacity check.** Its entries carry no plan (`mush-market/src/lot.rs:486`)
+  and its prepare does not check the hold (`:873-903`), unlike a Draw (`:1126-1150`). Two accepted
+  exact-lot quotes can overfill a governed hold. The comment at `:415-416` is stale.
+- **The house-sale guard matches by name** (above, §3.2).
+- **The retrieval path checks neither contract cap.** `post_retrieval` and `accept_retrieval` check
+  neither the 16 open contracts an issuer nor the 100 live contracts a party
+  (`contract_live.rs:6555-6556`, `:6603-6667`).
+- **The licence resale offer's limit is 86,400 real seconds** (`mush-market/src/mind_paid_resale/offer.rs:24`).
+  That is 24 IC days, under the owner's 28-IC-day minimum for a wait on a player.
+- **CO.13's integrator account starts at 0 cr** (`deploy/instance/launch-bringup.py:918-929`). The
+  buy-back has no money to pay with until it is funded.
+
 ## 5. The shape proposed
 
 ### 5.1 The exchange
 
 One protocol, many local venues.
 
+- **Correction (second review, doc 48b W-48-2, G-1):** a player seller does not "reuse the lot legs as they are".
+  Three things are missing:
+  - **Acceptance.** The market accepts for a seller by an NPC party cap fixed at composition
+    (`trade.rs:827-841`), with the seller hard-coded as an org (`api.rs:920`, `:1429`).
+  - **Pooled goods.** Only a port's own counter may sell pooled goods into a hull; anyone may sell an
+    exact whole lot (`trade.rs:979-985`).
+  - **An endpoint.** A player can make no vault or org (both admin-only), and the venue's endpoint is
+    a charter hold's helm (`port/market.rs:239-247`).
+
+  Q-48-49 and Q-48-50 settle these. Until then, "their own hold, room or vault" below means a
+  governed hold the player may trade.
 - **A seller is any principal.** Today a `Vendor` is an org registered by staff. It generalises to a
   seller: a principal, its account, its endpoint at the venue, and the venue. A player sells from
   their own hold, room or vault; an org sells through an officer; an NPC agent sells as its org.
@@ -589,7 +640,11 @@ One protocol, many local venues.
     workshop, works and yard orders, leases.
   - New in the first wave:
     - **haul**: these goods, from here to there, by a deadline. The fact comes from inventory's
-      transfer facts, if they can name a destination (unverified);
+      transfer facts. **Correction (second review, doc 48b W-48-3b):** the provider answers only whether a marker
+      exists (`mush-inventory/src/facts.rs:61-81`). But a marker stores from, to, commodity and
+      amount (`pool.rs:776-784`), and a derived marker id (`pool.rs:160-187`) can be named when the
+      job is posted. So the haul's fact is a derived marker written by a new haul delivery verb;
+      no player verb moves goods between principals today;
     - **escort**: stay with this hull through this passage or field. **Correction (outside review,
       doc 48a A-4):** `sim.station.served` cannot evidence this. It is satisfied by any seat
       interval, a zero-length one included, and it names no protected hull and no journey. An escort
@@ -653,7 +708,8 @@ One protocol, many local venues.
 
 - **Not a global book.** No exchange rate; no order matching across venues.
 - **Not a runtime protocol engine.** The closed families stay closed (Q-46-3).
-- **Not a kernel change for open kinds.** The lot action's path is the model.
+- **Not a kernel change for open kinds.** The lot action's path is the model. Closed-family changes
+  are named in §7 and sized as CO.13 was (§4.1's correction).
 - **Not free-text services.** Every service kind is typed, with a fact.
 - **Not negotiation with NPCs.** Prices are posted. An LLM-voiced NPC may choose among legal offers
   and never posts one (D12).
@@ -669,7 +725,8 @@ Every other default, Q-48-1 to Q-48-32, is accepted as written. Each amended que
 decision first, with the proposed text kept under it for the record. §6.6 holds the four follow-up
 questions the amendments raised. The owner accepted all four at their defaults the same day
 (Draft 0.3). §6.7 holds Q-48-37 to Q-48-46, raised by the outside review (Draft 0.4); the owner accepted all
-ten at their defaults (Draft 0.5).
+ten at their defaults (Draft 0.5). §6.8 holds Q-48-47 to Q-48-61, raised by the second review
+(Draft 0.6); they are open.
 
 ### 6.1 The exchange
 
@@ -690,6 +747,10 @@ ten at their defaults (Draft 0.5).
 - **Why:** the owner named player-to-player trade, and today it needs staff. A personal seller reuses
   the lot legs as they are.
 
+**Correction (second review, doc 48b G-1(3b), W-48-2):** "reuses the lot legs as they are" is wrong for a player
+seller. Neither the acceptance seam nor the pooled-goods gate admits one (§5.1's correction).
+Q-48-49 and Q-48-50.
+
 **Q-48-3 — What a listing offers.**
 - **Proposed default:** goods (lots, titled assets) and services, through one new representation arm
   for a service. Managed titles (cores, licences) list on the exchange and settle in their own
@@ -697,6 +758,15 @@ ten at their defaults (Draft 0.5).
 - **Alternative:** goods only; services stay venue fronts.
 - **Why:** one listing, quote and board is what makes it one system. Routing managed titles to their
   families keeps doc 46's wall.
+
+**Correction (second review, doc 48b W-48-1b):** a managed title cannot settle an open ask.
+- The licence resale takes a named buyer at offer, by the seller's own act, for 24 real hours, with
+  the licence's frozen cuts (`mush-economy/src/managed_paid_resale/subject.rs:235-236`;
+  `mush-market/src/mind_paid_resale/offer.rs:22-52`).
+- The core sale has no player buyer at all.
+
+So a managed title appears only as a private offer, and pays its family's cuts, not Q-48-8's fees.
+An open listing of one is a notice, which the seller answers with a private offer.
 
 **Q-48-4 — Posted prices, not a book.**
 - **Proposed default:** asks and bids are posted and taken by quote. Crossing bids and asks are not
@@ -806,6 +876,8 @@ ten at their defaults (Draft 0.5).
   IC day is one real hour, so the proposed 50 cr meant a player who logged off at a port came back to
   1,200 cr owed a real day, and 8,400 cr a real week — "pretty harsh". At 5 cr that is 120 cr a real
   day and 840 cr a real week. No customs duty, as proposed.
+  **Correction (second review, doc 48b W-48-8):** the fee is per hull of any mass. The "under 100 t" band in the
+  text below was wrong, since every ship is 240 t or more. Who pays at a home berth is Q-48-55.
 - **Proposed default (as written):** a berth fee per IC day at a port, paid to the port authority org
   (provisional: 50 cr a day for a hull under 100 t). No customs duty yet; customs stays a fine.
 - **Alternative:** no berth fees.
@@ -875,6 +947,10 @@ ten at their defaults (Draft 0.5).
 - **Why:** an operator that never pays its costs accumulates money forever. That is doc 18 risk 9's
   pooling, seen from the other side.
 
+**Correction (second review, doc 48b W-48-5a):** "facility daily cost and staff wages" counts the payroll twice. The
+daily cost already includes it (`mush-industry/src/cost.rs:111-120`). The debit is the daily cost, as
+Q-48-38 sets it, and all of it goes to a system sink.
+
 **Q-48-22 — The one inflow after boot.**
 - **Proposed default:** the boot capitalisation stays a one-time act. The one recurring source is an
   "off-map buyer" faucet: export bids at the five ports for alloys, parts and volatiles, funded from a
@@ -943,12 +1019,33 @@ ten at their defaults (Draft 0.5).
 - **Alternative:** cores stay quota-only and priced by constants.
 - **Why:** the core is the most valuable part of a hull and the one part outside the chain.
 
+**Correction (second review, doc 48b W-48-1c):** the facts behind this default differ.
+- Core integration takes exactly one input lot, the die: quantity 1, root lineage
+  (`mush-core/src/action_state/terminal_capacity/core_integration.rs:235-254`;
+  `mush-inventory/src/core_input/records.rs:217-221`).
+- The designs that carry a core (the escort and the line tanks) are commissioned with their stock
+  Class II core free: no die, no title, no bill line (`port/commission.rs:12`; `port/bill.rs:98-101`).
+  That core is governed in `cores.json`, but outside the quota.
+- `+core/fit` fits only Drays and prospectors (`hardware/counter.rs:486-493`).
+
+So billing chain goods for a core is a closed-family question: Q-48-48.
+
 **Q-48-28 — Buying straight into an escrow.**
 - **Proposed default:** a buyer may fund a works or yard bill at the venue's asks straight into the
   order's escrow, without a docked hold. A House can then buy hulls. CO.9's staff seed stays for the
   bring-up.
 - **Alternative:** keep the docked-hold rule.
 - **Why:** the hold rule makes every order a haul to Stickney, and a House has no hold.
+
+**Correction (second review, doc 48b W-48-4):** "at the venue's asks" cannot fill a bill as written.
+- No vendor asks any of the thirteen part goods.
+- Stickney has no ask for instrument boards or strategic ore.
+- A yard order takes only Intact, unfitted, unheld lots (`port/works.rs:607-618`).
+
+But V7 already buys a whole hull bill into escrow with no hold, taking parts from the yard
+operator's stores at catalogue price (`port/pools.rs:976-999`). So the default is: generalise V7's
+seller and price to any House. A House holds about 2,100 cr against a Dray of about 156,400 cr, so it
+needs an income first (Q-48-55). Until then, CO.9's seed stays its hull source.
 
 **Q-48-29 — A parts market.**
 - **Proposed default:**
@@ -958,6 +1055,12 @@ ten at their defaults (Draft 0.5).
 - **Alternative:** parts trade only player to player.
 - **Why:** twelve of thirteen parts have no buyer, so strip and scrap feed nothing.
 
+**Correction (second review, doc 48b G-9):** a flat 600‰ bid overpays a damaged part and underpays an intact one.
+Scrap credits 750‰ intact and 400‰ worn (`port/bay_work/scrap.rs:7-11`, `:32-36`), and the bid
+path checks neither heat nor condition. The bid takes unfitted, unheld, cool, Intact parts only; a
+damaged part goes to scrap. (Provenance is not lost: parts are indivisible and lineage is kept,
+`mush-inventory/src/pool.rs:1940-1962`.)
+
 **Q-48-30 — The catalogue cap.**
 - **Decision (owner ruling, 2026-11-15):** `MAX_GOODS` from 48 to **256**, in one change with its
   re-pins, before any new good lands. The extra room costs little and saves doing this again soon.
@@ -966,6 +1069,12 @@ ten at their defaults (Draft 0.5).
   before any new good lands.
 - **Alternative:** raise it as each good needs it.
 - **Why:** this document and doc 49 add at least a dozen goods. One re-pin is cheaper than six.
+
+**Correction (second review, doc 48b W-48-8):** the bump moves no pin. `goods_digest` hashes `goods.json`
+(`definitions/goods.rs:624-629`), and `MAX_GOODS` is read only at the bound (`:282`). Every goods row
+added later still re-pins `ic2_the_goods_table_is_pinned`. The ruling stands for the room it gives,
+not for fewer re-pins. PL.0 must also raise the per-endpoint pool cap, or the unload plan breaks
+(§7, PL.0; doc 48b G-5).
 
 **Q-48-31 — Census coverage.**
 - **Proposed default:** the matter census adds volatiles, propellant, provisions and munitions.
@@ -1031,6 +1140,10 @@ Each replaces the figure Q-48-14, Q-48-21, Q-48-18 or Q-48-19 and Q-48-22 accept
 - **Alternative:** keep 28 IC days.
 - **Why:** the window should cover the time a player is likely to be away.
 
+**Correction (second review, doc 48b G-5):** the trade tape cannot hold 24 IC weeks. It is a global ring of 1,024 rows,
+32 a pair (`mush-market/src/record.rs:57`; `store.rs:61`). The price history is its own bounded
+series, one row per venue, good and period (EX.8), not the tape.
+
 **Q-48-36 — Consumption and the inflow are sized from the census.**
 - **The problem:** two accepted figures were not sized against the 24:1 clock.
   - Q-48-19's consumption ("a port's seed lasts about 60 IC days with no trade") is about 2.5 real
@@ -1085,6 +1198,15 @@ the decision.
 - **Why:** an NPC house that dies in an evening because nobody played is not a market. Tying the cost
   to the work keeps the sink in proportion to the activity it prices.
 
+**Correction (second review, doc 48b W-48-5e,f):** two parts of the default need narrowing.
+- "Which the fee already recovers with its margin" holds only for a bookable facility with a margin.
+  Kasei's refinery has a margin of 0 and is never booked (`port/plant.rs:8-9`), and workshop fees
+  come from the tariff (`port/bay_work/command.rs:307-316`).
+- The way back from mothballing is not closed. A mothballed house takes no orders and posts no bids,
+  so it never gets 7 IC days ahead.
+
+Both are Q-48-59.
+
 **Q-48-39 — The throttle against the price rule** (A-10).
 - **The problem:** Q-48-18 limits an NPC price to 5% an IC week, and Q-48-34 raises a house's asks
   10% an IC week when it cannot pay. Neither says which wins.
@@ -1138,6 +1260,15 @@ the decision.
   - The bond covers the hauler's failure.
   - A full-value bond would make every haul a capital test that only big players pass.
 
+**Correction (second review, doc 48b W-48-3c):** "the cargo travels as a held lot" works, because a hold does withhold
+from the custodian (`mush-inventory/src/pool.rs:381-393`). The default needs three things stated:
+- The hold outlives the job. Today's TTL is 7 IC days unless `reserve_for` is used.
+- At the deadline, held cargo still aboard stays held, and returns to the shipper at the hauler's
+  next port.
+- Pool goods carry no title, so "the shipper keeps ownership" means the job's reservation.
+
+The cap on declared value, and collusive "interception", are Q-48-57.
+
 **Q-48-43 — Barter** (A-3).
 - **Proposed default:** not in this document. Two private offers are two independent sales, and the
   board says so. A both-or-neither barter would be one contract carrying both legs as conditions of
@@ -1145,6 +1276,9 @@ the decision.
 - **Alternative:** build the conditional settlement now.
 - **Why:** the lot legs settle by facts after escrow. A two-leg contract doubles that path's failure
   cases, for a trade that credits nearly cover.
+
+**Correction (second review, doc 48b W-48-7a):** the why also holds because two offers need one leg's cash up front (a
+listing's price must be above zero, `mush-market/src/api.rs:791`) and pay the fees twice.
 
 **Q-48-44 — Capacity at exchange scale** (A-14).
 - **The problem:** the market has a global cap of 64 vendors (`MAX_VENDORS`), and E4 caps 16 open
@@ -1159,6 +1293,14 @@ the decision.
 - **Alternative:** raise the existing caps.
 - **Why:** the caps bound sweep work. Splitting them by kind keeps that work bounded and stops one kind
   starving another.
+
+**Correction (second review, doc 48b G-5, W-48-3d):** three things to add.
+- **The listing ceiling.** `MAX_LISTINGS` is 1,024 for the whole market (`mush-market/src/record.rs:44`).
+  At 32 a seller, about thirty sellers fill it, so EX.1's load test covers that ceiling too.
+- **Both paths.** The caps are enforced on post and on join; today's retrieval path checks neither
+  (§4.3).
+- **Who binds first.** Institutional parties (Occator, the Trust, the Registry, busy vendors) reach
+  the 100-a-party cap first, and "a personal seller" means any non-port seller, player orgs included.
 
 **Q-48-45 — Selling a facility** (A-14).
 - **Proposed default:** a facility can be sold only when it is idle: no open work order, no customer
@@ -1180,6 +1322,173 @@ the decision.
 - **Why:** an escort is paid for presence and for the outcome, and only the hosts that run passages
   and fields can see both.
 
+**Correction (second review, doc 48b W-48-3a):** the fact is keyed by the job, so it can be named when the job is
+posted. The seat fact's key cannot be named in advance (`mush-sim/src/seat.rs:1060-1068`).
+
+### 6.8 Raised by the second review (doc 48b)
+
+Each question answers a finding that held. Until it is ruled, the ruling it qualifies stands, as
+corrected above.
+
+**Q-48-47 — Core resale to a player** (W-48-1a).
+- **Proposed default:** a second closed plan beside CO.13's buy-back: a named buyer only; the buyer's
+  money escrowed at acceptance; lines for the seller, the venue's cut and the levy. The kernel's image
+  rule admits a player destination. One CO.13-sized unit, EX.2b.
+- **Alternative:** players sell cores only to the shop, as CO.13 built.
+- **Why:** the ruling (Q-48-7) stands, but it is a closed family touching the kernel, and it should be
+  sized as one.
+
+**Q-48-48 — The yard's core** (W-48-1c).
+- **Proposed default:**
+  - Chain goods are consumed when a core's die is issued, by industry's origin provider, so
+    integration still takes one die lot and the kernel is not touched.
+  - A design that carries a stock core bills one new "core module" good, consumed at commission.
+  - **For the owner:** yard-built combat hulls keep a governed Class II core outside the monthly die
+    quota.
+- **Alternative:** combat hulls are coreless, and get their cores fitted through `+core/fit` once it
+  admits them, so every core comes from the quota.
+- **Why:** putting every combat hull on the die quota would throttle a hundred-unit game.
+
+**Q-48-49 — A player's goods and endpoint at a venue** (W-48-2a, W-48-2c, G-6).
+- **Proposed default:**
+  - Personal sellers list exact lots, split to size with `@inv/split`. These pass the hold gate today
+    and keep their provenance; pooled listings stay with the port's counters.
+  - A venue opens a locker vault for a player on first use, capacity-bound and charged like a berth
+    (provisional: 1 cr an IC day a tonne).
+  - The endpoint is any hold the player may trade, chosen by where they are present, not only the
+    lowest-numbered hull (`port/coop.rs:602-638`).
+  - A station or site venue gets a location gate before it lists, since the port gate admits anyone
+    elsewhere (`port/market.rs:258-263`).
+- **Alternative:** a personal seller must have a hull docked, and sells only from its hold.
+- **Why:** an officer or a passenger without a hull could not trade otherwise. And today's
+  capacity-free port vaults (`port/market.rs:477`) would be free storage.
+
+**Q-48-50 — Standing acceptance for player sellers and bidders** (G-1(3b), W-48-2d).
+- **Proposed default:**
+  - **A listing is the seller's standing acceptance within its terms:** a party cap scoped to the
+    seller and bound to the listing's id, price and quantity, revoked by withdrawal.
+  - **A player's bid escrows price × quantity at posting**, draws as it fills, and releases at expiry.
+    The bidder accepts only against its own escrowed bid.
+- **Alternative:** player listings and bids are notices, and the player accepts each sale.
+- **Why:** a sale must settle while its poster is away. Under the 28-IC-day rule, accepting sale by
+  sale is unworkable.
+
+**Q-48-51 — Fees off the board** (W-48-7b).
+- **Proposed default:** accept it. A trade by `@contract`, or a 1 cr offer plus a side payment, pays no
+  board fee. The fees are the price of the board's reach and escrow. EX.9 sizes the faucet from the
+  *measured* levy, not the nominal one.
+- **Alternative:** a journal-level levy on every player-to-player title transfer and E4 settlement.
+- **Why:** a levy everywhere changes E4 and every venue, and taxes gifts and House moves. A trust
+  trade carries its own risk.
+
+**Q-48-52 — Hull resale integrity** (G-1).
+- **Proposed default:**
+  - **The hold goes with the hull.** EX.2's one builder re-homes the hold's vault in the same
+    settlement (`rehome_vault`), and needs the hold empty, as the buyout does (`port/buyout.rs:321`),
+    or sells the cargo as its own leg.
+  - **A fitted governed core goes with it too.** A hull with one is listed only with its core, the
+    core leg settling in Q-48-47's plan.
+  - **No bait-and-strip.** The quote pins a digest of the hull's state (fitted parts, core,
+    condition), and settlement refuses on drift. The bay refuses strip, scrap and fit on a hull under
+    a live sale contract.
+- **Alternative:** refuse to list a cored or laden hull, and add a `+core/remove` verb.
+- **Why:** otherwise the buyer gets a hull whose hold and core the seller still owns, or a hull
+  stripped after the price was agreed.
+
+**Q-48-53 — What a facility sale moves, and the fee pinned at booking** (G-2).
+- **Proposed default:**
+  - **What moves:** `FacilityRecord.owner`, the stores vault and the payee.
+  - **An "owner-held" lane rule.** The lane applier today refuses the whole port entry when an owner
+    differs from the authored operator (`port/plant.rs:126-160`), and re-terms a facility back to
+    authored on every lane bump (`mush-industry/src/store.rs:1235-1260`). An owner-held facility
+    skips both.
+  - **What can be sold:** not the relay foundry, the programme workshops or the medical rooms. A
+    sold yard stays public.
+  - **The fee is pinned at booking.** If the live fee has risen when the arm submits, the order is
+    cancelled with its booking fee and bill returned. This also fixes §4.3's live defect.
+- **Alternative:** authored facilities are never sold; only facilities built later are.
+- **Why:** without the lane rule, a sale is undone by the next content bump. Without the pin, an
+  owner reprices orders already quoted.
+
+**Q-48-54 — Listings and obligations at 24:1** (G-3, G-4).
+- **Proposed default:**
+  - **A listing's lot hold renews while the listing stands**, and the listing fee is charged once a
+    listing. Today the hold lasts 7 IC days, which is 7 real hours (`mush-market/src/api.rs:902-906`).
+  - **A daily obligation a player owes (berth, wages) gets a grace of at least 28 periods.** It
+    accrues arrears as a one-term debt (`create_debt`, Q-41-13's shape), and reinstates on funding.
+    Today it goes Delinquent in 2 real hours, with no arrears (`mush-economy/src/obligation.rs:701-718`).
+  - **An unpaid berth is a debt** with a lien on the hull's next sale at that port. It never blocks
+    undocking before 28 IC days.
+- **Alternative:** keep E4's defaults, and size every daily rate to stay under a player's balance.
+- **Why:** the owner's rule that any wait on a player is at least 28 IC days. Q-48-35's reasoning
+  applies to sellers too.
+
+**Q-48-55 — House income and home berths** (G-4(3), W-48-4).
+- **Proposed default:**
+  - A House's hulls at its home port pay no berth fee.
+  - A House gets an income: a daily stipend from the export faucet (Q-48-22), as a consuming
+    institution does under Q-48-40, sized by EX.9. That pays for its licences, berths and, under
+    Q-48-28, its hulls.
+- **Alternative:** Houses stay funded by staff mint at the bring-up only.
+- **Why:** a House's 2,000 cr is a one-off procurement mint, already spent on licences. It cannot pay
+  for anything else.
+
+**Q-48-56 — The Co-op share and offline orders** (G-7, G-8).
+- **Proposed default:**
+  - The Co-op's proceeds policy runs on every sale from a chartered hold, not only sales into a bid
+    (`port/proceeds.rs:4-6`).
+  - A captain's offline buy reads house asks only, unless the order names a price ceiling.
+- **Alternative:** chartered holds may not post asks; and offline buys default their ceiling to the
+  reference price × 200%.
+- **Why:** a player ask would otherwise skip the Co-op's share. And once players post asks, an
+  unbounded offline buy (`port/orders.rs:212`) could be drained by a griefer's listing.
+
+**Q-48-57 — Declared value and collusion** (W-48-3c).
+- **Proposed default:**
+  - A haul's declared value is capped at the venue's reference price × quantity, so a shipper cannot
+    inflate the bond.
+  - A collusive "interception" (shipper and raider together) nets the colluders the bond's 25% at
+    most; that is accepted.
+- **Alternative:** an uncapped declared value, with insurance later.
+- **Why:** the cap stops bond inflation, and a 25% gain bounds the collusion that remains.
+
+**Q-48-58 — Org acceptors and job deadlines** (W-48-3d).
+- **Proposed default:**
+  - Members holding a capability may accept a job for their org or House. Today the join refuses
+    player orgs and Houses (`contract_live.rs:6625-6630`).
+  - A job's deadline is per kind: "N IC days from acceptance" for hauls, escorts and crew hire, and
+    absolute for retrieval, as today.
+  - The join escrows the provider's bond (EX.5).
+- **Alternative:** jobs are open to characters only, with a deadline fixed at posting.
+- **Why:** a deadline fixed at posting starves a late taker, and an org's members are who does the
+  work.
+
+**Q-48-59 — The way back from mothballing, and facilities with no bookable work** (W-48-5e,f).
+- **Proposed default:**
+  - A mothballed facility owes nothing while mothballed.
+  - It may still take orders whose escrow covers their worked cost, and each fee's margin repays the
+    debt first.
+  - A facility with no bookable work (Kasei's refinery, mill-run) is charged per batch milled, not a
+    standing share.
+- **Alternative:** a house's debt is written off after 28 IC days, and it reopens.
+- **Why:** paid work is the only honest way out of a debt, and a facility nobody can book should not
+  pay for idle slots it cannot fill.
+
+**Q-48-60 — One wage scale?** (raised by the verification).
+- **The problem:** lane facility staff are paid 150 cr an IC day each, against Q-48-33's crew wage of
+  10 or 20. That is a 15× gap, and the payroll is 62% of facility cost.
+- **Proposed default:** keep 150. Under Q-48-38 the payroll bites only while the facility works, and
+  the fee pays it.
+- **Alternative:** 15 cr, one scale for crew and staff. That cuts works and yard fees by about 62%.
+- **Why it needs a ruling:** the two scales disagree by 15×, and nothing says whether that is meant.
+
+**Q-48-61 — Ore regeneration** (W-48-6).
+- **Proposed default:** a worked-out surface site or space cluster re-rolls its deposit after 28 IC
+  days (provisional). The space ore lane-wide is about 1,440 t, roughly 15 real minutes of one laser.
+- **Alternative:** finite ore, and the chain ends when it does.
+- **Why:** at 24:1 the closed chain closes only until the ore runs out. A re-roll keeps mining a
+  job, not a one-off.
+
 ## 7. Units of work (sketch, cut after the rulings)
 
 Two chains, one writer per file set, as docs 44 to 47 ran. **EX** (the exchange and money) and **PL**
@@ -1187,35 +1496,41 @@ Two chains, one writer per file set, as docs 44 to 47 ran. **EX** (the exchange 
 
 | Unit | What | Gate |
 |---|---|---|
-| EX.0 | `@econ/census`; the matter census's new goods | Q-48-17, Q-48-31 |
-| EX.1 | The seller: any principal lists from its own endpoint; private offers authorised at quote and accept; the exchange-scale caps and a load test | Q-48-2, Q-48-5, Q-48-44 |
-| EX.2 | One asset-sale builder; player hull resale; core resale through CO.13 | EX.1, Q-48-7 |
+| EX.0 | `@econ/census`; the matter census's new goods, with declared sink terms (consumed, burned, fired; doc 48b W-48-6) | Q-48-17, Q-48-31 |
+| EX.1 | The seller: any principal lists from its own endpoint; private offers authorised at quote and accept; exact lots only, with the hold checked at prepare (§4.3); standing acceptance; any tradeable hold by presence; the exchange-scale caps and a load test | Q-48-2, Q-48-5, Q-48-44, Q-48-49, Q-48-50, Q-48-54, Q-48-56 |
+| EX.2 | One asset-sale builder; player hull resale with the hold and fitted core, and no bait-and-strip | EX.1, Q-48-7, Q-48-52 |
+| EX.2b | Core resale to a player: a second closed plan, a kernel image change (CO.13-sized) | EX.2, Q-48-47 |
 | EX.3 | NPC flows on the board, atomic; acceptor roles as data | EX.1, Q-48-9 |
 | EX.4 | Listing fee, sale cut, levy; berth fee | EX.1, Q-48-8, Q-48-15 |
-| EX.5 | The service arm; the generalised open join; retrieval, passage and survey listed | EX.1, Q-48-3, Q-48-12 |
+| EX.5 | The service arm; the generalised open join (escrowing the provider's bond, checking both caps, org acceptors); retrieval, passage and survey listed | EX.1, Q-48-3, Q-48-12, Q-48-58 |
 | EX.6 | Haul (a held lot, declared value, a bond on it) and escort (its own host-written fact) | EX.5, Q-48-11, Q-48-42, Q-48-46 |
 | EX.7 | Crew wages; player crew listings | EX.5, Q-48-14, Q-48-33 |
-| EX.8 | The NPC price rule (5% an IC week) and price history | EX.3, Q-48-18 (ruled), Q-48-35 |
+| EX.8 | The NPC price rule (5% an IC week) and price history as its own bounded series | EX.3, Q-48-18 (ruled), Q-48-35 |
 | EX.9 | NPC consumption, running costs by the work with mothballing and debts, the export faucet paying the consumers (one unit: they balance) | EX.0, EX.8, **PL.1, PL.2**, Q-48-19, Q-48-21, Q-48-22, Q-48-34, Q-48-36, Q-48-38..41 |
 | EX.10 | The NPC hauling house; consumption at ports with no producer in reach | EX.6, EX.9, Q-48-20, Q-48-41 |
-| PL.0 | `MAX_GOODS` 48 → 256, one re-pin | Q-48-30 (ruled) |
+| PL.0 | `MAX_GOODS` 48 → 256 (no pin moves); the unload plan takes the hopper's goods and an empty pool frees its count, so `+tv/unload` survives past 64 goods (doc 48b G-5) | Q-48-30 (ruled) |
 | PL.1 | Propellant from volatiles, with its operating arm | PL.0, Q-48-23 |
-| PL.2 | Provisions, instrument boards, relay blanks and carbon feedstock (from carbon ore) get producers, each with an operating arm | PL.0, Q-48-23 |
+| PL.2 | Provisions, instrument boards, relay blanks (`MAX_PAIRS` 8 is a Rust cap to lift, and a `relay_blank` good to add) and carbon feedstock (from carbon ore) get producers, each with an operating arm | PL.0, Q-48-23 |
 | PL.3 | Munitions recipes (with doc 49's CC.5) | PL.0, Q-48-23, Q-49-4 |
 | PL.4 | Mills and the refine as works recipes | Q-48-24 |
-| PL.5 | Buying into an escrow; a House buys a hull | Q-48-28 |
+| PL.5 | Buying into an escrow (V7's seller and price generalised); a House buys a hull once it has income | Q-48-28 |
 | PL.6 | The Ceres yard | Q-48-25 |
-| PL.7 | Cores from the chain; the core billed in a hull | PL.0, Q-48-27 |
+| PL.7 | Cores from the chain at die issue; a core-module good for stock-cored designs | PL.0, Q-48-27, Q-48-48 |
 | PL.8 | The parts market | EX.3, Q-48-29 |
-| PL.9 | Facilities as titled assets; owner terms (customers, margin); sale only when idle | EX.2, Q-48-26, Q-48-37, Q-48-45 |
+| PL.9 | Facilities as titled assets; owner terms (customers, margin); sale only when idle; what a sale moves, the owner-held lane rule, the fee pinned at booking | EX.2, Q-48-26, Q-48-37, Q-48-45, Q-48-53 |
 
-## 8. What this survey did not check
+## 8. What this survey did not check, and what the second review answered
 
-- Whether dev1 and dev2 run with TacSim on.
-- Whether `PortVenueGate` admits a venue that is not a port.
-- Whether the shipped sky ever gives a non-zero reach premium.
-- That the NPC bidders consume nothing (no consumer was found).
-- That relay carriage's `service::register` is reached in production.
-- Whether inventory's transfer facts can name a destination (Q-48-11's haul).
-- What an NPC naming the content studio's `hire` interface does.
-- Whether a yard-built escort or line tank carries a core component.
+The second review answered each item; doc 48b §5 has the evidence.
+- **TacSim on the dev boxes:** `deploy/dev1` and `dev2` set `TACSIM_ENABLED=true` and `IC_RATIO=24`
+  in the repo. What the boxes actually run is not readable from the tree.
+- **The venue gate:** `PortVenueGate` admits anyone at a venue no port authors, but gives no hold to
+  trade from (`port/market.rs:238-263`).
+- **The reach premium:** non-zero under the template's moving sky, capped at 50%; zero at the engine's
+  default rate of 0.
+- **NPC bidders:** they consume nothing (Q-48-40 is the fix).
+- **Relay carriage:** always composed (`mush-propagation/src/lib.rs:255`).
+- **Inventory facts:** they carry no place, but a derived marker can be keyed to one (§5.2's
+  correction).
+- **The content studio's `hire`:** a name only, with no provider.
+- **A yard-built escort or line tank:** carries its stock Class II core free (Q-48-27's correction).
