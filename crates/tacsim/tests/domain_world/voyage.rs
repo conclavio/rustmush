@@ -3633,7 +3633,9 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
     // Step ticks without returning fire until `step_interdictor_picket` disables `hull2`'s drive
     // (`ShipDisabledDerelict`) and `settle_disabled_carrier_bubbles` settles `hull2` into `derelicts`.
     // Doc 49 unit CC.8: on the palette's cycles that takes some tens of seconds, where the
-    // placeholder's 1 s laser took a few:
+    // placeholder's 1 s laser took a few, so she shows it her stern, where a round splits
+    // between her hull and her drive behind one plate and her drive goes first:
+    let _ = run(&mut rig.tw, pilot2, "+helm/heading 0 0");
     let mut settle_heard = String::new();
     for _ in 0..120 {
         let next_real = rig.tw.world().now() + 1;
@@ -3654,15 +3656,13 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
         "expected derelict narration for hull2, got: {settle_heard}"
     );
 
-    // Hull2 was NOT deleted; its `TacticalUnit` is checked back in with a section destroyed and
-    // open epoch. Doc 49 unit CC.8: the interdictor's spinal rounds, split across her stern,
-    // take her hull before her drive (read by record; the placeholder laser took the drive).
+    // Hull2 was NOT deleted; its `TacticalUnit` is checked back in with `drive destroyed` and open epoch.
     assert!(rig.tw.world().get(hull2).is_some());
     assert!(mush_sim::deployed::mark_of(rig.tw.world(), hull2).is_none());
     let ship2_out = run(&mut rig.tw, pilot2, "+ship");
     assert!(
-        ship2_out.contains("hull destroyed"),
-        "expected +ship for disabled carrier to show `hull destroyed`, got: {ship2_out}"
+        ship2_out.contains("drive destroyed"),
+        "expected +ship for disabled carrier to show `drive destroyed`, got: {ship2_out}"
     );
 
     let bubble_book = rig
@@ -5404,8 +5404,12 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         (session.challenge.session_id.clone(), steps)
     };
 
-    // Advance the world tick while `paused_from_world_tick == true` and verify the bubble neither
-    // steps nor auto-closes while the pilot is in the 60 Hz docking mini-game (`Q-35-5`, `D-35-14`):
+    // Advance the world tick while `paused_from_world_tick == true` and verify the bubble does not
+    // auto-close and holds her while the pilot is in the 60 Hz docking mini-game (`Q-35-5`,
+    // `D-35-14`). Doc 49 unit CC.8: the picket's bubble keeps its 1 s cadence for the corvette,
+    // and a docking session holds the docking hull alone while every other ship keeps its clock
+    // (doc 35 cut SF.R25), so it may step; the interdiction bubble this story flew before went to
+    // its cruise cadence once its interdictor was down, and did not.
     let next_real = rig.tw.world().now() + 2;
     rig.tw.set_now(next_real);
     let _ = rig.tw.fire_due(next_real * 1_000);
@@ -5418,9 +5422,15 @@ fn sfr7_docking_session_pauses_ship_replays_valid_tape_into_berth_docked_rejects
         let active = book
             .active_for_hull(hull)
             .expect("bubble must remain open while paused for docking");
-        assert_eq!(
-            active.steps, steps_before_pause,
-            "paused hull's bubble must not step while DockingSession is active"
+        assert!(active.steps >= steps_before_pause);
+        let ship = active
+            .bubble
+            .ships
+            .get(&active.carrier_ship_id)
+            .expect("her ship");
+        assert!(
+            ship.docking_hold && ship.thrust_mmps2 == [0, 0, 0],
+            "the paused hull is held, her drive cut, while DockingSession is active"
         );
     }
 
