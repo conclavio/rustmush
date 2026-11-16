@@ -143,6 +143,29 @@
       },
       "kind": "recipe"
     },
+    "metals": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "metal_ore",
+            "units": 10
+          }
+        ],
+        "label": "Metal ore milling",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "metals",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 2
+      },
+      "kind": "recipe"
+    },
     "missile": {
       "def": {
         "inputs": [
@@ -696,6 +719,29 @@
       },
       "kind": "recipe"
     },
+    "structural_alloys": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "metals",
+            "units": 5
+          }
+        ],
+        "label": "Alloy refining",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 4
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 9
+      },
+      "kind": "recipe"
+    },
     "torpedo": {
       "def": {
         "inputs": [
@@ -726,13 +772,36 @@
         "work_units": 168
       },
       "kind": "recipe"
+    },
+    "volatiles": {
+      "def": {
+        "inputs": [
+          {
+            "commodity": "ice_ore",
+            "units": 20
+          }
+        ],
+        "label": "Ice ore milling",
+        "output_lots": "pooled",
+        "outputs": [
+          {
+            "commodity": "volatiles",
+            "units": 8
+          }
+        ],
+        "requires": [
+          "tacsim.works"
+        ],
+        "work_units": 2
+      },
+      "kind": "recipe"
     }
   },
   "manifest": {
-    "digest": "c7727033432b1dd0b7b05b0202e3c70aacf93bbcba7bad0b567be1fa637ba701",
+    "digest": "f0696744e0c75a46d46be0c2dba678519d4ed8759d111560d32cad8ec4f26579",
     "id": "tacsim.industry.recipes",
     "kind": "rules_definition",
     "requires": [],
-    "version": 4
+    "version": 5
   }
 }
