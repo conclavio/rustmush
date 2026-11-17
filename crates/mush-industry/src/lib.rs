@@ -94,8 +94,9 @@ pub mod workorder;
 pub use cost::FacilityCostDef;
 pub use custody::IndustryCustodyProvider;
 pub use facility::{
-    CapacityGuardValidator, Customers, FACILITY_CLASS, FacilityRecord, MAX_FACILITY_CAPABILITIES,
-    MAX_FACILITY_SLOTS, facility_capacity_key, facility_key, facility_of_key, facility_resource,
+    CapacityGuardValidator, Customers, FACILITY_CLASS, FacilityRecord, Holding,
+    MAX_FACILITY_CAPABILITIES, MAX_FACILITY_SLOTS, facility_capacity_key, facility_key,
+    facility_of_key, facility_resource,
 };
 pub use facts::IndustryFactProvider;
 pub use families::{

@@ -2144,7 +2144,191 @@ Not built.
 
 ## PL.9
 
-Not built.
+Facilities as titled assets (Q-48-26, Q-48-37, Q-48-45, Q-48-53). Built 2026-11-16 and 2026-11-17
+on `claude/pl9-facilities-assets`, cut from main at `73d05678b`. Main was merged in at
+`45b50f303`, after EX.3a (#644).
+
+**Survey** (at `73d05678b`):
+- **A facility had no title.** The lane opened its refinery, works and yard rooms as
+  `FacilityRecord`s owned by the port's operator org, but issued no economy title, so nothing
+  could list one. `+market/post #<object>` (EX.2) lists a titled object through the market's
+  `AssetSale` seam, which tacsim implements in `port/hull_sale.rs` for hulls only.
+- **The lane reverted any owner.** The port applier's preflight refused the whole entry when a
+  facility's owner differed from the authored operator (`port/plant.rs`), and
+  `install_authored_facility` re-termed a facility back to its authored cost and customers on
+  every bump (`mush-industry/src/store.rs`).
+- **`@facility/terms` was all or nothing.** It set the customers and the whole cost model
+  together, for staff or whoever acts for the owner. Q-48-37 splits it.
+- **The works arm charged the live fee.** Doc 48b's fix cancelled an order at submit on any
+  policy-revision move, so a lowered margin or a customers change also cancelled.
+- **No command listed for an organization.** `post_asset` already let an org sell when the actor
+  acts for it, but `+market/post` always listed as the person typing it.
+- **The market's dispatch cannot read industry's work orders.** Typed reads are owner-scoped
+  (`ModuleActionStateReadError::ForeignOwner`). Inventory's families are delegated to the market;
+  `industry.workorder` is not. A walk of the family from the seam answers an error, which read
+  as busy for every facility.
+
+**Built:**
+1. **A facility is owner-held once sold** (`mush-industry` `facility.rs`).
+   - `FacilityRecord.holding`: `Authored` (the default, written by absence, so an unsold
+     record's bytes and the industry `.snap` files do not move), `Owner`, or `OwnerPublic`.
+   - `sold_to(owner, public)` replaces the owner as `with_owner` does (the policy revision moves)
+     and marks the record held; `public` forces Public customers (a sold yard).
+   - An `OwnerPublic` record refuses owner-only customers on every path, the wire included
+     (`FacilityKeptPublic`).
+   - `stands_as_authored`: for a held record the lane compares the object, capabilities and slots
+     only, not the owner or terms.
+2. **The lane leaves a sold facility alone** (`store.rs`, `port/plant.rs`).
+   - `install_authored_facility` returns early for a held record, after the identity check.
+   - The port applier's preflight uses `stands_as_authored`, so a sold facility no longer refuses
+     the port's entry.
+   - `store::sell_facility(ctx, object, owner, public)` persists the sold record; a replay is a
+     no-op.
+3. **The lane titles its facilities** (`port/plant.rs` `title`). After installing a facility it
+   issues an economy title to the operator org under the port registry, if the room has none.
+   Without an economy it does nothing, and an issue error is logged, not fatal.
+4. **`@facility/terms` is split** (`mush-industry` `commands.rs`, Q-48-37).
+   - `<facility>=public|owner [margin=<permille>]` for staff and whoever acts for the owner.
+   - The six-part cost spec is staff-only (`TERMS_COST_STAFF`).
+   - A margin on an unpriced facility is refused (`TERMS_NO_PRICE`), and a kept-public facility
+     cannot go owner-only (`TERMS_KEPT_PUBLIC`).
+   - Anyone else reads `No such facility.`, as before.
+5. **The facility arm of the asset sale** (`port/facility_sale.rs`, new; `port/hull_sale.rs`).
+   - `hull_sale::admit`, `state_digest` and the settled-sale observer dispatch to the facility
+     functions when the object is a facility. The facility code is in its own functions, so EX.4
+     and EX.2b's edits to `hull_sale.rs` meet it only at those three call sites.
+   - Three catalogue entries, `tacsim.facilities:facility.{refinery,works,yard}`, loaded by the
+     vendor beside the hulls (`port/vendor.rs`).
+   - `admit` refuses, with a sentence naming the room:
+     - the relay foundry, the programme workshops and the medical rooms (`FACILITY_FOUNDRY`,
+       `FACILITY_WORKSHOP`, `FACILITY_MEDICAL`), and any facility that is not a port's refinery,
+       works or yard (`FACILITY_NOT_SOLD`);
+     - work under way: an open works or yard contract, a commission still laying up, or an open
+       work order (`FACILITY_BUSY`);
+     - stores a vendor trades from (`FACILITY_STOREFRONT`);
+     - goods in its stores (`FACILITY_STORES_LADEN`), or stores that cannot be read
+       (`FACILITY_STORES_DARK`).
+   - `state_digest` is the record's hash, so a quote goes stale when the facility changes.
+   - **On settlement** (`on_sold`): the record passes to the buyer (a yard kept public), and the
+     stores vault, if the seller owned it, is re-homed to the buyer (`rehome_vault`). The payee
+     follows the record's owner, which the works arm already pays.
+6. **Industry's open-order index by facility** (`store.rs`). `IndustryStore::open_orders_at`,
+   kept by the work-order observer and rebuilt by `reconcile` beside the per-requester index
+   (WS02-S4). The sale's idle check reads it, since the market's context may not read
+   `industry.workorder`.
+7. **The fee is pinned at booking** (`port/works.rs`, Q-48-53).
+   - `WorksContract.fee_minor` is the facility's fee at booking (absent on older contracts).
+   - At submit the arm cancels only if the live fee has risen past the pinned one
+     (`fee_risen`): the booking fee and the bill come back, as doc 48b's fix did. A fee that held
+     or fell runs. A contract with no pin and a priced facility cancels, as doc 48b's fix did.
+8. **An organization lists through `+market/post … as=<org>`** (`mush-market` `commands.rs`, on
+   the lead's ruling).
+   - The org is named by name, alias or `#id`, with or without `org:`. The actor must act for it
+     (`mush_economy::acts_for`, the check `post_asset` makes), or the command refuses
+     `NOT_FOR_ORG`; an unknown or hidden org reads the same.
+   - `+market/bid` refuses `as=` with its usage.
+   - The sentence is in the bot's sentence table (`mush-bot` `mine/minds.rs`).
+9. **A sold works buys nothing for the house** (`port/supply.rs`). The NPC house purchase runs
+   only for authored facilities.
+10. **Help:** `docs/help/exchange.md` gains "Listing a facility".
+
+**Tests** (each failed before its change, or is named under the mutations):
+- `mush-industry` `e7r2.rs`:
+  - `pl9_the_owner_sets_customers_and_margin_but_not_the_cost_model`;
+  - `pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it`.
+- `mush-industry` `e7c4.rs`: `pl9_open_orders_are_indexed_by_facility`.
+- `tacsim` `port/facility_sale.rs`: two unit tests (the entries, the sentences under the floor).
+- `tacsim` `domain_economy/yard_in9.rs`:
+  - `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it`:
+    - a captain who does not act for Stickney Yards is refused `NOT_FOR_ORG`, and a bid naming
+      `as=` is refused with the bid's usage;
+    - the Yards' officer lists the idle yard with `as=`, and the captain buys it;
+    - the title, record (owner-held, kept public, authored cost model), stores and money move;
+    - the captain sets the margin but cannot close the yard or set its cost model;
+    - a lane bump re-terms the Ceres works and leaves the captain's yard;
+    - a booking, then a margin raise: the order is cancelled, the booking fee is not taken,
+      nothing stays held, and the owner is paid nothing (the bill waits in the escrow for
+      `/collect`, since the customer has no hold docked);
+    - a booking with the margin lowered runs.
+  - `pl9_a_busy_or_unsellable_facility_is_refused_with_its_reason`: the Ceres works (storefront),
+    the yard with an order booked (busy), the Stickney works with goods in its stores (laden), and
+    the Stickney workshop (untitled: `No such asset.`; titled by staff: a workshop). Nothing is
+    listed.
+
+**Runs** (conclav.dev, the branch with main at `45b50f303` merged in):
+- the workspace check;
+- `mush-industry` and `mush-market`: 529 passed;
+- `tacsim` lib (`port::`, `content_studio::`): 283 passed;
+- `domain_economy`: 615 run, 614 passed. The one failure was an assertion since removed (the
+  rig installs submissions below the commit announcement, see M25); both PL.9 stories then pass
+  on their own;
+- `mush-server` `commerce_composition` and `split_boundary`: 318 passed;
+- `mush-bot`: 803 passed;
+- clippy (`-D warnings`) and the CI lint job's 64 KiB stack-frame pass on `mush-industry`,
+  `tacsim` and `mush-market`, rustdoc, and `mush-contract-tests` (200 passed: the census, the
+  panic budget, the restriction lints, the help-page lint and the fiat budget).
+
+- **Mutations**, each applied alone in a clone on conclav.dev, its tests run (the loop is
+  `pl9_muts.py` in the group's notes folder):
+
+  | # | Mutation | Caught by |
+  |---|---|---|
+  | M1 | the lane re-terms a held facility | `pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it` |
+  | M2 | a held record's identity includes its owner and terms | the same |
+  | M3 | a held record's identity drops capabilities and slots | the same |
+  | M4 | a sold yard keeps its customers | the same |
+  | M5 | a sale leaves the record `Authored` | the same |
+  | M6 | an owner may set the cost model | `pl9_the_owner_sets_customers_and_margin_but_not_the_cost_model` |
+  | M7 | anyone may set a facility's terms | the same |
+  | M8 | a kept-public facility may go owner-only | `pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it` |
+  | M9 | a risen fee does not cancel | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M10 | a contract with no pin runs at the live fee | **survives.** Only a contract booked before this unit has no pin; none exist before launch. |
+  | M11 | a busy facility lists | `pl9_a_busy_or_unsellable_facility_is_refused_with_its_reason` |
+  | M12 | a storefront's facility lists | the same |
+  | M13 | a laden works lists | the same |
+  | M14 | the workshop room check removed | **survives.** The shipped workshop also holds `bay_refit`, which refuses it first; the room check stands for a workshop without it. |
+  | M15 | the stores are not re-homed | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M16 | the house buys into a sold works | **survives.** No story sells a works: the clerk's purchases keep the Stickney works' stores laden. |
+  | M17 | the lane titles nothing | both stories |
+  | M18 | the facility's state digest is not used | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M19 | `as=` checks nothing | the same (`NOT_FOR_ORG`) |
+  | M20 | a sold yard is not kept public | the same |
+  | M21 | a bid takes `as=` | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` (the bid answers `No such catalogue entry.`, not its usage) |
+  | M22 | a settled sale does not pass the facility | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M23 | an open work order does not make a facility busy | **survives.** A yard booking also leaves its contract open, which refuses first; the index itself is M24's. |
+  | M24 | reconcile does not index orders by facility | `pl9_open_orders_are_indexed_by_facility` |
+  | M25 | the commit observer does not index orders by facility | **survives.** The test rigs install submissions without the commit announcement (`install_prepared_action_announcing` is the server's), so no rig reaches the observer; the per-requester index (WS02-S4) has the same gap. |
+
+  Twenty caught, five survive (M10, M14, M16, M23, M25), each with its reason.
+
+**Divergences:**
+- **Touches EX.4's crate: `+market/post as=<org>`.** The `+market/post` arm and its usage line, a
+  `NOT_FOR_ORG` sentence beside it in `seller.rs`, and `+market/bid`'s refusal of `as=`. Nothing
+  else in `mush-market` changed. If EX.4 (#641) touches the same lines, whichever PR merges second
+  resolves.
+- **`hull_sale.rs` is shared with EX.4 and EX.2b.** The facility code is in `facility_sale.rs`;
+  `hull_sale.rs` gains three dispatches and `scope_of` made `pub(crate)`. Whoever merges later
+  resolves.
+- **The fee pin replaces doc 48b's policy-revision cancel** in the works arm. A re-term that does
+  not raise the fee no longer cancels.
+- **The idle check reads an index, not the family**, because the seam runs in the market's
+  context. The index lags a missed announcement until the next sweep's reconcile, as the
+  per-requester index does.
+- **Files outside the unit's list:**
+  - `mush-market` `commands.rs` and `seller.rs` (`as=`), and `mush-bot` `mine/minds.rs` (the
+    sentence), on the lead's ruling;
+  - `port/vendor.rs` (the facility entries' load) and `port/supply.rs` (the house-purchase guard);
+  - `mush-industry` `record.rs` (`FacilityKeptPublic`) and `lib.rs` (exports);
+  - `docs/help/exchange.md`;
+  - the tests above.
+
+**Not built:**
+- **No NPC decides to sell a facility.** An operator org's facility sells when someone who acts
+  for the org lists it.
+- **Running-cost debt** is EX.9's. No facility owes any yet, so nothing is settled from the sale.
+- **`@facility/owner`** (staff) can still set a record's owner apart from its title holder. The
+  sale moves both together.
+- **A sold facility's stores, if the seller did not own them,** stay where they are.
 
 ## EX.9
 

@@ -90,6 +90,34 @@ pub struct FacilityRecord {
     /// always did.
     #[serde(default, skip_serializing_if = "Customers::is_owner_only")]
     customers: Customers,
+    /// **Who holds its terms** (doc 48 unit PL.9, Q-48-53): the content that authored it, or the
+    /// owner a sale passed it to. Absent means [`Holding::Authored`], so every facility never
+    /// sold stores the bytes it always did.
+    #[serde(default, skip_serializing_if = "Holding::is_authored")]
+    holding: Holding,
+}
+
+/// **Who holds a facility's terms** (doc 48 unit PL.9, Q-48-53).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Holding {
+    /// Authored: its operator is the content's, and the lane re-terms it on every bump.
+    #[default]
+    Authored,
+    /// **Owner-held**: sold, so the lane applies it without reverting its owner or terms. The
+    /// owner sets its customers and margin (Q-48-37).
+    Owner,
+    /// Owner-held and **kept public**: a sold yard (Q-48-53), whose customers its owner cannot
+    /// close.
+    OwnerPublic,
+}
+
+impl Holding {
+    /// Whether this is the default, authored holding.
+    #[must_use]
+    pub const fn is_authored(&self) -> bool {
+        matches!(self, Self::Authored)
+    }
 }
 
 /// **Who may order at a facility** (doc 39 cut IN.3, §4.12, Q-39-30): the facility's own people
@@ -135,6 +163,8 @@ struct FacilityRecordWire {
     cost: Option<FacilityCostDef>,
     #[serde(default)]
     customers: Customers,
+    #[serde(default)]
+    holding: Holding,
 }
 
 impl<'de> Deserialize<'de> for FacilityRecord {
@@ -153,6 +183,7 @@ impl<'de> Deserialize<'de> for FacilityRecord {
             wire.cost,
             wire.customers,
         )
+        .and_then(|record| record.held_as(wire.holding))
         .map_err(serde::de::Error::custom)
     }
 }
@@ -249,7 +280,17 @@ impl FacilityRecord {
             policy_revision,
             cost,
             customers,
+            holding: Holding::Authored,
         })
+    }
+
+    /// The same record under `holding`, checked: a facility kept public opens to the public.
+    fn held_as(mut self, holding: Holding) -> Result<Self, IndustryRecordError> {
+        if holding == Holding::OwnerPublic && self.customers != Customers::Public {
+            return Err(IndustryRecordError::FacilityKeptPublic);
+        }
+        self.holding = holding;
+        Ok(self)
     }
 
     /// The world object this facility is.
@@ -307,6 +348,11 @@ impl FacilityRecord {
     pub const fn customers(&self) -> Customers {
         self.customers
     }
+    /// Who holds its terms (doc 48 unit PL.9).
+    #[must_use]
+    pub const fn holding(&self) -> Holding {
+        self.holding
+    }
     /// **The booking fee** (§4.12, Q-39-29): one slot-day at the facility's slot-hour, before
     /// margin, rounded up to the whole credit; `None` on a facility the cost model does not
     /// price.
@@ -324,6 +370,37 @@ impl FacilityRecord {
             && self.owner == other.owner
             && self.capabilities == other.capabilities
             && self.maximum_slots == other.maximum_slots
+    }
+
+    /// **Whether this facility stands as `authored` would open it** (doc 48 unit PL.9, Q-48-53):
+    /// [`Self::same_identity`], except that an owner-held facility's owner is its buyer's, never
+    /// the authored operator's. The object, capabilities and slots are still the content's.
+    #[must_use]
+    pub fn stands_as_authored(&self, authored: &Self) -> bool {
+        if self.holding.is_authored() {
+            return self.same_identity(authored);
+        }
+        self.object == authored.object
+            && self.capabilities == authored.capabilities
+            && self.maximum_slots == authored.maximum_slots
+    }
+
+    /// **Sold** (doc 48 unit PL.9, Q-48-45, Q-48-53): the owner replaced as
+    /// [`Self::with_owner`] replaces it, and the facility owner-held, so the lane leaves its owner
+    /// and terms. `public` keeps it open to every customer (a sold yard). The buyer takes the
+    /// authored cost model with it.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn sold_to(&self, owner: PrincipalId, public: bool) -> Result<Self, IndustryRecordError> {
+        let mut sold = self.with_owner(owner)?;
+        if public {
+            sold.customers = Customers::Public;
+            sold.holding = Holding::OwnerPublic;
+        } else {
+            sold.holding = Holding::Owner;
+        }
+        Ok(sold)
     }
 
     /// **Re-price** (doc 39 cut IN.4): the cost model's inputs replaced, bumping the policy
@@ -347,7 +424,8 @@ impl FacilityRecord {
             policy_revision,
             cost,
             self.customers,
-        )
+        )?
+        .held_as(self.holding)
     }
 
     /// **Open or close the doors** (doc 39 cut IN.3, Q-39-30): the customer policy replaced,
@@ -370,7 +448,8 @@ impl FacilityRecord {
             policy_revision,
             self.cost,
             customers,
-        )
+        )?
+        .held_as(self.holding)
     }
 
     /// ---- E7r2: P0a — **re-assign the owner, bumping the policy revision** ----
@@ -414,7 +493,8 @@ impl FacilityRecord {
             policy_revision,
             self.cost,
             self.customers,
-        )
+        )?
+        .held_as(self.holding)
     }
 }
 
