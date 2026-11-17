@@ -178,11 +178,11 @@ const DIGESTS: [(&str, &str); 18] = [
     ),
     (
         "tacsim.pack.space_mounts",
-        "fe5c35765fd2f254e38e1148efe7e2ab9038a43018671ba0f08dc70a7d45c7be",
+        "e6f36a20c83af8980d3dd4cc3c502ae4a741f14846cfb8c58c0fb547e86354cd",
     ),
     (
         "tacsim.pack.space_fits",
-        "2959aae314632a55d781f0e07fdc9cf3836a812a1bae79d36b4fc032fa2a8119",
+        "41cd5f26417dbb0f0dfda4d9f635b30c9d4a953b83be1c6d4101c60924f92758",
     ),
 ];
 

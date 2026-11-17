@@ -1602,8 +1602,22 @@ mod cc9_tests {
             "the kernel refuses the same shot"
         );
 
+        // Past the laser's reach and inside the spinal gun's (doc 49 unit CC.8 made the
+        // laser's the shorter): the laser reads past reach, the spinal gun fires.
+        let laser_reach = bubble.ships["halcyon"].lasers[0].max_range_m;
+        let spinal_reach = bubble.ships["halcyon"].railguns[0].max_range_m;
+        assert!(laser_reach < spinal_reach);
+        let between = field([-(laser_reach + 1_000), 0, 0]);
+        if held(&between) {
+            let picture = fire_picture(&between, "halcyon").expect("her picture");
+            assert_eq!(mount(&picture, "laser_dorsal").state, MountState::PastReach);
+            assert_eq!(mount(&picture, "laser_dorsal").at_lock, None);
+            assert_eq!(mount(&picture, "rail_spinal").state, MountState::Ready);
+            assert!(mount(&picture, "rail_spinal").at_lock.is_some());
+        }
+
         // Past a mount's reach: the lock as far off as her sensors still hold her.
-        let reach = bubble.ships["halcyon"].lasers[0].max_range_m;
+        let reach = laser_reach.max(spinal_reach);
         let far = field([-(reach + 1_000), 0, 0]);
         if held(&far) {
             let picture = fire_picture(&far, "halcyon").expect("her picture");
