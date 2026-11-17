@@ -1077,6 +1077,53 @@
           12.271
         ]
       }
+    },
+    "cc2b_deterministic_update": {
+      "cut": "doc 49 CC.2b, the motor's path cells per decide window",
+      "recorded_utc": "2026-11-17T21:20:00Z",
+      "measured_revision": "10a84b0f2 (CC.2b over CC.2's ce65da267 on main 45b50f303), by hand on conclav.dev",
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev (by hand as ghrunner, nice 10, HOSTNAME unset)"
+      ],
+      "reason": "CC.2b holds the field to 48,128 path cells per decide_ms window of arena time (arena/motor.rs, PATH_CELLS_PER_WINDOW): each search is handed what the window has left, and one that runs out of what others left is deferred to a later window. At the 90 s window the CI cohort's busiest wake (seed 2350, arena 101,500 ms, seven searches) now expands 47,985 cells where it expanded 50,425, so the motor counters moved (path cells, the refusals the deferred search no longer made, one more deferral), and with the deferred route the stock_ci minds lane's final substep hash. No other compared leaf moved: the counters, weapons, perception, the states at the end and the other three minds blocks are equal. Of the leaves no path compares, the snapshot grew by 12 bytes (the table's new cells field) and frame_execution's state hash and slope.refusals moved with the deferred route.",
+      "procedure": "In a throwaway clone of the measured revision: (A) the lanes under TACSIM_ASSERT=1, every lens and bound held, harness.max_path_cells_per_pulse 48,128 unchanged, then the delta against CC.2's file (8 differences, all the motor's); (B) TACSIM_BASELINE_BLESS=1 over A's reports; (C) the non-timing leaves of B carried onto CC.2's file by script, every earlier record and the blessed host, commit and date kept.",
+      "readings": {
+        "note": "wake p50 / wake p99 / window p99 ms of the CI cohort's arena lane, run A (TACSIM_ASSERT=1), against TS.21's 5.467 / 6.595 / 12.777",
+        "A_asserted": [
+          5.213,
+          6.933,
+          13.936
+        ]
+      },
+      "timing_policy": "TS.21's timings and host (conclav.dev) retained; no threshold or host comparison changed.",
+      "fields": [
+        "frame_execution.state_hash",
+        "minds.stock_ci.final_substep_hash",
+        "motor.peak_per_pulse.corner_refusals",
+        "motor.peak_per_pulse.path_cells",
+        "motor.peak_per_pulse.slope_refusals",
+        "motor.total.corner_refusals",
+        "motor.total.path_cells",
+        "motor.total.path_deferred",
+        "motor.total.slope_refusals",
+        "slope.refusals",
+        "snapshot.bytes_max",
+        "snapshot.bytes_mean"
+      ],
+      "previous": {
+        "frame_execution.state_hash": 9095607596645045965,
+        "minds.stock_ci.final_substep_hash": "12361968040696033747",
+        "motor.peak_per_pulse.corner_refusals": 597,
+        "motor.peak_per_pulse.path_cells": 50425,
+        "motor.peak_per_pulse.slope_refusals": 143,
+        "motor.total.corner_refusals": 1546,
+        "motor.total.path_cells": 135684,
+        "motor.total.path_deferred": 590,
+        "motor.total.slope_refusals": 814,
+        "slope.refusals": 814,
+        "snapshot.bytes_max": 5152519,
+        "snapshot.bytes_mean": 5111064
+      }
     }
   },
   "classes": {
@@ -1343,7 +1390,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "12361968040696033747",
+      "final_substep_hash": "12766493942455349593",
       "inline_thinks": 5365,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -1368,27 +1415,27 @@
     "max_path_queries_per_window": 64,
     "path_max_cells": 65536,
     "peak_per_pulse": {
-      "corner_refusals": 597,
+      "corner_refusals": 560,
       "intents": 278,
-      "path_cells": 50425,
+      "path_cells": 47985,
       "path_deferred": 29,
       "path_failures": 2,
       "path_queries": 32,
       "path_refused_unchanged": 0,
       "shots": 37,
-      "slope_refusals": 143
+      "slope_refusals": 134
     },
     "repath_ms": 4000,
     "total": {
-      "corner_refusals": 1546,
+      "corner_refusals": 1509,
       "intents": 55577,
-      "path_cells": 135684,
-      "path_deferred": 590,
+      "path_cells": 133244,
+      "path_deferred": 591,
       "path_failures": 55,
       "path_queries": 801,
       "path_refused_unchanged": 0,
       "shots": 1691,
-      "slope_refusals": 814
+      "slope_refusals": 791
     },
     "waypoint_nodes": 256,
     "waypoint_pitch_cells": 16
@@ -1455,7 +1502,7 @@
     "window_open": 12.332
   },
   "slope": {
-    "refusals": 814,
+    "refusals": 791,
     "units_at_45": 262,
     "units_at_70": 38
   },
@@ -1481,8 +1528,8 @@
       95000,
       100000
     ],
-    "bytes_max": 5152519,
-    "bytes_mean": 5111064,
+    "bytes_max": 5152531,
+    "bytes_mean": 5111076,
     "count": 19,
     "decode_ms_max": 48.576,
     "encode_ms": {
@@ -1571,6 +1618,6 @@
   },
   "frame_execution": {
     "requested_workers": 1,
-    "state_hash": 9095607596645045965
+    "state_hash": 6089448057861030543
   }
 }

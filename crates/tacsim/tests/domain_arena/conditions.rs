@@ -2935,7 +2935,8 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
     // Format 16 also carries record-only accepted-order attribution (R4).
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
     // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
-    assert_eq!(snapshot.document["format"], 19);
+    // Doc 49 unit CC.2b: 20, with the motor table's window cells.
+    assert_eq!(snapshot.document["format"], 20);
     let mut resumed =
         Snapshot::decode(&snapshot.document, definition()).expect("the document decodes");
     resumed.mind_runner = Arc::new(tacsim::arena::mind::NoMind);
@@ -3006,14 +3007,14 @@ fn m1b1_a_snapshot_carries_slots_a_card_the_floor_and_held_said_and_resumes_the_
         Snapshot::head(&old).map(|head| head.format),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 19
+            expected: 20
         })
     );
     assert!(matches!(
         Snapshot::decode(&old, definition()),
         Err(SnapshotError::Format {
             found: 6,
-            expected: 19
+            expected: 20
         })
     ));
 }
