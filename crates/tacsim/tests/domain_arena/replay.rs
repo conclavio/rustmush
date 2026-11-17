@@ -68,7 +68,7 @@ fn leak(text: &str) -> Option<&'static str> {
 
 /// **The match seed this fight runs on** (17b cut M4.5a): re-derived from
 /// [`support::SEED`] — see the test's doc for why.
-const FIGHT_SEED: u64 = 2_352;
+const FIGHT_SEED: u64 = 2_351;
 
 /// **17b cut M4.5a**: both tanks are unit minds flown by Standard Doctrine on
 /// the native stock mind ([`Muster::mind`], what production fields since 17b
@@ -82,7 +82,13 @@ const FIGHT_SEED: u64 = 2_352;
 /// with no wreck, against which the wreck claims below cannot be asserted.
 /// 2,352 is a seed from 2,350 whose fight ends in the loser's wreck (the
 /// porter measured 8 of the 20 seeds 2,350 to 2,369 doing so); the fight, the
-/// musters and the bound are otherwise the original's.
+/// musters and the bound are otherwise the original's. **Doc 49 unit CC.2
+/// re-derives it to 2,351**: under the ruled palette (the cannon at 15 s and
+/// 24 rounds, the coaxial gun at 5 s) seed 2,352's dry tank loses its turret
+/// first (`destroy_core` at 71,470 ms, a drop to the ROM) and is never
+/// wrecked; 2,351 is the first seed from 2,350 whose fight ends in the loser's
+/// wreck with no drop (101,418 ms), and 10 of the 20 seeds 2,350 to 2,369 end
+/// in a wreck.
 #[test]
 fn i1_a_real_fight_folds_to_one_objective_picture() {
     let world = booted_world();

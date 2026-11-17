@@ -115,6 +115,8 @@ const UNSIGNED: &str = "00000000000000000000000000000000000000000000000000000000
 /// component, the line core in the turret. Was `558a1cef…` at version 2.
 /// **17b cut M3.6** moved it again (version 4): the core consequence words,
 /// `destroy_core` on the turret. Was `e4f00866…` at version 3.
+/// **Doc 49 unit CC.2** moved `tacsim.pack.laser_mk1` (Q-49-19): a 5,000 ms cycle, the floor.
+/// Was `3fd9565a…`.
 const DIGESTS: [(&str, &str); 3] = [
     (
         "tacsim.pack.laser_charge",
@@ -122,7 +124,7 @@ const DIGESTS: [(&str, &str); 3] = [
     ),
     (
         "tacsim.pack.laser_mk1",
-        "3fd9565ac274989fec9e4f99784dda4cf6e63733a92b43a343e38c08ff96fae5",
+        "8b0b713dd284fa6ca5b8c2a4ea21ea257050490319c6fd06ed8a5d8dfa5c3981",
     ),
     (
         "tacsim.pack.line_tank_laser",
@@ -283,7 +285,12 @@ const VISUAL_MK1_SIGNATURE: &str = concat!(
 /// component names its plant (`tacsim.plant.vehicle_mk1`), and the unit's rules carry the
 /// authored components, so the definition is a new one by content (pre-launch: no persisted
 /// unit to migrate). Was `6bfa9bdbb4f75724e77228ade042700d4bdce398d4facf98f92c746e30200714`.
-const LINE_TANK_DIGEST: &str = "c85d03ac6b1cb4455cb7a9a6a37d1d9eebd98ebe480edaeb30071d00cdf61e18";
+///
+/// **Doc 49 unit CC.2 moved it a fifth time, with the content** (Q-49-3, Q-49-22): the tank's
+/// definition carries its mounts' cycles and loads, and the ruled palette moved the cannon's
+/// (15,000 ms, 24 rounds) and the coaxial gun's (5,000 ms, 600). Pre-launch: no persisted unit to
+/// migrate. Was `c85d03ac6b1cb4455cb7a9a6a37d1d9eebd98ebe480edaeb30071d00cdf61e18`.
+const LINE_TANK_DIGEST: &str = "3fc31438f05acbd4166458735853a922f809f625bf5a8c51b275844d4ff0a8c5";
 
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
@@ -6282,10 +6289,32 @@ fn q6_leg_arena(catalog: &Catalog) -> Arena {
     arena
 }
 
+/// **The scripted shooter's step** (doc 49 unit CC.2): the shipped cannon's
+/// cycle, rounded up to the coarsest cadence (5,000 ms), so a round goes every
+/// time the cannon is ready and every beat lands on a pulse at all three
+/// cadences. 15,000 ms under the ruled palette; 10,000 against cut X.2's
+/// 6,000 ms cannon, which is what the script stepped by until CC.2.
+fn q6_round_step(catalog: &Catalog) -> i64 {
+    let cycle = catalog
+        .weapons
+        .get(&CanonicalId::new("tacsim.weapon.cannon_105").expect("a canonical id"))
+        .map(|def| i64::from(def.cycle_ms))
+        .expect("the cannon is fielded");
+    (cycle + 4_999) / 5_000 * 5_000
+}
+
+/// The thirteen rounds the shooter fires, the first at 15,000 ms.
+const Q6_ROUNDS: i64 = 13;
+
+/// The run's end: one coarse pulse past the last round.
+fn q6_leg_end(catalog: &Catalog) -> i64 {
+    15_000 + (Q6_ROUNDS - 1) * q6_round_step(catalog) + 5_000
+}
+
 /// Start up, walk north, turn about, walk back, and be shot at all the way
 /// through — every timestamp a multiple of 5,000 ms, so one script means one
 /// thing at all three cadences.
-fn q6_leg_script() -> Vec<ReliefBeat> {
+fn q6_leg_script(catalog: &Catalog) -> Vec<ReliefBeat> {
     use tacsim::arena::intents::IntentKind;
     let contact = tacsim::arena::rng::draw_contact_id(SEED, RED, BLUE);
     let mut beats = vec![
@@ -6316,10 +6345,15 @@ fn q6_leg_script() -> Vec<ReliefBeat> {
             intents: vec![relief_intent(BLUE, IntentKind::Speed { cms: 0 }, 6)],
         },
     ];
-    // The cannon's cycle is 6,000 ms, so a round every ten seconds is a round
-    // every time it is ready, and each leg takes four of them through the front
-    // facet (260 of armour and 160 of internals against a 120-round).
-    for (n, at) in (15_000_i64..=135_000).step_by(10_000).enumerate() {
+    // A round every time the cannon is ready ([`q6_round_step`]); each leg takes
+    // four of them through the front facet (260 of armour and 160 of internals
+    // against a 120-round).
+    let step = q6_round_step(catalog);
+    let last = 15_000 + (Q6_ROUNDS - 1) * step;
+    for (n, at) in (15_000_i64..=last)
+        .step_by(usize::try_from(step).expect("a step"))
+        .enumerate()
+    {
         let seq = u64::try_from(n).unwrap_or(0).saturating_mul(2) + 10;
         beats.push(ReliefBeat {
             t_ms: at,
@@ -6356,8 +6390,13 @@ fn q6_leg_script() -> Vec<ReliefBeat> {
 #[test]
 fn q6_one_scripted_leg_fight_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
     let catalog = biped_catalog();
-    let script = q6_leg_script();
-    let first = q6_three_cadences("x2 legs", 140_000, || q6_leg_arena(&catalog), &script);
+    let script = q6_leg_script(&catalog);
+    let first = q6_three_cadences(
+        "x2 legs",
+        q6_leg_end(&catalog),
+        || q6_leg_arena(&catalog),
+        &script,
+    );
 
     // The run is worth comparing before it is compared: both legs went, and they
     // went at two different arena milliseconds.
@@ -6376,10 +6415,15 @@ fn q6_one_scripted_leg_fight_at_three_cadences_is_one_event_list_and_one_hash_se
     // consequences whatever actually fired, which is F.2's own ruling — so it is
     // read off the unit instead, at an arena time between the two losses. That is
     // a second three-cadence property in its own right: the biped is limping, and
-    // not stopped, at the same arena millisecond at every cadence.
+    // not stopped, at the same arena millisecond at every cadence. The halfway
+    // point is the first coarse pulse after the first leg went (60,000 ms until
+    // doc 49 unit CC.2 read the cannon's cycle), and the second is still standing
+    // then.
+    let halfway = (legs[0].0 / 5_000 + 1) * 5_000;
+    assert!(halfway < legs[1].0, "no pulse between the legs: {legs:?}");
     let limping = q6_three_cadences(
         "x2 legs, one down",
-        60_000,
+        halfway,
         || q6_leg_arena(&catalog),
         &script,
     );
@@ -10007,22 +10051,26 @@ fn ae1_a_machine_walker_and_a_machine_car_steer_on_their_own_rows_at_every_caden
 /// **The two weapons' and their rounds' digest pins** (16b cut AE.2; 16c N15),
 /// the way X.1 pins the laser's, in `requires` order: the 30 mm round, the
 /// autocannon, the missile round and the rack.
+///
+/// **Doc 49 unit CC.2** moved all four (Q-49-3, Q-49-22): the round to a load of 120 and the
+/// autocannon to a 10,000 ms cycle (was `8704ce19…` and `1aee8939…`), the missile round to a
+/// load of 4 and the rack to 30,000 ms (was `902758dc…` and `2437c519…`).
 const DIGESTS_ORDNANCE: [(&str, &str); 4] = [
     (
         "tacsim.pack.ap_30",
-        "8704ce199381569e8e9171eabc31143fe10f0f0d85f7755b5a3afa164b47d394",
+        "023dd9fd58d88c33980a1809e33786533a024dc276b71a1e99419f763da6865c",
     ),
     (
         "tacsim.pack.autocannon_30",
-        "1aee8939d0ee05e780919a5c1b06abdb455c0af6bc9fc6b15512bd15190f8d35",
+        "86b3b99ca90ba8e216b13d172cf40eda2af650aa93d803e9bbcf9fb30e719fa7",
     ),
     (
         "tacsim.pack.missile_round",
-        "902758dc2f22fa442a81828f30f9718f9aa35dd785801f83a0856919bb8f372a",
+        "c78c278540294313b357a290497cf7d8e9cd7ce0f6004dab92a9b3cef2ecdd44",
     ),
     (
         "tacsim.pack.missile_lr",
-        "2437c519457287ec4d5ac2fba9a54e1da973f6619f7db6f088fe0694fae851a4",
+        "d72a77bd5049f2f1a0221d37170a83f56e80cb2d3691c9e23b5f0a226491ea3e",
     ),
 ];
 
@@ -10237,7 +10285,8 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
             autocannon.muzzle_speed_cms,
             autocannon.bands_cm(),
         ),
-        (3, 3_000, 20, 240, 105_000, vec![100_000, 200_000])
+        // Doc 49 unit CC.2's palette (Q-49-3, Q-49-22): 10,000 ms and 120 rounds.
+        (3, 10_000, 20, 120, 105_000, vec![100_000, 200_000])
     );
     assert_eq!(
         autocannon.flight_ms(60_000),
@@ -10254,7 +10303,8 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
             rack.muzzle_speed_cms,
             rack.bands_cm(),
         ),
-        (1, 10_000, 350, 6, 25_000, vec![60_000, 300_000])
+        // Doc 49 unit CC.2's palette (Q-49-3, Q-49-22): 30,000 ms and 4 rounds.
+        (1, 30_000, 350, 4, 25_000, vec![60_000, 300_000])
     );
     assert!(
         !rack.is_beam(),

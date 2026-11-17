@@ -3486,6 +3486,10 @@ fn m1a5_the_production_hash_does_not_move() {
     // the Line card's fire terms and the Standard source (the reserve's rules) moved, folded in
     // every seal and in the card state: all three moved; the (j) field's 50 lines
     // (`tests/reflex.rs`) and the duel's 34 differ from the prior pins only in `hash`.
+    // Doc 49 unit CC.2: the ruled palette moved the shipped cannon's and coaxial gun's cycles
+    // and loads, folded with every mount, so the shipped duel's hash moved (was
+    // `0xcaae_5fcf_0dab_6143`); the field's two hold, since its mounts are the rig's own, and
+    // the duel's 34 lines differ from CC.1's only in `hash`.
     let actual = [
         first_hash,
         last_hash,
@@ -3496,7 +3500,7 @@ fn m1a5_the_production_hash_does_not_move() {
         [
             Some(0x18aa_60d9_5785_a83f),
             Some(0x9e8b_b51a_5d8b_a7bf),
-            Some(0xcaae_5fcf_0dab_6143)
+            Some(0xdeb8_4918_e033_5f67)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );

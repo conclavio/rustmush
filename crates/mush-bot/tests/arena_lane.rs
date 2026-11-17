@@ -1709,10 +1709,12 @@ fn a_due_fire_beats_a_due_poll() {
             >= 5,
         "the one-a-second ring never bound"
     );
-    // At four a second, every tick that sends the main gun sends it first.
+    // At four a second, every tick that sends the main gun sends it first. Three shots: the
+    // first shot's window above and two of the cannon's cycles (doc 49 unit CC.2: read from the
+    // content, 15 s; the 30 s this ran for held three at the 6 s cannon).
     let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
-    run.until(30_000, |_| false);
+    run.until(20_000 + 2 * Server::cycle_ms("cannon"), |_| false);
     let fires = run.sends_of("FIRE cannon", 0);
     assert!(fires.len() >= 3, "{fires:?}");
     for fire in fires {
@@ -2895,8 +2897,12 @@ fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
         angle_between(again, 0) <= HOLD_BOW_DEG,
         "holding again after the lapse: {again}"
     );
+    // From the hold's own end, the tick it lapsed in (doc 49 unit CC.2: under the
+    // 15 s cannon the stop goes in that tick, at `first + hold_ms`; at the 6 s
+    // cannon, with more shots claiming the line budget, it went at `lapse` or
+    // after).
     assert_eq!(
-        speed_sends(&run, lapse, run.now)
+        speed_sends(&run, first + hold_ms, run.now)
             .last()
             .map(|(_, kph)| *kph),
         Some(0),
@@ -3288,8 +3294,10 @@ fn a_crowded_minute(max: usize) -> Crowded {
     // Fewer lines a second may leave the post-shot read no slot inside the
     // cannon's first second; then the minute checks `STATUS` alone (a
     // `WEAPONSTATUS` may be the post-shot read, whose cadence is not a poll's
-    // that can wait).
-    let learned = run.until(20_000, cycles_learned);
+    // that can wait). Doc 49 unit CC.2: the window holds one cannon cycle more
+    // (read from the content), so a cycle the first shot's read missed is
+    // learned on the second shot, as it was inside 20 s at the 6 s cannon.
+    let learned = run.until(20_000 + Server::cycle_ms("cannon"), cycles_learned);
     run.server
         .contacts
         .push("X7  unknown  bearing 180° (rel 090°)  far  500 m  1 s".into());
@@ -3770,7 +3778,9 @@ fn an_empty_gun_is_not_fired_again() {
     assert!(run.until(30_000, |run| about_to_fire(run, "machine_gun")));
     run.server.rounds.insert("machine_gun".into(), 0);
     let dry_at = run.now;
-    run.until(20_000, |_| false);
+    // Two cannon shots after the dry gun: two of its cycles (doc 49 unit CC.2: read from the
+    // content; 20 s held them at the 6 s cannon).
+    run.until(20_000.max(2 * Server::cycle_ms("cannon")), |_| false);
     let mg = run.sends_of("FIRE machine_gun", dry_at);
     assert_eq!(mg.len(), 1, "one FIRE, refused as empty: {mg:?}");
     assert_eq!(
@@ -4645,10 +4655,27 @@ fn a_full_width_channel_line_never_swallows_an_expected_answer() {
     let mut acked = false;
     for _ in 0..5 {
         let from = run.now + 1;
-        assert!(run.until(15_000, |run| !run.sends_of("FIRE cannon", from).is_empty()));
+        // Doc 49 unit CC.2: one cannon cycle (read from the content) past the 15 s this
+        // waited at the 6 s cannon.
+        assert!(run.until(15_000 + Server::cycle_ms("cannon"), |run| {
+            !run.sends_of("FIRE cannon", from).is_empty()
+        }));
         let shots = run.lane.picture().tally.shots;
         assert!(run.lane.picture().fire_pending("cannon"));
         if run.server.acks.last() != Some(&(run.now + 20, "cannon".to_owned())) {
+            continue;
+        }
+        // AM.1's case is a `FIRE` alone in its tick (doc 49 unit CC.2). Under the 15 s
+        // cannon the first acked shot can share its tick with a poll (`RANGE`), and then
+        // the channel line does take the ack: the shot is counted only off the next
+        // `WEAPONSTATUS`, 1,670 ms later. That is a lane finding left to CC.10; the next
+        // shot is tried here.
+        let fired_at = run.sends_of("FIRE cannon", from).first().copied();
+        if run
+            .sent
+            .iter()
+            .any(|s| Some(s.lane_ms) == fired_at && s.line != "FIRE cannon")
+        {
             continue;
         }
         // The echo at +1, the channel line at +10, the ack at +20.

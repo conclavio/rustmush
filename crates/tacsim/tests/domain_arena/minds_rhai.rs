@@ -3635,34 +3635,44 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `16_055_487_243_381_801_295` / `1edf1d14…` / `747117c7…`,
 /// `3_235_368_525_617_475_578` / `261f3764…` / `73aec74c…`,
 /// `16_916_042_141_164_977_008` / `312402a1…` / `fe10f14d…` (CC.9's).
+///
+/// **Doc 49 unit CC.2 re-pins all four rows** (Q-49-3, Q-49-22): the ruled palette's slower
+/// cycles and smaller loads moved every fight: the stopping times 231,250, 197,500, 167,000 and
+/// 900,000 became 262,250, 321,750, 250,500 and 900,000. The probe's 3,600 thinks and the
+/// 369098751 bitmask are as they were. Read on Linux (conclav.dev); Windows is ci.yml's same
+/// step. Were (CC.1's):
+/// `6_441_726_380_087_781_903` / `b952665e…` / `73599ee3…`,
+/// `3_654_948_364_234_471_804` / `c37c7009…` / `b42c2870…`,
+/// `6_666_152_491_954_370_471` / `67d20fba…` / `b145b64d…`,
+/// `13_065_747_108_036_701_883` / `05037b8b…` / `93c3fee9…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
-        231250,
-        6441726380087781903,
-        "b952665eaa959256904198abc70a6152c8ee6a99f96acfd7fa285050c3107d0e",
-        "73599ee3731c7ea4f0078f8b7cb534675788a39da5caab440ec51e45f74b3b59",
+        262250,
+        12140716626063265255,
+        "2705f38a50d56ca5f3720199c9b3b929aa71d37306dcced8e65c0447b6e67b8d",
+        "b4517eb1f824d2760b8ae783f851304919f3124af3feafa92f9e5ca4422b65a6",
     ),
     (
         2351,
-        197500,
-        3654948364234471804,
-        "c37c7009d497d7572fa7d2d5faff484dcd3dcf37c4c196c6f13ba5e2698f8334",
-        "b42c28709adaff1b22a02f46b8415b0bce5fc5390c964f1a3d9099cd3b973d07",
+        321750,
+        3852494849714086324,
+        "83f0b046421de0b1cd69a5b925963e29cbbae6d44df8e1598786296babd8f9c0",
+        "d73bdfc56db3418ac95a1689061ac872e372c98b7514e6eb65ab840eca27b994",
     ),
     (
         2352,
-        167000,
-        6666152491954370471,
-        "67d20fba2d98b09fe76433863f2aa4493a7a7fa87de9f9c2353ffa394a334403",
-        "b145b64dd39a1376448dc97fbf1e534e787d1332f1bf70f3cfb1c956214cf6cd",
+        250500,
+        7412855432781915332,
+        "b023d6603baa90fafecfe3f54af29ee456329a614aa73ffbb11defbe043444ef",
+        "21a5c9bbb85d7fcf029bf61872c188e9c95e5d90ae3f1281b1af0d0ddc0ef530",
     ),
     (
         2350,
         900000,
-        13065747108036701883,
-        "05037b8bc03f30a7660c3c9d26cb518e8228a9423c1c1690354323e594f655df",
-        "93c3fee929bd30bda26ce63befdd898087ced9d12f2f361fd78dd77c46937921",
+        10332904847498022810,
+        "4114335378eb8473f811c4bdab7734457e43fe43fa0aadee3b3f478d8945b6b9",
+        "533b3444908e6c77fa4c6019faf1100104c09ab41b2a37646651011273fb1679",
     ),
 ];
 

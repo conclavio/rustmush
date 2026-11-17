@@ -102,23 +102,26 @@ const PACK_FILES: [&str; 10] = [
 /// `2cdf945e…` at version 3. **Doc 39 cut IN.1** added the plants pack and moved every
 /// chassis's for its power component's `plant` (no version moved; the line tank was
 /// `2d80e63e…`). **Doc 49 unit CC.6** added the three space packs: the belt raider's unit file,
-/// the space mount rows and the hull fits.
+/// the space mount rows and the hull fits. **Doc 49 unit CC.2** moved the four ground packs of the
+/// stock game for the ruled palette (Q-49-3, Q-49-22): the cannon to a 15,000 ms cycle and its
+/// round to a load of 24 (was `87aec3ba…` and `c377ca63…`), the coaxial gun to 5,000 ms and its
+/// belt to 600 (was `d5a24fd7…` and `59f3da8f…`).
 const DIGESTS: [(&str, &str); 18] = [
     (
         "tacsim.pack.he_105",
-        "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
+        "bd7fc2de0c682e84fe204a28f86cc23e0b0df02c84da4e16a0926fec5a6806cc",
     ),
     (
         "tacsim.pack.ball_762",
-        "59f3da8fbc7d0f656c8b9b94bd06106fa9e071b52109cebc101af0f087697bab",
+        "9dc4b050a12c20e0cc633e87aeee25aa9c5914d1219fcf1b7b3020f68cb2928f",
     ),
     (
         "tacsim.pack.cannon_105",
-        "87aec3ba2c8cf8aeefc50212c6f76762ca667d04785c3bb3dd3acf930dedf7d9",
+        "c089f8032ac2faab8718c94afb3b765ebc208a4f70ba0aa214d15cf7b8a2e171",
     ),
     (
         "tacsim.pack.mg_coax",
-        "d5a24fd7275500b239367b1da521c13a67ec8b767b800a8f9c7cf3797437766c",
+        "33eeb12f95eabe3a15e57825dca7296bfec1b515924f9682538a56c75af73e6b",
     ),
     (
         "tacsim.pack.visual_mk1",

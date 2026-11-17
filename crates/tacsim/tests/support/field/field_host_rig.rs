@@ -24,13 +24,44 @@ pub(crate) use crate::driving_rig::{
 };
 
 /// A fast field: the simulator's lab tempo, a snapshot every half second, a short quiet
-/// interval before demotion.
+/// interval before demotion ([`quiet_s`]).
 pub(crate) fn tune(cfg: &mut TacsimConfig) {
     cfg.arena.tempo.quiet_ms = 100;
     cfg.arena.tempo.alert_ms = 100;
     cfg.arena.tempo.engaged_ms = 100;
     cfg.arena.snapshot_ms = 500;
-    cfg.field.disengage_s = 15;
+    cfg.field.disengage_s = quiet_s();
+}
+
+/// **The rigs' short quiet interval**, seconds (doc 49 unit CC.2): five seconds past the
+/// slowest cycle of the armed hulls the field rigs field (the line tank's mounts, and CF.6c's
+/// `tv_escort`'s), read from the shipped content. A field disengages after `disengage_s` with no
+/// hostile fire, so an interval at or under a gun's cycle closes the field between two of its
+/// rounds. 20 under the ruled palette's 15 s cannon; the rigs held 15 against the 6 s cannon
+/// until CC.2.
+pub(crate) fn quiet_s() -> u32 {
+    use tacsim::definitions::unit::ComponentRole;
+    let catalog = tacsim::builtin_definitions().expect("the shipped content binds");
+    let slowest = ["tacsim.unit.line_tank", "tacsim.unit.tv_escort"]
+        .into_iter()
+        .flat_map(|unit| {
+            let spec = catalog
+                .specs
+                .get(&mush_core::CanonicalId::new(unit).expect("an id"))
+                .unwrap_or_else(|| panic!("{unit} is fielded"));
+            spec.components
+                .iter()
+                .filter_map(|slot| match &slot.role {
+                    ComponentRole::Weapon { weapon, .. } => {
+                        catalog.weapons.get(weapon).map(|def| def.cycle_ms)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .max()
+        .expect("an armed hull");
+    slowest.div_ceil(1_000) + 5
 }
 
 /// The armed hull the fixture fields: the first of the shipped armed designs the lane binds —

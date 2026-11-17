@@ -195,7 +195,7 @@ fn names_only_what_was_told_apart(
 
 /// **The match seed this fight runs on** (17b cut M4.5a): re-derived from
 /// [`support::SEED`] — see the test's doc for why.
-const FIGHT_SEED: u64 = 2_352;
+const FIGHT_SEED: u64 = 2_351;
 
 /// **17b cut M4.5a**: both tanks are unit minds flown by Standard Doctrine on
 /// the native stock mind ([`Muster::mind`], what production fields since 17b
@@ -209,7 +209,13 @@ const FIGHT_SEED: u64 = 2_352;
 /// with no wreck, against which the wreck claims below cannot be asserted.
 /// 2,352 is a seed from 2,350 whose fight ends in the loser's wreck (the
 /// porter measured 8 of the 20 seeds 2,350 to 2,369 doing so); the fight, the
-/// musters and the bound are otherwise the original's.
+/// musters and the bound are otherwise the original's. **Doc 49 unit CC.2
+/// re-derives it to 2,351**: under the ruled palette (the cannon at 15 s and
+/// 24 rounds, the coaxial gun at 5 s) seed 2,352's dry tank loses its turret
+/// first (`destroy_core` at 71,470 ms, a drop to the ROM) and is never
+/// wrecked; 2,351 is the first seed from 2,350 whose fight ends in the loser's
+/// wreck with no drop (101,418 ms), and 10 of the 20 seeds 2,350 to 2,369 end
+/// in a wreck.
 #[test]
 fn v3_a_real_fight_folds_to_each_pilots_own_projection() {
     let world = booted_world();
@@ -981,14 +987,14 @@ fn m5_the_pilots_report_carries_their_own_mind_block_and_no_other() {
         theirs.get(1).map(String::as_str),
         Some("  It never flew: you flew the tank the whole match.")
     );
-    // Seed 2,352's tape carries no drop to the ROM on the loser's hull (it is
+    // Seed 2,351's tape carries no drop to the ROM on the loser's hull (it is
     // destroyed without one), so the block is its two lines; a drop is `m5_the_drop_reads_its_cause_word_
     // alone`'s (17b cut M5.6's review, R29: the branch pinned, not either).
     let dropped = events.iter().find_map(|event| match &event.kind {
         EventKind::MindDropped { unit, .. } if *unit == loser => Some(event.t_ms),
         _ => None,
     });
-    assert_eq!(dropped, None, "the loser drops to the ROM on seed 2,352");
+    assert_eq!(dropped, None, "the loser drops to the ROM on seed 2,351");
     assert_eq!(theirs.len(), 2, "{theirs:#?}");
 
     // No other: neither reads the other's mind, an unchosen pilot never
@@ -1026,7 +1032,7 @@ fn m5_the_pilots_report_carries_their_own_mind_block_and_no_other() {
 }
 
 /// **17b cut M5.6's review** (R1/R23; the owner's OQ-9 (ii)), on the arena's
-/// own tape: the mind flies no wreck. Seed 2,352's loser is destroyed by the
+/// own tape: the mind flies no wreck. Seed 2,351's loser is destroyed by the
 /// winner; a release the world tells at or after that moment — an `EXIT` from
 /// the wreck the cockpit itself advises, or a drop — is no span: an unchosen
 /// pilot reads no block and the report is the one with no mind, a chosen one
@@ -1109,16 +1115,18 @@ fn m5_the_mind_flies_no_wreck_on_the_arenas_own_tape() {
 fn m5_the_minds_shots_are_counted_in_its_block_and_the_pilots_lines_are_unchanged() {
     let (arena, events, roster, winner, loser) = the_fight();
     let base = fold(&events, &roster, Reader::Pilot { unit: winner }, RULES);
-    // The winner's own counts on seed 2,352, as literals (17b cut M5.6's
+    // The winner's own counts on seed 2,351, as literals (17b cut M5.6's
     // review, R5): what the fold with no mind reads on this tape. The fold's
     // counting code is `5f505c8`'s (`report.rs` unchanged from `5f505c8` to
     // M5.5's `354e0ae8`; M5.6 adds the mind's calls beside it), so these are
-    // the counts that commit's fold gives this tape.
+    // the counts that commit's fold gives this tape. Doc 49 unit CC.2: seven
+    // cannon rounds and 190 of the coaxial gun's on seed 2,351 (four and 230 on
+    // seed 2,352 at the palette before it).
     assert_eq!(
         base.rounds,
         std::collections::BTreeMap::from([
-            (SmolStr::new("cannon"), 4),
-            (SmolStr::new("machine_gun"), 230)
+            (SmolStr::new("cannon"), 7),
+            (SmolStr::new("machine_gun"), 190)
         ])
     );
     assert_eq!(base.kills, 1);

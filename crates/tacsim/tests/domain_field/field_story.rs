@@ -334,7 +334,11 @@ async fn field_story(at: &Ground) {
     let wide = at.side > 256;
     let mut rig = stocked_tuned(|cfg| {
         crate::field_host_rig::tune(cfg);
-        cfg.field.disengage_s = 15;
+        // The black box's chunks close when full. Under doc 49 unit CC.2's palette (a coaxial
+        // burst every 5 s, not every second) the field's fire alone fills one in minutes, so the
+        // lines this story reads would reach it long after the shot; summaries every pulse fill
+        // one in a few arena seconds (`field_ap1`'s rig does the same).
+        cfg.arena.ledger.summary_ms = 100;
     });
 
     // (1) At a named frontier site — Ahuna Flank, or Urvara Reach — a mining roster works a
