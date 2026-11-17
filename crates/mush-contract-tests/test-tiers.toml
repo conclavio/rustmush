@@ -348,7 +348,7 @@ by_hand = "fb39c2b5"
 [[test]]
 id = "tacsim/tests::twin::cc2_the_ruled_palette_measured"
 tier = "by-hand"
-by_hand = "81c38ea2"
+by_hand = "ce65da26"
 
 # The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
 # (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).

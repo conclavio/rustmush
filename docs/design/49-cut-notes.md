@@ -470,8 +470,8 @@ applied.
 ## CC.2
 
 The ground palette and the floor (Q-49-2, Q-49-3, Q-49-19, Q-49-22). Built 2026-11-16 and
-2026-11-17 on CC.1's tip (`74ca06740`, PR #642), stacked on it. Every pin below was read on
-conclav.dev on this branch.
+2026-11-17 on CC.1's tip (`74ca06740`, PR #642), with main `45b50f303` merged in once #642 had
+landed (`ce65da267`). Every pin below was read on conclav.dev on this branch.
 
 **Survey.**
 - **The floor.** `definitions/weapon.rs` held W14's `CYCLE_FLOOR_MS`, 1,000 ms, for every mount,
@@ -521,7 +521,8 @@ conclav.dev on this branch.
     fires every mount that is ready, loaded and in reach, at any odds and to the last round
     (`trigger_happy`, a stand-in for a player pressing `FIRE` on every ready row).
 
-**The measured fights** (run at `81c38ea22`, conclav.dev):
+**The measured fights** (run at `ce65da267`, conclav.dev; the same figures at `81c38ea22`, before
+the merge):
 
 | | Mind against mind | Pilot (red) against mind (blue) |
 |---|---|---|
@@ -617,9 +618,11 @@ conclav.dev on this branch.
 - **Field stories** (see **Divergences** for each): `field_host` `cf2`, `field_carrier` `cf3`,
   `field_crash` `cf_review`, `field_gc3` `gc3`, `escort_lease` `cf6c`, `field_story` `gc0` and
   `s2`, and the five yielding `surrender` stories.
-- **The sweep**, at `e842bb416` on conclav.dev: the nine crates' tests with no fail-fast, 7,678
-  tests, all passing (65 skipped); then by name the D-UM-28 pin and the measured fights, both
-  passing.
+- **The sweep**, on conclav.dev, the nine crates' tests with no fail-fast, then by name the
+  D-UM-28 pin and the measured fights:
+  - at `e842bb416`, CC.2 over CC.1's tip: 7,678 tests, all passing (65 skipped);
+  - at `ce65da267`, main `45b50f303` merged in (CC.7 part 2 and EX.3a among it): 7,685 tests,
+    all passing, and `cargo clippy -p tacsim -p mush-bot --all-targets -- -D warnings` clean.
 - **Guards**, at `e842bb416` on conclav.dev, all passing:
   - `cargo fmt --check` for `tacsim`, `mush-bot` and `mush-contract-tests`;
   - `cargo clippy --all-targets -- -D warnings` for `tacsim` and `mush-bot`;
