@@ -3,9 +3,8 @@
 //! (Q-49-7, Q-49-10, Q-49-19, Q-49-24, Q-49-25, Q-49-26).
 //!
 //! The measurement fires one shooter's full magazine at each stock hull, as her fit lays her
-//! screen, and counts what lands. `cc8_measure_the_screens` prints the table the cut note
-//! reports (`cargo test -p tacsim --lib cc8_measure -- --ignored --nocapture`); the tests
-//! below hold the outcomes the palette was set for.
+//! screen, and counts what lands. The cut note keeps the table it gave; the tests below hold
+//! the outcomes the palette was set for.
 
 use mush_core::ObjId;
 
@@ -267,104 +266,6 @@ pub(super) const SCREENS: [&str; 6] = [
 
 /// The haulers among [`SCREENS`]; the rest are warships.
 const HAULERS: [&str; 2] = ["tacsim.unit.dray", "tacsim.unit.dray_p"];
-
-/// The geometries: standing off at a range, or closing.
-pub(super) const GEOMETRIES: [(&str, i64, i64); 5] = [
-    ("30 km, still", 30_000, 0),
-    ("60 km, still", 60_000, 0),
-    ("150 km, still", 150_000, 0),
-    ("300 km, still", 300_000, 0),
-    ("200 km, closing at 6 km/s", 200_000, 6_000_000),
-];
-
-fn row(label: &str, outcome: &Outcome) -> String {
-    format!(
-        "{label:<58} fired {:>2} landed {:>2} laser {:>2} rotary {:>2} lost {:>2} rounds {:>5} disabled {}",
-        outcome.fired,
-        outcome.landed,
-        outcome.by_laser,
-        outcome.by_rotary,
-        outcome.lost,
-        outcome.rotary_rounds,
-        outcome
-            .disabled_at
-            .map_or_else(|| "-".to_owned(), |n| format!("at {n}")),
-    )
-}
-
-/// **The measurement** (Q-49-26): a lone corvette's full magazine against each stock screen,
-/// as fitted and braced, at each geometry; her spinal magazine at a Dray that coasts and at
-/// one that dodges; and what an offence pulse lands by range. With `CC8_SWEEP` set it also
-/// sweeps the defence cycle and the rotary's envelope.
-#[test]
-#[ignore = "a measurement: prints the table the cut note reports"]
-fn cc8_measure_the_screens() {
-    let sweep = std::env::var_os("CC8_SWEEP").is_some();
-    let mut knob_sets = vec![("shipped", Knobs::default())];
-    if sweep {
-        for cycle in [3_000, 4_000, 5_000, 6_000] {
-            for envelope in [3_000, 4_000, 5_000, 15_000] {
-                knob_sets.push((
-                    "sweep",
-                    Knobs {
-                        defence_cycle_ms: Some(cycle),
-                        envelope_m: Some(envelope),
-                        damage_per_burst: None,
-                    },
-                ));
-            }
-        }
-    }
-    for (name, knobs) in knob_sets {
-        println!("== {name} {knobs:?}");
-        for (geometry, range_m, closing) in GEOMETRIES {
-            for screen in SCREENS {
-                for posture in [Posture::AsFitted, Posture::Braced] {
-                    let outcome = measure(
-                        "tacsim.unit.corvette",
-                        screen,
-                        posture,
-                        range_m,
-                        closing,
-                        knobs,
-                    );
-                    let label = format!(
-                        "{geometry} | {} {posture:?}",
-                        screen.trim_start_matches("tacsim.unit.")
-                    );
-                    println!("{}", row(&label, &outcome));
-                }
-            }
-        }
-    }
-    println!("== spinal");
-    for range_m in [30_000, 60_000, 90_000, 120_000, 150_000, 240_000] {
-        for dodge in [false, true] {
-            let outcome = measure_spinal(range_m, dodge);
-            println!(
-                "{} km, {} | fired {} struck {} dodged {} dv spent {} m/s",
-                range_m / 1_000,
-                if dodge { "dodging" } else { "coasting" },
-                outcome.fired,
-                outcome.struck,
-                outcome.dodged,
-                outcome.dv_spent_mps
-            );
-        }
-    }
-    println!("== offence pulse");
-    for key in [
-        "tacsim.space_mount.turret_laser",
-        "tacsim.space_mount.turret_laser_short",
-    ] {
-        let laser = laser_of(key);
-        let by_range: Vec<String> = [0, 10_000, 25_000, 45_000, 60_000, 100_000, 120_000, 150_000]
-            .iter()
-            .map(|range| format!("{} km {}", range / 1_000, laser.damage_at_range(*range)))
-            .collect();
-        println!("{key}: {}", by_range.join(", "));
-    }
-}
 
 /// A laser of the shipped row `key`, both modes allowed, in offence.
 fn laser_of(key: &str) -> crate::space::weapons::LaserMount {

@@ -874,8 +874,9 @@ The space palette and doctrines (Q-49-7, Q-49-10, Q-49-19, Q-49-24, Q-49-25, Q-4
 **The screen measurement** (Q-49-26). A lone corvette fires her whole tube magazine, a salvo of
 two at each reload, at each stock hull as her fit lays her screen ("as fitted"), and again with
 every laser in defence ("braced"). Ranges: 30, 60, 150 and 300 km standing off, and a pass from
-200 km closing at 6 km/s. `space::bubble::cc8_tests::cc8_measure_the_screens` prints the table
-(`--ignored --nocapture`; `CC8_SWEEP=1` adds the sweep).
+200 km closing at 6 km/s. The rig that printed this table and swept the defence cycle and the
+envelope was a one-off and is not kept; `cc8_a_warships_screen_stops_a_lone_salvo_and_a_haulers_leaks`
+holds its outcomes at 150 km, 300 km and on the closing pass.
 
 | Stock screen | As fitted, 30 and 60 km | As fitted, 150 km, 300 km and the closing pass | Braced |
 |---|---|---|---|
@@ -920,8 +921,7 @@ All runs were on conclav.dev, in a throwaway clone, with the unit's patch applie
     `cc8_each_mode_fires_on_its_own_cycle`;
   - `cc8_a_warships_screen_stops_a_lone_salvo_and_a_haulers_leaks`: the measurement's outcomes,
     held at 150 km, 300 km and on the closing pass;
-  - `cc8_the_spinal_guns_dodge_stays_and_costs_her_change_of_speed`;
-  - `cc8_measure_the_screens` (ignored), the table above.
+  - `cc8_the_spinal_guns_dodge_stays_and_costs_her_change_of_speed`.
 - **The story**: `space::tick::thinks_tests::cc8_a_corvette_disables_a_dray_that_dodges`.
 - **Retired**: `space::custody::content_tests::cc6_every_shipped_fit_carries_the_rust_tables_values`,
   for `cc6_a_hull_with_no_fit_of_her_own_flies_the_drays`.
