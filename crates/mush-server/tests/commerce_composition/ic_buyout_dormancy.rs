@@ -480,10 +480,35 @@ async fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
 /// Everything due `secs` on; legacy work flushed.
 async fn sweep(rig: &mut Rig, secs: i64) -> Vec<(Audience, OutputEvent)> {
     let t = rig.tw.world().now().saturating_add(secs);
+    // Doc 48 cut EX.3: a jump of a Draw's whole window first lets the works' house purchase on the
+    // board settle (`settle_house_purchase`), and still lands where it was aimed.
+    if secs >= mush_market::DRAW_WINDOW_SECS {
+        settle_house_purchase(rig).await;
+    }
+    sweep_to(rig, t.max(rig.tw.world().now())).await
+}
+
+/// Everything due at `t`; legacy work flushed.
+async fn sweep_to(rig: &mut Rig, t: i64) -> Vec<(Audience, OutputEvent)> {
     rig.tw.set_now(t);
     let events = rig.tw.fire_due(t.saturating_mul(1000));
     flush(rig).await;
     events
+}
+
+/// **The works' house purchase settles before a long jump** (doc 48 cut EX.3): a Draw settles on
+/// the market's mirror and the economy's sweep, a minute or two of real time, and a jump past its
+/// window first would lapse it with its goods drawn. A minute at a time, at most ten.
+async fn settle_house_purchase(rig: &mut Rig) {
+    for _ in 0..10 {
+        if !tacsim::port::supply::purchase_on_board(rig.tw.world()) {
+            return;
+        }
+        let t = rig.tw.world().now().saturating_add(61);
+        let _ = sweep_to(rig, t).await;
+        let queued = drain_players(rig).await;
+        land_quietly(rig, &queued).await;
+    }
 }
 
 /// One port-tick fire (6 s on), its submissions drained, not landed.
@@ -1078,8 +1103,18 @@ fn contract_state(tw: &TestWorld, id: u64) -> ContractState {
         .expect("the contract")
 }
 
+/// Every contract but the works' house purchases (doc 48 cut EX.3: Stickney's clerk buys the
+/// works' alloys on the board as the IC days turn).
 fn contract_count(tw: &TestWorld) -> usize {
-    economy(tw).snapshot().contracts().count()
+    let buyers: Vec<PrincipalId> = tacsim::port::supply::buyers(tw.world())
+        .into_iter()
+        .map(PrincipalId::Object)
+        .collect();
+    economy(tw)
+        .snapshot()
+        .contracts()
+        .filter(|c| !c.consent.parties.iter().any(|p| buyers.contains(p)))
+        .count()
 }
 
 /// The Trust's programme account and the Trust as a principal.

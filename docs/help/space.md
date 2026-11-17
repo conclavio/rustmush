@@ -133,6 +133,8 @@ A ship mind reads the same figures: `space_mount(v, id)` gives one of her mounts
 
 Your ship's magazines are hers to keep. The torpedoes, spinal rounds and point-defence rounds she fires stay fired: when the fight ends her magazines hold what she left in them, and they still hold it at the next fight and after a server restart. A bay repair mends her and does not rearm her. `+tac/status` shows what each magazine holds.
 
+Rearm her docked at a port with a workshop. `+bay <ship>` quotes the rounds each magazine is short and where they come from, and `+bay/order <ship>=rearm` loads them. The torpedoes, spinal rounds and point-defence boxes come from her hold where it carries them, and what her hold lacks is bought from the workshop's stores at the goods' price. You pay the workshop's labour on top, and the work takes its time on the IC clock. Rounds load in whole units: a point-defence box holds 500 rounds, so a rotary short by fewer than 500 waits until it is short by a whole box.
+
 A patrol is resupplied. The customs corvette and the belt raider you meet on a leg sail with full magazines every time, whatever an earlier fight cost them.
 
 ---

@@ -2494,7 +2494,8 @@ mod tests {
     /// does not: since doc 45 unit AP.6 it is the seat's and never binds the mind
     /// (`crate::arena::absent`, "the posture and the seat's fire hold"). The go-home order
     /// stands with no deadline, and the mind is shown as hostile only what it may answer. A
-    /// practice match records no fire on a hull nobody has named a player for.
+    /// practice match records fire too, on a hull nobody has named a player for: since doc 49
+    /// unit CC.1 every match keeps the record (the stock card's reserve answers it, Q-49-23).
     #[test]
     fn mw7_an_absent_players_mind_fires_only_on_a_unit_that_fired_on_it() {
         use crate::arena::party::{EndCondition, Relation};
@@ -2603,14 +2604,15 @@ mod tests {
         assert!(back.minds.get(&RED).is_some_and(|row| row.order.is_none()));
         assert_eq!(back.resolve_fire_by(RED, "cannon", 0, mind), Ok(1));
 
-        // A practice match keeps no record of who fired on whom, for a hull nobody has set a
-        // posture on (doc 45 unit AP.10 keeps one for a hull a pilot has named a player for).
+        // A practice match keeps the record of who fired on whom too, on a hull nobody has set
+        // a posture on (doc 49 unit CC.1, Q-49-23: the stock card's reserve answers it; doc 45
+        // unit AP.10 kept one only for a hull a pilot had named a player for).
         let mut practice = base;
         practice.note_fired_on(BLUE, RED);
         assert!(
             practice
                 .unit(RED)
-                .is_some_and(|state| state.fired_on_by.is_empty())
+                .is_some_and(|state| state.fired_on_by.contains(&BLUE))
         );
     }
 
@@ -2627,9 +2629,11 @@ mod tests {
 
     /// **Doc 45 unit AP.10: a practising hull in a match is held to the one rule** (Q-45-25;
     /// `crate::arena::absent::permits`, through the door every shot no seat typed takes). A
-    /// match records no fire and binds nobody until a pilot sets a posture: the words that
-    /// name whose the hull and the pilot's other hull are start the record on those two and
-    /// on no other. Left on `GUARD` with its pilot's hands off the controls, the hull is
+    /// match binds nobody until a pilot sets a posture: the words name whose the hull and the
+    /// pilot's other hull are. It keeps the fire record on every hull, named or not, since
+    /// doc 49 unit CC.1 (Q-49-23), so the opening's fire is kept apart on a clone here, and
+    /// the hull left on `GUARD` has had no fire on it. Left on `GUARD` with its pilot's hands
+    /// off the controls, the hull is
     /// refused the first shot at a side it holds hostile, is refused after fire on a
     /// stranger, answers after fire on the pilot's other hull, and answers for itself.
     #[test]
@@ -2640,14 +2644,22 @@ mod tests {
         let mut practice = a_practice_match();
         let opening = crate::arena::hash::state_hash(&practice);
 
-        // Nobody practises: nothing is bound, and fire leaves no record and no byte.
+        // Nobody practises: nothing is bound. Fire is recorded and folds (doc 49 unit CC.1),
+        // on a clone, so the practice below opens unfired on.
         assert_eq!(
             practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
             Ok(1),
             "a hull's mind in a match fires on the side it holds hostile"
         );
-        practice.note_fired_on(BLUE, RED);
-        practice.note_fired_on(BLUE, KIN);
+        let mut fired = practice.clone();
+        fired.note_fired_on(BLUE, RED);
+        fired.note_fired_on(BLUE, KIN);
+        assert!(
+            fired
+                .unit(RED)
+                .is_some_and(|state| state.fired_on_by.contains(&BLUE))
+        );
+        assert_ne!(crate::arena::hash::state_hash(&fired), opening);
         assert_eq!(crate::arena::hash::state_hash(&practice), opening);
 
         // The pilot sets GUARD: the host's word names the pilot for the hull and for the
@@ -2674,8 +2686,8 @@ mod tests {
         assert!(
             practice
                 .unit(STRANGER)
-                .is_some_and(|state| state.fired_on_by.is_empty()),
-            "no record on a hull no pilot named a player for"
+                .is_some_and(|state| state.fired_on_by.contains(&BLUE)),
+            "kept on a hull no pilot named a player for (doc 49 unit CC.1)"
         );
         practice.stand_posture(RED);
         assert_eq!(

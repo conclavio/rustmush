@@ -75,6 +75,10 @@ pub struct HardwareDeployment {
     /// catalogue baseline the integrator pays for a stored core with its title
     /// ([`super::sale::BUY_BACK_PERMILLE`] is the launch's). Absent, no shop buys cores.
     pub buy_back_permille: Option<u32>,
+    /// **The resale of a governed core to a player** (doc 48 unit EX.2b), composed beside the
+    /// buy-back: who takes the venue's cut and the levy, and at what rates. The launch names its
+    /// venue and its Registry where it names a buy-back; absent, no player resells a core.
+    pub resale: Option<super::sale::resale::ResaleTerms>,
     /// **The die depot's opening stock** (doc 48 unit PL.7): chain goods the origin's
     /// `Initialize` credits into [`Self::depot`] once, so a launched world can cut its first
     /// dies. Empty, the depot opens empty.
@@ -188,6 +192,7 @@ struct RosterPolicyState {
     bay_economy: Option<mush_economy::bay_refit::BayRefitConfig>,
     bay_parts: Option<mush_inventory::bay_part::BayPartBinding>,
     sale: Option<mush_economy::registry_filing::core_sale::CoreSaleConfig>,
+    resale: Option<mush_economy::registry_filing::core_sale::resale::CoreResaleConfig>,
 }
 impl RosterPolicy {
     pub(crate) fn inventory(&self, module: InventoryModule) -> InventoryModule {
@@ -206,6 +211,10 @@ impl RosterPolicy {
             .with_core_refit(self.state.fitting.clone());
         let module = match &self.state.sale {
             Some(config) => module.with_core_sale(config.clone()),
+            None => module,
+        };
+        let module = match &self.state.resale {
+            Some(config) => module.with_core_resale(config.clone()),
             None => module,
         };
         match &self.state.bay_economy {
@@ -436,6 +445,13 @@ impl GovernedHardware {
                     .as_deref()
                     .map(super::sale::SaleTerms::economy_config)
                     .transpose()?,
+                resale: self
+                    .state
+                    .sale
+                    .as_deref()
+                    .and_then(|sale| sale.resale.as_ref())
+                    .map(super::sale::resale::ResaleTerms::economy_config)
+                    .transpose()?,
             }),
         })
     }
@@ -599,6 +615,7 @@ impl GovernedHardware {
                 shop: payment.output_container,
                 catalogs: payment.catalogs.clone(),
                 refit: refit.clone(),
+                resale: deployment.resale.clone(),
             })
         });
         let factory = CoreFactoryConfig::new(mode, payment, Arc::new(publication.clone()), economy)
@@ -723,6 +740,11 @@ impl GovernedHardware {
         // Doc 47 CO.13: the economy's closed sale leg, beside the fitting shop's buy-back.
         let module = match self.state.sale.as_deref() {
             Some(sale) => module.with_core_sale(sale.economy_config()?),
+            None => module,
+        };
+        // Doc 48 unit EX.2b: the closed resale leg, beside it.
+        let module = match self.state.sale.as_deref().and_then(|s| s.resale.as_ref()) {
+            Some(resale) => module.with_core_resale(resale.economy_config()?),
             None => module,
         };
         Ok(module

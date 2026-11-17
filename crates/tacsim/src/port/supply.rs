@@ -30,28 +30,26 @@
 //! its lot) while a purchase is in flight leaves that purchase's key unmatched: the payment stands
 //! and the lot is not moved until staff repair it by hand.
 
-use mush_core::{CanonicalId, Ctx, IdempotencyKeyText, ObjId, PerceivedRef, World};
+use mush_core::{CanonicalId, Ctx, ObjId, World};
 use mush_economy::{AccountId, VaultId};
 use mush_inventory::record::EndpointRef;
 use mush_market::MarketStore;
-use serde_json::json;
 use smol_str::SmolStr;
 
-use crate::port::apply::{credit_scale, minor_of};
 use crate::port::def::{PortDef, WorksBuyDef};
 use crate::port::map::PortMap;
 use crate::port::stock::{IC_DAY, swapped};
-use crate::port::works::{Goods, Then, WorksAct};
+use crate::port::works::WorksAct;
 use crate::port_tick::{Fire, PortTickState, Step};
 
 /// The purchase's idempotency scope and its economic cause's kind.
 pub const SUPPLY_KEY: &str = "tacsim.works_supply";
 
-/// The payment's key for purchase `act` of `buy` into `stores`.
-fn key(stores: u64, act: u32, buy: &WorksBuyDef) -> mush_economy::IdempotencyKey {
+/// The purse top-up's key for `buy` into `stores` on IC day `day`: one an IC day a row.
+fn key(stores: u64, day: i64, buy: &WorksBuyDef) -> mush_economy::IdempotencyKey {
     mush_economy::IdempotencyKey::new(
         SUPPLY_KEY,
-        format!("{stores}/{act}/{}/{}", buy.good, buy.lot),
+        format!("{stores}/{day}/{}/{}", buy.good, buy.lot),
     )
 }
 
@@ -97,10 +95,8 @@ fn warn_once(state: &mut PortTickState, stores: u64, good: &CanonicalId, why: &s
 }
 
 /// **The house purchase's step** on the stock clerk's turn (after the seeds, before the list
-/// step): finish a purchase in flight — withdraw the seller's listing, then move the lot — or start
-/// one where a row's stores are under its floor. `None` when the port has no purchase to make, so
-/// the stock arm goes on.
-#[allow(clippy::too_many_lines)] // one purchase's two phases, in order
+/// step): start one where a row's stores are under its floor. `None` when the port has no
+/// purchase to make, or one is already on the board, so the stock arm goes on to its list step.
 pub(crate) fn supply_step(
     ctx: &mut Ctx<'_>,
     state: &mut PortTickState,
@@ -120,7 +116,9 @@ pub(crate) fn supply_step(
         .w
         .module_state::<mush_industry::IndustryStore>()
         .and_then(|store| store.facility(room))
-        .cloned()?;
+        .cloned()
+        // Doc 48 unit PL.9: a sold works is its buyer's; the operator buys nothing into it.
+        .filter(|facility| facility.holding().is_authored())?;
     let stores = match crate::port::works::stores(ctx, &facility) {
         Ok(vault) => vault.0,
         Err(error) => {
@@ -128,122 +126,92 @@ pub(crate) fn supply_step(
             return None;
         }
     };
-    let act = crate::port::works::landed(ctx, stores).checked_add(1)?;
-    // 1. A purchase in flight: its key resolved, its move not landed.
-    let mut flying = None;
+    // A purchase on the board: the market settles or refunds it, and nothing else is bought
+    // meanwhile. The clerk's list step goes on; the market keeps the ask's draw in hand.
     for buy in &works.buys {
-        match mush_economy::resolve_idempotency(ctx, &key(stores, act, buy)) {
-            Ok(Some(_)) => {
-                flying = Some(buy);
-                break;
-            }
-            Ok(None) => {}
-            // Outside the RAM window: the key read is requested; wait for it.
-            Err(_) => return Some(Step::Idle),
-        }
-    }
-    let Some(buy) = flying else {
-        state.supply_owed.remove(&stores);
-        return start(ctx, state, map, def, stores, act);
-    };
-    let seller = map.vendors.get(&buy.vendor)?;
-    let from = EndpointRef(VaultId(seller.vault));
-    // The owed move, recorded at once: the offer lands it, and the readiness report reads the
-    // seller's ask as a purchase in flight, never as stock waiting to be listed.
-    let tries = state
-        .supply_tries
-        .get(&stores)
-        .filter(|(at, _)| *at == act)
-        .map_or(0, |(_, tries)| *tries);
-    let owed = WorksAct {
-        act,
-        by: clerk,
-        from: seller.vault,
-        to: stores,
-        goods: vec![Goods {
-            good: buy.good.clone(),
-            units: buy.lot,
-        }],
-        lots: Vec::new(),
-        then: Then::Supplied,
-        tries,
-    };
-    state.supply_owed.insert(stores, owed);
-    let reading = ctx
-        .w
-        .module_state::<MarketStore>()
-        .map(|market| crate::port::stock::ask_reading(market, seller.vault, &buy.good))
-        .unwrap_or_default();
-    // A Draw quote on the pool unsettled: the wait is the mill restock's, a delay never a loss.
-    if reading.in_flight {
-        return Some(Step::Idle);
-    }
-    // 2. The seller's ask comes down by the lot, unless it already has.
-    if let Some((listing, listed)) = reading.listing {
-        let mills = ctx
+        let Some(seller) = map.vendors.get(&buy.vendor) else {
+            continue;
+        };
+        let listing = ctx
             .w
-            .module_state::<crate::port::families::PortHandles>()
-            .map(|handles| handles.families.mills.clone())?;
-        let vendor = def.vendors.iter().find(|v| v.org == buy.vendor)?;
-        let pool = crate::port_tick::read_pool(ctx, from, &buy.good).ok()?;
-        let unlisted =
-            crate::port::mill::unlisted(ctx, &mills, map, vendor, seller, &buy.good).ok()?;
-        let excess = pool
-            .saturating_sub(unlisted)
-            .saturating_sub(listed.saturating_add(reading.undrawn));
-        if excess < buy.lot {
-            let spec = mush_market::RestockSpec {
-                listing,
-                good: buy.good.clone(),
-                units: buy.lot - excess,
-            };
-            return Some(
-                match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::shrink_ask(ctx, spec))
-                {
-                    Ok(Ok(_)) => Step::Worked,
-                    Ok(Err(error)) => {
-                        warn_once(state, stores, &buy.good, &format!("{error:?}"));
-                        Step::Refused
-                    }
-                    Err(refused) => swapped(Err(refused)),
-                },
-            );
+            .module_state::<MarketStore>()
+            .and_then(|market| {
+                crate::port::stock::ask_reading(market, seller.vault, &buy.good).listing
+            })
+            .map(|(listing, _)| listing);
+        if listing.is_some_and(|listing| on_board(ctx.w, clerk, listing)) {
+            return None;
         }
     }
-    // 3. The move, under the works ledger's next ordinal.
-    let action = ctx
-        .w
-        .module_state::<crate::port::works::WorksHandles>()
-        .and_then(|handles| handles.action.clone())?;
-    let key =
-        IdempotencyKeyText::parse_canonical(format!("{SUPPLY_KEY}/{stores}/{act}/{tries}")).ok()?;
-    let step = swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
-        ctx.submit_authoritative(
-            action,
-            PerceivedRef::SelfActor,
-            Vec::new(),
-            json!({"contract": stores, "act": act}),
-            key,
-        );
-    }));
-    if step == Step::Submitted {
-        state
-            .supply_tries
-            .insert(stores, (act, tries.saturating_add(1)));
-    }
-    Some(step)
+    start(ctx, state, fire, clerk, map, def, stores)
 }
 
-/// **Start a purchase**: the first row whose stores are under its floor, not bought today, whose
-/// seller's pool holds a lot — paid from the operator's account to the seller's at the seller's
-/// ask, under the purchase's key. `None` when no row is due.
+/// **The works' buyers** (doc 48 cut EX.3): every laid-up port's stock clerk, whose quotes on the
+/// board are the works' house purchases.
+#[must_use]
+pub fn buyers(w: &World) -> Vec<ObjId> {
+    w.module_state::<crate::store::TacsimStore>()
+        .into_iter()
+        .flat_map(crate::store::TacsimStore::port_maps)
+        .filter_map(|map| map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)))
+        .collect()
+}
+
+/// **Whether any works' house purchase stands on the board** (doc 48 cut EX.3): a buyer's quote
+/// whose contract has not yet settled or closed.
+#[must_use]
+pub fn purchase_on_board(w: &World) -> bool {
+    let Some(market) = w.module_state::<MarketStore>() else {
+        return false;
+    };
+    buyers(w).into_iter().any(|buyer| {
+        market
+            .quotes_of_buyer(&mush_org::PrincipalId::Object(buyer))
+            .any(|quote| on_board(w, buyer, quote.listing))
+    })
+}
+
+/// **Whether `buyer` has a purchase on `listing` on the board**: a quote whose contract is not yet
+/// settled, refunded, cancelled or lapsed.
+#[must_use]
+pub fn on_board(w: &World, buyer: ObjId, listing: mush_market::ListingId) -> bool {
+    let (Some(market), Some(economy)) = (
+        w.module_state::<MarketStore>(),
+        w.module_state::<mush_economy::EconomyStore>(),
+    ) else {
+        return false;
+    };
+    market
+        .quotes_of_buyer(&mush_org::PrincipalId::Object(buyer))
+        .filter(|quote| quote.listing == listing && quote.settled.is_none())
+        .filter_map(|quote| quote.contract)
+        .filter_map(|contract| economy.snapshot().contract(contract))
+        .any(|contract| {
+            matches!(
+                contract.state,
+                mush_economy::ContractState::Draft
+                    | mush_economy::ContractState::Offered
+                    | mush_economy::ContractState::Active
+                    | mush_economy::ContractState::ReadyToSettle
+                    | mush_economy::ContractState::Disputed
+            )
+        })
+}
+
+/// **Start a purchase** (doc 48 cut EX.3; Q-48-9): the first row whose stores are under its floor,
+/// not bought today, whose seller's ask lists a lot. The operator funds the clerk's purse with
+/// what it lacks for the lot at the ask (one post an IC day a row, under the purchase's key), and
+/// the clerk buys the lot on the board: a quote of the seller's ask and an acceptance into the
+/// works' stores. The market escrows the money, draws the lot and settles; a leg that cannot be
+/// staged refunds the escrow to the purse. `None` when no row is due.
 fn start(
     ctx: &mut Ctx<'_>,
     state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
     map: &PortMap,
     def: &PortDef,
     stores: u64,
-    act: u32,
 ) -> Option<Step> {
     let works = def.works.as_deref()?;
     let today = ctx.w.world_ic_now().at.div_euclid(IC_DAY);
@@ -262,75 +230,138 @@ fn start(
         if held >= buy.floor {
             continue;
         }
-        let (Some(seller), Some(price)) = (
-            map.vendors.get(&buy.vendor),
-            def.vendors
-                .iter()
-                .find(|vendor| vendor.org == buy.vendor)
-                .and_then(|vendor| vendor.asks.iter().find(|ask| ask.good == buy.good))
-                .map(|ask| ask.price_major),
-        ) else {
+        let Some(seller) = map.vendors.get(&buy.vendor) else {
             continue;
         };
-        let pool = crate::port_tick::read_pool(ctx, EndpointRef(VaultId(seller.vault)), &buy.good)
-            .unwrap_or(0);
-        if pool < buy.lot {
+        let reading = ctx
+            .w
+            .module_state::<MarketStore>()
+            .map(|market| crate::port::stock::ask_reading(market, seller.vault, &buy.good))
+            .unwrap_or_default();
+        let Some((listing, listed)) = reading.listing else {
+            continue;
+        };
+        if listed < buy.lot || reading.in_flight {
             continue;
         }
-        let payee = map
-            .orgs
-            .get(&buy.vendor)
-            .and_then(|row| row.account)
-            .map(AccountId);
-        let minor = buy
-            .lot
-            .checked_mul(price)
-            .and_then(|major| minor_of(major, credit_scale(ctx.w)));
-        let (Some(payee), Some(minor)) = (payee, minor) else {
+        let Some(price) = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|market| market.listing(listing))
+            .map(|listing| listing.price)
+        else {
             continue;
         };
-        let (Some(debit), credit) = (
-            mush_economy::Amount::from_minor(minor).checked_neg(),
-            mush_economy::Amount::from_minor(minor),
-        ) else {
+        let Some(total) = price.minor().checked_mul(i64::try_from(buy.lot).ok()?) else {
             continue;
         };
-        state.supply_day.insert(day, today);
-        let plan = mush_economy::EconomyPlan {
-            description: format!(
-                "{} buys {} {} for its works stores",
-                works.operator, buy.lot, buy.good
-            ),
-            visibility: mush_economy::EconomicVisibility::Public,
-            ..mush_economy::EconomyPlan::new(
-                key(stores, act, buy),
-                mush_org::PrincipalId::Object(ctx.actor),
-                mush_economy::EconomicCause::Internal {
-                    kind: SmolStr::new_static(SUPPLY_KEY),
-                    id: stores,
-                },
-                vec![
-                    mush_economy::RequestedLine {
-                        account: payer,
-                        delta: debit,
-                        memo: SmolStr::new_static(SUPPLY_KEY),
-                    },
-                    mush_economy::RequestedLine {
-                        account: payee,
-                        delta: credit,
-                        memo: SmolStr::new_static(SUPPLY_KEY),
-                    },
-                ],
-            )
-        };
-        match mush_economy::post(ctx, &plan) {
-            Ok(
-                mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_),
-            ) => {
-                return Some(Step::Worked);
+        // Doc 18 cut IC14 row 2's rule, the sell gate's: a full engine queue would drop the
+        // draw after the escrow, so the purchase waits a fire, its day unspent.
+        if ctx.authoritative_queue_full() {
+            return Some(Step::Deferred);
+        }
+        // 1. The purse: the clerk's own account, topped up by what it lacks for the lot.
+        let purse = match crate::port::pools::purse_of(ctx, clerk, "works buyer purse") {
+            Ok(purse) => purse,
+            Err(error) => {
+                warn_once(state, stores, &buy.good, &error);
+                continue;
             }
-            other => warn_once(state, stores, &buy.good, &format!("{other:?}")),
+        };
+        let held_minor = ctx
+            .w
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|e| {
+                e.snapshot()
+                    .account(purse)
+                    .and_then(mush_economy::Account::available)
+            })
+            .map_or(0, mush_economy::Amount::minor);
+        let lacks = total.saturating_sub(held_minor);
+        if lacks > 0 && !fund(ctx, payer, purse, lacks, stores, today, buy) {
+            warn_once(
+                state,
+                stores,
+                &buy.good,
+                "the operator could not fund the purchase",
+            );
+            continue;
         }
+        // 2. The board: a quote of the seller's ask, accepted into the works' stores.
+        let into = EndpointRef(VaultId(stores));
+        let bought = fire.as_principal(ctx, clerk, clerk, |ctx| {
+            let quote = mush_market::quote(
+                ctx,
+                &mush_market::QuoteRequest {
+                    listing,
+                    quantity: buy.lot,
+                    window: mush_market::QuoteWindow::Live,
+                    ttl_live: mush_market::QUOTE_TTL_LIVE,
+                    ttl_remote: mush_market::QUOTE_TTL_REMOTE,
+                    presence: mush_market::Presence::Here,
+                },
+            )?;
+            mush_market::accept_at(ctx, quote, Some(into), mush_market::Presence::Here)
+        });
+        // The day is spent once the market has answered; a clerk busy this fire tries again.
+        return Some(match bought {
+            Ok(Ok(_)) => {
+                state.supply_day.insert(day, today);
+                Step::Worked
+            }
+            Ok(Err(error)) => {
+                state.supply_day.insert(day, today);
+                warn_once(state, stores, &buy.good, &format!("{error:?}"));
+                Step::Refused
+            }
+            Err(refused) => swapped(Err(refused)),
+        });
     }
     None
+}
+
+/// The operator's top-up of the clerk's purse, under the purchase's key for the day.
+fn fund(
+    ctx: &mut Ctx<'_>,
+    payer: AccountId,
+    purse: AccountId,
+    minor: i64,
+    stores: u64,
+    today: i64,
+    buy: &WorksBuyDef,
+) -> bool {
+    let (Some(debit), credit) = (
+        mush_economy::Amount::from_minor(minor).checked_neg(),
+        mush_economy::Amount::from_minor(minor),
+    ) else {
+        return false;
+    };
+    let plan = mush_economy::EconomyPlan {
+        description: format!("the works funds its buyer for {} {}", buy.lot, buy.good),
+        visibility: mush_economy::EconomicVisibility::Public,
+        ..mush_economy::EconomyPlan::new(
+            key(stores, today, buy),
+            mush_org::PrincipalId::Object(ctx.actor),
+            mush_economy::EconomicCause::Internal {
+                kind: SmolStr::new_static(SUPPLY_KEY),
+                id: stores,
+            },
+            vec![
+                mush_economy::RequestedLine {
+                    account: payer,
+                    delta: debit,
+                    memo: SmolStr::new_static(SUPPLY_KEY),
+                },
+                mush_economy::RequestedLine {
+                    account: purse,
+                    delta: credit,
+                    memo: SmolStr::new_static(SUPPLY_KEY),
+                },
+            ],
+        )
+    };
+    matches!(
+        mush_economy::post(ctx, &plan),
+        Ok(mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_))
+    )
 }

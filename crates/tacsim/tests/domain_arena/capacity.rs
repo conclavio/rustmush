@@ -185,10 +185,11 @@ fn ic2_the_catalog_rows_derive_from_the_goods_table() {
     // Doc 20 cut SM.3a: and its four ores (was 8). Doc 36 cut GC.7: and its four munitions.
     // Doc 39 cut IN.1: and its thirteen parts. Doc 39 cut IN.9: and its five hull kits. Doc 41
     // cut RS.6a: and Tycho's two. Doc 47 unit CO.10b: and the wrecker's kit. Doc 48 unit PL.7:
-    // and the three core modules. Doc 48 unit PL.3: and the three space munitions.
+    // and the three core modules. Doc 48 unit PL.3: and the three space munitions. Doc 48 unit
+    // PL.2b: and the relay blank.
     assert_eq!(
         entries.len(),
-        52,
+        53,
         "six rows, doc 19 cut A.8's two, doc 20 cut SM.3a's four, doc 36 cut GC.7's four and          doc 39 cut IN.1's thirteen"
     );
     for (entry, good) in entries.iter().zip(&table.goods) {

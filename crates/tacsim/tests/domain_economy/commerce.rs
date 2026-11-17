@@ -1593,9 +1593,11 @@ fn ic8_a_lapsed_player_listing_is_released_by_the_tick() {
         "the sweep keeps it"
     );
     let queued = drain(&mut rig.tw);
+    // Doc 48 cut EX.3: a works' house purchase on the board is a market lot action too.
+    let buyers = tacsim::port::supply::buyers(rig.tw.world());
     let releases: Vec<&AuthoritativeSubmit> = queued
         .iter()
-        .filter(|s| s.action.key().owner.as_str() == "market")
+        .filter(|s| s.action.key().owner.as_str() == "market" && !buyers.contains(&s.actor))
         .collect();
     assert_eq!(releases.len(), 1, "{queued:?}");
     assert_eq!(releases[0].actor, pilot, "the release is the holder's");
@@ -1742,17 +1744,18 @@ fn ic8_an_unreleasable_lapsed_listing_never_blocks_a_later_one() {
     // line if the arm did not pass over what it cannot release.
     rig.tw.set_now(expires + 1);
     let _ = rig.tw.fire_due((expires + 1) * 1000);
+    // Doc 48 cut EX.3: a works' house purchase on the board is a market lot action too.
+    let buyers = tacsim::port::supply::buyers(rig.tw.world());
+    let release = |s: &AuthoritativeSubmit| {
+        s.action.key().owner.as_str() == "market" && !buyers.contains(&s.actor)
+    };
     let mut releases: Vec<AuthoritativeSubmit> = drain(&mut rig.tw)
         .into_iter()
-        .filter(|s| s.action.key().owner.as_str() == "market")
+        .filter(|s| release(s))
         .collect();
     for _ in 0..2 {
         let (_, queued) = fire(&mut rig);
-        releases.extend(
-            queued
-                .into_iter()
-                .filter(|s| s.action.key().owner.as_str() == "market"),
-        );
+        releases.extend(queued.into_iter().filter(|s| release(s)));
     }
     assert_eq!(releases.len(), 1, "{releases:?}");
     assert_eq!(

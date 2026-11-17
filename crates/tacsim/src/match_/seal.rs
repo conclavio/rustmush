@@ -1253,13 +1253,14 @@ mod tests {
     }
 
     /// **17b cut M3.3** (D-UM-17, refuse-not-clamp): the Line card under a
-    /// floor of 200 is refused by name, and so is a card whose survival pair
-    /// does not hold.
+    /// floor of 400 is refused by name, and so is a card whose survival pair
+    /// does not hold. (The floor was 200 until doc 49 unit CC.1 raised Line's
+    /// own to 350.)
     #[test]
     fn m3_a_card_under_the_floor_or_off_its_pair_is_refused_by_name() {
         let catalog = catalog();
         let floored = SealTerms {
-            odds_floor_permille: 200,
+            odds_floor_permille: 400,
             ..SealTerms::fixture()
         };
         let refused = checked_out(
@@ -1270,10 +1271,10 @@ mod tests {
             &floored,
         )
         .err();
-        assert_eq!(refused, Some(SealError::Unlawful { floor: 200 }));
+        assert_eq!(refused, Some(SealError::Unlawful { floor: 400 }));
         assert_eq!(
             refused.map(|error| error.to_string()).as_deref(),
-            Some("the card asks for odds under the Compact floor of 20%")
+            Some("the card asks for odds under the Compact floor of 40%")
         );
         let mut card = crate::arena::card::line(&ReflexConfig::default());
         card.stand_min_permille = card.withdraw_permille + 50;
@@ -1397,7 +1398,7 @@ mod m5_tests {
         )
         .expect("the retained API 4 Standard source digest");
         let api7_source = crate::arena::snapshot::digest_from_text(
-            "c544bfbd2cdcbda6e4a9fafdec6c4cefe60f31963283edffd20af7f7ecf9375f",
+            "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91",
         )
         .expect("the observed API 7 Standard source digest");
         assert_eq!(crate::minds::content::standard_digest().0, api7_source);
@@ -1465,25 +1466,31 @@ mod m5_tests {
         // weapon facts/ROM and API 4. API6/stock3 changes the command-identity
         // behavior and those explicitly isolated provenance fields. Cross-host
         // gates must reproduce this complete array before accepting the release.
+        // Doc 49 unit CC.1: a custody change on purpose. The Line card every
+        // default seal carries moved (a 35% floor and a 25% reserve), so all
+        // nine API 4 projections moved with the card; nothing else in custody
+        // did. Captured on Linux. They were `5d0a8af7…811d8b`, `9f752c1b…e53371`,
+        // `9bc3d03b…f99609`, `2c31c30f…594f00`, `c0357d93…a5f8c0` and
+        // `0e3ea202…5436b3` (the fixture and production rows share one).
         let api4_pinned = [
             "tacsim.unit.line_tank fixture \
-             5d0a8af7688090e1ccb4cb8f38f2f610ecf82be8919f684cd341a79613811d8b",
+             aebce46a4406a67f3056d112fa2a7d8952db6416ea1e85442d1ae095228e8972",
             "tacsim.unit.line_tank production_fixture \
-             5d0a8af7688090e1ccb4cb8f38f2f610ecf82be8919f684cd341a79613811d8b",
+             aebce46a4406a67f3056d112fa2a7d8952db6416ea1e85442d1ae095228e8972",
             "tacsim.unit.line_tank production_principal \
-             9f752c1b8234b565a487db0e194f264a28dc2960af6ef37892035724e1e53371",
+             fa77fd72939ae83065db5054c0473e4931aca1a7a1280db27de306e864f95644",
             "tacsim.unit.heavy_mk1 fixture \
-             9bc3d03b1eafd6bf3e357b45ac44e8f83b4d26a68e55a5374015ea0089f99609",
+             5bc4842caa21159de90da7501f34305a8a6e46739c55950f687039e80b517f5a",
             "tacsim.unit.heavy_mk1 production_fixture \
-             9bc3d03b1eafd6bf3e357b45ac44e8f83b4d26a68e55a5374015ea0089f99609",
+             5bc4842caa21159de90da7501f34305a8a6e46739c55950f687039e80b517f5a",
             "tacsim.unit.heavy_mk1 production_principal \
-             2c31c30f1a8a4b7e00b21eea89c1772e653d63186313c5c5c53e9ef054594f00",
+             653f40f7be0d4561fc3b586cb1bd199f412abd5d3df8fe4070e72b833a8240aa",
             "tacsim.unit.target_mk1 fixture \
-             c0357d93bdb8e08be06819155c5cc2a4d1801afb4d22992607b32aa0a8a5f8c0",
+             500c8a2b0a1be236db5232ee3221b4e49b1a0b13c9f15aaa00c25ab34bee8c75",
             "tacsim.unit.target_mk1 production_fixture \
-             c0357d93bdb8e08be06819155c5cc2a4d1801afb4d22992607b32aa0a8a5f8c0",
+             500c8a2b0a1be236db5232ee3221b4e49b1a0b13c9f15aaa00c25ab34bee8c75",
             "tacsim.unit.target_mk1 production_principal \
-             0e3ea202b9b5bb3179245ab95357f673e13b831bf49f13a462eabc5aff5436b3",
+             0365cc73c8dfc43911bb12b98364b26e93be13ad8ad6b38da659580eb7c4f0bd",
         ];
         assert_eq!(
             api4_got, api4_pinned,
@@ -1505,25 +1512,30 @@ mod m5_tests {
         // Doc 49 unit CC.9: the mind ABI moved to API 10 (`space_mount`, the space aspect) and
         // the Standard header with it; all nine moved again, and the API 4 projection still
         // holds, so no custody did. Captured on Linux.
+        // Doc 49 unit CC.1: the Line card's fire terms and the Standard source (the reserve's
+        // rules) moved, so all nine moved with the card and the source; the API 4 projection
+        // above moved with the card alone. Captured on Linux. The fixture rows were CC.9's
+        // `eaa9e8da…e0ba23`, `70ce5e6c…1ec358` and `68730d0f…e99f44`; the production rows'
+        // and the principal's moved likewise.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             eaa9e8dabeb3b0b594d2643a441af1a30843f38100b26b4f9cb6972d5fe0ba23",
+             e5b3f802072da06bd59d8c68f85a999737f0beba600c4b7fda18aa989fd51d84",
             "tacsim.unit.line_tank production_fixture \
-             eaa9e8dabeb3b0b594d2643a441af1a30843f38100b26b4f9cb6972d5fe0ba23",
+             e5b3f802072da06bd59d8c68f85a999737f0beba600c4b7fda18aa989fd51d84",
             "tacsim.unit.line_tank production_principal \
-             b0808c5c4a0408587333b6dedad64de2faa74a672e740c7962a95074b6531ad8",
+             a2c605cc8db3254f264381460ab51061ee5964471e5fc3aef1cdfacf3c72819e",
             "tacsim.unit.heavy_mk1 fixture \
-             70ce5e6c2d3cc0c88be5b459de2f362596f89d070a921aedc4d80aad2f1ec358",
+             fee9ffcd9bcba856f04f558c45b11f959da817913d3cda18c39fb39f34a7ff50",
             "tacsim.unit.heavy_mk1 production_fixture \
-             70ce5e6c2d3cc0c88be5b459de2f362596f89d070a921aedc4d80aad2f1ec358",
+             fee9ffcd9bcba856f04f558c45b11f959da817913d3cda18c39fb39f34a7ff50",
             "tacsim.unit.heavy_mk1 production_principal \
-             667ad47810c30572198370710c7aebc298e48957c8447139b275d0792f5d8cd2",
+             382327debeb0320f534d9f512a7c7e711c2f8b61d77292c1f1c88b429e41b185",
             "tacsim.unit.target_mk1 fixture \
-             68730d0f8e3fb6418d947a3d17bef9de52ad95554eeb6f21e1bc33b70ce99f44",
+             c571a8c1d99f7cfb8662a80ac6169b2a296cb249dd1f4544bc856c04518735d0",
             "tacsim.unit.target_mk1 production_fixture \
-             68730d0f8e3fb6418d947a3d17bef9de52ad95554eeb6f21e1bc33b70ce99f44",
+             c571a8c1d99f7cfb8662a80ac6169b2a296cb249dd1f4544bc856c04518735d0",
             "tacsim.unit.target_mk1 production_principal \
-             b545c6698610a750ac5f7fcbe62bad7098e3dc763199e4bcfe593412bcd8102a",
+             9df4fe0bbdb9eb982df95f2eb910f6eac8bf7acdea557772ba854f90c0a30ac5",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }
@@ -1779,7 +1791,8 @@ mod m5_tests {
     /// **17b cut M5.2: an unarmed hull is never refused for the floor** (the
     /// design note's C-23; doc 17 §11's R-60: a fire section a hull cannot
     /// use is shown inert and never refuses the seal). Under an operator
-    /// floor of 20%, the armed line tank's Line card (10%) is refused as it
+    /// floor of 40%, the armed line tank's Line card (35% since doc 49 unit
+    /// CC.1; the floor was 20% over Line's 10% until then) is refused as it
     /// always was; the same tank with its weapon rows cleared, sealed again,
     /// is sealed — it was refused before this cut — and so is the unarmed
     /// target under a floor of 90%. The pair still runs on every hull: an
@@ -1792,17 +1805,17 @@ mod m5_tests {
             ..SealTerms::fixture()
         };
         assert_eq!(
-            checked_out(LINE_TANK, ObjId(4), &floored(200)).err(),
-            Some(SealError::Unlawful { floor: 200 }),
+            checked_out(LINE_TANK, ObjId(4), &floored(400)).err(),
+            Some(SealError::Unlawful { floor: 400 }),
             "armed: refused, as before"
         );
         let mut unarmed = checked_out(LINE_TANK, ObjId(4), &SealTerms::fixture()).expect("seals");
         unarmed.weapons.clear();
         unarmed
-            .reseal(&floored(200))
+            .reseal(&floored(400))
             .expect("unarmed: the floor is inert");
         assert_eq!(unarmed.seal.channels, vec![Channel::Helm, Channel::Sensors]);
-        assert_eq!(unarmed.seal.odds_floor_permille, 200);
+        assert_eq!(unarmed.seal.odds_floor_permille, 400);
         let target = checked_out(TARGET_MK1, ObjId(9), &floored(900));
         assert!(target.is_ok(), "{target:?}");
         let mut card = preset("Line");
@@ -1810,7 +1823,7 @@ mod m5_tests {
         assert!(matches!(
             unarmed.reseal(&SealTerms {
                 card,
-                ..floored(200)
+                ..floored(400)
             }),
             Err(SealError::Card(CardError::Pair { slider: "Line", .. }))
         ));

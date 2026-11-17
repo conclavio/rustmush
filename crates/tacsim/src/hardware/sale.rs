@@ -48,6 +48,8 @@ use mush_industry::core_production::refit::CoreRefitFactoryConfig;
 use serde::Deserialize;
 use serde_json::json;
 
+pub mod resale;
+
 /// The verb.
 pub const SALE_VERB: &str = "+core";
 /// The sale action's id (the kernel's and the economy's closed legs name it).
@@ -120,6 +122,9 @@ pub(crate) struct SaleTerms {
     pub(crate) shop: ObjId,
     pub(crate) catalogs: [CatalogRef; 3],
     pub(crate) refit: CoreRefitFactoryConfig,
+    /// **The resale to a player** (doc 48 unit EX.2b), composed beside the buy-back: who takes
+    /// the venue's cut and the levy, and at what rates. Absent, no player resells a core.
+    pub(crate) resale: Option<resale::ResaleTerms>,
 }
 impl std::fmt::Debug for SaleTerms {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -642,7 +647,8 @@ pub(crate) fn boot_audit(ctx: &ModuleCtx<'_>) -> Result<(), ModError> {
     if paired != sold.len() {
         return Err(bad("tacsim: a core sale record has no economy receipt"));
     }
-    Ok(())
+    // Doc 48 unit EX.2b: the resales pair the same way, in their own families.
+    resale::boot_audit(ctx)
 }
 
 /// **`+core/sell <core>[=go]`**: the quote, or the sale. Every refusal is one sentence.

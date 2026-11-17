@@ -8607,9 +8607,12 @@ async fn m5_the_mind_object_names_nothing_but_the_pilots_own_seal() {
         "schema": bo_definition.schema,
         "values": bo_definition.profiles[0].values,
     });
+    // Sniper's own 65%, and Line's floor (doc 49 unit CC.1: 35%, where it was the Compact
+    // floor's 10%).
+    let line_floor = i64::from(tacsim::arena::card::LINE_MIN_ODDS_PERMILLE);
     assert_eq!(ada_cards[0]["values"]["min_odds_permille"], 650);
-    assert_eq!(ada_cards[1]["values"]["min_odds_permille"], 100);
-    assert_eq!(bo_card["values"]["min_odds_permille"], 100);
+    assert_eq!(ada_cards[1]["values"]["min_odds_permille"], line_floor);
+    assert_eq!(bo_card["values"]["min_odds_permille"], line_floor);
 
     let server = boot("observer-mind").await;
     let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;

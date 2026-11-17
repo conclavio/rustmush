@@ -363,20 +363,26 @@ mod tests {
         assert!(ran.result.is_ok(), "{:?}", ran.result);
         assert_eq!(ran.ctx.refused, None);
         assert!(!ran.ctx.overflowed);
-        // What T1's `arming_for` builds for the cannon on Line at a 420 m
-        // ceiling (best hostile, 10%, every aspect, no reserve, no floor),
-        // built by T1's own function on the full view with its slots clear.
+        // What T1's `arming_for` builds for the cannon at a 420 m ceiling on
+        // a card at the script's own terms (best hostile, 10%, every aspect, no
+        // reserve, no floor: Line's until doc 49 unit CC.1 raised its floor
+        // and gave it a reserve), built by T1's own function on the full view
+        // with its slots clear.
         let mut clear = super::super::fixture::view();
         for row in &mut clear.weapons {
             row.armed = None;
         }
+        let mut terms = line(&ReflexConfig::default());
+        terms.min_odds_permille = 100;
+        terms.reserve_pct = 0;
         let built = arming_for(
             &clear,
-            &line(&ReflexConfig::default()),
+            &terms,
             Some(42_000),
             crate::arena::core::ClassTable::STOCK
                 .row(crate::arena::core::CoreClass::I)
                 .slots,
+            false,
         );
         let Some(IntentKind::Condition(Arming::Arm(t1))) = built.first().cloned() else {
             panic!("T1 arms the cannon: {built:?}");

@@ -69,7 +69,9 @@ pub(crate) const AHUNA_FLANK: Ground = Ground {
 /// **Urvara Reach at 512 a side** (doc 32 §20): the pad at `(256, 256)`, the middle of the site.
 /// The miner works its own block south-west of the pad, below cell 256 on both axes; the
 /// bystander's block and the raider's carrier (the pad's cell plus `(40, 20)`, its ramp at
-/// `(299, 276)`) are in the far quadrant, past 256 on both. The fight is on row 268 across the
+/// `(299, 276)`) are in the far quadrant, past 256 on both. The bystander's rig is at `(290, 284)`,
+/// some 120 m from the ramp (doc 49 unit CC.1: it was `(282, 294)`, 250 m off, where the stock
+/// mind's 35% floor never let a raider fire on it). The fight is on row 268 across the
 /// 256 line: the tank stands west of it at `(250, 268)` and fires east through the escort's rear
 /// plate, the walker and the escort east of it; the tank's withdrawal to its ramp crosses back.
 pub(crate) const URVARA_REACH: Ground = Ground {
@@ -77,7 +79,7 @@ pub(crate) const URVARA_REACH: Ground = Ground {
     venue: "urvara",
     raider: "tacsim.raider.urvara_reavers",
     side: 512,
-    bystander: (282, 294),
+    bystander: (290, 284),
     read: (242, 246),
     core: (238, 246),
     escort: ((262, 268), 90_000),

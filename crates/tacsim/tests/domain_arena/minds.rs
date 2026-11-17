@@ -3482,6 +3482,10 @@ fn m1a5_the_production_hash_does_not_move() {
     // moved again, and nothing an arena does moved with them. Doc 45 unit AP.3: the same for
     // the move to API 9 (`View.posture`): all three moved, and nothing else. Doc 49 unit CC.9:
     // the same for API 10 (`space_mount`, the space aspect); read on Linux (conclav.dev).
+    // Doc 49 unit CC.1:
+    // the Line card's fire terms and the Standard source (the reserve's rules) moved, folded in
+    // every seal and in the card state: all three moved; the (j) field's 50 lines
+    // (`tests/reflex.rs`) and the duel's 34 differ from the prior pins only in `hash`.
     let actual = [
         first_hash,
         last_hash,
@@ -3490,9 +3494,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0xa514_e283_3c91_a481),
-            Some(0x2761_eb45_9a09_88d7),
-            Some(0xc859_60c4_b776_63c5)
+            Some(0x18aa_60d9_5785_a83f),
+            Some(0x9e8b_b51a_5d8b_a7bf),
+            Some(0xcaae_5fcf_0dab_6143)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -4466,8 +4470,25 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
                 .take(STOCK_CONDITION_SLOTS)
                 .map(|weapon| &weapon.id)
                 .collect();
+            // Doc 49 unit CC.1: Line's discipline is its floor for the
+            // mount's magazine (35%, 50% under half a load) and a quarter of
+            // the load kept, none while the think ends withdrawing.
+            let line = tacsim::arena::card::line(&ReflexConfig::default());
+            let withdrawing = tacsim::arena::stock_mind::StockMemory::from(
+                &tacsim::arena::mind::decode_memory(&result.memory),
+            )
+            .state
+                == MachineState::Withdraw;
             for cond in arms {
                 assert!(slotted.contains(&&cond.weapon), "{} at {t_ms}", cond.weapon);
+                let Some(row) = view.weapons.iter().find(|row| row.id == cond.weapon) else {
+                    panic!("{} is a row of the view at {t_ms}", cond.weapon);
+                };
+                let keeps = if withdrawing {
+                    0
+                } else {
+                    line.keeps(row.rounds_max)
+                };
                 assert_eq!(
                     (
                         cond.target,
@@ -4475,7 +4496,12 @@ fn two_t1_slots_and_citations(run: &Run, kept: &[Kept]) {
                         cond.aspects,
                         cond.min_rounds_left
                     ),
-                    (SlotTarget::BestHostile, 100, ASPECTS_ANY, 0),
+                    (
+                        SlotTarget::BestHostile,
+                        line.floor_for(row.rounds, row.rounds_max),
+                        ASPECTS_ANY,
+                        keeps
+                    ),
                     "Line's discipline at {t_ms}"
                 );
                 // 17b cut M1b.3: only a row the view shows otherwise.
@@ -6886,15 +6912,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"c544bfbd2cdcbda6\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"c544bfbd2cdcbda6\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"c544bfbd2cdcbda6\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,
@@ -7071,7 +7097,11 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
 ];
 
 /// Every think's answer, `(unit, lattice ms, intents as JSON)`, recorded with
-/// the event list.
+/// the event list. **Doc 49 unit CC.1** re-records one of the sixty: the arming
+/// at 3,482 ms carries the Line card's discipline, `min_permille` 350 and
+/// `min_rounds_left` 10 (a quarter of 40), where it was 100 and 0; every other
+/// answer, and every line of [`M1B5_TWO_T1_EVENTS`] but the seals' `source` and
+/// `card_digest`, is unchanged.
 const M1B5_TWO_T1_INTENTS: &[(u32, i64, &str)] = &[
     (6, 4, "[\"startup\"]"),
     (4, 482, "[\"startup\"]"),
@@ -7083,7 +7113,7 @@ const M1B5_TWO_T1_INTENTS: &[(u32, i64, &str)] = &[
     (
         4,
         3482,
-        "[{\"condition\":{\"arm\":{\"weapon\":\"cannon\",\"target\":{\"target\":\"best_hostile\"},\"min_permille\":100,\"aspects\":15,\"min_rounds_left\":0,\"min_range_m\":0,\"max_range_m\":100}}},{\"goal\":\"hold\"},{\"lock\":{\"contact\":5852833454602713067}},{\"fire\":{\"weapon\":\"cannon\",\"slot\":1}}]",
+        "[{\"condition\":{\"arm\":{\"weapon\":\"cannon\",\"target\":{\"target\":\"best_hostile\"},\"min_permille\":350,\"aspects\":15,\"min_rounds_left\":10,\"min_range_m\":0,\"max_range_m\":100}}},{\"goal\":\"hold\"},{\"lock\":{\"contact\":5852833454602713067}},{\"fire\":{\"weapon\":\"cannon\",\"slot\":1}}]",
     ),
     (6, 4004, "[]"),
     (

@@ -1079,6 +1079,38 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// **Resell a governed core to the player a private offer names** (doc 48 unit EX.2b): the
+    /// trusted resale policy names the core, its seller, the buyer (this invocation's actor) and,
+    /// for a fitted core, the hull sold with it; Core evaluates the buyer's carry hooks against
+    /// committed pre-images and owns the object images (a stored core into the buyer's hands, a
+    /// fitted core's fence). The economy's closed resale leg is prepared beside it in the same
+    /// union.
+    pub fn resell_core<P: crate::core_sale::resale::CoreResalePolicy>(
+        &mut self,
+        service: &crate::core_sale::resale::CoreResales<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        request: crate::core_sale::resale::ResaleRequest,
+    ) -> Result<crate::core_sale::resale::ResoldCore, crate::participant::ParticipantError> {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let hooks = std::sync::Arc::from(
+                self.carry_hooks
+                    .ok_or(crate::participant::ParticipantError::Unavailable)?,
+            );
+            self.with_shell(|p, c| p.resell_core(service, txn, c, request, hooks, base, provider))
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
     /// Exchange one incoming and optional displaced core only with the exact
     /// already-prepared Economy and Tactics owners. Core owns physical images.
     pub fn exchange_core_component<P: crate::core_exchange::CoreExchangePolicy>(

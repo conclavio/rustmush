@@ -337,6 +337,24 @@ pub struct WorksContract {
     /// booking fee comes back rather than being forfeit.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
+    /// **The fee pinned at booking** (doc 48 unit PL.9, Q-48-53): the facility's fee for the
+    /// order's work units when it was booked, minor units; `None` at a facility no cost model
+    /// prices. At the submit the arm cancels the order if the live fee has risen past it
+    /// ([`fee_risen`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_minor: Option<u64>,
+}
+
+/// **Whether the facility's fee for `c` has risen since its booking** (doc 48 unit PL.9,
+/// Q-48-53): the live fee for its work units against the fee pinned at booking. A fee where none
+/// was pinned has risen; a fee that held or fell has not, and is charged as it stands.
+#[must_use]
+pub fn fee_risen(facility: &FacilityRecord, c: &WorksContract) -> bool {
+    match (c.fee_minor, facility.fee_minor(c.work_units)) {
+        (Some(pinned), Some(live)) => live > pinned,
+        (None, Some(_)) => true,
+        (_, None) => false,
+    }
 }
 
 impl WorksContract {
@@ -563,13 +581,26 @@ pub(crate) fn stores(ctx: &mut Ctx<'_>, facility: &FacilityRecord) -> Result<Vau
     {
         return Ok(vault);
     }
+    // Doc 48 cut EX.3: in the operator's root scope, so the port's clerk, whose
+    // `vault.withdraw` grant there stocks the operator's storefront, may take a purchase into
+    // the stores on the board.
+    let scope = match facility.owner() {
+        PrincipalId::Organization(org) => ctx.w.module_state::<TacsimStore>().and_then(|store| {
+            store
+                .port_maps()
+                .flat_map(|map| map.orgs.values())
+                .find(|row| row.org == org.0)
+                .map(|row| mush_org::OrgScopeId(row.root_scope))
+        }),
+        _ => None,
+    };
     let id = crate::port::apply::alloc_vault_id(ctx)?;
     mush_economy::create_vault(
         ctx,
         mush_economy::Vault {
             id,
             owner: facility.owner().clone(),
-            scope: None,
+            scope,
             name: SmolStr::new("Works stores"),
             backing,
             status: mush_economy::VaultStatus::Active,
@@ -1131,6 +1162,7 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
         owed: None,
         closed: None,
         stale: false,
+        fee_minor: facility.fee_minor(units),
     };
     put(ctx, &contract);
     Ok(contract)
@@ -1795,12 +1827,14 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
             if !covered {
                 return;
             }
-            // Doc 48 §4.3 (the second review, doc 48b): the arm's submit is `@wo/submit`'s, so it
-            // asks `@wo/submit`'s policy re-check. `money::place` reads the fee live, so an order
-            // whose facility was re-termed since its booking would be charged terms it was never
-            // quoted: the facility cancels it instead, and the requester, who did nothing wrong,
-            // has the booking fee and the bill back.
-            if facility.policy_revision() != order.policy_revision() {
+            // Doc 48 unit PL.9 (Q-48-53): the fee is pinned at booking. `money::place` charges
+            // the live fee, so an order whose facility's fee has risen since its booking (an
+            // owner's margin, a staff re-term) would be charged a price nobody quoted: the
+            // facility cancels it instead, and the requester, who did nothing wrong, has the
+            // booking fee and the bill back. A fee that held or fell is charged as it stands, so
+            // a re-term that did not raise the price (its customers, a lower margin) leaves the
+            // order to run. (Doc 48 section 4.3's fix cancelled on any re-term.)
+            if fee_risen(&facility, c) {
                 if !c.stale {
                     c.stale = true;
                     put(ctx, c);
@@ -1815,7 +1849,7 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
                     ctx.out.info(
                         c.requester,
                         format!(
-                            "Order {}: the {} changed its terms after your booking, so it \
+                            "Order {}: the {} raised its fee after your booking, so it \
                              cancels the order; {back} to you.",
                             c.id,
                             c.front.word()

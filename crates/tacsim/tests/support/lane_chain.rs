@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v37 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v38 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,11 +45,72 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit EX.3 (lane v38): the orgs' market roles taken out** — every port org's
+/// `roles` row (the acceptors, Q-48-9), so a strip chain rebuilds a lane before v38
+/// (idempotent). The chain's head.
+pub fn strip_roles(doc: &mut Value) {
+    for org in doc
+        .get_mut("entries")
+        .and_then(Value::as_object_mut)
+        .into_iter()
+        .flat_map(|entries| entries.values_mut())
+        .filter_map(|entry| entry.get_mut("def"))
+        .filter_map(|def| def.get_mut("orgs"))
+        .filter_map(Value::as_array_mut)
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        org.remove("roles");
+    }
+}
+
+/// **The shipped lane's org roles put back** on a stripped lane (doc 48 unit EX.3): every org
+/// row `shipped` gives roles gets them again, matched by entry and org id. For a suite that
+/// boots an older lane's shape to exercise today's code on it: the acceptors are lane data now
+/// (Q-48-9), so without them no house takes a quote. A digest rebuild never calls it.
+#[allow(
+    dead_code,
+    reason = "mush-server's split_boundary includes this file and rebuilds digests only"
+)]
+pub fn keep_roles(doc: &mut Value, shipped: &Value) {
+    let Some(entries) = shipped.get("entries").and_then(Value::as_object) else {
+        return;
+    };
+    for (key, entry) in entries {
+        for row in entry
+            .get("def")
+            .and_then(|def| def.get("orgs"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(id), Some(roles)) = (row.get("id"), row.get("roles")) else {
+                continue;
+            };
+            if let Some(org) = doc
+                .get_mut("entries")
+                .and_then(|entries| entries.get_mut(key))
+                .and_then(|entry| entry.get_mut("def"))
+                .and_then(|def| def.get_mut("orgs"))
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+                .find(|org| org.get("id") == Some(id))
+                .and_then(Value::as_object_mut)
+            {
+                org.insert("roles".to_owned(), roles.clone());
+            }
+        }
+    }
+}
+
 /// **Doc 48 unit PL.3 (lane v37): Stickney Yards' munitions taken out** — its seven munitions
 /// processes, its alloys bid, and its torpedo, spinal-round and point-defence stock
-/// rows and asks — so a strip chain rebuilds a lane before v37 (idempotent). The chain's head.
+/// rows and asks — so a strip chain rebuilds a lane before v37 (idempotent); lane v38's
+/// [`strip_roles`] first.
 pub fn strip_munitions(doc: &mut Value) {
     const SPACE: [&str; 3] = ["torpedo", "spinal_round", "pd_box"];
+    strip_roles(doc);
     let Some(vendor) = doc
         .get_mut("entries")
         .and_then(|entries| entries.get_mut("stickney_port"))

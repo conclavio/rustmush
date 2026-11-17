@@ -474,6 +474,7 @@ impl Rig {
         let deployment = HardwareDeployment {
             bay: None,
             buy_back_permille: None,
+            resale: None,
             // Doc 48 unit PL.7: the depot opens with the dies' chain goods.
             depot_stock: depot_stock(DEPOT_STOCK)?,
             ungovern: Some(super::UngoverningSite {

@@ -1124,7 +1124,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 37, "lane v37 since doc 48 unit PL.3");
+    assert_eq!(LANE_VERSION, 38, "lane v38 since doc 48 unit EX.3");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1468,13 +1468,13 @@ fn sm12a_the_daily_rate_binds_and_the_next_ic_day_resumes() {
 /// One fire with the one-act check (12a-M11): at most one queued submission by the Ceres
 /// clerk, and when there is one, no listing and no `ceres_port` map document written.
 fn checked_fire(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
-    let stickney = stickney_listings(rig);
+    let (stickney, quoted) = (stickney_listings(rig), stickney_quotes(rig));
     let queued = fire(rig);
-    one_act(rig, &queued, &stickney);
+    one_act(rig, &queued, &stickney, quoted);
     queued
 }
 
-fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String]) {
+fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String], quoted: usize) {
     let clerk = clerk(&rig.tw);
     let by_clerk = queued.iter().filter(|s| s.actor == clerk).count();
     assert!(
@@ -1488,6 +1488,8 @@ fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String]) {
         // market's allocator).
         let after = stickney_listings(rig);
         let posted = after.iter().any(|key| !stickney.contains(key));
+        // Doc 48 cut EX.3: the works' purchase is a quote on the board, the market's allocator too.
+        let posted = posted || stickney_quotes(rig) != quoted;
         let ceres: Vec<&String> = rig
             .last_keys
             .iter()
@@ -1503,6 +1505,21 @@ fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String]) {
             "the clerk submitted and wrote {ceres:?} in one fire"
         );
     }
+}
+
+/// How many quotes Stickney's clerk has asked for (doc 48 cut EX.3: the works buys on the board).
+fn stickney_quotes(rig: &Rig) -> usize {
+    let Some(clerk) = port_map(&rig.tw, "stickney_port").clerk else {
+        return 0;
+    };
+    rig.tw
+        .world()
+        .module_state::<MarketStore>()
+        .map_or(0, |market| {
+            market
+                .quotes_of_buyer(&PrincipalId::Object(ObjId(clerk.thing)))
+                .count()
+        })
 }
 
 /// The keys of every listing Stickney's vendors hold before a fire (doc 39 cut IN.5), so a
@@ -1532,10 +1549,10 @@ fn checked_settle(rig: &mut Rig, contract: ContractId) {
         if settled(&rig.tw, contract) {
             return;
         }
-        let stickney = stickney_listings(rig);
+        let (stickney, quoted) = (stickney_listings(rig), stickney_quotes(rig));
         sweep(rig, 31);
         let queued = drain(&mut rig.tw);
-        one_act(rig, &queued, &stickney);
+        one_act(rig, &queued, &stickney, quoted);
         land_queue(rig, &queued);
     }
     panic!("contract #{contract} did not settle");
@@ -2662,7 +2679,10 @@ fn sm12a_only_the_mill_restocks() {
 /// leaving the world, never made. It is the draw that used to ride the burn's second debit
 /// (`PendingSpaceBurn::seized_strategic_ore_t`), moved, not added. **Doc 48 unit PL.2**: a second
 /// `.debit(` in the mill, a process's second input consumed in the batch's bundle beside the
-/// ore: matter turned into the product, never made.
+/// ore: matter turned into the product, never made. **Doc 49 unit CC.7 part 2**: a second
+/// `.debit(` in the bay's draw (`port/bay_work/act.rs`), the space rounds a ship's rearm buys
+/// from the workshop's stores, taken out of the storefront in the draw's own bundle beside the
+/// hold's: matter leaving the world into her magazines (the census's `loaded`), never made.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2690,7 +2710,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     assert_eq!(
         occurrences(&files, ".debit("),
         vec![
-            ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
+            ("tacsim/src/port/bay_work/act.rs".to_owned(), 2),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
             ("tacsim/src/port/mill.rs".to_owned(), 2),
             ("tacsim/src/space/customs.rs".to_owned(), 1),
@@ -2771,7 +2791,12 @@ fn in1_the_receipt_kinds_a_mint_may_carry_are_closed() {
 fn sm12a_a_pack_apply_adds_the_mills_to_a_kept_world() {
     let next = lane_variant(LANE_VERSION + 1, |_| {});
     let mut rig = stocked_with(Roster {
-        seed_lane: Some(lane_variant(LANE_VERSION, strip_mill)),
+        // Doc 48 cut EX.3: the shipped org roles kept, so the Exchange takes the sale.
+        seed_lane: Some(lane_variant(LANE_VERSION, |doc| {
+            let shipped: Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+            strip_mill(doc);
+            support::lane_chain::keep_roles(doc, &shipped);
+        })),
         shelf: Some(vec![
             mush_content::load_pack(&next).expect("the next lane verifies"),
         ]),

@@ -114,8 +114,11 @@ pub const BIDDER_NOT_BUYING: &str = "That bid is not buying any more, so nothing
 /// A personal seller who cannot complete the sale (gone, or no longer standing behind it).
 pub const SELLER_GONE: &str = "That seller cannot complete the sale right now. Nothing was agreed.";
 /// The `+market/post` grammar.
-pub const POST_USAGE: &str =
-    "Usage: +market/post <lot>|#<object> price=<n> [to=<player>] [market=<venue>] [days=<n>]";
+pub const POST_USAGE: &str = "Usage: +market/post <lot>|#<object> price=<n> [to=<player>] \
+     [market=<venue>] [days=<n>] [as=<org>]";
+/// `+market/post … as=<org>` naming an organization the actor does not act for (doc 48 cut
+/// PL.9). An unknown or hidden organization reads the same.
+pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was listed.";
 /// The `+market/bid` grammar.
 pub const BID_USAGE: &str = "Usage: +market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] \
      [market=<venue>] [days=<n>]";

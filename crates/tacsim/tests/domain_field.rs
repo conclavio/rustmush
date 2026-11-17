@@ -55,6 +55,8 @@ mod c4_story_2_derivative;
 mod c4_story_7_facts;
 #[path = "domain_field/c4_story_kit.rs"]
 mod c4_story_kit;
+#[path = "domain_field/cc7b_berth_rearm.rs"]
+mod cc7b_berth_rearm;
 #[path = "domain_field/co6_cored_ship.rs"]
 mod co6_cored_ship;
 #[path = "domain_field/crew_custody.rs"]
@@ -69,6 +71,8 @@ mod driving;
 mod escort_lease;
 #[path = "domain_field/ex0_matter_sinks.rs"]
 mod ex0_matter_sinks;
+#[path = "domain_field/ex2b_core_resale.rs"]
+mod ex2b_core_resale;
 #[path = "domain_field/excursions.rs"]
 mod excursions;
 #[path = "domain_field/field_ap1.rs"]

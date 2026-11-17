@@ -9023,7 +9023,8 @@ async fn m4_3_a_pre_m3_live_record_decodes_with_no_seals_and_is_voided_by_name()
 
 /// **A floor the Line card sits under refuses the check-out by name, before
 /// any write** (17b cut M3.3; D-UM-17, refuse-not-clamp): with
-/// `[tacsim.minds].odds_floor_permille = 200` on the world's config, the
+/// `[tacsim.minds].odds_floor_permille = 400` on the world's config (200 until
+/// doc 49 unit CC.1 raised the Line card's own floor to 350), the
 /// lobby's `Boarding → Running` trigger is refused with
 /// `StartError::CardUnlawful`'s sentence naming red's first pod (`RA`), the
 /// pods are freed, and nothing was written: no record on the book, no live
@@ -9032,7 +9033,7 @@ async fn m4_3_a_pre_m3_live_record_decodes_with_no_seals_and_is_voided_by_name()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_write() {
     let mut cfg = config();
-    cfg.minds.odds_floor_permille = 200;
+    cfg.minds.odds_floor_permille = 400;
     let mut rig = Rig::boot_on(2, roster_with(cfg.clone()));
     rig.tick_to(1);
     rig.say(0, "sim team red");
@@ -9047,7 +9048,7 @@ async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_writ
     assert!(
         said.contains(
             "The match could not start: RA's card asks for odds under the Compact floor of \
-             20%; the match cannot start."
+             40%; the match cannot start."
         ),
         "{said}"
     );
@@ -9117,7 +9118,7 @@ async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_writ
     assert!(
         heard.contains(&format!(
             "Match {match_id} could not start: RA's card asks for odds under the Compact \
-             floor of 20%; the match cannot start. The pods are free again."
+             floor of 40%; the match cannot start. The pods are free again."
         )),
         "{heard}"
     );
@@ -9137,7 +9138,7 @@ async fn m3_a_card_under_the_floor_refuses_the_check_out_by_name_before_any_writ
     ));
     assert!(
         said.contains(&format!(
-            "{name}'s card asks for odds under the Compact floor of 20%; the match cannot start."
+            "{name}'s card asks for odds under the Compact floor of 40%; the match cannot start."
         )),
         "{said}"
     );
@@ -10023,7 +10024,8 @@ fn seat_beside(rig: &mut Rig, n: usize, unit: ObjId) {
 /// * eleven a side, the two seats among them (22 units: 33,002, a half of
 ///   16,501): the match opens;
 /// * and on a fresh world whose roster is BOTH over the pool and carries a
-///   card under `odds_floor_permille = 200`, check-out is refused for the
+///   card under `odds_floor_permille = 400` (200 until doc 49 unit CC.1 raised
+///   Line's floor to 350), check-out is refused for the
 ///   card (`StartError::CardUnlawful`), never the pool: the pool gate comes
 ///   after every other refusal of check-out's block (doc 17 §9: "the last
 ///   gate").
@@ -10098,7 +10100,7 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
 
     // Over the pool AND under the Compact floor: the card is refused first.
     let mut both = tiny.clone();
-    both.minds.odds_floor_permille = 200;
+    both.minds.odds_floor_permille = 400;
     let mut rig = Rig::boot_on(0, roster_with(both.clone()));
     let spares = spare_hulls(&mut rig, 12);
     let sides = twelve_a_side(&rig, &spares, 0, CoreClass::III);
@@ -10107,7 +10109,7 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
     assert!(
         matches!(
             refused,
-            Err(match_::StartError::CardUnlawful { unit, floor: 200, .. }) if unit == red_first
+            Err(match_::StartError::CardUnlawful { unit, floor: 400, .. }) if unit == red_first
         ),
         "the pool is the last gate: {refused:?}"
     );
@@ -10555,7 +10557,7 @@ async fn m5_a_profile_under_the_floor_is_refused_as_typed() {
     );
     assert_eq!(
         rig.say(0, "sim mind Standard"),
-        "Line fires at 10% and better; this server's Compact floor is 40%, so it cannot be sealed."
+        "Line fires at 35% and better; this server's Compact floor is 40%, so it cannot be sealed."
     );
     assert_eq!(
         rig.say(0, "sim mind Standard PROFILE Sniper, Rearguard"),

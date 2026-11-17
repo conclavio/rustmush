@@ -1,10 +1,10 @@
 {
   "manifest": {
     "id": "tacsim.relay.manufacture",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
     "requires": [],
-    "digest": "e8d550e91733ad0cd07e83e58fd0d5fde39641ab3ce75f690f7dbd1d91f816b6"
+    "digest": "e422b0c4106960581f028d54eb8c57fde9348ab4ddd43967aecc08d50ae5dd22"
   },
   "entries": {
     "private_pair": {
@@ -31,6 +31,32 @@
           "relay.entanglement"
         ],
         "work_units": 120
+      }
+    },
+    "relay_blank": {
+      "kind": "recipe",
+      "def": {
+        "label": "Entanglement relay blank",
+        "inputs": [
+          {
+            "commodity": "structural_alloys",
+            "units": 2
+          },
+          {
+            "commodity": "instrument_boards",
+            "units": 1
+          }
+        ],
+        "outputs": [
+          {
+            "commodity": "relay_blank",
+            "units": 1
+          }
+        ],
+        "requires": [
+          "relay.entanglement"
+        ],
+        "work_units": 48
       }
     }
   }

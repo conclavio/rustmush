@@ -157,6 +157,7 @@ pub mod def;
 pub mod epoch;
 pub(crate) mod equipment;
 pub mod executor;
+pub mod facility_sale;
 pub mod families;
 pub mod gauges;
 /// Doc 20 cut SM.9: the `body.ground` panel and `+chart/ground` — the Registry's survey of a

@@ -387,6 +387,8 @@ fn m8b_an_ungoverned_core_seals_under_the_floor_and_over_its_class() -> TestResu
     use crate::minds::licence_state::SealLicenceState;
     for governed in [true, false] {
         // The fixture tank's Class I core, and a cannon: a fire station, so the floor applies.
+        // The floor is 400, over the Line card's 350 (doc 49 unit CC.1; it was 200 over
+        // Line's 100).
         let mut hull = tank(UNIT, PartyId::RED, pose(1500, 1500));
         hull.weapons.push(crate::arena::test_support::cannon());
         hull.controller = Controller::Mind;
@@ -394,16 +396,16 @@ fn m8b_an_ungoverned_core_seals_under_the_floor_and_over_its_class() -> TestResu
             ungovern(&mut hull.unit)?;
         }
         let floored = SealTerms {
-            odds_floor_permille: 200,
+            odds_floor_permille: 400,
             ..SealTerms::fixture()
         };
         let sealed = hull.reseal(&floored);
         if governed {
-            check_eq!(sealed, Err(SealError::Unlawful { floor: 200 }));
+            check_eq!(sealed, Err(SealError::Unlawful { floor: 400 }));
         } else {
             sealed?;
             check!(hull.seal.lifts_floor());
-            check_eq!(hull.seal.odds_floor_permille, 200);
+            check_eq!(hull.seal.odds_floor_permille, 400);
             check_eq!(hull.seal.effective_floor(), 0);
             check_eq!(
                 hull.seal.admissions(SealLicenceState::Doctrine),
