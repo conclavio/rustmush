@@ -326,10 +326,13 @@ pub enum Answer {
     PickedUp,
     /// No crate in reach (`NO_CRATE`, `CRATE_NOT_IN_REACH`).
     NoCrate,
+    /// Doc 49 unit CC.7 part 2: a ship's rearm needs more rounds than her hold and the
+    /// workshop's stores carry (`tacsim::port::bay_work::magazines::SHORT_OF_ROUNDS`).
+    ShortOfRounds,
 }
 
 /// The claim's and the contest's answers by their fixed head and tail: `(head, tail, answer)`.
-const ANSWERS: [(&str, &str, Answer); 16] = [
+const ANSWERS: [(&str, &str, Answer); 17] = [
     ("No salvage custody names ", ".", Answer::NotInCustody),
     (
         "You would file a salvage claim on the ",
@@ -389,6 +392,11 @@ const ANSWERS: [(&str, &str, Answer); 16] = [
         Answer::ScrapNotTitled,
     ),
     ("No crate lies within a cell of rig ", ".", Answer::NoCrate),
+    (
+        "The rearm needs ",
+        " and the workshop's stores ",
+        Answer::ShortOfRounds,
+    ),
     (
         "Object ",
         " is not a crate within a cell of rig ",
@@ -617,6 +625,15 @@ mod tests {
             let said = fill(line);
             assert_eq!(answer(&said), Some(want), "{said}");
         }
+        // Doc 49 unit CC.7 part 2: a ship's rearm short of rounds, at its widest fill under
+        // the 120-column line.
+        let short = tacsim::port::bay_work::magazines::SHORT_OF_ROUNDS
+            .replace("{need}", "60000")
+            .replace("{good}", "spinal_round")
+            .replace("{hold}", "4294967295")
+            .replace("{store}", "4294967295");
+        assert_eq!(answer(&short), Some(Answer::ShortOfRounds), "{short}");
+        assert!(short.chars().count() <= 120, "{short}");
         for other in [
             claim::NO_CLAIMS,
             claim::WINDOW_PAUSED,
