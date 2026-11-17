@@ -796,6 +796,125 @@ Runs were on conclav.dev, with the unit's patch applied on CC.9's tip (`3d8d118b
   the same way: a fresh unit at each spawn, and its overlay laid anew after check-out. No test
   here holds it.
 
+### Part 2, the berth rearm (2026-11-16)
+
+Built on main `73d05678b`: CC.9, CC.7 part 1, doc 48's PL.3 (the space munitions goods) and
+EX.0 (the census's `loaded`). The lead ruled the shape: the bay order, not a verb of its own.
+
+**Survey.**
+
+- **The ground's rearm is a bay order** (`port/bay_work`), and it already gives:
+  - the tariff's labour per round and time per mount at the operator's multiplier;
+  - the fee escrowed at the take and captured at completion;
+  - the IC clock;
+  - one all-or-nothing draw of the order's goods from a hold;
+  - EX.0's count of the draw's munitions into the hull's `loaded_kg`.
+- **A ship docked at a port with a workshop is already a bay subject.** `facility_of`'s second
+  case makes her her own workshop subject, drawing on her own hold.
+- **PL.3's goods** name the ammunition they load: `torpedo` (one round a unit), `spinal_round`
+  (one) and `pd_box` (500 rounds a box). The space mount rows name no ammunition.
+- **Stock and asks.** Stickney Yards' storefront stocks all three, listed in the yard board's
+  asks, and a listing holds its quantity. Ceres' workshop operator (Occator) stocks none.
+
+**Built.**
+
+- **`port/bay_work/magazines.rs`** (new), the space part:
+  - each family's ammunition, as constants: the twin tubes `tacsim.ammunition.torpedo`, the
+    spinal gun `tacsim.ammunition.spinal_round`, the rotary `tacsim.ammunition.pd_rotary`;
+  - a unit's magazines: her fit's stows, read against her kept record;
+  - the quote's jobs; the hold-then-stores split and its price; the load;
+  - the op that carries the record at completion;
+  - the quote's and the reply's words.
+- **`BayJob::Magazine { mount, rounds, good, units }`**, a new job kind under the selector word
+  `rearm`, a rearm and not a repair, so a lessee may order it.
+  - **The quote:** for each magazine short of her fit, the whole units of its good that fit in
+    what it is short. The labour is `cost_per_ammo_round` a round and `duration_ic_rearm_component`
+    a mount, as the ground's.
+  - **Whole units only, so rounds are conserved.** A box is 500 rounds, so a rotary short by less
+    than a box waits. The ground's rearm rounds a short magazine up to a whole unit and loads only
+    what fits.
+- **Where the rounds come from** (at the take):
+  - her hold first, as many units as are free there;
+  - the shortfall from the workshop's stores, the operator's storefront, as a replaced part is
+    supplied. Its price is the good's catalogue price (`reference_major`), on the job's
+    `part_minor`, so the escrowed fee holds it beside the labour.
+  - Too few anywhere is refused before any escrow (`magazines::SHORT_OF_ROUNDS`).
+- **The draw** (`OwedKind::Draw`) gains `store` and `store_at`: the bought units, debited from the
+  storefront in the same draw as the hold's, all or nothing. `BayOrder` gains `store_goods` and
+  `store_vault`. All four are left out of a document while empty, so every order written before
+  reads as it did.
+- **Completion:** the bay's condition plan (`ic_condition_plan`) carries cells and conditions
+  only, so the magazine record rides as its own op beside it (`magazines::record_op`).
+- **The census:** a landed draw counts the bought units' kilograms into `loaded_kg` with the
+  hold's.
+- **`space/custody.rs`:** `magazine_op` is now one function, used by check-in and the bay.
+- **The surfaces:**
+  - `+bay <ship>` lists each magazine's rearm and a line for where its rounds come from: what
+    comes from her hold, what is bought, and its price;
+  - the order's reply names what is bought;
+  - `BAY_HELP` gains the ship case, and `docs/help/space.md`'s "Magazines" says how to rearm;
+  - the bot's `+bay` reader (`mush-bot/src/mine/salvage.rs`) gains `Answer::ShortOfRounds`, its
+    needle held to tacsim's constant at its widest fill, 101 columns.
+
+**Tests.**
+
+Runs were on conclav.dev, with the patch applied on `73d05678b`.
+
+- **New stories,** `tests/domain_field/cc7b_berth_rearm.rs`, at Ceres through
+  `+bay/order <ship>=rearm`. Each fails on main, where a ship's quote has no rearm.
+  - **A Dray's point defence:** one rotary is short three boxes and the other less than one. One
+    box comes from her hold and two are bought.
+    - The fee is the labour plus two boxes.
+    - The rotary rearms full, and the short one waits.
+    - Her hold ends with 0 boxes and the stores with 3.
+    - The census's `loaded` moves by three boxes' kilograms, and its balance holds.
+  - **A corvette's tubes and spinal gun** (her unit refitted to the corvette): four torpedoes come
+    from her hold, and two torpedoes and four spinal rounds are bought.
+    - The fee is the labour plus the rounds bought.
+    - Every magazine ends full and her record is dropped.
+    - The census's `loaded` moves by their kilograms, and its balance holds.
+  - **Too few anywhere:** refused with `SHORT_OF_ROUNDS` before any escrow, and nothing moves.
+- **Suites, all passing:**
+  - `tacsim`'s lib tests with `domain_field`, `domain_economy` and `domain_world`: 3,621 tests;
+  - `mush-bot`'s lib tests (the reader's contract check among them): 547 tests.
+- **One pin re-pinned, by record:** `mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`
+  counts `.debit(` in `port/bay_work/act.rs`, and the count moves from one to two: the draw's
+  stores debit.
+- **Guards, all passing:**
+  - fmt and clippy `-D warnings` on `tacsim` and `mush-bot`;
+  - the M7 memory-size pass;
+  - `ci_policy`'s guards and the help lint;
+  - rustdoc in both modes.
+
+**Divergences.**
+
+- **`port/bay_work` is extended, not a file of its own** (the lead's ruling): `jobs.rs` (the job,
+  the quote, the work), `mod.rs` (the take's split, the draw, the census, the completion's op),
+  `act.rs` (the draw's second source), `record.rs` (the order's two fields) and `command.rs` (the
+  quote, the reply, the help). The `.debit(` pin in `tests/domain_economy/mill.rs` and the bot's
+  reader (`mush-bot/src/mine/salvage.rs`) move with them. `space/custody.rs` gives up its record op to one function.
+  EX.3b may touch `mod.rs` for scrap; these changes stay on the rearm paths.
+- **The ammunition is named in `magazines.rs`, by family.** The space mount schema has no
+  ammunition field, and the space packs are CC.8's.
+- **Whole units**, not the ground's round-up (above).
+- **No hold on the bought units.** A replaced part's lot is held from the take to the draw. The
+  bought munitions are fungible and are not held: if the stores sell out meanwhile, the draw is
+  refused, and after its tries the order is cancelled and the fee released.
+
+**Not built.**
+
+- **The yard's listed stock.** The bay sells only free units. At Stickney Yards every space round
+  is listed in the yard board's asks, which hold them, so the bay there sells none: a player buys
+  them on the board into her hold (`+market`) and rearms from it. Selling listed stock through
+  the bay needs the stock clerk to withdraw an ask's quantity on a claim, as it does for a part's
+  lot (`port/stock.rs`).
+- **A finding in the bay's completion.** `jobs::work`'s clean-up revokes
+  `tacsim.space.subsystems` (a space hull's crits) when it repairs her. But `complete` writes the
+  work through `ic_condition_plan`, which drops capability ops, so the revoke never lands, and a
+  bay repair leaves her crits. (Part 1's survey above read the intent, not the landing.) The
+  magazine record rides its own op for that reason.
+- **`+coop/refit` still refills for free** (part 1).
+
 ## CC.8
 
 Not built.
