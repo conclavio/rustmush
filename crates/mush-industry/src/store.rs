@@ -302,6 +302,10 @@ pub struct IndustryStore {
     /// by `mush_economy::principal_token`, the canonical spelling the claim gate
     /// already compares principals by — `PrincipalId` itself is not `Ord`.
     open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>>,
+    /// **Doc 48 unit PL.9** (Q-48-45) — the same index by facility, kept and rebuilt beside
+    /// [`Self::open_orders`], so a facility's sale can ask whether an order is open there. The
+    /// market's listing runs in the market's context, which may not read `industry.workorder`.
+    open_at: BTreeMap<ObjId, BTreeSet<crate::workorder::WorkOrderId>>,
     /// **WS02-S5b** — `Draft` orders the last complete sweep found no longer
     /// matching the recipe authority, and why.
     ///
@@ -409,6 +413,31 @@ impl IndustryStore {
                 self.open_orders.remove(&token);
             }
         }
+    }
+
+    /// **Doc 48 unit PL.9** — note one work order at `facility` as live or terminal, as
+    /// [`Self::note_work_order`] does by requester.
+    pub fn note_facility_order(
+        &mut self,
+        facility: ObjId,
+        order: crate::workorder::WorkOrderId,
+        open: bool,
+    ) {
+        if open {
+            self.open_at.entry(facility).or_default().insert(order);
+        } else if let Some(live) = self.open_at.get_mut(&facility) {
+            live.remove(&order);
+            if live.is_empty() {
+                self.open_at.remove(&facility);
+            }
+        }
+    }
+
+    /// **Doc 48 unit PL.9** — how many non-terminal work orders stand at `facility`, from the
+    /// RAM index.
+    #[must_use]
+    pub fn open_orders_at(&self, facility: ObjId) -> usize {
+        self.open_at.get(&facility).map_or(0, BTreeSet::len)
     }
 
     /// How many requesters currently hold a live order (the index's observable).
@@ -851,6 +880,7 @@ pub fn reconcile(
     // silently stops being read.
     let mut open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>> =
         BTreeMap::new();
+    let mut open_at: BTreeMap<ObjId, BTreeSet<crate::workorder::WorkOrderId>> = BTreeMap::new();
     // WS02-S5b: the drafts whose pinned lines the authority no longer publishes,
     // gathered on the same walk and under the same page budget.
     let mut drifted: BTreeMap<crate::workorder::WorkOrderId, DraftDrift> = BTreeMap::new();
@@ -885,6 +915,10 @@ pub fn reconcile(
             if !order.state().is_terminal() {
                 open_orders
                     .entry(mush_economy::principal_token(order.requester()))
+                    .or_default()
+                    .insert(order.id());
+                open_at
+                    .entry(order.facility())
                     .or_default()
                     .insert(order.id());
             }
@@ -994,6 +1028,7 @@ pub fn reconcile(
     store.facility_quarantined = facility_quarantined;
     if orders_complete {
         store.open_orders = open_orders;
+        store.open_at = open_at;
         // Same rule, same reason: a truncated walk under-marks, and an
         // under-marking set is a refusal that silently stops being made. Keep the
         // last complete answer rather than installing a partial one.
@@ -1109,7 +1144,7 @@ impl WorldObserver for WorkOrderIndex {
         if owner != self.work_orders.owner() || family != self.work_orders.descriptor().id() {
             return;
         }
-        let mut notes: Vec<(PrincipalId, crate::workorder::WorkOrderId, bool)> = Vec::new();
+        let mut notes: Vec<(PrincipalId, ObjId, crate::workorder::WorkOrderId, bool)> = Vec::new();
         for key in keys.iter().take(MAX_INDEX_NOTES) {
             let Some(id) = crate::workorder::WorkOrderId::parse(key) else {
                 continue;
@@ -1122,6 +1157,7 @@ impl WorldObserver for WorkOrderIndex {
             };
             notes.push((
                 order.requester().clone(),
+                order.facility(),
                 order.id(),
                 !order.state().is_terminal(),
             ));
@@ -1135,8 +1171,9 @@ impl WorldObserver for WorkOrderIndex {
             );
         }
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
-            for (requester, order, open) in notes {
+            for (requester, facility, order, open) in notes {
                 store.note_work_order(&requester, order, open);
+                store.note_facility_order(facility, order, open);
             }
         }
     }
@@ -1222,6 +1259,38 @@ pub fn may_order(world: &World, actor: ObjId, facility: &FacilityRecord) -> bool
                 }))
 }
 
+/// **A facility passed to its buyer** (doc 48 unit PL.9, Q-48-45, Q-48-53): its owner replaced and
+/// it owner-held ([`FacilityRecord::sold_to`]), persisted. `public` keeps it open to every
+/// customer (a sold yard). The payee follows the owner (`money::payee_account` reads the live
+/// record). A facility already the buyer's is left as it is, so a replayed settlement does
+/// nothing.
+///
+/// # Errors
+/// No such facility, or a revision at its bound.
+pub fn sell_facility(
+    ctx: &mut mush_core::Ctx<'_>,
+    object: ObjId,
+    owner: PrincipalId,
+    public: bool,
+) -> Result<(), String> {
+    let facility = ctx
+        .w
+        .module_state::<IndustryStore>()
+        .and_then(|store| store.facility(object).cloned())
+        .ok_or("no such facility")?;
+    if *facility.owner() == owner && !facility.holding().is_authored() {
+        return Ok(());
+    }
+    let sold = facility
+        .sold_to(owner, public)
+        .map_err(|error| error.to_string())?;
+    persist_facility(ctx.out, &sold);
+    if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+        store.put_facility(sold);
+    }
+    Ok(())
+}
+
 /// Install a composition-authored facility without replacing an existing identity.
 /// The content owner validates its location and institution before calling.
 pub fn install_authored_facility(
@@ -1233,8 +1302,13 @@ pub fn install_authored_facility(
         .module_state::<IndustryStore>()
         .ok_or("Industry unavailable")?;
     if let Some(existing) = store.facility(facility.object()) {
-        if !existing.same_identity(&facility) {
+        if !existing.stands_as_authored(&facility) {
             return Err("Authored facility identity drift".into());
+        }
+        // Doc 48 unit PL.9 (Q-48-53): an owner-held facility keeps its owner's terms; the lane
+        // applies it without reverting them.
+        if !existing.holding().is_authored() {
+            return Ok(());
         }
         if existing.cost() == facility.cost() && existing.customers() == facility.customers() {
             return Ok(());

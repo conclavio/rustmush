@@ -1254,3 +1254,538 @@ async fn review_an_unpaid_storage_seizure_takes_the_hull_kit() {
         contract(&rig, order)
     );
 }
+
+// ---- doc 48 unit PL.9: facilities as titled assets --------------------------------------------
+
+/// The yard's price in the PL.9 stories, minor (50,000.00cr).
+const YARD_PRICE: i64 = 5_000_000;
+
+/// The Stickney yard's room, which is the facility `+yard` books at.
+fn yard_room(rig: &Rig) -> ObjId {
+    station_room(&rig.tw, STICKNEY, "room.p12_observation")
+}
+
+fn org_of(rig: &Rig, entry: &str, org: &str) -> mush_org::OrgId {
+    mush_org::OrgId(port_map(&rig.tw, entry).orgs[&cid(org)].org)
+}
+
+fn facility_of(rig: &Rig, object: ObjId) -> mush_industry::FacilityRecord {
+    rig.tw
+        .world()
+        .module_state::<mush_industry::IndustryStore>()
+        .and_then(|store| store.facility(object).cloned())
+        .expect("the facility")
+}
+
+fn posted(rig: &Rig, account: mush_economy::AccountId) -> i64 {
+    rig.tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|s| {
+            s.snapshot()
+                .account(account)
+                .map(|a| a.posted_balance.minor())
+        })
+        .expect("the account")
+}
+
+fn credit_of(rig: &Rig, who: ObjId) -> mush_economy::AccountId {
+    tacsim::port::credit::own_account(rig.tw.world(), who)
+        .map(|a| a.id)
+        .expect("a credit account")
+}
+
+/// The `org`'s officer, made once: a player granted `economy.account.post` on the org, so they
+/// act for it.
+fn officer_of(rig: &mut Rig, entry: &str, org: &str) -> ObjId {
+    let name = format!("Officer{}", org.replace('_', ""));
+    if let Some(who) = rig.tw.world().resolve_player(&name) {
+        return who;
+    }
+    let who = rig.tw.spawn_player(&name);
+    let id = org_of(rig, entry, org);
+    let granted = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@org/grant #{}=#{} economy.account.post", who.0, id.0),
+    );
+    assert!(
+        mush_economy::acts_for(rig.tw.world(), who, &PrincipalId::Organization(id)),
+        "{granted}"
+    );
+    who
+}
+
+/// `who` lists `object` at the venue's exchange with `+market/post … as=<org>`: the listing, or
+/// what the command said.
+fn post_as(
+    rig: &mut Rig,
+    who: ObjId,
+    (entry, org, venue): (&str, &str, &str),
+    object: ObjId,
+    price: i64,
+) -> Result<mush_market::ListingId, String> {
+    let id = org_of(rig, entry, org);
+    let exchange = if venue == "ceres" {
+        station_room(&rig.tw, "ceres_port", "room.c07_exchange")
+    } else {
+        station_room(&rig.tw, STICKNEY, "room.p08_exchange")
+    };
+    teleport(&mut rig.tw, who, exchange);
+    let out = run(
+        &mut rig.tw,
+        who,
+        &format!(
+            "+market/post #{} price={price} market={venue} days=3 as=#{}",
+            object.0, id.0
+        ),
+    );
+    rig.tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| {
+            m.live_listings()
+                .filter(|l| l.object == Some(object))
+                .map(|l| l.id)
+                .max()
+        })
+        .ok_or(out)
+}
+
+/// The `org`'s officer lists `object` for it.
+fn list_for(
+    rig: &mut Rig,
+    seller: (&str, &str, &str),
+    object: ObjId,
+    price: i64,
+) -> Result<mush_market::ListingId, String> {
+    let officer = officer_of(rig, seller.0, seller.1);
+    post_as(rig, officer, seller, object, price)
+}
+
+/// `who` quotes and buys `listing` at Stickney's exchange; the economy's sweep settles it.
+fn buy_listing(rig: &mut Rig, who: ObjId, listing: mush_market::ListingId) {
+    let exchange = station_room(&rig.tw, STICKNEY, "room.p08_exchange");
+    teleport(&mut rig.tw, who, exchange);
+    let quoted = run(&mut rig.tw, who, &format!("+market/quote {listing}=1"));
+    let quote = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| {
+            m.quotes_of_buyer(&PrincipalId::Object(who))
+                .map(|q| q.id)
+                .max()
+        })
+        .unwrap_or_else(|| panic!("no quote: {quoted}"));
+    let accepted = run(&mut rig.tw, who, &format!("+market/accept {quote}"));
+    assert!(!accepted.contains("refused"), "{accepted}");
+    crate::driving_rig::sweep(&mut rig.tw, 31);
+}
+
+/// **A lane bump at `margin` per mille** over the Stickney yard and the Ceres works: the shipped
+/// lane, both rows' margins changed and the pack re-signed, run through the real applier's
+/// check and update for both ports, as a newer lane version applies.
+fn bump_lane(rig: &mut Rig, margin: u32) {
+    use mush_content::EntryApplier;
+    let mut doc: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::LANE_JSON).expect("the lane");
+    for (entry, block) in [("stickney_port", "yard"), ("ceres_port", "works")] {
+        doc["entries"][entry]["def"][block]["cost"]["margin_permille"] = serde_json::json!(margin);
+    }
+    doc["manifest"]["digest"] = serde_json::json!("0".repeat(64));
+    let parsed = mush_content::parse_pack(&doc.to_string()).expect("the bumped lane parses");
+    doc["manifest"]["digest"] =
+        serde_json::json!(parsed.computed_digest().expect("a digest").to_hex());
+    let pack = mush_content::load_pack(&doc.to_string()).expect("the bumped lane verifies");
+    let placed = rig
+        .tw
+        .world()
+        .module_state::<mush_content::ContentState>()
+        .and_then(|state| {
+            state
+                .latches
+                .applied(&cid(tacsim::definitions::content::LANE_PACK))
+        })
+        .map(mush_content::Applied::placed)
+        .expect("the lane is applied")
+        .clone();
+    for entry in ["stickney_port", "ceres_port"] {
+        let id = cid(entry);
+        let raw = pack.entry(&id).cloned().expect("a port entry");
+        let applied = crate::support::with_ctx(&mut rig.tw, |ctx| {
+            EntryApplier::check(&tacsim::port::apply::PortApplier, ctx, &pack, &id, &raw)?;
+            EntryApplier::update(
+                &tacsim::port::apply::PortApplier,
+                ctx,
+                &pack,
+                &id,
+                &raw,
+                None,
+                &placed,
+            )
+        });
+        assert!(applied.is_ok(), "{entry}: {applied:?}");
+    }
+}
+
+/// The work order a contract drafted, read.
+fn order_state(rig: &mut Rig, id: u64) -> mush_industry::workorder::WorkOrderState {
+    let order = contract(rig, id).order.expect("the draft landed");
+    let families = rig
+        .tw
+        .world()
+        .module_state::<mush_industry::IndustryHandles>()
+        .expect("industry")
+        .0
+        .clone();
+    *crate::driving_rig::typed(
+        &mut rig.tw,
+        &families.work_orders,
+        &mush_industry::workorder::WorkOrderId(order),
+    )
+    .expect("the work order")
+    .state()
+}
+
+/// A wrecker's bill laid in `escrow` (the fixture: staff stand in for the deliveries).
+fn lay_wrecker_bill(rig: &mut Rig, escrow: VaultId, lot: u64) {
+    seed_pool(rig, escrow, ALLOYS, 9, LotId(lot));
+    seed_pool(rig, escrow, FITTINGS, 3, LotId(lot + 1));
+    for (i, part) in [
+        "tacsim.part.plant.light_mk1",
+        "tacsim.part.sensor.visual_mk1",
+    ]
+    .iter()
+    .enumerate()
+    {
+        seed_lot(rig, escrow, part, 1, LotId(lot + 2 + i as u64));
+    }
+}
+
+/// **Doc 48 unit PL.9 (Q-48-26, -37, -45, -53): a captain buys the Stickney yard, prices it, and
+/// keeps it across a lane bump; a margin raised after a booking cancels that order.**
+/// 1. The lane titled the yard to Stickney Yards. The captain, who does not act for the Yards,
+///    cannot list it for them (`NOT_FOR_ORG`). The Yards' officer lists it, idle, for 50,000cr
+///    with `+market/post … as=`, and the captain quotes and buys it at the exchange. The sweep pays the Yards, passes the title,
+///    and passes the facility: its owner is the captain, owner-held and kept public (a sold
+///    yard), and its cost model is the authored one.
+/// 2. The captain sets its margin to 400 per mille. Its doors stay open (`TERMS_KEPT_PUBLIC`),
+///    and its cost model is staff's (`TERMS_COST_STAFF`).
+/// 3. A lane bump at another margin re-terms the Ceres works (still authored) and leaves the
+///    captain's yard, owner and margin, as they were.
+/// 4. A customer books a wrecker. The owner raises the margin to 600, the bill is laid in the
+///    escrow, and the arm finds the fee risen past the booked one: the yard cancels the order,
+///    and the booking fee comes back. Booked again and the margin lowered to 100, the order runs
+///    at the lower fee.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it() {
+    let mut rig = stocked();
+    let yard = yard_room(&rig);
+    let yards = org_of(&rig, STICKNEY, "stickney_yards");
+    assert_eq!(titled(&rig, yard), PrincipalId::Organization(yards));
+    let authored = facility_of(&rig, yard);
+    assert_eq!(authored.holding(), mush_industry::Holding::Authored);
+    let owner = free_captain(&mut rig, "YardOwner", 81);
+    let owner_account = credit_of(&rig, owner);
+    let yards_account = port_map(&rig.tw, STICKNEY).orgs[&cid("stickney_yards")]
+        .account
+        .map(mush_economy::AccountId)
+        .expect("the Yards' account");
+    let (owner_before, yards_before) = (posted(&rig, owner_account), posted(&rig, yards_account));
+
+    // The yard's stores, as the works arm opens them on first need: empty, the Yards'.
+    let root = port_map(&rig.tw, STICKNEY).orgs[&cid("stickney_yards")].root_scope;
+    let opened = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@vault/create YardStores=container:#{} owner=org:{} scope={root}",
+            yard.0, yards.0
+        ),
+    );
+    let stores = tacsim::port::facility_sale::stores_of(rig.tw.world(), yard)
+        .unwrap_or_else(|| panic!("the yard's stores: {opened}"));
+
+    // ---- (1) Listed by the Yards' officer, bought by the captain ----
+    let outsider = post_as(
+        &mut rig,
+        owner,
+        (STICKNEY, "stickney_yards", "stickney"),
+        yard,
+        YARD_PRICE,
+    )
+    .expect_err("the captain does not act for the Yards");
+    assert!(
+        outsider.contains(mush_market::seller::NOT_FOR_ORG),
+        "{outsider}"
+    );
+    assert!(!mush_market::asset_on_sale(rig.tw.world(), yard));
+    // `as=` is a listing's alone: a bid that names one is refused with the bid's usage, where the
+    // same bid without it is not.
+    let bid_line = format!("+market/bid tacsim:iron qty=1 price=1 into={}", stores.0);
+    let plain = run(&mut rig.tw, owner, &bid_line);
+    assert!(!plain.contains(mush_market::seller::BID_USAGE), "{plain}");
+    let named = run(&mut rig.tw, owner, &format!("{bid_line} as=#{}", yards.0));
+    assert!(named.contains(mush_market::seller::BID_USAGE), "{named}");
+    let listing = list_for(
+        &mut rig,
+        (STICKNEY, "stickney_yards", "stickney"),
+        yard,
+        YARD_PRICE,
+    )
+    .expect("the idle yard lists");
+    buy_listing(&mut rig, owner, listing);
+    assert_eq!(titled(&rig, yard), PrincipalId::Object(owner), "the title");
+    let sold = facility_of(&rig, yard);
+    assert_eq!(sold.owner(), &PrincipalId::Object(owner), "the facility");
+    assert_eq!(sold.holding(), mush_industry::Holding::OwnerPublic);
+    assert_eq!(sold.customers(), mush_industry::Customers::Public);
+    assert_eq!(
+        sold.cost(),
+        authored.cost(),
+        "the authored cost model goes with it"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|e| e.snapshot().vault(stores).map(|v| v.owner.clone())),
+        Some(PrincipalId::Object(owner)),
+        "its stores went with it"
+    );
+    assert_eq!(posted(&rig, yards_account) - yards_before, YARD_PRICE);
+    assert_eq!(owner_before - posted(&rig, owner_account), YARD_PRICE);
+
+    // ---- (2) The owner's terms ----
+    let set = run(
+        &mut rig.tw,
+        owner,
+        &format!("@facility/terms #{}=public margin=400", yard.0),
+    );
+    assert!(set.contains("margin 400 per mille"), "{set}");
+    let closed = run(
+        &mut rig.tw,
+        owner,
+        &format!("@facility/terms #{}=owner", yard.0),
+    );
+    assert!(
+        closed.contains(mush_industry::commands::TERMS_KEPT_PUBLIC),
+        "{closed}"
+    );
+    let cost = run(
+        &mut rig.tw,
+        owner,
+        &format!("@facility/terms #{}=public 1/1/0/0/0/0", yard.0),
+    );
+    assert!(
+        cost.contains(mush_industry::commands::TERMS_COST_STAFF),
+        "{cost}"
+    );
+    let priced = facility_of(&rig, yard);
+    let mut expected = authored.cost().copied().expect("a priced yard");
+    expected.margin_permille = 400;
+    assert_eq!(
+        priced.cost().copied(),
+        Some(expected),
+        "only the margin moved"
+    );
+
+    // ---- (3) A lane bump keeps the owner's terms ----
+    bump_lane(&mut rig, 300);
+    assert_eq!(
+        facility_of(&rig, yard),
+        priced,
+        "the owner's yard, as it was"
+    );
+    let ceres = station_room(&rig.tw, "ceres_port", "room.c15_maintenance");
+    assert_eq!(
+        facility_of(&rig, ceres).cost().map(|c| c.margin_permille),
+        Some(300),
+        "an authored works re-termed"
+    );
+
+    // ---- (4) The fee pinned at booking ----
+    let customer = free_captain(&mut rig, "Customer", 82);
+    let customer_account = credit_of(&rig, customer);
+    let before = posted(&rig, customer_account);
+    let held_before = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|s| {
+            s.snapshot()
+                .account(customer_account)
+                .map(|a| a.held_amount.minor())
+        })
+        .expect("the account");
+    let raised = booked(&mut rig, customer, "+yard/order tv_wrecker");
+    assert!(contract(&rig, raised).fee_minor.is_some(), "the fee pinned");
+    let out = run(
+        &mut rig.tw,
+        owner,
+        &format!("@facility/terms #{}=public margin=600", yard.0),
+    );
+    assert!(out.contains("margin 600"), "{out}");
+    let owner_mid = posted(&rig, owner_account);
+    lay_wrecker_bill(&mut rig, VaultId(raised), 98_400);
+    settle(&mut rig, 3);
+    assert_eq!(
+        order_state(&mut rig, raised),
+        mush_industry::workorder::WorkOrderState::Cancelled,
+        "the risen fee cancels the order"
+    );
+    let c = contract(&rig, raised);
+    // The customer has no hold docked, so the bill waits in the escrow for `/collect` and the
+    // contract stays open until then.
+    assert!(c.stale && c.closed.is_none(), "{c:?}");
+    assert_eq!(
+        posted(&rig, customer_account),
+        before,
+        "the booking fee is not taken"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|s| s
+                .snapshot()
+                .account(customer_account)
+                .map(|a| a.held_amount.minor())),
+        Some(held_before),
+        "nothing stays held"
+    );
+    assert_eq!(
+        posted(&rig, owner_account),
+        owner_mid,
+        "the owner is paid nothing"
+    );
+    let lowered = booked(&mut rig, customer, "+yard/order tv_wrecker");
+    let out = run(
+        &mut rig.tw,
+        owner,
+        &format!("@facility/terms #{}=public margin=100", yard.0),
+    );
+    assert!(out.contains("margin 100"), "{out}");
+    lay_wrecker_bill(&mut rig, VaultId(lowered), 98_410);
+    settle(&mut rig, 3);
+    assert_ne!(
+        order_state(&mut rig, lowered),
+        mush_industry::workorder::WorkOrderState::Cancelled,
+        "a fee that fell is charged as it stands"
+    );
+    assert!(!contract(&rig, lowered).stale);
+}
+
+/// **Doc 48 unit PL.9 (Q-48-45, Q-48-53): a busy or unsellable facility is refused with its
+/// reason.** The Ceres works' stores are Freeport Works' storefront. The Stickney yard with a
+/// captain's order open is busy. The Stickney works' stores hold goods. The Stickney workshop,
+/// titled to the Yards by staff so it reaches the seam, is a programme workshop. Nothing is
+/// listed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pl9_a_busy_or_unsellable_facility_is_refused_with_its_reason() {
+    let mut rig = stocked();
+    let line = |template: &str, rig: &Rig, room: ObjId| {
+        let name = rig
+            .tw
+            .world()
+            .get(room)
+            .map(|o| o.name.to_string())
+            .expect("the room");
+        template.replace("{name}", &name)
+    };
+    let ceres = station_room(&rig.tw, "ceres_port", "room.c15_maintenance");
+    let storefront = list_for(
+        &mut rig,
+        ("ceres_port", "freeport_works", "ceres"),
+        ceres,
+        1_000,
+    )
+    .expect_err("a storefront's facility");
+    assert!(
+        storefront.contains(&line(
+            tacsim::port::facility_sale::FACILITY_STOREFRONT,
+            &rig,
+            ceres
+        )),
+        "{storefront}"
+    );
+    let customer = free_captain(&mut rig, "Customer", 83);
+    let _ = booked(&mut rig, customer, "+yard/order tv_wrecker");
+    let yard = yard_room(&rig);
+    let busy = list_for(
+        &mut rig,
+        (STICKNEY, "stickney_yards", "stickney"),
+        yard,
+        1_000,
+    )
+    .expect_err("a busy yard");
+    assert!(
+        busy.contains(&line(
+            tacsim::port::facility_sale::FACILITY_BUSY,
+            &rig,
+            yard
+        )),
+        "{busy}"
+    );
+    let works = station_room(&rig.tw, STICKNEY, "room.p15_maintenance");
+    let works_stores = tacsim::port::facility_sale::stores_of(rig.tw.world(), works)
+        .expect("the works' stores, which its house purchase opened");
+    seed_pool(&mut rig, works_stores, ALLOYS, 1, LotId(98_420));
+    let laden = list_for(
+        &mut rig,
+        (STICKNEY, "stickney_yards", "stickney"),
+        works,
+        1_000,
+    )
+    .expect_err("a works with goods in its stores");
+    assert!(
+        laden.contains(&line(
+            tacsim::port::facility_sale::FACILITY_STORES_LADEN,
+            &rig,
+            works
+        )),
+        "{laden}"
+    );
+    let shop = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    let untitled = list_for(
+        &mut rig,
+        (STICKNEY, "stickney_yards", "stickney"),
+        shop,
+        1_000,
+    )
+    .expect_err("an untitled workshop");
+    assert!(
+        untitled.contains(mush_market::seller::NO_SUCH_ASSET),
+        "{untitled}"
+    );
+    let yards = org_of(&rig, STICKNEY, "stickney_yards");
+    let titled_out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/title #{}=org:{}", shop.0, yards.0),
+    );
+    assert!(!titled_out.contains("Usage"), "{titled_out}");
+    let workshop = list_for(
+        &mut rig,
+        (STICKNEY, "stickney_yards", "stickney"),
+        shop,
+        1_000,
+    )
+    .expect_err("a workshop");
+    assert!(
+        workshop.contains(&line(
+            tacsim::port::facility_sale::FACILITY_WORKSHOP,
+            &rig,
+            shop
+        )),
+        "{workshop}"
+    );
+    assert!(
+        ![ceres, yard, works, shop]
+            .iter()
+            .any(|object| mush_market::asset_on_sale(rig.tw.world(), *object)),
+        "nothing was listed"
+    );
+}

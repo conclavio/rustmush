@@ -43,6 +43,26 @@ made on it does not settle, and its price goes back to the buyer a day later.
 When the sale settles her title passes to the buyer, and her hold goes with
 her.
 
+## Listing a facility
+
+`+market/post #<facility> price=<n> [to=<player>] [market=<venue>] [days=<n>] [as=<org>]`
+
+lists a port's refinery, works or yard whose title you hold, or with `as=<org>`
+one an organization you act for holds; the organization is paid. It is sold only
+when idle: no order open there and nothing in its stores. The relay foundry,
+the workshops and the medical rooms are not for sale, nor is a facility whose
+stores a vendor trades from.
+
+When the sale settles, the facility passes to the buyer with its stores, and
+its takings are paid to the buyer from then on. The buyer sets who may order
+there and its margin with `@facility/terms <facility>=public|owner
+[margin=<permille>]`. Its running costs stay as it was built. A sold yard
+stays open to every customer.
+
+A fee is fixed when an order is booked. If the owner raises it before the work
+starts, the order is cancelled, and its booking fee and bill go back to the
+customer.
+
 ## Posting a bid
 
 `+market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] [market=<venue>] [days=<n>]`

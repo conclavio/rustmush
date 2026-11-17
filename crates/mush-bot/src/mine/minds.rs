@@ -647,6 +647,8 @@ pub mod exchange {
     pub const NO_SUCH_ASSET: &str = "No such asset.";
     /// `mush_market::seller::NOT_LISTABLE` (doc 48 cut EX.2).
     pub const NOT_LISTABLE: &str = "That is not something this market lists for you.";
+    /// `mush_market::seller::NOT_FOR_ORG` (doc 48 cut PL.9): `as=<org>` for an org not yours.
+    pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was listed.";
     /// `mush_market::seller::ALREADY_FOR_SALE`'s head (doc 48 cut EX.2).
     pub const ALREADY_FOR_SALE: &str = "That is already up for sale";
 }
@@ -875,6 +877,7 @@ mod tests {
             ASSET_POSTED,
             NO_SUCH_ASSET,
             NOT_LISTABLE,
+            NOT_FOR_ORG,
             ALREADY_FOR_SALE,
         )
     }

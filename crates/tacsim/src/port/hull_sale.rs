@@ -24,6 +24,12 @@
 //!   same settlement's batch. A Co-op buyout leaves the hold where it is (the pilot already owns
 //!   it), and a recovery house's resale sells a rig, whose hopper is the vehicles principal's.
 //!
+//!
+//! **Doc 48 unit PL.9: and facilities.** The same seam lists a port's refinery, works or yard,
+//! titled to its seller, and the same observer passes a sold facility to its buyer: both are
+//! [`crate::port::facility_sale`]'s, asked first for any object that is a facility. A hull's
+//! behaviour is unchanged.
+//!
 //! [`admit`]: mush_market::AssetSale::admit
 //! [`state_digest`]: mush_market::AssetSale::state_digest
 
@@ -97,7 +103,8 @@ pub fn catalog_entries(w: &World) -> Result<Vec<mush_market::CatalogEntry>, Stri
         .collect()
 }
 
-/// **TacSim's asset-sale seam** (doc 48 cut EX.2): ship hulls only.
+/// **TacSim's asset-sale seam** (doc 48 cut EX.2): ship hulls, and (doc 48 unit PL.9) a port's
+/// refinery, works and yard ([`crate::port::facility_sale`]).
 #[derive(Debug, Default)]
 pub struct HullSale;
 
@@ -111,6 +118,12 @@ impl mush_market::AssetSale for HullSale {
         let w: &World = ctx.w;
         if crate::port::house_sweep::title_of(w, object).as_ref() != Some(seller) {
             return None;
+        }
+        // Doc 48 unit PL.9: a facility is the facility sale's to admit or refuse.
+        if w.module_state::<mush_industry::IndustryStore>()
+            .is_some_and(|store| store.facility(object).is_some())
+        {
+            return crate::port::facility_sale::admit(ctx, object, seller);
         }
         // First, before her design is looked up: a governed core rebinds her to a cored unit,
         // which no yard budget partitions, and she hears where she does sell all the same.
@@ -166,6 +179,9 @@ impl mush_market::AssetSale for HullSale {
     }
 
     fn state_digest(&self, w: &World, object: ObjId) -> Option<u64> {
+        if let Some(digest) = crate::port::facility_sale::state_digest(w, object) {
+            return Some(digest);
+        }
         crate::definitions::mass::hull_budget(w, object)?;
         unit_digest(w, object)
     }
@@ -307,8 +323,17 @@ impl EconomyObserver for HullSaleObserver {
                     .collect()
             })
             .unwrap_or_default();
-        for (hull, from, to) in transfers {
-            rehome_hold(ctx, hull, &from, &to);
+        for (object, from, to) in transfers {
+            // Doc 48 unit PL.9: a facility passes to its buyer; a hull's hold goes with her.
+            let facility = ctx
+                .w
+                .module_state::<mush_industry::IndustryStore>()
+                .is_some_and(|store| store.facility(object).is_some());
+            if facility {
+                crate::port::facility_sale::on_sold(ctx, object, &from, &to);
+            } else {
+                rehome_hold(ctx, object, &from, &to);
+            }
         }
     }
 }
@@ -345,7 +370,7 @@ fn rehome_hold(ctx: &mut Ctx<'_>, hull: ObjId, from: &PrincipalId, to: &Principa
 
 /// A new owner's vault scope: an organization's root scope (on a port map, else its own
 /// record's), none for a person.
-fn scope_of(w: &World, owner: &PrincipalId) -> Option<OrgScopeId> {
+pub(crate) fn scope_of(w: &World, owner: &PrincipalId) -> Option<OrgScopeId> {
     let PrincipalId::Organization(org) = owner else {
         return None;
     };

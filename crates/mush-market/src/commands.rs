@@ -1020,6 +1020,8 @@ struct SellerWords {
     to: Option<String>,
     market: Option<String>,
     days: Option<i64>,
+    /// Doc 48 cut PL.9: `as=<org>`, the organization the actor lists for.
+    as_org: Option<String>,
 }
 
 fn seller_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<SellerWords> {
@@ -1037,6 +1039,7 @@ fn seller_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<SellerWords>
             "into" => out.into.replace(digits.parse::<u64>().ok()?).is_none(),
             "to" => out.to.replace(value.to_owned()).is_none(),
             "market" => out.market.replace(value.to_owned()).is_none(),
+            "as" => out.as_org.replace(value.to_owned()).is_none(),
             "days" => out
                 .days
                 .replace(value.parse::<i64>().ok().filter(|d| *d > 0)?)
@@ -1063,6 +1066,20 @@ fn seller_venue(
     .ok_or(crate::seller::NAME_VENUE)?;
     let instrument = market_instrument(ctx.w, &market).ok_or(crate::seller::NO_CURRENCY)?;
     Ok((market, instrument))
+}
+
+/// Who a `+market/post` lists as: the actor, or with `as=<org>` (doc 48 cut PL.9) an
+/// organization the actor acts for, by name, alias or id, with or without `org:`. An unknown,
+/// hidden or foreign organization reads [`crate::seller::NOT_FOR_ORG`].
+fn listing_seller(ctx: &Ctx<'_>, as_org: Option<&str>) -> Result<mush_org::PrincipalId, CmdError> {
+    let Some(name) = as_org else {
+        return Ok(mush_org::PrincipalId::Object(ctx.actor));
+    };
+    let name = name.strip_prefix("org:").unwrap_or(name);
+    mush_economy::resolve_org_visible(ctx, name)
+        .map(mush_org::PrincipalId::Organization)
+        .filter(|org| mush_economy::acts_for(ctx.w, ctx.actor, org))
+        .ok_or_else(|| CmdError::msg(crate::seller::NOT_FOR_ORG))
 }
 
 /// `to=<player>`: a player by name or `#dbref`.
@@ -1094,8 +1111,9 @@ fn for_only(ctx: &Ctx<'_>, to: Option<&mush_org::PrincipalId>) -> String {
     }
 }
 
-/// `+market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>]` — list one
-/// exact lot (doc 48 cut EX.1a; Q-48-49).
+/// `+market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>] [as=<org>]` — list
+/// one exact lot (doc 48 cut EX.1a; Q-48-49), for an organization the actor acts for with
+/// `as=` (PL.9).
 fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_string();
     // Doc 48 cut EX.2: `#<object>` lists one titled object (a hull).
@@ -1114,6 +1132,7 @@ fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(price) = parsed.price else {
         return Err(CmdError::msg(crate::seller::POST_USAGE));
     };
+    let seller = listing_seller(ctx, parsed.as_org.as_deref())?;
     let (market, instrument) = match seller_venue(ctx, parsed.market.as_deref()) {
         Ok(venue) => venue,
         Err(line) => return Err(CmdError::msg(line)),
@@ -1126,7 +1145,7 @@ fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         },
     };
     let spec = crate::seller::PersonalAsk {
-        seller: mush_org::PrincipalId::Object(ctx.actor),
+        seller,
         market,
         instrument: instrument.clone(),
         lot,
@@ -1170,8 +1189,9 @@ fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// `+market/post #<object> price=<n> [to=<player>] [market=<venue>] [days=<n>]` — list one
-/// titled object you hold (doc 48 cut EX.2; Q-48-7, -52).
+/// `+market/post #<object> price=<n> [to=<player>] [market=<venue>] [days=<n>] [as=<org>]` —
+/// list one titled object you hold (doc 48 cut EX.2; Q-48-7, -52), or that an organization you
+/// act for holds (PL.9: a facility).
 fn post_object(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
     let mut words = raw.split_whitespace();
     let object = words
@@ -1190,6 +1210,7 @@ fn post_object(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
     let Some(price) = parsed.price else {
         return Err(CmdError::msg(crate::seller::POST_USAGE));
     };
+    let seller = listing_seller(ctx, parsed.as_org.as_deref())?;
     let (market, instrument) = match seller_venue(ctx, parsed.market.as_deref()) {
         Ok(venue) => venue,
         Err(line) => return Err(CmdError::msg(line)),
@@ -1202,7 +1223,7 @@ fn post_object(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
         },
     };
     let spec = crate::seller::PersonalAssetAsk {
-        seller: mush_org::PrincipalId::Object(ctx.actor),
+        seller,
         market,
         instrument: instrument.clone(),
         object,
@@ -1245,7 +1266,7 @@ fn bid(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut words = raw.split_whitespace();
     let catalog = words.next().and_then(parse_catalog);
     let parsed = seller_words(words);
-    let (Some(catalog), Some(parsed)) = (catalog, parsed) else {
+    let (Some(catalog), Some(parsed)) = (catalog, parsed.filter(|p| p.as_org.is_none())) else {
         return Err(CmdError::msg(crate::seller::BID_USAGE));
     };
     let (Some(price), Some(quantity), Some(into)) = (parsed.price, parsed.qty, parsed.into) else {
