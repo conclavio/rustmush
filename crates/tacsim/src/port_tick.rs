@@ -345,8 +345,13 @@ pub(crate) fn register_with_coverage(
         inspection_descriptors(inspection, 0, &mut actions)?;
     }
     // Doc 47 CO.13: the stored core sale's action, when the fitting shop's buy-back composes.
-    if sale.is_some() {
+    if let Some(terms) = sale {
         actions.push(crate::hardware::sale::action_descriptor()?);
+        // Doc 48 unit EX.2b: the resale's offer and acceptance, beside the buy-back.
+        if terms.resale.is_some() {
+            actions.push(crate::hardware::sale::resale::offer_action_descriptor()?);
+            actions.push(crate::hardware::sale::resale::resale_action_descriptor()?);
+        }
     }
     reg.definition_validator(
         kind("action")?,
@@ -375,6 +380,22 @@ pub(crate) fn register_with_coverage(
             need(&action_refs, crate::hardware::sale::SALE_ACTION)?,
             need(&outcome_refs, crate::hardware::sale::SALE_OUTCOME)?,
         )?;
+        if let Some(resale) = &terms.resale {
+            use crate::hardware::sale::resale as r;
+            r::register(
+                reg,
+                terms,
+                resale,
+                (
+                    need(&action_refs, r::OFFER_ACTION)?,
+                    need(&outcome_refs, r::OFFER_OUTCOME)?,
+                ),
+                (
+                    need(&action_refs, r::RESALE_ACTION)?,
+                    need(&outcome_refs, r::RESALE_OUTCOME)?,
+                ),
+            )?;
+        }
     }
     register_providers(
         reg,
@@ -741,8 +762,11 @@ fn register_outcomes(
     if let Some(inspection) = inspection {
         inspection_descriptors(inspection, 1, &mut outcomes)?;
     }
-    if sale.is_some() {
+    if let Some(terms) = sale {
         outcomes.push(crate::hardware::sale::outcome_descriptor()?);
+        if terms.resale.is_some() {
+            outcomes.extend(crate::hardware::sale::resale::outcome_descriptors()?);
+        }
     }
     reg.definition_validator(
         kind("outcome")?,

@@ -628,6 +628,19 @@ fn select_boot_checkpoint(
             .head
             .body
             .fold
+            .core_resale_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact core resale receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
             .refit_receipts
             .checkpoint_complete(&saved.rows)
     }) {
@@ -1673,7 +1686,7 @@ fn reconcile_boot_obligations_and_custody(inputs: RemainingReconciliation<'_>) -
 fn recover_refits_and_seizures(
     state: &mut FoldState,
     holds: &BTreeMap<HoldId, Hold>,
-    (refit, seizure, bay, sale): (bool, bool, bool, bool),
+    (refit, seizure, bay, sale, resale): (bool, bool, bool, bool, bool),
 ) -> Result<(), ModError> {
     crate::core_refit::bridge::recover(state, holds, refit)?;
     // Doc 31 UD.4b: the bay refit's fee histories, closed the same way.
@@ -1697,11 +1710,22 @@ fn recover_refits_and_seizures(
     let sold = state.core_sale_receipts.finish_replay().is_ok()
         && (sale || state.core_sale_receipts.require_absent().is_ok())
         && cores.is_ok_and(|index| state.core_sale_receipts.verify_titles(&index).is_ok());
-    if sold {
+    if !sold {
+        return Err(ModError::msg(
+            "economy: core sale history refused, unpaired or unlike the managed titles",
+        ));
+    }
+    // Doc 48 unit EX.2b: every resale names a managed core birth and no managed hull; none
+    // without the family.
+    let cores = crate::managed_title::ManagedTitleIndex::default().with_cores(&state.core_receipts);
+    let resold = state.core_resale_receipts.finish_replay().is_ok()
+        && (resale || state.core_resale_receipts.require_absent().is_ok())
+        && cores.is_ok_and(|index| state.core_resale_receipts.verify_titles(&index).is_ok());
+    if resold {
         Ok(())
     } else {
         Err(ModError::msg(
-            "economy: core sale history refused, unpaired or unlike the managed titles",
+            "economy: core resale history refused, unpaired or unlike the managed titles",
         ))
     }
 }
@@ -1728,6 +1752,7 @@ pub(crate) fn load_boot_with_coverage(
     require_seizure_receipts: bool,
     require_bay_refit_receipts: bool,
     require_core_sale_receipts: bool,
+    require_core_resale_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
@@ -2094,6 +2119,7 @@ pub(crate) fn load_boot_with_coverage(
             require_seizure_receipts,
             require_bay_refit_receipts,
             require_core_sale_receipts,
+            require_core_resale_receipts,
         ),
     )?;
     let renewal_offers = crate::managed_renewal::bridge::recover(

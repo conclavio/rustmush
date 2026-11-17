@@ -986,7 +986,214 @@ with in-step, census and distinct tests). `UNDER_SALE` now says the hull is up f
 
 ## EX.2b
 
-Not built.
+Row: §7.1 EX.2b; Q-48-47, Q-48-3's correction, Q-48-52's core leg; doc 48b W-48-1a, G-1(2).
+Built 2026-11-16/17 on `claude/ex2b-core-resale-32f0ba`, cut from main `73d05678b`.
+
+**Survey.**
+
+- **Why CO.13 could not serve.** Its kernel image admits only a Thing or Room destination
+  (`mush-core/src/core_sale.rs`, the `SaleObjects` rule); its economy plan has one
+  composition-time org buyer, two lines and no holds (`registry_filing/core_sale.rs`). A player
+  buyer needed a second closed plan, not a widened first one.
+- **Why a cored hull cannot ride the exchange's E4 sale.** EX.2's hull sale settles in the
+  economy sweep's generic contract settlement, and every generic path meets
+  `require_unmanaged_mutations` on the core's managed title. A settle path with a managed leg is
+  what doc 46 ruled out, and E4 settlement and a coordinator union cannot be made one atomic
+  step. So "both or neither" is honest only if the hull's title rides the core's closed plan.
+- **Where the offer lives.** The kernel policy reads a `&World` only and cannot see typed
+  state, so the offer (an action-state record) is the producer's: read, checked and removed in
+  the acceptance's own transaction. The policy re-reads the world facts and an opaque pin.
+- **The fitted core** sits in the hull (`location == hull`, the unit's core component's asset).
+  Selling the hull does not move it; only titles move.
+- **The economy participant writes only listed key families** (`accepts_write`): `vault:` was not
+  one of them, so the hold's re-home needed a closed-list entry of its own.
+
+**Built** — the family's shape, **(expensive to reverse)**.
+
+- **Two acts, one union.**
+  - *The offer* (`+core/offer <core or ship>=<player> price=<n>`, the seller's own act): tacsim
+    action `offer_core_resale` v1 writes one record in tacsim's `core_resale_offers` family,
+    keyed by the core: seller, the one buyer, price, the core's title revision and, for a ship,
+    hers and the digest of her parts, made and lapse IC seconds. It stands **28 IC days** (the
+    owner's floor), until withdrawn (`=withdraw`), replaced or taken. Nothing moves; nothing is
+    held.
+  - *The acceptance* (`+core/accept <core or ship>=go`, the buyer's act): tacsim action
+    `accept_core_resale` v1. Its provider reads the offer (it must name the actor and not have
+    lapsed) and the seller's holding on the pinned state, then binds in one coordinator union:
+    the economy's closed resale plan, the kernel's closed resale image, the kernel's record, and
+    removes the offer.
+- **"Escrowed at acceptance"** is read as: the buyer's money leaves their account at acceptance
+  and only in the union that delivers title and object, so no buyer is paid-up and undelivered
+  and no hold is left to release. There is no hold op; the union is the escrow.
+- **Kernel** (`mush-core/src/core_sale.rs` and new `core_sale/resale.rs`):
+  - CO.13's image gains a private `Destination` rule: `Shop` (Thing or Room, the buy-back's,
+    unchanged) or `Buyer` (a Player, only the resale's fixed action selects it).
+  - `CoreResales` (fixed action `tacsim/accept_core_resale` v1), `CoreResalePolicy`,
+    `ResaleRequest { core, seller, hull, pin }`, `ResaleFacts`, `ResoldCore`; the tacsim-owned
+    `core_resales` record family (operation, core, seller, buyer, hull) with `audit`.
+  - Two image shapes: a **stored** core leaves the seller's hands for the buyer's (the buy-back's
+    image with the `Buyer` rule; the buyer's carry hooks, as a delivery's); a **fitted** core sold
+    with its hull is a fence only (the core's and the hull's exact pre-images and the policy's
+    read, kept through custody), writing no object.
+  - One variant on the closed `BuiltinObjects` / `BoundBuiltinObjects` list (`Resale`), and
+    `PrepareCtx::resell_core` beside `sell_stored_core`.
+- **Economy** (`registry_filing/core_sale/resale{.rs,/install.rs,/receipt.rs,/tests.rs}`):
+  - `CoreResaleConfig { action, venue, levy, venue_permille, levy_permille }` (the venue is no
+    person; the levy is a system sink; the cuts leave the seller something).
+  - `RegistryCoreResale { core, title_revision, hull: Option<ResaleHull { hull, title_revision,
+    hold }>, seller, seller_account, buyer_account, price }`; the buyer is the actor.
+  - The plan: the buyer's own account pays the price; the seller's account is paid the net, the
+    venue its cut and the sink the levy (a zero cut has no line); `TransferTitle` of the core to
+    the buyer, then of the hull when she goes with it, both in no scope, both revision-fenced.
+  - `ClosedCoreResalePlan`: exact plan, the exact before-titles, the exact core birth, exactly
+    those lines and transfers, no hold or custody op, and the hull no managed title.
+  - The native install (the buy-back's, with up to four lines, up to two titles and the hull's
+    hold vault re-homed to the buyer through `put_vault`, its image in the same union).
+  - `CoreResaleReceiptAudit`: receipts by commit, folded from the journal, finished at boot,
+    checked against the managed-title index (every core a managed birth, no hull one), with
+    checkpoint coverage as the buy-back's.
+  - One variant each on `EconomyRequest`, `EconomyOutput`, `EconomyPatch`, `BoundEconomy` and
+    `PlanGuard` (both arms); `EconomyModule::with_core_resale`; the participant's config and
+    `register_with_house_updates`; `load_boot_with_coverage`'s flag;
+    `EconomyStore::{core_resale_receipt, core_resale_receipts}`; and `accepts_write` admits
+    `vault:<id>` only where the resale composes.
+  - `require_unmanaged_mutations` is not touched.
+- **TacSim** (new `hardware/sale/resale.rs`): both providers, the trusted policy (`holding`: a
+  governed core in the seller's own hands, theirs alone, not impounded, not destroyed; or a ship
+  of theirs with one fitted, through `port/hull_sale.rs`'s `core_leg`), the offers' family, the
+  `ResaleHost` slot, `+core/offer`, `+core/offers`, `+core/accept`, and the boot pass
+  (`boot_audit`, run from the buy-back's) pairing kernel records and economy receipts by
+  operation, core, seller, buyer and hull.
+- **The cored-hull leg** (`port/hull_sale.rs`, in its own functions for PL.9 and EX.4):
+  - `core_leg(w, hull, seller)`: the listed hull's rules read for a cored one (not in a bay,
+    nothing in flight, no leased rig aboard, a readable hold), her fitted core, her hold's vault
+    when the seller owns it, and her digest;
+  - `core_leg_hold_empty(ctx, hull)`: the empty hold, asked at offer and at acceptance;
+  - `HULL_CORED` now routes the seller: "sells only with her governed core, by private offer:
+    +core/offer #<n>=<player> price=<price>"; `admit`'s branch renders it; `state_digest`'s body
+    is `unit_digest`, shared with `core_leg`.
+- **Composition.** The resale composes where the fitting shop's buy-back does
+  (`HardwareDeployment::buy_back_permille`): `HardwareDeployment::resale` and
+  `SaleTerms::resale`, set by the launch from its own venue (the cut) and Registry (the levy).
+  No serialized deployment field is added, so no `launch_deployment` digest moves. The roster
+  policy and `configure_economy` add `with_core_resale`; `port_tick` registers both actions and
+  outcomes; `+core` gains `/offer`, `/offers` and `/accept`.
+- **Sentences**: 30 `pub const`s in `resale.rs`, a `core_resale` family in
+  `mush-bot/src/mine/minds.rs` (in-step, census, distinct), and `HULL_CORED`'s needle updated.
+  `legacy-handlers.toml`'s `+core` note covers the new switches.
+
+**Defaults taken (provisional).**
+
+1. **The rates are Q-48-8's, as constants**, because EX.4's fees have not merged: the venue's
+   cut 30‰ (`VENUE_PERMILLE`), the levy 10‰ (`LEVY_PERMILLE`). The venue's cut goes to the
+   launch's venue recipient and the levy to its Registry. **Cheap to reverse** (constants; EX.4
+   points them at its fees).
+2. **An offer stands 28 IC days**, the owner's player-response floor. **Cheap to reverse.**
+3. **The resale composes with the buy-back.** A world with no fitting shop has no resale.
+   **Cheap to reverse** (one composition line).
+4. **Prices are typed in centicredits** (`price=<n>`), as every market verb takes them.
+
+**Persisted shapes** **(expensive to reverse)**: the economy fold gains `core_resale_receipts`
+(skipped while uninitialized; the boot closes it on every world, so new checkpoints carry
+`{"receipts":{},"complete":true,...}`; `e2b`'s format-3 pin strips it, as the buy-back's); the
+journal namespace `tacsim.core_resale.v1` and its correlation string; tacsim's action-state
+families `core_resales` and `core_resale_offers`; the two action descriptors. No `.snap` moved.
+
+**Tests.**
+
+- `mush-economy` `registry_filing::core_sale::resale::tests` (engine level, six):
+  `ex2b_the_split_pays_seller_venue_and_levy`; `ex2b_the_closed_plan_refuses_every_mismatch`
+  (ten plan changes, stored and with a hull; moved images; a managed hull; wrong births);
+  `ex2b_no_generic_transfer_touches_a_managed_title`;
+  `ex2b_a_resale_posts_replays_and_a_forgery_is_refused` (money, both titles, the receipt, the
+  replay, four forgeries, a repeated commit); `ex2b_a_cored_hull_sells_with_her_core_or_neither_moves`
+  (another's hull, a claimed hull: refused whole, the core and the money unmoved);
+  `ex2b_the_prepare_read_refuses_what_may_not_be_resold`.
+- `mush-core` `core_sale::resale::tests`: the record's shape; only the resale admits a player.
+- `tacsim` `hardware::sale::resale::tests`: the lines under 120 columns; the offer's checks; the pin.
+- **The stories**, `tacsim` `domain_field` `ex2b_core_resale` (the launch world):
+  - `ex2b_a_stored_core_is_resold_to_the_player_its_seller_names`: an offer moves and holds
+    nothing; a third party is refused by the verb and by the action typed straight to the
+    provider; the named buyer's acceptance pays 500,000 split 480,000 / 15,000 / 5,000, the
+    title and the core are the buyer's, one receipt, one record, the offer gone, the buy-back's
+    family untouched; a restart replays and pairs; the seller cannot offer it again, the buyer can.
+  - `ex2b_a_cored_ship_sells_with_her_core_both_or_neither` (after CO.6's route): the exchange
+    routes her; the core alone is refused as fitted; with a lien on her the acceptance is
+    refused whole (no title, no money); released and offered again, the acceptance passes her
+    title, her core's title and her hold to the buyer in one union, the core still in her; a
+    restart reads the same.
+- **CO.13's buy-back is unchanged**: `co13_a_stored_core_is_sold_with_its_title`, CO.4's, CO.6's
+  three, story 4 and EX.2's cored-hull test (its line updated) pass beside them; all 930
+  `mush-economy` tests pass, `e2b` included.
+- **The gates**, on conclav.dev on the final tree: `cargo fmt --all --check`; workspace clippy
+  with `-D warnings`; the M7 memory-size clippy (it first caught the resale image's and output's
+  sizes, now boxed); rustdoc with `-D warnings`, the workspace with private items and the four
+  touched crates without; `mush-contract-tests` (census, panic budget, restriction lints, help,
+  shard names, state slots); the whole of `mush-bot` (the new `core_resale` rows' in-step,
+  census and distinct tests); all of `mush-core`, `mush-industry`, `mush-market` and `mush-roll`
+  with their CT.0 snapshots (**no `.snap` moved**); tacsim's ct0, launch and hardware lib tests;
+  and EX.2's `domain_economy` stories (`ex2_`, `rs6c2`, `ic13_`).
+
+**Mutations** (`ex2b-muts.py`, in this group's notes folder), each run alone on conclav.dev
+against the tests that can see it:
+
+| # | Mutation | Verdict |
+|---|---|---|
+| P1 | the closed check drops plan equality | caught: `ex2b_the_closed_plan_refuses_every_mismatch` |
+| P2 | the resale's `PlanGuard` arm removed (falls to `require_unmanaged_mutations`) | caught: `ex2b_a_resale_posts_replays_and_a_forgery_is_refused` |
+| P3 | the auth admits another holder's title | caught: `ex2b_a_cored_hull_sells_with_her_core_or_neither_moves` |
+| P4 | a managed hull admitted as a hull leg | caught: the mismatch test |
+| P5 | the economy's read lets a seller buy their own | **survives**, masked: the buyer's account must be the actor's, and tacsim refuses first |
+| L1 | the levy has no line | caught: `ex2b_the_split_pays_seller_venue_and_levy` |
+| L2 | the hull's title does not pass | caught: the mismatch test |
+| L3 | the hold is not re-homed | caught: the cored-ship story |
+| A1 | the fold ignores the family | caught: the cored-ship story (the restart's pairing) |
+| A2 | the receipt admits a line beyond the split | caught: the forgery test (a fifth line) |
+| A3 | the boot never closes the resale audit | caught: the stories |
+| A4 | tacsim's boot pairing ignores the buyer | **survives**, unreached: no story forges a record whose buyer differs from its receipt's |
+| K1 | the resale's rule admits a Thing | caught: `ex2b_only_the_resale_admits_a_player_destination` |
+| K2 | the buy-back's rule admits a player | caught: the same |
+| K3 | the resale image takes the shop's rule | caught: the stored-core story |
+| K4 | the kernel drops its buyer check | **survives**, masked: the policy names the acting buyer |
+| R1 | the acceptance admits any buyer | caught: the stored-core story (the third party's action) |
+| R2 | the acceptance drops its pin check | **survives**, masked: the kernel policy re-reads the pin |
+| R3 | the policy drops its pin check | **survives**, masked: the acceptance reads the pin first |
+| R4 | a destroyed core is offered | **survives**, unreached: no story destroys a core it then offers (CO.13's story covers the same `stored_core_destroyed` read for the buy-back) |
+| R5 | a withdrawal takes anyone's offer | **survives**, masked: an offer of a core the actor holds alone is theirs or stale |
+
+21 run, 14 caught, 7 survive. R2 and R3 each guard the other.
+
+**Divergences.**
+
+- **The cored hull is not an exchange listing.** Q-48-52 said a cored hull "is listed only with
+  its core, the core leg settling in Q-48-47's plan", and the brief "lists the hull with its core
+  leg instead of refusing". `+market/post` of a cored hull answers with the route to the private
+  offer, and `+core/offer #<ship>` *is* her listing, with both legs in one closed plan. Making
+  the E4 sale and the closed leg settle together would need a managed leg in the generic settle
+  path. A board notice for a cored hull (quotes answered "ask the seller") needs a small
+  mush-market seam change, left for after EX.4 holds the crate no longer.
+- **No hold.** "Escrowed at acceptance" is the union itself (above).
+- **The offer is the producer's state**, not the kernel's: the kernel policy cannot read typed
+  state, so the producer reads and removes the offer in the same transaction and hands the
+  kernel an opaque pin the policy re-reads.
+- **`accepts_write` admits `vault:`** where the resale composes: the one closed leg that writes a
+  vault image.
+- **Files beyond the owned list** (closed lists and composition): `mush-core` `participant.rs`,
+  `resolution.rs`, `core_output/image.rs`; `mush-economy` `registry_filing.rs`, `prepare.rs`,
+  `engine.rs`, `fold.rs`, `boot.rs`, `module.rs`, `tests/e2b.rs`; `tacsim` `hardware/counter.rs`
+  (the dispatch), `hardware/composition.rs`, `hardware/flow.rs`, `commands.rs`, `port_tick.rs`,
+  `launch.rs`, `launch/deployment.rs`, `tests/domain_field.rs`, `co6_cored_ship.rs` (EX.2's line);
+  `mush-bot/src/mine/minds.rs`; `mush-contract-tests/legacy-handlers.toml`. No mush-market change.
+- **Between acceptance and custody** the hold's emptiness is not re-read (typed state the world
+  read cannot reach), as EX.2's hull sale.
+
+**Not built.**
+
+- A board notice for a cored hull or a stored core (see Divergences).
+- An org seller or buyer (`org=`): persons only.
+- A resale of a core fitted in a rig or a line tank: ship hulls only (`core_leg` uses the ship's
+  hull view).
+- A notice to an offline buyer that an offer stands for them (they read `+core/offers`).
 
 ## EX.3
 

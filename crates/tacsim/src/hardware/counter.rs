@@ -374,6 +374,13 @@ pub(crate) fn core_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("sell") {
         return crate::hardware::sale::sale_cmd(ctx);
     }
+    // So does doc 48 unit EX.2b's resale to a player.
+    if ["offer", "offers", "accept"]
+        .iter()
+        .any(|switch| ctx.switches.has(switch))
+    {
+        return crate::hardware::sale::resale::resale_cmd(ctx);
+    }
     let Some(shop) = shop(ctx.w) else {
         return Err(CmdError::msg(CORE_NOT_OPEN));
     };

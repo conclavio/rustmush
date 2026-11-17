@@ -25,6 +25,7 @@ use mush_core::DefinitionRef;
 
 mod install;
 pub(crate) mod receipt;
+pub mod resale;
 pub use install::{BoundCoreSale, CoreSalePatch};
 pub use receipt::{CoreSaleAuditSubject, CoreSaleReceiptAudit};
 

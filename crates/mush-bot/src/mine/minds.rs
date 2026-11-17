@@ -655,8 +655,9 @@ pub mod exchange {
 /// the game's words, `tacsim::port::hull_sale`. No lane reads them yet; each is held to the
 /// game's own text below.
 pub mod hull_sale {
-    /// `tacsim::port::hull_sale::HULL_CORED`: a governed core fitted, refused for now.
-    pub const HULL_CORED: &str = "governed core fitted cannot be listed yet";
+    /// `tacsim::port::hull_sale::HULL_CORED`: a governed core fitted; since doc 48 unit EX.2b
+    /// she sells with it by private offer.
+    pub const HULL_CORED: &str = "sells only with her governed core, by private offer";
     /// `tacsim::port::hull_sale::HULL_HOLD_LADEN`.
     pub const HULL_HOLD_LADEN: &str = "hold must be empty before she is listed";
     /// `tacsim::port::hull_sale::HULL_HOLD_DARK`'s tail.
@@ -665,6 +666,72 @@ pub mod hull_sale {
     pub const HULL_IN_BAY: &str = "stow her before she is listed.";
     /// `tacsim::port::hull_sale::HULL_RIG_ABOARD`'s tail.
     pub const HULL_RIG_ABOARD: &str = "return it to Occator before she is listed.";
+}
+
+/// **A governed core resold to a player** (doc 48 unit EX.2b): `+core/offer`, `+core/offers` and
+/// `+core/accept`, in the game's words, `tacsim::hardware::sale::resale`. No lane reads them
+/// yet; each is held to the game's own text below.
+pub mod core_resale {
+    /// `tacsim::hardware::sale::resale::RESALE_OFFER_USAGE`.
+    pub const RESALE_OFFER_USAGE: &str = "Usage: +core/offer <core or ship>=<player> price=<n>";
+    /// `tacsim::hardware::sale::resale::RESALE_ACCEPT_USAGE`.
+    pub const RESALE_ACCEPT_USAGE: &str = "Usage: +core/accept <core or ship>";
+    /// `tacsim::hardware::sale::resale::RESALE_OFF`.
+    pub const RESALE_OFF: &str = "do not change hands between players";
+    /// `tacsim::hardware::sale::resale::RESALE_NOT_CORE`.
+    pub const RESALE_NOT_CORE: &str = "neither a governed core nor a ship of yours";
+    /// `tacsim::hardware::sale::resale::RESALE_NOT_YOURS`.
+    pub const RESALE_NOT_YOURS: &str = "title is not yours alone, so you cannot offer it";
+    /// `tacsim::hardware::sale::resale::RESALE_NOT_HELD`.
+    pub const RESALE_NOT_HELD: &str = "You are not holding that core.";
+    /// `tacsim::hardware::sale::resale::RESALE_FITTED`'s middle.
+    pub const RESALE_FITTED: &str = "offer her with it: +core/offer #";
+    /// `tacsim::hardware::sale::resale::RESALE_DESTROYED`.
+    pub const RESALE_DESTROYED: &str = "A destroyed core is not offered for sale.";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_PLAYER`.
+    pub const RESALE_NO_PLAYER: &str = "There is no player by that name to offer it to.";
+    /// `tacsim::hardware::sale::resale::RESALE_SELF`.
+    pub const RESALE_SELF: &str = "You cannot sell a core to yourself.";
+    /// `tacsim::hardware::sale::resale::RESALE_PRICE`'s tail.
+    pub const RESALE_PRICE: &str = "leaves you something after the venue's cut and the levy";
+    /// `tacsim::hardware::sale::resale::RESALE_OFFERED`'s tail.
+    pub const RESALE_OFFERED: &str = "Nothing moves until they accept.";
+    /// `tacsim::hardware::sale::resale::RESALE_OFFERED_HULL`'s middle.
+    pub const RESALE_OFFERED_HULL: &str = " with her core #";
+    /// `tacsim::hardware::sale::resale::RESALE_WITHDRAWN`'s head.
+    pub const RESALE_WITHDRAWN: &str = "Your offer of core #";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_OWN_OFFER`.
+    pub const RESALE_NO_OWN_OFFER: &str = "You have no standing offer of that core.";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_OFFER`.
+    pub const RESALE_NO_OFFER: &str = "No offer of that stands for you.";
+    /// `tacsim::hardware::sale::resale::RESALE_LAPSED`.
+    pub const RESALE_LAPSED: &str = "That offer has lapsed; ask the seller to offer it again.";
+    /// `tacsim::hardware::sale::resale::RESALE_CHANGED`'s tail.
+    pub const RESALE_CHANGED: &str = "what it sells has changed since it was made";
+    /// `tacsim::hardware::sale::resale::RESALE_QUOTE`'s middle.
+    pub const RESALE_QUOTE: &str = " offers you core #";
+    /// `tacsim::hardware::sale::resale::RESALE_QUOTE_HULL`'s tail.
+    pub const RESALE_QUOTE_HULL: &str = ", cuts included.";
+    /// `tacsim::hardware::sale::resale::RESALE_HOW`'s tail.
+    pub const RESALE_HOW: &str = "your money leaves your account only as it passes to you";
+    /// `tacsim::hardware::sale::resale::RESALE_SHORT`'s head.
+    pub const RESALE_SHORT: &str = "Your credit account cannot cover ";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_ACCOUNT`.
+    pub const RESALE_NO_ACCOUNT: &str = "You hold no credit account to pay from.";
+    /// `tacsim::hardware::sale::resale::RESALE_ACCEPTING`'s head.
+    pub const RESALE_ACCEPTING: &str = "You accept the offer of core #";
+    /// `tacsim::hardware::sale::resale::RESALE_BOUGHT`'s middle.
+    pub const RESALE_BOUGHT: &str = " and its title are yours, for ";
+    /// `tacsim::hardware::sale::resale::RESALE_BOUGHT_HULL`'s middle.
+    pub const RESALE_BOUGHT_HULL: &str = " are yours, with both titles, for ";
+    /// `tacsim::hardware::sale::resale::RESALE_SOLD`'s middle.
+    pub const RESALE_SOLD: &str = "; you are paid ";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_OFFERS`.
+    pub const RESALE_NO_OFFERS: &str = "No core offers stand to or from you.";
+    /// `tacsim::hardware::sale::resale::RESALE_OFFER_ROW`'s tail.
+    pub const RESALE_OFFER_ROW: &str = " days left to accept it.";
+    /// `tacsim::hardware::sale::resale::RESALE_BUSY`.
+    pub const RESALE_BUSY: &str = "You are already doing something; try again in a moment.";
 }
 
 /// **The exchange at the venue** (doc 48 cut EX.1b): a player's locker (`+locker`,
@@ -736,6 +803,7 @@ mod tests {
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
     const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
+    const CORE_RESALE_RS: &str = include_str!("../../../tacsim/src/hardware/sale/resale.rs");
 
     fn venue_rows() -> Vec<Row> {
         use super::venue as bot;
@@ -820,6 +888,43 @@ mod tests {
             HULL_HOLD_DARK,
             HULL_IN_BAY,
             HULL_RIG_ABOARD,
+        )
+    }
+
+    fn core_resale_rows() -> Vec<Row> {
+        use super::core_resale as bot;
+        use tacsim::hardware::sale::resale as game;
+        rows!("";
+            RESALE_OFFER_USAGE,
+            RESALE_ACCEPT_USAGE,
+            RESALE_OFF,
+            RESALE_NOT_CORE,
+            RESALE_NOT_YOURS,
+            RESALE_NOT_HELD,
+            RESALE_FITTED,
+            RESALE_DESTROYED,
+            RESALE_NO_PLAYER,
+            RESALE_SELF,
+            RESALE_PRICE,
+            RESALE_OFFERED,
+            RESALE_OFFERED_HULL,
+            RESALE_WITHDRAWN,
+            RESALE_NO_OWN_OFFER,
+            RESALE_NO_OFFER,
+            RESALE_LAPSED,
+            RESALE_CHANGED,
+            RESALE_QUOTE,
+            RESALE_QUOTE_HULL,
+            RESALE_HOW,
+            RESALE_SHORT,
+            RESALE_NO_ACCOUNT,
+            RESALE_ACCEPTING,
+            RESALE_BOUGHT,
+            RESALE_BOUGHT_HULL,
+            RESALE_SOLD,
+            RESALE_NO_OFFERS,
+            RESALE_OFFER_ROW,
+            RESALE_BUSY,
         )
     }
 
@@ -1083,7 +1188,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 11] = [
+        let families: [(&str, Vec<Row>); 12] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1094,6 +1199,7 @@ mod tests {
             ("practice", practice_rows()),
             ("exchange", exchange_rows()),
             ("hull_sale", hull_sale_rows()),
+            ("core_resale", core_resale_rows()),
             ("venue", venue_rows()),
         ];
         families
@@ -1127,6 +1233,24 @@ mod tests {
         (
             "HULL_CODE_PREFIX",
             "a hull entry's catalogue-code prefix, not a sentence",
+        ),
+    ];
+    /// `hardware/sale/resale.rs` (doc 48 unit EX.2b).
+    const CORE_RESALE_EXCLUDED: &[(&str, &str)] = &[
+        ("OFFER_ACTION", "the offer's action id, never printed"),
+        ("OFFER_OUTCOME", "the offer's outcome id, never printed"),
+        ("RESALE_ACTION", "the acceptance's action id, never printed"),
+        (
+            "RESALE_OUTCOME",
+            "the acceptance's outcome id, never printed",
+        ),
+        (
+            "OFFER_FAMILY",
+            "the offers' store family name, never printed",
+        ),
+        (
+            "RESALE_HELP",
+            "the verb's help text, read by help, not a line the bot waits on",
         ),
     ];
     /// `ship_mind.rs`.
@@ -1640,6 +1764,24 @@ mod tests {
     #[test]
     fn hull_sale_needles_are_distinct() {
         distinct(&qualified("hull_sale", hull_sale_rows()), &[]);
+    }
+    // Doc 48 unit EX.2b: a governed core resold to a player.
+    #[test]
+    fn core_resale_needles_are_in_step() {
+        in_step("core_resale", &core_resale_rows());
+    }
+    #[test]
+    fn core_resale_census() {
+        census(
+            "hardware/sale/resale.rs",
+            CORE_RESALE_RS,
+            &core_resale_rows(),
+            CORE_RESALE_EXCLUDED,
+        );
+    }
+    #[test]
+    fn core_resale_needles_are_distinct() {
+        distinct(&qualified("core_resale", core_resale_rows()), &[]);
     }
     // Doc 48 cut EX.1b: the exchange at the venue.
     #[test]
