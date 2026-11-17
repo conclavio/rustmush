@@ -1070,7 +1070,9 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// carbon-ore mill into feedstock with its carbon-ore bid, and the two farms' provisions asks; **v37 since
 /// doc 48 unit PL.3**: Stickney Yards' seven munitions processes (alloys and carbon ore into
 /// each ground and space munitions good, the works recipes' bill less its water), its alloys
-/// bid, and its torpedo, spinal-round and point-defence stock and asks. The port readiness report
+/// bid, and its torpedo, spinal-round and point-defence stock and asks; **v38 since doc 48 unit
+/// EX.3**: the port orgs' market roles (`roles: ["acceptor"]` on the orgs the board accepts
+/// for, Q-48-9). The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
 ///
@@ -1084,7 +1086,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), lane v35 ↔ relay v26 (doc 48 unit PL.1), lane v36 ↔ relay v27 (doc 48 unit PL.2), lane v37 ↔ relay v28 (doc 48 unit PL.3), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), lane v35 ↔ relay v26 (doc 48 unit PL.1), lane v36 ↔ relay v27 (doc 48 unit PL.2), lane v37 ↔ relay v28 (doc 48 unit PL.3), lane v38 ↔ relay v29 (doc 48 unit EX.3), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -1095,7 +1097,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 37;
+pub const LANE_VERSION: u32 = 38;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

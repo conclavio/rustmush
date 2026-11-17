@@ -313,6 +313,24 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
             .is_some_and(|o| o.flags.contains(mush_core::Flags::DARK)),
         "the helm is DARK"
     );
+    // Doc 48 cut EX.3: the helm is the Trust's agent at the venue its floor buys at, Stickney's,
+    // and at no other it is not standing in: refused at Luna's. At Ceres it stands in the
+    // gallery, so its presence admits it there, as anyone's would.
+    assert_eq!(
+        crate::ex3_board::admitted(&rig, helm, "stickney"),
+        Ok(()),
+        "the helm at the venue its floor names"
+    );
+    assert!(
+        crate::ex3_board::admitted(&rig, helm, "luna")
+            .is_err_and(|line| line.starts_with("That market is ")),
+        "the helm refused at a venue its floor does not name"
+    );
+    assert_eq!(
+        crate::ex3_board::admitted(&rig, helm, "ceres"),
+        Ok(()),
+        "the helm's own presence"
+    );
     assert!(
         fires_until(&mut rig, 40, |rig| phase(rig) == Some(Phase::Supplying)),
         "booked: {:?}",

@@ -222,6 +222,21 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
     }
 }
 
+/// **A lane institution's own agent at its own venue** (doc 48 cut EX.3; Q-48-9): the port's
+/// stock clerk at its own port's venue, from the staff spine it stands in; a registered house
+/// helm at the venue its floor names for its buys. Nobody else, and nowhere else: a player's
+/// presence is unchanged, and the endpoint and capacity checks still apply.
+#[must_use]
+pub fn agent_admitted(w: &World, actor: ObjId, def: &PortDef) -> bool {
+    let own_clerk = ports(w)
+        .into_iter()
+        .find(|(_, port, _)| port.venue == def.venue)
+        .and_then(|(_, _, map)| map?.clerk.as_ref().map(|clerk| ObjId(clerk.thing)))
+        == Some(actor);
+    own_clerk
+        || crate::port::pools::helm_buys_at(w, actor).is_some_and(|at| at == def.venue.as_str())
+}
+
 /// Whether `hull` is docked at `def`'s port.
 fn docked_at(w: &World, hull: ObjId, def: &PortDef) -> bool {
     matches!(berth_of(w, hull), Berth::Docked { def: there, .. } if there.venue == def.venue)
@@ -336,7 +351,7 @@ impl VenueGate for PortVenueGate {
                 .get(actor)
                 .and_then(|o| o.location)
                 .and_then(|room| self.venue_of_room(w, room));
-            if here.as_ref() != Some(venue) {
+            if here.as_ref() != Some(venue) && !agent_admitted(w, actor, def) {
                 return Err(refusal(NOT_IN_PORT.replace("{port}", &port_name(def))));
             }
         }
@@ -405,10 +420,10 @@ fn vendor_orgs(map: &PortMap) -> BTreeSet<OrgId> {
 // ---- the party-cap source ------------------------------------------------------
 
 /// **The port institutions' programmatic acceptance** (doc 18 §4.1/§4.7, Q-18-10;
-/// cut IC7's seam; lead ruling L13): `PartyCap::Accept` for an org a lane port map
-/// records as one of its **vendors**, or as its port's **programme org** (the Trust,
-/// for cuts IC10/IC13), or as the org of its port's **licence** block (the Freeport
-/// Registry, for the prospecting-licence fee; doc 20 cut SM.5), and for nothing else. It confers **no money authority**: the
+/// cut IC7's seam; lead ruling L13): `PartyCap::Accept` for an org whose port def row carries
+/// the `acceptor` role (doc 48 cut EX.3, Q-48-9: the fixed list of vendors, the programme's
+/// Trust, the licence's issuer and the workshop and recovery operators became data), and for
+/// nothing else. It confers **no money authority**: the
 /// accept still runs `accept_core`, still posts escrow under the org account's own
 /// debit authority, and still refuses when the account is short.
 #[derive(Debug)]
@@ -425,42 +440,17 @@ impl PartyCapSource for PortPartyCaps {
         let PrincipalId::Organization(org) = principal else {
             return false;
         };
+        // Doc 48 cut EX.3 (Q-48-9): the acceptors are data, a role row on the port's org.
         ports(w).into_iter().any(|(_, def, map)| {
-            let Some(map) = map else {
-                return false;
-            };
-            let programme = def
-                .programme
-                .as_ref()
-                .and_then(|p| map.orgs.get(&p.org))
-                .map(|row| OrgId(row.org));
-            // Doc 20 cut SM.5 (§9.1): the licence issuer (the Freeport Registry)
-            // accepts its fee contract programmatically as the Trust does — no money
-            // authority; the fee still settles only through the economy.
-            let issuer = def
-                .licence
-                .as_ref()
-                .and_then(|l| map.orgs.get(&l.org))
-                .map(|row| OrgId(row.org));
-            // Doc 36 cut GC.8: a workshop's operator accepts a repair order's fee contract
-            // when the work is done, the licence's way.
-            let workshop = def
-                .workshop
-                .as_ref()
-                .and_then(|w| map.orgs.get(&w.operator))
-                .map(|row| OrgId(row.org));
-            // Doc 41 cut RS.5 (Q-41-11): the recovery operator (Tycho Mutual) accepts a
-            // retrieval at the window's end, the clerk's tick; it escrows nothing.
-            let recovery = def
-                .recovery
-                .as_ref()
-                .and_then(|r| map.orgs.get(&r.operator))
-                .map(|row| OrgId(row.org));
-            programme == Some(*org)
-                || issuer == Some(*org)
-                || workshop == Some(*org)
-                || recovery == Some(*org)
-                || vendor_orgs(map).contains(org)
+            map.is_some_and(|map| {
+                def.orgs.iter().any(|row| {
+                    row.roles.contains(&crate::port::def::OrgRole::Acceptor)
+                        && map
+                            .orgs
+                            .get(&row.id)
+                            .is_some_and(|made| OrgId(made.org) == *org)
+                })
+            })
         })
     }
 }

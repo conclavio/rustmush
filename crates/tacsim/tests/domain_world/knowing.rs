@@ -4293,17 +4293,19 @@ fn survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract() {
         GOD,
         &format!("@account/open #{}=tacsim.credit", pilot.0),
     );
-    assert_eq!(
-        rig.tw
-            .world()
-            .module_state::<mush_economy::EconomyStore>()
-            .expect("the economy")
-            .peek_next_contract(),
-        0,
-        "the first commission exercises the economy's valid zero contract id"
-    );
+    // Doc 48 cut EX.3: the works' first purchase on the board, made while the ports stock up,
+    // holds the economy's zero contract id now, so the commission takes the next one.
+    let next = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy")
+        .peek_next_contract();
     let accepted = accept_commission(&mut rig, pilot, "juling-k");
-    assert_eq!(accepted.contract, 0);
+    assert_eq!(
+        accepted.contract, next,
+        "the commission takes the next contract id"
+    );
     let sponsor = survey_money(&rig.tw, accepted.sponsor_account);
     let payee = survey_money(&rig.tw, accepted.payee);
     rig = reboot(rig, &[pilot]);

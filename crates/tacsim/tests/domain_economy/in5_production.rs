@@ -378,7 +378,7 @@ fn facility_at(rig: &Rig, entry: &str, local: &str) -> mush_industry::FacilityRe
 }
 
 /// The works' stores vault at `entry` (the vault on the facility object).
-fn stores(rig: &Rig, entry: &str, local: &str) -> Option<VaultId> {
+pub(crate) fn stores(rig: &Rig, entry: &str, local: &str) -> Option<VaultId> {
     let room = station_room(&rig.tw, entry, local);
     rig.tw.world().module_state::<EconomyStore>().and_then(|s| {
         s.snapshot()
@@ -548,9 +548,9 @@ async fn in5_concentrate_refined_at_kasei_becomes_fittings_sold_at_ceres() {
         10,
         "two lots of five, one an IC day, to the floor"
     );
-    // Two purchases moved under the works ledger (keyed by the stores), and no third paid. (The
-    // first's payment key has aged out of the economy's RAM window by now: the rig runs at world
-    // rate 1, so the two passages are some 23 real days.)
+    // Doc 48 cut EX.3 (Q-48-9): the two purchases were trades on the board (`ex3_board` reads
+    // them on the tape, which this story's 23 days roll past), so nothing moved under the works
+    // ledger.
     let ledgers = rig
         .tw
         .world()
@@ -560,18 +560,7 @@ async fn in5_concentrate_refined_at_kasei_becomes_fittings_sold_at_ceres() {
         .clone();
     let moved =
         crate::driving_rig::typed(&mut rig.tw, &ledgers, &works_stores.0).map(|ledger| ledger.acts);
-    assert_eq!(moved, Some(2), "two lots moved into the works' stores");
-    let paid = |act: u32| {
-        let key = mush_economy::IdempotencyKey::new(
-            tacsim::port::supply::SUPPLY_KEY,
-            format!("{}/{act}/{ALLOYS}/5", works_stores.0),
-        );
-        rig.tw
-            .world()
-            .module_state::<EconomyStore>()
-            .is_some_and(|s| s.snapshot().idempotency(&key).is_some())
-    };
-    assert!(paid(2) && !paid(3), "the second purchase paid, no third");
+    assert_eq!(moved.unwrap_or(0), 0, "no lot moved off the board");
 
     // ---- The matter pin and the drift check held ----
     no_refused_writes(&rig.tw);
