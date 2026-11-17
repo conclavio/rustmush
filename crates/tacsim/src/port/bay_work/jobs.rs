@@ -88,6 +88,19 @@ pub enum BayJob {
         /// Units of `good` the rounds take (`ceil(rounds / rounds_per_unit)`), 0 without one.
         units: u64,
     },
+    /// **Load a space hull's magazine** (doc 49 unit CC.7 part 2; Q-49-12): whole units of a
+    /// space munitions good, drawn from her hold or bought from the workshop's stores
+    /// ([`super::magazines`]).
+    Magazine {
+        /// The mount, by its id on her hull.
+        mount: ComponentId,
+        /// The rounds it loads: `units` times the good's rounds a unit, never past her fit.
+        rounds: i64,
+        /// The munitions good that loads it.
+        good: CanonicalId,
+        /// Whole units of `good`.
+        units: u64,
+    },
 }
 
 impl BayJob {
@@ -96,9 +109,11 @@ impl BayJob {
     #[must_use]
     pub const fn needs(&self) -> FacilityClass {
         match self {
-            Self::Armor { .. } | Self::Mend { .. } | Self::Unjam { .. } | Self::Rearm { .. } => {
-                FacilityClass::CarrierBay
-            }
+            Self::Armor { .. }
+            | Self::Mend { .. }
+            | Self::Unjam { .. }
+            | Self::Rearm { .. }
+            | Self::Magazine { .. } => FacilityClass::CarrierBay,
             Self::Rebuild { .. } | Self::Replace { .. } => FacilityClass::Workshop,
         }
     }
@@ -106,7 +121,7 @@ impl BayJob {
     /// Whether this job is a repair (Q-36-33's "repair": everything but loading rounds).
     #[must_use]
     pub const fn is_repair(&self) -> bool {
-        !matches!(self, Self::Rearm { .. })
+        !matches!(self, Self::Rearm { .. } | Self::Magazine { .. })
     }
 
     /// The selector word that picks this job in `+bay/order` (`armor`, `rebuild`, `mend`,
@@ -119,7 +134,7 @@ impl BayJob {
             Self::Mend { .. } => "mend",
             Self::Unjam { .. } => "unjam",
             Self::Replace { .. } => "replace",
-            Self::Rearm { .. } => "rearm",
+            Self::Rearm { .. } | Self::Magazine { .. } => "rearm",
         }
     }
 
@@ -131,7 +146,10 @@ impl BayJob {
             Self::Mend { component }
             | Self::Unjam { component }
             | Self::Replace { component, .. }
-            | Self::Rearm { component, .. } => component.as_str(),
+            | Self::Rearm { component, .. }
+            | Self::Magazine {
+                mount: component, ..
+            } => component.as_str(),
         }
     }
 
@@ -148,6 +166,12 @@ impl BayJob {
             Self::Rearm { rounds, .. } => {
                 format!("recharge {} ({rounds} rounds)", self.target())
             }
+            Self::Magazine {
+                rounds,
+                good,
+                units,
+                ..
+            } => format!("rearm {} ({rounds} rounds, {units} {good})", self.target()),
             Self::Replace { lot: Some(lot), .. } => format!("fit {} from {lot}", self.target()),
             _ => format!("{} {}", self.kind_word(), self.target()),
         }
@@ -450,6 +474,8 @@ pub fn quote(
             });
         }
     }
+    // Doc 49 unit CC.7 part 2: a space hull's magazines short of her fit.
+    all.extend(super::magazines::quote_jobs(unit, goods, tariff));
     let (jobs, elsewhere) = all.into_iter().partition(|job| job.job.needs() <= class);
     Ok(BayQuote {
         hull: unit.object(),
@@ -466,7 +492,7 @@ const fn rank(job: &BayJob) -> u8 {
         BayJob::Armor { .. } => 1,
         BayJob::Replace { .. } => 2,
         BayJob::Mend { .. } | BayJob::Unjam { .. } => 3,
-        BayJob::Rearm { .. } => 4,
+        BayJob::Rearm { .. } | BayJob::Magazine { .. } => 4,
     }
 }
 
@@ -551,6 +577,10 @@ pub fn work(
                 )
                 .map_err(say)?
                 .0
+            }
+            BayJob::Magazine { mount, rounds, .. } => {
+                let rounds = loaded.get(mount).copied().unwrap_or(*rounds);
+                super::magazines::load(&now, mount, rounds, at_ic)?
             }
             BayJob::Rearm {
                 component, rounds, ..

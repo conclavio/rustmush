@@ -91,6 +91,9 @@ pub struct Floor {
     pub home: &'static str,
     /// The home port's venue word (`+ship/undock`'s argument).
     pub venue: &'static str,
+    /// **Doc 48 cut EX.3**: the venue the house's helm buys its bill and stores at (the yard's,
+    /// [`YARD_PORT`]'s): the one venue the gate admits the helm at.
+    pub buys_at: &'static str,
 }
 
 /// **The floors** (Q-39-34; provisional): the Trust's two free Drays at Ceres.
@@ -101,6 +104,7 @@ pub const FLOORS: &[Floor] = &[Floor {
     floor: 2,
     home: "ceres_port",
     venue: "ceres",
+    buys_at: "stickney",
 }];
 
 // ---- the record -----------------------------------------------------------------------------
@@ -275,6 +279,22 @@ pub fn ferry_hull(w: &World, pilot: ObjId) -> Option<ObjId> {
         .flat_map(|record| record.orders.iter())
         .find(|order| matches!(order.phase, Phase::Provisioning | Phase::Sailing))
         .and_then(|order| order.hull)
+}
+
+/// **The venue a house's helm buys at** (doc 48 cut EX.3): its floor's `buys_at`, `None` for
+/// anyone who is not a registered helm.
+#[must_use]
+pub fn helm_buys_at(w: &World, obj: ObjId) -> Option<&'static str> {
+    let book = book(w)?;
+    let org = book
+        .values()
+        .filter_map(crate::port::owned::Held::present)
+        .find(|record| record.helm == Some(obj))
+        .map(|record| record.org.clone())?;
+    FLOORS
+        .iter()
+        .find(|floor| floor.org == org.as_str())
+        .map(|floor| floor.buys_at)
 }
 
 /// Whether `obj` is a house's helm.
@@ -1208,8 +1228,27 @@ fn refund(ctx: &mut Ctx<'_>, home: &Home, (helm, purse): (ObjId, AccountId), n: 
     }
 }
 
+/// **An NPC buyer's purse** (doc 48 cut EX.3): its own unscoped credit account, opened on first
+/// use under `name`. The market's buyer is always a person's account, so a house's or a works'
+/// buyer holds one.
+///
+/// # Errors
+///
+/// The economy cannot open one.
+pub(crate) fn purse_of(ctx: &mut Ctx<'_>, buyer: ObjId, name: &str) -> Result<AccountId, String> {
+    if let Some(account) = crate::port::credit::own_account(ctx.w, buyer) {
+        return Ok(account.id);
+    }
+    open_named_purse(ctx, buyer, name)
+}
+
 /// Open the helm's own credit account.
 fn open_purse(ctx: &mut Ctx<'_>, helm: ObjId) -> Result<AccountId, String> {
+    open_named_purse(ctx, helm, "house helm purse")
+}
+
+/// Open `owner`'s own credit account, named `name`.
+fn open_named_purse(ctx: &mut Ctx<'_>, owner: ObjId, name: &str) -> Result<AccountId, String> {
     let id = ctx
         .w
         .module_state_mut::<EconomyStore>()
@@ -1221,10 +1260,10 @@ fn open_purse(ctx: &mut Ctx<'_>, helm: ObjId) -> Result<AccountId, String> {
         ctx,
         Account {
             id,
-            owner: PrincipalId::Object(helm),
+            owner: PrincipalId::Object(owner),
             instrument,
             scope: None,
-            name: SmolStr::new("house helm purse"),
+            name: SmolStr::new(name),
             status: AccountStatus::Active,
             posted_balance: Amount::ZERO,
             held_amount: Amount::ZERO,

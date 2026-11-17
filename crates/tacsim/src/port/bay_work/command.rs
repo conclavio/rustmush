@@ -51,7 +51,10 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     workshop takes her alloys and parts into its stores and pays her holder a fifth of what she \
     is worth less her parts for the structure, and the parts' used value less their removal. \
     The holder's +bay/return <hull> sells her bale's unused kilograms back to the workshop at \
-    the reference.";
+    the reference. A ship docked at a port with a workshop is her own bay: +bay <ship> quotes \
+    her space magazines too, and +bay/order <ship>=rearm loads them with torpedoes, spinal \
+    rounds and point-defence boxes from her hold, buying what her hold lacks from the \
+    workshop's stores at the goods' price, in whole units (a box is 500 rounds).";
 
 /// `#<id>`, or a thing of that name in the actor's room — never a scrapped shell by name (doc
 /// 36a P1-7).
@@ -212,11 +215,12 @@ fn taken_line(ctx: &Ctx<'_>, order: &super::BayOrder) -> String {
         "No fee away from port: her crew does the work".to_owned()
     };
     format!(
-        "Order {} taken in the {}: {}. {fee}, in {} IC time.",
+        "Order {} taken in the {}: {}. {fee}, in {} IC time.{}",
         order.seq,
         order.class.word(),
         words.join(", "),
-        hours(order.due_ic.saturating_sub(order.started_ic))
+        hours(order.due_ic.saturating_sub(order.started_ic)),
+        super::magazines::bought_words(&order.store_goods)
     )
 }
 
@@ -326,6 +330,31 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                         "  From the carrier's hold, all of it: {}.",
                         words.join(", ")
                     ));
+                }
+                // Doc 49 unit CC.7 part 2: a ship's rounds, from her hold and then the stores.
+                if !super::magazines::magazine_goods(&quote.jobs).is_empty() {
+                    let hold = super::source_hold(ctx.w, hull, &facility).ok();
+                    let stores = super::stores_of(ctx.w, &facility)
+                        .map(|row| mush_economy::VaultId(row.vault));
+                    let mut jobs = quote.jobs.clone();
+                    let table = ctx
+                        .w
+                        .module_state::<crate::store::TacsimStore>()
+                        .and_then(|store| store.goods());
+                    lines.push(
+                        match table.map(|table| {
+                            super::magazines::split(ctx, hold, stores, table, &mut jobs)
+                        }) {
+                            Some(Ok(split)) => {
+                                let bought: u64 = jobs.iter().map(|job| job.part_minor).sum();
+                                super::magazines::split_line(&split, bought, &|minor| {
+                                    money_minor(ctx, i64::try_from(minor).unwrap_or(i64::MAX))
+                                })
+                            }
+                            Some(Err(why)) => format!("  {why}"),
+                            None => "  The goods table is not loaded.".to_owned(),
+                        },
+                    );
                 }
                 // Doc 39 cut IN.1: what the hull's bale holds once the work is done.
                 if let Some(after) = after {
