@@ -908,7 +908,41 @@ interdictor takes no harm.
 
 **Tests.**
 
-TESTS-PLACEHOLDER
+All runs were on conclav.dev, in a throwaway clone, with the unit's patch applied on main
+`73d05678b` (main `b4254e826` merged forward with PL.3, PL.4, EX.0 and EX.2).
+
+- **New tests** (`space::bubble::cc8_tests`, `src/space/bubble_cc8_tests.rs`):
+  - `cc8_every_shipped_fit_flies_the_ruled_palette`: every fit's cycles (8, 6, 5, 4 and 0.5 s), the
+    spinal magazines, every laser dual-mode, and the start modes;
+  - `cc8_an_offence_laser_is_short_and_weak_against_a_hull`;
+  - `cc8_a_switch_starts_the_new_modes_cycle_and_never_fires_early`,
+    `cc8_switching_back_within_one_offence_cycle_keeps_the_offence_cooldown`,
+    `cc8_each_mode_fires_on_its_own_cycle`;
+  - `cc8_a_warships_screen_stops_a_lone_salvo_and_a_haulers_leaks`: the measurement's outcomes,
+    held at 150 km, 300 km and on the closing pass;
+  - `cc8_the_spinal_guns_dodge_stays_and_costs_her_change_of_speed`;
+  - `cc8_measure_the_screens` (ignored), the table above.
+- **The story**: `space::tick::thinks_tests::cc8_a_corvette_disables_a_dray_that_dodges`.
+- **Retired**: `space::custody::content_tests::cc6_every_shipped_fit_carries_the_rust_tables_values`,
+  for `cc6_a_hull_with_no_fit_of_her_own_flies_the_drays`.
+- **Suites, all passing:**
+  - `cargo nextest run -P ci -p tacsim`: 4,795 tests. Doc 47's space stories are among them:
+    `space_ap9.rs`, `field_ap11.rs`, the `tick_thinks_tests.rs` return-fire tests, MW.9, MW.11,
+    MW.13 and MW.21, and every `voyage.rs` story;
+  - the bot job (`cargo nextest run -P ci -p mush-bot`, less its two long stories): 796 tests.
+- **Guards, all passing**:
+  - `cargo fmt -p tacsim --check` and `cargo clippy -p tacsim --all-targets -- -D warnings`;
+  - the lint job's M7 memory-size pass;
+  - `mush-contract-tests`' `ci_policy` guards: census, panic budget, restriction lints and the
+    fiat budget;
+  - `engine_contracts` (the help lint and the space story lints);
+  - rustdoc with `-D warnings`, in both modes.
+- **Pins moved, by record**:
+  - the two space pack signatures in `DIGESTS`;
+  - the three doctrine digests in `picket_cast.json`;
+  - the story re-pins in the table above.
+- **The arena** was not touched. One `domain_arena` cockpit test failed once, under load, and
+  passed on its own and in the final run.
 
 **Divergences.**
 
@@ -977,8 +1011,8 @@ TESTS-PLACEHOLDER
   the 37 SF.R, MW.9, MW.10, CR.6 and RS.8 stories ran 286 s on main and 320 s on this branch.
   The branch run shared the box with 350 other tests: stories this unit did not touch (sfr13,
   sfr26b) rose by as much as the rewritten ones (about a second each), so part of the 34 s is load.
-- **Files outside the row**, each the least this needed. I asked the lead about them, and about
-  the SF.R stories' change of premise, and had no answer before opening the PR:
+- **Files outside the row**, each the least this needed. The lead approved them, and the SF.R
+  stories' change of premise:
   - `space/weapons.rs`: the per-mode cycle's state and the switch;
   - `space/custody.rs`: CC.6's `table_before_cc6` test retired, as CC.6's hand-over asked;
   - `space/view.rs`, `space/picket.rs`: a test each whose premise the palette moved;
