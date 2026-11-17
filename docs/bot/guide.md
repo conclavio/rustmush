@@ -374,8 +374,8 @@ read), then every gun that is due, main gun first, then the lock, `CONTACTS`,
 the heading and the speed and the lock's `RANGE`, and then the polls that can
 wait (`STATUS`, the regular `WEAPONSTATUS`, `BEARING B` and `VIEW BRIEF`).
 Those keep a slot
-free for any gun it would fire that is due inside the next second (not one that
-reads `0%`, and none while it fires nothing), and stop waiting for the guns once
+free for any gun it would fire that is due inside the next second (not one its
+floor or its reserve holds, and none while it fires nothing), and stop waiting for the guns once
 they are two seconds late; everything ahead of them in the order still goes
 first.
 
@@ -436,8 +436,8 @@ match, and boards back from its team room as above.
 own controller is read, imported or mirrored. It locks the nearest identified
 hostile with a fresh plot (never an unidentified contact, never a friend) and
 keeps that lock unless another is at least 100 m nearer; it fires each gun,
-main gun first, when the lock's plot is fresh and the gun is ready **on the
-gun's own clock**: the shot's acknowledgement starts it, one cycle and a slack
+main gun first, when the lock's plot is fresh, the gun's discipline lets it
+(below) and the gun is ready **on the gun's own clock**: the shot's acknowledgement starts it, one cycle and a slack
 long. The cycle is the whole seconds a `cycling (N s)` row prints when it is
 read inside the first second after the shot (the seconds the cockpit prints are
 rounded up, and a row read later can print a second less). The slack covers
@@ -449,6 +449,23 @@ cycling is tried again a quarter-second into the last second it was told
 (`1 s to go` a quarter-second on, `3 s to go` two seconds and a quarter on),
 inside the second it was refused for. A gun is never fired again while its last
 `FIRE` is unanswered.
+
+**Its discipline is the machines' own.** `help minds` gives the stock Line card's:
+it "fires at 35% or better on any face, 50% once a gun is under half its
+magazine", and "keeps a quarter of each gun's rounds back, and spends them only
+to answer a unit that has fired on it, or to cover its way home". The pilot
+fires under the same rule. A gun goes only when its chance against the lock is
+35% or better, and 50% or better once it holds under half its magazine. The
+chance is read from the gun's own `WEAPONSTATUS` row since the last lock line,
+or, for the main gun, from the lock line itself (`Locked on BA, 62% to hit.`
+is the chance of the gun a bare `FIRE` fires); a gun with no such chance read
+waits for one. A gun holding a quarter of its magazine or less (rounded down,
+as the card does) keeps it. It spends those rounds only on a lock it blames
+for a hit taken this match, or while its own fall back or a `withdraw` flies.
+The hit line says nothing of who fired, so the blame is the turn into the
+shot's reading: the nearest hostile whose row lies in the struck face's arc,
+else the lock. So the pilot never spends a magazine on shots under the floor,
+and a tank fired down to its reserve holds it until it is fired on.
 
 **Its guns on the arena's lattice.** A line-mode gun fires no faster than one
 cycle and one quarter-second step apart: the arena's own notices — every hit,
@@ -660,7 +677,9 @@ and every gun fires on its own clock, because the machine comes on to 420 m and
 stops, and a tank closing on it would be seen sooner. The halt ends when the
 hostile stops coming on (six seconds in which its `CONTACTS` row reads it no
 nearer and its plots show no course), when it reaches the band, when the tank
-is hit, or after a minute, and then the pilot fights as before. A hostile row from beyond the sight is a teammate's
+is hit, or after ten of its main gun's cycles (a minute of a 6 s cannon; the
+cycle as the pilot learned it from its own shots, and no limit before it has
+learned one), and then the pilot fights as before. A hostile row from beyond the sight is a teammate's
 report: it ends the wait with no halt, and the pilot fights or hunts as before.
 A wingman under a human lead opens the same way beside a teammate at the
 start: at its first `CONTACTS`, a contact the cockpit names as its own side,
@@ -673,7 +692,9 @@ reapproach = true`; off by default, see "From the muster, pooled" below).
 "Open the range past its sight and it comes after you again; let the ground
 hide you and it drives at where it last saw you". When the machine it fights
 has **stopped** (its plots show no course), is inside the stock sight, and has
-hit the tank at least eight times in the last twenty seconds and four more
+hit the tank at least eight times in the last four of its main gun's cycles
+(the cycle as the pilot learned it from its own shots: 60 s of a 15 s cannon;
+nothing is judged before it has learned one) and four more
 times than the tank has hit it, the pilot **backs away bow on**, steering on
 the machine while it can see it and on its last plot after: between 480 and
 600 m of a stopped machine the pilot cannot see it, but it can see the pilot
@@ -783,7 +804,7 @@ the north (35 m).`, `Opening: holding near our entry, facing 091° toward the
 other side's entry.`,
 `Opening over: BA is in sight after 95 s.`, `Firing from the halt at BA, 590 m
 off.`, `The halt is over: BA has stopped.`, `Opening the range on BA: 10 hits
-taken to 4 scored in 20 s; backing off bow on.`, `Out of BA's sight at 650 m
+taken to 4 scored in 60 s; backing off bow on.`, `Out of BA's sight at 650 m
 from its last plot; waiting for it to come on.`, `No room behind: waiting
 410 m from BA's last plot.`, `No approach from BA in 45 s; moving on.`,
 `Following BA home: it is hurt and driving away; holding 350 m behind it.`,
@@ -798,7 +819,7 @@ it holds, what its hold is doing (`stopped`, `ahead` or `astern`), the wait it
 is in (whom it is for and the seconds left, or `null`), the rule of its own in
 force (`rule`: `opening`, `halt`, `reapproach`, `approach_wait`, `follow`,
 `return_back`, `return_wait` or `null`), the hits taken and scored in the
-last twenty seconds (`exchange`), where the opening is (`opening`: `fresh`,
+exchange's window, four of the main gun's cycles (`exchange`), where the opening is (`opening`: `fresh`,
 `brief`, `inward`, `step`, `hold` or `done`), the start it kept (`start_m`), the
 lattice's phase and round trip as it reads them (`lattice`: `phase`,
 `rtt_ms`, each a figure or `null`), each gun's cycle and slack and whether

@@ -1595,9 +1595,12 @@ impl Lane {
     /// Always while the pilot fires nothing: with no lock, a friendly lock, or
     /// every gun in doubt (whose `WEAPONSTATUS` is the one read that ends it).
     /// Otherwise the carried guns the pilot may fire — not struck, rounds
-    /// left, not read at `0%` (the pilot leaves such a gun unfired until a row
-    /// says otherwise, so a slot kept for it would only hold back the read
-    /// that could) — that have a clock (`next_ready_ms`), each due at
+    /// left, and let fire by its discipline (the game's doc 49 cut CC.10,
+    /// `Pilot::may_fire`: at its floor against a chance read under the lock,
+    /// over its reserve unless answering or covering; it was "not read at
+    /// `0%`"). The pilot leaves any other gun unfired until a row says
+    /// otherwise, so a slot kept for it would only hold back the read that
+    /// could. Those that have a clock (`next_ready_ms`), each due at
     /// `d = max(clock, now)`, those with `d` inside the limiter's window,
     /// sorted by `d`: the `k`-th (from 0) must find the lines already in the
     /// window ending at `d`, this poll, the `k` guns due before it and itself
@@ -1610,7 +1613,13 @@ impl Lane {
         let mut due: Vec<u64> = p
             .weapons
             .iter()
-            .filter(|w| !p.struck.contains(&w.id) && w.rounds_left() > 0 && w.percent != Some(0))
+            // The game's doc 49 cut CC.10: only a gun the pilot's discipline
+            // lets fire (`Pilot::may_fire`) is reserved a line, as only such a
+            // gun is fired. A gun held under its floor or at its reserve is
+            // always due, and would hold back every poll that can wait.
+            .filter(|w| {
+                !p.struck.contains(&w.id) && w.rounds_left() > 0 && self.pilot.may_fire(p, w)
+            })
             .filter_map(|w| w.next_ready_ms)
             .map(|at| at.max(now_ms))
             .filter(|d| *d < now_ms.saturating_add(LIMIT_WINDOW_MS))
