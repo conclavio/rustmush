@@ -910,10 +910,18 @@ with in-step, census and distinct tests). `UNDER_SALE` now says the hull is up f
   - the whole of `mush-bot` passes (798, the new rows' family included);
   - `tacsim`'s lib tests over the buyout, the house sale, the bay, the vendor and the hull
     sale pass (66).
-- **The M7 market stories** (`player_market_story`, `player_market_typed`): they fail, and fail
-  identically on base main `c85a8744f`, where EX.1a measured them: `+minds/resell <lic>=<player>`
-  queues and is refused at its prepare ("That did not go through. Nothing changed."). The
-  cause is the #623 regression in the kernel's resale offer cap. EX.2 leaves it unchanged.
+- **The M7 market stories** (`player_market_story`, `player_market_typed`): both pass on the
+  tree merged with main `b4254e826`, which has #636's fix to the kernel's resale offer cap.
+  Before that merge they failed exactly as on base main `c85a8744f`: `+minds/resell` was
+  refused at its prepare.
+- **After the merge with main** (`b4254e826`: EX.1b, #636, PL.2, PL.7, CC.4, CC.7, CC.9), on
+  conclav.dev, these pass:
+  - the format check, the bot's `minds::` rows (38), `mush-contract-tests` and workspace clippy;
+  - mush-market and mush-economy (1,171);
+  - `tacsim --test domain_economy` in full (603, EX.1b's venue stories included);
+  - `co6_cored_ship` (3);
+  - `commerce_composition` (91);
+  - the M7 stories (2).
 - **The gates:** on the final tree, `cargo fmt --check`; workspace clippy with
   `-D warnings`; the M7 memory-size clippy; rustdoc with `-D warnings` on mush-market, tacsim,
   mush-composition and mush-bot, with and without private items; `mush-contract-tests` (the
@@ -1197,7 +1205,145 @@ against the tests that can see it:
 
 ## EX.3
 
-Not built.
+Row: §7.1 EX.3 (Q-48-9; doc 48a A-3). Built in two halves, each its own PR: EX.3a on main (after
+EX.1b, #637), EX.3b stacked on EX.3a. EX.3a lands first.
+
+### EX.3a (2026-11-16): the gate's agents, V6 on the board, the acceptors as data
+
+**Survey.**
+- **V6, the works' house purchase** (`port/supply.rs`):
+  - Stickney's clerk paid Kasei for a lot of structural alloys by a direct post, from the
+    operator's account to Kasei's.
+  - It then moved the lot from Kasei's storefront into the works' stores with `@inv/move`
+    submissions under a works act, retried by `supply_tries`.
+  - Payment and goods were two acts, so a move that never landed left Kasei paid. Nothing
+    reached the tape.
+- **The gate** (`PortVenueGate::admit`) admits `Presence::Here` only to an asker standing in one
+  of the venue's rooms. A port's clerk stands in the staff spine, which is in no venue.
+- **The acceptors** (`PortPartyCaps`) came from a rule in code: an org was an acceptor when a
+  port map recorded it as a vendor, as the programme's org, as the licence's issuer, or as the
+  workshop's or the recovery's operator.
+- **The market's buyer** is always `PrincipalId::Object(ctx.actor)`, holding an unscoped account
+  of its own. Before it escrows, `accept_at` checks that the actor may take from the endpoint it
+  buys into (`may_take`).
+- **The works' stores vault** was org-owned with no scope, so no NPC could take from it, and a
+  purchase into it was refused as "No such quote."
+
+**Built.**
+- **The gate's agents** (`market.rs` `agent_admitted`). Under `Presence::Here` the gate admits,
+  besides anyone standing at the venue:
+  - a port map's clerk, at its own port's venue only;
+  - a registered house helm, at the venue its floor buys at only (`pools.rs` `Floor.buys_at`,
+    `helm_buys_at`; the Trust's is Stickney's).
+
+  Players are unchanged. The endpoint and capacity checks still apply to an agent.
+- **V6 on the board** (`supply.rs`). On the stock clerk's turn, a purchase starts for a works
+  row that is under its floor, not yet bought today, and whose seller's ask lists at least a lot
+  with no draw in flight:
+  - The operator tops up the clerk's purse by what it lacks for the lot at the ask. That is at
+    most one post an IC day a row, keyed `tacsim.works_supply/{stores}/{day}/{good}/{lot}`.
+  - The clerk, as itself, quotes the ask and accepts it into the works' stores
+    (`Presence::Here`).
+  - The market escrows the price, draws the lot and settles. A leg that cannot be staged refunds
+    the escrow to the purse at the contract's deadline.
+
+  Three rules govern retries:
+  - While a purchase is on the board (`on_board`: a quote whose contract is Draft, Offered,
+    Active, ReadyToSettle or Disputed), no other starts, and the stock arm goes on to its list
+    step: the market keeps the ask's draw in hand until the contract settles.
+  - With the engine's queue full, the step defers before any money moves. This is IC14 row 2's
+    rule for the sell gate, since a full queue would drop the draw after the escrow.
+  - The IC day counts as spent only once the market answers.
+- **The clerk's purse** (`pools.rs` `purse_of`): the buyer's own unscoped credit account, opened
+  on first use under a name. The helm's purse uses the same opener.
+- **The works' stores** (`works.rs` `stores`) open in the operator org's root scope; the scope
+  was `None` before. The port's clerk already holds a `vault.withdraw` grant there for the
+  operator's storefront (lead ruling L25), so it may buy into the stores. A player who is not the
+  operator's agent still may not take from them.
+- **The acceptors are lane data** (`def.rs` `OrgRole`; `PortOrgDef.roles`, serde default, left
+  out when empty). `PortPartyCaps` accepts for an org whose port def row carries `"acceptor"`.
+  The lane gives the role to the twenty orgs the old rule covered.
+- **Lane v38 / relay v29**, over PL.3's v37: the role rows, re-signed.
+  - The strip chain's new head, `strip_roles`, rebuilds v37
+    (`ex3_strip_roles_rebuilds_the_published_v37`).
+  - `keep_roles` puts the shipped roles back on a stripped lane, for a suite that boots an older
+    lane's shape with today's code.
+
+**Tests.** (conclav.dev, `CARGO_INCREMENTAL=0`, on main `517dce487` with this half.)
+- **Stories** (`tacsim/tests/domain_economy/ex3_board.rs`):
+  - `ex3_the_works_buys_on_the_board_and_a_missed_leg_refunds`:
+    - the works' first lot is a settled quote on the tape after the ports stock up;
+    - on the next IC day, with the engine's queue held full for twelve fires, nothing is bought;
+    - then the purchase goes on the board, and Kasei's pool moves away before the draw lands;
+    - an IC day on, the purchase is closed, no trade, the stores unchanged, and the escrow back
+      in the purse;
+    - with the pool back, a later IC day's lot settles on the board, paid from the refunded purse
+      with no fresh top-up.
+  - `ex3_a_clerk_trades_at_its_own_port_only`: Stickney's and Ceres's clerks are admitted at
+    their own venues and refused at each other's, in the gate's words.
+  - `ex3_the_stores_admit_the_clerk_and_no_player`: Stickney's clerk may take from the works'
+    stores; a player may not.
+  - `in10_pools`: the Trust's helm is admitted at Stickney's venue and refused at Luna's. Ceres
+    admits it by presence, because it stands in Ceres's gallery.
+- **Lane:** `ex3_strip_roles_rebuilds_the_published_v37`, and every digest and version pin moved
+  to v38 / relay v29.
+- **Broad run:** tacsim's lib (2,416), `domain_economy` (613), `domain_world` (275),
+  `domain_field` (318), `domain_arena` (1,133) and `cost_lane` (12); mush-server's
+  `commerce_composition` (91) and `split_boundary` (227). All green after the test adaptations
+  under Divergences.
+- **Gates:**
+  - `cargo fmt --check`;
+  - clippy `--all-targets -D warnings` on tacsim and mush-server, and the M7 memory-size pass;
+  - rustdoc `-D warnings`;
+  - `mush-contract-tests`' `ci_policy` (80) and `help_commands` / `state_slot_owners` (10).
+- **Mutations:** 11, each alone, against the tests named to kill it; 9 killed. Two survive:
+  - **M7** (a purchase starts while one is on the board). The IC-day rule already stops a
+    second purchase the same day. The check matters only for a purchase still pending across an
+    IC-day boundary, which no story builds.
+  - **M8** (the in-flight check on the seller's ask dropped). No story has another buyer's draw
+    in flight on Kasei's ask when the clerk's turn comes.
+
+**Divergences.**
+- **Files outside the row's, approved by the lead:**
+  - `port/market.rs`: the gate's agent rule and `PortPartyCaps`;
+  - `port/works.rs`: the stores' scope, one field (it was `None`);
+  - `port/apply.rs`: one test literal;
+  - the lane bump's pins.
+- **`supply_tries` is gone** from `PortTickState`, since nothing moves goods by submission any
+  more. `owed_moves` and `moving` stay for the works ledger's readers, but are no longer used.
+- **A purchase on the board never holds up the stock clerk.** IN.5's step returned `Idle` while
+  its move was in flight, which held the clerk's list step for one fire. A board purchase stays
+  on the board until its contract settles, so holding the list step that long kept the ports
+  from stocking within the rigs' 40 fires. The step now hands the turn on.
+- **The purse top-up is keyed by IC day**, not by works act, because a purchase is no longer a
+  works act.
+- **in5's V6 assertion** now pins that no lot moved under the works ledger. It used to count two
+  works acts and their payment keys. The story's 23 days roll past the tape's window, so
+  `ex3_board` reads the trades on the tape instead.
+- **Tests that boot a stripped lane** and trade before an apply call `keep_roles` after the
+  strip: `sale.rs`' suite lane and mill's kept-world seed.
+- **mill's one-act check** allows the market's allocator in a fire where Stickney's clerk
+  quoted.
+- **Other suites, adapted to the works buying on the board** (`supply::buyers` and
+  `supply::purchase_on_board` are the readers they share):
+  - `commerce`'s lapsed-listing stories count releases apart from the works' buyers' lot
+    actions;
+  - `coop`'s retirement control accepts Kasei's deal in progress as the one other refusal,
+    since its rig never lands the market's draw;
+  - `knowing`'s survey commission takes the next contract id: the works' first purchase now
+    holds id 0, so that story no longer covers a zero id on the survey path;
+  - the composition rigs (`ic_slice_loop`, `ic_buyout_dormancy`, `sm_story`) let the works'
+    purchase settle before a jump of a Draw's whole window (a jump that size lapses a drawn
+    purchase unpaid, which the market escalates); `ic14` counts contracts apart from the
+    works'; `sm8`'s closed sum takes in the buyers' purses; `sm_story` lands the clerks'
+    submissions with the house's;
+  - `web/src/lib/fixtures/site/site_map.json` re-blessed: four timestamps 6 IC s earlier, the
+    stock-up one fire shorter.
+- **A house helm stands in its home port's gallery**, so the gate's presence rule admits it at
+  its home venue, as it would anyone standing there. The agent rule adds only the venue its
+  floor buys at.
+
+**Not built in EX.3a.** V7 and V10, and their failed-leg stories: EX.3b.
 
 ## EX.4
 

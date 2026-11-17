@@ -1054,6 +1054,17 @@ pub struct ReachPremiumDef {
     pub cap_permille: u32,
 }
 
+/// **What a port institution does on its own account** (doc 48 cut EX.3; Q-48-9): a role row on
+/// its org, read where code once kept a fixed list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrgRole {
+    /// It accepts its own contracts programmatically (the market's party cap): a vendor, the
+    /// programme's Trust, the licence's issuer, a workshop's or the recovery's operator. It confers
+    /// no money authority: an accept still escrows under the org account's own authority.
+    Acceptor,
+}
+
 /// **One institution of a port** (doc 18 §4.1, D-18-27): a real `mush-org`
 /// org with a root scope and one scoped `tacsim.credit` account, capitalized
 /// once from the treasury.
@@ -1078,6 +1089,10 @@ pub struct PortOrgDef {
     /// 250,000 at v11 takes it from 50,000 to 300,000.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub raises: Vec<u64>,
+    /// **Doc 48 cut EX.3** (Q-48-9): the institution's roles, each once ([`OrgRole`]). Omitted
+    /// while it has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<OrgRole>,
 }
 
 /// The most capital raises one institution may author (doc 20 cut SM.5).
@@ -3228,6 +3243,7 @@ mod tests {
             capital_major: capital,
             faction: cid("freeport"),
             raises: Vec::new(),
+            roles: Vec::new(),
         }
     }
 

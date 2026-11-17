@@ -2085,7 +2085,15 @@ fn ic6_a_port_with_a_leased_hull_refuses_retirement() {
         &format!("@atlas/pack retire {LANE_PACK}"),
     );
     assert!(!out.contains("chartered to a pilot"), "{out}");
-    assert!(out.contains(&format!("Retired {LANE_PACK}")), "{out}");
+    // Doc 48 cut EX.3: the works' first purchase on the board, Kasei's sale to Stickney's clerk,
+    // is a deal in progress until it settles, which this rig's landing never brings about; it
+    // is the one other refusal the control may meet.
+    assert!(
+        out.contains(&format!("Retired {LANE_PACK}"))
+            || (tacsim::port::supply::purchase_on_board(idle.tw.world())
+                && out.contains("vendor kasei has a deal in progress")),
+        "{out}"
+    );
 }
 
 // ---------------------------------------------------------------------------

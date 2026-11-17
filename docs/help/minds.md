@@ -68,9 +68,12 @@ Doctrine on Line.
 ## The six presets
 
 Line is the Registry's doctrine as this server runs it: it closes to 70% of
-its reach, fires at 10% or better on any face, keeps no rounds back, breaks
-off for its entry zone when its armour and internals fall under 35% and comes
-back after 20 quiet seconds, drives a minute to where it last saw a contact,
+its reach and fires at 35% or better on any face, 50% once a gun is under half
+its magazine. It keeps a quarter of each gun's rounds back, and spends them
+only to answer a unit that has fired on it, or to cover its way home. It
+breaks off for its entry zone when its armour and internals fall under 35%,
+and comes back after 20 quiet seconds; at its reserve on every gun it breaks
+off too, and stays home. It drives a minute to where it last saw a contact,
 and goes looking after a minute and a half with nobody in sight. Each other
 preset changes the terms it names, in the card's own words, and leaves every
 other term at Line's:

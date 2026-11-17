@@ -430,10 +430,33 @@ pub fn health_permille(view: &MindView) -> u32 {
 /// **Whether a hull that had a gun has nothing left to fire** (the reflex's
 /// `is_dry`, over the view): some weapon row holds a load, and every row is
 /// empty. A hull with no weapon rows is never dry — it is unarmed.
+///
+/// **Doc 49 unit CC.1** (Q-49-23, the second review's sentence 1): it still
+/// gates the arming ([`arming_for`]'s callers, `engage_orders`) and the stands,
+/// and it is the Rhai kernel `is_dry`. Whether the hull is dry FOR WITHDRAWAL
+/// is its own test, [`at_reserve`]: reusing this one would stop the reserve
+/// ever being spent.
 #[must_use]
 pub fn is_dry(view: &MindView) -> bool {
     view.weapons.iter().any(|weapon| weapon.rounds_max > 0)
         && view.weapons.iter().all(|weapon| weapon.rounds == 0)
+}
+
+/// **Whether a hull is dry for withdrawal** (doc 49 Q-49-23, unit CC.1): some
+/// mount's row holds a load, and every row holds at or under the card's reserve
+/// of its load ([`StockCard::keeps`]). On a card with no reserve it is
+/// [`is_dry`]. The withdraw edge, the expiry's restoration and the rally read
+/// it; the arming and the stands read [`is_dry`], so a hull at its reserve
+/// still answers fire and covers its withdrawal. The withdraw edge takes it as
+/// the doctrine's one retreat, as it takes a hurt hull: a hull that has
+/// rallied, or whose posture spent the retreat, stays (an empty one does not).
+#[must_use]
+pub fn at_reserve(view: &MindView, card: &StockCard) -> bool {
+    view.weapons.iter().any(|weapon| weapon.rounds_max > 0)
+        && view
+            .weapons
+            .iter()
+            .all(|weapon| weapon.rounds <= card.keeps(weapon.rounds_max))
 }
 
 /// **Whether firing `weapon` is held back by heat** (the reflex's
@@ -1113,7 +1136,11 @@ impl NativeStockMind {
             mem.ignore_identity = None;
         }
         let health = health_permille(view);
-        let dry = is_dry(view);
+        // Doc 49 unit CC.1 (Q-49-23): dry for withdrawal is the card's
+        // reserve on every mount, its own test (`at_reserve`); an empty hull
+        // (`is_dry`) is dry under it too.
+        let dry = at_reserve(view, card);
+        let empty = is_dry(view);
         // **The expiry's restoration** (`ReflexUnit::drop_to_doctrine`), read
         // off the view: a `Withdraw` that no live order holds, that the memory
         // says an order put it in (`ordered`, 17b cut M4.3), and that neither
@@ -1184,7 +1211,7 @@ impl NativeStockMind {
                 // 17b cut M1b.2: a cold hull's slots are disarmed, after the
                 // `Startup` — 17b cut M1b.3: where its view shows one armed.
                 let mut intents = vec![IntentKind::Startup];
-                intents.extend(arming_for(view, card, None, slots));
+                intents.extend(arming_for(view, card, None, slots, false));
                 return intents;
             }
             Power::Starting => {
@@ -1192,7 +1219,7 @@ impl NativeStockMind {
                     mem.state = MachineState::Startup;
                 }
                 mem.goal = held;
-                return arming_for(view, card, None, slots);
+                return arming_for(view, card, None, slots, false);
             }
             Power::Online => {
                 if matches!(mem.state, MachineState::Startup | MachineState::Disabled) {
@@ -1241,8 +1268,15 @@ impl NativeStockMind {
         }
 
         // ---- the `Withdraw` edges (16b cut Q.7) ----
+        //
+        // Doc 49 unit CC.1 (Q-49-23): a hull at its reserve on every mount
+        // breaks off as a hurt one does, as the doctrine's one retreat: not
+        // once it has rallied, nor where a posture spent that retreat
+        // (`crate::arena::mind::seed_stay`), so a guard stays and answers fire
+        // with its reserve while it can defend itself (doc 45 Q-45-9). An empty
+        // hull breaks off whatever it has spent, as before.
         if mem.state != MachineState::Withdraw
-            && (dry || (!mem.rallied && health < cfg.withdraw_permille))
+            && (empty || (!mem.rallied && (dry || health < cfg.withdraw_permille)))
         {
             mem.state = MachineState::Withdraw;
             mem.target = None;
@@ -1623,7 +1657,15 @@ impl NativeStockMind {
         // (`Startup` is the power arm's, which answers it with a disarm
         // where a slot is armed.)
         // 17b cut M1b.2: the slots first, after `Startup` and before `Goal`.
-        let mut intents: Vec<IntentKind> = arming_for(view, card, plan.arm_ceiling_cm, plan.slots);
+        // Doc 49 unit CC.1 (Q-49-23, sentence 3): a withdrawing hull arms
+        // with no reserve, so a cornered stand covers the withdrawal.
+        let mut intents: Vec<IntentKind> = arming_for(
+            view,
+            card,
+            plan.arm_ceiling_cm,
+            plan.slots,
+            mem.state == MachineState::Withdraw,
+        );
         // The helm half. A hull whose motion is disabled is not handed one:
         // every goal and heading would be refused `MotionDisabled`, as the
         // reflex's are, and the motor drops a goal it cannot drive anyway.
@@ -1998,9 +2040,10 @@ fn engage_orders(
 ///   stays armed; a heat skip here would put T1's numbering out of step with
 ///   the arena's and build in a think of latency for nothing — 17b's
 ///   adversarial F6), each `FireCondition { weapon, target: BestHostile,
-///   min_permille: card.min_odds_permille, aspects: card.aspect.mask(),
-///   min_rounds_left: card.reserve_pct × rounds_max / 100, min_range_m: 0,
-///   max_range_m: min(ceiling, the weapon's reach) / 100 }`;
+///   min_permille: card.floor_for(rounds, rounds_max), aspects:
+///   card.aspect.mask(), min_rounds_left: card.keeps(rounds_max) (0 while
+///   withdrawing), min_range_m: 0, max_range_m: min(ceiling, the weapon's
+///   reach) / 100 }`;
 /// * `None` — one `Condition(Disarm { weapon: None })` when some row is
 ///   armed, else nothing;
 /// * an unarmed hull (no weapon rows) — nothing (D-UM-48).
@@ -2012,19 +2055,32 @@ fn engage_orders(
 /// the `Disarm` only when some row is armed and the think wants none. A think
 /// whose view already shows what it wants emits no `Condition` at all. (17b
 /// cut M1b.2 emitted every think, idempotently, because the view could not
-/// show the arming.) The card is read here for its fire discipline (on Line:
-/// 100 per mille, every aspect, no reserve); its other mapped terms reach
-/// `decide` through the overlay (17b cut M1b.5).
+/// show the arming.) The card is read here for its fire discipline (on Line
+/// since doc 49 unit CC.1: 350 per mille, 500 under half a magazine, every
+/// aspect, a quarter of the load kept); its other mapped terms reach `decide`
+/// through the overlay (17b cut M1b.5).
 ///
 /// **17b cut M3.1** (D-UM-35): `slots` is the think's row's
 /// ([`crate::arena::mind::ThinkJob::profile`]) — Class I's two on every
 /// shipped chassis, and the Rhai port's `slots()` reads the same figure.
+///
+/// **Doc 49 unit CC.1** (Q-49-9, Q-49-23):
+///
+/// * the odds term is the card's floor for that mount's magazine,
+///   [`StockCard::floor_for`]: `min_odds`, and fifteen points more once the
+///   mount holds under half its load;
+/// * `min_rounds_left` is [`StockCard::keeps`] of the load, and `0` while
+///   `withdrawing` (the think ends in `Withdraw`): a withdrawing hull arms with
+///   no reserve, so its cornered stand covers the withdrawal (sentence 3).
+///   Under the reserve, a slot still answers a unit that fired on its hull:
+///   that is the arena's warrant (`Arena::warrant`), not the arming.
 #[must_use]
 pub fn arming_for(
     view: &MindView,
     card: &StockCard,
     reach_ceiling_cm: Option<u64>,
     slots: usize,
+    withdrawing: bool,
 ) -> Vec<IntentKind> {
     if view.weapons.is_empty() {
         return Vec::new();
@@ -2041,14 +2097,17 @@ pub fn arming_for(
         .take(slots)
         .filter_map(|weapon| {
             let reach_cm = weapon.bands_cm.last().map_or(0, |reach| u64::from(*reach));
-            let keeps =
-                u64::from(card.reserve_pct).saturating_mul(u64::from(weapon.rounds_max)) / 100;
+            let keeps = if withdrawing {
+                0
+            } else {
+                card.keeps(weapon.rounds_max)
+            };
             let wanted = FireCondition {
                 weapon: weapon.id.clone(),
                 target: SlotTarget::BestHostile,
-                min_permille: card.min_odds_permille,
+                min_permille: card.floor_for(weapon.rounds, weapon.rounds_max),
                 aspects: card.aspect.mask(),
-                min_rounds_left: u32::try_from(keeps).unwrap_or(u32::MAX),
+                min_rounds_left: keeps,
                 min_range_m: 0,
                 max_range_m: u32::try_from(ceiling_cm.min(reach_cm) / 100).unwrap_or(u32::MAX),
             };
@@ -3337,7 +3396,7 @@ mod tests {
         assert!(would_overheat(&view, &laser), "the precondition: hot");
         let mut card = crate::arena::card::line(&arena.arena_cfg.reflex);
         card.reserve_pct = 10;
-        let arms = arming_for(&view, &card, Some(80_000), CLASS_I_SLOTS);
+        let arms = arming_for(&view, &card, Some(80_000), CLASS_I_SLOTS, false);
         assert_eq!(arms.len(), CLASS_I_SLOTS, "{arms:?}");
         let terms: Vec<FireCondition> = arms.iter().map(armed_terms).collect();
         assert_eq!(
@@ -3365,21 +3424,21 @@ mod tests {
                 },
             ]
         );
-        // On Line the discipline is today's machine's: 100 per mille, every
-        // aspect, no reserve.
+        // On Line (doc 49 unit CC.1): 350 per mille on a full load, every
+        // aspect, a quarter of the load kept.
         let line = crate::arena::card::line(&arena.arena_cfg.reflex);
-        let on_line = arming_for(&view, &line, Some(80_000), CLASS_I_SLOTS);
+        let on_line = arming_for(&view, &line, Some(80_000), CLASS_I_SLOTS, false);
         assert!(
             on_line
                 .iter()
                 .map(armed_terms)
-                .all(|cond| cond.min_permille == 100
+                .all(|cond| cond.min_permille == 350
                     && cond.aspects == crate::arena::conditions::ASPECTS_ANY
-                    && cond.min_rounds_left == 0)
+                    && cond.min_rounds_left == like.rounds_max / 4)
         );
         // 17b cut M1b.3: nothing armed is nothing to disarm.
         assert_eq!(
-            arming_for(&view, &line, None, CLASS_I_SLOTS),
+            arming_for(&view, &line, None, CLASS_I_SLOTS, false),
             Vec::new(),
             "not reached, nothing armed: nothing said"
         );
@@ -3388,17 +3447,17 @@ mod tests {
             row.armed = Some(FrameArming::of(2, &cond));
         }
         assert_eq!(
-            arming_for(&view, &line, None, CLASS_I_SLOTS),
+            arming_for(&view, &line, None, CLASS_I_SLOTS, false),
             vec![disarm()],
             "not reached: one disarm"
         );
         view.weapons.clear();
         assert_eq!(
-            arming_for(&view, &line, Some(80_000), CLASS_I_SLOTS),
+            arming_for(&view, &line, Some(80_000), CLASS_I_SLOTS, false),
             Vec::new()
         );
         assert_eq!(
-            arming_for(&view, &line, None, CLASS_I_SLOTS),
+            arming_for(&view, &line, None, CLASS_I_SLOTS, false),
             Vec::new(),
             "D-UM-48"
         );
@@ -3597,6 +3656,158 @@ mod tests {
         );
     }
 
+    /// **Doc 49 unit CC.1 (Q-49-23, sentences 1 and 3; Q-49-9): dry for
+    /// withdrawal is its own test, and a withdrawing hull arms with no
+    /// reserve.**
+    ///
+    /// * Every mount at Line's reserve of its load: [`is_dry`] still reads
+    ///   `false` (rounds are left, so the arming is not gated), [`at_reserve`]
+    ///   reads `true`; one round over on one mount, or a card with no reserve,
+    ///   reads `false`.
+    /// * A hull fighting on full magazines breaks off at its next think once
+    ///   it is at its reserve on every mount, and not while one is over it
+    ///   (until CC.1 only an empty hull broke off, so a hull at its reserve
+    ///   stood and never fired).
+    /// * Cornered on the way home, it arms with no reserve (`min_rounds_left`
+    ///   `0`), at the floor its magazines call for: under half a load,
+    ///   fifteen points over the card's. Engaged at its reserve on one mount
+    ///   only, it arms that mount with the reserve kept.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cc1_a_hull_at_its_reserve_withdraws_by_its_own_test_and_covers_the_withdrawal() {
+        use crate::arena::card::line;
+        let mut arena = field(vec![
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
+        ]);
+        online(&mut arena, RED);
+        hold(&mut arena, RED, BLUE, ContactId(0x77));
+        let card = line(&arena.arena_cfg.reflex);
+        let full = view_of(&arena, RED);
+        assert!(!full.weapons.is_empty(), "the line tank is armed");
+        let mut low = full.clone();
+        for weapon in &mut low.weapons {
+            weapon.rounds = card.keeps(weapon.rounds_max);
+            assert!(weapon.rounds > 0, "the precondition: a round left");
+        }
+        assert!(!is_dry(&low), "rounds are left: the arming is not gated");
+        assert!(at_reserve(&low, &card), "dry for withdrawal");
+        let mut one_over = low.clone();
+        if let Some(weapon) = one_over.weapons.first_mut() {
+            weapon.rounds += 1;
+        }
+        assert!(!at_reserve(&one_over, &card));
+        let mut no_reserve = card.clone();
+        no_reserve.reserve_pct = 0;
+        assert!(!at_reserve(&low, &no_reserve), "only dry is dry on it");
+        let mut empty = low.clone();
+        for weapon in &mut empty.weapons {
+            weapon.rounds = 0;
+        }
+        assert!(is_dry(&empty) && at_reserve(&empty, &no_reserve));
+        assert!(
+            !at_reserve(
+                &MindView {
+                    weapons: Vec::new(),
+                    ..low.clone()
+                },
+                &card
+            ),
+            "unarmed"
+        );
+
+        // Fighting on full magazines, then at its reserve on every mount.
+        let mut fight = StockMemory::default();
+        let _ = think(&arena, &full, &mut fight, 1_000);
+        assert_eq!(fight.state, MachineState::Engage);
+        let mut breaks = fight.clone();
+        let _ = think(&arena, &low, &mut breaks, 2_000);
+        assert_eq!(breaks.state, MachineState::Withdraw, "dry for withdrawal");
+        assert!(!breaks.ordered, "its own edge, not an order's");
+        let mut stays = fight.clone();
+        let engaged = think(&arena, &one_over, &mut stays, 2_000);
+        assert_eq!(stays.state, MachineState::Engage, "one mount over");
+        // The reserve's break-off is the doctrine's one retreat: a hull that
+        // has rallied (or whose posture spent it, `seed_stay`) stays at its
+        // reserve, and still breaks off once it is empty.
+        let mut rallied = StockMemory {
+            rallied: true,
+            ..fight.clone()
+        };
+        let _ = think(&arena, &low, &mut rallied, 2_000);
+        assert_eq!(rallied.state, MachineState::Engage, "its retreat is spent");
+        let mut emptied = StockMemory {
+            rallied: true,
+            ..fight.clone()
+        };
+        let _ = think(&arena, &empty, &mut emptied, 2_000);
+        assert_eq!(emptied.state, MachineState::Withdraw, "empty breaks off");
+        // Engaged with its first mount over its reserve (any other at it): the
+        // reserve is kept on each, at the risen floor under half a load.
+        let arms: Vec<FireCondition> = engaged
+            .iter()
+            .filter(|kind| matches!(kind, IntentKind::Condition(Arming::Arm(_))))
+            .map(armed_terms)
+            .collect();
+        assert!(!arms.is_empty(), "{engaged:?}");
+        for (cond, weapon) in arms.iter().zip(&one_over.weapons) {
+            assert_eq!(cond.min_rounds_left, card.keeps(weapon.rounds_max));
+            assert_eq!(cond.min_permille, 500, "under half a load");
+        }
+
+        // Cornered on the way home: armed with no reserve.
+        let ranges = view_ranges(
+            &low,
+            card.as_reflex(&arena.arena_cfg.reflex).engage_band_permille,
+            None,
+        );
+        let mut cornered = low.clone();
+        for row in &mut cornered.contacts {
+            row.range_m = (ranges.stand_cm / 100).saturating_sub(10);
+        }
+        let mut home = StockMemory {
+            state: MachineState::Withdraw,
+            goal: Some((1, 1)),
+            ..StockMemory::default()
+        };
+        let covering = think(&arena, &cornered, &mut home, 3_000);
+        emission_holds(&covering);
+        assert_eq!(home.state, MachineState::Withdraw, "it stays on its way");
+        let covered: Vec<FireCondition> = covering
+            .iter()
+            .filter(|kind| matches!(kind, IntentKind::Condition(Arming::Arm(_))))
+            .map(armed_terms)
+            .collect();
+        assert!(
+            !covered.is_empty(),
+            "the cornered hull answers: {covering:?}"
+        );
+        assert!(
+            covered
+                .iter()
+                .all(|cond| cond.min_rounds_left == 0 && cond.min_permille == 500),
+            "no reserve on the way home, the floor of a low magazine: {covered:?}"
+        );
+        // And on full magazines, cornered: no reserve, the card's own floor.
+        let mut cornered_full = full.clone();
+        cornered_full.contacts.clone_from(&cornered.contacts);
+        let mut home_full = StockMemory {
+            state: MachineState::Withdraw,
+            goal: Some((1, 1)),
+            ..StockMemory::default()
+        };
+        let covering_full = think(&arena, &cornered_full, &mut home_full, 3_000);
+        let first = covering_full
+            .iter()
+            .find(|kind| matches!(kind, IntentKind::Condition(Arming::Arm(_))))
+            .map(armed_terms);
+        assert_eq!(
+            first.map(|cond| (cond.min_rounds_left, cond.min_permille)),
+            Some((0, 350)),
+            "{covering_full:?}"
+        );
+    }
+
     /// **The citation's weapon is T0's first-ready pick among the armed
     /// weapons, numbered `i + 1`** (17b cut M1b.2): a hot laser first and a
     /// cold cannon second, a fresh lock — the laser is armed (S1) and
@@ -3690,7 +3901,7 @@ mod tests {
         let card = crate::arena::card::line(&arena.arena_cfg.reflex);
         let arm = |arena: &mut Arena| {
             let view = view_of(arena, RED);
-            for kind in arming_for(&view, &card, Some(100_000), CLASS_I_SLOTS) {
+            for kind in arming_for(&view, &card, Some(100_000), CLASS_I_SLOTS, false) {
                 let IntentKind::Condition(arming) = kind else {
                     panic!("an arming");
                 };
@@ -3714,7 +3925,13 @@ mod tests {
         // 17b cut M1b.3: the view shows the machine gun in S2 on the terms
         // wanted, so the arming answers nothing — no re-arm, and S2 stands.
         assert_eq!(
-            arming_for(&view_of(&arena, RED), &card, Some(100_000), CLASS_I_SLOTS),
+            arming_for(
+                &view_of(&arena, RED),
+                &card,
+                Some(100_000),
+                CLASS_I_SLOTS,
+                false
+            ),
             Vec::new(),
             "nothing to re-arm: the view shows S2 as wanted"
         );

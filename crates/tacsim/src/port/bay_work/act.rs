@@ -237,6 +237,13 @@ pub enum OwedKind {
         /// part from the workshop's stores; `None` for a part in the hold the goods come from.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fit_at: Option<u64>,
+        /// **The space munitions bought from the workshop's stores** (doc 49 unit CC.7 part 2):
+        /// debited from [`OwedKind::Draw`]'s `store_at` in the same draw. Omitted while empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        store: Vec<GoodUnits>,
+        /// The storefront vault (`VaultId.0`) they lie in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        store_at: Option<u64>,
     },
     /// Mint lots into the hold, or (doc 39 cut IN.8) a workshop scrap's or a bale return's into
     /// the operator's stores.
@@ -378,7 +385,7 @@ impl OwedAct {
     /// A sentence naming what is wrong.
     pub fn check(&self) -> Result<(), String> {
         let rows = match &self.kind {
-            OwedKind::Draw { goods, .. } => goods.len(),
+            OwedKind::Draw { goods, store, .. } => goods.len().saturating_add(store.len()),
             OwedKind::Mint { lots, .. } | OwedKind::Commission { lots, .. } => lots.len(),
             OwedKind::Hot { .. } | OwedKind::Hold { .. } | OwedKind::Release { .. } => 0,
         };
@@ -970,9 +977,32 @@ impl ActionProvider for BayActProvider {
                 fit,
                 fit_at,
                 order,
+                store,
+                store_at,
             } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
                 let fit_endpoint = fit_at.map_or(endpoint, |v| EndpointRef(VaultId(v)));
+                // Doc 49 unit CC.7 part 2: the munitions bought from the workshop's stores,
+                // debited from the storefront in this same draw, all or nothing.
+                if !store.is_empty() {
+                    let at = EndpointRef(VaultId(store_at.ok_or_else(invalid)?));
+                    for row in store {
+                        let available = self
+                            .inventory
+                            .available(txn, at, &row.good)
+                            .map_err(|_| refused("the workshop's stores cannot be read"))?;
+                        if available < row.units {
+                            return Err(refused(
+                                "the workshop's stores no longer carry the rounds bought",
+                            ));
+                        }
+                    }
+                    for row in store.iter().filter(|r| r.units > 0) {
+                        self.inventory
+                            .debit(txn, at, &row.good, row.units)
+                            .map_err(|_| refused("the workshop's stores could not be drawn"))?;
+                    }
+                }
                 for row in goods {
                     let available = self
                         .inventory

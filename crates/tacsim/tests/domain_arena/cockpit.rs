@@ -17006,7 +17006,9 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         Some(format!("Mind card on #{id} ({name}): Line (as checked out)").as_str()),
         "{said}"
     );
-    assert_eq!(lines.len(), 6, "{said}");
+    // Doc 49 unit CC.1: an armed hull's card reads a sixth section line, the
+    // fire discipline's two rules, and Line's floor is 35%.
+    assert_eq!(lines.len(), 7, "{said}");
     assert!(
         lines
             .iter()
@@ -17016,7 +17018,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     assert!(
         lines
             .iter()
-            .any(|line| line.starts_with("  fire discipline  min_odds 10%  aspect any")),
+            .any(|line| line.starts_with("  fire discipline  min_odds 35%  aspect any")),
         "{said}"
     );
 

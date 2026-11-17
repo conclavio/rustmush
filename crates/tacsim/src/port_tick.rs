@@ -1745,9 +1745,6 @@ pub struct PortTickState {
     /// **Doc 39 cut IN.5**: the IC day of each `(stores vault, good)` row's last purchase — the
     /// one-a-day limit, RAM as the mill's back-offs are.
     pub(crate) supply_day: BTreeMap<(u64, CanonicalId), i64>,
-    /// **Doc 39 cut IN.5**: each in-flight purchase's move submissions, by stores vault ->
-    /// `(the ordinal, the submissions)`.
-    pub(crate) supply_tries: BTreeMap<u64, (u32, u8)>,
     /// **Doc 39 cut IN.5**: the house purchases warned about this boot, by `(stores, good)`.
     pub(crate) supply_warned: BTreeSet<(u64, CanonicalId)>,
 }

@@ -119,6 +119,14 @@ pub struct BayOrder {
     /// The goods the order draws from that hold at completion (GC.8b).
     #[serde(default)]
     pub goods: Vec<super::act::GoodUnits>,
+    /// **The space munitions the order buys from the workshop's stores** (doc 49 unit CC.7
+    /// part 2): drawn from [`BayOrder::store_vault`] at completion, their price in the fee.
+    /// Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub store_goods: Vec<super::act::GoodUnits>,
+    /// The workshop's storefront vault (`VaultId.0`) those goods lie in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_vault: Option<u64>,
     /// The ordinal of the draw this order owes at completion, once owed (GC.8b).
     #[serde(default)]
     pub draw_act: Option<u32>,

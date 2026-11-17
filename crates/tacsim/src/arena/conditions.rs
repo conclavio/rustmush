@@ -167,7 +167,8 @@ impl SlotTarget {
 /// `min_range_m`/`max_range_m` bound the lock's **rounded** range, the figure
 /// `RANGE` prints (`min_range_m` is 17b's one addition to D-UM-16's field list,
 /// declared); `min_rounds_left` is the reserve the slot keeps (it fires only
-/// while the weapon holds MORE rounds than this).
+/// while the weapon holds MORE rounds than this, or, since doc 49 unit CC.1,
+/// at a unit that has fired on the hull: [`Arena::warrant`]'s third term).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FireCondition {
@@ -179,7 +180,8 @@ pub struct FireCondition {
     pub min_permille: u16,
     /// The aspects it fires at ([`ASPECTS_ANY`] for all four).
     pub aspects: u8,
-    /// The rounds it keeps back: it fires while the weapon holds more.
+    /// The rounds it keeps back: it fires while the weapon holds more, and
+    /// under them only answering fire (doc 49 Q-49-23).
     pub min_rounds_left: u32,
     /// The nearest rounded range it fires at, metres.
     pub min_range_m: u32,
@@ -1000,7 +1002,12 @@ impl Arena {
     ///    expired); and the lock's target still in the match. Else
     ///    [`Held::Idle`] — an unclassified lock is idle (D-UM-17's
     ///    classified-only rule, extended to the default target);
-    /// 3. `rounds > slot.min_rounds_left`, else [`HeldWhy::Rounds`];
+    /// 3. `rounds > slot.min_rounds_left`, else [`HeldWhy::Rounds`] — unless
+    ///    the lock's target has fired on this hull and a round is left: **the
+    ///    reserve is spent answering fire** (doc 49 Q-49-23, unit CC.1), fire
+    ///    counted as the absent gate counts it (the record,
+    ///    [`crate::arena::state::UnitState::fired_on_by`], and a guard's
+    ///    widening to its player's other units);
     /// 4. one [`Arena::aim_at`] trace; the plot's range **rounded** at the
     ///    lock's step for the plot's age (`range_m_rounded` at
     ///    `lock_range_step_m`, the figure `RANGE` prints) inside
@@ -1053,7 +1060,14 @@ impl Arena {
             return Err(Held::Idle);
         }
         let rounds = state.weapon_ammo(&slot.weapon);
-        if rounds <= slot.min_rounds_left {
+        // Doc 49 unit CC.1 (Q-49-23, sentence 2): the reserve is spent
+        // answering fire. A round under the reserve goes only at a unit whose
+        // fire has reached this hull as the absent gate counts it
+        // (`Arena::answers_fire`: `UnitState::fired_on_by`, kept in every match
+        // since this unit, and a guard's widening); an empty magazine answers
+        // nobody.
+        let answering = rounds > 0 && self.answers_fire(unit, held.target);
+        if rounds <= slot.min_rounds_left && !answering {
             return Err(Held::Why(HeldWhy::Rounds {
                 rounds,
                 keeps: slot.min_rounds_left,
@@ -3630,6 +3644,115 @@ mod tests {
         assert_eq!(side, 0b0110);
         assert!(aspect_in(side, Aspect::Right));
         assert!(!aspect_in(side, Aspect::Rear));
+    }
+
+    /// **Doc 49 unit CC.1 (Q-49-23, sentence 2): the reserve is spent
+    /// answering fire.** A slot that keeps ten rounds fires over them; at or
+    /// under them it is held `Rounds`, unless the lock's target has fired on
+    /// this hull — fire from any other unit opens nothing — and an empty
+    /// magazine answers nobody. The record is kept in this practice arena
+    /// too (`Arena::note_fired_on`), which until CC.1 kept none.
+    #[test]
+    fn cc1_a_slot_under_its_reserve_answers_only_a_unit_that_fired_on_its_hull() {
+        let mut arena = locked();
+        let keeps = FireCondition {
+            min_rounds_left: 10,
+            ..slot("cannon", 100)
+        };
+        let load = |arena: &mut Arena, rounds: u32| {
+            if let Some(state) = arena.unit_mut(RED) {
+                state.ammo.insert(SmolStr::new("cannon"), rounds);
+            }
+        };
+        let held = |rounds, keeps| Err(Held::Why(HeldWhy::Rounds { rounds, keeps }));
+        load(&mut arena, 11);
+        assert!(arena.warrant(RED, &keeps, 0).is_ok(), "over the reserve");
+        load(&mut arena, 10);
+        assert_eq!(arena.warrant(RED, &keeps, 0), held(10, 10));
+        arena.note_fired_on(FRIEND, RED);
+        assert_eq!(
+            arena.warrant(RED, &keeps, 0),
+            held(10, 10),
+            "fire from a unit that is not the lock's opens nothing"
+        );
+        arena.note_fired_on(BLUE, RED);
+        assert!(
+            arena
+                .unit(RED)
+                .is_some_and(|state| state.fired_on_by.contains(&BLUE)),
+            "kept in a match whose end is not its host's"
+        );
+        assert!(
+            arena.warrant(RED, &keeps, 0).is_ok(),
+            "the lock fired on this hull: the reserve answers it"
+        );
+        load(&mut arena, 1);
+        assert!(arena.warrant(RED, &keeps, 0).is_ok(), "to the last round");
+        load(&mut arena, 0);
+        assert_eq!(
+            arena.warrant(RED, &keeps, 0),
+            held(0, 10),
+            "an empty magazine answers nobody"
+        );
+        assert_eq!(arena.warrant(RED, &slot("cannon", 100), 0), held(0, 0));
+    }
+
+    /// **Doc 49 unit CC.1 (Q-49-29, Q-49-20): a player's slot is bounded by the
+    /// Compact floor alone, and it stands.** A typed `FIRE <mount> WHEN` with no
+    /// odds or aspect term (the lock alone, a range alone, a rounds term) arms at the
+    /// match's floor and is lawful there: no judgement term is asked for. Only
+    /// an odds term under the floor is refused. Armed, the slot stays in its
+    /// row after a shot (it is not single-use). This held before CC.1; the test
+    /// pins the two rulings where the cockpit's parser and the law meet.
+    #[test]
+    fn cc1_a_players_slot_needs_no_judgement_term_and_stands() {
+        use crate::arena::rules::{
+            RuleCommand, RuleContext, RuleParseError, RuleWeapon, parse_command,
+        };
+        let weapons = [RuleWeapon {
+            id: SmolStr::new("cannon"),
+            rounds_max: 40,
+        }];
+        let context = RuleContext {
+            weapons: &weapons,
+            floor_permille: 100,
+            contacts: &[],
+        };
+        for typed in [
+            "FIRE cannon WHEN lock",
+            "FIRE cannon WHEN range<600",
+            "FIRE cannon WHEN rounds>10",
+        ] {
+            let Ok(RuleCommand::Arm(Arming::Rules { rules, .. })) = parse_command(typed, &context)
+            else {
+                panic!("{typed} arms");
+            };
+            let Some(Rule::Fire { condition, .. }) = rules.first() else {
+                panic!("{typed} is a fire rule");
+            };
+            assert_eq!(condition.min_permille, 100, "{typed}: the floor");
+            assert_eq!(condition.aspects, ASPECTS_ANY, "{typed}: every aspect");
+            assert_eq!(condition_is_lawful(condition, 100), Ok(()), "{typed}");
+        }
+        assert_eq!(
+            parse_command("FIRE cannon WHEN odds>=5", &context).err(),
+            Some(RuleParseError::Unlawful { floor_pct: 10 }),
+            "under the floor alone is refused"
+        );
+        // It stands: a warranted shot leaves the slot armed.
+        let mut arena = locked();
+        assert!(
+            arena
+                .resolve_arming(RED, &Arming::Arm(slot("cannon", 100)), 0)
+                .is_ok()
+        );
+        let armed = |arena: &Arena| arena.conditions.slots(RED).iter().flatten().count();
+        assert_eq!(armed(&arena), 1);
+        assert_eq!(
+            arena.resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 }),
+            Ok(1)
+        );
+        assert_eq!(armed(&arena), 1, "the slot stands after its shot");
     }
 
     /// The floor's static terms; classified Contact admission is checked on
