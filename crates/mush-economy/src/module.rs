@@ -1737,6 +1737,7 @@ struct EconomyModuleState {
     charter_transfer: Option<mush_core::mechanics::DefinitionRef>,
     seizure: Option<crate::registry_filing::seizure::SeizureConfig>,
     core_sale: Option<crate::registry_filing::core_sale::CoreSaleConfig>,
+    core_resale: Option<crate::registry_filing::core_sale::resale::CoreResaleConfig>,
     providers: CustodyTable,
     config: EconomyConfig,
     facts: crate::facts::FactTable,
@@ -1789,6 +1790,7 @@ impl std::fmt::Debug for EconomyModule {
             .field("charter_transfer", &self.state.charter_transfer)
             .field("seizure", &self.state.seizure)
             .field("core_sale", &self.state.core_sale)
+            .field("core_resale", &self.state.core_resale)
             .field("providers", &self.state.providers)
             .field("config", &self.state.config)
             .field("facts", &self.state.facts)
@@ -1946,6 +1948,19 @@ impl EconomyModule {
         config: crate::registry_filing::core_sale::CoreSaleConfig,
     ) -> Self {
         self.state.core_sale = Some(config);
+        self
+    }
+    /// **The resale of a governed core to a player** (doc 48 unit EX.2b, Q-48-47): the exact
+    /// tacsim action, the venue's and the levy's recipients and rates. The producer proves the
+    /// standing private offer and the core's place, and moves it in the same union; this enables
+    /// only the economy's closed leg and its boot audit. Requires native manufacture
+    /// (`with_core_integration`).
+    #[must_use]
+    pub fn with_core_resale(
+        mut self,
+        config: crate::registry_filing::core_sale::resale::CoreResaleConfig,
+    ) -> Self {
+        self.state.core_resale = Some(config);
         self
     }
     /// Add the three exact closed Market purchase actions to the existing
@@ -2355,6 +2370,7 @@ impl GameModule for EconomyModule {
                 self.state.seizure.as_ref(),
                 self.state.bay_refit.as_ref(),
                 self.state.core_sale.as_ref(),
+                self.state.core_resale.as_ref(),
             )?;
         }
         if (self.state.house_purchases.is_some()
@@ -2370,6 +2386,7 @@ impl GameModule for EconomyModule {
             || self.state.charter_transfer.is_some()
             || self.state.seizure.is_some()
             || self.state.core_sale.is_some()
+            || self.state.core_resale.is_some()
             || self.state.core_integration.is_some()
             || self.state.core_refit.is_some()
             || self.state.bay_refit.is_some()
@@ -2563,6 +2580,7 @@ impl GameModule for EconomyModule {
             self.state.seizure.is_some(),
             self.state.bay_refit.is_some(),
             self.state.core_sale.is_some(),
+            self.state.core_resale.is_some(),
         )?;
         store
             .fold

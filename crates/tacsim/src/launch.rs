@@ -70,12 +70,16 @@ impl LaunchComposition {
                 mush_industry::core_production::CoreOriginMode::Active,
             ),
         };
-        let hardware = crate::hardware::GovernedHardware::prepare(
-            layer,
-            origin,
-            deployment.hardware.deployment(&deployment.registry_issuer),
-            &filing,
-        )?;
+        let mut site = deployment.hardware.deployment(&deployment.registry_issuer);
+        // Doc 48 unit EX.2b: where the fitting shop buys cores back, players resell them to one
+        // another too, the venue's cut to the launch's venue and the levy to its Registry.
+        if site.buy_back_permille.is_some() {
+            site.resale = Some(crate::hardware::sale::resale::ResaleTerms::provisional(
+                deployment.venue.recipient.clone(),
+                deployment.registry.clone(),
+            ));
+        }
+        let hardware = crate::hardware::GovernedHardware::prepare(layer, origin, site, &filing)?;
         let roster = hardware.roster_policy()?;
         // Capture the same finite hardware catalogue the actual layer will
         // register. Preserve the host's already verified packs (including the

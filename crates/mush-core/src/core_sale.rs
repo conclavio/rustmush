@@ -11,6 +11,12 @@
 //! sale in an owner-scoped state family the producer's boot audit pairs with the economy's
 //! receipts. No provider supplies a World postimage; no caller supplies a source or a
 //! destination.
+//!
+//! **The resale** (doc 48 unit EX.2b, Q-48-47) is the second closed plan beside this buy-back,
+//! in [`resale`]: one player sells a stored core to another player named in a private offer. Its
+//! image is this one with the one rule the buy-back refuses, a **player** destination (the
+//! buyer's own hands), admitted for the resale's fixed action only (the private destination
+//! rule).
 use crate::action::{ActionInvocation, PerceivedRef, PrincipalId};
 use crate::action_state::{
     ActionTxn, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, TypedStateLens,
@@ -32,6 +38,8 @@ pub const ACTION: &str = "sell_stored_core";
 /// The only module that may register the sale service.
 pub const OWNER: &str = "tacsim";
 const FAMILY: &str = "core_sales";
+
+pub mod resale;
 const RECORD_BYTES: usize = 4_096;
 // A private local ceiling, as the delivery's: three objects, never the bundle cap.
 const IMAGE_BYTES: usize = 1_048_576;
@@ -169,13 +177,32 @@ impl SoldCore {
     }
 }
 
+/// **Where the core may go** (doc 48 unit EX.2b): each closed plan's own rule, chosen by the
+/// service, never by a caller. The buy-back's shop is a Thing or a Room; the resale's buyer is a
+/// Player (their own hands), and only the resale's fixed action selects it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Destination {
+    /// CO.13's buy-back: the shop's container (a Thing) or room.
+    Shop,
+    /// EX.2b's resale: the buyer's own hands.
+    Buyer,
+}
+impl Destination {
+    const fn admits(self, kind: ObjKind) -> bool {
+        match self {
+            Self::Shop => matches!(kind, ObjKind::Thing | ObjKind::Room),
+            Self::Buyer => matches!(kind, ObjKind::Player),
+        }
+    }
+}
+
 /// The fence the image keeps through custody: the policy's read, repeated.
 struct SaleFence<P: CoreSalePolicy> {
     policy: Arc<P>,
     request: SaleRequest,
     facts: SaleFacts,
 }
-trait Fence: Send + Sync {
+pub(crate) trait Fence: Send + Sync {
     fn recheck(&self, world: &World) -> Result<(), ParticipantError>;
 }
 impl<P: CoreSalePolicy> Fence for SaleFence<P> {
@@ -210,6 +237,7 @@ impl SaleObjects {
         facts: &SaleFacts,
         carry: CarryCheck,
         fence: Box<dyn Fence>,
+        rule: Destination,
     ) -> Result<Self, ParticipantError> {
         let (object, seller, shop) = (facts.core, facts.seller, facts.shop);
         if object == seller || object == shop || seller == shop {
@@ -224,7 +252,7 @@ impl SaleObjects {
             || !item.contents.is_empty()
             || !item.exits.is_empty()
             || source.kind != ObjKind::Player
-            || !matches!(destination.kind, ObjKind::Thing | ObjKind::Room)
+            || !rule.admits(destination.kind)
             || [&item, &source, &destination]
                 .into_iter()
                 .any(|o| o.flags.contains(Flags::GOING))
@@ -447,7 +475,7 @@ impl<P: CoreSalePolicy> CoreSales<P> {
                 request: request.clone(),
                 facts: facts.clone(),
             });
-            SaleObjects::prepare(world, lens, &facts, carry, fence)?
+            SaleObjects::prepare(world, lens, &facts, carry, fence, Destination::Shop)?
         };
         let row = SaleRecord {
             format: 1,
@@ -506,8 +534,11 @@ fn state_error(_: crate::action_state::ActionStateError) -> ParticipantError {
     ParticipantError::Authority
 }
 fn bounded<T: Serialize>(row: &T) -> Result<Value, ParticipantError> {
+    bounded_with(row, RECORD_BYTES)
+}
+fn bounded_with<T: Serialize>(row: &T, limit: usize) -> Result<Value, ParticipantError> {
     let v = serde_json::to_value(row).map_err(|_| ParticipantError::Encoding)?;
-    canonical_json_bytes_with_limit(&v, RECORD_BYTES).map_err(|_| ParticipantError::ImageLimit)?;
+    canonical_json_bytes_with_limit(&v, limit).map_err(|_| ParticipantError::ImageLimit)?;
     Ok(v)
 }
 fn decode(v: &Value) -> Result<SaleRecord, String> {

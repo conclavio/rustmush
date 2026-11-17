@@ -535,16 +535,18 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: crate::hardware::sale::SALE_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["buy", "fit", "sell"]
+            switches: ["buy", "fit", "sell", "offer", "offers", "accept"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
             help: format!(
                 "{}
+{}
 {}",
                 crate::hardware::counter::CORE_HELP,
-                crate::hardware::sale::SALE_HELP
+                crate::hardware::sale::SALE_HELP,
+                crate::hardware::sale::resale::RESALE_HELP
             ),
             ..CommandSpec::default()
         },

@@ -747,6 +747,39 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(output)
     }
 
+    /// Doc 48 unit EX.2b: the closed resale image of a governed core to the player a private
+    /// offer names, beside the economy's owner leg.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resell_core<P: crate::core_sale::resale::CoreResalePolicy>(
+        &mut self,
+        service: &crate::core_sale::resale::CoreResales<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        request: crate::core_sale::resale::ResaleRequest,
+        hooks: std::sync::Arc<[crate::module::HookReg]>,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::core_sale::resale::ResoldCore, ParticipantError> {
+        if self.shell.is_some() {
+            return Err(ParticipantError::Authority);
+        }
+        let (output, image) = service.prepare(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            request,
+            hooks,
+            base,
+            provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Resale(Box::new(
+            image,
+        )));
+        Ok(output)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn exchange_core_component<P: crate::core_exchange::CoreExchangePolicy>(
         &mut self,

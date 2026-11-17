@@ -120,6 +120,13 @@ pub struct FoldState {
         skip_serializing_if = "crate::registry_filing::core_sale::CoreSaleReceiptAudit::uninitialized"
     )]
     pub(crate) core_sale_receipts: crate::registry_filing::core_sale::CoreSaleReceiptAudit,
+    /// Doc 48 unit EX.2b: the resales of governed cores to players, with their titles.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::core_sale::resale::CoreResaleReceiptAudit::uninitialized"
+    )]
+    pub(crate) core_resale_receipts:
+        crate::registry_filing::core_sale::resale::CoreResaleReceiptAudit,
     #[serde(
         default,
         skip_serializing_if = "crate::core_refit::receipt::RefitReceiptAudit::uninitialized"
@@ -222,6 +229,7 @@ impl FoldState {
         self.core_receipts.observe(tx);
         self.seizure_receipts.observe(tx);
         self.core_sale_receipts.observe(tx);
+        self.core_resale_receipts.observe(tx);
         self.refit_receipts.observe(tx);
         self.bay_refit_receipts.observe(tx);
         self.filing_receipts.observe(tx);
