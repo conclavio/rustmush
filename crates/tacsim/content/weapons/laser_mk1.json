@@ -3,7 +3,7 @@
     "id": "tacsim.pack.laser_mk1",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "3fd9565ac274989fec9e4f99784dda4cf6e63733a92b43a343e38c08ff96fae5",
+    "digest": "8b0b713dd284fa6ca5b8c2a4ea21ea257050490319c6fd06ed8a5d8dfa5c3981",
     "requires": [
       {
         "id": "tacsim.pack.laser_charge",
@@ -31,12 +31,12 @@
             "dispersion_mrad": 5
           }
         ],
-        "cycle_ms": 2000,
+        "cycle_ms": 5000,
         "ammunition": "tacsim.ammunition.laser_charge",
         "burst_rounds": 1,
         "muzzle_speed_cms": 0,
         "heat_per_shot": 20,
-        "note": "Cut X.1's numbers, against the cannon's. muzzle_speed_cms is 0 because a beam arrives at once: the loader refuses any other value for a beam and the arena schedules its impact at now, so there is no cell to leave the predicted point from and a moving target cannot outrun it. That is what the tighter inner band pays for and the shorter reach pays back: 1.2 km at 2 mrad against the 105's 1.5 km at 3, and 2.4 km outside against its 3 km. The six-second cannon fires once to this weapon's three, which is the whole reason heat exists: 20 a pulse against a 60 ceiling is three pulses and then a wait."
+        "note": "Doc 49 unit CC.2's cycle (Q-49-19): one charge every 5,000 ms, the floor every mount a player or a mind fires is held to. The rest is cut X.1's. muzzle_speed_cms is 0 because a beam arrives at once: the loader refuses any other value for a beam, and the arena schedules its impact at now. Its reach is 1.2 km in the inner band and 2.4 km outside, against the 105's 1.5 km and 3 km. Heat is its limit: 20 a pulse against a 60 ceiling (doc 49 Q-49-28 makes heat refuse a shot past the ceiling, in CC.3)."
       }
     }
   }

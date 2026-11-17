@@ -208,16 +208,16 @@ Five things worth knowing before you pick one:
   will not take the tank.` or `Held: the slope ahead is too steep for the
   tank.`
 * the machines that fill the unclaimed pods always fly the pod's own tank.
-* the scout car's 30 mm autocannon fires three rounds a pull every three
-  seconds, out to 2 km: a cannon's damage a second in small bites, so it
-  strips a car or a drone quickly and a heavy slowly. Its bare `FIRE` is the
-  autocannon; `FIRE mg` is still the machine gun.
-* the heavy's missile rack is six rounds, one every ten seconds, and a round is
-  slow: 250 metres a second, so a shot at the edge of your sight, 600 m, is two
-  and a half seconds in the air and lands where the target was when you fired.
-  A machine on the move walks out from under it; one that has stopped, or a
-  target on the range, does not. The heavy's bare `FIRE` is still the cannon:
-  `FIRE missiles` names the rack.
+* the scout car's 30 mm autocannon fires three rounds a pull every ten
+  seconds, out to 2 km: a little less than a cannon's damage over a minute, in
+  small bites, so it strips a car or a drone quickly and a heavy slowly. Its
+  bare `FIRE` is the autocannon; `FIRE mg` is still the machine gun.
+* the heavy's missile rack is four rounds, one every thirty seconds, and a
+  round is slow: 250 metres a second, so a shot at the edge of your sight,
+  600 m, is two and a half seconds in the air and lands where the target was
+  when you fired. A machine on the move walks out from under it; one that has
+  stopped, or a target on the range, does not. The heavy's bare `FIRE` is still
+  the cannon: `FIRE missiles` names the rack.
 
 ## The ground
 

@@ -3,7 +3,7 @@
     "id": "tacsim.pack.missile_lr",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "2437c519457287ec4d5ac2fba9a54e1da973f6619f7db6f088fe0694fae851a4",
+    "digest": "d72a77bd5049f2f1a0221d37170a83f56e80cb2d3691c9e23b5f0a226491ea3e",
     "requires": [
       {
         "id": "tacsim.pack.missile_round",
@@ -31,12 +31,12 @@
             "dispersion_mrad": 2
           }
         ],
-        "cycle_ms": 10000,
+        "cycle_ms": 30000,
         "ammunition": "tacsim.ammunition.missile_round",
         "burst_rounds": 1,
         "muzzle_speed_cms": 25000,
         "heat_per_shot": 0,
-        "note": "16b cut AE.2's numbers. 250 m/s: a shot at the edge of a sight, 600 m, is 2.4 s in the air, and one on a teammate's plot at 900 m 3.6 s. The impact re-validates within one cell of where the target was, so a machine on the move (a stock tank on the grass makes 2.8 cells in 2.4 s) walks out from under it, and one that has stopped (a machine holding a square, a range target, a hulk) takes 350. The round is traced from where it was fired, so the shooter may move once it is away. Inside 600 m the cone is 12 mrad, because a rack does not aim the way a gun does; the 2 mrad band past it is a shared plot's. The outer edge is the cannon's 3 km on purpose: tempo.alert_range_cm is derived from the longest reach fielded."
+        "note": "Doc 49 unit CC.2's cycle (Q-49-3): one round every 30,000 ms; with the load of four (Q-49-22) that is two minutes of fire. The rest is 16b cut AE.2's. 250 m/s: a shot at the edge of a sight, 600 m, is 2.4 s in the air, and one on a teammate's plot at 900 m 3.6 s. The impact re-validates within one cell of where the target was, so a machine on the move (a stock tank on the grass makes 2.8 cells in 2.4 s) walks out from under it, and one that has stopped (a machine holding a square, a range target, a hulk) takes 350. The round is traced from where it was fired, so the shooter may move once it is away. Inside 600 m the cone is 12 mrad, because a rack does not aim the way a gun does; the 2 mrad band past it is a shared plot's. The outer edge is the cannon's 3 km on purpose: tempo.alert_range_cm is derived from the longest reach fielded."
       }
     }
   }
