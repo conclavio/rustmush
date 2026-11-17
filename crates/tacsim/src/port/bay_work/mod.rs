@@ -45,6 +45,7 @@
 pub mod act;
 pub mod command;
 pub mod jobs;
+pub mod magazines;
 pub mod record;
 pub mod scrap;
 pub mod strip;
@@ -1458,6 +1459,36 @@ fn take(
         }
         Some(vault.0)
     };
+    // Doc 49 unit CC.7 part 2: a ship's space magazines take their rounds from her hold where
+    // it carries them, and buy the shortfall from the workshop's stores at the goods' price.
+    let mut vault = vault;
+    let mut store_goods = Vec::new();
+    let mut store_vault = None;
+    if picked
+        .iter()
+        .any(|job| matches!(job.job, BayJob::Magazine { .. }))
+    {
+        let hold = source_hold(ctx.w, hull, &facility).ok();
+        let stores = stores_of(ctx.w, &facility).map(|row| VaultId(row.vault));
+        let table = ctx
+            .w
+            .module_state::<TacsimStore>()
+            .and_then(|store| store.goods())
+            .ok_or("The goods table is not loaded.")?;
+        let split = magazines::split(ctx, hold, stores, table, &mut picked)?;
+        if !split.hold.is_empty() {
+            let hold = hold.ok_or("She has no hold here to draw her rounds from.")?;
+            if vault.is_some_and(|held| held != hold.0) {
+                return Err("Her rounds and the rest of the work draw on two holds.".to_owned());
+            }
+            vault = Some(hold.0);
+            goods.extend(split.hold);
+        }
+        if !split.store.is_empty() {
+            store_vault = stores.map(|stores| stores.0);
+            store_goods = split.store;
+        }
+    }
     let unit_revision = mush_tactics::module::unit_of(ctx.w, hull)
         .map(TacticalUnit::revision)
         .ok_or(NO_HULL)?;
@@ -1514,6 +1545,8 @@ fn take(
         munitions_vault: vault,
         part_vault: store_lot.as_ref().map(|(_, vault, _, _)| *vault),
         goods,
+        store_goods,
+        store_vault,
         draw_act: None,
         bale_after,
         unit_revision,
@@ -1781,7 +1814,7 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
         BayJob::Replace { lot: Some(lot), .. } => Some(*lot),
         _ => None,
     });
-    if order.goods.is_empty() && fit.is_none() {
+    if order.goods.is_empty() && fit.is_none() && order.store_goods.is_empty() {
         complete(ctx, hull);
         return;
     }
@@ -1791,7 +1824,9 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
         .ok()
         .map(|vault| vault.0);
     // Doc 39 cut IN.6: an order whose only draw is a part from the stores has no hold to keep.
-    let holdless = order.munitions_vault.is_none() && order.part_vault.is_some();
+    // Doc 49 unit CC.7 part 2: nor one whose only draw is rounds bought from the stores.
+    let holdless = order.munitions_vault.is_none()
+        && (order.part_vault.is_some() || order.store_vault.is_some());
     if !holdless && (still.is_none() || still != order.munitions_vault) {
         close_cancelled(
             ctx,
@@ -1821,12 +1856,17 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
     record.owed = Some(Box::new(OwedAct {
         act,
         by: order.requester,
-        vault: order.munitions_vault.or(order.part_vault),
+        vault: order
+            .munitions_vault
+            .or(order.part_vault)
+            .or(order.store_vault),
         kind: OwedKind::Draw {
             order: order.seq,
             goods: order.goods.clone(),
             fit,
             fit_at: order.part_vault,
+            store: order.store_goods.clone(),
+            store_at: order.store_vault,
         },
         tries: 0,
     }));
@@ -1882,12 +1922,26 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         at,
     )
     .and_then(|after| {
-        mush_tactics::field_ops::ic_condition_plan(
+        let plan = mush_tactics::field_ops::ic_condition_plan(
             &before,
             &after,
             None,
             Some(SmolStr::new_static("tacsim.bay.repair")),
         )
+        .map_err(|e| e.to_string())?;
+        // Doc 49 unit CC.7 part 2: the condition plan carries cells and conditions only, so a
+        // space hull's rearmed magazines ride as their own op beside it.
+        let Some(record) = magazines::record_op(&before, &after)? else {
+            return Ok(plan);
+        };
+        let mut ops = plan.map_or_else(Vec::new, |plan| plan.ops().to_vec());
+        ops.push(record);
+        mush_tactics::UnitMutationPlan::new(
+            ops,
+            Some(before.revision()),
+            Some(SmolStr::new_static("tacsim.bay.repair")),
+        )
+        .map(Some)
         .map_err(|e| e.to_string())
     });
     let plan = match plan {
@@ -1998,8 +2052,10 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     if landed >= owed.act {
         record.owed = None;
         // Doc 48 cut EX.0: the draw's munitions left the hold as it landed (the census's `loaded`).
-        if let OwedKind::Draw { goods, .. } = &owed.kind {
-            let kg = crate::port::census::munitions_kg(ctx.w, goods);
+        // Doc 49 unit CC.7 part 2: and the rounds bought from the workshop's stores with them.
+        if let OwedKind::Draw { goods, store, .. } = &owed.kind {
+            let kg = crate::port::census::munitions_kg(ctx.w, goods)
+                .saturating_add(crate::port::census::munitions_kg(ctx.w, store));
             record.loaded_kg = record.loaded_kg.saturating_add(kg);
         }
         put_bay_hull(ctx, &record);

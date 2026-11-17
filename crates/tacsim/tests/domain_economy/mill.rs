@@ -2662,7 +2662,10 @@ fn sm12a_only_the_mill_restocks() {
 /// leaving the world, never made. It is the draw that used to ride the burn's second debit
 /// (`PendingSpaceBurn::seized_strategic_ore_t`), moved, not added. **Doc 48 unit PL.2**: a second
 /// `.debit(` in the mill, a process's second input consumed in the batch's bundle beside the
-/// ore: matter turned into the product, never made.
+/// ore: matter turned into the product, never made. **Doc 49 unit CC.7 part 2**: a second
+/// `.debit(` in the bay's draw (`port/bay_work/act.rs`), the space rounds a ship's rearm buys
+/// from the workshop's stores, taken out of the storefront in the draw's own bundle beside the
+/// hold's: matter leaving the world into her magazines (the census's `loaded`), never made.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2690,7 +2693,7 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     assert_eq!(
         occurrences(&files, ".debit("),
         vec![
-            ("tacsim/src/port/bay_work/act.rs".to_owned(), 1),
+            ("tacsim/src/port/bay_work/act.rs".to_owned(), 2),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
             ("tacsim/src/port/mill.rs".to_owned(), 2),
             ("tacsim/src/space/customs.rs".to_owned(), 1),

@@ -138,6 +138,41 @@ pub fn load_kept_magazines(ship: &mut SpaceShipState, rounds: &BTreeMap<String, 
     }
 }
 
+/// **The one op that makes `before`'s magazine record `rounds`** (doc 49 unit CC.7): the rounds
+/// left in each magazine short of what her fit stows, by mount id. A grant of the new record, a
+/// revoke when `rounds` is empty (every magazine full), or none when the record already says it.
+///
+/// # Errors
+///
+/// [`FieldOpsError::Unit`] when the record cannot be written.
+pub fn magazine_op(
+    before: &TacticalUnit,
+    rounds: &BTreeMap<String, u32>,
+) -> Result<Option<UnitMutationOp>, FieldOpsError> {
+    let key = mush_tactics::CapabilityKey {
+        id: mush_tactics::CapabilityId::new(SPACE_MAGAZINES_CAPABILITY)
+            .map_err(FieldOpsError::Unit)?,
+        source: None,
+    };
+    if rounds.is_empty() {
+        return Ok(before
+            .capability(&key)
+            .is_some()
+            .then_some(UnitMutationOp::RevokeCapability { key }));
+    }
+    let schema = before
+        .capabilities()
+        .next()
+        .and_then(|k| before.capability(k))
+        .map(|rv| rv.schema().clone())
+        .unwrap_or_else(|| before.schema().clone());
+    let rules =
+        mush_core::RulesValue::new(schema, serde_json::json!({ MAGAZINE_ROUNDS_KEY: rounds }))
+            .map_err(|_| FieldOpsError::Unit(mush_tactics::UnitError::EmptyId))?;
+    Ok((before.capability(&key) != Some(&rules))
+        .then_some(UnitMutationOp::GrantCapability { key, rules }))
+}
+
 /// The rounds `unit` kept in [`SPACE_MAGAZINES_CAPABILITY`], by mount id; empty when it kept
 /// none (every magazine full).
 #[must_use]
@@ -991,35 +1026,7 @@ pub fn build_space_damage_mutation_plan(
 
     // 7. Doc 49 unit CC.7 (Q-49-12): the rounds left in every magazine short of what her fit
     //    stows, so what she fired stays fired. A hull whose magazines are all full keeps none.
-    let spent = spent_magazines(ship);
-    let magazines_key = mush_tactics::CapabilityKey {
-        id: mush_tactics::CapabilityId::new(SPACE_MAGAZINES_CAPABILITY)
-            .map_err(FieldOpsError::Unit)?,
-        source: None,
-    };
-    if spent.is_empty() {
-        if before.capability(&magazines_key).is_some() {
-            cap_ops.push(UnitMutationOp::RevokeCapability { key: magazines_key });
-        }
-    } else {
-        let cap_schema = before
-            .capabilities()
-            .next()
-            .and_then(|k| before.capability(k))
-            .map(|rv| rv.schema().clone())
-            .unwrap_or_else(|| before.schema().clone());
-        let rules = mush_core::RulesValue::new(
-            cap_schema,
-            serde_json::json!({ MAGAZINE_ROUNDS_KEY: spent }),
-        )
-        .map_err(|_| FieldOpsError::Unit(mush_tactics::UnitError::EmptyId))?;
-        if before.capability(&magazines_key) != Some(&rules) {
-            cap_ops.push(UnitMutationOp::GrantCapability {
-                key: magazines_key,
-                rules,
-            });
-        }
-    }
+    cap_ops.extend(magazine_op(before, &spent_magazines(ship))?);
 
     if !cap_ops.is_empty() {
         let mut combined_ops = plan_opt
