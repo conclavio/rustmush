@@ -40,9 +40,10 @@ use tacsim::definitions::content::{LANE_JSON, LANE_PACK};
 use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::coop::{
-    BAD_NAME, BOOKS_UNREADABLE, CHARTER_NOT_IN_FORCE, ENROLLED_ONCE, EnrolmentState,
+    BAD_NAME, BOOKS_UNREADABLE, CHARTER_NOT_IN_FORCE, ENROLLED_ONCE, EndCause, EnrolmentState,
     EnrolmentStatus, FAILED, NAME_TAKEN, NAME_USAGE, NO_ACCOUNT_MATCH, NO_CAPITAL, NO_HULL,
-    NOT_OPEN, REGISTRAR_LINE, enrol_gate, enrolment_key, stake_key,
+    NOT_OPEN, RECHARTER_HINT, RECHARTER_WAIT, RECHARTERED_TERMS, REGISTRAR_LINE, enrol_gate,
+    enrolment_key, stake_key,
 };
 use tacsim::port::{HullRow, PortDef, PortMap, PortMapState, readiness, room_key};
 use tacsim::port_tick::pending_notices;
@@ -1594,9 +1595,116 @@ fn ic6_staff_cancel_revokes_the_charter_and_the_gate_reads_the_lease() {
         statement.contains("  Cash: no account is open; the buyout is 90000.00cr."),
         "{statement}"
     );
+    // The owner's 2026-11-17 ruling: a charter ended by a lease ended elsewhere may be
+    // renewed, but only once its hull is back in the pool (here the hold is still the pilot's).
     let desk = c05(&rig.tw);
     teleport(&mut rig.tw, who, desk);
     let out = enrol(&mut rig, who, "Second Wind");
+    let wait = RECHARTER_WAIT
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", "FPC-D-0401");
+    assert!(out.contains(&wait), "{out}");
+}
+
+/// The way back, filled as the game fills it, and held to the template.
+fn recharter_hint(tw: &TestWorld) -> String {
+    let hint = tacsim::port::coop::recharter_hint(tw.world()).expect("the way back");
+    let office = name(tw, c05(tw));
+    assert_eq!(
+        hint,
+        RECHARTER_HINT
+            .replace("{office}", &office)
+            .replace("{port}", "Ceres Freeport")
+    );
+    hint
+}
+
+/// **The owner's 2026-11-17 ruling, the whole story**: a docked, empty Dray idle for a real week
+/// less an hour (167 IC days at 24:1) is kept; past the real week (168 IC days) the dormancy
+/// recall takes her back and tells the pilot the way back; the same pilot then charters the
+/// next free Dray at the desk, with no second stake.
+#[test]
+fn coop_a_real_week_idle_recalls_the_dray_and_the_pilot_charters_again() {
+    const WEEK: i64 = 7 * 86_400;
+    let (mut rig, who) = enrolled();
+    let first_lease = lease_of(&rig.tw, who);
+    let first = store(&rig.tw)
+        .enrolment_of(who)
+        .expect("the enrolment")
+        .clone();
+    let acct = own_account(&rig.tw, who).expect("the pilot's account");
+    let staked = balance(&rig.tw, acct);
+    assert_eq!(staked, first.stake_minor, "the first charter's stake");
+
+    // A real week less an hour: the charter stands.
+    let now = rig.tw.world().now();
+    sweep(&mut rig.tw, first.leased_at + WEEK - 3_600 - now);
+    let e = store(&rig.tw).enrolment_of(who).expect("the enrolment");
+    assert_eq!(e.status, EnrolmentStatus::Active, "kept under the week");
+    assert!(tacsim::port::live_charter(rig.tw.world(), who).is_some());
+
+    // Past the real week: the recall, and the pilot told the way back.
+    let t = first.leased_at + WEEK + 60;
+    rig.tw.set_now(t);
+    let events = rig.tw.fire_due(t.saturating_mul(1000));
+    let told = said(&rig.tw, &events, who);
+    let e = store(&rig.tw)
+        .enrolment_of(who)
+        .expect("the enrolment")
+        .clone();
+    assert_eq!(e.status, EnrolmentStatus::Revoked, "recalled past the week");
+    assert_eq!(e.ended, Some(EndCause::Dormant));
+    assert!(tacsim::port::live_charter(rig.tw.world(), who).is_none());
+    let hint = recharter_hint(&rig.tw);
+    let dormant = tacsim::port::recall::DORMANT_NOTICE
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", "FPC-D-0401");
+    let notices = pending_notices(rig.tw.world(), who);
+    for line in [&dormant, &hint] {
+        assert!(
+            told.contains(line.as_str()) || notices.iter().any(|n| n == line),
+            "not told {line:?}: {told}
+{notices:?}"
+        );
+    }
+    let terms = run(&mut rig.tw, who, "+coop");
+    assert!(
+        terms.contains(&format!(
+            "Your charter of the Salt Moth (FPC-D-0401) has ended. {hint}"
+        )),
+        "{terms}"
+    );
+
+    // The same pilot charters again at the desk: a new lease, no second stake.
+    let desk = c05(&rig.tw);
+    teleport(&mut rig.tw, who, desk);
+    let out = enrol(&mut rig, who, "Second Wind");
+    assert!(out.contains("now the Second Wind"), "{out}");
+    let buyout = "90000.00cr";
+    let terms_line = RECHARTERED_TERMS
+        .replace("{buyout}", buyout)
+        .replace("{countersign}", tacsim::port::coop::COUNTERSIGN);
+    assert!(out.contains(&terms_line), "{out}");
+    assert!(!out.contains("staked to you"), "{out}");
+    assert!(
+        !out.contains("opens account"),
+        "the account is the pilot's own: {out}"
+    );
+    let again = store(&rig.tw)
+        .enrolment_of(who)
+        .expect("the enrolment")
+        .clone();
+    assert_eq!(again.status, EnrolmentStatus::Active);
+    assert_eq!(again.name, "Second Wind");
+    assert_eq!(
+        again.stake_minor, first.stake_minor,
+        "the first stake, recorded"
+    );
+    assert_ne!(lease_of(&rig.tw, who), first_lease, "a new lease");
+    assert!(tacsim::port::live_charter(rig.tw.world(), who).is_some());
+    assert_eq!(balance(&rig.tw, acct), staked, "no second stake");
+    // A live charter: a third enrolment is refused.
+    let out = enrol(&mut rig, who, "Third Time");
     assert!(out.contains(ENROLLED_ONCE), "{out}");
 }
 
