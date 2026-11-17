@@ -19,12 +19,29 @@ pub const FAMILY: &str = "tacsim.relay_fabrications";
 pub const KEY: &str = "tacsim:relay_foundry";
 pub const CARGO_BEHAVIOR: &str = "tacsim.relay_cargo";
 pub const PACK: &str = "tacsim.relay.manufacture";
+/// **The manufacture pack's shipped version** (doc 48 unit PL.2b: v2 adds [`BLANK_RECIPE`]);
+/// a pair or blank order pins it.
+pub const PACK_VERSION: u32 = 2;
 pub const RECIPE: &str = "private_pair";
+/// **The blank's recipe** (doc 48 unit PL.2b), at the foundry beside [`RECIPE`]: each blank
+/// one lot, received into the blank pool by `+relaypair/receive`.
+pub const BLANK_RECIPE: &str = "relay_blank";
 pub const KNOWHOW: &str = "relay.entanglement";
 pub const BLANK: &str = "relay_blank";
 pub const OUTPUT: &str = "relay_pair";
-pub const MAX_PAIRS: usize = 8;
+/// **The staff's one blank issue** (`+relaypair/stock`), the foundry's starting stock.
+pub const STOCK_BLANKS: u64 = 8;
+/// **The most pairs one foundry's book may ever hold** (doc 48 unit PL.2b): every pair takes two
+/// of the relay registry's nodes. The live bound is [`installable`]; this one bounds the
+/// documents, which carry no registry.
+pub const MAX_PAIRS: usize = mush_sim::relay::MAX_NODES / 2;
 pub const HALF_KG: u64 = 5_000;
+/// The stock's or the receive's refusal past the registry's room: `{limit}`, `{issued}`.
+pub const BLANKS_PAST_LIMIT: &str = "The relay registry can host {limit} private pairs, and the \
+     foundry has issued {issued} blanks for them; it takes no more.";
+/// The claim's refusal past the registry's room: `{limit}`, `{fabricated}`.
+pub const PAIRS_PAST_LIMIT: &str = "The relay registry can host {limit} private pairs, and the \
+     foundry has fabricated {fabricated}; it fabricates no more.";
 
 /// Exact inventory output consumed once. This is the provenance of two machines,
 /// never a second writable quantity balance.
@@ -43,25 +60,82 @@ pub struct Fabrications {
     pub facility: ObjId,
     pub stocked: bool,
     pub receipts: BTreeMap<u64, Receipt>,
+    /// **The blanks received from the foundry's own `relay_blank` orders** (doc 48 unit PL.2b),
+    /// keyed by the produced lot each consumed into the blank pool: their receipts, as
+    /// [`Self::receipts`] are the pairs'. Skipped when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blanks: BTreeMap<u64, BlankReceipt>,
+}
+/// **One produced lot of blanks received** (doc 48 unit PL.2b): the order that made it, the lot
+/// it consumed, and the blanks it credited to the pool.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlankReceipt {
+    pub order: u64,
+    pub lot: LotId,
+    pub qty: u64,
+    pub owner: PrincipalId,
+    pub actor: ObjId,
 }
 impl Fabrications {
+    /// **The blanks the foundry has issued**: the staff's stock, if issued, and every blank
+    /// received. Each is a pair to come, so it never passes [`installable`].
+    #[must_use]
+    pub fn issued(&self) -> u64 {
+        let stock = if self.stocked { STOCK_BLANKS } else { 0 };
+        self.blanks
+            .values()
+            .fold(stock, |sum, receipt| sum.saturating_add(receipt.qty))
+    }
+
     pub fn check(&self) -> Result<(), String> {
         if self.facility.0 == 0
-            || self.receipts.len() > MAX_PAIRS
+            || self.issued() > MAX_PAIRS as u64
             || self
                 .receipts
                 .iter()
                 .any(|(key, r)| *key == 0 || *key != r.order)
-            || (!self.stocked && !self.receipts.is_empty())
+            || self
+                .blanks
+                .iter()
+                .any(|(key, r)| *key == 0 || *key != r.lot.0 || r.order == 0 || r.qty == 0)
+            || self.receipts.len() as u64 > self.issued()
         {
             return Err("invalid relay fabrication census".into());
         }
-        let lots: std::collections::BTreeSet<_> = self.receipts.values().map(|r| r.lot).collect();
-        if lots.len() != self.receipts.len() {
+        let lots: std::collections::BTreeSet<_> = self
+            .receipts
+            .values()
+            .map(|r| r.lot)
+            .chain(self.blanks.values().map(|r| r.lot))
+            .collect();
+        if lots.len() != self.receipts.len() + self.blanks.len() {
             return Err("duplicate fabricated lot".into());
         }
         Ok(())
     }
+}
+
+/// **The private pairs the relay registry can hold for `f`** (doc 48 unit PL.2b; the owner's
+/// ruling on PL.2b): its pairs installed now, and as many more as the registry's free nodes (two
+/// a pair) and free pairs allow (`mush_sim::relay::MAX_NODES`, `mush_sim::relay::MAX_PAIRS`),
+/// never past [`MAX_PAIRS`]. The blanks the foundry issues never pass it, nor the pairs it
+/// fabricates. With the public star's five nodes and nothing private installed it reads 13.
+#[must_use]
+pub fn installable(w: &World, f: &Foundry) -> usize {
+    let Some(registry) = mush_propagation::routing::registry(w) else {
+        return 0;
+    };
+    let installed = f
+        .machines
+        .values()
+        .filter(|m| m.installed.iter().all(Option::is_some))
+        .count();
+    let free_nodes = mush_sim::relay::MAX_NODES.saturating_sub(registry.nodes.len());
+    let free_pairs = mush_sim::relay::MAX_PAIRS.saturating_sub(registry.pairs.len());
+    installed
+        .saturating_add((free_nodes / 2).min(free_pairs))
+        .min(MAX_PAIRS)
 }
 /// Physical identities are recorded with their creation/title post-images.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -138,6 +212,18 @@ pub struct Proposal {
     pub order: u64,
     pub lot: LotId,
     pub owner: PrincipalId,
+    /// **The recipe the order ran** (doc 48 unit PL.2b): [`RECIPE`] for a claim,
+    /// [`BLANK_RECIPE`] for a receive.
+    pub recipe: String,
+}
+
+/// The good a foundry recipe makes: a pair's [`OUTPUT`], a blank's [`BLANK`].
+fn output_of(recipe: &str) -> Option<&'static str> {
+    match recipe {
+        RECIPE => Some(OUTPUT),
+        BLANK_RECIPE => Some(BLANK),
+        _ => None,
+    }
 }
 pub fn current(w: &World) -> Option<&Foundry> {
     w.module_state::<crate::TacsimStore>()?
@@ -216,20 +302,24 @@ fn proposal_current(e: &mush_core::Engine, p: &Proposal) -> bool {
     else {
         return false;
     };
+    let Some(output) = output_of(&p.recipe) else {
+        return false;
+    };
     paid(&e.world, wo)
         && matches!(wo.state(), mush_industry::WorkOrderState::Completed { .. })
         && wo.facility() == p.facility
         && wo.recipe().pack().as_str() == PACK
-        && wo.recipe().id().as_str() == RECIPE
-        && wo.recipe().version() == 1
-        && wo.quantity() == 1
+        && wo.recipe().id().as_str() == p.recipe
+        && wo.recipe().version() == PACK_VERSION
+        // A pair's order makes one pair; a blank order makes one lot a blank.
+        && (p.recipe == BLANK_RECIPE || wo.quantity() == 1)
         && wo.destination().endpoint() == EndpointRef(p.vault)
         && wo.beneficiary() == &p.owner
         && !e
             .world
             .module_state::<mush_market::MarketStore>()
             .is_some_and(|s| {
-                id(OUTPUT)
+                id(output)
                     .ok()
                     .is_some_and(|good| s.lot_listing_of(EndpointRef(p.vault), &good).is_some())
             })
@@ -246,7 +336,7 @@ impl ActionProvider for Provider {
             || !i.targets().is_empty()
             || !matches!(
                 i.parameters().get("op").and_then(Value::as_str),
-                Some("stock" | "claim")
+                Some("stock" | "claim" | "receive")
             )
         {
             return Err(invalid());
@@ -290,12 +380,12 @@ impl ActionProvider for Provider {
             )
             .map_err(|_| invalid())?;
         Ok(Some(ProviderOfferDraft {
-            fixed_parameters: json!({"facility":f.facility,"vault":f.vault,"proposal":proposal}),
+            fixed_parameters: json!({"facility":f.facility,"vault":f.vault,"proposal":proposal,"limit":installable(&e.world, f)}),
             parameters: ProjectedParameterSchema::new(vec![ProjectedParameter {
                 id: CanonicalId::new("op").map_err(|_| invalid())?,
                 required: true,
                 kind: ProjectedParameterKind::Choice {
-                    choices: vec!["stock".into(), "claim".into()],
+                    choices: vec!["stock".into(), "claim".into(), "receive".into()],
                 },
             }])
             .map_err(|_| invalid())?,
@@ -329,10 +419,24 @@ impl ActionProvider for Provider {
             facility,
             stocked: false,
             receipts: BTreeMap::new(),
+            blanks: BTreeMap::new(),
         });
         if book.facility != facility {
             return Err(invalid());
         }
+        // Doc 48 unit PL.2b: the registry's room, projected with the offer (the world is not the
+        // transaction's); every blank issued and every pair fabricated stays within it.
+        let limit = p["limit"]
+            .as_u64()
+            .ok_or_else(invalid)?
+            .min(MAX_PAIRS as u64);
+        let past = || {
+            err(
+                ActionErrorCode::BoundsExceeded,
+                "The relay registry has no room for another private pair.",
+            )
+        };
+        let blank = CanonicalId::new(BLANK).map_err(|_| invalid())?;
         let mut order = 0;
         if p["op"] == "stock" {
             if book.stocked {
@@ -341,49 +445,61 @@ impl ActionProvider for Provider {
                     "The finite foundry stock was already issued.",
                 ));
             }
-            let pool = mush_inventory::pool_key(
-                EndpointRef(vault),
-                &CanonicalId::new(BLANK).map_err(|_| invalid())?,
-            )
-            .map_err(|_| invalid())?;
-            if t.get(&self.inventory.pools, &pool)
-                .map_err(|_| invalid())?
-                .is_some()
+            if book.issued().saturating_add(STOCK_BLANKS) > limit {
+                return Err(past());
+            }
+            let pool =
+                mush_inventory::pool_key(EndpointRef(vault), &blank).map_err(|_| invalid())?;
+            // A blank pool before the stock is a lost receipt, unless received blanks explain it.
+            if book.blanks.is_empty()
+                && t.get(&self.inventory.pools, &pool)
+                    .map_err(|_| invalid())?
+                    .is_some()
             {
                 return Err(err(
                     ActionErrorCode::Integrity,
                     "Foundry stock receipt missing; repair required.",
                 ));
             }
-            {
-                let (good, qty) = (BLANK, 8);
-                self.inventory
-                    .credit(
-                        t,
-                        EndpointRef(vault),
-                        &CanonicalId::new(good).map_err(|_| invalid())?,
-                        qty,
+            self.inventory
+                .credit(t, EndpointRef(vault), &blank, STOCK_BLANKS)
+                .map_err(|_| {
+                    err(
+                        ActionErrorCode::ProviderRejected,
+                        "Foundry stock could not be issued.",
                     )
-                    .map_err(|_| {
-                        err(
-                            ActionErrorCode::ProviderRejected,
-                            "Foundry stock could not be issued.",
-                        )
-                    })?;
-            }
+                })?;
             book.stocked = true;
         } else {
+            let receive = p["op"] == "receive";
             let proposal: Proposal =
                 serde_json::from_value(p["proposal"].clone()).map_err(|_| invalid())?;
             order = proposal.order;
+            let (recipe, good) = if receive {
+                (BLANK_RECIPE, BLANK)
+            } else {
+                (RECIPE, OUTPUT)
+            };
             if proposal.actor != i.actor()
                 || proposal.facility != facility
                 || proposal.vault != vault
-                || !book.stocked
-                || book.receipts.len() >= MAX_PAIRS
-                || book.receipts.contains_key(&order)
+                || proposal.recipe != recipe
             {
                 return Err(invalid());
+            }
+            if receive {
+                if book.blanks.contains_key(&proposal.lot.0) {
+                    return Err(invalid());
+                }
+            } else {
+                // A pair consumed an issued blank, within the registry's room.
+                if book.issued() <= book.receipts.len() as u64 || book.receipts.contains_key(&order)
+                {
+                    return Err(invalid());
+                }
+                if book.receipts.len() as u64 >= limit {
+                    return Err(past());
+                }
             }
             let lot = t
                 .get(&self.inventory.lots, &proposal.lot)
@@ -392,24 +508,54 @@ impl ActionProvider for Provider {
                 .ok_or_else(invalid)?;
             let source = format!("wo/{order:016x}");
             if lot.endpoint() != EndpointRef(vault)
-                || lot.commodity().as_str() != OUTPUT
-                || lot.quantity() != 1
+                || lot.commodity().as_str() != good
+                || (!receive && lot.quantity() != 1)
                 || !matches!(lot.lineage(),Lineage::Origin{source:s} if s.provider=="industry" && s.kind=="workorder.output" && s.id==source && s.revision==Some(1))
             {
                 return Err(invalid());
             }
-            self.inventory
-                .consume_product(t, &lot)
-                .map_err(|_| invalid())?;
-            book.receipts.insert(
-                order,
-                Receipt {
+            if receive {
+                // The produced lot becomes its blanks in the pool, under its own receipt, while
+                // the registry has room for the pairs they become.
+                let qty = lot.quantity();
+                if book.issued().saturating_add(qty) > limit {
+                    return Err(past());
+                }
+                self.inventory
+                    .consume_product(t, &lot)
+                    .map_err(|_| invalid())?;
+                self.inventory
+                    .credit(t, EndpointRef(vault), &blank, qty)
+                    .map_err(|_| {
+                        err(
+                            ActionErrorCode::ProviderRejected,
+                            "The blanks could not be received.",
+                        )
+                    })?;
+                book.blanks.insert(
+                    proposal.lot.0,
+                    BlankReceipt {
+                        order,
+                        lot: proposal.lot,
+                        qty,
+                        owner: proposal.owner,
+                        actor: i.actor(),
+                    },
+                );
+            } else {
+                self.inventory
+                    .consume_product(t, &lot)
+                    .map_err(|_| invalid())?;
+                book.receipts.insert(
                     order,
-                    lot: proposal.lot,
-                    owner: proposal.owner,
-                    actor: i.actor(),
-                },
-            );
+                    Receipt {
+                        order,
+                        lot: proposal.lot,
+                        owner: proposal.owner,
+                        actor: i.actor(),
+                    },
+                );
+            }
         }
         book.check().map_err(|_| invalid())?;
         if before.is_some() {
@@ -444,6 +590,28 @@ fn book(ctx: &Ctx<'_>, f: &Foundry) -> Result<Option<Fabrications>, String> {
         return Err("Foundry receipt identity drift".into());
     }
     Ok(found)
+}
+/// **The blanks `f`'s completed `relay_blank` orders delivered into its vault** (doc 48 unit
+/// PL.2b): industry's own book of them, each order its receipt.
+fn produced_into_vault(ctx: &Ctx<'_>, f: &Foundry) -> Result<u64, String> {
+    let industry = ctx
+        .w
+        .module_state::<mush_industry::IndustryHandles>()
+        .ok_or("Industry unwired")?
+        .0
+        .clone();
+    let mut produced = 0_u64;
+    crate::port::census::scan(ctx, &industry.work_orders, |wo| {
+        if wo.facility() == f.facility
+            && wo.recipe().pack().as_str() == PACK
+            && wo.recipe().id().as_str() == BLANK_RECIPE
+            && wo.destination().endpoint() == EndpointRef(f.vault)
+            && matches!(wo.state(), mush_industry::WorkOrderState::Completed { .. })
+        {
+            produced = produced.saturating_add(u64::from(wo.quantity()));
+        }
+    });
+    Ok(produced)
 }
 /// Create the authored lunar facility once; no pair or finished product is seeded.
 /// An absent/held lane defers initialization, preserving the existing repair path.
@@ -505,13 +673,20 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
             .ok_or("Foundry inventory unavailable")?;
         let key = mush_inventory::pool_key(EndpointRef(f.vault), &id(BLANK)?)
             .map_err(|e| e.to_string())?;
+        // A blank pool with no book is a lost stock receipt, unless the foundry's own completed
+        // blank orders into its vault explain it (doc 48 unit PL.2b: a produced blank is a
+        // source with its own receipt, never a reason to refuse the boot).
         if b.is_none()
             && ctx
                 .action_state(&inventory.pools, &key)
                 .map_err(|e| e.to_string())?
                 .is_some()
         {
-            return Err("Foundry stock receipt missing".into());
+            let pooled = crate::port_tick::read_pool(ctx, EndpointRef(f.vault), &id(BLANK)?)
+                .map_err(|e| format!("Foundry blank pool unreadable: {e:?}"))?;
+            if pooled > produced_into_vault(ctx, &f)? {
+                return Err("Foundry stock receipt missing".into());
+            }
         }
         for (order, machines) in &f.machines {
             let receipt = b
@@ -659,10 +834,25 @@ fn submit(ctx: &mut Ctx<'_>, op: &str, order: u64) -> Result<(), String> {
     );
     Ok(())
 }
+/// `+relaypair/claim <work-order>=<lot>`: a completed pair order's output, fabricated.
 fn claim(ctx: &mut Ctx<'_>, f: &Foundry) -> Result<(), String> {
+    take_output(ctx, f, RECIPE)
+}
+
+/// **`+relaypair/receive <work-order>=<lot>`** (doc 48 unit PL.2b): one blank a completed
+/// `relay_blank` order made, received into the foundry's blank pool under its own receipt, while
+/// the relay registry has room for the pair it becomes.
+fn receive(ctx: &mut Ctx<'_>, f: &Foundry) -> Result<(), String> {
+    take_output(ctx, f, BLANK_RECIPE)
+}
+
+/// The claim's and the receive's shared checks: the actor's authority, the order completed at
+/// this foundry for `recipe` and paid, its lot unlisted, and the registry's room.
+fn take_output(ctx: &mut Ctx<'_>, f: &Foundry, recipe: &str) -> Result<(), String> {
     if !authorized(ctx.w, ctx.actor, f) {
         return Err("Lunar foundry authority and presence required.".into());
     }
+    let pair = recipe == RECIPE;
     let order = mush_industry::WorkOrderId::parse(ctx.args.lhs().trim())
         .ok_or("Expected a work-order id")?;
     let lot = LotId(
@@ -684,29 +874,47 @@ fn claim(ctx: &mut Ctx<'_>, f: &Foundry) -> Result<(), String> {
     if !matches!(wo.state(), mush_industry::WorkOrderState::Completed { .. })
         || wo.facility() != f.facility
         || wo.recipe().pack().as_str() != PACK
-        || wo.recipe().id().as_str() != RECIPE
-        || wo.recipe().version() != 1
-        || wo.quantity() != 1
+        || wo.recipe().id().as_str() != recipe
+        || wo.recipe().version() != PACK_VERSION
+        || (pair && wo.quantity() != 1)
         || wo.destination().endpoint() != EndpointRef(f.vault)
         || !mush_economy::acts_for(ctx.w, ctx.actor, wo.beneficiary())
     {
-        return Err(
+        return Err(if pair {
             "Complete one authorized pair at the lunar foundry before collecting its output."
-                .into(),
-        );
+        } else {
+            "Complete an authorized blank order at the lunar foundry before receiving its blanks."
+        }
+        .into());
     }
     if !paid(ctx.w, wo) {
         return Err(
             "The production budget is still settling; try again after the industry sweep.".into(),
         );
     }
-    let output = id(OUTPUT)?;
+    let output = id(output_of(recipe).ok_or("Not a foundry recipe")?)?;
     if ctx
         .w
         .module_state::<mush_market::MarketStore>()
         .is_some_and(|s| s.lot_listing_of(EndpointRef(f.vault), &output).is_some())
     {
         return Err("Withdraw the output sale before fabrication.".into());
+    }
+    // Doc 48 unit PL.2b: the registry's room, said before anything is submitted.
+    let limit = installable(ctx.w, f) as u64;
+    let b = book(ctx, f)?;
+    let issued = b.as_ref().map_or(0, Fabrications::issued);
+    let fabricated = b.as_ref().map_or(0, |b| b.receipts.len() as u64);
+    // A blank order's one lot carries all its blanks (the delivery is one lot a line).
+    if !pair && issued.saturating_add(u64::from(wo.quantity())) > limit {
+        return Err(BLANKS_PAST_LIMIT
+            .replace("{limit}", &limit.to_string())
+            .replace("{issued}", &issued.to_string()));
+    }
+    if pair && fabricated >= limit {
+        return Err(PAIRS_PAST_LIMIT
+            .replace("{limit}", &limit.to_string())
+            .replace("{fabricated}", &fabricated.to_string()));
     }
     let proposal = Proposal {
         actor: ctx.actor,
@@ -715,6 +923,7 @@ fn claim(ctx: &mut Ctx<'_>, f: &Foundry) -> Result<(), String> {
         order: order.0,
         lot,
         owner: wo.beneficiary().clone(),
+        recipe: recipe.to_owned(),
     };
     let store = ctx
         .w
@@ -724,7 +933,12 @@ fn claim(ctx: &mut Ctx<'_>, f: &Foundry) -> Result<(), String> {
         return Err("Foundry offer capacity reached".into());
     }
     store.relay_proposals.insert(ctx.actor, proposal);
-    submit(ctx, "claim", order.0)
+    if pair {
+        submit(ctx, "claim", order.0)
+    } else {
+        // One order makes several blanks: the submission is keyed by the lot.
+        submit(ctx, "receive", lot.0)
+    }
 }
 fn collect(ctx: &mut Ctx<'_>, mut f: Foundry) -> Result<(), String> {
     let order = mush_industry::WorkOrderId::parse(ctx.args.lhs().trim())
@@ -902,10 +1116,21 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
         if !authorized(ctx.w, ctx.actor, &f) {
             return Err("Lunar foundry authority and presence required.".into());
         }
+        // Doc 48 unit PL.2b: the staff's stock is eight of the registry's room too.
+        let limit = installable(ctx.w, &f) as u64;
+        let issued = book(ctx, &f)?.as_ref().map_or(0, Fabrications::issued);
+        if issued.saturating_add(STOCK_BLANKS) > limit {
+            return Err(BLANKS_PAST_LIMIT
+                .replace("{limit}", &limit.to_string())
+                .replace("{issued}", &issued.to_string()));
+        }
         return submit(ctx, "stock", 0);
     }
     if ctx.switches.has("claim") {
         return claim(ctx, &f);
+    }
+    if ctx.switches.has("receive") {
+        return receive(ctx, &f);
     }
     if ctx.switches.has("collect") {
         return collect(ctx, f);
@@ -916,14 +1141,17 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
     if ctx.switches.has("unload") {
         return freight(ctx, false);
     }
-    ctx.out.info(ctx.actor,format!("Lunar relay foundry #{} at #{}; org:{}; vault {}. Recipe {PACK}/{RECIPE}/1 consumes one finite relay blank and two instrument boards. No installed link is produced.",f.facility.0,f.place.0,f.owner.0,f.vault.0));
+    ctx.out.info(ctx.actor,format!("Lunar relay foundry #{} at #{}; org:{}; vault {}. Recipe {PACK}/{RECIPE}/{PACK_VERSION} consumes one relay blank and two instrument boards; {PACK}/{BLANK_RECIPE}/{PACK_VERSION} makes the blanks. No installed link is produced.",f.facility.0,f.place.0,f.owner.0,f.vault.0));
     if authorized(ctx.w, ctx.actor, &f) {
         let b = book(ctx, &f)?;
+        let limit = installable(ctx.w, &f);
         ctx.out.info(
             ctx.actor,
             format!(
-                "Original blank stock issued: {}; fabrication receipts: {} / {MAX_PAIRS}.",
+                "Original blank stock issued: {}; blanks received: {}; blanks issued: {} / {limit}; fabrication receipts: {} / {limit}.",
                 b.as_ref().is_some_and(|b| b.stocked),
+                b.as_ref().map_or(0, |b| b.blanks.len()),
+                b.as_ref().map_or(0, Fabrications::issued),
                 b.as_ref().map_or(0, |b| b.receipts.len())
             ),
         );
@@ -976,8 +1204,8 @@ pub fn register(reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::Mod
     );
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     let result=reg.command(mush_core::CommandSpec{name:"+relaypair".into(),shape:mush_core::ArgShape::EqPair,
-        switches:["stock","claim","collect","load","unload","install","discover"].into_iter().map(Into::into).collect(),
-        help:"+relaypair; /stock; /claim <work-order>=<output-lot>; /collect <work-order>; /load #half; /unload #half; /install #half=#mount org:id; /discover #half".into(),..Default::default()},
+        switches:["stock","claim","receive","collect","load","unload","install","discover"].into_iter().map(Into::into).collect(),
+        help:"+relaypair; /stock; /claim <work-order>=<output-lot>; /receive <work-order>=<blank-lot>; /collect <work-order>; /load #half; /unload #half; /install #half=#mount org:id; /discover #half".into(),..Default::default()},
         std::sync::Arc::new(|ctx: &mut Ctx<'_>|command(ctx).map_err(mush_core::CmdError::msg)));
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     result
@@ -1556,4 +1784,70 @@ pub(crate) fn remove_mobile(ctx: &mut Ctx<'_>, order: u64, hull: ObjId) -> Resul
     f.machines.insert(order, m);
     mush_sim::relay::install(ctx, r)?;
     save(ctx, f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn receipt(order: u64, lot: u64) -> Receipt {
+        Receipt {
+            order,
+            lot: LotId(lot),
+            owner: PrincipalId::Object(ObjId(9)),
+            actor: ObjId(9),
+        }
+    }
+
+    fn blanks(order: u64, lot: u64, qty: u64) -> (u64, BlankReceipt) {
+        (
+            lot,
+            BlankReceipt {
+                order,
+                lot: LotId(lot),
+                qty,
+                owner: PrincipalId::Object(ObjId(9)),
+                actor: ObjId(9),
+            },
+        )
+    }
+
+    /// **Doc 48 unit PL.2b: the book counts every blank it issued and bounds them**: the staff's
+    /// stock of eight and each received lot's blanks are issued; a pair needs an issued blank; a
+    /// produced lot is received once and never also a pair's; the issued stay within the
+    /// registry's structural bound, two nodes a pair.
+    #[test]
+    fn pl2b_the_book_counts_and_bounds_the_blanks_it_issued() {
+        assert_eq!(MAX_PAIRS, mush_sim::relay::MAX_NODES / 2);
+        let mut book = Fabrications {
+            facility: ObjId(7),
+            stocked: false,
+            receipts: BTreeMap::new(),
+            blanks: BTreeMap::new(),
+        };
+        assert_eq!(book.issued(), 0);
+        book.receipts.insert(1, receipt(1, 11));
+        assert!(book.check().is_err(), "a pair with no blank issued");
+        book.blanks.extend([blanks(2, 21, 5)]);
+        assert_eq!(book.issued(), 5);
+        assert_eq!(book.check(), Ok(()), "received blanks issue the pair's");
+        book.stocked = true;
+        assert_eq!(book.issued(), 13);
+        assert_eq!(book.check(), Ok(()));
+        book.blanks.extend([blanks(3, 11, 1)]);
+        assert!(book.check().is_err(), "a pair's lot received as blanks");
+        book.blanks.remove(&11);
+        book.blanks.extend([blanks(3, 31, 0)]);
+        assert!(book.check().is_err(), "a receipt of no blanks");
+        book.blanks.remove(&31);
+        book.blanks.extend([blanks(4, 41, 4)]);
+        assert_eq!(book.issued(), 17);
+        assert!(book.check().is_err(), "past two nodes a pair");
+        // The wire: an old book (no blanks) reads, and an empty map is not written.
+        book.blanks.clear();
+        let wire = serde_json::to_value(&book).expect("serializes");
+        assert!(wire.get("blanks").is_none(), "{wire}");
+        let back: Fabrications = serde_json::from_value(wire).expect("reads");
+        assert_eq!(back, book);
+    }
 }

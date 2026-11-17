@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -687,6 +687,19 @@
       "reference_major": 250,
       "munitions": { "ammunition": "tacsim.ammunition.pd_rotary", "rounds_per_unit": 500 },
       "note": "Doc 48 unit PL.3 (doc 49 Q-49-12, Q-49-10): 500 linked rotary rounds, about 80 kg boxed (provisional; a batch of 24 boxes weighs 1,920 kg, under the two tonnes the Yards' house process takes). 250 cr a box makes the rotaries' 3,000-round load six boxes, 1,500 cr; a works batch makes 24 boxes. CC.7's berth rearm draws it."
+    },
+    {
+      "id": "relay_blank",
+      "label": "relay blanks, crated",
+      "family": "electronics",
+      "class": "trade",
+      "ledger_unit": "each",
+      "quote_unit": "each",
+      "measures": { "si.mass_kg": 1200, "si.volume_l": 1500 },
+      "stowage": "stow.kit",
+      "consumable": null,
+      "reference_major": 2000,
+      "note": "Doc 48 unit PL.2b: the entanglement substrate a private relay pair is fabricated around, about 1,200 kg crated (provisional). The lunar foundry makes one of 2 t of alloys and 1 t of boards over 48 work units (1,700 cr of inputs at Luna), only while the relay registry has room for the pair it becomes; stowed as a kit, so no hold carries it."
     }
   ]
 }

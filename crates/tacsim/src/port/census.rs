@@ -9,7 +9,8 @@
 //!
 //! - **Sources**: the opened deposits' reserves (`opened`; mining is a transfer out of a deposit's
 //!   vault, so `mined` = `opened` − `in_ground`), the stock clerk's mints (`stock`, the
-//!   `tacsim.port_stock` receipts), and what a scrap mints (`scrapped`: the hull's mass was never
+//!   `tacsim.port_stock` receipts, and since doc 48 unit PL.2b the relay foundry's one staff
+//!   stock of blanks), and what a scrap mints (`scrapped`: the hull's mass was never
 //!   in the census) — the alloys remains scrap mints on a site (the sub-tonne under its whole
 //!   tonnes is §4.6's declared loss), and a workshop's scrap's yield and stripped parts (doc 41
 //!   cut RS.9a; its sub-tonne goes to the shop bale, a holding).
@@ -75,6 +76,8 @@ pub const CHAIN_BULK: &[&str] = &[
     "industrial_parts",
     "instrument_boards",
     "carbon_feedstock",
+    // Doc 48 unit PL.2b: the relay foundry's blanks, made of alloys and boards.
+    "relay_blank",
 ];
 /// **The goods outside the chain the census counts by id** (doc 48 cut EX.0; Q-48-31): the
 /// volatiles, and the ice ore Occator's mill makes them from, so the mill balances. Propellant
@@ -214,8 +217,11 @@ impl MatterCensus {
 }
 
 /// Every value of one family, page by page.
-fn scan<K, V>(ctx: &Ctx<'_>, handle: &mush_core::StateFamilyHandle<K, V>, mut each: impl FnMut(&V))
-where
+pub(crate) fn scan<K, V>(
+    ctx: &Ctx<'_>,
+    handle: &mush_core::StateFamilyHandle<K, V>,
+    mut each: impl FnMut(&V),
+) where
     K: Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
@@ -296,6 +302,17 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             out.stock = out.stock.saturating_add(kg(&receipt.good, receipt.qty));
         }
     });
+    // Doc 48 unit PL.2b: the relay foundry's one staff stock of blanks is a mint as well (its
+    // received blanks are a produced lot's, moved into the pool, no source).
+    if let Ok(blank) = CanonicalId::new(crate::relay_foundry::BLANK) {
+        scan(ctx, &handles.families.relay_fabrications, |book| {
+            if book.stocked {
+                out.stock = out
+                    .stock
+                    .saturating_add(kg(&blank, crate::relay_foundry::STOCK_BLANKS));
+            }
+        });
+    }
 
     // Holdings: the pools by their books' commodity, the lots, the bales.
     let mut books: BTreeMap<mush_core::ReservationBookId, CanonicalId> = BTreeMap::new();
