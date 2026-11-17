@@ -24,6 +24,11 @@
 //! - the whole field searches at most `reflex.max_path_queries` times per
 //!   `reflex.decide_ms` **window of arena time** ([`MotorTable`]'s budget,
 //!   which every row shares — a unit refused by it keeps the path it has);
+//! - and, since doc 49 unit CC.2b, expands at most [`PATH_CELLS_PER_WINDOW`]
+//!   path cells in that window, the probe's included: each search is capped at
+//!   what the window has left, a search that runs out of a window someone
+//!   else spent in is deferred to the next window rather than failed, and so no
+//!   wake, which lies inside one window, expands more;
 //! - every scan of a route reads at most [`STEER_LOOKAHEAD_CELLS`] cells of it;
 //! - and the wander rule keeps a route while the machine is inside its turning
 //!   circle and a cell of it has an open line.
@@ -60,7 +65,8 @@ use crate::arena::index::range_between;
 use crate::arena::intents::{Intent, IntentKind, IntentSource, apply_intent};
 use crate::arena::motion::BlockedCause;
 use crate::arena::path::{
-    PathScratch, Shoulder, ShoulderVerdict, path_with, shoulder_refuses, shoulder_state,
+    POCKET_PROBE_CELLS, PathFailure, PathScratch, Shoulder, ShoulderVerdict, path_with,
+    shoulder_refuses, shoulder_state,
 };
 use crate::arena::perception::{DriveOutcome, FrameNotice, bearing_of};
 use crate::arena::slope;
@@ -69,6 +75,24 @@ use crate::arena::state::{
     SeenPose, UnitState,
 };
 use crate::config::ReflexConfig;
+
+/// **The path cells the whole field may expand in one `reflex.decide_ms` window
+/// of arena time** (doc 49 unit CC.2b): `harness.max_path_cells_per_pulse`'s
+/// figure, which the harness asserts per wake. A wake lies inside one window,
+/// so a window held to it holds every wake to it, at every tempo (D-16-2: the
+/// budget is the query budget's window, never a pulse). The 90 s harness window
+/// of doc 49 unit CC.2 met a wake of seven searches, every one found, at 50,425
+/// cells (seed 2350, arena 101,500 ms); the bound had been a threshold the arena
+/// never applied.
+pub const PATH_CELLS_PER_WINDOW: u32 = 48_128;
+
+/// **What one search may expand past the budget it is handed**: the expansion
+/// that breaks a `Budget` (counted, as the search loop counts it) and the
+/// goal-side probe's flood, at most `POCKET_PROBE_CELLS + 1` cells
+/// ([`PathScratch::last_expanded`]). The allowance a search is handed leaves this
+/// much of the window unspent, so the window's sum never passes
+/// [`PATH_CELLS_PER_WINDOW`].
+const SEARCH_OVERHEAD_CELLS: u32 = POCKET_PROBE_CELLS + 2;
 
 /// How near a goal cell counts as arrived, in cells.
 ///
@@ -424,6 +448,11 @@ pub struct MotorTable {
     window: i64,
     /// Searches already spent in that window.
     spent: u32,
+    /// **Path cells already expanded in that window** (doc 49 unit CC.2b),
+    /// against [`PATH_CELLS_PER_WINDOW`]. Carried by a snapshot
+    /// (`SNAPSHOT_FORMAT` 20), so a match resumed mid-window defers as an
+    /// unbroken one does.
+    cells: u32,
     #[serde(skip)]
     scratch: PathScratch,
 }
@@ -438,6 +467,7 @@ impl MotorTable {
             rows: BTreeMap::new(),
             window: i64::MIN,
             spent: 0,
+            cells: 0,
             scratch: PathScratch::default(),
         }
     }
@@ -489,18 +519,52 @@ impl MotorTable {
     /// value, since [`Arena::new`] built the memory from `arena_cfg.reflex`
     /// (until 17b cut M4.6 deleted it) and nothing writes that block
     /// afterwards. The window is keyed on `decide_ms`, as it was.
+    ///
+    /// **Doc 49 unit CC.2b**: and against the window's path cells. A search is
+    /// not started once what the window has left, less what one search may
+    /// expand past its budget, is under [`POCKET_PROBE_CELLS`] (the expansions
+    /// that close most routes): the hull keeps the path it has and searches in a
+    /// later window, as a hull the query budget refused does.
     pub(crate) fn may_search(&mut self, t_ms: i64, cfg: &ReflexConfig) -> bool {
         let window_ms = i64::from(cfg.decide_ms.max(1));
         let window = t_ms.div_euclid(window_ms);
         if window != self.window {
             self.window = window;
             self.spent = 0;
+            self.cells = 0;
         }
         if self.spent >= cfg.max_path_queries {
             return false;
         }
+        if self.cells > 0 && self.cell_allowance(cfg.path_max_cells) < POCKET_PROBE_CELLS {
+            return false;
+        }
         self.spent = self.spent.saturating_add(1);
         true
+    }
+
+    /// **The expansions the next search may make** (doc 49 unit CC.2b): what
+    /// the window has left of [`PATH_CELLS_PER_WINDOW`], less
+    /// [`SEARCH_OVERHEAD_CELLS`], and never more than `path_max_cells`.
+    fn cell_allowance(&self, path_max_cells: u32) -> u32 {
+        PATH_CELLS_PER_WINDOW
+            .saturating_sub(self.cells)
+            .saturating_sub(SEARCH_OVERHEAD_CELLS)
+            .min(path_max_cells)
+    }
+
+    /// **The budget the search [`MotorTable::may_search`] admitted runs under**,
+    /// and whether the window was untouched when it started (doc 49 unit
+    /// CC.2b): a search that runs out of an untouched window's allowance found
+    /// no route a window could pay for, which is the `unreachable` edge's
+    /// `Budget`; one that runs out of what others left is deferred.
+    pub(crate) fn search_budget(&self, path_max_cells: u32) -> (u32, bool) {
+        (self.cell_allowance(path_max_cells), self.cells == 0)
+    }
+
+    /// Count a search's expansions, the probe's included, against the window.
+    pub(crate) fn spend_cells(&mut self, cells: u32) {
+        self.cells = self.cells.saturating_add(cells);
     }
 
     /// Forget a path invalidated by staff PLACE, preserving the requested
@@ -1216,13 +1280,17 @@ impl Arena {
             if fresh_enough {
                 counters.path_deferred = counters.path_deferred.saturating_add(1);
             } else if motors.may_search(t_ms, cfg) {
+                // Doc 49 unit CC.2b: what a deferred search puts back.
+                let before = (row.searched_ms, row.searched_from);
                 row.searched_ms = Some(t_ms);
                 // **16b cut AI.1**: where it was spent, and a spent search is new
                 // information whatever it finds.
                 row.searched_from = Some(here);
                 row.refused = None;
                 counters.path_queries = counters.path_queries.saturating_add(1);
-                let budget = cfg.path_max_cells;
+                // Doc 49 unit CC.2b: what the window has left, not the whole
+                // `path_max_cells`, and whether this search opened the window.
+                let (budget, opened) = motors.search_budget(cfg.path_max_cells);
                 // **16b cut AE.1**: the heuristic's scale is this unit's own
                 // row's cheapest cell. A scale above the row's true minimum makes
                 // the heuristic inadmissible (`crate::arena::path::path`'s own
@@ -1265,12 +1333,21 @@ impl Arena {
                 // or failed, from the one source — a `Budget` failure is
                 // `path_max_cells` of them and a `NoRoute` the whole reachable
                 // region, and `harness.max_path_cells_per_pulse` bounds this.
-                counters.path_cells = counters
-                    .path_cells
-                    .saturating_add(u64::from(motors.scratch.last_expanded()));
+                let expanded = motors.scratch.last_expanded();
+                counters.path_cells = counters.path_cells.saturating_add(u64::from(expanded));
+                motors.spend_cells(expanded);
                 match searched {
                     Ok(found) => {
                         row.route = found.cells;
+                    }
+                    // **Doc 49 unit CC.2b**: out of what others left of the
+                    // window, which is no verdict on the route. The search is put
+                    // back as if it had not run, so the hull searches again in a
+                    // later window, and keeps the path it has (none, here) until
+                    // then, as a hull the query budget refused does.
+                    Err(PathFailure::Budget) if !opened && budget < cfg.path_max_cells => {
+                        (row.searched_ms, row.searched_from) = before;
+                        counters.path_deferred = counters.path_deferred.saturating_add(1);
                     }
                     Err(why) => {
                         // **The `unreachable` edge** (doc 16 §6): over budget, no
@@ -3367,6 +3444,286 @@ mod tests {
         assert!(motors.may_search(1_000, &cfg));
         assert!(motors.may_search(1_999, &cfg));
         assert!(!motors.may_search(1_999, &cfg));
+    }
+
+    /// **Doc 49 unit CC.2b: the window's path cells.** A fresh window hands its
+    /// first search everything it has, less what one search may expand past its
+    /// budget; a later search gets what is left; once less than the probe's
+    /// worth is left, no search starts; and the next window of arena time opens
+    /// with nothing spent, whatever the tempo.
+    #[test]
+    fn cc2b_the_window_holds_its_path_cells() {
+        let cfg = ReflexConfig {
+            decide_ms: 1_000,
+            ..ReflexConfig::default()
+        };
+        let whole = PATH_CELLS_PER_WINDOW - SEARCH_OVERHEAD_CELLS;
+        assert_eq!(
+            PATH_CELLS_PER_WINDOW,
+            u32::try_from(crate::config::HarnessConfig::default().max_path_cells_per_pulse)
+                .unwrap_or(0),
+            "the motor's window budget is the bound the harness asserts per wake"
+        );
+        let mut motors = MotorTable::new();
+        assert!(motors.may_search(0, &cfg));
+        assert_eq!(motors.search_budget(cfg.path_max_cells), (whole, true));
+        motors.spend_cells(30_000);
+        assert!(motors.may_search(400, &cfg), "18,128 left");
+        assert_eq!(
+            motors.search_budget(cfg.path_max_cells),
+            (
+                PATH_CELLS_PER_WINDOW - 30_000 - SEARCH_OVERHEAD_CELLS,
+                false
+            )
+        );
+        motors.spend_cells(17_000);
+        assert!(
+            !motors.may_search(900, &cfg),
+            "1,128 left is less than one search and its overhead"
+        );
+        assert!(motors.may_search(1_000, &cfg), "the next window opens");
+        assert_eq!(motors.search_budget(cfg.path_max_cells), (whole, true));
+        // A `path_max_cells` under the window's figure still caps every search.
+        assert_eq!(motors.search_budget(4_096), (4_096, true));
+    }
+
+    /// **Doc 49 unit CC.2b: a burst of long routes into one wake.** Eight hulls
+    /// on a 200 by 200 window, each sent across a wall with one gap at its far
+    /// end, so every search floods the near side to find the gap (about 19,000
+    /// cells). All eight are followed at one arena millisecond, a window at a
+    /// time. No window expands more than [`PATH_CELLS_PER_WINDOW`]; the first
+    /// window defers the searches it cannot pay for, which fail nothing; every
+    /// hull routes within as many windows as the burst's cost needs; and the run
+    /// is the same twice over.
+    /// The burst's field (doc 49 unit CC.2b): [`BURST_HULLS`] tanks on a
+    /// [`BURST_SIDE`] by [`BURST_SIDE`] window, a wall down [`BURST_WALL_X`] with
+    /// one gap at its far end.
+    fn burst_arena() -> Arena {
+        const SIDE: u16 = BURST_SIDE;
+        const WALL_X: u16 = BURST_WALL_X;
+        const HULLS: u32 = BURST_HULLS;
+        let ground = crate::arena::test_support::ground();
+        let wall = crate::arena::state::TerrainCell {
+            move_cost: 0,
+            ..ground
+        };
+        let cells = (0..SIDE)
+            .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                if x == WALL_X && y < SIDE - 3 {
+                    wall
+                } else {
+                    ground
+                }
+            })
+            .collect();
+        let units: Vec<_> = (0..HULLS)
+            .map(|n| {
+                let row = i64::from(n) * 2_000 + 10_500;
+                tank(ObjId(4 + n), PartyId::RED, pose(40_500, row))
+            })
+            .collect();
+        let definition = crate::arena::state::ArenaDefinition {
+            terrain: ArenaTerrain::new(SIDE, SIDE, 1_000, cells).expect("the walled window"),
+            ..crate::arena::test_support::definition()
+        };
+        Arena::new(
+            crate::arena::state::CustodyOut {
+                definition,
+                units,
+                pilots: Vec::new(),
+                resolution: crate::arena::test_support::resolution(),
+                seed: 2_350,
+                mode: crate::arena::state::MatchMode::Skirmish,
+                host: crate::arena::FieldHost::all_hostile(),
+            },
+            &crate::config::ArenaConfig::default(),
+            &crate::config::MatchConfig::default(),
+            &crate::config::SensorsConfig::default(),
+        )
+        .expect("the walled arena")
+    }
+
+    /// The burst's motor rows: each hull sent to `(160, 10 + 2n)`, across the wall.
+    fn burst_rows() -> Vec<(ObjId, MotorRow)> {
+        (0..BURST_HULLS)
+            .map(|n| {
+                let y = u16::try_from(10 + n * 2).unwrap_or(0);
+                (
+                    ObjId(4 + n),
+                    MotorRow {
+                        goal: Some((160, y)),
+                        ..MotorRow::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The burst field's side, its wall's column and its hulls.
+    const BURST_SIDE: u16 = 200;
+    const BURST_WALL_X: u16 = 100;
+    const BURST_HULLS: u32 = 8;
+
+    /// One hull's follow, as the resume test compares it: the hull, the route it
+    /// left with, and the goal it was answered unreachable on, if any.
+    type Followed = (ObjId, Vec<(u16, u16)>, Option<(u16, u16)>);
+
+    /// **Follow `rows` in order at `t_ms`**, each row taken from and put back
+    /// into the arena's own table as the tick does, so a snapshot carries them.
+    fn follow_rows(
+        arena: &mut Arena,
+        units: &[ObjId],
+        t_ms: i64,
+        counters: &mut MotorCounters,
+    ) -> Vec<Followed> {
+        let mut motors = std::mem::take(&mut arena.motors);
+        let mut seen = Vec::new();
+        for unit in units {
+            let mut row = motors.take(*unit);
+            if row.route.is_empty() {
+                let here = arena
+                    .unit(*unit)
+                    .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+                let mut plan = MotorPlan::default();
+                let outcome = arena.follow(
+                    *unit,
+                    t_ms,
+                    &mut motors,
+                    &mut row,
+                    here,
+                    Fallback::Notice,
+                    counters,
+                    &mut plan,
+                );
+                seen.push((*unit, row.route.clone(), outcome.unreachable));
+            }
+            motors.put(*unit, row);
+        }
+        arena.motors = motors;
+        seen
+    }
+
+    /// **Doc 49 unit CC.2b: a match snapshotted and resumed mid-window defers
+    /// exactly as an unbroken run does** (the lead's test for the carried
+    /// `cells`, `SNAPSHOT_FORMAT` 20). The burst is followed twice over two
+    /// windows: once unbroken, once with the arena encoded and decoded after
+    /// the first three hulls of the first window, when the window has spent
+    /// most of its cells. Every hull's route, every counter and the table's
+    /// window, searches and cells are the same.
+    #[test]
+    fn cc2b_a_match_resumed_mid_window_defers_as_an_unbroken_one() {
+        let units: Vec<ObjId> = burst_rows().iter().map(|(unit, _)| *unit).collect();
+        let open = |arena: &mut Arena| {
+            for (unit, row) in burst_rows() {
+                arena.motors.put(unit, row);
+            }
+        };
+        let run = |resume: bool| {
+            let mut arena = burst_arena();
+            open(&mut arena);
+            let mut counters = MotorCounters::default();
+            let mut seen = follow_rows(&mut arena, &units[..3], 10_000, &mut counters);
+            let spent_before = arena.motors.cells;
+            if resume {
+                let snapshot =
+                    crate::arena::snapshot::Snapshot::encode(&arena).expect("the arena encodes");
+                arena = crate::arena::snapshot::Snapshot::decode(
+                    &snapshot.document,
+                    (*arena.definition).clone(),
+                )
+                .expect("the arena decodes");
+                assert_eq!(
+                    arena.motors.cells, spent_before,
+                    "the window's cells ride the snapshot"
+                );
+            }
+            seen.extend(follow_rows(&mut arena, &units[3..], 10_000, &mut counters));
+            seen.extend(follow_rows(&mut arena, &units, 11_000, &mut counters));
+            let table = (arena.motors.window, arena.motors.spent, arena.motors.cells);
+            (seen, counters, table, spent_before)
+        };
+        let unbroken = run(false);
+        assert!(
+            unbroken.3 > 0 && unbroken.1.path_deferred > 0,
+            "the snapshot is taken mid-window, with cells spent and searches deferred: {:?}",
+            unbroken.1
+        );
+        assert_eq!(run(true), unbroken);
+    }
+
+    #[test]
+    fn cc2b_a_burst_of_routes_holds_the_window_and_every_hull_routes() {
+        let fly = || {
+            let mut arena = burst_arena();
+            let mut rows = burst_rows();
+            let mut routed_in: Vec<Option<i64>> = vec![None; rows.len()];
+            let mut windows: Vec<(u64, u32, u32)> = Vec::new();
+            for window in 0..8_i64 {
+                // Every hull still without a route, at one millisecond: one wake.
+                let t_ms = 10_000 + window * 1_000;
+                let mut motors = std::mem::take(&mut arena.motors);
+                let mut counters = MotorCounters::default();
+                for (at, (unit, row)) in rows.iter_mut().enumerate() {
+                    if !row.route.is_empty() {
+                        continue;
+                    }
+                    let here = arena
+                        .unit(*unit)
+                        .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+                    let mut plan = MotorPlan::default();
+                    let outcome = arena.follow(
+                        *unit,
+                        t_ms,
+                        &mut motors,
+                        row,
+                        here,
+                        Fallback::Notice,
+                        &mut counters,
+                        &mut plan,
+                    );
+                    assert_eq!(outcome.unreachable, None, "a deferral fails nothing");
+                    if !row.route.is_empty() && routed_in[at].is_none() {
+                        routed_in[at] = Some(window);
+                    }
+                }
+                arena.motors = motors;
+                windows.push((
+                    counters.path_cells,
+                    counters.path_deferred,
+                    counters.path_failures,
+                ));
+            }
+            (routed_in, windows)
+        };
+        let (routed_in, windows) = fly();
+        println!(
+            "cc2b_burst: (cells, deferred, failures) a window {windows:?}; routed in {routed_in:?}"
+        );
+        for (window, (cells, _, failures)) in windows.iter().enumerate() {
+            assert!(
+                *cells <= u64::from(PATH_CELLS_PER_WINDOW),
+                "window {window} expanded {cells} path cells: {windows:?}"
+            );
+            assert_eq!(*failures, 0, "window {window}: {windows:?}");
+        }
+        assert!(
+            windows
+                .first()
+                .is_some_and(|(_, deferred, _)| *deferred > 0),
+            "the burst outruns one window: {windows:?}"
+        );
+        // What the burst costs, over what a window pays: every hull routes within
+        // that many windows of the burst, and the first in the first.
+        let spent: u64 = windows.iter().map(|(cells, _, _)| *cells).sum();
+        let needed =
+            i64::try_from(spent.div_ceil(u64::from(PATH_CELLS_PER_WINDOW))).unwrap_or(i64::MAX);
+        assert_eq!(routed_in.first().copied().flatten(), Some(0));
+        assert!(
+            routed_in.iter().all(|at| at.is_some_and(|w| w <= needed)),
+            "every hull routes within {needed} windows: {routed_in:?} {windows:?}"
+        );
+        assert_eq!(fly(), (routed_in, windows), "the same twice over");
     }
 
     /// **16b cut Q.7**: the remembered-stop list is bounded, refreshes rather
