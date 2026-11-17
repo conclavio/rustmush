@@ -4871,7 +4871,7 @@ async fn r9a_paid_manufacture_survives_restart_and_installs_once() {
         &mut rig,
         who,
         &format!(
-            "@wo/draft tacsim.relay.manufacture/private_pair/1={} 1 {} {} {}",
+            "@wo/draft tacsim.relay.manufacture/private_pair/2={} 1 {} {} {}",
             f.facility.0, payer.0, f.vault.0, f.vault.0
         ),
     )
@@ -5244,6 +5244,275 @@ async fn r9_sail(rig: &mut Rig, who: ObjId, row: &HullRow, port: &str, dest: &st
     assert!(out.contains("cycle the lock"), "{out}");
 }
 
+/// Buy `qty` of `good` from `org`'s ask at Luna into the foundry's vault.
+async fn pl2b_buy(
+    rig: &mut Rig,
+    who: ObjId,
+    f: &tacsim::relay_foundry::Foundry,
+    org: &str,
+    good: &str,
+    qty: u64,
+) {
+    let ask = listing_of(&rig.tw, "luna_port", org, good);
+    let quoted = run(rig, who, &format!("+market/quote {ask}={qty}")).await;
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = newest_quote(&rig.tw, who);
+    r9_command(rig, who, &format!("+market/accept {quote}={}", f.vault.0)).await;
+}
+
+/// **One `relay_blank` order of `qty` at the foundry, run and delivered** (doc 48 unit PL.2b):
+/// its bill bought at Luna into the vault (two tonnes of Cabeus alloys and one of Crisium boards
+/// a blank), drafted, submitted, produced and delivered. The order and its one delivered lot.
+async fn pl2b_blank_order(
+    rig: &mut Rig,
+    who: ObjId,
+    f: &tacsim::relay_foundry::Foundry,
+    qty: u64,
+) -> (mush_industry::WorkOrderId, LotId) {
+    pl2b_buy(rig, who, f, "cabeus_works", "structural_alloys", 2 * qty).await;
+    pl2b_buy(rig, who, f, "crisium_instruments", "instrument_boards", qty).await;
+    let payer = credit_account(&rig.tw, &PrincipalId::Object(who));
+    r9_command(
+        rig,
+        who,
+        &format!(
+            "@wo/draft {}/{}/{}={} {qty} {} {} {}",
+            tacsim::relay_foundry::PACK,
+            tacsim::relay_foundry::BLANK_RECIPE,
+            tacsim::relay_foundry::PACK_VERSION,
+            f.facility.0,
+            payer.0,
+            f.vault.0,
+            f.vault.0
+        ),
+    )
+    .await;
+    let ih = rig
+        .tw
+        .world()
+        .module_state::<mush_industry::IndustryHandles>()
+        .unwrap()
+        .0
+        .clone();
+    let order = rig
+        .tw
+        .engine()
+        .action_state()
+        .scan_family(&ih.work_orders, None, 32)
+        .unwrap()
+        .entries()
+        .iter()
+        .find(|e| *e.value().state() == mush_industry::WorkOrderState::Draft)
+        .unwrap()
+        .value()
+        .id();
+    r9_command(rig, who, &format!("@wo/submit {order}")).await;
+    // 48 work units a blank: at 3,600 : 1 an IC hour is a real second. Five IC hours a step,
+    // so the delivery follows the run's end inside its reservation's deadline.
+    for _ in 0..200 {
+        sweep(rig, 5).await;
+        let queued = drain_players(rig).await;
+        land_quietly(rig, &queued).await;
+        r9_schedule(rig).await;
+        if run(rig, who, &format!("@wo/show {order}"))
+            .await
+            .contains("AwaitingDelivery")
+        {
+            break;
+        }
+    }
+    let out = run(rig, who, &format!("@wo/show {order}")).await;
+    assert!(out.contains("AwaitingDelivery"), "{out}");
+    r9_command(rig, who, &format!("@wo/deliver {order}")).await;
+    sweep(rig, 61).await;
+    let inv = families(&rig.tw);
+    let source = format!("wo/{:016x}", order.0);
+    let lot = rig
+        .tw
+        .engine()
+        .action_state()
+        .scan_family(&inv.lots, None, 256)
+        .unwrap()
+        .entries()
+        .iter()
+        .find(|e| {
+            e.value().endpoint() == EndpointRef(f.vault)
+                && e.value().commodity().as_str() == tacsim::relay_foundry::BLANK
+                && matches!(e.value().lineage(), mush_inventory::record::Lineage::Origin { source: s } if s.id == source)
+        })
+        .unwrap_or_else(|| panic!("the blank order's delivered lot"))
+        .value()
+        .clone();
+    assert_eq!(lot.quantity(), qty, "one lot a line: {qty} blanks");
+    (order, lot.id())
+}
+
+/// **A rig at the lunar foundry for doc 48 unit PL.2b**: a relaywright funded with 100,000 cr (the
+/// pay is in minor units; six blanks' inputs are 10,200 cr), with the foundry org's account and
+/// vault grants, standing at the foundry, the clock at 3,600 : 1 (set before any order, so no
+/// generation change pauses one).
+async fn pl2b_foundry(name: &str) -> (Rig, ObjId, tacsim::relay_foundry::Foundry) {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_test_writer()
+        .try_init();
+    let mut rig = boot(name).await;
+    stock(&mut rig).await;
+    let who = pilot(&mut rig, "Blanksmith", "blanksmith").await;
+    let f = tacsim::relay_foundry::current(rig.tw.world())
+        .unwrap()
+        .clone();
+    for cap in [
+        "economy.account.post",
+        "economy.account.view",
+        "vault.deposit",
+        "vault.withdraw",
+    ] {
+        let out = run(
+            &mut rig,
+            GOD,
+            &format!("@org/grant {who}={} {cap}", f.owner),
+        )
+        .await;
+        assert!(!out.contains("denied"), "{out}");
+    }
+    run(&mut rig, GOD, &format!("@teleport {who}={}", f.place)).await;
+    run(&mut rig, GOD, &format!("@account/open {who}=tacsim.credit")).await;
+    let payer = credit_account(&rig.tw, &PrincipalId::Object(who));
+    let treasury = port_map(&rig.tw, "ceres_port").treasury.unwrap();
+    let out = run(
+        &mut rig,
+        GOD,
+        &format!("@econ/pay #{treasury}=#{} 10000000", payer.0),
+    )
+    .await;
+    assert!(!out.contains("denied"), "{out}");
+    set_rate(&mut rig, 3_600).await;
+    (rig, who, f)
+}
+
+/// **Doc 48 unit PL.2b: a produced blank dissolved into the pool by hand boots** — the hazard's
+/// other road. With no foundry book, a blank lot a completed order delivered is dissolved
+/// (`@inv/dissolve`) into the vault's blank pool, past `+relaypair/receive`; the restart reads
+/// the pool against the foundry's completed blank orders, their own receipts, and boots.
+#[tokio::test]
+async fn pl2b_a_produced_blank_pooled_by_hand_boots() {
+    let (mut rig, who, f) = pl2b_foundry("pl2b-dissolved").await;
+    let (_, lot) = pl2b_blank_order(&mut rig, who, &f, 1).await;
+    r9_command(&mut rig, who, &format!("@inv/dissolve {lot}")).await;
+    assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 1);
+    restart(&mut rig, |tw| {
+        tacsim::relay_foundry::current(tw.world()).is_some()
+    })
+    .await;
+    assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 1);
+}
+
+/// The census line's `balance=`.
+fn census_balance(line: &str) -> i128 {
+    line.split_whitespace()
+        .find_map(|word| word.strip_prefix("balance="))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("a balance in {line}"))
+}
+
+/// **Doc 48 unit PL.2b: relay blanks are made by recipe up to the registry's room, and a world
+/// with produced blanks boots** (the owner's ruling: about 13 pairs). At the lunar foundry, with
+/// nothing private installed and the public star's five nodes, the registry has room for 13
+/// pairs:
+///
+/// 1. **Before the staff's stock**, a `relay_blank` order of five is bought, produced and
+///    delivered: one lot of five blanks in the foundry's vault, no foundry book yet.
+/// 2. **A restart with the produced blanks in the vault** boots.
+/// 3. `+relaypair/receive` takes the lot of five into the pool under its own receipt; the
+///    staff's stock then issues its eight over them (the stock-once rule kept): 13 issued of 13.
+/// 4. A sixth blank is produced; its receive is refused with the registry's sentence, and the
+///    lot stays a lot.
+/// 5. **A restart with the pool at 13 and the refused lot in the vault** boots.
+/// 6. **The census counts the blanks**: its balance is the same before the first purchase and
+///    after all of it.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn pl2b_blanks_are_made_up_to_the_registry_room_and_boot_again() {
+    let (mut rig, who, f) = pl2b_foundry("pl2b-blanks").await;
+    assert_eq!(
+        tacsim::relay_foundry::installable(rig.tw.world(), &f),
+        13,
+        "the registry's room: (32 nodes less the public star's five) / 2"
+    );
+    let before = census_balance(&run(&mut rig, GOD, "@industry/census").await);
+
+    // 1-2. Five blanks produced before the stock, and a restart over them.
+    let (first, lot) = pl2b_blank_order(&mut rig, who, &f, 5).await;
+    restart(&mut rig, |tw| {
+        tw.engine()
+            .action_state()
+            .get(&families(tw).lots, &lot)
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 0);
+
+    // 3. The produced lot received, then the staff's stock over its blanks.
+    r9_command(
+        &mut rig,
+        who,
+        &format!("+relaypair/receive {first}={}", lot.0),
+    )
+    .await;
+    assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 5);
+    assert!(
+        rig.tw
+            .engine()
+            .action_state()
+            .get(&families(&rig.tw).lots, &lot)
+            .unwrap()
+            .is_none(),
+        "the lot consumed into the pool"
+    );
+    r9_command(&mut rig, who, "+relaypair/stock").await;
+    assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 13);
+    let status = run(&mut rig, who, "+relaypair").await;
+    assert!(
+        status.contains("blanks received: 1; blanks issued: 13 / 13"),
+        "{status}"
+    );
+
+    // 4. A sixth blank: produced, refused.
+    let (second, spare) = pl2b_blank_order(&mut rig, who, &f, 1).await;
+    let refused = run(
+        &mut rig,
+        who,
+        &format!("+relaypair/receive {second}={}", spare.0),
+    )
+    .await;
+    assert!(
+        refused.contains(
+            &tacsim::relay_foundry::BLANKS_PAST_LIMIT
+                .replace("{limit}", "13")
+                .replace("{issued}", "13")
+        ),
+        "{refused}"
+    );
+    assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 13);
+
+    // 5. A restart with the pool at 13 and the refused lot in the vault.
+    restart(&mut rig, |tw| {
+        tw.engine()
+            .action_state()
+            .get(&families(tw).lots, &spare)
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 13);
+
+    // 6. The census across all of it.
+    let after = census_balance(&run(&mut rig, GOD, "@industry/census").await);
+    assert_eq!(before, after, "the census counts every blank");
+}
+
 /// A second paid pair supplies the destructive branch without restoring ledger
 /// records or reviving either physical identity for the successful voyage.
 async fn r9_bad_cargo(rig: &mut Rig, who: ObjId, f: &tacsim::relay_foundry::Foundry) {
@@ -5262,7 +5531,7 @@ async fn r9_bad_cargo(rig: &mut Rig, who: ObjId, f: &tacsim::relay_foundry::Foun
         rig,
         who,
         &format!(
-            "@wo/draft tacsim.relay.manufacture/private_pair/1={} 1 {} {} {}",
+            "@wo/draft tacsim.relay.manufacture/private_pair/2={} 1 {} {} {}",
             f.facility.0, payer.0, f.vault.0, f.vault.0
         ),
     )
@@ -5392,7 +5661,7 @@ async fn r9_make_pair(rig: &mut Rig, who: ObjId, f: &tacsim::relay_foundry::Foun
         rig,
         who,
         &format!(
-            "@wo/draft tacsim.relay.manufacture/private_pair/1={} 1 {} {} {}",
+            "@wo/draft tacsim.relay.manufacture/private_pair/2={} 1 {} {} {}",
             f.facility.0, payer.0, f.vault.0, f.vault.0
         ),
     )

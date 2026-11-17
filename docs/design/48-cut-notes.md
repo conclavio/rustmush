@@ -1531,6 +1531,144 @@ Not built.
 - **A process's ledger tail** (`recent`) keeps the ore and the product per batch, not the second
   input. The second input's per-batch figure follows from the ratio.
 
+## PL.2b
+
+**The ruling** (the owner, 2026-11-16: "pl.2b relay pair recommendation accepted"): relay blanks
+are made by recipe only up to what the relay registry can install, and the foundry refuses past
+that with a sentence. The registry and its 128 KiB budget stay as they are.
+
+**Survey** (at `73d05678b`, main with PL.1 to PL.4 and EX.0 merged):
+- **The foundry** (`relay_foundry.rs`) makes one private pair a work order:
+  - `tacsim.relay.manufacture/private_pair/1` takes one relay blank and two tonnes of boards
+    over 120 work units;
+  - `+relaypair/claim` consumes the pair's lot into the book's receipt;
+  - `/collect` mints the two titled halves.
+- **The only blanks were the staff's.** `+relaypair/stock` credited 8 blanks once, and the book
+  (`Fabrications`) recorded `stocked`. `MAX_PAIRS` was a literal 8 bounding the book and the
+  claims. No good row or recipe made a blank.
+- **The registry's bounds** (`mush-sim/src/relay.rs`): 32 nodes and 64 pairs. A private pair's
+  install adds two nodes and one pair (`install_half`). The public star holds five nodes, so 27
+  are free: 13 pairs.
+- **The boot hazard** (`relay_foundry::boot`): a blank pool in the foundry vault with no book
+  fails the boot ("Foundry stock receipt missing"). A produced blank pooled there before any
+  stock would stop the server.
+- **No tacsim seam refuses an industry draft**, so the limit has to sit where the foundry's own
+  operations decide.
+
+**Built:**
+1. **The limit, derived** (`relay_foundry::installable`): this foundry's pairs installed now,
+   plus the lesser of the registry's free nodes halved and its free pairs
+   (`mush_sim::relay::MAX_NODES`, `MAX_PAIRS`). It is never past `relay_foundry::MAX_PAIRS`, now
+   `MAX_NODES / 2` (16), the structural bound the book's own check uses. It reads 13 on today's
+   registry. It is projected with the foundry's offer (a transaction carries no world) and
+   re-checked in the prepare.
+2. **What the limit bounds:** the blanks the foundry issues, `Fabrications::issued` (the staff's
+   8 if issued, plus every received blank). Each issued blank is a pair to come, needing two
+   nodes unless installed, so `issued ≤ installable`. The claim also refuses a pair past the
+   limit, and needs an issued blank behind it.
+3. **The blank recipe:** manufacture pack v2 (`relay_foundry::PACK_VERSION`, re-signed) adds
+   `relay_blank`. It takes 2 t of structural alloys and 1 t of instrument boards into one blank,
+   over 48 work units, requiring `relay.entanglement`, so only the foundry makes it. A delivery
+   is one lot a line, so an order of N blanks delivers one lot of N.
+4. **The blank's receipt:** `+relaypair/receive <work-order>=<lot>` (op `receive`). It consumes
+   a completed blank order's delivered lot and credits its blanks to the pool. It records a
+   `BlankReceipt` (the order, the lot, the quantity, the owner and the actor) in the book's new
+   `blanks` map, skipped when empty.
+   - It refuses past the limit with `BLANKS_PAST_LIMIT`: "The relay registry can host 13
+     private pairs, and the foundry has issued 13 blanks for them; it takes no more."
+   - `/stock` refuses the same way. A claim past it says `PAIRS_PAST_LIMIT`.
+   - `+relaypair` shows the blanks received, the blanks issued and the receipts, each against
+     the limit.
+5. **The boot hazard closed, two ways:**
+   - A produced blank stays a lot until it is received, and the boot's check reads the pool
+     only, so produced lots in the vault never stop the boot.
+   - A blank pool with no book, which only a hand dissolve (`@inv/dissolve`) of a produced lot
+     makes, is accepted when the foundry's completed blank orders into its vault cover it.
+     Those orders are industry's own durable receipts (`produced_into_vault`).
+6. **The stock-once rule is kept:** `+relaypair/stock` still issues the staff's 8 once. It is
+   the starting stock and counts against the limit, so production adds up to 5 more on today's
+   registry. Received blanks before the stock no longer read as a lost stock receipt.
+7. **The good:** goods v10 adds `relay_blank`: family electronics, trade class, 1,200 kg and
+   1,500 L each, 2,000 cr, provisional. It is stowed as a kit (`stow.kit`), so no hold carries
+   it and no hold's load cells list it.
+8. **The census** (`port/census.rs`):
+   - `relay_blank` joins the chain goods;
+   - the foundry's staff stock is a mint under `stock` (8 × 1,200 kg once issued);
+   - a blank order's inputs less its blanks fall under `worked`, as every work order's do;
+   - a receive moves a lot into the pool, which is neither a source nor a sink.
+
+**Sizing** (provisional; at 24:1 an IC day is a real hour):
+- **A blank** is 2 t of Cabeus alloys (400 cr) and 1 t of Crisium boards (900 cr) at Luna:
+  1,700 cr of inputs. The foundry's facility has no cost model, so no fee.
+- **48 work units** is two IC days, two real hours a blank. The five blanks today's registry has
+  room for take ten real hours of the foundry's one slot. A pair after them takes another five.
+
+**Tests** (run on conclav.dev):
+- **New stories** (mush-server `commerce_composition` `ic_slice_loop`, on r9a's harness):
+  - `pl2b_blanks_are_made_up_to_the_registry_room_and_boot_again`. At the lunar foundry the
+    registry's room reads 13. Then:
+    1. Before any stock, an order of five blanks is bought at Luna, run and delivered: one lot
+       of five, no book.
+    2. A restart over that lot boots.
+    3. `+relaypair/receive` takes the lot into the pool (5), and the staff's stock issues its 8
+       over it (13 of 13).
+    4. A sixth blank's receive is refused with `BLANKS_PAST_LIMIT`.
+    5. A second restart, with the pool at 13 and the refused lot standing, boots.
+    6. The census's balance is the same before the first purchase and after all of it.
+  - `pl2b_a_produced_blank_pooled_by_hand_boots`: a produced blank lot dissolved into the pool by
+    `@inv/dissolve` before any book; the restart boots on the completed order's receipt.
+- **New unit test:** `relay_foundry::tests::pl2b_the_book_counts_and_bounds_the_blanks_it_issued`
+  covers the issued count, a pair needing an issued blank, one receipt a lot, no empty receipt,
+  the structural bound, and the wire skipping an empty `blanks` and reading an old book.
+- **Re-pinned by record:** r9a's and r9b's drafts name `private_pair/2`, the pack's version.
+  r9a's blank counts, 8 then 7 after one pair, hold as they were, since the staff's stock is
+  kept.
+- **Pins moved by the good:** the goods table's rows, version and digest; the catalogue counts,
+  53 (`capacity::ic2_…`, the content studio's lib and mush-server tests); and the orderable goods'
+  list (`orders::ic11_the_verbs_edit_the_plan`). The blank is a kit's stowage, so no hold's load
+  cells change.
+- **Green:**
+  - the r9a, r9b and PL.2b stories (5);
+  - the whole `tacsim` lib (2,417);
+  - `domain_economy` and `domain_arena` (1,742);
+  - mush-server `split_boundary` and `commerce_composition` (320; the two PL.2b stories green
+    after the fixes above);
+  - mush-bot (803).
+- **Gate:** clippy `-D warnings` on `tacsim` and `mush-server` with `--all-targets`, the M7
+  memory-size pass, rustdoc `-D warnings --document-private-items`, and the contract guards'
+  feature census, panic budget and restriction lints (24).
+- **Mutations:** seven; five killed and two named survivors.
+  - Killed:
+    1. `installable` ignoring the registry (always the structural bound): the main story's 13.
+    2. The receive command unbounded: the main story, whose sixth receive is refused by the
+       prepare without the registry's sentence.
+    4. Boot not counting produced blanks: the dissolve story's restart.
+    5. `issued` not counting received blanks: the unit test and the main story.
+    6. The stock refusing a pool that received blanks explain: the main story's stock after its
+       receive.
+  - Survived:
+    3. **The prepare's receive bound.** The command refuses first with the same bound, from the
+       same world, so no story reaches the prepare past it. It stays as the transaction's own
+       check.
+    7. **The claim's "an issued blank behind the pair".** `Fabrications::check` already refuses
+       more pair receipts than blanks issued, so the prepare refuses the same claim at the
+       book's check.
+
+**Divergences:**
+- **The blank is received, not pooled at delivery.** The ruling's "produced blanks a legitimate
+  source with their own receipt" is the `receive` op and its `BlankReceipt`. A hand dissolve
+  that skips it is accepted at boot on the industry order's receipt, as above.
+- **The foundry's sentences are module constants**, as its existing ones are: no bot drives the
+  foundry, so none joins the mush-bot sentence table.
+- **No industry seam:** a blank order is not refused at draft. Production past the limit is
+  refused at the receive and makes blanks the foundry cannot take.
+
+**Not built:**
+- **A refusal at draft.** It would need an industry order gate (a seam in `mush-industry`),
+  which this unit does not add.
+- **Remounting and destroyed pairs** keep their nodes' accounting as before. A destroyed pair's
+  blanks stay issued, which is conservative: it never frees room for another.
+
 ## PL.3
 
 **Survey** (at `d9d20b4a2`, PL.2's tip stacked on PL.7):
