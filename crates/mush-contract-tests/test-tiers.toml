@@ -340,6 +340,16 @@ id = "tacsim/tests::minds_at_size::mw20_an_idle_fire_by_tick"
 tier = "by-hand"
 by_hand = "fb39c2b5"
 
+# Doc 49 unit CC.2: the ruled palette measured on the proving ground, sixty one-against-one
+# fights (the stock mind against itself, and against a pilot who fires whenever a mount is
+# ready): ends, lengths against the 900 s cap, rounds fired and hit by mount, and each mind's
+# withdrawal at its reserve or hurt. A measurement, never a gate; the figures are in doc 49's
+# CC.2 cut note.
+[[test]]
+id = "tacsim/tests::twin::cc2_the_ruled_palette_measured"
+tier = "by-hand"
+by_hand = "ce65da26"
+
 # The four-bot mining cohort over SSH: passed at its landed commit, 2,258 s
 # (doc 20 cut notes, SM.12c-bot, the lead's run after the fixer's round).
 [[test]]

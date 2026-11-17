@@ -182,8 +182,13 @@ pub(crate) async fn surrender(at: &Ground, case: Case) {
                 "the crew at 1,000 never yields"
             );
             assert!(mark(&rig, hulls[1]).get("morale_step").is_none());
+            // Doc 49 unit CC.2: 300 s, where it was 150. The crew that holds fights on at the
+            // stranger's hulls after the first crew yields, and the field demotes a quiet
+            // interval after its last shot: at the ruled palette (the cannon's 15 s, the coaxial
+            // gun's 5 s) that was 278 to 279 s on every case at 256 and 512 (conclav.dev), inside
+            // 150 at W14's cycles.
             assert!(
-                until(&mut rig, &mut rx, &mut lines, 150, |rig, _| settled(
+                until(&mut rig, &mut rx, &mut lines, 300, |rig, _| settled(
                     rig, entry
                 ))
                 .await,

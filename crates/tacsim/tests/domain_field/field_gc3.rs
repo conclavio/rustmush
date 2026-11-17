@@ -99,7 +99,6 @@ fn wrecked(rig: &crate::driving_rig::Rig, unit: ObjId) -> bool {
 async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
     let mut rig = stocked_tuned(|cfg| {
         tune(cfg);
-        cfg.field.disengage_s = 15;
         cfg.field.idle_demote_s = 3_600;
     });
     // GC.2's ground: A in an armed hull, C's prospector out four cells east of it.

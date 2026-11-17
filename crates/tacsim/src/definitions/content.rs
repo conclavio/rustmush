@@ -644,16 +644,17 @@ pub const MISSILE_ROUND_JSON: &str = include_str!("../../content/ammunition/miss
 pub const MISSILE_LR_JSON: &str = include_str!("../../content/weapons/missile_lr.json");
 
 /// **The 30 mm autocannon** (16b cut AE.2; 16c N15): three rounds a pull every
-/// three seconds — the cannon's damage a second in bites of 20, each round its
-/// own draw under `burst:<seq>`. The scout car's first weapon from its version
+/// ten seconds since doc 49 unit CC.2 (three before), in bites of 20, each round
+/// its own draw under `burst:<seq>`. The scout car's first mount from its version
 /// 2, so its bare `FIRE`.
 pub const AUTOCANNON_30: &str = "tacsim.weapon.autocannon_30";
 
-/// **The missile rack** (16b cut AE.2; 16c N15): six rounds, one every ten
-/// seconds, at 250 m/s — a round with a flight time a moving target walks out
-/// from under. Doc 16 §3.5's scheduled impact is the whole of its mechanism: a
-/// longer schedule and a due event, and nothing new on the wire. The heavy's
-/// third weapon from its version 2, named `FIRE missiles`.
+/// **The missile rack** (16b cut AE.2; 16c N15): four rounds, one every thirty
+/// seconds since doc 49 unit CC.2 (six, one every ten, before), at 250 m/s — a
+/// round with a flight time a moving target walks out from under. Doc 16 §3.5's
+/// scheduled impact is the whole of its mechanism: a longer schedule and a due
+/// event, and nothing new on the wire. The heavy's third mount from its version
+/// 2, named `FIRE missiles`.
 pub const MISSILE_LR: &str = "tacsim.weapon.missile_lr";
 
 /// **The two weapons of 16b cut AE.2 and their ammunition, in `requires`
