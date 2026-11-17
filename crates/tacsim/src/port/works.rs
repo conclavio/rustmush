@@ -563,13 +563,26 @@ pub(crate) fn stores(ctx: &mut Ctx<'_>, facility: &FacilityRecord) -> Result<Vau
     {
         return Ok(vault);
     }
+    // Doc 48 cut EX.3: in the operator's root scope, so the port's clerk, whose
+    // `vault.withdraw` grant there stocks the operator's storefront, may take a purchase into
+    // the stores on the board.
+    let scope = match facility.owner() {
+        PrincipalId::Organization(org) => ctx.w.module_state::<TacsimStore>().and_then(|store| {
+            store
+                .port_maps()
+                .flat_map(|map| map.orgs.values())
+                .find(|row| row.org == org.0)
+                .map(|row| mush_org::OrgScopeId(row.root_scope))
+        }),
+        _ => None,
+    };
     let id = crate::port::apply::alloc_vault_id(ctx)?;
     mush_economy::create_vault(
         ctx,
         mush_economy::Vault {
             id,
             owner: facility.owner().clone(),
-            scope: None,
+            scope,
             name: SmolStr::new("Works stores"),
             backing,
             status: mush_economy::VaultStatus::Active,

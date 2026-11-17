@@ -1157,6 +1157,7 @@ mod tests {
             capital_major,
             faction: CanonicalId::new("freeport").expect("id"),
             raises: raises.to_vec(),
+            roles: Vec::new(),
         }
     }
 

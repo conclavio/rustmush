@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 37,
+    "version": 38,
     "kind": "campaign_seed",
-    "digest": "f668f7110fc7b406dfa529033a39999bbfdde3c354de58980695bc7f76dc02a3",
+    "digest": "3e569568d289eb5ccf2523d418a7d545d5b7ff5ac5aec2978f56e83e8a308ff8",
     "requires": []
   },
   "entries": {
@@ -2742,14 +2742,14 @@
         "treasury": "tacsim.treasury",
         "orgs": [
           { "id": "ceres_clearing", "name": "Ceres Clearing", "capital_major": 50000, "faction": "freeport" },
-          { "id": "coop", "name": "Belt Carriers' Cooperative", "capital_major": 3100000, "faction": "freeport" },
-          { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport", "raises": [ 250000 ] },
-          { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
-          { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ] },
-          { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord", "raises": [ 450000 ] },
-          { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" },
+          { "id": "coop", "name": "Belt Carriers' Cooperative", "capital_major": 3100000, "faction": "freeport", "roles": [ "acceptor" ] },
+          { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport", "raises": [ 250000 ], "roles": [ "acceptor" ] },
+          { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport", "roles": [ "acceptor" ] },
+          { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ], "roles": [ "acceptor" ] },
+          { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord", "raises": [ 450000 ], "roles": [ "acceptor" ] },
+          { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport", "roles": [ "acceptor" ] },
           { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" },
-          { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport" }
+          { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport", "roles": [ "acceptor" ] }
         ],
         "programme": {
           "id": "coop.first_captain",
@@ -2880,9 +2880,9 @@
         },
         "treasury": "tacsim.treasury",
         "orgs": [
-          { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic" },
-          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ] },
-          { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic" }
+          { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic", "roles": [ "acceptor" ] },
+          { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ], "roles": [ "acceptor" ] },
+          { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic", "roles": [ "acceptor" ] }
         ],
         "vendors": [
           { "org": "kasei", "storefront": "neighborhood.stickney_yards.item.kasei_manifold",
@@ -2974,12 +2974,12 @@
         },
         "treasury": "tacsim.treasury",
         "orgs": [
-          {"id": "concord_fleet", "name": "Concord Fleet Relief Command", "capital_major": 100000, "faction": "concord"},
+          {"id": "concord_fleet", "name": "Concord Fleet Relief Command", "capital_major": 100000, "faction": "concord", "roles": [ "acceptor" ]},
           { "id": "orbital_access", "name": "Concord Orbital Access", "capital_major": 50000, "faction": "concord" },
-          { "id": "cabeus_works", "name": "Cabeus Works", "capital_major": 250000, "faction": "concord" },
-          { "id": "habitat_board", "name": "Lunar Habitat Board", "capital_major": 1000000, "faction": "concord" },
-          { "id": "crisium_instruments", "name": "Crisium Instruments", "capital_major": 50000, "faction": "concord" },
-          { "id": "highport_victualling", "name": "Highport Victualling Office", "capital_major": 50000, "faction": "concord" }
+          { "id": "cabeus_works", "name": "Cabeus Works", "capital_major": 250000, "faction": "concord", "roles": [ "acceptor" ] },
+          { "id": "habitat_board", "name": "Lunar Habitat Board", "capital_major": 1000000, "faction": "concord", "roles": [ "acceptor" ] },
+          { "id": "crisium_instruments", "name": "Crisium Instruments", "capital_major": 50000, "faction": "concord", "roles": [ "acceptor" ] },
+          { "id": "highport_victualling", "name": "Highport Victualling Office", "capital_major": 50000, "faction": "concord", "roles": [ "acceptor" ] }
         ],
         "programme": {"id": "concord.relief", "org": "concord_fleet", "office": "neighborhood.aitken_highport.room.l01_berth_gallery", "floor_major": 1, "unit": "tacsim.unit.halcyon", "issuer": "tacsim.registry", "pool": 1, "registry_prefix": "CF-H-", "hull_names": ["Long Vigil"], "stake_major": 1, "share_permille": 0, "reference": {}, "buyout_major": 1, "dormancy_real_days": 7, "per_account": 1},
         "vendors": [
@@ -3034,8 +3034,8 @@
         "treasury": "tacsim.treasury",
         "orgs": [
           { "id": "voltaire_bond", "name": "Voltaire Bond Authority", "capital_major": 50000, "faction": "republic" },
-          { "id": "strategic_reserve", "name": "Republic Strategic Reserve", "capital_major": 300000, "faction": "republic" },
-          { "id": "syrtis_bonded", "name": "Syrtis Bonded Imports", "capital_major": 3100000, "faction": "republic" }
+          { "id": "strategic_reserve", "name": "Republic Strategic Reserve", "capital_major": 300000, "faction": "republic", "roles": [ "acceptor" ] },
+          { "id": "syrtis_bonded", "name": "Syrtis Bonded Imports", "capital_major": 3100000, "faction": "republic", "roles": [ "acceptor" ] }
         ],
         "vendors": [
           { "org": "strategic_reserve", "storefront": "neighborhood.voltaire_anchorage.item.reserve_manifold",
@@ -3076,9 +3076,9 @@
         },
         "treasury": "tacsim.treasury",
         "orgs": [
-          { "id": "titan_concession", "name": "Titan Concession Company", "capital_major": 50000, "faction": "company" },
-          { "id": "concession_stores", "name": "Concession Stores", "capital_major": 50000, "faction": "company" },
-          { "id": "selk_townships", "name": "Selk Townships Board", "capital_major": 1350000, "faction": "townships" }
+          { "id": "titan_concession", "name": "Titan Concession Company", "capital_major": 50000, "faction": "company", "roles": [ "acceptor" ] },
+          { "id": "concession_stores", "name": "Concession Stores", "capital_major": 50000, "faction": "company", "roles": [ "acceptor" ] },
+          { "id": "selk_townships", "name": "Selk Townships Board", "capital_major": 1350000, "faction": "townships", "roles": [ "acceptor" ] }
         ],
         "vendors": [
           { "org": "titan_concession", "storefront": "neighborhood.ligeia_terminal.item.concession_manifold",
