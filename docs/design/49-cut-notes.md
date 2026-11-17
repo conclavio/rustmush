@@ -195,7 +195,277 @@ The probe's edits never reached this worktree. It ran in the clone, and the clon
 
 ## CC.1
 
-Not built.
+Slots and the stock mind's discipline (Q-49-8, Q-49-9, Q-49-20, Q-49-23, Q-49-29). Built
+2026-11-15 on main `c85a8744f` (CC.0 and CC.6 merged in), with main `73d05678b` merged on
+2026-11-16 (CC.9's API 10 among it). Every pin below was re-read on the merged tree.
+
+**Survey.**
+- **Slots stand (Q-49-20).** Nothing in the tree made a slot single-use, so nothing needed
+  unwinding: an armed slot fires at each ready moment while its terms hold.
+- **A player's slot is bounded by the Compact floor alone (Q-49-29).** No judgement-term rule
+  exists in code:
+  - `rules.rs`' `fire_rules` takes the odds term from the typed terms, else the match's floor;
+  - `check_floor` refuses only an odds term under the floor;
+  - `condition_is_lawful` checks the same floor when the arming lands.
+
+  `FIRE cannon WHEN lock` arms at the floor.
+- **The card.** `line()` held `min_odds_permille: 100` (the Compact floor's default) and
+  `reserve_pct: 0`. The other five presets are written over Line, so they inherit its reserve.
+- **"Dry"** was one test, `stock_mind::is_dry`. Six places read it: the withdraw edge, the
+  expiry's restoration, the rally, the arming gate and both stands. The Rhai port read it
+  once, into `p.dry`.
+- **The record.** `note_fired_on` wrote `fired_on_by` only in a host-ended field, or on a
+  practice hull a pilot had named a player for (doc 45 AP.10).
+- **`spent()`** counted a unit spent only when every row was empty.
+- **The Rhai budget.** `standard.rhai` holds 31 of its 32 functions. `minds/stock.rs` compiles
+  a trusted copy (31 private functions plus six wrappers, under 40) and checks `arming_for`'s
+  signature line verbatim.
+
+**Built.**
+- **The Line card** (`arena/card.rs`, Q-49-8). `line()` holds `LINE_MIN_ODDS_PERMILLE`, 350,
+  and `LINE_RESERVE_PCT`, 25. Both are provisional.
+  - Sentry, Skirmisher, Hunter and Rearguard keep Line's quarter; Sniper keeps its own 30%.
+  - Hunter's 30% floor is its own, under Line's.
+  - Skirmisher's 35% now equals Line's, and it still names itself.
+- **The half-magazine rule** (Q-49-9). `StockCard::floor_for(rounds, rounds_max)` is:
+  - the card's floor while a mount holds half its load or more;
+  - `LOW_MAGAZINE_RISE_PERMILLE` (150) above it once the mount holds under half, capped at
+    `RISEN_FLOOR_MAX_PERMILLE` (950, the slider's top) and never below the card's own.
+
+  Line reads 50% there, Sniper 80%. `StockCard::keeps(rounds_max)` is the reserve in rounds.
+  The arming, the withdrawal and `spent` share it.
+- **The card's text.** On an armed hull, `read_back` prints a sixth line under the fire
+  discipline: `under half a magazine min_odds 50%; the reserve answers fire and covers a
+  withdrawal` (103 columns). `docs/help/minds.md`'s Line paragraph says the same, and says that
+  a hull at its reserve on every mount breaks off. `card.rs`' help test reads both.
+- **Sentence 1: dry for withdrawal is its own test** (`arena/stock_mind.rs`).
+  - The new public `at_reserve(view, card)` is true when some row holds a load and every row
+    holds at or under the card's reserve of it. On a card with no reserve it is `is_dry`.
+  - The withdraw edge, the expiry's restoration and the rally read it.
+  - The arming gate (`engage_orders`) and both stands still read `is_dry`, which is
+    unchanged, as is the Rhai kernel of that name.
+  - The edge takes it as the doctrine's one retreat, as it takes a hurt hull: see
+    **Divergences**.
+- **Sentence 2: answering fire is decided in the slot check** (`arena/conditions.rs`,
+  `arena/absent.rs`).
+  - In `Arena::warrant`'s third term, a slot at or under its `min_rounds_left` still fires
+    when a round is left and the lock's target has fired on the hull.
+  - Fire is counted as the absent gate counts it: the new `Arena::answers_fire` is
+    `fired_on_by`, plus a guard's widening to its player's other units (Q-45-8).
+  - Fire from any other unit opens nothing, and an empty magazine answers nobody.
+  - A seat's own rounds term is a rule predicate, not `min_rounds_left`, so the exception
+    reaches only a mind's arming (`Arming::Arm`: the stock shorthand and Rhai's `arm`).
+- **The record in every match** (`arena/absent.rs`). `note_fired_on` writes `fired_on_by` at
+  every impact in every match. This moves the arena hash of every match with an impact.
+- **Sentence 3: a withdrawing mind arms with no reserve.** `arming_for` takes a fifth argument,
+  `withdrawing` (the think ends in `Withdraw`), and arms with `min_rounds_left` 0 then. Its
+  odds term is each mount's `floor_for`.
+- **Sentence 4: `spent()` counts a unit at its reserve** (`arena/damage.rs`). The new public
+  `Arena::reserve_kept(unit, rounds_max)` is the active stock card's `keeps` while a mind flies
+  the unit, and 0 for a seat or a custom card. `spent()`'s third condition reads rounds above
+  that.
+- **The Rhai port** (`content/minds/standard.rhai`): still 31 functions, `stock: 3`, and `api: 10` from CC.9.
+  - `standing_order` reads `p.low` beside `p.dry`, a loop over the rows. The test that a row
+    is over its reserve is `rounds * 100 > reserve * rounds_max`, which is T1's rounded-down
+    `rounds > keeps`. The card's schema holds `reserve_pct` to 100, so no product overflows.
+  - `p.low` is read only where it has a reader: the edge of an unrallied hull, and a
+    withdrawing hull's restoration and rally.
+  - `edges`, the restoration and `withdraw_arm`'s rally read `p.low` where they read `p.dry`.
+    The edge reads both, as T1's does.
+  - `arming_for(view, card, ceiling, withdrawing)` arms with no reserve while withdrawing, and
+    at the risen floor on a mount under half its load. `emit` passes `this.state == 4`, and the
+    two power arms pass `false`.
+- **The digest.** `STANDARD_SHA256` (`minds/content.rs`) and `tests/domain_arena/content.rs`'
+  `STANDARD_DOCTRINE_SHA256` are re-blessed from CC.9's `c544bfbd…f9375f` to `eec3f668…154a91`.
+  `MIND_ABI` stays CC.9's `rhai=1.26.0;api=10;stock=3`. The mind view gains no field, so there is no
+  API bump.
+- **Outside the row, on the lead's word:**
+  - `minds/stock.rs`: the trusted copy's shape check names the new signature, and
+    `stock::fire_discipline` passes `false`. The public helper surface is unchanged.
+  - `minds/stations.rs`: one test builds its expected arming on a card at the script's literal
+    terms (10%, no reserve).
+  - `arena/weapons.rs`: the MW.7 and AP.10 tests assert the record is kept in a practice
+    match. AP.10's opening fire moves to a clone, so the practice after it opens unfired on.
+  - Doc comments in `arena/hash.rs` (sub-item 25) and `match_/practice.rs`.
+  - `docs/help/minds.md`, the Line paragraph.
+
+**Tests.** Every run was on conclav.dev, in a throwaway clone of `c85a8744f` with the unit's patch
+applied.
+
+- **New tests, each caught by a mutation of its ruling.** A mutation pass put each ruling's
+  production line back the old way, one at a time, and ran the new tests against it. All ten
+  passed unmutated, and every mutation failed at least one:
+
+  | Mutation (the line put back) | Failed |
+  |---|---|
+  | Line at 10% and no reserve | the two `card.rs` tests, `damage.rs`' spent test, the `stock_mind.rs` and `content.rs` withdrawal pair, both `reflex.rs` stories |
+  | No rise under half a magazine | `cc1_the_floor_rises_fifteen_points_under_half_a_magazine`, the withdrawal pair |
+  | The withdraw edge on `is_dry` | the withdrawal pair, the answering story |
+  | No answering under the reserve | the `conditions.rs` slot test, the answering story, AP.6's guard story |
+  | The record kept only in host-ended fields | the slot test, the answering story |
+  | No guard widening in the answer | AP.6's guard story |
+  | A withdrawing hull keeps its reserve | the withdrawal pair |
+  | `spent()` reads empty rows only | `damage.rs`' spent test, the two-minds story |
+  | The reserve's break-off not the one retreat | the withdrawal pair, AP.6's guard story |
+
+  The tests:
+  - `arena::card`:
+    - `cc1_line_holds_a_thirty_five_per_cent_floor_and_a_quarter_in_reserve`: Line, the presets,
+      `keeps`;
+    - `cc1_the_floor_rises_fifteen_points_under_half_a_magazine`.
+  - `arena::stock_mind::cc1_a_hull_at_its_reserve_withdraws_by_its_own_test_and_covers_the_withdrawal`.
+    It covers `at_reserve` against `is_dry` and the break-off with one mount over its reserve
+    and with none. A rallied hull stays at its reserve and still breaks off empty. Cornered, it
+    arms with no reserve at the low-magazine floor.
+  - `minds::content::cc1_mirror_a_hull_at_its_reserve_withdraws_and_covers_the_withdrawal`: the
+    same through both runners, then `arming_for` alone on every preset, low and full, withdrawing
+    and not. Native and Rhai agree.
+  - `arena::conditions::cc1_a_slot_under_its_reserve_answers_only_a_unit_that_fired_on_its_hull`.
+  - `arena::damage::cc1_two_minds_on_their_reserve_on_every_mount_are_spent`.
+  - The done-when stories, in `tests/domain_arena/reflex.rs`:
+    - `cc1_two_minds_on_their_reserve_end_the_match_spent_with_rounds_left`: two minds on Line, two
+      rounds over their reserves, end the simulator match `Spent` with rounds in both magazines.
+    - `cc1_a_mind_at_its_reserve_answers_the_unit_that_fired_on_it_and_withdraws_at_it`: at its
+      reserve the mind fires nothing for twenty seconds, then answers the seat that fired on it.
+      Once at its reserve on every mount with rounds left, it breaks off by its own edge.
+  - `field_ap6::ap6_a_guard_that_loses_its_last_fire_channel_goes_home`, unchanged. It caught
+    the literal reading of Q-49-23 (see **Divergences**).
+- **Already held, pinned.** `arena::conditions::cc1_a_players_slot_needs_no_judgement_term_and_stands`
+  (Q-49-29, Q-49-20). A typed `FIRE <mount> WHEN` with the lock, a range or a rounds term alone
+  arms at the Compact floor and is lawful. Only an odds term under the floor is refused, and a
+  slot stays armed after its shot. This held on main, so no mutation fails it.
+- **The probe.** First, the nine crates' tests with no fail-fast, as CC.0's probe ran them: 7,601
+  tests, 42 failures, all in `tacsim` but one contract test. Every non-`tacsim` crate passed:
+  `mushd`, `mush-bot` (its lanes included), `mush-gateway`, `mush-server`, `mush-net-ssh`,
+  `mush-campaign`, `mush-ansi`. The 42 sort into:
+  - the token `rhai` in a `card.rs` doc comment, which the arena library's contract bans;
+  - CC.1's own tests on the first draft;
+  - tests that put Line under a 20% floor, re-sized to 40%: two in `seal.rs`, one in
+    `ic_sortie/execution/tests.rs` and three in `match_lifecycle.rs`;
+  - texts quoting Line's 10% or its five read-back lines: `arena_bridge.rs`,
+    `domain_arena/cockpit.rs`, `match_lifecycle.rs`' refusal sentence, `card.rs`' preset list and
+    help test, `minds/stations.rs`;
+  - the practice record (`arena/weapons.rs`' MW.7 and AP.10 tests);
+  - fixtures whose mind's one round now sits under its reserve: `reflex.rs`' in-flight and
+    three-cadence spent draws, sized to 11 of 40, the in-flight ones with the retreat spent;
+  - AP.6's guard story and the 512-site field story (see **Divergences**);
+  - the pins below.
+- **Re-blessed by record** (every value read on the final tree):
+
+  | File and test | Pin | What moved |
+  |---|---|---|
+  | `minds/content.rs`, `domain_arena/content.rs` `m2_the_standard_doctrine_source_is_pinned`, `match_/seal.rs`, `support/api4_identity.rs` | the Standard source digest | `c544bfbd…f9375f` (CC.9's) → `eec3f668…154a91` |
+  | `arena/hash.rs` `m5_the_active_profile_folds_only_off_its_default` | the two-tanks hash | `0x63ea…ab0e` → `0xabec…b56d` (the card) |
+  | `match_/seal.rs` `m5rules_default_seal_identities_are_pinned` | nine seal digests, and their nine API 4 projections | the card, and the source; the projections with the card alone |
+  | `minds/registry/trials/physical_tests.rs` `c4_a_registry_trial_ends_the_same_on_every_host` | `C4_TRIAL_PINS` | each case ends in the same elimination and is filed `Loss` at 106,500 ms, not 58,500; run on Windows by hand at the same tree, equal |
+  | `domain_arena/motor.rs` `m1a1_…`, `gc1b_…`, `m1b0_…` | `DUEL_HASH_API6_OBSERVED`, `DUEL_HASH_AT_HEAD`, `M1B0_DUEL_LINES` | hashes only: the duel fires no shot in its minute, and its 34 lines equal the old pins once the hash is out |
+  | `domain_arena/reflex.rs` `m1a1_…`, `m1b0_…` | the (j) field's first and last hashes, `M1B0_J_LINES` | hashes only: 50 lines equal once the hash is out |
+  | `domain_arena/weapons.rs` `m1b0_…` | `M1B0_SEAT_LINES` | hashes only: 30 lines equal once the hash is out |
+  | `domain_arena/minds.rs` `m1a5_the_production_hash_does_not_move` | the three production encoding pins | with the duel's and the field's |
+  | `domain_arena/minds.rs` `m1b5_…` ×3, `m2_the_two_t1_fixture_…` ×2 | `M1B5_TWO_T1_INTENTS`, `M1B5_TWO_T1_EVENTS`; Line's discipline in `two_t1_slots_and_citations` | one answer of sixty (the arming at 3,482 ms: 350 and 10 kept, where 100 and 0); the events in the seals' `source` and `card_digest` alone; the slot check reads `floor_for` and `keeps` |
+  | `domain_arena/twin.rs` `m4_5_the_stock_pool_over_fifteen_seeds_is_its_record` | `M4_5_POOLED_RECORD` | matches run longer (seed 2350's 180,250 → 231,250 ms), the split 14–1 → 13–2, shots 1,488/863 → 1,058/936, `floor_held` 0 → 1,039, `unwarranted` 0 → 12 |
+  | `domain_arena/twin.rs` Gate A's three lanes | `COVERAGE`, `POOLED_MATCHES_WITH_STAND_IN` | pooled 10,015/291 → 10,851/405, mixed 12,884/449 → 12,866/345, lance 7,260/126 → 7,142/159, 14 → 12; 0 divergences |
+  | `domain_arena/minds_rhai.rs` `m2_the_twin_corpus_hashes_the_same_on_every_host` | `M2_CROSS_PLATFORM_PINS` | stopping times 180,250 / 177,500 / 170,000 → 231,250 / 197,500 / 167,000 (900,000 unmoved); the float probe's thinks and bitmask unmoved; read on Linux |
+  | `tests/harness_baseline/arena.linux.json` | twelve deterministic leaves, by record (`cc1_deterministic_update`) | the minds lanes' four final hashes; `fill_authored`'s thinks, landings, condition fires and drops; the arena lane's ledger bytes. Timing gate live and inside it on the merged tree (p50 −2.2%, p99 +7.7%, window p99 +10.8%) |
+
+- **The Rhai think's cost, and the lanes' bounds, set by record** (`tests/domain_arena/twin.rs`).
+  CC.1 took the twin lanes' costliest Rhai think past the 1,200 operations-plus-fees STOP that
+  17b cut M2.5 set on the mixed and pooled lanes. Max, with p99 in brackets, measured on
+  conclav.dev:
+
+  | Lane | main | CC.1 as first built | CC.1 after its cost pass | Bound |
+  |---|---|---|---|---|
+  | mixed | 1,168 (1,006) | 1,319 (1,158) | 1,275 (1,114) | 1,200 → **1,350** |
+  | pooled | 1,195 (1,057) | 1,346 (1,202) | 1,302 (1,158) | 1,200 → **1,350** |
+  | lance | 1,308 (1,246) | 1,468 (1,415) | 1,424 (1,371) | none → **1,450** |
+
+  - **The cost pass** (behaviour unchanged, Gate A at 0 divergences on every lane, still 31
+    functions):
+    - the reserve read once a think, only where a reader can read it;
+    - `arming_for`'s reserve read without its overflow clamp. The card's schema holds it to 100,
+      so the clamp never changed a value. This saved about 60 a think.
+    - A fully lazy read, at each reader, measured worse (lance 1,486), so it was not kept.
+  - **Where the peak is.** A print of every think past 1,250 showed the costliest are Engage
+    thinks under an Engage order, on 7- to 12-row views, taking a fresh lock and citing a shot.
+    Fees are only 72 to 90 of each; the rest is script. The cornered withdraw stand is not among
+    them. Its two `best_hostile` scans and two `line_to` traces are the line fallback's two
+    distinct queries, and `entry_cell` runs once a think.
+  - **Why lance stayed over 1,350.** CC.1's own code costs about 50 on that think, so lance would
+    sit near 1,375 even at zero. The rest is the ruled behaviour: longer fights, more rows.
+  - **The ruling.** The lead set the target at 1,350 (90% of class I's 1,500); lance could not
+    reach it inside CC.1. The owner ruled on 2026-11-16, "Guard at 1,450": mixed and pooled
+    bounded at 1,350 (`TWO_TANK_THINK_BOUND`), lance at 1,450 (`LANCE_THINK_BOUND`, its first
+    bound).
+  - **The follow-up unit CC.1b** cuts the Engage path's cost toward 1,350 on every lane.
+- **Guards**, on the final tree:
+  - `cargo fmt -p tacsim --check`;
+  - `cargo clippy -p tacsim --all-targets -- -D warnings`;
+  - the M7 memory-size pass;
+  - `cargo doc -p tacsim --no-deps --document-private-items` with `-D warnings`.
+
+  The contract tests (`engine_contracts`, `ci_policy`, the help-page lint) passed in the probe and
+  in the whole-workspace sweep.
+- **The whole-workspace sweep** (`gate.yml`, `kind=sweep` on conclav-dev, run 43825750857, before
+  the bounds): 12,740 tests.
+  - Three failed: the mixed and pooled twin lanes on the old 1,200 bound, and
+    `mushd::sim_lenses` `observer_rule::m5_the_mind_object_names_nothing_but_the_pilots_own_seal`.
+    That one pinned Line's 10% and now reads `LINE_MIN_ODDS_PERMILLE`.
+  - The probe had failed it too, but its retry group's `TRY 2 FAIL` slipped past my filter.
+  - `observer_rule::nothing_about_an_undetected_unit_crosses_on_any_surface` failed once and
+    passed on retry, in the load-sensitive group.
+
+**Divergences.**
+- **The reserve's break-off is the doctrine's one retreat** (my reading of Q-49-23 with doc
+  45's Q-45-9).
+  - Q-49-23 says a unit at its reserve on every mount counts as dry for withdrawal. Taken
+    literally, a unit on `GUARD` holding two rounds of 40 broke for home with rounds left.
+    AP.6's story `ap6_a_guard_that_loses_its_last_fire_channel_goes_home` failed on it.
+  - Doc 45 has a guard stay while it can still defend itself. At its reserve it can: it
+    answers fire.
+  - So the edge treats the reserve as it treats a hurt hull: it breaks off once, and not after
+    it has rallied, nor where a posture spent the retreat (`seed_stay`, which every standing
+    posture runs).
+  - An empty hull breaks off whatever it has spent, as before.
+  - The cost: a rallied stock mind at its reserve stays and holds. In a field, which never
+    ends on `spent`, two such minds can sit facing each other until the host ends the field.
+    The simulator still ends that match (sentence 4).
+- **Answering fire counts a guard's widening** (sentence 2). Q-49-23 says "a unit that fired on
+  this one, as the absent gate counts it". The gate's count includes the guard's answer for its
+  player's other units, so the slot check reads the gate's own set (`answers_fire`), not
+  `fired_on_by` alone. A guard on its last two rounds answers the intruder that fired on its
+  neighbour.
+- **In practice, the absent gate now counts fire from the match's open** (the lead asked for
+  this to be named for the owner). AP.10 had the record start on a practising hull when its
+  pilot named a player (`MIND AWAY`). The record is now kept in every match, so a practising
+  hull answers a unit that fired on it before the pilot let go. It still never fires first.
+  AP.10's tests were changed by record:
+  - `ap10_a_practising_hull_in_a_match_is_held_to_the_one_rule` takes its opening fire on a
+    clone;
+  - the MW.7 test's last assertion now reads the record as kept.
+
+  AP.10's stories (`tests/domain_arena/cockpit.rs`) pass unchanged.
+- **A withdrawing mind covers its withdrawal against any cornering hostile.** "Covering a
+  withdrawal" is the doctrine's cornered stand, which fires on the best hostile in reach, not
+  only on a unit that fired. This showed in `reflex.rs`' in-flight spent fixture. That
+  fixture's mind now has its one retreat spent, so its one round over the reserve is its last.
+- **`spent()` reads the active stock card** (`active_card`), which is the ROM card once a mind
+  is dropped. A custom card keeps no reserve there; its own terms are its own.
+- **The 512-site field story's bystander moved** (`tests/support/field/grounds_rig.rs`,
+  `URVARA_REACH`): from `(282, 294)`, about 250 m from the raider's ramp, to `(290, 284)`, about
+  120 m.
+  - The Line card's 35% floor never let a raider fire on it from there, even over 240 s.
+  - A probe with Line at 10% and no reserve passed; at 35% with no reserve it failed. So the
+    floor, not the reserve, was the cause.
+  - The cell is still in the far quadrant, as S.2 asserts, and no other test reads it.
+
+**Not built.**
+- **CC.2's palette** moves every cycle and load again and re-blesses the same pins after this
+  unit, as CC.0's list says.
+- **Measured fights at the new discipline** (hits per load, match length, dry withdrawals, human
+  against mind) are CC.2's to report. This unit's pins show the direction: matches run longer
+  (the pooled record's seed 2350 from 180,250 to 231,250 ms).
+- **The bot** (CC.10) still fires every gun at full rate. Its lanes passed unchanged in the
+  probe.
 
 ## CC.2
 

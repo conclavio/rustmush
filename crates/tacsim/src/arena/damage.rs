@@ -87,7 +87,9 @@ use crate::arena::ledger::EventKind;
 use crate::arena::perception::Notice;
 use crate::arena::resolution::{Consequence, Resolution};
 use crate::arena::rng::{DrawLabel, draw};
-use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, PartyId, Power, UnitState};
+use crate::arena::state::{
+    Arena, Controller, DueKind, EndReason, MatchEnd, PartyId, Power, UnitState,
+};
 use crate::definitions::unit::{UnitClass, armor_cell, internals_cell};
 
 // ---------------------------------------------------------------------------
@@ -1704,9 +1706,15 @@ impl Arena {
     ///    true. The test is [`UnitState::armed_at_checkout`], which survives a
     ///    turret being shot off because `destroy_unit` and `remove_weapons`
     ///    deliberately leave the rounds where they are (16b cut F.1);
-    /// 3. **no unit still in action has a weapon row holding rounds.** Rows
-    ///    emptied by `remove_weapons` (doc 16 §3.3, a turret shot off) count as
-    ///    none, which is the honest reading: that tank cannot shoot either;
+    /// 3. **no unit still in action has a weapon row holding rounds above its
+    ///    reserve.** Rows emptied by `remove_weapons` (doc 16 §3.3, a turret
+    ///    shot off) count as none, which is the honest reading: that tank
+    ///    cannot shoot either. **Doc 49 unit CC.1** (Q-49-23, the second
+    ///    review's sentence 4): a unit a mind flies on a stock card keeps that
+    ///    card's reserve of every load ([`Arena::reserve_kept`]), and a unit at
+    ///    or under it on every mount is spent, so two minds sitting on their
+    ///    reserves end the match here rather than at its cap. Any other unit
+    ///    (a seat, a custom card) keeps none: only an empty row is spent;
     /// 4. **nothing is in flight.** A round already on its way can still decide
     ///    the match, and ending before it lands would be calling a draw over a
     ///    kill.
@@ -1724,11 +1732,9 @@ impl Arena {
             if unit.armed_at_checkout() && !armed.contains(&unit.team) {
                 armed.push(unit.team);
             }
-            if unit
-                .weapons
-                .iter()
-                .any(|weapon| unit.weapon_ammo(&weapon.id) > 0)
-            {
+            if unit.weapons.iter().any(|weapon| {
+                unit.weapon_ammo(&weapon.id) > self.reserve_kept(unit, weapon.count_per_load)
+            }) {
                 return false;
             }
         }
@@ -1739,6 +1745,22 @@ impl Arena {
             .due
             .iter()
             .any(|event| matches!(event.kind, DueKind::Impact { .. }))
+    }
+
+    /// **The rounds `unit` keeps back on a mount whose load is `rounds_max`**
+    /// (doc 49 Q-49-23, unit CC.1): its active card's reserve
+    /// ([`crate::arena::card::StockCard::keeps`]) while a mind flies it on a
+    /// stock card, and none otherwise — a seat fires when its pilot says, and a
+    /// custom card keeps its own terms. What [`Arena::spent`] counts a unit
+    /// spent at.
+    #[must_use]
+    pub fn reserve_kept(&self, unit: &UnitState, rounds_max: u32) -> u32 {
+        if unit.controller != Controller::Mind {
+            return 0;
+        }
+        self.active_card(unit)
+            .and_then(crate::arena::runtime_card::RuntimeCard::stock)
+            .map_or(0, |card| card.keeps(rounds_max))
     }
 
     /// **End the match because nothing can shoot any more** (16b cut Q.7), if
@@ -3416,6 +3438,108 @@ mod tests {
     /// **16b cut AE.3** (doc 16 §2 W2; §3.8 read for the side): a side whose
     /// every unit in action is a drone, having fielded a gun, is out.
     ///
+    /// **Doc 49 unit CC.1 (Q-49-23, sentence 4): two minds on their reserve are
+    /// spent.** Two line tanks a mind flies on the fixture seal's Line card,
+    /// every mount at a quarter of its load: rounds are left, but each unit
+    /// is at or under its reserve on every mount, so the match is spent, and
+    /// ends. One round over on one mount is not; nor is a seat at the same
+    /// count, which keeps no reserve (its pilot fires when they say).
+    #[test]
+    fn cc1_two_minds_on_their_reserve_on_every_mount_are_spent() {
+        use crate::arena::state::Controller;
+        let minded = |id, team, at| {
+            let mut unit = line_tank(id, team, at);
+            unit.controller = Controller::Mind;
+            unit.reseal(&crate::match_::SealTerms::fixture())
+                .expect("the fixture terms seal");
+            unit
+        };
+        // Each of `unit`'s mounts at its reserve, and `over` rounds more on the
+        // first.
+        let at_reserve = |arena: &mut Arena, unit: ObjId, over: u32| {
+            let Some(state) = arena.unit(unit) else {
+                panic!("a fielded unit");
+            };
+            let kept: Vec<(SmolStr, u32)> = state
+                .weapons
+                .iter()
+                .map(|weapon| {
+                    (
+                        weapon.id.clone(),
+                        arena.reserve_kept(state, weapon.count_per_load),
+                    )
+                })
+                .collect();
+            if let Some(state) = arena.unit_mut(unit) {
+                for (at, (weapon, keeps)) in kept.into_iter().enumerate() {
+                    let extra = if at == 0 { over } else { 0 };
+                    state.ammo.insert(weapon, keeps + extra);
+                }
+            }
+        };
+        let mut pair = arena_of(vec![
+            minded(RED, PartyId::RED, pose(1_500, 1_500)),
+            minded(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
+        ]);
+        let Some(red) = pair.unit(RED) else {
+            panic!("red");
+        };
+        let Some(cannon) = red.weapons.first() else {
+            panic!("the line tank's first mount");
+        };
+        assert_eq!(
+            pair.reserve_kept(red, cannon.count_per_load),
+            cannon.count_per_load / 4,
+            "Line keeps a quarter"
+        );
+        assert!(!pair.spent(), "full magazines");
+        at_reserve(&mut pair, RED, 0);
+        at_reserve(&mut pair, BLUE, 1);
+        assert!(!pair.spent(), "blue has a round over its reserve");
+        at_reserve(&mut pair, BLUE, 0);
+        assert!(
+            pair.units.iter().all(|unit| unit
+                .weapons
+                .iter()
+                .all(|weapon| unit.weapon_ammo(&weapon.id) > 0)),
+            "the precondition: rounds are left on every mount"
+        );
+        assert!(pair.spent(), "both on their reserve on every mount");
+        assert_eq!(
+            pair.settle_spent().map(|end| end.reason),
+            Some(EndReason::Spent)
+        );
+        // A seat keeps no reserve: the same counts with a pilot in red's seat
+        // play on.
+        let mut seated = arena_of(vec![
+            line_tank(RED, PartyId::RED, pose(1_500, 1_500)),
+            minded(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
+        ]);
+        let Some(red) = seated.unit(RED) else {
+            panic!("red");
+        };
+        assert_eq!(red.controller, Controller::Pilot);
+        assert_eq!(seated.reserve_kept(red, 40), 0);
+        let blue_keeps: Vec<(SmolStr, u32)> = seated
+            .unit(BLUE)
+            .map(|state| {
+                state
+                    .weapons
+                    .iter()
+                    .map(|weapon| (weapon.id.clone(), weapon.count_per_load / 4))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for id in [RED, BLUE] {
+            if let Some(state) = seated.unit_mut(id) {
+                for (weapon, keeps) in &blue_keeps {
+                    state.ammo.insert(weapon.clone(), *keeps);
+                }
+            }
+        }
+        assert!(!seated.spent(), "a pilot at the same count can still fire");
+    }
+
     /// Red's tank wrecked and its drone standing against a standing blue tank:
     /// red is eliminated and blue wins. Red's tank dry and standing beside its
     /// drone against a dry blue: `Spent`, the drone changing nothing (it was

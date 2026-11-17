@@ -43,9 +43,10 @@
 //! the side's fill, and every other pilot's are their one hull: a lead's guard answers for
 //! the fill, and for any other pilot the fill's quarrel is a stranger's, as another
 //! player's rigs are in the world. The arena is told whose each is at `MIND AWAY` (and at a
-//! posture set while away); it keeps a fire record on those hulls from then on
-//! (`Arena::note_fired_on`), so "has fired on it" counts from the first time the pilot let
-//! go in the match.
+//! posture set while away). Since doc 49 unit CC.1 it keeps a fire record on every hull from
+//! the match's open (`Arena::note_fired_on`: the stock card's reserve answers that fire,
+//! Q-49-23), so "has fired on it" counts from the open, as it does in a field; until that
+//! unit it counted from the first time the pilot let go in the match.
 //!
 //! **`RETURN` in a match.** There is no carrier to go home to. The go-home order sends the
 //! hull to its side's home on the arena's ground (its entry zone), where it stays; it
