@@ -469,7 +469,235 @@ applied.
 
 ## CC.2
 
-Not built.
+The ground palette and the floor (Q-49-2, Q-49-3, Q-49-19, Q-49-22). Built 2026-11-16 and
+2026-11-17 on CC.1's tip (`74ca06740`, PR #642), stacked on it. Every pin below was read on
+conclav.dev on this branch.
+
+**Survey.**
+- **The floor.** `definitions/weapon.rs` held W14's `CYCLE_FLOOR_MS`, 1,000 ms, for every mount,
+  refused on load. No mount could be marked as automatic defence.
+- **The shipped ground palette**, before and as ruled:
+
+  | Mount | Cycle | Load (its round's pack) |
+  |---|---|---|
+  | cannon (`cannon_105`, `he_105`) | 6,000 → **15,000** ms | 40 → **24** |
+  | coaxial gun (`mg_coax`, `ball_762`) | 1,000 → **5,000** ms | 2,000 → **600** |
+  | autocannon (`autocannon_30`, `ap_30`) | 3,000 → **10,000** ms | 240 → **120** |
+  | missile rack (`missile_lr`, `missile_round`) | 10,000 → **30,000** ms | 6 → **4** |
+  | pulse laser (`laser_mk1`, `laser_charge`) | 2,000 → **5,000** ms | 500, kept (Q-49-28) |
+
+  No unit pack names a cycle or a load, so `content/units/` did not move.
+- **The probe.** CC.2's packs and floor over CC.1's tip, re-signed, and the nine crates' tests
+  with no fail-fast, as CC.0 and CC.1 ran them: 7,678 tests, 42 failures, and the D-UM-28 pin
+  by name. They sort into:
+  - CC.0's list of content pins and seeded fights, every one of which moved (25);
+  - a scripted fight timed on the old cannon (`extensions::q6_…`) and a registry trial's
+    terminal (`physical_cycle_trial_…`);
+  - ten field stories, which run on the wall clock (see **Divergences**);
+  - five of the bot's lane tests (see **The bot's windows**).
+
+**Built.**
+- **The 5 s floor and the automatic-defence class** (`definitions/weapon.rs`, Q-49-2, Q-49-19).
+  - `CYCLE_FLOOR_MS` is 5,000. Every mount a player or a mind fires is held to it, and the
+    loader refuses a cycle under it, naming "the 5 s floor".
+  - `AUTOMATIC_DEFENCE_FLOOR_MS` keeps W14's 1,000 for a mount authored `automatic_defence`
+    (Q-49-10's point defence, a laser in its defence mode), refused under it as "the
+    automatic-defence floor". `WeaponDef::cycle_floor_ms()` names the floor a mount is held to.
+  - The flag is written only when set, so every shipped pack signs as it did. No ground mount
+    ships in the class yet.
+- **The ruled palette** (`content/weapons/`, `content/ammunition/`, Q-49-3, Q-49-22): the nine
+  packs in the table above, each note rewritten for its numbers, each re-signed with
+  `pack_digest` (the tool re-sorts the keys, so only its digest was carried over).
+- **The harness window** (`tests/harness.rs`). `DEFAULT_ARENA_S` is 90 where it was 30: six
+  cannon cycles and three of the rack's, where 30 seconds held two cannon rounds a hull.
+- **The help.** `docs/help/simulator.md`'s autocannon and rack sentences give the new cycles and
+  loads; `definitions/content.rs`' two doc comments say the same.
+- **The measured fights, by hand** (`tests/domain_arena/twin.rs`,
+  `cc2_the_ruled_palette_measured`, `#[ignore]`d; a `by-hand` row in `test-tiers.toml` and a
+  recipe comment in `ci.yml`, which the gated-test inventory requires). Sixty one-against-one
+  fights on the proving ground at seeds 2,350 to 2,379, to the end or the 900 s cap:
+  - thirty of the stock mind against itself;
+  - thirty against a seated pilot who starts up, holds the muster, locks the nearest hostile and
+    fires every mount that is ready, loaded and in reach, at any odds and to the last round
+    (`trigger_happy`, a stand-in for a player pressing `FIRE` on every ready row).
+
+**The measured fights** (run at `81c38ea22`, conclav.dev):
+
+| | Mind against mind | Pilot (red) against mind (blue) |
+|---|---|---|
+| Ends | 30 eliminations: red 13, blue 17 | 30 eliminations: the pilot 22, the mind 8 |
+| Length | 189,250 to 294,750 ms, median 247,000 (about a quarter of the 900 s cap) | 293,750 to 400,750 ms, median 339,750 |
+| Cannon rounds a hull fired | 7.1 of 24 on average, 11 at most | pilot 8.6, mind 7.7 |
+| Cannon rounds that hit | 64% (273 of 424): about 15 hits for a full load | pilot 62%, mind 70% |
+| Coaxial rounds a hull fired | 194 of 600 on average | pilot 238, mind 1.3 |
+| Coaxial rounds that hit | 39% (4,493 of 11,630): about 230 for a full belt | pilot 34%, mind 55% (22 of 40) |
+| Withdrawals | none | none |
+
+- **No fight runs to the cap**, and none comes near a load: no hull fired more than 11 cannon
+  rounds of its 24, so no mind reached its reserve and none withdrew, dry or hurt. Fights end on
+  the first hull lost, at about a third of the cannon's load.
+- **The pilot who fires on every ready row beats the stock mind 22 to 8.** The mind, held to the
+  Line card's 35% floor, fights from cannon range and almost never fires its coaxial gun (40
+  rounds in thirty fights), while the pilot's coaxial puts some 80 rounds a fight on the mind.
+- **The lanes agree.** The stock pool (two against two, `M4_5_POOLED_RECORD`) ends between
+  248,500 and 412,750 ms. In Gate A's mixed lane (one armed and one unarmed hull a side) eight of
+  the fifteen matches end in an elimination, between 303,500 and 546,750 ms, and seven reach the
+  cap.
+
+**Tests.**
+- **New:**
+  - `definitions::cc2_the_floor_is_five_seconds_and_automatic_defence_keeps_the_engines`. The
+    constants; the shipped coaxial gun loads at 5,000 ms and is refused at 4,999, naming the
+    floor; marked `automatic_defence`, it loads at 1,000 and is refused at 999.
+  - `definitions::cc2_the_ground_palette_is_the_ruled_one`: the five cycles and five loads as
+    shipped, a content pin by design.
+- **Mutations** (each on conclav.dev, against `domain_arena`'s definitions tests):
+
+  | Mutation | Caught by |
+  |---|---|
+  | `CYCLE_FLOOR_MS` back at W14's 1,000 | `cc2_the_floor_is_five_seconds_and_automatic_defence_keeps_the_engines` |
+  | `cycle_floor_ms` ignoring `automatic_defence` | the same |
+
+  A retuned cycle or load in a pack fails `cc2_the_ground_palette_is_the_ruled_one` and the
+  digest pins by construction.
+- **Re-blessed by record** (every value read on conclav.dev; paths under `crates/tacsim/`):
+
+  | File and test | Pin | What moved |
+  |---|---|---|
+  | `tests/domain_arena/content.rs` `the_pinned_digests_are_the_shipped_ones` | `DIGESTS` | the cannon's, the coaxial gun's and their rounds' four packs |
+  | `tests/domain_arena/extensions.rs` `ae1`, `ae3`, `x2` to `x6` | `LINE_TANK_DIGEST` | the tank's definition carries its mounts' cycles and loads: `c85d03ac…` → `3fc31438…` |
+  | `tests/domain_arena/extensions.rs` `ae2`, `x1` | `DIGESTS_ORDNANCE`, the laser's row; the autocannon's and the rack's authored tuples | the four ordnance packs and `laser_mk1`; `(3, 10_000, 20, 120, …)` and `(1, 30_000, 350, 4, …)` |
+  | `src/match_/seal.rs` `m5rules_default_seal_identities_are_pinned` | the API 4 projections and the seal identities | the line tank's and the heavy's six of each (their captured mount facts); the target's three unmoved |
+  | `src/minds/registry/trials/physical_tests.rs` `c4_a_registry_trial_ends_the_same_on_every_host` | `C4_TRIAL_PINS` | every case ends in the same elimination, filed `Loss`, at 241,500 ms where it was 106,500; run on Windows by hand too, the four rows equal |
+  | the same file, `physical_cycle_trial_…` | `cancelled_uncalled` | 1 → 0 (see **Divergences**) |
+  | `tests/domain_arena/motor.rs` `m1a1`, `gc1b`, `m1b0` | `DUEL_HASH_API6_OBSERVED`, `DUEL_HASH_AT_HEAD`, `M1B0_DUEL_LINES` | hashes only: the duel fires no shot in its minute, and its 34 lines equal CC.1's once the hash is out. `DUEL_HASH_AT_HEAD` moves too, as CC.0 found |
+  | `tests/domain_arena/minds.rs` `m1a5_the_production_hash_does_not_move` | the shipped duel's pin | `0xcaae…6143` → `0xdeb8…5f67`; the field's two, on the rig's own mounts, unmoved |
+  | `tests/domain_arena/minds_rhai.rs` `m2_the_twin_corpus_hashes_the_same_on_every_host` | `M2_CROSS_PLATFORM_PINS` | stopping times 231,250 / 197,500 / 167,000 → 262,250 / 321,750 / 250,500 (900,000 unmoved); the probe's thinks and bitmask unmoved |
+  | `tests/domain_arena/twin.rs` `m4_5_…` | `M4_5_POOLED_RECORD` | ends 167,000–240,500 → 248,500–412,750 ms, the split 13–2 → 10–5, shots 1,058/936 → 670/531, thinks 11,256 → 16,502, `floor_held` 1,039 → 4,437 |
+  | `tests/domain_arena/twin.rs` Gate A's three lanes | `COVERAGE`, `POOLED_MATCHES_WITH_STAND_IN` | pooled 10,851/405 → 16,066/436, mixed 12,866/345 → 33,734/534 (at the 900 s cap), lance 7,142/159 → 8,433/133; 12 → 8; no divergence on any lane |
+  | `tests/domain_arena/report.rs`, `replay.rs` | `FIGHT_SEED`; the winner's counts | 2,352 → 2,351; seven cannon rounds and 190 of the coaxial gun's |
+  | `tests/harness_baseline/arena.linux.json` | 121 leaves, by record (`cc2_deterministic_update`) | see **The harness** |
+
+  The Rhai think's cost moved down with the slower fire: the pooled and mixed lanes peak at
+  1,263 operations and fees (CC.1: 1,302 and 1,275), under `TWO_TANK_THINK_BOUND`'s 1,350; the
+  lance lane at 1,376 (CC.1: 1,424), under `LANCE_THINK_BOUND`'s 1,450. Gate A held on every
+  lane: no divergence.
+- **The harness** (`tests/harness.rs`, `tests/harness_baseline/arena.linux.json`). At the 90 s
+  window every deterministic leaf moved (118 differences in the delta), so the fresh run's
+  non-timing leaves are carried onto main's file by record, with every earlier record kept and
+  TS.21's timing leaves and host kept. The record is `cc2_deterministic_update`, with each moved
+  leaf's previous value. Verified at `0c3e429ae` on conclav.dev: the delta reads the
+  deterministic block equal (106 fields), the four minds blocks equal, and the timing gate live
+  and inside it (wake p50 −6.5%, p99 −5.4%, window p99 −4.0%). A first reading on a box other
+  sessions were loading had the window p99 at +21.1%; it was the load.
+  - **A known breach, on the lead's ruling.** Under `TACSIM_ASSERT=1` (TS.21's procedure A), the
+    CI cohort's `motor.peak_per_pulse.path_cells` reads **50,425** against
+    `harness.max_path_cells_per_pulse` **48,128**. It is at seed 2350, in the wake ending at arena
+    101,500 ms (the 90 s window's last): seven path queries in one wake, every one found, none
+    failed, about 7,200 cells each. It is several hulls routing at once, not one search sealed in
+    a pocket. The 30 s window never reached it. Every other bound and lens holds, and the
+    authored cohort peaks at 20,318. **The bound is kept, so the weekly asserted run
+    (`scripts/harness-weekly.sh`) is red on this figure until CC.2b lands.** The CI job's delta
+    does not assert absolutes and compares the bound as an equal threshold, so it is green.
+    CC.2b, stacked on this branch, is a per-wake path budget in the motor (`arena/motor.rs`).
+- **The bot's windows** (`crates/mush-bot/tests/arena_lane.rs`, test code only, on the lead's
+  word): windows widened for the 15 s cannon; CC.10 owns the discipline. Each reads the cannon's
+  cycle through `Server::cycle_ms`, which the rig reads from the shipped content; the only
+  literals are the windows' old figures.
+  - `a_due_fire_beats_a_due_poll`: three shots, the first shot's 20 s window plus two cycles.
+  - `a_due_gun_keeps_its_slot_from_a_poll`: the crowded minute's learning window plus one cycle,
+    so a cycle the first shot's read missed is learned on the second.
+  - `a_full_width_channel_line_never_swallows_an_expected_answer`: 15 s plus one cycle for the
+    next shot. It also tries the next shot when the cannon's `FIRE` shares its tick with a poll
+    (see **Not built**: that case is a finding).
+  - `a_withdraw_on_a_failing_hull_holds_then_lapses`: reads the stop from the hold's own end, the
+    tick it lapsed in. Under the 15 s cannon the `SPEED 0` goes in that tick (42,200 ms), one
+    tick before the test's old window opened (42,250).
+  - `an_empty_gun_is_not_fired_again`: the old 20 s or two cycles, whichever is longer.
+- **Field stories** (see **Divergences** for each): `field_host` `cf2`, `field_carrier` `cf3`,
+  `field_crash` `cf_review`, `field_gc3` `gc3`, `escort_lease` `cf6c`, `field_story` `gc0` and
+  `s2`, and the five yielding `surrender` stories.
+- **The sweep**, at `e842bb416` on conclav.dev: the nine crates' tests with no fail-fast, 7,678
+  tests, all passing (65 skipped); then by name the D-UM-28 pin and the measured fights, both
+  passing.
+- **Guards**, at `e842bb416` on conclav.dev, all passing:
+  - `cargo fmt --check` for `tacsim`, `mush-bot` and `mush-contract-tests`;
+  - `cargo clippy --all-targets -- -D warnings` for `tacsim` and `mush-bot`;
+  - the CI lint job's M7 memory-size pass;
+  - `cargo doc --no-deps --document-private-items` with `-D warnings` for `tacsim` and
+    `mush-bot`;
+  - `mush-contract-tests` whole (the census, the panic budget, the restriction lints, the help
+    page lint and the gated-test inventory);
+  - `mush-bot`'s tests whole (the bot job), and the harness binary's own tests.
+
+**Divergences.**
+- **The field rigs' quiet interval reads the content** (`support/field/field_host_rig.rs`,
+  `quiet_s`). A field disengages after `[tacsim.field].disengage_s` with no hostile fire, and
+  the rigs held 15 s. Under the 15 s cannon that closed a field between two rounds of one gun:
+  in `cf2` and `cf3` the field ended at 15,301 ms, the millisecond the cannon was ready again.
+  `quiet_s` is the slowest cycle of the line tank's and the escort's mounts, read from the
+  shipped content, plus five seconds: 20 s. `field_story`'s and `field_gc3`'s 15 s overrides are
+  gone.
+- **The field story writes a summary every pulse** (`field_story.rs`,
+  `cfg.arena.ledger.summary_ms = 100`, as `field_ap1`'s rig does). The black box closes a chunk
+  only when it is full (16 KiB), and the story reads its Fired and SectionDestroyed lines off
+  closed chunks. With a coaxial burst every 5 s, not every second, the raiders' fire alone fills
+  a chunk in minutes: a print of the raiders' thinks showed them firing from 5 s into the field
+  while no Fired line reached the story inside its 60 s.
+- **The yielding surrender stories wait 300 s for the demotion** (`support/field/surrender_rig.rs`,
+  was 150). After the first crew yields, the crew that holds fights on at the stranger's hulls,
+  and the field demotes a quiet interval after its last shot: 278 to 279 s on all five cases at
+  256 and 512, measured with a 600 s wait. The wait returns as the field settles, so each story
+  takes as long as its fight. (Emptying the holding hull's magazines was tried first and is wrong:
+  a hull that was armed still counts in `hostile_in_weapons_range` when it has spent its rounds,
+  so it held the field open for good.)
+- **The mixed Gate A lane runs to the match's own 900 s** (`twin.rs`, `MIXED_CAP_S`, was 300).
+  At 300 s no match of the fifteen made a turret kill, so the lane's coverage (a mind dropped to
+  the ROM) was empty and its assertion failed by name.
+- **The mixed lane counts a withdrawal of either kind.** Its "some withdraws" claim was the
+  unarmed hulls'. Under the ruled palette an unarmed hull loses sections to heavier, rarer rounds
+  and is disabled before it wears down to the withdraw edge: none of the fifteen withdrew, even at
+  900 s. The lane now counts the armed hulls' withdrawals too (they withdraw at their reserve,
+  CC.1's edge, or hurt: one of the fifteen did), prints both, and asserts their sum. The unarmed arm is
+  held by `minds::content`'s `m2_mirror_the_withdraw_dwell_and_the_rally`.
+- **The seeded real fight moved to seed 2,351** (`report.rs`, `replay.rs`). At 2,352 the dry
+  tank's turret now goes first (a drop to the ROM at 71,470 ms), and it is never wrecked. A scan
+  of seeds 2,350 to 2,409 found 2,351 the first whose fight ends in the loser's wreck with no
+  drop (101,418 ms). Ten of the twenty seeds 2,350 to 2,369 end in a wreck; the porter measured
+  eight at 17b cut M4.5a.
+- **The scripted leg fight steps by the cannon's cycle** (`extensions::q6_…`). It fired every
+  10 s, which was "every time the cannon is ready" at 6 s. It now steps by the cycle read from the
+  catalog, rounded up to the coarsest cadence (15 s), and reads its halfway point off the first
+  leg's loss.
+- **A registry trial's final wreck has no uncalled suffix** (`physical_tests.rs`,
+  `physical_cycle_trial_…`, `cancelled_uncalled` 1 → 0 by record). Under the slower cycles the
+  last wreck lands with no think of the wrecked unit drawn and uncalled.
+  `meter::physical::tests::wreck_terminal` still builds the suffix of one on purpose.
+- **Two files outside the row**: `ci.yml` gains the measured fights' recipe comment, and
+  `test-tiers.toml` its `by-hand` row. The gated-test inventory requires both.
+
+**Not built.**
+- **No count changed.** The magazines are the ruled 24 / 600 / 120 / 4. What the measured fights
+  say about them is for the owner (Q-49-22).
+- **CC.2b**, the motor's per-wake path budget: until it lands the weekly asserted harness run is
+  red on the CI cohort's path cells (above).
+- **A bot finding, for CC.10.** When the cannon's `FIRE` shares its tick with a poll (`RANGE`), a
+  full-width channel line before the ack takes the ack: the shot is counted only off the next
+  `WEAPONSTATUS`, 1,670 ms later (in the lane's rig, the first acked shot, typed at 40,750 ms). The
+  old 6 s cannon never put its first acked shot on a poll's tick. AM.1's test keeps its own case,
+  a `FIRE` alone in its tick.
+- **No ground mount ships as automatic defence.** The class exists for point defence and the
+  laser's defence mode (Q-49-10); later units author it.
+- **The quiet interval's floor** (`config.rs`, `FIELD_DISENGAGE_S`, 10 to 3,600 s) sits under
+  the cannon's 15 s cycle. The shipped default, 120 s, is well over it, but an operator who set
+  10 or 15 would see a field disengage between two rounds of one gun, as the rigs did. A
+  follow-up could floor it at the longest shipped cycle.
+- **A quiet field's black box reaches the world late.** Chunks close at 16 KiB, so with sparse
+  fire the world reads a shot's lines minutes after it. Durability is unchanged (the snapshot
+  rides behind every closed chunk); only the lag grew.
+- **The heavy's unit note** (`content/units/heavy_mk1.json`) still says version 2 added "a
+  six-round missile rack". It is the version's history; re-signing the heavy's pack for it would
+  move that pack's pin for a note.
 
 ## CC.3
 
