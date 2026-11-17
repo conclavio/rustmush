@@ -941,33 +941,42 @@ TESTS-PLACEHOLDER
 
   The picket's corvette now disables the raider in about fifty seconds with spinal rounds, where
   it took about twenty-four with the old laser.
-- **Doc 35's SF.R stories had to change premise**, because no story hull can now make an
-  interdictor derelict by play (measured: four minutes of close laser fight leave a jinking Dray
-  and the interdictor both standing), and the story lint forbids writing bubble state off the
-  command path. Each change is by play:
-  - where a story needed only the interdiction to end (sfr1, sfr9, sfr11, sfr14, sfr20), the
-    pilot fires on the interdictor and then heaves to until it stands her down
-    (`heave_to_until_stood_down`), as MW.9's story does; sfr1's step counts are read from the run;
-  - where a story needed a derelict to dock with, tow or salvage (sfr7, sfr15's third part,
-    sfr17's part C, sfr21), she sails the stocked lane, clears the Kirkwood picket's customs, and
-    the corvette disables the raider (`picket_until_the_raider_is_down`,
-    `convoy_until_the_raider_is_down`); in a picket's bubble the raider holds the bubble's
-    interdictor slot;
-  - sfr2's first part takes the interdictor's fire, then heaves to; its NPC-derelict assertions
-    are sfr6's and sfr8's, which still make one by play;
-  - where the NPC disables a carrier (sfr2's third part, sfr9's last), the window widened: on the
-    palette's cycles it takes some tens of seconds, where the 1 s laser took a few. sfr2's carrier
-    shows the interdictor her stern, so her drive goes before her hull and she checks in
-    `Immobile`, as the story asserts;
-  - sfr6 steps until the corvette has disabled the raider; sfr15's point-defence check starts its
-    torpedoes inside the new envelope, and its damage line is re-pinned by record; sfr20 turns on
-    what the interdictor's fire has done rather than on a tick count (`+helm/heading 180 0` shows
-    a Dray's bow to a hull at +x, `0 0` her stern);
-  - sfr7 checks that the docking hull is held, her drive cut, rather than that the bubble does
-    not step: the picket's bubble keeps its 1 s cadence for the corvette (SF.R25 holds the
-    docking hull alone), where the interdiction bubble had gone to its cruise cadence;
-  - the picket's own doctrine test (`space::picket::tests`) reads the new doctrine: the corvette
-    no longer fires torpedoes at the raider.
+- **Doc 35's SF.R stories changed how they reach their precondition**, because no story hull can
+  now make an interdictor derelict by play (measured: four minutes of close laser fight leave a
+  jinking Dray and the interdictor both standing), and the story lint forbids writing bubble state
+  off the command path. Each story still makes its doc 35 assertion at full strength, but one
+  (sfr7, below). Every precondition is reached by play, with no staff fiat a story did not already
+  have. The helpers are `heave_to_until_stood_down` (MW.9's recipe: burn against her drift until
+  the interdictor stands her down), and `picket_until_the_raider_is_down` /
+  `convoy_until_the_raider_is_down` (the stocked lane; clear the Kirkwood picket's customs; the
+  corvette's spinal rounds disable the raider once she coasts). In a picket's bubble the raider
+  holds the bubble's interdictor slot, so `interdictor_hull` reads her.
+
+  | Story | What it tests | Old precondition | New precondition | Re-pinned |
+  |---|---|---|---|---|
+  | sfr1 | promotion, the paused leg timer, the wall-clock bubble, resume to dock | a Dray beams the interdictor to a derelict in 4 s | she fires on it, then heaves to until it stands her down | `steps` and `wall_elapsed_ms`: the 4 one-second steps and the capped 30 s step, plus the seconds she spent heaving to, read from the run |
+  | sfr2 (1) | custody check-out, damage persisted on check-in, the NPC derelict's open epoch and no claim before `+helm/tow` | the interdictor's volleys hurt her; her beams disable it | stocked lane: the raider's opening round finds her stern; the corvette disables the raider | the derelict's life support read as its 48 hours less the seconds the bubble ran on |
+  | sfr2 (3) | a carrier disabled in a bubble checks in `Immobile` with a 48-hour window | the interdictor disables her in 16 s | the same, stern on, so her drive goes before her hull | the window, 16 → 120 s |
+  | sfr6 | the picket triad end to end, the dodge, the fine | the corvette lasers the raider down in 24 s | the corvette's spinal rounds, once the raider coasts | the window, 24 s → until the bubble closes |
+  | sfr7 | the docking session, forged tapes, the bounce, clamp, tow, dock at the port | a derelict interdictor 18 km off | stocked lane, the raider's derelict; the far `+helm/dock` is tried once the corvette's last rounds are done | the approach, 3 ticks → until flown; **one assertion changed**: "the bubble does not step while she docks" became "she is held, her drive cut, and the bubble stays open" (SF.R25: a picket's bubble keeps its 1 s cadence for the corvette; the interdiction bubble had gone to its cruise cadence). Put to the lead |
+  | sfr9 | the docking and `+helm/run` gates; a derelict carrier's journey fails | beams disable the interdictor; it disables a Dray in 16 s | heave to; the same Dray, given 120 s | the window, 16 → 120 s |
+  | sfr11 | the one propellant ledger, no refill on re-entry | beams disable the interdictor | heave to | none (its figures are read from the run) |
+  | sfr14 | authored packs, picket only at Kirkwood, drone minds | beams end the 2-ship interdiction | heave to | none |
+  | sfr15 (2) | a stripped rotary opens a gap in the screen | torpedoes 5 km out, inside the 15 km envelope | 3.5 km out, inside the 4 km envelope | the start distance |
+  | sfr15 (3) | rear damage, clamp, tow, dock, bay repair to full | the interdictor's volleys; its derelict | stocked lane: the raider's opening round on her stern; the raider's derelict | the damage line, `drive 172/250, hull 524/600` → `drive 207/250, hull 558/600`, by record |
+  | sfr17 (C) | a 30 s late tick; one carrier's salvage hold does not hold the other; the hold expires | beams disable the interdictor | a two-carrier convoy at the picket; the raider's derelict | the second carrier resumes once the corvette's last rounds are done: next tick → within 20 |
+  | sfr18 | per-carrier inspection, a disabled escort settled, stand-down | the raider's lasers disable the escort | unchanged; the raider now presses the escort, who shows fight, before the quiet smuggler | none |
+  | sfr20 (5) | the rear split, a stripped rotary persisting through check-in and check-out | ticks timed to 1 s volleys; beams end it | bow on until a rotary is stripped, stern on until the drive is hurt; then heave to | the tick counts, now read from the fight |
+  | sfr21 | prepared bubble input, standing orders, the per-entity store, the approach debit, an `OutOfGate` session | beams disable the interdictor | stocked lane; she shows herself again and clears customs; the raider's derelict | none |
+
+  The picket's own doctrine test (`space::picket::tests`) reads the new doctrine: the corvette no
+  longer fires torpedoes at the raider.
+
+  **Runtime.** The fights are stepped a wall second at a time while they last; each helper stops
+  when its condition holds, and no story strides through an idle wait. Measured on conclav.dev,
+  the 37 SF.R, MW.9, MW.10, CR.6 and RS.8 stories ran 286 s on main and 320 s on this branch.
+  The branch run shared the box with 350 other tests: stories this unit did not touch (sfr13,
+  sfr26b) rose by as much as the rewritten ones (about a second each), so part of the 34 s is load.
 - **Files outside the row**, each the least this needed. I asked the lead about them, and about
   the SF.R stories' change of premise, and had no answer before opening the PR:
   - `space/weapons.rs`: the per-mode cycle's state and the switch;
