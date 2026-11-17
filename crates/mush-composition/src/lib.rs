@@ -29,10 +29,11 @@ use smol_str::SmolStr;
 pub use tacsim::composition::{
     Fetch, NAMED_LAUNCH_HARDWARE_CAPABILITIES, RulesetAgent, SCHEMA_KEY, atlas_module,
     boot_pack_list, content_module, content_module_with, econ_alerts, econ_canon, econ_inbox,
-    housing_title_issuer, industry_recipes, industry_seams, market_title_issuer, mind_commerce,
-    npc_agent_adapter, npc_module, salvage_source, seat_audit, sheet_modules, sim_routes,
-    tacsim_module, tacsim_module_wired, tacsim_module_wired_with_mind_commerce, tacsim_module_with,
-    tacsim_test_world_module, tacsim_test_world_module_wired,
+    housing_title_issuer, http_content_packs, industry_recipes, industry_seams,
+    market_title_issuer, mind_commerce, npc_agent_adapter, npc_module, salvage_source, seat_audit,
+    sheet_modules, sim_routes, tacsim_module, tacsim_module_wired,
+    tacsim_module_wired_with_mind_commerce, tacsim_module_with, tacsim_test_world_module,
+    tacsim_test_world_module_wired,
 };
 
 /// Construct the full built-in module list in dependency order, with crate-default

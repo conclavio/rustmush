@@ -126,6 +126,10 @@ pub struct WebBridge<A: AuthBackend + 'static> {
     /// §4.3): the gateway generation's, none until
     /// [`WebBridge::with_conn_id_bit`] sets it.
     conn_id_bit: u64,
+    /// Optional client content manifest JSON (`GET /api/content/manifest`).
+    content_manifest: Option<Arc<str>>,
+    /// Optional client content pack map (`id -> (sha256, json)`).
+    content_packs: HashMap<String, (Arc<str>, Arc<str>)>,
 }
 
 impl<A: AuthBackend + 'static> WebBridge<A> {
@@ -163,6 +167,8 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
             composing: Mutex::new(crate::composing::ComposingLimiter::default()),
             metrics: Arc::new(mush_net_web::Metrics::new()),
             conn_id_bit: 0,
+            content_manifest: None,
+            content_packs: HashMap::new(),
         }
     }
 
@@ -190,6 +196,22 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<mush_net_web::Metrics>) -> WebBridge<A> {
         self.metrics = metrics;
+        self
+    }
+
+    /// Attach dynamic client content packs served read-only over
+    /// `GET /api/content/manifest` and `GET /api/content/packs/{id}`.
+    #[must_use]
+    pub fn with_content_packs(
+        mut self,
+        manifest_json: Arc<str>,
+        packs: Vec<(String, Arc<str>, Arc<str>)>,
+    ) -> WebBridge<A> {
+        self.content_manifest = Some(manifest_json);
+        self.content_packs = packs
+            .into_iter()
+            .map(|(id, sha256, json)| (id, (sha256, json)))
+            .collect();
         self
     }
 
@@ -959,6 +981,16 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
 
     fn conn_id_bit(&self) -> u64 {
         self.conn_id_bit
+    }
+
+    fn content_manifest(&self) -> Option<Arc<str>> {
+        self.content_manifest.as_ref().map(Arc::clone)
+    }
+
+    fn content_pack(&self, id: &str) -> Option<(Arc<str>, Arc<str>)> {
+        self.content_packs
+            .get(id)
+            .map(|(sha, json)| (Arc::clone(sha), Arc::clone(json)))
     }
 }
 

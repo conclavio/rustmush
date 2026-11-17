@@ -694,3 +694,51 @@ fn every_event_a_boot_emits_is_plain_text() {
         let _ = text_of(event);
     }
 }
+
+#[test]
+fn room_ambient_publishes_atlas_and_npc_metadata_without_crowding_ic_time() {
+    let mut tw = lot();
+    let hall = room_named(&tw, "Welcome Hall");
+    let alice = tw.spawn_player("Alice");
+    tw.world_mut()
+        .move_to(alice, hall)
+        .expect("move into welcome hall");
+
+    let lens = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+    let rv = mush_core::output::room_view(tw.registry(), tw.world(), alice, hall, lens)
+        .expect("welcome hall renders");
+
+    assert!(
+        rv.ambient.contains_key("ic_time"),
+        "core ic_time must remain present"
+    );
+    let atlas = rv
+        .ambient
+        .get("atlas")
+        .expect("atlas roomgeo emits ambient['atlas']");
+    assert_eq!(
+        atlas.get("pack").and_then(|v| v.as_str()),
+        Some("neighborhood.ooc_area")
+    );
+    assert_eq!(
+        atlas.get("entry").and_then(|v| v.as_str()),
+        Some("room.welcome_hall")
+    );
+    assert!(
+        atlas
+            .get("details")
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| arr.iter().any(|x| x.as_str() == Some("sign"))),
+        "authored room details are listed in ambient['atlas'].details: {atlas}"
+    );
+
+    let npcs = rv
+        .ambient
+        .get("npcs")
+        .and_then(|v| v.as_array())
+        .expect("room with NPC emits ambient['npcs']");
+    assert!(
+        !npcs.is_empty(),
+        "welcome hall NPCs should be advertised in ambient['npcs']"
+    );
+}

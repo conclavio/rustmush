@@ -1,0 +1,255 @@
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace TacSim.Core
+{
+    /// <summary>
+    /// Instantiates imported commercial kit prefabs (DOTTEAM Heavy Station Kit, Vattalus Fenris,
+    /// MSGDI Shipyards/Freighters, Gllow3D ambient workers) with automatic URP material repair,
+    /// vendor-script stripping, optional collider stripping, proportional bounds scaling, and
+    /// millimeter-exact floor grounding.
+    /// </summary>
+    public static class PrefabFittingHelper
+    {
+        private static readonly Dictionary<Material, Material> UrpCache = new Dictionary<Material, Material>();
+
+        public static GameObject SpawnGrounded(
+            GameObject prefab,
+            Transform parent,
+            string instanceName,
+            Vector3 floorWorldPos,
+            Quaternion worldRot,
+            float targetHeightM = 0f,
+            float maxDimensionM = 0f,
+            bool keepColliders = false,
+            Texture overrideAlbedo = null)
+        {
+            if (prefab == null) return null;
+
+            var inst = UnityEngine.Object.Instantiate(prefab, parent);
+            inst.name = instanceName;
+            inst.transform.SetPositionAndRotation(floorWorldPos, worldRot);
+            inst.transform.localScale = Vector3.one;
+
+            PrepareInstance(inst, keepColliders, overrideAlbedo);
+
+            if (!TryComputeRendererBounds(inst, out Bounds b))
+                return inst;
+
+            float scaleFactor = 1f;
+            if (targetHeightM > 0.01f && b.size.y > 0.001f)
+            {
+                scaleFactor = targetHeightM / b.size.y;
+            }
+            if (maxDimensionM > 0.01f)
+            {
+                float maxAxis = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z)) * scaleFactor;
+                if (maxAxis > maxDimensionM && maxAxis > 0.001f)
+                    scaleFactor *= maxDimensionM / maxAxis;
+            }
+
+            if (Mathf.Abs(scaleFactor - 1f) > 0.001f)
+            {
+                inst.transform.localScale = Vector3.one * scaleFactor;
+                TryComputeRendererBounds(inst, out b);
+            }
+
+            // Shift so horizontal center sits on floorWorldPos.xz and bottom rests cleanly on floorWorldPos.y
+            Vector3 shift = new Vector3(
+                floorWorldPos.x - b.center.x,
+                floorWorldPos.y - b.min.y,
+                floorWorldPos.z - b.center.z);
+            inst.transform.position += shift;
+            return inst;
+        }
+
+        public static GameObject SpawnCentered(
+            GameObject prefab,
+            Transform parent,
+            string instanceName,
+            Vector3 centerWorldPos,
+            Quaternion worldRot,
+            float maxDimensionM = 0f,
+            bool keepColliders = false,
+            Texture overrideAlbedo = null)
+        {
+            if (prefab == null) return null;
+
+            var inst = UnityEngine.Object.Instantiate(prefab, parent);
+            inst.name = instanceName;
+            inst.transform.SetPositionAndRotation(centerWorldPos, worldRot);
+            inst.transform.localScale = Vector3.one;
+
+            PrepareInstance(inst, keepColliders, overrideAlbedo);
+
+            if (TryComputeRendererBounds(inst, out Bounds b))
+            {
+                if (maxDimensionM > 0.01f)
+                {
+                    float maxAxis = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
+                    if (maxAxis > maxDimensionM && maxAxis > 0.001f)
+                    {
+                        inst.transform.localScale = Vector3.one * (maxDimensionM / maxAxis);
+                        TryComputeRendererBounds(inst, out b);
+                    }
+                }
+                inst.transform.position += (centerWorldPos - b.center);
+            }
+            return inst;
+        }
+
+        public static bool TryComputeRendererBounds(GameObject root, out Bounds combined)
+        {
+            combined = default;
+            if (root == null) return false;
+            var renderers = root.GetComponentsInChildren<Renderer>(true);
+            bool any = false;
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var r = renderers[i];
+                if (r == null || r is ParticleSystemRenderer) continue;
+                if (!any)
+                {
+                    combined = r.bounds;
+                    any = true;
+                }
+                else
+                {
+                    combined.Encapsulate(r.bounds);
+                }
+            }
+            return any;
+        }
+
+        private static void PrepareInstance(GameObject inst, bool keepColliders, Texture overrideAlbedo)
+        {
+            // Remove any vendor demo MonoBehaviours so foreign triggers/door scripts never conflict
+            var behaviours = inst.GetComponentsInChildren<MonoBehaviour>(true);
+            for (int i = 0; i < behaviours.Length; i++)
+            {
+                var mb = behaviours[i];
+                if (mb == null) continue;
+                string ns = mb.GetType().Namespace ?? string.Empty;
+                if (ns.StartsWith("TacSim", StringComparison.Ordinal) ||
+                    ns.StartsWith("TMPro", StringComparison.Ordinal) ||
+                    ns.StartsWith("UnityEngine", StringComparison.Ordinal))
+                    continue;
+
+                if (Application.isPlaying) UnityEngine.Object.Destroy(mb);
+                else UnityEngine.Object.DestroyImmediate(mb);
+            }
+
+            var animators = inst.GetComponentsInChildren<Animator>(true);
+            for (int i = 0; i < animators.Length; i++)
+            {
+                if (animators[i] != null)
+                    animators[i].applyRootMotion = false;
+            }
+
+            if (!keepColliders)
+            {
+                var cols = inst.GetComponentsInChildren<Collider>(true);
+                for (int i = 0; i < cols.Length; i++)
+                {
+                    if (cols[i] != null) cols[i].enabled = false;
+                }
+            }
+
+            SanitizeRenderersForUrp(inst, overrideAlbedo);
+        }
+
+        public static void SanitizeRenderersForUrp(GameObject root, Texture overrideAlbedo = null)
+        {
+            Shader urpLit = Shader.Find("Universal Render Pipeline/Lit");
+            if (urpLit == null) return;
+
+            var renderers = root.GetComponentsInChildren<Renderer>(true);
+            for (int rIdx = 0; rIdx < renderers.Length; rIdx++)
+            {
+                var r = renderers[rIdx];
+                if (r == null || r is ParticleSystemRenderer) continue;
+
+                var mats = r.sharedMaterials;
+                if (mats == null || mats.Length == 0) continue;
+
+                bool changed = false;
+                var list = new List<Material>(mats.Length);
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    Material m = mats[i];
+                    if (m == null)
+                    {
+                        changed = true;
+                        continue;
+                    }
+
+                    if (overrideAlbedo != null)
+                    {
+                        var custom = new Material(urpLit) { name = root.name + "_URP" };
+                        custom.SetTexture("_BaseMap", overrideAlbedo);
+                        custom.SetColor("_BaseColor", Color.white);
+                        custom.SetFloat("_Smoothness", 0.32f);
+                        list.Add(custom);
+                        changed = true;
+                        continue;
+                    }
+
+                    Shader sh = m.shader;
+                    string shName = sh != null ? sh.name : string.Empty;
+                    bool isUrpCompatible = sh != null &&
+                                           sh.isSupported &&
+                                           shName != "Hidden/InternalErrorShader" &&
+                                           (shName.StartsWith("Universal Render Pipeline/", StringComparison.Ordinal) ||
+                                            shName.StartsWith("Shader Graphs/", StringComparison.Ordinal) ||
+                                            shName.StartsWith("Sprites/", StringComparison.Ordinal) ||
+                                            shName.StartsWith("UI/", StringComparison.Ordinal) ||
+                                            shName.StartsWith("TextMeshPro/", StringComparison.Ordinal) ||
+                                            shName.StartsWith("Particles/", StringComparison.Ordinal));
+                    bool needsUpgrade = !isUrpCompatible;
+
+                    if (!needsUpgrade)
+                    {
+                        list.Add(m);
+                        continue;
+                    }
+
+                    if (!UrpCache.TryGetValue(m, out Material upg) || upg == null)
+                    {
+                        upg = new Material(urpLit) { name = m.name + "_AutoURP" };
+                        Texture main = m.HasProperty("_BaseMap") ? m.GetTexture("_BaseMap")
+                                     : (m.HasProperty("_MainTex") ? m.GetTexture("_MainTex") : null);
+                        Color col = m.HasProperty("_BaseColor") ? m.GetColor("_BaseColor")
+                                  : (m.HasProperty("_Color") ? m.GetColor("_Color") : new Color(0.55f, 0.58f, 0.62f));
+                        Texture bump = m.HasProperty("_BumpMap") ? m.GetTexture("_BumpMap") : null;
+                        float metal = m.HasProperty("_Metallic") ? m.GetFloat("_Metallic") : 0.25f;
+                        float smooth = m.HasProperty("_Glossiness") ? m.GetFloat("_Glossiness") : 0.42f;
+
+                        if (main != null) upg.SetTexture("_BaseMap", main);
+                        upg.SetColor("_BaseColor", col);
+                        if (bump != null)
+                        {
+                            upg.SetTexture("_BumpMap", bump);
+                            upg.EnableKeyword("_NORMALMAP");
+                        }
+                        upg.SetFloat("_Metallic", metal);
+                        upg.SetFloat("_Smoothness", smooth);
+                        UrpCache[m] = upg;
+                    }
+
+                    list.Add(upg);
+                    changed = true;
+                }
+
+                if (list.Count == 0)
+                {
+                    list.Add(UrpMaterialFactory.GetOpaque("PropFallback", new Color(0.28f, 0.32f, 0.36f), 0.4f, 0.5f));
+                    changed = true;
+                }
+
+                if (changed)
+                    r.sharedMaterials = list.ToArray();
+            }
+        }
+    }
+}

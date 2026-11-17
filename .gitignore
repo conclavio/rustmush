@@ -53,3 +53,39 @@ Thumbs.db
 # Python bytecode caches (a guard test of scripts/prune_target.py left one under scripts/ on 2026-09-28)
 __pycache__/
 *.pyc
+
+# Unity 3D client (unity/) — cache, build artifacts, IDE files, and commercial 3D asset packs.
+# Per the 2026-10-29 licensing ruling (doc 22 / doc 30), third-party .unitypackage / .fbx /
+# textures imported from 3d_assets must never be committed: only unity/Assets/_TacSim/ is tracked.
+unity/[Ll]ibrary/
+unity/[Tt]emp/
+unity/[Oo]bj/
+unity/[Bb]uild/
+unity/[Bb]uilds/
+unity/[Ll]ogs/
+unity/[Uu]serSettings/
+unity/[Mm]emoryCaptures/
+unity/[Rr]ecordings/
+unity/.vs/
+unity/.vsconfig
+unity/*.csproj
+unity/*.sln
+unity/*.slnx
+unity/*.unityproj
+unity/*.pidb
+unity/*.booproj
+unity/*.svd
+unity/*.pdb
+unity/*.mdb
+unity/*.opendb
+unity/*.VC.db
+unity/sysinfo.txt
+unity/crashlytics-build.properties
+unity/Assets/*
+!unity/Assets/_TacSim/
+!unity/Assets/_TacSim.meta
+# Generated local scene & commercial prefab GUID catalog (rebuilt via TacSim -> 1 & 2 menus)
+unity/Assets/_TacSim/Scenes/
+unity/Assets/_TacSim/Scenes.meta
+unity/Assets/_TacSim/Resources/
+unity/Assets/_TacSim/Resources.meta

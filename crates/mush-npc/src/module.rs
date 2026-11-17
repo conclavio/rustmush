@@ -13,9 +13,10 @@ use std::sync::Arc;
 use mush_core::commands::movement::{find_exit, traverse_exit};
 use mush_core::module::{AsyncCompletion, WorldEvent};
 use mush_core::{
-    ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, Flags, GameModule, ModError,
-    ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, Powers, Registrar, Role,
-    TickCadence, World, WorldEventKind, WorldObserver, obj_ref, perm,
+    ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, EventHook, Flags, GameModule,
+    HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId,
+    ObjKind, Powers, Registrar, Role, TickCadence, World, WorldEventKind, WorldObserver, obj_ref,
+    perm,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -211,6 +212,7 @@ impl GameModule for NpcModule {
         // H2b: a turn-based scene handing its turn to an NPC is a durable
         // decision request.
         reg.subscribe(WorldEventKind::SceneTurn, Arc::new(NpcObserver));
+        reg.hook(HookPoint::RoomAmbient, Arc::new(NpcAmbient));
 
         // The coalescing/cooldown driver.
         reg.tick(
@@ -4487,6 +4489,102 @@ fn speech_tag(kind: SpeechKind) -> &'static str {
         SpeechKind::Pose => "pose",
         SpeechKind::SemiPose => "semipose",
         SpeechKind::Emit => "emit",
+    }
+}
+
+/// Maximum NPC/player object IDs published in `RoomView.ambient`.
+const MAX_AMBIENT_NPCS: usize = 16;
+/// Maximum inanimate thing object IDs published in `RoomView.ambient["things"]`.
+const MAX_AMBIENT_THINGS: usize = 32;
+
+/// Publishes `RoomView.ambient["npcs"]` (`["#12", ...]`), `dormant_npcs`,
+/// `players`, and `things` for perceivable occupants in `room` so 3D and
+/// spatial clients can distinguish NPC cast characters, connected player
+/// avatars, and inanimate props/hulls without extra queries.
+struct NpcAmbient;
+
+impl EventHook for NpcAmbient {
+    fn room_ambient(
+        &self,
+        ctx: &HookReadContext<'_>,
+        looker: ObjId,
+        room: ObjId,
+    ) -> Vec<(SmolStr, serde_json::Value)> {
+        let w = ctx.world();
+        let Some(r) = w.get(room) else {
+            return Vec::new();
+        };
+        let see_hidden = perm::has_power(w, looker, Powers::SEE_HIDDEN);
+        let inside = w.get(looker).and_then(|o| o.location) == Some(room);
+        let room_privileged = see_hidden || perm::controls(w, looker, room);
+        let hide_contents = !room_privileged
+            && (r.flags.contains(Flags::DARK) || (r.flags.contains(Flags::OPAQUE) && !inside));
+        if hide_contents {
+            return Vec::new();
+        }
+        let mut npcs = Vec::new();
+        let mut dormant_npcs = Vec::new();
+        let mut players = Vec::new();
+        let mut things = Vec::new();
+        for &c in &r.contents {
+            if c == looker {
+                continue;
+            }
+            let Some(o) = w.get(c) else {
+                continue;
+            };
+            if o.flags.contains(Flags::GOING) {
+                continue;
+            }
+            if o.flags.contains(Flags::DARK) && !see_hidden && !perm::controls(w, looker, c) {
+                continue;
+            }
+            match o.kind {
+                ObjKind::Npc => {
+                    if enabled_npc(w, c) {
+                        if npcs.len() < MAX_AMBIENT_NPCS {
+                            npcs.push(serde_json::Value::String(c.to_string()));
+                        }
+                    } else if dormant_npcs.len() < MAX_AMBIENT_NPCS {
+                        dormant_npcs.push(serde_json::Value::String(c.to_string()));
+                    }
+                }
+                ObjKind::Player => {
+                    if w.is_connected(c) && players.len() < MAX_AMBIENT_NPCS {
+                        players.push(serde_json::Value::String(c.to_string()));
+                    }
+                }
+                ObjKind::Thing => {
+                    if things.len() < MAX_AMBIENT_THINGS {
+                        things.push(serde_json::Value::String(c.to_string()));
+                    }
+                }
+                ObjKind::Room | ObjKind::Exit => {}
+            }
+        }
+        let mut out = Vec::new();
+        if !npcs.is_empty() {
+            out.push((SmolStr::new_static("npcs"), serde_json::Value::Array(npcs)));
+        }
+        if !dormant_npcs.is_empty() {
+            out.push((
+                SmolStr::new_static("dormant_npcs"),
+                serde_json::Value::Array(dormant_npcs),
+            ));
+        }
+        if !players.is_empty() {
+            out.push((
+                SmolStr::new_static("players"),
+                serde_json::Value::Array(players),
+            ));
+        }
+        if !things.is_empty() {
+            out.push((
+                SmolStr::new_static("things"),
+                serde_json::Value::Array(things),
+            ));
+        }
+        out
     }
 }
 

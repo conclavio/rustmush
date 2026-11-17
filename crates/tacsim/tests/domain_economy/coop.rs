@@ -2591,3 +2591,68 @@ fn npc_coop_graduate_statement_tracks_current_title_after_a_transfer() {
     }
     assert_eq!(store(&rig.tw).enrolment_of(who), Some(&record));
 }
+
+#[test]
+fn room_ambient_publishes_berth_gallery_and_ship_interior_metadata() {
+    let (mut rig, who) = enrolled();
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+
+    let lens = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+    let gallery_view =
+        mush_core::output::room_view(rig.tw.registry(), rig.tw.world(), who, gallery, lens)
+            .expect("gallery renders");
+    let gal_tac = gallery_view
+        .ambient
+        .get("tacsim")
+        .expect("berth gallery emits ambient['tacsim']");
+    assert_eq!(
+        gal_tac.get("mode").and_then(|v| v.as_str()),
+        Some("berth_gallery")
+    );
+    assert_eq!(
+        gal_tac.get("port_entry").and_then(|v| v.as_str()),
+        Some("ceres_port")
+    );
+    assert_eq!(
+        gal_tac
+            .get("own_hull_docked_here")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(
+        gallery_view.ambient.contains_key("atlas"),
+        "berth gallery also carries ambient['atlas']"
+    );
+    assert!(
+        gallery_view.ambient.contains_key("ic_time"),
+        "core ic_time remains intact"
+    );
+
+    let _ = run(&mut rig.tw, who, "+ship/board");
+    let airlock = location(&rig.tw, who).expect("aboard in airlock");
+    let airlock_view =
+        mush_core::output::room_view(rig.tw.registry(), rig.tw.world(), who, airlock, lens)
+            .expect("airlock renders");
+    let ship_tac = airlock_view
+        .ambient
+        .get("tacsim")
+        .expect("hull room emits ambient['tacsim']");
+    assert_eq!(
+        ship_tac.get("mode").and_then(|v| v.as_str()),
+        Some("interior")
+    );
+    assert_eq!(
+        ship_tac.get("room").and_then(|v| v.as_str()),
+        Some("airlock")
+    );
+    assert_eq!(
+        ship_tac.get("hull_name").and_then(|v| v.as_str()),
+        Some("Salt Moth")
+    );
+    assert_eq!(ship_tac.get("docked").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        ship_tac.get("port").and_then(|v| v.as_str()),
+        Some("ceres_port")
+    );
+}
