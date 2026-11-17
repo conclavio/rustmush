@@ -702,6 +702,127 @@ the merge):
   six-round missile rack". It is the version's history; re-signing the heavy's pack for it would
   move that pack's pin for a note.
 
+## CC.2b
+
+The motor's path cells per window (the lead's follow-up to CC.2's harness breach). Built
+2026-11-17 on CC.2's branch (PR #649, main `45b50f303` merged), stacked on it. Scope:
+`tacsim/src/arena/motor.rs` and its tests, and on the lead's word the snapshot format
+(`arena/snapshot.rs`) and its shape pin.
+
+**Survey.**
+- **The breach.** Under `TACSIM_ASSERT=1` at CC.2's 90 s window, the harness CI cohort's
+  `motor.peak_per_pulse.path_cells` read 50,425 against `harness.max_path_cells_per_pulse`
+  48,128: seed 2350, the wake ending at arena 101,500 ms, seven searches, every one found.
+- **The bound was a threshold, never applied.** `config.rs`' doc for the bound says so: "a
+  threshold the harness asserts, never a throttle the arena applies", because a controller that
+  stopped searching when a per-wake budget ran out would make a route a function of the tempo
+  (D-16-2).
+- **The motor already budgets in arena time.** `MotorTable::may_search` holds the field to
+  `reflex.max_path_queries` searches per `reflex.decide_ms` window of arena time (1 s), for the
+  same reason; a hull it refuses keeps the path it has and searches in a later window.
+- **What a search costs past its budget.** `PathScratch::last_expanded` counts the expansion
+  that breaks a `Budget` and, past `POCKET_PROBE_CELLS` expansions, the goal-side probe's flood:
+  at most `POCKET_PROBE_CELLS + 2` (1,026) more than the A* budget handed in.
+
+**Built** (`arena/motor.rs`).
+- **`PATH_CELLS_PER_WINDOW`**, 48,128: the harness's figure, now the motor's budget per
+  `decide_ms` window of arena time, beside the query budget. A wake lies inside one window, so a
+  window held to it holds every wake to it, at every tempo.
+- **`MotorTable` counts the window's cells** (a new field, `cells`), reset when the window
+  turns. Like the window and the query spend beside it, it is not folded in the state hash, and a
+  snapshot carries it, so a match resumed mid-window defers as an unbroken one does.
+- **`SNAPSHOT_FORMAT` 20** (`arena/snapshot.rs`): the motor table's `cells`. Format 19 is
+  refused by name before state decode, as every earlier bump; pre-launch, in-flight matches
+  restart rather than migrating.
+- **Each search is handed what the window has left**, less 1,026 (`SEARCH_OVERHEAD_CELLS`), and
+  never more than `reflex.path_max_cells`. So the window's sum never passes 48,128.
+- **No search starts** once less than `POCKET_PROBE_CELLS` (1,024, the expansions that close most
+  routes) is left, after the window's first: the hull keeps its path and searches in a later
+  window, as one the query budget refused does.
+- **A search that runs out of what others left is deferred, not failed**: its `searched_ms` and
+  `searched_from` are put back, so it searches again at its next tick in a later window, and
+  `path_deferred` counts it. A search that runs out of a window it opened found no route a window
+  can pay for, which is the `unreachable` edge's `Budget` as before.
+
+**Tests.**
+- `motor::tests::cc2b_the_window_holds_its_path_cells`: the figure equals
+  `HarnessConfig::default().max_path_cells_per_pulse`; a fresh window hands 47,102; a later search
+  gets what is left; under 1,024 left, no search; the next window opens with nothing spent; a
+  smaller `path_max_cells` still caps.
+- `motor::tests::cc2b_a_burst_of_routes_holds_the_window_and_every_hull_routes`: eight hulls on a
+  200 by 200 window, each sent across a wall with one gap at its far end, so each search floods the
+  near side (about 19,500 cells); all eight followed at one arena millisecond, a window at a time.
+  Per window, (cells, deferred, failures): (47,103, 6, 0), (47,103, 4, 0), (47,103, 2, 0),
+  (39,099, 0, 0). Two hulls route in each window, all eight by the fourth, none fails, and the run
+  is the same twice.
+- `motor::tests::cc2b_a_match_resumed_mid_window_defers_as_an_unbroken_one` (the lead's): the
+  burst followed over two windows, once unbroken and once with the arena encoded and decoded after
+  the first three hulls of the first window, when the window has spent most of its cells. The
+  decoded table holds the same cells, and every hull's route, every counter and the table's
+  window, searches and cells come out the same.
+- **Mutations**, each caught:
+
+  | Mutation | Caught by |
+  |---|---|
+  | No cell budget (every search handed `path_max_cells`, none refused) | both tests |
+  | A deferred search failed as `unreachable` | the burst test |
+  | `cells` not carried by the snapshot (`#[serde(skip)]`) | the resume test |
+
+- **The harness, the done-when** (`tests/harness.rs`, at the 90 s window, conclav.dev). Under
+  `TACSIM_ASSERT=1` every lane passes, `harness.max_path_cells_per_pulse` unchanged at 48,128:
+  the CI cohort's busiest wake (seed 2350, arena 101,500 ms) now expands **47,985** path cells
+  where it expanded 50,425; the authored cohort's peak stays 20,318. The weekly asserted run is
+  green again.
+- **Re-blessed by record:**
+
+  | File and test | Pin | What moved |
+  |---|---|---|
+  | `tests/harness_baseline/arena.linux.json` | 12 leaves (`cc2b_deterministic_update`) | the motor's: peak path cells 50,425 → 47,985, total 135,684 → 133,244, one more deferral (590 → 591), the slope and corner refusals the deferred search no longer made; the `stock_ci` minds lane's final substep hash; uncompared, the snapshot's bytes (+12, the new field) and `frame_execution`'s state hash |
+  | `tests/domain_arena/arena.rs` `af1_the_snapshot_shape_is_pinned` | `AF1_SHAPE_DIGEST`, `AF1_SHAPE_LINES` | one path, `state.motors.cells: number`: 739 → 740 |
+  | `arena.rs` (four), `conditions.rs`, `deliberation.rs` (two), `minds/resimulation.rs` | the literal format each round trip checks | 19 → 20 |
+
+  The delta against the re-blessed file reads the deterministic block equal (106 fields) and the
+  four minds blocks equal. The timing gate, on a box other sessions were loading (load 5 to 8),
+  read the window p99 from +9% to +34% over three runs. So CC.2's and CC.2b's harness binaries
+  were run back to back, alternately, twice each (wake p50 / p99 / window p99, ms):
+
+  | Run | CC.2 | CC.2b |
+  |---|---|---|
+  | first | 4.92 / 5.89 / 11.42 | 5.24 / 9.00 / 16.47 |
+  | second | 5.14 / 6.76 / 13.21 | 5.05 / 6.06 / 12.50 |
+
+  The budget costs nothing measurable; the spread is the box. Against TS.21's baseline, CC.2b's
+  second run reads −7.6%, −8.1% and −2.2%, inside the 20% gate.
+
+- **The sweep** (conclav.dev, the nine crates with no fail-fast, then by name the D-UM-28 pin and
+  the measured fights): 7,688 tests at `93756fb46`, all passing but the eight format literals
+  above, which the bump moved and `762711899` and `e19c48e5f` re-pin; those eight, every snapshot test and the
+  CC.2b tests then pass at `e19c48e5f` (69 tests), with three more literals there (the
+  refused-format errors' `expected: 20`). The D-UM-28 pin and CC.2's measured fights pass,
+  their figures unchanged.
+- **Guards**: `cargo fmt --check`, the M7 memory-size pass and rustdoc with `-D warnings` for
+  `tacsim` at `93756fb46`; `cargo clippy -p tacsim --all-targets -- -D warnings` at
+  `762711899`, clean (a type alias for the resume test's follows, which `type_complexity` asked for).
+
+**Divergences.**
+- **A window, not a wake.** The lead's done-when names a per-wake budget. The budget is per
+  `decide_ms` window of arena time, as the query budget is, so a route never depends on the
+  tempo (D-16-2); a wake lies inside one window, so the per-wake figure the harness asserts is
+  bounded by it. A deferred hull searches at its next tick, one `decide_ms` later (four wakes at the
+  `Engaged` tempo): in the burst above, the eighth hull waited three windows.
+- **Not oldest first, but tick order.** Within a window the searches run in the order the hulls'
+  motor ticks fall, and a deferred hull competes again at its next tick. The burst shows the wait
+  is what the burst costs over what a window pays, and no hull starves while windows keep
+  refilling.
+- **One search's ceiling is 47,102 cells, not `path_max_cells`' 65,536.** A search that needs more
+  than a whole window can pay is the `unreachable` edge's `Budget`. AI.1's pocket probe answers the
+  floods that used to reach that size.
+
+**Not built.**
+- **`config.rs`' doc for `harness.max_path_cells_per_pulse`** still says the bound is never a
+  throttle the arena applies. It is now the motor's window budget too; the doc is outside this
+  unit's scope (motor.rs and its tests) and is the lead's to rule on.
+
 ## CC.3
 
 Not built.
