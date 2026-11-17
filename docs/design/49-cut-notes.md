@@ -861,10 +861,10 @@ The space palette and doctrines (Q-49-7, Q-49-10, Q-49-19, Q-49-24, Q-49-25, Q-4
     its laser alone; its tubes only at a hull that ran the picket, a hauler, since the raider's
     warship's screen stops a lone salvo.
   - **Interdictor:** the laser and the spinal gun at any hull that will not heave to, and the
-    tubes only at a hull radiating for a fight. It closes only until its laser reaches the hull,
-    then holds its drive: `speed(n)` left standing carried it past her ever faster, and the
-    closing speed it piled up left no Dray able to heave to. Its hail and heave-to logic is
-    unchanged.
+    tubes only at a hull radiating for a fight. It closes until it is closing at 50 m/s, then
+    holds its drive: `speed(n)` left standing carried it past her ever faster, and the closing
+    speed it piled up left no Dray able to heave to. Its hail and heave-to logic is unchanged,
+    and so is what MW.9's and MW.10's stories read (it closes on a hull that will not stop).
   - **Belt raider:** her opener as before; then her torch dies (`hold()`) and she presses from
     where she is. She prefers a prey radiating for a fight to one that is not, among those customs
     have finished with, and presses only the former, as before.
@@ -914,11 +914,14 @@ TESTS-PLACEHOLDER
 
 - **The rotary's envelope moved**, beyond the defence cycle Q-49-26 names: measured, no defence
   cycle can make a hauler's screen leak while two rotaries alone stop every salvo (above).
-- **The offence laser's reach is 150 km** (100 km on the corvette's heavier laser), not "short" in
-  tens of kilometres. The raider ambushes from 120 km in doc 47's stories (AP.9, CO.2), which assert
-  that a Dray's answer arrives on her; a shorter reach would weaken the Dray answering fire, which
-  this unit may not do. The laser is short against the spinal gun's 250 km and the old 500 km,
-  and weak: past 25 km a pulse does under half its close-range damage, past 100 km a point.
+- **The offence laser's effective reach is 25 km**: inside it a pulse does at least half its
+  close-range damage (15 of 30 on the turret, 22 of 45 on the corvette's heavier laser). Past it a
+  pulse still lands out to a full reach of 150 km (100 km on the heavier laser), but as a token:
+  a point at 120 km. The reason is gameplay. A Dray's answer to a raider ambushing from 120 km is
+  a token, but a real one: R-47-2 and R-47-3 hold, and the raider knows she has been answered.
+  Every hurt at range comes from the tubes and the spinal gun, which the rewritten doctrines use
+  (Q-49-26). The lead accepted this reading of Q-49-7 (a short reach, little to a hull) and put it
+  to the owner, who may veto it. No story asserts more than a token answer at range.
 - **The belt raider's second laser starts in defence**, so her screen is a warship's.
 - **Halcyon's spinal gun stows 32**, its own fit's figure, beside the palette's 24.
 - **A laser's `cooldown_remaining_ms` is left out of her document when nought.** The per-mode
@@ -934,7 +937,7 @@ TESTS-PLACEHOLDER
     nobody, and an escort she had opened on sailed away (sfr18);
   - the picket keeps its tubes for a runner: its salvos at the raider were all stopped, and their
     thirty-second flights kept every docking under fire long after the raider was down;
-  - the interdictor holds once its laser reaches.
+  - the interdictor caps its closing speed at 50 m/s.
 
   The picket's corvette now disables the raider in about fifty seconds with spinal rounds, where
   it took about twenty-four with the old laser.
@@ -953,10 +956,18 @@ TESTS-PLACEHOLDER
   - sfr2's first part takes the interdictor's fire, then heaves to; its NPC-derelict assertions
     are sfr6's and sfr8's, which still make one by play;
   - where the NPC disables a carrier (sfr2's third part, sfr9's last), the window widened: on the
-    palette's cycles it takes some tens of seconds, where the 1 s laser took a few;
+    palette's cycles it takes some tens of seconds, where the 1 s laser took a few. sfr2's carrier
+    shows the interdictor her stern, so her drive goes before her hull and she checks in
+    `Immobile`, as the story asserts;
   - sfr6 steps until the corvette has disabled the raider; sfr15's point-defence check starts its
-    torpedoes inside the new envelope; sfr20 turns on what the interdictor's fire has done rather
-    than on a tick count.
+    torpedoes inside the new envelope, and its damage line is re-pinned by record; sfr20 turns on
+    what the interdictor's fire has done rather than on a tick count (`+helm/heading 180 0` shows
+    a Dray's bow to a hull at +x, `0 0` her stern);
+  - sfr7 checks that the docking hull is held, her drive cut, rather than that the bubble does
+    not step: the picket's bubble keeps its 1 s cadence for the corvette (SF.R25 holds the
+    docking hull alone), where the interdiction bubble had gone to its cruise cadence;
+  - the picket's own doctrine test (`space::picket::tests`) reads the new doctrine: the corvette
+    no longer fires torpedoes at the raider.
 - **Files outside the row**, each the least this needed. I asked the lead about them, and about
   the SF.R stories' change of premise, and had no answer before opening the PR:
   - `space/weapons.rs`: the per-mode cycle's state and the switch;

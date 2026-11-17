@@ -28,7 +28,7 @@
     "unit": "tacsim.unit.corvette",
     "overlay": "tacsim.unit.corvette_interdictor",
     "doctrine": "interdictor_patrol",
-    "doctrine_sha256": "319726a3fcdb4979264b18bf8090cdc3975ced97826ab02ee25914810c418a75",
+    "doctrine_sha256": "11ba28b7b608f38b0bc22f2c147a26f00b9cc8ed45c2d188f009a4caa7502909",
     "pos_m": [18000, 0, 0],
     "vel_mmps": [-20000, 0, 0]
   },
