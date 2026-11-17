@@ -274,3 +274,130 @@ async fn ex3_the_works_buys_on_the_board_and_a_missed_leg_refunds() {
         purse(&rig)
     );
 }
+
+/// The Trust's helm, once its pool has one, and its open order's escrow.
+fn trust_order(rig: &Rig) -> Option<(ObjId, VaultId)> {
+    let pool = tacsim::port::pools::pool(rig.tw.world(), "coop_trust")?;
+    let order = pool.orders.first()?;
+    Some((pool.helm?, VaultId(order.contract?)))
+}
+
+/// The helm's purse: its own available credit, minor units.
+fn helm_purse(rig: &Rig, helm: ObjId) -> i64 {
+    tacsim::port::credit::own_account(rig.tw.world(), helm)
+        .and_then(mush_economy::Account::available)
+        .map_or(0, mush_economy::Amount::minor)
+}
+
+/// The helm's settled trades on the tape.
+fn helm_trades(rig: &Rig, helm: ObjId) -> usize {
+    rig.tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .map_or(0, |m| {
+            m.quotes_of_buyer(&PrincipalId::Object(helm))
+                .filter(|q| q.is_trade())
+                .count()
+        })
+}
+
+/// **V7 on the board** (doc 48 cut EX.3): eight charters breach the Trust's floor and it orders a
+/// Dray at Stickney. Its helm buys the bill on the board, quoting Kasei's alloy ask into the yard
+/// order's escrow from its purse. When the alloys move away before the draw lands, the escrow comes
+/// back to the purse and the order's escrow takes nothing; with Kasei's stock back, the next
+/// purchase settles and leaves a trade on the tape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ex3_the_house_buys_its_bill_on_the_board_and_a_missed_leg_refunds() {
+    let mut rig = stocked();
+    crate::in10_pools::settle(&mut rig, 40);
+    for i in 0..8_i64 {
+        let captain = crate::driving_rig::pilot(&mut rig, &format!("Captain{i}"), i + 1);
+        let out = run(&mut rig.tw, captain, &format!("+coop/enrol Hull {i}"));
+        assert!(out.contains("now the Hull"), "{out}");
+        crate::in10_pools::settle(&mut rig, 1);
+    }
+    let (kasei, yards) = (
+        vendor_vault(&rig, "kasei"),
+        vendor_vault(&rig, "stickney_yards"),
+    );
+    // The Trust orders; its helm books the yard order and puts the first line on the board.
+    let mut missed = None;
+    for _ in 0..400 {
+        // in10's fire: six seconds on, the industry's occurrences, then every submission, the
+        // industry's draft included (`fire`'s `drain` keeps tacsim's, the inventory's and the
+        // market's only).
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        crate::in10_pools::produce(&mut rig);
+        let mut queued = Vec::new();
+        while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+            queued.push(*submit);
+        }
+        if let Some((helm, escrow)) = trust_order(&rig)
+            && tacsim::port::pools::helm_on_board(rig.tw.world(), helm)
+        {
+            move_alloys(&mut rig, kasei, yards);
+            land_quietly(&mut rig, &queued);
+            missed = Some((helm, escrow));
+            break;
+        }
+        land_quietly(&mut rig, &queued);
+    }
+    let (helm, escrow) = missed.unwrap_or_else(|| {
+        panic!(
+            "the helm put a purchase on the board: {:?}; the order {:?}; the board: {}",
+            tacsim::port::pools::pool(rig.tw.world(), "coop_trust"),
+            trust_order(&rig).and_then(|(_, escrow)| crate::driving_rig::store(&rig.tw)
+                .works_contract(escrow.0)
+                .cloned()),
+            board(&rig)
+        )
+    });
+    assert_eq!(helm_trades(&rig, helm), 0, "nothing bought yet");
+    let escrowed = helm_purse(&rig, helm);
+
+    // Past the contract's deadline (a Draw's window, six seconds a fire): the missed leg
+    // refunds, and the escrow took nothing. A coarser jump would lapse the next, drawn purchase
+    // unpaid.
+    for _ in 0..900 {
+        if !tacsim::port::pools::helm_on_board(rig.tw.world(), helm) {
+            break;
+        }
+        crate::in10_pools::fire_all(&mut rig);
+    }
+    assert!(
+        !tacsim::port::pools::helm_on_board(rig.tw.world(), helm),
+        "the missed purchase is closed: {}",
+        board(&rig)
+    );
+    assert_eq!(helm_trades(&rig, helm), 0, "no trade without its goods");
+    assert_eq!(
+        hold_pool(&mut rig.tw, escrow, ALLOYS),
+        0,
+        "the order's escrow took nothing"
+    );
+    assert!(
+        helm_purse(&rig, helm) > escrowed,
+        "the escrow came back to the purse: {escrowed} then {}",
+        helm_purse(&rig, helm)
+    );
+
+    // Kasei's stock back, the next purchase settles into the order's escrow on the board.
+    move_alloys(&mut rig, yards, kasei);
+    for _ in 0..900 {
+        if helm_trades(&rig, helm) > 0 {
+            break;
+        }
+        crate::in10_pools::fire_all(&mut rig);
+    }
+    assert!(
+        helm_trades(&rig, helm) > 0,
+        "a purchase settled on the board: {}",
+        board(&rig)
+    );
+    assert!(
+        hold_pool(&mut rig.tw, escrow, ALLOYS) > 0,
+        "the order's escrow took the alloys"
+    );
+}

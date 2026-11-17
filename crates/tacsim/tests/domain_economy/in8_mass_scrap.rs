@@ -131,7 +131,7 @@ fn credit(rig: &Rig, pilot: ObjId) -> i64 {
         .expect("the pilot's account")
 }
 
-fn record(rig: &Rig, hull: ObjId) -> tacsim::port::bay_work::BayHull {
+pub(crate) fn record(rig: &Rig, hull: ObjId) -> tacsim::port::bay_work::BayHull {
     match store(&rig.tw).bay_hull(hull) {
         Some(BayHullState::Present(row)) => row.clone(),
         other => panic!("the bay record: {other:?}"),
@@ -152,6 +152,45 @@ fn settled(rig: &mut Rig, who: ObjId, line: &str, hull: ObjId) -> String {
         land_quietly(rig, &queued);
     }
     panic!("{line}: the bay's act did not settle\n{out}");
+}
+
+/// The holder's settled sales on the tape (doc 48 cut EX.3).
+pub(crate) fn sales_of(rig: &Rig, holder: ObjId) -> (usize, bool) {
+    let w = rig.tw.world();
+    w.module_state::<mush_market::MarketStore>()
+        .map_or((0, false), |m| {
+            let mine: Vec<_> = m
+                .quotes_of_seller(&mush_org::PrincipalId::Object(holder))
+                .collect();
+            (
+                mine.iter().filter(|q| q.is_trade()).count(),
+                mine.iter().any(|q| q.settled.is_none()),
+            )
+        })
+}
+
+/// **Doc 48 cut EX.3: a landed scrap's or return's sale, sold out and settled**: fires (each six
+/// real seconds on, the market's and the economy's sweeps among them) until `hull`'s record sells
+/// nothing more and none of `holder`'s sales is unsettled.
+pub(crate) fn sold_out(rig: &mut Rig, hull: ObjId, holder: ObjId) {
+    sold_out_within(rig, hull, holder, 200);
+}
+
+/// [`sold_out`] within `fires` fires (a missed leg refunds only at its contract's deadline, a
+/// Draw's window on: some 600 fires. A coarser jump lapses a drawn sale unpaid).
+pub(crate) fn sold_out_within(rig: &mut Rig, hull: ObjId, holder: ObjId, fires: usize) {
+    for _ in 0..fires {
+        let selling = record(rig, hull).sale.is_some();
+        if !selling && !sales_of(rig, holder).1 {
+            return;
+        }
+        crate::in10_pools::fire_all(rig);
+    }
+    panic!(
+        "the sale did not settle: {:?}, {:?}",
+        record(rig, hull).sale,
+        sales_of(rig, holder)
+    );
 }
 
 fn lot_record(rig: &mut Rig, lot: mush_inventory::LotId) -> Option<mush_inventory::Lot> {
@@ -327,6 +366,7 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
     let yards = mush_economy::VaultId(yards);
     let hold_before = hold_pool(&mut rig.tw, vault, "structural_alloys");
     let paid_before = credit(&rig, pilot);
+    let yards_before = hold_pool(&mut rig.tw, yards, "structural_alloys");
 
     // (2) The whole intact escort, scrapped. Doc 41's RS.9a follow-up: the matter census holds
     // while the scrap's mint is owed (its source counted only when the lots land) and after.
@@ -360,22 +400,28 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
         "the yield is a source: {landed:?}"
     );
     assert!(
-        out.contains("1539 kg of structural alloys (1 t to the workshop's stock) and 4 part(s)"),
+        out.contains(
+            "1539 kg of structural alloys (1 t whole) and 4 part(s) go to your scrap here"
+        ),
         "{out}"
     );
-    let tonne = lot_record(
-        &mut rig,
-        tacsim::port::bay_work::act::lot_id(escort, 1, 0).expect("the lot"),
-    )
-    .expect("the alloys' lot");
+    // Doc 48 cut EX.3: the matter landed in the captain's own scrap vault at Stickney, and the
+    // captain sells it to the Yards on the board, a row a step, each a trade on the tape.
+    let scrap = tacsim::port::bay_work::scrap::scrap_vault(rig.tw.world(), pilot, "stickney")
+        .expect("the captain's scrap vault at Stickney");
+    sold_out(&mut rig, escort, pilot);
+    assert_eq!(
+        sales_of(&rig, pilot).0,
+        5,
+        "the tonne and four parts, each a trade"
+    );
     assert_eq!(
         (
-            tonne.commodity().as_str(),
-            tonne.quantity(),
-            tonne.endpoint()
+            hold_pool(&mut rig.tw, scrap, "structural_alloys"),
+            hold_pool(&mut rig.tw, yards, "structural_alloys") - yards_before
         ),
-        ("structural_alloys", 1, EndpointRef(yards)),
-        "1 t in the Yards' stock"
+        (0, 1),
+        "1 t sold into the Yards' stock"
     );
     assert_eq!(
         hold_pool(&mut rig.tw, vault, "structural_alloys"),
@@ -395,7 +441,11 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
         let lot = tacsim::port::bay_work::act::lot_id(escort, 1, n).expect("the lot");
         let found = lot_record(&mut rig, lot).expect("a part's lot");
         assert!(found.commodity().as_str().starts_with("tacsim.part."));
-        assert_eq!(found.endpoint(), EndpointRef(yards), "in the Yards' stores");
+        assert_eq!(
+            found.endpoint(),
+            EndpointRef(yards),
+            "sold into the Yards' stores"
+        );
         let part = provenance(&mut rig, lot);
         assert!(part.stripped().is_some_and(|s| s.scrapped));
         parts.push(found.commodity().as_str().to_owned());
@@ -461,8 +511,10 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
         "the patch drew the heavy's own alloys and fittings"
     );
     let paid_before = credit(&rig, pilot);
+    let yards_before = hold_pool(&mut rig.tw, yards, "structural_alloys");
     let out = settled(&mut rig, pilot, &format!("+bay/return #{}", heavy.0), heavy);
     assert!(out.contains("bale goes back to the workshop"), "{out}");
+    sold_out(&mut rig, heavy, pilot);
     let returned = crate::in11_matter::census(&mut rig);
     assert_eq!(
         returned["balance"], window["balance"],
@@ -478,16 +530,13 @@ async fn in8_a_whole_escort_scrapped_at_stickney_pays_for_its_parts_and_a_tonne(
     let shop = store(&rig.tw)
         .shop_bale(&cid(STICKNEY))
         .expect("the Yards' shop bale");
-    let act = record(&rig, heavy).acts;
-    let minted = lot_record(
-        &mut rig,
-        tacsim::port::bay_work::act::lot_id(heavy, act, 0).expect("the lot"),
-    )
-    .filter(|lot| lot.commodity().as_str() == "structural_alloys")
-    .map_or(0, |lot| {
-        assert_eq!(lot.endpoint(), EndpointRef(yards), "in the Yards' stock");
-        lot.quantity()
-    });
+    // Doc 48 cut EX.3: the whole tonne, sold through the captain's scrap vault into the Yards'.
+    let minted = hold_pool(&mut rig.tw, yards, "structural_alloys") - yards_before;
+    assert_eq!(
+        hold_pool(&mut rig.tw, scrap, "structural_alloys"),
+        0,
+        "all sold"
+    );
     assert_eq!(
         minted * KG_PER_T + shop.kg.alloys_kg,
         539 + bale.alloys_kg,
@@ -598,4 +647,238 @@ async fn in8_an_escorts_remains_on_ahuna_yield_a_tonne_and_a_full_hold_refuses()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in8_a_drays_remains_on_urvara_yield_forty_tonnes_and_a_full_hold_refuses() {
     remains_on(&URVARA_REACH, "tacsim.unit.dray", 40);
+}
+
+/// The port's buy-back desk (doc 48 cut EX.3), once laid up.
+fn desk_of(rig: &Rig, port: &str) -> Option<ObjId> {
+    port_map(&rig.tw, port).desk.map(|desk| ObjId(desk.thing))
+}
+
+/// The buy-back desk's purse: its own available credit, minor units.
+fn desk_purse(rig: &Rig, port: &str) -> i64 {
+    let desk = desk_of(rig, port).expect("the port's buy-back desk");
+    tacsim::port::credit::own_account(rig.tw.world(), desk)
+        .and_then(mush_economy::Account::available)
+        .map_or(0, mush_economy::Amount::minor)
+}
+
+/// **The money census's total** (doc 48 cut EX.0): every currency account's posted balance, the
+/// system's included, as `@econ/census` reads it.
+fn money_total(rig: &Rig) -> i128 {
+    let w = rig.tw.world();
+    let store = w
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("the economy");
+    let currencies = mush_economy::census::currencies(store);
+    let orgs = mush_economy::census::org_classes(w);
+    mush_economy::census::read(w, store, &currencies, &orgs)
+        .values()
+        .map(|reading| {
+            reading.holdings.total()
+                + reading
+                    .system
+                    .values()
+                    .map(|v| i128::from(*v))
+                    .sum::<i128>()
+                + i128::from(reading.system_rest)
+        })
+        .sum()
+}
+
+/// Seed Occator a hundred thousand from Ceres' treasury, to buy two hulls' matter.
+fn fund_occator(rig: &mut Rig) {
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let account = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")]
+        .account
+        .expect("Occator's account");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={account} 10000000"),
+    );
+}
+
+/// **Doc 48 cut EX.3 — V10 on the board** (Q-48-9; doc 48a A-3), at Ceres' workshop (C14,
+/// Occator's). A whole Dray titled to the captain is scrapped: its 94 t of alloys, far past a
+/// locker's 20 t, mint into the captain's own uncapped scrap vault at Ceres, and the captain sells
+/// them and her plant to Occator on the board, each row into a private bid Ceres' buy-back desk posts,
+/// each a trade on the tape, paid only as it settles. Then a spare escort is scrapped, and its
+/// tonnes of alloys are moved off before their sale's leg lands, the captain gone from the port
+/// meanwhile: the missed leg refunds the bid's escrow to the desk's purse, Occator's stock takes
+/// nothing, the captain is paid nothing for it, and the escort's parts still sell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn ex3_scrap_sells_on_the_board_past_twenty_tonnes_and_a_missed_leg_refunds() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("tacsim::port::bay_work=info")
+        .with_test_writer()
+        .try_init();
+    let mut rig = stocked();
+    let (pilot, row) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    mint(&mut rig, pilot);
+    fund_occator(&mut rig);
+    at_counter(&mut rig, pilot);
+    let bay = ObjId(row.rooms[&cid("bay")]);
+    let hold = hold_vault_of(&rig.tw, &row);
+    let workshop = station_room(&rig.tw, "ceres_port", "room.c14_dockmaster");
+    let stores =
+        mush_economy::VaultId(port_map(&rig.tw, "ceres_port").vendors[&cid("occator")].vault);
+    let dray = spare_of(&rig, "tacsim.unit.dray", &[ObjId(row.hull)]);
+    title_to(&mut rig, dray, pilot);
+    put(&mut rig, dray, bay, true);
+    put(&mut rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", dray.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+
+    // ---- (1) A Dray, 94 t: into the captain's scrap vault, sold on the board ----
+    assert_eq!(
+        desk_of(&rig, "ceres_port"),
+        None,
+        "no desk before the first sale"
+    );
+    let money_before = money_total(&rig);
+    let paid_before = credit(&rig, pilot);
+    let stock_before = hold_pool(&mut rig.tw, stores, "structural_alloys");
+    let out = settled(&mut rig, pilot, &format!("+bay/scrap #{}", dray.0), dray);
+    assert!(out.contains("(94 t whole)"), "{out}");
+    let scrap = tacsim::port::bay_work::scrap::scrap_vault(rig.tw.world(), pilot, "ceres")
+        .expect("the captain's scrap vault at Ceres");
+    assert!(
+        mush_market::CapacityProvider::plan(
+            &tacsim::port::PortCapacity,
+            rig.tw.world(),
+            EndpointRef(scrap)
+        )
+        .is_none(),
+        "the scrap vault is uncapped"
+    );
+    sold_out(&mut rig, dray, pilot);
+    let (trades, _) = sales_of(&rig, pilot);
+    assert!(trades >= 1, "the alloys sold on the tape");
+    assert_eq!(
+        hold_pool(&mut rig.tw, stores, "structural_alloys") - stock_before,
+        94,
+        "94 t into Occator's stock"
+    );
+    assert_eq!(hold_pool(&mut rig.tw, scrap, "structural_alloys"), 0);
+    let paid = credit(&rig, pilot) - paid_before;
+    assert!(paid > 0, "paid on the board: {paid}");
+    // The bidder is Ceres' buy-back desk, the clerk's own Thing: laid up on the first sale, with
+    // its own purse, which the money census counts (an NPC's account: `Other`); the sale moved
+    // money and made none.
+    let desk = desk_of(&rig, "ceres_port").expect("the desk, laid up");
+    let clerk = port_map(&rig.tw, "ceres_port")
+        .clerk
+        .map(|c| ObjId(c.thing))
+        .expect("the clerk");
+    assert_eq!(rig.tw.world().get(desk).map(|o| o.owner), Some(clerk));
+    let purse = tacsim::port::credit::own_account(rig.tw.world(), desk)
+        .map(|a| a.id)
+        .expect("the desk's purse");
+    assert_eq!(
+        mush_economy::census::classify(
+            &mush_org::PrincipalId::Object(desk),
+            &mush_economy::census::org_classes(rig.tw.world()),
+            |_| false
+        ),
+        Some(mush_economy::census::HoldingClass::Other)
+    );
+    assert_eq!(
+        money_total(&rig),
+        money_before,
+        "the census: money moved, none made"
+    );
+
+    // ---- (2) An escort, its tonne's leg missed ----
+    let escort = spare_of(&rig, "tacsim.unit.tv_escort", &[]);
+    title_to(&mut rig, escort, pilot);
+    put(&mut rig, escort, bay, true);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", escort.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let stock_before = hold_pool(&mut rig.tw, stores, "structural_alloys");
+    let hold_before = hold_pool(&mut rig.tw, hold, "structural_alloys");
+    let (trades_before, _) = sales_of(&rig, pilot);
+    let paid_before = credit(&rig, pilot);
+    let out = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", escort.0));
+    // The escort's 1,539 kg and the Dray's 500 kg left in Occator's shop bale: 2 t whole.
+    assert!(out.contains("(2 t whole)"), "{out}");
+    // The captain leaves the port (to LIMBO, as one who logs off): the scrap vault's owner sells
+    // from it at its venue wherever they stand.
+    put(&mut rig, pilot, mush_core::LIMBO, false);
+    // What the parts sell for: the owed mint's rows past the tonne.
+    let parts_minor = match record(&rig, escort).owed.map(|owed| owed.kind) {
+        Some(tacsim::port::bay_work::act::OwedKind::Mint {
+            settle: Some(settle),
+            ..
+        }) => settle
+            .rows
+            .iter()
+            .filter(|row| row.good.as_str().starts_with("tacsim.part."))
+            .map(tacsim::port::bay_work::scrap::SaleRow::total_minor)
+            .sum::<u64>(),
+        other => panic!("the scrap's mint is owed: {other:?}"),
+    };
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    // The mint lands and the first row, the tonne, is sold in the same step: before its leg
+    // lands, staff move the tonne out of the scrap vault into the captain's hold.
+    let mut missed = false;
+    for _ in 0..12 {
+        let (_, queued) = fire(&mut rig);
+        if sales_of(&rig, pilot).1 {
+            let tonnes = hold_pool(&mut rig.tw, scrap, "structural_alloys");
+            assert_eq!(tonnes, 2, "the tonnes on sale");
+            let moved = run(
+                &mut rig.tw,
+                GOD,
+                &format!(
+                    "@inv/move {}/structural_alloys:{tonnes}={}",
+                    scrap.0, hold.0
+                ),
+            );
+            assert!(!moved.contains("Usage"), "{moved}");
+            let staff = drain(&mut rig.tw);
+            land_all(&mut rig, &staff);
+            land_quietly(&mut rig, &queued);
+            missed = true;
+            break;
+        }
+        land_quietly(&mut rig, &queued);
+    }
+    assert!(missed, "the tonne's sale went on the board");
+    let escrowed = desk_purse(&rig, "ceres_port");
+    // Past the sale's deadline: the missed leg refunds; the parts still sell.
+    sold_out_within(&mut rig, escort, pilot, 900);
+    assert!(
+        desk_purse(&rig, "ceres_port") > escrowed,
+        "the bid's escrow came back to the desk's purse: {escrowed} then {}",
+        desk_purse(&rig, "ceres_port")
+    );
+    // The desk is laid up once: the second scrap found it, and its one purse.
+    assert_eq!(desk_of(&rig, "ceres_port"), Some(desk), "one desk");
+    assert_eq!(
+        tacsim::port::credit::own_account(rig.tw.world(), desk).map(|a| a.id),
+        Some(purse),
+        "one purse"
+    );
+    assert_eq!(
+        hold_pool(&mut rig.tw, stores, "structural_alloys"),
+        stock_before,
+        "Occator's stock took no alloys"
+    );
+    assert_eq!(
+        hold_pool(&mut rig.tw, hold, "structural_alloys") - hold_before,
+        2,
+        "the tonnes are still the captain's"
+    );
+    let (trades, unsettled) = sales_of(&rig, pilot);
+    assert!(!unsettled);
+    assert!(trades > trades_before, "the parts sold on the tape");
+    assert_eq!(
+        credit(&rig, pilot) - paid_before,
+        i64::try_from(parts_minor).expect("a sum"),
+        "the parts were paid for, and the tonne was not"
+    );
 }
