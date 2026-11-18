@@ -2700,6 +2700,8 @@ pub fn reservation_id_text(
         .map_err(|_| InventoryError::Identity)
 }
 
+pub mod carriage;
+
 #[cfg(test)]
 mod pl0_tests {
     use super::{InventoryError, InventoryFamilies};

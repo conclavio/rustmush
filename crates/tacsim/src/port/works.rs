@@ -72,6 +72,11 @@ pub const WORKS_FAMILY: &str = "tacsim.works_ledger";
 pub const WORKS_CAPABILITY: &str = "tacsim.works";
 /// The capability a yard's facility carries.
 pub const YARD_CAPABILITY: &str = "tacsim.yard";
+/// **The heavy yard's capability** (doc 48 unit PL.6, Q-48-25): every hull recipe but the light
+/// ones (the Dray, the Dray-P, the prospector, the escort, the tender and the wrecker) requires it
+/// beside [`YARD_CAPABILITY`]. Stickney's yard holds it and Ceres's does not, so Ceres builds the
+/// light hulls and Stickney all of them.
+pub const YARD_HEAVY_CAPABILITY: &str = "tacsim.yard.heavy";
 /// IC seconds an uncollected delivery waits before storage is charged (§4.12: 28 IC days).
 pub const STORAGE_GRACE_SECS: i64 = 28 * 86_400;
 /// IC seconds a storage day.
@@ -94,7 +99,8 @@ const LOT_PAGE: usize = 256;
 /// The usage line.
 pub const WORKS_USAGE: &str = "Usage: +works · +works/quote <recipe> [qty] · \
                                +works/order <recipe> [qty][=<org>] · \
-                               +works/deliver <order>=<good> <qty> · +works/collect <order> · \
+                               +works/deliver <order>=<good> <qty> · +works/buy <order>[=<good>] · \
+                               +yard/fund <recipe>=<org> · +works/collect <order> · \
                                +works/cancel <order>";
 /// The help text (`+yard` reads the same with its own word).
 pub const WORKS_HELP: &str = "+works                          the works here: what it makes, its \
@@ -106,14 +112,24 @@ pub const WORKS_HELP: &str = "+works                          the works here: wh
                               +works/deliver <order>=<good> <qty>  move bill goods from your docked \
                               hold into the escrow (a part as its lots); the order starts when the \
                               bill is covered.\n\
-                              +works/collect <order>          the output (or a canceled bill) into \
+                              +works/buy <order>[=<good>]     buy the bill's next short line (or \
+                              that good's) at this port's asks straight into the escrow, from your \
+                              own account, with no hold: a good stocked with no ask, or a yard \
+                              part, is listed to you first, and you buy again to take it.\n\
+                              +yard/fund <recipe>=<org>       an officer who may spend the \
+                              organization's treasury orders a hull for it: its yard agent is \
+                              funded with the price, buys the bill here, and she is handed over \
+                              docked here, titled to the organization.\n\
+                              +works/collect <order>          the output (or a cancelled bill) into \
                               your docked hold; at a yard, the hull's commission: she is handed \
                               over docked here (a ship) or on the workshop floor (a rig), titled to \
                               you, her magazines empty.\n\
                               +works/cancel <order>           before half the work is done: the \
                               bill back, the booking fee and the work done so far forfeit.";
 /// The switches.
-pub const WORKS_SWITCHES: &[&str] = &["quote", "order", "deliver", "collect", "cancel"];
+pub const WORKS_SWITCHES: &[&str] = &[
+    "quote", "order", "deliver", "buy", "fund", "collect", "cancel",
+];
 
 const NO_ORDER: &str = "You have no such order here.";
 
@@ -134,6 +150,38 @@ pub const SETTLING: &str = "That order is still settling.";
 /// **Doc 39 cut IN.11**: `+yard/collect`'s commission, "Order {n}: the yard commissions her as
 /// {mark}; …" (the bot's reader holds to it).
 pub const COMMISSIONS_AS: &str = ": the yard commissions her as ";
+
+// ---- doc 48 unit PL.5 (Q-48-28): buying straight into an escrow ------------------------------
+
+/// `+works/buy`'s purchase on the board: `{qty}`, `{good}`, `{seller}`, `{price}` a unit, `{n}`.
+pub const BOUGHT_INTO: &str =
+    "You buy {qty} {good} from {seller} at {price} each for order {n}; it lands as it settles.";
+/// `+works/buy` when the port's clerk lists the buyer a private ask first.
+pub const LISTED_TO_YOU: &str =
+    "{seller} lists you {qty} {good} at {price} each for order {n}; buy again to take it.";
+/// `+works/buy` while the buyer's last purchase is on the board.
+pub const BUY_ON_BOARD: &str = "Your last purchase is still settling; buy again in a moment.";
+/// `+works/buy` while the market or the port's clerk is busy.
+pub const BUY_BUSY: &str = "The market here is busy; buy again in a moment.";
+/// `+works/buy` while a good's ask is not listed or its pool is being drawn, `{good}`.
+pub const BUY_POOL: &str = "No {good} is free to buy here just now; buy again in a moment.";
+/// `+works/buy` while another buyer's private ask holds the pool, `{good}`.
+pub const BUY_HELD: &str = "The {good} here is held for another buyer; buy again in a few minutes.";
+/// `+works/buy` on a covered bill, `{n}`.
+pub const BILL_COVERED: &str = "Order {n}'s bill is covered.";
+/// `+works/buy` for a good nobody at the port sells, or a part the yard's stores lack, `{good}`.
+pub const NO_SELLER: &str = "No one at this port sells you {good} for that order.";
+/// `+yard/fund`'s first line: `{org}`, `{recipe}`, `{price}`.
+pub const FUNDS_A: &str =
+    "{org} orders a {recipe} at the yard for {price}, paid from its treasury.";
+/// `+yard/fund`'s second line: `{org}`, `{days}`.
+pub const AGENT_BUYS: &str = "Its yard agent buys the bill here; she is handed over docked here, \
+                              titled to {org}, in about {days} IC days.";
+/// `+yard/fund` away from the yard the houses order at.
+pub const FUND_YARD_ONLY: &str = "Only Stickney's yard takes an organization's order.";
+/// **A hull this yard does not build** (doc 48 unit PL.6): `{recipe}` the recipe, `{port}` the
+/// port whose yard builds it.
+pub const BUILT_ELSEWHERE: &str = "The yard here does not build a {recipe}; order it at {port}.";
 
 // ---- the records --------------------------------------------------------------------------
 
@@ -669,9 +717,6 @@ fn menu(
         (mush_industry::RecipeRef, mush_industry::PinnedRecipe),
     > = BTreeMap::new();
     for (recipe, pinned) in recipes().catalog(w) {
-        if !facility.offers(pinned.requires()) {
-            continue;
-        }
         let key = (recipe.pack().clone(), recipe.id().clone());
         if latest
             .get(&key)
@@ -680,7 +725,44 @@ fn menu(
             latest.insert(key, (recipe, pinned));
         }
     }
-    latest.into_values().collect()
+    // Doc 48 unit PL.6: the latest version first, then the facility's test, so a recipe whose
+    // latest version requires more (a heavy hull at v3) never falls back to an older one.
+    latest
+        .into_values()
+        .filter(|(_, pinned)| facility.offers(pinned.requires()))
+        .collect()
+}
+
+/// **What `+works` or `+yard` answers for a recipe word its facility does not make**: at a
+/// yard, the port whose yard builds it (doc 48 unit PL.6, [`BUILT_ELSEWHERE`]), else the plain
+/// refusal.
+fn not_made_here(w: &World, front: Front, word: &str) -> String {
+    let elsewhere = (front == Front::Yard)
+        .then(|| {
+            crate::port::market::ports(w)
+                .into_iter()
+                .find(|(entry, def, _)| {
+                    crate::port::plant::block_room(w, entry, def, front.word())
+                        .ok()
+                        .flatten()
+                        .and_then(|room| {
+                            w.module_state::<mush_industry::IndustryStore>()?
+                                .facility(room)
+                                .cloned()
+                        })
+                        .is_some_and(|yard| find_recipe(w, &yard, word).is_some())
+                })
+                .map(|(_, def, _)| crate::port::coop::port_name(def))
+        })
+        .flatten();
+    elsewhere.map_or_else(
+        || format!("The {} here does not make that.", front.word()),
+        |port| {
+            BUILT_ELSEWHERE
+                .replace("{recipe}", word)
+                .replace("{port}", &port)
+        },
+    )
 }
 
 /// **The parts one order of `pinned` lays** (doc 39 cut IN.7, §4.11): the largest part output
@@ -814,6 +896,12 @@ fn front_cmd(ctx: &mut Ctx<'_>, front: Front) -> Result<(), CmdError> {
         if ctx.switches.has("deliver") {
             return deliver(ctx, front, &raw);
         }
+        if ctx.switches.has("buy") {
+            return buy(ctx, front, &raw);
+        }
+        if ctx.switches.has("fund") {
+            return fund(ctx, front, &raw);
+        }
         if ctx.switches.has("collect") {
             return collect(ctx, front, &raw);
         }
@@ -930,8 +1018,8 @@ fn quote(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let mut words = raw.split_whitespace();
     let word = words.next().ok_or(WORKS_USAGE)?;
     let quantity = parse_qty_at(front, words.next())?;
-    let (_, pinned) = find_recipe(ctx.w, &facility, word)
-        .ok_or_else(|| format!("The {} here does not make that.", front.word()))?;
+    let (_, pinned) =
+        find_recipe(ctx.w, &facility, word).ok_or_else(|| not_made_here(ctx.w, front, word))?;
     if parts_laid(&pinned, quantity) > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
         return Err(too_many_parts(front));
     }
@@ -965,8 +1053,8 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
             front.word()
         ));
     }
-    let (recipe, pinned) = find_recipe(ctx.w, &facility, word)
-        .ok_or_else(|| format!("The {} here does not make that.", front.word()))?;
+    let (recipe, pinned) =
+        find_recipe(ctx.w, &facility, word).ok_or_else(|| not_made_here(ctx.w, front, word))?;
     if parts_laid(&pinned, quantity) > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
         return Err(too_many_parts(front));
     }
@@ -1265,6 +1353,131 @@ fn deliver(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
             good.as_str(),
             c.id
         ),
+    );
+    Ok(())
+}
+
+/// **`+works/buy <order>[=<good>]`** (doc 48 unit PL.5; Q-48-28): the bill's next short line, or
+/// `good`'s, bought at this port's asks straight into the order's escrow, as the requester from
+/// their own account: V7's seller and price ([`crate::port::pools::buy_into`]), with no hold.
+fn buy(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
+    let (left, only) = match raw.split_once('=') {
+        Some((left, good)) => (
+            left,
+            Some(CanonicalId::new(good.trim()).map_err(|_| WORKS_USAGE)?),
+        ),
+        None => (raw, None),
+    };
+    let (_, c) = mine(ctx, front, left)?;
+    if c.requester != ctx.actor || c.house {
+        return Err(NO_ORDER.to_owned());
+    }
+    if only
+        .as_ref()
+        .is_some_and(|good| !c.bill.iter().any(|line| line.good == *good))
+    {
+        return Err("That good is not on the order's bill.".to_owned());
+    }
+    if c.order
+        .and_then(|o| work_order(ctx, o))
+        .is_some_and(|o| *o.state() != WorkOrderState::Draft)
+    {
+        return Err("That order is no longer taking goods.".to_owned());
+    }
+    if c.owed.is_some() {
+        return Err("That order's last delivery is still settling.".to_owned());
+    }
+    let Some((good, want)) = crate::port::pools::short_line(ctx, &c, only.as_ref()) else {
+        say(ctx, BILL_COVERED.replace("{n}", &c.id.to_string()));
+        return Ok(());
+    };
+    let entry = here(ctx, front)?.0;
+    let line = match crate::port::pools::buy_into(ctx, ctx.actor, &entry, c.id, (&good, want)) {
+        Ok(crate::port::pools::Bought::Accepted {
+            seller,
+            quantity,
+            price,
+        }) => fill(BOUGHT_INTO, ctx, (&seller, quantity, &good, price), c.id),
+        Ok(crate::port::pools::Bought::Listed {
+            seller,
+            quantity,
+            price,
+        }) => fill(LISTED_TO_YOU, ctx, (&seller, quantity, &good, price), c.id),
+        Ok(crate::port::pools::Bought::Wait(wait)) => match wait {
+            crate::port::pools::Wait::OnBoard => BUY_ON_BOARD.to_owned(),
+            crate::port::pools::Wait::Busy => BUY_BUSY.to_owned(),
+            crate::port::pools::Wait::Pool => BUY_POOL.replace("{good}", good.as_str()),
+            crate::port::pools::Wait::Held => BUY_HELD.replace("{good}", good.as_str()),
+        },
+        Err(crate::port::pools::BuyError::Market(error)) => {
+            return Err(mush_market::refuse_market(ctx, &error).to_string());
+        }
+        Err(crate::port::pools::BuyError::Plain(why)) => {
+            tracing::debug!(order = c.id, %why, "tacsim: a player's escrow purchase found no seller");
+            return Err(NO_SELLER.replace("{good}", good.as_str()));
+        }
+    };
+    say(ctx, line);
+    Ok(())
+}
+
+/// One of `+works/buy`'s two purchase lines, filled.
+fn fill(
+    template: &str,
+    ctx: &Ctx<'_>,
+    (seller, quantity, good, price): (&str, u64, &CanonicalId, u64),
+    order: u64,
+) -> String {
+    template
+        .replace("{seller}", seller)
+        .replace("{qty}", &quantity.to_string())
+        .replace("{good}", good.as_str())
+        .replace("{price}", &cr(ctx, price))
+        .replace("{n}", &order.to_string())
+}
+
+/// **`+yard/fund <recipe>=<org>`** (doc 48 unit PL.5; Q-48-28): an officer who acts for the
+/// organization (`mush_economy::acts_for`: `economy.account.post` on its root, the economy's own
+/// "may spend the org's money") orders a hull for it at the yard; the House pays
+/// ([`crate::port::pools::request`]).
+fn fund(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
+    let usage = "Usage: +yard/fund <recipe>=<org>";
+    let (entry, _) = here(ctx, front)?;
+    if front != Front::Yard || entry.as_str() != crate::port::pools::YARD_PORT {
+        return Err(FUND_YARD_ONLY.to_owned());
+    }
+    let (recipe, org) = raw.split_once('=').ok_or(usage)?;
+    let (recipe, org) = (recipe.trim(), org.trim());
+    if recipe.is_empty() || recipe.contains(char::is_whitespace) || org.is_empty() {
+        return Err(usage.to_owned());
+    }
+    let named = mush_economy::parse_principal(ctx, org)
+        .filter(|p| matches!(p, PrincipalId::Organization(_)))
+        .ok_or("No such organization.")?;
+    let PrincipalId::Organization(id) = named else {
+        return Err("No such organization.".to_owned());
+    };
+    if !mush_economy::acts_for(ctx.w, ctx.actor, &named) {
+        return Err("You do not act for that organization.".to_owned());
+    }
+    let requested = crate::port::pools::request(ctx, id, recipe, ctx.actor)?;
+    let name = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|store| store.state().org(id).map(|o| o.name.to_string()))
+        .unwrap_or_else(|| org.to_owned());
+    say(
+        ctx,
+        FUNDS_A
+            .replace("{org}", &name)
+            .replace("{recipe}", recipe)
+            .replace("{price}", &cr(ctx, requested.price_minor)),
+    );
+    say(
+        ctx,
+        AGENT_BUYS
+            .replace("{org}", &name)
+            .replace("{days}", &requested.days.to_string()),
     );
     Ok(())
 }
@@ -1670,6 +1883,10 @@ pub(crate) fn submit_move(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> 
 }
 
 fn submit(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
+    // Doc 48 unit PL.6: one submission an actor a drain (`submit_as`).
+    if ctx.authoritative_pending(owed.by) {
+        return false;
+    }
     let Some(action) = ctx
         .w
         .module_state::<WorksHandles>()
@@ -1697,7 +1914,16 @@ fn submit(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
 }
 
 /// Submit one industry verb as `who` (the arm's swap).
+///
+/// **One submission an actor a drain** (doc 48 unit PL.6). The engine queues one authoritative
+/// submission an actor, and a second in the same drain voids both. The arm submits as each
+/// contract's requester and never asked, so two orders of one captain finishing together never
+/// delivered: each fire voided both delivers. A submission for an actor who already has one in
+/// flight is skipped, as the field and detachment ticks skip theirs; the arm's next fire makes it.
 fn submit_as(ctx: &mut Ctx<'_>, who: ObjId, verb: IndustryVerb, params: Value, tag: &str) {
+    if ctx.authoritative_pending(who) {
+        return;
+    }
     let saved = ctx.actor;
     ctx.actor = who;
     if let Err(error) = mush_industry::commands::submit(ctx, verb, params, tag) {
@@ -1762,6 +1988,10 @@ fn settle(ctx: &mut Ctx<'_>, c: &mut WorksContract) -> bool {
                 );
             }
         }
+        return true;
+    }
+    // Doc 48 unit PL.6: an actor with a submission in flight waits, and spends no try.
+    if ctx.authoritative_pending(owed.by) {
         return true;
     }
     if owed.tries >= MAX_TRIES {
@@ -1863,6 +2093,11 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
                     json!({ "order": WorkOrderId(id).to_string() }),
                     "works.stale",
                 );
+                return;
+            }
+            // Doc 48 unit PL.6: the submit waits a fire while the requester has one in flight,
+            // before it takes a slot or places the budget hold.
+            if ctx.authoritative_pending(c.requester) {
                 return;
             }
             let slots = free

@@ -474,9 +474,13 @@ fn status(tw: &mut TestWorld) -> String {
     run(tw, GOD, "@tacsim/port status")
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -490,7 +494,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 /// A pilot on a gateway account of their own, standing at the Registry desk.
@@ -2439,7 +2443,8 @@ fn sm5_strip_ore_rebuilds_the_published_v10() {
 /// which bids strategic ore for the sights (doc 39 cut IN.7) and stocks and bids carbon ore for
 /// the Stickney works (lane v33, the owner's IN.11 house-restock ruling). Doc 48 unit PL.2 (lane
 /// v36): Crisium Instruments bids strategic ore for its fab at Luna, and Titan Concession carbon
-/// ore for its carbon mill.
+/// ore for its carbon mill. Doc 48 unit PL.5 (lane v39): Kasei stocks and asks strategic ore at
+/// Stickney, so a core module's or a sensor's bill is bought there with no hold (Q-48-28).
 #[test]
 fn sm5_only_ceres_bids_ore() {
     let pack = lane();
@@ -2468,14 +2473,17 @@ fn sm5_only_ceres_bids_ore() {
             // Lane v33: the Yards' carbon stock is the one ore row a vendor but Freeport Works keeps.
             let yards_carbon =
                 |good: &str| vendor.org.as_str() == "stickney_yards" && good == "carbon_ore";
+            // Doc 48 unit PL.5: Kasei's strategic ore, a works input asked at Stickney.
+            let kasei_strategic =
+                |good: &str| vendor.org.as_str() == "kasei" && good == "strategic_ore";
             assert!(
-                !vendor
-                    .asks
-                    .iter()
-                    .any(|a| ORE_GOODS.contains(&a.good.as_str()))
-                    && !vendor.stock.iter().any(|s| {
-                        ORE_GOODS.contains(&s.good.as_str()) && !yards_carbon(s.good.as_str())
-                    }),
+                !vendor.asks.iter().any(|a| {
+                    ORE_GOODS.contains(&a.good.as_str()) && !kasei_strategic(a.good.as_str())
+                }) && !vendor.stock.iter().any(|s| {
+                    ORE_GOODS.contains(&s.good.as_str())
+                        && !yards_carbon(s.good.as_str())
+                        && !kasei_strategic(s.good.as_str())
+                }),
                 "{id} {}: nobody asks or stocks ore",
                 vendor.org
             );

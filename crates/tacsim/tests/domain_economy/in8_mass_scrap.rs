@@ -785,6 +785,13 @@ async fn ex3_scrap_sells_on_the_board_past_twenty_tonnes_and_a_missed_leg_refund
         ),
         Some(mush_economy::census::HoldingClass::Other)
     );
+    // Doc 48 cut EX.4: the desk lists as Ceres' house, so its bids pay no listing fee; the purse
+    // is topped up to each row's price and pays it out, and ends empty.
+    assert_eq!(
+        desk_purse(&rig, "ceres_port"),
+        0,
+        "the desk paid no listing fee"
+    );
     assert_eq!(
         money_total(&rig),
         money_before,

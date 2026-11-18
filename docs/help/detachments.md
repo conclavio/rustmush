@@ -6,7 +6,8 @@ commands prepare a plan. Activate a complete draft to reserve its assignments,
 then use `+sortie/launch` at a surface berth with a ramp and vehicle bay.
 
 To hire an NPC, meet them at a port and use `+sortie/crew`. It lists the available
-people in your room, their agreed duties and whether they can command a detachment.
+people in your room, their agreed duties, whether they can command a detachment,
+and the wage they are paid.
 Use the exact `+sortie/hire #<NPC>=<terms>` command printed beside their terms.
 If the terms change or the NPC leaves, inspect the current list again.
 `+sortie/contract #<NPC>` shows your accepted agreement, even after leaving port.
@@ -23,8 +24,25 @@ problem and invite them again. This is an explicit boarding action, not an ongoi
 follow order.
 
 Preparation and launch will check who is currently inside
-the carrier. Hiring currently records employment and scope without charging or
-accruing wages; future pay will follow contract terms rather than time aboard.
+the carrier.
+
+A hire is paid a wage every IC day from your own account to the hiring port,
+for as long as the contract stands: 10 cr an IC day for a rating (a unit
+operator) and 20 cr for an officer (a detachment commander). At the live clock
+an IC day is one real hour, so that is 240 cr or 480 cr a real day. A day you
+cannot pay is not lost: it is owed as arrears, which your account pays as soon
+as it is funded. After 28 unpaid IC days the wage is delinquent. A missed wage
+never ends the contract or takes the crew member off your ship.
+`+sortie/contract #<NPC>` shows the wage and any arrears.
+
+Duties are mining, combat, recovery and technician. A technician is hired and
+paid like any crew member; no sortie activates for that duty yet.
+
+To offer yourself as crew, stand in a port's station and use
+`+sortie/available <duty>[,<duty>] [officer]`. While you are in that port,
+`+market/jobs crew` lists you, asking the scale wage. An employer pages you to
+agree terms; the listing is not a contract. `+sortie/available` alone shows your
+listing, and `+sortie/unavailable` withdraws it.
 
 Renting a unit does not supply its operating rights. For Occator's actual rental,
 request the separate four-right equipment agreement at the counter with
@@ -53,6 +71,8 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/hire #<NPC>=<printed terms>` | Accept the displayed employment terms |
 | `+sortie/contract #<NPC>` | Inspect your recorded crew agreement |
 | `+sortie/board <npc>` | Arrange boarding for an NPC you hired, using the ship's real berth |
+| `+sortie/available <duties> [officer]` | List yourself for crew hire at this port |
+| `+sortie/unavailable` | Withdraw your crew-hire listing |
 | `+sortie/preset <name>=<plan JSON>` | Create a private preset |
 | `+sortie/copy <preset>:<revision>=<name>` | Copy one of your presets |
 | `+sortie/load <preset>:<revision>` | Create a draft from a preset |

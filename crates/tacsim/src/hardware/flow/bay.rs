@@ -167,12 +167,13 @@ async fn ud4b_a_shipped_line_tank_is_refitted_to_its_laser_in_a_bay() -> Result 
         (before_balance - FEE, 0),
         "the quote is paid"
     );
-    let returned = r
-        .rows("inventory_lots")
-        .into_iter()
-        .find(|v| v["commodity"] == "tacsim.part.weapon.cannon_105")
-        .ok_or("the cannon returned to the bay's stores")?;
-    check_eq!(returned["endpoint"], json!(site.stores));
+    // Doc 49 unit CC.3 (Q-49-6): the laser goes in beside the 105, so nothing comes out.
+    check!(
+        r.rows("inventory_lots")
+            .iter()
+            .all(|v| v["commodity"] != "tacsim.part.weapon.cannon_105"),
+        "the cannon stays fitted, and none comes back to the bay's stores"
+    );
     check!(
         r.rows("inventory_lots")
             .iter()

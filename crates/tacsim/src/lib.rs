@@ -180,6 +180,7 @@ pub mod relay_mobile;
 pub mod relay_service;
 pub mod relay_world;
 pub mod seed;
+pub mod services;
 /// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
 /// facts of doc 10 §17–§19, `+sheet`/`+chargen`/`+stat`/`+roll` over
 /// [`mush_ruleset`]'s schema library, and the single NPC `check` ability that

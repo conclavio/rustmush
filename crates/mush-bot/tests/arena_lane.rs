@@ -4862,8 +4862,9 @@ fn a_full_width_channel_line_never_swallows_an_expected_answer() {
         // AM.1's case is a `FIRE` alone in its tick (doc 49 unit CC.2). Under the 15 s
         // cannon the first acked shot can share its tick with a poll (`RANGE`), and then
         // the channel line does take the ack: the shot is counted only off the next
-        // `WEAPONSTATUS`, 1,670 ms later. That is a lane finding left to CC.10; the next
-        // shot is tried here.
+        // `WEAPONSTATUS`, 1,670 ms later. CC.10 found it a rig artifact (the game answers
+        // in order) and harmless to the discipline (its cut note); the next shot is tried
+        // here.
         let fired_at = run.sends_of("FIRE cannon", from).first().copied();
         if run
             .sent

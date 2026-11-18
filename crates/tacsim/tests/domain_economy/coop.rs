@@ -563,11 +563,15 @@ fn commerce_ready(tw: &mut TestWorld) -> (bool, String) {
     (ready, out)
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// **Fire and land the port tick until the gate's commerce lines are ready**
 /// (doc 18 cut IC8): the stock clerks mint, dissolve and list, one step a fire.
 /// Bounded; panics with the last report.
 fn ensure_stocked(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let (ready, _) = commerce_ready(&mut rig.tw);
         if ready {
             return;
@@ -588,7 +592,7 @@ fn ensure_stocked(rig: &mut Rig) {
         }
     }
     let (_, out) = commerce_ready(&mut rig.tw);
-    panic!("the ports were not stocked within 40 fires:\n{out}");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires:\n{out}");
 }
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (`port_tick.rs`'s

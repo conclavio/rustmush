@@ -148,6 +148,9 @@ pub struct MarketStore {
     /// is a question about the world and not about ids.
     pub(crate) by_org: BTreeMap<OrgId, VendorId>,
     pub(crate) sources: BTreeMap<MarketSourceId, MarketSource>,
+    /// **Doc 48 cut EX.8: (venue, good) -> the price series** (`crate::history`), at most
+    /// [`crate::history::MAX_PRICE_SERIES`].
+    pub(crate) history: BTreeMap<(MarketId, CatalogRef), crate::history::PriceSeries>,
     pub(crate) next_listing: u64,
     pub(crate) next_quote: u64,
     pub(crate) next_vendor: u64,
@@ -1049,6 +1052,8 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)]) -> MarketStore {
                     true
                 },
             );
+        } else if key.starts_with("market:history:") {
+            crate::history::load_series(&mut store, key, value);
         } else if key == META_KEY {
             store.next_listing = read_u64(value, "next_listing_id");
             store.next_quote = read_u64(value, "next_quote_id");

@@ -1076,10 +1076,14 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bo
 async fn mining_crew_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
     mining_field_fixture(store, false).await
 }
+/// Pulses a fixture waits for every port to read ready (doc 48 unit PL.5: lane v39's two
+/// Stickney stock rows and asks put the yard past forty).
+const STOCK_PULSES: usize = 60;
+
 async fn rented_mining_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)> {
     let mut rig = fixture_keyed(store, true).await?;
     ordinary(&mut rig.world, GOD, "@tacsim/time rate=24")?;
-    for _ in 0..40 {
+    for _ in 0..STOCK_PULSES {
         let status = text(&mut rig.world, GOD, "@tacsim/port status");
         let gated: Vec<_> = status
             .lines()

@@ -795,7 +795,8 @@ fn fielded_mount(entry: &str, id: &str) -> (i64, i64) {
 /// component order, under HEAD's unchanged rule — the cannon if carried,
 /// else the first weapon. The scout car answers its autocannon, the heavy
 /// its cannon (its rack is `FIRE missiles`, or the prefix `FIRE mis`), the
-/// stock tank its cannon and the laser tank its beam; a one-word id has no
+/// stock tank its cannon and, since doc 49 unit CC.3 (Q-49-6), the laser tank
+/// the 105 it keeps beside its laser; a one-word id has no
 /// short name, so `FIRE auto` is a prefix; and `WEAPONSTATUS` prints the
 /// new rows in the existing format.
 #[test]
@@ -809,7 +810,10 @@ fn ae2_the_bare_fire_is_the_authors_choice_by_component_order() {
     assert_eq!(chosen(content::SCOUT_MK1, ""), Ok("autocannon".to_owned()));
     assert_eq!(chosen(content::HEAVY_MK1, ""), Ok("cannon".to_owned()));
     assert_eq!(chosen(content::LINE_TANK, ""), Ok("cannon".to_owned()));
-    assert_eq!(chosen(content::LINE_TANK_LASER, ""), Ok("laser".to_owned()));
+    assert_eq!(
+        chosen(content::LINE_TANK_LASER, ""),
+        Ok("cannon".to_owned())
+    );
     assert_eq!(
         chosen(content::SCOUT_MK1, "auto"),
         Ok("autocannon".to_owned())
@@ -947,9 +951,11 @@ fn cc4_the_rounds_row_at_its_widest_fill_is_under_120_columns() {
         assert!(armed.iter().any(|key| key == entry), "{entry}: {armed:?}");
     }
     let (entry, line) = widest.unwrap_or_else(|| panic!("no fielded unit carries a mount"));
-    assert_eq!(entry, content::HEAVY_MK1, "the widest fill: {line}");
-    for id in ["cannon", "machine_gun", "missiles"] {
-        let (load, _) = fielded_mount(content::HEAVY_MK1, id);
+    // Doc 49 unit CC.3 (Q-49-6): the Mk2 biped's 105, laser and machine gun are the
+    // widest fill since its laser has a main gun beside it; the heavy's were until then.
+    assert_eq!(entry, content::BIPED_MK2, "the widest fill: {line}");
+    for id in ["cannon", "laser", "machine_gun"] {
+        let (load, _) = fielded_mount(content::BIPED_MK2, id);
         assert!(line.contains(&format!("{id} {load}/{load}")), "{line}");
     }
 

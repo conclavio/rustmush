@@ -914,6 +914,90 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
 }
 
+/// **Doc 48 unit PL.6 (Q-48-25): a lane update may grow a yard's capabilities, never shrink
+/// them.** The next version gives Stickney's yard one more capability: the one port updates and
+/// its facility grows in place, both revisions standing, so no order there is interrupted or
+/// re-validated (`mush_industry::FacilityRecord::grows_to`). A version that drops
+/// `tacsim.yard.heavy` instead is drift: the apply names the yard, writes nothing, and the latch
+/// stays.
+#[test]
+fn pl6_a_lane_update_grows_a_yard_and_refuses_a_shrink() {
+    fn yard_capabilities(doc: &mut serde_json::Value) -> &mut Vec<serde_json::Value> {
+        doc["entries"]["stickney_port"]["def"]["yard"]["capabilities"]
+            .as_array_mut()
+            .expect("the yard's capabilities")
+    }
+    fn heavy_yard(tw: &TestWorld) -> mush_industry::FacilityRecord {
+        tw.world()
+            .module_state::<mush_industry::IndustryStore>()
+            .into_iter()
+            .flat_map(mush_industry::IndustryStore::facilities)
+            .find(|f| {
+                f.capabilities()
+                    .iter()
+                    .any(|c| c.as_str() == tacsim::port::works::YARD_HEAVY_CAPABILITY)
+            })
+            .cloned()
+            .expect("Stickney's yard")
+    }
+    let grown = content_pack(&lane_variant(LANE_VERSION + 1, |doc| {
+        yard_capabilities(doc).push(serde_json::json!("tacsim.yard.slip"));
+    }));
+    let roster = Roster::production().with_shelf(vec![grown]);
+    let mut tw = boot(&roster);
+    sweep(&mut tw, 3_600);
+    let before = heavy_yard(&tw);
+    let (plan, apply) = plan_and_apply(&mut tw);
+    assert!(
+        apply.contains(&format!(
+            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired, 63 unchanged.",
+            LANE_VERSION + 1
+        )),
+        "{plan}
+{apply}"
+    );
+    let after = heavy_yard(&tw);
+    assert_eq!(
+        after
+            .capabilities()
+            .iter()
+            .map(CanonicalId::as_str)
+            .collect::<Vec<_>>(),
+        ["tacsim.yard", "tacsim.yard.heavy", "tacsim.yard.slip"]
+    );
+    assert_eq!(
+        (
+            after.object(),
+            after.capacity_revision(),
+            after.policy_revision()
+        ),
+        (
+            before.object(),
+            before.capacity_revision(),
+            before.policy_revision()
+        ),
+        "grown in place, neither revision moved"
+    );
+    no_refused_writes(&tw);
+
+    let shrunk = content_pack(&lane_variant(LANE_VERSION + 1, |doc| {
+        yard_capabilities(doc).retain(|word| word != "tacsim.yard.heavy");
+    }));
+    let roster = Roster::production().with_shelf(vec![shrunk]);
+    let mut tw = boot(&roster);
+    sweep(&mut tw, 3_600);
+    let before = heavy_yard(&tw);
+    let (plan, apply) = plan_and_apply(&mut tw);
+    assert!(
+        apply.contains("stickney_port: the yard room") && apply.contains("repair it by hand"),
+        "{plan}
+{apply}"
+    );
+    assert!(!apply.contains("Applied "), "{apply}");
+    assert_eq!(lane_latch(&tw), Some(LANE_VERSION));
+    assert_eq!(heavy_yard(&tw), before, "nothing written");
+}
+
 /// **A later version's new org is created and capitalized, and every recorded
 /// row stands** (doc 18 §4.7, L4: "a new org in a later version is created and
 /// capitalized normally"). Test-only data: a tenth institution on Stickney.
@@ -1941,9 +2025,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // unit PL.2 (lane v36): the two farms' provisions asks, Crisium's two bids and Titan's
     // carbon-ore bid, and four mill lines (the farms, the fab and Titan's carbon mill). Doc 48
     // unit PL.3 (lane v37): Stickney Yards' three space munitions asks, its alloys bid
-    // and its seven munitions processes.
+    // and its seven munitions processes. Doc 48 unit PL.5 (lane v39): Kasei's strategic-ore ask
+    // and Stickney Yards' instrument-board ask.
     assert_eq!(
-        commerce_lines, 88,
+        commerce_lines, 90,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();

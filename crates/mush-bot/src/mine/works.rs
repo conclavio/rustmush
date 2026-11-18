@@ -44,12 +44,71 @@ pub const FEE: &str = "; fee ";
 /// `tacsim::port::works::SETTLING`: a collection asked for before the arm has pooled the output.
 pub const SETTLING: &str = "That order is still settling.";
 
+// ---- doc 48 unit PL.5 (Q-48-28): buying straight into an escrow ------------------------------
+
+/// `tacsim::port::works::BOUGHT_INTO`: `+works/buy`'s purchase on the board.
+pub const BOUGHT_INTO: &str =
+    "You buy {qty} {good} from {seller} at {price} each for order {n}; it lands as it settles.";
+/// `tacsim::port::works::LISTED_TO_YOU`: the port's clerk lists the buyer a private ask first.
+pub const LISTED_TO_YOU: &str =
+    "{seller} lists you {qty} {good} at {price} each for order {n}; buy again to take it.";
+/// `tacsim::port::works::BUY_ON_BOARD`: the buyer's last purchase is still on the board.
+pub const BUY_ON_BOARD: &str = "Your last purchase is still settling; buy again in a moment.";
+/// `tacsim::port::works::BUY_BUSY`: the market or the port's clerk is busy.
+pub const BUY_BUSY: &str = "The market here is busy; buy again in a moment.";
+/// `tacsim::port::works::BUY_POOL`: a good's ask is not listed, or its pool is being drawn.
+pub const BUY_POOL: &str = "No {good} is free to buy here just now; buy again in a moment.";
+/// `tacsim::port::works::BUY_HELD`: another buyer's private ask holds the pool.
+pub const BUY_HELD: &str = "The {good} here is held for another buyer; buy again in a few minutes.";
+/// `tacsim::port::works::BILL_COVERED`: the bill is covered.
+pub const BILL_COVERED: &str = "Order {n}'s bill is covered.";
+/// `tacsim::port::works::NO_SELLER`: nobody at the port sells the good for the order.
+pub const NO_SELLER: &str = "No one at this port sells you {good} for that order.";
+/// `tacsim::port::works::FUNDS_A`: `+yard/fund`'s first line.
+pub const FUNDS_A: &str =
+    "{org} orders a {recipe} at the yard for {price}, paid from its treasury.";
+/// `tacsim::port::works::AGENT_BUYS`: `+yard/fund`'s second line.
+pub const AGENT_BUYS: &str = "Its yard agent buys the bill here; she is handed over docked here, \
+                              titled to {org}, in about {days} IC days.";
+/// `tacsim::port::works::FUND_YARD_ONLY`: `+yard/fund` away from Stickney's yard.
+pub const FUND_YARD_ONLY: &str = "Only Stickney's yard takes an organization's order.";
+/// `tacsim::port::pools::NO_TREASURY`: an organization with no treasury to pay from.
+pub const NO_TREASURY: &str = "That organization holds no treasury to pay from.";
+/// `tacsim::port::pools::HOUSE_ORDERS_FULL`: an organization with eight hulls on order.
+pub const HOUSE_ORDERS_FULL: &str =
+    "That organization has eight hulls on order already; wait for one to be handed over.";
+/// `tacsim::port::pools::TREASURY_SHORT`: the treasury short of the price.
+pub const TREASURY_SHORT: &str = "The treasury has {holds} free; a {recipe} costs {price} bought \
+                                  at the yard's asks.";
+
+/// `tacsim::port::works::BUILT_ELSEWHERE` (doc 48 unit PL.6): a hull this yard does not build,
+/// `{recipe}` and the `{port}` whose yard does (a heavy hull at Ceres: Stickney Yards).
+pub const BUILT_ELSEWHERE: &str = "The yard here does not build a {recipe}; order it at {port}.";
+
+/// **Doc 48 unit PL.5**: every escrow-buying sentence, the bot's own words for tacsim's.
+pub const ESCROW_SENTENCES: [&str; 14] = [
+    BOUGHT_INTO,
+    LISTED_TO_YOU,
+    BUY_ON_BOARD,
+    BUY_BUSY,
+    BUY_POOL,
+    BUY_HELD,
+    BILL_COVERED,
+    NO_SELLER,
+    FUNDS_A,
+    AGENT_BUYS,
+    FUND_YARD_ONLY,
+    NO_TREASURY,
+    HOUSE_ORDERS_FULL,
+    TREASURY_SHORT,
+];
+
 /// **Whether `line` is one of the production run's lines**, each in closed form:
 ///
 /// - `+works`, `+works/quote <recipe> [qty]`, `+works/order <recipe> [qty]`, `+works/deliver
-///   <order>=<good> <qty>`, `+works/collect <order>`, `+works/cancel <order>` — `<recipe>` and
-///   `<good>` a lower-case word of letters, digits, `_` and `.`, `<qty>` 1–999, `<order>` a
-///   decimal number;
+///   <order>=<good> <qty>`, `+works/buy <order>[=<good>]` (doc 48 unit PL.5),
+///   `+works/collect <order>`, `+works/cancel <order>` — `<recipe>` and `<good>` a lower-case
+///   word of letters, digits, `_` and `.`, `<qty>` 1–999, `<order>` a decimal number;
 /// - `+ship/plan <port>` and `+ship/undock <port>`, `<port>` one of [`PORTS`].
 #[must_use]
 pub fn in_vocabulary(line: &str) -> bool {
@@ -166,6 +225,11 @@ fn works_switch(rest: &str) -> bool {
                     .is_some_and(|(good, qty)| word(good) && number(qty, 3))
         }),
         "collect" | "cancel" => number(args, 20),
+        // Doc 48 unit PL.5: the bill's next short line, or one good's, bought into the escrow.
+        "buy" => match args.split_once('=') {
+            Some((order, good)) => number(order, 20) && word(good),
+            None => number(args, 20),
+        },
         _ => false,
     }
 }
@@ -283,6 +347,9 @@ mod tests {
             "+works/deliver 154=carbon_ore 1",
             "+works/collect 154",
             "+works/cancel 154",
+            "+works/buy 154",
+            "+works/buy 154=carbon_ore",
+            "+yard/buy 161=tacsim.part.plant.hauler_mk1",
             "+yard",
             "+yard/quote dray",
             "+yard/order tv_escort",
@@ -315,6 +382,9 @@ mod tests {
             "+works/collect",
             "+works/collect x",
             "+works/strip 154",
+            "+works/buy",
+            "+works/buy 154=",
+            "+works/buy 0154",
             "+ship/undock titan",
             "+ship/undock",
             "@works/order fittings",
@@ -394,5 +464,53 @@ mod tests {
         let bid = bid_row(&rows, "metal concentrate").expect("Kasei's bid");
         assert_eq!((bid.number, row_quantity(bid)), (13, Some(3_980)));
         assert!(bid_row(&rows, "yard fittings").is_none(), "not buying");
+    }
+
+    /// **Doc 48 unit PL.5**: the escrow-buying sentences are tacsim's own, each within 120
+    /// columns filled with the longest names the lane gives them.
+    #[test]
+    fn pl5_the_escrow_sentences_are_the_games() {
+        use tacsim::port::{pools, works};
+        let game = [
+            works::BOUGHT_INTO,
+            works::LISTED_TO_YOU,
+            works::BUY_ON_BOARD,
+            works::BUY_BUSY,
+            works::BUY_POOL,
+            works::BUY_HELD,
+            works::BILL_COVERED,
+            works::NO_SELLER,
+            works::FUNDS_A,
+            works::AGENT_BUYS,
+            works::FUND_YARD_ONLY,
+            pools::NO_TREASURY,
+            pools::HOUSE_ORDERS_FULL,
+            pools::TREASURY_SHORT,
+        ];
+        assert_eq!(ESCROW_SENTENCES, game);
+        for sentence in ESCROW_SENTENCES {
+            let filled = sentence
+                .replace("{qty}", "163")
+                .replace("{good}", "structural_alloys")
+                .replace("{seller}", "Stickney Yards")
+                .replace("{price}", "156,400.00cr")
+                .replace("{holds}", "156,400.00cr")
+                .replace("{n}", "1234567")
+                .replace("{org}", "House Meridiani")
+                .replace("{recipe}", "tv_prospector")
+                .replace("{days}", "33");
+            assert!(filled.len() <= 120, "{} columns: {filled}", filled.len());
+        }
+    }
+
+    /// **Doc 48 unit PL.6: the yard's refusal of a hull it does not build is the game's**, within
+    /// 120 columns at the longest recipe id and port name.
+    #[test]
+    fn pl6_the_built_elsewhere_sentence_is_the_games() {
+        assert_eq!(BUILT_ELSEWHERE, tacsim::port::works::BUILT_ELSEWHERE);
+        let filled = BUILT_ELSEWHERE
+            .replace("{recipe}", "line_tank_thermal")
+            .replace("{port}", "Voltaire Anchorage");
+        assert!(filled.len() <= 120, "{} columns: {filled}", filled.len());
     }
 }

@@ -6788,6 +6788,100 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
     if !titled {
         return Err(ContractError::NoSuchAsset(spec.hull));
     }
+    post_standing(
+        ctx,
+        StandingJob {
+            name: spec.name,
+            poster: spec.poster,
+            poster_account: spec.poster_account,
+            fee: spec.fee,
+            conditions: vec![
+                TypedCondition::TitleHeld {
+                    object: spec.hull,
+                    by: holder,
+                },
+                TypedCondition::Fact {
+                    fact: spec.delivered,
+                },
+            ],
+            evidence: vec![EvidenceKind::TitleHeld, EvidenceKind::Fact],
+            deadline_ic: spec.deadline_ic,
+        },
+    )
+}
+
+/// **A job with no object** (doc 48 cut EX.6; Q-48-11, -12): a haul or an escort, whose one
+/// condition is its performance fact, named when the job is posted.
+#[derive(Clone, Debug)]
+pub struct JobSpec {
+    /// A short human label for `@contract/show`.
+    pub name: SmolStr,
+    /// The poster, who pays: the contract's issuer and first party.
+    pub poster: PrincipalId,
+    /// The poster's account the fee is escrowed from at posting.
+    pub poster_account: AccountId,
+    /// The fee, escrowed whole at posting and paid whole on performance.
+    pub fee: Amount,
+    /// The performance fact: the job's one condition.
+    pub fact: ExternalRef,
+    /// The posted deadline, World IC seconds; the join may bring it nearer (Q-48-58's term).
+    pub deadline_ic: i64,
+}
+
+/// **Post a job with no object** (doc 48 cut EX.6): [`post_retrieval`]'s standing offer with
+/// the one fact for its whole condition, so [`job_shape`] recognises it and [`join_job`] takes
+/// it.
+///
+/// # Errors
+///
+/// As [`post_retrieval`], less its title refusal.
+pub fn post_job(ctx: &mut Ctx<'_>, spec: JobSpec) -> Result<ContractId, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if spec.fee.minor() <= 0 {
+        return Err(ContractError::Infeasible("a job pays a positive fee"));
+    }
+    if spec.deadline_ic <= ctx.w.world_ic_now().at {
+        return Err(ContractError::Infeasible("the deadline has passed"));
+    }
+    if spec.name.is_empty() || spec.name.len() > MAX_CONTRACT_NAME_BYTES {
+        return Err(ContractError::TooLarge("the name is empty or too long"));
+    }
+    post_standing(
+        ctx,
+        StandingJob {
+            name: spec.name,
+            poster: spec.poster,
+            poster_account: spec.poster_account,
+            fee: spec.fee,
+            conditions: vec![TypedCondition::Fact { fact: spec.fact }],
+            evidence: vec![EvidenceKind::Fact],
+            deadline_ic: spec.deadline_ic,
+        },
+    )
+}
+
+/// What [`post_standing`] writes: a job's standing offer, checked by its caller.
+struct StandingJob {
+    name: SmolStr,
+    poster: PrincipalId,
+    poster_account: AccountId,
+    fee: Amount,
+    conditions: Vec<TypedCondition>,
+    evidence: Vec<EvidenceKind>,
+    deadline_ic: i64,
+}
+
+/// The standing offer every job posts (doc 41 cut RS.5, generalised by doc 48 cut EX.6): the
+/// poster held to the job budget and the party cap, one public contract with the fee escrowed
+/// under the poster's own authority, in force at once with the poster its only party.
+fn post_standing(ctx: &mut Ctx<'_>, spec: StandingJob) -> Result<ContractId, ContractError> {
+    let slots = spec.conditions.len();
     // Doc 48 §4.3 (the second review, doc 48b): a retrieval is a contract, so its poster is
     // held to §9's two caps as every other contract path holds an issuer and a party.
     if let Some(store) = ctx.w.module_state::<EconomyStore>() {
@@ -6816,15 +6910,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
             on_expiry: Expiry::Refund,
             outcomes: Vec::new(),
         },
-        conditions: vec![
-            TypedCondition::TitleHeld {
-                object: spec.hull,
-                by: holder,
-            },
-            TypedCondition::Fact {
-                fact: spec.delivered,
-            },
-        ],
+        conditions: spec.conditions,
         deadline: Some(EconomicDeadline {
             clock: EconomicClock::WorldIc,
             at: spec.deadline_ic,
@@ -6832,7 +6918,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
         visibility: EconomicVisibility::Public,
         scope: None,
         adjudicator: None,
-        evidence: vec![EvidenceKind::TitleHeld, EvidenceKind::Fact],
+        evidence: spec.evidence,
     };
     let mut c = EconomicContract {
         id: ContractId(0),
@@ -6841,7 +6927,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
         consent_hash: [0u8; 32],
         consent,
         acceptances: Vec::new(),
-        satisfied: vec![None, None],
+        satisfied: vec![None; slots],
         escrow: Vec::new(),
         state: ContractState::Offered,
         settle_attempts: 0,
@@ -7212,6 +7298,32 @@ pub fn cancel_retrieval(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, Contr
         return Err(ContractError::Infeasible("the economy is frozen"));
     }
     let c = retrieval_of(ctx, id).ok_or(ContractError::Infeasible("no such retrieval"))?;
+    if c.state.is_terminal() {
+        return Ok(true);
+    }
+    unwind(ctx, id, ContractState::Cancelled);
+    Ok(live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()))
+}
+
+/// **Cancel a job** (doc 48 cut EX.6): [`cancel_retrieval`] for any job ([`job_shape`]): the
+/// ordinary unwind, every escrow back to whoever placed it (the fee to the poster, a bond to
+/// its acceptor). The host decides when a job may be cancelled: before anyone takes it, or
+/// before the work has begun. Answers whether the contract is terminal afterwards.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] for a frozen economy or a contract that is not a job.
+pub fn cancel_job(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let c = live_contract(ctx, id)
+        .filter(|c| job_shape(c).is_some())
+        .ok_or(ContractError::Infeasible("no such job"))?;
     if c.state.is_terminal() {
         return Ok(true);
     }

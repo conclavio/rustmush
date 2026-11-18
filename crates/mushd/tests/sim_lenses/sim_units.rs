@@ -753,17 +753,18 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
         "it is still a tank: {seen}"
     );
     let seen = ask(&mut bo, "WEAPONSTATUS", "laser").await;
+    // Doc 49 unit CC.3 (Q-49-6): the laser tank keeps the 105 beside its laser.
     assert!(
-        seen.contains("laser") && !seen.contains("cannon"),
-        "the laser tank carries a beam and no cannon: {seen}"
+        seen.contains("laser") && seen.contains("cannon"),
+        "the laser tank carries its laser and the 105: {seen}"
     );
 
     // ---- the fight ----------------------------------------------------------
     //
     // Ada's biped mounts the stock cannon, so her bare `FIRE` fires it. Bo's
-    // tank carries no cannon at all, so his bare `FIRE` is his beam: the recorded
-    // limit is that `DEFAULT_WEAPON` is `cannon` and the fallback is the first
-    // weapon the platform carries, which for `line_tank_laser` is the laser.
+    // tank carries the 105 beside its laser since doc 49 unit CC.3, so his bare
+    // `FIRE` would be the cannon too (`DEFAULT_WEAPON` is `cannon`); he names his
+    // laser, whose cycle is the shorter.
     //
     // Both of them shoot, because the cannon's cycle is measured in seconds and
     // one gun firing into a per-mille roll is a test waiting out its own budget
@@ -782,7 +783,7 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
         // Drain each shot's complete reply, including a refusal, before sending
         // another line. This advances the SSH receive window and leaves no old
         // suffix to complete the next command's read.
-        for (term, line) in [(&mut ada, "FIRE"), (&mut bo, "FIRE")] {
+        for (term, line) in [(&mut ada, "FIRE"), (&mut bo, "FIRE laser")] {
             framed_line(term, line).await;
         }
         tokio::time::sleep(Duration::from_millis(800)).await;

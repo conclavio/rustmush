@@ -883,6 +883,17 @@ fn price_of(tw: &TestWorld, id: ListingId) -> i64 {
         .expect("the listing")
 }
 
+/// **What `buyer` paid on `listing`** (doc 48 cut EX.8): the price on their newest quote of it,
+/// or the board's when they have none. A house's price steps with its stock once an IC week, so a
+/// story that reads the board after the buy reads the stepped price, not the one paid.
+fn paid_on(tw: &TestWorld, buyer: ObjId, listing: ListingId) -> i64 {
+    market(tw)
+        .quotes_of_buyer(&PrincipalId::Object(buyer))
+        .filter(|q| q.listing == listing)
+        .max_by_key(|q| q.id)
+        .map_or_else(|| price_of(tw, listing), |q| q.price.minor())
+}
+
 /// `+market/quote <listing>=<qty>`, `+market/accept <quote>`, the Draw landed; the
 /// price paid (minor).
 async fn buy(rig: &mut Rig, pilot: ObjId, listing: ListingId, qty: u64) -> i64 {
@@ -2379,8 +2390,11 @@ async fn ic12_part_two_the_queue_runs_the_return() {
     let mut shares = 0_i64;
     let sold = sales_of(&rig.tw, wren);
     assert_eq!(sold.len(), 2, "two sales");
+    // Doc 48 cut EX.8: each sale's own share, to find the reference ask it was struck against.
+    let mut share_of_sale: BTreeMap<u64, i64> = BTreeMap::new();
     for q in &sold {
         let lines = settlement(&rig.tw, q.contract.expect("a contract"));
+        share_of_sale.insert(q.id.0, lines.get(&trust).copied().unwrap_or(0));
         let paid = -lines.get(&kasei_account).copied().unwrap_or(0);
         let net = lines.get(&me).copied().unwrap_or(0);
         let share = lines.get(&trust).copied().unwrap_or(0);
@@ -2388,31 +2402,49 @@ async fn ic12_part_two_the_queue_runs_the_return() {
         assert_eq!(lines.values().sum::<i64>(), 0);
         shares += share;
     }
-    // The statement's margin and share, computed from the posted prices: each sale's
-    // margin over the Ceres reference ask, its share floored at the frozen permille.
+    // The statement's margin and share, computed from the prices struck: each sale's margin
+    // over the Ceres reference ask, its share floored at the frozen permille. Doc 48 cut EX.8: the
+    // reference is the Ceres house ask at the sale's moment, which steps with its stock once an
+    // IC week, so it is one of the prices the venue's history (or the board) has posted for it.
     let (mut margins, mut billed) = (0_i64, 0_i64);
-    // Doc 39 cut IN.5: Kasei's concentrate bid refreshes, so its standing listing is read anew.
-    let metals_now = ListingId(
-        port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")].bids[&cid("metals")].listing,
-    );
-    for (bid, ask, qty) in [
+    let ceres = mush_market::MarketId::new("ceres").expect("Ceres's venue");
+    for (good, ask, qty) in [
         (
-            metals_now,
+            "metals",
             listing_of(&rig.tw, "ceres_port", "freeport_exchange", "metals"),
             outfit.metals,
         ),
         (
-            ListingId(kasei.bids[&cid("volatiles")].listing),
+            "volatiles",
             listing_of(&rig.tw, "ceres_port", "occator", "volatiles"),
             outfit.ice,
         ),
     ] {
-        let (margin, share) = margin_and_share(
-            price_of(&rig.tw, bid),
-            price_of(&rig.tw, ask),
-            qty,
-            permille,
-        );
+        let sale = sold
+            .iter()
+            .find(|q| q.catalog.code.as_str() == good)
+            .unwrap_or_else(|| panic!("the {good} sale"));
+        let paid = sale.price.minor();
+        let mut references = vec![price_of(&rig.tw, ask)];
+        if let Some(series) = mush_market::price_series(
+            rig.tw.world(),
+            &ceres,
+            &tacsim::port::price::catalog_of_good(&cid(good)),
+        ) {
+            references.extend(
+                series
+                    .periods
+                    .iter()
+                    .filter_map(|p| p.ask.map(|a| a.price.minor())),
+            );
+        }
+        let (margin, share) = references
+            .iter()
+            .map(|reference| margin_and_share(paid, *reference, qty, permille))
+            .find(|(_, share)| *share == share_of_sale[&sale.id.0])
+            .unwrap_or_else(|| {
+                panic!("the {good} sale's share against no posted Ceres ask: {references:?}")
+            });
         margins += margin;
         billed += share;
     }
@@ -2629,11 +2661,15 @@ fn stickney_buys(
     let goods = goods();
     let label = |good: &str| goods.good(&cid(good)).expect("the good").label.clone();
     let ask = |org: &str, good: &str| listing_of(tw, "stickney_port", org, good);
-    let fuel_price = price_of(tw, ask("kasei", "propellant"));
-    let food_price = price_of(tw, ask("yard_commissary", "provisions"));
+    // Doc 48 cut EX.8: what Wren paid, read from the quotes (the board steps after).
+    let fuel_price = paid_on(tw, wren, ask("kasei", "propellant"));
+    let food_price = paid_on(tw, wren, ask("yard_commissary", "provisions"));
     let parts_listing = ask("stickney_yards", "industrial_parts");
     let alloy_listing = ask("kasei", "structural_alloys");
-    let (parts_price, alloy_price) = (price_of(tw, parts_listing), price_of(tw, alloy_listing));
+    let (parts_price, alloy_price) = (
+        paid_on(tw, wren, parts_listing),
+        paid_on(tw, wren, alloy_listing),
+    );
     assert!(fuel_price <= 6_000, "under the fill's max=60");
     assert!(
         parts_price <= 60_000 && alloy_price <= 60_000,

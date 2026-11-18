@@ -1302,6 +1302,19 @@ pub fn install_authored_facility(
         .module_state::<IndustryStore>()
         .ok_or("Industry unavailable")?;
     if let Some(existing) = store.facility(facility.object()) {
+        // Doc 48 unit PL.6 (Q-48-25): a lane bump that only grows the capabilities (Stickney's
+        // yard taking `tacsim.yard.heavy`) widens the facility in place, then applies as any
+        // other bump does. Neither revision moves (`FacilityRecord::with_capabilities_grown`).
+        if existing.grows_to(&facility) {
+            let grown = existing
+                .with_capabilities_grown(facility.capabilities())
+                .map_err(|error| error.to_string())?;
+            persist_facility(ctx.out, &grown);
+            if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+                store.put_facility(grown);
+            }
+            return install_authored_facility(ctx, facility);
+        }
         if !existing.stands_as_authored(&facility) {
             return Err("Authored facility identity drift".into());
         }

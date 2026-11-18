@@ -137,6 +137,13 @@ pub const MISS_REASONS: [&str; 7] = [
 /// The condition a section takes when its internals reach zero.
 pub const DESTROYED: &str = "destroyed";
 
+/// **What a beam spends of a facet's armour**, per mille of its damage (doc 49 unit
+/// CC.3, Q-49-27): a fifth. A beam's damage is counted at this against a section's
+/// armour and in full against its internals, so a laser is weak against a tank's
+/// faces and quick against a drone's thin ones and a soft target (Q-49-6: lasers are
+/// the anti-drone fit on the ground). A projectile spends armour point for point.
+pub const BEAM_ARMOR_PERMILLE: u32 = 200;
+
 /// The condition doc 16 §3.3 makes a wreck: `hull` condition `wreck`.
 pub const WRECK_CONDITION: &str = "wreck";
 
@@ -720,7 +727,8 @@ impl Arena {
                 facet_value,
             ),
         ];
-        let Some(struck) = self.plan_hit(shot.target, &section, &taken.band, damage) else {
+        let Some(struck) = self.plan_hit(shot.target, &section, &taken.band, damage, shot.beam)
+        else {
             journal.push((
                 t_ms,
                 EventKind::Miss {
@@ -943,6 +951,7 @@ impl Arena {
         section: &str,
         band: &str,
         damage: u32,
+        beam: bool,
     ) -> Option<(Struck, Vec<UnitMutationOp>)> {
         let state = self.unit(target)?;
         let profile = state.profile.section(section)?;
@@ -969,9 +978,32 @@ impl Arena {
         let armor = state.unit.cell(&armor_addr)?;
         let internals = state.unit.cell(&internals_addr)?;
         let damage = i64::from(damage);
-        let spent = damage.min(armor.current.saturating_sub(armor.min));
+        // **Doc 49 unit CC.3** (Q-49-27): a beam spends armour at a fraction of its
+        // damage, and what is left of it once the facet is down reaches the internals
+        // in full. A projectile spends armour point for point, as it always has.
+        let (spent, overflow) = if beam {
+            let whole: i64 = 1_000;
+            let permille = i64::from(BEAM_ARMOR_PERMILLE);
+            let against = damage.saturating_mul(permille) / whole;
+            let room = armor.current.saturating_sub(armor.min);
+            if against < room {
+                // The facet holds: nothing reaches the internals.
+                (against, 0)
+            } else {
+                // The facet goes down. The beam it took is `room` armour at
+                // `permille`, rounded up, so a beam never reaches the internals with
+                // more than it had left.
+                let used = room
+                    .saturating_mul(whole)
+                    .saturating_add(permille.saturating_sub(1))
+                    / permille;
+                (room, damage.saturating_sub(used))
+            }
+        } else {
+            let spent = damage.min(armor.current.saturating_sub(armor.min));
+            (spent, damage.saturating_sub(spent))
+        };
         let armor_left = armor.current.saturating_sub(spent);
-        let overflow = damage.saturating_sub(spent);
         let internals_left = internals
             .current
             .saturating_sub(overflow.min(internals.current.saturating_sub(internals.min)));
@@ -1982,6 +2014,7 @@ impl Arena {
             from_cell: terrain.cell_of(&from),
             from_height_cm: 150,
             damage,
+            beam: false,
             resolution: Resolution::blind("front", 3_000, Cover::None),
         };
         let drawn = self.shot_draw(seq, 1);
@@ -2069,7 +2102,7 @@ mod tests {
         let mut arena = duel();
         // The turret's front facet is 350 and its internals 150.
         let (struck, ops) = arena
-            .plan_hit(BLUE, "turret", "front", 400)
+            .plan_hit(BLUE, "turret", "front", 400, false)
             .unwrap_or_else(|| panic!("a turret hit plans"));
         assert_eq!(struck.armor_left, 0, "350 of armor is spent");
         assert_eq!(struck.internals_left, 100, "50 overflows");
@@ -2095,6 +2128,7 @@ mod tests {
             from_cell: Some((1, 1)),
             from_height_cm: 150,
             damage: 400,
+            beam: false,
             resolution: Resolution::blind("front", 3_000, Cover::None),
         };
         arena.apply_hit(
@@ -2148,6 +2182,7 @@ mod tests {
             from_cell: Some((1, 1)),
             from_height_cm: 150,
             damage: 10,
+            beam: false,
             resolution: Resolution::blind("front", 3_000, Cover::None),
         };
         let drawn = arena.shot_draw(5, 3);
@@ -2194,6 +2229,7 @@ mod tests {
             from_cell: Some((1, 1)),
             from_height_cm: 150,
             damage,
+            beam: false,
             resolution: Resolution::blind("front", 3_000, Cover::None),
         }
     }
@@ -2443,13 +2479,82 @@ mod tests {
             };
         }
         let (struck, _) = arena
-            .plan_hit(BLUE, "turret", "front", 300)
+            .plan_hit(BLUE, "turret", "front", 300, false)
             .unwrap_or_else(|| panic!("a turret hit plans"));
         assert!(!struck.penetrated, "300 stops in 350 of armor");
         let (struck, _) = arena
-            .plan_hit(BLUE, "turret", "front", 500)
+            .plan_hit(BLUE, "turret", "front", 500, false)
             .unwrap_or_else(|| panic!("a turret hit plans"));
         assert!(struck.penetrated && struck.fresh, "500 destroys the turret");
+    }
+
+    /// **Doc 49 unit CC.3 (Q-49-27): a beam against armour, and against internals.** On
+    /// the stock tank's turret front (350 of armour, 150 of internals): a beam spends the
+    /// armour at [`BEAM_ARMOR_PERMILLE`] of its damage and stops while the facet holds; a
+    /// round of the same damage spends it all. The beam that takes the facet down passes
+    /// what is left of it to the internals in full, and on a facet already down the whole
+    /// beam reaches them.
+    #[test]
+    fn cc3_a_beam_spends_armour_at_a_fifth_and_reaches_the_internals_in_full() {
+        assert_eq!(BEAM_ARMOR_PERMILLE, 200);
+        let arena = duel();
+        let hit = |arena: &Arena, damage: u32, beam: bool| {
+            arena
+                .plan_hit(BLUE, "turret", "front", damage, beam)
+                .unwrap_or_else(|| panic!("a turret hit plans"))
+                .0
+        };
+        let beam = hit(&arena, 120, true);
+        assert_eq!(
+            (beam.armor_left, beam.internals_left, beam.penetrated),
+            (326, 150, false),
+            "120 of beam spends 24 of armour and stops in it"
+        );
+        assert_eq!(beam.damage, 120, "the line says what the beam carried");
+        assert_eq!(
+            hit(&arena, 120, false).armor_left,
+            230,
+            "a round spends all 120"
+        );
+        // 1,750 of beam is the 350 at a fifth: the facet goes down and nothing is left.
+        let exact = hit(&arena, 1_750, true);
+        assert_eq!((exact.armor_left, exact.internals_left), (0, 150));
+        // 1,850: the same 1,750 takes the facet, and the other 100 reaches the internals.
+        let through = hit(&arena, 1_850, true);
+        assert_eq!(
+            (
+                through.armor_left,
+                through.internals_left,
+                through.penetrated
+            ),
+            (0, 50, true)
+        );
+        // A beam whose fifth is under a point spends nothing of a facet that holds, and a
+        // beam whose fifth is not whole spends the whole points of it: neither leaks its
+        // remainder into the internals while the facet holds.
+        let weak = hit(&arena, 4, true);
+        assert_eq!((weak.armor_left, weak.internals_left), (350, 150));
+        let uneven = hit(&arena, 121, true);
+        assert_eq!((uneven.armor_left, uneven.internals_left), (326, 150));
+        // On a facet already down, the whole beam reaches the internals.
+        let mut bare = duel();
+        let addr = CellAddr::Facet {
+            section: SectionId::new("turret").expect("a section"),
+            facet: mush_tactics::FacetId::new("front").expect("a facet"),
+            cell: armor_cell().expect("the armour cell").clone(),
+        };
+        if let Some(state) = bare.unit_mut(BLUE) {
+            state.unit = apply_ops(
+                &state.unit,
+                vec![UnitMutationOp::SetCell { addr, value: 0 }],
+            );
+        }
+        let soft = hit(&bare, 120, true);
+        assert_eq!(
+            (soft.armor_left, soft.internals_left),
+            (0, 30),
+            "120 in full"
+        );
     }
 
     #[test]
@@ -2457,7 +2562,7 @@ mod tests {
         let arena = duel();
         // 400 of hull front armour and 200 of internals: 600 exactly.
         let (struck, ops) = arena
-            .plan_hit(BLUE, "hull", "front", 600)
+            .plan_hit(BLUE, "hull", "front", 600, false)
             .unwrap_or_else(|| panic!("a hull hit plans"));
         assert_eq!((struck.armor_left, struck.internals_left), (0, 0));
         assert_eq!(struck.consequences, vec![Consequence::DestroyUnit]);
@@ -2481,7 +2586,7 @@ mod tests {
     fn the_engine_is_struck_through_the_hulls_rear_and_disables_motion() {
         let mut arena = duel();
         let (struck, _) = arena
-            .plan_hit(BLUE, "engine", "rear", 1_000)
+            .plan_hit(BLUE, "engine", "rear", 1_000, false)
             .unwrap_or_else(|| panic!("an engine hit plans"));
         assert_eq!(struck.section, "engine");
         assert_eq!(
@@ -2494,7 +2599,7 @@ mod tests {
         assert_eq!(struck.armor_section, "hull");
         // A section with armour of its own names itself.
         let (turret, _) = arena
-            .plan_hit(BLUE, "turret", "front", 10)
+            .plan_hit(BLUE, "turret", "front", 10, false)
             .unwrap_or_else(|| panic!("a turret hit plans"));
         assert_eq!(
             (turret.section.as_str(), turret.armor_section.as_str()),
@@ -2760,6 +2865,7 @@ mod tests {
                 from_cell: Some((1, 1)),
                 from_height_cm: 150,
                 damage: 1_000,
+                beam: false,
                 resolution: Resolution::blind("left", 3_000, Cover::None),
             };
             let taken = Resolution {
@@ -2843,7 +2949,7 @@ mod tests {
     /// consequences applied in authored order. Answers the plan's ops.
     fn kill_turret(arena: &mut Arena) -> Vec<UnitMutationOp> {
         let (struck, ops) = arena
-            .plan_hit(BLUE, "turret", "front", 600)
+            .plan_hit(BLUE, "turret", "front", 600, false)
             .unwrap_or_else(|| panic!("a turret hit plans"));
         assert!(struck.fresh, "the turret goes");
         let plan = UnitMutationPlan::new(ops.clone(), None, Some(SmolStr::new_static("shot:1")))
@@ -3021,7 +3127,7 @@ mod tests {
         assert_eq!(arena.conditions.slots(BLUE).len(), 1);
         // And at the floor a degrade builds nothing.
         let (_, ops) = doctored(vec![Consequence::DegradeCore])
-            .plan_hit(BLUE, "hull", "front", 1)
+            .plan_hit(BLUE, "hull", "front", 1, false)
             .unwrap_or_else(|| panic!("a hull hit plans"));
         assert!(
             ops.iter()
@@ -3043,7 +3149,7 @@ mod tests {
             arena
         };
         let (_, ops) = floored
-            .plan_hit(BLUE, "turret", "front", 600)
+            .plan_hit(BLUE, "turret", "front", 600, false)
             .unwrap_or_else(|| panic!("a turret hit plans"));
         assert!(
             ops.iter()
@@ -3200,7 +3306,7 @@ mod tests {
         //     itself builds for that hit, committed to the record the way a
         //     check-in commits one.
         let (_, ops) = duel()
-            .plan_hit(BLUE, "hull", "front", 600)
+            .plan_hit(BLUE, "hull", "front", 600, false)
             .unwrap_or_else(|| panic!("a hull hit plans"));
         let wrecked = apply_ops(&spec, ops);
         assert!(is_wreck(&wrecked), "match one did not leave a wreck");
@@ -3214,7 +3320,7 @@ mod tests {
             "a wrecked record entered as a live tank"
         );
         let (struck, _) = held
-            .plan_hit(BLUE, "hull", "front", 600)
+            .plan_hit(BLUE, "hull", "front", 600, false)
             .unwrap_or_else(|| panic!("a hull hit plans"));
         assert!(
             struck.consequences.is_empty(),
@@ -3254,7 +3360,7 @@ mod tests {
             .unwrap_or_else(|| panic!("the reset tank has hull front armor"));
         assert!(before > 0, "the reset left the hull's armor spent");
         let (struck, ops) = arena
-            .plan_hit(BLUE, "hull", "front", 600)
+            .plan_hit(BLUE, "hull", "front", 600, false)
             .unwrap_or_else(|| panic!("a hull hit plans"));
         assert!(
             ops.iter().any(

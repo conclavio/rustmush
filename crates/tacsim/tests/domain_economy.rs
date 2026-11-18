@@ -65,6 +65,12 @@ mod ex3_board;
 mod ex4_charges;
 #[path = "domain_economy/ex5_jobs.rs"]
 mod ex5_jobs;
+#[path = "domain_economy/ex6_haul.rs"]
+mod ex6_haul;
+#[path = "domain_economy/ex7_wages.rs"]
+mod ex7_wages;
+#[path = "domain_economy/ex8_prices.rs"]
+mod ex8_prices;
 #[path = "domain_economy/house_arm_rs6b.rs"]
 mod house_arm_rs6b;
 #[path = "domain_economy/house_resale_rs6c2.rs"]
@@ -105,6 +111,10 @@ mod orders;
 mod pl2_producers;
 #[path = "domain_economy/pl4_works_mills.rs"]
 mod pl4_works_mills;
+#[path = "domain_economy/pl5_escrow.rs"]
+mod pl5_escrow;
+#[path = "domain_economy/pl6_ceres_yard.rs"]
+mod pl6_ceres_yard;
 #[path = "domain_economy/plans.rs"]
 mod plans;
 #[path = "domain_economy/plumbing.rs"]
