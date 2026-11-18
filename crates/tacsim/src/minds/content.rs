@@ -224,8 +224,17 @@ pub fn ensure_space_mind_sources_installed(store: &mut crate::store::TacsimStore
 /// without the old overflow clamp (the card's schema holds it to 100), a cost
 /// cut the lanes' ops budget asked for. Still 31 functions, `api: 10` and
 /// `stock: 3`; CC.9's was `c544bfbd…f9375f`.
+/// **Re-blessed by doc 49 unit CC.1b**, the Engage path's cost, with behaviour
+/// unchanged (Gate A at 0 divergences on every lane): the leash's arms called
+/// only under a leash; `standing_order` reads T1's `obeyed` off the one key it
+/// already formed, and the obeyed order's objective and early ends in one
+/// pass; `hostile_edges` tests pursuit by ranges and one `switch`;
+/// `engage_orders` drops the power and dry gates no caller can reach it
+/// past; and the reserve's two readers, `standing_order` and `arming_for`,
+/// read `reserve_pct` as it is. Still 31 functions, `api: 10` and `stock: 3`;
+/// CC.1's was `eec3f668…154a91`.
 pub const STANDARD_SHA256: &str =
-    "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91";
+    "e9f1a863eabc057066304121fe74b48cce05c21f0a629abb8f8f240c9a02ed15";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the
@@ -2019,6 +2028,61 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **Doc 49 unit CC.1b: what the Engage path's cost pass reshaped, through
+    /// both runners** ([`think`] holds T1 == T2 on every think):
+    ///
+    /// 1. a hull engaged under an `Engage` order whose every mount runs dry
+    ///    withdraws and says nothing of fire (`engage_orders` no longer tests
+    ///    the dry gate: a dry hull is in `Withdraw` before any arm calls it);
+    /// 2. an immobile hull's `Advance` ends: its key is written to
+    ///    `ignore_until_ms`, the next think on the same order still obeys
+    ///    nothing, and a `Hold` under another key spends it and is obeyed
+    ///    (`standing_order` reads T1's `obeyed` off its one key).
+    #[test]
+    fn cc1b_mirror_a_dry_engaged_hull_and_an_ended_advance() {
+        let mut arena = field(vec![
+            minded(RED, PartyId::RED, 20_500, 20_500),
+            line_tank(BLUE, PartyId::BLUE, pose(20_500, 40_500)),
+        ]);
+        online(&mut arena, RED);
+        hold(&mut arena, RED, BLUE, ContactId(0x77));
+        let mut ordered = view_of(&arena, RED);
+        ordered.order = Some(order_of(MindObjective::Engage { target: None }));
+        let mut fight = StockMemory::default();
+        let _ = think(&arena, &ordered, &mut fight, 1_000);
+        assert_eq!(fight.state, MachineState::Engage);
+        let mut dry = ordered.clone();
+        for weapon in &mut dry.weapons {
+            weapon.rounds = 0;
+        }
+        let mut breaks = fight.clone();
+        let intents = think(&arena, &dry, &mut breaks, 2_000);
+        assert_eq!(breaks.state, MachineState::Withdraw, "{intents:?}");
+        assert!(
+            !intents
+                .iter()
+                .any(|kind| fire_half(kind) || matches!(kind, IntentKind::Lock { .. })),
+            "{intents:?}"
+        );
+        // 2. The immobile hull's Advance, its key, and another order's.
+        let mut stuck = view_of(&arena, RED);
+        stuck.immobile = true;
+        let advance = order_of(MindObjective::Advance { to: (6, 4) });
+        let key = advance.expires_ms;
+        stuck.order = Some(advance);
+        let mut memory = patrolling(0);
+        let _ = think(&arena, &stuck, &mut memory, 1_000);
+        assert_eq!(memory.ignore_until_ms, Some(key), "the Advance ended");
+        let _ = think(&arena, &stuck, &mut memory, 2_000);
+        assert_eq!(memory.ignore_until_ms, Some(key), "still the ended one");
+        let mut hold_order = order_of(MindObjective::Hold);
+        hold_order.expires_ms = key + 30_000;
+        stuck.order = Some(hold_order);
+        let held = think(&arena, &stuck, &mut memory, 3_000);
+        assert_eq!(memory.ignore_until_ms, None, "another key spends it");
+        assert_eq!(memory.target, None, "a Hold pursues nothing: {held:?}");
     }
 
     /// Mirror of `m1b2_t1_arms_on_the_admitting_ceiling_and_cites_only_beside_a_fresh_lock`
