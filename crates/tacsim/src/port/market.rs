@@ -400,6 +400,17 @@ impl VenueGate for PortVenueGate {
         crate::port_tick::is_part(commodity)
     }
 
+    /// **A port house's bid takes no worn part** (doc 48 unit PL.8, Q-48-29 as doc 48b G-9
+    /// corrects it): a damaged part goes to scrap. A part lot's grade is its condition where a
+    /// strip or a scrap mints it ([`crate::hardware::bay::WORN_GRADE`] for a damaged or jammed
+    /// part, `INTACT_GRADE` for an intact one); a made part mints new, at the works' grade. The
+    /// market reads no part's provenance, so the grade is what it asks about. A hot part is held
+    /// under its claim (`bay_work::act::hot_holder`), and a fitted one is consumed, so neither
+    /// is a lot a sale can take.
+    fn house_takes(&self, commodity: &CanonicalId, grade: u8) -> bool {
+        !(crate::port_tick::is_part(commodity) && grade == crate::hardware::bay::WORN_GRADE)
+    }
+
     /// Doc 18 cut IC14 row 52 (§4.3; Q-18-47): the signatory NPC the port map
     /// records for the vendor whose org is `seller`, by name.
     fn signatory(&self, w: &World, market: &MarketId, seller: &PrincipalId) -> Option<String> {

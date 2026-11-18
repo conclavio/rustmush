@@ -2288,11 +2288,12 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
         .values()
         .flat_map(|row| row.bids.values().map(|b| ListingId(b.listing)))
         .collect();
-    // Doc 20 cut SM.5: and the four ore intakes.
+    // Doc 20 cut SM.5: and the four ore intakes. Doc 48 unit PL.8: and Occator's thirteen part
+    // bids.
     assert_eq!(
         bids.len(),
-        6,
-        "the alloy and fittings bids and the four ore intakes"
+        19,
+        "the alloy and fittings bids, the four ore intakes and the thirteen part bids"
     );
     // A buyer's Draw from the Exchange, accepted into their own crate and unsettled.
     let buyer = rig.tw.spawn_player("Buyer");
@@ -2409,11 +2410,12 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
         .values()
         .flat_map(|row| row.bids.values().map(|b| ListingId(b.listing)))
         .collect();
-    // Doc 20 cut SM.5: the four ore intakes with them.
+    // Doc 20 cut SM.5: the four ore intakes with them. Doc 48 unit PL.8: and Occator's thirteen
+    // part bids.
     assert_eq!(
         reposted.len(),
-        6,
-        "both bids and the four ore intakes recorded again"
+        19,
+        "both bids, the four ore intakes and the thirteen part bids recorded again"
     );
     for listing in &reposted {
         assert!(

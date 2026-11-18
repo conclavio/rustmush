@@ -346,6 +346,15 @@ pub fn bay_holder(hull: ObjId, order: u32) -> String {
     format!("tacsim.bay/{}/{order}", hull.0)
 }
 
+/// **The hold a hot part sits under** (doc 48 unit PL.8): `tacsim.hot/{claim}`, the vacated
+/// claim's. Nothing in tacsim uses a hot part (fit, the stores, a yard bill), and the market,
+/// which cannot read a part's provenance, sells no held lot; so a hot part is never sold into a
+/// workshop's bid nor listed, and stays where it lies for its claim.
+#[must_use]
+pub fn hot_holder(claim: u64) -> String {
+    format!("tacsim.hot/{claim}")
+}
+
 impl OwedKind {
     /// The op word.
     #[must_use]
@@ -1144,6 +1153,23 @@ impl ActionProvider for BayActProvider {
                 };
                 txn.replace(&self.parts, lot, flagged)
                     .map_err(|_| refused("the part's provenance did not stage"))?;
+                // Doc 48 unit PL.8: the hot part is held under its claim, where it lies. A lot
+                // already held (its holder's own listing) keeps that hold; a lot gone holds
+                // nothing.
+                let unheld = self
+                    .inventory
+                    .lot_hold(txn, *lot)
+                    .map_err(|_| refused("the part's hold cannot be read"))?
+                    .is_none();
+                let at = txn
+                    .get(&self.inventory.lots, lot)
+                    .map_err(|_| refused("the part's lot cannot be read"))?
+                    .map(mush_inventory::Lot::endpoint);
+                if let (true, Some(at)) = (unheld, at) {
+                    self.inventory
+                        .hold_lot(txn, at, *lot, &hot_holder(*claim))
+                        .map_err(|_| refused("the hot part could not be held"))?;
+                }
             }
         }
         // 5. The ledger.

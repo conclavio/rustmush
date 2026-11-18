@@ -27,9 +27,10 @@ fn bad(e: impl std::fmt::Display) -> ModError {
 }
 /// The bay recipe's id; the kernel pins it.
 pub const RECIPE: &str = "bay_refit";
-/// The grade an intact part goes back to stores at, and a damaged one.
-const INTACT_GRADE: u8 = 9;
-const WORN_GRADE: u8 = 3;
+/// The grade an intact part goes back to stores at (doc 48 unit PL.8: a part bid's floor).
+pub const INTACT_GRADE: u8 = 9;
+/// The grade a damaged or jammed part goes back to stores at.
+pub const WORN_GRADE: u8 = 3;
 
 /// The bay recipe: the work a refit takes and the facility word it runs at.
 pub(crate) fn recipe_descriptor() -> Result<DefinitionDescriptor, ModError> {

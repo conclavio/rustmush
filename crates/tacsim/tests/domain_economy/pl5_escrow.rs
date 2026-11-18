@@ -539,6 +539,16 @@ async fn pl5_a_player_buys_a_stores_part_by_a_private_lot_ask() {
     const PLANT: &str = "tacsim.part.plant.hauler_mk1";
     let mut rig = stocked();
     settle(&mut rig, 40);
+    let (first, _) = buyer(&mut rig, "Tamsin", 1);
+    let (second, _) = buyer(&mut rig, "Ulric", 2);
+    let out = run(&mut rig.tw, first, "+yard/order dray");
+    let order = booked(&out);
+    let out = run(&mut rig.tw, second, "+yard/order dray");
+    let theirs = booked(&out);
+    settle(&mut rig, 2);
+    // Doc 48 unit PL.8: the workshop lists the sound parts in its stores as public lot asks, one
+    // a good. The plant arrives just before the first buyer asks, so the clerk lists it to them
+    // privately first, and the private ask holds it from the public list.
     let lots = crate::driving_rig::seed_store_parts(
         &mut rig,
         STICKNEY,
@@ -547,14 +557,6 @@ async fn pl5_a_player_buys_a_stores_part_by_a_private_lot_ask() {
         1,
         7_650_000,
     );
-    settle(&mut rig, 2);
-    let (first, _) = buyer(&mut rig, "Tamsin", 1);
-    let (second, _) = buyer(&mut rig, "Ulric", 2);
-    let out = run(&mut rig.tw, first, "+yard/order dray");
-    let order = booked(&out);
-    let out = run(&mut rig.tw, second, "+yard/order dray");
-    let theirs = booked(&out);
-    settle(&mut rig, 2);
 
     let out = run(&mut rig.tw, first, &format!("+yard/buy {order}={PLANT}"));
     assert!(

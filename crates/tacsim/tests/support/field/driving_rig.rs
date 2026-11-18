@@ -873,7 +873,21 @@ pub(crate) fn seed_part(
     condition: mush_tactics::field_ops::ComponentCondition,
     legality: mush_tactics::field_ops::ProvenanceLegalityStatus,
 ) {
-    seed_lot(rig, vault, good, 1, lot);
+    seed_part_at(rig, vault, good, lot, (condition, SEED_GRADE), legality);
+}
+
+/// **[`seed_part`] at `grade`** (doc 48 unit PL.8): the part's lot minted at the grade a strip
+/// mints its condition at (intact 9, worn 3), which a workshop's part bid reads as its floor.
+/// `seed_part` keeps the seed's own grade for the stories written before the floor.
+pub(crate) fn seed_part_at(
+    rig: &mut Rig,
+    vault: VaultId,
+    good: &str,
+    lot: LotId,
+    (condition, grade): (mush_tactics::field_ops::ComponentCondition, u8),
+    legality: mush_tactics::field_ops::ProvenanceLegalityStatus,
+) {
+    seed_steps_at(rig, vault, good, 1, lot, 1, grade);
     // Doc 48 unit PL.7: a core module's provenance names its core, as a made one's does.
     let definition = store(&rig.tw)
         .definitions()
@@ -907,6 +921,9 @@ pub(crate) fn seed_part(
     );
 }
 
+/// The grade every seed mints at.
+const SEED_GRADE: u8 = 2;
+
 /// [`seed_pool`]'s two steps — the origin mint, then its dissolve — the first `steps` of them.
 pub(crate) fn seed_steps(
     rig: &mut Rig,
@@ -915,6 +932,19 @@ pub(crate) fn seed_steps(
     qty: u64,
     lot: LotId,
     steps: usize,
+) {
+    seed_steps_at(rig, vault, good, qty, lot, steps, SEED_GRADE);
+}
+
+/// [`seed_steps`] minting at `grade`.
+fn seed_steps_at(
+    rig: &mut Rig,
+    vault: VaultId,
+    good: &str,
+    qty: u64,
+    lot: LotId,
+    steps: usize,
+    grade: u8,
 ) {
     let endpoint = EndpointRef(vault);
     let good = cid(good);
@@ -938,7 +968,7 @@ pub(crate) fn seed_steps(
                         endpoint,
                         &good,
                         qty,
-                        Grade::new(2).expect("grade"),
+                        Grade::new(grade).expect("grade"),
                         mush_economy::ExternalRef {
                             provider: "test".into(),
                             kind: "seed".into(),

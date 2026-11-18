@@ -1862,6 +1862,11 @@ pub const OVER_INTAKE: &str = "That house wants only {remaining} more, so nothin
 /// A grade-floored bid: pool stock carries no grade (cut IC10).
 pub const GRADED_BID: &str =
     "That house buys graded lots only, and pooled stock carries no grade, so nothing was sold.";
+/// **A port house takes none of the seller's lots of a good in the condition they are** (doc 48
+/// unit PL.8, the gate's `house_takes`): a workshop's part bid takes no worn part, which goes to
+/// scrap.
+pub const NOT_AS_HELD: &str =
+    "That house does not buy that in the condition you hold it, so nothing was sold.";
 /// The seller already has an authoritative submission queued this step (cut IC10, IC8's
 /// `Ctx::authoritative_pending` seam): the deliver leg could not be staged.
 pub const SELL_BUSY: &str =
@@ -2219,10 +2224,13 @@ fn held_for_sale(
     actor: ObjId,
     source: mush_inventory::EndpointRef,
     commodity: &mush_core::CanonicalId,
+    takes: &dyn Fn(u8) -> bool,
 ) -> Result<u64, MarketError> {
-    // Doc 39 cut IN.11: an indivisible good is held as its free lots, never as a pool.
+    // Doc 39 cut IN.11: an indivisible good is held as its free lots, never as a pool; doc 48
+    // unit PL.8: those the bidding house takes.
     if crate::module::sells_as_lots(ctx.w, commodity) {
-        return Ok(u64::try_from(sale_lots(ctx, actor, source, commodity)?.len()).unwrap_or(0));
+        let lots = sale_lots(ctx, actor, source, commodity, takes)?;
+        return Ok(u64::try_from(lots.len()).unwrap_or(0));
     }
     let Ok(pool) = crate::lot::pool_available(ctx, source, commodity) else {
         return Err(MarketError::bad(SOURCE_UNREADABLE));
@@ -2248,6 +2256,33 @@ fn held_for_sale(
     Ok(pool.saturating_sub(in_flight))
 }
 
+/// **What the seller holds for a bid, the house's rule applied** (doc 48 unit PL.8): step 11's
+/// holding, and [`NOT_AS_HELD`] for a seller who holds lots of the good there but none the house
+/// takes, so the refusal says why rather than that nothing is held.
+fn held_as_taken(
+    ctx: &Ctx<'_>,
+    actor: ObjId,
+    source: mush_inventory::EndpointRef,
+    commodity: &mush_core::CanonicalId,
+    takes: &dyn Fn(u8) -> bool,
+) -> Result<u64, MarketError> {
+    let held = held_for_sale(ctx, actor, source, commodity, takes)?;
+    if held == 0 && held_for_sale(ctx, actor, source, commodity, &|_| true)? > 0 {
+        return Err(MarketError::bad(NOT_AS_HELD));
+    }
+    Ok(held)
+}
+
+/// **The house's rule on a lot's grade** (doc 48 unit PL.8): a port institution's bid asks the
+/// gate ([`crate::module::VenueGate::house_takes`]); any other bid takes every grade.
+fn house_rule<'g>(
+    ctx: &Ctx<'_>,
+    gate: Option<&'g std::sync::Arc<dyn crate::module::VenueGate>>,
+    listing: &Listing,
+) -> Option<&'g std::sync::Arc<dyn crate::module::VenueGate>> {
+    gate.filter(|g| g.port_seller(ctx.w, &listing.market, &listing.seller))
+}
+
 /// **A sale of an indivisible good names one lot** (doc 39 cut IN.11).
 pub const ONE_LOT_A_SALE: &str = "A part sells one at a time: sell 1.";
 
@@ -2257,12 +2292,13 @@ const MAX_LOT_PAGES: usize = 64;
 
 /// **The lots of an indivisible `commodity` at `source` free to sell** (doc 39 cut IN.11): held
 /// by no lot hold (a listing, an order) and named by none of the seller's sales still in
-/// flight, in lot order.
+/// flight, in lot order. Doc 48 unit PL.8: of a grade the buyer `takes`.
 fn sale_lots(
     ctx: &Ctx<'_>,
     actor: ObjId,
     source: mush_inventory::EndpointRef,
     commodity: &mush_core::CanonicalId,
+    takes: &dyn Fn(u8) -> bool,
 ) -> Result<Vec<mush_inventory::LotId>, MarketError> {
     let Some(families) = crate::module::lot_supply(ctx.w) else {
         return Err(MarketError::bad(SOURCE_UNREADABLE));
@@ -2289,6 +2325,7 @@ fn sale_lots(
             let lot = entry.value();
             if lot.endpoint() == source
                 && lot.commodity() == commodity
+                && takes(lot.grade().get())
                 && !flying.contains(&lot.id())
                 // A hold the market's context cannot read is not read as one (the stock
                 // clerk's rule); the Deliver prepare refuses a held lot inside its transaction.
@@ -2408,8 +2445,10 @@ pub fn bid_take(
             return Err(MarketError::bad(HOLD_ONLY_SOURCE));
         }
     }
-    // 11.
-    let held = held_for_sale(ctx, actor, source, &commodity)?;
+    // 11. Doc 48 unit PL.8: the lots a port house's bid takes.
+    let rule = house_rule(ctx, gate.as_ref(), &listing);
+    let takes = |grade: u8| rule.is_none_or(|g| g.house_takes(&commodity, grade));
+    let held = held_as_taken(ctx, actor, source, &commodity, &takes)?;
     // The house's fundable units (step 10's funds, read as a count): a vendor's
     // available balance, or a personal bid's escrow (doc 48 cut EX.1a).
     let price = listing.price.minor();
@@ -2570,8 +2609,11 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             personal_bid_room(ctx, vault, &commodity, quantity)?;
         }
     }
-    // 11. Over-selling: the pool, less every sale from it still in flight.
-    let held = held_for_sale(ctx, actor, source, &commodity)?;
+    // 11. Over-selling: the pool, less every sale from it still in flight. Doc 48 unit PL.8: the
+    // lots a port house's bid takes.
+    let rule = house_rule(ctx, gate.as_ref(), &listing);
+    let takes = |grade: u8| rule.is_none_or(|g| g.house_takes(&commodity, grade));
+    let held = held_as_taken(ctx, actor, source, &commodity, &takes)?;
     let seller = PrincipalId::Object(actor);
     if held < quantity {
         return Err(MarketError::bad(
@@ -2586,7 +2628,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             return Err(MarketError::bad(ONE_LOT_A_SALE));
         }
         Some(
-            sale_lots(ctx, actor, source, &commodity)?
+            sale_lots(ctx, actor, source, &commodity, &takes)?
                 .first()
                 .copied()
                 .ok_or_else(|| MarketError::bad(SOURCE_UNREADABLE))?,

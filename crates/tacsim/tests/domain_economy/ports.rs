@@ -2026,9 +2026,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // carbon-ore bid, and four mill lines (the farms, the fab and Titan's carbon mill). Doc 48
     // unit PL.3 (lane v37): Stickney Yards' three space munitions asks, its alloys bid
     // and its seven munitions processes. Doc 48 unit PL.5 (lane v39): Kasei's strategic-ore ask
-    // and Stickney Yards' instrument-board ask.
+    // and Stickney Yards' instrument-board ask. Doc 48 unit PL.8 (lane v41): Occator's thirteen
+    // part bids and Stickney Yards' twelve more (its light plant's was there).
     assert_eq!(
-        commerce_lines, 90,
+        commerce_lines, 115,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();

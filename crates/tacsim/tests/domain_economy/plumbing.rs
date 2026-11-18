@@ -1890,11 +1890,29 @@ fn sm5_a_hold_of_ore_sells_in_one_act_against_the_cap() {
     assert_eq!(pool(&mut rig.tw, hold, "metal_ore"), 86);
     let out = sell(&mut rig, pilot, "freeport_exchange", "metal_ore", "all");
     assert!(out.contains("Sold 86 t of metal ore, run-of-mine"), "{out}");
-    let list = run(&mut rig.tw, pilot, "+market/list");
+    // Doc 48 unit PL.8: the workshops' part bids fill the first page, so the list is paged.
+    let mut list = run(&mut rig.tw, pilot, "+market/list");
+    let mut pages = String::new();
+    for _ in 0..16 {
+        pages.push_str(&list);
+        let more = list
+            .split("(more: +market/list after=")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .map(str::to_owned);
+        if list.lines().any(|l| l.starts_with(&format!("#{listing} "))) {
+            break;
+        }
+        let Some(after) = more else {
+            break;
+        };
+        list = run(&mut rig.tw, pilot, &format!("+market/list after={after}"));
+    }
     assert!(
-        list.lines()
+        pages
+            .lines()
             .any(|l| l.starts_with(&format!("#{listing} ")) && l.contains(" wanted 154 × ")),
-        "{list}"
+        "{pages}"
     );
     assert_eq!(
         pool(&mut rig.tw, hold, "metal_ore"),

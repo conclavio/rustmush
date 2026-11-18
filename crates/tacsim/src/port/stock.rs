@@ -1023,6 +1023,8 @@ pub(crate) fn stock_step(
         return match bid_step(ctx, state, fire, clerk, &map, &def) {
             Step::Idle => seed_step(ctx, state, fire, clerk, &map, &def, &action, true, &mut 0)
                 .or_else(|| part_ask_step(ctx, state, fire, clerk, &map, &def))
+                // Doc 48 unit PL.8: the workshop's used parts, after the seeded ones.
+                .or_else(|| used_part_step(ctx, state, fire, clerk, &map, &def))
                 .unwrap_or(Step::Idle),
             step => step,
         };
@@ -1354,6 +1356,139 @@ fn part_ask_step(
                 tracing::warn!(
                     vault, good = %good, ?error,
                     "tacsim: the stock clerk could not list a part"
+                );
+                state.list_refused.retain(|_, day| *day == today);
+                let key = (vault, good);
+                if state.list_refused.contains_key(&key)
+                    || state.list_refused.len() < MAX_CLERK_ROWS
+                {
+                    state.list_refused.insert(key, today);
+                }
+                Step::Refused
+            }
+            Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+                Step::Deferred
+            }
+            Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
+        },
+    )
+}
+
+/// **A workshop's used parts** (doc 48 unit PL.8, Q-48-29): the port's workshop lists the parts
+/// it took in, from a scrap's buy-back desk and from its own part bids, as **lot asks** at the
+/// good's reference price, one public ask a good at a time, one listing a fire, after the seeded
+/// parts.
+///
+/// A lot is listed when it is in the workshop operator's storefront, sound (not at
+/// [`crate::hardware::bay::WORN_GRADE`], a strip's or a scrap's grade for a damaged part), cool,
+/// unfitted, free (held by nothing, taken by no bay order: [`store_lots`]) and not one of the
+/// operator's authored seed lots, which [`part_ask_step`] lists at their authored asks. A worn
+/// part is not listed: a damaged part is scrap (doc 48b G-9). These asks are no authored ask rows, so the lane's rule that a vendor
+/// never both asks and bids one good still governs every authored row, and EX.8's price step
+/// leaves them at their reference, as it leaves every part ask.
+fn used_part_step(
+    ctx: &mut Ctx<'_>,
+    state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
+    map: &PortMap,
+    def: &PortDef,
+) -> Option<Step> {
+    let operator = &def.workshop.as_ref()?.operator;
+    let row = map.vendors.get(operator)?;
+    let vendor = mush_market::VendorId(row.vendor?);
+    if ctx
+        .w
+        .module_state::<MarketStore>()
+        .is_some_and(|m| m.listings_of_vendor(vendor) >= mush_market::MAX_LISTINGS_PER_VENDOR)
+    {
+        return None;
+    }
+    let today = ctx.w.world_ic_now().at.div_euclid(IC_DAY);
+    let storefront = EndpointRef(VaultId(row.vault));
+    let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
+    let seeded: std::collections::BTreeSet<LotId> = row
+        .stock
+        .iter()
+        .filter(|stock| crate::port_tick::is_part(&stock.good))
+        .filter_map(|stock| StockIssueId::parse(&stock.id).map(|id| (id, stock.qty)))
+        .flat_map(|(id, qty)| (0..qty).map(move |n| seed_lot_id(&id, n)))
+        .collect();
+    let store = ctx.w.module_state::<TacsimStore>()?;
+    let goods: std::collections::BTreeSet<CanonicalId> = store
+        .definitions()
+        .parts
+        .values()
+        .map(|part| part.commodity.clone())
+        .collect();
+    let references = store.goods()?.clone();
+    let mut due = None;
+    for good in goods {
+        if state
+            .list_refused
+            .get(&(row.vault, good.clone()))
+            .is_some_and(|day| *day == today)
+        {
+            continue;
+        }
+        let standing = ctx.w.module_state::<MarketStore>().is_some_and(|m| {
+            m.lot_listings().any(|l| {
+                l.source.exact_lot().is_some()
+                    && l.source.lot().is_some_and(|(endpoint, commodity, _)| {
+                        endpoint == storefront && *commodity == good
+                    })
+            })
+        });
+        if standing {
+            continue;
+        }
+        let Some(lot) = store_lots(ctx, row, &good, &claimed)
+            .into_iter()
+            .find(|lot| {
+                lot.grade != crate::hardware::bay::WORN_GRADE
+                    && lot.listing.is_none()
+                    && !seeded.contains(&lot.lot)
+            })
+        else {
+            continue;
+        };
+        let Some(reference) = references.good(&good).map(|g| g.reference_major) else {
+            continue;
+        };
+        due = Some((good, lot, reference));
+        break;
+    }
+    let (good, StoreLot { lot, grade, .. }, reference) = due?;
+    let Some(price) = ask_price(ctx.w, reference) else {
+        return Some(Step::Refused);
+    };
+    let spec = mush_market::ListingSpec {
+        vendor,
+        catalog: CatalogRef {
+            ruleset: smol_str::SmolStr::new_static(crate::NS),
+            code: smol_str::SmolStr::new(good.as_str()),
+        },
+        price,
+        quantity: 1,
+        source: Supply::Lot {
+            endpoint: mush_market::LotEndpoint(storefront),
+            commodity: mush_market::LotCommodity(good.clone()),
+            grade,
+            lot: Some(lot),
+        },
+        object: None,
+        visibility: MarketVisibility::Public,
+        ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+        private_to: None,
+    };
+    let vault = row.vault;
+    Some(
+        match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::list_goods(ctx, spec)) {
+            Ok(Ok(_)) => Step::Worked,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    vault, good = %good, ?error,
+                    "tacsim: the stock clerk could not list a used part"
                 );
                 state.list_refused.retain(|_, day| *day == today);
                 let key = (vault, good);
