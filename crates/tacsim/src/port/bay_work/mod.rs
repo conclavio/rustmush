@@ -50,6 +50,9 @@ pub mod record;
 pub mod scrap;
 pub mod strip;
 
+/// The grades a part lot's condition is minted at (doc 48 unit PL.8: a port house's part bid takes
+/// no lot at `WORN_GRADE`).
+pub use crate::hardware::bay::{INTACT_GRADE, WORN_GRADE};
 pub use jobs::{BayJob, BayQuote, CARRIER_TIME_FACTOR, FacilityClass, QuotedJob};
 pub use record::{
     BAY_PREFIX, BAY_SCHEMA, Bale, BaleDraw, BayHull, BayHullState, BayOrder, BerthRow, ClaimLot,

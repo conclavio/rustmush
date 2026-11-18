@@ -185,6 +185,18 @@ Shows a house's ask and bid for a good at this venue, an IC week a row, newest
 first, for the last 24 IC weeks (about a real week). A good reads as
 tacsim:<good>, for example +market/history tacsim:metals.
 
+## Used parts
+
+Each port's workshop bids for every part its bay fits, at 60% of the part's
+reference price, four at a time. Sell one from your docked hold with
++market/sell <bid>=1, one part a sale. The workshop buys sound parts only: a
+damaged or jammed part is scrap, and its bid refuses it. A part flagged hot
+under a salvage claim stays where it lies, and nobody buys it.
+
+The parts a workshop takes in, from its bids and from the hulls it scraps, go
+up on its board as lot asks at the reference price, one of each part at a time.
+A worn part is not listed.
+
 ## Hauls
 
   +haul/post <qty> <good> to=<port> fee=<cr> [value=<cr>] [go]

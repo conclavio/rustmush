@@ -223,6 +223,13 @@ pub trait VenueGate: Send + Sync + std::fmt::Debug {
     fn indivisible(&self, _commodity: &mush_core::CanonicalId) -> bool {
         false
     }
+    /// **Whether a port house's bid takes a lot of `commodity` at `grade`** (doc 48 unit PL.8):
+    /// asked of each lot a sale into one of the venue's own institutions' bids could hand over
+    /// ([`Self::port_seller`]). Default: every lot, so a composition whose gate does not answer
+    /// is unchanged; a personal bid is never asked.
+    fn house_takes(&self, _commodity: &mush_core::CanonicalId, _grade: u8) -> bool {
+        true
+    }
 }
 
 /// **Whether `commodity` sells as its lots** (doc 39 cut IN.11): the inventory's indivisible

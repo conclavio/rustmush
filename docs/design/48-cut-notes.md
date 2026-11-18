@@ -3686,7 +3686,151 @@ in at `72d5b7150`, then at `c85a8744f` once #624, #625, #626 and #627 had merged
 
 ## PL.8
 
-Not built.
+Row: §7.1 PL.8 (Q-48-29 as doc 48b G-9 corrects it). Cut from main `83499744d` (#669), after
+EX.3 and PL.6.
+
+**Survey** (at `83499744d`):
+- **Where parts go today.**
+  - `+bay/strip` mints the part into the carrier's hold, at the grade its condition mints at (9
+    intact, 3 damaged or jammed: `hardware::bay::part_grade`).
+  - `+bay/scrap` mints each salvageable part into the holder's scrap vault. EX.3b's buy-back
+    desk then buys it into the workshop operator's storefront at 750 ‰ intact or 400 ‰ worn, less
+    its removal.
+  - Nothing listed those lots. Bay Replace orders drew them, and Stickney's yard drew them by a
+    private lot ask.
+- **The one part bid** was Stickney Yards' light plant: 4,000 cr (800 ‰), four, no refresh
+  (IN.11).
+- **The market's sale into a bid** (`sell_into_bid`) sells a part as its lowest-id free lot, at
+  any grade. It checks no condition, heat or fit. A grade floor (`min_grade`) is refused outright
+  for every bid (`GRADED_BID`).
+- **The market cannot read a part's provenance.** Every seam it asks (`VenueGate`,
+  `ProceedsPolicy`) gets `&World` only, and a module's context reads no other module's typed
+  family (PL.9 met the same wall). Only the lot's grade is readable.
+- **The grade is condition only where a strip or a scrap mints it.** The works mints a made
+  part at the industry's output grade (0), and the rig's seeds mint at 2. So "intact" cannot be a
+  grade floor: a new part is grade 0. "Worn" is exactly grade 3.
+- **Hot parts** (`ContrabandHotPart`) come only from a vacated salvage claim's flag
+  (`strip::vacate_claim`), which no play path reaches yet. Tacsim's own users (fit, the stores, a
+  yard bill) refuse one, but nothing stopped a sale.
+- **A fitted part's lot is consumed** by the fit, so no fitted lot stands at any endpoint.
+- **EX.8's price step** moves bids, part bids included; part asks are outside it.
+
+**The choices:**
+- **The bid's rule is the gate's, on the grade.** For a sale into a port institution's bid, the
+  market asks the gate whether that house takes a lot of that good at that grade
+  (`VenueGate::house_takes`, default yes). Tacsim answers no for a part at the worn grade. Only
+  house bids are asked: the desk's personal bids still buy worn parts at the scrap rate.
+- **Cool by a hold.** The hot flag also holds the lot, under `tacsim.hot/{claim}`, where it lies.
+  The market sells no held lot, so no bid takes a hot part. Nothing clears a hot flag yet, so
+  the hold stands.
+- **Unheld and unfitted** were already true: the market skips held lots, and a fitted lot no
+  longer exists.
+- **"A damaged part goes to scrap"** is read as the bid's limit: a worn part gets no part bid.
+  Its outlet stays the scrap's worn rate, through a hull's scrap. There is no loose-part scrap
+  (see Not built).
+- **What a workshop lists:** every sound lot it took in (not worn, cool, unfitted, free, not
+  authored seed stock), one public lot ask a good at a time, at the good's reference.
+
+**Built:**
+1. **The market** (`mush-market`):
+   - `VenueGate::house_takes`;
+   - the sale and its preview take only the lots the house takes;
+   - a seller who holds lots of the good, but none the house takes, is refused with `NOT_AS_HELD`
+     ("That house does not buy that in the condition you hold it, so nothing was sold.").
+
+   `GRADED_BID` is unchanged.
+2. **The gate's answer** (`port/market.rs`): a port house takes no part lot at `WORN_GRADE`.
+3. **A hot part is held** (`bay_work/act.rs`, the `Hot` act): `hot_holder(claim)`. A lot already
+   held (its holder's own listing) keeps that hold.
+4. **The workshop's used parts** (`port/stock.rs` `used_part_step`, after the seeded parts' asks):
+   one lot ask a fire, at the reference, for the sound lots in the workshop operator's storefront.
+   EX.8 leaves them at the reference, as it leaves every part ask.
+5. **The lane, v41 / relay v32** (re-signed over v40 / v31): a bid for each of the thirteen parts
+   a bay fits, at each workshop's operator, at the reference × 600 ‰:
+   - Occator at Ceres, on the dockmaster's board;
+   - Stickney Yards at Stickney, on the yard's board, its light plant moved from 4,000 to 3,000
+     cr.
+
+   Each takes four, refilled one an IC day to four. The strip chain's new head,
+   `strip_parts_market`, rebuilds v40 (`pl8_strip_parts_market_rebuilds_the_published_v40`);
+   `strip_ceres_yard` calls it first.
+6. **The grades are public** (`bay_work::{INTACT_GRADE, WORN_GRADE}`), and the rig gains
+   `seed_part_at`, a part seeded at its condition's grade.
+7. **The bot's table** (`mush-bot` `mine::works`): `NOT_AS_HELD`. **Help:** `exchange.md`'s "Used
+   parts".
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`, on main `83499744d`.)
+- **The story** (`tacsim/tests/domain_economy/pl8_parts_market.rs`),
+  `pl8_a_workshop_buys_sound_parts_and_lists_what_it_took_in`:
+  - each of the thirteen bay-fittable parts has a bid at each workshop, at its reference ×
+    600 ‰, for four;
+  - a captain sells an intact cannon from her docked hold into Occator's bid. The lot itself
+    moves into Occator's storefront, and the bid wants three more;
+  - her worn coaxial mount is refused with `NOT_AS_HELD`, stages nothing, and stays aboard;
+  - the clerk lists the cannon as a public lot ask at its reference, and a second captain buys
+    the same lot into her hold;
+  - of three lots in Occator's storefront, an intact laser and a made sight (grade 0) are listed
+    at their references, and a worn thermal sight is not.
+- **The hot part** (`in2_lifecycle`): after its claim is vacated, the stripped, intact coaxial
+  mount is held under `tacsim.hot/7`. Stickney Yards' bid takes nothing ("nothing was sold"), and
+  the part stays where it lay.
+- **The pins:**
+  - `pl8_strip_parts_market_rebuilds_the_published_v40`, and every lane and relay version and
+    digest pin moved to v41 / v32;
+  - the readiness report's commerce lines, 115 (was 90);
+  - the retire story's Ceres bids, 19 (was 6), both counts;
+  - the sky chart's web fixture, re-blessed (Stickney's thirteen part bids);
+  - `mush-bot`'s `pl8_the_not_as_held_sentence_is_the_markets`.
+- **Adapted:**
+  - `pl5_a_player_buys_a_stores_part_by_a_private_lot_ask` seeds the plant just before the first
+    buyer asks. The workshop now lists a stores part publicly, and the private ask must hold it
+    first.
+  - `sm5_a_hold_of_ore_sells_in_one_act_against_the_cap` pages `+market/list`, since the part
+    bids fill its first page; so does mush-server's `ic12_part_one_a_leg_by_hand`
+    (`market_list_all`).
+  - **The mining bot reads a board whole** (`mush-bot` `mine::lane` `after_list_page`). Ceres's
+    board outgrew the market's twenty-row page, and the lane read one page, so its ore bids and
+    bunker asks fell off it (PR CI's `bot-stories`). It now follows
+    `(more: +market/list after=N)`, up to eight pages, before it reads the rows, and
+    `+market/list after=<n>` joins the lanes' closed vocabulary.
+- **Suites:**
+  - tacsim whole 4,862 of 4,867, the five failures the pins above, then fixed and rerun;
+  - mush-market 266;
+  - mush-bot lib 575;
+  - mush-server split_boundary 227;
+  - the contract guards 205;
+  - fmt, clippy `-D warnings`, the M7 pass, and rustdoc in both modes.
+
+**Mutations:** 8, 7 killed.
+
+| # | Mutation | Killed by |
+|---|---|---|
+| M1 | A port house takes a worn part | the story |
+| M2 | The house's rule is never asked | the story |
+| M3 | The sale's lots ignore the rule | the story |
+| M4 | A seller with only worn lots hears that nothing is held | the story |
+| M5 | A hot part is left unheld | `in2_lifecycle` (the hot mount sells) |
+| M6 | The workshop never lists what it took in | the story |
+| M7 | The workshop lists a worn part | the story |
+
+M8, an authored seed lot listed as used, **survives as equivalent**: no lane authors part stock
+for a workshop's operator, so no seed lot is ever in a workshop's storefront.
+
+**Divergences:**
+- **The bid reads condition from the grade.** A part minted outside a strip or a scrap at the
+  worn grade would be refused, and one minted damaged at another grade would be taken. Today only
+  strip and scrap mint a damaged part.
+- **A workshop both bids for and lists one part good.** The lane's rule that a vendor never both
+  asks and bids one good governs authored rows, and the listings are none. A pooled ask and bid
+  share a pool, which is what the rule guards; part lots are listed one by one.
+- **The light plant's bid** moves from IN.11's 800 ‰ to 600 ‰, with the others.
+
+**Not built:**
+- **A loose damaged part's scrap.** `+bay/scrap` breaks up a hull. A worn part in a hold has no
+  NPC buyer; it can be fitted, repaired with its hull, or sold to a player.
+- **Clearing a hot part.** The hold stands until a claim's owner path exists (doc 41).
+- **The yard's private asks** (EX.3b) still price a stores lot at its catalogue price whatever its
+  grade.
 
 ## PL.9
 

@@ -84,6 +84,10 @@ pub const TREASURY_SHORT: &str = "The treasury has {holds} free; a {recipe} cost
 /// `tacsim::port::works::BUILT_ELSEWHERE` (doc 48 unit PL.6): a hull this yard does not build,
 /// `{recipe}` and the `{port}` whose yard does (a heavy hull at Ceres: Stickney Yards).
 pub const BUILT_ELSEWHERE: &str = "The yard here does not build a {recipe}; order it at {port}.";
+/// `mush_market::NOT_AS_HELD` (doc 48 unit PL.8): a workshop's part bid takes no worn part, and
+/// every lot of that part the seller holds there is worn.
+pub const NOT_AS_HELD: &str =
+    "That house does not buy that in the condition you hold it, so nothing was sold.";
 
 /// **Doc 48 unit PL.5**: every escrow-buying sentence, the bot's own words for tacsim's.
 pub const ESCROW_SENTENCES: [&str; 14] = [
@@ -512,5 +516,13 @@ mod tests {
             .replace("{recipe}", "line_tank_thermal")
             .replace("{port}", "Voltaire Anchorage");
         assert!(filled.len() <= 120, "{} columns: {filled}", filled.len());
+    }
+
+    /// **Doc 48 unit PL.8: a worn part's refusal at a part bid is the market's**, within 120
+    /// columns.
+    #[test]
+    fn pl8_the_not_as_held_sentence_is_the_markets() {
+        assert_eq!(NOT_AS_HELD, mush_market::NOT_AS_HELD);
+        assert!(NOT_AS_HELD.len() <= 120, "{} columns", NOT_AS_HELD.len());
     }
 }

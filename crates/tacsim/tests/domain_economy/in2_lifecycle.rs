@@ -444,4 +444,23 @@ async fn in2_a_sight_stripped_at_stickney_is_sold_bought_and_fitted_to_a_scout()
         &format!("+bay/fit #{}=machine_gun {mount}", escort.0),
     );
     assert!(refused.contains("That part is hot"), "{refused}");
+    // Doc 48 unit PL.8: a hot part is held under its claim where it lies, so the workshop's part
+    // bid (Stickney Yards' 600 permille for the coaxial mount) takes none, though it is intact.
+    assert_eq!(
+        hold_on(&mut rig, mount).map(|h| h.holder().to_owned()),
+        Some(tacsim::port::bay_work::act::hot_holder(7)),
+        "held under its claim"
+    );
+    let bid =
+        port_map(&rig.tw, STICKNEY).vendors[&cid("stickney_yards")].bids[&cid(MOUNT_PART)].listing;
+    let sold = run(&mut rig.tw, seller, &format!("+market/sell {bid}=1"));
+    assert!(
+        sold.contains("nothing was sold") && !sold.contains("Sold "),
+        "{sold}"
+    );
+    assert_eq!(
+        lot_record(&mut rig, mount).map(|l| l.endpoint()),
+        Some(EndpointRef(seller_hold)),
+        "the hot part stays where it lay"
+    );
 }

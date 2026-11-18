@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v40 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v41 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,49 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit PL.8 (lane v41): the workshops' part bids taken out** — every part bid of
+/// Occator's at Ceres, and Stickney Yards' but its light plant's, which goes back to IN.11's 4,000
+/// with no refresh in its old place (Q-48-29), so a strip chain rebuilds a lane before v41
+/// (idempotent). The chain's head.
+pub fn strip_parts_market(doc: &mut Value) {
+    let light = "tacsim.part.plant.light_mk1";
+    for (entry, org) in [
+        ("ceres_port", "occator"),
+        ("stickney_port", "stickney_yards"),
+    ] {
+        let Some(bids) = doc
+            .get_mut("entries")
+            .and_then(|entries| entries.get_mut(entry))
+            .and_then(|entry| entry.get_mut("def"))
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+            .and_then(|vendors| vendors.iter_mut().find(|vendor| vendor["org"] == org))
+            .and_then(|vendor| vendor.get_mut("bids"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        let had_light = bids.iter().any(|bid| bid["good"] == light);
+        bids.retain(|bid| {
+            !bid["good"]
+                .as_str()
+                .is_some_and(|good| good.starts_with("tacsim.part."))
+        });
+        if org == "stickney_yards" && had_light {
+            let at = 1.min(bids.len());
+            bids.insert(
+                at,
+                serde_json::json!({ "good": light, "price_major": 4000, "intake": 4, "boards": ["yard"] }),
+            );
+        }
+    }
+}
+
 /// **Doc 48 unit PL.6 (lane v40): the Ceres yard taken out** — Ceres's `yard` block and
 /// Stickney's heavy-yard capability (Q-48-25), so a strip chain rebuilds a lane before v40
-/// (idempotent). The chain's head.
+/// (idempotent); lane v41's [`strip_parts_market`] first.
 pub fn strip_ceres_yard(doc: &mut Value) {
+    strip_parts_market(doc);
     let Some(entries) = doc.get_mut("entries") else {
         return;
     };
