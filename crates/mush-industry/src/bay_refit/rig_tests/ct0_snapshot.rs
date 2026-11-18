@@ -384,7 +384,7 @@ fn cancel_walk(s: &mut Snapshot) -> Result {
     let walk = "cancel walk";
     let id = offer_and_accept(&mut r, s, walk)?;
     let inv = r.invocation(r.requester, 22, order_parameters(id))?;
-    step(&mut r, s, &format!("{walk}: canceled"), 5, &inv, 22)?;
+    step(&mut r, s, &format!("{walk}: cancelled"), 5, &inv, 22)?;
     ct0::lines(s, &records(&r, Some(id))?);
     cold_boot(&mut r, s, walk, id)
 }
@@ -399,7 +399,7 @@ fn cancel_after_work_walk(s: &mut Snapshot) -> Result {
     step(&mut r, s, &format!("{walk}: advanced once"), 3, &inv, 30)?;
     ct0::lines(s, &records(&r, Some(id))?);
     let inv = r.invocation(r.requester, 33, order_parameters(id))?;
-    step(&mut r, s, &format!("{walk}: canceled"), 5, &inv, 33)?;
+    step(&mut r, s, &format!("{walk}: cancelled"), 5, &inv, 33)?;
     ct0::lines(s, &records(&r, Some(id))?);
     check!(r.order(id)?.terminal.is_some());
     cold_boot(&mut r, s, walk, id)?;
@@ -435,7 +435,7 @@ fn expired_walk(s: &mut Snapshot) -> Result {
     step(
         &mut r,
         s,
-        &format!("{walk}: canceled at the deadline"),
+        &format!("{walk}: cancelled at the deadline"),
         5,
         &inv,
         34,

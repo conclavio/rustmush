@@ -489,7 +489,7 @@ pub(super) fn register(
             name: COMMAND.into(),
             switches: vec!["continue".into()],
             shape: mush_core::ArgShape::Raw,
-            help: "Internal bounded paid license settlement.".into(),
+            help: "Internal bounded paid licence settlement.".into(),
             ..Default::default()
         },
         Arc::new(|ctx: &mut mush_core::Ctx<'_>| {

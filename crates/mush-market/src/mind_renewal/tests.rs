@@ -835,7 +835,7 @@ fn the_front_prints_the_minds_words_for_every_state_and_binds_the_operation() ->
     let licence = drafted.binding().licence();
     let shown = licence.get().to_string();
     check_eq!(shown, "7");
-    let not_due = "License 7 is not due for renewal; its term has 1 IC days left.".to_owned();
+    let not_due = "Licence 7 is not due for renewal; its term has 1 IC days left.".to_owned();
     for (row, state) in &personal_rows(&drafted)? {
         let view = super::service::status_view(term_end, row.as_ref());
         let before = front_request(&shown, &view, term_end - 30);
@@ -843,7 +843,7 @@ fn the_front_prints_the_minds_words_for_every_state_and_binds_the_operation() ->
         match state {
             super::player::RenewalState::Drafted => {
                 let lines = vec![
-                    "License 7 renews for 5cr (1+1 IC days); the offer is open 1 more IC hours."
+                    "Licence 7 renews for 5cr (1+1 IC days); the offer is open 1 more IC hours."
                         .to_owned(),
                     "Pay it with +minds/renew/pay 7, or turn it down with +minds/renew/decline 7."
                         .to_owned(),
@@ -976,7 +976,7 @@ fn house_front_words(term_end: i64) -> TestResult {
             RenewalState::Drafted => check_eq!(
                 before,
                 FrontAnswer::Say(vec![
-                    "License 7 renews for 5cr (1+1 IC days); the offer is open 1 more IC hours."
+                    "Licence 7 renews for 5cr (1+1 IC days); the offer is open 1 more IC hours."
                         .to_owned(),
                     "Pay it with +minds/renew/pay 7, or turn it down with +minds/renew/decline 7."
                         .to_owned(),
@@ -993,7 +993,7 @@ fn house_front_words(term_end: i64) -> TestResult {
                 check_eq!(
                     before,
                     FrontAnswer::Refuse(
-                        "License 7 is not due for renewal; its term has 1 IC days left.".to_owned()
+                        "Licence 7 is not due for renewal; its term has 1 IC days left.".to_owned()
                     ),
                     "House {state:?}"
                 );
@@ -1136,7 +1136,7 @@ fn personal_market_identity_strings_hold_todays_bytes() -> TestResult {
     check_eq!(<I as Issuer>::COMMAND, "@mindrenewal");
     check_eq!(
         <I as Issuer>::HELP,
-        "@mindrenewal/status <license> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously."
+        "@mindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously."
     );
     check_eq!(<I as Issuer>::SERVICE_TICK, "personal_mind_renewal_service");
     check_eq!(

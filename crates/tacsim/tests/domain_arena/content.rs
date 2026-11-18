@@ -2840,7 +2840,9 @@ const DRAY_DIGEST: &str = "29251cd41240e93b151230fb76840673a8e678144273675883e4d
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4). Doc 48 unit PL.3: v9, the three space munitions rows (was
 /// `dfdef8b3…` at v8). Doc 48 unit PL.2b: v10, the relay blank (was `4377ca07…` at v9).
-const GOODS_DIGEST: &str = "c1bb52b4340126883682ded1d3c82662443124e17e1046055ca45cff83264b80";
+/// US spelling (2026-11-18): two labels, anti-armor and point-defense, and nothing else (was
+/// `c1bb52b4…`).
+const GOODS_DIGEST: &str = "7fb4b1491b9da718fe26e7d59416a767782db8d3e869926e8e36577c948358ed";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {

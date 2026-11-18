@@ -861,3 +861,65 @@ file = "crates/tacsim/src/minds/market_commands/market.rs"
 word = "licence"
 context = "licence"
 reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+
+[[allow]]
+file = "crates/mush-atlas/content/neighborhood.staff_lobby.json"
+word = "storey"
+context = "storey"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/mush-atlas/content/neighborhood.staff_lobby.json"
+word = "metre"
+context = "A metre and a"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/mush-atlas/content/neighborhood.staff_lobby.json"
+word = "labelled"
+context = "circled and labelled OVERRATED in"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/mush-bot/src/mine/minds.rs"
+word = "licence"
+context = "offer on licence"
+reason = "persisted bytes, Q-46-2: the bot needle mirrors a sentence a doc 46 ct0 snapshot pins"
+
+
+[[allow]]
+file = "crates/mush-market/src/mind_house_renewal/mod.rs"
+word = "licence"
+context = "@housemindrenewal/status <licence> — inspect"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/mod.rs"
+word = "licence"
+context = "@mindrenewal/status <licence> — inspect"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-roll/src/commerce/paid_resale/service.rs"
+word = "licence"
+context = "bounded paid licence settlement."
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-roll/src/commerce/registry_recall/notice.rs"
+word = "licence"
+context = "@mindrecall/status <your licence> — inspect"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-roll/src/commerce/registry_revocation/notice.rs"
+word = "licence"
+context = "@mindrevoke/status <your licence>[/term] — inspect"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/tacsim/src/minds/bulk/registry_service.rs"
+word = "licence"
+context = "licence"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"

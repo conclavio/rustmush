@@ -94,7 +94,7 @@ pub mod renewal {
     /// `mush_market::mind_renewal::player::RENEW_NOT_DUE`.
     pub const RENEW_NOT_DUE: &str = "is not due for renewal; its term has";
     /// `mush_market::mind_renewal::player::RENEWING`.
-    pub const RENEWING: &str = "Asking for a renewal offer on license";
+    pub const RENEWING: &str = "Asking for a renewal offer on licence";
     /// `mush_market::mind_renewal::player::RENEW_OFFER`.
     pub const RENEW_OFFER: &str = "IC days); the offer is open";
     /// `mush_market::mind_renewal::player::RENEW_HOW`.
@@ -104,7 +104,7 @@ pub mod renewal {
     /// `mush_market::mind_renewal::player::RENEW_PAYING`.
     pub const RENEW_PAYING: &str = "into escrow; it completes on its own.";
     /// `mush_market::mind_renewal::player::RENEW_DECLINING`.
-    pub const RENEW_DECLINING: &str = "Turning down the renewal offer on license";
+    pub const RENEW_DECLINING: &str = "Turning down the renewal offer on licence";
     /// `mush_market::mind_renewal::player::RENEW_STOPPED`.
     pub const RENEW_STOPPED: &str = "Nothing further will be tried.";
     /// `mush_market::mind_renewal::player::STATUS_NONE`.

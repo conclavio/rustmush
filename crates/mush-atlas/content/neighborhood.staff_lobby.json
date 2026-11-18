@@ -3,7 +3,7 @@
     "id": "neighborhood.staff_lobby",
     "version": 5,
     "kind": "neighborhood",
-    "digest": "bec450b5220c5a051da2a3eeb57ffc5e8bc7f72e589a7e2efc9604cbc31d667b",
+    "digest": "dacbc7af257e6eececdbd28218945ede03a9114d2274a7031f5ecabcdc938adf",
     "requires": [
       {
         "id": "region.limbo",
@@ -16,7 +16,7 @@
     ]
   },
   "brief": {
-    "prose": "The Staff Lobby: the studio's front office in the north-east of the lot. A forecourt and bus stop where the tour arrives; a two-story lobby building with reception, the staff breakroom and, up the stairs on the mezzanine, the restricted production office; the souvenir shop; the backlot with its raised loading dock; the back-lot coffee shop where the open house happens; and the writers' room, which is the builders' front desk. Every NPC room is public. One secret: why the tour is late.",
+    "prose": "The Staff Lobby: the studio's front office in the north-east of the lot. A forecourt and bus stop where the tour arrives; a two-storey lobby building with reception, the staff breakroom and, up the stairs on the mezzanine, the restricted production office; the souvenir shop; the backlot with its raised loading dock; the back-lot coffee shop where the open house happens; and the writers' room, which is the builders' front desk. Every NPC room is public. One secret: why the tour is late.",
     "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
     "answers": {
       "q.public_role": "the staff's front door",
@@ -384,7 +384,7 @@
         },
         "desc": "A staff breakroom: a fridge with names on things, a table of dice and character sheets, and a whiteboard of scene ideas half rubbed out. Phil is off the clock and will tell you so. The lobby is west.",
         "details": {
-          "whiteboard": "Storyline ideas, ranked. One is circled and labeled OVERRATED in Phil's hand."
+          "whiteboard": "Storyline ideas, ranked. One is circled and labelled OVERRATED in Phil's hand."
         }
       }
     },
@@ -467,7 +467,7 @@
         },
         "desc": "The back lot: a broad service road behind the front office, a raised loading dock at its east end, and the weather, which Karen Smith is reading. The coffee shop and the writers' room open onto it from the south; the forecourt is south-west.",
         "details": {
-          "loading dock": "A meter and a bit up, with a ramp. A good place to watch a sky from."
+          "loading dock": "A metre and a bit up, with a ramp. A good place to watch a sky from."
         }
       }
     },

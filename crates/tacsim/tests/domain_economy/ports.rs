@@ -1121,7 +1121,7 @@ fn ic3_a_cancelled_tranche_reads_missing_not_pending() {
     assert!(
         out.contains(&format!(
             "  stickney_port org kasei: Kasei Metals, org #{}, account #{}; capital obligation \
-             #{obligation} is canceled, and no sweep will settle it. [missing]",
+             #{obligation} is cancelled, and no sweep will settle it. [missing]",
             kasei.org,
             kasei.account.expect("an account")
         )),

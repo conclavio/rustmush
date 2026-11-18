@@ -1696,7 +1696,7 @@ mod tests {
             "naming the drone moves it: 24 is every unit an arena places"
         );
         assert_eq!(
-            caps("[tacsim.arena.max_units_by_class]\ndrone = 0\narmor = 0\n"),
+            caps("[tacsim.arena.max_units_by_class]\ndrone = 0\narmour = 0\n"),
             std::collections::BTreeMap::from([(UnitClass::Armour, 0), (UnitClass::Drone, 0)]),
             "0 is legal and forbids the class; the header spelling maps the same"
         );

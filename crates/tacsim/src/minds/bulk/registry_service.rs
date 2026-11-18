@@ -369,7 +369,7 @@ pub(in crate::minds) fn rating_held(w: &mush_core::World, actor: ObjId) -> bool 
 /// lines inside the 120-column floor; the line break stands in for the `; `
 /// that joined `@registry/cancel` to the second clause (17g C2e hygiene; the
 /// help prose itself stays as written, the lead's ruling R5).
-pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <license> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull>, @registry/fine <hull>[/<n>] <amount> and @registry/claims (Registry operators)\n@registry/seize <hull> and @registry/forfeit <hull>[/<n>] (Registry operators)";
+pub(crate) const HELP: &str = "@registry/rate <owned mind number>/<saved revision>; @registry/cancel\n@registry/recall <filed>, @registry/revoke <licence> or principal=<who> <hull>[/<n>] (Registry operators)\n@registry/inspect <hull>, @registry/fine <hull>[/<n>] <amount> and @registry/claims (Registry operators)\n@registry/seize <hull> and @registry/forfeit <hull>[/<n>] (Registry operators)";
 
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // 17g C2d: the operators' commands answer for themselves (the driver's

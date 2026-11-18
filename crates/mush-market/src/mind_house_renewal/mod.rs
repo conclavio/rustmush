@@ -182,7 +182,7 @@ impl Issuer for House {
     ];
     const SERVICE_VERB: &'static str = "house-renewal-service";
     const COMMAND: &'static str = "@housemindrenewal";
-    const HELP: &'static str = "@housemindrenewal/status <license> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously.";
+    const HELP: &'static str = "@housemindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously.";
     const SERVICE_TICK: &'static str = "house_mind_renewal_service";
     const INTENT_DOMAIN: &'static str = "market.house_renewal_service_intent.v1";
     const SUBMISSION_DOMAIN: &'static str = "market.house_renewal_submission.v1";

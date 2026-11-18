@@ -1059,7 +1059,7 @@ fn renewal_offer_lines_round_hours_up() -> TestResult {
     check_eq!(
         offer_text("41", 50_000, 90 * DAY, 3 * DAY, now + 24 * HOUR - 1, now),
         [
-            "License 41 renews for 500cr (90+3 IC days); the offer is open 24 more IC hours."
+            "Licence 41 renews for 500cr (90+3 IC days); the offer is open 24 more IC hours."
                 .to_owned(),
             "Pay it with +minds/renew/pay 41, or turn it down with +minds/renew/decline 41."
                 .to_owned(),
@@ -1067,7 +1067,7 @@ fn renewal_offer_lines_round_hours_up() -> TestResult {
     );
     check_eq!(
         offer_text("41", 1_250, 90 * DAY - 1, 0, now - 5, now)[0],
-        "License 41 renews for 12.50cr (90+0 IC days); the offer is open 0 more IC hours."
+        "Licence 41 renews for 12.50cr (90+0 IC days); the offer is open 0 more IC hours."
     );
     Ok(())
 }

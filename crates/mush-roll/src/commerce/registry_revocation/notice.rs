@@ -390,7 +390,7 @@ pub(crate) fn register(
     let command_service = service.clone();
     reg.classify_commands(CommandCompatibility::ReadOnly);
     reg.command(CommandSpec{name:COMMAND.into(),switches:vec!["status".into()],shape:ArgShape::Raw,
-        help:"@mindrevoke/status <your license>[/term] — inspect Registry revocation of your accepted term.".into(),..Default::default()},
+        help:"@mindrevoke/status <your licence>[/term] — inspect Registry revocation of your accepted term.".into(),..Default::default()},
         Arc::new(move|ctx:&mut Ctx<'_>|command(ctx,&command_service)))?;
     reg.tick(
         "registry_revocation_notices",

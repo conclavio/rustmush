@@ -106,7 +106,7 @@ impl FactoryRig {
         Ok(())
     }
     pub(super) fn licence(&mut self) -> Result<AccountId> {
-        self.control("@delivery-fixture license")?;
+        self.control("@delivery-fixture licence")?;
         self.control(&format!("@account/open #{}={LICENCE}", self.buyer.0))?;
         self.control(&format!("@account/system core.licence.fixture={LICENCE}"))?;
         let s = self

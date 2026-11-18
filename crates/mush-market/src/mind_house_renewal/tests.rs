@@ -580,7 +580,7 @@ fn house_market_identity_strings_hold_todays_bytes() -> TestResult {
     check_eq!(<I as Issuer>::COMMAND, "@housemindrenewal");
     check_eq!(
         <I as Issuer>::HELP,
-        "@housemindrenewal/status <license> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously."
+        "@housemindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously."
     );
     check_eq!(<I as Issuer>::SERVICE_TICK, "house_mind_renewal_service");
     check_eq!(
