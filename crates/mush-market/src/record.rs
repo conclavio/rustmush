@@ -2049,7 +2049,7 @@ pub enum ServiceKind {
 
 impl ServiceKind {
     /// Every kind, in board order.
-    pub const ALL: [ServiceKind; 5] = [
+    pub const ALL: [ServiceKind; 6] = [
         ServiceKind::Retrieval,
         ServiceKind::Passage,
         ServiceKind::Survey,
