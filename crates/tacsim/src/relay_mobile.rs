@@ -396,9 +396,7 @@ fn tick(ctx: &mut Ctx<'_>) -> Result<(), String> {
     finish(ctx, p)
 }
 fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let mut p = current(ctx.w)
-        .cloned()
-        .ok_or("Fleet program not present")?;
+    let mut p = current(ctx.w).cloned().ok_or("Fleet program not present")?;
     clock_ok(ctx.w, &p)?;
     if ctx.switches.has("fund") {
         if !mush_economy::acts_for(ctx.w, ctx.actor, &PrincipalId::Organization(p.fleet)) {

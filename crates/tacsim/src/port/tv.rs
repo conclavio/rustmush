@@ -5349,8 +5349,7 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
     if crate::port::yard::yard_of_hull(w, hull).is_some() {
         return Err("the yard hull is never repossessed".to_owned());
     }
-    let view =
-        hull_view(w, hull).ok_or_else(|| format!("hull #{} has no program view", hull.0))?;
+    let view = hull_view(w, hull).ok_or_else(|| format!("hull #{} has no program view", hull.0))?;
     let port = programme_port(w).ok_or_else(|| "no program port".to_owned())?;
     let lessor =
         lessor_of(w, &port).ok_or_else(|| "the program port authors no rig lessor".to_owned())?;

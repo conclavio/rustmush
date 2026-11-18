@@ -963,7 +963,10 @@ fn the_british_enrol_switch_is_an_alias_of_enroll() {
     assert!(out.contains("now the Grey Heron"), "{out}");
     let help = run(&mut rig.tw, us, "help +coop");
     assert!(help.contains("/enroll"), "{help}");
-    assert!(help.contains("(switch aliases: /enrol = /enroll)"), "{help}");
+    assert!(
+        help.contains("(switch aliases: /enrol = /enroll)"),
+        "{help}"
+    );
 }
 
 // ---------------------------------------------------------------------------

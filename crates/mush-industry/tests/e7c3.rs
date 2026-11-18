@@ -2965,5 +2965,8 @@ fn the_british_licence_verb_is_an_alias_of_license() {
     let us = world.exec_ok(player, "@license/show");
     assert!(!us.is_empty(), "@license/show answers");
     assert_eq!(world.exec_ok(player, "@licence/show"), us);
-    assert_eq!(world.exec_ok(player, "@licence"), world.exec_ok(player, "@license"));
+    assert_eq!(
+        world.exec_ok(player, "@licence"),
+        world.exec_ok(player, "@license")
+    );
 }

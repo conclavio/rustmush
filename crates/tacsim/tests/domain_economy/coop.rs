@@ -396,7 +396,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// The Trust's programme account.
 fn trust_account(tw: &TestWorld) -> mush_economy::AccountId {
     let def = port_def("ceres_port");
-    let org = def.programme.expect("a programme").org;
+    let org = def.programme.expect("a program").org;
     mush_economy::AccountId(
         ceres_map(tw).orgs[&org]
             .account
@@ -406,7 +406,7 @@ fn trust_account(tw: &TestWorld) -> mush_economy::AccountId {
 
 fn trust(tw: &TestWorld) -> PrincipalId {
     let def = port_def("ceres_port");
-    let org = def.programme.expect("a programme").org;
+    let org = def.programme.expect("a program").org;
     PrincipalId::Organization(OrgId(ceres_map(tw).orgs[&org].org))
 }
 
@@ -455,7 +455,7 @@ fn lease_of(tw: &TestWorld, pilot: ObjId) -> ContractId {
 /// Enrol `pilot` (at the desk) as `ship`; the reply. (The desk opens only once the
 /// ports' stock is seeded and listed — doc 18 cut IC8 — which [`boot`] sees to.)
 fn enrol(rig: &mut Rig, pilot: ObjId, ship: &str) -> String {
-    run(&mut rig.tw, pilot, &format!("+coop/enrol {ship}"))
+    run(&mut rig.tw, pilot, &format!("+coop/enroll {ship}"))
 }
 
 /// A fresh request/commit token per landing, across every test in the process.
@@ -728,11 +728,11 @@ fn load_cells(indent: &str) -> Vec<String> {
         format!("{indent}30 mm AP rounds: 0 t · 0.0 m³"),
         format!("{indent}7.62 mm ball, boxed: 0 t · 0.0 m³"),
         format!("{indent}105 mm HE rounds: 0 t · 0.0 m³"),
-        format!("{indent}anti-armour missiles, canistered: 0 t · 0.0 m³"),
+        format!("{indent}anti-armor missiles, canistered: 0 t · 0.0 m³"),
         // Doc 48 unit PL.3: the space munitions, three more zero cells.
         format!("{indent}space torpedoes, canistered: 0 t · 0.0 m³"),
         format!("{indent}spinal gun rounds: 0 t · 0.0 m³"),
-        format!("{indent}point-defence rounds, boxed: 0 t · 0.0 m³"),
+        format!("{indent}point-defense rounds, boxed: 0 t · 0.0 m³"),
         format!("{indent}TOTAL: 100 t · 120.0 m³"),
         format!("{indent}LIMIT: 100 t · 120 m³"),
         format!("{indent}FULL: mass and packed volume"),
@@ -887,7 +887,7 @@ fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
         attr_text(&rig.tw, hull, "desc").as_deref(),
         Some(
             "A Dray-class bulk hauler, FPC-D-0401, cradled with its umbilicals slack: blunt, \
-             grey and webbed with reaction-mass hoses."
+             gray and webbed with reaction-mass hoses."
         )
     );
     let hull_owner = rig.tw.world().get(hull).expect("the hull").owner;
@@ -901,7 +901,7 @@ fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
     let account_id = account("PilotAcct", 1);
     let e = match store(&rig.tw).enrolment_state(account_id) {
         EnrolmentState::Present(e) => e.clone(),
-        other => panic!("the enrolment: {other:?}"),
+        other => panic!("the enrollment: {other:?}"),
     };
     assert_eq!(e.pilot, who);
     assert_eq!(e.hull, hull);
@@ -928,7 +928,7 @@ fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
                 registrar.as_str(),
                 "Terms: a 25000.00cr stake; 250‰ of trading margin over the Co-op's reference \
                  prices; buyout 90000.00cr, fixed at signing (a new Dray from the Yard is \
-                 120000.00cr); one enrolment per pilot, ever.",
+                 120000.00cr); one enrollment per pilot, ever.",
                 "Drays free: 7 of 8.",
                 "Your charter: the Salt Moth (FPC-D-0401); buyout 90000.00cr. +coop/statement \
                  reads your lay.",
@@ -943,7 +943,7 @@ fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
         has_block(
             &statement,
             &[
-                "Statement: the Salt Moth (FPC-D-0401), First Captain programme.",
+                "Statement: the Salt Moth (FPC-D-0401), First Captain program.",
                 "  Terms: stake 25000.00cr; 250‰ of trading margin; buyout 90000.00cr.",
                 "  Sales: 0; margin 0.00cr; Co-op share paid 0.00cr.",
                 "  Cash: 25000.00cr available; the buyout is 90000.00cr.",
@@ -993,7 +993,7 @@ fn ic6_a_second_enrolment_from_the_same_account_is_refused_for_ever() {
     // is on them, never invited to an enrolment the desk refuses.
     let alt_terms = run(&mut rig.tw, alt, "+coop");
     assert!(alt_terms.contains(ENROLLED_ONCE), "{alt_terms}");
-    assert!(!alt_terms.contains("Enrol at"), "{alt_terms}");
+    assert!(!alt_terms.contains("Enroll at"), "{alt_terms}");
     // A pilot on another account is chartered the next hull.
     let other = pilot(&mut rig, "Other", 2);
     let out = enrol(&mut rig, other, "Second Wind");
@@ -1028,14 +1028,14 @@ fn ic6_enrol_refuses_away_from_the_desk_and_without_its_prerequisites() {
     teleport(&mut rig.tw, who, gallery);
     let out = enrol(&mut rig, who, "Salt Moth");
     assert!(
-        out.contains("Enrolment is signed at the Registry & Co-op Desk in Ceres Freeport."),
+        out.contains("Enrollment is signed at the Registry & Co-op Desk in Ceres Freeport."),
         "{out}"
     );
     // `+coop` anywhere invites the unenrolled to the desk.
     let terms = run(&mut rig.tw, who, "+coop");
     assert!(
         terms.contains(
-            "Enrol at the Registry & Co-op Desk in Ceres Freeport: +coop/enrol <a name for your \
+            "Enroll at the Registry & Co-op Desk in Ceres Freeport: +coop/enroll <a name for your \
              ship>."
         ),
         "{terms}"
@@ -1043,7 +1043,7 @@ fn ic6_enrol_refuses_away_from_the_desk_and_without_its_prerequisites() {
     let desk = c05(&rig.tw);
     teleport(&mut rig.tw, who, desk);
     // No name.
-    let out = run(&mut rig.tw, who, "+coop/enrol");
+    let out = run(&mut rig.tw, who, "+coop/enroll");
     assert!(out.contains(NAME_USAGE), "{out}");
     // A bad name.
     for bad in [
@@ -1159,7 +1159,7 @@ fn ic8_the_desk_stays_closed_until_the_ports_are_stocked() {
     let before = counts(&rig.tw);
     let out = enrol(&mut rig, who, "Salt Moth");
     assert!(out.contains(NOT_OPEN), "{out}");
-    assert_eq!(counts(&rig.tw), before, "a refused enrol wrote something");
+    assert_eq!(counts(&rig.tw), before, "a refused enroll wrote something");
     ensure_stocked(&mut rig);
     let out = enrol(&mut rig, who, "Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
@@ -1525,7 +1525,7 @@ fn ic6_eight_simulated_days_raise_no_stale_contract_page() {
             .state,
         ContractState::Active
     );
-    let e = store(&rig.tw).enrolment_of(who).expect("the enrolment");
+    let e = store(&rig.tw).enrolment_of(who).expect("the enrollment");
     assert_eq!(e.status, EnrolmentStatus::Active);
     assert_eq!(e.ended, None);
     // The recall arm did judge her dormant (the eight days were real to it) and was
@@ -1561,7 +1561,7 @@ fn ic6_staff_cancel_revokes_the_charter_and_the_gate_reads_the_lease() {
     );
     let e = store(&rig.tw)
         .enrolment_of(who)
-        .expect("the enrolment")
+        .expect("the enrollment")
         .clone();
     assert_eq!(e.status, EnrolmentStatus::Revoked);
     assert_eq!(tacsim::port::live_charter(rig.tw.world(), who), None);
@@ -1630,7 +1630,7 @@ fn coop_a_real_week_idle_recalls_the_dray_and_the_pilot_charters_again() {
     let first_lease = lease_of(&rig.tw, who);
     let first = store(&rig.tw)
         .enrolment_of(who)
-        .expect("the enrolment")
+        .expect("the enrollment")
         .clone();
     let acct = own_account(&rig.tw, who).expect("the pilot's account");
     let staked = balance(&rig.tw, acct);
@@ -1639,7 +1639,7 @@ fn coop_a_real_week_idle_recalls_the_dray_and_the_pilot_charters_again() {
     // A real week less an hour: the charter stands.
     let now = rig.tw.world().now();
     sweep(&mut rig.tw, first.leased_at + WEEK - 3_600 - now);
-    let e = store(&rig.tw).enrolment_of(who).expect("the enrolment");
+    let e = store(&rig.tw).enrolment_of(who).expect("the enrollment");
     assert_eq!(e.status, EnrolmentStatus::Active, "kept under the week");
     assert!(tacsim::port::live_charter(rig.tw.world(), who).is_some());
 
@@ -1650,7 +1650,7 @@ fn coop_a_real_week_idle_recalls_the_dray_and_the_pilot_charters_again() {
     let told = said(&rig.tw, &events, who);
     let e = store(&rig.tw)
         .enrolment_of(who)
-        .expect("the enrolment")
+        .expect("the enrollment")
         .clone();
     assert_eq!(e.status, EnrolmentStatus::Revoked, "recalled past the week");
     assert_eq!(e.ended, Some(EndCause::Dormant));
@@ -1692,7 +1692,7 @@ fn coop_a_real_week_idle_recalls_the_dray_and_the_pilot_charters_again() {
     );
     let again = store(&rig.tw)
         .enrolment_of(who)
-        .expect("the enrolment")
+        .expect("the enrollment")
         .clone();
     assert_eq!(again.status, EnrolmentStatus::Active);
     assert_eq!(again.name, "Second Wind");
@@ -1813,7 +1813,7 @@ fn ic13_a_staff_cancelled_hull_reads_recalled_until_the_return_arm_takes_it_back
     let _ = rig.tw.run(GOD, &format!("@contract/cancel #{}", lease.0));
     let e = store(&rig.tw)
         .enrolment_of(who)
-        .expect("the enrolment")
+        .expect("the enrollment")
         .clone();
     assert_eq!(e.status, EnrolmentStatus::Revoked);
     assert_eq!(e.ended, Some(tacsim::port::EndCause::LeaseEnded));
@@ -2048,7 +2048,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
                 "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
                 "Hold: cargo 100/100 t · 120.0/120 m³ · tank 53/80 t · locker 19/120 crew-days.",
                 "Radio: about 1 IC seconds one way to an Exchange endpoint; queue time and returning acknowledgements are additional.",
-                "Programme: 0 sales; buyout 90000.00cr.",
+                "Program: 0 sales; buyout 90000.00cr.",
             ]
         ),
         "{out}"
@@ -2117,7 +2117,7 @@ fn ic6_the_charter_survives_a_reboot() {
         let doc = folded
             .get_mut(tacsim::NS)
             .and_then(|data| data.kv.iter_mut().find(|(k, _)| *k == key))
-            .expect("the enrolment document");
+            .expect("the enrollment document");
         doc.1 = serde_json::json!({ "schema": 1, "nonsense": true });
     });
     let _ = rig.tw.connect(who);
@@ -2133,7 +2133,7 @@ fn ic6_the_charter_survives_a_reboot() {
             &[
                 "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
                 "Hold: cargo 100/100 t · 120.0/120 m³ · tank 53/80 t · locker 19/120 crew-days.",
-                "Programme: the Co-op's books cannot be read.",
+                "Program: the Co-op's books cannot be read.",
             ]
         ),
         "{out}"
@@ -2269,7 +2269,7 @@ fn ic6_a_disputed_lease_is_not_in_force() {
         ),
         "{terms}"
     );
-    assert!(!terms.contains("Enrol at"), "{terms}");
+    assert!(!terms.contains("Enroll at"), "{terms}");
     let statement = run(&mut rig.tw, who, "+coop/statement");
     assert!(
         statement.contains("  Charter: not in force."),
@@ -2310,7 +2310,7 @@ fn ic8_enrolment_checks_its_document_before_writing() {
     assert!(out.contains("now the Salt Moth"), "{out}");
     let laid_up = match store(&rig.tw).enrolment_state(account("PilotAcct", 1)) {
         EnrolmentState::Present(e) => e.laid_up_name.clone(),
-        other => panic!("the enrolment is not present: {other:?}"),
+        other => panic!("the enrollment is not present: {other:?}"),
     };
     assert_eq!(
         laid_up.len(),
@@ -2414,11 +2414,11 @@ fn ic14_a_failed_stake_post_leaves_the_recorded_residue() {
     assert_eq!(
         leases,
         vec![ContractState::Cancelled],
-        "one lease, Cancelled"
+        "one lease, Canceled"
     );
     assert!(
         store(&rig.tw).enrolment_of(who).is_none(),
-        "no enrolment document"
+        "no enrollment document"
     );
 }
 
@@ -2432,13 +2432,13 @@ fn ic14_a_revocation_survives_a_reboot() {
     let _ = rig.tw.run(GOD, &format!("@contract/cancel #{}", lease.0));
     let before = store(&rig.tw)
         .enrolment_of(who)
-        .expect("the enrolment")
+        .expect("the enrollment")
         .clone();
     assert_eq!(before.status, EnrolmentStatus::Revoked);
     let mut rig = reboot_with(rig, Roster::bare(), |_| {});
     let after = store(&rig.tw)
         .enrolment_of(who)
-        .expect("the enrolment after the reboot")
+        .expect("the enrollment after the reboot")
         .clone();
     assert_eq!(after, before, "the revocation is durable");
     let gallery = c01(&rig.tw);
@@ -2579,7 +2579,7 @@ fn npc_coop_obeys_the_same_disabled_and_missing_programme_gates() {
             let Err(mush_core::InterfaceError::Refused(line)) =
                 coop_reply(tw, GOD, GOD, ability, serde_json::json!({}))
             else {
-                panic!("{ability} must refuse on an unavailable programme");
+                panic!("{ability} must refuse on an unavailable program");
             };
             assert_eq!(line, expected);
         }

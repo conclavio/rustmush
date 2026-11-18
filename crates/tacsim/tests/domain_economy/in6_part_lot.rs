@@ -200,14 +200,8 @@ async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
         .iter()
         .find(|j| matches!(&j.job, tacsim::port::bay_work::BayJob::Replace { component, .. } if *component == cannon))
         .expect("the cannon's replace");
-    assert_eq!(
-        replace.cost_minor, 48_000,
-        "400 of labor at Occator's 1.2x"
-    );
-    assert_eq!(
-        replace.part_minor, 2_800_000,
-        "the cannon's catalog 28,000"
-    );
+    assert_eq!(replace.cost_minor, 48_000, "400 of labor at Occator's 1.2x");
+    assert_eq!(replace.part_minor, 2_800_000, "the cannon's catalog 28,000");
     assert!(
         quote.contains("replace") && quote.contains("from the workshop's stores"),
         "{quote}"

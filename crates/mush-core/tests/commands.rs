@@ -2281,7 +2281,8 @@ fn a_switch_alias_reaches_the_handler_as_its_canonical_switch() {
     let echo = || {
         Arc::new(|ctx: &mut Ctx<'_>| {
             let seen: Vec<&str> = ctx.switches.iter().collect();
-            ctx.out.info(ctx.actor, format!("switches: {}", seen.join(",")));
+            ctx.out
+                .info(ctx.actor, format!("switches: {}", seen.join(",")));
             Ok(())
         })
     };
@@ -2310,5 +2311,8 @@ fn a_switch_alias_reaches_the_handler_as_its_canonical_switch() {
     let header = mush_core::commands::info::help_entry(&g.reg, &g.w, ann, "+sign")
         .expect("+sign has help")
         .header;
-    assert!(header.contains("(switch aliases: /enrol = /enroll)"), "{header}");
+    assert!(
+        header.contains("(switch aliases: /enrol = /enroll)"),
+        "{header}"
+    );
 }

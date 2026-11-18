@@ -298,11 +298,7 @@ pub(crate) fn template<'a>(
     store: &'a TacsimStore,
     programme: &ProgrammeDef,
 ) -> Result<(&'a InteriorDef, &'a mush_tactics::UnitSpec), String> {
-    template_of(
-        store,
-        &format!("program {}", programme.id),
-        &programme.unit,
-    )
+    template_of(store, &format!("program {}", programme.id), &programme.unit)
 }
 
 /// **A hull unit's interior template and its binding's instantiation shape**, or the refusal

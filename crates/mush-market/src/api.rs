@@ -1006,9 +1006,7 @@ fn draw_listing_precheck(
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     }
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
-        return Err(MarketError::bad(
-            "That catalog code is not a commodity id.",
-        ));
+        return Err(MarketError::bad("That catalog code is not a commodity id."));
     };
     if ctx
         .w
@@ -1381,9 +1379,7 @@ pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, Mar
         ));
     }
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
-        return Err(MarketError::bad(
-            "That catalog code is not a commodity id.",
-        ));
+        return Err(MarketError::bad("That catalog code is not a commodity id."));
     };
     if spec.vault != vendor.vault {
         return Err(MarketError::bad(

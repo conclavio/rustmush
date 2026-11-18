@@ -162,8 +162,10 @@ fn skipped(text: &[u8], start: usize, end: usize) -> bool {
     let next = at(end);
     let after = at(end + 1);
     let identish = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'{' | b'<' | b'_');
-    matches!(prev, b':' | b'.' | b'_' | b'{' | b'"' | b'\'' | b'\\' | b'@' | b'+' | b'/')
-        || matches!(next, b'_' | b'}' | b'"' | b'\\')
+    matches!(
+        prev,
+        b':' | b'.' | b'_' | b'{' | b'"' | b'\'' | b'\\' | b'@' | b'+' | b'/'
+    ) || matches!(next, b'_' | b'}' | b'"' | b'\\')
         || (matches!(next, b'.' | b':') && identish(after))
         || (prev == b'`' && next == b'`')
         || (next == b'/' && identish(after))
@@ -418,7 +420,8 @@ fn command_hits(deny: &Denylist) -> Vec<Hit> {
     let composition = production_composition();
     let mut hits = Vec::new();
     for spec in composition.registry().specs() {
-        let words = std::iter::once(spec.name.as_str()).chain(spec.switches.iter().map(|s| s.as_str()));
+        let words =
+            std::iter::once(spec.name.as_str()).chain(spec.switches.iter().map(|s| s.as_str()));
         for written in words {
             for word in written
                 .split(|c: char| !c.is_ascii_alphabetic())
@@ -550,7 +553,11 @@ fn the_reader_keeps_case_and_skips_identifiers_and_command_tokens() {
         "type +licence/buy or @licence/show or +coop/enrol",
         "licence_id and licence2 are code",
     ] {
-        assert!(words(identifier).is_empty(), "{identifier}: {:?}", words(identifier));
+        assert!(
+            words(identifier).is_empty(),
+            "{identifier}: {:?}",
+            words(identifier)
+        );
     }
     assert_eq!(
         words("your licence."),
@@ -610,8 +617,14 @@ fn a_packs_reader_skips_notes_keywords_and_exit_aliases() {
     assert_eq!(
         hits,
         vec![
-            ("/entries/room.office/def/desc".to_string(), "harbourmaster".to_string()),
-            ("/entries/room.office/def/desc".to_string(), "grey".to_string()),
+            (
+                "/entries/room.office/def/desc".to_string(),
+                "harbourmaster".to_string()
+            ),
+            (
+                "/entries/room.office/def/desc".to_string(),
+                "grey".to_string()
+            ),
         ]
     );
 }

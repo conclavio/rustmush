@@ -775,7 +775,7 @@ pub mod coop {
     pub const RECHARTER_WAIT: &str = "; charter again once she is in its pool.";
     /// `tacsim::port::coop::RECHARTER_HINT`'s head: the way back.
     pub const RECHARTER_HINT: &str =
-        "To fly again, charter another Dray: +coop/enrol <ship name> at the ";
+        "To fly again, charter another Dray: +coop/enroll <ship name> at the ";
     /// `tacsim::port::coop::RECHARTERED_TERMS`'s head: a re-charter's terms.
     pub const RECHARTERED_TERMS: &str = "No second stake: the Co-op stakes a captain once. Buyout ";
     /// `tacsim::port::coop::REGISTRAR_LINE`'s last sentence: the recall and the way back.

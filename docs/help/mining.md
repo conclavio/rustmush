@@ -34,6 +34,8 @@ once title has passed, you can lease them again.
   +tv/lease [go]           lease a rig into a free bay slot
   +tv/lease escort [go]    lease an escort line tank, armed, under the escort clearance
 
+`+licence`, the British spelling, still works as an alias of `+license`.
+
 Occator also leases an armed escort hull into the same bay (`+tv/lease escort`).
 It needs the escort clearance: a license in force (its grace does not serve), no
 lease of yours forfeit, one armed hull at a time, and none written off in the

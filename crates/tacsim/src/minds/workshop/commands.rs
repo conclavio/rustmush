@@ -650,8 +650,7 @@ impl InputContext for Paste {
             if let Some(session) = &self.marked {
                 session.emit(ctx, "Paste unavailable.");
             } else {
-                ctx.out
-                    .error(ctx.actor, "Paste canceled; session changed.");
+                ctx.out.error(ctx.actor, "Paste canceled; session changed.");
             }
             return ContextOutcome::Pop;
         }

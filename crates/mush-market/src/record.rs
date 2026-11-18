@@ -392,9 +392,7 @@ pub fn check_entry(e: &CatalogEntry) -> Result<(), RecordError> {
         || e.catalog.code.trim().is_empty()
         || e.catalog.code.len() > MAX_CATALOG_CODE_BYTES
     {
-        return Err(RecordError(
-            "a catalog entry names no usable catalog code",
-        ));
+        return Err(RecordError("a catalog entry names no usable catalog code"));
     }
     if !e
         .catalog
@@ -402,9 +400,7 @@ pub fn check_entry(e: &CatalogEntry) -> Result<(), RecordError> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
     {
-        return Err(RecordError(
-            "a catalog code holds a character a key cannot",
-        ));
+        return Err(RecordError("a catalog code holds a character a key cannot"));
     }
     if e.name.trim().is_empty() || e.name.len() > MAX_ENTRY_NAME_BYTES {
         return Err(RecordError("a catalog entry's name is empty or too long"));
