@@ -492,45 +492,42 @@ async fn kill9_journey_local_twin_in_memory() {
 #[tokio::test(flavor = "multi_thread")]
 async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     use mush_store::RedisStore;
-    use support::{Term, wait_until};
+    use support::{STEP_TIMEOUT, Term, wait_until};
 
     async fn command(term: &mut Term, line: &str, expected: &str) -> String {
-        // The SSH listener can bind before the world's initial durable fence
-        // clears. Match the existing split-process harness's bounded readiness
-        // retry; a refused connection has not entered the game or run a command.
-        if line.starts_with("connect ") {
-            let mut reply = String::new();
-            wait_until(
-                Duration::from_secs(60),
-                "world connection boundary",
-                async || {
-                    let mark = term.mark();
-                    term.send_line(line).await;
-                    let ready = term
-                        .expect_one_of_after(
-                            mark,
-                            &[
-                                expected,
-                                "Connection failed:",
-                                "You're doing that too fast.",
-                            ],
-                        )
-                        .await
-                        == 0;
-                    reply = strip_ansi(&term.seen[mark..]);
-                    if !ready {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                    ready
-                },
-            )
-            .await;
-            return reply;
+        // Two refusals mean the line never ran, so sending it again is safe:
+        // - The SSH listener can bind before the world's initial durable fence
+        //   clears. A refused `connect` has not entered the game; match the
+        //   split-process harness's bounded readiness retry.
+        // - The world defers a line behind a slow store commit for 250 ms and
+        //   then refuses it ("... please retry in a moment."), as every other
+        //   rig's commit-pending needle expects. Under a loaded runner a staff
+        //   line can hit that window; retry it rather than wait out the step.
+        const RETRY: &str = "please retry in a moment";
+        let connect = line.starts_with("connect ");
+        let mut needles = vec![expected, RETRY];
+        if connect {
+            needles.extend(["Connection failed:", "You're doing that too fast."]);
         }
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.expect_after(mark, expected).await;
-        strip_ansi(&term.seen[mark..])
+        // Each attempt's own wait panics with the transcript after one step;
+        // the outer bound caps a run of refusals at two steps.
+        let mut reply = String::new();
+        wait_until(
+            STEP_TIMEOUT * 2,
+            &format!("{line:?} to answer {expected:?} without a retry refusal"),
+            async || {
+                let mark = term.mark();
+                term.send_line(line).await;
+                let done = term.expect_one_of_after(mark, &needles).await == 0;
+                reply = strip_ansi(&term.seen[mark..]);
+                if !done && connect {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                done
+            },
+        )
+        .await;
+        reply
     }
     async fn record(store: &RedisStore, id: u32) -> serde_json::Value {
         store
@@ -540,8 +537,30 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
             .expect("durable envelope")
     }
     async fn barrier(term: &mut Term) {
-        command(term, "@dump", "@dump: snapshot acknowledged by the store.").await;
+        // The store writer is FIFO, so an acknowledged `@dump` means every
+        // earlier write landed. Redis refuses a BGSAVE while another fork runs
+        // (an automatic AOF rewrite, or the previous barrier's save still
+        // finishing); that refusal is no failed write, so ask again. Any other
+        // `@dump failed` matches nothing here and fails the step.
+        wait_until(STEP_TIMEOUT * 2, "@dump to be acknowledged", async || {
+            let mark = term.mark();
+            term.send_line("@dump").await;
+            term.expect_one_of_after(
+                mark,
+                &[
+                    "@dump: snapshot acknowledged by the store.",
+                    "can't BGSAVE right now",
+                    "Background save already in progress",
+                    "please retry in a moment",
+                ],
+            )
+            .await
+                == 0
+        })
+        .await;
     }
+
+    const JAMMED: &str = "Orders already delivered still stand.";
 
     let Some(base) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
         eprintln!("relay process proof not run: REDIS_URL not set; CI redis-faults supplies it");
@@ -591,9 +610,17 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     let luna = reg["nodes"]["malapert"]["coverage"][0].as_u64().unwrap();
     let ceres = reg["nodes"]["ceres"]["coverage"][0].as_u64().unwrap();
     let node = reg["nodes"]["ceres"]["place"].as_u64().unwrap();
-    god.send_line(&format!("@teleport me=#{luna}")).await;
-    god.send_line(&format!("@teleport {recipient}=#{ceres}"))
-        .await;
+    // Every line goes through `command`, the bare ones too: a refused line
+    // never ran, and a jam or teleport that silently did not happen breaks
+    // the story far from its cause.
+    // A self-teleport answers with the new room's view.
+    command(&mut god, &format!("@teleport me=#{luna}"), "Exits").await;
+    command(
+        &mut god,
+        &format!("@teleport {recipient}=#{ceres}"),
+        "Teleported.",
+    )
+    .await;
     // This story isolates physical routing and crash durability. R3's Standard
     // policy deliberately waits 60 IC seconds, so give both the order and its
     // returning ACK explicit no-charge Priority service. Class-delay coverage
@@ -606,7 +633,7 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
         )
         .await;
     }
-    god.send_line(&format!("@prop/jam #{node}=9")).await;
+    command(&mut god, &format!("@prop/jam #{node}=9"), JAMMED).await;
     barrier(&mut god).await;
     let reply = command(
         &mut god,
@@ -638,7 +665,7 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     )
     .await;
     assert_eq!(record(&store, id).await, queued);
-    god.send_line(&format!("@prop/jam #{node}=0")).await;
+    command(&mut god, &format!("@prop/jam #{node}=0"), JAMMED).await;
     barrier(&mut god).await;
     wait_until(Duration::from_secs(60), "one relay arrival", async || {
         record(&store, id).await["state"] == "delivered"
@@ -646,7 +673,7 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     .await;
     let delivered = record(&store, id).await;
     assert_eq!(delivered["path"].as_array().unwrap().len(), 1);
-    god.send_line("@prop/pass").await;
+    command(&mut god, "@prop/pass", "Delivery pass:").await;
     barrier(&mut god).await;
     assert_eq!(record(&store, id).await, delivered);
     let (_rh, mut receiver) = support::play_client_sized(addr, 240, 40).await;
@@ -706,7 +733,7 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
     .await;
     assert_eq!(record(&store, flight_id).await, flying);
     command(&mut god, "@relay/enable luna_ceres.luna", "revision").await;
-    god.send_line("@prop/pass").await;
+    command(&mut god, "@prop/pass", "Delivery pass:").await;
     barrier(&mut god).await;
     let after = record(&store, flight_id).await;
     assert_eq!(
