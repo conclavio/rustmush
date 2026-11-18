@@ -130,6 +130,13 @@ pub struct CommandSpec {
     pub aliases: Vec<SmolStr>,
     /// Valid `/switches`; anything else is rejected before the handler runs.
     pub switches: Vec<SmolStr>,
+    /// Alternate `/switch` spellings, each `(alias, canonical)`: a typed
+    /// `/alias` (case-insensitive, exact) is accepted and reaches the handler
+    /// as `/canonical`, so the handler only ever tests the canonical name. A
+    /// renamed switch keeps its old spelling working this way (`+coop/enrol`
+    /// is `+coop/enroll`). Every canonical must be one of [`switches`](Self::switches);
+    /// an alias must not be.
+    pub switch_aliases: Vec<(SmolStr, SmolStr)>,
     /// Argument splitting rule.
     pub shape: ArgShape,
     /// Minimum staff role required.
@@ -157,6 +164,7 @@ impl Default for CommandSpec {
             name: SmolStr::default(),
             aliases: Vec::new(),
             switches: Vec::new(),
+            switch_aliases: Vec::new(),
             shape: ArgShape::Raw,
             min_role: Role::Player,
             power: None,
@@ -505,6 +513,10 @@ pub enum RegistryError {
     /// The name or one of its aliases is already registered.
     #[error("command name {0:?} is already registered")]
     Collision(String),
+    /// A [`CommandSpec::switch_aliases`] row names a canonical switch the
+    /// spec does not take, or an alias that is itself a switch.
+    #[error("switch alias {0:?} is malformed")]
+    SwitchAlias(String),
 }
 
 /// Command lookup failed.
@@ -724,6 +736,15 @@ impl Registry {
         compatibility: CommandCompatibility,
         exact: bool,
     ) -> Result<(), RegistryError> {
+        for (alias, canonical) in &spec.switch_aliases {
+            let is_switch = |s: &SmolStr| spec.switches.iter().any(|k| k.eq_ignore_ascii_case(s));
+            if !is_switch(canonical) || is_switch(alias) {
+                return Err(RegistryError::SwitchAlias(format!(
+                    "{}/{alias} -> /{canonical}",
+                    spec.name
+                )));
+            }
+        }
         let mut keys = vec![spec.name.to_lowercase()];
         keys.extend(spec.aliases.iter().map(|a| a.to_lowercase()));
         for k in &keys {
@@ -1886,8 +1907,17 @@ fn check_spec(
     switch_names: &[&str],
     rest: &str,
 ) -> Result<(ParsedArgs, SwitchSet), String> {
+    let mut canonical: Vec<&str> = Vec::with_capacity(switch_names.len());
     for s in switch_names {
-        if !spec.switches.iter().any(|k| k.eq_ignore_ascii_case(s)) {
+        if spec.switches.iter().any(|k| k.eq_ignore_ascii_case(s)) {
+            canonical.push(s);
+        } else if let Some((_, to)) = spec
+            .switch_aliases
+            .iter()
+            .find(|(alias, _)| alias.eq_ignore_ascii_case(s))
+        {
+            canonical.push(to.as_str());
+        } else {
             return Err(format!("Unknown switch \"/{s}\" for {}.", spec.name));
         }
     }
@@ -1911,7 +1941,7 @@ fn check_spec(
     }
     Ok((
         ParsedArgs::parse(spec.shape, rest),
-        SwitchSet::from_names(switch_names.iter().copied()),
+        SwitchSet::from_names(canonical),
     ))
 }
 

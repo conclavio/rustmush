@@ -251,11 +251,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::Raw,
             // Doc 20 cut SM.3a: `refit` re-binds a chartered hull's unit through
             // `mush_tactics::module::refit_unit` and writes nothing else.
-            switches: ["enrol", "statement", "buyout", "release", "refit"]
+            switches: ["enroll", "statement", "buyout", "release", "refit"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
+            // US spelling is canonical; the British `/enrol` stays an alias so
+            // nothing that already types it breaks.
+            switch_aliases: vec![("enrol".into(), "enroll".into())],
             help: crate::port::coop::COOP_HELP.into(),
             ..CommandSpec::default()
         },
@@ -505,6 +508,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
         CommandSpec {
             name: crate::port::licence::LICENCE_VERB.into(),
+            aliases: vec![crate::port::licence::LICENCE_VERB_ALIAS.into()],
             shape: ArgShape::Raw,
             switches: ["buy", "show"].iter().copied().map(SmolStr::new).collect(),
             help: crate::port::licence::LICENCE_HELP.into(),

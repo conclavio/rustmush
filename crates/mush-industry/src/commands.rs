@@ -1907,7 +1907,9 @@ pub fn register(
     reg.classify_commands(CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
-            name: "@licence".into(),
+            name: "@license".into(),
+            // The British spelling stays an alias so nothing that types it breaks.
+            aliases: vec!["@licence".into()],
             switches: vec!["show".into()],
             shape: ArgShape::EqPair,
             ..CommandSpec::default()

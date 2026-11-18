@@ -82,8 +82,11 @@ use crate::port::def::{LicenceDef, PortDef};
 use crate::port::map::PortMap;
 use crate::store::{TacsimStore, put_licence};
 
-/// The verb.
-pub const LICENCE_VERB: &str = "+licence";
+/// The verb, in US spelling.
+pub const LICENCE_VERB: &str = "+license";
+/// The British spelling, kept as an alias of [`LICENCE_VERB`] so nothing that
+/// already types it breaks.
+pub const LICENCE_VERB_ALIAS: &str = "+licence";
 /// The document prefix: `tacsim:licence:{account canonical hash}`.
 pub const LICENCE_PREFIX: &str = "tacsim:licence:";
 /// The record's schema.

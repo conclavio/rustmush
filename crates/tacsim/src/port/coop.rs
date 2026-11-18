@@ -1136,7 +1136,7 @@ pub(crate) fn programme_rows<'a>(
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn coop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_open(ctx)?;
-    if ctx.switches.has("enrol") {
+    if ctx.switches.has("enroll") {
         enrol(ctx)
     } else if ctx.switches.has("statement") {
         statement(ctx)
