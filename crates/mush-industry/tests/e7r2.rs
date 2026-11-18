@@ -821,3 +821,107 @@ fn pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it() {
     closed["customers"] = serde_json::json!("owner_only");
     assert!(serde_json::from_value::<FacilityRecord>(closed).is_err());
 }
+
+/// **Doc 48 unit PL.6 (Q-48-25): a lane bump that only grows an authored facility's
+/// capabilities widens it in place.**
+/// - A yard opened with `yard` takes `yard` and `yard.heavy` with a new margin: the capacity
+///   revision stands (no order is interrupted), and the policy revision moves once, for the
+///   re-term alone.
+/// - Dropping a capability, swapping one, or growing the set while the slots or the owner change,
+///   is still drift, refused with nothing written.
+/// - A sold (owner-held) facility grows too: its capabilities are the content's; its owner, its
+///   terms and its revisions stay its buyer's.
+#[test]
+fn pl6_a_lane_bump_grows_a_facility_capabilities_in_place() {
+    let (mut tw, _families, _budget) = scene(0);
+    let pat = tw.spawn_player("Pat");
+    let room = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Yard", GOD, None)
+        .expect("the yard");
+    let authored = |words: &[&str], margin: u32, slots: u32| {
+        FacilityRecord::new(room, PrincipalId::Object(GOD), capabilities(words), slots)
+            .and_then(|r| r.with_authored_cost(cost(margin)))
+            .map(|r| r.with_authored_customers(mush_industry::Customers::Public))
+            .expect("an authored record")
+    };
+    let install = |tw: &mut TestWorld, record: FacilityRecord| {
+        staff_hand(tw, |ctx| {
+            mush_industry::store::install_authored_facility(ctx, record)
+        })
+    };
+    install(&mut tw, authored(&["yard"], 250, 2)).expect("opened");
+    let opened = facility(&tw, room);
+    install(&mut tw, authored(&["yard", "yard.heavy"], 300, 2)).expect("grown");
+    let grown = facility(&tw, room);
+    assert_eq!(grown.capabilities(), &capabilities(&["yard", "yard.heavy"]));
+    assert_eq!(
+        grown.capacity_revision(),
+        opened.capacity_revision(),
+        "no order is interrupted"
+    );
+    assert_eq!(
+        grown.cost().map(|c| c.margin_permille),
+        Some(300),
+        "re-termed in the same bump"
+    );
+    assert_eq!(
+        grown.policy_revision(),
+        opened.policy_revision() + 1,
+        "the re-term's bump alone"
+    );
+    // Drift, each refused before a write: a dropped capability; a grown set with another slot
+    // count; more capabilities that are not a superset (one swapped); a grown set under another
+    // owner.
+    let elsewhere = FacilityRecord::new(
+        room,
+        PrincipalId::Object(pat),
+        capabilities(&["yard", "yard.heavy", "yard.ship"]),
+        2,
+    )
+    .and_then(|r| r.with_authored_cost(cost(300)))
+    .map(|r| r.with_authored_customers(mush_industry::Customers::Public))
+    .expect("an authored record");
+    for drifted in [
+        authored(&["yard"], 300, 2),
+        authored(&["yard", "yard.heavy", "yard.ship"], 300, 3),
+        authored(&["yard.heavy", "yard.ship", "yard.slip"], 300, 2),
+        elsewhere,
+    ] {
+        assert!(install(&mut tw, drifted).is_err(), "drift is refused");
+        assert_eq!(facility(&tw, room), grown, "the refusal wrote nothing");
+    }
+    // Sold, then grown: the content's capabilities, the buyer's owner and terms.
+    staff_hand(&mut tw, |ctx| {
+        mush_industry::store::sell_facility(ctx, room, PrincipalId::Object(pat), false)
+    })
+    .expect("sold");
+    let sold = facility(&tw, room);
+    install(
+        &mut tw,
+        authored(&["yard", "yard.heavy", "yard.ship"], 250, 2),
+    )
+    .expect("the lane grows a held facility");
+    let held = facility(&tw, room);
+    assert_eq!(
+        held.capabilities(),
+        &capabilities(&["yard", "yard.heavy", "yard.ship"])
+    );
+    assert_eq!(
+        (
+            held.owner(),
+            held.holding(),
+            held.cost(),
+            held.policy_revision(),
+            held.capacity_revision()
+        ),
+        (
+            sold.owner(),
+            sold.holding(),
+            sold.cost(),
+            sold.policy_revision(),
+            sold.capacity_revision()
+        ),
+        "the buyer's owner, terms and revisions stand"
+    );
+}

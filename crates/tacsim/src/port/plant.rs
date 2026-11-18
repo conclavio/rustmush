@@ -17,6 +17,14 @@
 //! facility its sale made **owner-held** keeps its buyer as owner and its buyer's terms: the
 //! preflight takes it as authored ([`mush_industry::FacilityRecord::stands_as_authored`]) and the
 //! re-term leaves it alone (`install_authored_facility`).
+//!
+//! **Doc 48 unit PL.6 (Q-48-25): what a yard builds is its capabilities.** Ceres's yard holds
+//! `tacsim.yard` and builds the light hulls; Stickney's holds `tacsim.yard.heavy` beside it
+//! ([`crate::port::works::YARD_HEAVY_CAPABILITY`]), which every other hull recipe requires, so
+//! the industry's own `requires` test keeps the heavy hulls at Stickney. A lane bump may **grow**
+//! a facility's capability set, as v40 grows Stickney's yard: the preflight admits it
+//! ([`mush_industry::FacilityRecord::grows_to`]) and the install widens the record in place,
+//! moving neither revision. A dropped capability is still drift.
 
 use mush_core::{CanonicalId, Ctx, ObjId, World};
 use mush_industry::{Customers, FacilityCostDef, FacilityRecord, IndustryStore};
@@ -131,8 +139,9 @@ fn record(room: ObjId, operator: OrgId, row: &Row<'_>) -> Result<FacilityRecord,
 }
 
 /// **Parts l and m's refusals before any write**: each room resolves, and a facility already on
-/// it is exactly the one this entry would open (its operator's org, from a present map). A
-/// changed slot count or capability set is drift, refused.
+/// it is exactly the one this entry would open (its operator's org, from a present map), or that
+/// one with fewer capabilities (doc 48 unit PL.6). A changed slot count, or a capability set
+/// that drops one, is drift, refused.
 ///
 /// # Errors
 ///
@@ -155,10 +164,10 @@ pub(crate) fn preflight(
             .and_then(|m| m.orgs.get(row.operator))
             .map(|org| record(room, OrgId(org.org), &row))
             .transpose()?;
-        if !expected
-            .as_ref()
-            .is_some_and(|expected| existing.stands_as_authored(expected))
-        {
+        // Doc 48 unit PL.6: a grown capability set is no drift; the install widens it.
+        if !expected.as_ref().is_some_and(|expected| {
+            existing.stands_as_authored(expected) || existing.grows_to(expected)
+        }) {
             return Err(format!(
                 "{id}: the {} room {} is already a facility this entry did not open as \
                  authored (its owner, capabilities or slots differ); repair it by hand",

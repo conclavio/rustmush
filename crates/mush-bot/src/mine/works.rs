@@ -81,6 +81,10 @@ pub const HOUSE_ORDERS_FULL: &str =
 pub const TREASURY_SHORT: &str = "The treasury has {holds} free; a {recipe} costs {price} bought \
                                   at the yard's asks.";
 
+/// `tacsim::port::works::BUILT_ELSEWHERE` (doc 48 unit PL.6): a hull this yard does not build,
+/// `{recipe}` and the `{port}` whose yard does (a heavy hull at Ceres: Stickney Yards).
+pub const BUILT_ELSEWHERE: &str = "The yard here does not build a {recipe}; order it at {port}.";
+
 /// **Doc 48 unit PL.5**: every escrow-buying sentence, the bot's own words for tacsim's.
 pub const ESCROW_SENTENCES: [&str; 14] = [
     BOUGHT_INTO,
@@ -497,5 +501,16 @@ mod tests {
                 .replace("{days}", "33");
             assert!(filled.len() <= 120, "{} columns: {filled}", filled.len());
         }
+    }
+
+    /// **Doc 48 unit PL.6: the yard's refusal of a hull it does not build is the game's**, within
+    /// 120 columns at the longest recipe id and port name.
+    #[test]
+    fn pl6_the_built_elsewhere_sentence_is_the_games() {
+        assert_eq!(BUILT_ELSEWHERE, tacsim::port::works::BUILT_ELSEWHERE);
+        let filled = BUILT_ELSEWHERE
+            .replace("{recipe}", "line_tank_thermal")
+            .replace("{port}", "Voltaire Anchorage");
+        assert!(filled.len() <= 120, "{} columns: {filled}", filled.len());
     }
 }

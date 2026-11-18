@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v39 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v40 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,11 +45,37 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit PL.6 (lane v40): the Ceres yard taken out** — Ceres's `yard` block and
+/// Stickney's heavy-yard capability (Q-48-25), so a strip chain rebuilds a lane before v40
+/// (idempotent). The chain's head.
+pub fn strip_ceres_yard(doc: &mut Value) {
+    let Some(entries) = doc.get_mut("entries") else {
+        return;
+    };
+    if let Some(def) = entries
+        .get_mut("ceres_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        def.remove("yard");
+    }
+    if let Some(capabilities) = entries
+        .get_mut("stickney_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("yard"))
+        .and_then(|yard| yard.get_mut("capabilities"))
+        .and_then(Value::as_array_mut)
+    {
+        capabilities.retain(|word| word != "tacsim.yard.heavy");
+    }
+}
+
 /// **Doc 48 unit PL.5 (lane v39): Stickney's escrow asks taken out** — Kasei's strategic-ore
 /// stock row and ask and Stickney Yards' instrument-board stock row and ask, the asks a bill
 /// is bought at with no hold (Q-48-28), so a strip chain rebuilds a lane before v39
-/// (idempotent). The chain's head.
+/// (idempotent); lane v40's [`strip_ceres_yard`] first.
 pub fn strip_escrow_asks(doc: &mut Value) {
+    strip_ceres_yard(doc);
     for (org, good) in [
         ("kasei", "strategic_ore"),
         ("stickney_yards", "instrument_boards"),
