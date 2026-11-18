@@ -3645,34 +3645,44 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `3_654_948_364_234_471_804` / `c37c7009…` / `b42c2870…`,
 /// `6_666_152_491_954_370_471` / `67d20fba…` / `b145b64d…`,
 /// `13_065_747_108_036_701_883` / `05037b8b…` / `93c3fee9…`.
+///
+/// **Doc 49 unit CC.1b re-pins all four rows.** The Standard source moved (the Engage path's
+/// cost, behaviour unchanged) and a seal folds its source, so every hash moved, the float
+/// probe's with them. No fight moved: the stopping times 262,250, 321,750, 250,500 and 900,000,
+/// the probe's 3,600 thinks and the 369098751 bitmask are as they were. Read on Linux
+/// (conclav.dev); Windows is ci.yml's same step. Were (CC.2's):
+/// `12_140_716_626_063_265_255` / `2705f38a…` / `b4517eb1…`,
+/// `3_852_494_849_714_086_324` / `83f0b046…` / `d73bdfc5…`,
+/// `7_412_855_432_781_915_332` / `b023d660…` / `21a5c9bb…`,
+/// `10_332_904_847_498_022_810` / `41143353…` / `533b3444…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         262250,
-        12140716626063265255,
-        "2705f38a50d56ca5f3720199c9b3b929aa71d37306dcced8e65c0447b6e67b8d",
-        "b4517eb1f824d2760b8ae783f851304919f3124af3feafa92f9e5ca4422b65a6",
+        16000682199109245849,
+        "8221dac51c8c9721ab62fdf345fea461d185122b59970b66e03bc7d265f23db5",
+        "e84f0f2697becf21545bf55a2ffe3c9c12a18ad1044efe420987f4ccc42a941f",
     ),
     (
         2351,
         321750,
-        3852494849714086324,
-        "83f0b046421de0b1cd69a5b925963e29cbbae6d44df8e1598786296babd8f9c0",
-        "d73bdfc56db3418ac95a1689061ac872e372c98b7514e6eb65ab840eca27b994",
+        16293227761906457789,
+        "b1907260bba87212ebd30913c8e7b7b335b8dc5a5ad9960d14c1e21949b0bbef",
+        "89bc84bdb44125f3c227b09d8c32f9488c32274dd99f2bb05a5a4b8032e0d35f",
     ),
     (
         2352,
         250500,
-        7412855432781915332,
-        "b023d6603baa90fafecfe3f54af29ee456329a614aa73ffbb11defbe043444ef",
-        "21a5c9bbb85d7fcf029bf61872c188e9c95e5d90ae3f1281b1af0d0ddc0ef530",
+        17189525096992751847,
+        "c93ebe434bf8d5dd1df653540943f1a0e90af63d875ace70456e9931bea6c1e8",
+        "ca9d56cc2a4913d1f9690f1d8a97034d4368fb8a0f15bf68494d3e229071c1d8",
     ),
     (
         2350,
         900000,
-        10332904847498022810,
-        "4114335378eb8473f811c4bdab7734457e43fe43fa0aadee3b3f478d8945b6b9",
-        "533b3444908e6c77fa4c6019faf1100104c09ab41b2a37646651011273fb1679",
+        6558500431099612070,
+        "0a5f5cb546d3de1a17525936100b9b684519e05c90699e40242e2526a62cea65",
+        "7e0756f2a149c57bcc6ee99d11e0f340d4f9cb3e506d2391ae3d4010d65ec5cb",
     ),
 ];
 
@@ -5122,10 +5132,12 @@ fn doctored_hull(
 }
 
 /// The seated blue's beam, heavy enough to take a turret through its plate
-/// and internals in one round.
+/// and internals in one round. Doc 49 unit CC.3 (Q-49-27): a beam counts a fifth of
+/// its damage against armour, so 2,000 where it was 1,000 (the turret's 220 of side
+/// plate takes 1,100 of it and its 150 of internals the rest).
 fn heavy_beam() -> WeaponSummary {
     WeaponSummary {
-        damage: 1_000,
+        damage: 2_000,
         ..beam()
     }
 }

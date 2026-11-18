@@ -478,6 +478,16 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // Survey acceptance creates an economy offer and queues one authoritative
     // record. Occator funds only a landed record; successful soundings earn it.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    // Doc 48 cut EX.6: `+haul` posts and joins jobs through the economy's API and submits at
+    // most one haul leg a command; `+escort` posts and joins jobs, and its host writes the fact.
+    reg.command(
+        crate::services::haul::haul_spec(),
+        Arc::new(crate::services::haul::haul_cmd),
+    )?;
+    reg.command(
+        crate::services::escort::escort_spec(),
+        Arc::new(crate::services::escort::escort_cmd),
+    )?;
     reg.command(
         CommandSpec {
             name: crate::port::survey::SURVEY_VERB.into(),

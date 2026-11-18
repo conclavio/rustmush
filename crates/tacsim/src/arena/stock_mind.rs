@@ -460,11 +460,13 @@ pub fn at_reserve(view: &MindView, card: &StockCard) -> bool {
 }
 
 /// **Whether firing `weapon` is held back by heat** (the reflex's
-/// `would_overheat`, the engine's own line): a weapon that makes heat, on a
-/// hull already at its ceiling.
+/// `would_overheat`, the engine's own line): a weapon that makes heat, whose shot
+/// would carry the hull past its ceiling (doc 49 unit CC.3, Q-49-28: the arena's
+/// `UnitState::refuses_heat`, read off the view; until CC.3, a hull already at it).
 #[must_use]
 pub fn would_overheat(view: &MindView, weapon: &FrameWeapon) -> bool {
-    weapon.heat_per_shot != 0 && view.heat.is_some_and(|heat| heat.overheated())
+    view.heat
+        .is_some_and(|heat| heat.refuses(weapon.heat_per_shot))
 }
 
 /// **Whether this hull holds any live hostile at all** (the reflex's
@@ -4215,11 +4217,21 @@ mod tests {
         };
         // Cold: neither is held back.
         assert_eq!(asked(&arena), (false, false));
-        // One shot short of the ceiling: the engine accepts a shot that would
-        // carry a unit past the maximum and clamps it there, and refuses only
-        // AT the ceiling, so the mind takes this one too.
-        d11_set_heat(&mut arena, ObjId(4), 50);
+        // A shot that lands on the ceiling is taken, by the engine and the mind.
+        d11_set_heat(&mut arena, ObjId(4), 40);
         assert_eq!(asked(&arena), (false, false));
+        // **Doc 49 unit CC.3** (Q-49-28): a shot that would carry the unit past the
+        // ceiling is refused, so at 50 the hot gun is held back and the cold one is
+        // not, by the engine and the mind alike. Until CC.3 the engine clamped that
+        // shot at the ceiling and took it, and so did the mind.
+        d11_set_heat(&mut arena, ObjId(4), 50);
+        assert_eq!(asked(&arena), (true, false));
+        assert!(
+            arena
+                .unit(ObjId(4))
+                .is_some_and(|state| state.refuses_heat(20) && !state.overheated()),
+            "the engine refuses the hot shot under its ceiling"
+        );
         // **At** the ceiling: the engine refuses the hot gun and takes the cold
         // one, and so does the mind.
         d11_set_heat(&mut arena, ObjId(4), 60);

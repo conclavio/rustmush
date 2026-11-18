@@ -820,21 +820,22 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             .collect::<Vec<_>>(),
         vec![
             Some("cannon".to_owned()),
-            Some("laser".to_owned()),
+            // Doc 49 unit CC.3 (Q-49-6): the laser tank and the Mk2 biped keep the 105.
+            Some("cannon".to_owned()),
             // 16b cut AE.3: the drone carries no gun.
             None,
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
-            Some("laser".to_owned()),
+            Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("autocannon".to_owned()),
             None,
         ],
         "the weapon a bare `FIRE` fires: the cannon, or the first in component \
-         order on a hull that carries none (the Mk2's beam, the scout's \
-         autocannon), and nothing on the drone or the range's target"
+         order on a hull that carries none (the scout's autocannon), and \
+         nothing on the drone or the range's target"
     );
     assert_eq!(
         table(&arena),
@@ -893,13 +894,19 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         // AE.1**: and a unit whose only weapon was the emptied one has nothing to
         // fall to either (no fielded unit is one since 16b cut AE.2 gave the
         // scout its autocannon). A unit that still has a loaded weapon falls to
-        // `machine_gun`.
+        // `machine_gun`, and since doc 49 unit CC.3 (Q-49-6) the two laser machines,
+        // whose laser is listed after their 105, fall to the laser.
         let emptied = dry.get(at).cloned().flatten();
+        let next = if state.weapons.iter().any(|weapon| weapon.id == "laser") {
+            "laser"
+        } else {
+            "machine_gun"
+        };
         let expected = state
             .weapons
             .iter()
             .any(|weapon| Some(&weapon.id) != emptied.as_ref())
-            .then(|| "machine_gun".to_owned());
+            .then(|| next.to_owned());
         assert_eq!(
             loaded, expected,
             "{name}: a dry default weapon falls to the next loaded one"
@@ -1395,7 +1402,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (
             content::LINE_TANK_LASER_JSON,
             "tacsim.pack.line_tank_laser",
-            4,
+            // Doc 49 unit CC.3 (Q-49-6): version 5, the 105 back beside the laser.
+            5,
         ),
         (
             content::LINE_TANK_THERMAL_JSON,
@@ -1411,7 +1419,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (content::HEAVY_MK1_JSON, "tacsim.pack.heavy_mk1", 4),
         (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 4),
         (content::BIPED_MK1_JSON, "tacsim.pack.biped_mk1", 2),
-        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2),
+        // Doc 49 unit CC.3 (Q-49-6): version 3, the 105 beside the laser.
+        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 3),
         // M5r: version 4, its note describes the restored public Hold goal.
         (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 4),
     ] {
@@ -2271,8 +2280,17 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// half a load, as `NativeStockMind` does; `stock=3` kept; was
 /// `c544bfbd2cdcbda6e4a9fafdec6c4cefe60f31963283edffd20af7f7ecf9375f` (doc 49
 /// unit CC.9's header bump to `api: 10`; AP.3's `api: 9` was `2bea2391…7b5fef`).
+/// **Re-blessed by doc 49 unit CC.1b**, a cost-only rewrite of the Engage path,
+/// behaviour unchanged (Gate A asserts every think of every lane): the leash's
+/// arms called only under a leash, `standing_order`'s one order key and one
+/// pass over the obeyed order, `hostile_edges`' pursuit test, `engage_orders`
+/// without the two gates no caller reaches it past, and `reserve_pct` read as
+/// it is; a reviewer of this digest's history re-reads `think`,
+/// `standing_order`, `hostile_edges`, `leash_arms`, `engage_orders` and
+/// `arming_for`; was
+/// `eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91` (CC.1).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91";
+    "e9f1a863eabc057066304121fe74b48cce05c21f0a629abb8f8f240c9a02ed15";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):

@@ -1,6 +1,6 @@
 {
   "manifest": {
-    "digest": "a5bad388b6e2ce628e87b6d44026a0ecabffb6e3b2e2c918897794de89425892",
+    "digest": "2c17bc1ecf0cbaae9c660b4b653ce3078d2df0139f54f104b918952e9b7a013b",
     "id": "tacsim.industry.hulls",
     "kind": "rules_definition",
     "requires": [],
@@ -40,11 +40,11 @@
         "inputs": [
           {
             "commodity": "structural_alloys",
-            "units": 39
+            "units": 37
           },
           {
             "commodity": "industrial_parts",
-            "units": 17
+            "units": 16
           }
         ],
         "label": "Mk2 biped hull",
@@ -234,7 +234,7 @@
         "inputs": [
           {
             "commodity": "structural_alloys",
-            "units": 21
+            "units": 19
           },
           {
             "commodity": "industrial_parts",

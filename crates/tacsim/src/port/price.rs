@@ -227,14 +227,20 @@ pub fn reach_for(w: &World, def: &PortDef, good: &CanonicalId) -> Option<Reach> 
 /// the port has no premium block or no reach.
 #[must_use]
 pub fn bid_price_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
+    // Doc 48 cut EX.8 (Q-48-18): the authored price under the stock rule's factor first, then the
+    // reach premium on top.
+    let base = factored(
+        bid.price_major,
+        factor_of(w, def, &bid.good, mush_market::PriceSide::Bid),
+    );
     let Some(policy) = def.premium.as_ref() else {
-        return bid.price_major;
+        return base;
     };
     let Some(reach) = reach_for(w, def, &bid.good) else {
-        return bid.price_major;
+        return base;
     };
     priced(
-        bid.price_major,
+        base,
         premium_permille(policy.k_permille, policy.cap_permille, reach),
     )
 }
@@ -338,9 +344,314 @@ pub fn emergency_readings(w: &World, def: &PortDef) -> Vec<EmergencyReading> {
         .collect()
 }
 
+// ---- doc 48 cut EX.8: the NPC price rule ----------------------------------------------------
+//
+// Q-48-18 (owner ruling, 2026-11-15): an NPC house's ask and bid move with its stock against an
+// authored target, by at most 5% an IC week, within 50% to 200% of the authored price, with the
+// reach premium on top. Q-48-39: the throttle (a house in debt) is the one exception: its asks
+// rise 10% an IC week inside the same band, and it posts no new bids.
+//
+// - **The factor** is permille of the authored price, carried period to period in the market's
+//   price history (`mush_market::history`), so a re-posted listing starts from it.
+// - **An ask's target** is its authored stock, the stock rows' quantity of the good: a storefront
+//   holding the target asks the authored price; empty, it wants 200%; at twice the target, 50%.
+// - **A bid's target** is what its house holds of the good against its authored intake: holding
+//   none it bids the authored price, and as its stores fill to the intake the bid falls to 50%.
+//   What the bid still wants is not the signal: a bid re-posted within its funds wants less when
+//   its house is short of money, and a falling price would then let it buy more.
+// - **The step** moves the factor toward the target by at most 5% of the current price an IC week.
+
+/// The step, permille of the current price, an IC week (Q-48-18).
+pub const STEP_PERMILLE: u32 = 50;
+/// The throttle's step, permille of the current price, an IC week (Q-48-34, -39).
+pub const THROTTLE_PERMILLE: u32 = 100;
+/// The authored price's factor.
+pub const PAR_PERMILLE: u16 = 1_000;
+
+/// The market's catalogue reference for a port good (`tacsim:<good>`).
+#[must_use]
+pub fn catalog_of_good(good: &CanonicalId) -> mush_economy::CatalogRef {
+    mush_economy::CatalogRef {
+        ruleset: smol_str::SmolStr::new_static(crate::NS),
+        code: smol_str::SmolStr::new(good.as_str()),
+    }
+}
+
+fn band(permille: i128) -> u16 {
+    let clamped = permille.clamp(
+        i128::from(mush_market::FACTOR_FLOOR),
+        i128::from(mush_market::FACTOR_CEILING),
+    );
+    u16::try_from(clamped).unwrap_or(PAR_PERMILLE)
+}
+
+/// **An ask's target factor**: `1000 × (2T − pool) / T`, in the band; par with no target.
+#[must_use]
+pub fn ask_target_permille(pool: u64, target: u64) -> u16 {
+    if target == 0 {
+        return PAR_PERMILLE;
+    }
+    let t = i128::from(target);
+    band(1_000 * (2 * t - i128::from(pool)) / t)
+}
+
+/// **A bid's target factor**: `1000 − 500 × held / intake`, in the band; par with no intake. A
+/// house holding none of the good bids par, and one whose stores hold its whole intake bids half.
+#[must_use]
+pub fn bid_target_permille(held: u64, intake: u64) -> u16 {
+    if intake == 0 {
+        return PAR_PERMILLE;
+    }
+    band(1_000 - 500 * i128::from(held.min(intake)) / i128::from(intake))
+}
+
+/// **One week's step** from `current` toward `desired`: at most [`STEP_PERMILLE`] of the current
+/// factor (at least one permille, so a step is never stuck), in the band. Throttled, the factor
+/// rises [`THROTTLE_PERMILLE`] of itself whatever the target, to the ceiling.
+#[must_use]
+pub fn step_permille(current: u16, desired: u16, throttled: bool) -> u16 {
+    let cur = i128::from(current);
+    if throttled {
+        return band(cur + (cur * i128::from(THROTTLE_PERMILLE) / 1_000).max(1));
+    }
+    let most = (cur * i128::from(STEP_PERMILLE) / 1_000).max(1);
+    let delta = (i128::from(desired) - cur).clamp(-most, most);
+    band(cur + delta)
+}
+
+/// `base_major × factor / 1000`, whole units, floor, at least one.
+#[must_use]
+pub fn factored(base_major: u64, factor: u16) -> u64 {
+    let scaled = u128::from(base_major) * u128::from(factor) / 1_000;
+    u64::try_from(scaled).unwrap_or(u64::MAX).max(1)
+}
+
+/// The factor a port's `side` of `good` carries: the latest recorded, par before any.
+#[must_use]
+pub fn factor_of(
+    w: &World,
+    def: &PortDef,
+    good: &CanonicalId,
+    side: mush_market::PriceSide,
+) -> u16 {
+    mush_market::MarketId::new(def.venue.as_str())
+        .and_then(|venue| mush_market::latest_point(w, &venue, &catalog_of_good(good), side))
+        .map_or(PAR_PERMILLE, |(_, point)| point.factor_permille)
+}
+
+/// **An ask's price as the port posts it**, major units: the authored price under its factor.
+#[must_use]
+pub fn ask_price_major(w: &World, def: &PortDef, good: &CanonicalId, authored_major: u64) -> u64 {
+    factored(
+        authored_major,
+        factor_of(w, def, good, mush_market::PriceSide::Ask),
+    )
+}
+
+/// **Whether a house is throttled** (Q-48-39): it owes an obligation it has gone delinquent on.
+/// EX.4's player-owed class and the economy's own obligations both count; running costs (Q-48-38)
+/// are not built, so a delinquency is today's one sign a house cannot pay.
+#[must_use]
+pub fn throttled(w: &World, org: mush_org::OrgId) -> bool {
+    let debtor = mush_org::PrincipalId::Organization(org);
+    w.module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|e| {
+            e.snapshot().obligations().any(|o| {
+                o.debtor == debtor && o.status == mush_economy::ObligationStatus::Delinquent
+            })
+        })
+}
+
+/// The minor units of `major` on this world's credit.
+fn minor(w: &World, major: u64) -> Option<mush_economy::Amount> {
+    let scale = crate::port::apply::credit_scale(w);
+    crate::port::apply::minor_of(major, scale).map(mush_economy::Amount::from_minor)
+}
+
+/// **The week's step for one port** (doc 48 cut EX.8): every NPC ask and bid of the port whose
+/// latest recorded period is before this IC week is stepped toward its stock's target, recorded in
+/// the market's price history, and its standing listing re-priced in place. A row stepped this
+/// week is left alone, so the step runs once an IC week whatever the fire rate. Writes only market
+/// documents; submits nothing.
+pub(crate) fn weekly_step(ctx: &mut mush_core::Ctx<'_>, map: &crate::port::PortMap, def: &PortDef) {
+    let Some(venue) = mush_market::MarketId::new(def.venue.as_str()) else {
+        return;
+    };
+    let period = mush_market::period_of(ctx.w.world_ic_now().at);
+    let instrument = mush_economy::InstrumentId::new(crate::economy::CREDIT);
+    let mut asks: Vec<(CanonicalId, u16, u64, Option<mush_market::ListingId>)> = Vec::new();
+    let mut bids: Vec<(CanonicalId, u16, u64, Option<mush_market::ListingId>)> = Vec::new();
+    for vendor in &def.vendors {
+        let Some(row) = map.vendors.get(&vendor.org) else {
+            continue;
+        };
+        let hold = map
+            .orgs
+            .get(&vendor.org)
+            .is_some_and(|o| throttled(ctx.w, mush_org::OrgId(o.org)));
+        for ask in vendor
+            .asks
+            .iter()
+            .filter(|ask| !crate::port_tick::is_part(&ask.good))
+        {
+            let catalog = catalog_of_good(&ask.good);
+            let latest =
+                mush_market::latest_point(ctx.w, &venue, &catalog, mush_market::PriceSide::Ask);
+            if latest.is_some_and(|(p, _)| p >= period) {
+                continue;
+            }
+            let target: u64 = vendor
+                .stock
+                .iter()
+                .filter(|s| s.good == ask.good)
+                .map(|s| s.qty)
+                .sum();
+            let endpoint = mush_inventory::EndpointRef(mush_economy::VaultId(row.vault));
+            let Ok(pool) = crate::port_tick::read_pool(ctx, endpoint, &ask.good) else {
+                continue;
+            };
+            let current = latest.map_or(PAR_PERMILLE, |(_, p)| p.factor_permille);
+            let next = step_permille(current, ask_target_permille(pool, target), hold);
+            let listing = ctx
+                .w
+                .module_state::<mush_market::MarketStore>()
+                .and_then(|s| crate::port::stock::ask_reading(s, row.vault, &ask.good).listing)
+                .map(|(id, _)| id);
+            // A row not yet listed and never stepped has not started: the clerk is still
+            // seeding it, and an empty pool then is not scarcity.
+            if listing.is_none() && latest.is_none() {
+                continue;
+            }
+            asks.push((
+                ask.good.clone(),
+                next,
+                factored(ask.price_major, next),
+                listing.filter(|_| next != current),
+            ));
+        }
+        if hold {
+            continue;
+        }
+        for bid in &vendor.bids {
+            let catalog = catalog_of_good(&bid.good);
+            let latest =
+                mush_market::latest_point(ctx.w, &venue, &catalog, mush_market::PriceSide::Bid);
+            if latest.is_some_and(|(p, _)| p >= period) {
+                continue;
+            }
+            let listing = row
+                .bids
+                .get(&bid.good)
+                .map(|r| mush_market::ListingId(r.listing))
+                .filter(|id| {
+                    ctx.w
+                        .module_state::<mush_market::MarketStore>()
+                        .is_some_and(|s| s.listing(*id).is_some())
+                });
+            // A bid not standing has no price to move; its re-post starts from the carried factor.
+            if listing.is_none() {
+                continue;
+            }
+            let endpoint = mush_inventory::EndpointRef(mush_economy::VaultId(row.vault));
+            let Ok(held) = crate::port_tick::read_pool(ctx, endpoint, &bid.good) else {
+                continue;
+            };
+            let intake = bid.intake;
+            let current = latest.map_or(PAR_PERMILLE, |(_, p)| p.factor_permille);
+            let next = step_permille(current, bid_target_permille(held, intake), false);
+            let premium = def
+                .premium
+                .as_ref()
+                .zip(reach_for(ctx.w, def, &bid.good))
+                .map_or(0, |(policy, reach)| {
+                    premium_permille(policy.k_permille, policy.cap_permille, reach)
+                });
+            let price = priced(factored(bid.price_major, next), premium);
+            // An unchanged factor leaves the standing bid as posted (its reach premium is read
+            // at posting, as before); only a step re-prices it.
+            bids.push((
+                bid.good.clone(),
+                next,
+                price,
+                listing.filter(|_| next != current),
+            ));
+        }
+    }
+    for (side, rows) in [
+        (mush_market::PriceSide::Ask, asks),
+        (mush_market::PriceSide::Bid, bids),
+    ] {
+        for (good, factor, major, listing) in rows {
+            let Some(price) = minor(ctx.w, major) else {
+                continue;
+            };
+            let point = mush_market::SidePoint {
+                price,
+                factor_permille: factor,
+            };
+            if let Err(why) = mush_market::record_price(
+                ctx,
+                (&venue, &catalog_of_good(&good)),
+                instrument.clone(),
+                period,
+                side,
+                point,
+            ) {
+                tracing::warn!(venue = %venue.as_str(), good = %good, why, "tacsim: a price point was not recorded");
+                continue;
+            }
+            if let Some(listing) = listing
+                && let Err(error) = mush_market::reprice_listing(ctx, listing, price)
+            {
+                tracing::warn!(
+                    listing = listing.0,
+                    ?error,
+                    "tacsim: a house listing was not re-priced"
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 48 cut EX.8**: an ask at its target asks par; empty it wants the ceiling; at twice
+    /// the target the floor. A bid bids par while its house holds none and falls as its stores fill.
+    #[test]
+    fn ex8_the_targets_follow_stock_within_the_band() {
+        assert_eq!(ask_target_permille(120, 120), 1_000);
+        assert_eq!(ask_target_permille(0, 120), 2_000);
+        assert_eq!(ask_target_permille(80, 120), 1_333);
+        assert_eq!(ask_target_permille(240, 120), 500);
+        assert_eq!(ask_target_permille(1_000, 120), 500, "the floor");
+        assert_eq!(ask_target_permille(7, 0), 1_000, "no target, par");
+        assert_eq!(bid_target_permille(0, 240), 1_000, "holding none, par");
+        assert_eq!(bid_target_permille(120, 240), 750);
+        assert_eq!(bid_target_permille(240, 240), 500, "the stores full");
+        assert_eq!(bid_target_permille(480, 240), 500, "the floor");
+    }
+
+    /// **Doc 48 cut EX.8**: at most 5% of the current factor a week toward the target, never
+    /// past it; throttled, 10% up whatever the target; always inside 500..=2000.
+    #[test]
+    fn ex8_a_step_is_five_percent_and_the_throttle_ten() {
+        assert_eq!(step_permille(1_000, 2_000, false), 1_050);
+        assert_eq!(step_permille(1_050, 2_000, false), 1_102);
+        assert_eq!(step_permille(1_000, 500, false), 950);
+        assert_eq!(
+            step_permille(1_000, 1_020, false),
+            1_020,
+            "never past the target"
+        );
+        assert_eq!(step_permille(1_000, 1_000, false), 1_000);
+        assert_eq!(step_permille(1_990, 2_000, false), 2_000);
+        assert_eq!(step_permille(1_000, 500, true), 1_100, "the throttle rises");
+        assert_eq!(step_permille(1_950, 500, true), 2_000, "to the ceiling");
+        assert_eq!(factored(1_500, 1_333), 1_999);
+        assert_eq!(factored(1, 500), 1, "at least one");
+    }
 
     #[test]
     fn a4b_the_emergency_crosses_at_the_ratio() {

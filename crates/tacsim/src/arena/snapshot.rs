@@ -1819,6 +1819,7 @@ mod tests {
                 from_cell: Some((5, 5)),
                 from_height_cm: 150,
                 damage: 120,
+                beam: false,
                 resolution: Resolution::blind("near", 3, mush_atlas::Cover::Partial),
             },
         )]));

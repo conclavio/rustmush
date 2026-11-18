@@ -4,6 +4,7 @@ mod commands;
 pub mod content;
 pub(crate) mod personnel;
 mod runtime;
+pub mod wages;
 
 pub(crate) use commands::describe as describe_terms;
 pub(crate) use commands::{SWITCHES, command, handles};
@@ -31,6 +32,9 @@ pub enum CrewDuty {
     Mining,
     Combat,
     Recovery,
+    /// Doc 48 cut EX.7 (Q-48-14, doc 38 Q-38-15): the technician, a crew-hire kind. No sortie
+    /// activates for it; it is hired and paid like the others.
+    Technician,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,7 +47,7 @@ pub struct HireTerms {
 }
 impl HireTerms {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != 1 || self.duties.is_empty() || self.duties.len() > 3 {
+        if self.schema != 1 || self.duties.is_empty() || self.duties.len() > 4 {
             return Err("Invalid NPC crew terms.".into());
         }
         Ok(())

@@ -369,7 +369,7 @@ impl Lane {
             Slack => self.dt(
                 Offers,
                 "+sortie/crew",
-                "These offers have no wage charge",
+                crate::mine::minds::crew::OFFERS_WAGES,
                 false,
                 0,
             ),

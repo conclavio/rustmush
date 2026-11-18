@@ -75,6 +75,7 @@ fn terminal_wreck(
         from_cell: arena.definition.terrain.cell_of(&shooter.pose),
         from_height_cm: 150,
         damage: 10000,
+        beam: false,
         resolution: Resolution {
             p_permille: 1000,
             ..Resolution::blind(band, 3000, mush_atlas::Cover::None)

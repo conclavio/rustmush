@@ -4053,6 +4053,7 @@ mod tests {
                 from_cell,
                 from_height_cm,
                 damage: 1_000_000,
+                beam: false,
                 resolution: crate::arena::resolution::Resolution {
                     p_permille: 1_000,
                     ..crate::arena::resolution::Resolution::blind(

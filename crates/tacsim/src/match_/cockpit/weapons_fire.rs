@@ -572,9 +572,10 @@ pub(super) fn fire(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), Coc
     // — pinned for the machine by the reflex's own tests until 17b cut M4.6c;
     // the mind's in `arena/stock_mind.rs`' d2 mirror off the view
     // (`d2_a_weapon_that_makes_no_heat_never_holds_the_mind_back`).
+    // **Doc 49 unit CC.3** (Q-49-28): refused when this shot's own heat would carry the
+    // platform past its ceiling, the arena's rule (`FrameHeat::refuses`).
     if let Some(heat) = held.as_ref().and_then(|held| held.frame.heat)
-        && heat.overheated()
-        && weapon.heat_per_shot > 0
+        && heat.refuses(weapon.heat_per_shot)
     {
         return Err(refused(&CockpitError::Overheated {
             heat: heat.heat,
@@ -728,8 +729,8 @@ pub(super) fn fire_all(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitErro
     }
     require_power(ctx.w, seat.driver).map_err(|said| all(&said.to_string()))?;
     // Each row's skip, in `FIRE`'s own order: the weapon's two refusals, the
-    // reach, then the platform's heat for a weapon that makes some.
-    let overheated = frame.heat.filter(|heat| heat.overheated());
+    // reach, then the platform's heat for a weapon whose shot would carry it past its
+    // ceiling (doc 49 unit CC.3, Q-49-28).
     let skips: Vec<Option<String>> = rows
         .iter()
         .map(|row| {
@@ -742,16 +743,13 @@ pub(super) fn fire_all(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitErro
                 CockpitError::Empty.to_string()
             } else if row.range_band.is_none() {
                 out_of_reach(frame, &row.id)
-            } else if let Some(heat) = overheated
-                && row.heat_per_shot > 0
-            {
+            } else {
+                let heat = frame.heat.filter(|heat| heat.refuses(row.heat_per_shot))?;
                 CockpitError::Overheated {
                     heat: heat.heat,
                     max: heat.max,
                 }
                 .to_string()
-            } else {
-                return None;
             };
             Some(order_refused(
                 IntentKind::fire(&row.id).as_str(),

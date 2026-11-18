@@ -26,7 +26,8 @@ pub trait ServiceBoard: Send + Sync {
 }
 
 /// `+market/jobs` usage.
-pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey] [market=<venue>]";
+pub const JOBS_USAGE: &str =
+    "Usage: +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]";
 /// No venue here and none named.
 pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=<venue>.";
 /// An empty board.
@@ -49,6 +50,8 @@ pub const TERM_BY: &str = "due within {days} IC days";
 pub const TERM_TODAY: &str = "due today";
 /// Settled on performance.
 pub const TERM_ON_PERFORMANCE: &str = "paid on arrival";
+/// Paid by the IC day (a crew member's wage).
+pub const TERM_DAILY: &str = "paid by the IC day";
 /// More than the board shows.
 pub const JOBS_MORE: &str = "(More are posted than one board shows.)";
 
@@ -84,6 +87,7 @@ fn term_words(w: &World, term: ServiceTerm) -> String {
             }
         }
         ServiceTerm::OnPerformance => TERM_ON_PERFORMANCE.to_string(),
+        ServiceTerm::Daily => TERM_DAILY.to_string(),
     }
 }
 

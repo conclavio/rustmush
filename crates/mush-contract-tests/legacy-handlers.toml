@@ -131,6 +131,12 @@ note = "doc 44 unit MW.23 (Q-44-40; doc 17 section 16; 17f M7.11): the Registry'
 
 
 [[handler]]
+name = "+escort"
+category = "authoritative"
+family = "tacsim.escort"
+note = "Doc 48 cut EX.6 (Q-48-11, Q-48-46, Q-48-58): an escort job. +escort is a pure read of the actor's own escort records. /post <hull> to=<port>|field=<site> fee=<cr> and /accept <job> with=<hull> [as=<org>] preview without go; with go each is the economy's own API (post: mush_economy::post_job, one public standing job whose fee escrows from the poster's account; accept: mush_economy::join_job with Q-48-13's bond and a 28 IC day term) and one bounded whole-document tacsim:escort:<contract> record (deny_unknown_fields, identity rule). /withdraw <job> go cancels an untaken job through mush_economy::cancel_job. No authoritative submission: the fact (tacsim.escort.kept, keyed by the contract) is written by the passage and field host on the tacsim.port tick into the same record, and read by EscortFactProvider. Future family: the escort as a typed per-job record."
+
+[[handler]]
 name = "+faction"
 category = "legacy-post-image"
 family = "faction.stance"
@@ -157,6 +163,12 @@ name = "+guest"
 category = "legacy-post-image"
 family = "housing.tenancy"
 note = "Residence guest list (+guest): updates the bounded tenancy record (tenancy:<id>) on the housing module's compatibility post-image lane; no prepared mechanic."
+
+[[handler]]
+name = "+haul"
+category = "authoritative"
+family = "tacsim.haul_ledger"
+note = "Doc 48 cut EX.6 (Q-48-42, Q-48-57, Q-48-58): a haul job. +haul is a pure read of the actor's own haul records. /post <qty> <good> to=<port> fee=<cr> [value=<cr>] previews without go; with go it opens the shipper's locker at the destination (crate::port::locker::open), posts one standing job through mush_economy::post_job whose one condition is an inventory.transferred marker id derived at posting, and writes one bounded whole-document tacsim:haul:<contract> record. /accept <job> [as=<org>] go joins through mush_economy::join_job (a bond of 25% of the declared value, a 28 IC day term) and stages exactly one Ctx::submit_authoritative of the tacsim-owned tacsim_haul (leg load, keyed tacsim.haul/<contract>/1/<try>); /deliver <job> go stages exactly one tacsim_haul (leg deliver, keyed tacsim.haul/<contract>/2/<try>). The prepare moves the goods by InventoryFamilies::carry under the job's hold and writes the tacsim.haul_ledger row in the same bundle. The tacsim.port tick resubmits an unlanded leg as its pilot and, after the term, submits the return leg at the hull's next port. /withdraw <job> go cancels an untaken job through mush_economy::cancel_job."
 
 [[handler]]
 name = "+helm"

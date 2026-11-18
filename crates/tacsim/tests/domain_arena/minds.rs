@@ -2003,7 +2003,13 @@ fn beam_shot(unit: ObjId) -> Vec<IntentKind> {
 
 /// **A beam**: [`cannon`] with no flight time — `muzzle_speed_cms` nought, so
 /// `resolve_fire` puts its impact at its own millisecond, the shape of the
-/// shipped `laser_mk1` (`delivery: beam`) — doing `damage`.
+/// shipped `laser_mk1` (`delivery: beam`) — doing `damage`, which since doc 49
+/// unit CC.3 (Q-49-27) a facet's armour takes at a fifth: [`ONE_POINT_BEAM`].
+/// **A beam that takes one point of a facet's armour** (doc 49 unit CC.3, Q-49-27: a
+/// beam counts a fifth of its damage against armour, so five), the beam the M1b.0
+/// landing tests watch arrive. Until CC.3 it was a beam of one.
+const ONE_POINT_BEAM: u32 = 5;
+
 fn beam(damage: u32) -> WeaponSummary {
     WeaponSummary {
         muzzle_speed_cms: 0,
@@ -2289,14 +2295,14 @@ fn m1b0_a_landings_beam_impact_precedes_the_thinks_of_its_millisecond() {
         "the precondition: the two lattices one substep apart"
     );
     let (shoot_at, blue_think, land) = landing_on_a_think(red, blue);
-    let (arena, mind) = beam_field(red, blue, 1, false, shoot_at);
+    let (arena, mind) = beam_field(red, blue, ONE_POINT_BEAM, false, shoot_at);
     assert_eq!(arena.substep_len_ms(), SUBSTEP, "the rig's substep");
     let mut rig = Rig::new(arena);
     let _ = rig.until(land + STOCK_THINK_MS, |arena| arena.now_ms >= land);
     assert_the_beam_preceded_the_think(&mut rig, &mind, red, blue, blue_think, land);
 
     // (b) The reviewer's hand-scheduled form.
-    let (arena, mind) = beam_field(RED, BLUE, 1, false, 0);
+    let (arena, mind) = beam_field(RED, BLUE, ONE_POINT_BEAM, false, 0);
     let mut rig = Rig::new(arena);
     let _ = rig.arena.due.retain(|kind| {
         !matches!(
@@ -2328,7 +2334,7 @@ fn m1b0_a_landings_beam_impact_precedes_the_thinks_of_its_millisecond() {
 fn beam_before_think(drive: Drive) -> (Run, Vec<Seen>) {
     let (red, blue) = lattice_pair(SUBSTEP);
     let (shoot_at, _, _) = landing_on_a_think(red, blue);
-    let (mut arena, mind) = beam_field(red, blue, 1, false, shoot_at);
+    let (mut arena, mind) = beam_field(red, blue, ONE_POINT_BEAM, false, shoot_at);
     let run = run(&mut arena, drive, 5_000);
     (run, mind.seen())
 }
@@ -3490,6 +3496,10 @@ fn m1a5_the_production_hash_does_not_move() {
     // and loads, folded with every mount, so the shipped duel's hash moved (was
     // `0xcaae_5fcf_0dab_6143`); the field's two hold, since its mounts are the rig's own, and
     // the duel's 34 lines differ from CC.1's only in `hash`.
+    // Doc 49 unit CC.1b: the Standard source moved (the Engage path's cost, behaviour
+    // unchanged), folded in every seal: all three moved (were `0x18aa_60d9_5785_a83f`,
+    // `0x9e8b_b51a_5d8b_a7bf` and `0xdeb8_4918_e033_5f67`), and the field's 50 lines and the
+    // duel's 34 differ from CC.2's only in `hash`.
     let actual = [
         first_hash,
         last_hash,
@@ -3498,9 +3508,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x18aa_60d9_5785_a83f),
-            Some(0x9e8b_b51a_5d8b_a7bf),
-            Some(0xdeb8_4918_e033_5f67)
+            Some(0x53d2_1504_a61a_ee67),
+            Some(0x93f9_3932_663c_b6b2),
+            Some(0x11ac_bd3f_fa27_1bfc)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6916,15 +6926,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"e9f1a863eabc0570\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"e9f1a863eabc0570\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"e9f1a863eabc0570\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,
