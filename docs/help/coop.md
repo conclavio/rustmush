@@ -16,7 +16,7 @@ reads the terms and how many Drays are free, from anywhere.
                   papers when you sign
   one at a time   one charter per account at a time: no other character on
                   your account can enroll while it stands
-  one stake       the stake is paid once per account, ever: a second
+  one stake       the stake is paid only once per account: a second
                   charter comes with no second stake
 
 ## Signing
@@ -103,7 +103,7 @@ told the next time you are on watch, with the way to charter again.
 Once the Co-op has your Dray back, whether you handed her back or a week without
 a departure ended her charter, `+coop/enroll <name>` at the Registry & Co-op desk
 charters you its next free Dray, as the first time did, on the terms as they
-stand that day. There is no second stake: the Co-op stakes a captain once, ever,
+stand that day. There is no second stake: the Co-op stakes a captain only once,
 and your credit account is the one you already have. While your last Dray is
 still on her way back (not yet docked at Ceres with an empty cargo hold), the
 desk asks you to wait until she is back in the pool. `+coop` says when you can

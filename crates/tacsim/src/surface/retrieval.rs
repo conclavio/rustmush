@@ -75,7 +75,14 @@ const DAY: i64 = 86_400;
 pub const RETRIEVE_USAGE: &str = "Usage: +salvage/retrieve <hull>[=<port>] [fee=<cr>] [go] — post a job to bring a hull of \
      yours to a port.";
 /// `+salvage/accept`'s usage.
-pub const ACCEPT_USAGE: &str = "Usage: +salvage/accept <job> [go] — take a retrieval job.";
+pub const ACCEPT_USAGE: &str = "Usage: +salvage/accept <job> [as=<org>] [go] — take a retrieval job, for yourself or your org.";
+/// The bond clause of the preview and the acceptance (doc 48 cut EX.5, Q-48-13): `{bond}`.
+pub const BOND_CLAUSE: &str = " You escrow a bond of {bond}: it comes back with the fee when she is \
+     delivered, and is the poster's if she is not.";
+/// `as=<org>` naming an organization the actor does not act for (doc 48 cut EX.5, Q-48-58).
+pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was accepted.";
+/// The organization has no credit account to be paid into.
+pub const ORG_NO_ACCOUNT: &str = "That organization has no account to be paid into.";
 /// No such open job.
 pub const NO_SUCH_JOB: &str = "There is no open retrieval job {job}; +salvage/jobs lists them.";
 /// The board, empty.
@@ -599,8 +606,22 @@ pub fn accept(
     if order.poster == acceptor {
         return Err(OWN_JOB.to_owned());
     }
-    mush_economy::accept_retrieval(ctx, ContractId(order.contract), &acceptor, account)
-        .map_err(|error| ACCEPT_FAILED.replace("{why}", &error.to_string()))?;
+    // Doc 48 cut EX.5 (Q-48-12, -13): the generalised join. A player or their org escrows the
+    // bond a fee above 10,000 cr asks; the house's fallback acceptance posts none.
+    let bond = (!house_acceptance)
+        .then(|| mush_economy::job_bond(Amount::from_minor(order.fee_minor)))
+        .flatten();
+    mush_economy::join_job(
+        ctx,
+        ContractId(order.contract),
+        mush_economy::JoinTerms {
+            acceptor: acceptor.clone(),
+            account,
+            bond,
+            term_ic: None,
+        },
+    )
+    .map_err(|error| ACCEPT_FAILED.replace("{why}", &error.to_string()))?;
     let now = ctx.w.world_ic_now().at;
     order.acceptor = Some(acceptor);
     if house_acceptance {
@@ -1082,10 +1103,31 @@ pub(crate) fn jobs_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 ///
 /// The refusal.
 pub(crate) fn accept_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
-    let (word, go) = split_go(raw);
+    let (rest, go) = split_go(raw);
+    let mut word = String::new();
+    let mut as_org: Option<String> = None;
+    for part in rest.split_whitespace() {
+        match part.strip_prefix("as=") {
+            Some(org) if as_org.is_none() => as_org = Some(org.to_owned()),
+            Some(_) => return Err(CmdError::msg(ACCEPT_USAGE)),
+            None if word.is_empty() => word = part.to_owned(),
+            None => return Err(CmdError::msg(ACCEPT_USAGE)),
+        }
+    }
     if word.is_empty() {
         return Err(CmdError::msg(ACCEPT_USAGE));
     }
+    // Doc 48 cut EX.5 (Q-48-58): a member holding the org's spending capability accepts for it.
+    let acceptor = match as_org.as_deref() {
+        None => PrincipalId::Object(ctx.actor),
+        Some(name) => {
+            let name = name.strip_prefix("org:").unwrap_or(name);
+            mush_economy::resolve_org_visible(ctx, name)
+                .map(PrincipalId::Organization)
+                .filter(|org| mush_economy::acts_for(ctx.w, ctx.actor, org))
+                .ok_or_else(|| CmdError::msg(NOT_FOR_ORG))?
+        }
+    };
     let hull = word
         .trim()
         .trim_start_matches('#')
@@ -1096,11 +1138,16 @@ pub(crate) fn accept_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
     let order = order_of(ctx.w, hull)
         .filter(|order| order.stage == RetrievalStage::Open)
         .ok_or_else(|| CmdError::msg(NO_SUCH_JOB.replace("{job}", word.trim())))?;
-    if acts_for(ctx.w, ctx.actor, &order.poster) {
+    if acts_for(ctx.w, ctx.actor, &order.poster) || acceptor == order.poster {
         return Err(CmdError::msg(OWN_JOB));
     }
+    let bond = mush_economy::job_bond(Amount::from_minor(order.fee_minor))
+        .map(|bond| {
+            BOND_CLAUSE.replace("{bond}", &crate::port::coop::money_minor(ctx, bond.minor()))
+        })
+        .unwrap_or_default();
     if !go {
-        let line = ACCEPT_PREVIEW
+        let mut line = ACCEPT_PREVIEW
             .replace("{name}", &name(ctx.w, hull))
             .replace("{lies}", &lies_line(ctx.w, hull))
             .replace("{port}", &port_name(ctx.w, &order.destination))
@@ -1109,24 +1156,82 @@ pub(crate) fn accept_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
                 &crate::port::coop::money_minor(ctx, order.fee_minor),
             )
             .replace("{days}", &(window_secs(ctx.w) / DAY).to_string());
+        line.push_str(&bond);
         ctx.out.sys_to_actor(ctx.actor, "tacsim.retrieval", line);
         return Ok(());
     }
-    let account = crate::port::credit::own_account(ctx.w, ctx.actor)
-        .map(|a| a.id)
-        .ok_or_else(|| CmdError::msg("You have no account to be paid into."))?;
-    let order = accept(ctx, hull, (PrincipalId::Object(ctx.actor), account), false)
-        .map_err(CmdError::msg)?;
-    let line = ACCEPTED
+    let account = match &acceptor {
+        PrincipalId::Object(_) => crate::port::credit::own_account(ctx.w, ctx.actor)
+            .map(|a| a.id)
+            .ok_or_else(|| CmdError::msg("You have no account to be paid into."))?,
+        org => credit_account_of(ctx.w, org).ok_or_else(|| CmdError::msg(ORG_NO_ACCOUNT))?,
+    };
+    let order = accept(ctx, hull, (acceptor.clone(), account), false).map_err(CmdError::msg)?;
+    let mut line = ACCEPTED
         .replace("{job}", &order.job())
         .replace("{name}", &name(ctx.w, hull))
         .replace("{days}", &(window_secs(ctx.w) / DAY).to_string());
+    line.push_str(&bond);
     ctx.out.sys_to_actor(ctx.actor, "tacsim.retrieval", line);
     let told = TOLD_ACCEPTED
         .replace("{name}", &name(ctx.w, hull))
-        .replace("{who}", &name(ctx.w, ctx.actor));
+        .replace("{who}", &principal_name(ctx.w, &acceptor));
     tell(ctx, &order.poster, &told);
     Ok(())
+}
+
+/// **An organization's active credit account** (doc 48 cut EX.5): what an org's acceptance is
+/// paid into and its bond escrowed from.
+fn credit_account_of(w: &World, org: &PrincipalId) -> Option<AccountId> {
+    w.module_state::<EconomyStore>()?
+        .snapshot()
+        .accounts_of(org)
+        .find(|a| {
+            a.instrument.as_str() == crate::economy::CREDIT
+                && a.status == mush_economy::AccountStatus::Active
+        })
+        .map(|a| a.id)
+}
+
+/// **The open retrievals on `venue`'s board** (doc 48 cut EX.5, Q-48-12): each job still open,
+/// on the board of its destination's venue. The term is the taker's: the host's performance
+/// window from acceptance (the contract keeps its absolute deadline, Q-48-58).
+#[must_use]
+pub fn services(w: &World, venue: &mush_market::MarketId) -> Vec<mush_market::Service> {
+    let instrument = mush_economy::InstrumentId::new(crate::economy::CREDIT);
+    orders(w)
+        .into_iter()
+        .filter(|order| order.stage == RetrievalStage::Open)
+        .filter(|order| {
+            venue_of(w, &order.destination).is_some_and(|v| v.as_str() == venue.as_str())
+        })
+        .map(|order| {
+            let fee = Amount::from_minor(order.fee_minor);
+            mush_market::Service {
+                kind: mush_market::ServiceKind::Retrieval,
+                side: mush_market::ServiceSide::Wanted,
+                venue: venue.clone(),
+                poster_name: principal_name(w, &order.poster).into(),
+                poster: order.poster.clone(),
+                subject: format!(
+                    "bring {} (lying {}) to {}",
+                    name(w, order.hull),
+                    lies_line(w, order.hull),
+                    port_name(w, &order.destination)
+                )
+                .into(),
+                pay: fee,
+                instrument: instrument.clone(),
+                negotiable: false,
+                bond: mush_economy::job_bond(fee),
+                term: mush_market::ServiceTerm::FromAcceptance {
+                    ic_secs: window_secs(w),
+                },
+                contract: Some(ContractId(order.contract)),
+                take: format!("+salvage/accept {}", order.job()).into(),
+            }
+        })
+        .collect()
 }
 
 // ---- debts -----------------------------------------------------------------------------------

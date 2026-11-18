@@ -428,6 +428,9 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
     // (5) Day 3: B is cancelled; the bill comes back whole.
     to_day(&mut rig, start, 3.0);
     let (posted_before, _) = money(&rig, captain_account);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let posted_before_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(captain));
     let (yards_before, _) = money(&rig, yards_account);
     let ran = order_of(&mut rig, b)
         .schedule()
@@ -552,13 +555,25 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
         .expect("priced");
     assert_eq!(
         money(&rig, captain_account),
-        (posted_before - forfeit - fee, 0),
+        (
+            posted_before
+                - forfeit
+                - fee
+                - (crate::driving_rig::berth_paid(
+                    rig.tw.world(),
+                    &mush_org::PrincipalId::Object(captain)
+                ) - posted_before_berth),
+            0
+        ),
         "A's fee paid, its booking fee released, nothing left held"
     );
 
     // (9) The stranger never collects: storage after 28 days.
     let delivered = contract(&rig, s).delivered_ic.expect("delivered");
     let (stranger_before, _) = money(&rig, stranger_account);
+    // Doc 48 cut EX.4: the stranger's hull berths at Stickney across the 30 days waited.
+    let stranger = mush_org::PrincipalId::Object(stranger);
+    let stranger_berth = crate::driving_rig::berth_paid(rig.tw.world(), &stranger);
     let target = delivered + 28 * DAY + 2 * DAY + 3_600;
     while ic_now(&rig.tw) < target {
         let next = (ic_now(&rig.tw) + 8 * DAY).min(target);
@@ -568,7 +583,7 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
     assert_eq!(contract(&rig, s).storage_days, 2, "two days charged");
     assert_eq!(
         stranger_before - money(&rig, stranger_account).0,
-        2 * booking,
+        2 * booking + (crate::driving_rig::berth_paid(rig.tw.world(), &stranger) - stranger_berth),
         "a slot-day a day"
     );
     assert_eq!(hold_pool(&mut rig.tw, stranger_hold, FITTINGS), 0);

@@ -356,6 +356,9 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
                 .with_proceeds_policy(Arc::new(crate::port::proceeds::CoopProceeds))
                 // Doc 48 cut EX.2: a person lists a hull through the market.
                 .with_asset_sale(Arc::new(crate::port::hull_sale::HullSale))
+                // Doc 48 cut EX.4: a port's authority operates its venue's fees.
+                .with_venue_fees(Arc::new(crate::port::berth::PortFees))
+                .with_service_board(Arc::new(crate::port::jobs::PortJobs))
         } else {
             self
         }

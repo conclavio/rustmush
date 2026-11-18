@@ -610,6 +610,11 @@ pub struct ListingSpec {
     pub visibility: MarketVisibility,
     /// How long it stands, in seconds.
     pub ttl_secs: i64,
+    /// **A private listing's one buyer** (doc 48 cut EX.3; Q-48-9): the listing is `Hidden`,
+    /// seen and taken up by that buyer alone (and seen by its seller and staff), and refused to
+    /// anyone else at quote and at accept ([`crate::seller::PRIVATE_TO_OTHER`]). It trades on
+    /// the tape as any other: only who may see and accept it narrows.
+    pub private_to: Option<PrincipalId>,
 }
 
 /// **Publish a listing** (B5).
@@ -652,6 +657,12 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             "That vendor's organization is not trading.",
         ));
     }
+    // Doc 48 cut EX.3: a private listing names one other live person (`post_ask`'s rule).
+    crate::seller::check_private(
+        ctx.w,
+        &PrincipalId::Organization(vendor.org),
+        spec.private_to.as_ref(),
+    )?;
     let Some(entry) = ctx
         .w
         .module_state::<MarketStore>()
@@ -919,6 +930,11 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
     let exact_lot = spec.source.exact_lot();
+    let visibility = if spec.private_to.is_some() {
+        MarketVisibility::Hidden
+    } else {
+        spec.visibility
+    };
     put_listing(
         ctx,
         Listing {
@@ -932,7 +948,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             object: spec.object,
             price: spec.price,
             quantity: spec.quantity,
-            visibility: spec.visibility,
+            visibility,
             expires: EconomicDeadline {
                 clock: EconomicClock::RealUtc,
                 at: now.saturating_add(ttl),
@@ -940,7 +956,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             revision: 1,
             draw: Some(draws),
             account: None,
-            private_to: None,
+            private_to: spec.private_to,
             escrow: None,
         },
     );

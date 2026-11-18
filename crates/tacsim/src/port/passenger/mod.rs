@@ -4,6 +4,7 @@
 //! A traveller is a persistent NPC. Its authored role can be reused by content
 //! packs; a completed journey never respawns the person or refills their purse.
 
+pub mod board;
 mod commands;
 pub mod content;
 pub(crate) mod economy;
@@ -54,6 +55,19 @@ impl TravellerDef {
         }
         Ok(())
     }
+}
+
+/// **A venue's port, as a traveller names it** (doc 48 cut EX.5): the port whose market venue is
+/// `venue`, by its authored name, or the venue word when no port has it.
+#[must_use]
+pub fn port_title(w: &World, venue: &str) -> String {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(_, def, _)| def.venue.as_str() == venue)
+        .map_or_else(
+            || venue.to_owned(),
+            |(_, def, _)| crate::port::coop::port_name(def),
+        )
 }
 
 /// An authored live traveller. The source attribute is not player-writable.

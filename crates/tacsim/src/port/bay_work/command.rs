@@ -47,11 +47,14 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     away from port, +bay/fit <hull>=<slot> <lot> fits a traced part from the hold into any slot \
     of its kind (a hot part is refused). In a workshop, +bay/strip \
     <hull>=<part> takes a part \
-    off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up: the \
-    workshop takes her alloys and parts into its stores and pays her holder a fifth of what she \
-    is worth less her parts for the structure, and the parts' used value less their removal. \
-    The holder's +bay/return <hull> sells her bale's unused kilograms back to the workshop at \
-    the reference. A ship docked at a port with a workshop is her own bay: +bay <ship> quotes \
+    off into the hold, and the title holder's +bay/scrap <hull> breaks the hull up: her whole \
+    tonnes of alloys and her parts go into the holder's scrap here, and the holder sells them \
+    to the workshop on the market, for a fifth of what she is worth less her parts for the \
+    structure and the parts' used value less their removal. Scrap is paid by the whole tonne: \
+    what is under a tonne stays in the workshop's bale, and with no whole tonne nothing is paid. \
+    The holder's +bay/return \
+    <hull> sells her bale's unused kilograms back to the workshop at the reference, the same \
+    way. A ship docked at a port with a workshop is her own bay: +bay <ship> quotes \
     her space magazines too, and +bay/order <ship>=rearm loads them with torpedoes, spinal \
     rounds and point-defense boxes from her hold, buying what her hold lacks from the \
     workshop's stores at the goods' price, in whole units (a box is 500 rounds).";
@@ -541,8 +544,8 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             say(
                 ctx,
                 format!(
-                    "#{} is broken up: {} kg of structural alloys ({} t to the workshop's \
-                     stock) and {} part(s) go to its stores, for {credit}.",
+                    "#{} is broken up: {} kg of structural alloys ({} t whole) and {} part(s) \
+                     go to your scrap here, which the workshop buys for {credit}.",
                     hull.0,
                     scrapped.yield_kg,
                     scrapped.alloys_t,
@@ -561,7 +564,7 @@ pub(crate) fn bay_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 ctx,
                 format!(
                     "#{}'s bale goes back to the workshop: {} kg of alloys and {} kg of \
-                     fittings, for {credit}.",
+                     fittings; it buys what is whole for {credit}.",
                     hull.0, returned.bale.alloys_kg, returned.bale.fittings_kg
                 ),
             );

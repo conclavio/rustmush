@@ -7945,6 +7945,9 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
         .available()
         .expect("amt")
         .minor();
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let balance_before_tow_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot));
     let tow_out = run(&mut rig.tw, pilot, "+helm/tow");
     assert!(
         tow_out.contains("[SALVAGE] Tow line locked to disabled derelict"),
@@ -7968,7 +7971,12 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
         .expect("amt")
         .minor();
     assert_eq!(
-        balance_after_tow, balance_before_tow,
+        balance_after_tow,
+        balance_before_tow
+            - (crate::driving_rig::berth_paid(
+                rig.tw.world(),
+                &mush_org::PrincipalId::Object(pilot)
+            ) - balance_before_tow_berth),
         "delivering a towed derelict to port pays no bounty (doc 41 cut RS.8)"
     );
 
@@ -9545,6 +9553,9 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
 
     // 3. The tow files on the one path, from real seconds, on the one window; no bounty.
     let credit_before = credit_of(&rig.tw, pilot_a);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let credit_before_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot_a));
     let now_before_tow = rig.tw.world().now();
     let tow_1 = run(&mut rig.tw, pilot_a, "+helm/tow");
     assert!(
@@ -9674,7 +9685,11 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
     fly_on_to_stickney(&mut rig, hull_a, total_secs);
     assert_eq!(
         credit_of(&rig.tw, pilot_a),
-        credit_before,
+        credit_before
+            - (crate::driving_rig::berth_paid(
+                rig.tw.world(),
+                &mush_org::PrincipalId::Object(pilot_a)
+            ) - credit_before_berth),
         "no bounty at the dock"
     );
     assert!(
@@ -9870,6 +9885,9 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
     );
 
     let credit_before = credit_of(&rig.tw, pilot_a);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let credit_before_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot_a));
     fly_on_to_stickney(&mut rig, hull_a, total_secs);
     let order = tacsim::surface::retrieval::order_of(rig.tw.world(), raider_hull).expect("the job");
     let delivery = order.delivered.as_ref().expect("the dock delivered her");
@@ -9878,7 +9896,10 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
     sweep(&mut rig.tw, 60);
     assert_eq!(
         credit_of(&rig.tw, pilot_a) - credit_before,
-        fee,
+        fee - (crate::driving_rig::berth_paid(
+            rig.tw.world(),
+            &mush_org::PrincipalId::Object(pilot_a)
+        ) - credit_before_berth),
         "the delivered job pays its fee"
     );
     assert_eq!(

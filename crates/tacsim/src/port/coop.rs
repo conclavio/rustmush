@@ -14,8 +14,8 @@
 //!
 //! **The operate gate is the live lease, never this document** (D-18-23, L8):
 //! [`live_charter`] reads the economy's contracts and nothing else. The document
-//! is the account ledger — "one enrolment per gateway account, ever" (D-18-25,
-//! L5), keyed `tacsim:coop:{account}` so an unreadable one bars only its own
+//! is the account ledger — one charter per gateway account at a time (D-18-25,
+//! L5, as the owner's 2026-11-17 ruling amends "ever"), keyed `tacsim:coop:{account}` so an unreadable one bars only its own
 //! account — and the frozen terms a statement reads. Cut IC10 folds sales into
 //! it; cut IC13 adds the buyout and graduation. A staff-ended lease is folded
 //! into [`EnrolmentStatus::Revoked`] by [`CoopObserver`].
@@ -57,7 +57,7 @@ pub const COOP_VERB: &str = "+coop";
 pub const COOP_HELP: &str = "+coop  --  The Belt Carriers' Cooperative's First Captain \
      program. The Co-op stakes a new captain a Dray on a working charter and twenty-five \
      thousand in working cash, takes a quarter of trading margin over its reference prices until \
-     the hull is bought out, and stakes each pilot once, ever. A Dray that goes a real week (168 IC \
+     the hull is bought out, and stakes each pilot only once. A Dray that goes a real week (168 IC \
      days at the live 24:1 clock) without a departure goes back to the Co-op; a pilot whose charter \
      ended so, or by +coop/release, may +coop/enroll again for the next free Dray, with no second \
      stake. A charter staff revoke is not renewed. +coop reads the terms and how many Drays are \
@@ -139,7 +139,10 @@ pub const RECHARTER_WAIT: &str =
 /// back from, and on `+coop` after one. `{office}`, `{port}`.
 pub const RECHARTER_HINT: &str =
     "To fly again, charter another Dray: +coop/enroll <ship name> at the {office} in {port}.";
-/// **A re-charter's terms line** (the owner's 2026-11-17 ruling: the stake is paid once, ever):
+/// **The terms line's last clause** (the owner's 2026-11-17 ruling): the stake is paid once
+/// per account, and the account holds one charter at a time.
+pub const TERMS_ONE_AT_A_TIME: &str = "one stake per pilot, and one Dray at a time.";
+/// **A re-charter's terms line** (the owner's 2026-11-17 ruling: the stake is paid only once):
 /// `{buyout}`, `{countersign}`.
 pub const RECHARTERED_TERMS: &str = "No second stake: the Co-op stakes a captain once. Buyout {buyout}. {countersign} countersigns.";
 /// The account's enrolment document does not read.
@@ -1194,7 +1197,7 @@ pub(crate) fn terms_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
             format!(
                 "Terms: a {stake} stake; {}‰ of trading margin over the Co-op's reference \
                  prices; buyout {buyout}, fixed at signing (a new Dray from the Yard is \
-                 {new_dray}); one enrollment per pilot, ever.",
+                 {new_dray}); {TERMS_ONE_AT_A_TIME}",
                 programme.share_permille
             ),
             format!("Drays free: {free} of {}.", programme.pool),
@@ -1381,7 +1384,7 @@ struct EnrolPlan {
 }
 
 /// **Whether the account's last charter lets it charter again** (the owner's 2026-11-17
-/// ruling, amending D-18-25's "once, ever"): `Ok` with the first charter's stake when the
+/// ruling, amending D-18-25's one enrolment for ever): `Ok` with the first charter's stake when the
 /// charter ended by dormancy, by `+coop/release` or by a lease ended outside the programme's
 /// verbs, its lease is over and its hold vault is no longer the pilot's (the recall's return
 /// half has run, so the account never holds two hulls). A live, pending or graduated charter, a
@@ -1456,7 +1459,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     else {
         return Err(NO_ACCOUNT_MATCH.to_owned());
     };
-    // 4. One enrolment ever (D-18-25, L5); the live lease is a second guard.
+    // 4. One charter at a time (D-18-25, L5, as amended); the live lease is a second guard.
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Err(NOT_ENABLED.to_owned());
     };
@@ -1804,7 +1807,7 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(failed_after_writes(ctx));
     }
     // 10e. The stake — the post is the last fallible step. A re-charter pays none (the
-    // owner's 2026-11-17 ruling: the stake is paid once, ever).
+    // owner's 2026-11-17 ruling: the stake is paid only once).
     if !plan.recharter {
         post_stake(ctx, lease, &plan, actor, pilot_account)?;
     }

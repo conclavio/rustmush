@@ -207,7 +207,7 @@ fn lot_entry(store: &MarketStore, commodity: &mush_core::CanonicalId) -> Option<
 }
 
 /// The private-offer rule at posting: a live person who is not the seller.
-fn check_private(
+pub(crate) fn check_private(
     w: &World,
     seller: &PrincipalId,
     to: Option<&PrincipalId>,
@@ -363,6 +363,12 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
     else {
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
+    // Doc 48 cut EX.4 (Q-48-8): the listing fee, once, the last fallible step before the
+    // listing is written (refunded below if its hold cannot be staged).
+    let listed = total_of(spec.price, quantity).unwrap_or(Amount::ZERO);
+    let fee_market = spec.market.clone();
+    let fee =
+        crate::fees::charge_listing_fee(ctx, &spec.seller, account, &spec.market, id, listed)?;
     let grade = lot.grade().get();
     put_listing(
         ctx,
@@ -417,6 +423,9 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
     );
     if !staged {
         del_listing(ctx, id);
+        if let Some((fee, _)) = fee {
+            refund_listing_fee(ctx, &fee_market, account, id, fee);
+        }
         return Err(MarketError::bad(
             "This server cannot move lot stock right now, so nothing was listed.",
         ));
@@ -426,6 +435,36 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
         store.reserve_staged.insert(id, at);
     }
     Ok(id)
+}
+
+/// **Give back a listing fee whose listing was not written** (doc 48 cut EX.4): the operator
+/// pays `fee` back to `account` under `market.listing_fee.refund/<listing>`. Logged when refused;
+/// the fee then stands as a staff matter.
+fn refund_listing_fee(
+    ctx: &mut Ctx<'_>,
+    market: &MarketId,
+    account: AccountId,
+    listing: ListingId,
+    fee: Amount,
+) {
+    let Some(venue) = crate::fees::venue_accounts(ctx.w, market) else {
+        return;
+    };
+    let mut plan = mush_economy::EconomyPlan::new(
+        mush_economy::IdempotencyKey::new(
+            smol_str::SmolStr::new_static("market.listing_fee.refund"),
+            smol_str::SmolStr::new(listing.0.to_string()),
+        ),
+        PrincipalId::Object(mush_core::GOD),
+        mush_economy::EconomicCause::Command {
+            serial: ctx.w.next_correlation_id(),
+        },
+        crate::fees::fee_lines(venue.operator, account, fee),
+    );
+    plan.description = format!("market listing #{listing} fee refunded");
+    if let Err(error) = mush_economy::post(ctx, &plan) {
+        tracing::error!(listing = listing.0, %error, "market: a listing fee could not be refunded");
+    }
 }
 
 // ---- doc 48 cut EX.2: one titled object -----------------------------------------
@@ -535,6 +574,8 @@ pub fn post_asset(ctx: &mut Ctx<'_>, spec: PersonalAssetAsk) -> Result<ListingId
     else {
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
+    // Doc 48 cut EX.4 (Q-48-8): the listing fee, once, the last fallible step.
+    crate::fees::charge_listing_fee(ctx, &spec.seller, account, &spec.market, id, spec.price)?;
     put_listing(
         ctx,
         Listing {
@@ -694,6 +735,16 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
     persist_meta(ctx);
+    let fee = crate::fees::venue_accounts(ctx.w, &spec.market).map(|venue| {
+        (
+            crate::fees::listing_fee(total, venue.listing_floor),
+            venue.operator,
+        )
+    });
+    let fee_lines = match fee {
+        Some((fee, operator)) if fee.minor() > 0 => crate::fees::fee_lines(account, operator, fee),
+        _ => Vec::new(),
+    };
     // **The escrow, under the bidder's own authority** — the last fallible call.
     let plan = mush_economy::EconomyPlan {
         hold_ops: vec![mush_economy::HoldOp::Place {
@@ -713,7 +764,8 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
             mush_economy::EconomicCause::Command {
                 serial: ctx.w.next_correlation_id(),
             },
-            Vec::new(),
+            // Doc 48 cut EX.4 (Q-48-8): the listing fee, once, in the escrow's own post.
+            fee_lines,
         )
     };
     let rendered = crate::commands::money(ctx.w, Some(&spec.instrument), total);
@@ -964,16 +1016,25 @@ impl mush_economy::StandingAcceptance for ListingAcceptance {
             let paid = owed(&quote.buyer)
                 .iter()
                 .try_fold(0_i64, |sum, (_, a)| sum.checked_add(a.minor()));
-            // Every outcome pays the seller's own account exactly the whole price.
+            // Every outcome pays exactly what a person's sale pays (doc 48 cut EX.4): the
+            // seller's own account the price less the venue's cut and levy and any proceeds
+            // policy's share, and each of those exactly its own.
             let pays_seller = listing.account.is_some_and(|account| {
-                contract.consent.terms.outcomes.iter().all(|o| {
-                    matches!(
-                        o.payouts.as_slice(),
-                        [mush_economy::PayoutShare {
-                            to,
-                            share: mush_economy::Share::Exact(amount),
-                        }] if *to == account && *amount == total
-                    )
+                crate::fees::personal_ask_payouts(
+                    w,
+                    listing,
+                    &quote.buyer,
+                    quote.quantity,
+                    quote.price,
+                    account,
+                )
+                .is_ok_and(|expected| {
+                    contract
+                        .consent
+                        .terms
+                        .outcomes
+                        .iter()
+                        .all(|o| o.payouts == expected)
                 })
             });
             quote.seller == *party

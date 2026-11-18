@@ -295,8 +295,9 @@ pub use contract_live::{
 // Doc 41 cut RS.5 (Q-41-8): the retrieval contract, posted by a hull's title holder and
 // accepted by whoever takes the job.
 pub use contract_live::{
-    RetrievalSpec, accept_retrieval, cancel_retrieval, post_retrieval, retrieval_acceptor,
-    retrieval_contract_hull,
+    JOB_BOND_ABOVE_MINOR, JOB_BOND_PERMILLE, JobShape, JoinTerms, MAX_LIVE_JOBS_PER_PRINCIPAL,
+    RetrievalSpec, accept_retrieval, cancel_retrieval, job_acceptor, job_bond, job_shape, join_job,
+    post_retrieval, retrieval_acceptor, retrieval_contract_hull,
 };
 
 // E4c — facts, events, evidence.
@@ -308,6 +309,10 @@ pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable, observer_
 pub use sweep::MAX_REPUBLISH_PER_SWEEP;
 
 // E2b/E3b1 public surface.
+// Doc 48 cut EX.4 (Q-48-54): the player-owed obligation class.
+pub use api::{
+    ARREARS_DUE_IC_SECS, create_player_obligation, player_obligations_of, reprice_player_obligation,
+};
 pub use api::{
     CadenceError, DebtCause, ENGINE_OWNED_RESERVATIONS, MAX_CADENCE_NAME_BYTES, MAX_CADENCES,
     META_KEY, ObligationSpec, PostOutcome, SanctionSpec, account_key, acknowledge_escalation,
@@ -327,6 +332,7 @@ pub use commands::{
     ASSET_PAGE_VISIT, may_view_account, may_view_asset, may_view_hold, may_view_obligation,
     may_view_vault,
 };
+pub use obligation::{Arrears, PLAYER_OWED_MIN_GRACE};
 // E6a step 1 (E5b-D36/D37): the parsing and existence-hiding helpers a ruleset
 // layered on the economy needs, exported so it never keeps a third copy.
 // E6b (B1): one masking renderer — `render_account` plus the history collapse

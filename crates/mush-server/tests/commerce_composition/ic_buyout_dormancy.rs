@@ -736,6 +736,24 @@ fn available(tw: &TestWorld, account: mush_economy::AccountId) -> i64 {
         .expect("the account's available funds")
 }
 
+/// **What `who` has paid in berth fees, ever** (doc 48 cut EX.4): every berth period of
+/// theirs that settled, at its fee. A story that checks a wallet to the minor unit across
+/// IC days subtracts the berth it paid over them.
+fn berth_paid(tw: &TestWorld, who: &PrincipalId) -> i64 {
+    economy(tw)
+        .snapshot()
+        .obligations()
+        .filter(|o| {
+            &o.debtor == who
+                && o.arrears.as_ref().is_some_and(|a| {
+                    a.namespace
+                        .starts_with(tacsim::port::berth::BERTH_NS_PREFIX)
+                })
+        })
+        .map(|o| o.amount.minor() * i64::from(o.settled_total))
+        .sum()
+}
+
 /// The money render (`5600.00cr`).
 fn cr(minor: i64) -> String {
     format!("{}.{:02}cr", minor / 100, minor % 100)
@@ -1567,6 +1585,8 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
     );
     let trust_at_sale = posted(&rig.tw, trust_acct);
     let mine_at_sale = posted(&rig.tw, me);
+    // Doc 48 cut EX.4: her own hull's berth at Stickney is paid across the sweeps.
+    let berth_at_sale = berth_paid(&rig.tw, &PrincipalId::Object(vex));
     let counters = (
         graduated.sales,
         graduated.margin_minor,
@@ -1601,7 +1621,7 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
     );
     assert_eq!(
         posted(&rig.tw, me),
-        mine_at_sale + gross,
+        mine_at_sale + gross - (berth_paid(&rig.tw, &PrincipalId::Object(vex)) - berth_at_sale),
         "Vex receives the gross"
     );
     let after = enrolment(&rig.tw, vex);

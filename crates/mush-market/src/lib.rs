@@ -120,6 +120,7 @@ mod boot;
 mod commands;
 pub use commands::ACCEPT_SIGNS;
 mod facts;
+pub mod fees;
 mod ids;
 pub mod interface;
 mod lot;
@@ -134,6 +135,7 @@ mod record;
 // Doc 48 cut EX.1a: the personal seller, its sentences and the standing-acceptance seam.
 pub(crate) mod renewal_twin;
 pub mod seller;
+pub mod services;
 mod store;
 mod trade;
 
@@ -184,6 +186,13 @@ pub use record::{
     Quote, RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, check_entry,
     declared_hash,
 };
+// Doc 48 cut EX.4: the fee seam.
+pub use fees::{VenueFeeAccounts, VenueFees};
+pub use module::venue_fees;
+// Doc 48 cut EX.5: services on the exchange.
+pub use module::service_board;
+pub use record::{MAX_SERVICES_SHOWN, Service, ServiceKind, ServiceSide, ServiceTerm};
+pub use services::{ServiceBoard, service_lines, services_at};
 // Doc 48 cut EX.2: the asset-state fact and a personal object listing's no-vault mark.
 pub use record::{FACT_ASSET_STATE, NO_VAULT};
 // Doc 48 cut EX.1a: the personal seller's API and its standing acceptance.

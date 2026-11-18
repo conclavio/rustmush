@@ -183,6 +183,7 @@ pub(crate) fn buyout_spec(
         buyer_account: pilot_account,
         price,
         deadline: now.saturating_add(BUYOUT_WINDOW_SECS),
+        others: Vec::new(),
         facts: Vec::new(),
     })
 }

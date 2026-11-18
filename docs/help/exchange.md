@@ -103,13 +103,54 @@ there. It need not be your first hull, only one whose hold you may trade from.
 
 With no hull of yours docked there, it goes into your locker at that market.
 `+locker/open` opens one where you stand, and `+locker` shows what it holds and
-owes. A locker holds 20 t and 40 m3, and owes 1 cr an IC day for each tonne
-it holds. Nothing collects that yet.
+owes. A locker holds 20 t and 40 m3, and costs 1 cr an IC day for each tonne
+it holds, taken from your own account. A day you cannot pay is owed as arrears,
+and paid once your account is funded.
 
 A market that belongs to no port, such as a counter, trades only with people
 standing at it.
 
 ## Chartered cargo
 
-Goods in a Co-op chartered hold cannot go on a personal ask yet. Sell them
-into a house's bid instead, which pays the Co-op its share.
+Goods in a Co-op chartered hold may go on a personal ask. When they sell, the
+Co-op takes its share of the margin over its reference price, as it does on a
+sale into a house's bid, and you are paid the rest.
+
+## Fees
+
+At a port, the port's authority takes a listing fee of 1% of what you list (at
+least 10 cr), once, when you post it, and 3% of each sale. A further 1% of each
+sale is a levy to the port's treasury. A house's own listings pay none of these.
+
+## Berths
+
+A hull docked at a port with an authority owes it 5 cr an IC day, from her
+title holder's account. A day you cannot pay is owed as arrears, and paid once
+your account is funded; a long absence stops adding to it after about ten real
+days. Arrears never keep a hull at her berth, but they are paid out of her next
+sale at that port. A house's own hulls at their home port owe nothing.
+
+## The job board
+
+  +market/jobs [retrieval|passage|survey] [market=<venue>]
+
+Lists the jobs posted at the port you stand in, or at the market you name.
+Each job says what it pays, any bond you would escrow, when it is due, and the
+command that takes it:
+
+- **Retrieval:** bring a hull to a port for its title holder. Take it with
+  +salvage/accept. You then have the retrieval window to deliver her.
+- **Passage:** carry a waiting traveler to their destination. The fare shown is
+  their opening offer; +passage/offer opens the haggling. The fare is paid on
+  arrival.
+- **Survey:** Occator's commissions for fresh soundings of one block. Take one
+  with +survey/accept; you have 28 IC days from accepting.
+
+A job paying more than 10,000 cr asks for a bond of a fifth of its pay. The bond
+is escrowed from your account when you take the job. It comes back with the pay
+when the work is done, and goes to the poster if the work is not done in time.
+
+To take a retrieval for your organization, add as=<org>:
++salvage/accept <job> as=<org> go. You need the right to spend the
+organization's money. The pay goes to its account, and its bond comes from
+there.

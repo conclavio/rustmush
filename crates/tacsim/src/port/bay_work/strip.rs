@@ -302,11 +302,13 @@ pub struct Returned {
     pub minted: (u64, u64),
 }
 
-/// The operator's storefront, the org and account that pay, and its shop bale.
+/// The operator's storefront, the org and account that pay, its shop bale, and the workshop's
+/// venue word.
 type Buyer = (
     VaultId,
     (mush_org::OrgId, mush_economy::AccountId),
     super::ShopBale,
+    SmolStr,
 );
 
 /// **The workshop's side of a scrap or a return** (doc 39 cut IN.8): the operator's storefront
@@ -320,6 +322,11 @@ fn buyer(w: &mush_core::World, facility: &super::Facility) -> Result<Buyer, Stri
     ) else {
         return Err("That workshop keeps no stores to buy what comes off her.".to_owned());
     };
+    let venue = crate::port::market::ports(w)
+        .into_iter()
+        .find(|(id, _, _)| id == port)
+        .map(|(_, def, _)| SmolStr::new(def.venue.as_str()))
+        .ok_or("That workshop keeps no stores to buy what comes off her.")?;
     let shop = w
         .module_state::<crate::store::TacsimStore>()
         .ok_or("TacSim is not loaded.")?
@@ -332,7 +339,7 @@ fn buyer(w: &mush_core::World, facility: &super::Facility) -> Result<Buyer, Stri
                 .to_owned(),
         );
     }
-    Ok((VaultId(row.vault), operator, shop))
+    Ok((VaultId(row.vault), operator, shop, venue))
 }
 
 /// The holder's credit account.
@@ -375,14 +382,15 @@ fn references(w: &mush_core::World, hull_minor: u64) -> super::scrap::References
     }
 }
 
-/// **Settle or owe** a scrap's or a return's matter and money: with nothing to mint it lands
-/// now; otherwise the shop bale is held for this act and the mint is owed with its settlement.
+/// **Settle or owe** a scrap's or a return's matter and its sale: with nothing to mint it lands
+/// now; otherwise the shop bale is held for this act and the mint into the holder's scrap vault
+/// is owed with its settlement.
 #[allow(clippy::too_many_arguments)]
 fn settle_or_owe(
     ctx: &mut Ctx<'_>,
     record: BayHull,
     (act_no, why): (u32, &str),
-    (stores, shop): (VaultId, super::ShopBale),
+    shop: super::ShopBale,
     lots: Vec<LotMint>,
     settle: super::scrap::Settlement,
 ) {
@@ -398,7 +406,8 @@ fn settle_or_owe(
             ..shop
         },
     );
-    owe_mint(ctx, record, act_no, stores.0, why, (lots, Some(settle)));
+    let vault = settle.vault;
+    owe_mint(ctx, record, act_no, vault, why, (lots, Some(settle)));
 }
 
 /// **`+bay/scrap`** (Q-36-39; doc 39 cut IN.8, §4.6): the title holder breaks a berthed hull up
@@ -410,8 +419,9 @@ fn settle_or_owe(
 #[allow(clippy::too_many_lines)]
 pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
     let (mut record, facility) = ready(ctx, hull, Act::Scrap)?;
-    let (stores, (operator, operator_account), shop) = buyer(ctx.w, &facility)?;
-    let holder = holder_account(ctx.w, ctx.actor)?;
+    let (stores, (operator, operator_account), shop, venue) = buyer(ctx.w, &facility)?;
+    // The holder is paid on the board, into their own account.
+    holder_account(ctx.w, ctx.actor)?;
     let (before, _, anatomy) = super::unit_parts(ctx.w, hull)?;
     let at_ic = ctx.w.world_ic_now().at;
     let assessment = assess_tactical_unit(&before, &anatomy);
@@ -431,8 +441,23 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         budget.scrap_yield_kg(super::scrap::surviving_points(&before))
     });
     let act_no = super::next_act(ctx, &record);
+    // The removal is the tariff's replacement labour at the operator's multiplier (§4.6: the
+    // strip's four IC hours).
+    let removal = crate::definitions::workshop::workshop_tariff()
+        .map_err(|e| e.to_string())?
+        .with_multiplier_permille(facility.multiplier_permille)
+        .map_err(|e| e.to_string())?
+        .labor_cost_replace_component;
+    let goods = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| store.goods());
     let mut parts = Vec::new();
     let mut part_lots = Vec::new();
+    let mut part_values = Vec::new();
+    // Doc 48 cut EX.3 (the lead's ruling): a part worth nothing after its removal is no part
+    // sale; its mass joins the bulk.
+    let mut joins_bulk_kg = 0_u64;
     for (slot, condition) in &assessment.component_conditions {
         if !condition.is_salvageable() || part_lots.len() >= act::MAX_ACT_ROWS - 2 {
             continue;
@@ -444,10 +469,22 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
             continue;
         };
         let intact = *condition == ComponentCondition::Intact;
-        parts.push(super::scrap::PartIn {
+        let part = super::scrap::PartIn {
             reference_minor: super::part_price(ctx.w, hull, slot).map_or(0, |(_, _, price)| price),
             intact,
-        });
+        };
+        let value = super::scrap::part_value(part, removal);
+        if value == 0 {
+            joins_bulk_kg = joins_bulk_kg.saturating_add(
+                goods
+                    .and_then(|goods| goods.good(&part_row.commodity))
+                    .and_then(|def| def.mass_kg_per_unit())
+                    .unwrap_or(0),
+            );
+            continue;
+        }
+        parts.push(part);
+        part_values.push((part_row.commodity.clone(), value));
         // Rows 0 and 1 are the bulk lots'.
         let lot = act::lot_id(hull, act_no, part_lots.len().saturating_add(2))?;
         part_lots.push(LotMint {
@@ -470,22 +507,12 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
     let hull_minor = budget.as_ref().map_or(0, |(design, budget)| {
         crate::definitions::mass::reference_price_minor(ctx.w, design, budget)
     });
-    // The removal is the tariff's replacement labour at the operator's multiplier (§4.6: the
-    // strip's four IC hours).
-    let removal = crate::definitions::workshop::workshop_tariff()
-        .map_err(|e| e.to_string())?
-        .with_multiplier_permille(facility.multiplier_permille)
-        .map_err(|e| e.to_string())?
-        .labor_cost_replace_component;
-    let terms = super::scrap::terms(
-        references(ctx.w, hull_minor),
-        yield_kg,
-        &parts,
-        removal,
-        record.bale,
-        shop.kg,
-    );
-    if !super::scrap::operator_covers(ctx.w, operator_account, terms.credit_minor()) {
+    let yield_kg = yield_kg.saturating_add(joins_bulk_kg);
+    let at = references(ctx.w, hull_minor);
+    let terms = super::scrap::terms(at, yield_kg, &parts, removal, record.bale, shop.kg);
+    let rows = super::scrap::sale_rows(&terms, at, record.bale, &part_values);
+    let credit = super::scrap::rows_minor(&rows);
+    if !super::scrap::operator_covers(ctx.w, operator_account, credit) {
         return Err("The yard cannot pay for her just now; nothing is scrapped.".to_owned());
     }
     let mut lots = bulk_lots(hull, act_no, &terms)?;
@@ -497,13 +524,10 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
         Some(SmolStr::new_static("tacsim.bay.scrap")),
     )
     .map_err(|e| e.to_string())?;
+    // The operator's storefront takes what the holder sells it (the scrap vault is uncapped).
     hold_takes(ctx, stores, &lots)?;
     // Doc 41 cut RS.9a: what the scrap mints is a source in the matter census, counted when its
     // lots land (`scrap::land`).
-    let goods = ctx
-        .w
-        .module_state::<crate::store::TacsimStore>()
-        .and_then(|store| store.goods());
     let part_kg = lots
         .iter()
         .filter(|l| l.part.is_some())
@@ -514,11 +538,16 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
                 .map_or(0, |per| per.saturating_mul(l.quantity))
         })
         .fold(0_u64, u64::saturating_add);
+    // Doc 48 cut EX.3: the holder's scrap vault, opened (or found) once nothing refuses.
+    let vault = super::scrap::open_scrap_vault(ctx, ctx.actor, &venue)?;
     let settle = super::scrap::Settlement {
-        credit_minor: terms.credit_minor(),
+        credit_minor: credit,
         operator: operator.0,
         operator_account: operator_account.0,
-        holder_account: holder.0,
+        vault: vault.0,
+        stores: stores.0,
+        venue,
+        rows,
         shop: super::ShopBale {
             kg: terms.shop_after,
             pending: None,
@@ -535,7 +564,7 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
             .filter(|l| l.part.is_some())
             .map(|l| l.lot)
             .collect(),
-        credit_minor: terms.credit_minor(),
+        credit_minor: credit,
     };
     if lots.is_empty() {
         // Nothing to lay in the stores: the hull is broken up now.
@@ -548,7 +577,7 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
     }
     // Otherwise the breaking-up and the credit land with the mint (`land_mint`); the hull
     // stands berthed and whole, and the shop bale held, until then.
-    settle_or_owe(ctx, record, (act_no, "scrap"), (stores, shop), lots, settle);
+    settle_or_owe(ctx, record, (act_no, "scrap"), shop, lots, settle);
     Ok(scrapped)
 }
 
@@ -563,20 +592,27 @@ pub fn return_bale(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Returned, String> {
     let Some(bale) = record.bale.filter(|bale| *bale != super::Bale::default()) else {
         return Err("Her bale holds nothing to return.".to_owned());
     };
-    let (stores, (operator, operator_account), shop) = buyer(ctx.w, &facility)?;
-    let holder = holder_account(ctx.w, ctx.actor)?;
-    let terms = super::scrap::terms(references(ctx.w, 0), 0, &[], 0, Some(bale), shop.kg);
-    if !super::scrap::operator_covers(ctx.w, operator_account, terms.credit_minor()) {
+    let (stores, (operator, operator_account), shop, venue) = buyer(ctx.w, &facility)?;
+    holder_account(ctx.w, ctx.actor)?;
+    let at = references(ctx.w, 0);
+    let terms = super::scrap::terms(at, 0, &[], 0, Some(bale), shop.kg);
+    let rows = super::scrap::sale_rows(&terms, at, Some(bale), &[]);
+    let credit = super::scrap::rows_minor(&rows);
+    if !super::scrap::operator_covers(ctx.w, operator_account, credit) {
         return Err("The yard cannot pay for her bale just now.".to_owned());
     }
     let act_no = super::next_act(ctx, &record);
     let lots = bulk_lots(hull, act_no, &terms)?;
     hold_takes(ctx, stores, &lots)?;
+    let vault = super::scrap::open_scrap_vault(ctx, ctx.actor, &venue)?;
     let settle = super::scrap::Settlement {
-        credit_minor: terms.credit_minor(),
+        credit_minor: credit,
         operator: operator.0,
         operator_account: operator_account.0,
-        holder_account: holder.0,
+        vault: vault.0,
+        stores: stores.0,
+        venue,
+        rows,
         shop: super::ShopBale {
             kg: terms.shop_after,
             pending: None,
@@ -585,17 +621,10 @@ pub fn return_bale(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Returned, String> {
         clear_bale: true,
         minted_kg: 0,
     };
-    settle_or_owe(
-        ctx,
-        record,
-        (act_no, "return"),
-        (stores, shop),
-        lots,
-        settle,
-    );
+    settle_or_owe(ctx, record, (act_no, "return"), shop, lots, settle);
     Ok(Returned {
         bale,
-        credit_minor: terms.credit_minor(),
+        credit_minor: credit,
         minted: (terms.alloys_t, terms.fittings_t),
     })
 }

@@ -928,7 +928,7 @@ fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
                 registrar.as_str(),
                 "Terms: a 25000.00cr stake; 250‰ of trading margin over the Co-op's reference \
                  prices; buyout 90000.00cr, fixed at signing (a new Dray from the Yard is \
-                 120000.00cr); one enrollment per pilot, ever.",
+                 120000.00cr); one stake per pilot, and one Dray at a time.",
                 "Drays free: 7 of 8.",
                 "Your charter: the Salt Moth (FPC-D-0401); buyout 90000.00cr. +coop/statement \
                  reads your lay.",
@@ -1636,11 +1636,30 @@ fn coop_a_real_week_idle_recalls_the_dray_and_the_pilot_charters_again() {
     let staked = balance(&rig.tw, acct);
     assert_eq!(staked, first.stake_minor, "the first charter's stake");
 
-    // A real week less an hour: the charter stands.
+    // The live clock: 24 IC hours to the real hour (the rig boots at 1).
+    set_rate(&mut rig.tw, 24);
+    assert_eq!(
+        world_rate(&rig.tw),
+        24,
+        "the story runs at the live 24:1 clock"
+    );
+    // Whole IC days since the signing (the IC clock is anchored to the real one).
+    let signed_ic = rig.tw.world().world_ic_now().at;
+    let ic_days = |tw: &TestWorld| (tw.world().world_ic_now().at - signed_ic) / 86_400;
+
+    // Seven IC days (seven real hours), the window the owner feared: the charter stands.
+    let now = rig.tw.world().now();
+    sweep(&mut rig.tw, first.leased_at + 7 * 3_600 - now);
+    assert_eq!(ic_days(&rig.tw), 7, "seven IC days on");
+    let e = store(&rig.tw).enrolment_of(who).expect("the enrollment");
+    assert_eq!(e.status, EnrolmentStatus::Active, "kept at seven IC days");
+
+    // A real week less an hour (167 IC days): the charter stands.
     let now = rig.tw.world().now();
     sweep(&mut rig.tw, first.leased_at + WEEK - 3_600 - now);
+    assert_eq!(ic_days(&rig.tw), 167, "167 IC days on");
     let e = store(&rig.tw).enrolment_of(who).expect("the enrollment");
-    assert_eq!(e.status, EnrolmentStatus::Active, "kept under the week");
+    assert_eq!(e.status, EnrolmentStatus::Active, "kept at 167 IC days");
     assert!(tacsim::port::live_charter(rig.tw.world(), who).is_some());
 
     // Past the real week: the recall, and the pilot told the way back.
@@ -1648,11 +1667,16 @@ fn coop_a_real_week_idle_recalls_the_dray_and_the_pilot_charters_again() {
     rig.tw.set_now(t);
     let events = rig.tw.fire_due(t.saturating_mul(1000));
     let told = said(&rig.tw, &events, who);
+    assert_eq!(ic_days(&rig.tw), 168, "past 168 IC days");
     let e = store(&rig.tw)
         .enrolment_of(who)
         .expect("the enrollment")
         .clone();
-    assert_eq!(e.status, EnrolmentStatus::Revoked, "recalled past the week");
+    assert_eq!(
+        e.status,
+        EnrolmentStatus::Revoked,
+        "recalled past 168 IC days"
+    );
     assert_eq!(e.ended, Some(EndCause::Dormant));
     assert!(tacsim::port::live_charter(rig.tw.world(), who).is_none());
     let hint = recharter_hint(&rig.tw);

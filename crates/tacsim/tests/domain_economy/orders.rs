@@ -1635,6 +1635,9 @@ fn ic11_the_queue_runs_the_day_unattended() {
     let hold = hold_vault(&rig.tw, &row);
     set_rate(&mut rig.tw, 3_600);
     let start = pilot_available(&rig.tw, pilot);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let start_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot));
     let (metals, ice) = vertex_load();
     let mut ceres = 0;
     ceres += buy_from(
@@ -1757,7 +1760,12 @@ fn ic11_the_queue_runs_the_day_unattended() {
         .sum();
     assert_eq!(
         pilot_available(&rig.tw, pilot),
-        start - ceres + nets - costs,
+        start - ceres + nets
+            - costs
+            - (crate::driving_rig::berth_paid(
+                rig.tw.world(),
+                &mush_org::PrincipalId::Object(pilot)
+            ) - start_berth),
         "the funds path"
     );
     let fuel = price_of(
@@ -2244,6 +2252,9 @@ fn ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick() {
     assert!(out.contains("Order 1 filed"), "{out}");
     disconnect(&mut rig.tw, pilot);
     let a0 = pilot_available(&rig.tw, pilot);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let a0_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot));
     let (_, queued) = fire(&mut rig);
     assert_eq!(queued.len(), 1, "the draw leg");
     let staged = orders(&rig.tw, hull)
@@ -2287,7 +2298,11 @@ fn ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick() {
     assert_eq!(pool(&mut rig.tw, hold, "structural_alloys"), 5);
     assert_eq!(
         pilot_available(&rig.tw, pilot),
-        a0 - 5 * price,
+        a0 - 5 * price
+            - (crate::driving_rig::berth_paid(
+                rig.tw.world(),
+                &mush_org::PrincipalId::Object(pilot)
+            ) - a0_berth),
         "the funds debited once"
     );
     let doc = orders(&rig.tw, hull);

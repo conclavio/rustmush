@@ -1967,3 +1967,24 @@ pub(crate) fn seed_store_parts(
     }
     lots
 }
+
+/// **What `who` has paid in berth fees, ever** (doc 48 cut EX.4): every berth period of theirs that
+/// settled, at its fee. A story that checks a wallet to the minor unit across IC days subtracts
+/// the berth it paid over them.
+pub(crate) fn berth_paid(w: &mush_core::World, who: &mush_org::PrincipalId) -> i64 {
+    w.module_state::<mush_economy::EconomyStore>()
+        .map(|e| {
+            e.snapshot()
+                .obligations()
+                .filter(|o| {
+                    &o.debtor == who
+                        && o.arrears.as_ref().is_some_and(|a| {
+                            a.namespace
+                                .starts_with(tacsim::port::berth::BERTH_NS_PREFIX)
+                        })
+                })
+                .map(|o| o.amount.minor() * i64::from(o.settled_total))
+                .sum()
+        })
+        .unwrap_or(0)
+}

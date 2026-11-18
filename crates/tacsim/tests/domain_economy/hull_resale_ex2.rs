@@ -32,7 +32,7 @@ use crate::field_host_rig::set_section;
 /// Her price, minor (60,000.00cr).
 const PRICE: i64 = 6_000_000;
 
-fn mint(rig: &mut Rig, who: ObjId, minor: i64) {
+pub(crate) fn mint(rig: &mut Rig, who: ObjId, minor: i64) {
     let account = account_of(rig, who);
     let treasury = port_map(&rig.tw, "ceres_port")
         .treasury
@@ -45,13 +45,13 @@ fn mint(rig: &mut Rig, who: ObjId, minor: i64) {
     assert!(!out.contains("Usage"), "{out}");
 }
 
-fn account_of(rig: &Rig, who: ObjId) -> AccountId {
+pub(crate) fn account_of(rig: &Rig, who: ObjId) -> AccountId {
     tacsim::port::credit::own_account(rig.tw.world(), who)
         .expect("a credit account")
         .id
 }
 
-fn balance(rig: &Rig, account: AccountId) -> i64 {
+pub(crate) fn balance(rig: &Rig, account: AccountId) -> i64 {
     rig.tw
         .world()
         .module_state::<mush_economy::EconomyStore>()
@@ -63,11 +63,11 @@ fn balance(rig: &Rig, account: AccountId) -> i64 {
         .expect("the balance")
 }
 
-fn title(rig: &Rig, hull: ObjId) -> Option<PrincipalId> {
+pub(crate) fn title(rig: &Rig, hull: ObjId) -> Option<PrincipalId> {
     tacsim::port::house_sweep::title_of(rig.tw.world(), hull)
 }
 
-fn owner(rig: &Rig, vault: VaultId) -> PrincipalId {
+pub(crate) fn owner(rig: &Rig, vault: VaultId) -> PrincipalId {
     rig.tw
         .world()
         .module_state::<mush_economy::EconomyStore>()
@@ -76,7 +76,7 @@ fn owner(rig: &Rig, vault: VaultId) -> PrincipalId {
 }
 
 /// A captain chartered into `name`, at the desk.
-fn captain(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
+pub(crate) fn captain(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let who = pilot(rig, who, seed);
     let out = run(&mut rig.tw, who, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
@@ -90,7 +90,7 @@ fn captain(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) 
 }
 
 /// A captain who has bought `name` out of the Co-op: her title, her hold.
-fn owner_of_her(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
+pub(crate) fn owner_of_her(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let (who, row) = captain(rig, who, seed, name);
     mint(rig, who, 10_000_000);
     let out = run(&mut rig.tw, who, "+coop/buyout");
@@ -109,13 +109,13 @@ fn owner_of_her(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, Hull
     (who, row)
 }
 
-fn exchange(rig: &mut Rig, who: ObjId) {
+pub(crate) fn exchange(rig: &mut Rig, who: ObjId) {
     let room = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
     teleport(&mut rig.tw, who, room);
 }
 
 /// `+market/post #<hull> price=<n>`; the listing.
-fn list(rig: &mut Rig, seller: ObjId, hull: ObjId) -> mush_market::ListingId {
+pub(crate) fn list(rig: &mut Rig, seller: ObjId, hull: ObjId) -> mush_market::ListingId {
     exchange(rig, seller);
     let said = run(
         &mut rig.tw,
@@ -133,7 +133,7 @@ fn list(rig: &mut Rig, seller: ObjId, hull: ObjId) -> mush_market::ListingId {
     mush_market::ListingId(id)
 }
 
-fn market(rig: &Rig) -> &mush_market::MarketStore {
+pub(crate) fn market(rig: &Rig) -> &mush_market::MarketStore {
     rig.tw
         .world()
         .module_state::<mush_market::MarketStore>()
@@ -141,7 +141,7 @@ fn market(rig: &Rig) -> &mush_market::MarketStore {
 }
 
 /// `+market/quote <listing>=1` at the exchange: the reply and the quote, if one was issued.
-fn quote(
+pub(crate) fn quote(
     rig: &mut Rig,
     buyer: ObjId,
     listing: mush_market::ListingId,
@@ -153,7 +153,7 @@ fn quote(
     (said, after.filter(|q| Some(*q) != before))
 }
 
-fn newest(rig: &Rig, buyer: ObjId) -> Option<mush_market::QuoteId> {
+pub(crate) fn newest(rig: &Rig, buyer: ObjId) -> Option<mush_market::QuoteId> {
     market(rig)
         .quotes_of_buyer(&PrincipalId::Object(buyer))
         .map(|q| q.id)
@@ -161,7 +161,7 @@ fn newest(rig: &Rig, buyer: ObjId) -> Option<mush_market::QuoteId> {
 }
 
 /// `+market/accept <quote>`: the reply and the contract it filed, if any.
-fn accept(
+pub(crate) fn accept(
     rig: &mut Rig,
     buyer: ObjId,
     quote: mush_market::QuoteId,
@@ -288,9 +288,10 @@ fn ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her() {
         PrincipalId::Object(buyer),
         "her hold went with her"
     );
+    // Doc 48 cut EX.4: less the venue's 3% cut and 1% levy.
     assert_eq!(
         balance(&rig, account_of(&rig, seller)) - seller_before,
-        PRICE,
+        PRICE - PRICE * 4 / 100,
         "the seller was paid"
     );
     assert_eq!(

@@ -1102,6 +1102,7 @@ fn obligation() -> Obligation {
         settled_total: 0,
         missed_total: 0,
         service_terms: None,
+        arrears: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,

@@ -166,6 +166,7 @@ pub(crate) fn sale_spec(
         buyer_account,
         price: Amount::from_minor(i64::try_from(listing.price_minor).unwrap_or(i64::MAX)),
         deadline: now.saturating_add(SALE_WINDOW_SECS),
+        others: Vec::new(),
         facts: Vec::new(),
     })
 }

@@ -77,10 +77,6 @@ pub const SALE_NOT_PILOT: &str =
     "Only the {name}'s chartered pilot sells out of its hold, so nothing was sold.";
 /// The payout's label on the sale contract and the line.
 pub const SHARE_LABEL: &str = "Co-op share";
-/// **Doc 48 cut EX.1b** (Q-48-56, doc 48b G-7): a personal ask from a Co-op-chartered hold is
-/// refused until the share runs on asks (EX.4).
-pub const CHARTERED_ASK: &str = "Chartered cargo cannot go on a personal ask yet. Sell it into \
-                                 a house's bid, which pays the Co-op its share.";
 /// The contract-name memo when the reference fell back to the goods table.
 pub const BASELINE_MEMO: &str = "baseline ref";
 
@@ -138,6 +134,60 @@ fn house_of<'a>(w: &'a World, sale: &SaleTerms<'_>) -> Option<House<'a>> {
         .find(|id| map.orgs.get(*id).is_some_and(|row| row.org == house.0))?
         .clone();
     Some(House { def, map, org })
+}
+
+/// **The Co-op's cut of one sale from an enrolled hold** (doc 18 cut IC10; doc 48 cut EX.4 shares
+/// it with a person's ask): the reference read at contract build, the share of the margin over
+/// it at `permille`, and the Trust's one cut when the share is more than nothing. Returns the
+/// cuts, the basis, the memo and the share.
+fn share_cuts(
+    w: &World,
+    sale: &SaleTerms<'_>,
+    permille: u32,
+    label: &str,
+) -> Result<(Vec<ProceedsCut>, Amount, Option<SmolStr>, Amount), ProceedsRefusal> {
+    let Some(port) = programme_port(w) else {
+        return Err(refuse(SALE_BOOKS_DARK.to_owned()));
+    };
+    // Doc 18 cut IC14 row 66 (documented, no behaviour change): the reference is
+    // read here, when the sale's contract is built, and the share is frozen on
+    // the quote; the live ask can move before the settlement, so the share may
+    // drift from it by at most one draw window. Re-reading it at settlement with a
+    // remainder cut is the owner's open question Q-18-50.
+    //
+    // Doc 20 cut SM.5 (§7.4, Q-20-5): a fixed reference in minor units is read
+    // first — for a good no port of the lane asks (ore, at half its bid), which
+    // the validator holds — with no memo and no warn; else the live listing; else
+    // the goods table's baseline with the memo.
+    let fixed = port.programme.reference_minor.get(sale.commodity);
+    let (reference, memo) = match fixed {
+        Some(minor) => {
+            let minor = i64::try_from(*minor)
+                .map_err(|_| refuse(REFERENCE_DARK.replace("{label}", label)))?;
+            (Amount::from_minor(minor), None)
+        }
+        None => reference_of(
+            w,
+            port.programme.reference.get(sale.commodity),
+            sale.commodity,
+            label,
+        )?,
+    };
+    let Some((basis, share)) = share_of(sale.price, reference, sale.quantity, permille) else {
+        return Err(refuse(REFERENCE_DARK.replace("{label}", label)));
+    };
+    let mut cuts = Vec::new();
+    if share.minor() > 0 {
+        let Some(to) = port.trust_account() else {
+            return Err(refuse(SALE_BOOKS_DARK.to_owned()));
+        };
+        cuts.push(ProceedsCut {
+            to,
+            amount: share,
+            label: SmolStr::new_static(SHARE_LABEL),
+        });
+    }
+    Ok((cuts, basis, memo, share))
 }
 
 /// The live reference price of `good`, or the goods table's baseline with the memo.
@@ -238,29 +288,28 @@ fn enrolled_at(
 }
 
 impl ProceedsPolicy for CoopProceeds {
-    /// Doc 48 cut EX.1b (Q-48-56, doc 48b G-7): no personal ask from a chartered hold, since the
-    /// share runs only on sales into bids until EX.4 widens the ask path. Any other source,
-    /// and a governed hold no lease encloses, lists as before.
-    fn may_list(
-        &self,
-        w: &World,
-        seller: &PrincipalId,
-        source: EndpointRef,
-    ) -> Result<(), ProceedsRefusal> {
-        let seller = match seller {
-            PrincipalId::Object(id) => *id,
-            _ => ObjId(0),
-        };
-        match enrolled_at(w, source, seller) {
-            Ok(None) => Ok(()),
-            Ok(Some(_)) | Err(_) => Err(refuse(CHARTERED_ASK.to_owned())),
-        }
-    }
-
     fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
         let Some(house) = house_of(w, sale) else {
-            // A venue no port authors: the market's own line, no cuts.
-            return Ok(Proceeds::default());
+            // Doc 48 cut EX.4 (Q-48-56, doc 48b G-7): a person's ask, bought by a person, is no
+            // house's: the share still runs on a chartered hold, with the market's own line. A
+            // venue no port authors, or a hold no charter encloses: no cuts.
+            let Some(permille) = enrolled(w, sale)? else {
+                return Ok(Proceeds::default());
+            };
+            let label = w
+                .module_state::<TacsimStore>()
+                .and_then(TacsimStore::goods)
+                .map_or_else(
+                    || sale.commodity.to_string(),
+                    |g| label_of(g, sale.commodity),
+                );
+            let (cuts, basis, memo, _) = share_cuts(w, sale, permille, &label)?;
+            return Ok(Proceeds {
+                cuts,
+                basis,
+                line: None,
+                memo,
+            });
         };
         let goods = w.module_state::<TacsimStore>().and_then(TacsimStore::goods);
         let (label, unit) = goods.map_or_else(
@@ -292,47 +341,7 @@ impl ProceedsPolicy for CoopProceeds {
                 ..Proceeds::default()
             });
         };
-        let Some(port) = programme_port(w) else {
-            return Err(refuse(SALE_BOOKS_DARK.to_owned()));
-        };
-        // Doc 18 cut IC14 row 66 (documented, no behaviour change): the reference is
-        // read here, when the sale's contract is built, and the share is frozen on
-        // the quote; the live ask can move before the settlement, so the share may
-        // drift from it by at most one draw window. Re-reading it at settlement with a
-        // remainder cut is the owner's open question Q-18-50.
-        //
-        // Doc 20 cut SM.5 (§7.4, Q-20-5): a fixed reference in minor units is read
-        // first — for a good no port of the lane asks (ore, at half its bid), which
-        // the validator holds — with no memo and no warn; else the live listing; else
-        // the goods table's baseline with the memo.
-        let fixed = port.programme.reference_minor.get(sale.commodity);
-        let (reference, memo) = match fixed {
-            Some(minor) => {
-                let minor = i64::try_from(*minor)
-                    .map_err(|_| refuse(REFERENCE_DARK.replace("{label}", &label)))?;
-                (Amount::from_minor(minor), None)
-            }
-            None => reference_of(
-                w,
-                port.programme.reference.get(sale.commodity),
-                sale.commodity,
-                &label,
-            )?,
-        };
-        let Some((basis, share)) = share_of(sale.price, reference, sale.quantity, permille) else {
-            return Err(refuse(REFERENCE_DARK.replace("{label}", &label)));
-        };
-        let mut cuts = Vec::new();
-        if share.minor() > 0 {
-            let Some(to) = port.trust_account() else {
-                return Err(refuse(SALE_BOOKS_DARK.to_owned()));
-            };
-            cuts.push(ProceedsCut {
-                to,
-                amount: share,
-                label: SmolStr::new_static(SHARE_LABEL),
-            });
-        }
+        let (cuts, basis, memo, share) = share_cuts(w, sale, permille, &label)?;
         let net = Amount::from_minor(sale.gross.minor().saturating_sub(share.minor()));
         let line = fill(SALE_LINE)
             .replace("{share}", &money(w, share))

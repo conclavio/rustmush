@@ -4320,6 +4320,16 @@ fn ceres_v2() -> mush_content::Pack {
         .as_object_mut()
         .unwrap()
         .remove("lore.qureshi_personal");
+    // The registry's lay board as v2 published it (the owner's 2026-11-17 ruling re-worded it
+    // in place).
+    let board = ceres["entries"]["room.c05_registry"]["def"]["details"]["lay board"]
+        .as_str()
+        .unwrap()
+        .replace(
+            "ONE STAKE PER PILOT, ONE HULL AT A TIME.",
+            "ONE ENROLMENT PER PILOT.",
+        );
+    ceres["entries"]["room.c05_registry"]["def"]["details"]["lay board"] = board.into();
     let pack = resigned(ceres);
     assert_eq!(
         pack.manifest().digest().to_hex(),

@@ -779,9 +779,8 @@ fn stores_hold(ctx: &Ctx<'_>, good: &CanonicalId) -> bool {
         return false;
     };
     let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
-    crate::port::stock::store_lots(ctx, row, good, &claimed)
-        .into_iter()
-        .any(|lot| lot.listing.is_none())
+    // Doc 48 cut EX.3: a lot standing in its own lot ask is for sale all the same.
+    !crate::port::stock::store_lots(ctx, row, good, &claimed).is_empty()
 }
 
 /// The works at the yard's port.
@@ -842,6 +841,10 @@ fn buy(
 ) -> Result<Option<WorksAct>, String> {
     let (map, def) = yard_port(ctx.w)?;
     let part = crate::port_tick::is_part(good);
+    // Doc 48 cut EX.3 (Q-48-9): an order's bill is bought on the board.
+    if let Sink::Escrow(id) = sink {
+        return board::buy(ctx, helm, (&map, &def), id, (good, units)).map(|()| None);
+    }
     let (vendor, price_minor) = seller(ctx.w, &def, good, part)?;
     let row = map
         .vendors
@@ -1275,4 +1278,239 @@ fn open_named_purse(ctx: &mut Ctx<'_>, owner: ObjId, name: &str) -> Result<Accou
         },
     );
     Ok(id)
+}
+
+pub use board::on_board as helm_on_board;
+
+/// **A house order's bill on the board** (doc 48 cut EX.3; Q-48-9, doc 48a A-3): V7's purchases,
+/// each a quote and an acceptance by the helm into the order's escrow, paid from the helm's purse.
+///
+/// - **A bulk line** takes the seller's standing ask at the yard's port, at most what it lists.
+/// - **A part** takes one lot of the yard operator's stores. A lot already standing in its own
+///   lot ask is quoted as it stands; otherwise the port's clerk first lists the lowest-grade lot
+///   as an exact-lot vendor ask at its catalogue price, and the helm quotes it on a later fire.
+///
+/// **The guarantee** (A-3): the market escrows the price before the lot is drawn, and a leg that
+/// cannot be staged refunds the escrow to the purse; nothing moves without escrowed money, and
+/// each purchase is a trade on the tape. One purchase stands at a time: while the helm's quote
+/// is on the board nothing else is bought, and the next fire reads the escrow again. The seller
+/// and the price are the listing's, so the seam serves any buyer (PL.5).
+mod board {
+    use mush_core::{CanonicalId, Ctx, ObjId, World};
+    use mush_economy::{Amount, CatalogRef, VaultId};
+    use mush_inventory::record::EndpointRef;
+    use mush_market::{ListingId, MarketStore};
+    use mush_org::PrincipalId;
+    use smol_str::SmolStr;
+
+    use crate::port::def::PortDef;
+    use crate::port::map::PortMap;
+
+    /// Buy up to `want` of `good` into order `escrow`'s escrow, as `helm`. `Ok(())` when the
+    /// step is taken or waits (a purchase on the board, a busy queue, a part's ask being listed).
+    ///
+    /// # Errors
+    ///
+    /// No seller lists the good, or the market refuses the purchase.
+    pub(super) fn buy(
+        ctx: &mut Ctx<'_>,
+        helm: ObjId,
+        (map, def): (&PortMap, &PortDef),
+        escrow: u64,
+        (good, want): (&CanonicalId, u64),
+    ) -> Result<(), String> {
+        if on_board(ctx.w, helm)
+            || ctx.authoritative_queue_full()
+            || ctx.authoritative_pending(helm)
+        {
+            return Ok(());
+        }
+        let (listing, quantity) = if crate::port_tick::is_part(good) {
+            match part_listing(ctx, helm, (map, def), good)? {
+                Some(listing) => (listing, 1),
+                None => return Ok(()),
+            }
+        } else {
+            match bulk_listing(ctx, helm, (map, def), good, want)? {
+                Some(found) => found,
+                None => return Ok(()),
+            }
+        };
+        if quantity == 0 {
+            return Ok(());
+        }
+        let into = EndpointRef(VaultId(escrow));
+        let saved = ctx.actor;
+        ctx.actor = helm;
+        let bought = quote_and_accept(ctx, listing, quantity, into);
+        ctx.actor = saved;
+        bought.map_err(|error| format!("the market refused the helm's {good}: {error:?}"))
+    }
+
+    /// The quote and the acceptance, as the actor.
+    fn quote_and_accept(
+        ctx: &mut Ctx<'_>,
+        listing: ListingId,
+        quantity: u64,
+        into: EndpointRef,
+    ) -> Result<(), mush_market::MarketError> {
+        let quote = mush_market::quote(
+            ctx,
+            &mush_market::QuoteRequest {
+                listing,
+                quantity,
+                window: mush_market::QuoteWindow::Live,
+                ttl_live: mush_market::QUOTE_TTL_LIVE,
+                ttl_remote: mush_market::QUOTE_TTL_REMOTE,
+                presence: mush_market::Presence::Here,
+            },
+        )?;
+        mush_market::accept_at(ctx, quote, Some(into), mush_market::Presence::Here).map(|_| ())
+    }
+
+    /// **Whether `helm` has a purchase on the board**: a quote whose contract has not settled
+    /// or closed.
+    #[must_use]
+    pub fn on_board(w: &World, helm: ObjId) -> bool {
+        w.module_state::<MarketStore>().is_some_and(|market| {
+            market
+                .quotes_of_buyer(&PrincipalId::Object(helm))
+                .any(|quote| crate::port::supply::on_board(w, helm, quote.listing))
+        })
+    }
+
+    /// The listing a bulk `good` is bought from at the yard's port and how much of `want` to
+    /// take from it now (0 while a draw on the pool is unsettled), or `None` while one is
+    /// listed. A seller's standing ask, when one stands; else the vendor that stocks the good
+    /// and bids for it with no ask (the owner's IN.11 ruling, lane v33: Stickney Yards'
+    /// carbon) lists the helm a private draw ask of what it wants, at its bid.
+    fn bulk_listing(
+        ctx: &mut Ctx<'_>,
+        helm: ObjId,
+        (map, def): (&PortMap, &PortDef),
+        good: &CanonicalId,
+        want: u64,
+    ) -> Result<Option<(ListingId, u64)>, String> {
+        let market = ctx.w.module_state::<MarketStore>().ok_or("no market")?;
+        let take = |vault: u64, listing: ListingId, listed: u64| {
+            let (_, in_flight) = market.draw_reading(EndpointRef(VaultId(vault)), good);
+            (listing, if in_flight { 0 } else { want.min(listed) })
+        };
+        let standing = def
+            .vendors
+            .iter()
+            .filter(|vendor| vendor.asks.iter().any(|ask| &ask.good == good))
+            .filter_map(|vendor| map.vendors.get(&vendor.org))
+            .find_map(|row| {
+                let reading = crate::port::stock::ask_reading(market, row.vault, good);
+                reading
+                    .listing
+                    .map(|(listing, listed)| take(row.vault, listing, listed))
+            });
+        if let Some(found) = standing {
+            return Ok(Some(found));
+        }
+        let (vendor, price) = super::seller(ctx.w, def, good, false)?;
+        let row = map
+            .vendors
+            .get(&vendor.org)
+            .cloned()
+            .ok_or("the seller is not laid up")?;
+        let private = market
+            .lot_listings_of(EndpointRef(VaultId(row.vault)), good)
+            .find(|listing| listing.private_to == Some(PrincipalId::Object(helm)))
+            .map(|listing| (listing.id, listing.quantity));
+        if let Some((listing, listed)) = private {
+            return Ok(Some(take(row.vault, listing, listed)));
+        }
+        let pool =
+            crate::port_tick::read_pool(ctx, EndpointRef(VaultId(row.vault)), good).unwrap_or(0);
+        let quantity = want.min(pool).min(mush_market::MAX_QUANTITY);
+        if quantity == 0 {
+            return Err(format!("the yard holds no {good} to sell"));
+        }
+        let vendor = row.vendor.ok_or("the seller is not a vendor")?;
+        let source = mush_market::Supply::Stock {
+            vault: VaultId(row.vault),
+        };
+        list_for(ctx, map, helm, (vendor, good, price), (source, quantity)).map(|()| None)
+    }
+
+    /// **A private ask to `helm`**, listed by the port's clerk for `vendor`: `quantity` of
+    /// `good` from `source` at `price` minor a unit. Waits (`Ok`) while the clerk is busy.
+    fn list_for(
+        ctx: &mut Ctx<'_>,
+        map: &PortMap,
+        helm: ObjId,
+        (vendor, good, price): (u64, &CanonicalId, u64),
+        (source, quantity): (mush_market::Supply, u64),
+    ) -> Result<(), String> {
+        let clerk = map
+            .clerk
+            .as_ref()
+            .map(|clerk| ObjId(clerk.thing))
+            .ok_or("the yard's port has no clerk")?;
+        if ctx.authoritative_pending(clerk) {
+            return Ok(());
+        }
+        let price = i64::try_from(price).map_err(|_| "a price overflows")?;
+        let spec = mush_market::ListingSpec {
+            vendor: mush_market::VendorId(vendor),
+            catalog: CatalogRef {
+                ruleset: SmolStr::new_static(crate::NS),
+                code: SmolStr::new(good.as_str()),
+            },
+            price: Amount::from_minor(price),
+            quantity,
+            source,
+            object: None,
+            visibility: mush_market::MarketVisibility::Hidden,
+            ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+            private_to: Some(PrincipalId::Object(helm)),
+        };
+        let saved = ctx.actor;
+        ctx.actor = clerk;
+        let listed = mush_market::list_goods(ctx, spec);
+        ctx.actor = saved;
+        listed
+            .map(|_| ())
+            .map_err(|error| format!("the yard could not list its {good}: {error:?}"))
+    }
+
+    /// **The part's lot ask**: the listing of a lot of `good` in the yard operator's stores,
+    /// or `None` while the port's clerk lists one (the lowest-grade lot, at its catalogue
+    /// price).
+    fn part_listing(
+        ctx: &mut Ctx<'_>,
+        helm: ObjId,
+        (map, def): (&PortMap, &PortDef),
+        good: &CanonicalId,
+    ) -> Result<Option<ListingId>, String> {
+        let operator = def
+            .yard
+            .as_ref()
+            .map(|yard| yard.operator.clone())
+            .ok_or("the yard's port authors no yard")?;
+        let row = map
+            .vendors
+            .get(&operator)
+            .cloned()
+            .ok_or("the yard's operator keeps no stores")?;
+        let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
+        let lots = crate::port::stock::store_lots(ctx, &row, good, &claimed);
+        if let Some(listing) = lots.iter().find_map(|lot| lot.listing) {
+            return Ok(Some(listing));
+        }
+        let lot = lots.first().ok_or("the yard's stores hold no such part")?;
+        let vendor = row.vendor.ok_or("the yard's operator is not a vendor")?;
+        let (_, price) = super::seller(ctx.w, def, good, true)?;
+        let source = mush_market::Supply::Lot {
+            endpoint: mush_market::LotEndpoint(EndpointRef(VaultId(row.vault))),
+            commodity: mush_market::LotCommodity(good.clone()),
+            grade: lot.grade,
+            lot: Some(lot.lot),
+        };
+        list_for(ctx, map, helm, (vendor, good, price), (source, 1))?;
+        Ok(None)
+    }
 }

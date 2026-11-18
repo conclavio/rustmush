@@ -88,7 +88,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         CERES_PACK,
-        "853e63e30f75f3c4caa70c08cf8585cc6da73b25566a8669792783a93b9e0f10",
+        "bc3a5dfd1fb4dc6fc6b069e420e27246c33ef8d71d7f8ccfd30185572211fa29",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -147,7 +147,25 @@ fn restore_oduya_v2(doc: &mut Value) {
             .expect("the shipped v2 profile");
 }
 
+/// The Co-op wording as Ceres v1 to v3 published it: the registry's lay board and Oduya's
+/// lore (the owner's 2026-11-17 ruling re-worded both in place for one stake per pilot and one
+/// hull at a time).
+fn restore_one_enrolment_wording(doc: &mut Value) {
+    let text = serde_json::to_string(doc)
+        .expect("serializes")
+        .replace(
+            "ONE STAKE PER PILOT, ONE HULL AT A TIME.",
+            "ONE ENROLMENT PER PILOT.",
+        )
+        .replace(
+            "one stake per gateway account and one charter at a time, renewable after a recall or a release;",
+            "one enrolment per gateway account;",
+        );
+    *doc = serde_json::from_str(&text).expect("parses");
+}
+
 fn restore_qureshi_v3(doc: &mut Value) {
+    restore_one_enrolment_wording(doc);
     doc["entries"]["npc.qureshi"]["def"] =
         serde_json::from_str(include_str!("../support/qureshi_v3_def.json"))
             .expect("the shipped v3 Qureshi definition");

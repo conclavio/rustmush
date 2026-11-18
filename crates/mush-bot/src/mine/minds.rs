@@ -653,6 +653,48 @@ pub mod exchange {
     pub const ALREADY_FOR_SALE: &str = "That is already up for sale";
 }
 
+/// **The job board** (doc 48 cut EX.5): `+market/jobs` (`mush_market::services`) and the
+/// retrieval join's new sentences (`tacsim::surface::retrieval`). No lane reads them yet; each is
+/// held to the game's own text below.
+pub mod jobs {
+    /// `mush_market::services::JOBS_USAGE`.
+    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey]";
+    /// `mush_market::services::JOBS_NO_VENUE`.
+    pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=";
+    /// `mush_market::services::JOBS_NONE`.
+    pub const JOBS_NONE: &str = "No jobs are posted on this board.";
+    /// `mush_market::services::JOBS_HEAD`'s head.
+    pub const JOBS_HEAD: &str = "Jobs on this board (";
+    /// `mush_market::services::JOB_LINE`'s middle: a job's pay. Partial: read the amount after it.
+    pub const JOB_LINE: &str = ". Pays ";
+    /// `mush_market::services::JOB_NEGOTIABLE`: a pay that is an opening figure. Partial: read
+    /// it after the amount on a job's line.
+    pub const JOB_NEGOTIABLE: &str = " to open";
+    /// `mush_market::services::JOB_BOND`'s head. Partial: read it on a job's line.
+    pub const JOB_BOND: &str = ", bond ";
+    /// `mush_market::services::JOB_TAKE`'s tail: the verb that takes the job. Partial: read the
+    /// command after it.
+    pub const JOB_TAKE: &str = ". Take it: ";
+    /// `mush_market::services::TERM_FROM_ACCEPTANCE`'s tail.
+    pub const TERM_FROM_ACCEPTANCE: &str = " IC days from acceptance";
+    /// `mush_market::services::TERM_BY`'s head. Partial: read the days after it.
+    pub const TERM_BY: &str = "due within ";
+    /// `mush_market::services::TERM_TODAY`. Partial: read it on a job's line.
+    pub const TERM_TODAY: &str = "due today";
+    /// `mush_market::services::TERM_ON_PERFORMANCE`.
+    pub const TERM_ON_PERFORMANCE: &str = "paid on arrival";
+    /// `mush_market::services::JOBS_MORE`.
+    pub const JOBS_MORE: &str = "(More are posted than one board shows.)";
+    /// `tacsim::surface::retrieval::ACCEPT_USAGE`'s head.
+    pub const ACCEPT_USAGE: &str = "Usage: +salvage/accept <job> [as=<org>] [go]";
+    /// `tacsim::surface::retrieval::BOND_CLAUSE`'s head: the bond a job's taker escrows.
+    pub const BOND_CLAUSE: &str = " You escrow a bond of ";
+    /// `tacsim::surface::retrieval::NOT_FOR_ORG`.
+    pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was accepted.";
+    /// `tacsim::surface::retrieval::ORG_NO_ACCOUNT`.
+    pub const ORG_NO_ACCOUNT: &str = "That organization has no account to be paid into.";
+}
+
 /// **A hull listed on the exchange** (doc 48 cut EX.2): what `+market/post #<hull>` refuses in
 /// the game's words, `tacsim::port::hull_sale`. No lane reads them yet; each is held to the
 /// game's own text below.
@@ -736,6 +778,15 @@ pub mod core_resale {
     pub const RESALE_BUSY: &str = "You are already doing something; try again in a moment.";
 }
 
+/// **The scrap sold on the board** (doc 48 cut EX.3, `tacsim::port::bay_work::scrap`): what the
+/// holder hears when nothing whole is sold, or a row is given up.
+pub mod scrap {
+    /// `tacsim::port::bay_work::scrap::NOTHING_WHOLE`.
+    pub const NOTHING_WHOLE: &str = "scrap is paid by the whole tonne";
+    /// `tacsim::port::bay_work::scrap::SALE_GIVEN_UP`'s middle.
+    pub const SALE_GIVEN_UP: &str = "; it stays in your scrap at ";
+}
+
 /// **The exchange at the venue** (doc 48 cut EX.1b): a player's locker (`+locker`,
 /// `tacsim::port::locker`) and the venue gate's new refusals (`tacsim::port::market`). No lane
 /// reads them yet; each is held to the game's own text below.
@@ -747,7 +798,7 @@ pub mod venue {
     /// `tacsim::port::locker::LOCKER_NO_VENUE`.
     pub const LOCKER_NO_VENUE: &str = "There is no market here to keep a locker at.";
     /// `tacsim::port::locker::LOCKER_SHOW`'s tail: what a locker holds and owes.
-    pub const LOCKER_SHOW: &str = " owed (collection starts later).";
+    pub const LOCKER_SHOW: &str = " t held, charged ";
     /// `tacsim::port::locker::LOCKER_NONE`'s tail.
     pub const LOCKER_NONE: &str = "+locker/open opens one.";
     /// `tacsim::port::market::NOT_AT_VENUE`'s tail: a non-port venue, away from it.
@@ -756,8 +807,6 @@ pub mod venue {
     pub const VENUE_UNPLACED: &str = " market has no place to trade in, so it cannot trade.";
     /// `tacsim::port::market::LOCKER_ELSEWHERE`'s head: another venue's or player's locker.
     pub const LOCKER_ELSEWHERE: &str = "That locker is not yours at ";
-    /// `tacsim::port::proceeds::CHARTERED_ASK`'s head: no personal ask from a chartered hold.
-    pub const CHARTERED_ASK: &str = "Chartered cargo cannot go on a personal ask yet.";
 }
 
 /// **The way back to a Co-op Dray** (the owner's 2026-11-17 ruling): the recall after a real
@@ -781,6 +830,8 @@ pub mod coop {
     /// `tacsim::port::coop::REGISTRAR_LINE`'s last sentence: the recall and the way back.
     pub const REGISTRAR_LINE: &str =
         "takes its Dray back; you may charter another, with no second stake.";
+    /// `tacsim::port::coop::TERMS_ONE_AT_A_TIME`: the `+coop` terms line's last clause.
+    pub const TERMS_ONE_AT_A_TIME: &str = "one stake per pilot, and one Dray at a time.";
     /// `tacsim::port::recall::DORMANT_NOTICE`'s tail: the recall after a real week idle.
     pub const DORMANT_NOTICE: &str = "): a real week without a departure. The stake stays yours.";
 }
@@ -797,6 +848,12 @@ pub const PARTIAL: &[&str] = &[
     "market::HOLD_PAID",
     "market::REVOKING_PRINCIPAL",
     "market::CLAIM_LINE",
+    "jobs::JOB_LINE",
+    "jobs::JOB_NEGOTIABLE",
+    "jobs::JOB_BOND",
+    "jobs::JOB_TAKE",
+    "jobs::TERM_BY",
+    "jobs::TERM_TODAY",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -829,6 +886,7 @@ mod tests {
     const WORDS_RS: &str = include_str!("../../../tacsim/src/minds/market_commands/words.rs");
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
     const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
+    const SERVICES_RS: &str = include_str!("../../../mush-market/src/services.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
     const CORE_RESALE_RS: &str = include_str!("../../../tacsim/src/hardware/sale/resale.rs");
 
@@ -852,10 +910,39 @@ mod tests {
                 LOCKER_ELSEWHERE,
             )
         });
+        rows
+    }
+
+    fn job_board_rows() -> Vec<Row> {
+        use super::jobs as bot;
+        use mush_market::services as game;
+        rows!("";
+            JOBS_USAGE,
+            JOBS_NO_VENUE,
+            JOBS_NONE,
+            JOBS_HEAD,
+            JOB_LINE,
+            JOB_NEGOTIABLE,
+            JOB_BOND,
+            JOB_TAKE,
+            TERM_FROM_ACCEPTANCE,
+            TERM_BY,
+            TERM_TODAY,
+            TERM_ON_PERFORMANCE,
+            JOBS_MORE,
+        )
+    }
+
+    fn jobs_rows() -> Vec<Row> {
+        use super::jobs as bot;
+        let mut rows = job_board_rows();
         rows.extend({
-            use tacsim::port::proceeds as game;
+            use tacsim::surface::retrieval as game;
             rows!("";
-                CHARTERED_ASK,
+                ACCEPT_USAGE,
+                BOND_CLAUSE,
+                NOT_FOR_ORG,
+                ORG_NO_ACCOUNT,
             )
         });
         rows
@@ -873,6 +960,7 @@ mod tests {
                 RECHARTER_HINT,
                 RECHARTERED_TERMS,
                 REGISTRAR_LINE,
+                TERMS_ONE_AT_A_TIME,
             )
         };
         rows.extend({
@@ -927,6 +1015,15 @@ mod tests {
             NOT_LISTABLE,
             NOT_FOR_ORG,
             ALREADY_FOR_SALE,
+        )
+    }
+
+    fn scrap_rows() -> Vec<Row> {
+        use super::scrap as bot;
+        use tacsim::port::bay_work::scrap as game;
+        rows!("";
+            NOTHING_WHOLE,
+            SALE_GIVEN_UP,
         )
     }
 
@@ -1239,7 +1336,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 13] = [
+        let families: [(&str, Vec<Row>); 14] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1249,9 +1346,11 @@ mod tests {
             ("ship_mind", ship_mind_rows()),
             ("practice", practice_rows()),
             ("exchange", exchange_rows()),
+            ("jobs", jobs_rows()),
             ("hull_sale", hull_sale_rows()),
             ("core_resale", core_resale_rows()),
             ("venue", venue_rows()),
+            ("scrap", scrap_rows()),
             ("coop", coop_rows()),
         ];
         families
@@ -1799,6 +1898,19 @@ mod tests {
     fn exchange_needles_are_distinct() {
         distinct(&qualified("exchange", exchange_rows()), &[]);
     }
+    // Doc 48 cut EX.5: the job board.
+    #[test]
+    fn jobs_needles_are_in_step() {
+        in_step("jobs", &jobs_rows());
+    }
+    #[test]
+    fn jobs_census() {
+        census("services.rs", SERVICES_RS, &job_board_rows(), &[]);
+    }
+    #[test]
+    fn jobs_needles_are_distinct() {
+        distinct(&qualified("jobs", jobs_rows()), &[]);
+    }
     // Doc 48 cut EX.2: a hull listed on the exchange.
     #[test]
     fn hull_sale_needles_are_in_step() {
@@ -1834,6 +1946,15 @@ mod tests {
     #[test]
     fn core_resale_needles_are_distinct() {
         distinct(&qualified("core_resale", core_resale_rows()), &[]);
+    }
+    // Doc 48 cut EX.3: the scrap sold on the board.
+    #[test]
+    fn scrap_needles_are_in_step() {
+        in_step("scrap", &scrap_rows());
+    }
+    #[test]
+    fn scrap_needles_are_distinct() {
+        distinct(&qualified("scrap", scrap_rows()), &[]);
     }
     // Doc 48 cut EX.1b: the exchange at the venue.
     #[test]
