@@ -4560,6 +4560,10 @@ fn laser_field() -> (Arena, u32) {
         PartyId::RED,
         facing(5, 8, 90_000),
     );
+    // Doc 49 unit CC.3 (Q-49-6): the shipped laser tank lists its 105 first, beside the
+    // laser. This field is the laser's heat story through Class I's two slots, so it fields
+    // the laser and the coaxial as S1 and S2, as the laser tank carried them until CC.3.
+    red.weapons.retain(|weapon| weapon.id != "cannon");
     for weapon in &mut red.weapons {
         if let Some((_, cycle_ms)) = LASER_FIELD_CYCLES.iter().find(|(id, _)| weapon.id == *id) {
             weapon.cycle_ms = *cycle_ms;
@@ -4693,8 +4697,14 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
             Err(Refusal::Unwarranted)
         );
         probed.set(true);
+        // Doc 49 unit CC.3 (Q-49-28): a shot that would cross the ceiling is refused, so
+        // the laser fires again only once the platform is back at 40. The sink comes back
+        // at four times the authored rate, so each 2 s cycle cools a pulse's 20 and more,
+        // and the laser is under 40 again before every ready: its slot fires at each one,
+        // and the fresh lock after `UNLOCKS_AT` cites it. At the authored rate it would
+        // not be cool again until about 23 s.
         if let Some(heat) = arena.unit_mut(RED).and_then(|state| state.heat.as_mut()) {
-            heat.per_s = sink;
+            heat.per_s = sink.saturating_mul(4);
         }
     };
     let make = || laser_field().0;

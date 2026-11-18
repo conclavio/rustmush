@@ -1827,10 +1827,14 @@ impl Coverage {
 /// 900 s ([`MIXED_CAP_S`]) — `pooled` 10,851 / 405 → 16,066 / 436, `mixed` 12,866 / 345 →
 /// 33,734 / 534 (at the new cap), `lance` 7,142 / 159 → 8,433 / 133, and
 /// [`POOLED_MATCHES_WITH_STAND_IN`] 12 → 8 — with no divergence on any lane.
+/// **Doc 49 unit CC.3's re-bless of the lance lane** (Q-49-6, Q-49-27, Q-49-28): its laser
+/// tanks carry the 105 beside the laser, a beam counts a fifth against armour, and heat
+/// refuses a shot that would cross the ceiling, so the lance's fights moved: 8,433 / 133 →
+/// 8,105 / 177, with no divergence. The two-tank lanes field no laser and are unmoved.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
     ("pooled", (16_066, 436)),
     ("mixed", (33_734, 534)),
-    ("lance", (8_433, 133)),
+    ("lance", (8_105, 177)),
 ];
 
 /// **The two-tank lanes' bound on a Rhai think's operations plus fees**, the

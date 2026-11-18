@@ -2309,8 +2309,9 @@ fn heat_field() -> Arena {
 /// mind locks and never fires — `would_overheat` holds the think's own
 /// `Fire` back, and the armed slot's shots are refused `Overheated` by the
 /// resolver, silently; (b) one shot short of the ceiling the one legal shot
-/// is taken and lands the hull on it; (c) a shot the engine clamps is taken
-/// and the next is refused. What moved: `counters.shots` (the reflex row's
+/// is taken and lands the hull on it; (c) a shot that would cross the ceiling
+/// is held, since doc 49 unit CC.3 (Q-49-28: the engine refuses it; it clamped
+/// it until then, and the machine took it). What moved: `counters.shots` (the reflex row's
 /// accepted `FIRE`s) is dropped — the `fired` line is the count that
 /// survives the controller — and the field is [`heat_field`]'s mind on
 /// [`t1_heated`], the heat cell on a hull that keeps its core.
@@ -2346,29 +2347,29 @@ fn t1_an_overheated_machine_holds_its_fire_rather_than_feeding_a_refusal() {
         "and it is at the ceiling now, which is what stopped the second"
     );
 
-    // (c) **a shot that would go past it** — **16b cut E.2 (16c `T-55`)
-    // reversed this case.** Twenty on a platform carrying fifty of sixty is a
-    // shot the engine accepts and clamps (`Arena::raise_heat` writes
-    // `min(now + per_shot, max)`), so the machine takes it too: the two halves
-    // of one platform may not disagree about whether the gun works, which is
-    // the sentence `would_overheat`'s doc used to make the other argument with.
-    // It lands ON the ceiling, and the next think is (a).
+    // (c) **a shot that would go past it.** 16b cut E.2 (16c `T-55`) had the
+    // engine accept and clamp it (`min(now + per_shot, max)`), so the machine
+    // took it too. **Doc 49 unit CC.3 (Q-49-28) reversed it again:** a shot that
+    // would carry the platform past its ceiling is refused
+    // (`UnitState::refuses_heat`), and `would_overheat` answers the same rule, so
+    // twenty on a platform carrying fifty of sixty is a shot the machine holds
+    // rather than one it feeds to a refusal: the two halves of one platform still
+    // agree about whether the gun works. This platform does not cool, so it never
+    // fires in the eight seconds and stays at fifty.
     let mut arena = heat_field();
     t1_heated(&mut arena, RED, 60, 50, 20);
     let mut bytes: Vec<u8> = Vec::new();
     run_settled(&mut arena, 8_000, &mut bytes);
     assert_eq!(
         arena.unit(RED).and_then(|unit| unit.heat_now()),
-        Some(60),
-        "it landed on the ceiling rather than past it"
+        Some(50),
+        "the shot that would have crossed the ceiling was held"
     );
-    // And it held its fire afterwards, which is the other half of the same
-    // line: eight seconds is two cannon cycles.
     let log = events(&mut arena, &mut bytes);
     assert_eq!(
         count(&log, "fired"),
-        1,
-        "the engine would have taken this shot and clamped, and the second was refused"
+        0,
+        "the machine held the shot the engine would have refused"
     );
 }
 
@@ -5404,7 +5405,9 @@ fn an_unreachable_order_and_a_hot_gun() -> Arena {
         &arena_cfg(reflex_cfg()),
         &[BLUE],
     );
-    t1_heated(&mut arena, RED, 60, 50, 20);
+    // Doc 49 unit CC.3 (Q-49-28): forty, so the one shot lands on the ceiling; at fifty
+    // it would cross it and be refused, where until CC.3 it was clamped and taken.
+    t1_heated(&mut arena, RED, 60, 40, 20);
     arena
 }
 
@@ -5440,9 +5443,10 @@ fn t1_pocket_replay(cadence_ms: i64) -> (Replay, Vec<Kept>) {
 /// one log at three cadences** (16b cut E.2; 16c `B-41`, `T-55`; 16b §11).
 /// Kept: the story happens at one cadence (`startup`, `detected`,
 /// `classified`, `fired`); `T-55`'s shot — exactly one `fired` in twenty
-/// seconds, the 50→60 shot the engine accepts and clamps, every later ready
-/// held `Overheated` (weapons.rs refuses only at `overheated()`; the mind's
-/// `would_overheat` holds its own fire at the same number); at least forty
+/// seconds, the 40→60 shot that lands on the ceiling (doc 49 unit CC.3: the
+/// 50→60 shot the engine clamped until then is refused now), every later ready
+/// held `Overheated` (weapons.rs refuses a shot that would cross the ceiling; the
+/// mind's `would_overheat` holds its own fire at the same number); at least forty
 /// substeps; and the event list, the hash sequence and the field's end one
 /// at 5,000, 1,000 and 500 ms — joined by the kept think sequence, every
 /// view and answer. What moved, and the one divergence (`order_end`, doc

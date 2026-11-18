@@ -820,21 +820,22 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             .collect::<Vec<_>>(),
         vec![
             Some("cannon".to_owned()),
-            Some("laser".to_owned()),
+            // Doc 49 unit CC.3 (Q-49-6): the laser tank and the Mk2 biped keep the 105.
+            Some("cannon".to_owned()),
             // 16b cut AE.3: the drone carries no gun.
             None,
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
-            Some("laser".to_owned()),
+            Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("autocannon".to_owned()),
             None,
         ],
         "the weapon a bare `FIRE` fires: the cannon, or the first in component \
-         order on a hull that carries none (the Mk2's beam, the scout's \
-         autocannon), and nothing on the drone or the range's target"
+         order on a hull that carries none (the scout's autocannon), and \
+         nothing on the drone or the range's target"
     );
     assert_eq!(
         table(&arena),
@@ -893,13 +894,19 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         // AE.1**: and a unit whose only weapon was the emptied one has nothing to
         // fall to either (no fielded unit is one since 16b cut AE.2 gave the
         // scout its autocannon). A unit that still has a loaded weapon falls to
-        // `machine_gun`.
+        // `machine_gun`, and since doc 49 unit CC.3 (Q-49-6) the two laser machines,
+        // whose laser is listed after their 105, fall to the laser.
         let emptied = dry.get(at).cloned().flatten();
+        let next = if state.weapons.iter().any(|weapon| weapon.id == "laser") {
+            "laser"
+        } else {
+            "machine_gun"
+        };
         let expected = state
             .weapons
             .iter()
             .any(|weapon| Some(&weapon.id) != emptied.as_ref())
-            .then(|| "machine_gun".to_owned());
+            .then(|| next.to_owned());
         assert_eq!(
             loaded, expected,
             "{name}: a dry default weapon falls to the next loaded one"
@@ -1395,7 +1402,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (
             content::LINE_TANK_LASER_JSON,
             "tacsim.pack.line_tank_laser",
-            4,
+            // Doc 49 unit CC.3 (Q-49-6): version 5, the 105 back beside the laser.
+            5,
         ),
         (
             content::LINE_TANK_THERMAL_JSON,
@@ -1411,7 +1419,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (content::HEAVY_MK1_JSON, "tacsim.pack.heavy_mk1", 4),
         (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 4),
         (content::BIPED_MK1_JSON, "tacsim.pack.biped_mk1", 2),
-        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2),
+        // Doc 49 unit CC.3 (Q-49-6): version 3, the 105 beside the laser.
+        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 3),
         // M5r: version 4, its note describes the restored public Hold goal.
         (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 4),
     ] {

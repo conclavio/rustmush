@@ -2003,7 +2003,13 @@ fn beam_shot(unit: ObjId) -> Vec<IntentKind> {
 
 /// **A beam**: [`cannon`] with no flight time — `muzzle_speed_cms` nought, so
 /// `resolve_fire` puts its impact at its own millisecond, the shape of the
-/// shipped `laser_mk1` (`delivery: beam`) — doing `damage`.
+/// shipped `laser_mk1` (`delivery: beam`) — doing `damage`, which since doc 49
+/// unit CC.3 (Q-49-27) a facet's armour takes at a fifth: [`ONE_POINT_BEAM`].
+/// **A beam that takes one point of a facet's armour** (doc 49 unit CC.3, Q-49-27: a
+/// beam counts a fifth of its damage against armour, so five), the beam the M1b.0
+/// landing tests watch arrive. Until CC.3 it was a beam of one.
+const ONE_POINT_BEAM: u32 = 5;
+
 fn beam(damage: u32) -> WeaponSummary {
     WeaponSummary {
         muzzle_speed_cms: 0,
@@ -2289,14 +2295,14 @@ fn m1b0_a_landings_beam_impact_precedes_the_thinks_of_its_millisecond() {
         "the precondition: the two lattices one substep apart"
     );
     let (shoot_at, blue_think, land) = landing_on_a_think(red, blue);
-    let (arena, mind) = beam_field(red, blue, 1, false, shoot_at);
+    let (arena, mind) = beam_field(red, blue, ONE_POINT_BEAM, false, shoot_at);
     assert_eq!(arena.substep_len_ms(), SUBSTEP, "the rig's substep");
     let mut rig = Rig::new(arena);
     let _ = rig.until(land + STOCK_THINK_MS, |arena| arena.now_ms >= land);
     assert_the_beam_preceded_the_think(&mut rig, &mind, red, blue, blue_think, land);
 
     // (b) The reviewer's hand-scheduled form.
-    let (arena, mind) = beam_field(RED, BLUE, 1, false, 0);
+    let (arena, mind) = beam_field(RED, BLUE, ONE_POINT_BEAM, false, 0);
     let mut rig = Rig::new(arena);
     let _ = rig.arena.due.retain(|kind| {
         !matches!(
@@ -2328,7 +2334,7 @@ fn m1b0_a_landings_beam_impact_precedes_the_thinks_of_its_millisecond() {
 fn beam_before_think(drive: Drive) -> (Run, Vec<Seen>) {
     let (red, blue) = lattice_pair(SUBSTEP);
     let (shoot_at, _, _) = landing_on_a_think(red, blue);
-    let (mut arena, mind) = beam_field(red, blue, 1, false, shoot_at);
+    let (mut arena, mind) = beam_field(red, blue, ONE_POINT_BEAM, false, shoot_at);
     let run = run(&mut arena, drive, 5_000);
     (run, mind.seen())
 }
