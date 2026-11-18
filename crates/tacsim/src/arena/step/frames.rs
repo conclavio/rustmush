@@ -561,6 +561,15 @@ impl FrameHeat {
     pub const fn overheated(&self) -> bool {
         self.heat >= self.max
     }
+
+    /// **Whether a shot that makes `per_shot` heat is refused for it** (doc 49 unit CC.3,
+    /// Q-49-28), read off the frame: the arena's own rule
+    /// ([`crate::arena::state::UnitState::refuses_heat`]), a shot that would carry the
+    /// platform past its ceiling. A shot that makes no heat never is.
+    #[must_use]
+    pub const fn refuses(&self, per_shot: u32) -> bool {
+        per_shot > 0 && self.heat.saturating_add(per_shot) > self.max
+    }
 }
 
 /// A hull's own motor status. Formation-adjusted internal goals stay private.

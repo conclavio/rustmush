@@ -3,8 +3,9 @@
 //!
 //! Doc 16 §3.5 gives every weapon a `heat_per_shot` and says the cell *exists for
 //! lasers*; this is the rest of that sentence. A shot of a weapon that makes heat
-//! raises its shooter's `heat` cell, arena time lowers it, and a platform at its
-//! ceiling refuses to fire until it has cooled.
+//! raises its shooter's `heat` cell, arena time lowers it, and a shot whose heat
+//! would carry the platform past its ceiling is refused until it has cooled (doc 49
+//! unit CC.3, Q-49-28; until then only a platform already at the ceiling was).
 //!
 //! # The truth is one M32 cell, and the ceiling is that cell's own maximum
 //!
@@ -112,17 +113,33 @@ impl UnitState {
         }
     }
 
-    /// **Whether `FIRE` refuses for heat** (doc 16 §9 item 1: *a shot refused
-    /// above a heat ceiling*).
-    ///
-    /// At the ceiling and not merely past it: the cell cannot hold more than its
-    /// maximum, so a shot that would carry a unit past it leaves it exactly at it
-    /// and the *next* shot is the one refused. A unit with no heat is never
-    /// refused for it, which is every stock tank.
+    /// **Whether the unit is at its ceiling** (doc 16 §9 item 1: *a shot refused
+    /// above a heat ceiling*): what the cockpit's status line and a mind's
+    /// `Heat.overheated` read. Since doc 49 unit CC.3 (Q-49-28) `FIRE` refuses by
+    /// [`UnitState::refuses_heat`], a shot that would cross the ceiling, so a unit
+    /// under it can still be refused a hot shot. A unit with no heat is never at a
+    /// ceiling, which is every stock tank.
     #[must_use]
     pub fn overheated(&self) -> bool {
         match (self.heat_now(), self.heat_max()) {
             (Some(now), Some(max)) => now >= max,
+            _ => false,
+        }
+    }
+
+    /// **Whether a shot that makes `per_shot` heat is refused for it** (doc 49 unit CC.3,
+    /// Q-49-28): one that would carry the unit past its ceiling. Until CC.3 such a shot was
+    /// capped at the ceiling and only a unit already at it was refused, so at the laser's
+    /// cycle the cooling always made room and heat never held a shot back. A shot that makes
+    /// no heat is never refused for it, nor is any shot of a unit with no heat (every stock
+    /// tank).
+    #[must_use]
+    pub fn refuses_heat(&self, per_shot: u32) -> bool {
+        if per_shot == 0 {
+            return false;
+        }
+        match (self.heat_now(), self.heat_max()) {
+            (Some(now), Some(max)) => now.saturating_add(per_shot) > max,
             _ => false,
         }
     }
@@ -134,9 +151,11 @@ impl Arena {
     ///
     /// Called by [`Arena::resolve_fire`](crate::arena::state::Arena) from the
     /// accepted shot, after the round and the cycle are spent, so a refused shot
-    /// costs no heat. The value is capped at the cell's own maximum before the op
-    /// is built — the plan is in bounds by construction, exactly as the armour
-    /// spend is — and a weapon that makes no heat builds no plan at all.
+    /// costs no heat. Since doc 49 unit CC.3 an accepted shot never carries the unit
+    /// past its ceiling ([`UnitState::refuses_heat`]); the value is still capped at
+    /// the cell's own maximum before the op is built, as a guard — the plan is in
+    /// bounds by construction, exactly as the armour spend is — and a weapon that
+    /// makes no heat builds no plan at all.
     ///
     /// A plan M32 refuses leaves the unit exactly as it was and the shot stands:
     /// the round has left the barrel either way, and a shot unfired because a
@@ -392,6 +411,32 @@ mod tests {
             Some(marked),
             "a heat plan recomputed the bands"
         );
+    }
+
+    /// **Doc 49 unit CC.3 (Q-49-28): a shot that would cross the ceiling is refused.** The
+    /// laser tank's ceiling is 60 and its laser makes 20 a shot: at 40 the shot lands on the
+    /// ceiling and is allowed, at 41 it would cross it and is refused, and a shot that makes
+    /// no heat never is. The frame's reading answers as the unit's does; `overheated` stays
+    /// the status line's "at the ceiling".
+    #[test]
+    fn cc3_a_shot_that_would_cross_the_ceiling_is_refused_and_one_onto_it_is_not() {
+        let mut arena = arena_of(vec![laser_tank(RED, PartyId::RED, pose(1_500, 1_500))]);
+        let per_shot = arena
+            .unit(RED)
+            .and_then(|state| state.heat.as_ref())
+            .map_or(0, |heat| heat.per_shot("laser"));
+        let max = arena.unit(RED).and_then(UnitState::heat_max);
+        assert_eq!((per_shot, max), (20, Some(60)), "the laser tank's content");
+        for (now, refused) in [(0, false), (40, false), (41, true), (60, true)] {
+            set_heat(&mut arena, RED, now);
+            let state = arena.unit(RED).unwrap_or_else(|| panic!("the tank"));
+            assert_eq!(state.refuses_heat(per_shot), refused, "at {now}");
+            assert!(!state.refuses_heat(0), "a cold gun at {now}");
+            assert_eq!(state.overheated(), now >= 60, "the status line at {now}");
+            let frame = crate::arena::step::FrameHeat { heat: now, max: 60 };
+            assert_eq!(frame.refuses(per_shot), refused, "the frame at {now}");
+            assert!(!frame.refuses(0));
+        }
     }
 
     /// Put `value` in the unit's heat cell, through M32 as everything else does.

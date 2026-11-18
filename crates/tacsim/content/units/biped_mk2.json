@@ -1,10 +1,14 @@
 {
   "manifest": {
     "id": "tacsim.pack.biped_mk2",
-    "version": 2,
+    "version": 3,
     "kind": "rules_definition",
-    "digest": "886f86daea7132c3a3953bd3248513ad7a2386c5b7089cb1264043170811f3b6",
+    "digest": "07d3c901b1638582f1ebf8337d916a75cb60cce3685949f07eca8918f5ad9183",
     "requires": [
+      {
+        "id": "tacsim.pack.cannon_105",
+        "version": 1
+      },
       {
         "id": "tacsim.pack.laser_mk1",
         "version": 1
@@ -113,8 +117,17 @@
         ],
         "components": [
           {
-            "id": "laser",
+            "id": "cannon",
             "section": "right_arm",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.cannon_105",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "laser",
+            "section": "left_arm",
             "role": {
               "kind": "weapon",
               "weapon": "tacsim.weapon.laser_mk1",
@@ -123,7 +136,7 @@
           },
           {
             "id": "machine_gun",
-            "section": "left_arm",
+            "section": "torso",
             "role": {
               "kind": "weapon",
               "weapon": "tacsim.weapon.mg_coax",
@@ -228,7 +241,7 @@
         "sensor_height_cm": 950,
         "heat_max": 60,
         "heat_dissipation_per_s": 3,
-        "note": "The second biped of 16b cut AE.1: the Mk1's six sections, a little heavier everywhere (520 on the torso's front against 450), with the Mk1 laser in its right arm where the laser tank carries it in a turret, found through cut X.2's mount fallback, the machine gun in its left, and the Mk1 thermal sight in its head at the thermal tank's 650 and 120. The heat is the laser tank's: 60 is three pulses of 20 and 3 a second empties it in twenty seconds. The legged mode walks at 1,000 cm/s, slower than the Mk1's 1,200, twists at 40 degrees a second and backs at 40 per cent. On the legged row it pays 200 for the thick woods a tank is refused and 150 for rubble a tank pays 200 for, and it climbs 70 per cent against a tank's 45, so it takes the thick woods and the bluff's faces. It stands 11.5 m tall with the sight 9.5 m up. One leg gone is slow(50); both gone is disable_motion, authored on each leg as the pair. Version 2 (17b cut M3.1): a line core in the torso."
+        "note": "The second biped of 16b cut AE.1: the Mk1's six sections, a little heavier everywhere (520 on the torso's front against 450), with the Mk1 thermal sight in its head at the thermal tank's 650 and 120. Doc 49 unit CC.3 (Q-49-6): the Mk1's 105 in the right arm as the main gun, the Mk1 laser in the left for drones and soft targets, and the machine gun in the torso; the cannon is listed first, so Class I's two slots arm it and the laser. The heat is the laser tank's: a 60 ceiling, 20 a pulse, 3 a second. It walks at 1,000 cm/s, twists at 40 degrees a second and backs at 40 per cent; it pays 200 for thick woods and 150 for rubble and climbs 70 per cent. It stands 11.5 m tall with the sight 9.5 m up. One leg gone is slow(50); both gone is disable_motion. Version 2 (17b cut M3.1): a line core in the torso. Version 3 (CC.3): the 105 beside the laser."
       }
     }
   }
