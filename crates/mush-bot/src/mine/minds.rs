@@ -781,6 +781,8 @@ pub mod coop {
     /// `tacsim::port::coop::REGISTRAR_LINE`'s last sentence: the recall and the way back.
     pub const REGISTRAR_LINE: &str =
         "takes its Dray back; you may charter another, with no second stake.";
+    /// `tacsim::port::coop::TERMS_ONE_AT_A_TIME`: the `+coop` terms line's last clause.
+    pub const TERMS_ONE_AT_A_TIME: &str = "one stake per pilot, and one Dray at a time.";
     /// `tacsim::port::recall::DORMANT_NOTICE`'s tail: the recall after a real week idle.
     pub const DORMANT_NOTICE: &str = "): a real week without a departure. The stake stays yours.";
 }
@@ -873,6 +875,7 @@ mod tests {
                 RECHARTER_HINT,
                 RECHARTERED_TERMS,
                 REGISTRAR_LINE,
+                TERMS_ONE_AT_A_TIME,
             )
         };
         rows.extend({

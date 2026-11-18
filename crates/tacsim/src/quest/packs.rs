@@ -56,7 +56,7 @@ mod tests {
         );
         assert_eq!(
             packs[1].manifest().digest().to_hex(),
-            "c982d6ce6378044f8a8f3e682c89ee7ebc324d192615e54439746d80f0611ee2"
+            "554d015d860808e35e0de99678841f7b68f7a0d39efdf62b59bb473a7e79f1f4"
         );
         assert_eq!(
             packs[2].manifest().digest().to_hex(),

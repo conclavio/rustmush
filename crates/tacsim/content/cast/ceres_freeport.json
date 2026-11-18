@@ -299,7 +299,7 @@
             "coop"
           ],
           "knows": [
-            "the lay is a stake, not a loan: a working charter and working cash, with a share of trading margin until buyout; one enrolment per gateway account; the live Co-op terms and statement are authoritative for amounts and eligibility",
+            "the lay is a stake, not a loan: a working charter and working cash, with a share of trading margin until buyout; one stake per gateway account and one charter at a time, renewable after a recall or a release; the live Co-op terms and statement are authoritative for amounts and eligibility",
             "title versus charter versus lay and which form each is",
             "the pilot uses +coop to read terms, +coop/enrol <name> to sign, +coop/statement to read their books and +coop/buyout to request buyout; a historical buyout is not proof that the pilot still owns the hull",
             "the Registry handles prospecting licences and block claims; use the supplied command help for exact preview and confirmation syntax, and never claim a licence or claim was filed merely because she explained it",
@@ -485,7 +485,7 @@
     }
   },
   "manifest": {
-    "digest": "cb9280261955f54affcc443363d33bce1c09cd55b38baf27cce0b9b7598558bc",
+    "digest": "a8b6e6eb2be51700f2ca6a8c89482a9e125d6ce54be8c92ec9356bf9acebbe00",
     "id": "tacsim.cast.ceres_freeport",
     "kind": "campaign_seed",
     "requires": [
