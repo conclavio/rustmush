@@ -3,9 +3,9 @@
 //! One of four domain binaries (doc 43 cut TS.12, adopted by D-43-5 on 2026-11-04). Each module
 //! below was a `tests/<name>.rs` target of its own until test-strategy cut T.3 merged them (every
 //! integration binary links the whole engine), and it lives at `tests/domain_field/<name>.rs`. The CI's ten
-//! `tacsim-integration-N` cells build all four binaries and run `cargo nextest run --partition
-//! hash:N/10` over them, so the balance is the hash's and nothing is ever resharded: **a new test is
-//! a `mod` line here**, in the domain it belongs to (rule 2.3 #3). A module imports only from its
+//! `tacsim-integration-N` cells build all four binaries and each runs its share of their tests,
+//! planned by measured time (scripts/tacsim-cells.py, since 2026-11-18), so nothing is ever
+//! resharded: **a new test is a `mod` line here**, in the domain it belongs to (rule 2.3 #3). A module imports only from its
 //! own binary; the field helpers are the `*_rig` modules under tests/support/field/, declared in
 //! every root.
 //!

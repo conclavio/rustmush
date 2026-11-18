@@ -3,22 +3,46 @@
 #
 # Since doc 43 cut TS.12's adoption (D-43-5, 2026-11-04) tacsim's tests are
 # four DOMAIN binaries, `crates/tacsim/tests/<domain>.rs` with their modules
-# under `tests/<domain>/`, and every cell builds all four and runs its hash
-# share of their tests: `cargo nextest run --partition hash:N/10`. Balance is
-# the hash's, so nothing is ever resharded; a new test is a `mod` line in its
-# domain root, never a line here. Measured (doc 43 cut notes, TS.12): about
-# +26 to +31 s of compile and link a cell against the ten hand-balanced
-# shard binaries, the wall and balance no worse.
+# under `tests/<domain>/`, and every cell builds all four and runs its share
+# of their tests. A new test is a `mod` line in its domain root, never a line
+# here.
 #
-# The `partition:` line names the partitioned binaries. A numbered line
+# The share is planned by measured time (2026-11-18), not by hash. Until then
+# it was `cargo nextest run --partition hash:N/10`, and the hash put the slow
+# 512-site field stories together: over main's green runs 44171357746,
+# 44195103450, 44207692403, 44223456939 and 44362324881 cell 6 summed 73-96
+# test-minutes (s2_the_field_story_at_512, su3_a_restart_redraws_nothing_at_512,
+# su5_an_unloaded_yield_lapses_after_28_ic_days, ap4a, mw14a_at_512 and ap8,
+# 22 minutes of it) against a mean of 57, and was the run's wall at 18-29 min.
+# Now scripts/tacsim-cells.py lists the tests every cell would run and places
+# them longest first, each onto the least-loaded cell: the `weight:` lines
+# below at their seconds, every other test at the `default-weight:`. Every
+# cell computes the same plan from the same list, so each test runs once.
+# Replayed on those five runs (weights from four, times from the fifth), the
+# heaviest cell came to 1.04-1.10x the median.
+#
+# Keeping it balanced: a slow test with no `weight:` line is placed at the
+# default, so new slow stories drift the cells apart again. Refresh the lines
+# from three to five recent green main runs:
+#   gh run download <run> -p 'nextest-junit-tacsim-integration-*' -D junit/<run>
+#   python3 scripts/tacsim-cells.py weights junit/*
+# and paste its output over the `default-weight:` and `weight:` lines (every
+# test whose mean is at least 60 s). A weight for a test that no longer exists
+# is a guard failure (`ci_tacsim_shards`); a renamed test falls back to the
+# default until the next refresh. Each cell's log prints the plan
+# ("planned test-minutes").
+#
+# The `partition:` line names the planned binaries. A numbered line
 # `N: target ...` names the targets cell N runs FIRST, by name and whole,
-# before its share of the partition (an empty line runs none):
+# before its share (an empty line runs none); a `weight:` line naming a whole
+# target is its cost to its cell in test-thread seconds, which the plan
+# starts that cell's load from:
 # - harness stays a target of its own (its `#![recursion_limit]` is
 #   crate-root-only) and is cell 1's.
 # - cost_lane runs alone (.config/nextest.toml: threads-required = the whole
 #   pool) and is cell 2's, so its serial minutes sit on one cell, first,
-#   rather than stalling all ten (TS.12: with opt-level 1 it no longer makes
-#   cell 2 the wall).
+#   rather than stalling all ten. Its 3.5-6.6 min of wall hold the pool's four
+#   threads, so its weight is four times its mean wall of 294 s.
 # Every top-level `tests/*.rs` target appears exactly once in this file
 # (`ci_tacsim_shards` is the guard), and the workflow's matrix runs exactly
 # the numbered cells.
@@ -33,3 +57,119 @@ partition: domain_arena domain_economy domain_field domain_world
 8:
 9:
 10:
+weight: 120 harness
+weight: 1176 cost_lane
+default-weight: 9.8
+weight: 386 domain_economy::drones::sm12b_the_drones_mine_deliver_and_never_sell
+weight: 367 domain_field::field_story::s2_the_field_story_at_512
+weight: 323 domain_field::field_story::gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark
+weight: 279 domain_field::surrender::su3_a_restart_redraws_nothing_at_512
+weight: 271 domain_field::surrender::su3_a_stranded_crew_yields_to_a_holder_at_512
+weight: 266 domain_field::surrender::su3_a_stranded_crew_yields_to_a_holder
+weight: 264 domain_field::surrender::su5_an_unloaded_yield_lapses_after_28_ic_days
+weight: 263 domain_field::surrender::su5_an_unloaded_yield_lapses_after_28_ic_days_at_512
+weight: 258 domain_field::surrender::su3_a_restart_redraws_nothing
+weight: 218 domain_field::field_gc4::gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift
+weight: 216 domain_economy::drones::sm12b_the_restart_changes_nothing
+weight: 201 domain_field::field_ap4a::ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_back
+weight: 168 domain_field::field_ap7::ap7_an_unattended_rig_on_a_raided_site_goes_home_and_its_operator_reads_the_plans_end
+weight: 159 domain_field::field_ap6::ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour
+weight: 150 domain_arena::match_lifecycle::af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason
+weight: 148 domain_field::field_mw14a::mw14a_an_npc_led_detachment_advances_holds_and_withdraws
+weight: 147 domain_field::escort_lease::cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back
+weight: 144 domain_field::field_ap7::ap7_a_carrier_with_nobody_aboard_stays_on_its_pad_and_takes_its_rigs_aboard
+weight: 144 domain_field::field_ap6::ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strangers_quarrel
+weight: 140 domain_field::field_ap11::ap11_an_absent_players_outfit_through_a_raid_and_their_return
+weight: 136 domain_field::field_mw14c::mw14c_a_posture_stands_for_the_dwell_and_a_loss_withdraws_at_once
+weight: 135 domain_field::field_mw14a::mw14a_an_npc_led_detachment_advances_holds_and_withdraws_at_512
+weight: 135 domain_field::field_raiders::cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed
+weight: 125 domain_economy::claims::sm10_the_registry_and_the_list_print_public_facts
+weight: 119 domain_field::field_fr5::fr5_urvara_the_casualty_is_struck_in_tow_and_released_in_the_field
+weight: 117 domain_field::field_fr5::fr5_ahuna_the_casualty_is_struck_in_tow_and_released_in_the_field
+weight: 115 domain_field::field_director::gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home
+weight: 113 domain_field::field_ap8::ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit
+weight: 113 domain_economy::plans::sm11_a_lapsed_licence_parks_the_plan_with_its_reason
+weight: 108 domain_economy::plans::sm11_the_offline_story_fills_the_hold_parks_and_the_queue_sells
+weight: 103 domain_economy::in11_matter::in11_the_port_half_ore_to_parts_to_a_prospector_conserves_matter
+weight: 102 domain_economy::landing::sm2_rheasilvia_reachability_over_a_year
+weight: 100 domain_field::field_ap4a::co3_a_leaders_order_after_the_grace_goes_to_the_members_mind
+weight: 97 domain_field::field_ap6::ap6_a_party_declared_hostile_by_stance_is_not_fired_on_first_under_any_posture
+weight: 96 domain_economy::plans::sm11_await_tv_waits_for_the_rigs
+weight: 95 domain_economy::house_resale_rs6c2::rs6c2_tycho_restores_and_sells_a_wreck_from_urvara_reach
+weight: 95 domain_field::surrender::su3_no_holder_no_yield
+weight: 95 domain_economy::house_arm_rs6b::rs6b_tycho_flies_an_unaccepted_retrieval_on_urvara_reach
+weight: 95 domain_field::field_ap3::ap3_a_units_posture_is_its_own_through_a_field_a_restart_and_a_demotion
+weight: 92 domain_economy::house_sweep_rs6c::rs6c_tycho_sweeps_and_scraps_a_wreck_on_ahuna_flank
+weight: 91 domain_field::field_mw15::mw15_a_rosters_screen_and_support_are_delivered_and_obeyed
+weight: 91 domain_economy::mill::sm12a_a_month_of_milling_conserves_and_restocks_only_by_the_mill
+weight: 91 domain_field::surrender::su3_no_holder_no_yield_at_512
+weight: 90 domain_world::knowing::sm4a_an_implied_launch_scans_from_the_ramp
+weight: 90 domain_economy::house_resale_rs6c2::rs6c2_tycho_restores_and_sells_a_wreck_from_ahuna_flank
+weight: 90 domain_economy::house_arm_rs6b::rs6b_tycho_flies_an_unaccepted_retrieval_on_ahuna_flank
+weight: 90 domain_economy::claims::sm10_a_stake_reads_the_same_whatever_the_block_holds
+weight: 88 domain_field::field_mw14c::mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired
+weight: 88 domain_field::surrender::su3_morale_holds_at_full_resolve
+weight: 86 domain_economy::deposits::sm6_two_boots_with_one_key_open_identical_reserves
+weight: 85 domain_economy::drones::sm12b_a_full_storefront_parks_the_drones
+weight: 85 domain_field::field_mw15::mw15_a_rosters_screen_and_support_are_delivered_and_obeyed_at_512
+weight: 84 domain_economy::house_sweep_rs6c::review_38b_f09_a_retrieval_waits_for_the_sweep_under_way
+weight: 84 domain_field::crew_custody::cr1_the_captors_field_close_keeps_the_captive_at_512
+weight: 84 domain_field::surrender::su3_morale_holds_at_full_resolve_at_512
+weight: 83 domain_field::field_mw14a::mw14a_the_same_run_gives_the_same_orders_twice
+weight: 82 domain_economy::ex3_board::ex3_the_house_buys_its_bill_on_the_board_and_a_missed_leg_refunds
+weight: 82 domain_economy::house_sweep_rs6c::rs6c_tycho_sweeps_and_scraps_a_wreck_on_urvara_reach
+weight: 82 domain_field::field_rs1::rs1_urvara_the_tender_works_through_fields_and_the_tow_counts_her_laden
+weight: 81 domain_economy::in8_mass_scrap::ex3_scrap_sells_on_the_board_past_twenty_tonnes_and_a_missed_leg_refunds
+weight: 81 domain_field::field_carrier::cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port
+weight: 81 domain_field::field_host::cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_the_freeze
+weight: 80 domain_field::field_mw7::mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind
+weight: 79 domain_field::crew_treatment::gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury
+weight: 78 domain_field::one_picture::cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers
+weight: 78 domain_field::field_mw7::mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_first
+weight: 78 domain_field::field_fr5::fr5_ahuna_a_coupled_pair_is_withdrawn_at_the_ramp_and_loaded
+weight: 76 domain_economy::pl5_escrow::pl5_a_house_orders_a_dray_with_no_hold
+weight: 75 domain_field::field_fr5::fr5_urvara_a_tug_that_falls_drops_its_casualty_where_it_stands
+weight: 75 domain_world::knowing::sm4a_a_restart_mid_scan_and_mid_sounding_equals_an_uninterrupted_run
+weight: 75 domain_field::field_rs1::rs1_ahuna_the_tender_works_through_fields_and_the_tow_counts_her_laden
+weight: 75 domain_field::field_fr5::fr5_urvara_a_coupled_pair_is_withdrawn_at_the_ramp_and_loaded
+weight: 74 domain_field::field_fr5::fr5_ahuna_a_tug_that_falls_drops_its_casualty_where_it_stands
+weight: 73 domain_field::ex6_escort::ex6_the_field_host_keeps_one_escort_and_fails_the_one_whose_rig_is_wrecked
+weight: 73 domain_field::field_director::gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses
+weight: 72 domain_field::field_mw14c::mw14c_the_same_run_gives_the_same_orders_twice
+weight: 72 domain_field::field_mw7::mw7_an_absent_pilots_mind_answers_only_the_unit_that_fired_on_it
+weight: 72 domain_field::field_ap6::co2_the_same_rig_on_return_answers_on_its_way_home
+weight: 71 domain_field::field_gc5::gc5_review_the_captors_field_close_keeps_the_captive
+weight: 71 domain_field::crew_exit::cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extracted
+weight: 71 domain_field::escort_lease::cf6c_a_leased_escort_wrecked_in_a_field_is_written_off
+weight: 70 domain_field::field_mw7::ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind
+weight: 69 domain_field::field_crash::cf_review_a_crash_before_the_close_lands_keeps_the_wreck_and_the_cap_skips_it
+weight: 68 domain_field::field_ap1::ap1_ahuna_an_absent_defender_reads_the_field_and_its_losses_at_login
+weight: 68 domain_field::field_fr1::fr1_declared_stances_at_256
+weight: 68 domain_field::driving::sm4b_a_restart_mid_drive_equals_an_uninterrupted_run
+weight: 68 domain_economy::claims::sm10_a_block_with_no_deposits_is_claimed_like_any_other
+weight: 68 domain_economy::mining::sm7_a_restart_mid_run_equals_an_uninterrupted_run
+weight: 68 domain_field::field_ap6::ap6_a_guard_that_loses_its_last_fire_channel_goes_home
+weight: 67 domain_field::field_gc4::lane3_a_casualty_keeps_its_row_when_its_tug_falls_irrecoverable
+weight: 67 domain_economy::unloading::sm8_a_restart_between_the_recover_and_the_unload_files_it_after_boot
+weight: 67 domain_economy::plans::sm11_the_notice_budget_queues_a_trip_not_a_cycle
+weight: 67 domain_field::crew_custody::cr1_the_captor_releases_a_captive_on_the_site
+weight: 67 domain_field::field_ap1::ap1_urvara_an_absent_defender_reads_the_field_and_its_losses_at_login
+weight: 66 domain_field::field_fr1::fr1_declared_stances_at_512
+weight: 66 domain_field::field_boarding::boarding_a_stranded_raider_fights_on_after_a_restart
+weight: 66 domain_field::field_gc4::lane3_a_later_field_never_restarts_the_write_off_clock
+weight: 65 domain_economy::consent_rs10::rs10_silence_is_consent_on_ahuna_flank
+weight: 65 domain_field::crew_custody::cr2_an_unpaid_release_fee_stands_and_the_captive_is_released_anyway_at_512
+weight: 65 domain_field::field_ap5::ap5_a_mark_left_by_a_player_who_then_quit_is_not_fired_on
+weight: 64 domain_field::field_raiders::cf6b_the_raider_launches_fires_past_a_carrier_on_its_pad_and_withdraws_up_its_ramp
+weight: 63 domain_field::crew_custody::cr3_a_captive_extracts_after_the_bound_and_a_restart_keeps_it
+weight: 63 domain_field::testimony::s4bt_a_rig_earns_what_it_told_apart_in_a_field_at_512
+weight: 62 domain_field::field_director::lane3_a_barge_whose_drive_is_down_stays_on_the_ground
+weight: 62 domain_field::driving::sm4b_a_drive_from_the_bay_implies_the_launch
+weight: 62 domain_economy::claims::sm10_a_lapse_is_the_clerks_with_its_canon_line_and_epoch
+weight: 62 domain_economy::consent_rs10::rs10_silence_is_consent_on_urvara_reach
+weight: 61 domain_field::surrender::co10b_a_yard_built_wrecker_tows_the_yielded_line_tank_in
+weight: 61 domain_economy::plans::sm11_await_tv_reads_a_stale_plan_and_a_stranded_rig
+weight: 60 domain_field::crew_custody::cr2_the_captor_docks_at_ceres_and_the_captive_is_handed_over_and_released
+weight: 60 domain_economy::in10_pools::in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home
+weight: 60 domain_economy::mining::m8e_a_cored_rig_drives_and_mines_through_the_command_path
+weight: 60 domain_field::field_ap5::ap5_a_player_logged_off_in_a_rigs_seat_is_flown_home_by_its_mind
