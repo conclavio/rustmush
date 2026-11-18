@@ -2271,8 +2271,17 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// half a load, as `NativeStockMind` does; `stock=3` kept; was
 /// `c544bfbd2cdcbda6e4a9fafdec6c4cefe60f31963283edffd20af7f7ecf9375f` (doc 49
 /// unit CC.9's header bump to `api: 10`; AP.3's `api: 9` was `2bea2391…7b5fef`).
+/// **Re-blessed by doc 49 unit CC.1b**, a cost-only rewrite of the Engage path,
+/// behaviour unchanged (Gate A asserts every think of every lane): the leash's
+/// arms called only under a leash, `standing_order`'s one order key and one
+/// pass over the obeyed order, `hostile_edges`' pursuit test, `engage_orders`
+/// without the two gates no caller reaches it past, and `reserve_pct` read as
+/// it is; a reviewer of this digest's history re-reads `think`,
+/// `standing_order`, `hostile_edges`, `leash_arms`, `engage_orders` and
+/// `arming_for`; was
+/// `eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91` (CC.1).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91";
+    "e9f1a863eabc057066304121fe74b48cce05c21f0a629abb8f8f240c9a02ed15";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):

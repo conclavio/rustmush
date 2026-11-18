@@ -1124,6 +1124,47 @@
         "snapshot.bytes_max": 5152519,
         "snapshot.bytes_mean": 5111064
       }
+    },
+    "cc1b_deterministic_update": {
+      "cut": "doc 49 CC.1b, the Engage path's think cost",
+      "recorded_utc": "2026-11-18T04:45:00Z",
+      "measured_revision": "CC.1b's tree (claude/cc1b-engage-cost) applied as a patch on main 8519e21c90b0a235cff2423e3fea20c2992ae090, by hand on conclav.dev",
+      "verified_hosts": [
+        "linux/32/hg.conclav.dev (by hand as ghrunner, nice 10, HOSTNAME unset)"
+      ],
+      "reason": "CC.1b cuts the Standard Doctrine's Rhai think cost on the Engage path, behaviour unchanged (Gate A holds every think of the twin lanes equal to the native stock mind). The source moved, so its digest moved (minds/content.rs STANDARD_SHA256 eec3f668 to e9f1a863). A seal's digest covers its source, and the arena folds every seal into its state hash, so every state hash moved: the minds lane's four final_substep_hash leaves, and the hash value on every line of the arena lane's ledger. A ledger line writes that value as a decimal, so the stream is 553 bytes longer (2692001 to 2692554), which crosses one chunk boundary (168 to 169 chunks). The delta at this revision moved these six fields and no other field of its deterministic block; no count moved. The stock lanes fly the native mind, so their ops leaves are unmoved. Of the leaves no path compares, frame_execution's state hash moved with every state hash, and the snapshot's sizes moved with the state it encodes (bytes_max 5152531 to 5152571, bytes_mean 5111076 to 5110799). A deterministic-only update, as the CC.9 record.",
+      "procedure": "In a throwaway clone of the measured revision: (A) the lanes, then the delta against main's file (six differences: the ledger stream's bytes and chunks and the four minds hashes); (B) TACSIM_BASELINE_BLESS=1 over A's reports; (C) the non-timing leaves of B carried onto main's file by script, every earlier record and the blessed host, commit and date kept.",
+      "readings": {
+        "note": "wake p50 / wake p99 / window p99 ms of the CI cohort's arena lane, run A, against TS.21's 5.467 / 6.595 / 12.777",
+        "A": [
+          4.977,
+          6.046,
+          11.792
+        ]
+      },
+      "timing_policy": "TS.21's timings and host (conclav.dev) retained; no threshold or host comparison changed.",
+      "fields": [
+        "counters.ledger_bytes_streamed",
+        "counters.ledger_chunks",
+        "frame_execution.state_hash",
+        "minds.ceiling_authored.final_substep_hash",
+        "minds.fill_authored.final_substep_hash",
+        "minds.stock_authored.final_substep_hash",
+        "minds.stock_ci.final_substep_hash",
+        "snapshot.bytes_max",
+        "snapshot.bytes_mean"
+      ],
+      "previous": {
+        "counters.ledger_bytes_streamed": 2692001,
+        "counters.ledger_chunks": 168,
+        "frame_execution.state_hash": 6089448057861030543,
+        "minds.ceiling_authored.final_substep_hash": "4358605778177844039",
+        "minds.fill_authored.final_substep_hash": "16702480450913438500",
+        "minds.stock_authored.final_substep_hash": "8725076528568167435",
+        "minds.stock_ci.final_substep_hash": "12766493942455349593",
+        "snapshot.bytes_max": 5152531,
+        "snapshot.bytes_mean": 5111076
+      }
     }
   },
   "classes": {
@@ -1169,8 +1210,8 @@
     "frames_per_pulse_mean": 17.4,
     "held_at_end": 2,
     "lagged_pulses": 0,
-    "ledger_bytes_streamed": 2692001,
-    "ledger_chunks": 168,
+    "ledger_bytes_streamed": 2692554,
+    "ledger_chunks": 169,
     "moving_at_end": 82
   },
   "loop": {
@@ -1209,7 +1250,7 @@
       "fees_total": 28800,
       "fielded_per_side": 2,
       "fighting": 24,
-      "final_substep_hash": "4358605778177844039",
+      "final_substep_hash": "998528470203216960",
       "inline_thinks": 5469,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -1315,7 +1356,7 @@
       "fees_total": 0,
       "fielded_per_side": 36,
       "fighting": 24,
-      "final_substep_hash": "16702480450913438500",
+      "final_substep_hash": "10403027742519810256",
       "inline_thinks": 5211,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -1357,7 +1398,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "8725076528568167435",
+      "final_substep_hash": "15227880700139359321",
       "inline_thinks": 5267,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -1390,7 +1431,7 @@
       "fees_total": 0,
       "fielded_per_side": 0,
       "fighting": 24,
-      "final_substep_hash": "12766493942455349593",
+      "final_substep_hash": "1388800170477720241",
       "inline_thinks": 5365,
       "jitter_ms": 250,
       "jitter_per_mille": 250,
@@ -1528,8 +1569,8 @@
       95000,
       100000
     ],
-    "bytes_max": 5152531,
-    "bytes_mean": 5111076,
+    "bytes_max": 5152571,
+    "bytes_mean": 5110799,
     "count": 19,
     "decode_ms_max": 48.576,
     "encode_ms": {
@@ -1618,6 +1659,6 @@
   },
   "frame_execution": {
     "requested_workers": 1,
-    "state_hash": 6089448057861030543
+    "state_hash": 14378162919498479727
   }
 }
