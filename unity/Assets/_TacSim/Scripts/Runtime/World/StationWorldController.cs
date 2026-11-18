@@ -28,7 +28,9 @@ namespace TacSim.World
         private readonly Dictionary<string, Light> _roomLights = new Dictionary<string, Light>(StringComparer.Ordinal);
         private readonly Dictionary<string, TextMeshPro> _roomBoards = new Dictionary<string, TextMeshPro>(StringComparer.Ordinal);
         private readonly Dictionary<string, GameObject> _spawnedActors = new Dictionary<string, GameObject>(StringComparer.Ordinal);
+        private readonly Dictionary<string, Vector3> _actorTargetPositions = new Dictionary<string, Vector3>(StringComparer.Ordinal);
         private readonly Dictionary<string, WorldBillboard> _actorBillboards = new Dictionary<string, WorldBillboard>(StringComparer.Ordinal);
+        private string _spawnedActorsRoomEntry;
 
         private Transform _actorsContainer;
         private Transform _dockedShipVisual;
@@ -164,7 +166,9 @@ namespace TacSim.World
             _roomLights.Clear();
             _roomBoards.Clear();
             _spawnedActors.Clear();
+            _actorTargetPositions.Clear();
             _actorBillboards.Clear();
+            _spawnedActorsRoomEntry = null;
             _berthDrones.Clear();
             _cradleHullSigns.Clear();
             _cradleHullObjects.Clear();
@@ -1240,6 +1244,37 @@ namespace TacSim.World
                 float bob = Mathf.Sin(Time.time * 1.35f + i * 2.1f) * 0.004f;
                 d.position += new Vector3(0f, bob, 0f);
             }
+
+            float dt = Mathf.Max(0.001f, Time.deltaTime);
+            foreach (var kv in _spawnedActors)
+            {
+                var actorGo = kv.Value;
+                if (actorGo == null || !_actorTargetPositions.TryGetValue(kv.Key, out Vector3 targetPos))
+                    continue;
+
+                Vector3 curPos = actorGo.transform.position;
+                Vector3 delta = targetPos - curPos;
+                float dist = delta.magnitude;
+                var spawner = actorGo.GetComponent<CharacterVisualSpawner>();
+
+                if (dist > 0.02f)
+                {
+                    float stepSpeed = 3.4f;
+                    actorGo.transform.position = Vector3.MoveTowards(curPos, targetPos, stepSpeed * dt);
+                    Vector3 flat = new Vector3(delta.x, 0f, delta.z);
+                    if (flat.sqrMagnitude > 0.001f)
+                    {
+                        Quaternion face = Quaternion.LookRotation(flat.normalized, Vector3.up);
+                        actorGo.transform.rotation = Quaternion.Slerp(actorGo.transform.rotation, face, dt * 8f);
+                    }
+                    spawner?.UpdateLocomotion(stepSpeed, false, false, dt);
+                }
+                else
+                {
+                    actorGo.transform.position = targetPos;
+                    spawner?.UpdateLocomotion(0f, false, false, dt);
+                }
+            }
         }
 
         public static GameObject BuildSculptedDrayExterior(Transform parent, Vector3 pos, Material hullMat, Material trimMat, string name)
@@ -1411,7 +1446,7 @@ namespace TacSim.World
             }
         }
 
-        private void SyncRoomOccupants(MushRoomView rv, string selfActorId, string targetRoomEntry)
+        private void ClearAllSpawnedActors()
         {
             foreach (var kv in _spawnedActors)
             {
@@ -1422,13 +1457,27 @@ namespace TacSim.World
                 }
             }
             _spawnedActors.Clear();
+            _actorTargetPositions.Clear();
             _actorBillboards.Clear();
+        }
 
+        private void SyncRoomOccupants(MushRoomView rv, string selfActorId, string targetRoomEntry)
+        {
             string lookupEntry = !string.IsNullOrEmpty(targetRoomEntry) ? targetRoomEntry : ActiveRoomEntryId;
             if (!Pack.Rooms.TryGetValue(lookupEntry, out var room))
             {
                 Pack.Rooms.TryGetValue("room.c03_arrivals", out room);
-                if (room == null) return;
+                if (room == null)
+                {
+                    ClearAllSpawnedActors();
+                    return;
+                }
+            }
+
+            if (!string.Equals(_spawnedActorsRoomEntry, lookupEntry, StringComparison.Ordinal))
+            {
+                ClearAllSpawnedActors();
+                _spawnedActorsRoomEntry = lookupEntry;
             }
 
             bool isBerthGallery = lookupEntry.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -1476,6 +1525,7 @@ namespace TacSim.World
 
             bool hasAuthoritativeThingTyping = rv.ThingIds.Count > 0 || rv.PlayerIds.Count > 0;
             float elev = Pack.GetFloorElevationY(room.FloorIndex);
+            var seenActorIds = new HashSet<string>(StringComparer.Ordinal);
             int actorIdx = 0;
             for (int i = 0; i < rv.Contents.Count; i++)
             {
@@ -1525,8 +1575,15 @@ namespace TacSim.World
                 if (!isNpc && !isExplicitPlayer && (hasAuthoritativeThingTyping || isBerthGallery || LooksLikeStaticRoomThing(item.Name, room)))
                     continue;
 
+                seenActorIds.Add(item.Id);
                 Vector3 pos = ComputeNpcStandSpot(room, elev, actorIdx);
                 actorIdx++;
+                _actorTargetPositions[item.Id] = pos;
+
+                // Reuse existing GameObject when still present in this room so `look` / `RoomView` updates
+                // never destroy/recreate characters, flash T-poses, or drop active speech bubbles!
+                if (_spawnedActors.TryGetValue(item.Id, out var existingGo) && existingGo != null)
+                    continue;
 
                 var npcGo = new GameObject($"Actor_{item.Id}_{item.Name}");
                 npcGo.transform.SetParent(_actorsContainer, false);
@@ -1575,6 +1632,28 @@ namespace TacSim.World
 
                 _spawnedActors[item.Id] = npcGo;
                 _actorBillboards[item.Id] = bb;
+            }
+
+            if (_spawnedActors.Count > seenActorIds.Count)
+            {
+                var departedIds = new List<string>();
+                foreach (var kv in _spawnedActors)
+                {
+                    if (!seenActorIds.Contains(kv.Key))
+                        departedIds.Add(kv.Key);
+                }
+                for (int i = 0; i < departedIds.Count; i++)
+                {
+                    string depId = departedIds[i];
+                    if (_spawnedActors.TryGetValue(depId, out var depGo) && depGo != null)
+                    {
+                        if (Application.isPlaying) Destroy(depGo);
+                        else DestroyImmediate(depGo);
+                    }
+                    _spawnedActors.Remove(depId);
+                    _actorTargetPositions.Remove(depId);
+                    _actorBillboards.Remove(depId);
+                }
             }
 
             // Update exterior 3D ship cradle nameplates outside the Berth Gallery glass!

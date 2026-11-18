@@ -55,6 +55,7 @@ namespace TacSim.Core
         private string _currentClockStr = "08:15 UTC";
         private string _currentHullBadge = "NO CHARTER";
         private MushWsConnectionState _lastBadgeState = MushWsConnectionState.Disconnected;
+        private float _lastAutoTradeRefreshAt = -10f;
 
         private void Start()
         {
@@ -485,7 +486,7 @@ namespace TacSim.Core
             {
                 ShipInterior.BuildInterior(AssetCatalog, ShipInterior.LoadedUnitId);
                 if (_isAboardShip && _lastRoomView != null)
-                    ShipInterior.ApplyRoomView(_lastRoomView);
+                    ShipInterior.ApplyRoomView(_lastRoomView, _ws != null && _ws.ActiveCharacter != null ? _ws.ActiveCharacter.Id : null);
             }
         }
 
@@ -1277,7 +1278,7 @@ namespace TacSim.Core
                     Audio?.PlayAirlockCycle();
                 _serverShipCompartment = resolvedComp;
                 _serverStationRoomEntry = null;
-                ShipInterior.ApplyRoomView(rv);
+                ShipInterior.ApplyRoomView(rv, _ws != null && _ws.ActiveCharacter != null ? _ws.ActiveCharacter.Id : null);
                 if (SurfaceStage == null || !SurfaceStage.IsExcursionActive)
                     Audio?.SetSoundscape(AmbientSoundscape.ShipInterior);
 
@@ -1525,8 +1526,31 @@ namespace TacSim.Core
             Hud.AppendLogLine(formatted);
             if (Hud.IsModalOpen)
                 Hud.AppendModalResponseLine(formatted);
-            if (nar.Actor != null && !_isAboardShip)
-                StationWorld.ShowActorSpeech(nar.Actor.Id, nar.Actor.Name, nar.Text);
+
+            if (nar.Actor != null)
+            {
+                if (_isAboardShip)
+                    ShipInterior?.ShowActorSpeech(nar.Actor.Id, nar.Actor.Name, nar.Text);
+                else
+                    StationWorld?.ShowActorSpeech(nar.Actor.Id, nar.Actor.Name, nar.Text);
+            }
+
+            // Event-driven live roster/berth refresh when another pilot acts in Simulator Lobby, Berth Gallery,
+            // or while a station modal is open (debounced >= 0.6s so room chatter never floods `port.trade`).
+            if (!_isAboardShip && _ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("port.trade"))
+            {
+                bool inLiveRosterRoom =
+                    string.Equals(_serverStationRoomEntry, "room.simulator_lobby", StringComparison.OrdinalIgnoreCase) ||
+                    (!string.IsNullOrEmpty(_serverStationRoomEntry) &&
+                     _serverStationRoomEntry.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0);
+                if ((inLiveRosterRoom || (Hud != null && Hud.IsModalOpen)) &&
+                    (Time.unscaledTime - _lastAutoTradeRefreshAt) >= 0.6f)
+                {
+                    _lastAutoTradeRefreshAt = Time.unscaledTime;
+                    _awaitingAppendedTradePage = false;
+                    _ws.SendPanelSubscribe("port.trade");
+                }
+            }
         }
 
         private void HandleServerChannel(MushChannelEvent ch)
@@ -1539,9 +1563,12 @@ namespace TacSim.Core
 
         private void HandleServerComposing(MushComposingEvent comp)
         {
-            if (comp?.Actor == null || _isAboardShip || StationWorld == null) return;
+            if (comp?.Actor == null) return;
             if (_ws?.ActiveCharacter != null && comp.Actor.Id == _ws.ActiveCharacter.Id) return;
-            StationWorld.SetActorComposing(comp.Actor.Id, comp.Actor.Name, comp.Active);
+            if (_isAboardShip)
+                ShipInterior?.SetActorComposing(comp.Actor.Id, comp.Actor.Name, comp.Active);
+            else
+                StationWorld?.SetActorComposing(comp.Actor.Id, comp.Actor.Name, comp.Active);
         }
 
         private void HandleServerSystemLine(string plainLine, string richMarkup)

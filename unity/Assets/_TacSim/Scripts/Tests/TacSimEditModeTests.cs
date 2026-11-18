@@ -1640,6 +1640,333 @@ namespace TacSim.Tests
             }
         }
 
+        [Test]
+        public void P0_Track3_PackSanitizer_CliUrl_ShipInteriorCrewAndGauges_AndPersistentActors()
+        {
+            bool hadPreExistingEventSystem = UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>() != null;
+            var rootGo = new UnityEngine.GameObject("TestTrack3Root");
+            UnityEngine.GameObject mockFenrisShell = null;
+            TacSimAssetCatalog tempCatalog = null;
+
+            try
+            {
+                // 1. Standalone Fallback Pack Sanitizer (`TacSimContentLoader.SanitizePackJsonForClient`)
+                string rawPackJson = @"{
+                    ""manifest"": { ""id"": ""neighborhood.test_port"", ""version"": 1 },
+                    ""brief"": ""GM-only design brief"",
+                    ""notes"": ""Private author notes"",
+                    ""secrets"": [""master_key""],
+                    ""entries"": {
+                        ""room.public_hall"": {
+                            ""kind"": ""room"",
+                            ""def"": {
+                                ""name"": ""Public Hall"",
+                                ""access"": ""public"",
+                                ""desc"": ""Warm deck lighting and open stalls."",
+                                ""details"": { ""stalls"": ""Fresh coffee."" },
+                                ""secrets"": [""trapdoor""]
+                            }
+                        },
+                        ""room.vault"": {
+                            ""kind"": ""room"",
+                            ""def"": {
+                                ""name"": ""Council Vault"",
+                                ""access"": ""restricted"",
+                                ""desc"": ""Classified bullion stacks."",
+                                ""details"": { ""keypad"": ""Code 9941"" }
+                            }
+                        },
+                        ""exit.main_door"": {
+                            ""kind"": ""exit"",
+                            ""def"": { ""from"": ""room.public_hall"", ""to"": ""room.vault"", ""portal"": { ""visibility"": ""public"" } }
+                        },
+                        ""exit.smuggler_vent"": {
+                            ""kind"": ""exit"",
+                            ""def"": { ""from"": ""room.public_hall"", ""to"": ""room.vault"", ""portal"": { ""visibility"": ""hidden"" } }
+                        },
+                        ""npc.ilse"": {
+                            ""kind"": ""npc"",
+                            ""def"": {
+                                ""name"": ""Ilse Oduya-Brandt"",
+                                ""room"": ""room.public_hall"",
+                                ""short_desc"": ""Co-op registrar"",
+                                ""prompt"": ""Confidential LLM persona prompt"",
+                                ""agenda"": ""Private faction goal""
+                            }
+                        },
+                        ""secret.plot"": { ""kind"": ""secret"", ""def"": { ""text"": ""Hidden plot"" } },
+                        ""lore.old"": { ""kind"": ""lore"", ""def"": { ""text"": ""Hidden lore"" } },
+                        ""quest.arc"": { ""kind"": ""quest"", ""def"": { ""text"": ""Hidden quest"" } },
+                        ""lane.vesta"": { ""kind"": ""lane"", ""def"": { ""text"": ""Vendor schedule"" } }
+                    }
+                }";
+
+                string sanitizedText = TacSimContentLoader.SanitizePackJsonForClient(rawPackJson);
+                var sanitizedRoot = JsonNode.Parse(sanitizedText);
+                Assert.IsFalse(sanitizedRoot.ContainsKey("brief"), "Top-level brief must be stripped");
+                Assert.IsFalse(sanitizedRoot.ContainsKey("notes"), "Top-level notes must be stripped");
+                Assert.IsFalse(sanitizedRoot.ContainsKey("secrets"), "Top-level secrets must be stripped");
+
+                var entries = sanitizedRoot["entries"].AsObject();
+                Assert.IsNotNull(entries);
+                Assert.IsTrue(entries.ContainsKey("room.public_hall"));
+                Assert.IsTrue(entries.ContainsKey("room.vault"));
+                Assert.IsTrue(entries.ContainsKey("exit.main_door"));
+                Assert.IsTrue(entries.ContainsKey("npc.ilse"));
+                Assert.IsFalse(entries.ContainsKey("exit.smuggler_vent"), "Hidden exits must be stripped from client fallback packs");
+                Assert.IsFalse(entries.ContainsKey("secret.plot"), "Secret entries must be stripped");
+                Assert.IsFalse(entries.ContainsKey("lore.old"), "Lore entries must be stripped");
+                Assert.IsFalse(entries.ContainsKey("quest.arc"), "Quest entries must be stripped");
+                Assert.IsFalse(entries.ContainsKey("lane.vesta"), "Vendor lane schedules must be stripped");
+
+                Assert.AreEqual("Warm deck lighting and open stalls.", entries["room.public_hall"]["def"].Str("desc"));
+                Assert.IsFalse(entries["room.public_hall"]["def"].ContainsKey("secrets"));
+                Assert.IsFalse(entries["room.vault"]["def"].ContainsKey("desc"), "Restricted room desc must be stripped");
+                Assert.IsFalse(entries["room.vault"]["def"].ContainsKey("details"), "Restricted room details must be stripped");
+                Assert.AreEqual("Ilse Oduya-Brandt", entries["npc.ilse"]["def"].Str("name"));
+                Assert.IsFalse(entries["npc.ilse"]["def"].ContainsKey("prompt"), "NPC LLM prompt must be stripped");
+                Assert.IsFalse(entries["npc.ilse"]["def"].ContainsKey("agenda"), "NPC private agenda must be stripped");
+
+                // 2. Standalone CLI `--server` & `TACSIM_SERVER_URL` Resolution Priority
+                Assert.AreEqual(
+                    "https://play.conclavio.dev:8443",
+                    TacSim.UI.TacSimHudController.ResolveInitialServerUrl(
+                        new[] { "TacSim.exe", "--server", "https://play.conclavio.dev:8443/" },
+                        "http://env.example:4201",
+                        "http://saved.example:4201"));
+                Assert.AreEqual(
+                    "http://10.0.0.12:4201",
+                    TacSim.UI.TacSimHudController.ResolveInitialServerUrl(
+                        new[] { "TacSim.exe", "--server=http://10.0.0.12:4201/" },
+                        null,
+                        "http://saved.example:4201"));
+                Assert.AreEqual(
+                    "http://env.example:4201",
+                    TacSim.UI.TacSimHudController.ResolveInitialServerUrl(
+                        new[] { "TacSim.exe" },
+                        "http://env.example:4201/",
+                        "http://saved.example:4201"));
+                Assert.AreEqual(
+                    "http://saved.example:4201",
+                    TacSim.UI.TacSimHudController.ResolveInitialServerUrl(
+                        new[] { "TacSim.exe" },
+                        string.Empty,
+                        "http://saved.example:4201/"));
+
+                // 3. ShipInterior Overhaul: No colliding FenrisVisualHullShell, unstretched GaugeRoot, stairwell cutouts, Bridge canopy & co-op crewmates
+                mockFenrisShell = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube);
+                mockFenrisShell.name = "MockFenrisShell";
+                tempCatalog = UnityEngine.ScriptableObject.CreateInstance<TacSimAssetCatalog>();
+                tempCatalog.fenrisExteriorInteriorPrefab = mockFenrisShell;
+
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                coord.AssetCatalog = tempCatalog;
+                coord.Audio = rootGo.AddComponent<TacSimAudioSynthesizer>();
+
+                var stationGo = new UnityEngine.GameObject("Track3Station");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                coord.StationWorld = stationGo.AddComponent<StationWorldController>();
+
+                var shipGo = new UnityEngine.GameObject("Track3Ship");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                coord.ShipInterior = shipGo.AddComponent<ShipInteriorController>();
+
+                var spaceGo = new UnityEngine.GameObject("Track3Space");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SpaceStage = spaceGo.AddComponent<SpaceFlightController>();
+
+                var surfGo = new UnityEngine.GameObject("Track3Surface");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                coord.SurfaceStage = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+
+                var arenaGo = new UnityEngine.GameObject("Track3Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                coord.ArenaStage = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+
+                var camGo = new UnityEngine.GameObject("Track3Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                coord.CameraRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                coord.CameraRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+
+                var playerGo = new UnityEngine.GameObject("Track3Player", typeof(UnityEngine.CharacterController));
+                playerGo.transform.SetParent(rootGo.transform, false);
+                coord.Player = playerGo.AddComponent<TacSim.Character.ThirdPersonPlayerController>();
+                coord.Player.VisualSpawner = playerGo.AddComponent<TacSim.Character.CharacterVisualSpawner>();
+
+                var hudGo = new UnityEngine.GameObject("Track3Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+
+                coord.EnsureSubsystems();
+
+                var shipTransforms = coord.ShipInterior.GetComponentsInChildren<UnityEngine.Transform>(true);
+                int gaugeCount = 0;
+                int shipDiffuserCount = 0;
+                bool foundBridgeCanopy = false;
+                bool foundRampHandrail = false;
+                bool foundPassageStairCutout = false;
+                bool foundBridgeStairCutout = false;
+
+                for (int i = 0; i < shipTransforms.Length; i++)
+                {
+                    var tr = shipTransforms[i];
+                    Assert.AreNotEqual("FenrisVisualHullShell", tr.name, "Monolithic 1-deck Fenris shell must not be spawned inside multi-deck Dray compartments");
+                    if (tr.name == "GaugeText")
+                    {
+                        gaugeCount++;
+                        Assert.AreEqual("GaugeRoot", tr.parent.name, "GaugeText must sit under uniform-scale GaugeRoot");
+                        Assert.AreEqual(UnityEngine.Vector3.one, tr.parent.localScale, "GaugeRoot must maintain uniform (1,1,1) scale");
+                        Assert.AreEqual(UnityEngine.Vector3.one, tr.localScale, "GaugeText must never be stretched 2.4x horizontally");
+                    }
+                    else if (tr.name == "CeilingLightDiffuser")
+                    {
+                        shipDiffuserCount++;
+                    }
+                    else if (tr.name == "BridgeCanopyGlass")
+                    {
+                        foundBridgeCanopy = true;
+                    }
+                    else if (tr.name == "RampRail_L")
+                    {
+                        foundRampHandrail = true;
+                    }
+                    else if (tr.name == "DeckPlate_Port" && tr.parent != null && tr.parent.name == "Compartment_passage")
+                    {
+                        foundPassageStairCutout = true;
+                    }
+                    else if (tr.name == "DeckPlate_Fwd" && tr.parent != null && tr.parent.name == "Compartment_bridge")
+                    {
+                        foundBridgeStairCutout = true;
+                    }
+                }
+                Assert.Greater(gaugeCount, 0, "Expected compartment GaugeText displays aboard Dray");
+                Assert.Greater(shipDiffuserCount, 0, "Expected recessed CeilingLightDiffuser luminaires aboard Dray");
+                Assert.IsTrue(foundBridgeCanopy, "Expected framed BridgeCanopyGlass forward viewport on Bridge");
+                Assert.IsTrue(foundRampHandrail, "Expected sloped companionway safety handrails");
+                Assert.IsTrue(foundPassageStairCutout, "Expected stairwell cutout in Central Passage deck above Hold companionway");
+                Assert.IsTrue(foundBridgeStairCutout, "Expected stairwell cutout in Bridge deck above Bridge companionway");
+
+                // Co-op crewmate spawning + persistent pooling + speech bubbles aboard ShipInterior
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                var onNarrative = typeof(TacSimGameCoordinator).GetMethod("HandleServerNarrative", flags);
+                var shipCrewField = typeof(ShipInteriorController).GetField("_crewActors", flags);
+                var shipCrewDict = shipCrewField.GetValue(coord.ShipInterior) as System.Collections.IDictionary;
+                Assert.IsNotNull(shipCrewDict);
+
+                var bridgeCrewRv1 = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#802"",
+                    ""name"": ""Salt Moth - Bridge"",
+                    ""contents"": [
+                        { ""id"": ""#10"", ""name"": ""Self Captain"" },
+                        { ""id"": ""#22"", ""name"": ""Maya Vance"" },
+                        { ""id"": ""#88"", ""name"": ""Drive ROM Slate"" }
+                    ],
+                    ""ambient"": {
+                        ""players"": [""#10"", ""#22""],
+                        ""things"": [""#88""],
+                        ""tacsim"": { ""mode"": ""interior"", ""unit"": ""dray"", ""room"": ""bridge"", ""hull_name"": ""Salt Moth"", ""class"": ""Dray"" }
+                    }
+                }"));
+                coord.ShipInterior.ApplyRoomView(bridgeCrewRv1, selfActorId: "#10");
+                Assert.AreEqual(1, shipCrewDict.Count, "Only co-op crewmate #22 (excluding self #10 and Thing #88) must spawn");
+                var mayaGo1 = shipCrewDict["#22"] as UnityEngine.GameObject;
+                Assert.IsNotNull(mayaGo1);
+
+                // Enter ship via coordinator so `_isAboardShip` is true, then verify repeat RoomView keeps same GameObject AND narrative lights up SpeechBubble!
+                onRoom.Invoke(coord, new object[] { bridgeCrewRv1 });
+                coord.ShipInterior.ApplyRoomView(bridgeCrewRv1, selfActorId: "#10");
+                var mayaGo2 = shipCrewDict["#22"] as UnityEngine.GameObject;
+                Assert.AreSame(mayaGo1, mayaGo2, "Repeat ShipInterior RoomView must reuse existing crewmate GameObject without T-pose flicker");
+
+                var crewSpeech = new MushNarrativeEvent
+                {
+                    Kind = "say",
+                    Actor = new MushObjRef { Id = "#22", Name = "Maya Vance" },
+                    Text = "Tankage green, ready to undock."
+                };
+                onNarrative.Invoke(coord, new object[] { crewSpeech });
+                var mayaBb = mayaGo2.GetComponentInChildren<WorldBillboard>(true);
+                Assert.IsNotNull(mayaBb);
+                Assert.IsTrue(mayaBb.IsSpeechActive, "Shipmate narrative must activate SpeechBubble aboard ship");
+                StringAssert.Contains("Tankage green", mayaBb.CurrentSpeechText);
+
+                // Departed crewmate is removed cleanly
+                var bridgeEmptyRv = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#802"",
+                    ""name"": ""Salt Moth - Bridge"",
+                    ""contents"": [ { ""id"": ""#10"", ""name"": ""Self Captain"" } ],
+                    ""ambient"": {
+                        ""players"": [""#10""],
+                        ""tacsim"": { ""mode"": ""interior"", ""unit"": ""dray"", ""room"": ""bridge"", ""hull_name"": ""Salt Moth"", ""class"": ""Dray"" }
+                    }
+                }"));
+                coord.ShipInterior.ApplyRoomView(bridgeEmptyRv, selfActorId: "#10");
+                Assert.AreEqual(0, shipCrewDict.Count, "Departed shipmate must be removed cleanly");
+
+                // 4. StationWorld Persistent Non-Destroying Actor Pool across `RoomView` updates
+                var stationActorsField = typeof(StationWorldController).GetField("_spawnedActors", flags);
+                var stationActorsDict = stationActorsField.GetValue(coord.StationWorld) as System.Collections.IDictionary;
+                Assert.IsNotNull(stationActorsDict);
+
+                var registryRv1 = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#105"",
+                    ""name"": ""Registry & Co-op Desk"",
+                    ""contents"": [
+                        { ""id"": ""#501"", ""name"": ""Ilse Oduya-Brandt"" },
+                        { ""id"": ""#602"", ""name"": ""Pilot Kade"" }
+                    ],
+                    ""ambient"": {
+                        ""npcs"": [""#501""],
+                        ""players"": [""#602""],
+                        ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c05_registry"", ""surface"": ""station"" }
+                    }
+                }"));
+                coord.StationWorld.ApplyRoomView(registryRv1, selfActorId: "#10");
+                Assert.AreEqual(2, stationActorsDict.Count);
+                var ilseGo1 = stationActorsDict["#501"] as UnityEngine.GameObject;
+                Assert.IsNotNull(ilseGo1);
+
+                coord.StationWorld.ShowActorSpeech("#501", "Ilse Oduya-Brandt", "Sign on the line, captain.");
+                var ilseBb = ilseGo1.GetComponentInChildren<WorldBillboard>(true);
+                Assert.IsTrue(ilseBb.IsSpeechActive);
+
+                // Second RoomView (e.g. player types `look` or #602 leaves): Ilse's GameObject AND active speech bubble stay intact!
+                var registryRv2 = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#105"",
+                    ""name"": ""Registry & Co-op Desk"",
+                    ""contents"": [
+                        { ""id"": ""#501"", ""name"": ""Ilse Oduya-Brandt"" }
+                    ],
+                    ""ambient"": {
+                        ""npcs"": [""#501""],
+                        ""players"": [],
+                        ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c05_registry"", ""surface"": ""station"" }
+                    }
+                }"));
+                coord.StationWorld.ApplyRoomView(registryRv2, selfActorId: "#10");
+                Assert.AreEqual(1, stationActorsDict.Count, "Departed remote pilot #602 must be removed while keeping #501");
+                Assert.AreSame(ilseGo1, stationActorsDict["#501"], "StationWorld must preserve existing NPC GameObject across RoomView refreshes");
+                Assert.IsTrue(ilseBb.IsSpeechActive, "Existing actor SpeechBubble must survive RoomView refresh");
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+                if (!hadPreExistingEventSystem)
+                {
+                    var createdEs = UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>();
+                    if (createdEs != null)
+                        UnityEngine.Object.DestroyImmediate(createdEs.gameObject);
+                }
+                if (mockFenrisShell != null)
+                    UnityEngine.Object.DestroyImmediate(mockFenrisShell);
+                if (tempCatalog != null)
+                    UnityEngine.Object.DestroyImmediate(tempCatalog);
+                if (rootGo != null)
+                    UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
         private static System.IO.MemoryStream BuildSyntheticUnityPackage(params (string entryName, byte[] payload)[] entries)
         {
             var gzOut = new System.IO.MemoryStream();

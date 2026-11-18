@@ -19,32 +19,71 @@ namespace TacSim.Editor
 
         static HumanoidAnimatorBuilder()
         {
-            EditorApplication.delayCall += AutoBindImportedIdleClipIfPresent;
+            EditorApplication.delayCall += AutoBindImportedMocapClipsIfPresent;
         }
 
-        private static void AutoBindImportedIdleClipIfPresent()
+        private static void AutoBindImportedMocapClipsIfPresent()
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
                 return;
 
             var importedIdle = FindImportedIdaFaberIdleClip();
-            if (importedIdle == null)
+            var importedWalk = FindImportedWalkClip();
+            var importedRun = FindImportedRunClip();
+            var importedSit = FindImportedSitClip();
+            if (importedIdle == null && importedWalk == null && importedRun == null && importedSit == null)
                 return;
 
             var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(ControllerPath);
             if (controller == null || controller.layers == null || controller.layers.Length == 0)
                 return;
 
-            var defaultState = controller.layers[0].stateMachine?.defaultState;
-            if (defaultState != null && defaultState.motion != importedIdle)
+            var sm = controller.layers[0].stateMachine;
+            if (sm == null || sm.states == null)
+                return;
+
+            bool needsReimportPass = false;
+            for (int i = 0; i < sm.states.Length; i++)
             {
-                AssetPackImporter.EnsureIdaFaberHumanoidRigs();
-                importedIdle = FindImportedIdaFaberIdleClip() ?? importedIdle;
-                defaultState.motion = importedIdle;
-                EditorUtility.SetDirty(defaultState);
+                var st = sm.states[i].state;
+                if (st == null) continue;
+                if (st.name == "Idle" && importedIdle != null && st.motion != importedIdle) needsReimportPass = true;
+                else if (st.name == "Walk" && importedWalk != null && st.motion != importedWalk) needsReimportPass = true;
+                else if (st.name == "Run" && importedRun != null && st.motion != importedRun) needsReimportPass = true;
+                else if (st.name == "SeatedHelm" && importedSit != null && st.motion != importedSit) needsReimportPass = true;
+            }
+            if (!needsReimportPass)
+                return;
+
+            AssetPackImporter.EnsureIdaFaberHumanoidRigs();
+            importedIdle = FindImportedIdaFaberIdleClip() ?? importedIdle;
+            importedWalk = FindImportedWalkClip() ?? importedWalk;
+            importedRun = FindImportedRunClip() ?? importedRun;
+            importedSit = FindImportedSitClip() ?? importedSit;
+
+            bool updatedAny = false;
+            for (int i = 0; i < sm.states.Length; i++)
+            {
+                var st = sm.states[i].state;
+                if (st == null) continue;
+                AnimationClip target = st.name == "Idle" ? importedIdle
+                                     : st.name == "Walk" ? importedWalk
+                                     : st.name == "Run" ? importedRun
+                                     : st.name == "SeatedHelm" ? importedSit
+                                     : null;
+                if (target != null && st.motion != target)
+                {
+                    st.motion = target;
+                    EditorUtility.SetDirty(st);
+                    updatedAny = true;
+                }
+            }
+
+            if (updatedAny)
+            {
                 EditorUtility.SetDirty(controller);
                 AssetDatabase.SaveAssets();
-                Debug.Log($"[TacSim] Auto-bound imported Humanoid idle clip '{importedIdle.name}' to {ControllerPath}.");
+                Debug.Log($"[TacSim] Auto-bound imported Humanoid mocap clip(s) to {ControllerPath}.");
             }
         }
 
@@ -53,10 +92,14 @@ namespace TacSim.Editor
             EnsureFolder("Assets/_TacSim", "Generated");
 
             AnimationClip generatedIdle = CreateBreathingIdleClip();
+            AnimationClip generatedWalk = CreateStrideClip("TacSim_Walk", strideAngle: 26f, swingKneeFlex: 38f, armSwing: 20f, periodSec: 0.92f);
+            AnimationClip generatedRun = CreateStrideClip("TacSim_Run", strideAngle: 42f, swingKneeFlex: 62f, armSwing: 36f, periodSec: 0.64f);
+            AnimationClip generatedSeated = CreateSeatedHelmClip();
+
             AnimationClip idleClip = FindImportedIdaFaberIdleClip() ?? generatedIdle;
-            AnimationClip walkClip = CreateStrideClip("TacSim_Walk", strideAngle: 26f, swingKneeFlex: 38f, armSwing: 20f, periodSec: 0.92f);
-            AnimationClip runClip = CreateStrideClip("TacSim_Run", strideAngle: 42f, swingKneeFlex: 62f, armSwing: 36f, periodSec: 0.64f);
-            AnimationClip seatedClip = CreateSeatedHelmClip();
+            AnimationClip walkClip = FindImportedWalkClip() ?? generatedWalk;
+            AnimationClip runClip = FindImportedRunClip() ?? generatedRun;
+            AnimationClip seatedClip = FindImportedSitClip() ?? generatedSeated;
 
             var controller = AnimatorController.CreateAnimatorControllerAtPath(ControllerPath);
             controller.AddParameter("Speed", AnimatorControllerParameterType.Float);
@@ -127,25 +170,85 @@ namespace TacSim.Editor
 
         public static AnimationClip FindImportedIdaFaberIdleClip()
         {
-            string[] exactCandidates =
+            return FindImportedHumanoidClip(
+                new[]
+                {
+                    "Assets/IdaFaber/Demo/A_Idle_F.fbx",
+                    "Assets/IdaFaber/Demo/A_Idle_M.fbx",
+                    "Assets/Ida Faber/Stellar Trooper/Demo/A_Idle_F.fbx",
+                    "Assets/Ida Faber/Stellar Trooper/Demo/A_Idle_M.fbx"
+                },
+                "A_Idle_");
+        }
+
+        public static AnimationClip FindImportedWalkClip()
+        {
+            return FindImportedHumanoidClip(
+                new[]
+                {
+                    "Assets/IdaFaber/Demo/A_Walk_F.fbx",
+                    "Assets/IdaFaber/Demo/A_Walk_M.fbx",
+                    "Assets/Mocap/HumanoidWalk.fbx",
+                    "Assets/Mocap/A_Walk_F.fbx"
+                },
+                "A_Walk_",
+                "HumanoidWalk");
+        }
+
+        public static AnimationClip FindImportedRunClip()
+        {
+            return FindImportedHumanoidClip(
+                new[]
+                {
+                    "Assets/IdaFaber/Demo/A_Run_F.fbx",
+                    "Assets/IdaFaber/Demo/A_Run_M.fbx",
+                    "Assets/Mocap/HumanoidRun.fbx",
+                    "Assets/Mocap/A_Run_F.fbx"
+                },
+                "A_Run_",
+                "HumanoidRun");
+        }
+
+        public static AnimationClip FindImportedSitClip()
+        {
+            return FindImportedHumanoidClip(
+                new[]
+                {
+                    "Assets/IdaFaber/Demo/A_Sit_F.fbx",
+                    "Assets/IdaFaber/Demo/A_Sit_M.fbx",
+                    "Assets/Mocap/HumanoidSit.fbx",
+                    "Assets/Mocap/A_Sit_F.fbx"
+                },
+                "A_Sit_",
+                "HumanoidSit");
+        }
+
+        public static AnimationClip FindImportedHumanoidClip(string[] exactCandidates, params string[] assetQueries)
+        {
+            if (exactCandidates != null)
             {
-                "Assets/IdaFaber/Demo/A_Idle_F.fbx",
-                "Assets/IdaFaber/Demo/A_Idle_M.fbx",
-                "Assets/Ida Faber/Stellar Trooper/Demo/A_Idle_F.fbx",
-                "Assets/Ida Faber/Stellar Trooper/Demo/A_Idle_M.fbx"
-            };
-            foreach (string path in exactCandidates)
-            {
-                var found = LoadHumanoidClipFromAssetPath(path);
-                if (found != null) return found;
+                foreach (string path in exactCandidates)
+                {
+                    var found = LoadHumanoidClipFromAssetPath(path);
+                    if (found != null) return found;
+                }
             }
 
-            string[] guids = AssetDatabase.FindAssets("A_Idle_");
-            foreach (string guid in guids)
+            if (assetQueries != null)
             {
-                string path = AssetDatabase.GUIDToAssetPath(guid);
-                var found = LoadHumanoidClipFromAssetPath(path);
-                if (found != null) return found;
+                foreach (string query in assetQueries)
+                {
+                    if (string.IsNullOrEmpty(query)) continue;
+                    string[] guids = AssetDatabase.FindAssets(query);
+                    foreach (string guid in guids)
+                    {
+                        string path = AssetDatabase.GUIDToAssetPath(guid);
+                        if (string.IsNullOrEmpty(path) || path.StartsWith(GeneratedFolder, System.StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        var found = LoadHumanoidClipFromAssetPath(path);
+                        if (found != null) return found;
+                    }
+                }
             }
             return null;
         }

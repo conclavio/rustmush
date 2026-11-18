@@ -390,7 +390,135 @@ namespace TacSim.World
                     return true;
                 }
             }
+
+            // Embedded standalone fallback (`Resources/TacSimFallbackPacks/<key>` staged by TacSimStandaloneBuilder)
+            // so cold-cache standalone `.exe` / `.app` builds render the full 16-room 3-deck Ceres Freeport, Dray,
+            // and Goods catalog immediately on launch before WebSocket login!
+            try
+            {
+                TextAsset embedded = Resources.Load<TextAsset>("TacSimFallbackPacks/" + key);
+                if (embedded != null && !string.IsNullOrEmpty(embedded.text))
+                {
+                    json = embedded.text;
+                    return true;
+                }
+            }
+            catch
+            {
+                // Managed CI runner without Unity native Resources
+            }
             return false;
+        }
+
+        /// <summary>
+        /// Strips server-only narrative secrets, lore, quests, hooks, vendor lane schedules, hidden exits,
+        /// restricted-room descriptions, and private NPC prompts before staging fallback packs into a client build.
+        /// Mirrors <c>crates/tacsim/src/client_sync.rs</c>'s public projection boundary.
+        /// </summary>
+        public static string SanitizePackJsonForClient(string rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+                return rawJson;
+
+            JsonNode root = JsonNode.Parse(rawJson);
+            if (root == null || !root.IsObject)
+                return rawJson;
+
+            var rootObj = root.AsObject();
+            rootObj.Remove("brief");
+            rootObj.Remove("notes");
+            rootObj.Remove("secrets");
+
+            var entriesObj = root["entries"].AsObject();
+            if (entriesObj != null)
+            {
+                var removeKeys = new List<string>();
+                foreach (var kv in entriesObj)
+                {
+                    var entry = kv.Value;
+                    if (entry == null || !entry.IsObject)
+                    {
+                        removeKeys.Add(kv.Key);
+                        continue;
+                    }
+
+                    string kind = entry.Str("kind", string.Empty);
+                    bool allowedKind = kind == "neighborhood" || kind == "locality" || kind == "site" ||
+                                       kind == "structure" || kind == "room" || kind == "exit" ||
+                                       kind == "feature" || kind == "item" || kind == "region" ||
+                                       kind == "heightfield" || kind == "terrain" || kind == "connection" ||
+                                       kind == "checkpoint" || kind == "npc" || kind == "person" ||
+                                       kind == "unit" || kind == "weapon" || kind == "arena" ||
+                                       kind == "body" || kind == "location" || kind == "route" || kind == "port";
+                    if (!allowedKind)
+                    {
+                        removeKeys.Add(kv.Key);
+                        continue;
+                    }
+
+                    var def = entry["def"];
+                    var defObj = def.AsObject();
+                    if (defObj == null)
+                        continue;
+
+                    if (string.Equals(def.Str("reveal"), "staff", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(def.Str("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(def["portal"].Str("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
+                        def.Bool("hidden", false) ||
+                        def["portal"].Bool("hidden", false))
+                    {
+                        removeKeys.Add(kv.Key);
+                        continue;
+                    }
+
+                    defObj.Remove("notes");
+                    defObj.Remove("secrets");
+
+                    if (kind == "room")
+                    {
+                        bool restricted = string.Equals(def.Str("access"), "restricted", StringComparison.OrdinalIgnoreCase) ||
+                                          def.Bool("restricted", false) ||
+                                          def["access"].Bool("restricted", false);
+                        if (restricted)
+                        {
+                            defObj.Remove("desc");
+                            defObj.Remove("details");
+                        }
+                    }
+                    else if (kind == "npc" || kind == "person")
+                    {
+                        var stripNpcKeys = new List<string>();
+                        foreach (var nk in defObj)
+                        {
+                            string k = nk.Key;
+                            bool keep = k == "name" || k == "aliases" || k == "room" || k == "home" ||
+                                        k == "enabled" || k == "short_desc" || k == "desc" || k == "profile";
+                            if (!keep)
+                                stripNpcKeys.Add(k);
+                        }
+                        for (int s = 0; s < stripNpcKeys.Count; s++)
+                            defObj.Remove(stripNpcKeys[s]);
+
+                        var profileObj = def["profile"].AsObject();
+                        if (profileObj != null)
+                        {
+                            bool enabled = profileObj.ContainsKey("enabled") ? def["profile"].Bool("enabled", true) : true;
+                            string bg = def["profile"].Str("background", string.Empty);
+                            if (bg.Length > 96)
+                                bg = bg.Substring(0, 93) + "...";
+                            profileObj.Clear();
+                            profileObj["enabled"] = JsonNode.FromBool(enabled);
+                            if (!string.IsNullOrEmpty(bg))
+                                profileObj["background"] = JsonNode.FromString(bg);
+                        }
+                    }
+                }
+
+                for (int i = 0; i < removeKeys.Count; i++)
+                    entriesObj.Remove(removeKeys[i]);
+            }
+
+            return root.ToJson();
         }
 
         public static string ResolveRepoContentPath(string relativeUnderTacsimContent)
