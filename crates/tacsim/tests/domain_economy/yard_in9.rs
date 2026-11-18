@@ -1555,7 +1555,12 @@ async fn pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it() {
         Some(PrincipalId::Object(owner)),
         "its stores went with it"
     );
-    assert_eq!(posted(&rig, yards_account) - yards_before, YARD_PRICE);
+    // Doc 48 cut EX.4 (Q-48-8): the Yards are Stickney's operator, so the listing fee and the
+    // 3% cut come back to them; only the 1% levy leaves for the system sink.
+    assert_eq!(
+        posted(&rig, yards_account) - yards_before,
+        YARD_PRICE - YARD_PRICE * mush_market::fees::LEVY_PERMILLE / 1_000
+    );
     assert_eq!(owner_before - posted(&rig, owner_account), YARD_PRICE);
 
     // ---- (2) The owner's terms ----

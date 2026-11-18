@@ -48,9 +48,12 @@ fn locker_vault(rig: &crate::driving_rig::Rig, player: ObjId) -> Option<VaultId>
 }
 
 /// The owed charge recorded on the player's Ceres locker, minor units.
-fn owed(rig: &crate::driving_rig::Rig, player: ObjId) -> Option<i64> {
-    let venue = mush_market::MarketId::new("ceres")?;
-    tacsim::port::locker::locker_of(rig.tw.world(), player, &venue).map(|l| l.owed_minor)
+/// Doc 48 cut EX.4: the locker's charge, as the player-owed obligation that collects it.
+fn locker_charge(rig: &crate::driving_rig::Rig, player: ObjId) -> Option<mush_economy::Obligation> {
+    let ns = tacsim::port::berth::locker_namespace("ceres", player);
+    mush_economy::player_obligations_of(rig.tw.world(), &mush_org::PrincipalId::Object(player), &ns)
+        .into_iter()
+        .next()
 }
 
 /// The exchange's live metals listing.
@@ -122,30 +125,36 @@ async fn ex1b_a_hull_less_player_buys_into_their_locker() {
         "an overfill is refused: {quoted} / {accepted:?}"
     );
 
-    // Two IC days on: three tonnes owe 6 cr, accrued when shown.
+    // Doc 48 cut EX.4: three tonnes are charged 3 cr an IC day, collected from the walker's
+    // account as a player-owed obligation; two IC days on, it has been paid and nothing is owed.
     crate::in10_pools::days_on(&mut rig, 2);
     let shown = run(&mut rig.tw, walker, "+locker");
-    assert!(shown.contains("owed (collection starts later)."), "{shown}");
-    assert_eq!(owed(&rig, walker), Some(600), "{shown}");
+    assert!(
+        shown.contains("charged 3.00cr an IC day; 0.00cr in arrears."),
+        "{shown}"
+    );
+    let charge = locker_charge(&rig, walker).expect("the locker's charge");
+    assert_eq!(charge.amount.minor(), 300, "3 t at 1 cr a day");
+    assert!(charge.settled_total >= 1, "collected: {charge:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ex1b_a_chartered_hold_cannot_post_a_personal_ask() {
+async fn ex1b_a_chartered_hold_and_a_locker_both_post_a_personal_ask() {
     let mut rig = crate::driving_rig::stocked();
     let (captain, row) = prospector(&mut rig, "Charter", 42, "Tern");
     let hold = hold_vault_of(&rig.tw, &row);
     seed_lot(&mut rig, hold, SIGHT, 1, LotId(0xe1b1));
     let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
     teleport(&mut rig.tw, captain, exchange);
-    let refused = run(
+    // Doc 48 cut EX.4 (Q-48-56): a chartered hold's lot lists; the Co-op's share runs on its sale.
+    let listed = run(
         &mut rig.tw,
         captain,
         &format!("+market/post {} price=500", LotId(0xe1b1)),
     );
-    assert!(
-        refused.contains(tacsim::port::proceeds::CHARTERED_ASK),
-        "a chartered hold's lot is refused: {refused}"
-    );
+    assert!(listed.contains("Listed for sale as #"), "{listed}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
 
     // The same captain's locker is no chartered hold: its lot lists.
     let _ = run(&mut rig.tw, captain, "+locker/open");
@@ -179,6 +188,18 @@ async fn ex1b_an_offline_buy_takes_a_players_ask_only_under_a_ceiling() {
     let locker = locker_vault(&rig, seller).expect("the locker");
     seed_lot(&mut rig, locker, "metals", 2, LotId(0xe1b3));
     let price = house_minor / 100 - 1;
+    // Doc 48 cut EX.4: the seller pays the listing fee (its 10 cr floor).
+    let account = tacsim::port::credit::own_account(rig.tw.world(), seller)
+        .expect("the seller's account")
+        .id;
+    let treasury = crate::driving_rig::port_map(&rig.tw, CERES)
+        .treasury
+        .expect("a treasury");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} 1000", account.0),
+    );
     let listed = run(
         &mut rig.tw,
         seller,

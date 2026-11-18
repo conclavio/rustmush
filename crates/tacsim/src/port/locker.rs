@@ -13,9 +13,10 @@
 //!   takes any stowage, held to [`LOCKER_KG`] and [`LOCKER_L`] (provisional). Before EX.1b an
 //!   off-hold vault had no plan, so it was free storage.
 //! - **What it owes.** The charge is [`LOCKER_MINOR_PER_T_DAY`] an IC day per started tonne held
-//!   (provisional, the berth's rate). [`Locker::accrue`] adds whole IC days to `owed_minor` at the
-//!   tonnes held when it runs. Nothing collects it: EX.4's player-owed obligation does (its grace,
-//!   arrears and reinstatement), so a locker never blocks a trade over what it owes.
+//!   (provisional, the berth's rate). **Doc 48 cut EX.4** collects it as a player-owed obligation
+//!   (`crate::port::berth`): repriced to the tonnes held as they move, its unpaid days accruing as
+//!   arrears, so a locker never blocks a trade over what it owes. The record's `accrued_to_ic` and
+//!   `owed_minor` are EX.1b's display tally, kept on the wire and no longer moved.
 //!
 //! The record is `tacsim:locker:{player}:{venue}`, in the store's own block.
 
@@ -51,9 +52,9 @@ pub const LOCKER_OPENED: &str =
 pub const LOCKER_ALREADY: &str = "Your locker at {venue} is already open.";
 /// The refusal when they stand in no venue.
 pub const LOCKER_NO_VENUE: &str = "There is no market here to keep a locker at.";
-/// The show line (`{venue}`, `{tonnes}`, `{owed}`).
+/// The show line (`{venue}`, `{tonnes}`, `{rate}`, `{owed}`; doc 48 cut EX.4).
 pub const LOCKER_SHOW: &str =
-    "Your locker at {venue}: {tonnes} t held, {owed} owed (collection starts later).";
+    "Your locker at {venue}: {tonnes} t held, charged {rate} an IC day; {owed} in arrears.";
 /// The show line when they hold none here (`{venue}`).
 pub const LOCKER_NONE: &str = "You have no locker at {venue}. +locker/open opens one.";
 
@@ -258,8 +259,9 @@ pub(crate) fn locker_spec() -> mush_core::CommandSpec {
         help: "+locker                          your locker at the market you stand in: what it \
                holds and what it owes\n\
                +locker/open                     open one here. A locker holds 20 t and 40 m3. \
-               Goods you buy with no hold of yours docked here go into it. It owes 1 cr an IC \
-               day a tonne; collection starts later."
+               Goods you buy with no hold of yours docked here go into it. It costs 1 cr an IC \
+               day a started tonne, from your own account; a day you cannot pay is owed as \
+               arrears, paid when your account is funded."
             .into(),
         ..mush_core::CommandSpec::default()
     }
@@ -288,21 +290,21 @@ pub(crate) fn locker_cmd(ctx: &mut Ctx<'_>) -> Result<(), mush_core::CmdError> {
             LOCKER_ALREADY
         };
         line.replace("{venue}", venue.as_str())
-    } else if let Some(mut record) = locker_of(ctx.w, actor, &venue).cloned() {
+    } else if let Some(record) = locker_of(ctx.w, actor, &venue).cloned() {
         let held = held_kg(ctx, VaultId(record.vault));
-        if record.accrue(held, ctx.w.game_now_unix()) > 0 {
-            crate::store::put_locker(ctx, &record);
-        }
+        let tonnes = i64::try_from(held.div_ceil(1_000)).unwrap_or(i64::MAX);
+        let ns = crate::port::berth::locker_namespace(venue.as_str(), actor);
+        let owed = crate::port::berth::arrears_of(ctx.w, &PrincipalId::Object(actor), &ns);
+        let money =
+            |minor: i64| crate::port::board::money(ctx.w, mush_economy::Amount::from_minor(minor));
         LOCKER_SHOW
             .replace("{venue}", venue.as_str())
             .replace("{tonnes}", &crate::port::gauges::part_tonnes(held))
             .replace(
-                "{owed}",
-                &crate::port::board::money(
-                    ctx.w,
-                    mush_economy::Amount::from_minor(record.owed_minor),
-                ),
+                "{rate}",
+                &money(tonnes.saturating_mul(LOCKER_MINOR_PER_T_DAY)),
             )
+            .replace("{owed}", &money(owed))
     } else {
         LOCKER_NONE.replace("{venue}", venue.as_str())
     };

@@ -52,6 +52,31 @@ pub const DEFAULT_GRACE_PERIODS: u8 = 1;
 /// actually end.
 pub const MAX_GRACE_PERIODS: u8 = 254;
 
+/// **The least grace a player-owed obligation carries** (doc 48 cut EX.4, Q-48-54): the owner's
+/// rule that any wait on a player is at least 28 IC days, in periods of a daily cadence.
+pub const PLAYER_OWED_MIN_GRACE: u8 = 28;
+
+/// **A player-owed obligation's arrears** (doc 48 cut EX.4, Q-48-54): a period the debtor cannot
+/// pay is not lost and not forgiven; its amount accrues into one one-term debt
+/// (`crate::create_debt_due`, Q-41-13's shape) kept under `namespace`, payable at any time and
+/// collected when the account is funded. `None` on every obligation of the E4 class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Arrears {
+    /// The ruleset namespace the arrears debt is kept under (its `+debts` reader's).
+    pub namespace: SmolStr,
+    /// The live one-term debt the missed periods accrue into, if any.
+    #[serde(default)]
+    pub debt: Option<ObligationId>,
+    /// Every missed period's amount ever accrued.
+    #[serde(default = "zero")]
+    pub accrued: Amount,
+}
+
+fn zero() -> Amount {
+    Amount::ZERO
+}
+
 /// How many missed periods an obligation tolerates before going `Delinquent`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GracePolicy {
@@ -465,6 +490,11 @@ pub struct Obligation {
     /// is its one implicit holder ([`Obligation::holders`]).
     #[serde(default)]
     pub suspensions: BTreeSet<SuspensionKey>,
+    /// **The player-owed class** (doc 48 cut EX.4, Q-48-54): present, a missed period accrues
+    /// into [`Arrears::debt`] rather than being lost, and a delinquent record returns to the due
+    /// pool once its account is funded. `None` for every E4 obligation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrears: Option<Arrears>,
     /// Staleness stamp.
     pub revision: u64,
 }

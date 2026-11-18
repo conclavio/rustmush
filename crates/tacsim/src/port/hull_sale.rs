@@ -333,6 +333,8 @@ impl EconomyObserver for HullSaleObserver {
                 crate::port::facility_sale::on_sold(ctx, object, &from, &to);
             } else {
                 rehome_hold(ctx, object, &from, &to);
+                // Doc 48 cut EX.4 (Q-48-54): her berth's arrears at this port, out of the sale.
+                crate::port::berth::collect_lien(ctx, object, &from);
             }
         }
     }

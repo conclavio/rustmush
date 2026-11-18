@@ -1874,6 +1874,7 @@ pub fn create_system_obligation(
         settled_total: 0,
         missed_total: 0,
         service_terms: None,
+        arrears: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,
@@ -2138,6 +2139,7 @@ fn open_obligation(
         settled_total: 0,
         missed_total: 0,
         service_terms,
+        arrears: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,
@@ -2605,6 +2607,267 @@ fn reinstate_locked(
     put_obligation(ctx, next);
     ctx.gate_on_durable_ack();
     Ok(true)
+}
+
+// ---- doc 48 cut EX.4: the player-owed class (Q-48-54) ------------------------------------
+
+/// **The IC seconds a player-owed obligation's arrears debt stands before it is first swept**
+/// (doc 48 cut EX.4): [`crate::obligation::PLAYER_OWED_MIN_GRACE`] IC days, the owner's rule that
+/// any wait on a player is at least 28 IC days. Until then it is `Active` and payable, so nothing
+/// that reads a delinquent debt can act on it sooner.
+pub const ARREARS_DUE_IC_SECS: i64 = crate::obligation::PLAYER_OWED_MIN_GRACE as i64 * 86_400;
+
+/// **Open a player-owed obligation** (doc 48 cut EX.4, Q-48-54): [`create_obligation`]'s record
+/// and locks, with a grace of at least [`crate::obligation::PLAYER_OWED_MIN_GRACE`] periods and
+/// the arrears class stamped, its arrears debt kept under `arrears_namespace`. A missed period
+/// then accrues into one one-term debt instead of being lost (`accrue_arrears`); a funded
+/// account pays it (`collect_arrears`) and returns a delinquent record to the due pool
+/// (`reinstate_funded`).
+///
+/// # Errors
+///
+/// Everything [`create_obligation`] refuses.
+pub fn create_player_obligation(
+    ctx: &mut Ctx<'_>,
+    spec: ObligationSpec,
+    arrears_namespace: &str,
+) -> Result<ObligationId, EconomyError> {
+    let grace = crate::obligation::GracePolicy::new(
+        spec.grace
+            .allowance()
+            .max(crate::obligation::PLAYER_OWED_MIN_GRACE),
+    );
+    let id = create_obligation(ctx, ObligationSpec { grace, ..spec })?;
+    let stamped = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().obligation(id).cloned())
+        .map(|o| crate::obligation::Obligation {
+            arrears: Some(crate::obligation::Arrears {
+                namespace: SmolStr::new(arrears_namespace),
+                debt: None,
+                accrued: Amount::ZERO,
+            }),
+            ..o
+        });
+    if let Some(o) = stamped {
+        put_obligation(ctx, o);
+    }
+    Ok(id)
+}
+
+/// The live one-term debt `o`'s arrears accrue into, if it still stands.
+fn live_arrears_debt(
+    ctx: &Ctx<'_>,
+    o: &crate::obligation::Obligation,
+) -> Option<crate::obligation::Obligation> {
+    let id = o.arrears.as_ref()?.debt?;
+    ctx.w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .obligation(id)
+        .filter(|d| owed_one_term(d))
+        .cloned()
+}
+
+/// **One missed period accrues into the arrears** (doc 48 cut EX.4): the period's amount is
+/// added to the live arrears debt, or opens one ([`create_debt_due`], first swept
+/// [`ARREARS_DUE_IC_SECS`] on), and the record's [`crate::obligation::Arrears`] is updated in
+/// `o`, which the caller persists. A record of the E4 class is untouched. A debt that cannot be
+/// opened or grown is logged; the period stays missed, as E4's are.
+pub(crate) fn accrue_arrears(ctx: &mut Ctx<'_>, o: &mut crate::obligation::Obligation) {
+    let Some(arrears) = o.arrears.clone() else {
+        return;
+    };
+    let debt = match live_arrears_debt(ctx, o) {
+        Some(mut debt) => match debt.amount.checked_add(o.amount) {
+            Some(grown) => {
+                debt.amount = grown;
+                debt.revision = debt.revision.saturating_add(1);
+                let id = debt.id;
+                put_obligation(ctx, debt);
+                Some(id)
+            }
+            None => {
+                tracing::error!(
+                    obligation = o.id.0,
+                    "economy: an arrears debt is at its ceiling; the period was not accrued"
+                );
+                return;
+            }
+        },
+        None => {
+            let due = ctx.w.world_ic_now().at.saturating_add(ARREARS_DUE_IC_SECS);
+            match create_debt_due(
+                ctx,
+                (o.debit_account, o.credit_account),
+                o.amount,
+                &arrears.namespace,
+                due,
+            ) {
+                Ok(id) => Some(id),
+                Err(error) => {
+                    tracing::error!(
+                        obligation = o.id.0,
+                        %error,
+                        "economy: an arrears debt could not be opened; the period was not accrued"
+                    );
+                    return;
+                }
+            }
+        }
+    };
+    o.arrears = Some(crate::obligation::Arrears {
+        debt,
+        accrued: arrears
+            .accrued
+            .checked_add(o.amount)
+            .unwrap_or(arrears.accrued),
+        ..arrears
+    });
+}
+
+/// **A funded account pays its arrears** (doc 48 cut EX.4): when `o`'s debit account can cover
+/// its live arrears debt, the debt is paid whole ([`pay_debt`]'s one post) and `o` forgets it;
+/// otherwise nothing is written. Called after a period settles, so the account just showed it
+/// had money.
+pub(crate) fn collect_arrears(ctx: &mut Ctx<'_>, o: &mut crate::obligation::Obligation) {
+    let Some(arrears) = o.arrears.clone() else {
+        return;
+    };
+    let Some(debt) = live_arrears_debt(ctx, o) else {
+        if arrears.debt.is_some() {
+            o.arrears = Some(crate::obligation::Arrears {
+                debt: None,
+                ..arrears
+            });
+        }
+        return;
+    };
+    if !covers(ctx, o.debit_account, debt.amount) {
+        return;
+    }
+    match settle_debt(ctx, &debt, DebtCause::Ruleset(&arrears.namespace)) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {
+            o.arrears = Some(crate::obligation::Arrears {
+                debt: None,
+                ..arrears
+            });
+        }
+        Ok(PostOutcome::NeedsApproval(_)) => {}
+        Err(error) => tracing::info!(
+            obligation = o.id.0,
+            debt = debt.id.0,
+            %error,
+            "economy: an arrears debt was not collected; it stands"
+        ),
+    }
+}
+
+/// Whether `account`'s available funds cover `amount`.
+fn covers(ctx: &Ctx<'_>, account: AccountId, amount: Amount) -> bool {
+    ctx.w
+        .module_state::<EconomyStore>()
+        .and_then(|store| {
+            store
+                .snapshot()
+                .account(account)
+                .and_then(|a| a.available())
+        })
+        .is_some_and(|available| available >= amount)
+}
+
+/// **A delinquent player-owed obligation returns once its account is funded** (doc 48 cut EX.4,
+/// Q-48-54): every delinquent record of the class whose debit account covers one period is
+/// reinstated ([`reinstate_obligation`]'s rule: back to `Active`, its schedule re-anchored, so
+/// the periods past its grace are not charged twice; what it accrued stands as its arrears
+/// debt). At most [`crate::MAX_OBLIGATIONS_PER_SWEEP`] a fire; called from the sweep.
+pub(crate) fn reinstate_funded(ctx: &mut Ctx<'_>) {
+    let funded: Vec<crate::obligation::Obligation> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        let snap = store.snapshot();
+        snap.obligations()
+            .filter(|o| {
+                o.arrears.is_some()
+                    && matches!(o.status, crate::obligation::ObligationStatus::Delinquent)
+                    && o.holders().is_empty()
+                    && snap
+                        .account(o.debit_account)
+                        .and_then(|a| a.available())
+                        .is_some_and(|available| available >= o.amount)
+            })
+            .take(crate::MAX_OBLIGATIONS_PER_SWEEP)
+            .cloned()
+            .collect()
+    };
+    for o in funded {
+        if let Err(error) = reinstate_locked(ctx, &o) {
+            tracing::info!(obligation = o.id.0, %error, "economy: a funded obligation was not reinstated");
+        }
+    }
+}
+
+/// **Reprice a player-owed obligation** (doc 48 cut EX.4): its per-period amount becomes `amount`
+/// (positive), under [`cancel_obligation`]'s namespace and actor locks. A charge that follows a
+/// quantity (a locker's tonnes) is repriced as the quantity moves; periods already closed keep
+/// what they cost.
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] (another namespace's record, one of the E4 class, or an actor
+/// with no standing over the debit account), [`EconomyError::ZeroLine`] for a non-positive amount,
+/// [`EconomyError::ObligationTerminal`].
+pub fn reprice_player_obligation(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    namespace: &str,
+    amount: Amount,
+) -> Result<(), EconomyError> {
+    let mut o = ruleset_obligation(ctx, id, namespace)?;
+    if o.arrears.is_none() {
+        return Err(EconomyError::Unauthorized);
+    }
+    if amount.is_zero() || amount.is_negative() {
+        return Err(EconomyError::ZeroLine(0));
+    }
+    o.amount = amount;
+    o.revision = o.revision.saturating_add(1);
+    put_obligation(ctx, o);
+    ctx.gate_on_durable_ack();
+    Ok(())
+}
+
+/// **The player-owed obligations and arrears `debtor` owes under `namespace`** (doc 48 cut EX.4):
+/// the live records of the class kept under it, in id order.
+#[must_use]
+pub fn player_obligations_of(
+    w: &mush_core::World,
+    debtor: &PrincipalId,
+    namespace: &str,
+) -> Vec<crate::obligation::Obligation> {
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<crate::obligation::Obligation> = store
+        .snapshot()
+        .obligations()
+        .filter(|o| {
+            &o.debtor == debtor
+                && o.arrears
+                    .as_ref()
+                    .is_some_and(|a| a.namespace.as_str() == namespace)
+                && !matches!(
+                    o.status,
+                    crate::obligation::ObligationStatus::Cancelled
+                        | crate::obligation::ObligationStatus::Satisfied
+                )
+        })
+        .cloned()
+        .collect();
+    out.sort_by_key(|o| o.id);
+    out
 }
 
 // ---- one-term debts (doc 41 cut RS.5; Q-41-13, doc 42 Q-42-7) ------------------------------
