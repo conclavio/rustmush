@@ -132,7 +132,7 @@ sale at that port. A house's own hulls at their home port owe nothing.
 
 ## The job board
 
-  +market/jobs [retrieval|passage|survey] [market=<venue>]
+  +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]
 
 Lists the jobs posted at the port you stand in, or at the market you name.
 Each job says what it pays, any bond you would escrow, when it is due, and the
@@ -145,6 +145,11 @@ command that takes it:
   arrival.
 - **Survey:** Occator's commissions for fresh soundings of one block. Take one
   with +survey/accept; you have 28 IC days from accepting.
+- **Haul:** carry a shipper's goods from their locker here to their locker at
+  another port. Take one with +haul/accept while your hull is docked here; you
+  have 28 IC days from accepting.
+- **Escort:** stay near a hull through her passage or her field sortie. Take
+  one with +escort/accept and the hull or rig you escort with.
 
 A job paying more than 10,000 cr asks for a bond of a fifth of its pay. The bond
 is escrowed from your account when you take the job. It comes back with the pay
@@ -154,3 +159,34 @@ To take a retrieval for your organization, add as=<org>:
 +salvage/accept <job> as=<org> go. You need the right to spend the
 organization's money. The pay goes to its account, and its bond comes from
 there.
+
+## Hauls
+
+  +haul/post <qty> <good> to=<port> fee=<cr> [value=<cr>] [go]
+
+Posts a job to carry goods from your locker at this port to your locker at
+another. The fee is escrowed from your account and paid on delivery. You
+declare the goods' value, at most their reference price; the hauler escrows a
+bond of a quarter of it, which is yours if the goods are not delivered.
+
+  +haul/accept <job> [as=<org>] [go]
+
+Takes a haul with your hull docked at its origin. The goods load into your
+hold held for the job: you cannot sell, burn or move them. Deliver them with
++haul/deliver <job> go at the destination within 28 IC days, and the fee and
+your bond follow. Goods still aboard when the term ends go back to the
+shipper at your next port. +haul lists your hauls; +haul/withdraw takes back
+one nobody has taken.
+
+## Escorts
+
+  +escort/post <hull> to=<port> fee=<cr> [go]
+  +escort/post <hull> field=<site> fee=<cr> [go]
+
+Posts a job to escort your hull on her next passage from the port she lies at,
+or on her next sortie in a field. Whoever takes it with +escort/accept <job>
+with=<hull> must stay near her for nine tenths of the journey: on the same
+passage or in the same bubble in space, in the same field in a sortie. A link
+drop inside the linkdead grace does not count against the escort. The job
+fails if she is wrecked or captured, or the escort leaves her. +escort lists
+your escorts.

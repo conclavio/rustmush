@@ -82,6 +82,7 @@ pub use lot_hold::{IndivisibleGoods, LotHold, MAX_HOLDER_BYTES};
 pub use module::{
     InventoryHandleCell, InventoryHandles, InventoryModule, SWEEP_PERIOD_SECS, SWEEP_TAG,
 };
+pub use pool::carriage::Carriage;
 pub use pool::{
     InventoryError, InventoryFamilies, LotSale, MARKER_CAUSAL_MAX_BYTES, Moved,
     REFIT_RESERVATION_LEAD_SECS, SettledSale, derive_lot_id, derive_tranche_id, derived_marker_id,

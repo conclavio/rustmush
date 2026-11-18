@@ -299,6 +299,8 @@ pub use contract_live::{
     RetrievalSpec, accept_retrieval, cancel_retrieval, job_acceptor, job_bond, job_shape, join_job,
     post_retrieval, retrieval_acceptor, retrieval_contract_hull,
 };
+// Doc 48 cut EX.6: a job with no object (a haul, an escort).
+pub use contract_live::{JobSpec, cancel_job, post_job};
 
 // E4c — facts, events, evidence.
 pub use attest::{MAX_CANON_CONTRACTS_VISITED, MAX_OBSERVER_SETTLEMENTS_PER_EVENT};

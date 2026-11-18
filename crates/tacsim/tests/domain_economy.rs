@@ -65,6 +65,8 @@ mod ex3_board;
 mod ex4_charges;
 #[path = "domain_economy/ex5_jobs.rs"]
 mod ex5_jobs;
+#[path = "domain_economy/ex6_haul.rs"]
+mod ex6_haul;
 #[path = "domain_economy/house_arm_rs6b.rs"]
 mod house_arm_rs6b;
 #[path = "domain_economy/house_resale_rs6c2.rs"]
