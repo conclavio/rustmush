@@ -202,11 +202,11 @@ async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
         .expect("the cannon's replace");
     assert_eq!(
         replace.cost_minor, 48_000,
-        "400 of labour at Occator's 1.2x"
+        "400 of labor at Occator's 1.2x"
     );
     assert_eq!(
         replace.part_minor, 2_800_000,
-        "the cannon's catalogue 28,000"
+        "the cannon's catalog 28,000"
     );
     assert!(
         quote.contains("replace") && quote.contains("from the workshop's stores"),
@@ -217,7 +217,7 @@ async fn in6_a_refit_at_ceres_takes_the_cannon_from_occators_stores() {
     let done = refit(&mut rig, pilot, escort);
     assert_eq!(
         done.fee_minor, 2_848_000,
-        "480 of labour and 28,000 for the part"
+        "480 of labor and 28,000 for the part"
     );
     assert_eq!(done.part_vault, Some(stores(&rig)));
     let taken = done

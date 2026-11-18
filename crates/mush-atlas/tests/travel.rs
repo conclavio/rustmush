@@ -877,7 +877,7 @@ fn s8_intercept_holds_a_vehicle_at_the_stop_and_release_lets_it_go() {
     let out = run(&mut tw, rider, "board");
     assert!(out.contains("is not here"), "the bus has gone: {out}");
     let status = run(&mut tw, blocker, "+travel/status");
-    assert!(status.contains("not travelling"), "{status}");
+    assert!(status.contains("not traveling"), "{status}");
     let show = run(&mut tw, GOD, "@atlas/journey show bus");
     assert!(
         show.contains("Security Gate") && show.contains("Water Tower"),

@@ -1652,7 +1652,7 @@ mod tests {
             .current()
             .rate,
             1,
-            "`GameClock`'s own `0 is treated as 1` sentinel is honoured at boot"
+            "`GameClock`'s own `0 is treated as 1` sentinel is honored at boot"
         );
     }
 

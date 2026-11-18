@@ -1765,7 +1765,7 @@ async fn m8b2_grey_dies_integrate_as_ungoverned_cores_of_their_class() -> Result
     let refused = refusal_text(refit_class_one(&mut r, hull, core, accept, None))?;
     check!(
         refused.contains("offer_core_refit") && refused.contains(REFIT_REFUSAL),
-        "the chartered refit refuses the grey core at its offer: {refused}"
+        "the chartered refit refuses the gray core at its offer: {refused}"
     );
     r.world_mut().world_mut().move_to(buyer, shop.factory)?;
     r.world_mut().world_mut().move_to(hull, shop.factory)?;

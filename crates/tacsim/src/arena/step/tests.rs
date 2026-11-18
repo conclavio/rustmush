@@ -1080,7 +1080,7 @@ fn d2_the_spent_window_is_kept_whether_or_not_anybody_is_seated() {
     stage_hit(&mut arena, 2, "hull", true, 4_000);
     assert!(
         victims_notices(&mut arena).is_empty(),
-        "the window the empty pod kept was not honoured"
+        "the window the empty pod kept was not honored"
     );
     stage_hit(&mut arena, 3, "hull", true, 5_000);
     assert_eq!(

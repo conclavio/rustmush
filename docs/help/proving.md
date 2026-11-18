@@ -19,7 +19,7 @@ interval, and records faults, operations, rules, weapons, damage, and rounds.
 It preserves the scenario, chassis, settings, source digests, and seeds used.
 Compare those settings before comparing results. Overlapping intervals do
 not establish a difference. Proving shares an account quota and fair queue;
-cancelling keeps already spent work charged. Forget removes an unpinned
+canceling keeps already spent work charged. Forget removes an unpinned
 finished result. Your runs and reports are visible only to your character.
 
 The replay bench opens a game from an owned proving run:
@@ -77,7 +77,7 @@ The comparison reports differing think results without changing the reference's
 intents or memory. It keeps at most 64 difference rows and reports omitted rows.
 Each compared unit consumes an additional unit's proving allowance.
 
-To test a candidate's effects, start a labelled fork at the settled reference
+To test a candidate's effects, start a labeled fork at the settled reference
 cursor. You can also possess that unit and issue ordinary station commands:
 
   BENCH SWAP Patrol@3/Line

@@ -817,7 +817,7 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            tracing::warn!(hull = order.hull.0, %error, "tacsim: a lapsed retrieval could not be cancelled; the next tick tries again");
+            tracing::warn!(hull = order.hull.0, %error, "tacsim: a lapsed retrieval could not be canceled; the next tick tries again");
             return;
         }
     }

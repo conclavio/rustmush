@@ -49,7 +49,7 @@ impl FiledExecutable {
         {
             return Err(invalid(
                 "class",
-                "paid licence is below the certified minimum",
+                "paid license is below the certified minimum",
             ));
         }
         let (definition, source) = decode_holding(&holding, sources)?;

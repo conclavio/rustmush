@@ -134,7 +134,7 @@ fn helm(mdeg: Dynamic) -> Result<(), Box<EvalAltResult>> {
 
 /// **`speed(cms)`** → `Speed { cms }`.
 fn speed(cms: Dynamic) -> Result<(), Box<EvalAltResult>> {
-    const TEXT: &str = "speed takes whole centimetres a second";
+    const TEXT: &str = "speed takes whole centimeters a second";
     let cms: i32 = bounded(int_arg(&cms, TEXT)?, TEXT)?;
     push(IntentKind::Speed { cms })
 }

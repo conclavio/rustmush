@@ -18,7 +18,7 @@ impl InterfaceAbilityProvider for CoopInterface {
             (
                 "coop.terms",
                 "+coop",
-                "Read the Co-op's programme terms, available hulls and the asker's current charter status. This does not enrol or buy anything.",
+                "Read the Co-op's program terms, available hulls and the asker's current charter status. This does not enroll or buy anything.",
             ),
             (
                 "coop.statement",

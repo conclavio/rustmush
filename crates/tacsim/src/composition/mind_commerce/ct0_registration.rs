@@ -180,7 +180,7 @@ fn tables(engine: &Engine, detail: bool) -> Result<Vec<(&'static str, Vec<Record
             // The manifest's payload and references are the TacSim catalogue
             // and configuration, which other programmes change.
             if reference.key().kind.as_str() == "registry_manifest" {
-                let omitted = "<the TacSim catalogue: not written>".to_owned();
+                let omitted = "<the TacSim catalog: not written>".to_owned();
                 record.push(("  payload".into(), omitted.clone()));
                 record.push(("  references".into(), omitted));
             } else {

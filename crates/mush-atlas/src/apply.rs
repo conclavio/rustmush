@@ -1351,7 +1351,7 @@ fn make_interior(ctx: &mut Ctx<'_>, thing: ObjId) -> Result<(), String> {
     if ctx.w.module_state::<mush_sim::SpatialState>().is_none() {
         tracing::warn!(
             obj = thing.0,
-            "an interior item applied on a world with no simulation: the behaviour is on, \
+            "an interior item applied on a world with no simulation: the behavior is on, \
              the interior-space record waits for `@spatial/space`"
         );
         return Ok(());

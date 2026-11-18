@@ -418,7 +418,7 @@ pub(crate) fn ct7_a_second_accept_waits_for_the_first<M: Rig>() {
     assert!(!replay(End::Open, &rival), "the same object, first open");
     assert!(
         replay(End::Cancelled, &rival),
-        "the same object, first cancelled"
+        "the same object, first canceled"
     );
     assert_eq!(
         replay(End::Installed, &rival),

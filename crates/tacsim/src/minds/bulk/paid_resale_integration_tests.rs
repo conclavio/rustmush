@@ -509,7 +509,7 @@ fn pending(f: &PurchaseFixture, template: &IcWorld, saved: &Durable, mode: u8) -
             json!({"offer":token(n+1),"payer":0}),
             None
         ))?,
-        "occupied licence admitted immediate sale"
+        "occupied license admitted immediate sale"
     );
     let cash = balance(&w, WalletId(0))?;
     buy(&mut w, n + 3, n + 1, FUND, GOD, 0)?;

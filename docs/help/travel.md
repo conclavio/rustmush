@@ -22,7 +22,7 @@ minutes by default for foot, car, transit and the bus).
 A **timed way** — a farm road, a long stair, a ferry — works the same: go through
 it and you set off; a short door stays instant.
 
-If you are stopped on a road (you cancelled past a checkpoint, or you dropped
+If you are stopped on a road (you canceled past a checkpoint, or you dropped
 your connection), `+travel` names the road's two ends and you set out again from
 where you stopped.
 

@@ -2,7 +2,7 @@
 
 The ship of the trade run is the **Dray**, a Stickney-built bulk hauler: slow,
 efficient, unarmed. A Co-op pilot flies one on charter (`help coop`). `+ship`
-says where yours is, what its hold carries and how your programme stands, from
+says where yours is, what its hold carries and how your program stands, from
 anywhere.
 
 ## Aboard
@@ -45,9 +45,9 @@ OOC channels remain immediate.
 
 ## The hold
 
-`+ship/hold` shows the hold good by good, in tonnes and cubic metres. The cargo
+`+ship/hold` shows the hold good by good, in tonnes and cubic meters. The cargo
 hold has **two limits**, a mass rating in tonnes and a packed volume in cubic
-metres, and a load can meet either one first: dense goods weigh it out, bulky
+meters, and a load can meet either one first: dense goods weigh it out, bulky
 goods cube it out. The reaction-mass tank and the stores locker are apart from
 the cargo hold, each with its own limit; reaction mass goes only in the tank and
 provisions only in the locker, and no cargo goes in either. When you buy, the
@@ -174,12 +174,12 @@ counter in the Exchange Hall at Ceres Freeport, with your Dray-P docked,
 1400.00cr for a term of 168 IC days, paid now, and a 5000.00cr deposit held on
 your account while the rig is aboard. The rig rolls up the ramp into the lowest free
 slot; `+tv/2/lease go` names slot 2. Two leases are two rigs. A lease needs a
-prospecting licence (`+licence/buy`; `help coop`), in force or in its grace.
+prospecting license (`+license/buy`; `help coop`), in force or in its grace.
 After buyout, the same terms apply to the current title holder.
 
 `+tv` reads each slot anywhere: the rig, how long its lease has left and what
 its hopper holds; `+tv/1` reads rig 1 alone. A term that runs out is re-debited
-at your next `+tv/lease` act, even one your lapsed licence refuses; if your
+at your next `+tv/lease` act, even one your lapsed license refuses; if your
 account cannot pay it, Occator keeps the deposit and the rig must go back.
 
 `+tv/1 lease return go` at the same counter hands rig 1 back: the rig must be in
@@ -208,7 +208,7 @@ staff can empty a hopper. Scanning, sounding and the rest of the mining loop are
 
 Every hull keeps a black box: one line when it leaves a hangar for a trip and one
 when it comes in, with the mind sealed for the trip, its class, whether it ran
-under the governor, the state of its licence and the first eight characters of
+under the governor, the state of its license and the first eight characters of
 its seal. `+hull/box #<hull>` reads the last eight lines, oldest first;
 `+hull/box #<hull> 20` reads the last twenty (thirty-two at most). When older
 lines are sealed away, the last line says how many. You can read the box of a
@@ -222,14 +222,14 @@ A ship that carries a core can carry a mind of yours. A Dray as she is built
 carries none: her drive ROM flies a filed plan and decides nothing.
 
   +ship/mind                          what is sealed aboard
-  +ship/mind filed:<licence> [go]     seal a filed mind you hold a licence to
-  +ship/mind filed:<licence> org=<organisation> [go]
-                                      one an organisation you act for holds
+  +ship/mind filed:<license> [go]     seal a filed mind you hold a license to
+  +ship/mind filed:<license> org=<organization> [go]
+                                      one an organization you act for holds
   +ship/mind off [go]                 unseal it
 
 Seal it at your berth in a port, before you undock. The Registry admits the
 claim over her as she lies there, and the mind is sealed at the class her core
-gives it. It holds a seat of its licence until she next docks at a port, where
+gives it. It holds a seat of its license until she next docks at a port, where
 the claim closes; to fly it again, seal it again. An unfiled draft is refused:
 only a filed mind is sealed aboard a ship.
 

@@ -3,7 +3,7 @@
     "id": "tacsim.crew.ceres",
     "version": 2,
     "kind": "campaign_seed",
-    "digest": "4eed4d50885466bdef44aee3e4428171f22d45821fefb5daae6b2006d9bd482f",
+    "digest": "9b09798f6ebf4dbcede95e4613dca0322cd006a0485d6b20315601f9e00ee1a1",
     "requires": [
       {
         "id": "neighborhood.ceres_freeport",
@@ -78,7 +78,7 @@
         "tier": "minor",
         "profile": {
           "persona": "A calm field forewoman who asks who has the controls and which units actually have permission before agreeing to a plan.",
-          "background": "An experienced mining and recovery forewoman available at Ceres for an explicitly accepted command contract. Command is a duty, not title or an equipment licence.",
+          "background": "An experienced mining and recovery forewoman available at Ceres for an explicitly accepted command contract. Command is a duty, not title or an equipment license.",
           "speech_style": "Plain and unhurried. Discuss the work without claiming that a conversation signed a contract or moved a unit.",
           "goals": [
             "Meet captains looking for a mining crew; point them to +sortie/crew to inspect the current offer.",

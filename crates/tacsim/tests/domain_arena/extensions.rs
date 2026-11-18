@@ -955,7 +955,7 @@ fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
         .flat_map(|section| section.facets.iter())
         .map(|facet| facet.armor)
         .min()
-        .expect("the tank has armour");
+        .expect("the tank has armor");
     assert!(
         laser.damage < he.damage,
         "a pulse is smaller than a 105 shell: {} against {}",
@@ -999,7 +999,7 @@ fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
         .sum();
     assert!(
         spent == 0 || spent == i64::from(laser.damage),
-        "the pulse either missed or spent exactly its damage on armour: {spent}"
+        "the pulse either missed or spent exactly its damage on armor: {spent}"
     );
     assert!(
         !journal.iter().any(|(_, kind, _)| matches!(
@@ -1275,13 +1275,13 @@ fn x2_the_biped_content_loads_beside_the_stock_game_without_moving_it() {
         "the shipped tank's definition moved; a persisted unit needs a migration"
     );
     let spec = stock.specs.get(&tank).expect("the line tank is shipped");
-    let json = serde_json::to_value(spec).expect("the spec serialises");
+    let json = serde_json::to_value(spec).expect("the spec serializes");
     assert_eq!(
         json.get("mobility")
             .and_then(serde_json::Value::as_object)
             .map(|mobility| mobility.keys().cloned().collect::<Vec<String>>()),
         Some(vec!["tracked".to_owned()]),
-        "a unit with no legs serialises exactly the mobility it did before legs \
+        "a unit with no legs serializes exactly the mobility it did before legs \
          existed"
     );
 }
@@ -1855,7 +1855,7 @@ fn x3_the_thermal_content_loads_beside_the_stock_game_without_moving_it() {
         "the shipped tank's definition moved; a persisted unit needs a migration"
     );
     let spec = stock.specs.get(&tank).expect("the line tank is shipped");
-    let json = serde_json::to_value(spec).expect("the spec serialises");
+    let json = serde_json::to_value(spec).expect("the spec serializes");
     let mount = json
         .get("components")
         .and_then(serde_json::Value::as_array)
@@ -1869,7 +1869,7 @@ fn x3_the_thermal_content_loads_beside_the_stock_game_without_moving_it() {
     assert_eq!(
         mount,
         Some(vec!["kind".to_owned(), "sensor".to_owned()]),
-        "a sight with no thermal channel serialises exactly the mount it did \
+        "a sight with no thermal channel serializes exactly the mount it did \
          before the channel existed"
     );
 }
@@ -1887,7 +1887,7 @@ fn x3_the_shipped_sights_signature_table_is_untouched_by_the_extension() {
     let id = CanonicalId::new("tacsim.sensor.visual_mk1").expect("a canonical id");
     let table = |catalog: &Catalog| {
         let def = catalog.sensors.get(&id).expect("the shipped sight").clone();
-        serde_json::to_string(&def.signature).expect("the table serialises")
+        serde_json::to_string(&def.signature).expect("the table serializes")
     };
     assert_eq!(
         table(&stock),
@@ -2023,7 +2023,7 @@ fn x3_a_thermal_sight_holds_a_moving_tank_where_a_cold_one_is_invisible() {
     target_state(&mut near, Power::Off, 0);
     assert!(
         holds(&mut near),
-        "a cold tank is dark at a hundred metres, not at forty"
+        "a cold tank is dark at a hundred meters, not at forty"
     );
 }
 
@@ -2313,11 +2313,11 @@ fn x4_the_ecm_content_loads_beside_the_stock_game_without_moving_it() {
         .get(&CanonicalId::new("tacsim.sensor.visual_mk1").expect("a canonical id"))
         .expect("the shipped sight");
     assert!(sight.jamming.is_none() && sight.emission.is_none());
-    let json = serde_json::to_value(sight).expect("the row serialises");
+    let json = serde_json::to_value(sight).expect("the row serializes");
     let row = json.as_object().expect("a row is an object");
     assert!(
         row.get("jamming").is_some_and(serde_json::Value::is_null),
-        "a sight with no jamming block no longer serialises as null"
+        "a sight with no jamming block no longer serializes as null"
     );
     assert!(row.get("emission").is_some_and(serde_json::Value::is_null));
     let keys: Vec<&str> = row.keys().map(String::as_str).collect();
@@ -2339,7 +2339,7 @@ fn x4_the_ecm_content_loads_beside_the_stock_game_without_moving_it() {
     );
     // The signature table X.3 pinned is untouched by this cut as well.
     assert_eq!(
-        serde_json::to_string(&sight.signature).expect("the table serialises"),
+        serde_json::to_string(&sight.signature).expect("the table serializes"),
         VISUAL_MK1_SIGNATURE
     );
 }
@@ -2522,7 +2522,7 @@ fn x4_a_target_in_the_bubble_is_lost_from_inside_it_and_held_from_outside() {
     );
     assert!(
         holds(&mut near),
-        "a jammed sight is blind at a hundred metres, not at forty"
+        "a jammed sight is blind at a hundred meters, not at forty"
     );
 }
 
@@ -2888,11 +2888,11 @@ fn x5_the_eccm_content_loads_beside_the_stock_game_without_moving_it() {
         .expect("the shipped sight");
     assert!(sight.emission.is_none() && sight.jamming.is_none());
     assert!(sight.eccm().is_none(), "the shipped sight filters nothing");
-    let json = serde_json::to_value(sight).expect("the row serialises");
+    let json = serde_json::to_value(sight).expect("the row serializes");
     let row = json.as_object().expect("a row is an object");
     assert!(
         row.get("emission").is_some_and(serde_json::Value::is_null),
-        "a sight with no filter block no longer serialises as null"
+        "a sight with no filter block no longer serializes as null"
     );
     assert!(row.get("jamming").is_some_and(serde_json::Value::is_null));
     let keys: Vec<&str> = row.keys().map(String::as_str).collect();
@@ -2914,7 +2914,7 @@ fn x5_the_eccm_content_loads_beside_the_stock_game_without_moving_it() {
     );
     // The signature table X.3 pinned is untouched by this cut as well.
     assert_eq!(
-        serde_json::to_string(&sight.signature).expect("the table serialises"),
+        serde_json::to_string(&sight.signature).expect("the table serializes"),
         VISUAL_MK1_SIGNATURE
     );
 }
@@ -3860,7 +3860,7 @@ fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
     );
     assert!(
         levels.iter().all(|level| level % 10 == 0),
-        "every level is on a ten-centimetre step"
+        "every level is on a ten-centimeter step"
     );
     for bluff in [40, 270, 500] {
         assert!(levels.contains(&bluff), "The Bluff's {bluff}");
@@ -4055,7 +4055,7 @@ fn x6_a_unit_opens_the_match_at_its_cells_elevation() {
     );
     assert_eq!(
         solid, 8_015,
-        "the five hundred centimetres are in the range"
+        "the five hundred centimeters are in the range"
     );
 
     // And the ledger's own summary says so, at the first cadence.
@@ -4239,7 +4239,7 @@ fn x6_a_slope_past_the_limit_blocks_both_ways() {
     assert_eq!(
         arena.unit(RED).map(|unit| unit.pose.x_cm),
         Some(23_999),
-        "it stopped at the last centimetre of its own cell"
+        "it stopped at the last centimeter of its own cell"
     );
     assert_eq!(arena.unit(RED).map(|unit| unit.speed_cms), Some(0));
     assert_eq!(arena.unit(RED).map(|unit| unit.blocked), Some(true));
@@ -4952,7 +4952,7 @@ fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
     assert_eq!(
         arena.unit(RED).map(|unit| unit.sensor_height_cm),
         Some(900),
-        "the biped's eye is nine metres up"
+        "the biped's eye is nine meters up"
     );
     for id in [RED, BLUE] {
         if let Some(state) = arena.unit_mut(id) {
@@ -6869,7 +6869,7 @@ fn q6_a_pod_beside_one_end_cuts_the_mesh_by_range() {
     let mut nearer = q6_mesh_arena(&catalog, (6, 8), (9, 8), Some((13, 8)), &[]);
     assert!(
         q6_meshed(&mut nearer),
-        "thirty metres of the same clear ground did not link, so the cut was not the range"
+        "thirty meters of the same clear ground did not link, so the cut was not the range"
     );
 
     // The filter goes on the end that is in the bubble, and nowhere else: a pod
@@ -6921,7 +6921,7 @@ fn q6_a_pod_beside_the_sharer_cuts_the_mesh_at_both_terms() {
     let mut nearer = q6_mesh_arena(&catalog, (9, 8), (6, 8), Some((13, 8)), &[]);
     assert!(
         q6_meshed(&mut nearer),
-        "thirty metres of the same clear ground did not link, so the cut was not the range"
+        "thirty meters of the same clear ground did not link, so the cut was not the range"
     );
     let mut wrong_end = q6_mesh_arena(&catalog, (9, 8), (3, 8), Some((13, 8)), &[]);
     q6_fit_filter(&mut wrong_end, MESH_MATE);
@@ -6986,7 +6986,7 @@ fn q6_a_pod_beside_one_end_cuts_the_mesh_by_the_budget() {
     let mut clear = q6_mesh_arena(&catalog, (6, 8), (9, 8), Some((13, 8)), &[]);
     assert!(
         q6_meshed(&mut clear),
-        "thirty metres is inside the jammed reach, so the range did not cut it"
+        "thirty meters is inside the jammed reach, so the range did not cut it"
     );
 
     let mut filtered = q6_mesh_arena(&catalog, (6, 8), (9, 8), Some((13, 8)), &belt);
@@ -8697,7 +8697,7 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
             .map(|reference| reference.digest().to_hex())
             .as_deref(),
         Some(LINE_TANK_DIGEST),
-        "the shipped tank's definition moved: the wheeled field must serialise away"
+        "the shipped tank's definition moved: the wheeled field must serialize away"
     );
 
     // Each chassis, instantiated as production instantiates it.
@@ -8760,7 +8760,7 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
         .specs
         .get(&CanonicalId::new(content::SCOUT_MK1).expect("a canonical id"))
         .expect("the scout");
-    let json = serde_json::to_value(scout).expect("the spec serialises");
+    let json = serde_json::to_value(scout).expect("the spec serializes");
     assert_eq!(
         json.get("mobility")
             .and_then(serde_json::Value::as_object)
@@ -10066,7 +10066,7 @@ const DIGESTS_ORDNANCE: [(&str, &str); 4] = [
     ),
     (
         "tacsim.pack.missile_round",
-        "c78c278540294313b357a290497cf7d8e9cd7ce0f6004dab92a9b3cef2ecdd44",
+        "9c4c4cb04834e29e69e30a0fdf020a2c808d59dc8f51fc6b0f8bd1eff4babd82",
     ),
     (
         "tacsim.pack.missile_lr",
@@ -11121,7 +11121,7 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
             "scout_mk1",
             "target_mk1",
         ],
-        "eight armoured machines, the scout car's wheels included"
+        "eight armored machines, the scout car's wheels included"
     );
     let mut walkers = classes.get(&UnitClass::Walker).cloned().unwrap_or_default();
     walkers.sort();
@@ -11286,7 +11286,7 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
     assert_eq!(
         UnitClass::read(&bare_tactical_unit(mush_core::ObjId(35))),
         UnitClass::Armour,
-        "a fixture with no class word and no profile is armour"
+        "a fixture with no class word and no profile is armor"
     );
 
     // And it checks out as a drone with no weapon row: never armed.

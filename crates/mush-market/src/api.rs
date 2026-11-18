@@ -37,7 +37,7 @@ pub const NO_SUCH_VENDOR: &str = "No such vendor.";
 /// The same, for a market maker.
 pub const NO_SUCH_SOURCE: &str = "No such market source.";
 /// The same, for a catalogue entry.
-pub const NO_SUCH_ENTRY: &str = "No such catalogue entry.";
+pub const NO_SUCH_ENTRY: &str = "No such catalog entry.";
 
 /// The longest a listing stands before it lapses, in seconds, and the ceiling on a
 /// caller-supplied window.
@@ -316,7 +316,7 @@ pub fn load_pack(
         .map_or(0, |s| s.entries().count());
     if held.saturating_add(net_new) > crate::record::MAX_CATALOG_ENTRIES {
         return Err(MarketError::bad(format!(
-            "pack '{pack}' would take the catalogue past the {} entries this server holds.",
+            "pack '{pack}' would take the catalog past the {} entries this server holds.",
             crate::record::MAX_CATALOG_ENTRIES
         )));
     }
@@ -422,7 +422,7 @@ pub fn register_vendor(
     }
     if buy_permille > 1_000 {
         return Err(MarketError::bad(
-            "A vendor's buy rate is a permille of the catalogue baseline, 0..=1000.",
+            "A vendor's buy rate is a permille of the catalog baseline, 0..=1000.",
         ));
     }
     if let Some(existing) = ctx
@@ -699,7 +699,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         if entry.baseline.is_none_or(|b| b.minor() <= 0) {
             return Err(MarketError::bad(format!(
                 "'{}' carries no reference price, and a market maker prices against one. Give the \
-                 catalogue entry a baseline, or stock it from the vendor's own vault.",
+                 catalog entry a baseline, or stock it from the vendor's own vault.",
                 entry.name
             )));
         }
@@ -1007,7 +1007,7 @@ fn draw_listing_precheck(
     }
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
         return Err(MarketError::bad(
-            "That catalogue code is not a commodity id.",
+            "That catalog code is not a commodity id.",
         ));
     };
     if ctx
@@ -1382,7 +1382,7 @@ pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, Mar
     }
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
         return Err(MarketError::bad(
-            "That catalogue code is not a commodity id.",
+            "That catalog code is not a commodity id.",
         ));
     };
     if spec.vault != vendor.vault {
@@ -1714,7 +1714,7 @@ pub fn create_source(
     }
     if !(-1_000..=1_000).contains(&spread) {
         return Err(MarketError::bad(
-            "A maker's spread is a permille of the catalogue baseline, -1000..=1000.",
+            "A maker's spread is a permille of the catalog baseline, -1000..=1000.",
         ));
     }
     if volume_budget.minor() < 0 || loss_budget.minor() < 0 {

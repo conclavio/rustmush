@@ -59,7 +59,7 @@ Drive closer and look again. A teammate's reading reaches you over the mesh the
 same way their plot does, and it is as old as *their* look, not yours.
 
 What you are told about your **own** tank is the other way round and complete —
-armour, internals, section by section — and it carries nothing whatever about
+armor, internals, section by section — and it carries nothing whatever about
 who shot you. Where a round came from is something only a sensor may tell you.
 `help cockpit` is the whole of the pilot's side of this.
 

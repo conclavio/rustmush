@@ -3,7 +3,7 @@
     "id": "tacsim.pack.tv_prospector",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "2d03e9c0a53217b3e2a4b102b925274dc0fa6b90490a7e5e69bb137583f0f27f",
+    "digest": "10fd633345f7680498024544fb18faaa6249f42cb302e80579bc1b1a5c87444e",
     "requires": [
       {
         "id": "tacsim.pack.visual_mk1",
@@ -121,7 +121,7 @@
               "details": {
                 "seat": "Empty, its harness clipped back. A stencil on the headrest says CREW SEAT; the buckle has never been fastened, because rigs like this one are driven from the bridge, and somebody has scratched a question mark after the stencil.",
                 "repeater": "A sealed box with a green link light and a red one. Green means the bridge has the rig; red means nobody does, and the rig sits still until somebody does.",
-                "hopper gauge": "Tonnes and cubic metres of ore aboard against the hopper's two limits, 12 t and 13.2 m3, and FULL lit under whichever binds first."
+                "hopper gauge": "Tonnes and cubic meters of ore aboard against the hopper's two limits, 12 t and 13.2 m3, and FULL lit under whichever binds first."
               }
             },
             {

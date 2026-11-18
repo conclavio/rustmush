@@ -2071,7 +2071,7 @@ mod tests {
         let (struck, ops) = arena
             .plan_hit(BLUE, "turret", "front", 400)
             .unwrap_or_else(|| panic!("a turret hit plans"));
-        assert_eq!(struck.armor_left, 0, "350 of armour is spent");
+        assert_eq!(struck.armor_left, 0, "350 of armor is spent");
         assert_eq!(struck.internals_left, 100, "50 overflows");
         assert_eq!(ops.len(), 2, "one cell each, and no consequence yet");
         // And the plan really lands those two numbers.
@@ -2445,7 +2445,7 @@ mod tests {
         let (struck, _) = arena
             .plan_hit(BLUE, "turret", "front", 300)
             .unwrap_or_else(|| panic!("a turret hit plans"));
-        assert!(!struck.penetrated, "300 stops in 350 of armour");
+        assert!(!struck.penetrated, "300 stops in 350 of armor");
         let (struck, _) = arena
             .plan_hit(BLUE, "turret", "front", 500)
             .unwrap_or_else(|| panic!("a turret hit plans"));
@@ -3251,8 +3251,8 @@ mod tests {
         let before = after
             .cell(&front)
             .map(|scalar| scalar.current)
-            .unwrap_or_else(|| panic!("the reset tank has hull front armour"));
-        assert!(before > 0, "the reset left the hull's armour spent");
+            .unwrap_or_else(|| panic!("the reset tank has hull front armor"));
+        assert!(before > 0, "the reset left the hull's armor spent");
         let (struck, ops) = arena
             .plan_hit(BLUE, "hull", "front", 600)
             .unwrap_or_else(|| panic!("a hull hit plans"));
@@ -3260,7 +3260,7 @@ mod tests {
             ops.iter().any(
                 |op| matches!(op, UnitMutationOp::SetCell { addr, value } if *addr == front && *value < before)
             ),
-            "the hit moved no armour: {ops:?}"
+            "the hit moved no armor: {ops:?}"
         );
         assert_eq!(struck.armor_left, 0, "and spent all of it");
         assert_eq!(
@@ -3606,7 +3606,7 @@ mod tests {
         assert_eq!(
             unarmed.eliminated(),
             Some(Some(PartyId::RED)),
-            "an unarmed tank is armour, and armour stands"
+            "an unarmed tank is armor, and armor stands"
         );
         // A side of drones alone against a tank is still standing.
         let drones = arena_of(vec![

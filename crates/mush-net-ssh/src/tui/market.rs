@@ -88,7 +88,7 @@ pub(super) const IDS_EXHAUSTED: &str = "Request IDs exhausted; reconnect.";
 /// its own, the C3 plan §2.4).
 pub(super) const LOST: &str = "A request whose result you have not seen is not a refusal; check your holdings before trying again.";
 /// `k` on a holding with no renewal action (the C3 plan §2.4).
-pub(super) const NOT_RENEWABLE: &str = "This licence is not renewable now.";
+pub(super) const NOT_RENEWABLE: &str = "This license is not renewable now.";
 /// `t` on a holding with neither `resell` nor `charter` (the C3 plan §2.4).
 pub(super) const NOT_OFFERABLE: &str = "This holding cannot be offered now.";
 /// `l` on a holding without `publish`.
@@ -1749,7 +1749,7 @@ impl MarketDesk {
                     "The renewal service answers on the scene screen; read the price there before you pay."
                         .to_owned(),
                 );
-                format!("Renew licence {licence}: {name}")
+                format!("Renew license {licence}: {name}")
             }
             Form::Offer {
                 kind,
@@ -1770,7 +1770,7 @@ impl MarketDesk {
                     typed(price, *field == 1)
                 ));
                 match kind {
-                    Kind::Licence => format!("Offer licence {number}: {name}"),
+                    Kind::Licence => format!("Offer license {number}: {name}"),
                     Kind::Filed => format!("Offer filed mind {number} and its charter: {name}"),
                 }
             }
@@ -1830,7 +1830,7 @@ impl MarketDesk {
             }
             Form::Withdraw { filed, name } => {
                 rows.push(format!(
-                    "Withdraw filed mind #{filed} {name}? New sales stop; licences already sold keep working. Enter withdraws; Esc cancels."
+                    "Withdraw filed mind #{filed} {name}? New sales stop; licenses already sold keep working. Enter withdraws; Esc cancels."
                 ));
                 format!("Withdraw filed mind {filed}")
             }

@@ -449,7 +449,7 @@ macro_rules! ct0_renewal_walk {
             row: &RenewalOperationV1,
         ) -> Ct0Result<Box<Birth>> {
             let next = Box::new(granted_birth(row)?);
-            let licence = rig::document(s, "granted licence", &f.paid_licences, &next.licence)?;
+            let licence = rig::document(s, "granted license", &f.paid_licences, &next.licence)?;
             let term = rig::document(s, "granted term", &f.paid_terms, &next.term)?;
             let economics =
                 rig::document(s, "granted economics", &f.$economics, &next.economics)?;

@@ -1171,7 +1171,7 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         own_strip_empty(&w, &[author, w.bystander]).await?;
         let (line, outcome) =
             staged(&w, buyer, MarketAction::Complete { code: code(&at)? }).await?;
-        check_eq!(line, format!("Taking the licence from listing {at}."));
+        check_eq!(line, format!("Taking the license from listing {at}."));
         check_eq!(
             outcome.last().map(String::as_str),
             Some("Done."),
@@ -1181,11 +1181,11 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         let [licence]: [u64; 1] = paid_licences(&w, buyer)
             .await?
             .try_into()
-            .map_err(|_| "one paid licence")?;
+            .map_err(|_| "one paid license")?;
         let held = w.server.command(buyer, "+minds/holdings".into()).await?;
         check!(
             held.iter()
-                .any(|l| l.starts_with(&format!("  licence {licence:<8}  paid "))
+                .any(|l| l.starts_with(&format!("  license {licence:<8}  paid "))
                     && l.contains("sentinel")),
             "{held:?}"
         );
@@ -1236,13 +1236,13 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         // The typed renewal: handed to the service, which answers alone.
         let not_due = |l: &str| {
             l.starts_with(&format!(
-                "Licence {licence} is not due for renewal; its term has "
+                "License {licence} is not due for renewal; its term has "
             )) && l.ends_with(" IC days left.")
         };
         match typed(&w.server, buyer, MarketAction::Renew { licence }).await? {
             MindResponse::Staged { line } => check_eq!(
                 line,
-                format!("Handing licence {licence} to the renewal service.")
+                format!("Handing license {licence} to the renewal service.")
             ),
             other => return Err(format!("the renewal handed on, not {other:?}").into()),
         }
@@ -1280,7 +1280,7 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         .await?;
         check_eq!(
             line,
-            format!("Offering licence {licence} to LaunchAuthor for 0.21cr.")
+            format!("Offering license {licence} to LaunchAuthor for 0.21cr.")
         );
         check_eq!(
             outcome.last().map(String::as_str),
@@ -1303,7 +1303,7 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         check_eq!(lines.len(), 2, "{lines:?}");
         check!(
             lines.first().is_some_and(|l| l.starts_with(&format!(
-                "Licence {licence} is offered to you for 0.21cr; the offer is open "
+                "License {licence} is offered to you for 0.21cr; the offer is open "
             ))),
             "{lines:?}"
         );
@@ -1323,7 +1323,7 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         .await?;
         check_eq!(
             line,
-            format!("Accepting the offer for licence {licence} at 0.21cr.")
+            format!("Accepting the offer for license {licence} at 0.21cr.")
         );
         check!(
             outcome.iter().any(|l| l == QUEUED) || outcome.iter().any(|l| answered(l)),

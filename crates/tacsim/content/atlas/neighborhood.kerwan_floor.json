@@ -3,7 +3,7 @@
     "id": "neighborhood.kerwan_floor",
     "version": 1,
     "kind": "neighborhood",
-    "digest": "3501aa8a84a862c4a4c3e06595e3d5f434b5fcd46b6b5e03ab02f00137129c6e",
+    "digest": "50cc744eb80cb4735f51cc6f153feb98867619f926f488a0dac77ee392d26668",
     "requires": [
       {
         "id": "region.kerwan_floor",
@@ -93,7 +93,7 @@
       "def": {
         "name": "Kerwan Floor Pad",
         "short_desc": "A cleared landing square on the smooth floor of Kerwan basin, the ground dark and stony.",
-        "desc": "The pad is a cleared square of packed regolith with tie-down rings at its edges and the Registry number FR-14 stencilled in its centre. The ground around it is darker than the Freeport's, a thin grey dust over stony ground that crunches under a boot. Kerwan's floor runs flat to a horizon only a few kilometres off; its old rim is too far and too worn to stand above it. Small fresh craters pock the plain, each with a bright apron of thrown rock.",
+        "desc": "The pad is a cleared square of packed regolith with tie-down rings at its edges and the Registry number FR-14 stencilled in its center. The ground around it is darker than the Freeport's, a thin gray dust over stony ground that crunches under a boot. Kerwan's floor runs flat to a horizon only a few kilometers off; its old rim is too far and too worn to stand above it. Small fresh craters pock the plain, each with a bright apron of thrown rock.",
         "surface": "ground",
         "footprint": {
           "rect": [
@@ -112,7 +112,7 @@
           "port.dock"
         ],
         "details": {
-          "registry stake": "A survey stake beside the pad marks the site's centre: a steel post with a brass cap, the site's name and its coordinates stamped in.",
+          "registry stake": "A survey stake beside the pad marks the site's center: a steel post with a brass cap, the site's name and its coordinates stamped in.",
           "thrown rock": "Angular blocks sprayed out from the small craters, fist-sized to cart-sized. None of them has had time to soften."
         }
       }

@@ -1113,7 +1113,7 @@ fn caps(plan: &EconomyPlan) -> Result<(), EconomyError> {
                 || c.code.len() > crate::commands::MAX_CATALOG_PART_BYTES =>
             {
                 return Err(EconomyError::TooLarge(
-                    "a catalogue reference half is empty or too long",
+                    "a catalog reference half is empty or too long",
                 ));
             }
             _ => {}

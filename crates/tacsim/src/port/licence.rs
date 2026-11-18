@@ -99,65 +99,65 @@ pub const LICENCE_SETTLE_WINDOW_SECS: i64 = 3_600;
 /// An IC day, seconds.
 const IC_DAY: i64 = 86_400;
 /// The name of the pilot's entitlement account and of the fee contract.
-const LICENCE_NAME: &str = "Freeport prospecting licence";
+const LICENCE_NAME: &str = "Freeport prospecting license";
 
 /// `+licence`'s help.
-pub const LICENCE_HELP: &str = "+licence  --  The Freeport Registry's prospecting licence: it \
-     lets you work ore at the Registry's mining sites. +licence (or +licence/show) reads yours, \
-     anywhere.\n+licence/buy  previews a licence: 2500.00cr for 168 IC days, then 28 IC days' \
+pub const LICENCE_HELP: &str = "+license  --  The Freeport Registry's prospecting license: it \
+     lets you work ore at the Registry's mining sites. +license (or +license/show) reads yours, \
+     anywhere.\n+license/buy  previews a license: 2500.00cr for 168 IC days, then 28 IC days' \
      grace, bought from anywhere as a public contract with the Registry; bought while yours \
-     stands, the new term runs on from the day it ends. +licence/buy go buys exactly what the \
-     preview printed. One licence an account.";
+     stands, the new term runs on from the day it ends. +license/buy go buys exactly what the \
+     preview printed. One license an account.";
 /// No licence held.
-pub const LICENCE_NONE: &str = "You hold no prospecting licence. +licence/buy takes one from the \
+pub const LICENCE_NONE: &str = "You hold no prospecting license. +license/buy takes one from the \
      {issuer}: {fee} for {term} IC days, from anywhere.";
 /// A licence in force.
-pub const LICENCE_IN_FORCE: &str = "Your prospecting licence from the {issuer}, account \
+pub const LICENCE_IN_FORCE: &str = "Your prospecting license from the {issuer}, account \
      #{account}: in force until {until} ({days} IC days left), then {grace} IC days' grace.";
 /// A licence in its grace.
-pub const LICENCE_GRACE: &str = "Your prospecting licence from the {issuer}, account #{account}: \
-     it ended at {until}; its grace runs to {lapses}. +licence/buy renews it from {until}.";
+pub const LICENCE_GRACE: &str = "Your prospecting license from the {issuer}, account #{account}: \
+     it ended at {until}; its grace runs to {lapses}. +license/buy renews it from {until}.";
 /// A lapsed licence (doc 20 §5's public fact).
 pub const LICENCE_LAPSED: &str =
-    "Your licence lapsed at {lapses}. +licence/buy takes a new one from today.";
+    "Your license lapsed at {lapses}. +license/buy takes a new one from today.";
 /// The entitlement account is frozen.
-pub const LICENCE_SUSPENDED: &str = "The {issuer} has suspended your prospecting licence, \
+pub const LICENCE_SUSPENDED: &str = "The {issuer} has suspended your prospecting license, \
      account #{account}. Ask staff about it.";
 /// Another character of the account holds the licence.
 pub const LICENCE_OTHER: &str = "The {issuer} already licenses another character of your \
-     account: one licence an account.";
+     account: one license an account.";
 /// The record cannot be read.
 pub const LICENCE_BOOKS_DARK: &str =
-    "The Registry's books for your licence cannot be read right now. Ask staff to look at them.";
+    "The Registry's books for your license cannot be read right now. Ask staff to look at them.";
 /// No gateway account.
 pub const LICENCE_NO_MATCH: &str =
     "The Registry cannot match you to an account, so it cannot license you.";
 /// No credit account.
 pub const LICENCE_NO_CREDIT: &str = "You hold no credit account to pay from; Ceres Clearing opens \
-     one when you enrol at the Registry & Co-op desk.";
+     one when you enroll at the Registry & Co-op desk.";
 /// Short of the fee.
-pub const LICENCE_FUNDS: &str = "A licence costs {fee}; you have {available}.";
+pub const LICENCE_FUNDS: &str = "A license costs {fee}; you have {available}.";
 /// The preview of a new licence (or one after a lapse).
 pub const LICENCE_PREVIEW: &str = "The {issuer} licenses you to prospect at its sites for {term} \
-     IC days, until {until}, for {fee}. +licence/buy go buys it.";
+     IC days, until {until}, for {fee}. +license/buy go buys it.";
 /// The preview of an extension.
-pub const LICENCE_PREVIEW_EXTEND: &str = "The {issuer} extends your licence by {term} IC days, \
-     from {from} to {until}, for {fee}. +licence/buy go buys it.";
+pub const LICENCE_PREVIEW_EXTEND: &str = "The {issuer} extends your license by {term} IC days, \
+     from {from} to {until}, for {fee}. +license/buy go buys it.";
 /// A licence bought.
 pub const LICENCE_BOUGHT: &str = "The {issuer} licenses you to prospect at its sites until \
      {until}: {fee} paid, account #{account}.";
 /// A licence extended.
-pub const LICENCE_EXTENDED: &str = "The {issuer} extends your licence to {until}: {fee} paid.";
+pub const LICENCE_EXTENDED: &str = "The {issuer} extends your license to {until}: {fee} paid.";
 /// The licence could not be issued; nothing was paid.
-pub const LICENCE_FAILED: &str = "The Registry could not issue your licence; nothing was paid.";
+pub const LICENCE_FAILED: &str = "The Registry could not issue your license; nothing was paid.";
 /// The licence could not be issued and the refund is the sweep's.
-pub const LICENCE_REFUND_PENDING: &str = "The Registry could not issue your licence; your {fee} \
+pub const LICENCE_REFUND_PENDING: &str = "The Registry could not issue your license; your {fee} \
      comes back when the exchange settles it.";
 /// No lane port authors a licence.
-pub const LICENCE_NOT_HERE: &str = "The Freeport Registry issues no prospecting licences on this \
+pub const LICENCE_NOT_HERE: &str = "The Freeport Registry issues no prospecting licenses on this \
      world.";
 /// The grammar.
-pub const LICENCE_USAGE: &str = "Usage: +licence[/show]  or  +licence/buy [go]";
+pub const LICENCE_USAGE: &str = "Usage: +license[/show]  or  +license/buy [go]";
 
 /// **`tacsim:licence:{account}`** — the one key of one gateway account's licence
 /// (the `tacsim:coop:` precedent). Never logged: its tail is the account's
@@ -212,7 +212,7 @@ impl Licence {
             return Err("the entitlement account and the contract are named".to_owned());
         }
         if self.expires_ic <= self.first_bought_ic {
-            return Err("the licence expires after it was first bought".to_owned());
+            return Err("the license expires after it was first bought".to_owned());
         }
         if self.grace_secs < 0 {
             return Err("the grace is not negative".to_owned());
@@ -510,14 +510,14 @@ pub(crate) fn licence_line(
 ) -> Option<(crate::port::LineState, String)> {
     use crate::port::LineState;
     let licence = def.licence.as_ref()?;
-    let head = format!("{entry} licence {}", crate::economy::LICENCE_FREEPORT);
+    let head = format!("{entry} license {}", crate::economy::LICENCE_FREEPORT);
     let issuer = issuer_name(def, licence);
     let named = w
         .module_state::<mush_industry::IndustryStore>()
         .and_then(|store| store.licence().cloned());
     let missing = |why: String| Some((LineState::Missing, format!("{head}: {why}")));
     let Some(named) = named else {
-        return missing("the industry layer names no extraction licence.".to_owned());
+        return missing("the industry layer names no extraction license.".to_owned());
     };
     if named.as_str() != crate::economy::LICENCE_FREEPORT {
         return missing(format!("the industry layer names {named}."));
@@ -728,7 +728,7 @@ pub(crate) fn standing_line(w: &World, pilot: ObjId, standing: &LicenceStanding)
         LicenceStanding::Unreadable => {
             tracing::error!(
                 pilot = pilot.0,
-                "tacsim: a licence-gated read found an unreadable licence for the asking account; \
+                "tacsim: a license-gated read found an unreadable license for the asking account; \
                  staff repair the tacsim:licence: document"
             );
             LICENCE_BOOKS_DARK.to_owned()
@@ -793,7 +793,7 @@ fn plan_buy(ctx: &Ctx<'_>) -> Result<BuyPlan, String> {
         LicenceState::Absent => None,
         LicenceState::Unreadable => {
             tracing::error!(
-                "tacsim: +licence/buy found an unreadable licence for the buying account; staff \
+                "tacsim: +license/buy found an unreadable license for the buying account; staff \
                  repair the tacsim:licence: document"
             );
             return Err(LICENCE_BOOKS_DARK.to_owned());
@@ -824,7 +824,7 @@ fn plan_buy(ctx: &Ctx<'_>) -> Result<BuyPlan, String> {
     };
     let pilot_account = credit.id;
     let Some(fee_minor) = fee_minor(w, licence) else {
-        tracing::error!("tacsim: +licence/buy: the fee overflows the credit's scale");
+        tracing::error!("tacsim: +license/buy: the fee overflows the credit's scale");
         return Err(LICENCE_FAILED.to_owned());
     };
     let available = credit.available().map_or(0, Amount::minor);
@@ -835,23 +835,23 @@ fn plan_buy(ctx: &Ctx<'_>) -> Result<BuyPlan, String> {
     }
     // 4. The economy, the instrument and the Registry.
     let Some(economy) = w.module_state::<EconomyStore>() else {
-        tracing::error!("tacsim: +licence/buy: the economy is not composed");
+        tracing::error!("tacsim: +license/buy: the economy is not composed");
         return Err(LICENCE_FAILED.to_owned());
     };
     if economy.is_frozen() {
-        tracing::error!("tacsim: +licence/buy: the economy is frozen");
+        tracing::error!("tacsim: +license/buy: the economy is frozen");
         return Err(LICENCE_FAILED.to_owned());
     }
     let instrument: Option<InstrumentId> = crate::economy::licence_instrument();
     if !instrument.is_some_and(|id| mush_industry::licence::is_entitlement(w, &id)) {
         tracing::error!(
             instrument = crate::economy::LICENCE_FREEPORT,
-            "tacsim: +licence/buy: the licence instrument is not registered as an entitlement"
+            "tacsim: +license/buy: the license instrument is not registered as an entitlement"
         );
         return Err(LICENCE_FAILED.to_owned());
     }
     let Some(row) = map.orgs.get(&licence.org) else {
-        tracing::error!(org = %licence.org, "tacsim: +licence/buy: the issuer has no map row");
+        tracing::error!(org = %licence.org, "tacsim: +license/buy: the issuer has no map row");
         return Err(LICENCE_FAILED.to_owned());
     };
     let registry = PrincipalId::Organization(OrgId(row.org));
@@ -859,7 +859,7 @@ fn plan_buy(ctx: &Ctx<'_>) -> Result<BuyPlan, String> {
         .module_state::<mush_org::OrgStore>()
         .is_some_and(|orgs| orgs.state().org(OrgId(row.org)).is_some());
     if !org_live {
-        tracing::error!(org = %licence.org, "tacsim: +licence/buy: the issuer's org is not on this world");
+        tracing::error!(org = %licence.org, "tacsim: +license/buy: the issuer's org is not on this world");
         return Err(LICENCE_FAILED.to_owned());
     }
     let Some(registry_account) = row.account.map(AccountId).filter(|id| {
@@ -868,7 +868,7 @@ fn plan_buy(ctx: &Ctx<'_>) -> Result<BuyPlan, String> {
             .account(*id)
             .is_some_and(|a| a.status == AccountStatus::Active)
     }) else {
-        tracing::error!(org = %licence.org, "tacsim: +licence/buy: the issuer has no live account");
+        tracing::error!(org = %licence.org, "tacsim: +license/buy: the issuer has no live account");
         return Err(LICENCE_FAILED.to_owned());
     };
     // 5. The new term: from the expiry while the licence stands (in force or in its
@@ -885,11 +885,11 @@ fn plan_buy(ctx: &Ctx<'_>) -> Result<BuyPlan, String> {
     let grace_secs = i64::from(licence.grace_ic_days).checked_mul(IC_DAY);
     let (Some(until), Some(grace_secs)) = (term_secs.and_then(|t| from.checked_add(t)), grace_secs)
     else {
-        tracing::error!("tacsim: +licence/buy: the new term overflows");
+        tracing::error!("tacsim: +license/buy: the new term overflows");
         return Err(LICENCE_FAILED.to_owned());
     };
     if until.checked_add(grace_secs).is_none() {
-        tracing::error!("tacsim: +licence/buy: the new term's grace overflows");
+        tracing::error!("tacsim: +license/buy: the new term's grace overflows");
         return Err(LICENCE_FAILED.to_owned());
     }
     Ok(BuyPlan {
@@ -950,7 +950,7 @@ fn cancel_own(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
     tracing::error!(
         contract = id.0,
         ?outcome,
-        "tacsim: +licence/buy could not cancel its own fee contract; its refund is retrying in \
+        "tacsim: +license/buy could not cancel its own fee contract; its refund is retrying in \
          the economy sweep; `@contract/show #<id>`"
     );
     false
@@ -977,7 +977,7 @@ fn buy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .module_state_mut::<EconomyStore>()
                 .and_then(EconomyStore::alloc_account)
             else {
-                tracing::error!("tacsim: +licence/buy: the account allocator is spent");
+                tracing::error!("tacsim: +license/buy: the account allocator is spent");
                 return Err(CmdError::msg(LICENCE_FAILED));
             };
             mush_economy::open_account(
@@ -1013,7 +1013,7 @@ fn buy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let id = match mush_economy::offer_contract(ctx, spec) {
         Ok(id) => id,
         Err(error) => {
-            tracing::error!(%error, pilot = actor.0, "tacsim: +licence/buy: the fee contract was not offered");
+            tracing::error!(%error, pilot = actor.0, "tacsim: +license/buy: the fee contract was not offered");
             let line = LICENCE_FAILED.to_owned();
             return Err(if opened {
                 refuse_after_writes(ctx, line)
@@ -1032,7 +1032,7 @@ fn buy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     _
                 )))
             );
-            tracing::error!(contract = id.0, outcome = ?other, "tacsim: +licence/buy: the pilot's escrow was not placed");
+            tracing::error!(contract = id.0, outcome = ?other, "tacsim: +license/buy: the pilot's escrow was not placed");
             let line = if !cancel_own(ctx, id) {
                 refund_pending
             } else if short {
@@ -1054,7 +1054,7 @@ fn buy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             activated: true, ..
         }) => {}
         other => {
-            tracing::error!(contract = id.0, outcome = ?other, "tacsim: +licence/buy: the Registry's acceptance did not activate the fee contract");
+            tracing::error!(contract = id.0, outcome = ?other, "tacsim: +license/buy: the Registry's acceptance did not activate the fee contract");
             let line = if cancel_own(ctx, id) {
                 LICENCE_FAILED.to_owned()
             } else {
@@ -1072,7 +1072,7 @@ fn buy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         tracing::error!(
             contract = id.0,
             entitlement = entitlement.0,
-            "tacsim: +licence/buy could not activate the entitlement account; staff \
+            "tacsim: +license/buy could not activate the entitlement account; staff \
              `@account/unfreeze` it"
         );
     }
@@ -1104,7 +1104,7 @@ fn buy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     if let Err(error) = record.check() {
         // The `TvLease` precedent: logged, and written anyway (the contract stands).
-        tracing::error!(%error, contract = id.0, "tacsim: +licence/buy wrote a licence that fails its own check");
+        tracing::error!(%error, contract = id.0, "tacsim: +license/buy wrote a license that fails its own check");
     }
     put_licence(ctx, &record);
     // f. The reply; the economy's next sweep settles the fee.

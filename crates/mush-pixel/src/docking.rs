@@ -1529,7 +1529,7 @@ mod tests {
         let colours = frame.count_colours(256);
         assert!(
             (6..=64).contains(&colours),
-            "expected rich 6-DOF docking frame within 256-colour limit, got {colours}"
+            "expected rich 6-DOF docking frame within 256-color limit, got {colours}"
         );
     }
 

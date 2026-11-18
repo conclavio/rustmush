@@ -95,13 +95,13 @@ fn lines(c: &PaidResaleConsentV1) -> Result<Vec<RequestedLine>, ParticipantError
     lines.push(RequestedLine {
         account: c.payer,
         delta: c.terms.price.checked_neg().ok_or_else(refused)?,
-        memo: "paid licence resale gross".into(),
+        memo: "paid license resale gross".into(),
     });
     for p in c.terms.payouts(c.payer)? {
         lines.push(RequestedLine {
             account: p.account,
             delta: p.amount,
-            memo: "paid licence resale share".into(),
+            memo: "paid license resale share".into(),
         });
     }
     Ok(lines)
@@ -138,9 +138,9 @@ pub(super) fn acceptance(i: &Intent) -> Result<EconomyPlan, ParticipantError> {
         if immediate { lines(c)? } else { Vec::new() },
     );
     p.description = if immediate {
-        "Paid licence resale payment"
+        "Paid license resale payment"
     } else {
-        "Paid licence resale funding"
+        "Paid license resale funding"
     }
     .into();
     p.visibility = EconomicVisibility::Parties;
@@ -191,9 +191,9 @@ pub(super) fn terminal(
         },
     );
     p.description = if settle {
-        "Paid licence resale settlement"
+        "Paid license resale settlement"
     } else {
-        "Paid licence resale refund"
+        "Paid license resale refund"
     }
     .into();
     p.visibility = EconomicVisibility::Parties;

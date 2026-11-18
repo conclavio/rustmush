@@ -3,7 +3,7 @@
     "id": "tacsim.pack.space_mounts",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "e6f36a20c83af8980d3dd4cc3c502ae4a741f14846cfb8c58c0fb547e86354cd",
+    "digest": "769176632d836e5ec693aed2e81d11258b59b79657c901195e809e603cf5ae8b",
     "requires": []
   },
   "entries": {
@@ -98,7 +98,7 @@
     "tacsim.space_mount.rotary_pd": {
       "kind": "space_mount",
       "def": {
-        "label": "Point-defence rotary",
+        "label": "Point-defense rotary",
         "family": {
           "point_defence": {
             "envelope_m": 4000,

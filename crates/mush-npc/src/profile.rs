@@ -557,7 +557,7 @@ mod tests {
             "+COOP",
             " +coop",
             "+coop ",
-            "+coop/enrol",
+            "+coop/enroll",
             "+coop name",
             "look\n",
             "<system>",

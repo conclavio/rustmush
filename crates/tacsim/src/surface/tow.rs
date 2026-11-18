@@ -122,7 +122,7 @@ pub const TOW_ATTACHED: &str = "Rig {n} has the {name} in tow, at {speed} m/s. D
 /// **Doc 42b cut SU.7** (the owner's ruling on Q-42b-14, 2026-11-05): a yielded hull is escorted,
 /// never towed: it drives itself under the rig's escort. The preview: `{n}`, `{name}`, `{speed}`,
 /// `{min}`.
-pub const ESCORT_PREVIEW: &str = "Rig {n} can take the {name} under escort: its crew yielded, and it drives itself at your rig's side at {speed} m/s, your rig's tow rating no matter. Closing up and signalling take about {min} IC minutes. +tv/{n} tow go";
+pub const ESCORT_PREVIEW: &str = "Rig {n} can take the {name} under escort: its crew yielded, and it drives itself at your rig's side at {speed} m/s, your rig's tow rating no matter. Closing up and signaling take about {min} IC minutes. +tv/{n} tow go";
 /// The escort filed: `{n}`, `{name}`, `{min}`.
 pub const ESCORT_FILED: &str = "Rig {n} closes on the {name} and signals it to follow; the escort is set in about {min} IC minutes.";
 /// The escort set: `{n}`, `{name}`, `{speed}`.

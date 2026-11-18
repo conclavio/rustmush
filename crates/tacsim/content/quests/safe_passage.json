@@ -3,14 +3,14 @@
     "id": "tacsim.quests.safe_passage",
     "version": 1,
     "kind": "campaign_seed",
-    "digest": "03c64ad7904943334144cacf4facaa7e48dea7715beab650b920c95510d2db8f",
+    "digest": "ca683a10cc932f89affa4ad5ff731d89c2d66759ae865bda8c2bee29ddeeb059",
     "requires": [
       { "id": "neighborhood.ceres_freeport", "version": 4 },
       { "id": "tacsim.passengers.ceres", "version": 1 }
     ]
   },
   "brief": {
-    "prose": "Ma offers an independent optional passenger journey to Stickney with the existing Nadia. It verifies the captain's real delivered passage after quest acceptance and settled fare, then records Ma's once-only personal relationship bonus. Ordinary passage negotiation and payment remain separate, existing bookings may qualify, and the shared traveller is never reset or summoned."
+    "prose": "Ma offers an independent optional passenger journey to Stickney with the existing Nadia. It verifies the captain's real delivered passage after quest acceptance and settled fare, then records Ma's once-only personal relationship bonus. Ordinary passage negotiation and payment remain separate, existing bookings may qualify, and the shared traveler is never reset or summoned."
   },
   "entries": {
     "quest.ma_safe_passage": {

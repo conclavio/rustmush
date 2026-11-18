@@ -1298,13 +1298,13 @@ mod pl0_tests {
     /// unit PL.7's three core modules) and 47 test copies of `metals`.
     fn seventy_bulk() -> GoodsTable {
         let table = GoodsTable::load("goods.json", &padded(47))
-            .unwrap_or_else(|error| panic!("the test catalogue loads: {error}"));
+            .unwrap_or_else(|error| panic!("the test catalog loads: {error}"));
         let bulk = table
             .goods
             .iter()
             .filter(|good| good.stowage.as_str() == "stow.bulk")
             .count();
-        assert!(bulk >= 70, "the test catalogue's bulk goods: {bulk}");
+        assert!(bulk >= 70, "the test catalog's bulk goods: {bulk}");
         table
     }
 

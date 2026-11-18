@@ -107,7 +107,7 @@ From either mode:
                focused list (wrapping); Ctrl-O swaps between the IC and OOC
                lists. Elsewhere both do nothing.
   Ctrl-G       On the chart screen, draw the sky as a picture, on a replay
-               the match, and on the damage screen your tank's armour as a
+               the match, and on the damage screen your tank's armor as a
                page, on a terminal that can show one; again to close. It does
                nothing on the cockpit screen, which is a picture on its own
                (below).
@@ -120,10 +120,10 @@ and the cockpit screen's picture below, whose keys are a pilot's controls.
 
 **The cockpit screen as a picture.** In a tank's seat, on a terminal that can
 show pictures, screen `0` is a first-person picture of the arena with your
-armour, weapons, contacts and the comms as text under it, and its own keys:
+armor, weapons, contacts and the comms as text under it, and its own keys:
 `a`/`d` and the arrows turn (held down, on a terminal that reports when a key
 is let go; press and press again elsewhere), `w`/`s` change speed a step, `x` all stop,
-`q`/`e` look, `c` centre, space steady, `v` the overhead, `f` weapons
+`q`/`e` look, `c` center, space steady, `v` the overhead, `f` weapons
 free/hold, `g` a volley, `t`/`T` the lock cycle, `F1`–`F6` an `ORDER` ready in
 the chat line, Enter the chat line. Each sends the line you would have typed
 (`HEADING`, `SPEED`, `FIRE`, `LOCK`). `p` swaps it for the text cockpit and
@@ -247,7 +247,7 @@ reads the scene back, and is not taken as the line you were composing.
              screen, and the tab with it: the ground with both sides drawn
              on it (`o` red, `*` blue, `%` a wreck), one keyframe at a time.
              The left says which match and how it ended, which keyframe,
-             whose tank the map is centred on and that both sides are shown;
+             whose tank the map is centered on and that both sides are shown;
              the damage pane lists the tanks wrecked so far, the weapons
              pane the shots fired since the keyframe before, and the
              contacts pane every tank of both sides where it stood. `,` and
@@ -258,10 +258,10 @@ reads the scene back, and is not taken as the line you were composing.
              Sitting in a tank closes the replay; a replay never opens over
              a cockpit you are flying.
              On a terminal that shows pictures, Ctrl-G on a replay draws
-             the match: the whole ground, both sides in their team's colour
+             the match: the whole ground, both sides in their team's color
              with their headings and trails, each shot as a line for a
-             moment after it is fired (yellow a hit, grey dashed a miss),
-             the wrecks in grey, the tank in focus ringed, and under it a
+             moment after it is fired (yellow a hit, gray dashed a miss),
+             the wrecks in gray, the tank in focus ringed, and under it a
              timeline of the whole match with every shot and wreck marked
              on it. Space plays it at the arena's own speed (`f` faster:
              four times, sixteen times), `,` and `.` step a keyframe, `[`
@@ -296,13 +296,13 @@ reads the scene back, and is not taken as the line you were composing.
              wide terminal the term and Grace in IC days and the flags — with
              your own open quotes and waiting purchases under the heading (a
              purchase whose listing is not on the page stays there, and `b`
-             on it still completes or refunds it); your licences on the
+             on it still completes or refunds it); your licenses on the
              right, one section at a time (`h` swaps
-             your filed minds and the licences you paid for). `b` buys the
+             your filed minds and the licenses you paid for). `b` buys the
              highlighted listing (quote, pay, complete or refund, the step
              set from where your purchase stands), `k` renews the highlighted
-             licence (request, pay or decline), `t` offers it to a player for
-             a price (a filed mind's charter, or a licence you paid for), `a`
+             license (request, pay or decline), `t` offers it to a player for
+             a price (a filed mind's charter, or a license you paid for), `a`
              accepts an offer someone made you (leave the price empty to see
              their offers first), `l` lists a filed mind for sale and `x`
              withdraws one. `]` shows the next page of the focused pane and
@@ -327,8 +327,8 @@ contacts pane is the table `+contacts` prints, when the server publishes it
 (Enter on a row prefills `+contact <id>`); it also carries panes for things
 no server publishes yet — a grid, weapons, comms — each saying what it is
 waiting for. Those are the first panes to go when the window is too short
-for them all, so a real pane never loses its place to an empty one. Colour and condition marks
-on both screens come from the ruleset's own judgement, never from the
+for them all, so a real pane never loses its place to an empty one. Color and condition marks
+on both screens come from the ruleset's own judgment, never from the
 client's reading of a word.
 
 Above the input box, when your ruleset publishes vitals, a strip of gauges

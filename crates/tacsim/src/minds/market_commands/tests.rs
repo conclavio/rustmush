@@ -422,7 +422,7 @@ fn publish_arguments_parse_strictly() -> TestResult {
         "paid",
         "owner 0",
         "owner 4 5",
-        "licences 4",
+        "licenses 4",
         "owner x",
     ] {
         check_eq!(holdings_arguments(bad), None, "{bad:?}");
@@ -749,9 +749,9 @@ fn accept_selects_the_offer_the_buyer_confirms() -> TestResult {
     let dear = offer(2, 500, 1_201);
     let both = [dear, cheap];
     let listed = vec![
-        "Licence 12 is offered to you for 0.21cr; the offer is open 10 more minutes.".to_owned(),
+        "License 12 is offered to you for 0.21cr; the offer is open 10 more minutes.".to_owned(),
         "Accept it with +minds/resell/accept 12 price=0.21.".to_owned(),
-        "Licence 12 is offered to you for 5cr; the offer is open 21 more minutes.".to_owned(),
+        "License 12 is offered to you for 5cr; the offer is open 21 more minutes.".to_owned(),
         "Accept it with +minds/resell/accept 12 price=5.".to_owned(),
     ];
     check_eq!(
@@ -763,17 +763,17 @@ fn accept_selects_the_offer_the_buyer_confirms() -> TestResult {
         accept_plan(Named::Resale, 12, &both, Some(21), now),
         AcceptPlan::Submit(
             cheap,
-            "Accepting the offer for licence 12 at 0.21cr.".to_owned()
+            "Accepting the offer for license 12 at 0.21cr.".to_owned()
         )
     );
     check_eq!(
         accept_plan(Named::Resale, 12, &both, Some(500), now),
         AcceptPlan::Submit(
             dear,
-            "Accepting the offer for licence 12 at 5cr.".to_owned()
+            "Accepting the offer for license 12 at 5cr.".to_owned()
         )
     );
-    let mut refused = vec!["None of your offers for licence 12 is at 1cr.".to_owned()];
+    let mut refused = vec!["None of your offers for license 12 is at 1cr.".to_owned()];
     refused.extend(listed);
     check_eq!(
         accept_plan(Named::Resale, 12, &both, Some(100), now),
@@ -791,11 +791,11 @@ fn accept_selects_the_offer_the_buyer_confirms() -> TestResult {
     let expired = offer(4, 21, 0);
     check_eq!(
         accept_plan(Named::Resale, 12, &[expired], Some(21), now),
-        AcceptPlan::Refuse(vec!["You have no offer for licence 12.".to_owned()])
+        AcceptPlan::Refuse(vec!["You have no offer for license 12.".to_owned()])
     );
     check_eq!(
         accept_plan(Named::Resale, 12, &[], None, now),
-        AcceptPlan::Refuse(vec!["You have no offer for licence 12.".to_owned()])
+        AcceptPlan::Refuse(vec!["You have no offer for license 12.".to_owned()])
     );
     // The charter accept.
     check_eq!(
@@ -1059,7 +1059,7 @@ fn renewal_offer_lines_round_hours_up() -> TestResult {
     check_eq!(
         offer_text("41", 50_000, 90 * DAY, 3 * DAY, now + 24 * HOUR - 1, now),
         [
-            "Licence 41 renews for 500cr (90+3 IC days); the offer is open 24 more IC hours."
+            "License 41 renews for 500cr (90+3 IC days); the offer is open 24 more IC hours."
                 .to_owned(),
             "Pay it with +minds/renew/pay 41, or turn it down with +minds/renew/decline 41."
                 .to_owned(),
@@ -1067,7 +1067,7 @@ fn renewal_offer_lines_round_hours_up() -> TestResult {
     );
     check_eq!(
         offer_text("41", 1_250, 90 * DAY - 1, 0, now - 5, now)[0],
-        "Licence 41 renews for 12.50cr (90+0 IC days); the offer is open 0 more IC hours."
+        "License 41 renews for 12.50cr (90+0 IC days); the offer is open 0 more IC hours."
     );
     Ok(())
 }
@@ -1152,7 +1152,7 @@ fn own_purchase_line_follows_the_actors_record() -> TestResult {
     check_eq!(
         own_line("feed0001", true, Some((40_000, now + 30)), now),
         Some(
-            "Your payment is held in escrow. Take the licence with +minds/buy/complete feed0001."
+            "Your payment is held in escrow. Take the license with +minds/buy/complete feed0001."
                 .to_owned()
         )
     );
@@ -1180,7 +1180,7 @@ fn own_purchase_line_follows_the_actors_record() -> TestResult {
     check_eq!(own_line("feed0001", false, None, now), None);
     check_eq!(
         own_line("feed0001", true, None, now).as_deref(),
-        Some("Your payment is held in escrow. Take the licence with +minds/buy/complete feed0001.")
+        Some("Your payment is held in escrow. Take the license with +minds/buy/complete feed0001.")
     );
     Ok(())
 }
@@ -1435,7 +1435,7 @@ fn multi_line_replies_print_the_refusal_then_the_rest() -> TestResult {
     check_eq!(
         refusal(refused_lines(&[live])?),
         Ok(vec![
-            Said::Error("None of your offers for licence 7 is at 0.01cr.".to_owned()),
+            Said::Error("None of your offers for license 7 is at 0.01cr.".to_owned()),
             info(&fill(
                 words::named::OFFER,
                 &[("licence", "7"), ("price", "0.21cr"), ("minutes", "10")]
@@ -1446,7 +1446,7 @@ fn multi_line_replies_print_the_refusal_then_the_rest() -> TestResult {
     let none = refused_lines(&[])?;
     check_eq!(
         refusal(none),
-        Err(CmdError::msg("You have no offer for licence 7."))
+        Err(CmdError::msg("You have no offer for license 7."))
     );
     Ok(())
 }
@@ -1720,12 +1720,12 @@ fn typed_refusal_codes_are_the_words() -> TestResult {
         (
             word!(NO_LICENCE, &n),
             "no_licence",
-            "You hold no licence 7.",
+            "You hold no license 7.",
         ),
         (
             word!(NO_RENEWAL, &n),
             "no_renewal",
-            "Licence 7 has no renewal offer waiting for you. Ask for one with +minds/renew 7.",
+            "License 7 has no renewal offer waiting for you. Ask for one with +minds/renew 7.",
         ),
         (
             word!(NO_PLAYER, &[("name", "Nobody")]),
@@ -1736,12 +1736,12 @@ fn typed_refusal_codes_are_the_words() -> TestResult {
         (
             word!(named::NO_OFFER, &n),
             "no_offer",
-            "You have no offer for licence 7.",
+            "You have no offer for license 7.",
         ),
         (
             word!(named::NO_OFFER_AT, &[("licence", "7"), ("price", "0.01cr")]),
             "no_offer_at",
-            "None of your offers for licence 7 is at 0.01cr.",
+            "None of your offers for license 7 is at 0.01cr.",
         ),
         (
             word!(named::NO_CHARTER_OFFER, &n),
@@ -1857,7 +1857,7 @@ fn typed_refusal_codes_are_the_words() -> TestResult {
     );
     check_eq!(
         fill(words::RENEW_HANDED, &[("licence", "7")]),
-        "Handing licence 7 to the renewal service."
+        "Handing license 7 to the renewal service."
     );
     Ok(())
 }

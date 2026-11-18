@@ -2156,8 +2156,8 @@ async fn cancellation_ack_installs_terminal_state_before_token_rejection() {
         engine
             .action_state()
             .get(&registration.families.pending, &pending.id)
-            .expect("cancelled decision read")
-            .expect("cancelled decision")
+            .expect("canceled decision read")
+            .expect("canceled decision")
             .status,
         PendingDecisionStatus::Terminal {
             outcome: mush_core::DecisionTerminalOutcome::Cancelled,
@@ -2170,11 +2170,11 @@ async fn cancellation_ack_installs_terminal_state_before_token_rejection() {
         match driver
             .drive_one(&mut engine, &store, None)
             .await
-            .expect("cancelled decision compaction drive")
+            .expect("canceled decision compaction drive")
         {
             DurableDecisionDrive::StagedLifecycle(staged) => break staged,
             DurableDecisionDrive::Idle | DurableDecisionDrive::RecoveryAuditProgress => {}
-            _ => panic!("cancelled decision did not stage no-action compaction"),
+            _ => panic!("canceled decision did not stage no-action compaction"),
         }
     };
     let prepared = engine
@@ -9802,7 +9802,7 @@ fn seed_licence(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::CmdError>
             owner: mush_org::PrincipalId::Object(ctx.actor),
             instrument: id,
             scope: None,
-            name: SmolStr::new("extraction licence"),
+            name: SmolStr::new("extraction license"),
             status: mush_economy::AccountStatus::Active,
             posted_balance: mush_economy::Amount::ZERO,
             held_amount: mush_economy::Amount::ZERO,

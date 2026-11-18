@@ -1315,7 +1315,7 @@ mod tests {
         let crate_rgb = [180, 140, 90];
         let found =
             (0..with.height()).any(|y| (0..with.width()).any(|x| with.get(x, y) == crate_rgb));
-        assert!(found, "the crate's square, in its colour");
+        assert!(found, "the crate's square, in its color");
     }
 
     #[test]
@@ -1554,7 +1554,7 @@ mod tests {
         let LockAt::Box(x, y, w, bh) = lock.at else {
             panic!("BA at 045 is dead ahead: {:?}", lock.at);
         };
-        assert!(x <= 320 && x + w >= 320, "boxed at the centre column");
+        assert!(x <= 320 && x + w >= 320, "boxed at the center column");
         assert!(y < 128 + 8 && y + bh > 128, "on the horizon, 450 m out");
 
         // A look 90° right: BA lies off to the left; the hull, still at
@@ -1989,7 +1989,7 @@ mod tests {
         );
         assert!(
             with_glass.count_colours(256) <= 256,
-            "canopy glass stays inside the 256-colour indexed palette"
+            "canopy glass stays inside the 256-color indexed palette"
         );
         assert!(glass.hull_pct > 0 && glass.hull_pct < 100);
         assert!(!glass.weapon_pips.is_empty());

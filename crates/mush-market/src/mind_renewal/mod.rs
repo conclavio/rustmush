@@ -141,7 +141,7 @@ impl Issuer for Personal {
     ];
     const SERVICE_VERB: &'static str = "mind-renewal-service";
     const COMMAND: &'static str = "@mindrenewal";
-    const HELP: &'static str = "@mindrenewal/status <licence> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously.";
+    const HELP: &'static str = "@mindrenewal/status <license> — inspect your retained offer. /request asks for an offer; /accept explicitly pays it; /decline closes it; /retry requests a fresh offer after closure. Processing is acknowledged asynchronously.";
     const SERVICE_TICK: &'static str = "personal_mind_renewal_service";
     const INTENT_DOMAIN: &'static str = "market.renewal_service_intent.v1";
     const SUBMISSION_DOMAIN: &'static str = "market.renewal_submission.v1";

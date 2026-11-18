@@ -1445,7 +1445,7 @@ async fn mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired() {
         .await;
     assert!(
         seen,
-        "the organiser reads her CONCENTRATE and both answers: {}",
+        "the organizer reads her CONCENTRATE and both answers: {}",
         orders_report(&mut field, organiser)
     );
 }

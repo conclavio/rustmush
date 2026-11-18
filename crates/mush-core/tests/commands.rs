@@ -444,12 +444,12 @@ fn building_verbs_refuse_a_kernel_command_word_for_an_exit() {
 fn desc_and_look_detail() {
     let mut g = Game::new();
     let ann = g.ann;
-    let out = g.run(GOD, "@desc here=A quiet grey void.");
+    let out = g.run(GOD, "@desc here=A quiet gray void.");
     assert_error_contains(&out, GOD, "Set.");
     let out = g.run(ann, "look");
     assert!(out.events().iter().any(|(_, e)| matches!(
         e,
-        OutputEvent::Room(rv) if rv.desc.to_plain_text() == "A quiet grey void."
+        OutputEvent::Room(rv) if rv.desc.to_plain_text() == "A quiet gray void."
     )));
     // look <keyword> via detail: attributes on the room.
     g.run(GOD, "@set here/detail:mist=Curls of silver mist.");
@@ -461,7 +461,7 @@ fn desc_and_look_detail() {
     // 16b cut D.5: with no module composed, no detail prefix is registered and
     // `look` behaves exactly as it always did — a namespaced detail attribute
     // is nobody's keyword.
-    g.run(GOD, "@set here/atlas:detail:fog=A grey haze.");
+    g.run(GOD, "@set here/atlas:detail:fog=A gray haze.");
     let out = g.run(ann, "look fog");
     assert_error_contains(&out, ann, "I don't see that here.");
 }

@@ -984,7 +984,7 @@ fn market_command_reader_lists_only_the_actors_resale_offers() -> TestResult {
             .map(ResaleOfferView::offer)
             .collect::<Vec<_>>()),
         Some(vec![aside.operation()]),
-        "an offer on another licence is that licence's"
+        "an offer on another license is that license's"
     );
     let steps = *memory.steps.borrow();
     let unoffered = ask(10, 41)?;
@@ -993,7 +993,7 @@ fn market_command_reader_lists_only_the_actors_resale_offers() -> TestResult {
     check_eq!(
         serde_json::to_string(&unoffered)?,
         serde_json::to_string(&missing)?,
-        "nobody's offer to me reads as a missing licence"
+        "nobody's offer to me reads as a missing license"
     );
     check_eq!(
         ask(8, 43)?.into_resale_offers(),

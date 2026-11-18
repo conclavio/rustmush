@@ -1,6 +1,6 @@
 {
   "brief": {
-    "prose": "The Exchange compound at Malapert on the lunar surface stands beside the Concord's political centre at Shackleton. Aitken Highport uses its communications coverage; no instantaneous foot exit connects the orbital port to the surface."
+    "prose": "The Exchange compound at Malapert on the lunar surface stands beside the Concord's political center at Shackleton. Aitken Highport uses its communications coverage; no instantaneous foot exit connects the orbital port to the surface."
   },
   "entries": {
     "exit.office": {
@@ -245,7 +245,7 @@
     }
   },
   "manifest": {
-    "digest": "acad4209e0ded034b989bfbe0ff7311df8e02734d579bd6bcdd6a5abbf0b626c",
+    "digest": "d8b3228c44f0536b8f9ad59a6e680fb758bf0c866a6773872cd8dad1b69c5061",
     "id": "neighborhood.malapert_exchange",
     "kind": "neighborhood",
     "requires": [

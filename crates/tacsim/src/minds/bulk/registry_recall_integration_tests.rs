@@ -263,7 +263,7 @@ fn private_status(
     let text = PlayerWorld::private_text(&events, actor);
     check!(
         text.contains(if recalled {
-            "Registry recall: your mind licence"
+            "Registry recall: your mind license"
         } else {
             "No Registry recall is recorded"
         }),
@@ -318,7 +318,7 @@ fn notices(world: &mut PlayerWorld, owner: LicenceId, a: &EntitlementAllocationV
     for _ in 0..4 {
         for (audience, event) in tick(world)? {
             let text = mush_testkit::text_of(&event);
-            if text.starts_with("Registry recall: your mind licence") {
+            if text.starts_with("Registry recall: your mind license") {
                 let actor = match audience {
                     mush_core::Audience::Actor(actor) => actor,
                     _ => return Err("private notice audience".into()),
@@ -563,11 +563,11 @@ fn bounded_notice_drain(
         let mut count = 0;
         for (audience, event) in tick(&mut world)? {
             let text = mush_testkit::text_of(&event);
-            if let Some(rest) = text.strip_prefix("Registry recall: your mind licence ") {
+            if let Some(rest) = text.strip_prefix("Registry recall: your mind license ") {
                 let licence = rest
                     .split_whitespace()
                     .next()
-                    .ok_or("notice licence")?
+                    .ok_or("notice license")?
                     .parse::<u64>()?;
                 let actor = match audience {
                     mush_core::Audience::Actor(actor) => actor,

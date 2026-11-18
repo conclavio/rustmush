@@ -36,7 +36,7 @@ struct Notice {
 impl Notice {
     fn text(self) -> String {
         format!(
-            "Registry recall: your mind licence {} selects filed revision {}, recalled by operation {}. New use of that revision is unavailable; running sorties retain their captured mind.",
+            "Registry recall: your mind license {} selects filed revision {}, recalled by operation {}. New use of that revision is unavailable; running sorties retain their captured mind.",
             self.licence.get(),
             self.filed.get(),
             self.operation
@@ -409,7 +409,7 @@ pub(crate) fn register(
     let command_service = service.clone();
     reg.classify_commands(CommandCompatibility::ReadOnly);
     reg.command(CommandSpec{name:COMMAND.into(),switches:vec!["status".into()],shape:ArgShape::Raw,
-        help:"@mindrecall/status <your licence> — inspect Registry recall of your selected filed revision.".into(),..Default::default()},
+        help:"@mindrecall/status <your license> — inspect Registry recall of your selected filed revision.".into(),..Default::default()},
         Arc::new(move|ctx:&mut Ctx<'_>|command(ctx,&command_service)))?;
     reg.tick(
         "registry_recall_notices",

@@ -13,7 +13,7 @@ fn leila(tw: &TestWorld) -> ObjId {
         tw.world(),
         &mush_atlas::RecordKey::new(cid(PASSENGER_PACK), cid(PASSENGER_ENTRY)),
     )
-    .expect("the authored traveller is latched")
+    .expect("the authored traveler is latched")
 }
 
 pub(super) fn booking(rig: &mut Rig, contract: u64) -> Value {
@@ -47,7 +47,7 @@ fn pump(rig: &mut Rig, count: usize) {
 
 pub(super) fn charter(rig: &mut Rig, name: &str, seed: i64, ship: &str) -> (ObjId, HullRow) {
     let captain = pilot(rig, name, seed);
-    let out = run(&mut rig.tw, captain, &format!("+coop/enrol {ship}"));
+    let out = run(&mut rig.tw, captain, &format!("+coop/enroll {ship}"));
     assert!(out.contains(&format!("now the {ship}")), "{out}");
     let hull = tacsim::port::live_charter(rig.tw.world(), captain)
         .expect("charter")
@@ -164,7 +164,7 @@ fn conversation_status(rig: &mut Rig, npc: ObjId, asker: ObjId) -> String {
             &json!({}),
         )
     })
-    .expect("present player can ask about the traveller's status");
+    .expect("present player can ask about the traveler's status");
     assert_eq!(reply.audience, mush_core::ReplyAudience::Asker);
     reply.text
 }

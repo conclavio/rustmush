@@ -4924,7 +4924,7 @@ fn t1_the_shooter_knows_its_own_kill_and_a_teammate_waits_for_the_track() {
     let mate = hold_on(&arena, RED2, BLUE).expect("the teammate's hold");
     assert!(
         !mate.known_dead,
-        "a kill travelled to a platform that did not see it"
+        "a kill traveled to a platform that did not see it"
     );
     assert!(
         !arena.contact_reads_dead(&mate),
@@ -5070,7 +5070,7 @@ fn t1_a_share_carries_the_track_and_never_the_kill() {
     );
     assert!(
         mate.seen_condition.is_none(),
-        "the sharer had no reading to give, so nothing but the track travelled"
+        "the sharer had no reading to give, so nothing but the track traveled"
     );
     assert!(
         !arena.contact_reads_dead(&mate),

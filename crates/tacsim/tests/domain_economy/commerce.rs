@@ -592,7 +592,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot (`Salt Moth`), standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, "+coop/enrol Salt Moth");
+    let out = run(&mut rig.tw, pilot, "+coop/enroll Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1233,7 +1233,7 @@ fn ic8_the_ship_presence_and_the_gate_refusals() {
     let mut rig = stocked();
     let (me, row) = chartered(&mut rig, "Pilot", 1);
     let other = pilot(&mut rig, "Other", 2);
-    let out = run(&mut rig.tw, other, "+coop/enrol Grey Heron");
+    let out = run(&mut rig.tw, other, "+coop/enroll Grey Heron");
     assert!(out.contains("now the Grey Heron"), "{out}");
     let other_charter = tacsim::port::live_charter(rig.tw.world(), other).expect("a charter");
     let other_row = port_map(&rig.tw, "ceres_port")
@@ -1477,7 +1477,7 @@ fn ic8_the_board_counts_down_to_sold_out() {
         "  30 mm AP rounds: 12.00cr/round",
         "  7.62 mm ball, boxed: 25.00cr/box",
         "  105 mm HE rounds: 150.00cr/round",
-        "  anti-armour missiles, canistered: 1500.00cr/round",
+        "  anti-armor missiles, canistered: 1500.00cr/round",
     ]) {
         assert!(line.starts_with(want), "{want}:\n{out}");
     }

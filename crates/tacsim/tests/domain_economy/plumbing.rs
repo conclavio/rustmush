@@ -510,7 +510,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot whose ship is named `name`.
 fn chartered(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -739,13 +739,13 @@ fn gateway(rig: &Rig, pilot: ObjId) -> AccountId {
 fn licence(rig: &Rig, pilot: ObjId) -> Licence {
     match store(&rig.tw).licence_state(gateway(rig, pilot)) {
         LicenceState::Present(record) => record.clone(),
-        other => panic!("no readable licence: {other:?}"),
+        other => panic!("no readable license: {other:?}"),
     }
 }
 
 /// The pilot's unscoped accounts in the licence instrument.
 fn entitlements(tw: &TestWorld, who: ObjId) -> Vec<mush_economy::Account> {
-    let instrument = tacsim::economy::licence_instrument().expect("the licence instrument");
+    let instrument = tacsim::economy::licence_instrument().expect("the license instrument");
     economy(tw)
         .snapshot()
         .accounts_of(&PrincipalId::Object(who))
@@ -769,10 +769,10 @@ fn licence_writes(tw: &mut TestWorld) -> usize {
 
 /// `+licence/buy go` as `pilot`, asserting the licence.
 fn buy(rig: &mut Rig, pilot: ObjId) -> String {
-    let out = run(&mut rig.tw, pilot, "+licence/buy go");
+    let out = run(&mut rig.tw, pilot, "+license/buy go");
     assert!(
         out.contains(" licenses you to prospect at its sites until ")
-            || out.contains(" extends your licence to "),
+            || out.contains(" extends your license to "),
         "{out}"
     );
     out
@@ -921,7 +921,7 @@ fn sm5_a_licence_authorizes_extraction_over_a_seeded_claim() {
         .world()
         .module_state::<mush_industry::IndustryStore>()
         .and_then(|s| s.licence().cloned())
-        .expect("the composition root names the licence");
+        .expect("the composition root names the license");
     assert_eq!(named.as_str(), tacsim::economy::LICENCE_FREEPORT);
     let (deposit, claim) = seeded_claim(pilot);
     assert_eq!(
@@ -1021,7 +1021,7 @@ fn sm5_a_refused_buy_leaves_no_active_entitlement() {
     });
     assert!(ruled, "staff put an approval rule on the pilot's account");
     let before = balances(&rig.tw, account);
-    let out = run(&mut rig.tw, pilot, "+licence/buy go");
+    let out = run(&mut rig.tw, pilot, "+license/buy go");
     assert_eq!(
         out.lines().last(),
         Some(tacsim::port::licence::LICENCE_FAILED),
@@ -1048,7 +1048,7 @@ fn sm5_a_refused_buy_leaves_no_active_entitlement() {
         Err(LicenceStanding::Unlicensed)
     );
     assert_eq!(
-        run(&mut rig.tw, pilot, "+licence"),
+        run(&mut rig.tw, pilot, "+license"),
         LICENCE_NONE
             .replace("{issuer}", REGISTRY)
             .replace("{fee}", FEE)
@@ -1089,7 +1089,7 @@ fn sm5_a_bare_buy_previews_and_commits_nothing() {
     let account = credit_of(&rig.tw, pilot);
     let before = balances(&rig.tw, account);
     let _ = licence_writes(&mut rig.tw);
-    let out = run(&mut rig.tw, pilot, "+licence/buy");
+    let out = run(&mut rig.tw, pilot, "+license/buy");
     let want = LICENCE_PREVIEW
         .replace("{issuer}", REGISTRY)
         .replace("{term}", "168")
@@ -1105,9 +1105,9 @@ fn sm5_a_bare_buy_previews_and_commits_nothing() {
     assert_eq!(licence_writes(&mut rig.tw), 0);
     // The grammar: a word that is not `go`, or one after it, is the usage line.
     for line in [
-        "+licence/buy now",
-        "+licence/buy go now",
-        "+licence everything",
+        "+license/buy now",
+        "+license/buy go now",
+        "+license everything",
     ] {
         let out = run(&mut rig.tw, pilot, line);
         assert_eq!(out, tacsim::port::licence::LICENCE_USAGE, "{line}");
@@ -1156,7 +1156,7 @@ fn sm5_the_licence_lapses_after_its_grace_at_the_next_act() {
         tacsim::port::live_charter(rig.tw.world(), pilot).is_none(),
         "the ticks ran: the charter arm ended the idle charter"
     );
-    let out = run(&mut rig.tw, pilot, "+licence");
+    let out = run(&mut rig.tw, pilot, "+license");
     assert_eq!(
         out,
         LICENCE_LAPSED.replace("{lapses}", &ic_stamp(t0 + 196 * DAY))
@@ -1177,7 +1177,7 @@ fn sm5_the_licence_lapses_after_its_grace_at_the_next_act() {
     );
     // A buy after the lapse runs from now.
     let now = ic_now(&rig.tw);
-    let out = run(&mut rig.tw, pilot, "+licence/buy");
+    let out = run(&mut rig.tw, pilot, "+license/buy");
     assert_eq!(
         out,
         LICENCE_PREVIEW
@@ -1212,7 +1212,7 @@ fn sm5_a_buy_while_in_force_or_in_grace_extends_from_the_expiry() {
     assert_eq!(out.lines().last(), Some(bought.as_str()), "{out}");
     assert_eq!(first.terms, 1);
     // In force: from the expiry.
-    let preview = run(&mut rig.tw, pilot, "+licence/buy");
+    let preview = run(&mut rig.tw, pilot, "+license/buy");
     assert_eq!(
         preview,
         LICENCE_PREVIEW_EXTEND
@@ -1222,7 +1222,7 @@ fn sm5_a_buy_while_in_force_or_in_grace_extends_from_the_expiry() {
             .replace("{until}", &ic_stamp(t0 + 336 * DAY))
             .replace("{fee}", FEE)
     );
-    let out = run(&mut rig.tw, pilot, "+licence/buy go");
+    let out = run(&mut rig.tw, pilot, "+license/buy go");
     let extended = LICENCE_EXTENDED
         .replace("{issuer}", REGISTRY)
         .replace("{until}", &ic_stamp(t0 + 336 * DAY))
@@ -1324,7 +1324,7 @@ fn sm5_one_licence_an_account() {
     }
     let _ = licence_writes(&mut rig.tw);
     let other = LICENCE_OTHER.replace("{issuer}", REGISTRY);
-    for line in ["+licence/buy", "+licence/buy go", "+licence"] {
+    for line in ["+license/buy", "+license/buy go", "+license"] {
         assert_eq!(run(&mut rig.tw, alt, line), other, "{line}");
     }
     assert!(entitlements(&rig.tw, alt).is_empty());
@@ -1340,15 +1340,15 @@ fn sm5_the_licence_show_lines() {
     let mut rig = stocked();
     let (pilot, _) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
     assert_eq!(
-        run(&mut rig.tw, pilot, "+licence"),
+        run(&mut rig.tw, pilot, "+license"),
         LICENCE_NONE
             .replace("{issuer}", REGISTRY)
             .replace("{fee}", FEE)
             .replace("{term}", "168")
     );
     assert_eq!(
-        run(&mut rig.tw, pilot, "+licence/show"),
-        run(&mut rig.tw, pilot, "+licence")
+        run(&mut rig.tw, pilot, "+license/show"),
+        run(&mut rig.tw, pilot, "+license")
     );
     let t0 = ic_now(&rig.tw);
     buy(&mut rig, pilot);
@@ -1356,7 +1356,7 @@ fn sm5_the_licence_show_lines() {
     let account = record.entitlement.to_string();
     skip_days(&mut rig, 10);
     assert_eq!(
-        run(&mut rig.tw, pilot, "+licence"),
+        run(&mut rig.tw, pilot, "+license"),
         LICENCE_IN_FORCE
             .replace("{issuer}", REGISTRY)
             .replace("{account}", &account)
@@ -1366,7 +1366,7 @@ fn sm5_the_licence_show_lines() {
     );
     skip_days(&mut rig, 159);
     assert_eq!(
-        run(&mut rig.tw, pilot, "+licence"),
+        run(&mut rig.tw, pilot, "+license"),
         LICENCE_GRACE
             .replace("{issuer}", REGISTRY)
             .replace("{account}", &account)
@@ -1375,7 +1375,7 @@ fn sm5_the_licence_show_lines() {
     );
     skip_days(&mut rig, 28);
     assert_eq!(
-        run(&mut rig.tw, pilot, "+licence"),
+        run(&mut rig.tw, pilot, "+license"),
         LICENCE_LAPSED.replace("{lapses}", &ic_stamp(t0 + 196 * DAY))
     );
     // Suspended: staff freeze a second pilot's entitlement account.
@@ -1393,14 +1393,14 @@ fn sm5_the_licence_show_lines() {
     let suspended = LICENCE_SUSPENDED
         .replace("{issuer}", REGISTRY)
         .replace("{account}", &frozen.to_string());
-    assert_eq!(run(&mut rig.tw, second, "+licence"), suspended);
-    assert_eq!(run(&mut rig.tw, second, "+licence/buy"), suspended);
+    assert_eq!(run(&mut rig.tw, second, "+license"), suspended);
+    assert_eq!(run(&mut rig.tw, second, "+license/buy"), suspended);
     assert_eq!(
         licence_gate(rig.tw.world(), second, ic_now(&rig.tw)),
         Err(LicenceStanding::Suspended)
     );
     // The help spells the lane's fee and terms in the house form.
-    let block = port_def("ceres_port").licence.expect("the licence block");
+    let block = port_def("ceres_port").licence.expect("the license block");
     assert!(LICENCE_HELP.contains(&format!("{}.00cr", block.fee_major)));
     assert!(LICENCE_HELP.contains(&format!("for {} IC days", block.term_ic_days)));
     assert!(LICENCE_HELP.contains(&format!("then {} IC days' grace", block.grace_ic_days)));
@@ -1488,10 +1488,10 @@ fn refuses_to_buy(rig: &mut Rig, who: ObjId, want: &str) {
     let credit = tacsim::port::credit::own_account(rig.tw.world(), who).map(|a| a.id);
     let before = credit.map(|id| balances(&rig.tw, id));
     let _ = licence_writes(&mut rig.tw);
-    for line in ["+licence/buy", "+licence/buy go"] {
+    for line in ["+license/buy", "+license/buy go"] {
         assert_eq!(run(&mut rig.tw, who, line), want, "{line}");
     }
-    assert_eq!(licence_writes(&mut rig.tw), 0, "no licence document");
+    assert_eq!(licence_writes(&mut rig.tw), 0, "no license document");
     assert!(store(&rig.tw).licence_of_holder(who).is_none(), "no record");
     assert!(
         entitlements(&rig.tw, who).is_empty(),
@@ -1562,7 +1562,7 @@ fn sm5_a_refused_buy_writes_nothing() {
     });
     let anyone = pilot(&mut rig, "Pilot", 1);
     refuses_to_buy(&mut rig, anyone, LICENCE_NOT_HERE);
-    for line in ["+licence", "+licence/show"] {
+    for line in ["+license", "+license/show"] {
         assert_eq!(run(&mut rig.tw, anyone, line), LICENCE_NOT_HERE, "{line}");
     }
 }
@@ -1603,9 +1603,9 @@ fn sm5_an_unreadable_licence_reads_dark_and_bars_only_its_account() {
     let (pilot, _) = dray_p(&mut rig, "Pilot", 1, "Salt Moth");
     buy(&mut rig, pilot);
     let record = licence(&rig, pilot);
-    let shown = run(&mut rig.tw, pilot, "+licence");
+    let shown = run(&mut rig.tw, pilot, "+license");
     assert!(
-        shown.starts_with("Your prospecting licence from the Freeport Registry, account #"),
+        shown.starts_with("Your prospecting license from the Freeport Registry, account #"),
         "{shown}"
     );
     let key = tacsim::port::licence::licence_key(gateway(&rig, pilot));
@@ -1617,7 +1617,7 @@ fn sm5_an_unreadable_licence_reads_dark_and_bars_only_its_account() {
     // The round trip: the record loads back whole.
     let mut rig = reboot(rig);
     assert_eq!(licence(&rig, pilot), record);
-    assert_eq!(run(&mut rig.tw, pilot, "+licence"), shown);
+    assert_eq!(run(&mut rig.tw, pilot, "+license"), shown);
     assert_eq!(licence_gate(rig.tw.world(), pilot, ic_now(&rig.tw)), Ok(()));
 
     let elsewhere = Licence {
@@ -1652,10 +1652,10 @@ fn sm5_an_unreadable_licence_reads_dark_and_bars_only_its_account() {
             "{why}"
         );
         for line in [
-            "+licence",
-            "+licence/show",
-            "+licence/buy",
-            "+licence/buy go",
+            "+license",
+            "+license/show",
+            "+license/buy",
+            "+license/buy go",
         ] {
             assert_eq!(
                 run(&mut rig.tw, pilot, line),
@@ -1666,7 +1666,7 @@ fn sm5_an_unreadable_licence_reads_dark_and_bars_only_its_account() {
         assert_eq!(
             at_occator(&mut rig, pilot, "+tv/lease go"),
             LICENCE_BOOKS_DARK,
-            "{why}: the lease reads the licence dark"
+            "{why}: the lease reads the license dark"
         );
         assert_eq!(
             stored(&mut rig, &key),
@@ -1777,14 +1777,14 @@ fn sm5_a_lane_has_one_licence_issuer_and_every_site_is_its() {
         });
     };
     let got = refused(&second);
-    let want = "licence: port stickney_port also authors a licence block (port ceres_port's); a \
-                lane has one licence issuer in phase 1";
+    let want = "license: port stickney_port also authors a license block (port ceres_port's); a \
+                lane has one license issuer in phase 1";
     assert!(got.contains(want), "{got}\nwanted: {want}");
     let occator_issues = |doc: &mut Value| {
         doc["entries"]["ahuna_port"]["def"]["site"]["issuer"] = serde_json::json!("occator");
     };
     let got = refused(&occator_issues);
-    let want = "site: issuer occator is not the lane's licence issuer freeport_registry";
+    let want = "site: issuer occator is not the lane's license issuer freeport_registry";
     assert!(got.contains(want), "{got}\nwanted: {want}");
     assert_eq!(
         refused(&|doc| {
@@ -2233,7 +2233,7 @@ fn sm5_a_fixed_reference_for_an_asked_good_is_refused_at_load() {
         programme["reference_minor"]["metals"] = serde_json::json!(10_000);
     });
     let want = format!(
-        "programme coop.first_captain: reference_minor metals: a fixed reference is only for a \
+        "program coop.first_captain: reference_minor metals: a fixed reference is only for a \
          good no port of this lane asks, and port {asker} asks it"
     );
     assert!(got.contains(&want), "{got}\nwanted: {want}");
@@ -2241,7 +2241,7 @@ fn sm5_a_fixed_reference_for_an_asked_good_is_refused_at_load() {
         doc["entries"]["ceres_port"]["def"]["programme"]["reference_minor"]["volatiles"] =
             serde_json::json!(5_000);
     });
-    let want = "programme coop.first_captain: volatiles has both a reference listing and a fixed \
+    let want = "program coop.first_captain: volatiles has both a reference listing and a fixed \
                 reference";
     assert!(got.contains(want), "{got}\nwanted: {want}");
 }
@@ -2380,7 +2380,7 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
 fn sm5_the_readiness_report_names_the_licence_and_the_ore_intakes() {
     let mut rig = stocked();
     let report = status(&mut rig.tw);
-    let licence = "  ceres_port licence tacsim.licence.freeport: the Freeport Registry issues it \
+    let licence = "  ceres_port license tacsim.licence.freeport: the Freeport Registry issues it \
                    at 2500.00cr for 168 IC days with 28 IC days' grace; extraction reads it. \
                    [ready]";
     assert!(report.lines().any(|l| l == licence), "{report}");
@@ -2518,7 +2518,7 @@ fn sm5_only_ceres_bids_ore() {
             ),
         ]
     );
-    let programme = port_def("ceres_port").programme.expect("the programme");
+    let programme = port_def("ceres_port").programme.expect("the program");
     assert_eq!(
         programme
             .reference_minor
@@ -2905,9 +2905,9 @@ fn licence_status(tw: &mut TestWorld) -> String {
     let report = status(tw);
     report
         .lines()
-        .find(|l| l.starts_with("  ceres_port licence "))
+        .find(|l| l.starts_with("  ceres_port license "))
         .map(str::to_owned)
-        .unwrap_or_else(|| panic!("no Licence line:\n{report}"))
+        .unwrap_or_else(|| panic!("no License line:\n{report}"))
 }
 
 /// **The Licence line names what is missing** (lead ruling 10; the lead's pre-commit round,
@@ -2919,7 +2919,7 @@ fn licence_status(tw: &mut TestWorld) -> String {
 #[test]
 fn sm5_the_licence_line_names_what_is_missing() {
     let mut rig = stocked();
-    let head = "  ceres_port licence tacsim.licence.freeport: ";
+    let head = "  ceres_port license tacsim.licence.freeport: ";
     let ready = format!(
         "{head}the Freeport Registry issues it at 2500.00cr for 168 IC days with 28 IC days' \
          grace; extraction reads it. [ready]"
@@ -2929,7 +2929,7 @@ fn sm5_the_licence_line_names_what_is_missing() {
     name_licence(&mut rig.tw, None);
     assert_eq!(
         licence_status(&mut rig.tw),
-        format!("{head}the industry layer names no extraction licence. [missing]")
+        format!("{head}the industry layer names no extraction license. [missing]")
     );
     // 2. Another instrument named.
     name_licence(
@@ -2955,7 +2955,7 @@ fn sm5_the_licence_line_names_what_is_missing() {
     );
 
     // 3. The instrument is not an entitlement (read before the account).
-    let instrument = tacsim::economy::licence_instrument().expect("the licence instrument");
+    let instrument = tacsim::economy::licence_instrument().expect("the license instrument");
     let ikey = mush_economy::instrument_key(&instrument);
     let mut def = stored(&mut rig, &ikey).expect("the instrument is stored");
     def["kind"] =
@@ -2995,7 +2995,7 @@ fn sm5_the_in_verb_help_names_the_preview_all_and_the_licence() {
     );
     let tv = run(&mut rig.tw, pilot, "help +tv");
     assert!(
-        tv.contains("A lease needs a prospecting licence in force or in its grace (+licence)."),
+        tv.contains("A lease needs a prospecting license in force or in its grace (+license)."),
         "{tv}"
     );
     assert!(tacsim::port::tv::TV_HELP.contains("(+licence)"));

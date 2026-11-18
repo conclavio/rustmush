@@ -427,7 +427,7 @@ fn cancel_walk(snap: &mut Snapshot) -> Result {
     step(&mut s, snap, &format!("{walk}: advanced once"), 3, &inv, 42)?;
     ct0::lines(snap, &records(&s, &seen)?);
     let inv = invocation(s.f.buyer, 45, FactoryRig::order_parameters(id));
-    step(&mut s, snap, &format!("{walk}: cancelled"), 5, &inv, 45)?;
+    step(&mut s, snap, &format!("{walk}: canceled"), 5, &inv, 45)?;
     ct0::lines(snap, &records(&s, &seen)?);
     check!(s.order(id)?.terminal.is_some());
     cold_boot(&mut s, snap, &seen, walk)
@@ -459,7 +459,7 @@ fn expired_walk(snap: &mut Snapshot) -> Result {
     step(
         &mut s,
         snap,
-        &format!("{walk}: cancelled at the deadline"),
+        &format!("{walk}: canceled at the deadline"),
         5,
         &inv,
         45,

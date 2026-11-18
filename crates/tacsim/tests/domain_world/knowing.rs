@@ -610,7 +610,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -2104,7 +2104,7 @@ fn sm4a_a_field_middle_reads_its_field_and_its_neighbours() {
     for index in seen {
         assert!(row.fields.contains_key(&index), "a seen field is covered");
     }
-    let middle = open.expect("a field middle that sees all eight neighbours");
+    let middle = open.expect("a field middle that sees all eight neighbors");
     let own = field_of_cell(middle).expect("a field");
     to_cell(&mut rig, tv, middle);
     let _ = act_go(&mut rig, pilot, "+tv/1 scan go");

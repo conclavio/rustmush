@@ -871,7 +871,7 @@ pub enum ContractError {
     /// A refund was asked of a contract that has not been cancelled or expired
     /// (E4a verify fold, finding 6): a refund releases escrow, so on a live or
     /// settled contract it is an unwind, not a refund.
-    #[error("contract {0} is not cancelled or expired")]
+    #[error("contract {0} is not canceled or expired")]
     WrongState(ContractId),
     /// A `Before`/`After` condition on an [`EconomicClock::Manual`] clock (E4a
     /// verify fold, finding 10). A manual clock's position is carried by the record

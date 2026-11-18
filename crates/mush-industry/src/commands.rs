@@ -446,7 +446,7 @@ fn cmd_licence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         actor_principal(ctx.actor)
     } else if staff {
         crate::provider::parse_principal(&raw)
-            .ok_or_else(|| CmdError::msg("Usage: @licence/show [obj:<n>|org:<n>|sys:<name>]"))?
+            .ok_or_else(|| CmdError::msg("Usage: @license/show [obj:<n>|org:<n>|sys:<name>]"))?
     } else {
         // A principal may read their own standing and nobody else's.
         actor_principal(ctx.actor)
@@ -457,22 +457,22 @@ fn cmd_licence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .and_then(|store| store.licence().cloned())
     else {
         ctx.out
-            .info(ctx.actor, "This server issues no extraction licences.");
+            .info(ctx.actor, "This server issues no extraction licenses.");
         return Ok(());
     };
     if ctx.w.module_state::<EconomyStore>().is_none() {
         ctx.out
-            .info(ctx.actor, "This server issues no extraction licences.");
+            .info(ctx.actor, "This server issues no extraction licenses.");
         return Ok(());
     }
     match licence_accounts(ctx.w, &instrument, &who) {
         Some(status) => ctx.out.info(
             ctx.actor,
-            format!("Extraction licence in {}: {status:?}.", instrument.as_str()),
+            format!("Extraction license in {}: {status:?}.", instrument.as_str()),
         ),
         None => ctx.out.info(
             ctx.actor,
-            "No extraction licence stands for that principal.",
+            "No extraction license stands for that principal.",
         ),
     }
     Ok(())

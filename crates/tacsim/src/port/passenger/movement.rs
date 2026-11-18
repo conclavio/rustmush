@@ -187,9 +187,9 @@ pub(crate) fn walk(
         .w
         .get(npc)
         .and_then(|o| o.location)
-        .ok_or("The traveller has no location.")?;
+        .ok_or("The traveler has no location.")?;
     let route = path(ctx.w, from, to, allowed)
-        .ok_or("The traveller cannot find a station route to the berth.")?;
+        .ok_or("The traveler cannot find a station route to the berth.")?;
     for exit in route {
         let expected = ctx
             .w
@@ -206,7 +206,7 @@ pub(crate) fn walk(
         );
         ctx.out.pin_deferred();
         if ctx.w.get(npc).and_then(|o| o.location) != Some(expected) {
-            return Err("The traveller was stopped on the way to the berth. Clear the route and invite them again.".into());
+            return Err("The traveler was stopped on the way to the berth. Clear the route and invite them again.".into());
         }
     }
     Ok(())
@@ -216,7 +216,7 @@ fn own(ctx: &Ctx<'_>, npc: ObjId) -> Result<Booking, String> {
     store::list(ctx)?
         .into_iter()
         .find(|r| r.npc == npc && r.captain == ctx.actor)
-        .ok_or_else(|| "You have no passage agreement with that traveller.".into())
+        .ok_or_else(|| "You have no passage agreement with that traveler.".into())
 }
 
 pub(crate) fn board(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
@@ -327,7 +327,7 @@ pub(crate) fn cancel(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<String, String> {
     economy::prepare_cancellation(ctx, &row)?;
     ashore(ctx, &row, &row.origin)?;
     store::stage_transition(ctx, &row, Phase::Cancelled, None)?;
-    Ok("Cancellation filed. Any reserved fare returns to the traveller when the cancellation settles.".into())
+    Ok("Cancellation filed. Any reserved fare returns to the traveler when the cancellation settles.".into())
 }
 
 /// Keep an agreed passenger aboard before departure, and preserve the durable

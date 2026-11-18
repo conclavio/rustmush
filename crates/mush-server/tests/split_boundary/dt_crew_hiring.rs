@@ -750,9 +750,9 @@ async fn berthed_crew_carrier(
 ) -> TestResult<(ObjId, ObjId, ObjId)> {
     let (hull, domain, gallery, crew) = {
         let port =
-            tacsim::port::coop::programme_port(rig.world.world()).ok_or("real programme port")?;
+            tacsim::port::coop::programme_port(rig.world.world()).ok_or("real program port")?;
         assert_eq!(port.def.venue.as_str(), "ceres");
-        let row = port.map.hulls.first().ok_or("real programme hull")?;
+        let row = port.map.hulls.first().ok_or("real program hull")?;
         (
             ObjId(row.hull),
             port.map.domain.ok_or("port domain")?,

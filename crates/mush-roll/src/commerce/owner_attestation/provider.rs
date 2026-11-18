@@ -612,10 +612,10 @@ impl ActionProvider for Provider {
             })
             .collect::<Result<Vec<_>, ActionError>>()?;
         let presentation = if self.house {
-            mush_core::ActionPresentation::new("roll-attest-house-mind","Renew a House owner mind licence",
-                "Attest a House's filed mind for the organisation you act for, after its current term ends. This free renewal never changes paid customer terms.")
+            mush_core::ActionPresentation::new("roll-attest-house-mind","Renew a House owner mind license",
+                "Attest a House's filed mind for the organization you act for, after its current term ends. This free renewal never changes paid customer terms.")
         } else {
-            mush_core::ActionPresentation::new("roll-attest-owner-mind","Renew an owner mind licence",
+            mush_core::ActionPresentation::new("roll-attest-owner-mind","Renew an owner mind license",
                 "Attest your own filed mind after its current term ends. This free renewal never changes paid customer terms.")
         }.map_err(|_|fail())?;
         Ok(Some(mush_core::ProviderOfferDraft {
@@ -667,7 +667,7 @@ pub(crate) fn register(
             refusal: ActionError::new(
                 ActionErrorCode::ProviderRejected,
                 false,
-                "The owner licence is unavailable, not due, or no longer eligible for attestation.",
+                "The owner license is unavailable, not due, or no longer eligible for attestation.",
             )
             .map_err(error)?,
         },
@@ -715,7 +715,7 @@ pub(crate) fn register_house(
             refusal: ActionError::new(
                 ActionErrorCode::ProviderRejected,
                 false,
-                "The owner licence is unavailable, not due, or no longer eligible for attestation.",
+                "The owner license is unavailable, not due, or no longer eligible for attestation.",
             )
             .map_err(error)?,
         },

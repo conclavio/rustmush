@@ -344,7 +344,7 @@ fn floor_strip_licence_grace_rebuilds_the_published_v29() {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
     assert_eq!(
         doc["entries"]["ceres_port"]["def"]["licence"]["grace_ic_days"], 28,
-        "owner rule, 2026-11-04: the licence's grace is 28 IC days"
+        "owner rule, 2026-11-04: the license's grace is 28 IC days"
     );
     doc["manifest"]["version"] = 29.into();
     doc["manifest"]["digest"] = UNSIGNED.into();
@@ -1622,7 +1622,7 @@ fn sm3a_the_lane_carries_the_refit_row_and_occators_rigs() {
     let Some(PackEntry::Port(ceres)) = pack.entry(&cid("ceres_port")) else {
         panic!("ceres_port is a port entry");
     };
-    let programme = ceres.programme.as_ref().expect("the programme");
+    let programme = ceres.programme.as_ref().expect("the program");
     assert_eq!(
         programme.refits,
         BTreeMap::from([(cid("prospector"), cid("tacsim.unit.dray_p"))])
@@ -1713,15 +1713,15 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
         (
             // Doc 20 cut SM.5: the sentence names the licence block too; doc 36 cut GC.7: and
             // the workshop block; doc 36 cut GC.13: and the medical block.
-            "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and no \
-             vehicles, licence, workshop or medical block; its pad is its gallery",
+            "site: a site authors no orgs, rooms, program, vendors, premium or emergency, and no \
+             vehicles, license, workshop or medical block; its pad is its gallery",
             Box::new(move |doc| {
                 let block = vehicles(doc);
                 doc["entries"]["ahuna_port"]["def"]["vehicles"] = block;
             }),
         ),
         (
-            "programme coop.first_captain: refit `standard` is the programme's own unit and is \
+            "program coop.first_captain: refit `standard` is the program's own unit and is \
              never authored",
             Box::new(|doc| {
                 doc["entries"]["ceres_port"]["def"]["programme"]["refits"] =
@@ -1740,8 +1740,8 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
             }),
         ),
         (
-            "vehicles kasei.rig_lease: port stickney_port authors no programme; rigs are leased \
-             into the programme's hulls",
+            "vehicles kasei.rig_lease: port stickney_port authors no program; rigs are leased \
+             into the program's hulls",
             Box::new(move |doc| {
                 let mut block = vehicles(doc);
                 block["id"] = json!("kasei.rig_lease");
@@ -1775,7 +1775,7 @@ fn sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper() {
     let Some(PackEntry::Port(ceres)) = pack.entry(&cid("ceres_port")) else {
         panic!("ceres_port is a port entry");
     };
-    let licence = ceres.licence.as_ref().expect("the licence block");
+    let licence = ceres.licence.as_ref().expect("the license block");
     assert_eq!(
         (
             licence.fee_major,
@@ -1854,7 +1854,7 @@ fn sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper() {
     assert_eq!(
         mush_content::parse_pack(&v11)
             .expect(
-                "the v11 shape parses (its licence block predates the claim fees, so only its \
+                "the v11 shape parses (its license block predates the claim fees, so only its \
                  bytes are compared)",
             )
             .manifest()
@@ -1932,13 +1932,13 @@ fn sm10_a_paper_naming_no_row_or_the_sites_own_issuer_is_refused() {
             }),
         ),
         (
-            "licence: claim_stake_major must be 1..=1000000, not 0",
+            "license: claim_stake_major must be 1..=1000000, not 0",
             Box::new(|doc| {
                 doc["entries"]["ceres_port"]["def"]["licence"]["claim_stake_major"] = json!(0);
             }),
         ),
         (
-            "licence: claim_term_major must be 1..=1000000, not 1000001",
+            "license: claim_term_major must be 1..=1000000, not 1000001",
             Box::new(|doc| {
                 doc["entries"]["ceres_port"]["def"]["licence"]["claim_term_major"] =
                     json!(1_000_001);

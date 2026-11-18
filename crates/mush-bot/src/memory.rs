@@ -1298,7 +1298,7 @@ impl Book {
             if &at == end {
                 return json!({"status":"remembered_route", "from":start, "to":targets[0],
                     "journeys":path.iter().filter_map(|id| self.record(*id)).collect::<Vec<_>>(),
-                    "caveat":"Previously travelled in this direction; accessibility and layout may have changed."});
+                    "caveat":"Previously traveled in this direction; accessibility and layout may have changed."});
             }
             for (id, edge) in edges.values() {
                 if edge.from.dbref == at && seen.insert(edge.to.dbref.clone()) {
@@ -1763,7 +1763,7 @@ mod tests {
         let label = observe(&mut book, "Marco says, \"Hello.\"\n");
         let mut name = belief(label, "Marco", "Marco");
         name.kind = Kind::Identity;
-        name.subject = "speaker labelled Marco at the market".into();
+        name.subject = "speaker labeled Marco at the market".into();
         name.predicate = "known_name".into();
         assert!(!book.believe(vec![name.clone()]).unwrap().is_empty());
         assert!(book.active_beliefs().is_empty());

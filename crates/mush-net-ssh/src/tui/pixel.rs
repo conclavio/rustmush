@@ -2104,7 +2104,7 @@ impl PixelView {
                 .current_encoder()
                 .map_or("nothing".to_string(), |e| e.name().to_string());
             return (
-                format!("ARMOUR  |  {probe}, drawing {drawing}, redrawn on change"),
+                format!("ARMOR  |  {probe}, drawing {drawing}, redrawn on change"),
                 "Enter: chat   Esc/q: close   ^]: detach".to_string(),
             );
         }

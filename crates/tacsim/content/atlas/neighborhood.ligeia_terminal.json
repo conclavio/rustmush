@@ -495,7 +495,7 @@
           "A bulb of tea drifts loose from the Ninety-Four's hatch and is caught by the nearest hand without comment.",
           "The scrubbers cycle, and for a minute the naphtha in the air is almost gone.",
           "Saturn's rings cut the long window in a hard bright line as the spar comes round into sunlight.",
-          "A Company notice lifts at one corner in the air plant's draught and is pressed flat again by a passing glove.",
+          "A Company notice lifts at one corner in the air plant's draft and is pressed flat again by a passing glove.",
           "Frost creeps a finger's width along a pressure seal and stops."
         ],
         "footprint": [
@@ -595,7 +595,7 @@
         "details": {
           "berth board": "Collar by collar: the hull, its registry, its agent of record, and CLEARED or HELD in Company orange. A docked hull's name lights when a pilot is aboard.",
           "frost": "A white rime on every seal and frame, scraped back where hands go. The Company's maintenance card says that frost on a seal is normal and a seal without frost is worth reporting.",
-          "handlines": "Braided line with a clip point every two metres, stiff with cold. The gloves on the rail by the lobby door are there for a reason, and the sign over them says which reason.",
+          "handlines": "Braided line with a clip point every two meters, stiff with cold. The gloves on the rail by the lobby door are there for a reason, and the sign over them says which reason.",
           "ports": "Small, triple-glazed against the cold, each with a Company inspection tag dated in Luna time. Through them the spar's truss runs away to a point, and a berthed hull hangs on its collar with frost on its radiators."
         },
         "footprint": {
@@ -695,12 +695,12 @@
     },
     "room.t04_concourse": {
       "def": {
-        "desc": "The concourse is the widest space on the spar, a square-sectioned hall with handlines strung both ways down the middle and Company notices pinned flat under clear film so that they will not lift in the draught. There is no advertising; on its own deck the Company has no need of it. A cold white strip of light runs the length of the overhead. Fans roar at either end, and under them the spar ticks as it cools in Titan's shadow. Naphtha and ammonia hang in air the scrubbers never quite clear. Doors open to the dockmaster, the sales floor, the Ninety-Four and the lifter gallery; the lobby and arrivals are back toward the locks.",
+        "desc": "The concourse is the widest space on the spar, a square-sectioned hall with handlines strung both ways down the middle and Company notices pinned flat under clear film so that they will not lift in the draft. There is no advertising; on its own deck the Company has no need of it. A cold white strip of light runs the length of the overhead. Fans roar at either end, and under them the spar ticks as it cools in Titan's shadow. Naphtha and ammonia hang in air the scrubbers never quite clear. Doors open to the dockmaster, the sales floor, the Ninety-Four and the lifter gallery; the lobby and arrivals are back toward the locks.",
         "details": {
           "fans": "Big ducted fans at either end, run hard because air does not move on its own without weight. The scrubber cartridges behind them are dated and initialled.",
-          "handlines": "Two lines, inbound and outbound, with a painted arrow every five metres. Traffic keeps right by habit, and newcomers hold both.",
+          "handlines": "Two lines, inbound and outbound, with a painted arrow every five meters. Traffic keeps right by habit, and newcomers hold both.",
           "notices": "Company notices in orange type: lifter windows, a frost advisory, a reminder that the Company Store keeps the only book on the spar. A clean rectangle of film marks where a townships notice hung.",
-          "station map": "A plan of the Terminal in two decks. The Company Deck is drawn in full; the Cargo Deck shows the bunkering yard and townships receiving, and a grey band marked COMPANY PERSONNEL."
+          "station map": "A plan of the Terminal in two decks. The Company Deck is drawn in full; the Cargo Deck shows the bunkering yard and townships receiving, and a gray band marked COMPANY PERSONNEL."
         },
         "footprint": {
           "rect": [
@@ -804,7 +804,7 @@
           "Luna board": "Luna's prices as the light brought them, over an hour stale and sometimes an hour and a half. There is no relay half at Titan, so nothing on this board is ever current.",
           "almond notice": "A Company notice by the well: the bitter almond near the billet locks is a handling trace and harmless at the levels shown. A meter beside it shows the levels.",
           "price board": "CARBON BILLET, PRESSED. WATER ICE. REACTION MASS. Per tonne, with the quantity left; the figures are the Company's and change when the Company says so. The ice is overburden and the board does not pretend otherwise.",
-          "stair well": "A rung stair in a railed well, seven metres down to the Cargo Deck, with a handline beside the rungs for those who float it. TOWNSHIPS RECEIVING, the arrow green.",
+          "stair well": "A rung stair in a railed well, seven meters down to the Cargo Deck, with a handline beside the rungs for those who float it. TOWNSHIPS RECEIVING, the arrow green.",
           "townships board": "SELK TOWNSHIPS BOARD BUYS: structural alloy stock and instrument boards, crated, the bid per tonne beside each line with the intake left. Signed at the receiving counter, not up here."
         },
         "footprint": {
@@ -869,7 +869,7 @@
     },
     "room.t09_commissary": {
       "def": {
-        "desc": "Racks of crew-day crates run back from a counter under the Company's posting, one figure per crew-day and a line beneath it that reads AT THE COMPANY'S PRICE. Netting holds every crate to its shelf, and the shelves are labelled by the day rather than by the item. A cage over the counter is half drawn. The store is warm and lit yellow, and it smells of cardboard and the sweet tang of ration bars; a cold-locker at the back hums, the only cold thing in the room. A ledger on a tether hangs by the till. Arrivals is through one door and the Ninety-Four through the other.",
+        "desc": "Racks of crew-day crates run back from a counter under the Company's posting, one figure per crew-day and a line beneath it that reads AT THE COMPANY'S PRICE. Netting holds every crate to its shelf, and the shelves are labeled by the day rather than by the item. A cage over the counter is half drawn. The store is warm and lit yellow, and it smells of cardboard and the sweet tang of ration bars; a cold-locker at the back hums, the only cold thing in the room. A ledger on a tether hangs by the till. Arrivals is through one door and the Ninety-Four through the other.",
         "details": {
           "cage": "A grille that rolls down over the counter, half drawn at all hours. The sign on it gives no hours at all.",
           "crates": "Sealed crew-day crates of four kilos: food, potable stores, scrubber cartridges. They are the dearest stores in the system, and the netting makes sure none of them drifts off unpaid.",
@@ -973,7 +973,7 @@
     "room.t15_spine": {
       "def": {
         "access": "restricted",
-        "desc": "A service corridor runs behind the tank gallery, cable trays overhead and pump manifolds along one wall, with three wire cages holding the manifold, the locker and the receiving cage that feed the counters on both decks. Beyond the cages two offices face each other across the corridor, one under the Company's mark and one under the townships' plain lettering, each with a dark terminal and a nameplate turned face down. The air is cold and loud with pumps and smells of hydraulic fluid and naphtha. COMPANY PERSONNEL ONLY is stencilled every ten metres. The bunkering hatch is the way out.",
+        "desc": "A service corridor runs behind the tank gallery, cable trays overhead and pump manifolds along one wall, with three wire cages holding the manifold, the locker and the receiving cage that feed the counters on both decks. Beyond the cages two offices face each other across the corridor, one under the Company's mark and one under the townships' plain lettering, each with a dark terminal and a nameplate turned face down. The air is cold and loud with pumps and smells of hydraulic fluid and naphtha. COMPANY PERSONNEL ONLY is stencilled every ten meters. The bunkering hatch is the way out.",
         "details": {
           "cages": "CONCESSION EXPORT. COMPANY STORE. TOWNSHIPS RECEIVING. Each cage has a manifest clipped to it, and the manifests are the spar's real stock, not the boards upstairs.",
           "common services clause": "The plate on the Board's door gives a clause of the Saturn Charter and nothing else: the townships' office sits on the Company's service deck because the Charter puts it here.",
@@ -1080,7 +1080,7 @@
     }
   },
   "manifest": {
-    "digest": "4826b8fb58848615537fb768d156a28bad67fa9a854681a24d11d031d27d4086",
+    "digest": "bd921f85e472ae0c8d99433d1bffac2df6e1957236f87b68c594f004e72b26d1",
     "id": "neighborhood.ligeia_terminal",
     "kind": "neighborhood",
     "requires": [

@@ -215,7 +215,7 @@ pub(super) fn second_page(
     let licences = rows(&disk(&world), "roll", "roll_mind_personal_paid_licence");
     check!(
         licences.len() > 4,
-        "a second inventory page: {} licences",
+        "a second inventory page: {} licenses",
         licences.len()
     );
     check!(
@@ -226,7 +226,7 @@ pub(super) fn second_page(
             .filter(|id| id.get() < fifth.licence().get())
             .count()
             >= 4,
-        "the fifth licence is not on the first page"
+        "the fifth license is not on the first page"
     );
     let holder = fifth.holder().acting_character();
     check_eq!(holder, birth.holder().acting_character());
@@ -246,7 +246,7 @@ pub(super) fn second_page(
         }
         land(&mut world, &draft, N + 100 + n)?;
     }
-    Err(format!("the service never offered the fifth licence: {offered:?}").into())
+    Err(format!("the service never offered the fifth license: {offered:?}").into())
 }
 pub(super) fn exercise(
     f: &PurchaseFixture,

@@ -181,7 +181,7 @@ fn check_manifest(value: &Value, envelope: &Envelope, api: u32) -> Result<(), Ro
     if map.get("class").and_then(Value::as_str) != Some("discretion") {
         return Err(invalid(
             "MIND.class",
-            "authored drafts declare discretion; this grants no licence",
+            "authored drafts declare discretion; this grants no license",
         ));
     }
     if map.get("role").and_then(Value::as_str) != Some("combat") {

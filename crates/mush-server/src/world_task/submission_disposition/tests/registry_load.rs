@@ -427,10 +427,10 @@ struct Driver {
 }
 impl Driver {
     async fn state(&mut self, w: &World, mail: &mut Mail) -> TestResult<String> {
-        let (_, own) = says(w, mail, self.lead, "SIM STATUS", "Simulator centre: ").await?;
+        let (_, own) = says(w, mail, self.lead, "SIM STATUS", "Simulator center: ").await?;
         let state = own
             .iter()
-            .find_map(|l| l.strip_prefix("Simulator centre: "))
+            .find_map(|l| l.strip_prefix("Simulator center: "))
             .and_then(|rest| rest.split([' ', '(']).next())
             .unwrap_or("unknown")
             .to_owned();

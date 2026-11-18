@@ -851,8 +851,8 @@ impl UnitClass {
     #[must_use]
     pub const fn noun(self, count: u32) -> &'static str {
         match (self, count == 1) {
-            (UnitClass::Armour, true) => "armoured machine",
-            (UnitClass::Armour, false) => "armoured machines",
+            (UnitClass::Armour, true) => "armored machine",
+            (UnitClass::Armour, false) => "armored machines",
             (UnitClass::Walker, true) => "walker",
             (UnitClass::Walker, false) => "walkers",
             (UnitClass::Drone, true) => "drone",

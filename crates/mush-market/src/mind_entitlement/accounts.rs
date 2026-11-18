@@ -63,9 +63,9 @@ pub(crate) fn treasury<'a>(
             && a.scope == Some(scope)
             && a.status == AccountStatus::Active
     });
-    let account = accounts.next().ok_or("organisation treasury unavailable")?;
+    let account = accounts.next().ok_or("organization treasury unavailable")?;
     if accounts.next().is_some() {
-        return Err("ambiguous organisation treasury".into());
+        return Err("ambiguous organization treasury".into());
     }
     Ok(account)
 }

@@ -1149,7 +1149,7 @@ fn cockpit_help(verb: &str) -> String {
             .to_owned(),
         // 16b cut V.1: and a named spot of the ground, by its name or its letter.
         "range" => "RANGE [<contact>]   how far away a contact plotted; your lock if you name \
-                    none. A locked contact reads to the nearest ten metres. A named spot of the \
+                    none. A locked contact reads to the nearest ten meters. A named spot of the \
                     ground works too, by its name or its map letter: RANGE The Ford."
             .to_owned(),
         "bearing" => "BEARING [<contact>] which way a contact plotted, absolute and off your own \
@@ -1233,7 +1233,7 @@ fn cockpit_help(verb: &str) -> String {
         // each mount's rounds, on a line of their own.
         _ => "STATUS              your callsign, power, speed, heading, position, the named spot \
               nearest you, what your own scope holds, each mount's rounds left over its full \
-              load, your pod's switch if you carry one, and your armour and internals section \
+              load, your pod's switch if you carry one, and your armor and internals section \
               by section."
             .to_owned(),
     }

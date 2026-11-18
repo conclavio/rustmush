@@ -400,7 +400,7 @@ impl Phase {
         match self {
             Phase::Unknown => "unknown".into(),
             Phase::Walking => "walking".into(),
-            Phase::InCentre => "in the centre".into(),
+            Phase::InCentre => "in the center".into(),
             Phase::Claimed { side, index } => format!("claimed {} {index}", side.as_str()),
             Phase::Boarding { match_id } => format!("boarding (match {match_id})"),
             Phase::Seated { match_id } => format!("seated (match {match_id})"),
@@ -3417,7 +3417,7 @@ mod tests {
                 );
                 p.apply(t + 60, &classify("No such contact."));
                 let ba = &p.contacts["BA"];
-                assert_eq!(ba.track, None, "at {t} ms, centre {centre_east_m} m east");
+                assert_eq!(ba.track, None, "at {t} ms, center {centre_east_m} m east");
                 if let Some(raw) = fit(&ba.fixes, t + 60) {
                     run.fastest_mps = run.fastest_mps.max(raw.speed_mps);
                     if raw.fixes >= TRACK_MIN_FIXES
@@ -3449,7 +3449,7 @@ mod tests {
             decided += run.decided_by_displacement;
             assert!(
                 run.fastest_mps > TRACK_MIN_MPS,
-                "centre {centre_east_m} m east: the fastest raw fit was {} m/s",
+                "center {centre_east_m} m east: the fastest raw fit was {} m/s",
                 run.fastest_mps
             );
         }
@@ -3597,11 +3597,11 @@ mod tests {
                 (13_002, "BA destroyed."),
                 (
                     13_003,
-                    "Hit on the hull's front facet: 280 of 400 armour left.",
+                    "Hit on the hull's front facet: 280 of 400 armor left.",
                 ),
                 (
                     13_004,
-                    "Hit on the engine, through the hull's rear facet: armour gone, 20 of 40 inside.",
+                    "Hit on the engine, through the hull's rear facet: armor gone, 20 of 40 inside.",
                 ),
                 (
                     13_005,
@@ -3633,23 +3633,23 @@ mod tests {
             &[
                 (
                     1_000,
-                    "Hit on the hull's left facet: 200 of 250 armour left.",
+                    "Hit on the hull's left facet: 200 of 250 armor left.",
                 ),
                 (
                     1_100,
-                    "Hit on the hull's left facet: 150 of 250 armour left.",
+                    "Hit on the hull's left facet: 150 of 250 armor left.",
                 ),
                 (
                     1_200,
-                    "Hit on the engine, through the hull's rear facet: armour gone, 20 of 40 inside.",
+                    "Hit on the engine, through the hull's rear facet: armor gone, 20 of 40 inside.",
                 ),
                 (
                     1_300,
-                    "Hit on the right_track's right facet: 40 of 100 armour left.",
+                    "Hit on the right_track's right facet: 40 of 100 armor left.",
                 ),
                 (
                     1_400,
-                    "Hit on the turret's front facet: 300 of 350 armour left.",
+                    "Hit on the turret's front facet: 300 of 350 armor left.",
                 ),
                 (1_500, "Hit on the left_track, which is already destroyed."),
             ],
@@ -3702,7 +3702,7 @@ mod tests {
             &mut p,
             &[(
                 2_000,
-                "Hit on the hull's left facet: 200 of 250 armour left.",
+                "Hit on the hull's left facet: 200 of 250 armor left.",
             )],
         );
         assert_eq!(
@@ -3717,7 +3717,7 @@ mod tests {
             &mut p,
             &[(
                 2_500,
-                "Hit on the engine, through the hull's rear facet: armour gone, 20 of 40 inside.",
+                "Hit on the engine, through the hull's rear facet: armor gone, 20 of 40 inside.",
             )],
         );
         let rear = p.own.last_hit.clone().expect("a facet hit");
@@ -3947,13 +3947,13 @@ mod tests {
             "Miss on BA: the target moved.",
             "BA destroyed.",
             "BA's turret is destroyed.",
-            "Hit on the hull's front facet: 280 of 400 armour left.",
+            "Hit on the hull's front facet: 280 of 400 armor left.",
             "The left_track is destroyed: the tank is slowed.",
             "Power online.",
             "Held: something is in the way.",
             "Receiver degraded: something is jamming the sight.",
             "FIRE cannon refused. Still cycling: 4 s to go.",
-            "Simulator centre: running (match 8)",
+            "Simulator center: running (match 8)",
             "  red: 1 (RA): Pilot, pod Red Pod 1, seated",
             "  blue: 1 (BA): Ada",
             "Pilot takes red slot 1. `SIM START` begins the match.",
@@ -4977,7 +4977,7 @@ mod tests {
             "Miss.",
             "BA destroyed.",
             "BA's turret is destroyed.",
-            "Hit on the hull's front facet: 280 of 400 armour left.",
+            "Hit on the hull's front facet: 280 of 400 armor left.",
             "The left_track is destroyed.",
             "Power online.",
             "Held: something is in the way.",
@@ -4986,12 +4986,12 @@ mod tests {
             "Back aboard RA after 2 m 14 s away.",
             "You climb into Red Pod 1. The panel wakes when every pilot is seated.",
             "The hatch of Red Pod 1 swings open.",
-            "Simulator centre: idle",
+            "Simulator center: idle",
             "Pilot takes red slot 1. `SIM START` begins the match.",
             "Match 8 is boarding. Every pilot: BOARD your pod.",
             "Match 8 is running. Good hunting.",
             "Match 8 is over (red). Its units are checked in.",
-            "The simulator centre is running; that is not something you can do to it now.",
+            "The simulator center is running; that is not something you can do to it now.",
             "Red Room #12",
             "Hint: STARTUP brings your power up.",
             "Connected as Pilot (account pilot, 1 connection).",
@@ -5101,7 +5101,7 @@ mod tests {
                 (30, "Locked on BA."),
                 (40, "Firing cannon."),
                 (50, "Hit on BA: turret."),
-                (60, "Hit on the hull's front facet: 280 of 400 armour left."),
+                (60, "Hit on the hull's front facet: 280 of 400 armor left."),
                 (70, "Match 8 is over (red). Its units are checked in."),
             ],
         );
@@ -5257,7 +5257,7 @@ mod tests {
                 (100, "Match 9 is boarding. Every pilot: BOARD your pod."),
                 // Before the match runs: nothing.
                 (500, "New contact X1: bearing 000°, far."),
-                (600, "Hit on the hull's left facet: 200 of 250 armour left."),
+                (600, "Hit on the hull's left facet: 200 of 250 armor left."),
                 (700, "Hit on X1: turret."),
             ],
         );
@@ -5313,12 +5313,12 @@ mod tests {
             &[
                 (
                     5_000,
-                    "Hit on the hull's left facet: 200 of 250 armour left.",
+                    "Hit on the hull's left facet: 200 of 250 armor left.",
                 ),
                 (6_000, "Hit on BA: turret."),
                 (
                     7_000,
-                    "Hit on the hull's front facet: 300 of 400 armour left.",
+                    "Hit on the hull's front facet: 300 of 400 armor left.",
                 ),
                 (8_000, "Hit on BA: hull."),
             ],
@@ -6159,7 +6159,7 @@ mod tests {
         feed(
             &mut p,
             &[
-                (1_000, "Simulator centre: selection"),
+                (1_000, "Simulator center: selection"),
                 (1_000, "  red: nobody"),
                 (
                     1_000,
@@ -6170,14 +6170,14 @@ mod tests {
         assert_eq!(p.match_mode, MatchMode::Hold);
         p.new_match();
         assert_eq!(p.match_mode, MatchMode::Hold, "kept by a new match");
-        feed(&mut p, &[(2_000, "Simulator centre: selection")]);
+        feed(&mut p, &[(2_000, "Simulator center: selection")]);
         assert_eq!(p.match_mode, MatchMode::Skirmish, "a board head resets it");
         feed(
             &mut p,
             &[(2_000, "  mode: range — 2 targets on the blue side")],
         );
         assert_eq!(p.match_mode, MatchMode::Range);
-        feed(&mut p, &[(3_000, "Simulator centre: idle")]);
+        feed(&mut p, &[(3_000, "Simulator center: idle")]);
         assert_eq!(p.match_mode, MatchMode::Skirmish);
     }
 
@@ -6338,7 +6338,7 @@ mod tests {
                 (2_005, "Miss on BA: the round went wide."),
                 (
                     2_255,
-                    "Hit on the hull's front facet: 300 of 400 armour left.",
+                    "Hit on the hull's front facet: 300 of 400 armor left.",
                 ),
                 (2_505, "Held: the ground ahead will not take the tank."),
             ],

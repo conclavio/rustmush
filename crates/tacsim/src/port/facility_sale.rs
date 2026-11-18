@@ -40,7 +40,7 @@ pub const FACILITY_CODE_PREFIX: &str = "facility.";
 /// The relay foundry: `{name}`.
 pub const FACILITY_FOUNDRY: &str = "The {name} is the relay foundry, which is not for sale.";
 /// A programme workshop: `{name}`.
-pub const FACILITY_WORKSHOP: &str = "The {name} is a programme workshop, which is not for sale.";
+pub const FACILITY_WORKSHOP: &str = "The {name} is a program workshop, which is not for sale.";
 /// A medical room: `{name}`.
 pub const FACILITY_MEDICAL: &str = "The {name} is a medical room, which is not for sale.";
 /// Any other facility: `{name}`.

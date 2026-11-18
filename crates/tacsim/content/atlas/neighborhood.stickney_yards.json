@@ -1,6 +1,6 @@
 {
   "brief": {
-    "prose": "The station is laid out as a curve. The visiting berths and the pressure lobby are at one end; the Republic Customs Hall is the first room every arrival stands in; the Yard Concourse is the spine, and every public desk opens off it: the harbourmaster, the Materials Exchange (with its public rung stair down to Kasei's receiving counter on the Freight Deck), the commissary, the Stickney service counter, the Shift Board mess and the observation gallery over the drydocks. Twelve rooms carry the slice; the pasted P06 Bonded Freight Hall, P13 Freight Transfer Junction and P14 Tank Service Gallery are reconciled out as §0.3 says (their only loop purpose arrives with the freight-deck cut P-F) and stay visible as background through the receiving office's barred window and the gallery's ports. One restricted room, the Yard Maintenance Spine, is staff-locked and hidden off the receiving office on the staff-lobby precedent; it holds the storefront items that back the counters and the dark desks where doc 11's principals sit enabled:false until the faction cut binds them."
+    "prose": "The station is laid out as a curve. The visiting berths and the pressure lobby are at one end; the Republic Customs Hall is the first room every arrival stands in; the Yard Concourse is the spine, and every public desk opens off it: the harbormaster, the Materials Exchange (with its public rung stair down to Kasei's receiving counter on the Freight Deck), the commissary, the Stickney service counter, the Shift Board mess and the observation gallery over the drydocks. Twelve rooms carry the slice; the pasted P06 Bonded Freight Hall, P13 Freight Transfer Junction and P14 Tank Service Gallery are reconciled out as §0.3 says (their only loop purpose arrives with the freight-deck cut P-F) and stay visible as background through the receiving office's barred window and the gallery's ports. One restricted room, the Yard Maintenance Spine, is staff-locked and hidden off the receiving office on the staff-lobby precedent; it holds the storefront items that back the counters and the dark desks where doc 11's principals sit enabled:false until the faction cut binds them."
   },
   "entries": {
     "exit.p01_p02": {
@@ -49,7 +49,7 @@
       "def": {
         "from": "room.p04_concourse",
         "names": [
-          "Harbourmaster <HM>;hm;harbourmaster;harbour",
+          "Harbormaster <HM>;hm;harbormaster;harbourmaster;harbor;harbour",
           "Concourse <C>;c;concourse;out"
         ],
         "portal": {
@@ -673,7 +673,7 @@
         "details": {
           "berth board": "Cradle by cradle: the hull, its registry, its agent of record, CLEARED or HELD. A docked hull's name lights when a pilot is aboard.",
           "boarding tubes": "Each tube ends at a lock plate and a cycle counter. The tubes are the station's: a ship's own lock is on the other side of the counter.",
-          "handlines": "Braided line at shoulder height, clip points every two metres. The convention is right-hand traffic; the sign says so in Coprates typeface.",
+          "handlines": "Braided line at shoulder height, clip points every two meters. The convention is right-hand traffic; the sign says so in Coprates typeface.",
           "ports": "Thick laminated glass with a Republic inspection sticker in each corner, dated. Beyond them the boarding tubes, and past those the crater floor's work lamps."
         },
         "footprint": {
@@ -709,7 +709,7 @@
         "desc": "A square chamber between two pressure doors, each a hand-span of Stickney alloy with a Republic inspection sticker on its frame and a cycle counter glowing above it. There is no side exit and nothing to buy; the room exists so that nobody is ever one door from vacuum. Tether clips hang from a rail by the inner door, and a wall placard in Republic typeface lists the order of operations if the gallery door fails to seal. The air is still, a little over-pressured, and smells of door grease. The berth gallery is outward; the customs hall is inward.",
         "details": {
           "cycle counter": "Six digits over each door. The gallery side is higher by a hundred thousand; ships come and go more than people do.",
-          "inspection sticker": "Orbital Guard Harbour Safety, a date, a stamp, a signature that is only a line.",
+          "inspection sticker": "Orbital Guard Harbor Safety, a date, a stamp, a signature that is only a line.",
           "placard": "IN THE EVENT OF SEAL FAILURE: 1. Do not open the inner door. 2. Clip on. 3. Wait. Initialled by three inspectors, the last one this month."
         },
         "footprint": {
@@ -773,11 +773,11 @@
     },
     "room.p04_concourse": {
       "def": {
-        "desc": "A wide corridor curves with the crater wall, its outer face studded with viewports and its inner face given over to shift boards: crew call lists, drydock rotations, a Guard recruiting bill with its corners curling. There is no advertising. Handlines run both ways down the middle and traffic keeps right by habit. Pump vibration from the refinery comes up through the deck, a hum felt in the boot-cleats before it is heard. The air is warm and tastes of alloy dust. Doors open off the concourse to the harbourmaster, the materials exchange, the commissary, the service counter, the Shift Board mess and the observation gallery; the customs hall is back toward the locks.",
+        "desc": "A wide corridor curves with the crater wall, its outer face studded with viewports and its inner face given over to shift boards: crew call lists, drydock rotations, a Guard recruiting bill with its corners curling. There is no advertising. Handlines run both ways down the middle and traffic keeps right by habit. Pump vibration from the refinery comes up through the deck, a hum felt in the boot-cleats before it is heard. The air is warm and tastes of alloy dust. Doors open off the concourse to the harbormaster, the materials exchange, the commissary, the service counter, the Shift Board mess and the observation gallery; the customs hall is back toward the locks.",
         "details": {
-          "handlines": "Two lines, inbound and outbound, with a painted arrow every five metres. Newcomers hold both.",
+          "handlines": "Two lines, inbound and outbound, with a painted arrow every five meters. Newcomers hold both.",
           "recruiting bill": "ORBITAL GUARD — THE CORRIDOR IS OURS TO KEEP. A Vigil at full torch, drawn larger than it is. Someone has pencilled a tally under it.",
-          "shift boards": "Drydock 2 on third rotation; Drydock 4 RESERVED — GUARD; a crew call for a Hod refit, Settlement citizens preferred. A public map of the station hangs at the end, the Freight Deck drawn as a grey band marked YARD PERSONNEL.",
+          "shift boards": "Drydock 2 on third rotation; Drydock 4 RESERVED — GUARD; a crew call for a Hod refit, Settlement citizens preferred. A public map of the station hangs at the end, the Freight Deck drawn as a gray band marked YARD PERSONNEL.",
           "viewports": "Small, round, thick. Through each one a slice of crater floor, a truss, a work lamp, and a scrap of Mars."
         },
         "footprint": {
@@ -809,10 +809,10 @@
       "def": {
         "desc": "A half-door with a counter on top of it closes off a narrow office papered in berth assignments. On the back wall a board shows every cradle in the visiting berths — occupied, cleared, overdue — and under it two clocks, one in Freeport time and one in Coprates standard, disagreeing by the margin two governments can keep up over a calendar. Clearance stamps sit in a tray; a sailing-plan pad lies open to today's page. A radio mutters the Guard's approach-control channel at a volume that is just not words. The office smells of stamp ink and strong tea. The concourse is out the half-door.",
         "details": {
-          "berth board": "Cradle, hull, CLEARED or OVERDUE, and the hour of the next filed departure. A hull with no sailing plan is listed as IDLE, in a colour meant to shame.",
+          "berth board": "Cradle, hull, CLEARED or OVERDUE, and the hour of the next filed departure. A hull with no sailing plan is listed as IDLE, in a color meant to shame.",
           "clocks": "Freeport time on the left, Coprates standard on the right. A card between them gives the offset, in case anyone asks why the Belt's day and the Republic's disagree; the clerk has an opinion about which is right.",
           "radio": "Approach control, the Guard's voice, a cutter's callsign, a bearing. Then static, which is most of it.",
-          "sailing plan pad": "Departure at, destination, manifest sealed Y/N, sell at destination, agent of record, SIGNED. A plan can be filed days ahead and amended until the burn; after it, the pad says SAILED and nothing else, and the harbourmaster's office runs its lines under the captain's signature whether the captain is awake or not."
+          "sailing plan pad": "Departure at, destination, manifest sealed Y/N, sell at destination, agent of record, SIGNED. A plan can be filed days ahead and amended until the burn; after it, the pad says SAILED and nothing else, and the harbormaster's office runs its lines under the captain's signature whether the captain is awake or not."
         },
         "footprint": {
           "rect": [
@@ -827,7 +827,7 @@
           ]
         },
         "kind": "indoor",
-        "name": "Harbourmaster's Office",
+        "name": "Harbormaster's Office",
         "short_desc": "A narrow office behind a half-door, the berth board glowing on the back wall.",
         "site": "site.yard_rim",
         "surface": {
@@ -880,7 +880,7 @@
           "bids board": "KASEI METALS BUYS: concentrate and water ice, the bid per tonne beside each line with the intake left this cycle; the figures are the board's own, never the paint's. Under it, contractors' chits: a tonne of alloy offcuts wanted, a Hod seat to Isidis offered.",
           "floor": "Pallet scoring in the alloy, in parallel lines from the well to the door. Freight used to come up this way. Now it does not, and the lines are a record.",
           "price board": "ALLOY STOCK, STRUCTURAL — per t — remaining. PROPELLANT, DRIVE — per t — remaining. The figures are Kasei's and change when Kasei says so. Below Kasei's lines, in the Yard's own stencil: YARD FITTINGS, CRATED — PER TONNE, THE YARD'S FIGURE — STICKNEY YARDS — SIGNED AT THE SERVICE COUNTER, with a chalked note beside it, CRATED: 2.3 CUBES TO THE TONNE. A Dray captain who reads both boards sees the return run's arithmetic: alloy stock fills the rating, fittings fill the bay, and the hull that leaves with both full pays best.",
-          "stair well": "A rung stair in a railed well, seven metres down to the Freight Deck, with a handline beside the rungs for those who prefer to float it. RECEIVING COUNTER — PUBLIC; the arrow is green."
+          "stair well": "A rung stair in a railed well, seven meters down to the Freight Deck, with a handline beside the rungs for those who prefer to float it. RECEIVING COUNTER — PUBLIC; the arrow is green."
         },
         "footprint": {
           "rect": [
@@ -1047,7 +1047,7 @@
     "room.p15_maintenance": {
       "def": {
         "access": "restricted",
-        "desc": "A service corridor runs behind the freight deck, cable trays overhead, pump manifolds along one wall, and three wire cages holding the manifolds and lockers that feed the counters above: Kasei's intake and store, the commissary's provisions, the Yard's spares. At the far end a glassed office looks down into the bonded hall — three desks, three dark terminals, nameplates face down. The air is cold and loud with pumps and smells of hydraulic fluid. YARD PERSONNEL ONLY is stencilled every ten metres. The receiving hatch is the way out.",
+        "desc": "A service corridor runs behind the freight deck, cable trays overhead, pump manifolds along one wall, and three wire cages holding the manifolds and lockers that feed the counters above: Kasei's intake and store, the commissary's provisions, the Yard's spares. At the far end a glassed office looks down into the bonded hall — three desks, three dark terminals, nameplates face down. The air is cold and loud with pumps and smells of hydraulic fluid. YARD PERSONNEL ONLY is stencilled every ten meters. The receiving hatch is the way out.",
         "details": {
           "cages": "KASEI — INTAKE & STORE. COMMISSARY — PROVISIONS. YARD — SPARES. Each cage has a manifest clipped to it, and the manifests are the station's real stock, not the boards upstairs.",
           "manifolds": "Propellant from the refinery, water from the bunker, air from the plant, each valve tagged with a date and an initial.",
@@ -1161,7 +1161,7 @@
     }
   },
   "manifest": {
-    "digest": "43fc3279b531a93eb1479371549bfdc1270216dc6a6ebdaba56043c5009daafd",
+    "digest": "b0bb2e7caaa7fd715da8798eb0049dcd343c8a26a377466cc1d8c3b5cbaeb559",
     "id": "neighborhood.stickney_yards",
     "kind": "neighborhood",
     "requires": [

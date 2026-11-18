@@ -2626,7 +2626,7 @@ fn y2_the_orders_counter_counts_orders_and_not_unit_lines() {
                     draws: Vec::new(),
                     hash: 0,
                 };
-                bytes.push_str(&serde_json::to_string(&event).expect("a ledger line serialises"));
+                bytes.push_str(&serde_json::to_string(&event).expect("a ledger line serializes"));
                 bytes.push('\n');
             }
         }
@@ -7133,7 +7133,7 @@ async fn measure_fan_out(knobs: &Knobs) {
     assert_eq!(state, Some(MatchState::Running), "{started}");
     let match_id = match_::centre_of(tw.world())
         .and_then(|centre| centre.match_id)
-        .expect("the centre adopted the match");
+        .expect("the center adopted the match");
     let bound = pilots
         .iter()
         .filter(|pilot| {

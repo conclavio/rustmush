@@ -571,7 +571,7 @@ fn refused_admission(
     let consulted = probe.consulted()?;
     check!(
         !consulted.is_empty() && consulted.iter().all(|pair| *pair == (issuer, buyer)),
-        "the fenced Accept asks about the licence's House issuer and its buyer: {consulted:?}"
+        "the fenced Accept asks about the license's House issuer and its buyer: {consulted:?}"
     );
     check_eq!(fenced.to_string(), missing.to_string());
     check_eq!(format!("{fenced:?}"), format!("{missing:?}"));

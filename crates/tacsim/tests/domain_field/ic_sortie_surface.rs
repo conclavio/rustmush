@@ -748,7 +748,7 @@ fn abandonment(rig: &mut crate::excursions::Rig, tv: ObjId) -> Option<(bool, Opt
 /// The abandonment notice (A1): the close receipt's line to the operator.
 fn abandoned_notice(tv: ObjId) -> String {
     format!(
-        "Staff closed rig #{}'s excursion and cancelled its work. It stands where it is, \
+        "Staff closed rig #{}'s excursion and canceled its work. It stands where it is, \
          abandoned, until staff bring it home; its hopper is unchanged.",
         tv.0
     )
@@ -757,7 +757,7 @@ fn abandoned_notice(tv: ObjId) -> String {
 /// The plain close's notice: a close that abandons nothing new.
 fn plain_close_notice(tv: ObjId) -> String {
     format!(
-        "Staff closed rig #{}'s excursion and cancelled its work. Its location and hopper are \
+        "Staff closed rig #{}'s excursion and canceled its work. Its location and hopper are \
          unchanged.",
         tv.0
     )
@@ -1407,7 +1407,7 @@ fn m8a_the_owner_reads_the_box_and_nobody_else() {
     let seal = open.seal.clone().expect("the rig has a seal");
     // The fix round's F1: a trip's open is two rows, the second indented two spaces.
     let open_line = format!(
-        "{} out · surface from the bay of {}\n  Standard Doctrine · the ROM · governed · licence \
+        "{} out · surface from the bay of {}\n  Standard Doctrine · the ROM · governed · license \
          doctrine · seal {}",
         tacsim::port::licence::ic_stamp(out_ic),
         hull_name(&rig, hull),
@@ -1435,7 +1435,7 @@ fn m8a_the_owner_reads_the_box_and_nobody_else() {
     assert!(
         rows[1].starts_with("  Standard Doctrine · ")
             && rows[1].ends_with(&format!(
-                " · licence doctrine · seal {}",
+                " · license doctrine · seal {}",
                 &ship_seal.seal_digest[..8]
             )),
         "{out}"
@@ -2281,7 +2281,7 @@ fn m8d_an_organisations_fine_debits_its_treasury() {
                 .find(|o| o.name.as_str() == "Salvage")
                 .map(|o| (o.id, o.root_scope))
         })
-        .expect("the organisation");
+        .expect("the organization");
     retitle(&mut rig, tv, &format!("org:Salvage scope={}", root.0));
     let seq = inspect(&mut rig, operator, tv);
     seed_ungoverned(&mut rig, tv, seq);
@@ -2367,7 +2367,7 @@ fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
     for (line, said) in [
         (
             format!("@registry/revoke principal=Nobody #{n}"),
-            "No such character or organisation.",
+            "No such character or organization.",
         ),
         (line.clone(), "That inspection found nothing to revoke for."),
     ] {
@@ -2417,11 +2417,11 @@ fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
     let until = tacsim::port::licence::ic_stamp(record.until_ic);
     assert_eq!(
         receipt.as_deref(),
-        Some(format!("{pilot_name} holds no new licence until {until}.").as_str())
+        Some(format!("{pilot_name} holds no new license until {until}.").as_str())
     );
     // K2: the pilot is told once; nobody else.
     announce(&mut rig, &family, vec![pilot_key.clone()]);
-    let notice = format!("The Registry has barred your mind licences until {until}.");
+    let notice = format!("The Registry has barred your mind licenses until {until}.");
     let mut heard = (0, 0, 0);
     for _ in 0..2 {
         let (events, queued) = fire(&mut rig);
@@ -2444,7 +2444,7 @@ fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
                 .find(|o| o.name.as_str() == "Salvage")
                 .map(|o| (o.id, o.root_scope))
         })
-        .expect("the organisation");
+        .expect("the organization");
     let member = rig.tw.spawn_player("Member");
     god(
         &mut rig,
@@ -2468,11 +2468,11 @@ fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
         .get(&family, &org_key)
         .expect("the family reads")
         .cloned()
-        .expect("the organisation's record");
+        .expect("the organization's record");
     assert_eq!(record.principal, mush_org::PrincipalId::Organization(org));
     announce(&mut rig, &family, vec![org_key.clone()]);
     let notice = format!(
-        "The Registry has barred your mind licences until {}.",
+        "The Registry has barred your mind licenses until {}.",
         tacsim::port::licence::ic_stamp(record.until_ic)
     );
     let mut heard = (0, 0);
@@ -2482,7 +2482,7 @@ fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
         heard.1 += count(&said(&rig.tw, &events, bystander), &notice);
         land_all(&mut rig, &queued);
     }
-    assert_eq!(heard, (1, 0), "the organisation's granted member, once");
+    assert_eq!(heard, (1, 0), "the organization's granted member, once");
 
     // A name that is both.
     god(&mut rig, &format!("@org/create {pilot_name}"));
@@ -2493,7 +2493,7 @@ fn m8d_the_registry_revokes_the_inspected_holder_for_a_term() {
     );
     assert_eq!(
         out,
-        "That name is a character and an organisation; name the character as #<n>."
+        "That name is a character and an organization; name the character as #<n>."
     );
     assert!(queued.is_empty());
 
@@ -2679,7 +2679,7 @@ fn m8e_an_ungoverned_rig_seals_the_operators_draft_aboard() {
         .and_then(|record| record.act)
         .and_then(|act| act.seal)
         .expect("the dispatch sealed the draft at the start");
-    assert_eq!(sealed.licence, None, "a draft has no licence to mark");
+    assert_eq!(sealed.licence, None, "a draft has no license to mark");
     let _ = finish(&mut rig, tv, pilot);
     let open = record_of(&mut rig.tw, tv)
         .and_then(|record| record.sortie)
@@ -2877,7 +2877,7 @@ fn s4b1_a_live_claim_cursor_holds_the_rig_in_its_bay() {
     }
     let mut record = record_of(&mut rig.tw, tv).expect("the record");
     record.claim = Some(Box::new(ClaimCursor::Refused {
-        reason: "You hold no licence 7.".into(),
+        reason: "You hold no license 7.".into(),
         at_ic: 1,
     }));
     crate::excursions::put_record(&mut rig, record);
@@ -2958,7 +2958,7 @@ fn s4b2_an_open_refused_for_good_cancels_the_queued_launch() {
         "{:?}",
         record.claim
     );
-    assert!(record.queued.is_none(), "the launch is cancelled");
+    assert!(record.queued.is_none(), "the launch is canceled");
     assert!(record.act.is_none() && record.excursion.is_none());
     assert!(in_bay(&rig.tw, tv, &row), "nothing left the bay");
     assert_eq!(heard, 1, "the pilot is told once");
@@ -3135,7 +3135,7 @@ fn s4b2_a_claim_refused_for_good_does_not_hold_its_operators_next_claim() {
     );
 
     let record = record_of(&mut rig.tw, second).expect("the record");
-    assert!(record.queued.is_none(), "the launch is cancelled");
+    assert!(record.queued.is_none(), "the launch is canceled");
     assert!(record.act.is_none() && record.excursion.is_none());
     for tv in [first, second] {
         assert!(in_bay(&rig.tw, tv, &row), "nothing left the bay");

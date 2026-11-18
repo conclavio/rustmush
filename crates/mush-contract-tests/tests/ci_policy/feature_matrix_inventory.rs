@@ -239,7 +239,7 @@ const ALLOWED: &[Allowed] = &[
         package: "tacsim",
         feature: "test-dormancy-floor",
         reason: "doc 41 cut RS.9c: `tacsim::store::lower_dormancy_floor_for_test`, the charter \
-                 recall's dormancy window below the programme's validated one-day floor for the \
+                 recall's dormancy window below the program's validated one-day floor for the \
                  bot's story (c) on a production root. Turned on by `mush-bot`'s \
                  `[dev-dependencies]` edge alone, so `cargo test --workspace` unifies it on and \
                  compiles it; no shipped binary carries it",

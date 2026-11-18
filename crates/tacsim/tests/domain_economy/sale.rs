@@ -533,7 +533,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot whose hull is named `name`, standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1001,7 +1001,7 @@ fn enrolment_of(tw: &TestWorld, pilot: ObjId) -> tacsim::port::Enrolment {
     store(tw)
         .enrolment_of(pilot)
         .cloned()
-        .expect("the pilot's enrolment")
+        .expect("the pilot's enrollment")
 }
 
 /// A contract's name.
@@ -1241,7 +1241,7 @@ fn ic10_selling_metals_at_stickney_pays_the_pilot_and_the_trust_from_journals() 
         "{statement}"
     );
     let ship = run(&mut rig.tw, pilot, "+ship");
-    assert!(ship.contains("Programme: 1 sale;"), "{ship}");
+    assert!(ship.contains("Program: 1 sale;"), "{ship}");
 
     // The settled sale is a trade-tape row (residual F11a, pinned).
     let catalog = mush_economy::CatalogRef {
@@ -1416,7 +1416,7 @@ fn kasei_boards_lane(reference: bool) -> String {
         if !reference {
             doc["entries"]["ceres_port"]["def"]["programme"]["reference"]
                 .as_object_mut()
-                .expect("the programme's reference")
+                .expect("the program's reference")
                 .remove("instrument_boards")
                 .expect("the boards row");
         }
@@ -2318,7 +2318,7 @@ fn ic14_a_settlement_healed_at_boot_folds_once() {
                 found = true;
             }
         }
-        assert!(found, "the enrolment document");
+        assert!(found, "the enrollment document");
     }
     let mut rig = reboot(rig);
     assert!(

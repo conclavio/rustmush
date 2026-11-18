@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(
             whole.kv.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
             vec!["doc:1"],
-            "a whole fetch still honours the manifest's key prefixes"
+            "a whole fetch still honors the manifest's key prefixes"
         );
         // An unreadable manifest is a whole fetch, not a failed boot.
         write_ops(
@@ -1860,7 +1860,7 @@ mod tests {
                 ("@claim", mush_core::CommandCompatibility::Authoritative),
                 ("@extract", mush_core::CommandCompatibility::Authoritative),
                 ("@survey", mush_core::CommandCompatibility::LegacyPostImage),
-                ("@licence", mush_core::CommandCompatibility::ReadOnly),
+                ("@license", mush_core::CommandCompatibility::ReadOnly),
                 // E7 cut 4: the work-order lane (ceiling Authoritative) and the
                 // facility lane (LegacyPostImage — open writes a document).
                 ("@wo", mush_core::CommandCompatibility::Authoritative),

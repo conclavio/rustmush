@@ -98,7 +98,7 @@ fn granted_rows(
     )?;
     term.matches_current(&pointer)?;
     check_eq!(term.key(), format!("{}/{}", licence.key(), one.key()));
-    let bytes = rig::document(s, "granted licence", &f.paid_licences, &pointer)?;
+    let bytes = rig::document(s, "granted license", &f.paid_licences, &pointer)?;
     rig::read_back(&bytes, &pointer)?;
     let bytes = rig::document(s, "granted term", &f.paid_terms, &term)?;
     rig::read_back(&bytes, &term)?;

@@ -5,7 +5,7 @@ const START: u128 = 65_000_000;
 pub(super) fn exercise(registry: &Fixture, snapshot: &Durable) -> TestResult {
     let birth = one(rows(&snapshot.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
-        serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
+        serde_json::from_value(birth.get("licence").cloned().ok_or("owner license")?)?;
     // 17g C1a: the paid resale writer repeats the House buyer admission. The
     // probe (`resale_routes::AdmissionProbe`) stands in for the launch's
     // Coprates admission: it refuses only the pair the route arms, and records

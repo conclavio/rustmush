@@ -500,7 +500,7 @@ impl AsyncCompletion for WorldgenCompletion {
                 {
                     tracing::debug!(
                         correlation,
-                        "batch room completion for a cancelled batch dropped"
+                        "batch room completion for a canceled batch dropped"
                     );
                     return;
                 }

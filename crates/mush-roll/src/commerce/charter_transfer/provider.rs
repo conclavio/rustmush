@@ -513,7 +513,7 @@ impl ActionProvider for Provider {
                 } else {
                     "Offer a charter transfer"
                 },
-                "A personal charter title sale preserves existing mind terms and paid licences.",
+                "A personal charter title sale preserves existing mind terms and paid licenses.",
             )
             .map_err(|_| fail())?,
             guards: guards.finish().map_err(|_| fail())?,

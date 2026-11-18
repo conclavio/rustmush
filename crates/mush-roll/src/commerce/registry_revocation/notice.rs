@@ -33,7 +33,7 @@ struct Notice {
 impl Notice {
     fn text(self) -> String {
         format!(
-            "Registry revocation: your mind licence {} term {} is revoked through its original grace end {} (operation {}). Running sorties retain their captured warrant. A later term requires normal fresh admission.",
+            "Registry revocation: your mind license {} term {} is revoked through its original grace end {} (operation {}). Running sorties retain their captured warrant. A later term requires normal fresh admission.",
             self.licence.get(),
             self.generation.get(),
             self.grace_end.get(),
@@ -224,7 +224,7 @@ fn command(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         .transpose()?;
     let result = own(ctx, s, ctx.actor, licence, generation).map_err(|_| unavailable())?;
     let text = result.map(Notice::text).unwrap_or_else(|| {
-        "No Registry revocation is recorded for the selected term of your licence.".to_owned()
+        "No Registry revocation is recorded for the selected term of your license.".to_owned()
     });
     ctx.out.sys_to_actor(ctx.actor, crate::NS, text);
     Ok(())
@@ -390,7 +390,7 @@ pub(crate) fn register(
     let command_service = service.clone();
     reg.classify_commands(CommandCompatibility::ReadOnly);
     reg.command(CommandSpec{name:COMMAND.into(),switches:vec!["status".into()],shape:ArgShape::Raw,
-        help:"@mindrevoke/status <your licence>[/term] — inspect Registry revocation of your accepted term.".into(),..Default::default()},
+        help:"@mindrevoke/status <your license>[/term] — inspect Registry revocation of your accepted term.".into(),..Default::default()},
         Arc::new(move|ctx:&mut Ctx<'_>|command(ctx,&command_service)))?;
     reg.tick(
         "registry_revocation_notices",

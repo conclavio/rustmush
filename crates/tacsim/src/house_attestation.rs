@@ -220,7 +220,7 @@ fn walk(ctx: &Ctx<'_>, state: &mut HouseAttestationState) {
             );
         let Some(page) = page else {
             if let Some(&(org, _)) = state.agents.first() {
-                state.page(org, "walk", "the House owner licences are unreadable");
+                state.page(org, "walk", "the House owner licenses are unreadable");
             }
             return;
         };

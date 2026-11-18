@@ -205,7 +205,7 @@
     },
     {
       "id": "ammo_missile",
-      "label": "anti-armour missiles, canistered",
+      "label": "anti-armor missiles, canistered",
       "family": "munitions",
       "class": "trade",
       "ledger_unit": "round",
@@ -676,7 +676,7 @@
     },
     {
       "id": "pd_box",
-      "label": "point-defence rounds, boxed",
+      "label": "point-defense rounds, boxed",
       "family": "munitions",
       "class": "trade",
       "ledger_unit": "box",

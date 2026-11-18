@@ -740,7 +740,7 @@ impl Lane {
     /// **The hull settled on the site**: the launch under the licence, from the bay.
     pub(super) fn market_launch(&mut self) {
         let Some(licence) = self.market.as_ref().and_then(|state| state.licence) else {
-            self.fail(0, "the buyer reached the site with no licence".to_owned());
+            self.fail(0, "the buyer reached the site with no license".to_owned());
             return;
         };
         self.market_send(
@@ -764,7 +764,7 @@ impl Lane {
             .map(|state| state.charter.clone())
             .unwrap_or_default();
         let outcome = format!(
-            "bought licence {licence} of {charter}; it flew simulator match {match_id} and rig 1 \
+            "bought license {licence} of {charter}; it flew simulator match {match_id} and rig 1 \
              at {}; home",
             self.site.name()
         );
@@ -965,7 +965,7 @@ impl Lane {
                 if paid_row(raw, &state.charter).is_some() && quiet {
                     Verdict::Done
                 } else {
-                    poll("no paid licence for the charter in +minds/holdings", POLL_MS, 40)
+                    poll("no paid license for the charter in +minds/holdings", POLL_MS, 40)
                 }
             }
             Phase::SimTeam => done_if(raw.iter().any(|line| {
@@ -1264,7 +1264,7 @@ impl Lane {
                 self.market_go(Route::Simulator, 0);
             }
             Phase::SimTeam => {
-                let licence = licence.ok_or("no licence at the simulator")?;
+                let licence = licence.ok_or("no license at the simulator")?;
                 self.market_send(Phase::SimMind, &LobbyLine::SimMind(licence).line(), 0);
             }
             Phase::SimMind => {
@@ -1641,7 +1641,7 @@ mod tests {
         move |line, nth| match line {
             "c" => room(lines::ROOM_ARRIVALS),
             "registry" => room(lines::ROOM_REGISTRY),
-            "+coop/enrol lathe Lode" => now(&[
+            "+coop/enroll lathe Lode" => now(&[
                 "Ceres Clearing opens account #41 in your name.",
                 "The Co-op charters you FPC-D-0401, laid up as the Slack Water, now the lathe Lode, cradled at the Visiting Berth",
                 "Gallery.",
@@ -1676,7 +1676,7 @@ mod tests {
                 now(&["Filing sentry@1 as Sentry Line.", "Queued.", "Done."])
             }
             "+minds/holdings" => now(&[
-                "Your mind licences:",
+                "Your mind licenses:",
                 "  filed 1         owner      Sentry Line           Active, 90 days left",
             ]),
             "mc" => now(&["Named launch counter #811", "You see nothing special."]),
@@ -1704,7 +1704,7 @@ mod tests {
             [
                 "c",
                 "registry",
-                "+coop/enrol lathe Lode",
+                "+coop/enroll lathe Lode",
                 "@mind/file sentry@1=Sentry Line",
                 "@mind/rate sentry@1",
                 // Twice while the Registry holds its finished job, then the filing.
@@ -1800,13 +1800,13 @@ mod tests {
                 "Done.",
             ]),
             "+minds/buy/complete b8c32048" => now(&[
-                "Taking the licence from listing b8c32048.",
+                "Taking the license from listing b8c32048.",
                 "Queued.",
                 "Done.",
             ]),
             "+minds/holdings" => now(&[
-                "Your mind licences:",
-                "  licence 2         paid       Sentry Line           sealed       Active, 90 days left",
+                "Your mind licenses:",
+                "  license 2         paid       Sentry Line           sealed       Active, 90 days left",
             ]),
             "out" if nth == 0 => room(lines::ROOM_REGISTRY),
             "out" => room(lines::ROOM_ARRIVALS),
@@ -2026,21 +2026,21 @@ mod tests {
     #[test]
     fn a_launch_the_game_refuses_fails_the_buyer_by_its_sentence() {
         for (answer, needle) in [
-            ("You hold no licence 2.", dispatch::MIND_NO_LICENCE),
+            ("You hold no license 2.", dispatch::MIND_NO_LICENCE),
             (
                 "That rig carries no core; only Standard Doctrine flies it.",
                 dispatch::MIND_NO_CORE,
             ),
             (
-                "Licence 2 already flies 1 of its 1 seats; bring a hull home first.",
+                "License 2 already flies 1 of its 1 seats; bring a hull home first.",
                 dispatch::MIND_SEATS_HELD,
             ),
             (
-                "The Registry did not admit the mind's claim; the launch is cancelled and the rig stays in its bay.",
+                "The Registry did not admit the mind's claim; the launch is canceled and the rig stays in its bay.",
                 claim::CLAIM_REFUSED,
             ),
             (
-                "Licence 2 is lapsed: rig 1 flies Standard Doctrine sealed aboard.",
+                "License 2 is lapsed: rig 1 flies Standard Doctrine sealed aboard.",
                 walk::LAUNCHED_DOCTRINE,
             ),
         ] {
@@ -2318,10 +2318,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let holdings = own(&[
-            "Your mind licences:",
+            "Your mind licenses:",
             "  filed 3         owner      Other Line            Active, 90 days left",
             "  filed 1         owner      Sentry Line           Active, 90 days left",
-            "  licence 2         paid       Sentry Line           sealed       Active, 90 days left",
+            "  license 2         paid       Sentry Line           sealed       Active, 90 days left",
         ]);
         assert_eq!(
             owner_row(&holdings, "Sentry Line").map(|row| row.0),
@@ -2337,7 +2337,7 @@ mod tests {
         assert_eq!(owner_row(&holdings[1..], "Sentry Line"), None);
         // A name longer than its column is known by its start.
         let long = own(&[
-            "Your mind licences:",
+            "Your mind licenses:",
             "  filed 9         owner      A Rather Long Charte  Active, 90 days left",
         ]);
         assert_eq!(

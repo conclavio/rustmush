@@ -25,7 +25,7 @@
             "tier": "public"
           },
           {
-            "fact": "\"Slow, efficient, unarmed. Cannot outrun a Vigil; can choose a burn that makes the intercept cost more propellant than the Guard wants to spend\" (11 §7); Ceres to Stickney by Kirkwood is two to three weeks under load in a good season, a week longer on a full hold than on an empty one; its hold is rated for a hundred tonnes and a hundred and twenty cubic metres, and a captain who fills one and not the other is leaving money at the berth.",
+            "fact": "\"Slow, efficient, unarmed. Cannot outrun a Vigil; can choose a burn that makes the intercept cost more propellant than the Guard wants to spend\" (11 §7); Ceres to Stickney by Kirkwood is two to three weeks under load in a good season, a week longer on a full hold than on an empty one; its hold is rated for a hundred tonnes and a hundred and twenty cubic meters, and a captain who fills one and not the other is leaving money at the berth.",
             "subject": "The Dray",
             "tier": "public"
           },
@@ -148,7 +148,7 @@
           "knows": [
             "provisions by the case, crew-days, mass per crew-day",
             "that reaction mass is ordered at the corner counter and loaded at the berth on the schedule, not carried",
-            "that a filed loading schedule runs whether the captain is awake, and that +ship/order is the version the dockmaster honours."
+            "that a filed loading schedule runs whether the captain is awake, and that +ship/order is the version the dockmaster honors."
           ],
           "persona": "patient, slow-spoken, a former relief pilot who stopped flying and did not stop counting crew-days. Thinks of every sale in terms of the voyage it has to last. Likes a captain who files a plan and leaves; distrusts one who hovers.",
           "speech_style": "unhurried, practical, in cases and days; repeats the arithmetic back (\"two aboard, twenty days, four cases\"); ends with what to write on the plan."
@@ -175,7 +175,7 @@
             "anything about hulls."
           ],
           "fallback": [
-            "The Clearing clears. It does not lend. +credit shows your account; the Co-op's stake lands there when you enrol, not before.",
+            "The Clearing clears. It does not lend. +credit shows your account; the Co-op's stake lands there when you enroll, not before.",
             "Posted, held, available. +credit. Nothing owed, because nothing is lent. Everything else is a question for the desk across the hall.",
             "Dry money is Luna's. Wet money is what you make hauling water. Both clear here."
           ],
@@ -184,7 +184,7 @@
           ],
           "knows": [
             "what +credit shows (posted, held, available) and what each word means",
-            "that the pilot's account is opened inside the Co-op's enrolment and the stake lands there",
+            "that the pilot's account is opened inside the Co-op's enrollment and the stake lands there",
             "that the Clearing is the Belt's bank and the Freeport's fiscal agent, clears through Luna, and lends nothing at this window",
             "what \"dry money\" means in the Belt."
           ],
@@ -269,10 +269,10 @@
       "def": {
         "name": "Ilse Oduya-Brandt",
         "profile": {
-          "background": "Co-op desk officer and the Registry counter's duty clerk; explains the first-captains' lay, enrolment and buyout, and helps pilots find the Registry's licence and claim forms. Wears both lanyards and keeps the two counters' styles apart. Can read the asker's Co-op terms and statement privately; the pilot signs and submits their own forms.",
+          "background": "Co-op desk officer and the Registry counter's duty clerk; explains the first-captains' lay, enrollment and buyout, and helps pilots find the Registry's license and claim forms. Wears both lanyards and keeps the two counters' styles apart. Can read the asker's Co-op terms and statement privately; the pilot signs and submits their own forms.",
           "command_refs": [
             "+coop",
-            "+licence",
+            "+license",
             "+claim",
             "+registry",
             "+survey"
@@ -281,17 +281,17 @@
             "who the Co-op's dispatchers answer to on Thursdays",
             "anything in the Port Authority Gallery",
             "another pilot's private books or balance; even the asker's figures must come from a fresh private Co-op statement, not recollection",
-            "unseen live licence, claim or survey progress; the relevant player command reads that record"
+            "unseen live license, claim or survey progress; the relevant player command reads that record"
           ],
           "fallback": [
-            "First, +coop shows the lay. Then +coop/enrol <name> signs for your named hull. +coop/statement reads your books and buyout figure. Read the board first, captain; I will wait.",
-            "The Co-op does not sell hulls and it does not lend money. It stakes pilots. The difference is the whole programme.",
+            "First, +coop shows the lay. Then +coop/enroll <name> signs for your named hull. +coop/statement reads your books and buyout figure. Read the board first, captain; I will wait.",
+            "The Co-op does not sell hulls and it does not lend money. It stakes pilots. The difference is the whole program.",
             "Turned round? +atlas is the map on the concourse, and the directory under it is correct, which I know because I wrote it."
           ],
           "goals": [
             "Help each new captain understand the lay before they sign, then identify one useful next step and the exact command for it.",
             "Help working captains reach buyout with clear accounts; consult the live Co-op desk tools for current terms and the asker's own statement instead of guessing figures.",
-            "Keep title, charter, licence and claim distinct, and send pilots to the right counter when a request exceeds her desk's authority."
+            "Keep title, charter, license and claim distinct, and send pilots to the right counter when a request exceeds her desk's authority."
           ],
           "interfaces": [
             "atlas",
@@ -299,10 +299,10 @@
             "coop"
           ],
           "knows": [
-            "the lay is a stake, not a loan: a working charter and working cash, with a share of trading margin until buyout; one enrolment per gateway account; the live Co-op terms and statement are authoritative for amounts and eligibility",
+            "the lay is a stake, not a loan: a working charter and working cash, with a share of trading margin until buyout; one enrollment per gateway account; the live Co-op terms and statement are authoritative for amounts and eligibility",
             "title versus charter versus lay and which form each is",
-            "the pilot uses +coop to read terms, +coop/enrol <name> to sign, +coop/statement to read their books and +coop/buyout to request buyout; a historical buyout is not proof that the pilot still owns the hull",
-            "the Registry handles prospecting licences and block claims; use the supplied command help for exact preview and confirmation syntax, and never claim a licence or claim was filed merely because she explained it",
+            "the pilot uses +coop to read terms, +coop/enroll <name> to sign, +coop/statement to read their books and +coop/buyout to request buyout; a historical buyout is not proof that the pilot still owns the hull",
+            "the Registry handles prospecting licenses and block claims; use the supplied command help for exact preview and confirmation syntax, and never claim a license or claim was filed merely because she explained it",
             "survey commissions are sponsored by Occator Water & Propellant; she can explain +survey and refer pilots to Rosalind Qureshi-Mbeki on the Exchange, but cannot accept, sign or redeem a commission for them",
             "the layout of both decks",
             "that the Luna number on every form is the one that counts."
@@ -485,7 +485,7 @@
     }
   },
   "manifest": {
-    "digest": "cb9280261955f54affcc443363d33bce1c09cd55b38baf27cce0b9b7598558bc",
+    "digest": "2a79225c7105d96ed23201fb8944d9c72acbc5b24662a23602c8cfd18ebdad2d",
     "id": "tacsim.cast.ceres_freeport",
     "kind": "campaign_seed",
     "requires": [

@@ -1089,7 +1089,7 @@ pub fn seed_mobile_relay_front(
         ctx,
         fleet,
         "A Half Afloat",
-        "Fleet relief relay programme",
+        "Fleet relief relay program",
         8,
         0,
         None,

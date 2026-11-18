@@ -438,7 +438,7 @@ async fn renewal_reaches(w: &World, licence: &str, kind: &str) -> TestResult {
         }
         check!(
             Instant::now() < end,
-            "licence {licence} renewal {kind}: {all:?}"
+            "license {licence} renewal {kind}: {all:?}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -522,7 +522,7 @@ async fn term_end(w: &World, licence: &str, generation: &str) -> TestResult<i64>
             return Ok(term.window().term_end().get());
         }
     }
-    Err(format!("licence {licence}'s term {generation}").into())
+    Err(format!("license {licence}'s term {generation}").into())
 }
 /// The phase words at the end of a holdings row that starts with `prefix`
 /// (the phase moves with the IC clock, so a row is pinned up to it).
@@ -533,7 +533,7 @@ fn phase_of<'a>(row: &'a str, prefix: &str) -> TestResult<&'a str> {
 /// `HOLD_PAID`'s columns up to the phase.
 fn paid_prefix(licence: &str, form: &str) -> String {
     format!(
-        "  licence {licence:<8}  {:<9}  {:<20}  {form:<11}  ",
+        "  license {licence:<8}  {:<9}  {:<20}  {form:<11}  ",
         "paid", "sentinel"
     )
 }
@@ -717,7 +717,7 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
     );
     let detail = vec![
         format!("Listing {code}: sentinel, sealed, class {class} and above."),
-        "One seat for 90 IC days plus 28 days of Grace; the licence can be resold.".to_owned(),
+        "One seat for 90 IC days plus 28 days of Grace; the license can be resold.".to_owned(),
         "Price 400cr: Registry 5%, charter owner the rest.".to_owned(),
     ];
     let with = |last: String| -> Vec<String> {
@@ -813,7 +813,7 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
     check_eq!(
         w.server.command(buyer, format!("+minds {code}")).await?,
         with(format!(
-            "Your payment is held in escrow. Take the licence with +minds/buy/complete {code}."
+            "Your payment is held in escrow. Take the license with +minds/buy/complete {code}."
         ))
     );
     check_eq!(
@@ -825,7 +825,7 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
     check_eq!(
         waiting,
         vec![
-            "You hold no mind licences.".to_owned(),
+            "You hold no mind licenses.".to_owned(),
             "Purchases waiting:".to_owned(),
             format!(
                 "  listing {code}  paid into escrow: +minds/buy/complete {code} or +minds/buy/refund {code}"
@@ -835,7 +835,7 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
     check_eq!(
         submitted(w, buyer, format!("+minds/buy/complete {code}")).await?,
         vec![
-            format!("Taking the licence from listing {code}."),
+            format!("Taking the license from listing {code}."),
             QUEUED.to_owned(),
             "Done.".to_owned()
         ]
@@ -843,7 +843,7 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
     let [sealed]: [u64; 1] = holds(w, buyer, 1)
         .await?
         .try_into()
-        .map_err(|_| "one sealed licence")?;
+        .map_err(|_| "one sealed license")?;
     let sealed = sealed.to_string();
     let after = (
         minor(w, buyer).await?,
@@ -866,7 +866,7 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
     check_eq!(held.len(), 2, "{held:?}");
     check_eq!(
         held.first().map(String::as_str),
-        Some("Your mind licences:")
+        Some("Your mind licenses:")
     );
     let phase = phase_of(
         held.get(1).ok_or("the paid row")?,
@@ -919,7 +919,7 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
         ),
         (
             format!("+minds/buy/complete {open_code}"),
-            format!("Taking the licence from listing {open_code}."),
+            format!("Taking the license from listing {open_code}."),
         ),
     ] {
         check_eq!(
@@ -933,14 +933,14 @@ async fn part_two(w: &mut World, filed: &str) -> TestResult<Sold> {
         .into_iter()
         .map(|n| n.to_string())
         .find(|n| *n != sealed)
-        .ok_or("the open licence")?;
+        .ok_or("the open license")?;
     let fork = submitted(w, buyer, format!("@mind/fork {open}=Sentinel Fork")).await?;
     check!(
         fork.len() == 3
             && fork
                 .first()
                 .is_some_and(|l| l
-                    .eq_ignore_ascii_case(&format!("Forking licence {open} as Sentinel Fork.")))
+                    .eq_ignore_ascii_case(&format!("Forking license {open} as Sentinel Fork.")))
             && fork.get(1..) == Some(&[QUEUED.to_owned(), "Done.".to_owned()][..]),
         "{fork:?}"
     );
@@ -1007,7 +1007,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
             )
             .await?,
             vec![
-                format!("Offering licence {sealed} to {CY} for {price}."),
+                format!("Offering license {sealed} to {CY} for {price}."),
                 format!(
                     "Once that is confirmed, they accept with +minds/resell/accept {sealed} price={amount}."
                 ),
@@ -1035,7 +1035,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         .server
         .command(cy, format!("+minds/resell/accept {sealed}"))
         .await?;
-    let head = format!("Licence {sealed} is offered to you for ");
+    let head = format!("License {sealed} is offered to you for ");
     check!(
         listed.len() == 4
             && listed.first().is_some_and(|l| offered(
@@ -1075,7 +1075,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check_eq!(
         submitted(w, cy, format!("+minds/resell/accept {sealed} price=0.21")).await?,
         vec![
-            format!("Accepting the offer for licence {sealed} at 0.21cr."),
+            format!("Accepting the offer for license {sealed} at 0.21cr."),
             QUEUED.to_owned(),
             "Done.".to_owned()
         ]
@@ -1098,7 +1098,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // The 5.00 offer can no longer be honoured: nothing moves, whatever the
     // reply (the provider's refusal while the offer is still listed, or no
     // offer once it is not).
-    let no_offer = format!("You have no offer for licence {sealed}.");
+    let no_offer = format!("You have no offer for license {sealed}.");
     let stale = later(
         w,
         cy,
@@ -1109,7 +1109,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check!(
         stale
             == vec![
-                format!("Accepting the offer for licence {sealed} at 5cr."),
+                format!("Accepting the offer for license {sealed} at 5cr."),
                 QUEUED.to_owned(),
                 DRIVER.to_owned()
             ]
@@ -1130,7 +1130,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check_eq!(
         submitted(w, buyer, format!("+minds/resell {open}={CY} price=1")).await?,
         vec![
-            format!("Offering licence {open} to {CY} for 1cr."),
+            format!("Offering license {open} to {CY} for 1cr."),
             format!(
                 "Once that is confirmed, they accept with +minds/resell/accept {open} price=1."
             ),
@@ -1142,7 +1142,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // hand-off, and no renewal operation appears.
     let not_due = |l: &str| {
         l.starts_with(&format!(
-            "Licence {sealed} is not due for renewal; its term has "
+            "License {sealed} is not due for renewal; its term has "
         )) && l.ends_with(" IC days left.")
     };
     let renew = private_later(w, cy, format!("+minds/renew {sealed}"), not_due).await?;
@@ -1153,7 +1153,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // With no offer waiting, `/pay` and `/decline` are TacSim's own
     // synchronous refusal (`NO_RENEWAL`), and nothing is handed over.
     let no_renewal = format!(
-        "Licence {sealed} has no renewal offer waiting for you. Ask for one with +minds/renew {sealed}."
+        "License {sealed} has no renewal offer waiting for you. Ask for one with +minds/renew {sealed}."
     );
     for form in ["pay", "decline"] {
         check_eq!(
@@ -1198,7 +1198,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // never pays one, D-UM-39); give it a moment, then read what stands.
     tokio::time::sleep(Duration::from_secs(20)).await;
     let renewing = format!(
-        "Asking for a renewal offer on licence {sealed}. +minds/renew {sealed} shows it once it is confirmed."
+        "Asking for a renewal offer on license {sealed}. +minds/renew {sealed} shows it once it is confirmed."
     );
     let how = format!(
         "Pay it with +minds/renew/pay {sealed}, or turn it down with +minds/renew/decline {sealed}."
@@ -1237,7 +1237,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         answered(l) || l == unavailable || l == no_renewal
     })
     .await?;
-    let declining = format!("Turning down the renewal offer on licence {sealed}.");
+    let declining = format!("Turning down the renewal offer on license {sealed}.");
     check!(
         declined.first() == Some(&declining)
             || declined == vec![unavailable.to_owned()]
@@ -1284,7 +1284,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     let offer = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == how).await?;
     let price = offer
         .first()
-        .and_then(|l| l.strip_prefix(&format!("Licence {sealed} renews for ")))
+        .and_then(|l| l.strip_prefix(&format!("License {sealed} renews for ")))
         .and_then(|rest| rest.split_once(" (90+28 IC days); the offer is open "))
         .and_then(|(price, rest)| rest.ends_with(" more IC hours.").then_some(price))
         .ok_or_else(|| format!("RENEW_OFFER: {offer:?}"))?
@@ -1316,7 +1316,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         private_later(w, cy, format!("+minds/renew/pay {sealed}"), answered).await?,
         vec![
             format!(
-                "Paying {price} for the renewal of licence {sealed} into escrow; it completes on its own."
+                "Paying {price} for the renewal of license {sealed} into escrow; it completes on its own."
             ),
             QUEUED.to_owned(),
             "Done.".to_owned()
@@ -1394,7 +1394,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check_eq!(
         submitted(w, author, format!("@mind/attest {filed}")).await?,
         vec![
-            format!("Renewing your owner's licence for filed mind {filed}."),
+            format!("Renewing your owner's license for filed mind {filed}."),
             QUEUED.to_owned(),
             "Done.".to_owned()
         ]
@@ -1449,7 +1449,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check_eq!(holds(w, cy, 1).await?, vec![sealed.parse::<u64>()?]);
     // The lasting refusal: the holder is told why, once, and nothing is
     // submitted (the renewal operations are the ones the renewal above left).
-    let stopped = "This licence cannot be renewed: its author withdrew this mind. Nothing further will be tried.";
+    let stopped = "This license cannot be renewed: its author withdrew this mind. Nothing further will be tried.";
     let renewals_before = renewals(w, sealed).await?;
     settle(w, cy).await?;
     let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == stopped).await?;
@@ -1545,7 +1545,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check_eq!(
         submitted(w, operator, format!("@registry/revoke {sealed}")).await?,
         vec![
-            format!("Revoking licence {sealed}."),
+            format!("Revoking license {sealed}."),
             QUEUED.to_owned(),
             "Done.".to_owned()
         ]
@@ -1567,7 +1567,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // operator's step keeps what reached the buyer meanwhile (`Seen`) and
     // the buyer waits only when the notice was not among it.
     let notice = format!(
-        "Registry recall: your mind licence {open} selects filed revision {filed}, recalled by operation "
+        "Registry recall: your mind license {open} selects filed revision {filed}, recalled by operation "
     );
     let mut recall = typed_seen(w, operator, format!("@registry/recall {filed}")).await?;
     if !recall.own.iter().any(|l| answered(l)) {
@@ -1638,7 +1638,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // act is told before the author's. The verdict is the Roll's own rows',
     // so it is the same after the restart: the renewal service opened nothing
     // across it, and the holder is told why, with nothing submitted.
-    let recalled = "This licence cannot be renewed: the Registry recalled this mind. Nothing further will be tried.";
+    let recalled = "This license cannot be renewed: the Registry recalled this mind. Nothing further will be tried.";
     settle(w, cy).await?;
     let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == recalled).await?;
     check_eq!(refused, vec![recalled.to_owned()], "{refused:?}");
@@ -1841,7 +1841,7 @@ async fn restore(dir: &Path) -> TestResult<(World, Sold)> {
     let end_of_term = term_end(&w, &saved.sold.sealed, "1").await?;
     check!(
         ic < end_of_term - 5 * 3_600,
-        "the restored world is in licence {}'s term: ic {ic}, term end {end_of_term}",
+        "the restored world is in license {}'s term: ic {ic}, term end {end_of_term}",
         saved.sold.sealed
     );
     eprintln!(
@@ -1996,7 +1996,7 @@ async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() 
                 .await?
                 .len(),
             1,
-            "one owner licence"
+            "one owner license"
         );
         check_eq!(open_shells(&w.launch, author).await?.len(), 0);
         let after = balances(&w, author).await?;
@@ -2021,7 +2021,7 @@ async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() 
         check_eq!(
             attest,
             vec![
-                format!("Renewing your owner's licence for filed mind {filed_number}."),
+                format!("Renewing your owner's license for filed mind {filed_number}."),
                 QUEUED.to_owned(),
                 DRIVER.to_owned()
             ]
@@ -2066,7 +2066,7 @@ async fn player_market_commands_story_two_accounts_alt_stale_tiny_and_restart() 
         check_eq!(
             durable(&w, author).await?,
             rows_before,
-            "the filing, the owner licence, no open shell"
+            "the filing, the owner license, no open shell"
         );
         check_eq!(balances(&w, author).await?, after);
         // C2c: part 2 (publish, +minds, the alt pair, stale terms, the

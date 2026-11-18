@@ -44,7 +44,7 @@ struct Seams {
 const LICENCE: &str = "test.licence";
 
 fn licence_id() -> InstrumentId {
-    InstrumentId::new(LICENCE).expect("licence id")
+    InstrumentId::new(LICENCE).expect("license id")
 }
 
 fn boot(seams: Seams) -> (TestWorld, IndustryFamilies) {
@@ -292,7 +292,7 @@ fn license(world: &mut TestWorld, who: ObjId) {
                 revision: 1,
             },
         )
-        .expect("the licence instrument registers");
+        .expect("the license instrument registers");
     }
     world.run(GOD, &format!("@account/open #{}={LICENCE}", who.0));
     assert!(
@@ -300,7 +300,7 @@ fn license(world: &mut TestWorld, who: ObjId) {
             mush_industry::licence_accounts(world.world(), &licence_id(), &obj(who)),
             Some(mush_economy::AccountStatus::Active)
         ),
-        "the licence account is open and active"
+        "the license account is open and active"
     );
 }
 

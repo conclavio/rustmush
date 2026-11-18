@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(
             f.get(50, 52),
             RED,
-            "the marker (its centre is under the ray)"
+            "the marker (its center is under the ray)"
         );
         assert_eq!(f.get(58, 50), BLUE, "the ray points east");
         assert_eq!(f.get(80, 50), BLUE, "the circle's east point");

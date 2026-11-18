@@ -151,7 +151,7 @@ pub fn check_look(look: &Look, units: &[(&str, &UnitShape)]) -> LookCheck {
         match crate::model::entry(model) {
             None => out
                 .refusals
-                .push(format!("{name}: model {model} is not in the catalogue")),
+                .push(format!("{name}: model {model} is not in the catalog")),
             Some(entry) => {
                 let ((lw, lh), (mw, mh)) = (look.size_cm, entry.size_cm);
                 if mh.abs_diff(lh) * 50 > lh {
@@ -320,7 +320,7 @@ mod tests {
             found
                 .refusals
                 .iter()
-                .any(|r| r.contains("not in the catalogue"))
+                .any(|r| r.contains("not in the catalog"))
         );
         let found = check_draft("{}", &tank_def());
         assert_eq!(

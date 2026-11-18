@@ -3708,7 +3708,7 @@ fn q8_a_refit_changes_the_type_and_leaves_the_world_around_it_alone() {
         .world()
         .get(unit)
         .and_then(|object| object.behaviors.get(&unit_behavior()).cloned())
-        .expect("`@unit/create` attached the unit behaviour");
+        .expect("`@unit/create` attached the unit behavior");
     let spatial_before = spatial(&world);
     let locust = store(&world)
         .units
@@ -3748,7 +3748,7 @@ fn q8_a_refit_changes_the_type_and_leaves_the_world_around_it_alone() {
             .get(unit)
             .and_then(|object| object.behaviors.get(&unit_behavior()).cloned()),
         Some(binding_before),
-        "a refit restamped the behaviour binding"
+        "a refit restamped the behavior binding"
     );
 
     // The RAM row is the new type, and it is still the ONE active record.

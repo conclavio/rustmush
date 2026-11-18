@@ -221,6 +221,6 @@ fn obligation_line(
             format!("Obligation #{id} is suspended pending a decision.")
         }
         ObligationStatusKind::Satisfied => format!("Obligation #{id} is satisfied."),
-        ObligationStatusKind::Cancelled => format!("Obligation #{id} is cancelled."),
+        ObligationStatusKind::Cancelled => format!("Obligation #{id} is canceled."),
     }
 }

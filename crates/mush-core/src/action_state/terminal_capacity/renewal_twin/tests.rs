@@ -287,10 +287,10 @@ pub(in crate::action_state::terminal_capacity) fn fixture_from_seed<I: Rig>(
     let request = RequestUid::from_bytes([30; 16]);
     let pointer = store
         .get(
-            handles.get(LICENCE).ok_or("licence handle")?,
+            handles.get(LICENCE).ok_or("license handle")?,
             &"licence/0000000000000001".to_owned(),
         )?
-        .ok_or("current licence")?;
+        .ok_or("current license")?;
     let actor = ObjId(u32::try_from(number(pointer, "holder")?)?);
     let principal = PrincipalId::Object { id: actor };
     let invocation = ActionInvocation::new(ActionInvocationDraft {

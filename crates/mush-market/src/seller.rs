@@ -639,7 +639,7 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
     }
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
         return Err(MarketError::bad(
-            "That catalogue code is not a commodity id.",
+            "That catalog code is not a commodity id.",
         ));
     };
     if !mush_inventory::may_take(ctx.w, actor, spec.into) {

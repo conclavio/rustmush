@@ -106,7 +106,7 @@ pub const WORKS_HELP: &str = "+works                          the works here: wh
                               +works/deliver <order>=<good> <qty>  move bill goods from your docked \
                               hold into the escrow (a part as its lots); the order starts when the \
                               bill is covered.\n\
-                              +works/collect <order>          the output (or a cancelled bill) into \
+                              +works/collect <order>          the output (or a canceled bill) into \
                               your docked hold; at a yard, the hull's commission: she is handed \
                               over docked here (a ship) or on the workshop floor (a rig), titled to \
                               you, her magazines empty.\n\
@@ -1617,7 +1617,7 @@ fn cancel(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         })
         .unwrap_or(0);
     let line = format!(
-        "Order {} cancelled: the bill comes back to your hold; the booking fee {} and the work \
+        "Order {} canceled: the bill comes back to your hold; the booking fee {} and the work \
          done, {}, are forfeit.",
         c.id,
         cr(ctx, c.booking_minor),

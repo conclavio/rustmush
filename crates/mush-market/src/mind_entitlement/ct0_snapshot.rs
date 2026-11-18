@@ -363,7 +363,7 @@ fn identity(snap: &mut Snapshot) -> TestResult {
     snap.line("max listing bytes", &MAX_LISTING_BYTES.to_string());
     snap.line("max quote bytes", &MAX_QUOTE_BYTES.to_string());
     snap.line(
-        "buyer index key, organisation",
+        "buyer index key, organization",
         &BuyerKey::Organization(mush_org::OrgId(3)).key(),
     );
     let config = command_config(400)?;

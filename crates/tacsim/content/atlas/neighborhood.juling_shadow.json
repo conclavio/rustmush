@@ -3,7 +3,7 @@
     "id": "neighborhood.juling_shadow",
     "version": 1,
     "kind": "neighborhood",
-    "digest": "97655785413243d6e9bac03a59d9af99a2db6bf7d0029db8cb87f969fad05c5a",
+    "digest": "7e57dfc4457aaca49fd4fca9a7d881ee803814d0cc84d744ca7e6441a7f24001",
     "requires": [
       {
         "id": "region.juling_shadow",
@@ -93,7 +93,7 @@
       "def": {
         "name": "Juling Shadow Pad",
         "short_desc": "A cleared landing square in the long shadow of Juling's crater wall, the ground frozen and glittering.",
-        "desc": "The pad sits in shadow most of the day, a cleared square with tie-down rings and the Registry number FR-31 painted on in heat-safe orange. Ice lies in the open here: the ground around the square glitters where lamps catch it, and frost rims every rut. To the north the wall of Juling rises dark and steep between the pad and the low sun, and the pad sits at its foot. The cold is the first thing the hull's sensors log. The horizon to the south is low and grey.",
+        "desc": "The pad sits in shadow most of the day, a cleared square with tie-down rings and the Registry number FR-31 painted on in heat-safe orange. Ice lies in the open here: the ground around the square glitters where lamps catch it, and frost rims every rut. To the north the wall of Juling rises dark and steep between the pad and the low sun, and the pad sits at its foot. The cold is the first thing the hull's sensors log. The horizon to the south is low and gray.",
         "surface": "ground",
         "footprint": {
           "rect": [

@@ -2481,7 +2481,7 @@ fn ws02_s3_a_filer_with_no_authority_mints_no_object_and_no_title() {
     let refused = world.seen_by(&ev, alice).join("\n");
     assert!(
         refused.contains("No such claim."),
-        "an unauthorised filer is refused: {refused}"
+        "an unauthorized filer is refused: {refused}"
     );
     assert_eq!(
         world.world().next_id(),
@@ -2571,7 +2571,7 @@ fn ws02_s3_claim_file_is_offered_only_to_staff_and_to_an_authorised_principal() 
     );
     assert!(
         projects_verb(&world, alice, "claim-file"),
-        "an authorised principal is offered the filing path"
+        "an authorized principal is offered the filing path"
     );
     assert!(
         mush_industry::provider::issuable_authorities(world.engine(), bob).is_empty()
@@ -2677,7 +2677,7 @@ fn ws02_s3_a_forged_issuer_refuses_unauthorized_and_files_nothing() {
             ),
             Err(ExtractionRefusal::NoLicenceInstrument)
         ),
-        "an org-issued claim authorises tenure; only the licence is absent"
+        "an org-issued claim authorizes tenure; only the license is absent"
     );
 }
 

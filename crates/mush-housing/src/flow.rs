@@ -364,7 +364,7 @@ fn report_lease_ending(ctx: &mut Ctx<'_>, t: &Tenancy, ending: &LeaseEnding) {
             tracing::info!(
                 tenancy = t.id.0,
                 contract = contract.0,
-                "housing: the tenancy's lease is ended; its rent is cancelled"
+                "housing: the tenancy's lease is ended; its rent is canceled"
             );
         }
         LeaseEnding::Retrying => {

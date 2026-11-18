@@ -241,7 +241,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     // here, at the host, against the atlas's default cell sizes.
     if !mush_atlas::DEFAULT_CELL_SIZES.contains(&cfg.ground_cell_cm) {
         return Err(format!(
-            "[tacsim].ground_cell_cm is one of {:?} centimetres, not {}",
+            "[tacsim].ground_cell_cm is one of {:?} centimeters, not {}",
             mush_atlas::DEFAULT_CELL_SIZES,
             cfg.ground_cell_cm
         ));
@@ -664,7 +664,7 @@ fn class_caps(
             .filter(|class| class.fieldable())
             .ok_or_else(|| {
                 format!(
-                    "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                    "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
                  drone: {word}"
                 )
             })?;
@@ -1696,7 +1696,7 @@ mod tests {
             "naming the drone moves it: 24 is every unit an arena places"
         );
         assert_eq!(
-            caps("[tacsim.arena.max_units_by_class]\ndrone = 0\narmour = 0\n"),
+            caps("[tacsim.arena.max_units_by_class]\ndrone = 0\narmor = 0\n"),
             std::collections::BTreeMap::from([(UnitClass::Armour, 0), (UnitClass::Drone, 0)]),
             "0 is legal and forbids the class; the header spelling maps the same"
         );
@@ -1714,7 +1714,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+            "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
              drone: hauler"
         );
     }
@@ -1728,7 +1728,7 @@ mod tests {
         assert_eq!(
             super::class_caps(&written),
             Err(
-                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
                  drone: vehicle"
                     .to_owned()
             )
@@ -1880,7 +1880,7 @@ mod tests {
             (
                 "[tacsim.arena]",
                 "max_units_by_class = { flier = 2 }\n",
-                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
                  drone",
                 "flier",
             ),

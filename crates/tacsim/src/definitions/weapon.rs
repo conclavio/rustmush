@@ -212,7 +212,7 @@ impl WeaponDef {
                 format!(
                     "cycle_ms is {floor} to {MAX_CYCLE_MS} ({}); {} is not",
                     if self.automatic_defence {
-                        "the automatic-defence floor"
+                        "the automatic-defense floor"
                     } else {
                         "the 5 s floor"
                     },

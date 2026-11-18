@@ -15,15 +15,15 @@ use mush_testkit::TestWorld;
 const PINNED: [(&str, &str); 3] = [
     (
         REGION_PACK,
-        "46beb771027b8fa0e4056d9374259f4a32321c8b308aeb0e721c737b7b1cc94e",
+        "5555c18076ffccedf400959faf2fbc8258bb5eca8e0cb075d27c63d6cee7d11a",
     ),
     (
         OOC_AREA_PACK,
-        "23698d37280a67a033cfd6c5e801c058475a529f2f756f59ec145b27545c9418",
+        "547ed6b6d52787fb5cdb0aa079f432103d3f5ab967ced08a0f094fc4dbc18dd5",
     ),
     (
         STAFF_LOBBY_PACK,
-        "dacbc7af257e6eececdbd28218945ede03a9114d2274a7031f5ecabcdc938adf",
+        "bec450b5220c5a051da2a3eeb57ffc5e8bc7f72e589a7e2efc9604cbc31d667b",
     ),
 ];
 

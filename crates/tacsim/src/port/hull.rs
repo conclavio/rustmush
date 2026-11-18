@@ -300,7 +300,7 @@ pub(crate) fn template<'a>(
 ) -> Result<(&'a InteriorDef, &'a mush_tactics::UnitSpec), String> {
     template_of(
         store,
-        &format!("programme {}", programme.id),
+        &format!("program {}", programme.id),
         &programme.unit,
     )
 }
@@ -348,7 +348,7 @@ pub(crate) fn berths_slot(
     interior: &InteriorDef,
 ) -> Result<mush_sim::SlotId, String> {
     berths_slot_of(
-        &format!("programme {}", programme.id),
+        &format!("program {}", programme.id),
         &programme.unit,
         interior,
     )
@@ -385,7 +385,7 @@ pub(crate) fn preflight(
     let Some(programme) = &def.programme else {
         if !recorded.is_empty() {
             return Err(format!(
-                "{id}: the port map {key} records {} hulls but the entry has no programme; hulls \
+                "{id}: the port map {key} records {} hulls but the entry has no program; hulls \
                  are never retired by a port update",
                 recorded.len()
             ));
@@ -409,7 +409,7 @@ pub(crate) fn preflight(
         .is_some_and(|issuer| economy.is_title_issuer(&issuer));
     if !registered {
         return Err(format!(
-            "{id}: programme {pid}: the title issuer {} is not registered on this world",
+            "{id}: program {pid}: the title issuer {} is not registered on this world",
             programme.issuer
         ));
     }
@@ -435,7 +435,7 @@ pub(crate) fn preflight(
     let mut refit_rooms: BTreeSet<&CanonicalId> = BTreeSet::new();
     let base = store.definitions().specs.get(&programme.unit);
     for (word, unit) in &programme.refits {
-        let refused = |why: String| format!("{id}: programme {pid}: refit {word}: {why}");
+        let refused = |why: String| format!("{id}: program {pid}: refit {word}: {why}");
         let refit = store
             .definitions()
             .specs
@@ -464,7 +464,7 @@ pub(crate) fn preflight(
         let mark = &row.mark;
         if row.n >= programme.pool {
             return Err(format!(
-                "{id}: hull {mark} is in the port map {key} but the programme's pool is {}; hulls \
+                "{id}: hull {mark} is in the port map {key} but the program's pool is {}; hulls \
                  are never retired by a port update",
                 programme.pool
             ));
@@ -629,13 +629,13 @@ pub(crate) fn lay_up(
     let slot = berths_slot(programme, &interior).map_err(|e| format!("{id}: {e}"))?;
     let issuer = SystemPrincipalId::new(&programme.issuer).ok_or_else(|| {
         format!(
-            "{id}: programme {}: the title issuer {} is not a system principal",
+            "{id}: program {}: the title issuer {} is not a system principal",
             programme.id, programme.issuer
         )
     })?;
     let trust = map.orgs.get(&programme.org).cloned().ok_or_else(|| {
         format!(
-            "{id}: programme {}: the org {} has no map row",
+            "{id}: program {}: the org {} has no map row",
             programme.id, programme.org
         )
     })?;

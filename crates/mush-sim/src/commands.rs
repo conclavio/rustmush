@@ -3254,7 +3254,7 @@ fn domain_demote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             domain = %id,
             opened_generation = ?opened_generation,
             "sim: a domain summary window spans a world-IC rate generation; the opening stamp \
-             is normalised onto the closing generation (the IC axis is continuous)"
+             is normalized onto the closing generation (the IC axis is continuous)"
         );
     }
     // The summary is written BEFORE the cadence changes, and a summary that

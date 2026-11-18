@@ -89,12 +89,12 @@ fn native_renderer_hanging_wrap_preserves_agreements_without_promoting_speech_to
         Response::Accepted
     );
     assert_eq!(state.commitments["long"].history[0].quote, lines);
-    let reported = "Lead says, \"I heard a story about Friday and I think the club has actually cancelled the gig.\"";
+    let reported = "Lead says, \"I heard a story about Friday and I think the club has actually canceled the gig.\"";
     book.observe(&mush_ansi::wrap_indent(reported, 60, 20).join("\n"))
         .unwrap();
     book.flush().unwrap();
     let episode = book.stats()["records"].as_u64().unwrap();
-    let false_fact = json!({"type":"claim","subject":"gig","predicate":"status","value":"cancelled","attribution":"Lead","stance":"believed","basis":"observed","confidence":"strong","evidence":[{"episode":episode,"quote":"cancelled the gig."}]});
+    let false_fact = json!({"type":"claim","subject":"gig","predicate":"status","value":"cancelled","attribution":"Lead","stance":"believed","basis":"observed","confidence":"strong","evidence":[{"episode":episode,"quote":"canceled the gig."}]});
     assert!(
         !book
             .annotate_social(Some(json!([false_fact])), "Bassist", &Default::default())
@@ -209,7 +209,7 @@ async fn band_negotiates_through_ssh_and_preserves_private_perspectives_across_b
     assert!(
         !serde_json::to_string(&parent.bots["Drummer"].memory)
             .unwrap()
-            .contains("Friday was cancelled")
+            .contains("Friday was canceled")
     );
     let trace = events(&output.join("negotiated/Bassist/trace.jsonl"));
     let captures = trace
@@ -270,7 +270,7 @@ async fn band_negotiates_through_ssh_and_preserves_private_perspectives_across_b
         (
             "Guitarist",
             "cancelled",
-            "Lead told me Friday was cancelled.",
+            "Lead told me Friday was canceled.",
             "Bassist attributed this to Lead",
         ),
     ] {

@@ -1874,7 +1874,7 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
             "the plot followed the target through the wall at {t_ms}"
         );
         assert_eq!(row.range_cm, 30_000, "and so did the range at {t_ms}");
-        assert_eq!(row.age_ms, t_ms, "the plot is not ageing");
+        assert_eq!(row.age_ms, t_ms, "the plot is not aging");
     }
 
     // The contact is lost at the TTL and re-acquired under the same id, at the
@@ -3886,7 +3886,7 @@ fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
         !lines
             .iter()
             .any(|line| *line == format!("Contact {mark} lost.")),
-        "the cancelled loss was announced: {lines:?}"
+        "the canceled loss was announced: {lines:?}"
     );
     let regression = lines
         .iter()
@@ -5484,7 +5484,7 @@ fn u2_a_locked_pair_is_sent_a_frame_when_the_locks_range_step_moves() {
     assert_eq!(
         lock_range(&frame),
         serde_json::json!(300),
-        "the lock's metres moved with the step"
+        "the lock's meters moved with the step"
     );
     assert!(
         frame.notices.is_empty(),

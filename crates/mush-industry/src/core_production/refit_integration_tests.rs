@@ -928,7 +928,7 @@ fn actual_refit_capacity_survives_progress_and_cold_boot_and_rejects_corrupt_res
     s.commit(5, s.f.buyer, 44, FactoryRig::order_parameters(id))?;
     check!(
         s.reservation(id)?.is_none(),
-        "cancelled fitting retained capacity"
+        "canceled fitting retained capacity"
     );
     s.f.restart(CoreOriginMode::Active)?;
     Ok(())

@@ -58,7 +58,7 @@ Airlock, and `+ship/leave` in the Airlock, docked, takes you back to the gallery
 @domain                                  list
 @domain/create <host>=<driver>[,<presentation room>]
     drivers: sim.passive (the simulation's own; opens nothing) or tactics.ground
-    (the TacSim ground driver: the domain IS a ten-metre window over the host
+    (the TacSim ground driver: the domain IS a ten-meter window over the host
     room's tiles — [tacsim].ground_cell_cm — with the room's occupants placed;
     @domain/retire closes it)
 @domain/status <id|host>

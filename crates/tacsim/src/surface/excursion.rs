@@ -1350,14 +1350,14 @@ impl ClaimCursor {
 /// `{tv}`, `{mind}`, `{class}`. Said once, by the visit that acknowledges the claim's Open, with
 /// the queued launch submitted behind it; a launch refused after it is told by
 /// [`CLAIM_CANCELLED`].
-pub const CLAIM_ADMITTED: &str = "The Registry admits licence {licence}'s claim on #{tv}.\n{mind} is sealed aboard at Class {class} until the rig is home.";
+pub const CLAIM_ADMITTED: &str = "The Registry admits license {licence}'s claim on #{tv}.\n{mind} is sealed aboard at Class {class} until the rig is home.";
 
 /// **A launch over a live claim cursor** (doc 23 §17.3): the claim's relaunch guard.
 pub const CLAIM_STILL_OPEN: &str = "that rig's mind claim is still open";
 /// **The cursor's reason when the claim was refused for good** (doc 23 cut S.4b-2, D-23-21): the
 /// owners refused the Open on every try (a licence's seat already held, a lapsed or withdrawn
 /// holding, a changed hull); the launch is cancelled with the rig in its bay.
-pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is cancelled and the rig stays in its bay.";
+pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is canceled and the rig stays in its bay.";
 
 /// **A claim whose launch never ran** (doc 23 cut S.4b-3, D-23-23 step 5): the claim opened in the
 /// bay but the launch could not start; it closes with the rig in its bay.
@@ -2949,7 +2949,7 @@ mod tests {
         assert_eq!(
             PAD_CENTRE_CM,
             i64::from(crate::surface::ground::SITE_CELLS) / 2 * i64::from(SITE_CELL_CM),
-            "the pad centre is the site's middle"
+            "the pad center is the site's middle"
         );
         let catalog = crate::definitions::Catalog::build_fielded(&[], crate::NS)
             .unwrap_or_else(|e| panic!("{e}"));
@@ -4196,7 +4196,7 @@ mod tests {
             ),
             (
                 ClaimCursor::Refused {
-                    reason: "You hold no licence 7.".into(),
+                    reason: "You hold no license 7.".into(),
                     at_ic: 1_010,
                 },
                 "refused",
@@ -4574,7 +4574,7 @@ mod tests {
                 "mine C117".to_owned(),
             ],
             deadline_ic: 123_456_789_012,
-            end: Some("its licence lapsed".to_owned()),
+            end: Some("its license lapsed".to_owned()),
         });
         rec.plan_told = Some(PlanTold {
             no: 4_000_000_000,

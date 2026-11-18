@@ -3,7 +3,7 @@
     "id": "tacsim.pack.corvette",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "3394eae4801bb3b356f1b5bcb51953ecfcdac39705da9265ab79545821df130f",
+    "digest": "0387f38ba2db9916efc354e1ba7555d5f1e547838659d91b784e1723873fb5de",
     "requires": [
       {
         "id": "tacsim.pack.plants",
@@ -123,8 +123,8 @@
               "id": "passage",
               "name": "Cutter Spine",
               "kind": "walkable",
-              "short_desc": "A narrow armoured spine linking lock, bridge, quarters, and hold.",
-              "desc": "A narrow armoured spine linking lock, bridge, quarters, and hold."
+              "short_desc": "A narrow armored spine linking lock, bridge, quarters, and hold.",
+              "desc": "A narrow armored spine linking lock, bridge, quarters, and hold."
             },
             {
               "id": "bridge",

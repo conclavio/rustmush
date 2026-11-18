@@ -687,7 +687,7 @@ provider = {{ order = ["Together"], allow_fallbacks = false }}
     let heard = u64::try_from(asked).expect("a count");
     assert!(
         requests >= heard && requests <= heard + cancelled,
-        "{requests} filed ({cancelled} cancelled) against {heard} heard: {filed}"
+        "{requests} filed ({cancelled} canceled) against {heard} heard: {filed}"
     );
     assert!(
         landed.report["costs"]["session"]["by_prompt_type"]["goal_decision"].is_null(),
@@ -1044,7 +1044,7 @@ provider = {{ order = ["Together"], allow_fallbacks = false }}
                 && record["data"]["request_id"] == third
                 && record["request_id"] == third
         })
-        .unwrap_or_else(|| panic!("the third request cancelled: {}", landed.report_text));
+        .unwrap_or_else(|| panic!("the third request canceled: {}", landed.report_text));
     assert!(cancelled_at > asked_at);
     let by = if records[asked_at..cancelled_at]
         .iter()
@@ -1072,7 +1072,7 @@ provider = {{ order = ["Together"], allow_fallbacks = false }}
         requests >= heard_n && requests <= heard_n + 1,
         "{requests} filed against {heard_n} heard: {filed}"
     );
-    assert!(cancelled >= 1, "the third call filed cancelled: {filed}");
+    assert!(cancelled >= 1, "the third call filed canceled: {filed}");
     assert!(
         landed.report["costs"]["session"]["by_prompt_type"]["goal_decision"].is_null(),
         "no goal turn was asked"
@@ -1112,8 +1112,8 @@ provider = {{ order = ["Together"], allow_fallbacks = false }}
     assert_eq!(landed.report["success"], false);
     assert_eq!(landed.code, Some(2), "stderr:\n{}", landed.stderr);
     println!(
-        "COMMANDER THROUGH THE RUNNER: the stub heard {total}; the third call was cancelled by \
-         {by}; the budget blocked in {block_in}; {requests} filed ({cancelled} cancelled); \
+        "COMMANDER THROUGH THE RUNNER: the stub heard {total}; the third call was canceled by \
+         {by}; the budget blocked in {block_in}; {requests} filed ({cancelled} canceled); \
          wall {:.1} s",
         wall.as_secs_f64()
     );
@@ -1285,7 +1285,7 @@ async fn refuse_poses() {
     for (spec, sentence) in [
         ("RA=5000 5000 90", "is off the arena window."),
         ("RA=100 97 400", "Heading is 0 to 359."),
-        ("ZZ=100 97 90", "There is no slot ZZ on this centre."),
+        ("ZZ=100 97 90", "There is no slot ZZ on this center."),
     ] {
         let asked = Instant::now();
         let answer = arena_rig::try_pose(&mut god, spec).await;

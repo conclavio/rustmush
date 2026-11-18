@@ -2023,7 +2023,7 @@ fn page_unfunded_houses(w: &World, state: &mut PortTickState) {
     };
     tracing::error!(
         runbook = "doc 18 Q-18-60 (cut P-B): pay the house (@econ/pay #<treasury account>=#<house \
-                   account> <amount>) or let players buy from it; enrolment stays open and the \
+                   account> <amount>) or let players buy from it; enrollment stays open and the \
                    sales against it skip meanwhile",
         port = %entry,
         house = %org,

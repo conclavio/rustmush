@@ -547,7 +547,7 @@ impl ActionProvider for Provider {
             presentation: mush_core::ActionPresentation::new(
                 verb(self.kind),
                 "Record an original mind offer",
-                "Record listing or quote terms; no payment or licence is created.",
+                "Record listing or quote terms; no payment or license is created.",
             )
             .map_err(|_| bad())?,
             guards: guards.finish().map_err(|_| bad())?,

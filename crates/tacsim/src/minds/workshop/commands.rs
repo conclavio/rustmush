@@ -61,7 +61,7 @@ const SWITCHES: &[&str] = &[
     "forget",
     "trace",
 ];
-const HELP: &str = "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)\n@mind/launch <meridiani|coprates|safe_conduct>=<configured name> (private draft only)\n@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)\n@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]\n@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)\n@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)\n@mind/claim #<hull> [#<hull>...] <text> (testimony to the Registry: hulls your own sensors saw)\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.\n@mind/cast [<corvette|raider|interdictor>=<owned mind>@<revision> | <digest> | PACK] (staff) reads the space cast's doctrines or selects one for an actor's next bubble.";
+const HELP: &str = "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)\n@mind/launch <meridiani|coprates|safe_conduct>=<configured name> (private draft only)\n@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)\n@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]\n@mind/fork <license>=<name> (from an Open license; @mind/localcopy copies your own drafts)\n@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)\n@mind/claim #<hull> [#<hull>...] <text> (testimony to the Registry: hulls your own sensors saw)\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.\n@mind/cast [<corvette|raider|interdictor>=<owned mind>@<revision> | <digest> | PACK] (staff) reads the space cast's doctrines or selects one for an actor's next bubble.";
 
 #[derive(Clone)]
 pub(crate) struct WorkshopCommands {
@@ -247,7 +247,7 @@ impl WorkshopCommands {
                     .ok_or(RollError::Missing)?;
                 let prepared = launch.0.import(ctx.w, actor, recipe, name.trim())?;
                 publish(ctx, prepared)?;
-                ctx.out.info(actor, "Launch draft imported. Check and save it, then request actual Registry rating; import grants no filing or licence.");
+                ctx.out.info(actor, "Launch draft imported. Check and save it, then request actual Registry rating; import grants no filing or license.");
             }
             "list" => {
                 let names = roll(ctx)?
@@ -651,7 +651,7 @@ impl InputContext for Paste {
                 session.emit(ctx, "Paste unavailable.");
             } else {
                 ctx.out
-                    .error(ctx.actor, "Paste cancelled; session changed.");
+                    .error(ctx.actor, "Paste canceled; session changed.");
             }
             return ContextOutcome::Pop;
         }
@@ -702,11 +702,11 @@ impl InputContext for Paste {
                 > mush_roll::MAX_SOURCE_BYTES
         {
             if let Some(session) = &self.marked {
-                session.emit(ctx, "Paste cancelled: maximum 32 KiB; NUL is forbidden.");
+                session.emit(ctx, "Paste canceled: maximum 32 KiB; NUL is forbidden.");
             } else {
                 ctx.out.error(
                     ctx.actor,
-                    "Paste cancelled: maximum 32 KiB; NUL is forbidden.",
+                    "Paste canceled: maximum 32 KiB; NUL is forbidden.",
                 );
             }
             return ContextOutcome::Pop;

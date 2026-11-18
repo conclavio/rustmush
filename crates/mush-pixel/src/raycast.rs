@@ -1715,7 +1715,7 @@ mod tests {
         };
         assert!(
             count(&f, unfogged) >= 8,
-            "the bracket in its unfogged colour"
+            "the bracket in its unfogged color"
         );
         let fogged = sprite_colour(&shades, SpriteKind::Hostile, Material::Team, fog_step(11.5));
         assert_eq!(count(&f, fogged), 0, "no silhouette through 8 m woods");

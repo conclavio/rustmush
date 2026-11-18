@@ -1530,7 +1530,7 @@ fn name_defender(tw: &mut TestWorld, fx: &Fx, op: OperationId, who: ObjId) {
     ok(
         tw,
         fx.commander,
-        &format!("@op/terms {}/side=defence:#{}", op.0, who.0),
+        &format!("@op/terms {}/side=defense:#{}", op.0, who.0),
     );
 }
 

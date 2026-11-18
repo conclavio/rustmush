@@ -283,7 +283,7 @@ fn draft(rig: &mut Rig, organiser: ObjId, id: u64) -> Draft {
         .clone();
     typed(&mut rig.tw, &books, &organiser)
         .and_then(|book| book.drafts.get(&PlanId(id)).cloned())
-        .expect("the draft is in the organiser's book")
+        .expect("the draft is in the organizer's book")
 }
 
 /// A consent declaration's line (`+sortie/accept`, `+sortie/ready`) over `draft`.
@@ -618,7 +618,7 @@ pub(crate) fn fly_to(
         let left = run(&mut rig.tw, organiser, "+tv/1 leave");
         assert!(
             !left.contains("Usage") && cab_of(rig, organiser).is_none(),
-            "the organiser steps out of rig 1 into the carrier: {left}"
+            "the organizer steps out of rig 1 into the carrier: {left}"
         );
         seat(rig, organiser, 1);
         let out = run(&mut rig.tw, organiser, "+tv/bay out");
@@ -758,7 +758,7 @@ fn on_pad_planned(
         .world()
         .get(organiser)
         .and_then(|object| object.location)
-        .expect("the organiser is aboard");
+        .expect("the organizer is aboard");
     for (index, billet) in plan.billets.iter().enumerate() {
         let Billet::Member(name) = billet else {
             continue;
@@ -874,7 +874,7 @@ fn ashore(
             .expect("a treasury");
         let account = tacsim::port::credit::own_account(rig.tw.world(), organiser)
             .map(|account| account.id.0)
-            .expect("the organiser's account");
+            .expect("the organizer's account");
         let minted = run(
             &mut rig.tw,
             mush_core::GOD,
@@ -935,7 +935,7 @@ fn embark_two(rig: &mut Rig, organiser: ObjId, hired: &[Option<ObjId>]) {
         let aboard = run(&mut rig.tw, organiser, &format!("+sortie/board #{}", npc.0));
         assert!(
             aboard.contains("has come aboard"),
-            "#{} comes aboard while the organiser sits in a cab: {aboard}",
+            "#{} comes aboard while the organizer sits in a cab: {aboard}",
             npc.0
         );
     }

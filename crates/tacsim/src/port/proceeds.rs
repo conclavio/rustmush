@@ -358,7 +358,7 @@ impl ProceedsPolicy for CoopProceeds {
             tracing::warn!(
                 quote = sale.quote.0,
                 contract = sale.contract.0,
-                "tacsim: a sale into a bid settled out of a hold with no enrolment for its seller; \
+                "tacsim: a sale into a bid settled out of a hold with no enrollment for its seller; \
                  nothing folds"
             );
             return;
@@ -387,7 +387,7 @@ impl ProceedsPolicy for CoopProceeds {
             tracing::error!(
                 quote = sale.quote.0,
                 pilot = pilot.0,
-                "tacsim: an enrolment's sale counters would overflow; nothing folds"
+                "tacsim: an enrollment's sale counters would overflow; nothing folds"
             );
             return;
         };
@@ -399,7 +399,7 @@ impl ProceedsPolicy for CoopProceeds {
                 quote = sale.quote.0,
                 pilot = pilot.0,
                 %error,
-                "tacsim: a folded enrolment broke its own invariants; nothing folds"
+                "tacsim: a folded enrollment broke its own invariants; nothing folds"
             );
             return;
         }

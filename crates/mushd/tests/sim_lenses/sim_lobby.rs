@@ -399,7 +399,7 @@ async fn two_pilots_walk_selection_and_boarding_twice_and_a_slot_belongs_to_an_a
         assert!(status.contains("red: nobody"), "run {run}: {status}");
 
         // `Aborted -> Idle`: the staff reset, which run 2 then proves.
-        say(&mut god, "@arena/reset", "centre is reset").await;
+        say(&mut god, "@arena/reset", "center is reset").await;
     }
 
     // And the second reset says nothing changed.
@@ -449,7 +449,7 @@ async fn sim_is_refused_outside_the_centre_and_a_boarding_nobody_answers_aborts(
     assert!(status.contains("red: nobody"), "{status}");
 
     // And the centre is reusable at once: a reset, and a fresh claim.
-    say(&mut god, "@arena/reset", "centre is reset").await;
+    say(&mut god, "@arena/reset", "center is reset").await;
     say(
         &mut god,
         &format!("@teleport #{}=#{lobby}", BO.0),
@@ -489,7 +489,7 @@ async fn the_staff_shortcut_runs_a_match_the_centre_knows_about() {
     // A lobby claim is refused while the centre holds a match, and so is a
     // second shortcut.
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
-    say(&mut ada, "SIM TEAM red", "centre is running").await;
+    say(&mut ada, "SIM TEAM red", "center is running").await;
     say(
         &mut god,
         &format!("@arena/start tacsim.arena.proving_ground=#{red}/#{blue}"),
@@ -513,7 +513,7 @@ async fn the_staff_shortcut_runs_a_match_the_centre_knows_about() {
 
     let status = ask(&mut god, "SIM STATUS", "blue:").await;
     assert!(status.contains("aborted"), "{status}");
-    say(&mut god, "@arena/reset", "centre is reset").await;
+    say(&mut god, "@arena/reset", "center is reset").await;
     say(&mut god, "@arena/reset", "already idle; nothing changed").await;
     say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
 }
@@ -927,7 +927,7 @@ async fn d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_wo
     .await;
     say(&mut god, "SIM ABORT", "calls the match off").await;
     let status = one_line(&ask(&mut god, "SIM STATUS", "blue:").await);
-    assert!(status.contains("Simulator centre: aborted"), "{status}");
+    assert!(status.contains("Simulator center: aborted"), "{status}");
     assert!(
         !status.contains("— abort"),
         "the board said the same thing twice: {status}"
@@ -935,14 +935,14 @@ async fn d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_wo
 
     // And from `Boarding`, where there IS a match id, the head names it and
     // still says `abort` no second time.
-    say(&mut god, "@arena/reset", "centre is reset").await;
+    say(&mut god, "@arena/reset", "center is reset").await;
     say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
     say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
     say(&mut ada, "SIM START", "is boarding").await;
     say(&mut bo, "SIM ABORT", "calls the match off").await;
     let status = one_line(&ask(&mut god, "SIM STATUS", "blue:").await);
     assert!(
-        status.contains("Simulator centre: aborted (match 1)"),
+        status.contains("Simulator center: aborted (match 1)"),
         "{status}"
     );
     assert!(
@@ -1116,7 +1116,7 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
     say(
         &mut cy,
         "SIM REPLAY 9",
-        "The centre remembers its last 20 matches; match 9 is not one of them.",
+        "The center remembers its last 20 matches; match 9 is not one of them.",
     )
     .await;
 }
@@ -1146,7 +1146,7 @@ async fn o1_sim_mode_over_the_wire() {
         "{said}"
     );
     // A set outside `Selection`.
-    say(&mut ada, "SIM MODE hold", "centre is idle").await;
+    say(&mut ada, "SIM MODE hold", "center is idle").await;
 
     // Ada leads red from the red room, Bo blue from the blue room; Cy claims
     // red's second slot and stays in the lobby.
@@ -1207,6 +1207,6 @@ async fn o1_sim_mode_over_the_wire() {
 
     // `Boarding` refuses a set.
     say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "SIM MODE skirmish", "centre is boarding").await;
+    say(&mut ada, "SIM MODE skirmish", "center is boarding").await;
     say(&mut ada, "SIM ABORT", "calls the match off").await;
 }

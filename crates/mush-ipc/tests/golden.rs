@@ -109,7 +109,7 @@ fn the_previous_version_set_decodes_under_the_current_codec() {
     let set = read_set(previous).unwrap_or_else(|| {
         panic!(
             "no recorded set for the previous version {previous} at {}; the window is one step \
-             and the previous version's set is the contract this build must still honour (it is \
+             and the previous version's set is the contract this build must still honor (it is \
              recorded by a build AT that version, before the bump)",
             set_dir(previous).display()
         )

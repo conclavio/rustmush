@@ -625,7 +625,7 @@ mod tests {
                 .command_refs
                 .is_empty()
         );
-        def.profile.command_refs = vec!["+coop/enrol My Ship".into()];
+        def.profile.command_refs = vec!["+coop/enroll My Ship".into()];
         assert!(
             profile_of(&def).is_err(),
             "a command line is not a reference"

@@ -493,7 +493,7 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
 
     // ---- the board, before anything is claimed ----
     let seen = ask(&mut ada, "SIM STATUS", "idle").await;
-    assert!(seen.contains("Simulator centre"), "{seen}");
+    assert!(seen.contains("Simulator center"), "{seen}");
 
     // ---- one claim, and a match ----
     say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
@@ -702,7 +702,7 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // board, so `spent` can never appear here and `void` can.
     assert!(
         ["red", "blue", "draw", "abort", "timeout", "void"].contains(&outcome.as_str()),
-        "the centre sealed a record with an outcome in it: {record}"
+        "the center sealed a record with an outcome in it: {record}"
     );
 
     // Doc 16 §3.1's egress is ack-gated and chunked, so what is in the store is
@@ -1489,7 +1489,7 @@ async fn m5_sim_report(term: &mut Term) -> String {
     const AGAIN: [&str; 5] = [
         "still being written",
         "already being read",
-        "You have not flown a match the centre remembers.",
+        "You have not flown a match the center remembers.",
         "is still running.",
         COMMIT_PENDING,
     ];
@@ -1662,7 +1662,7 @@ async fn m5_a_pilot_seals_a_mind_climbs_out_and_the_tank_is_flown_by_it() {
     assert!(
         read.iter().any(|line| {
             let line = line.trim();
-            line.starts_with("Red's half of the centre's pool is ")
+            line.starts_with("Red's half of the center's pool is ")
                 && line.ends_with(" are spoken for.")
         }),
         "the pool line: {read:#?}"

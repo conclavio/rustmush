@@ -216,13 +216,13 @@ impl Rig {
 
     fn state(&self) -> MatchState {
         match_::centre_of(self.tw.world())
-            .expect("the centre is on the match book")
+            .expect("the center is on the match book")
             .state
     }
 
     fn centre(&self) -> tacsim::match_::Centre {
         match_::centre_of(self.tw.world())
-            .expect("the centre is on the match book")
+            .expect("the center is on the match book")
             .clone()
     }
 
@@ -236,11 +236,11 @@ impl Rig {
 
     fn walk_to(&mut self, n: usize, entry: &str) {
         let pilot = self.pilot(n);
-        let room = match_::centre_object(self.tw.world(), entry).expect("a centre room");
+        let room = match_::centre_object(self.tw.world(), entry).expect("a center room");
         self.tw
             .world_mut()
             .move_to(pilot, room)
-            .expect("the centre's rooms take anybody");
+            .expect("the center's rooms take anybody");
     }
 
     fn tick_to(&mut self, seconds: i64) {
@@ -436,7 +436,7 @@ fn a_wrecked_stock_tank_is_back_at_spec_and_at_muster_and_a_second_reset_says_no
     );
 
     let said = rig.staff("@arena/reset");
-    assert!(said.contains("centre is reset"), "{said}");
+    assert!(said.contains("center is reset"), "{said}");
     assert!(
         said.contains("1 tank(s) back at spec"),
         "the reset says what it repaired: {said}"
@@ -794,7 +794,7 @@ fn a_unit_staff_fielded_is_never_reset() {
     assert_eq!(
         before.revision(),
         after.revision(),
-        "the reset wrote to a unit the centre does not own"
+        "the reset wrote to a unit the center does not own"
     );
     assert!(
         tacsim::arena::damage::is_wreck(&after),
@@ -991,14 +991,14 @@ fn a_claim_on_a_terminal_centre_resets_it_and_claims_with_no_staff() {
     rig.wreck(red);
     one_aboard(&mut rig);
     rig.say(1, "sim abort");
-    assert_eq!(rig.state(), MatchState::Aborted, "a terminal centre");
+    assert_eq!(rig.state(), MatchState::Aborted, "a terminal center");
 
     // The board says how it went **and** how to get past it.
     let said = rig.say(0, "sim status");
     assert!(said.contains("aborted"), "{said}");
     assert!(
         said.contains("`SIM TEAM red` or `SIM TEAM blue` opens the next match."),
-        "a terminal centre is a dead end: {said}"
+        "a terminal center is a dead end: {said}"
     );
 
     // And the claim itself does the staff verb's work on the way through.
@@ -1065,7 +1065,7 @@ fn a_claim_that_could_not_put_every_tank_back_says_so_rather_than_promising_must
         );
     });
     rig.say(1, "sim abort");
-    assert_eq!(rig.state(), MatchState::Aborted, "a terminal centre");
+    assert_eq!(rig.state(), MatchState::Aborted, "a terminal center");
 
     rig.walk_to(0, match_::LOBBY_ENTRY);
     let said = rig.say(0, "sim team red");
@@ -1104,12 +1104,12 @@ fn the_other_sim_selectors_keep_their_state_guards_on_a_terminal_centre() {
         let said = rig.say(0, line);
         assert!(
             said.contains("aborted") || said.contains("hold no slot"),
-            "{line} on a terminal centre: {said}"
+            "{line} on a terminal center: {said}"
         );
         assert_eq!(
             rig.state(),
             MatchState::Aborted,
-            "{line} moved a terminal centre"
+            "{line} moved a terminal center"
         );
     }
     rig.walk_to(0, match_::RED_ROOM_ENTRY);
@@ -1140,7 +1140,7 @@ fn an_arena_reset_on_an_already_idle_centre_sweeps_a_stranded_body_and_billet() 
     let said = rig.staff("@arena/reset");
     assert!(
         said.contains("1 pod(s) opened and 1 cockpit billet(s) given back"),
-        "an idle centre with a stranded pilot reported nothing: {said}"
+        "an idle center with a stranded pilot reported nothing: {said}"
     );
     assert_ne!(rig.location(0), Some(pod), "the body is still in the pod");
     assert_eq!(
@@ -1283,7 +1283,7 @@ fn v2_the_boot_fills_the_history_ring_from_the_result_documents_newest_first() {
     let lines: Vec<&str> = said.lines().collect();
     assert_eq!(
         lines.first().copied(),
-        Some("The centre's last 20 matches, newest first:"),
+        Some("The center's last 20 matches, newest first:"),
         "{said}"
     );
     assert_eq!(lines.len(), 21, "{said}");
@@ -1365,7 +1365,7 @@ fn i1_the_boot_holds_the_replays_the_ring_remembers_and_no_others() {
         &smol_str::SmolStr::new(match_::CENTRE_ARENA),
     )
     .expect("the ground builds")
-    .expect("the centre's ground is loaded");
+    .expect("the center's ground is loaded");
     let digest = tacsim::arena_bridge::digest_text(&ground.digest());
     let replay_document = |id: u64| {
         serde_json::json!({
@@ -1546,5 +1546,5 @@ fn z4_the_boot_makes_the_two_nets_once_and_a_reboot_still_holds_two() {
         .next()
         .expect("red's net");
     assert_eq!(red.perms.join, shut, "the boot shut the lock again");
-    assert_eq!(red.color.ansi, "red", "and kept the colour");
+    assert_eq!(red.color.ansi, "red", "and kept the color");
 }

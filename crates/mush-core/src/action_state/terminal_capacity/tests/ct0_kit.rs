@@ -538,7 +538,7 @@ macro_rules! purchase_walk {
                     },
                 ),
                 (
-                    "fund that skips a licence",
+                    "fund that skips a license",
                     FundFault {
                         wrong_allocator: true,
                         ..FundFault::default()

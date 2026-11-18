@@ -672,7 +672,7 @@ impl GovernedHardware {
         }
         let (_, _, ship) = families(&layer)?;
         if ship.catalog().descriptors != self.state.registration.catalog().descriptors {
-            return Err(bad("hardware composition catalogue changed"));
+            return Err(bad("hardware composition catalog changed"));
         }
         let packs = layer.loaded.as_mut().map_err(|e| bad(e.as_str()))?;
         let manifest = self.state.publication.pack().manifest();

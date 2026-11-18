@@ -1216,7 +1216,7 @@ mod tests {
             first: 1,
             last: 200,
         });
-        request.validate().expect("bounded licence request");
+        request.validate().expect("bounded license request");
         let bytes = serde_json::to_vec(&request).expect("wire");
         assert_eq!(
             serde_json::from_slice::<super::InvokeRequest>(&bytes).expect("decode"),
@@ -1350,7 +1350,7 @@ mod tests {
         let market = |action: MarketAction| InvokeRequest::Mind(MindRequest::Market { action });
         let resell = |player: &str, price: &str| {
             market(MarketAction::Resell {
-                licence: 7,
+                license: 7,
                 player: player.into(),
                 price: price.into(),
             })
@@ -1397,7 +1397,7 @@ mod tests {
             check_eq!(resell("Cy", price).validate().is_ok(), ok, "{price:?}");
             check_eq!(
                 market(MarketAction::ResellAccept {
-                    licence: 7,
+                    license: 7,
                     price: Some(price.into()),
                 })
                 .validate()

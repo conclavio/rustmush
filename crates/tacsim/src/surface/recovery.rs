@@ -1545,13 +1545,13 @@ fn project(ctx: &mut Ctx<'_>, record: &RigRecord, receipt: &RecoveryReceipt) -> 
     // notice of it, told once by `recovery_told` (and not again after a reboot); (A4) a home
     // into a second carrier names that carrier.
     let abandoned_line = format!(
-        "Staff closed rig #{}'s excursion and cancelled its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.",
+        "Staff closed rig #{}'s excursion and canceled its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.",
         record.tv.0
     );
     let line = match receipt.operation {
         RecoveryOperation::Close if receipt.abandoned => abandoned_line.clone(),
         RecoveryOperation::Close => format!(
-            "Staff closed rig #{}'s excursion and cancelled its work. Its location and hopper are unchanged.",
+            "Staff closed rig #{}'s excursion and canceled its work. Its location and hopper are unchanged.",
             record.tv.0
         ),
         RecoveryOperation::Home => format!(

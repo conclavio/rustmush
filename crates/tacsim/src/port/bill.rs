@@ -121,7 +121,7 @@ pub fn design_bill(
     let spec = catalog
         .specs
         .get(design)
-        .ok_or_else(|| format!("{design} is not in the catalogue"))?;
+        .ok_or_else(|| format!("{design} is not in the catalog"))?;
     let budget = catalog
         .budget_of(design.as_str())
         .cloned()

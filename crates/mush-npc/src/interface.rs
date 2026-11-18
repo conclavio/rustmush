@@ -306,7 +306,7 @@ mod tests {
                 name: "+coop".into(),
                 aliases: vec!["+cooperative".into()],
                 switches: vec!["enrol".into()],
-                help: "+coop/enrol <name> signs a charter at the desk.".into(),
+                help: "+coop/enroll <name> signs a charter at the desk.".into(),
                 ..CommandSpec::default()
             },
         );
@@ -316,7 +316,7 @@ mod tests {
         let alias = help_reply(&reg, &world, player, "+cooperative").unwrap();
         assert_eq!(canonical, alias);
         assert_eq!(canonical.audience, ReplyAudience::Asker);
-        assert!(canonical.text.contains("/enrol <name>"));
+        assert!(canonical.text.contains("/enroll <name>"));
         assert!(!canonical.text.contains("must not win"));
         let prose = help_reply(&reg, &world, player, "corridor").unwrap();
         assert_eq!(prose.audience, ReplyAudience::Room);

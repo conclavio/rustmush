@@ -60,7 +60,7 @@ asked and logged as `npc_decision disabled` against the NPC. A call that was
 already under way when the NPC was parked finishes and is charged.
 
 Use `@llm/disable` if cost or output ever runs away; in-flight drafts finish
-harmlessly and everything else falls back to its deterministic behaviour (hand-
+harmlessly and everything else falls back to its deterministic behavior (hand-
 written weather lines, NPC fallback lines).
 
 ## Spending LLM budget

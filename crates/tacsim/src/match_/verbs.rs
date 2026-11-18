@@ -157,8 +157,8 @@ pub fn start(
     // no safety in it. Checked before anything is minted or written.
     if super::lobby::centre(ctx.w).is_some_and(super::Centre::is_busy) {
         return Err(CmdError::msg(
-            "The simulator centre is holding a match; `@arena/abort` it, or `@arena/reset` the \
-             centre, before starting another.",
+            "The simulator center is holding a match; `@arena/abort` it, or `@arena/reset` the \
+             center, before starting another.",
         ));
     }
     let match_id = allocate_id(ctx).map_err(CmdError::msg)?;
@@ -651,7 +651,7 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if super::lobby::centre(ctx.w).is_some_and(super::Centre::is_busy) {
         return Err(CmdError::msg(
-            "That centre is holding a match; `@arena/abort` it first — its units are checked out \
+            "That center is holding a match; `@arena/abort` it first — its units are checked out \
              and only the check-in gives them back.",
         ));
     }
@@ -677,11 +677,11 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         actor,
         crate::arena_bridge::NOTICE_CATEGORY,
         if outcome.changed() || (outcome.is_empty() && overrides > 0) {
-            "The simulator centre is reset; its slots and pods are free."
+            "The simulator center is reset; its slots and pods are free."
         } else if outcome.is_empty() {
-            "The simulator centre is already idle; nothing changed."
+            "The simulator center is already idle; nothing changed."
         } else {
-            "The simulator centre is idle, but not clean:"
+            "The simulator center is idle, but not clean:"
         },
     );
     // **16b cut F.1**: and what it actually found. The sweep now runs even on an
@@ -958,7 +958,7 @@ fn slot_of_callsign(w: &mush_core::World, named: &str) -> Result<(PartyId, u8), 
         .find(|(team, slot)| {
             callsign(*team, *slot) == named && super::pod_object(w, *team, *slot).is_some()
         })
-        .ok_or_else(|| CmdError::msg(format!("There is no slot {named} on this centre.")))
+        .ok_or_else(|| CmdError::msg(format!("There is no slot {named} on this center.")))
 }
 
 /// Refuse a change to the overrides while the centre holds a running match: its
@@ -966,7 +966,7 @@ fn slot_of_callsign(w: &mush_core::World, named: &str) -> Result<(PartyId, u8), 
 fn refuse_while_running(w: &mush_core::World) -> Result<(), CmdError> {
     if super::lobby::centre(w).is_some_and(|centre| centre.state.is_live()) {
         return Err(CmdError::msg(
-            "The simulator centre is running; set opening cells before the match starts.",
+            "The simulator center is running; set opening cells before the match starts.",
         ));
     }
     Ok(())
@@ -1560,11 +1560,11 @@ mod tests {
         }
         assert_eq!(
             said("@arena/pose ZZ=90 97"),
-            ["POSE refused. There is no slot ZZ on this centre."]
+            ["POSE refused. There is no slot ZZ on this center."]
         );
         assert_eq!(
             said("@arena/pose zz=off"),
-            ["POSE refused. There is no slot ZZ on this centre."]
+            ["POSE refused. There is no slot ZZ on this center."]
         );
         // The bare read is an answer, not a refusal.
         assert_eq!(said("@arena/pose"), ["No opening cell is overridden."]);

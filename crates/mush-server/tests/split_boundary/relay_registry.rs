@@ -4774,7 +4774,7 @@ fn r10_public_star_content_digests_are_pinned() {
     let expected = [
         (
             "region.kirkwood_depot",
-            "0c4187a8757fe7f7fed9179f09f0a62e83db606ea25f2a9cdffebca6ccd76627",
+            "48dd4138e2f3e6f0e5f5bb8fce32f1eefbaa1a1bbb7940a427c71058be937635",
         ),
         (
             "region.mercury_relay",
@@ -4782,7 +4782,7 @@ fn r10_public_star_content_digests_are_pinned() {
         ),
         (
             "neighborhood.malapert_exchange",
-            "acad4209e0ded034b989bfbe0ff7311df8e02734d579bd6bcdd6a5abbf0b626c",
+            "d8b3228c44f0536b8f9ad59a6e680fb758bf0c866a6773872cd8dad1b69c5061",
         ),
         (
             "neighborhood.phobos_exchange",
@@ -4790,7 +4790,7 @@ fn r10_public_star_content_digests_are_pinned() {
         ),
         (
             "neighborhood.kirkwood_depot",
-            "fe585584e7631ed5904c4402d5042f451ff487a417aaf5b259b27db0fcc4e328",
+            "2717ede9f772bac06845061320b5e05b5b91c00f3f1bd097131b6ed0e25cac86",
         ),
         (
             "neighborhood.mercury_relay",

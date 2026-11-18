@@ -1396,7 +1396,7 @@ mod tests {
             BlockedCause::TooSteep,
         ] {
             assert_eq!(
-                serde_json::to_value(cause).expect("a cause serialises"),
+                serde_json::to_value(cause).expect("a cause serializes"),
                 serde_json::json!(cause.as_str())
             );
             let back: BlockedCause =

@@ -116,7 +116,7 @@ fn current(w: &PlayerWorld, owner: LicenceId) -> TestResult<u64> {
     let row = rows(&disk(w), "roll", "roll_mind_owner_licence")
         .into_iter()
         .find(|v| v.get("id") == Some(&json!(owner)))
-        .ok_or("actual owner licence")?;
+        .ok_or("actual owner license")?;
     Ok(row
         .get("term")
         .and_then(Value::as_str)
@@ -317,7 +317,7 @@ async fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
                             == Some("roll_mind_owner_licence")
                             && v.pointer("/value/format") == Some(&json!(2))
                     })
-                    .ok_or("current licence")?;
+                    .ok_or("current license")?;
                 *v.pointer_mut("/value/format").ok_or("format")? = json!(1);
                 *v.pointer_mut("/value/term").ok_or("term")? = json!("1");
             }

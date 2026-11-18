@@ -19,7 +19,7 @@ fn parent_end(w: &PlayerWorld) -> TestResult<i64> {
     let licence: LicenceId = serde_json::from_value(
         binding
             .pointer("/parent/licence")
-            .ok_or("parent licence")?
+            .ok_or("parent license")?
             .clone(),
     )?;
     let term: PaidTermRecord = serde_json::from_value(

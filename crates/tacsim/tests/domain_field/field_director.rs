@@ -255,7 +255,7 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
         worn.iter()
             .flatten()
             .all(|(_, current, min)| current == min),
-        "the hulls' armour is at its floor after the landing: {worn:?}; poses {:?}",
+        "the hulls' armor is at its floor after the landing: {worn:?}; poses {:?}",
         raiders
             .iter()
             .map(|hull| mush_sim::pose_of(rig.tw.world(), *hull))

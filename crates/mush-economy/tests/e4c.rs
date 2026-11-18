@@ -1904,7 +1904,7 @@ fn vf_e5_after_can_anchor_on_a_deterministic_condition() {
     assert_eq!(
         state(&tw, id),
         ContractState::Active,
-        "the delay was not honoured"
+        "the delay was not honored"
     );
     let stamp = snap(&tw).contract(id).expect("contract").satisfied[0]
         .clone()
@@ -2371,7 +2371,7 @@ fn e6c_b4_a_title_issuer_stamps_the_catalogue_reference_at_birth() {
     assert_eq!(
         asset.catalog.as_ref().map(|c| c.code.as_str()),
         Some("ares.predator"),
-        "the issuer's catalogue reference did not land"
+        "the issuer's catalog reference did not land"
     );
     assert_eq!(
         asset.catalog.as_ref().map(|c| c.ruleset.as_str()),

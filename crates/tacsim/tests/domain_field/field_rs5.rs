@@ -228,7 +228,7 @@ fn charter_on(ground: &Ground) {
     set_rate(&mut rig.tw, 1);
     let restoration = {
         let w = rig.tw.world();
-        let port = tacsim::port::coop::programme_port(w).expect("the programme port");
+        let port = tacsim::port::coop::programme_port(w).expect("the program port");
         tacsim::port::tv::restoration_charge(w, &port, prospect).expect("a quote")
     };
     assert!(
@@ -544,7 +544,7 @@ fn rs5_the_clerk_hands_an_unaccepted_job_and_a_lapsed_one_to_tycho() {
     assert_eq!(
         contract_state(&rig, second_job.contract),
         mush_economy::ContractState::Cancelled,
-        "the lapsed contract is cancelled"
+        "the lapsed contract is canceled"
     );
     let fresh = rig
         .tw

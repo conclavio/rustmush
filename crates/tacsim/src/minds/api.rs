@@ -518,7 +518,7 @@ pub const PARITY: &[(&str, &str, &str)] = &[
     (
         "Predicate",
         "value",
-        "predicate's min_permille, mask, metres, amount, below_percent or above_percent",
+        "predicate's min_permille, mask, meters, amount, below_percent or above_percent",
     ),
     ("Predicate", "percent", "rules[].rule.predicates[].percent"),
     ("Predicate", "section", "rules[].rule.predicates[].section"),

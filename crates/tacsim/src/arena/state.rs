@@ -7774,7 +7774,7 @@ mod tests {
             )
             .err()
             .map(|error| error.to_string()),
-            Some("the red side fields 2 of class armour; a side fields at most 1".to_owned())
+            Some("the red side fields 2 of class armor; a side fields at most 1".to_owned())
         );
     }
 

@@ -84,7 +84,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/command-grants <draft>:<activation revision>` | Print grants that a unit's owner or authorized lender can issue to this mission's current leader role |
 | `+sortie/recover <draft>:<activation revision>=<slot>` | Bring a unit physically beside the ramp back into the carrier |
 | `+sortie/cancel-launch <draft>:<activation revision>=<slot>` | Cancel a departure that is still physically aboard |
-| `+sortie/end <draft>:<activation revision>` | End coordination, cancelling only departures still aboard |
+| `+sortie/end <draft>:<activation revision>` | End coordination, canceling only departures still aboard |
 | `+sortie/history <unit>:<flight>` | Read an authorized flight's departure and return history |
 
 ## Detachment chat
@@ -214,7 +214,7 @@ A missing unit may be `null`; an unassigned controller is
 `{"kind":"npc","character":43}`; an automated preference uses
 `{"kind":"automated"}`. A mind preference is
 `{"licence":7,"profiles":{"role":"scout"}}`. These are selections for later
-validation, not proof that a person, unit, licence or profile is available.
+validation, not proof that a person, unit, license or profile is available.
 
 The report checks current physical presence and your current unit permissions.
 It also identifies prerequisites that preparation cannot establish yet.
@@ -261,7 +261,7 @@ console that fires. Anyone else flies an unarmed rig.
 Preflight and launch check current facts again after that request settles.
 Each departure takes the existing ramp duration;
 units complete independently. A blocked departure remains pending and can be
-retried or cancelled while still aboard. Inspect `+sortie/operation` for confirmed
+retried or canceled while still aboard. Inspect `+sortie/operation` for confirmed
 progress and individual flight references. History is available to the original
 organizer and assigned player participants; it is not a remote casualty sensor.
 
@@ -282,7 +282,7 @@ After a mining deployment, the physical operator of a leased stock rig can use
 its individual `+tv/<n> drive`, `scan`, `sound`, `mine`, `recover`, `dump` and
 `unload` controls. They must remain at the rig's real console with control and
 permission to operate it. A hired mining operator uses their own readings and
-the employer's mining licence and claim rights; field leadership supplies
+the employer's mining license and claim rights; field leadership supplies
 neither. A loaded recovery unloads into the carrier after the physical return
 is confirmed. Launch the next flight with `+sortie/launch` before starting more
 field work. Field crews use individual orders rather than the carrier's
@@ -328,7 +328,7 @@ holds Hostile. An NPC leader marks nobody Hostile and never sets a player's
 POSTURE, so a roster it leads fights only a party that has fired on the roster
 or on a friend.
 
-The organiser, and any player flying a slot, can read what the NPC leader
+The organizer, and any player flying a slot, can read what the NPC leader
 ordered: `+sortie/orders` lists its last sixteen orders, oldest first, each with
 the slot, the order as a leader would type it, and the answer once that answer
 has reached the leader. Nobody outside the roster can read them.

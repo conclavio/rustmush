@@ -511,7 +511,7 @@ impl TacsimRuleset {
             || self.conduct_trials.is_some()
         {
             return Err(ModError::msg(
-                "Conduct carrier must precede catalogue capture",
+                "Conduct carrier must precede catalog capture",
             ));
         }
         let carrier = minds::registry::conduct::composition::carrier_pack()?;

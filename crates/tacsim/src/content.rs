@@ -510,7 +510,7 @@ impl ArenaApplier {
             .any(|object| w.get(*object).is_some() && mush_sim::deployed::is_custodied(w, *object));
         if running {
             return Err(format!(
-                "{id}: a match is running; apply with the centre idle"
+                "{id}: a match is running; apply with the center idle"
             ));
         }
         Ok(())

@@ -14,7 +14,7 @@ use store::{Booking, Phase};
 const UNAVAILABLE: &str = "No passenger service is available here.";
 const QUOTE_SECONDS: i64 = 600;
 const TERM_SECONDS: i64 = 365 * 86_400;
-const HELP: &str = "+passage [<traveller>] -- your passage agreement, or ask a present traveller about their journey.\n+passage/offer <traveller>[=<fare in credits>] -- negotiate a fare; the traveller may counteroffer.\n+passage/accept <traveller>=<quote token> -- explicitly agree to the exact quoted ship, destination and fare. The passenger reserves the fare before boarding.\n+passage/board <traveller> -- invite your funded passenger aboard at the agreed origin before filing clearance; they walk to the berth and use a real bunk.\n+passage/cancel <traveller> -- cancel before departure at the origin and return the reserved fare.\nA booked passenger must board or have their passage cancelled before the ship can file departure clearance. Arrival at the agreed port pays once, disembarks the traveller and preserves your shared history. Quotes expire after ten minutes; a booking expires and refunds after one IC year.";
+const HELP: &str = "+passage [<traveler>] -- your passage agreement, or ask a present traveler about their journey.\n+passage/offer <traveler>[=<fare in credits>] -- negotiate a fare; the traveler may counteroffer.\n+passage/accept <traveler>=<quote token> -- explicitly agree to the exact quoted ship, destination and fare. The passenger reserves the fare before boarding.\n+passage/board <traveler> -- invite your funded passenger aboard at the agreed origin before filing clearance; they walk to the berth and use a real bunk.\n+passage/cancel <traveler> -- cancel before departure at the origin and return the reserved fare.\nA booked passenger must board or have their passage canceled before the ship can file departure clearance. Arrival at the agreed port pays once, disembarks the traveler and preserves your shared history. Quotes expire after ten minutes; a booking expires and refunds after one IC year.";
 
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.interface_provider("passenger", Arc::new(PassengerInterface))?;
@@ -238,7 +238,7 @@ fn accept(ctx: &mut Ctx<'_>, npc: ObjId, token: &str) -> Result<String, String> 
         return Err(error);
     }
     Ok(format!(
-        "Passage agreement filed. The traveller is confirming the fare reservation. +passage shows its status; +passage/board #{} invites them aboard once the fare is reserved.",
+        "Passage agreement filed. The traveler is confirming the fare reservation. +passage shows its status; +passage/board #{} invites them aboard once the fare is reserved.",
         npc.0
     ))
 }
@@ -274,7 +274,7 @@ fn status(ctx: &Ctx<'_>, npc: ObjId, read: BookingRead) -> Result<String, String
                 Phase::Aboard => "aboard",
                 Phase::Delivered if economy::settled(ctx.w, &row) => "arrived and paid",
                 Phase::Delivered => "arrived; payment settling",
-                Phase::Cancelled => "cancelled; reserved fare returns to the traveller",
+                Phase::Cancelled => "canceled; reserved fare returns to the traveler",
             };
             return Ok(format!(
                 "{}: {state}. Passage to {} aboard {}; agreed fare {}.",
@@ -342,7 +342,7 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .filter(|b| b.captain == ctx.actor)
             .collect();
         if rows.is_empty() {
-            ctx.out.info(ctx.actor, "You have no passage agreement. Talk to a traveller to discover where they want to go.");
+            ctx.out.info(ctx.actor, "You have no passage agreement. Talk to a traveler to discover where they want to go.");
         }
         for row in rows {
             let line = status(ctx, row.npc, BookingRead::Current).map_err(CmdError::msg)?;
@@ -453,7 +453,7 @@ impl InterfaceAbilityProvider for PassengerInterface {
                     row.destination
                 ),
                 Phase::Aboard => format!(
-                    "You are a passenger aboard {}. Your agreed destination is {}. Read current voyage events for where the ship is actually going. Talk naturally with people present: why you are travelling, life at the destination, or a question about this voyage. You do not operate the ship or know anyone's finances. Let conversations breathe.",
+                    "You are a passenger aboard {}. Your agreed destination is {}. Read current voyage events for where the ship is actually going. Talk naturally with people present: why you are traveling, life at the destination, or a question about this voyage. You do not operate the ship or know anyone's finances. Let conversations breathe.",
                     crate::port::coop::name_of(w, row.hull),
                     row.destination
                 ),
@@ -462,7 +462,7 @@ impl InterfaceAbilityProvider for PassengerInterface {
                     row.destination
                 ),
                 Phase::Cancelled => format!(
-                    "Your previous passage arrangement was cancelled. You still want to reach {}. A new offer is possible only after the passage service confirms the old fare is released.",
+                    "Your previous passage arrangement was canceled. You still want to reach {}. A new offer is possible only after the passage service confirms the old fare is released.",
                     row.destination
                 ),
             },

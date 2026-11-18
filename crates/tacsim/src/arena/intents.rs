@@ -4011,7 +4011,7 @@ mod tests {
         assert!(!arming.is_continuous());
         assert_eq!(arming.channel_required(), Channel::Fire);
         assert_eq!(arming.as_str(), "fire");
-        let text = serde_json::to_string(&arming).expect("an arming serialises");
+        let text = serde_json::to_string(&arming).expect("an arming serializes");
         assert_eq!(
             text,
             "{\"condition\":{\"arm\":{\"weapon\":\"cannon\",\"target\":{\"target\":\"best_hostile\"},\

@@ -467,7 +467,7 @@ impl ActionProvider for Provider {
             presentation: mush_core::ActionPresentation::new(
                 "roll-registry-principal-revocation",
                 "Revoke a principal for a term",
-                "Bar a character or organisation from new licences after an inspection found an ungoverned core.",
+                "Bar a character or organization from new licenses after an inspection found an ungoverned core.",
             )
             .map_err(|_| fail())?,
             guards: guards.finish().map_err(|_| fail())?,

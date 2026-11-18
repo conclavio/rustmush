@@ -651,7 +651,7 @@ async fn in3_a_works_re_termed_after_a_booking_cancels_it_and_returns_the_bookin
     assert_eq!(
         *order_of(&mut rig, id).state(),
         WorkOrderState::Cancelled,
-        "the facility cancelled the stale order rather than submit it"
+        "the facility canceled the stale order rather than submit it"
     );
     let c = contract(&rig, id);
     assert!(c.stale, "{c:?}");

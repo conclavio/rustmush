@@ -1628,7 +1628,7 @@ mod tests {
         assert_eq!(
             search(45, CostRow::Tracked),
             Ok(vec![(0, 1), (1, 1)]),
-            "the tank's rubble shoulder is ten metres up, so it goes round"
+            "the tank's rubble shoulder is ten meters up, so it goes round"
         );
     }
 

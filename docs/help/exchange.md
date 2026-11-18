@@ -60,7 +60,7 @@ there and its margin with `@facility/terms <facility>=public|owner
 stays open to every customer.
 
 A fee is fixed when an order is booked. If the owner raises it before the work
-starts, the order is cancelled, and its booking fee and bill go back to the
+starts, the order is canceled, and its booking fee and bill go back to the
 customer.
 
 ## Posting a bid

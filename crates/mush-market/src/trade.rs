@@ -1665,7 +1665,7 @@ pub fn sell(
         .and_then(|s| s.snapshot().asset(object).and_then(|a| a.catalog.clone()))
     else {
         return Err(MarketError::bad(
-            "That has no catalogue entry, so no vendor can put a price on it.",
+            "That has no catalog entry, so no vendor can put a price on it.",
         ));
     };
     let Some(entry) = ctx
@@ -1674,7 +1674,7 @@ pub fn sell(
         .and_then(|s| s.entry_of(&catalog).cloned())
     else {
         return Err(MarketError::bad(
-            "That has no catalogue entry, so no vendor can put a price on it.",
+            "That has no catalog entry, so no vendor can put a price on it.",
         ));
     };
     let Some(baseline) = entry.baseline.filter(|b| b.minor() > 0) else {

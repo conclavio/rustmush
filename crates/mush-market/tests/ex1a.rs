@@ -1288,7 +1288,7 @@ fn ex1a_a_listing_whose_terms_moved_under_its_quote_is_refused_at_accept() {
         .contracts()
         .filter(|c| !c.state.is_terminal())
         .count();
-    assert_eq!(live, 0, "the drafted contract was cancelled");
+    assert_eq!(live, 0, "the drafted contract was canceled");
     assert!(economy(&r.tw).snapshot().contracts().count() >= contracts);
     assert_eq!(held(&r.tw, bea.account), 0);
     assert_eq!(posted(&r.tw, bea.account), FUNDS);
@@ -1358,7 +1358,7 @@ fn ex1a_a_backing_hold_that_is_not_the_bid_is_refused() {
         refused.contains(mush_market::seller::BIDDER_NOT_BUYING),
         "{refused}"
     );
-    assert_eq!(live(&r.tw), before, "the sale was cancelled");
+    assert_eq!(live(&r.tw), before, "the sale was canceled");
     let manual_now = economy(&r.tw)
         .snapshot()
         .hold(manual)

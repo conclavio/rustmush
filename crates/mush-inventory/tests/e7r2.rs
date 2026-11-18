@@ -1097,5 +1097,5 @@ fn m8b2_lot_lineage_lines_cut_the_id_and_keep_the_new_words_for_staff() {
         "{player}"
     );
     let staff = read(&mut tw, GOD, lots[2].0);
-    assert!(staff.contains("  grey: no origin recorded"), "{staff}");
+    assert!(staff.contains("  gray: no origin recorded"), "{staff}");
 }

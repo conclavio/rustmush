@@ -82,7 +82,7 @@ fn ct0_prepare(
 
 /// The birth the walk renews: its three rows and every digest over them.
 fn ct0_birth(s: &mut Snapshot, f: &CommerceFamilies, b: &Birth) -> Ct0Result {
-    rig::document(s, "birth licence", &f.paid_licences, &b.licence)?;
+    rig::document(s, "birth license", &f.paid_licences, &b.licence)?;
     rig::document(s, "birth term", &f.paid_terms, &b.term)?;
     rig::document(s, "birth economics", &f.house_economics, &b.economics)?;
     s.wire("birth economics digest", &b.economics.digest()?)?;

@@ -2713,7 +2713,7 @@ mod tests {
         assert_eq!(
             practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
             Err(Refusal::Unwarranted),
-            "HOLD does not answer for its neighbour"
+            "HOLD does not answer for its neighbor"
         );
         practice.note_fired_on(BLUE, RED);
         assert_eq!(
@@ -2814,7 +2814,7 @@ mod tests {
             &mut dropped,
             &reds_seat(3, ControlState::Released, Some(OWNER)),
         );
-        for (arena, which) in [(&plain, "never practised"), (&dropped, "practised")] {
+        for (arena, which) in [(&plain, "never practiced"), (&dropped, "practised")] {
             let state = arena.unit(RED).expect("red");
             assert_eq!(state.controller, Controller::Mind, "{which}");
             assert!(!state.absent, "{which}: bound by no rule");
@@ -3043,7 +3043,7 @@ mod tests {
             assert_eq!(
                 other.clone().resolve_fire_by(RED, "cannon", 0, mind),
                 Err(Refusal::Unwarranted),
-                "{posture} does not answer for its neighbour"
+                "{posture} does not answer for its neighbor"
             );
             assert_eq!(shown(&other), None, "{posture}");
             // Each still answers for itself.

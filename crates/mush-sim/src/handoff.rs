@@ -1791,7 +1791,7 @@ mod tests {
         assert!(cancelled["pending"].is_null());
         let error = engine
             .plan_scheduled_action(&stale_candidate, &stale_ingress)
-            .expect_err("cancelled handoff candidate must be stale");
+            .expect_err("canceled handoff candidate must be stale");
         assert!(matches!(
             error,
             mush_core::ScheduleActionPlanError::Adapter { source, .. }

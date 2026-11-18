@@ -62,7 +62,7 @@ pub const OUTCOME: &str = "licence_seal_mark_recorded";
 /// The refusal's first sentence (B5), verbatim; the line names the hull and
 /// the IC date after it (`unattestable_line`).
 pub const UNATTESTABLE: &str =
-    "The Registry cannot attest a licence that flew on an ungoverned core.";
+    "The Registry cannot attest a license that flew on an ungoverned core.";
 
 fn invalid<T>(_: T) -> PublicationError {
     PublicationError::Invalid
@@ -624,8 +624,8 @@ impl ActionProvider for Provider {
             expires: None,
             presentation: mush_core::ActionPresentation::new(
                 "roll-licence-seal-mark",
-                "Record a licence seal mark",
-                "Record one flight under a licence and whether its core was governed.",
+                "Record a license seal mark",
+                "Record one flight under a license and whether its core was governed.",
             )
             .map_err(|_| fail())?,
             guards: guards.finish().map_err(|_| fail())?,
@@ -640,7 +640,7 @@ pub(crate) fn register(
 ) -> Result<(), ModError> {
     let [action, outcome] = definitions;
     if reg.module() != crate::NS || action != self::action()? {
-        return Err(error("licence seal mark registration differs"));
+        return Err(error("license seal mark registration differs"));
     }
     // Doc 17h cut M8e E4: the surface finish's writer, delegated beside the action.
     writer.install(reg, &f)?;
@@ -653,7 +653,7 @@ pub(crate) fn register(
             refusal: ActionError::new(
                 ActionErrorCode::ProviderRejected,
                 false,
-                "The licence seal mark is unavailable.",
+                "The license seal mark is unavailable.",
             )
             .map_err(error)?,
         },

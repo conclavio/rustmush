@@ -321,7 +321,7 @@ pub(crate) fn paid_licence(world: &M8World, licence: u64) -> Value {
         .rows("roll_mind_personal_paid_licence")
         .into_iter()
         .find(|row| number(row, "id") == licence)
-        .unwrap_or_else(|| panic!("paid licence {licence}'s row"))
+        .unwrap_or_else(|| panic!("paid license {licence}'s row"))
 }
 
 /// Who holds paid licence `licence` now.

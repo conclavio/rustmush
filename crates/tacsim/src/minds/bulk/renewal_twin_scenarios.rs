@@ -481,8 +481,8 @@ pub(super) fn corruptions<T: Twin>(t: &T, snapshot: &Durable, renewed_by: u128) 
                 let value = v
                     .get_mut("value")
                     .and_then(Value::as_object_mut)
-                    .ok_or("licence document")?;
-                let slot = value.get_mut(field).ok_or("licence field")?;
+                    .ok_or("license document")?;
+                let slot = value.get_mut(field).ok_or("license field")?;
                 *slot = if field == "term" {
                     json!("1")
                 } else {

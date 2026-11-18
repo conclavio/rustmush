@@ -688,7 +688,7 @@ fn rk1_a_buyer_short_of_the_price_hears_it_cannot_be_covered() {
             .snapshot()
             .contracts()
             .all(|c| !c.state.is_live()),
-        "the contract drafted before the buyer's escrow refused was cancelled"
+        "the contract drafted before the buyer's escrow refused was canceled"
     );
     assert!(
         tw.engine_mut().take_authoritative_submit().is_none(),
@@ -735,7 +735,7 @@ fn ic0_every_price_line_reads_in_major_units() {
     let shown = ok(&mut tw, GOD, "@market/catalog show ic0:iron");
     assert!(
         shown.contains("never charged): 7.00cr"),
-        "the catalogue baseline renders in major units: {shown}"
+        "the catalog baseline renders in major units: {shown}"
     );
     ok(
         &mut tw,

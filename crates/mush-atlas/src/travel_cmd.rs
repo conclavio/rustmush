@@ -141,7 +141,7 @@ fn cmd_travel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .travel
             .journey_of(actor)
             .map(|j| j.id)
-            .ok_or_else(|| CmdError::msg("You are not travelling."))?;
+            .ok_or_else(|| CmdError::msg("You are not traveling."))?;
         travel::cancel(ctx, id, "you turned back", Some(actor)).map_err(CmdError::msg)?;
         return Ok(());
     }
@@ -319,7 +319,7 @@ fn travel_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     match line {
         Some(line) => say(ctx, vec![line]),
-        None => say(ctx, vec!["You are not travelling.".to_string()]),
+        None => say(ctx, vec!["You are not traveling.".to_string()]),
     }
     Ok(())
 }

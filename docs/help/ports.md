@@ -211,7 +211,7 @@ registry marks, registered title and agent, and public clearance status. A priva
 registry stays unnamed. The berth field names the gallery; registry marks tell
 hulls apart.
 
-At the dockmaster or harbourmaster, `look` also shows filed departures and the
+At the dockmaster or harbormaster, `look` also shows filed departures and the
 origin port's underway sailings. FILED is a scheduled departure awaiting clearance;
 CLEARED has a frozen passage and arrival estimate; OVERDUE is a runnable departure
 whose hour has passed. IDLE means no current public clearance. A captain's cargo

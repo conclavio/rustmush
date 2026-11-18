@@ -84,10 +84,10 @@ pub const MIND_PENDING: &str =
     "{mind} is changing hands; it is not sealed aboard until the transfer settles.";
 /// **A licence the operator does not hold** (or an organisation's they do not act for), read
 /// exactly like a missing one. `{licence}`.
-pub const MIND_NO_LICENCE: &str = "You hold no licence {licence}.";
+pub const MIND_NO_LICENCE: &str = "You hold no license {licence}.";
 /// **A draft on a governed core** (D-UM-41): only an ungoverned core seals an unfiled draft.
 pub const MIND_GOVERNED_DRAFT: &str =
-    "A governed core seals no unfiled draft; name a filed licence.";
+    "A governed core seals no unfiled draft; name a filed license.";
 /// **An organisation the operator does not act for** (or may not see): the `+minds` family's
 /// own sentence (M8c B3), re-exported.
 pub use crate::minds::market_commands::words::NOT_FOR_ORG as MIND_NOT_FOR_ORG;
@@ -98,7 +98,7 @@ pub const MIND_NO_CORE: &str = "That rig carries no core; only Standard Doctrine
 /// **A licence whose seats are all held** (doc 23 cut S.4b-3, D-23-16): the launch is refused at
 /// `go`, before any rig leaves a bay. `{licence}`, `{held}`, `{seats}`.
 pub const MIND_SEATS_HELD: &str =
-    "Licence {licence} already flies {held} of its {seats} seats; bring a hull home first.";
+    "License {licence} already flies {held} of its {seats} seats; bring a hull home first.";
 /// **The holdings are not composed here** (a world with no Roll holdings seam).
 pub const MIND_UNAVAILABLE: &str = "Minds cannot be sealed aboard here.";
 
@@ -108,7 +108,7 @@ pub const MIND_UNAVAILABLE: &str = "Minds cannot be sealed aboard here.";
 /// titled to an organisation they act for (`mush_roll::commerce::ic_claims::hull_authority`).
 /// Any other hull is refused at `go`, before any permit is minted. `{mark}` the rig, `{owner}`
 /// its title's holder as a player reads it.
-pub const MIND_UNTITLED: &str = "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you, leased to you, or held by an organisation you act for.";
+pub const MIND_UNTITLED: &str = "{mark} is {owner}'s hull; a licensed mind flies a hull titled to you, leased to you, or held by an organization you act for.";
 
 /// **D-23-22's refusal, or `None`** (doc 23 cuts S.4b-1 and S.4c): only where the claim path is
 /// composed ([`crate::minds::ic_sortie::claim_path_composed`]), where a filed mind that flies

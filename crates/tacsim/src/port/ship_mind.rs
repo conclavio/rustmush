@@ -67,15 +67,15 @@ use crate::surface::excursion::{ClaimCloseKind, ClaimCursor};
 /// The switch.
 pub const MIND_SWITCH: &str = "mind";
 /// The grammar.
-pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<licence> [org=<organisation>] [go] | +ship/mind off [go]";
+pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<license> [org=<organization>] [go] | +ship/mind off [go]";
 /// No mind aboard: `{name}`.
 pub const MIND_NONE: &str =
     "No mind is sealed aboard the {name}. If you lose your link, the house default takes her home.";
 /// A claim on its way: `{name}`, `{licence}`.
 pub const MIND_ADMITTING: &str =
-    "The Registry is admitting licence {licence}'s claim on the {name}.";
+    "The Registry is admitting license {licence}'s claim on the {name}.";
 /// A mind aboard: `{mind}`, `{name}`, `{licence}`, `{class}`.
-pub const MIND_ABOARD: &str = "{mind} is sealed aboard the {name} under licence {licence}, at Class {class}.\nIt has her helm and sensors while her crew has no link, until she next docks at a port.";
+pub const MIND_ABOARD: &str = "{mind} is sealed aboard the {name} under license {licence}, at Class {class}.\nIt has her helm and sensors while her crew has no link, until she next docks at a port.";
 /// A mind aboard that no longer fits her: `{mind}`, `{name}`.
 pub const MIND_UNFIT: &str =
     "{mind} was sealed aboard the {name}.\nIt no longer fits her; its claim is being closed.";
@@ -100,9 +100,9 @@ pub const MIND_PASSAGE: &str =
 pub const MIND_DRAFT: &str =
     "A ship's core seals a filed mind; an unfiled draft cannot be sealed aboard a ship.";
 /// A lapsed or revoked licence: `{licence}`, `{state}`.
-pub const MIND_LAPSED: &str = "Licence {licence} is {state}; nothing is sealed aboard.";
+pub const MIND_LAPSED: &str = "License {licence} is {state}; nothing is sealed aboard.";
 /// The preview: `{licence}`, `{name}`.
-pub const MIND_PREVIEW: &str = "Seal licence {licence} aboard the {name}: its mind takes her helm and sensors while her crew has no link,\nand holds a seat of the licence until she next docks at a port. Add go to seal it.";
+pub const MIND_PREVIEW: &str = "Seal license {licence} aboard the {name}: its mind takes her helm and sensors while her crew has no link,\nand holds a seat of the license until she next docks at a port. Add go to seal it.";
 /// Nothing to unseal: `{name}`.
 pub const MIND_NOT_SEALED: &str = "The {name} has no mind sealed aboard to unseal.";
 /// Another's seal: `{name}`.
@@ -112,7 +112,7 @@ pub const MIND_NOT_YOURS: &str =
 pub const MIND_NOT_YET: &str =
     "The Registry has not admitted the {name}'s mind claim yet; try again in a moment.";
 /// The unseal's preview: `{name}`.
-pub const MIND_OFF_PREVIEW: &str = "Unseal the mind aboard the {name}: its claim closes and the licence's seat is free.\nAdd go to unseal it.";
+pub const MIND_OFF_PREVIEW: &str = "Unseal the mind aboard the {name}: its claim closes and the license's seat is free.\nAdd go to unseal it.";
 /// The tick's word once the claim is open: `{mind}`, `{name}`, `{class}`.
 pub const MIND_SEALED: &str =
     "The Registry admits the claim: {mind} is sealed aboard the {name} at Class {class}.";
@@ -468,7 +468,7 @@ fn mind_param(
         Some(value) => Some(mush_org::OrgId(
             value
                 .as_u64()
-                .ok_or_else(|| invalid("an organisation is its number"))?,
+                .ok_or_else(|| invalid("an organization is its number"))?,
         )),
     };
     parameters
@@ -1070,7 +1070,7 @@ pub(crate) fn step(
                         let licence =
                             mush_roll::commerce::LicenceId::new(*licence).map_err(|_| {
                                 mush_core::participant::ParticipantError::refused(
-                                    "ship mind claim licence",
+                                    "ship mind claim license",
                                 )
                             })?;
                         host.enqueue_start(&permit, licence, vec![])
@@ -1514,7 +1514,7 @@ mod tests {
         assert_eq!(
             rows(&aboard),
             [
-                "keeper is sealed aboard the Salt Moth under licence 2, at Class II.",
+                "keeper is sealed aboard the Salt Moth under license 2, at Class II.",
                 "It has her helm and sensors while her crew has no link, until she next docks at a port.",
             ]
         );

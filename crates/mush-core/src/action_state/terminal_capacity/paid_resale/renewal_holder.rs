@@ -51,7 +51,7 @@ pub(in crate::action_state::terminal_capacity) fn renewal_holder(
     let birth = token(field(binding, "birth_operation")?)?;
     let (_, allocation) = history::birth_allocation(view, birth)?;
     if field(&allocation, "licence")? != field(binding, "licence")? {
-        return Err(refused("renewal holder birth licence differs"));
+        return Err(refused("renewal holder birth license differs"));
     }
     if generation == 1 {
         // M8c F4: by principal: the binding of an organisation-held licence

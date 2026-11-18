@@ -163,7 +163,7 @@ async fn canary() {
     if let (Some(rate), Some(_)) = (lift, enrolled) {
         let reply = mine::lift_rate(&mut god, rate).await;
         println!(
-            "canary: +{} s the world rate lifted to {rate} after the enrolment:\n{}",
+            "canary: +{} s the world rate lifted to {rate} after the enrollment:\n{}",
             drive_started.elapsed().as_secs(),
             reply.trim_end()
         );
@@ -264,11 +264,11 @@ async fn canary() {
         .milestone(Milestone::ArrivedSite)
         .map_or(0, |at| at.lane_ms / 1_000);
     println!(
-        "canary: wall {} s at world rate {}, enrolment open after {} s, arrived after {arrived} s, lines {}, bytes {}",
+        "canary: wall {} s at world rate {}, enrollment open after {} s, arrived after {arrived} s, lines {}, bytes {}",
         started.elapsed().as_secs(),
         lift.map_or_else(
             || mine::BOOT_RATE.to_string(),
-            |rate| format!("{} then {rate} after the enrolment", mine::BOOT_RATE)
+            |rate| format!("{} then {rate} after the enrollment", mine::BOOT_RATE)
         ),
         enrolled.map_or_else(|| "?".to_owned(), |s| s.to_string()),
         report.lines_sent,
@@ -2040,7 +2040,7 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
                 Duration::from_secs(600)
             )
             .await,
-            "both bots enrol; the captain's ends:\n{}\nthe escort's ends:\n{}",
+            "both bots enroll; the captain's ends:\n{}\nthe escort's ends:\n{}",
             transcript_tail(&flight),
             transcript_tail(&escort_flight)
         );

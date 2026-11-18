@@ -3,7 +3,7 @@
     "id": "tacsim.pack.raider_heavy",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "148bd49020546a2d4f6074846d35892b6d2768a12ddced672deb971a1a09421c",
+    "digest": "d124c6d940d387576e1d69e9088127ead173ccd2599a0d4cb412c02e2b4a7c31",
     "requires": [
       {
         "id": "tacsim.pack.plants",
@@ -123,8 +123,8 @@
               "id": "passage",
               "name": "Cutter Spine",
               "kind": "walkable",
-              "short_desc": "A narrow armoured spine linking lock, bridge, quarters, and hold.",
-              "desc": "A narrow armoured spine linking lock, bridge, quarters, and hold."
+              "short_desc": "A narrow armored spine linking lock, bridge, quarters, and hold.",
+              "desc": "A narrow armored spine linking lock, bridge, quarters, and hold."
             },
             {
               "id": "bridge",
