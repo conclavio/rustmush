@@ -142,6 +142,13 @@ namespace UnityEngine
         public Vector3 normalized { get { float m = magnitude; return m > 1e-5f ? this / m : zero; } }
         public static float Distance(Vector3 a, Vector3 b) => (a - b).magnitude;
         public static float Dot(Vector3 a, Vector3 b) => a.x * b.x + a.y * b.y + a.z * b.z;
+        public static float Angle(Vector3 from, Vector3 to)
+        {
+            float denom = MathF.Sqrt(from.sqrMagnitude * to.sqrMagnitude);
+            if (denom < 1e-15f) return 0f;
+            float dot = Mathf.Clamp(Dot(from, to) / denom, -1f, 1f);
+            return MathF.Acos(dot) * Mathf.Rad2Deg;
+        }
         public static Vector3 Cross(Vector3 a, Vector3 b) =>
             new Vector3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
         public static Vector3 ProjectOnPlane(Vector3 vector, Vector3 planeNormal)
@@ -200,6 +207,7 @@ namespace UnityEngine
         }
         public static Quaternion LookRotation(Vector3 forward) => identity;
         public static Quaternion LookRotation(Vector3 forward, Vector3 upwards) => identity;
+        public static Quaternion FromToRotation(Vector3 fromDirection, Vector3 toDirection) => identity;
         public static Quaternion Slerp(Quaternion a, Quaternion b, float t) => b;
         public static Quaternion Lerp(Quaternion a, Quaternion b, float t) => b;
         public static Quaternion AngleAxis(float angle, Vector3 axis) => identity;
@@ -605,7 +613,28 @@ namespace UnityEngine
         {
             if (typeof(RectTransform).IsAssignableFrom(componentType))
             {
-                var rt = new RectTransform { gameObject = this, name = name };
+                if (transform is RectTransform existingRt)
+                    return existingRt;
+                var prev = transform;
+                var prevParent = prev?.parent;
+                var rt = new RectTransform
+                {
+                    gameObject = this,
+                    name = name,
+                    position = prev != null ? prev.position : Vector3.zero,
+                    localPosition = prev != null ? prev.localPosition : Vector3.zero,
+                    rotation = prev != null ? prev.rotation : Quaternion.identity,
+                    localRotation = prev != null ? prev.localRotation : Quaternion.identity,
+                    localScale = prev != null ? prev.localScale : Vector3.one
+                };
+                if (prev != null)
+                {
+                    prev.SetParent(null, false);
+                    while (prev.childCount > 0)
+                        prev.GetChild(0).SetParent(rt, false);
+                }
+                if (prevParent != null)
+                    rt.SetParent(prevParent, false);
                 transform = rt;
                 _components[0] = rt;
                 return rt;
@@ -1233,6 +1262,7 @@ namespace TMPro
     public enum TextAlignmentOptions { TopLeft, Top, TopRight, Left, Center, Right, BottomLeft, Bottom, BottomRight }
     public enum FontStyles { Normal = 0, Bold = 1, Italic = 2 }
     public enum TextWrappingModes { NoWrap = 0, Normal = 1, PreserveWhitespace = 2, PreserveWhitespaceNoWrap = 3 }
+    public enum TextOverflowModes { Overflow = 0, Ellipsis = 1, Masking = 2, Truncate = 3 }
     public class TMP_Text : UnityEngine.UI.MaskableGraphic
     {
         public string text { get; set; } = string.Empty;
@@ -1241,6 +1271,7 @@ namespace TMPro
         public TextAlignmentOptions alignment { get; set; }
         public bool enableWordWrapping { get; set; }
         public TextWrappingModes textWrappingMode { get; set; }
+        public TextOverflowModes overflowMode { get; set; }
         public bool richText { get; set; } = true;
     }
     public class TextMeshPro : TMP_Text { }
@@ -1283,6 +1314,15 @@ namespace UnityEditor
         public static bool DisplayDialog(string title, string message, string ok, string cancel = "") => true;
     }
 
+    [Flags]
+    public enum ImportAssetOptions
+    {
+        Default = 0,
+        ForceUpdate = 1,
+        ForceSynchronousImport = 8,
+        ImportRecursive = 256
+    }
+
     public static class AssetDatabase
     {
         public static T LoadAssetAtPath<T>(string assetPath) where T : UnityEngine.Object => null;
@@ -1294,7 +1334,7 @@ namespace UnityEditor
         public static bool IsValidFolder(string path) => true;
         public static string CreateFolder(string parentFolder, string newFolderName) => string.Empty;
         public static void SaveAssets() { }
-        public static void Refresh() { }
+        public static void Refresh(ImportAssetOptions options = ImportAssetOptions.Default) { }
     }
 
     public class AssetImporter : UnityEngine.Object
@@ -1304,9 +1344,23 @@ namespace UnityEditor
     }
 
     public enum ModelImporterAnimationType { None = 0, Legacy = 1, Generic = 2, Human = 3 }
+
+    public class ModelImporterClipAnimation
+    {
+        public string name { get; set; }
+        public bool loopTime { get; set; }
+        public bool loopPose { get; set; }
+        public bool keepOriginalPositionY { get; set; }
+        public bool keepOriginalPositionXZ { get; set; }
+        public bool keepOriginalOrientation { get; set; }
+    }
+
     public class ModelImporter : AssetImporter
     {
         public ModelImporterAnimationType animationType { get; set; }
+        public bool importAnimation { get; set; } = true;
+        public ModelImporterClipAnimation[] defaultClipAnimations { get; set; } = Array.Empty<ModelImporterClipAnimation>();
+        public ModelImporterClipAnimation[] clipAnimations { get; set; } = Array.Empty<ModelImporterClipAnimation>();
     }
 
     public class SerializedProperty

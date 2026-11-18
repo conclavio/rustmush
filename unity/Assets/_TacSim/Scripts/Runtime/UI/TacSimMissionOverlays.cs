@@ -215,7 +215,7 @@ namespace TacSim.UI
             _surfaceReadingsText.supportRichText = true;
             SetRect(_surfaceReadingsText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 10f), new Vector2(-12f, -98f));
 
-            var actionBar = CreatePanel(_surfaceHudRoot.transform, "SurfaceRoverActions", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-460f, 74f), new Vector2(460f, 124f), new Color(0.05f, 0.09f, 0.13f, 0.94f));
+            var actionBar = CreatePanel(_surfaceHudRoot.transform, "SurfaceRoverActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 16f), new Vector2(-16f, 66f), new Color(0.05f, 0.09f, 0.13f, 0.94f));
             var aHlg = actionBar.AddComponent<HorizontalLayoutGroup>();
             aHlg.spacing = 6f; aHlg.padding = new RectOffset(8, 8, 6, 6);
             aHlg.childControlWidth = true; aHlg.childControlHeight = true; aHlg.childForceExpandWidth = true;

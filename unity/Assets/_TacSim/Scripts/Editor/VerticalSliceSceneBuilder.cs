@@ -41,6 +41,7 @@ namespace TacSim.Editor
             UrpBootstrap.EnsureUrpAssigned();
             EnsureFolder("Assets/_TacSim", "Scenes");
 
+            AssetPackImporter.EnsureIdaFaberHumanoidRigs();
             var controller = HumanoidAnimatorBuilder.BuildOrRefreshController();
             var catalog = AssetPackImporter.PopulateOrRefreshCatalog(controller);
 

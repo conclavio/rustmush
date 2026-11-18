@@ -2,6 +2,7 @@ using TacSim.Arena;
 using TacSim.Character;
 using TacSim.Space;
 using TacSim.Surface;
+using TacSim.UI;
 using TacSim.World;
 using UnityEngine;
 
@@ -30,6 +31,7 @@ namespace TacSim.Core
         private readonly TacSimCameraRig _cameraRig;
         private readonly ThirdPersonPlayerController _player;
         private readonly TacSimAudioSynthesizer _audio;
+        private readonly TacSimHudController _hud;
 
         public TacSimActiveStage CurrentStage { get; private set; } = TacSimActiveStage.StationWalk;
 
@@ -41,7 +43,8 @@ namespace TacSim.Core
             OocArenaController arenaStage,
             TacSimCameraRig cameraRig,
             ThirdPersonPlayerController player,
-            TacSimAudioSynthesizer audio)
+            TacSimAudioSynthesizer audio,
+            TacSimHudController hud = null)
         {
             _station = station;
             _shipInterior = shipInterior;
@@ -51,6 +54,7 @@ namespace TacSim.Core
             _cameraRig = cameraRig;
             _player = player;
             _audio = audio;
+            _hud = hud;
         }
 
         public void SyncFrame(bool isAboardShip, bool isTextInputFocused)
@@ -94,6 +98,7 @@ namespace TacSim.Core
                 _player.SetStagePhysicsSuspended(inVehicleStage);
                 _player.InputSuspended = isTextInputFocused || dockingActive || inVehicleStage;
             }
+            _hud?.SetWalkQuickActionsVisible(!inVehicleStage);
             if (_cameraRig != null)
                 _cameraRig.OrbitInputEnabled = !isTextInputFocused && !dockingActive;
             if (_surfaceStage != null)

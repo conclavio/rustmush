@@ -327,7 +327,7 @@ namespace TacSim.World
             Color signCol = room.EntryId == "room.sim_red" ? new Color(1f, 0.42f, 0.38f)
                           : room.EntryId == "room.sim_blue" ? new Color(0.42f, 0.78f, 1f)
                           : new Color(0.65f, 0.88f, 1.0f);
-            CreateWorldSign(root, room.Name.ToUpperInvariant(), AtlasToUnity(center2d.x, elev + 3.45f, room.MaxY - 0.35f), Quaternion.identity, 3.6f, signCol);
+            CreateWorldSign(root, room.Name.ToUpperInvariant(), AtlasToUnity(center2d.x, elev + 3.55f, room.MaxY - 0.28f), Quaternion.identity, 2.5f, signCol);
 
             // World-space live status / market board across all ports & Simulator Lobby
             if (isBerthGallery ||
@@ -340,22 +340,23 @@ namespace TacSim.World
                 room.EntryId.IndexOf("harbourmaster", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 room.EntryId == "room.simulator_lobby")
             {
-                Vector3 boardPos = AtlasToUnity(Mathf.Min(room.MaxX - 3f, room.MinX + 4.5f), elev + 2.15f, room.MaxY - 0.26f);
+                float boardX = SelectClearHorizontalWallX(room, room.MaxY, hDoors, room.MinX + 4.2f, halfClearanceM: 2.8f);
+                Vector3 boardPos = AtlasToUnity(boardX, elev + 2.10f, room.MaxY - 0.18f);
                 var boardTmp = CreateDiegeticBoard(root, room, boardPos, Quaternion.identity);
                 _roomBoards[room.EntryId] = boardTmp;
             }
 
-            // Spawn up to 3 authored room detail plaques as interactive [E] inspection terminals
+            // Spawn up to 3 authored room detail plaques as grounded interactive [E] inspection terminals
             int detailIdx = 0;
             foreach (var det in room.Details)
             {
                 if (detailIdx >= 3) break;
-                float px = Mathf.Lerp(room.MinX + 3.5f, room.MaxX - 3.5f, (detailIdx + 1f) / 4f);
-                Vector3 plaquePos = AtlasToUnity(px, elev + 1.35f, room.MinY + 0.45f);
-                if (isBerthGallery)
-                    plaquePos = AtlasToUnity(px, elev + 1.05f, room.MinY + 1.55f);
+                float desiredX = Mathf.Lerp(room.MinX + 3.8f, room.MaxX - 3.8f, (detailIdx + 1f) / 4f);
+                float px = SelectClearHorizontalWallX(room, room.MinY, hDoors, desiredX, halfClearanceM: 2.9f);
+                float pz = isBerthGallery ? room.MinY + 1.65f : room.MinY + 0.68f;
+                Vector3 plaqueFloorPos = AtlasToUnity(px, elev, pz);
 
-                CreateDetailPlaque(root, det.Key, det.Value, plaquePos);
+                CreateDetailPlaque(root, det.Key, det.Value, plaqueFloorPos);
                 detailIdx++;
             }
 
@@ -760,24 +761,30 @@ namespace TacSim.World
             trig.isLocked = ex.Locked;
             trig.OnPortalCrossed = (p, target, cmd) => OnPortalCrossed?.Invoke(p, target, cmd);
 
-            Material postMat = ex.Locked
-                ? UrpMaterialFactory.GetEmissive("LockedDoorGlow", new Color(0.55f, 0.14f, 0.12f), new Color(1.0f, 0.25f, 0.18f) * 1.1f)
-                : frameMat;
+            bool isStairOrLadder = ex.Mode == "stair" || ex.Mode == "ladder";
+            bool hasCommercialDoorPrefab = !isStairOrLadder && Catalog != null &&
+                                           ((ex.Locked && Catalog.stationLockedDoor != null) ||
+                                            (!ex.Locked && Catalog.stationDoorFrame != null));
 
-            // Subtle emissive door-jam strips so players spot exits visually across the concourse
-            Vector3 stripOffset = horizontal ? new Vector3(boxSize.x * 0.5f, 0f, 0f) : new Vector3(0f, 0f, boxSize.z * 0.5f);
-            CreateBox(go.transform, "DoorPost_A", pos - stripOffset, new Vector3(0.14f, boxSize.y, 0.14f), postMat, false);
-            CreateBox(go.transform, "DoorPost_B", pos + stripOffset, new Vector3(0.14f, boxSize.y, 0.14f), postMat, false);
+            if (!hasCommercialDoorPrefab)
+            {
+                Material postMat = ex.Locked
+                    ? UrpMaterialFactory.GetEmissive("LockedDoorGlow", new Color(0.55f, 0.14f, 0.12f), new Color(1.0f, 0.25f, 0.18f) * 1.1f)
+                    : frameMat;
+                Vector3 stripOffset = horizontal ? new Vector3(boxSize.x * 0.5f, 0f, 0f) : new Vector3(0f, 0f, boxSize.z * 0.5f);
+                CreateBox(go.transform, "DoorPost_A", pos - stripOffset, new Vector3(0.14f, boxSize.y, 0.14f), postMat, false);
+                CreateBox(go.transform, "DoorPost_B", pos + stripOffset, new Vector3(0.14f, boxSize.y, 0.14f), postMat, false);
+            }
 
             // DOTTEAM Heavy Station Kit portal arch / locked bulkhead door dressing (auto-aligned flush in wall plane!)
-            if (ex.Mode != "stair" && ex.Mode != "ladder")
+            if (!isStairOrLadder)
             {
                 Vector3 floorCenter = new Vector3(pos.x, pos.y - boxSize.y * 0.5f, pos.z);
                 if (ex.Locked)
                 {
                     // Always place a solid physics bulkhead blocker across locked doorways so the player avatar cannot walk into a restricted room
                     Vector3 blockerSize = horizontal ? new Vector3(4.3f, 3.2f, 0.36f) : new Vector3(0.36f, 3.2f, 4.3f);
-                    Material sealedMat = UrpMaterialFactory.GetOpaque("SealedBulkheadLeaf", new Color(0.24f, 0.20f, 0.20f), 0.35f, 0.65f);
+                    Material sealedMat = UrpMaterialFactory.GetOpaque("SealedBulkheadLeaf", new Color(0.24f, 0.20f, 0.20f), new Color(0.24f, 0.20f, 0.20f).r, 0.65f);
                     CreateBox(go.transform, "SealedBulkheadBlocker", floorCenter + Vector3.up * 1.6f, blockerSize, sealedMat, withCollider: true);
                     if (Catalog != null && Catalog.stationLockedDoor != null)
                         SpawnAlignedDoorwayPrefab(Catalog.stationLockedDoor, go.transform, "LockedBulkheadDoor", floorCenter, horizontal, 3.1f, 4.2f, keepColliders: true);
@@ -838,9 +845,9 @@ namespace TacSim.World
                 {
                     Vector3 counterTop = new Vector3(mid.x, elev + feat.HeightM, mid.z);
                     if (Catalog.stationConsoleProp != null)
-                        PrefabFittingHelper.SpawnGrounded(Catalog.stationConsoleProp, transform, $"DeskConsole_{feat.EntryId}", counterTop + new Vector3(-0.45f, 0f, 0f), Quaternion.identity, 0.68f, 1.1f, false);
+                        SpawnWallAlignedConsoleProp(Catalog.stationConsoleProp, transform, $"DeskConsole_{feat.EntryId}", counterTop + new Vector3(-0.45f, 0f, 0f), alignAlongX: true, targetHeightM: 0.68f, maxDimensionM: 1.1f);
                     if (Catalog.stationDisplayProp != null)
-                        PrefabFittingHelper.SpawnGrounded(Catalog.stationDisplayProp, transform, $"DeskDisplay_{feat.EntryId}", counterTop + new Vector3(0.55f, 0f, 0f), Quaternion.identity, 0.58f, 0.95f, false);
+                        SpawnWallAlignedConsoleProp(Catalog.stationDisplayProp, transform, $"DeskDisplay_{feat.EntryId}", counterTop + new Vector3(0.55f, 0f, 0f), alignAlongX: true, targetHeightM: 0.58f, maxDimensionM: 0.95f);
                 }
 
                 AttachServiceDeskInteractable(counterGo, feat.RoomId);
@@ -1675,15 +1682,98 @@ namespace TacSim.World
             }
         }
 
+        private static float SelectClearHorizontalWallX(
+            AtlasRoomDef room,
+            float yWall,
+            List<(int floor, float yWall, float centerX, AtlasExitDef exit)> hDoors,
+            float desiredX,
+            float halfClearanceM)
+        {
+            float minSafe = room.MinX + halfClearanceM;
+            float maxSafe = room.MaxX - halfClearanceM;
+            if (minSafe >= maxSafe)
+                return (room.MinX + room.MaxX) * 0.5f;
+
+            float clamped = Mathf.Clamp(desiredX, minSafe, maxSafe);
+            if (!ConflictsWithHorizontalDoor(room.FloorIndex, yWall, clamped, halfClearanceM + 2.3f, hDoors))
+                return clamped;
+
+            // Scan left and right along the wall for the nearest non-doorway span
+            for (float offset = 1.5f; offset <= (maxSafe - minSafe); offset += 1.5f)
+            {
+                float right = clamped + offset;
+                if (right <= maxSafe && !ConflictsWithHorizontalDoor(room.FloorIndex, yWall, right, halfClearanceM + 2.3f, hDoors))
+                    return right;
+                float left = clamped - offset;
+                if (left >= minSafe && !ConflictsWithHorizontalDoor(room.FloorIndex, yWall, left, halfClearanceM + 2.3f, hDoors))
+                    return left;
+            }
+            return clamped;
+        }
+
+        private static bool ConflictsWithHorizontalDoor(
+            int floor,
+            float yWall,
+            float candidateX,
+            float minDistM,
+            List<(int floor, float yWall, float centerX, AtlasExitDef exit)> hDoors)
+        {
+            if (hDoors == null) return false;
+            for (int i = 0; i < hDoors.Count; i++)
+            {
+                var d = hDoors[i];
+                if (d.floor == floor && Mathf.Abs(d.yWall - yWall) < 0.35f && Mathf.Abs(d.centerX - candidateX) < minDistM)
+                    return true;
+            }
+            return false;
+        }
+
+        private static GameObject SpawnWallAlignedConsoleProp(
+            GameObject prefab,
+            Transform parent,
+            string instanceName,
+            Vector3 floorPos,
+            bool alignAlongX,
+            float targetHeightM,
+            float maxDimensionM)
+        {
+            // Face into the room (+Z when placed against the south wall); if the vendor mesh's wide desk axis is Z rather than X,
+            // rotate -90 deg around Y so the console's front screen faces into the room (+Z) rather than standing edge-on!
+            var inst = PrefabFittingHelper.SpawnGrounded(prefab, parent, instanceName, floorPos, Quaternion.identity, targetHeightM, maxDimensionM, keepColliders: false);
+            if (inst == null) return null;
+
+            if (PrefabFittingHelper.TryComputeRendererBounds(inst, out Bounds b))
+            {
+                bool wideAlongZ = b.size.z > b.size.x * 1.05f;
+                bool needsQuarterTurn = (alignAlongX && wideAlongZ) || (!alignAlongX && !wideAlongZ);
+                inst.transform.rotation = needsQuarterTurn ? Quaternion.Euler(0f, -90f, 0f) : Quaternion.identity;
+                if (PrefabFittingHelper.TryComputeRendererBounds(inst, out Bounds bAligned))
+                {
+                    inst.transform.position += new Vector3(
+                        floorPos.x - bAligned.center.x,
+                        floorPos.y - bAligned.min.y,
+                        floorPos.z - bAligned.center.z);
+                }
+            }
+            return inst;
+        }
+
         private TextMeshPro CreateDiegeticBoard(Transform parent, AtlasRoomDef room, Vector3 pos, Quaternion rot)
         {
-            var backing = CreateBox(parent, "StatusBoardBacking", pos, new Vector3(5.6f, 2.2f, 0.12f),
+            // Keep StatusBoardRoot at uniform scale (1, 1, 1) so BoardText NEVER inherits non-uniform cube scaling across doorways!
+            var boardRoot = new GameObject("StatusBoardRoot");
+            boardRoot.transform.SetParent(parent, false);
+            boardRoot.transform.SetPositionAndRotation(pos, rot);
+
+            var backing = CreateBox(boardRoot.transform, "StatusBoardBacking", pos, new Vector3(4.6f, 1.85f, 0.10f),
                 UrpMaterialFactory.GetOpaque("BoardFrame", new Color(0.06f, 0.09f, 0.13f), 0.6f, 0.4f), true);
+            backing.transform.localRotation = Quaternion.identity;
 
             string summary = $"{room.Name.ToUpperInvariant()}\n<color=#88CCFF>{room.ShortDesc}</color>";
-            var tmp = CreateTmp3D(backing.transform, "BoardText", new Vector3(0f, 0f, -0.08f), summary, 1.85f, new Color(0.82f, 0.95f, 1f));
-            tmp.rectTransform.sizeDelta = new Vector2(5.2f, 1.95f);
+            var tmp = CreateTmp3D(boardRoot.transform, "BoardText", new Vector3(0f, 0f, -0.07f), summary, 1.45f, new Color(0.82f, 0.95f, 1f));
+            tmp.rectTransform.sizeDelta = new Vector2(4.30f, 1.65f);
             tmp.alignment = TextAlignmentOptions.TopLeft;
+            tmp.overflowMode = TextOverflowModes.Ellipsis;
 
             var wi = backing.AddComponent<WorldInteractable>();
             wi.kind = InteractableKind.RoomDetailPlaque;
@@ -1694,32 +1784,38 @@ namespace TacSim.World
             return tmp;
         }
 
-        private void CreateDetailPlaque(Transform parent, string keyword, string textBody, Vector3 pos)
+        private void CreateDetailPlaque(Transform parent, string keyword, string textBody, Vector3 floorPos)
         {
             var plaqueRoot = new GameObject($"Plaque_{keyword}");
             plaqueRoot.transform.SetParent(parent, false);
-            plaqueRoot.transform.position = pos;
+            plaqueRoot.transform.position = floorPos;
 
             var bc = plaqueRoot.AddComponent<BoxCollider>();
-            bc.size = new Vector3(0.9f, 1.25f, 0.65f);
-            bc.center = new Vector3(0f, 0.1f, 0f);
+            bc.size = new Vector3(0.95f, 1.35f, 0.75f);
+            bc.center = new Vector3(0f, 0.68f, 0f);
 
             if (Catalog != null && Catalog.stationConsoleProp != null)
             {
-                Vector3 floorPos = new Vector3(pos.x, pos.y - 0.55f, pos.z);
-                PrefabFittingHelper.SpawnGrounded(Catalog.stationConsoleProp, plaqueRoot.transform, "ObservationConsole", floorPos, Quaternion.Euler(0f, 180f, 0f), 1.15f, 1.25f, keepColliders: false);
+                SpawnWallAlignedConsoleProp(Catalog.stationConsoleProp, plaqueRoot.transform, "ObservationConsole", floorPos, alignAlongX: true, targetHeightM: 1.12f, maxDimensionM: 1.25f);
             }
             else
             {
                 Material postMat = UrpMaterialFactory.GetOpaque("LecternPost", new Color(0.16f, 0.20f, 0.25f), 0.45f, 0.65f);
                 Material screenMat = UrpMaterialFactory.GetEmissive("LecternScreen", new Color(0.08f, 0.22f, 0.30f), new Color(0.15f, 0.65f, 0.85f) * 0.8f);
-                CreateBox(plaqueRoot.transform, "LecternPedestal", pos + new Vector3(0f, -0.15f, 0f), new Vector3(0.22f, 0.90f, 0.22f), postMat, false);
-                var face = CreateBox(plaqueRoot.transform, "LecternPlate", pos + new Vector3(0f, 0.34f, 0f), new Vector3(0.68f, 0.08f, 0.42f), screenMat, false);
-                face.transform.localRotation = Quaternion.Euler(-28f, 0f, 0f);
+                CreateBox(plaqueRoot.transform, "LecternPedestal", floorPos + new Vector3(0f, 0.48f, 0f), new Vector3(0.22f, 0.96f, 0.22f), postMat, false);
+                var face = CreateBox(plaqueRoot.transform, "LecternPlate", floorPos + new Vector3(0f, 0.98f, 0.04f), new Vector3(0.68f, 0.08f, 0.42f), screenMat, false);
+                face.transform.localRotation = Quaternion.Euler(28f, 0f, 0f);
             }
 
-            var labelTmp = CreateTmp3D(plaqueRoot.transform, "PlaqueTitle", new Vector3(0f, 0.82f, 0f), $"[{keyword.ToUpperInvariant()}]", 1.55f, new Color(0.55f, 0.90f, 1f));
-            labelTmp.rectTransform.sizeDelta = new Vector2(3.6f, 0.8f);
+            // Orient toward a viewer inside the room looking South (-Z) AND attach WorldBillboard so the label is never mirrored!
+            var labelGo = new GameObject("PlaqueLabelBillboard");
+            labelGo.transform.SetParent(plaqueRoot.transform, false);
+            labelGo.transform.localPosition = new Vector3(0f, 1.48f, 0f);
+            labelGo.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+            var bb = labelGo.AddComponent<WorldBillboard>();
+            var labelTmp = CreateTmp3D(labelGo.transform, "PlaqueTitle", Vector3.zero, $"[{keyword.ToUpperInvariant()}]", 1.45f, new Color(0.55f, 0.90f, 1f));
+            labelTmp.rectTransform.sizeDelta = new Vector2(3.4f, 0.65f);
+            bb.NameplateText = labelTmp;
 
             var wi = plaqueRoot.AddComponent<WorldInteractable>();
             wi.kind = InteractableKind.RoomDetailPlaque;

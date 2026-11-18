@@ -34,6 +34,7 @@ namespace TacSim.Character
 
         private bool _sampledIdleAnkle;
         private float _idleAnkleHeight = 0.095f;
+        private Renderer[] _cachedRenderers;
 
         // Locomotion blend state
         private float _planarSpeed;
@@ -161,20 +162,38 @@ namespace TacSim.Character
             if (!_hasHumanoidBones)
                 return;
 
-            // Sample exact standing ankle-to-sole height from Ida Faber's authored Idle pose on frame 1
-            if (!_sampledIdleAnkle && _locoBlend < 0.01f && _seatBlend < 0.01f && _leftFoot != null && _rightFoot != null)
+            Vector3 pitchAxis = transform.right;
+
+            // 1. Ensure an upright standing base pose before layering seated or stride rotations:
+            // If an un-rebuilt Humanoid clip lacks explicit Lower Leg Stretch curves (Mecanim 0.0 => ~80 deg squat),
+            // straighten thigh & shin along -transform.up while preserving flat horizontal boot soles.
+            if (_leftUpperLeg != null && _leftLowerLeg != null && _leftFoot != null &&
+                _rightUpperLeg != null && _rightLowerLeg != null && _rightFoot != null)
             {
-                float rawAnkle = Mathf.Min(_leftFoot.position.y, _rightFoot.position.y) - transform.position.y;
-                if (rawAnkle > 0.01f && rawAnkle < 0.35f)
+                Vector3 lThigh = _leftLowerLeg.position - _leftUpperLeg.position;
+                Vector3 lShin = _leftFoot.position - _leftLowerLeg.position;
+                if (lThigh.sqrMagnitude > 0.001f && lShin.sqrMagnitude > 0.001f &&
+                    Vector3.Angle(lThigh, lShin) > 22f)
                 {
-                    _idleAnkleHeight = rawAnkle;
-                    _sampledIdleAnkle = true;
+                    StraightenStandingLeg(_leftUpperLeg, _leftLowerLeg, _leftFoot, pitchAxis);
+                    StraightenStandingLeg(_rightUpperLeg, _rightLowerLeg, _rightFoot, pitchAxis);
                 }
             }
 
-            Vector3 pitchAxis = transform.right;
+            // Sample exact boot-sole thickness below the ankle joint from actual rendered bounds on frame 1
+            if (!_sampledIdleAnkle && _locoBlend < 0.01f && _seatBlend < 0.01f && _leftFoot != null && _rightFoot != null)
+            {
+                float lowestFootJointY = Mathf.Min(_leftFoot.position.y, _rightFoot.position.y);
+                if (TryGetLowestRenderedY(out float minMeshY))
+                {
+                    float soleThickness = lowestFootJointY - minMeshY;
+                    if (soleThickness >= 0.01f && soleThickness <= 0.25f)
+                        _idleAnkleHeight = soleThickness;
+                }
+                _sampledIdleAnkle = true;
+            }
 
-            // 1. Bridge Helm Seated Pose
+            // 2. Bridge Helm Seated Pose
             if (_seatBlend > 0.001f)
             {
                 float b = _seatBlend;
@@ -190,51 +209,88 @@ namespace TacSim.Character
                 return;
             }
 
-            // 2. Grounded Walking / Sprinting Stride
-            if (_locoBlend <= 0.001f)
-                return;
+            // 3. Grounded Idle & Walking / Sprinting Stride
+            if (_locoBlend > 0.001f)
+            {
+                float s = Mathf.Sin(_walkCyclePhase);
+                float c = Mathf.Cos(_walkCyclePhase);
 
-            float s = Mathf.Sin(_walkCyclePhase);
-            float c = Mathf.Cos(_walkCyclePhase);
+                float hipAmp = Mathf.Lerp(22f, 36f, _sprintBlend) * _locoBlend;
+                float kneeAmp = Mathf.Lerp(30f, 48f, _sprintBlend) * _locoBlend;
+                float armAmp = Mathf.Lerp(18f, 34f, _sprintBlend) * _locoBlend;
+                float elbowBase = Mathf.Lerp(10f, 30f, _sprintBlend) * _locoBlend;
+                float spineLean = Mathf.Lerp(3.0f, 8.5f, _sprintBlend) * _locoBlend;
 
-            float hipAmp = Mathf.Lerp(24f, 38f, _sprintBlend) * _locoBlend;
-            float kneeAmp = Mathf.Lerp(34f, 54f, _sprintBlend) * _locoBlend;
-            float armAmp = Mathf.Lerp(18f, 34f, _sprintBlend) * _locoBlend;
-            float elbowBase = Mathf.Lerp(12f, 34f, _sprintBlend) * _locoBlend;
-            float spineLean = Mathf.Lerp(3.5f, 9.5f, _sprintBlend) * _locoBlend;
+                // Thigh stride: negative angle around +right swings a downward leg FORWARD (+Z) in Unity
+                if (_leftUpperLeg != null) _leftUpperLeg.Rotate(pitchAxis, -s * hipAmp, UnityEngine.Space.World);
+                if (_rightUpperLeg != null) _rightUpperLeg.Rotate(pitchAxis, s * hipAmp, UnityEngine.Space.World);
 
-            // Thigh stride: negative angle around +right swings a downward leg FORWARD (+Z) in Unity
-            if (_leftUpperLeg != null) _leftUpperLeg.Rotate(pitchAxis, -s * hipAmp, UnityEngine.Space.World);
-            if (_rightUpperLeg != null) _rightUpperLeg.Rotate(pitchAxis, s * hipAmp, UnityEngine.Space.World);
+                // Knee flexion: positive angle bends shin BACKWARD; peaks during forward swing (c > 0 for left, -c > 0 for right)
+                float leftKnee = (Mathf.Max(0f, c) * kneeAmp) + (2f * _locoBlend);
+                float rightKnee = (Mathf.Max(0f, -c) * kneeAmp) + (2f * _locoBlend);
+                if (_leftLowerLeg != null) _leftLowerLeg.Rotate(pitchAxis, leftKnee, UnityEngine.Space.World);
+                if (_rightLowerLeg != null) _rightLowerLeg.Rotate(pitchAxis, rightKnee, UnityEngine.Space.World);
 
-            // Knee flexion: positive angle bends shin BACKWARD; peaks during forward swing (c > 0 for left, -c > 0 for right)
-            float leftKnee = (Mathf.Max(0f, c) * kneeAmp) + (4f * _locoBlend);
-            float rightKnee = (Mathf.Max(0f, -c) * kneeAmp) + (4f * _locoBlend);
-            if (_leftLowerLeg != null) _leftLowerLeg.Rotate(pitchAxis, leftKnee, UnityEngine.Space.World);
-            if (_rightLowerLeg != null) _rightLowerLeg.Rotate(pitchAxis, rightKnee, UnityEngine.Space.World);
+                // Subtle toe-lift (dorsiflexion) during forward swing so boots clear the deck
+                if (_leftFoot != null) _leftFoot.Rotate(pitchAxis, -Mathf.Max(0f, c) * 10f * _locoBlend, UnityEngine.Space.World);
+                if (_rightFoot != null) _rightFoot.Rotate(pitchAxis, -Mathf.Max(0f, -c) * 10f * _locoBlend, UnityEngine.Space.World);
 
-            // Subtle toe-lift (dorsiflexion) during forward swing so boots clear the deck
-            if (_leftFoot != null) _leftFoot.Rotate(pitchAxis, -Mathf.Max(0f, c) * 10f * _locoBlend, UnityEngine.Space.World);
-            if (_rightFoot != null) _rightFoot.Rotate(pitchAxis, -Mathf.Max(0f, -c) * 10f * _locoBlend, UnityEngine.Space.World);
+                // Forward torso lean + natural counter-twist
+                if (_spine != null) _spine.Rotate(pitchAxis, spineLean, UnityEngine.Space.World);
+                if (_chest != null) _chest.Rotate(Vector3.up, s * 4.5f * _locoBlend, UnityEngine.Space.World);
 
-            // Forward torso lean + natural counter-twist
-            if (_spine != null) _spine.Rotate(pitchAxis, spineLean, UnityEngine.Space.World);
-            if (_chest != null) _chest.Rotate(Vector3.up, s * 4.5f * _locoBlend, UnityEngine.Space.World);
+                // Counter-swinging arms & natural elbow flexion
+                if (_leftUpperArm != null) _leftUpperArm.Rotate(pitchAxis, s * armAmp, UnityEngine.Space.World);
+                if (_rightUpperArm != null) _rightUpperArm.Rotate(pitchAxis, -s * armAmp, UnityEngine.Space.World);
+                if (_leftLowerArm != null) _leftLowerArm.Rotate(pitchAxis, -(elbowBase + Mathf.Max(0f, -s) * 10f * _locoBlend), UnityEngine.Space.World);
+                if (_rightLowerArm != null) _rightLowerArm.Rotate(pitchAxis, -(elbowBase + Mathf.Max(0f, s) * 10f * _locoBlend), UnityEngine.Space.World);
+            }
 
-            // Counter-swinging arms & natural elbow flexion
-            if (_leftUpperArm != null) _leftUpperArm.Rotate(pitchAxis, s * armAmp, UnityEngine.Space.World);
-            if (_rightUpperArm != null) _rightUpperArm.Rotate(pitchAxis, -s * armAmp, UnityEngine.Space.World);
-            if (_leftLowerArm != null) _leftLowerArm.Rotate(pitchAxis, -(elbowBase + Mathf.Max(0f, -s) * 10f * _locoBlend), UnityEngine.Space.World);
-            if (_rightLowerArm != null) _rightLowerArm.Rotate(pitchAxis, -(elbowBase + Mathf.Max(0f, s) * 10f * _locoBlend), UnityEngine.Space.World);
-
-            // Keep lowest boot planted cleanly on the floor (y = transform.position.y) with zero sinking
+            // Plant lowest boot sole cleanly on the floor (`y = transform.position.y`) both at idle and during stride!
             if (_hips != null && _leftFoot != null && _rightFoot != null)
             {
-                float lowestAnkle = Mathf.Min(_leftFoot.position.y, _rightFoot.position.y) - transform.position.y;
-                float flightHop = _sprintBlend * Mathf.Abs(s) * 0.022f;
-                float deltaY = (_idleAnkleHeight - lowestAnkle) + flightHop;
-                _hips.position += Vector3.up * Mathf.Clamp(deltaY, -0.18f, 0.28f);
+                float lowestSoleY = Mathf.Min(_leftFoot.position.y, _rightFoot.position.y) - _idleAnkleHeight;
+                float flightHop = _locoBlend > 0.01f ? (_sprintBlend * Mathf.Abs(Mathf.Sin(_walkCyclePhase)) * 0.022f) : 0f;
+                float deltaY = (transform.position.y + flightHop) - lowestSoleY;
+                _hips.position += Vector3.up * Mathf.Clamp(deltaY, -0.35f, 0.35f);
             }
+        }
+
+        private void StraightenStandingLeg(Transform upperLeg, Transform lowerLeg, Transform foot, Vector3 pitchAxis)
+        {
+            Quaternion savedFootRot = foot.rotation;
+            Vector3 downDir = -transform.up;
+            Vector3 targetThigh = Quaternion.AngleAxis(-1.6f, pitchAxis) * downDir;
+            Vector3 targetShin = Quaternion.AngleAxis(1.6f, pitchAxis) * downDir;
+
+            Vector3 curThigh = (lowerLeg.position - upperLeg.position).normalized;
+            if (curThigh.sqrMagnitude > 0.001f)
+                upperLeg.rotation = Quaternion.FromToRotation(curThigh, targetThigh) * upperLeg.rotation;
+
+            Vector3 curShin = (foot.position - lowerLeg.position).normalized;
+            if (curShin.sqrMagnitude > 0.001f)
+                lowerLeg.rotation = Quaternion.FromToRotation(curShin, targetShin) * lowerLeg.rotation;
+
+            foot.rotation = savedFootRot;
+        }
+
+        private bool TryGetLowestRenderedY(out float minY)
+        {
+            minY = float.MaxValue;
+            if (_activeModel == null) return false;
+            if (_cachedRenderers == null || _cachedRenderers.Length == 0)
+                _cachedRenderers = _activeModel.GetComponentsInChildren<Renderer>(false);
+            bool any = false;
+            for (int i = 0; i < _cachedRenderers.Length; i++)
+            {
+                var r = _cachedRenderers[i];
+                if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                Bounds b = r.bounds;
+                if (b.size.sqrMagnitude < 0.0001f) continue;
+                if (b.min.y < minY) minY = b.min.y;
+                any = true;
+            }
+            return any;
         }
 
         private void ClearCurrent()
@@ -242,6 +298,7 @@ namespace TacSim.Character
             _animator = null;
             _hasHumanoidBones = false;
             _sampledIdleAnkle = false;
+            _cachedRenderers = null;
             _hips = _spine = _chest = null;
             _leftUpperLeg = _rightUpperLeg = _leftLowerLeg = _rightLowerLeg = _leftFoot = _rightFoot = null;
             _leftUpperArm = _rightUpperArm = _leftLowerArm = _rightLowerArm = null;

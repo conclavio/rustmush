@@ -86,6 +86,8 @@ namespace TacSim.Editor
             if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
                 throw new DirectoryNotFoundException("Set TACSIM_3D_ASSETS environment variable to your local 3D asset vault before running ImportAllBatch.");
             RunFullImportPipeline(root);
+            VerticalSliceSceneBuilder.BuildVerticalSliceScene();
+            AssetDatabase.SaveAssets();
         }
 
         /// <summary>
@@ -96,6 +98,7 @@ namespace TacSim.Editor
         public static void FinalizeImportedAssetsAndRebuildScene()
         {
             SanitizeVendorScriptsForUrp();
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             UrpBootstrap.EnsureUrpAssigned();
             int upgradedMats = UpgradeStandardMaterialsToUrpLit();
             RepairIdaFaberHairMaterials();
@@ -127,8 +130,10 @@ namespace TacSim.Editor
         public static void RunFullImportPipeline(string vaultRoot)
         {
             UrpBootstrap.EnsureUrpAssigned();
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
 
             int importedCount = 0;
+            int extractedAssets = 0;
             foreach (string rel in CuratedVerticalSlicePackages)
             {
                 string fullPath = Path.Combine(vaultRoot, rel);
@@ -137,17 +142,16 @@ namespace TacSim.Editor
                     Debug.LogWarning($"[TacSim Importer] Skipping missing package: {fullPath}");
                     continue;
                 }
-                Debug.Log($"[TacSim Importer] Importing {rel}...");
-                UnityEditor.AssetPackage.Package.Import(fullPath, interactive: false);
+                Debug.Log($"[TacSim Importer] Extracting {rel} synchronously...");
+                extractedAssets += UnityPackageArchiveExtractor.ExtractPackageFile(fullPath, projectRoot);
                 importedCount++;
             }
 
-            AssetDatabase.Refresh();
-
             // Unpack nested URP upgrade .unitypackages shipped inside Astra, Celeste, Fenris, and FORGE3D
-            InstallNestedUrpSubPackages();
+            // and sanitize duplicate/legacy vendor scripts on disk BEFORE triggering a synchronous AssetDatabase refresh!
+            extractedAssets += InstallNestedUrpSubPackages(projectRoot);
             SanitizeVendorScriptsForUrp();
-            AssetDatabase.Refresh();
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
 
             // Convert Built-in Standard materials (DOTTEAM Heavy Station Kit, MSGDI Space Hulls) to URP/Lit
             int upgradedMats = UpgradeStandardMaterialsToUrpLit();
@@ -156,8 +160,13 @@ namespace TacSim.Editor
 
             var controller = HumanoidAnimatorBuilder.BuildOrRefreshController();
             var catalog = PopulateOrRefreshCatalog(controller);
+            AssetDatabase.SaveAssets();
 
-            Debug.Log($"[TacSim Importer] Finished! Imported {importedCount} packs, upgraded {upgradedMats} materials to URP/Lit, catalog ready ({catalog.npcCharacterPrefabs.Count} NPC prefabs).");
+            Debug.Log(
+                $"[TacSim Importer] Finished! Extracted {importedCount} packs ({extractedAssets} assets), upgraded {upgradedMats} materials to URP/Lit | " +
+                $"TrooperM={(catalog.stellarTrooperMale != null)} TrooperF={(catalog.stellarTrooperFemale != null)} " +
+                $"CyberM={(catalog.cyberStreetFighterMale != null)} CyberF={(catalog.cyberStreetFighterFemale != null)} " +
+                $"NPCs={catalog.npcCharacterPrefabs.Count}.");
         }
 
         private static void SanitizeVendorScriptsForUrp()
@@ -192,9 +201,13 @@ namespace TacSim.Editor
             }
         }
 
-        private static void InstallNestedUrpSubPackages()
+        private static int InstallNestedUrpSubPackages(string projectRoot)
         {
             string assetsDiskRoot = Application.dataPath;
+            if (!Directory.Exists(assetsDiskRoot))
+                return 0;
+
+            int extracted = 0;
             string[] nestedPackages = Directory.GetFiles(assetsDiskRoot, "*.unitypackage", SearchOption.AllDirectories);
             foreach (string pkgPath in nestedPackages)
             {
@@ -203,12 +216,13 @@ namespace TacSim.Editor
                 {
                     if (fileName.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        Debug.Log($"[TacSim Importer] Applying nested URP upgrade package: {fileName}");
-                        UnityEditor.AssetPackage.Package.Import(pkgPath, interactive: false);
+                        Debug.Log($"[TacSim Importer] Extracting nested URP upgrade package synchronously: {fileName}");
+                        extracted += UnityPackageArchiveExtractor.ExtractPackageFile(pkgPath, projectRoot);
                         break;
                     }
                 }
             }
+            return extracted;
         }
 
         [MenuItem("TacSim/Utilities/Upgrade All Standard Materials to URP Lit", priority = 40)]
@@ -364,7 +378,7 @@ namespace TacSim.Editor
                 AssetDatabase.SaveAssets();
         }
 
-        private static void EnsureIdaFaberHumanoidRigs()
+        public static void EnsureIdaFaberHumanoidRigs()
         {
             string[] modelGuids = AssetDatabase.FindAssets("t:Model");
             foreach (string guid in modelGuids)
@@ -375,10 +389,55 @@ namespace TacSim.Editor
                     continue;
 
                 var importer = AssetImporter.GetAtPath(path) as ModelImporter;
-                if (importer != null && importer.animationType != ModelImporterAnimationType.Human)
+                if (importer == null)
+                    continue;
+
+                string fileName = Path.GetFileNameWithoutExtension(path);
+                bool isIdleClip = fileName.IndexOf("Idle", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool needsReimport = false;
+
+                if (importer.animationType != ModelImporterAnimationType.Human)
                 {
                     importer.animationType = ModelImporterAnimationType.Human;
+                    needsReimport = true;
+                }
+
+                if (isIdleClip && !importer.importAnimation)
+                {
+                    importer.importAnimation = true;
+                    needsReimport = true;
+                }
+
+                if (needsReimport)
                     importer.SaveAndReimport();
+
+                if (isIdleClip)
+                {
+                    var clips = importer.clipAnimations;
+                    if (clips == null || clips.Length == 0)
+                        clips = importer.defaultClipAnimations;
+
+                    if (clips != null && clips.Length > 0)
+                    {
+                        bool loopUpdated = false;
+                        for (int i = 0; i < clips.Length; i++)
+                        {
+                            if (!clips[i].loopTime || !clips[i].loopPose)
+                            {
+                                clips[i].loopTime = true;
+                                clips[i].loopPose = true;
+                                clips[i].keepOriginalPositionY = true;
+                                clips[i].keepOriginalOrientation = true;
+                                loopUpdated = true;
+                            }
+                        }
+
+                        if (loopUpdated)
+                        {
+                            importer.clipAnimations = clips;
+                            importer.SaveAndReimport();
+                        }
+                    }
                 }
             }
         }

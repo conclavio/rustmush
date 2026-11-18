@@ -82,6 +82,7 @@ namespace TacSim.UI
         private Text _interactSubText;
 
         // Contextual Quick Actions strip & Bridge Helm Flight Deck bar
+        private GameObject _quickActionsStripPanel;
         private Transform _quickActionsContainer;
         private GameObject _helmFlightBar;
         private Text _helmStatusLabel;
@@ -214,21 +215,22 @@ namespace TacSim.UI
             SetRect(_interactSubText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0.5f), new Vector2(12f, 6f), new Vector2(-12f, 0f));
             _interactBanner.SetActive(false);
 
-            // 3. Bottom-Center Diegetic Quick Action Strip + Seated Bridge Flight Strip
-            var quickPanel = CreatePanel(_hudRoot.transform, "QuickActionStrip", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-460f, 18f), new Vector2(460f, 68f), new Color(0.04f, 0.07f, 0.11f, 0.86f));
-            var hlg = quickPanel.AddComponent<HorizontalLayoutGroup>();
+            // 3. Bottom-Right Diegetic Quick Action Strip + Seated Bridge Flight Strip
+            // Anchored strictly to the right of CommsDrawer (`x = 452 .. -16`) so narrow aspect ratios (e.g. 1100x756) never overlap!
+            _quickActionsStripPanel = CreatePanel(_hudRoot.transform, "QuickActionStrip", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 16f), new Vector2(-16f, 64f), new Color(0.04f, 0.07f, 0.11f, 0.86f));
+            var hlg = _quickActionsStripPanel.AddComponent<HorizontalLayoutGroup>();
             hlg.spacing = 7f;
-            hlg.padding = new RectOffset(10, 10, 8, 8);
+            hlg.padding = new RectOffset(10, 10, 7, 7);
             hlg.childAlignment = TextAnchor.MiddleCenter;
             hlg.childControlWidth = true;
             hlg.childControlHeight = true;
             hlg.childForceExpandWidth = true;
-            _quickActionsContainer = quickPanel.transform;
+            _quickActionsContainer = _quickActionsStripPanel.transform;
 
             BuildHelmFlightDeckBar(_hudRoot.transform);
 
             // 4. Bottom-Left Compact Comms & Narrative Drawer (ScrollRect + RectMask2D pinned to newest bottom line)
-            var commsPanel = CreatePanel(_hudRoot.transform, "CommsDrawer", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(16f, 18f), new Vector2(520f, 275f), new Color(0.03f, 0.05f, 0.08f, 0.88f));
+            var commsPanel = CreatePanel(_hudRoot.transform, "CommsDrawer", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(14f, 16f), new Vector2(436f, 248f), new Color(0.03f, 0.05f, 0.08f, 0.88f));
             var commsViewport = CreatePanel(commsPanel.transform, "CommsViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 44f), new Vector2(-12f, -10f), new Color(0f, 0f, 0f, 0.02f));
             commsViewport.AddComponent<RectMask2D>();
             _commsScrollRect = commsViewport.AddComponent<ScrollRect>();
@@ -272,7 +274,7 @@ namespace TacSim.UI
 
         private void BuildHelmFlightDeckBar(Transform parent)
         {
-            _helmFlightBar = CreatePanel(parent, "HelmFlightDeckBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-460f, 74f), new Vector2(460f, 122f), new Color(0.03f, 0.09f, 0.15f, 0.90f));
+            _helmFlightBar = CreatePanel(parent, "HelmFlightDeckBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 70f), new Vector2(-16f, 118f), new Color(0.03f, 0.09f, 0.15f, 0.90f));
             _helmStatusLabel = CreateText(_helmFlightBar.transform, "TORCH 0% | EMCON STANDARD", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.45f, 0.92f, 1f));
             SetRect(_helmStatusLabel.rectTransform, new Vector2(0f, 0f), new Vector2(0.24f, 1f), new Vector2(12f, 0f), Vector2.zero);
 
@@ -866,6 +868,14 @@ namespace TacSim.UI
             if (obj == null) return;
             if (Application.isPlaying) Destroy(obj);
             else DestroyImmediate(obj);
+        }
+
+        public bool IsWalkQuickActionsVisible => _quickActionsStripPanel != null && _quickActionsStripPanel.activeSelf;
+
+        public void SetWalkQuickActionsVisible(bool visible)
+        {
+            if (_quickActionsStripPanel != null && _quickActionsStripPanel.activeSelf != visible)
+                _quickActionsStripPanel.SetActive(visible);
         }
 
         public void RefreshContextualQuickActions(string roomOrModeKey, bool isSeatedAtHelm)

@@ -51,6 +51,7 @@ namespace TacSim.Core
         private string _pendingMoveTarget;
         private float _pendingMoveSentAt = -100f;
         private float _nextMoveStepAllowedAt;
+        private bool _simulateConnectedForTests;
         private string _currentClockStr = "08:15 UTC";
         private string _currentHullBadge = "NO CHARTER";
         private MushWsConnectionState _lastBadgeState = MushWsConnectionState.Disconnected;
@@ -224,7 +225,8 @@ namespace TacSim.Core
                 ArenaStage,
                 CameraRig,
                 Player,
-                Audio);
+                Audio,
+                Hud);
 
             BindEvents();
         }
@@ -589,7 +591,8 @@ namespace TacSim.Core
         {
             if (Player == null || Player.PhysicsSuspended || Player.IsSeatedAtHelm || SpaceStage.IsDockingActive)
                 return;
-            if (_awaitingInitialRoomSync || _ws == null || !_ws.IsConnected)
+            bool wsReady = (_ws != null && _ws.IsConnected) || _simulateConnectedForTests;
+            if (_awaitingInitialRoomSync || !wsReady)
                 return;
 
             // Strictly one outbound room-move step in flight at a time so multi-hop corridors (e.g. `e` -> `e`)
@@ -612,7 +615,9 @@ namespace TacSim.Core
                     _pendingMoveTarget = path[0].targetCompartment;
                     _pendingMoveSentAt = Time.time;
                     _nextMoveStepAllowedAt = Time.time + 0.35f;
-                    _ws.SendLine(path[0].command);
+                    OnCommandDispatched?.Invoke(path[0].command);
+                    if (_ws != null && _ws.IsConnected)
+                        _ws.SendLine(path[0].command);
                 }
             }
             else
@@ -636,7 +641,9 @@ namespace TacSim.Core
                     _pendingMoveTarget = path[0].targetRoom;
                     _pendingMoveSentAt = Time.time;
                     _nextMoveStepAllowedAt = Time.time + 0.35f;
-                    _ws.SendLine(path[0].command);
+                    OnCommandDispatched?.Invoke(path[0].command);
+                    if (_ws != null && _ws.IsConnected)
+                        _ws.SendLine(path[0].command);
                 }
             }
         }
@@ -1139,10 +1146,16 @@ namespace TacSim.Core
             if (_ws != null && _ws.IsConnected)
             {
                 FlushPendingRoomMovesBeforeAction();
+                // Any explicit typed/UI command may initiate a server-driven room change (e.g. typing `concourse` or `bridge`
+                // while standing still); clear `_pendingMoveTarget` so HandleServerRoomView teleports the stationary avatar!
+                _pendingMoveTarget = null;
+                _pendingMoveSentAt = -100f;
                 _ws.SendLine(cmd);
             }
             else
             {
+                _pendingMoveTarget = null;
+                _pendingMoveSentAt = -100f;
                 const string msg = "<color=#FF7766>[NET] Disconnected from mushd — command not sent.</color>";
                 Hud.AppendLogLine(msg);
                 if (Hud.IsModalOpen)
@@ -1220,6 +1233,7 @@ namespace TacSim.Core
         private void HandleServerRoomView(MushRoomView rv)
         {
             _lastRoomView = rv;
+            string acknowledgedWalkTarget = _pendingMoveTarget;
             _pendingMoveTarget = null;
             _pendingMoveSentAt = -100f;
             _nextMoveStepAllowedAt = Time.time + 0.22f;
@@ -1270,10 +1284,16 @@ namespace TacSim.Core
                 string physComp = Player != null
                     ? ShipInterior.TryFindContainingCompartment(Player.transform.position, ShipInterior.ActiveCompartmentId, hysteresisM: 0.55f)
                     : null;
-                bool connectedAboardWalk = wasAboard && !firstSync && !shipUnitChanged && !string.IsNullOrEmpty(physComp) &&
-                                           (physComp == resolvedComp || ShipInterior.FindExitPath(resolvedComp, physComp).Count > 0);
+                bool alreadyInComp = wasAboard && !firstSync && !shipUnitChanged &&
+                                     !string.IsNullOrEmpty(physComp) && physComp == resolvedComp;
+                bool correlatedShipWalkAhead = wasAboard && !firstSync && !shipUnitChanged &&
+                                               !string.IsNullOrEmpty(acknowledgedWalkTarget) &&
+                                               acknowledgedWalkTarget == resolvedComp &&
+                                               !string.IsNullOrEmpty(physComp) &&
+                                               ShipInterior.FindExitPath(resolvedComp, physComp).Count > 0;
+                bool keepPhysicalShipPose = alreadyInComp || correlatedShipWalkAhead;
 
-                if (!connectedAboardWalk && (SurfaceStage == null || !SurfaceStage.IsExcursionActive))
+                if (!keepPhysicalShipPose && (SurfaceStage == null || !SurfaceStage.IsExcursionActive))
                 {
                     Player.IsSeatedAtHelm = false;
                     Player.TeleportTo(ShipInterior.GetCompartmentSpawnWorldPos(resolvedComp), 180f);
@@ -1295,7 +1315,7 @@ namespace TacSim.Core
                     {
                         Hud.UpdateTopBar($"SHIP INTERIOR — {rv.Name.ToUpperInvariant()}", $"{_currentClockStr} | {_currentHullBadge}");
                     }
-                    string activeUiComp = connectedAboardWalk && !string.IsNullOrEmpty(physComp) ? physComp : resolvedComp;
+                    string activeUiComp = correlatedShipWalkAhead && !string.IsNullOrEmpty(physComp) ? physComp : resolvedComp;
                     Hud.RefreshContextualQuickActions($"interior:{activeUiComp}", Player.IsSeatedAtHelm);
                 }
             }
@@ -1321,9 +1341,15 @@ namespace TacSim.Core
                 string physRoom = Player != null
                     ? StationWorld.TryFindContainingRoomWithHysteresis(Player.transform.position, StationWorld.ActiveRoomEntryId)
                     : null;
-                bool connectedStationWalk = !firstSync && !wasAboard && !stationPackSwitched && !string.IsNullOrEmpty(physRoom) &&
-                                            StationWorld.AreRoomsConnectedWithinHops(matchedStationEntry, physRoom, maxHops: 3);
-                bool playerAheadOfRoomView = connectedStationWalk && physRoom != matchedStationEntry;
+                bool alreadyInRoom = !firstSync && !wasAboard && !stationPackSwitched &&
+                                     !string.IsNullOrEmpty(physRoom) && physRoom == matchedStationEntry;
+                bool correlatedStationWalkAhead = !firstSync && !wasAboard && !stationPackSwitched &&
+                                                  !string.IsNullOrEmpty(acknowledgedWalkTarget) &&
+                                                  acknowledgedWalkTarget == matchedStationEntry &&
+                                                  !string.IsNullOrEmpty(physRoom) &&
+                                                  StationWorld.AreRoomsConnectedWithinHops(matchedStationEntry, physRoom, maxHops: 3);
+                bool keepPhysicalStationPose = alreadyInRoom || correlatedStationWalkAhead;
+                bool playerAheadOfRoomView = correlatedStationWalkAhead && physRoom != matchedStationEntry;
 
                 StationWorld.ApplyRoomView(
                     rv,
@@ -1331,7 +1357,7 @@ namespace TacSim.Core
                     updateHighlight: !playerAheadOfRoomView);
                 Audio?.SetSoundscape(AmbientSoundscape.StationRing);
 
-                if (!connectedStationWalk && (ArenaStage == null || !ArenaStage.IsArenaActive))
+                if (!keepPhysicalStationPose && (ArenaStage == null || !ArenaStage.IsArenaActive))
                 {
                     Player.TeleportTo(StationWorld.GetRoomSpawnPosition(matchedStationEntry), 0f);
                     CameraRig.SetMode(CameraRigMode.ThirdPersonWalk);

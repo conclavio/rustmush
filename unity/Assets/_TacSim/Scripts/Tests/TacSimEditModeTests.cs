@@ -1116,11 +1116,18 @@ namespace TacSim.Tests
                 var onPanel = typeof(TacSimGameCoordinator).GetMethod("HandleServerPanelUpdated", flags);
                 var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
                 var onRefreshSync = typeof(TacSimGameCoordinator).GetMethod("RefreshLoadedContentAfterSync", flags);
+                var onSyncPos = typeof(TacSimGameCoordinator).GetMethod("Sync3DPositionWithServer", flags);
                 var awaitingInitField = typeof(TacSimGameCoordinator).GetField("_awaitingInitialRoomSync", flags);
+                var simConnField = typeof(TacSimGameCoordinator).GetField("_simulateConnectedForTests", flags);
+                var nextMoveField = typeof(TacSimGameCoordinator).GetField("_nextMoveStepAllowedAt", flags);
                 Assert.IsNotNull(onPanel);
                 Assert.IsNotNull(onRoom);
                 Assert.IsNotNull(onRefreshSync);
+                Assert.IsNotNull(onSyncPos);
                 Assert.IsNotNull(awaitingInitField);
+                Assert.IsNotNull(simConnField);
+                Assert.IsNotNull(nextMoveField);
+                simConnField.SetValue(coord, true);
 
                 // 1. Ceres Freeport multi-room walk check: walking ahead through Pressure Lobby into the 100m-wide Berth Gallery
                 // (36m from room center) must NOT bounce the player backwards or flicker ActiveRoomEntryId back to Pressure Lobby!
@@ -1137,9 +1144,11 @@ namespace TacSim.Tests
                 float pubElev = coord.StationWorld.Pack.GetFloorElevationY(1);
                 UnityEngine.Vector3 galleryDoorwayPos = coord.StationWorld.AtlasToUnity(125f, pubElev + 0.15f, 122f);
                 coord.Player.TeleportTo(galleryDoorwayPos, 180f);
-                coord.StationWorld.HighlightActiveRoom("room.c01_berth_gallery");
+                nextMoveField.SetValue(coord, -1f);
+                onSyncPos.Invoke(coord, null);
+                Assert.AreEqual("room.c01_berth_gallery", coord.StationWorld.ActiveRoomEntryId);
 
-                // Intermediate `RoomView` for `room.c02_pressure` arrives while player is already in `room.c01_berth_gallery`:
+                // Intermediate `RoomView` for `room.c02_pressure` arrives acknowledging hop 1 while player is already in `room.c01_berth_gallery`:
                 var pressureView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
                     ""id"": ""#102"",
                     ""name"": ""Pressure Lobby"",
@@ -1195,6 +1204,7 @@ namespace TacSim.Tests
                 Assert.IsFalse(coord.SurfaceStage.IsExcursionActive);
                 Assert.IsFalse(coord.SurfaceStage.RigOnGround);
                 Assert.IsFalse(coord.Player.PhysicsSuspended);
+                Assert.IsTrue(coord.Hud.IsWalkQuickActionsVisible, "Walking in Vehicle Bay displays QuickActionStrip");
 
                 UnityEngine.Vector3 bayDeckPos = coord.Player.transform.position;
                 UnityEngine.Quaternion bayDeckRot = coord.Player.transform.rotation;
@@ -1207,6 +1217,7 @@ namespace TacSim.Tests
                 Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
                 Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleChase, coord.CameraRig.Mode);
                 Assert.IsTrue(coord.Player.PhysicsSuspended, "Inactive walking avatar physics must be suspended while ship floor is disabled");
+                Assert.IsFalse(coord.Hud.IsWalkQuickActionsVisible, "PlanetarySurface hides QuickActionStrip beneath SurfaceRoverActions");
 
                 // Simulate 80 seconds (1,600 frames) of `Player.SimulateStep(0.05f)` while ship floor is disabled:
                 // avatar must NOT fall 50 km below the ship!
@@ -1259,6 +1270,7 @@ namespace TacSim.Tests
                 Assert.AreEqual(TacSimActiveStage.ShipInteriorWalk, coord.ActiveStage, "Recovered rig must leave PlanetarySurface stage");
                 Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode, "Recovered rig must restore walk camera");
                 Assert.IsFalse(coord.Player.PhysicsSuspended);
+                Assert.IsTrue(coord.Hud.IsWalkQuickActionsVisible, "Recovering rig restores QuickActionStrip on ShipInteriorWalk");
                 Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, bayDeckPos), 0.001f, "Recovery must restore exact saved bay deck pose");
                 Assert.Less(UnityEngine.Quaternion.Angle(coord.Player.transform.rotation, bayDeckRot), 0.1f);
                 Assert.AreEqual(0f, coord.Player.VerticalVelocity, 0.001f);
@@ -1301,6 +1313,309 @@ namespace TacSim.Tests
                 if (rootGo != null)
                     UnityEngine.Object.DestroyImmediate(rootGo);
             }
+        }
+
+        [Test]
+        public void P0_PlaytestReviewFixes_TypedExits_StationGeometry_HudLayout_IdleClip_AndSyncExtractor()
+        {
+            bool hadPreExistingEventSystem = UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>() != null;
+            var rootGo = new UnityEngine.GameObject("TestPlaytestReviewRoot");
+            UnityEngine.GameObject mockDoorFrame = null;
+            TacSimAssetCatalog tempCatalog = null;
+            string tempProjectDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimPkgExtract_" + System.Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                coord.Audio = rootGo.AddComponent<TacSimAudioSynthesizer>();
+
+                var stationGo = new UnityEngine.GameObject("TestStationWorld");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                coord.StationWorld = stationGo.AddComponent<StationWorldController>();
+
+                var shipGo = new UnityEngine.GameObject("TestShipInterior");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                coord.ShipInterior = shipGo.AddComponent<ShipInteriorController>();
+
+                var spaceGo = new UnityEngine.GameObject("TestSpaceStage");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SpaceStage = spaceGo.AddComponent<SpaceFlightController>();
+
+                var surfGo = new UnityEngine.GameObject("TestSurfaceStage");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                coord.SurfaceStage = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+
+                var arenaGo = new UnityEngine.GameObject("TestArenaStage");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                coord.ArenaStage = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+
+                var camGo = new UnityEngine.GameObject("TestCameraRig", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                coord.CameraRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                coord.CameraRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+
+                var playerGo = new UnityEngine.GameObject("TestPlayer", typeof(UnityEngine.CharacterController));
+                playerGo.transform.SetParent(rootGo.transform, false);
+                coord.Player = playerGo.AddComponent<TacSim.Character.ThirdPersonPlayerController>();
+                coord.Player.VisualSpawner = playerGo.AddComponent<TacSim.Character.CharacterVisualSpawner>();
+
+                var hudGo = new UnityEngine.GameObject("TestHud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+
+                coord.EnsureSubsystems();
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                var onSyncPos = typeof(TacSimGameCoordinator).GetMethod("Sync3DPositionWithServer", flags);
+                var awaitingInitField = typeof(TacSimGameCoordinator).GetField("_awaitingInitialRoomSync", flags);
+                var simConnField = typeof(TacSimGameCoordinator).GetField("_simulateConnectedForTests", flags);
+                var nextMoveField = typeof(TacSimGameCoordinator).GetField("_nextMoveStepAllowedAt", flags);
+                simConnField.SetValue(coord, true);
+
+                var dispatched = new List<string>();
+                coord.OnCommandDispatched += dispatched.Add;
+
+                // 1A. Stationary typed exit on Station (`Port Watch Arrivals` -> `concourse` -> `Freeport Concourse`):
+                // Standing still without walking in 3D MUST teleport the avatar into Freeport Concourse and dispatch ZERO reverse exits!
+                awaitingInitField.SetValue(coord, true);
+                var arrivalsView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#103"",
+                    ""name"": ""Port Watch Arrivals"",
+                    ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c03_arrivals"", ""surface"": ""station"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { arrivalsView });
+                UnityEngine.Vector3 arrivalsSpawn = coord.StationWorld.GetRoomSpawnPosition("room.c03_arrivals");
+                UnityEngine.Vector3 concourseSpawn = coord.StationWorld.GetRoomSpawnPosition("room.c04_concourse");
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, arrivalsSpawn), 0.05f);
+
+                coord.ExecutePlayerCommand("concourse");
+                dispatched.Clear();
+
+                var concourseView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#104"",
+                    ""name"": ""Freeport Concourse"",
+                    ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c04_concourse"", ""surface"": ""station"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { concourseView });
+
+                Assert.AreEqual("room.c04_concourse", coord.StationWorld.ActiveRoomEntryId, "Typed station exit must update active room to Freeport Concourse");
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, concourseSpawn), 0.05f, "Stationary typed station exit must teleport avatar to destination room");
+
+                // Advance past the 220 ms post-RoomView move cooldown (`_nextMoveStepAllowedAt`) where the live playtest previously bounced at ~230 ms!
+                nextMoveField.SetValue(coord, -1f);
+                for (int frame = 0; frame < 10; frame++)
+                    onSyncPos.Invoke(coord, null);
+                Assert.AreEqual(0, dispatched.Count, "Stationary typed station exit must never dispatch a reverse exit bounce ('w')");
+
+                // 1B. Stationary typed exit aboard Ship Interior (`Passage` -> `bridge` -> `Bridge`):
+                // Standing still in `corridor` and typing `bridge` MUST teleport the avatar to `bridge` and dispatch ZERO reverse exits!
+                var corridorView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#801"",
+                    ""name"": ""Salt Moth - Passage"",
+                    ""ambient"": { ""tacsim"": { ""mode"": ""interior"", ""unit"": ""dray"", ""room"": ""corridor"", ""hull_name"": ""Salt Moth"", ""class"": ""Dray"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { corridorView });
+                Assert.AreEqual("corridor", coord.ShipInterior.ActiveCompartmentId);
+
+                coord.ExecutePlayerCommand("bridge");
+                dispatched.Clear();
+
+                var bridgeView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#802"",
+                    ""name"": ""Salt Moth - Bridge"",
+                    ""ambient"": { ""tacsim"": { ""mode"": ""interior"", ""unit"": ""dray"", ""room"": ""bridge"", ""hull_name"": ""Salt Moth"", ""class"": ""Dray"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { bridgeView });
+
+                UnityEngine.Vector3 bridgeSpawn = coord.ShipInterior.GetCompartmentSpawnWorldPos("bridge");
+                Assert.AreEqual("bridge", coord.ShipInterior.ActiveCompartmentId);
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, bridgeSpawn), 0.05f, "Stationary typed ship exit must teleport avatar to bridge");
+
+                nextMoveField.SetValue(coord, -1f);
+                for (int frame = 0; frame < 10; frame++)
+                    onSyncPos.Invoke(coord, null);
+                Assert.AreEqual(0, dispatched.Count, "Stationary typed ship exit must never dispatch a reverse compartment command");
+
+                // 2. Station World status boards (`BoardText` unstretched), grounded plaques + 180-deg facing labels, and suppressed cyan doorposts:
+                float elev0 = coord.StationWorld.Pack.GetFloorElevationY(0);
+                float elev1 = coord.StationWorld.Pack.GetFloorElevationY(1);
+                float elev2 = coord.StationWorld.Pack.GetFloorElevationY(2);
+                var allTransforms = coord.StationWorld.GetComponentsInChildren<UnityEngine.Transform>(true);
+                int boardCount = 0;
+                int plaqueCount = 0;
+                for (int i = 0; i < allTransforms.Length; i++)
+                {
+                    var tr = allTransforms[i];
+                    if (tr.name == "BoardText")
+                    {
+                        boardCount++;
+                        Assert.AreEqual(UnityEngine.Vector3.one, tr.parent.localScale, "BoardText parent StatusBoardRoot must stay at uniform (1,1,1) scale");
+                        Assert.AreEqual(UnityEngine.Vector3.one, tr.localScale, "BoardText must not be stretched across doorways");
+                    }
+                    else if (tr.name.StartsWith("Plaque_", System.StringComparison.Ordinal))
+                    {
+                        plaqueCount++;
+                        float distFromDeck = UnityEngine.Mathf.Min(
+                            UnityEngine.Mathf.Abs(tr.position.y - elev0),
+                            UnityEngine.Mathf.Min(
+                                UnityEngine.Mathf.Abs(tr.position.y - elev1),
+                                UnityEngine.Mathf.Abs(tr.position.y - elev2)));
+                        Assert.Less(distFromDeck, 0.02f, $"Plaque '{tr.name}' must sit flush on deck elevation rather than floating in midair");
+
+                        var labelBillboard = tr.Find("PlaqueLabelBillboard");
+                        Assert.IsNotNull(labelBillboard, $"Plaque '{tr.name}' must have PlaqueLabelBillboard");
+                        Assert.IsNotNull(labelBillboard.GetComponent<WorldBillboard>(), "Plaque label must carry WorldBillboard so text never renders mirrored");
+                        Assert.Less(UnityEngine.Quaternion.Angle(labelBillboard.localRotation, UnityEngine.Quaternion.Euler(0f, 180f, 0f)), 0.5f);
+                    }
+                }
+                Assert.Greater(boardCount, 0, "Expected Ceres Freeport diegetic status boards");
+                Assert.Greater(plaqueCount, 0, "Expected Ceres Freeport detail plaques ([CASES], [ROLLER DOOR], etc.)");
+
+                // Rebuild a secondary StationWorld with commercial door prefabs assigned -> zero fallback cyan DoorPost_A / DoorPost_B!
+                mockDoorFrame = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube);
+                mockDoorFrame.name = "MockCommercialDoorArch";
+                tempCatalog = UnityEngine.ScriptableObject.CreateInstance<TacSimAssetCatalog>();
+                tempCatalog.stationDoorFrame = mockDoorFrame;
+                tempCatalog.stationLockedDoor = mockDoorFrame;
+
+                var commercialStationGo = new UnityEngine.GameObject("TestCommercialStation");
+                commercialStationGo.transform.SetParent(rootGo.transform, false);
+                var commercialStation = commercialStationGo.AddComponent<StationWorldController>();
+                commercialStation.BuildStation(tempCatalog, "neighborhood.ceres_freeport");
+
+                var commTransforms = commercialStation.GetComponentsInChildren<UnityEngine.Transform>(true);
+                for (int i = 0; i < commTransforms.Length; i++)
+                {
+                    Assert.AreNotEqual("DoorPost_A", commTransforms[i].name, "Fallback cyan DoorPost_A must be suppressed when commercial door prefabs exist");
+                    Assert.AreNotEqual("DoorPost_B", commTransforms[i].name, "Fallback cyan DoorPost_B must be suppressed when commercial door prefabs exist");
+                }
+
+                // 3. HUD narrow-aspect (`1100 x 756`) non-overlap check: CommsDrawer right edge < QuickActionStrip / Helm / Rover left edge
+                UnityEngine.RectTransform commsRt = null;
+                UnityEngine.RectTransform quickStripRt = null;
+                UnityEngine.RectTransform roverBarRt = null;
+                var hudRects = coord.Hud.GetComponentsInChildren<UnityEngine.RectTransform>(true);
+                for (int i = 0; i < hudRects.Length; i++)
+                {
+                    if (hudRects[i].name == "CommsDrawer") commsRt = hudRects[i];
+                    else if (hudRects[i].name == "QuickActionStrip") quickStripRt = hudRects[i];
+                    else if (hudRects[i].name == "SurfaceRoverActions") roverBarRt = hudRects[i];
+                }
+                Assert.IsNotNull(commsRt);
+                Assert.IsNotNull(quickStripRt);
+                Assert.IsNotNull(roverBarRt);
+                Assert.AreEqual(0f, quickStripRt.anchorMin.x, 0.001f);
+                Assert.AreEqual(1f, quickStripRt.anchorMax.x, 0.001f);
+                Assert.Less(commsRt.offsetMax.x, quickStripRt.offsetMin.x, "CommsDrawer must never overlap QuickActionStrip on narrow viewports");
+                Assert.Less(commsRt.offsetMax.x, roverBarRt.offsetMin.x, "CommsDrawer must never overlap SurfaceRoverActions on narrow viewports");
+
+                // 4. Checked-in `TacSim_Idle.anim` contains explicit upright leg/hip Humanoid muscles (`Lower Leg Stretch = 0.96`)
+                string idleAnimYaml = ReadUnityAssetText("Generated/TacSim_Idle.anim");
+                StringAssert.Contains("attribute: RootT.y", idleAnimYaml);
+                StringAssert.Contains("attribute: Left Lower Leg Stretch", idleAnimYaml);
+                StringAssert.Contains("attribute: Right Lower Leg Stretch", idleAnimYaml);
+                StringAssert.Contains("value: 0.96", idleAnimYaml);
+                StringAssert.Contains("attribute: Left Upper Leg Front-Back", idleAnimYaml);
+                StringAssert.Contains("value: -0.3", idleAnimYaml);
+
+                // 5. Synchronous `.unitypackage` extractor (`<guid>/asset` preceding `<guid>/pathname` + zip-slip guard)
+                byte[] expectedPrefabBytes = System.Text.Encoding.UTF8.GetBytes("%YAML 1.1\nPrefab: Trooper\n");
+                byte[] expectedMetaBytes = System.Text.Encoding.UTF8.GetBytes("fileFormatVersion: 2\nguid: 0123456789abcdef0123456789abcdef\n");
+                using (var pkgStream = BuildSyntheticUnityPackage(
+                    ("0123456789abcdef0123456789abcdef/asset", expectedPrefabBytes),
+                    ("0123456789abcdef0123456789abcdef/asset.meta", expectedMetaBytes),
+                    ("0123456789abcdef0123456789abcdef/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/IdaFaber/Prefabs/Girl/SK_F_TROOPER.prefab\n00")),
+                    ("ffffffffffffffffffffffffffffffff/asset", System.Text.Encoding.UTF8.GetBytes("malicious")),
+                    ("ffffffffffffffffffffffffffffffff/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/../../outside_escape.txt\n"))))
+                {
+                    int count = UnityPackageArchiveExtractor.ExtractPackageStream(pkgStream, tempProjectDir);
+                    Assert.AreEqual(2, count, "Valid Assets/ payload + .meta sidecar written synchronously; traversal entry rejected");
+                }
+
+                string extractedAsset = System.IO.Path.Combine(tempProjectDir, "Assets", "IdaFaber", "Prefabs", "Girl", "SK_F_TROOPER.prefab");
+                string extractedMeta = extractedAsset + ".meta";
+                Assert.IsTrue(System.IO.File.Exists(extractedAsset), "Extracted asset must exist synchronously before returning");
+                Assert.IsTrue(System.IO.File.Exists(extractedMeta), "Extracted .meta must exist synchronously before returning");
+                CollectionAssert.AreEqual(expectedPrefabBytes, System.IO.File.ReadAllBytes(extractedAsset));
+                CollectionAssert.AreEqual(expectedMetaBytes, System.IO.File.ReadAllBytes(extractedMeta));
+                Assert.IsFalse(System.IO.File.Exists(System.IO.Path.GetFullPath(System.IO.Path.Combine(tempProjectDir, "..", "outside_escape.txt"))));
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+                if (!hadPreExistingEventSystem)
+                {
+                    var createdEs = UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>();
+                    if (createdEs != null)
+                        UnityEngine.Object.DestroyImmediate(createdEs.gameObject);
+                }
+                if (mockDoorFrame != null)
+                    UnityEngine.Object.DestroyImmediate(mockDoorFrame);
+                if (tempCatalog != null)
+                    UnityEngine.Object.DestroyImmediate(tempCatalog);
+                if (rootGo != null)
+                    UnityEngine.Object.DestroyImmediate(rootGo);
+                if (System.IO.Directory.Exists(tempProjectDir))
+                    System.IO.Directory.Delete(tempProjectDir, recursive: true);
+            }
+        }
+
+        private static System.IO.MemoryStream BuildSyntheticUnityPackage(params (string entryName, byte[] payload)[] entries)
+        {
+            var gzOut = new System.IO.MemoryStream();
+            using (var gz = new System.IO.Compression.GZipStream(gzOut, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+            {
+                for (int i = 0; i < entries.Length; i++)
+                {
+                    byte[] header = new byte[512];
+                    byte[] nameBytes = System.Text.Encoding.ASCII.GetBytes(entries[i].entryName);
+                    System.Array.Copy(nameBytes, 0, header, 0, System.Math.Min(nameBytes.Length, 100));
+
+                    byte[] modeBytes = System.Text.Encoding.ASCII.GetBytes("0000644\0");
+                    System.Array.Copy(modeBytes, 0, header, 100, modeBytes.Length);
+
+                    string octalSize = System.Convert.ToString(entries[i].payload.Length, 8).PadLeft(11, '0') + "\0";
+                    byte[] sizeBytes = System.Text.Encoding.ASCII.GetBytes(octalSize);
+                    System.Array.Copy(sizeBytes, 0, header, 124, 12);
+
+                    header[156] = (byte)'0';
+                    for (int c = 148; c < 156; c++) header[c] = (byte)' ';
+                    int checksum = 0;
+                    for (int c = 0; c < 512; c++) checksum += header[c];
+                    string octalSum = System.Convert.ToString(checksum, 8).PadLeft(6, '0') + "\0 ";
+                    System.Array.Copy(System.Text.Encoding.ASCII.GetBytes(octalSum), 0, header, 148, 8);
+
+                    gz.Write(header, 0, 512);
+                    if (entries[i].payload.Length > 0)
+                    {
+                        gz.Write(entries[i].payload, 0, entries[i].payload.Length);
+                        int rem = entries[i].payload.Length % 512;
+                        if (rem != 0)
+                            gz.Write(new byte[512 - rem], 0, 512 - rem);
+                    }
+                }
+                gz.Write(new byte[1024], 0, 1024);
+            }
+            gzOut.Position = 0;
+            return gzOut;
+        }
+
+        private static string ReadUnityAssetText(string relativeUnderTacSim)
+        {
+            string normalized = relativeUnderTacSim.Replace('/', System.IO.Path.DirectorySeparatorChar);
+            string dir = System.IO.Directory.GetCurrentDirectory();
+            for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
+            {
+                string candidateA = System.IO.Path.Combine(dir, "unity", "Assets", "_TacSim", normalized);
+                if (System.IO.File.Exists(candidateA))
+                    return System.IO.File.ReadAllText(candidateA);
+                string candidateB = System.IO.Path.Combine(dir, "Assets", "_TacSim", normalized);
+                if (System.IO.File.Exists(candidateB))
+                    return System.IO.File.ReadAllText(candidateB);
+                dir = System.IO.Directory.GetParent(dir)?.FullName;
+            }
+            throw new System.IO.FileNotFoundException($"Missing Unity asset '{relativeUnderTacSim}'.");
         }
 
         private static string ReadRustFixtureJson(string fileName)

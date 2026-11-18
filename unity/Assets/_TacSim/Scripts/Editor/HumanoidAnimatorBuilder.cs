@@ -20,9 +20,10 @@ namespace TacSim.Editor
         {
             EnsureFolder("Assets/_TacSim", "Generated");
 
-            AnimationClip idleClip = CreateBreathingIdleClip();
-            AnimationClip walkClip = CreateStrideClip("TacSim_Walk", strideAngle: 26f, kneeBend: -32f, armSwing: 20f, periodSec: 0.92f);
-            AnimationClip runClip = CreateStrideClip("TacSim_Run", strideAngle: 44f, kneeBend: -55f, armSwing: 36f, periodSec: 0.64f);
+            AnimationClip generatedIdle = CreateBreathingIdleClip();
+            AnimationClip idleClip = FindImportedIdaFaberIdleClip() ?? generatedIdle;
+            AnimationClip walkClip = CreateStrideClip("TacSim_Walk", strideAngle: 26f, swingKneeFlex: 38f, armSwing: 20f, periodSec: 0.92f);
+            AnimationClip runClip = CreateStrideClip("TacSim_Run", strideAngle: 42f, swingKneeFlex: 62f, armSwing: 36f, periodSec: 0.64f);
             AnimationClip seatedClip = CreateSeatedHelmClip();
 
             var controller = AnimatorController.CreateAnimatorControllerAtPath(ControllerPath);
@@ -92,22 +93,40 @@ namespace TacSim.Editor
             return controller;
         }
 
-        private static AnimationClip FindImportedIdaFaberIdleClip()
+        public static AnimationClip FindImportedIdaFaberIdleClip()
         {
-            string[] candidates =
+            string[] exactCandidates =
             {
                 "Assets/IdaFaber/Demo/A_Idle_F.fbx",
-                "Assets/IdaFaber/Demo/A_Idle_M.fbx"
+                "Assets/IdaFaber/Demo/A_Idle_M.fbx",
+                "Assets/Ida Faber/Stellar Trooper/Demo/A_Idle_F.fbx",
+                "Assets/Ida Faber/Stellar Trooper/Demo/A_Idle_M.fbx"
             };
-            foreach (string path in candidates)
+            foreach (string path in exactCandidates)
             {
-                if (!File.Exists(path)) continue;
-                Object[] subAssets = AssetDatabase.LoadAllAssetsAtPath(path);
-                foreach (var obj in subAssets)
-                {
-                    if (obj is AnimationClip clip && !clip.name.StartsWith("__preview__"))
-                        return clip;
-                }
+                var found = LoadHumanoidClipFromAssetPath(path);
+                if (found != null) return found;
+            }
+
+            string[] guids = AssetDatabase.FindAssets("A_Idle_");
+            foreach (string guid in guids)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                var found = LoadHumanoidClipFromAssetPath(path);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static AnimationClip LoadHumanoidClipFromAssetPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            Object[] subAssets = AssetDatabase.LoadAllAssetsAtPath(path);
+            if (subAssets == null) return null;
+            foreach (var obj in subAssets)
+            {
+                if (obj is AnimationClip clip && !clip.name.StartsWith("__preview__", System.StringComparison.Ordinal))
+                    return clip;
             }
             return null;
         }
@@ -117,35 +136,52 @@ namespace TacSim.Editor
             string path = GeneratedFolder + "/TacSim_Idle.anim";
             var clip = new AnimationClip { name = "TacSim_Idle" };
             SetLoopTime(clip, true);
-            SetHumanoidRootPose(clip, pelvisHeightM: 0.94f, duration: 2.8f);
+            SetHumanoidRootPose(clip, pelvisHeightM: 0.98f, duration: 2.8f);
 
-            SetMuscleSinusoid(clip, "Spine Front-Back", 0.03f, 2.8f, phaseOffset: 0f);
-            SetMuscleSinusoid(clip, "Chest Front-Back", 0.04f, 2.8f, phaseOffset: 0.4f);
-            SetMuscleConstant(clip, "Left Arm Down-Up", -0.35f, 2.8f);
-            SetMuscleConstant(clip, "Right Arm Down-Up", -0.35f, 2.8f);
+            // Explicit upright Humanoid standing muscles:
+            // In Mecanim muscle space, Lower Leg Stretch = 0.0 is an ~80 deg squat while +1.0 is 0 deg straight leg (+0.96 => ~3.2 deg natural stance),
+            // and Upper Leg Front-Back = -0.30 aligns thighs vertically under the pelvis.
+            SetMuscleConstant(clip, "Left Upper Leg Front-Back", -0.30f, 2.8f);
+            SetMuscleConstant(clip, "Right Upper Leg Front-Back", -0.30f, 2.8f);
+            SetMuscleConstant(clip, "Left Upper Leg In-Out", -0.05f, 2.8f);
+            SetMuscleConstant(clip, "Right Upper Leg In-Out", -0.05f, 2.8f);
+            SetMuscleConstant(clip, "Left Lower Leg Stretch", 0.96f, 2.8f);
+            SetMuscleConstant(clip, "Right Lower Leg Stretch", 0.96f, 2.8f);
+            SetMuscleConstant(clip, "Left Foot Up-Down", 0f, 2.8f);
+            SetMuscleConstant(clip, "Right Foot Up-Down", 0f, 2.8f);
+
+            SetMuscleSinusoid(clip, "Spine Front-Back", 0.02f, 2.8f, phaseOffset: 0f);
+            SetMuscleSinusoid(clip, "Chest Front-Back", 0.03f, 2.8f, phaseOffset: 0.4f);
+            SetMuscleConstant(clip, "Left Arm Down-Up", -0.55f, 2.8f);
+            SetMuscleConstant(clip, "Right Arm Down-Up", -0.55f, 2.8f);
+            SetMuscleConstant(clip, "Left Forearm Stretch", 0.82f, 2.8f);
+            SetMuscleConstant(clip, "Right Forearm Stretch", 0.82f, 2.8f);
 
             SaveOrReplaceClip(clip, path);
             return AssetDatabase.LoadAssetAtPath<AnimationClip>(path);
         }
 
-        private static AnimationClip CreateStrideClip(string clipName, float strideAngle, float kneeBend, float armSwing, float periodSec)
+        private static AnimationClip CreateStrideClip(string clipName, float strideAngle, float swingKneeFlex, float armSwing, float periodSec)
         {
             string path = $"{GeneratedFolder}/{clipName}.anim";
             var clip = new AnimationClip { name = clipName };
             SetLoopTime(clip, true);
-            SetHumanoidRootPose(clip, pelvisHeightM: 0.94f, duration: periodSec);
+            SetHumanoidRootPose(clip, pelvisHeightM: 0.96f, duration: periodSec);
 
-            float normLeg = Mathf.Clamp(strideAngle / 90f, -1f, 1f);
-            float normKnee = Mathf.Clamp(kneeBend / 90f, -1f, 1f);
-            float normArm = Mathf.Clamp(armSwing / 90f, -1f, 1f);
+            float normLeg = Mathf.Clamp(strideAngle / 90f, 0f, 1f);
+            float kneeSwingAmp = Mathf.Clamp(swingKneeFlex / 160f, 0.05f, 0.65f);
+            float normArm = Mathf.Clamp(armSwing / 90f, 0f, 1f);
 
-            SetMuscleSinusoid(clip, "Left Upper Leg Front-Back", normLeg, periodSec, 0f);
-            SetMuscleSinusoid(clip, "Right Upper Leg Front-Back", normLeg, periodSec, Mathf.PI);
-            SetMuscleSinusoid(clip, "Left Lower Leg Stretch", normKnee * 0.5f, periodSec, Mathf.PI * 0.5f, dcOffset: -0.2f);
-            SetMuscleSinusoid(clip, "Right Lower Leg Stretch", normKnee * 0.5f, periodSec, Mathf.PI * 1.5f, dcOffset: -0.2f);
+            // Oscillate thighs around vertical (-0.30) and keep stance knee extended (+0.92), flexing only during forward swing!
+            SetMuscleSinusoid(clip, "Left Upper Leg Front-Back", normLeg, periodSec, 0f, dcOffset: -0.30f);
+            SetMuscleSinusoid(clip, "Right Upper Leg Front-Back", normLeg, periodSec, Mathf.PI, dcOffset: -0.30f);
+            SetMuscleSinusoid(clip, "Left Lower Leg Stretch", -kneeSwingAmp, periodSec, Mathf.PI * 0.5f, dcOffset: 0.92f - kneeSwingAmp);
+            SetMuscleSinusoid(clip, "Right Lower Leg Stretch", -kneeSwingAmp, periodSec, Mathf.PI * 1.5f, dcOffset: 0.92f - kneeSwingAmp);
 
-            SetMuscleConstant(clip, "Left Arm Down-Up", -0.32f, periodSec);
-            SetMuscleConstant(clip, "Right Arm Down-Up", -0.32f, periodSec);
+            SetMuscleConstant(clip, "Left Arm Down-Up", -0.50f, periodSec);
+            SetMuscleConstant(clip, "Right Arm Down-Up", -0.50f, periodSec);
+            SetMuscleConstant(clip, "Left Forearm Stretch", 0.55f, periodSec);
+            SetMuscleConstant(clip, "Right Forearm Stretch", 0.55f, periodSec);
             SetMuscleSinusoid(clip, "Left Arm Front-Back", normArm, periodSec, Mathf.PI);
             SetMuscleSinusoid(clip, "Right Arm Front-Back", normArm, periodSec, 0f);
 
