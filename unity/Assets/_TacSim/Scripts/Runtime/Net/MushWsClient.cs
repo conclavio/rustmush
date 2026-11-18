@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TacSim.Core;
-using UnityEngine;
 
 namespace TacSim.Net
 {
@@ -41,9 +41,9 @@ namespace TacSim.Net
 
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
-        private readonly ConcurrentQueue<MushEnvelope> _inbound = new ConcurrentQueue<MushEnvelope>();
+        private readonly ConcurrentQueue<(long epoch, MushEnvelope env)> _inbound = new ConcurrentQueue<(long, MushEnvelope)>();
         private readonly ConcurrentQueue<string> _outbound = new ConcurrentQueue<string>();
-        private readonly ConcurrentQueue<(int? code, string message)> _socketDrops = new ConcurrentQueue<(int?, string)>();
+        private readonly ConcurrentQueue<(long epoch, int? code, string message)> _socketDrops = new ConcurrentQueue<(long, int?, string)>();
         private readonly Dictionary<string, JsonNode> _panelFeeds = new Dictionary<string, JsonNode>(StringComparer.Ordinal);
         private readonly Dictionary<string, ViewStreamCursor> _viewCursors = new Dictionary<string, ViewStreamCursor>(StringComparer.Ordinal);
         private readonly HashSet<string> _advertisedPanels = new HashSet<string>(StringComparer.Ordinal);
@@ -52,11 +52,15 @@ namespace TacSim.Net
         private string _activeCharKey;
         private ulong _lastSeq;
         private ulong _nextQueryId = 1;
+        private long _sessionEpoch;
         private volatile bool _isConnected;
         private bool _intentionalDisconnect = true;
         private bool _reconnectInFlight;
         private int _reconnectAttempt;
-        private float _nextReconnectAtRealtime = -1f;
+        private double _nextReconnectAtMonotonicSec = -1.0;
+
+        private static double MonotonicSeconds() =>
+            Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
         public bool IsConnected => _isConnected && _ws != null && _ws.State == WebSocketState.Open;
         public MushWsConnectionState State { get; private set; } = MushWsConnectionState.Disconnected;
@@ -104,7 +108,7 @@ namespace TacSim.Net
             _activeCharKey = characterKey;
             _intentionalDisconnect = false;
             _reconnectInFlight = false;
-            _nextReconnectAtRealtime = -1f;
+            _nextReconnectAtMonotonicSec = -1.0;
 
             if (resetResume)
             {
@@ -126,6 +130,10 @@ namespace TacSim.Net
             CloseSocketOnly();
             while (_outbound.TryDequeue(out _)) { }
 
+            long epoch = Interlocked.Increment(ref _sessionEpoch);
+            while (_inbound.TryDequeue(out _)) { }
+            while (_socketDrops.TryDequeue(out _)) { }
+
             _cts = new CancellationTokenSource();
             _ws = new ClientWebSocket();
             _ws.Options.AddSubProtocol($"rustmush.v1.{_activeAuth.Token}");
@@ -143,7 +151,7 @@ namespace TacSim.Net
             await _ws.ConnectAsync(uri, _cts.Token);
             _isConnected = true;
             _reconnectAttempt = 0;
-            _nextReconnectAtRealtime = -1f;
+            _nextReconnectAtMonotonicSec = -1.0;
             State = MushWsConnectionState.Online;
 
             // Declare structured true_color Web client capabilities immediately upon attach
@@ -152,16 +160,20 @@ namespace TacSim.Net
 
             var capturedWs = _ws;
             var capturedToken = _cts.Token;
-            _ = Task.Run(() => ReceiveLoopAsync(capturedWs, capturedToken));
+            _ = Task.Run(() => ReceiveLoopAsync(capturedWs, capturedToken, epoch));
             _ = Task.Run(() => SendLoopAsync(capturedWs, capturedToken));
         }
 
         public void Disconnect()
         {
+            Interlocked.Increment(ref _sessionEpoch);
             _intentionalDisconnect = true;
-            _nextReconnectAtRealtime = -1f;
+            _nextReconnectAtMonotonicSec = -1.0;
             _reconnectInFlight = false;
             State = MushWsConnectionState.Disconnected;
+            while (_inbound.TryDequeue(out _)) { }
+            while (_socketDrops.TryDequeue(out _)) { }
+            while (_outbound.TryDequeue(out _)) { }
             CloseSocketOnly();
         }
 
@@ -219,27 +231,43 @@ namespace TacSim.Net
 
         public void InjectSyntheticEnvelope(MushEnvelope env)
         {
-            if (env != null) _inbound.Enqueue(env);
+            if (env != null)
+            {
+                _intentionalDisconnect = false;
+                _inbound.Enqueue((Interlocked.Read(ref _sessionEpoch), env));
+            }
         }
 
         public void PumpMainThread()
         {
+            long currentEpoch = Interlocked.Read(ref _sessionEpoch);
             while (_socketDrops.TryDequeue(out var drop))
             {
-                HandleSocketDroppedOnMainThread(drop.code, drop.message);
+                if (drop.epoch == currentEpoch)
+                    HandleSocketDroppedOnMainThread(drop.code, drop.message);
             }
 
-            if (!_intentionalDisconnect && !_isConnected && !_reconnectInFlight && _nextReconnectAtRealtime > 0f && Time.realtimeSinceStartup >= _nextReconnectAtRealtime)
+            if (_intentionalDisconnect)
+            {
+                while (_inbound.TryDequeue(out _)) { }
+                return;
+            }
+
+            if (!_isConnected && !_reconnectInFlight && _nextReconnectAtMonotonicSec > 0.0 && MonotonicSeconds() >= _nextReconnectAtMonotonicSec)
             {
                 _ = AttemptAutoReconnectAsync();
             }
 
             int processed = 0;
-            while (processed < 64 && _inbound.TryDequeue(out MushEnvelope env))
+            while (processed < 64 && _inbound.TryDequeue(out var item))
             {
+                if (item.epoch != currentEpoch || _intentionalDisconnect)
+                    continue;
                 processed++;
-                // Never overwrite _lastSeq with 0 (out-of-band hello/resumed/ping frames carry seq: 0)
-                if (env.Seq > 0 && env.Seq > _lastSeq)
+                var env = item.env;
+                // Never overwrite _lastSeq with 0 (out-of-band hello/resumed/ping frames carry seq: 0),
+                // but accept lower sequence numbers after a non-replayed fresh incarnation.
+                if (env.Seq > 0)
                     _lastSeq = env.Seq;
                 DispatchEvent(env.EventType, env.Data);
             }
@@ -277,7 +305,7 @@ namespace TacSim.Net
             }
 
             State = MushWsConnectionState.Reconnecting;
-            _nextReconnectAtRealtime = Time.realtimeSinceStartup + delaySec;
+            _nextReconnectAtMonotonicSec = MonotonicSeconds() + delaySec;
             OnConnectionStatusChanged?.Invoke($"{detail} — reconnecting in {delaySec:0.#}s...");
         }
 
@@ -287,7 +315,7 @@ namespace TacSim.Net
                 return;
 
             _reconnectInFlight = true;
-            _nextReconnectAtRealtime = -1f;
+            _nextReconnectAtMonotonicSec = -1.0;
             try
             {
                 await OpenSocketInternalAsync(isReconnect: true);
@@ -347,6 +375,7 @@ namespace TacSim.Net
                 case "resumed":
                     if (!d.Bool("replayed", true))
                     {
+                        _lastSeq = 0;
                         _panelFeeds.Clear();
                         _viewCursors.Clear();
                         SubscribeStandardPanels();
@@ -513,7 +542,7 @@ namespace TacSim.Net
             _outbound.Enqueue(json);
         }
 
-        private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken ct)
+        private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken ct, long epoch)
         {
             var buffer = new byte[16384];
             try
@@ -533,7 +562,7 @@ namespace TacSim.Net
                                 string desc = !string.IsNullOrEmpty(res.CloseStatusDescription)
                                     ? res.CloseStatusDescription
                                     : $"WebSocket closed ({(closeCode.HasValue ? closeCode.Value.ToString() : "EOF")})";
-                                _socketDrops.Enqueue((closeCode, desc));
+                                _socketDrops.Enqueue((epoch, closeCode, desc));
                                 return;
                             }
                             ms.Write(buffer, 0, res.Count);
@@ -543,7 +572,7 @@ namespace TacSim.Net
                         {
                             string json = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
                             var env = MushProtocol.ParseEnvelope(json);
-                            if (env != null) _inbound.Enqueue(env);
+                            if (env != null) _inbound.Enqueue((epoch, env));
                         }
                     }
                 }
@@ -552,7 +581,7 @@ namespace TacSim.Net
             catch (Exception ex)
             {
                 _isConnected = false;
-                _socketDrops.Enqueue((null, $"WebSocket interrupted ({ex.Message})"));
+                _socketDrops.Enqueue((epoch, null, $"WebSocket interrupted ({ex.Message})"));
             }
         }
 
@@ -574,9 +603,9 @@ namespace TacSim.Net
                 }
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Debug.LogWarning($"[MushWsClient] SendLoop ended: {ex.Message}");
+                // ReceiveLoopAsync handles socket drop notification on the session epoch queue.
             }
         }
     }

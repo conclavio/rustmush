@@ -381,14 +381,16 @@ namespace TacSim.Net
             if (cursor == null || viewFrame == null || !viewFrame.IsObject)
                 return ViewCursorDisposition.IgnoreDuplicateOrStale;
 
-            string kind = viewFrame.Str("kind", "snapshot");
             string gen = viewFrame.Str("generation", string.Empty);
             ulong seq = (ulong)Math.Max(0L, viewFrame.Long("sequence", (long)viewFrame.Long("seq", 0)));
+            bool hasBaseSeq = (viewFrame.ContainsKey("base_sequence") && !viewFrame["base_sequence"].IsNull) ||
+                              (viewFrame.ContainsKey("base") && !viewFrame["base"].IsNull);
             ulong baseSeq = (ulong)Math.Max(0L, viewFrame.Long("base_sequence", (long)viewFrame.Long("base", 0)));
 
-            bool isSnapshot = string.Equals(kind, "snapshot", StringComparison.OrdinalIgnoreCase) ||
-                              string.Equals(kind, "keyframe", StringComparison.OrdinalIgnoreCase) ||
-                              (!viewFrame.ContainsKey("kind") && !viewFrame.ContainsKey("base_sequence"));
+            // Canonical Rust ViewEnvelope distinguishes deltas by base_sequence presence (no "kind" field).
+            string explicitKind = viewFrame.Str("kind", string.Empty);
+            bool isDelta = hasBaseSeq || string.Equals(explicitKind, "delta", StringComparison.OrdinalIgnoreCase);
+            bool isSnapshot = !isDelta;
 
             if (isSnapshot)
             {
@@ -594,6 +596,14 @@ namespace TacSim.Net
                     };
                 }
 
+                var occ = amb["occupants"];
+                if (occ.IsObject)
+                {
+                    ReadIdSet(occ["npcs"], rv.NpcIds);
+                    ReadIdSet(occ["dormant"], rv.DormantNpcIds);
+                    ReadIdSet(occ["players"], rv.PlayerIds);
+                    ReadIdSet(occ["things"], rv.ThingIds);
+                }
                 ReadIdSet(amb["npcs"], rv.NpcIds);
                 ReadIdSet(amb["dormant_npcs"], rv.DormantNpcIds);
                 ReadIdSet(amb["players"], rv.PlayerIds);

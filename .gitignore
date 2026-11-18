@@ -84,6 +84,21 @@ unity/crashlytics-build.properties
 unity/Assets/*
 !unity/Assets/_TacSim/
 !unity/Assets/_TacSim.meta
+# Block commercial 3D packages, meshes, and source textures anywhere under unity/ (including _TacSim/)
+unity/**/*.unitypackage
+unity/**/*.unitypackage.meta
+unity/**/*.fbx
+unity/**/*.fbx.meta
+unity/**/*.obj
+unity/**/*.obj.meta
+unity/**/*.blend
+unity/**/*.blend.meta
+unity/**/*.psd
+unity/**/*.psd.meta
+unity/**/*.tga
+unity/**/*.tga.meta
+unity/**/*.exr
+unity/**/*.exr.meta
 # Generated local scene & commercial prefab GUID catalog (rebuilt via TacSim -> 1 & 2 menus)
 unity/Assets/_TacSim/Scenes/
 unity/Assets/_TacSim/Scenes.meta

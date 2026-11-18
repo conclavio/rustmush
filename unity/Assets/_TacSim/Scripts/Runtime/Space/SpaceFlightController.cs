@@ -9,9 +9,10 @@ using UnityEngine.EventSystems;
 namespace TacSim.Space
 {
     /// <summary>
-    /// Renders 3D Orbital Space Flight (player ship hull + fusion plume, rotating Ceres globe,
-    /// targetable Zero-G Ore Asteroids &amp; Naval Contacts, 3D Mining Laser &amp; Collector Drones,
-    /// Space Tactical Beam/Railgun/Torpedo FX) AND drives the 60 Hz 6-DOF Bow Docking Collar Mini-Game.
+    /// Renders authoritative 3D Orbital Space Flight (player ship hull + fusion plume, rotating body,
+    /// server-perceived Zero-G Ore Asteroids &amp; Naval Contacts from `space.holotank` / `space.cockpit`,
+    /// 3D Mining Laser &amp; Collector Drones) AND drives the 60 Hz 6-DOF Bow Docking Collar Mini-Game
+    /// with bounded RLE submission and authoritative `space.docking` outcome reconciliation.
     /// </summary>
     public sealed class SpaceFlightController : MonoBehaviour
     {
@@ -32,11 +33,16 @@ namespace TacSim.Space
         public float ShipRollDeg { get; private set; }
         public float ThrottlePermille { get; private set; }
         public string EmconPosture { get; private set; } = "standard";
-        public string SelectedRockId { get; private set; } = "A";
-        public string LockedContactId { get; private set; } = "C1";
+        public string SelectedRockId { get; private set; } = string.Empty;
+        public string LockedContactId { get; private set; } = string.Empty;
 
-        public event Action<string> OnDockingTapeReadyToSubmit;
+        /// <summary>
+        /// Fired when the local 60 Hz integrator reaches a terminal contact (`(tapeCommand, isClampCandidate)`).
+        /// Final success/failure is decided only when the server replies with `space.docking` (`closed: true, outcome`).
+        /// </summary>
+        public event Action<string, bool> OnDockingTapeReadyToSubmit;
         public event Action OnDockingAborted;
+        public event Action<string> OnDockingEndedByServer;
         public event Action<string> OnSpaceAlert;
         public event Action<string, bool> OnOrbitalTargetClicked; // (designator, isAsteroid)
 
@@ -47,6 +53,7 @@ namespace TacSim.Space
         private Transform _dockingCollarTarget;
         private readonly List<MeshRenderer> _gateRingRenderers = new List<MeshRenderer>();
         private readonly Dictionary<string, Transform> _namedOrbitalTargets = new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _knownRockIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<Transform> _collectorDrones = new List<Transform>();
 
         private LineRenderer _activeBeamRenderer;
@@ -61,7 +68,11 @@ namespace TacSim.Space
         private float _dockingAccumulatorS;
         private bool _pendingDampenerToggle;
         private bool _pendingAbort;
-        private bool _clampSubmitted;
+        private bool _tapeSubmittedAwaitingServer;
+
+        public bool HasTargetableRock(string rockId) => !string.IsNullOrEmpty(rockId) && _knownRockIds.Contains(rockId);
+        public bool HasPerceivedContact(string designator) =>
+            !string.IsNullOrEmpty(designator) && _namedOrbitalTargets.ContainsKey(designator) && !_knownRockIds.Contains(designator);
 
         public void BuildSpaceStage(TacSimAssetCatalog catalog)
         {
@@ -73,6 +84,12 @@ namespace TacSim.Space
                 else DestroyImmediate(ch);
             }
             _gateRingRenderers.Clear();
+            _namedOrbitalTargets.Clear();
+            _knownRockIds.Clear();
+            _collectorDrones.Clear();
+            SelectedRockId = string.Empty;
+            LockedContactId = string.Empty;
+            _droneSortieActive = false;
 
             transform.position = OrbitalStageOrigin;
 
@@ -90,7 +107,6 @@ namespace TacSim.Space
                 PlayerShipTransform = StationWorldController.BuildSculptedDrayExterior(transform, OrbitalStageOrigin, hullMat, trimMat, "PlayerOrbitalShip").transform;
             }
 
-            // Fusion torch plume + commercial thruster VFX particle emitter
             var plumeGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             plumeGo.name = "FusionDrivePlume";
             plumeGo.transform.SetParent(PlayerShipTransform, false);
@@ -111,7 +127,7 @@ namespace TacSim.Space
                 _particlePlumeInstance.gameObject.SetActive(false);
             }
 
-            // 2. Ceres Dwarf Planet & Sunlight
+            // 2. Distant Planet Backdrop & Sunlight
             var sunGo = new GameObject("SolarLight");
             sunGo.transform.SetParent(transform, false);
             sunGo.transform.position = OrbitalStageOrigin + new Vector3(200f, 120f, -180f);
@@ -143,68 +159,21 @@ namespace TacSim.Space
                 _ceresBody = ceres.transform;
             }
 
+            // Authoritative contacts & cluster rocks container (starts empty until server telemetry arrives!)
             _contactsContainer = new GameObject("OrbitalContacts").transform;
             _contactsContainer.SetParent(transform, false);
-            BuildAmbientStarfieldAndAsteroids();
+            BuildAmbientSceneryAndVfxPool();
 
             // 3. Dedicated 60 Hz 6-DOF Bow Docking Collar Stage
             BuildBowDockingRig();
         }
 
-        private void BuildAmbientStarfieldAndAsteroids()
+        private void BuildAmbientSceneryAndVfxPool()
         {
-            _namedOrbitalTargets.Clear();
-            _collectorDrones.Clear();
-
             Material rockMat = UrpMaterialFactory.GetOpaque("AsteroidOre", new Color(0.32f, 0.28f, 0.24f), 0.15f, 0.2f);
             Material veinMat = UrpMaterialFactory.GetEmissive("OreVein", new Color(0.22f, 0.72f, 0.85f), new Color(0.25f, 0.95f, 1.0f) * 1.4f);
 
-            // 1. Three named Zero-G Prospecting Ore Pockets (A, B, C) within visual mining range!
-            (string id, string label, Vector3 offset)[] oreRocks =
-            {
-                ("A", "ROCK A [Rich Ice/Volatiles]", new Vector3(-34f, 4f, 44f)),
-                ("B", "ROCK B [Metal Concentrate]",  new Vector3(38f, -6f, 52f)),
-                ("C", "ROCK C [Carbonaceous]",       new Vector3(6f, 12f, 68f))
-            };
-
-            for (int r = 0; r < oreRocks.Length; r++)
-            {
-                Vector3 pos = OrbitalStageOrigin + oreRocks[r].offset;
-                var pocketRoot = new GameObject($"OreRock_{oreRocks[r].id}");
-                pocketRoot.transform.SetParent(_contactsContainer, false);
-                pocketRoot.transform.position = pos;
-
-                var sc = pocketRoot.AddComponent<SphereCollider>();
-                sc.radius = 6.5f;
-
-                List<GameObject> orePool = (Catalog != null && Catalog.oreAsteroidPrefabs != null && Catalog.oreAsteroidPrefabs.Count > 0)
-                    ? Catalog.oreAsteroidPrefabs
-                    : (Catalog != null ? Catalog.asteroidPrefabs : null);
-
-                if (orePool != null && orePool.Count > 0 && orePool[r % orePool.Count] != null)
-                {
-                    PrefabFittingHelper.SpawnCentered(orePool[r % orePool.Count], pocketRoot.transform, "OreMesh", pos, Quaternion.Euler(r * 35f, r * 62f, 0f), 11f, keepColliders: false);
-                }
-                else
-                {
-                    var sp = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                    sp.transform.SetParent(pocketRoot.transform, false);
-                    sp.transform.localScale = new Vector3(9.5f, 7.2f, 8.4f);
-                    var col = sp.GetComponent<Collider>();
-                    if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
-                    sp.GetComponent<MeshRenderer>().sharedMaterial = rockMat;
-                    CreateDockBox(pocketRoot.transform, "OreSeam", new Vector3(0f, 1.2f, -3.2f), new Vector3(4.5f, 0.65f, 2.2f), veinMat);
-                }
-
-                AddOrbitalTag(pocketRoot.transform, oreRocks[r].label, new Vector3(0f, 7.2f, 0f), new Color(0.55f, 1f, 0.85f));
-                _namedOrbitalTargets[oreRocks[r].id] = pocketRoot.transform;
-            }
-
-            // 2. Named Naval Contacts: Customs Patrol Corvette (C1) & Belt Raider Contact (X1)
-            SpawnNavalContact("C1", "C1 — Patrol Corvette", OrbitalStageOrigin + new Vector3(-62f, 14f, 92f), Quaternion.Euler(0f, 145f, 0f), new Color(0.45f, 0.82f, 1f), isHostile: false);
-            SpawnNavalContact("X1", "X1 — Unmarked Raider", OrbitalStageOrigin + new Vector3(72f, -12f, 108f), Quaternion.Euler(0f, -145f, 0f), new Color(1f, 0.42f, 0.36f), isHostile: true);
-
-            // 3. Two Collector Drones parked beside player's spine ready for +mine/drones sorties
+            // Collector drone visual pool (hidden until server reports active drones in flight)
             for (int d = 0; d < 2; d++)
             {
                 Vector3 dPos = OrbitalStageOrigin + new Vector3(d == 0 ? -7.5f : 7.5f, 2.2f, 2f);
@@ -218,14 +187,18 @@ namespace TacSim.Space
                     droneGo = CreateDockBox(transform, $"MiningDrone_{d + 1}", Vector3.zero, new Vector3(1.8f, 1.1f, 2.4f), veinMat);
                     droneGo.transform.position = dPos;
                 }
-                if (droneGo != null) _collectorDrones.Add(droneGo.transform);
+                if (droneGo != null)
+                {
+                    droneGo.SetActive(false);
+                    _collectorDrones.Add(droneGo.transform);
+                }
             }
 
-            // 4. Outer Belt Asteroid Ring
+            // Non-interactive distant belt scenery ring (no colliders, no target IDs)
             for (int i = 0; i < 8; i++)
             {
                 float ang = i * 0.785f;
-                float dist = 125f + (i % 3) * 42f;
+                float dist = 165f + (i % 3) * 42f;
                 Vector3 pos = OrbitalStageOrigin + new Vector3(Mathf.Cos(ang) * dist, ((i % 5) - 2) * 16f, Mathf.Sin(ang) * dist);
                 GameObject rock;
                 if (Catalog != null && Catalog.asteroidPrefabs != null && Catalog.asteroidPrefabs.Count > 0 && Catalog.asteroidPrefabs[i % Catalog.asteroidPrefabs.Count] != null)
@@ -238,14 +211,13 @@ namespace TacSim.Space
                     rock.transform.SetParent(transform, true);
                     rock.transform.position = pos;
                     rock.transform.localScale = new Vector3(6f + (i % 4) * 2f, 4.5f, 5.5f);
-                    var rc = rock.GetComponent<Collider>();
-                    if (rc != null) { if (Application.isPlaying) Destroy(rc); else DestroyImmediate(rc); }
                     rock.GetComponent<MeshRenderer>().sharedMaterial = rockMat;
                 }
-                rock.name = $"BeltRock_{i}";
+                var rc = rock.GetComponent<Collider>();
+                if (rc != null) { if (Application.isPlaying) Destroy(rc); else DestroyImmediate(rc); }
+                rock.name = $"DistantSceneryRock_{i}";
             }
 
-            // 5. Reusable 3D Beam Renderer & Torpedo Visual for Mining Laser & Naval Fire Control
             var beamGo = new GameObject("OrbitalBeamVfx");
             beamGo.transform.SetParent(transform, false);
             _activeBeamRenderer = beamGo.AddComponent<LineRenderer>();
@@ -274,6 +246,132 @@ namespace TacSim.Space
             torpGo.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("TorpFlare", new Color(1f, 0.45f, 0.15f), new Color(1f, 0.55f, 0.2f) * 2.8f);
             _activeTorpedoVisual = torpGo.transform;
             _activeTorpedoVisual.gameObject.SetActive(false);
+        }
+
+        /// <summary>
+        /// Reconciles 3D orbital contacts and asteroid cluster rocks strictly from authoritative `space.holotank` JSON.
+        /// </summary>
+        public void ApplyHolotankFeed(JsonNode holotank)
+        {
+            if (holotank == null || !holotank.IsObject || _contactsContainer == null)
+                return;
+
+            for (int i = _contactsContainer.childCount - 1; i >= 0; i--)
+            {
+                var ch = _contactsContainer.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(ch);
+                else DestroyImmediate(ch);
+            }
+            _namedOrbitalTargets.Clear();
+            _knownRockIds.Clear();
+
+            Material rockMat = UrpMaterialFactory.GetOpaque("AsteroidOre", new Color(0.32f, 0.28f, 0.24f), 0.15f, 0.2f);
+            Material veinMat = UrpMaterialFactory.GetEmissive("OreVein", new Color(0.22f, 0.72f, 0.85f), new Color(0.25f, 0.95f, 1.0f) * 1.4f);
+
+            var rocksArr = holotank["rocks"].AsArray() ?? holotank["cluster"]?["rocks"].AsArray();
+            if (rocksArr != null)
+            {
+                for (int r = 0; r < rocksArr.Count; r++)
+                {
+                    var rk = rocksArr[r];
+                    if (!rk.IsObject) continue;
+                    string rId = rk.Str("id", rk.Str("letter", string.Empty)).Trim().ToUpperInvariant();
+                    if (string.IsNullOrEmpty(rId)) continue;
+                    string spectral = rk.Str("spectral", rk.Str("label", "Pocket"));
+                    Vector3 offset = ParseRelativeOffset(rk, defaultRadius: 48f, index: r);
+                    SpawnOreRockTarget(rId, $"ROCK {rId} [{spectral}]", OrbitalStageOrigin + offset, r, rockMat, veinMat);
+                }
+            }
+
+            var contactsArr = holotank["contacts"].AsArray() ?? holotank["blips"].AsArray();
+            if (contactsArr != null)
+            {
+                for (int i = 0; i < contactsArr.Count; i++)
+                {
+                    var c = contactsArr[i];
+                    if (!c.IsObject) continue;
+                    string kind = c.Str("kind", string.Empty);
+                    string id = c.Str("designator", c.Str("id", string.Empty)).Trim();
+                    if (string.IsNullOrEmpty(id)) continue;
+
+                    if (string.Equals(kind, "rock", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(kind, "asteroid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string lbl = c.Str("label", c.Str("name", $"ROCK {id}"));
+                        Vector3 offset = ParseRelativeOffset(c, defaultRadius: 50f, index: i);
+                        SpawnOreRockTarget(id.ToUpperInvariant(), lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
+                        continue;
+                    }
+
+                    string relation = c.Str("relation", c.Str("iff", "neutral"));
+                    bool hostile = relation.IndexOf("hostile", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                   relation.IndexOf("enemy", StringComparison.OrdinalIgnoreCase) >= 0;
+                    string name = c.Str("name", c.Str("label", id));
+                    Vector3 pos = OrbitalStageOrigin + ParseRelativeOffset(c, defaultRadius: 85f, index: i);
+                    Color col = hostile ? new Color(1f, 0.42f, 0.36f) : new Color(0.45f, 0.82f, 1f);
+                    SpawnNavalContact(id, $"{id} — {name}", pos, Quaternion.Euler(0f, 180f, 0f), col, hostile);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(SelectedRockId) && !_knownRockIds.Contains(SelectedRockId))
+                SelectedRockId = string.Empty;
+            if (string.IsNullOrEmpty(SelectedRockId))
+            {
+                foreach (string rid in _knownRockIds) { SelectedRockId = rid; break; }
+            }
+
+            if (!string.IsNullOrEmpty(LockedContactId) && !HasPerceivedContact(LockedContactId))
+                LockedContactId = string.Empty;
+        }
+
+        private static Vector3 ParseRelativeOffset(JsonNode node, float defaultRadius, int index)
+        {
+            var rel = node["rel_pos_m"].AsArray() ?? node["pos_m"].AsArray();
+            if (rel != null && rel.Count >= 3)
+            {
+                Vector3 raw = new Vector3(rel[0].AsFloat(0f), rel[2].AsFloat(0f), rel[1].AsFloat(0f)) * 0.04f;
+                float mag = raw.magnitude;
+                if (mag > 0.1f)
+                    return raw.normalized * Mathf.Clamp(mag, 26f, 140f);
+            }
+            float bearingDeg = node.Float("bearing_deg", index * 55f);
+            float rangeM = node.Float("range_m", defaultRadius * 20f);
+            float scaledDist = Mathf.Clamp(rangeM * 0.04f, 28f, 135f);
+            float rad = bearingDeg * Mathf.Deg2Rad;
+            return new Vector3(Mathf.Sin(rad) * scaledDist, ((index % 3) - 1) * 8f, Mathf.Cos(rad) * scaledDist);
+        }
+
+        private void SpawnOreRockTarget(string id, string label, Vector3 pos, int idx, Material rockMat, Material veinMat)
+        {
+            var pocketRoot = new GameObject($"OreRock_{id}");
+            pocketRoot.transform.SetParent(_contactsContainer, false);
+            pocketRoot.transform.position = pos;
+
+            var sc = pocketRoot.AddComponent<SphereCollider>();
+            sc.radius = 6.5f;
+
+            List<GameObject> orePool = (Catalog != null && Catalog.oreAsteroidPrefabs != null && Catalog.oreAsteroidPrefabs.Count > 0)
+                ? Catalog.oreAsteroidPrefabs
+                : (Catalog != null ? Catalog.asteroidPrefabs : null);
+
+            if (orePool != null && orePool.Count > 0 && orePool[idx % orePool.Count] != null)
+            {
+                PrefabFittingHelper.SpawnCentered(orePool[idx % orePool.Count], pocketRoot.transform, "OreMesh", pos, Quaternion.Euler(idx * 35f, idx * 62f, 0f), 11f, keepColliders: false);
+            }
+            else
+            {
+                var sp = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                sp.transform.SetParent(pocketRoot.transform, false);
+                sp.transform.localScale = new Vector3(9.5f, 7.2f, 8.4f);
+                var col = sp.GetComponent<Collider>();
+                if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
+                sp.GetComponent<MeshRenderer>().sharedMaterial = rockMat;
+                CreateDockBox(pocketRoot.transform, "OreSeam", new Vector3(0f, 1.2f, -3.2f), new Vector3(4.5f, 0.65f, 2.2f), veinMat);
+            }
+
+            AddOrbitalTag(pocketRoot.transform, label, new Vector3(0f, 7.2f, 0f), new Color(0.55f, 1f, 0.85f));
+            _namedOrbitalTargets[id] = pocketRoot.transform;
+            _knownRockIds.Add(id);
         }
 
         private void SpawnNavalContact(string id, string label, Vector3 pos, Quaternion rot, Color tagColor, bool isHostile)
@@ -313,7 +411,7 @@ namespace TacSim.Space
             var txtGo = new GameObject("Label");
             txtGo.transform.SetParent(bbGo.transform, false);
             var tmp = txtGo.AddComponent<TextMeshPro>();
-            tmp.text = label;
+            tmp.text = MushProtocolLiteEscape(label);
             tmp.fontSize = 16f;
             tmp.color = color;
             tmp.alignment = TextAlignmentOptions.Center;
@@ -321,6 +419,9 @@ namespace TacSim.Space
             tmp.rectTransform.sizeDelta = new Vector2(45f, 6f);
             bb.NameplateText = tmp;
         }
+
+        private static string MushProtocolLiteEscape(string s) =>
+            string.IsNullOrEmpty(s) ? string.Empty : s.Replace("<", "‹").Replace(">", "›");
 
         public void SelectRock(string rockId)
         {
@@ -337,7 +438,7 @@ namespace TacSim.Space
         public void TriggerMiningLaser(string rockId = null, float durationSec = 4.2f)
         {
             if (!string.IsNullOrWhiteSpace(rockId)) SelectedRockId = rockId.Trim().ToUpperInvariant();
-            Transform target = ResolveOrbitalTarget(SelectedRockId);
+            Transform target = ResolveExactTarget(SelectedRockId);
             if (target == null || PlayerShipTransform == null || _activeBeamRenderer == null) return;
 
             Vector3 dir = (target.position - PlayerShipTransform.position).normalized;
@@ -362,12 +463,17 @@ namespace TacSim.Space
         public void ToggleDroneSortie(bool active)
         {
             _droneSortieActive = active;
+            for (int i = 0; i < _collectorDrones.Count; i++)
+            {
+                if (_collectorDrones[i] != null)
+                    _collectorDrones[i].gameObject.SetActive(active);
+            }
         }
 
         public void TriggerNavalWeaponVfx(string weaponKind, string targetDesignator = null)
         {
             string tgtKey = !string.IsNullOrWhiteSpace(targetDesignator) ? targetDesignator : LockedContactId;
-            Transform target = ResolveOrbitalTarget(tgtKey);
+            Transform target = ResolveExactTarget(tgtKey);
             if (target == null || PlayerShipTransform == null) return;
 
             Vector3 muzzle = PlayerShipTransform.position + PlayerShipTransform.forward * 12f;
@@ -401,14 +507,10 @@ namespace TacSim.Space
             _beamExpireTime = Time.time + (wk.Contains("rail") ? 0.45f : 1.6f);
         }
 
-        private Transform ResolveOrbitalTarget(string id)
+        private Transform ResolveExactTarget(string id)
         {
             if (!string.IsNullOrEmpty(id) && _namedOrbitalTargets.TryGetValue(id, out var tr) && tr != null)
                 return tr;
-            foreach (var kv in _namedOrbitalTargets)
-            {
-                if (kv.Value != null) return kv.Value;
-            }
             return null;
         }
 
@@ -426,19 +528,16 @@ namespace TacSim.Space
             Material collarRim = UrpMaterialFactory.GetOpaque("CollarRim", new Color(0.35f, 0.38f, 0.42f), 0.55f, 0.8f);
             Material crossMat = UrpMaterialFactory.GetEmissive("AlignmentCross", new Color(0.9f, 0.7f, 0.15f), new Color(1.0f, 0.75f, 0.2f) * 1.6f);
 
-            // Station cradle gantry backdrop surrounding target collar
             if (Catalog != null && Catalog.shipyardCradlePrefab != null)
             {
                 PrefabFittingHelper.SpawnCentered(Catalog.shipyardCradlePrefab, dockRoot, "CeresDockingCradleBackdrop", DockingStageOrigin + new Vector3(0f, 0f, 14f), Quaternion.identity, 28f, keepColliders: false);
             }
 
-            // Station cradle bulkhead surrounding target collar at Z = 0, facing -Z (towards approaching ship)
             CreateDockBox(_dockingCollarTarget, "StationBulkhead_Top", new Vector3(0f, 2.2f, 0.4f), new Vector3(8f, 2.4f, 0.8f), portBulkhead);
             CreateDockBox(_dockingCollarTarget, "StationBulkhead_Bot", new Vector3(0f, -2.2f, 0.4f), new Vector3(8f, 2.4f, 0.8f), portBulkhead);
             CreateDockBox(_dockingCollarTarget, "StationBulkhead_L", new Vector3(-2.6f, 0f, 0.4f), new Vector3(3.2f, 2.0f, 0.8f), portBulkhead);
             CreateDockBox(_dockingCollarTarget, "StationBulkhead_R", new Vector3(2.6f, 0f, 0.4f), new Vector3(3.2f, 2.0f, 0.8f), portBulkhead);
 
-            // Octagonal collar ring & roll-index top fin (so pilot sees roll alignment clearly!)
             for (int i = 0; i < 8; i++)
             {
                 float a = i * 45f * Mathf.Deg2Rad;
@@ -446,11 +545,9 @@ namespace TacSim.Space
                 seg.transform.localRotation = Quaternion.Euler(0f, 0f, i * 45f);
             }
             CreateDockBox(_dockingCollarTarget, "TopRollIndexChevron", new Vector3(0f, 1.18f, -0.1f), new Vector3(0.14f, 0.42f, 0.14f), crossMat);
-            // Inner standoff crosshairs at Z = +0.6m behind collar for true 3D parallax attitude cue!
             CreateDockBox(_dockingCollarTarget, "StandoffCross_H", new Vector3(0f, 0f, 0.65f), new Vector3(0.75f, 0.04f, 0.04f), crossMat);
             CreateDockBox(_dockingCollarTarget, "StandoffCross_V", new Vector3(0f, 0f, 0.65f), new Vector3(0.04f, 0.75f, 0.04f), crossMat);
 
-            // 5 Holographic Approach Tunnel Gates along -Z (0.5m, 1.0m, 1.5m, 2.0m, 2.5m)
             for (int g = 0; g < 5; g++)
             {
                 var ring = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -485,9 +582,26 @@ namespace TacSim.Space
             if (cockpit == null || !cockpit.IsObject) return;
             ShipYawDeg = cockpit.Float("yaw_deg", ShipYawDeg);
             ShipPitchDeg = cockpit.Float("pitch_deg", ShipPitchDeg);
-            ShipRollDeg = cockpit.Float("roll_deg", ShipRollDeg);
+            ShipRollDeg = cockpit.Float("roll_deg", ShipPitchDeg);
+            ShipRollDeg = cockpit.Float("roll_deg", 0f);
             ThrottlePermille = cockpit.Float("thrust_permille", cockpit.Float("throttle_permille", ThrottlePermille));
             EmconPosture = cockpit.Str("emcon", EmconPosture);
+
+            var fireObj = cockpit["fire"];
+            if (fireObj.IsObject)
+            {
+                string serverLock = fireObj.Str("lock", fireObj.Str("locked", string.Empty));
+                if (!string.IsNullOrEmpty(serverLock))
+                    LockedContactId = serverLock;
+            }
+
+            string matchedRock = cockpit.Str("matched_rock", string.Empty);
+            if (!string.IsNullOrEmpty(matchedRock))
+                SelectedRockId = matchedRock.Trim().ToUpperInvariant();
+
+            int activeDrones = cockpit.Int("active_drones", -1);
+            if (activeDrones >= 0)
+                ToggleDroneSortie(activeDrones > 0);
 
             if (PlayerShipTransform != null)
                 PlayerShipTransform.rotation = Quaternion.Euler(-ShipPitchDeg, ShipYawDeg, -ShipRollDeg);
@@ -526,19 +640,28 @@ namespace TacSim.Space
 
         public void StartDockingFromFeed(JsonNode dockingFeed)
         {
-            if (dockingFeed == null || !dockingFeed.IsObject || dockingFeed.Bool("closed", false))
+            if (dockingFeed == null || !dockingFeed.IsObject || dockingFeed.Bool("closed", false) || dockingFeed.Bool("refused", false))
             {
+                bool hadSession = ActiveDockingSession != null || _tapeSubmittedAwaitingServer;
                 ActiveDockingSession = null;
+                _tapeSubmittedAwaitingServer = false;
+                if (hadSession)
+                {
+                    string outcome = dockingFeed != null && dockingFeed.IsObject
+                        ? dockingFeed.Str("outcome", "closed")
+                        : "closed";
+                    OnDockingEndedByServer?.Invoke(outcome);
+                }
                 return;
             }
             string sid = dockingFeed.Str("session_id", string.Empty);
             if (string.IsNullOrEmpty(sid)) return;
             if (ActiveDockingSession != null && ActiveDockingSession.SessionId == sid)
-                return; // Keep stepping local 60 Hz session uninterrupted!
+                return;
 
             ActiveDockingSession = DockingClientSession.FromFeed(dockingFeed);
             _dockingAccumulatorS = 0f;
-            _clampSubmitted = false;
+            _tapeSubmittedAwaitingServer = false;
             GuidanceAssistEnabled = false;
             SyncBowDockingCameraPose();
         }
@@ -546,7 +669,7 @@ namespace TacSim.Space
         public void StopDockingSession()
         {
             ActiveDockingSession = null;
-            _clampSubmitted = false;
+            _tapeSubmittedAwaitingServer = false;
         }
 
         private void Update()
@@ -556,7 +679,7 @@ namespace TacSim.Space
 
             UpdateOrbitalMiningAndWeaponAnimations();
 
-            if (ActiveDockingSession == null || _clampSubmitted)
+            if (ActiveDockingSession == null || _tapeSubmittedAwaitingServer)
                 return;
 
             if (Input.GetKeyDown(KeyCode.X))
@@ -569,7 +692,7 @@ namespace TacSim.Space
             _dockingAccumulatorS += Mathf.Min(0.1f, Time.unscaledDeltaTime);
             const float StepDt = 1f / 60f;
 
-            while (_dockingAccumulatorS >= StepDt && ActiveDockingSession != null && !_clampSubmitted)
+            while (_dockingAccumulatorS >= StepDt && ActiveDockingSession != null && !_tapeSubmittedAwaitingServer)
             {
                 _dockingAccumulatorS -= StepDt;
                 DockingControlInput input = GuidanceAssistEnabled
@@ -595,19 +718,41 @@ namespace TacSim.Space
 
                 if (ActiveDockingSession.IsClamped)
                 {
-                    _clampSubmitted = true;
-                    SyncBowDockingCameraPose();
                     string tapeCmd = ActiveDockingSession.FormatTapeCommand();
-                    OnDockingTapeReadyToSubmit?.Invoke(tapeCmd);
+                    if (tapeCmd.Length > DockingClientSession.MaxSafeCommandChars)
+                    {
+                        ActiveDockingSession = null;
+                        OnSpaceAlert?.Invoke("Docking tape exceeded safe command length — aborting session; re-initiate approach.");
+                        OnDockingAborted?.Invoke();
+                        return;
+                    }
+                    _tapeSubmittedAwaitingServer = true;
+                    SyncBowDockingCameraPose();
+                    OnDockingTapeReadyToSubmit?.Invoke(tapeCmd, true);
                     return;
                 }
 
                 if (ActiveDockingSession.IsCollarScrapeBounce)
                 {
-                    _clampSubmitted = true;
+                    string tapeCmd = ActiveDockingSession.FormatTapeCommand();
+                    if (tapeCmd.Length > DockingClientSession.MaxSafeCommandChars)
+                    {
+                        ActiveDockingSession = null;
+                        OnDockingAborted?.Invoke();
+                        return;
+                    }
+                    _tapeSubmittedAwaitingServer = true;
                     SyncBowDockingCameraPose();
-                    OnSpaceAlert?.Invoke($"COLLAR SCRAPE BOUNCE at {ActiveDockingSession.VzMmps} mm/s! Submitting tape...");
-                    OnDockingTapeReadyToSubmit?.Invoke(ActiveDockingSession.FormatTapeCommand());
+                    OnSpaceAlert?.Invoke($"Collar contact out of gate at {ActiveDockingSession.VzMmps} mm/s — awaiting server bounce check...");
+                    OnDockingTapeReadyToSubmit?.Invoke(tapeCmd, false);
+                    return;
+                }
+
+                if (ActiveDockingSession.IsTapeBudgetExhausted)
+                {
+                    ActiveDockingSession = null;
+                    OnSpaceAlert?.Invoke("Docking approach reached 60s / RLE frame limit — aborting approach.");
+                    OnDockingAborted?.Invoke();
                     return;
                 }
             }
@@ -646,62 +791,48 @@ namespace TacSim.Space
                 }
             }
 
-            // Collector drone shuttle loop between Dray spine and SelectedRockId
-            if (_collectorDrones.Count > 0 && PlayerShipTransform != null)
+            if (_droneSortieActive && _collectorDrones.Count > 0 && PlayerShipTransform != null)
             {
-                Transform rock = ResolveOrbitalTarget(SelectedRockId);
+                Transform rock = ResolveExactTarget(SelectedRockId);
+                Vector3 dst = rock != null ? rock.position : OrbitalStageOrigin + new Vector3(0f, 0f, 45f);
+                Vector3 src = PlayerShipTransform.position + new Vector3(0f, 2f, 0f);
                 for (int i = 0; i < _collectorDrones.Count; i++)
                 {
                     var d = _collectorDrones[i];
-                    if (d == null) continue;
-                    if (_droneSortieActive && rock != null)
-                    {
-                        float phase = Mathf.PingPong(Time.time * 0.35f + i * 0.5f, 1f);
-                        Vector3 shipBay = PlayerShipTransform.position + new Vector3(i == 0 ? -6.5f : 6.5f, 2f, 0f);
-                        Vector3 rockFace = rock.position + new Vector3(i == 0 ? -4.5f : 4.5f, 2.5f, -4.5f);
-                        Vector3 nextPos = Vector3.Lerp(shipBay, rockFace, phase) + Vector3.up * (Mathf.Sin(Time.time * 2.2f + i) * 1.2f);
-                        Vector3 vel = nextPos - d.position;
-                        d.position = nextPos;
-                        if (vel.sqrMagnitude > 0.0001f)
-                            d.rotation = Quaternion.Slerp(d.rotation, Quaternion.LookRotation(vel.normalized), 8f * Time.deltaTime);
-                    }
-                    else
-                    {
-                        Vector3 home = PlayerShipTransform.position + new Vector3(i == 0 ? -7.5f : 7.5f, 2.2f + Mathf.Sin(Time.time * 1.4f + i) * 0.35f, 2f);
-                        d.position = Vector3.Lerp(d.position, home, 5f * Time.deltaTime);
-                    }
+                    if (d == null || !d.gameObject.activeSelf) continue;
+                    float phase = Mathf.PingPong(Time.time * 0.28f + i * 0.5f, 1f);
+                    Vector3 lateral = new Vector3(i == 0 ? -4.5f : 4.5f, 1.5f + Mathf.Sin(Time.time * 2f + i) * 0.8f, 0f);
+                    d.position = Vector3.Lerp(src + lateral, dst + lateral * 0.5f, phase);
+                    d.LookAt(phase < 0.5f ? dst : src);
                 }
             }
 
-            // Click-to-select 3D Ore Asteroid or Naval Contact in Orbital Exterior view
-            if (ActiveDockingSession == null && Input.GetMouseButtonDown(0))
+            bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+            if (!overUi && Input.GetMouseButtonDown(0) && !IsDockingActive)
             {
-                bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
                 Camera cam = Camera.main;
-                if (!overUi && cam != null && Vector3.Distance(cam.transform.position, OrbitalStageOrigin) < 350f)
+                if (cam != null && Vector3.Distance(cam.transform.position, OrbitalStageOrigin) < 280f)
                 {
                     Ray ray = cam.ScreenPointToRay(Input.mousePosition);
-                    if (Physics.Raycast(ray, out RaycastHit hit, 500f))
+                    if (Physics.Raycast(ray, out RaycastHit hit, 350f))
                     {
-                        string hitName = hit.collider.gameObject.name;
-                        if (hitName.StartsWith("OreRock_", StringComparison.OrdinalIgnoreCase))
+                        foreach (var kv in _namedOrbitalTargets)
                         {
-                            string id = hitName.Substring("OreRock_".Length);
-                            SelectRock(id);
-                            OnOrbitalTargetClicked?.Invoke(id, true);
-                        }
-                        else if (hitName.StartsWith("NavalContact_", StringComparison.OrdinalIgnoreCase))
-                        {
-                            string id = hitName.Substring("NavalContact_".Length);
-                            SetLockedContact(id);
-                            OnOrbitalTargetClicked?.Invoke(id, false);
+                            if (kv.Value != null && (hit.transform == kv.Value || hit.transform.IsChildOf(kv.Value)))
+                            {
+                                bool isRock = _knownRockIds.Contains(kv.Key);
+                                if (isRock) SelectedRockId = kv.Key;
+                                else LockedContactId = kv.Key;
+                                OnOrbitalTargetClicked?.Invoke(kv.Key, isRock);
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
 
-        private static DockingControlInput SamplePilotDockingInput()
+        private DockingControlInput SamplePilotDockingInput()
         {
             var inp = new DockingControlInput();
             if (Input.GetKey(KeyCode.D)) inp.TransX = 1;
@@ -713,11 +844,11 @@ namespace TacSim.Space
             if (Input.GetKey(KeyCode.R) || Input.GetKey(KeyCode.Space)) inp.ClosurePulse = 1;
             else if (Input.GetKey(KeyCode.F) || Input.GetKey(KeyCode.LeftControl)) inp.ClosurePulse = -1;
 
-            if (Input.GetKey(KeyCode.UpArrow) || Input.GetKey(KeyCode.I)) inp.PitchTrim = 1;
-            else if (Input.GetKey(KeyCode.DownArrow) || Input.GetKey(KeyCode.K)) inp.PitchTrim = -1;
+            if (Input.GetKey(KeyCode.UpArrow)) inp.PitchTrim = 1;
+            else if (Input.GetKey(KeyCode.DownArrow)) inp.PitchTrim = -1;
 
-            if (Input.GetKey(KeyCode.RightArrow) || Input.GetKey(KeyCode.L)) inp.YawTrim = 1;
-            else if (Input.GetKey(KeyCode.LeftArrow) || Input.GetKey(KeyCode.J)) inp.YawTrim = -1;
+            if (Input.GetKey(KeyCode.RightArrow)) inp.YawTrim = 1;
+            else if (Input.GetKey(KeyCode.LeftArrow)) inp.YawTrim = -1;
 
             if (Input.GetKey(KeyCode.E)) inp.RollTrim = 1;
             else if (Input.GetKey(KeyCode.Q)) inp.RollTrim = -1;
@@ -730,28 +861,28 @@ namespace TacSim.Space
             if (ActiveDockingSession == null || BowDockingCameraAnchor == null)
                 return;
 
-            // 1000 mm = 1.0 Unity metre; collar is at local (0, 0, 0) facing -Z; ship approaches along -Z -> 0
-            float xM = ActiveDockingSession.DxMm / 1000f;
-            float yM = ActiveDockingSession.DyMm / 1000f;
-            float zM = -Mathf.Max(0.18f, ActiveDockingSession.DzMm / 1000f);
+            float xM = ActiveDockingSession.DxMm * 0.001f;
+            float yM = ActiveDockingSession.DyMm * 0.001f;
+            float zM = -Mathf.Max(0.18f, ActiveDockingSession.DzMm * 0.001f);
 
-            float pitchDeg = ActiveDockingSession.PitchMdeg / 1000f;
-            float yawDeg = ActiveDockingSession.YawMdeg / 1000f;
-            float rollDeg = ActiveDockingSession.RollMdeg / 1000f;
+            float pitchDeg = ActiveDockingSession.PitchMdeg * 0.001f;
+            float yawDeg = ActiveDockingSession.YawMdeg * 0.001f;
+            float rollDeg = ActiveDockingSession.RollMdeg * 0.001f;
 
             BowDockingCameraAnchor.localPosition = new Vector3(xM, yM, zM);
             BowDockingCameraAnchor.localRotation = Quaternion.Euler(-pitchDeg, yawDeg, -rollDeg);
 
             var gates = ActiveDockingSession.EvaluateGates();
-            bool[] flags = { gates.LateralOk, gates.AttitudeOk, gates.RollOk, gates.ClosureOk, gates.RangeOk };
-            for (int i = 0; i < _gateRingRenderers.Count && i < flags.Length; i++)
+            Color ringCol = gates.AllGreen
+                ? new Color(0.2f, 1.0f, 0.55f, 0.34f)
+                : (gates.LateralOk && gates.AttitudeOk && gates.RollOk
+                    ? new Color(0.35f, 0.88f, 1.0f, 0.26f)
+                    : new Color(1.0f, 0.58f, 0.16f, 0.18f));
+
+            for (int i = 0; i < _gateRingRenderers.Count; i++)
             {
                 if (_gateRingRenderers[i] != null)
-                {
-                    _gateRingRenderers[i].sharedMaterial = flags[i]
-                        ? UrpMaterialFactory.GetHologramUnlit("GateGreen", new Color(0.2f, 1.0f, 0.55f, 0.22f))
-                        : UrpMaterialFactory.GetHologramUnlit("GateAmber", new Color(1.0f, 0.62f, 0.15f, 0.16f));
-                }
+                    _gateRingRenderers[i].sharedMaterial.color = ringCol;
             }
         }
 
@@ -763,7 +894,11 @@ namespace TacSim.Space
             go.transform.localPosition = localPos;
             go.transform.localScale = scale;
             var c = go.GetComponent<Collider>();
-            if (c != null) { if (Application.isPlaying) Destroy(c); else DestroyImmediate(c); }
+            if (c != null)
+            {
+                if (Application.isPlaying) Destroy(c);
+                else DestroyImmediate(c);
+            }
             go.GetComponent<MeshRenderer>().sharedMaterial = mat;
             return go;
         }

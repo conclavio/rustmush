@@ -805,6 +805,39 @@ pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
 }
 
+/// Emit a terminal `space.docking` keyframe to every crew member aboard `hull`
+/// when a docking session closes (`aborted`, `out_of_gate`, `bounced`,
+/// `clamped`, `expired`). Carries `"refused": true` so `mush-pixel` renders its
+/// `"NO DOCKING CAMERA"` placeholder and `"closed": true` + `"outcome"` so
+/// graphical clients transition cleanly out of docking mode.
+pub(crate) fn push_docking_closed_panel(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    session_id: &str,
+    outcome: &'static str,
+) {
+    let mut recipients = all_aboard_crew_for_hull(ctx.w, hull);
+    if hull_aboard_for_actor(ctx.w, ctx.actor) == Some(hull) && !recipients.contains(&ctx.actor) {
+        recipients.push(ctx.actor);
+    }
+    let data = serde_json::json!({
+        "refused": true,
+        "closed": true,
+        "session_id": session_id,
+        "outcome": outcome,
+    });
+    for actor in recipients {
+        ctx.out.push(
+            Audience::Actor(actor),
+            OutputEvent::Panel {
+                feed: SPACE_DOCKING_FEED.into(),
+                kind: PanelFrameKind::Keyframe,
+                data: data.clone(),
+            },
+        );
+    }
+}
+
 fn build_tier1_space_panel_payloads(
     w: &World,
     hull: ObjId,
@@ -5394,6 +5427,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 session.challenge.session_id
             ),
         );
+        push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "aborted");
         push_space_panels(ctx, hull);
         return Ok(());
     }
@@ -5422,6 +5456,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     session.challenge.session_id
                 ),
             );
+            push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "aborted");
             push_space_panels(ctx, hull);
             return Ok(());
         }
@@ -5511,6 +5546,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         session.challenge.session_id,
                     ),
                 );
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "out_of_gate");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }
@@ -5528,6 +5564,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         session.challenge.session_id, report.frames_replayed, report.rcs_spent_kg
                     ),
                 );
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "aborted");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }
@@ -5550,6 +5587,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 );
                 crate::port::voyage::narrate_hull(ctx, hull, &line);
                 ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "bounced");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }
@@ -5722,6 +5760,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
                     }
                 }
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "clamped");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }

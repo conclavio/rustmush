@@ -121,7 +121,11 @@ namespace TacSim.UI
         public void UpdateOrbitalTargetReadout(string rockId, string contactId)
         {
             if (_orbitalTargetLabel != null)
-                _orbitalTargetLabel.text = $"ROCK: <b>{rockId}</b> | LOCK: <b>{contactId}</b>";
+            {
+                string r = string.IsNullOrEmpty(rockId) ? "NONE" : rockId;
+                string c = string.IsNullOrEmpty(contactId) ? "NONE" : contactId;
+                _orbitalTargetLabel.text = $"ROCK: <b>{r}</b> | LOCK: <b>{c}</b>";
+            }
         }
 
         // ---- SLICE 2: ORBITAL MINING & NAVAL TACTICAL BAR ----
@@ -134,22 +138,23 @@ namespace TacSim.UI
             var mHlg = rowMine.AddComponent<HorizontalLayoutGroup>();
             mHlg.spacing = 5f; mHlg.childControlWidth = true; mHlg.childControlHeight = true; mHlg.childForceExpandWidth = true;
 
-            _orbitalTargetLabel = CreateTxt(rowMine.transform, "ROCK: <b>A</b> | LOCK: <b>C1</b>", 11, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.55f, 0.95f, 0.85f));
+            _orbitalTargetLabel = CreateTxt(rowMine.transform, "ROCK: <b>NONE</b> | LOCK: <b>NONE</b>", 11, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.55f, 0.95f, 0.85f));
             _orbitalTargetLabel.supportRichText = true;
 
             CreateBtn(rowMine.transform, "PING ROCKS", new Color(0.12f, 0.38f, 0.44f), () => OnCommandRequested?.Invoke("space:mine_ping"));
             CreateBtn(rowMine.transform, "ROCK A", new Color(0.16f, 0.34f, 0.30f), () => OnCommandRequested?.Invoke("space:rock:A"));
             CreateBtn(rowMine.transform, "ROCK B", new Color(0.16f, 0.34f, 0.30f), () => OnCommandRequested?.Invoke("space:rock:B"));
+            CreateBtn(rowMine.transform, "ROCK C", new Color(0.16f, 0.34f, 0.30f), () => OnCommandRequested?.Invoke("space:rock:C"));
             CreateBtn(rowMine.transform, "MINING LASER", new Color(0.12f, 0.50f, 0.44f), () => OnCommandRequested?.Invoke("space:mine_laser"));
             CreateBtn(rowMine.transform, "DRONE SORTIE", new Color(0.46f, 0.36f, 0.12f), () => OnCommandRequested?.Invoke("space:mine_drones"));
-            CreateBtn(rowMine.transform, "STAKE CLAIM", new Color(0.24f, 0.42f, 0.26f), () => OnCommandRequested?.Invoke("+mine/stake"));
+            CreateBtn(rowMine.transform, "STAKE CLAIM", new Color(0.24f, 0.42f, 0.26f), () => OnCommandRequested?.Invoke("space:mine_stake"));
 
             var rowTac = CreatePanel(_orbitalOpsBar.transform, "NavalTacticalRow", new Vector2(0f, 0f), new Vector2(1f, 0.5f), new Vector2(8f, 4f), new Vector2(-8f, -2f), Color.clear);
             var tHlg = rowTac.AddComponent<HorizontalLayoutGroup>();
             tHlg.spacing = 5f; tHlg.childControlWidth = true; tHlg.childControlHeight = true; tHlg.childForceExpandWidth = true;
 
-            CreateBtn(rowTac.transform, "LOCK C1", new Color(0.16f, 0.32f, 0.48f), () => OnCommandRequested?.Invoke("space:lock:C1"));
-            CreateBtn(rowTac.transform, "LOCK X1", new Color(0.46f, 0.20f, 0.22f), () => OnCommandRequested?.Invoke("space:lock:X1"));
+            CreateBtn(rowTac.transform, "SCAN CONTACTS", new Color(0.16f, 0.32f, 0.48f), () => OnCommandRequested?.Invoke("+tac/scan"));
+            CreateBtn(rowTac.transform, "TAC STATUS", new Color(0.22f, 0.30f, 0.44f), () => OnCommandRequested?.Invoke("+tac/status"));
             CreateBtn(rowTac.transform, "FIRE BEAM", new Color(0.55f, 0.18f, 0.24f), () => OnCommandRequested?.Invoke("space:tac_beam"));
             CreateBtn(rowTac.transform, "RAILGUN", new Color(0.20f, 0.40f, 0.62f), () => OnCommandRequested?.Invoke("space:tac_railgun"));
             CreateBtn(rowTac.transform, "TORPEDO", new Color(0.58f, 0.30f, 0.12f), () => OnCommandRequested?.Invoke("space:tac_torp"));
@@ -200,16 +205,16 @@ namespace TacSim.UI
             aHlg.spacing = 6f; aHlg.padding = new RectOffset(8, 8, 6, 6);
             aHlg.childControlWidth = true; aHlg.childControlHeight = true; aHlg.childForceExpandWidth = true;
 
-            CreateBtn(actionBar.transform, "SCAN 9 FIELDS", new Color(0.14f, 0.44f, 0.54f), () => OnCommandRequested?.Invoke("+tv/1 scan go"));
-            CreateBtn(actionBar.transform, "SOUND POCKETS", new Color(0.52f, 0.36f, 0.12f), () => OnCommandRequested?.Invoke("+tv/1 sound go"));
-            CreateBtn(actionBar.transform, "CORE / DRILL", new Color(0.14f, 0.52f, 0.34f), () => OnCommandRequested?.Invoke("+tv/1 mine go"));
-            CreateBtn(actionBar.transform, "STAKE CLAIM", new Color(0.32f, 0.42f, 0.18f), () => OnCommandRequested?.Invoke("+claim"));
-            CreateBtn(actionBar.transform, "UNLOAD HOPPER", new Color(0.22f, 0.40f, 0.48f), () => OnCommandRequested?.Invoke("+tv/1 unload go"));
-            CreateBtn(actionBar.transform, "RECOVER RAMP", new Color(0.28f, 0.28f, 0.44f), () => OnCommandRequested?.Invoke("+tv/1 recover go"));
+            CreateBtn(actionBar.transform, "SCAN 9 FIELDS", new Color(0.14f, 0.44f, 0.54f), () => OnCommandRequested?.Invoke("surface:scan"));
+            CreateBtn(actionBar.transform, "SOUND POCKETS", new Color(0.52f, 0.36f, 0.12f), () => OnCommandRequested?.Invoke("surface:sound"));
+            CreateBtn(actionBar.transform, "CORE / DRILL", new Color(0.14f, 0.52f, 0.34f), () => OnCommandRequested?.Invoke("surface:mine"));
+            CreateBtn(actionBar.transform, "STAKE CLAIM", new Color(0.32f, 0.42f, 0.18f), () => OnCommandRequested?.Invoke("surface:claim_stake"));
+            CreateBtn(actionBar.transform, "UNLOAD HOPPER", new Color(0.22f, 0.40f, 0.48f), () => OnCommandRequested?.Invoke("surface:unload"));
+            CreateBtn(actionBar.transform, "RECOVER RAMP", new Color(0.28f, 0.28f, 0.44f), () => OnCommandRequested?.Invoke("surface:recover"));
             CreateBtn(actionBar.transform, "CAB / CHASE CAM", new Color(0.24f, 0.32f, 0.42f), () => OnToggleVehicleCameraViewRequested?.Invoke());
             CreateBtn(actionBar.transform, "RETURN TO BAY", new Color(0.48f, 0.18f, 0.20f), () =>
             {
-                OnCommandRequested?.Invoke("+tv/1 recover go");
+                OnCommandRequested?.Invoke("surface:recover");
                 OnExitSurfaceExcursionRequested?.Invoke();
             });
 

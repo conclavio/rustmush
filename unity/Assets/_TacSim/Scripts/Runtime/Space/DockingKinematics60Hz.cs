@@ -178,6 +178,15 @@ namespace TacSim.Space
         public int FramesStepped { get; private set; }
         public uint TotalRcsPulses { get; private set; }
 
+        /// <summary>
+        /// Maximum safe `+helm/dock tape &lt;session_id&gt; &lt;rle&gt;` command length (gateway cap is 8,192 chars).
+        /// </summary>
+        public const int MaxSafeCommandChars = 7600;
+
+        public int EstimatedCommandLength => 24 + (SessionId?.Length ?? 8) + _spans.Count * 10;
+
+        public bool IsTapeBudgetExhausted => FramesStepped >= MaxTapeFrames || EstimatedCommandLength >= MaxSafeCommandChars;
+
         public static DockingClientSession CreateStandardPortPractice(string sessionId = "dock.demo.1", string label = "Ceres Freeport Cradle 04")
         {
             return new DockingClientSession

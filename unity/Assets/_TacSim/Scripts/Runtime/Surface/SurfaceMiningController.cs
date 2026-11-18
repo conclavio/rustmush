@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using TacSim.Core;
 using TacSim.World;
 using TMPro;
@@ -10,11 +12,15 @@ namespace TacSim.Surface
 {
     /// <summary>
     /// Pure-online 3D Planetary Surface Heightfield, Landed Dray-P Pad, and
-    /// Articulated Prospector Rover (`+tv`) driven by authoritative `mushd` `site.map` and `tv.status` feeds.
+    /// Articulated Prospector Rover (`+tv`) driven by authoritative `mushd` `site.map`
+    /// (`rows`, `site.grid`, `site.rigs[]`, `readings[]`, `others[]`) and `tv.status` feeds.
     /// </summary>
     public sealed class SurfaceMiningController : MonoBehaviour
     {
         public static readonly Vector3 SurfaceStageOrigin = new Vector3(1200f, 0f, 0f);
+        private static readonly Regex HopperPairRegex = new Regex(
+            @"(\d+)\s*/\s*(\d+)\s*t",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public TacSimAssetCatalog Catalog;
         public DecodedTerrainGrid TerrainGrid { get; private set; }
@@ -29,6 +35,8 @@ namespace TacSim.Surface
         public string ActiveOreFamily { get; private set; } = "volatiles";
         public int AddressedRigSlot { get; private set; } = 1;
         public bool RigOnGround { get; private set; }
+        public int AuthoritativeSiteCellX { get; private set; } = 128;
+        public int AuthoritativeSiteCellY { get; private set; } = 128;
         public int HopperLoadedTonnes { get; private set; }
         public int HopperCapacityTonnes { get; private set; } = 6;
         public int BatteryPct { get; private set; } = 100;
@@ -40,6 +48,7 @@ namespace TacSim.Surface
         public event Action<string> OnSurfaceLogEvent;
 
         private Transform _terrainRoot;
+        private Transform _padRoot;
         private Transform _markersRoot;
         private Transform _otherRigsRoot;
         private Transform _scanPulseRing;
@@ -52,6 +61,7 @@ namespace TacSim.Surface
         private float _roverHeadingDeg = 180f;
         private float _roverSpeedKph;
         private bool _hasDriveWaypoint;
+        private float _nextKeyboardDriveCommandAt;
 
         private readonly List<string> _recentSiteLines = new List<string>();
         public IReadOnlyList<string> RecentSiteLines => _recentSiteLines;
@@ -61,12 +71,17 @@ namespace TacSim.Surface
             Catalog = catalog;
             ActiveSiteSlug = string.IsNullOrWhiteSpace(siteSlug) ? "occator_rim" : siteSlug.Trim().ToLowerInvariant();
 
+            if (_terrainRoot != null)
+                TacSimTerrainDecoder.DestroyTerrainChunkResources(_terrainRoot);
+
             for (int i = transform.childCount - 1; i >= 0; i--)
             {
                 var ch = transform.GetChild(i).gameObject;
                 if (Application.isPlaying) Destroy(ch);
                 else DestroyImmediate(ch);
             }
+            _terrainRoot = null;
+            _padRoot = null;
 
             transform.position = SurfaceStageOrigin;
 
@@ -88,6 +103,46 @@ namespace TacSim.Surface
             BuildScanAndDrillVfx();
         }
 
+        private void RebuildLiveTerrainMesh(DecodedTerrainGrid liveGrid)
+        {
+            if (liveGrid == null) return;
+            TerrainGrid = liveGrid;
+
+            if (_terrainRoot != null)
+            {
+                TacSimTerrainDecoder.DestroyTerrainChunkResources(_terrainRoot);
+                for (int i = _terrainRoot.childCount - 1; i >= 0; i--)
+                {
+                    var ch = _terrainRoot.GetChild(i).gameObject;
+                    if (Application.isPlaying) Destroy(ch);
+                    else DestroyImmediate(ch);
+                }
+            }
+            else
+            {
+                _terrainRoot = new GameObject("PlanetaryTerrainMesh").transform;
+                _terrainRoot.SetParent(transform, false);
+            }
+
+            TacSimTerrainDecoder.BuildChunkedTerrainMeshes(TerrainGrid, _terrainRoot, chunkCells: 32);
+
+            if (_padRoot != null && TerrainGrid.RawGlyphs != null)
+            {
+                // Reposition pad carrier to 'H' / '+' landing apron cell if visible in this window
+                for (int i = 0; i < TerrainGrid.RawGlyphs.Length; i++)
+                {
+                    char g = TerrainGrid.RawGlyphs[i];
+                    if (g == 'H' || g == '+')
+                    {
+                        int lx = i % TerrainGrid.Width;
+                        int ly = i / TerrainGrid.Width;
+                        _padRoot.position = SurfaceStageOrigin + TerrainGrid.CellToLocalPos(lx, ly, 0f);
+                        break;
+                    }
+                }
+            }
+        }
+
         private void BuildLandedDrayCarrierOnPad()
         {
             int padCx = TerrainGrid.Width / 2;
@@ -95,16 +150,16 @@ namespace TacSim.Surface
             Vector3 padLocal = TerrainGrid.CellToLocalPos(padCx, padCy, 0f);
             Vector3 padWorld = SurfaceStageOrigin + padLocal;
 
-            var padRoot = new GameObject("LandedCarrierPad").transform;
-            padRoot.SetParent(transform, false);
-            padRoot.position = padWorld;
+            _padRoot = new GameObject("LandedCarrierPad").transform;
+            _padRoot.SetParent(transform, false);
+            _padRoot.position = padWorld;
 
             Material apronMat = UrpMaterialFactory.GetOpaque("PadApron", new Color(0.24f, 0.27f, 0.31f), 0.38f, 0.55f);
             Material rampMat = UrpMaterialFactory.GetEmissive("SternRamp", new Color(0.45f, 0.36f, 0.14f), new Color(0.85f, 0.58f, 0.12f) * 0.65f);
 
             var apron = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             apron.name = "LandingApron";
-            apron.transform.SetParent(padRoot, false);
+            apron.transform.SetParent(_padRoot, false);
             apron.transform.localPosition = new Vector3(0f, 0.08f, 0f);
             apron.transform.localScale = new Vector3(26f, 0.12f, 26f);
             var ac = apron.GetComponent<Collider>();
@@ -113,25 +168,25 @@ namespace TacSim.Surface
 
             if (Catalog != null && Catalog.drayExteriorHullPrefab != null)
             {
-                PrefabFittingHelper.SpawnGrounded(Catalog.drayExteriorHullPrefab, padRoot, "SettledDrayPHull", padWorld + Vector3.up * 0.2f, Quaternion.identity, 8.5f, 26f, keepColliders: true);
+                PrefabFittingHelper.SpawnGrounded(Catalog.drayExteriorHullPrefab, _padRoot, "SettledDrayPHull", padWorld + Vector3.up * 0.2f, Quaternion.identity, 8.5f, 26f, keepColliders: true);
             }
             else
             {
                 Material hMat = UrpMaterialFactory.GetOpaque("PadDrayHull", new Color(0.48f, 0.45f, 0.40f), 0.4f, 0.55f);
                 Material tMat = UrpMaterialFactory.GetOpaque("PadDrayTrim", new Color(0.22f, 0.26f, 0.32f), 0.45f, 0.7f);
-                StationWorldController.BuildSculptedDrayExterior(padRoot, padWorld + Vector3.up * 3.2f, hMat, tMat, "SettledDrayPHull");
+                StationWorldController.BuildSculptedDrayExterior(_padRoot, padWorld + Vector3.up * 3.2f, hMat, tMat, "SettledDrayPHull");
             }
 
             var ramp = GameObject.CreatePrimitive(PrimitiveType.Cube);
             ramp.name = "LoweredSternRamp";
-            ramp.transform.SetParent(padRoot, false);
+            ramp.transform.SetParent(_padRoot, false);
             ramp.transform.localPosition = new Vector3(0f, 0.65f, -12.8f);
             ramp.transform.localRotation = Quaternion.Euler(14f, 0f, 0f);
             ramp.transform.localScale = new Vector3(4.6f, 0.22f, 5.4f);
             ramp.GetComponent<MeshRenderer>().sharedMaterial = rampMat;
 
             var floodGo = new GameObject("PadFloodLight");
-            floodGo.transform.SetParent(padRoot, false);
+            floodGo.transform.SetParent(_padRoot, false);
             floodGo.transform.localPosition = new Vector3(0f, 14f, -10f);
             floodGo.transform.localRotation = Quaternion.Euler(50f, 0f, 0f);
             var lt = floodGo.AddComponent<Light>();
@@ -145,7 +200,9 @@ namespace TacSim.Surface
         private void SpawnPlayerProspectorRover()
         {
             int cx = TerrainGrid.Width / 2;
-            int cy = TerrainGrid.Height / 2 - 2;
+            int cy = Mathf.Max(0, TerrainGrid.Height / 2 - 2);
+            AuthoritativeSiteCellX = TerrainGrid.LocalToSiteCellX(cx);
+            AuthoritativeSiteCellY = TerrainGrid.LocalToSiteCellY(cy);
             _roverTargetLocalPos = TerrainGrid.CellToLocalPos(cx, cy, 0f);
             Vector3 worldPos = SurfaceStageOrigin + _roverTargetLocalPos;
             ActiveRoverRig = TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, transform, "RIG 1 [@]", worldPos, 180f, isEscort: false);
@@ -198,24 +255,97 @@ namespace TacSim.Surface
             OnSurfaceTelemetryChanged?.Invoke();
         }
 
+        public static bool TryParseHopperTonnes(string hopperText, out int loadedTonnes, out int capacityTonnes)
+        {
+            loadedTonnes = 0;
+            capacityTonnes = 6;
+            if (string.IsNullOrWhiteSpace(hopperText))
+                return false;
+
+            Match m = HopperPairRegex.Match(hopperText);
+            if (m.Success &&
+                int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ld) &&
+                int.TryParse(m.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cap))
+            {
+                loadedTonnes = Mathf.Max(0, ld);
+                capacityTonnes = Mathf.Max(1, cap);
+                return true;
+            }
+
+            if (hopperText.IndexOf("empty", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                loadedTonnes = 0;
+                return true;
+            }
+            return false;
+        }
+
+        private void ApplyRigRowNode(JsonNode rig)
+        {
+            if (rig == null || !rig.IsObject) return;
+            if (rig.ContainsKey("charge_pct") && !rig["charge_pct"].IsNull)
+                BatteryPct = Mathf.Clamp(rig.Int("charge_pct", BatteryPct), 0, 100);
+
+            if (rig.ContainsKey("load_t") || rig.ContainsKey("cap_t"))
+            {
+                HopperLoadedTonnes = Mathf.Max(0, rig.Int("load_t", HopperLoadedTonnes));
+                HopperCapacityTonnes = Mathf.Max(1, rig.Int("cap_t", HopperCapacityTonnes));
+            }
+            else if (rig.ContainsKey("hopper"))
+            {
+                string hopStr = rig.Str("hopper", string.Empty);
+                if (TryParseHopperTonnes(hopStr, out int ld, out int cap))
+                {
+                    HopperLoadedTonnes = ld;
+                    if (hopStr.IndexOf('/') >= 0)
+                        HopperCapacityTonnes = cap;
+                }
+            }
+
+            var cellArr = rig["cell"].AsArray();
+            if (cellArr != null && cellArr.Count >= 2)
+            {
+                AuthoritativeSiteCellX = cellArr[0].AsInt(AuthoritativeSiteCellX);
+                AuthoritativeSiteCellY = cellArr[1].AsInt(AuthoritativeSiteCellY);
+            }
+        }
+
         public void ApplyTvStatusFrame(JsonNode frame)
         {
             if (frame == null || !frame.IsObject) return;
-            var rig = frame["rig"];
-            if (rig.IsObject)
-            {
-                BatteryPct = Mathf.Clamp(rig.Int("charge_pct", BatteryPct), 0, 100);
-                HopperLoadedTonnes = Mathf.Max(0, rig.Int("load_t", HopperLoadedTonnes));
-                HopperCapacityTonnes = Mathf.Max(1, rig.Int("cap_t", HopperCapacityTonnes));
-                OnSurfaceTelemetryChanged?.Invoke();
-            }
+            if (frame.ContainsKey("slot"))
+                AddressedRigSlot = Mathf.Max(1, frame.Int("slot", AddressedRigSlot));
+            ApplyRigRowNode(frame["rig"].IsObject ? frame["rig"] : frame);
+            OnSurfaceTelemetryChanged?.Invoke();
         }
 
         public void ApplySiteMapFrame(JsonNode frame)
         {
             if (frame == null || !frame.IsObject) return;
 
+            // 1. Decode live RLE terrain & site.grid coordinate frame (`x0`, `y0`, `span`, `width`, `height`)
+            var decoded = TacSimTerrainDecoder.DecodeSiteMapFrame(frame);
+            if (decoded != null)
+            {
+                bool shouldRebuildMesh = TerrainGrid == null ||
+                                         !TerrainGrid.IsFromLiveServerFeed ||
+                                         TerrainGrid.Width != decoded.Width ||
+                                         TerrainGrid.Height != decoded.Height ||
+                                         TerrainGrid.OriginCellX != decoded.OriginCellX ||
+                                         TerrainGrid.OriginCellY != decoded.OriginCellY ||
+                                         TerrainGrid.SpanCells != decoded.SpanCells;
+                if (shouldRebuildMesh)
+                {
+                    RebuildLiveTerrainMesh(decoded);
+                }
+                else
+                {
+                    TerrainGrid = decoded;
+                }
+            }
+
             var siteBlock = frame["site"];
+            bool positionedFromRigRow = false;
             if (siteBlock.IsObject)
             {
                 ActiveSiteTitle = siteBlock.Str("site", ActiveSiteTitle);
@@ -224,6 +354,37 @@ namespace TacSim.Surface
                 var holdObj = siteBlock["hold"];
                 if (holdObj.IsObject)
                     HoldUnreservedTonnes = holdObj.Int("room_t", HoldUnreservedTonnes);
+
+                // 2. Read authoritative battery, hopper ("3/6 t"), cell, and active leg from `site.rigs[]`!
+                var rigsArr = siteBlock["rigs"].AsArray();
+                if (rigsArr != null && rigsArr.Count > 0)
+                {
+                    JsonNode matchedRig = JsonNode.Null;
+                    for (int i = 0; i < rigsArr.Count; i++)
+                    {
+                        var r = rigsArr[i];
+                        if (r.IsObject && r.Int("slot", 0) == AddressedRigSlot)
+                        {
+                            matchedRig = r;
+                            break;
+                        }
+                    }
+                    if (!matchedRig.IsObject)
+                        matchedRig = rigsArr[0];
+
+                    if (matchedRig.IsObject)
+                    {
+                        ApplyRigRowNode(matchedRig);
+                        if (TerrainGrid != null && matchedRig["cell"].IsArray && matchedRig["cell"].AsArray().Count >= 2)
+                        {
+                            var rc = matchedRig["cell"].AsArray();
+                            AuthoritativeSiteCellX = rc[0].AsInt(AuthoritativeSiteCellX);
+                            AuthoritativeSiteCellY = rc[1].AsInt(AuthoritativeSiteCellY);
+                            UpdateRoverTargetFromSiteCell(AuthoritativeSiteCellX, AuthoritativeSiteCellY, matchedRig["leg"]);
+                            positionedFromRigRow = true;
+                        }
+                    }
+                }
 
                 _recentSiteLines.Clear();
                 var linesArr = siteBlock["lines"].AsArray();
@@ -254,23 +415,62 @@ namespace TacSim.Surface
                 RebuildOtherRigsVisuals(siteBlock["others"].AsArray());
             }
 
-            var youArr = frame["you"].AsArray();
-            var origArr = frame["origin_cell"].AsArray();
-            if (youArr != null && youArr.Count >= 2 && TerrainGrid != null)
+            if (!positionedFromRigRow && TerrainGrid != null)
             {
-                int ox = (origArr != null && origArr.Count >= 2) ? origArr[0].AsInt(0) : 0;
-                int oy = (origArr != null && origArr.Count >= 2) ? origArr[1].AsInt(0) : 0;
-                int siteX = ox + youArr[0].AsInt(0);
-                int siteY = oy + youArr[1].AsInt(0);
-
-                int localCx = Mathf.Clamp(siteX - 128 + TerrainGrid.Width / 2, 2, TerrainGrid.Width - 3);
-                int localCy = Mathf.Clamp(siteY - 128 + TerrainGrid.Height / 2, 2, TerrainGrid.Height - 3);
-                _roverTargetLocalPos = TerrainGrid.CellToLocalPos(localCx, localCy, 0f);
-                _hasDriveWaypoint = true;
-                RigOnGround = true;
+                var youArr = frame["you"].AsArray();
+                if (youArr != null && youArr.Count >= 2)
+                {
+                    int localFx = youArr[0].AsInt(0);
+                    int localFy = youArr[1].AsInt(0);
+                    AuthoritativeSiteCellX = TerrainGrid.LocalToSiteCellX(localFx);
+                    AuthoritativeSiteCellY = TerrainGrid.LocalToSiteCellY(localFy);
+                    UpdateRoverTargetFromSiteCell(AuthoritativeSiteCellX, AuthoritativeSiteCellY, JsonNode.Null);
+                }
             }
 
             OnSurfaceTelemetryChanged?.Invoke();
+        }
+
+        private void UpdateRoverTargetFromSiteCell(int siteX, int siteY, JsonNode legNode)
+        {
+            if (TerrainGrid == null) return;
+
+            int targetSiteX = siteX;
+            int targetSiteY = siteY;
+            if (legNode != null && legNode.IsObject)
+            {
+                var wps = legNode["waypoints"].AsArray();
+                if (wps != null && wps.Count > 0)
+                {
+                    var lastWp = wps[wps.Count - 1].AsArray();
+                    if (lastWp != null && lastWp.Count >= 2)
+                    {
+                        // Waypoints in `site.rigs[].leg` are either site cells or centimetres (1000 cm / cell)
+                        int rawX = lastWp[0].AsInt(siteX);
+                        int rawY = lastWp[1].AsInt(siteY);
+                        targetSiteX = rawX > 1024 ? rawX / 1000 : rawX;
+                        targetSiteY = rawY > 1024 ? rawY / 1000 : rawY;
+                    }
+                }
+            }
+
+            int localCx = TerrainGrid.SiteToLocalCellX(targetSiteX);
+            int localCy = TerrainGrid.SiteToLocalCellY(targetSiteY);
+            _roverTargetLocalPos = TerrainGrid.CellToLocalPos(localCx, localCy, 0f);
+            _hasDriveWaypoint = true;
+            RigOnGround = true;
+
+            // Snap immediately if no rover visual was initialized near the live window yet
+            if (ActiveRoverRig?.Root != null)
+            {
+                int curLocalX = TerrainGrid.SiteToLocalCellX(siteX);
+                int curLocalY = TerrainGrid.SiteToLocalCellY(siteY);
+                Vector3 curLocalPos = TerrainGrid.CellToLocalPos(curLocalX, curLocalY, 0f);
+                if (Vector3.Distance(ActiveRoverRig.Root.transform.position - SurfaceStageOrigin, curLocalPos) > TerrainGrid.CellSizeM * 8f)
+                {
+                    ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + curLocalPos;
+                }
+            }
         }
 
         private void RebuildLiveReadingsMarkers(List<JsonNode> readings)
@@ -285,8 +485,8 @@ namespace TacSim.Surface
                 var r = readings[i];
                 var cell = r["cell"].AsArray();
                 if (cell == null || cell.Count < 2) continue;
-                int localCx = Mathf.Clamp(cell[0].AsInt(128) - 128 + TerrainGrid.Width / 2, 2, TerrainGrid.Width - 3);
-                int localCy = Mathf.Clamp(cell[1].AsInt(128) - 128 + TerrainGrid.Height / 2, 2, TerrainGrid.Height - 3);
+                int localCx = TerrainGrid.SiteToLocalCellX(cell[0].AsInt(AuthoritativeSiteCellX));
+                int localCy = TerrainGrid.SiteToLocalCellY(cell[1].AsInt(AuthoritativeSiteCellY));
                 string txt = r.Str("text", "Ore Reading");
                 bool isRich = txt.IndexOf("rich", StringComparison.OrdinalIgnoreCase) >= 0;
                 SpawnBeaconPillar(localCx, localCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
@@ -305,8 +505,8 @@ namespace TacSim.Surface
                 var o = others[i];
                 var c = o["cell"].AsArray();
                 if (c == null || c.Count < 2) continue;
-                int localCx = Mathf.Clamp(c[0].AsInt(128) - 128 + TerrainGrid.Width / 2, 2, TerrainGrid.Width - 3);
-                int localCy = Mathf.Clamp(c[1].AsInt(128) - 128 + TerrainGrid.Height / 2, 2, TerrainGrid.Height - 3);
+                int localCx = TerrainGrid.SiteToLocalCellX(c[0].AsInt(AuthoritativeSiteCellX));
+                int localCy = TerrainGrid.SiteToLocalCellY(c[1].AsInt(AuthoritativeSiteCellY));
                 Vector3 wp = SurfaceStageOrigin + TerrainGrid.CellToLocalPos(localCx, localCy, 0f);
                 string tag = o.Bool("sounding", false) ? "OTHER RIG [SOUNDING!]" : "OTHER RIG [o]";
                 TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, _otherRigsRoot, tag, wp, 90f, isEscort: true);
@@ -355,7 +555,7 @@ namespace TacSim.Surface
             var tmpGo = new GameObject("Txt");
             tmpGo.transform.SetParent(tagGo.transform, false);
             var tmp = tmpGo.AddComponent<TextMeshPro>();
-            tmp.text = label;
+            tmp.text = label.Replace("<", "‹").Replace(">", "›");
             tmp.fontSize = 4.2f;
             tmp.color = color;
             tmp.alignment = TextAlignmentOptions.Center;
@@ -386,55 +586,56 @@ namespace TacSim.Surface
             if (!IsExcursionActive || ActiveRoverRig?.Root == null || TerrainGrid == null)
                 return;
 
-            float throttle = 0f;
-            float steer = 0f;
+            // Route keyboard WASD / Arrow driving through authoritative `+tv/<slot> drive <x>,<y> go`
             bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
-            if (!KeyboardSuspended)
+            if (!KeyboardSuspended && Time.unscaledTime >= _nextKeyboardDriveCommandAt)
             {
-                if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow)) throttle = 1f;
-                else if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow)) throttle = -0.65f;
-                if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) steer = 1f;
-                else if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow)) steer = -1f;
+                int dx = 0;
+                int dy = 0;
+                if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow)) dy = 1;
+                else if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow)) dy = -1;
+                if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) dx = 1;
+                else if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow)) dx = -1;
+
+                if (dx != 0 || dy != 0)
+                {
+                    int step = Mathf.Max(2, TerrainGrid.SpanCells * 3);
+                    int nextSiteX = Mathf.Max(0, AuthoritativeSiteCellX + dx * step);
+                    int nextSiteY = Mathf.Max(0, AuthoritativeSiteCellY + dy * step);
+                    _nextKeyboardDriveCommandAt = Time.unscaledTime + 0.50f;
+                    OnTerrainCellDriveClicked?.Invoke(nextSiteX, nextSiteY);
+                }
             }
+
             if (!overUi && Input.GetMouseButtonDown(0))
             {
                 Camera cam = Camera.main;
-                if (cam != null && Vector3.Distance(cam.transform.position, ActiveRoverRig.Root.transform.position) < 260f)
+                if (cam != null && Vector3.Distance(cam.transform.position, ActiveRoverRig.Root.transform.position) < 340f)
                 {
                     Ray ray = cam.ScreenPointToRay(Input.mousePosition);
-                    if (Physics.Raycast(ray, out RaycastHit hit, 500f))
+                    if (Physics.Raycast(ray, out RaycastHit hit, 600f))
                     {
                         Vector3 hitLocal = hit.point - SurfaceStageOrigin;
-                        int cx = Mathf.Clamp(Mathf.FloorToInt(hitLocal.x / TerrainGrid.CellSizeM), 2, TerrainGrid.Width - 3);
-                        int cy = Mathf.Clamp(Mathf.FloorToInt(hitLocal.z / TerrainGrid.CellSizeM), 2, TerrainGrid.Height - 3);
-                        _roverTargetLocalPos = TerrainGrid.CellToLocalPos(cx, cy, 0f);
-                        _hasDriveWaypoint = true;
-
-                        int siteX = cx - TerrainGrid.Width / 2 + 128;
-                        int siteY = cy - TerrainGrid.Height / 2 + 128;
+                        int cx = Mathf.Clamp(Mathf.FloorToInt(hitLocal.x / TerrainGrid.CellSizeM), 0, TerrainGrid.Width - 1);
+                        int cy = Mathf.Clamp(Mathf.FloorToInt(hitLocal.z / TerrainGrid.CellSizeM), 0, TerrainGrid.Height - 1);
+                        int siteX = TerrainGrid.LocalToSiteCellX(cx);
+                        int siteY = TerrainGrid.LocalToSiteCellY(cy);
                         OnTerrainCellDriveClicked?.Invoke(siteX, siteY);
                     }
                 }
             }
 
+            // Smoothly interpolate toward the authoritative server cell / active leg waypoint
             Vector3 localPos = ActiveRoverRig.Root.transform.position - SurfaceStageOrigin;
             float maxMetersPerSec = 14f;
-            if (Mathf.Abs(throttle) > 0.01f || Mathf.Abs(steer) > 0.01f)
-            {
-                _hasDriveWaypoint = false;
-                _roverHeadingDeg = (_roverHeadingDeg + steer * 68f * dt + 360f) % 360f;
-                Vector3 fwd = Quaternion.Euler(0f, _roverHeadingDeg, 0f) * Vector3.forward;
-                localPos += fwd * (throttle * maxMetersPerSec * dt);
-                _roverSpeedKph = throttle * 42f;
-            }
-            else if (_hasDriveWaypoint)
+            if (_hasDriveWaypoint)
             {
                 Vector3 toTarget = _roverTargetLocalPos - localPos;
                 toTarget.y = 0f;
-                if (toTarget.magnitude > 0.75f)
+                if (toTarget.magnitude > 0.65f)
                 {
                     float desiredYaw = Mathf.Atan2(toTarget.x, toTarget.z) * Mathf.Rad2Deg;
-                    _roverHeadingDeg = Mathf.MoveTowardsAngle(_roverHeadingDeg, desiredYaw, 110f * dt);
+                    _roverHeadingDeg = Mathf.MoveTowardsAngle(_roverHeadingDeg, desiredYaw, 120f * dt);
                     Vector3 step = toTarget.normalized * Mathf.Min(toTarget.magnitude, maxMetersPerSec * dt);
                     localPos += step;
                     _roverSpeedKph = 38f;
@@ -450,9 +651,10 @@ namespace TacSim.Surface
                 _roverSpeedKph = Mathf.MoveTowards(_roverSpeedKph, 0f, 40f * dt);
             }
 
-            float maxCoord = (TerrainGrid.Width - 2) * TerrainGrid.CellSizeM;
-            localPos.x = Mathf.Clamp(localPos.x, 12f, maxCoord);
-            localPos.z = Mathf.Clamp(localPos.z, 12f, maxCoord);
+            float maxCoordX = Mathf.Max(TerrainGrid.CellSizeM, (TerrainGrid.Width - 1) * TerrainGrid.CellSizeM);
+            float maxCoordZ = Mathf.Max(TerrainGrid.CellSizeM, (TerrainGrid.Height - 1) * TerrainGrid.CellSizeM);
+            localPos.x = Mathf.Clamp(localPos.x, 0f, maxCoordX);
+            localPos.z = Mathf.Clamp(localPos.z, 0f, maxCoordZ);
             localPos.y = TerrainGrid.SampleElevationMeters(localPos.x, localPos.z);
 
             ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + localPos;

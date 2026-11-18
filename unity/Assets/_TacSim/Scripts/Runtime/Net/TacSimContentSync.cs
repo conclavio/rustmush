@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Net;
-using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -21,24 +19,37 @@ namespace TacSim.Net
     }
 
     /// <summary>
-    /// Dynamically synchronizes authored TacSim &amp; Atlas JSON content packs by SHA-256 digest
-    /// from mushd (`GET /api/content/manifest` + `GET /api/content/packs/{id}` over HTTP, or
-    /// `tacsim.content` panel queries over WebSocket), caching verified packs under
-    /// `Application.persistentDataPath/TacSimContentCache/&lt;host&gt;`.
-    /// Gracefully no-ops if connected to an older server returning 404.
+    /// Dynamically synchronizes player-safe projected TacSim &amp; Atlas JSON content packs by SHA-256
+    /// digest over the authenticated `tacsim.content` WebSocket panel feed (working identically in
+    /// all-in-one `mushd` and split `mush-gateway` + `mush-server` deployments), caching verified
+    /// packs under `Application.persistentDataPath/TacSimContentCache/&lt;host&gt;`.
+    /// Paces in-flight `pack` queries (&lt;= 4 concurrent, min 0.45s batch spacing, with timeout
+    /// retry) so the 30-token / 10-per-second session flood bucket is never exceeded.
     /// </summary>
     public sealed class TacSimContentSync
     {
-        private static readonly HttpClient SharedHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        public const int MaxInFlightPackRequests = 4;
+        private const float MinBatchIntervalSec = 0.45f;
+        private const float RequestRetryTimeoutSec = 5.0f;
 
         private string _cacheRootDir;
         private readonly Dictionary<string, string> _localDigests = new Dictionary<string, string>(StringComparer.Ordinal);
-        private bool _httpManifestSucceeded;
+        private readonly Queue<ContentPackManifestItem> _pendingPacks = new Queue<ContentPackManifestItem>();
+        private readonly Dictionary<string, (ContentPackManifestItem item, float sentAt, int attempts)> _inFlightPacks =
+            new Dictionary<string, (ContentPackManifestItem, float, int)>(StringComparer.Ordinal);
+        private float _lastDispatchRealtime = -10f;
+        private bool _manifestReceived;
 
         public event Action<string> OnSyncLog;
         public event Action<int> OnPacksUpdated;
 
-        public bool HttpManifestSucceeded => _httpManifestSucceeded;
+        public bool IsSyncComplete => _manifestReceived && _pendingPacks.Count == 0 && _inFlightPacks.Count == 0;
+        public int PendingPackCount => _pendingPacks.Count + _inFlightPacks.Count;
+
+        private static void SafeLogWarn(string msg)
+        {
+            try { Debug.LogWarning(msg); } catch { /* standalone managed test runner */ }
+        }
 
         public static string ComputeSha256Hex(string utf8Text)
         {
@@ -119,23 +130,43 @@ namespace TacSim.Net
             return sb.ToString();
         }
 
-        public void InitializeDiskCacheForServer(string baseHttpUrl)
+        public void InitializeDiskCacheForServer(string baseHttpUrl, string explicitCacheDir = null)
         {
-            _httpManifestSucceeded = false;
+            _manifestReceived = false;
             _localDigests.Clear();
+            _pendingPacks.Clear();
+            _inFlightPacks.Clear();
+            // Clear any dynamic packs retained from a previous server connection before hydrating this server's cache.
+            TacSimContentLoader.ClearDynamicPacks();
 
             string hostSlug = "local";
-            if (!string.IsNullOrWhiteSpace(baseHttpUrl) && Uri.TryCreate(baseHttpUrl.Trim(), UriKind.Absolute, out Uri u))
+            string normalized = MushAuthClient.NormalizeBaseUrl(baseHttpUrl);
+            if (!string.IsNullOrWhiteSpace(normalized) && Uri.TryCreate(normalized, UriKind.Absolute, out Uri u))
                 hostSlug = SanitizeFileSlug($"{u.Host}_{u.Port}");
 
             try
             {
-                string persistent = Application.persistentDataPath;
-                if (!string.IsNullOrEmpty(persistent))
+                if (!string.IsNullOrEmpty(explicitCacheDir))
                 {
-                    _cacheRootDir = Path.Combine(persistent, "TacSimContentCache", hostSlug);
+                    _cacheRootDir = Path.Combine(explicitCacheDir, hostSlug);
+                }
+                else
+                {
+                    string persistent = Application.persistentDataPath;
+                    _cacheRootDir = !string.IsNullOrEmpty(persistent)
+                        ? Path.Combine(persistent, "TacSimContentCache", hostSlug)
+                        : null;
+                }
+
+                if (!string.IsNullOrEmpty(_cacheRootDir))
+                {
                     Directory.CreateDirectory(Path.Combine(_cacheRootDir, "packs"));
-                    LoadCachedPacksIntoMemory();
+                    int warmLoaded = LoadCachedPacksIntoMemory();
+                    if (warmLoaded > 0)
+                    {
+                        OnSyncLog?.Invoke($"[ContentSync] Hydrated {warmLoaded} verified pack(s) from local server cache.");
+                        OnPacksUpdated?.Invoke(warmLoaded);
+                    }
                 }
             }
             catch
@@ -144,12 +175,13 @@ namespace TacSim.Net
             }
         }
 
-        private void LoadCachedPacksIntoMemory()
+        private int LoadCachedPacksIntoMemory()
         {
-            if (string.IsNullOrEmpty(_cacheRootDir)) return;
+            if (string.IsNullOrEmpty(_cacheRootDir)) return 0;
             string manifestPath = Path.Combine(_cacheRootDir, "manifest.json");
-            if (!File.Exists(manifestPath)) return;
+            if (!File.Exists(manifestPath)) return 0;
 
+            int loaded = 0;
             try
             {
                 var items = ParseManifestPacks(JsonNode.Parse(File.ReadAllText(manifestPath)));
@@ -163,6 +195,7 @@ namespace TacSim.Net
                     {
                         _localDigests[item.Id] = item.Sha256;
                         TacSimContentLoader.RegisterDynamicPack(item.Id, json);
+                        loaded++;
                     }
                 }
             }
@@ -170,6 +203,7 @@ namespace TacSim.Net
             {
                 SafeLogWarn($"[TacSimContentSync] Failed reading local pack cache: {ex.Message}");
             }
+            return loaded;
         }
 
         private void PersistLocalManifest()
@@ -186,7 +220,7 @@ namespace TacSim.Net
                     packsArr.Add(row);
                 }
                 var doc = JsonNode.NewObject();
-                doc["version"] = JsonNode.FromLong(1);
+                doc["version"] = JsonNode.FromLong(2);
                 doc["packs"] = packsArr;
                 File.WriteAllText(Path.Combine(_cacheRootDir, "manifest.json"), doc.ToJson());
             }
@@ -227,108 +261,150 @@ namespace TacSim.Net
             return true;
         }
 
-        public async Task SyncOverHttpAsync(string baseHttpUrl)
+        public Task SyncOverHttpAsync(string baseHttpUrl)
         {
-            InitializeDiskCacheForServer(baseHttpUrl);
-            string baseClean = MushAuthClient.NormalizeBaseUrl(baseHttpUrl);
-            try
-            {
-                using (var resp = await SharedHttp.GetAsync($"{baseClean}/api/content/manifest"))
-                {
-                    if (resp.StatusCode == HttpStatusCode.NotFound)
-                    {
-                        // Server does not expose HTTP pack endpoint yet (e.g. pre-redeploy or split gateway); WS or bundled fallback handles it.
-                        return;
-                    }
-                    if (!resp.IsSuccessStatusCode)
-                        return;
-
-                    string manifestJson = await resp.Content.ReadAsStringAsync();
-                    var remoteItems = ParseManifestPacks(JsonNode.Parse(manifestJson));
-                    if (remoteItems.Count == 0) return;
-
-                    _httpManifestSucceeded = true;
-                    var changed = ComputeChangedPacks(_localDigests, remoteItems);
-                    if (changed.Count == 0)
-                    {
-                        OnSyncLog?.Invoke($"Content packs up-to-date ({remoteItems.Count} verified cached packs).");
-                        return;
-                    }
-
-                    int updated = 0;
-                    for (int i = 0; i < changed.Count; i++)
-                    {
-                        var item = changed[i];
-                        string url = $"{baseClean}/api/content/packs/{Uri.EscapeDataString(item.Id)}?digest={Uri.EscapeDataString(item.Sha256)}";
-                        using (var pResp = await SharedHttp.GetAsync(url))
-                        {
-                            if (!pResp.IsSuccessStatusCode) continue;
-                            string packJson = await pResp.Content.ReadAsStringAsync();
-                            if (StoreVerifiedPack(item.Id, item.Sha256, packJson))
-                                updated++;
-                        }
-                    }
-
-                    if (updated > 0)
-                    {
-                        PersistLocalManifest();
-                        OnSyncLog?.Invoke($"Synced {updated} updated content pack(s) from mushd.");
-                        OnPacksUpdated?.Invoke(updated);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                SafeLogWarn($"[TacSimContentSync] HTTP content check skipped ({ex.Message}); using cached/fallback packs.");
-            }
+            // Content sync runs over authenticated WebSocket `tacsim.content` so split
+            // `mush-gateway` + `mush-server` and all-in-one `mushd` behave identically.
+            return Task.CompletedTask;
         }
 
-        private static void SafeLogWarn(string message)
+        public void RequestManifestOverWebSocket(MushWsClient ws, float nowRealtime = 0f)
         {
-            try { Debug.LogWarning(message); } catch { /* Headless standalone test runner without Unity native runtime */ }
-        }
-
-        public void RequestWebSocketManifestIfNeeded(MushWsClient ws)
-        {
-            if (_httpManifestSucceeded || ws == null || !ws.IsConnected)
+            if (ws == null || !ws.IsConnected)
                 return;
             if (!ws.HasAdvertisedPanel("tacsim.content"))
                 return;
+
+            _inFlightPacks.Clear();
+            _pendingPacks.Clear();
+            _manifestReceived = false;
+            _lastDispatchRealtime = nowRealtime;
 
             var p = JsonNode.NewObject();
             p["op"] = JsonNode.FromString("manifest");
             ws.SendPanelSubscribe("tacsim.content", p);
         }
 
-        public void HandleWebSocketContentPanel(MushWsClient ws, JsonNode data)
+        public void HandleWebSocketContentPanel(MushWsClient ws, JsonNode data, float nowRealtime = 0f)
         {
             if (data == null || !data.IsObject) return;
             string op = data.Str("op", string.Empty);
             if (op == "manifest")
             {
+                _manifestReceived = true;
                 var remote = ParseManifestPacks(data);
+                PruneRemovedServerPacks(remote);
                 var changed = ComputeChangedPacks(_localDigests, remote);
-                if (changed.Count == 0 || ws == null || !ws.IsConnected) return;
-
+                _pendingPacks.Clear();
+                _inFlightPacks.Clear();
                 for (int i = 0; i < changed.Count; i++)
+                    _pendingPacks.Enqueue(changed[i]);
+
+                if (_pendingPacks.Count > 0)
                 {
-                    var p = JsonNode.NewObject();
-                    p["op"] = JsonNode.FromString("pack");
-                    p["id"] = JsonNode.FromString(changed[i].Id);
-                    ws.SendPanelSubscribe("tacsim.content", p);
+                    OnSyncLog?.Invoke($"[ContentSync] Syncing {_pendingPacks.Count} updated pack(s) over WebSocket...");
+                    PumpPackQueue(ws, nowRealtime, forceImmediate: true);
                 }
             }
-            else if (op == "pack" && data.Bool("found", false))
+            else if (op == "pack")
             {
                 string id = data.Str("id", string.Empty);
-                string sha = data.Str("sha256", string.Empty);
-                string json = data.Str("json", string.Empty);
-                if (StoreVerifiedPack(id, sha, json))
+                string reqId = data.Str("requested_id", id);
+                _inFlightPacks.Remove(id);
+                if (!string.IsNullOrEmpty(reqId))
+                    _inFlightPacks.Remove(reqId);
+
+                if (data.Bool("found", false))
                 {
-                    PersistLocalManifest();
-                    OnPacksUpdated?.Invoke(1);
+                    string sha = data.Str("sha256", string.Empty);
+                    string json = data.Str("json", string.Empty);
+                    if (StoreVerifiedPack(id, sha, json))
+                    {
+                        PersistLocalManifest();
+                        OnPacksUpdated?.Invoke(1);
+                    }
+                }
+                PumpPackQueue(ws, nowRealtime, forceImmediate: false);
+            }
+        }
+
+        private void PruneRemovedServerPacks(List<ContentPackManifestItem> remote)
+        {
+            var remoteIds = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < remote.Count; i++)
+                remoteIds.Add(remote[i].Id);
+
+            var staleKeys = new List<string>();
+            foreach (var kv in _localDigests)
+            {
+                if (!remoteIds.Contains(kv.Key))
+                    staleKeys.Add(kv.Key);
+            }
+            if (staleKeys.Count == 0) return;
+
+            for (int i = 0; i < staleKeys.Count; i++)
+                _localDigests.Remove(staleKeys[i]);
+
+            TacSimContentLoader.ClearDynamicPacks();
+            LoadCachedPacksIntoMemory();
+            PersistLocalManifest();
+        }
+
+        /// <summary>
+        /// Call from Update() to pace queued pack downloads within session rate limits and retry timed-out packs.
+        /// </summary>
+        public void PumpPackQueue(MushWsClient ws, float nowRealtime, bool forceImmediate = false)
+        {
+            if (ws == null) return;
+
+            // Re-queue any in-flight pack that timed out (e.g. dropped by flood limiter or reconnect)
+            if (_inFlightPacks.Count > 0)
+            {
+                List<string> timedOut = null;
+                foreach (var kv in _inFlightPacks)
+                {
+                    if (nowRealtime - kv.Value.sentAt >= RequestRetryTimeoutSec)
+                    {
+                        if (timedOut == null) timedOut = new List<string>();
+                        timedOut.Add(kv.Key);
+                    }
+                }
+                if (timedOut != null)
+                {
+                    for (int i = 0; i < timedOut.Count; i++)
+                    {
+                        var entry = _inFlightPacks[timedOut[i]];
+                        _inFlightPacks.Remove(timedOut[i]);
+                        if (entry.attempts < 4)
+                            _pendingPacks.Enqueue(entry.item);
+                    }
                 }
             }
+
+            if (_pendingPacks.Count == 0 || _inFlightPacks.Count >= MaxInFlightPackRequests)
+                return;
+
+            if (!forceImmediate && nowRealtime - _lastDispatchRealtime < MinBatchIntervalSec && _inFlightPacks.Count > 0)
+                return;
+
+            int sent = 0;
+            while (_pendingPacks.Count > 0 && _inFlightPacks.Count < MaxInFlightPackRequests)
+            {
+                var next = _pendingPacks.Dequeue();
+                if (_localDigests.TryGetValue(next.Id, out string have) &&
+                    string.Equals(have, next.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                _inFlightPacks[next.Id] = (next, nowRealtime, 1);
+                var p = JsonNode.NewObject();
+                p["op"] = JsonNode.FromString("pack");
+                p["id"] = JsonNode.FromString(next.Id);
+                ws.SendPanelSubscribe("tacsim.content", p);
+                sent++;
+            }
+            if (sent > 0)
+                _lastDispatchRealtime = nowRealtime;
         }
     }
 }

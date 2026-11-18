@@ -69,9 +69,16 @@ namespace TacSim.World
         public float CellSizeM = 10f;
         public int OriginCellX;
         public int OriginCellY;
+        public int SpanCells = 1;
+        public bool IsFromLiveServerFeed;
         public TerrainCellClass[] Classes; // length = Width * Height (row-major, y=0 south -> north)
         public char[] RawGlyphs;           // optional overlay glyphs from site.map / arena.map
         public float[] ElevMeters;         // length = Width * Height
+
+        public int LocalToSiteCellX(int localCx) => OriginCellX + Mathf.Clamp(localCx, 0, Math.Max(0, Width - 1)) * Math.Max(1, SpanCells);
+        public int LocalToSiteCellY(int localCy) => OriginCellY + Mathf.Clamp(localCy, 0, Math.Max(0, Height - 1)) * Math.Max(1, SpanCells);
+        public int SiteToLocalCellX(int siteX) => Mathf.Clamp((siteX - OriginCellX) / Math.Max(1, SpanCells), 0, Math.Max(0, Width - 1));
+        public int SiteToLocalCellY(int siteY) => Mathf.Clamp((siteY - OriginCellY) / Math.Max(1, SpanCells), 0, Math.Max(0, Height - 1));
 
         public ArenaZoneRect RedEntryZone;
         public ArenaZoneRect BlueEntryZone;
@@ -328,6 +335,97 @@ namespace TacSim.World
         }
 
         /// <summary>
+        /// Decodes an authoritative `site.map` panel keyframe (`rows`, `width`, `height`, `site.grid`)
+        /// into a 3D `DecodedTerrainGrid` with exact `OriginCellX`, `OriginCellY`, and `SpanCells`
+        /// across both 256-cell and 512-cell planetary extraction sites.
+        /// </summary>
+        public static DecodedTerrainGrid DecodeSiteMapFrame(JsonNode siteMapFrame)
+        {
+            if (siteMapFrame == null || !siteMapFrame.IsObject || !siteMapFrame["rows"].IsArray)
+                return null;
+
+            int w = Mathf.Clamp(siteMapFrame.Int("width", 64), 4, 512);
+            int h = Mathf.Clamp(siteMapFrame.Int("height", w), 4, 512);
+
+            int ox = 0;
+            int oy = 0;
+            var orig = siteMapFrame["origin_cell"].AsArray();
+            if (orig != null && orig.Count >= 2)
+            {
+                ox = orig[0].AsInt(0);
+                oy = orig[1].AsInt(0);
+            }
+
+            int span = 1;
+            int baseCellCm = siteMapFrame.Int("cell_cm", 1000);
+            var siteObj = siteMapFrame["site"];
+            string siteTitle = siteMapFrame.Str("title", "Planetary Site");
+            if (siteObj.IsObject)
+            {
+                siteTitle = siteObj.Str("site", siteTitle);
+                var gridObj = siteObj["grid"];
+                if (gridObj.IsObject)
+                {
+                    ox = gridObj.Int("x0", ox);
+                    oy = gridObj.Int("y0", oy);
+                    span = Mathf.Max(1, gridObj.Int("span", 1));
+                    baseCellCm = gridObj.Int("cell_cm", baseCellCm);
+                }
+            }
+
+            float cellSizeM = Mathf.Max(1f, baseCellCm * 0.01f * span);
+            char[] glyphs = DecodeRleGlyphRows(siteMapFrame["rows"], w, h);
+            var classes = new TerrainCellClass[w * h];
+            var elevM = new float[w * h];
+
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    int i = y * w + x;
+                    char g = glyphs[i];
+                    TerrainCellClass cls = ClassFromGlyph(g);
+                    if (g == ',' || g == '.' || g == ' ')
+                        cls = TerrainCellClass.Regolith;
+                    else if (g == 'H' || g == '+')
+                        cls = TerrainCellClass.Platform;
+                    classes[i] = cls;
+
+                    int gx = ox + x * span;
+                    int gy = oy + y * span;
+                    float micro = (SmoothValueNoise2D(gx * 0.09f, gy * 0.09f) - 0.5f) * 1.4f;
+                    if (cls == TerrainCellClass.Platform) elevM[i] = 0.15f;
+                    else if (g == '^' || g == 'O') elevM[i] = 2.2f + micro * 0.5f;
+                    else if (g == 'v' || g == 'V') elevM[i] = -1.3f;
+                    else if (cls == TerrainCellClass.Ice) elevM[i] = -0.45f + micro * 0.3f;
+                    else elevM[i] = micro;
+                }
+            }
+
+            string biome = siteTitle.IndexOf("rheasilvia", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           siteTitle.IndexOf("vesta", StringComparison.OrdinalIgnoreCase) >= 0
+                ? "vesta"
+                : "ceres";
+
+            return new DecodedTerrainGrid
+            {
+                Id = $"sitemap_{ox}_{oy}_{w}x{h}_s{span}",
+                DisplayName = siteTitle,
+                Biome = biome,
+                Width = w,
+                Height = h,
+                CellSizeM = cellSizeM,
+                OriginCellX = ox,
+                OriginCellY = oy,
+                SpanCells = span,
+                IsFromLiveServerFeed = true,
+                Classes = classes,
+                RawGlyphs = glyphs,
+                ElevMeters = elevM
+            };
+        }
+
+        /// <summary>
         /// Loads a static 256x256 arena definition (`proving_ground`, `mars_canyon`, `winter_valley`)
         /// from `crates/tacsim/content/arenas/<slug>.json` + `atlas/<slug>.json` 4-quadrant tiles.
         /// </summary>
@@ -361,49 +459,159 @@ namespace TacSim.World
 
             if (!string.IsNullOrEmpty(arenaJsonText))
             {
-                var aRoot = JsonNode.Parse(arenaJsonText);
-                biome = aRoot.Str("biome", biome);
+                var docRoot = JsonNode.Parse(arenaJsonText);
+                JsonNode aDef = docRoot;
+                var entriesObj = docRoot["entries"].AsObject();
+                if (entriesObj != null)
+                {
+                    if (entriesObj.TryGetValue($"tacsim.arena.{slug}", out var exactEntry) && exactEntry["def"].IsObject)
+                    {
+                        aDef = exactEntry["def"];
+                    }
+                    else
+                    {
+                        foreach (var kv in entriesObj)
+                        {
+                            if (kv.Value.Str("kind") == "arena" && kv.Value["def"].IsObject)
+                            {
+                                aDef = kv.Value["def"];
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                grid.DisplayName = aDef.Str("label", grid.DisplayName);
+                biome = aDef.Str("biome", biome);
                 grid.Biome = biome;
-                side = Mathf.Clamp(aRoot.Int("width_cells", 256), 64, 512);
-                int hSide = Mathf.Clamp(aRoot.Int("height_cells", side), 64, 512);
+                side = Mathf.Clamp(aDef.Int("cols", aDef.Int("width_cells", 256)), 64, 512);
+                int hSide = Mathf.Clamp(aDef.Int("rows", aDef.Int("height_cells", side)), 64, 512);
                 grid.Width = side;
                 grid.Height = hSide;
-                grid.CellSizeM = Mathf.Max(1f, aRoot.Int("cell_cm", 1000) * 0.01f);
+                grid.CellSizeM = Mathf.Max(1f, aDef.Int("cell_cm", 1000) * 0.01f);
                 grid.Classes = new TerrainCellClass[side * hSide];
                 grid.ElevMeters = new float[side * hSide];
 
-                grid.RedEntryZone = ParseZoneRect(aRoot["entry_zones"]["red"]);
-                grid.BlueEntryZone = ParseZoneRect(aRoot["entry_zones"]["blue"]);
-
-                var holdObj = aRoot["modes"]["hold"];
-                if (holdObj.IsObject)
+                var ezNode = aDef["entry_zones"];
+                if (ezNode.IsArray)
                 {
-                    grid.HoldSpotLetter = holdObj.Str("spot", "B");
-                    grid.HoldRadiusCells = holdObj.Int("radius_cells", 6);
+                    var ezArr = ezNode.AsArray();
+                    for (int i = 0; i < ezArr.Count; i++)
+                    {
+                        var z = ezArr[i];
+                        if (!z.IsObject) continue;
+                        var rect = new ArenaZoneRect
+                        {
+                            MinX = z.Int("x0", 0),
+                            MinY = z.Int("y0", 0),
+                            MaxX = z.Int("x1", 15),
+                            MaxY = z.Int("y1", hSide - 1)
+                        };
+                        if (string.Equals(z.Str("team", string.Empty), "blue", StringComparison.OrdinalIgnoreCase))
+                            grid.BlueEntryZone = rect;
+                        else
+                            grid.RedEntryZone = rect;
+                    }
+                }
+                else if (ezNode.IsObject)
+                {
+                    grid.RedEntryZone = ParseZoneRect(ezNode["red"]);
+                    grid.BlueEntryZone = ParseZoneRect(ezNode["blue"]);
                 }
 
-                var ksArr = aRoot["key_spots"].AsArray();
+                string holdSpotTarget = null;
+                var modesNode = aDef["modes"];
+                if (modesNode.IsArray)
+                {
+                    var mArr = modesNode.AsArray();
+                    for (int i = 0; i < mArr.Count; i++)
+                    {
+                        var m = mArr[i];
+                        if (m.IsObject && string.Equals(m.Str("mode", string.Empty), "hold", StringComparison.OrdinalIgnoreCase))
+                        {
+                            holdSpotTarget = m.Str("spot", "B");
+                            grid.HoldRadiusCells = m.Int("radius_cells", 6);
+                            break;
+                        }
+                    }
+                }
+                else if (modesNode.IsObject && modesNode["hold"].IsObject)
+                {
+                    holdSpotTarget = modesNode["hold"].Str("spot", "B");
+                    grid.HoldRadiusCells = modesNode["hold"].Int("radius_cells", 6);
+                }
+
+                var ksArr = aDef["key_spots"].AsArray();
                 if (ksArr != null)
                 {
                     for (int i = 0; i < ksArr.Count; i++)
                     {
                         var ks = ksArr[i];
+                        if (!ks.IsObject) continue;
+                        int cx, cy;
                         var c = ks["cell"].AsArray();
-                        if (c == null || c.Count < 2) continue;
+                        if (c != null && c.Count >= 2)
+                        {
+                            cx = c[0].AsInt(side / 2);
+                            cy = c[1].AsInt(hSide / 2);
+                        }
+                        else if (ks.ContainsKey("x") && ks.ContainsKey("y"))
+                        {
+                            cx = ks.Int("x", side / 2);
+                            cy = ks.Int("y", hSide / 2);
+                        }
+                        else
+                        {
+                            continue;
+                        }
+
+                        string letter = ks.Str("letter", ((char)('A' + i)).ToString());
+                        string name = ks.Str("name", $"Objective {letter}");
                         grid.KeySpots.Add(new ArenaKeySpotDef
                         {
-                            Letter = ks.Str("letter", ((char)('A' + i)).ToString()),
-                            Name = ks.Str("name", $"Objective {(char)('A' + i)}"),
-                            CellX = c[0].AsInt(side / 2),
-                            CellY = c[1].AsInt(hSide / 2)
+                            Letter = letter,
+                            Name = name,
+                            CellX = cx,
+                            CellY = cy
                         });
+                        if (!string.IsNullOrEmpty(holdSpotTarget) &&
+                            (string.Equals(holdSpotTarget, name, StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(holdSpotTarget, letter, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            grid.HoldSpotLetter = letter;
+                        }
                     }
                 }
 
-                var tanksObj = aRoot["tanks"].AsObject();
-                if (tanksObj != null)
+                var tanksNode = aDef["tanks"];
+                if (tanksNode.IsArray)
                 {
-                    foreach (var kv in tanksObj)
+                    var tArr = tanksNode.AsArray();
+                    for (int i = 0; i < tArr.Count; i++)
+                    {
+                        var tNode = tArr[i];
+                        if (!tNode.IsObject) continue;
+                        string id = tNode.Str("id", $"slot_{i + 1}");
+                        string team = tNode.Str("team", id.StartsWith("blue", StringComparison.OrdinalIgnoreCase) ? "blue" : "red");
+                        float xm = tNode.ContainsKey("x_cm")
+                            ? tNode.Int("x_cm", 20000) * 0.01f
+                            : (tNode.Int("x", 20) + 0.5f) * grid.CellSizeM;
+                        float zm = tNode.ContainsKey("y_cm")
+                            ? tNode.Int("y_cm", 128000) * 0.01f
+                            : (tNode.Int("y", 128) + 0.5f) * grid.CellSizeM;
+                        grid.Spawns.Add(new ArenaSpawnPoseDef
+                        {
+                            SlotKey = id,
+                            Party = string.Equals(team, "blue", StringComparison.OrdinalIgnoreCase) ? "B" : "R",
+                            Xm = xm,
+                            Zm = zm,
+                            HeadingDeg = tNode.Int("heading_mdeg", 90000) * 0.001f
+                        });
+                    }
+                }
+                else if (tanksNode.IsObject)
+                {
+                    foreach (var kv in tanksNode.AsObject())
                     {
                         var tNode = kv.Value;
                         grid.Spawns.Add(new ArenaSpawnPoseDef
@@ -811,6 +1019,65 @@ namespace TacSim.World
             tex.SetPixels32(pixels);
             tex.Apply(updateMipmaps: true, makeNoLongerReadable: false);
             return UrpMaterialFactory.CreateTexturedLit(grid.Id, tex, smoothness: 0.15f, metallic: 0.05f);
+        }
+
+        /// <summary>
+        /// Explicitly destroys runtime Mesh, Material, and Texture2D assets allocated under <paramref name="terrainRoot"/>
+        /// so terrain rebuilds never leak GPU/native memory.
+        /// </summary>
+        public static void DestroyTerrainChunkResources(Transform terrainRoot)
+        {
+            if (terrainRoot == null) return;
+            var meshes = new HashSet<Mesh>();
+            var mats = new HashSet<Material>();
+            var texs = new HashSet<Texture>();
+
+            foreach (var mf in terrainRoot.GetComponentsInChildren<MeshFilter>(includeInactive: true))
+            {
+                if (mf != null && mf.sharedMesh != null)
+                {
+                    meshes.Add(mf.sharedMesh);
+                    mf.sharedMesh = null;
+                }
+            }
+            foreach (var mc in terrainRoot.GetComponentsInChildren<MeshCollider>(includeInactive: true))
+            {
+                if (mc != null && mc.sharedMesh != null)
+                {
+                    meshes.Add(mc.sharedMesh);
+                    mc.sharedMesh = null;
+                }
+            }
+            foreach (var mr in terrainRoot.GetComponentsInChildren<MeshRenderer>(includeInactive: true))
+            {
+                if (mr != null && mr.sharedMaterial != null)
+                {
+                    var m = mr.sharedMaterial;
+                    mats.Add(m);
+                    if (m.mainTexture != null && m.mainTexture.name.StartsWith("Splat_", StringComparison.Ordinal))
+                        texs.Add(m.mainTexture);
+                    mr.sharedMaterial = null;
+                }
+            }
+
+            foreach (var mesh in meshes)
+            {
+                if (mesh == null) continue;
+                if (Application.isPlaying) UnityEngine.Object.Destroy(mesh);
+                else UnityEngine.Object.DestroyImmediate(mesh);
+            }
+            foreach (var mat in mats)
+            {
+                if (mat == null) continue;
+                if (Application.isPlaying) UnityEngine.Object.Destroy(mat);
+                else UnityEngine.Object.DestroyImmediate(mat);
+            }
+            foreach (var tex in texs)
+            {
+                if (tex == null) continue;
+                if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
+                else UnityEngine.Object.DestroyImmediate(tex);
+            }
         }
 
         /// <summary>

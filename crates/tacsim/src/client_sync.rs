@@ -2,264 +2,101 @@
 //! `tacsim.content`).
 //!
 //! Two pull-only panel feeds for graphical 3D clients (such as the Unity URP
-//! client):
+//! client), served exclusively over authenticated WebSocket `PanelSubscribe`
+//! queries (working identically in all-in-one `mushd` and split
+//! `mush-gateway` + `mush-server` deployments):
 //!
-//! - [`PORT_TRADE_FEED`] (`"port.trade"`): structured port venue, actor liquid
-//!   credit balance, visible market asks/bids (via [`mush_market::visible`]),
-//!   and the actor's own charter/title hull stowage gauges.
+//! - [`PORT_TRADE_FEED`] (`"port.trade"`): structured port venue (gated by
+//!   [`PortVenueGate`]), actor liquid credit balance (via
+//!   [`crate::port::credit::own_account`]), paginated visible market asks/bids
+//!   with post-spread execution prices and funding flags (via
+//!   [`mush_market::summarize_listing`]), open buyer quotes for correlated
+//!   purchase confirmation, own-hull stowage gauges, and contextual berth /
+//!   simulator rosters.
 //! - [`CLIENT_CONTENT_FEED`] (`"tacsim.content"`): SHA-256 content manifest and
-//!   per-pack JSON retrieval over WebSocket `PanelSubscribe` queries, mirrored
-//!   by [`http_content_packs`] for HTTP `GET /api/content/manifest` and
-//!   `GET /api/content/packs/{id}`.
+//!   player-safe projected pack JSON (`secret`, `lore`, `brief`, hidden staff
+//!   exits, restricted room prose, and NPC prompt internals stripped) derived
+//!   directly from canonical `mush-atlas` and `tacsim` content tables.
 //!
 //! Neither feed ends in a suffix auto-subscribed by the web SPA or SSH TUI
 //! (`.vitals`, `.view`, `.unit`, `.sheet`, `.roll`, `.chart`, `.map`,
 //! `.market`), so existing clients ignore both unless they explicitly query
 //! them.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use mush_core::module::{ModError, Registrar};
 use mush_core::{HookReadContext, ObjId, QueryHandler, World};
 use mush_economy::{Amount, EconomyStore, InstrumentId};
-use mush_market::{MARKET_PAGE, MarketFilter, MarketStore};
+use mush_market::{ListingId, MARKET_PAGE, MarketFilter, MarketStore};
 use mush_org::PrincipalId;
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
 
+use crate::definitions::content::{
+    CAST_SOURCES, LANE_JSON, MARS_CANYON_ATLAS_JSON, PROVING_GROUND_ATLAS_JSON, SITE_SOURCES,
+    STATION_SOURCES, WIDE_SITE_SOURCES, WINTER_VALLEY_ATLAS_JSON, fielded_sources,
+};
+use crate::definitions::goods::GOODS_JSON;
 use crate::economy::CREDIT;
 use crate::port::board::money;
 use crate::port::coop::{EnrolmentStatus, helm_of, name_of, port_name};
+use crate::port::credit::own_account;
 use crate::port::market::{PortVenueGate, port_of_venue};
-use crate::port::ship::{Berth, berth_of, hull_of_room, hull_stowage_json, hull_view};
+use crate::port::ship::{
+    Berth, berth_gallery_json, berth_of, hull_of_room, hull_stowage_json, hull_view,
+    simulator_lobby_json,
+};
 use crate::store::TacsimStore;
 
 /// Pulled panel feed returning structured port market listings, actor credits,
-/// and own-hull stowage gauges without writing to scrollback.
+/// open buyer quotes, stowage gauges, and contextual berth/simulator rosters.
 pub const PORT_TRADE_FEED: &str = "port.trade";
 
-/// Pulled panel feed returning the dynamic client content pack manifest and
-/// individual pack JSON payloads by id.
+/// Pulled panel feed returning the projected client content pack manifest and
+/// individual player-safe pack JSON payloads by id.
 pub const CLIENT_CONTENT_FEED: &str = "tacsim.content";
 
-/// Schema version for both client feeds.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Schema version for both client feeds (`2` = player-safe projection +
+/// correlated quotes + post-spread pricing + contextual rosters).
+pub const SCHEMA_VERSION: u32 = 2;
 
-/// Raw client-relevant JSON packs compiled into the server binary (`(id, category, json)`).
-const CLIENT_PACK_SOURCES: &[(&str, &str, &str)] = &[
-    // OOC & starter neighborhoods (`mush-atlas`)
-    (
-        "neighborhood.ooc_area",
-        "neighborhood",
-        mush_atlas::starter::OOC_AREA_JSON,
-    ),
-    (
-        "neighborhood.staff_lobby",
-        "neighborhood",
-        mush_atlas::starter::STAFF_LOBBY_JSON,
-    ),
-    // Station & surface neighborhoods (`tacsim`)
-    (
-        "neighborhood.ceres_freeport",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.ceres_freeport.json"),
-    ),
-    (
-        "neighborhood.stickney_yards",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.stickney_yards.json"),
-    ),
-    (
-        "neighborhood.aitken_highport",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.aitken_highport.json"),
-    ),
-    (
-        "neighborhood.voltaire_anchorage",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.voltaire_anchorage.json"),
-    ),
-    (
-        "neighborhood.ligeia_terminal",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.ligeia_terminal.json"),
-    ),
-    (
-        "neighborhood.kirkwood_depot",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.kirkwood_depot.json"),
-    ),
-    (
-        "neighborhood.ahuna_flank",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.ahuna_flank.json"),
-    ),
-    (
-        "neighborhood.occator_rim",
-        "neighborhood",
-        include_str!("../content/atlas/neighborhood.occator_rim.json"),
-    ),
-    // Economy & trade lane
-    (
-        "goods",
-        "market",
-        include_str!("../content/market/goods.json"),
-    ),
-    (
-        "ceres_phobos",
-        "lane",
-        include_str!("../content/lane/ceres_phobos.json"),
-    ),
-    // Ship, rover & combat unit definitions
-    ("dray", "unit", include_str!("../content/units/dray.json")),
-    (
-        "dray_p",
-        "unit",
-        include_str!("../content/units/dray_p.json"),
-    ),
-    (
-        "corvette",
-        "unit",
-        include_str!("../content/units/corvette.json"),
-    ),
-    (
-        "halcyon",
-        "unit",
-        include_str!("../content/units/halcyon.json"),
-    ),
-    (
-        "tv_prospector",
-        "unit",
-        include_str!("../content/units/tv_prospector.json"),
-    ),
-    (
-        "tv_escort",
-        "unit",
-        include_str!("../content/units/tv_escort.json"),
-    ),
-    (
-        "tv_tender",
-        "unit",
-        include_str!("../content/units/tv_tender.json"),
-    ),
-    (
-        "line_tank",
-        "unit",
-        include_str!("../content/units/line_tank.json"),
-    ),
-    (
-        "line_tank_laser",
-        "unit",
-        include_str!("../content/units/line_tank_laser.json"),
-    ),
-    (
-        "line_tank_thermal",
-        "unit",
-        include_str!("../content/units/line_tank_thermal.json"),
-    ),
-    (
-        "line_tank_ecm",
-        "unit",
-        include_str!("../content/units/line_tank_ecm.json"),
-    ),
-    (
-        "line_tank_eccm",
-        "unit",
-        include_str!("../content/units/line_tank_eccm.json"),
-    ),
-    (
-        "heavy_mk1",
-        "unit",
-        include_str!("../content/units/heavy_mk1.json"),
-    ),
-    (
-        "biped_mk1",
-        "unit",
-        include_str!("../content/units/biped_mk1.json"),
-    ),
-    (
-        "biped_mk2",
-        "unit",
-        include_str!("../content/units/biped_mk2.json"),
-    ),
-    (
-        "scout_mk1",
-        "unit",
-        include_str!("../content/units/scout_mk1.json"),
-    ),
-    (
-        "drone_mk1",
-        "unit",
-        include_str!("../content/units/drone_mk1.json"),
-    ),
-    // Weapons
-    (
-        "cannon_105",
-        "weapon",
-        include_str!("../content/weapons/cannon_105.json"),
-    ),
-    (
-        "laser_mk1",
-        "weapon",
-        include_str!("../content/weapons/laser_mk1.json"),
-    ),
-    (
-        "autocannon_30",
-        "weapon",
-        include_str!("../content/weapons/autocannon_30.json"),
-    ),
-    (
-        "missile_lr",
-        "weapon",
-        include_str!("../content/weapons/missile_lr.json"),
-    ),
-    (
-        "mg_coax",
-        "weapon",
-        include_str!("../content/weapons/mg_coax.json"),
-    ),
-    // Simulator arena maps (atlas terrain)
-    (
-        "arena_atlas.proving_ground",
-        "arena_atlas",
-        include_str!("../content/atlas/proving_ground.json"),
-    ),
-    (
-        "arena_atlas.mars_canyon",
-        "arena_atlas",
-        include_str!("../content/atlas/mars_canyon.json"),
-    ),
-    (
-        "arena_atlas.winter_valley",
-        "arena_atlas",
-        include_str!("../content/atlas/winter_valley.json"),
-    ),
-];
+const CONDUCT_CARRIER_JSON: &str = include_str!("../content/units/conduct_carrier.json");
 
-/// Precomputed SHA-256 entry for one client content pack.
+/// Precomputed SHA-256 entry for one projected client content pack.
 #[derive(Clone, Debug)]
 pub struct ClientPackEntry {
-    /// Stable pack identifier (`"neighborhood.ceres_freeport"`, `"dray"`, `"goods"`, ...).
-    pub id: &'static str,
-    /// Pack category (`"neighborhood"`, `"unit"`, `"weapon"`, `"market"`, `"lane"`, `"arena_atlas"`).
+    /// Canonical client pack identifier (`"neighborhood.ceres_freeport"`, `"dray"`, `"goods"`, ...).
+    pub id: Arc<str>,
+    /// Pack category (`"neighborhood"`, `"cast"`, `"unit"`, `"weapon"`, `"arena"`, `"arena_atlas"`, `"market"`, `"lane"`).
     pub category: &'static str,
-    /// Lowercase hex SHA-256 of `json`.
+    /// Lowercase hex SHA-256 of the projected `json`.
     pub sha256: Arc<str>,
-    /// Raw UTF-8 JSON payload.
+    /// Projected player-safe UTF-8 JSON payload.
     pub json: Arc<str>,
 }
 
-/// Cached bundle of all client content packs and their serialized manifest JSON.
+/// Cached bundle of all projected client content packs and their manifest JSON.
 #[derive(Debug)]
 pub struct ClientContentBundle {
-    /// Serialized HTTP manifest JSON (`{ "version": 1, "packs": [...] }`).
-    pub manifest_json: Arc<str>,
     /// Manifest entries as a `serde_json::Value` array for WebSocket frames.
     pub manifest_packs_value: Value,
-    /// Individual pack entries.
+    /// Individual projected pack entries in deterministic manifest order.
     pub entries: Vec<ClientPackEntry>,
+    /// Lookup index mapping canonical IDs and aliases to index in `entries`.
+    by_id: BTreeMap<String, usize>,
+}
+
+impl ClientContentBundle {
+    /// Look up a projected pack entry by canonical ID or alias.
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<&ClientPackEntry> {
+        let idx = *self.by_id.get(id.trim())?;
+        self.entries.get(idx)
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -272,56 +109,303 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Lazily computed static bundle of client content packs and SHA-256 digests.
+fn public_role_clause(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let semi = trimmed.find(';');
+    let dot = trimmed.find('.');
+    let cut = match (semi, dot) {
+        (Some(s), Some(d)) => Some(s.min(d)),
+        (Some(s), None) => Some(s),
+        (None, Some(d)) => Some(d),
+        (None, None) => None,
+    };
+    let head = match cut {
+        Some(idx) if idx > 0 && idx <= 110 => trimmed.get(..idx).unwrap_or(trimmed).trim(),
+        _ => trimmed,
+    };
+    if head.chars().count() > 96 {
+        let mut short: String = head.chars().take(93).collect();
+        short.push_str("...");
+        short
+    } else {
+        head.to_owned()
+    }
+}
+
+fn entry_is_staff_or_hidden(kind: &str, def: Option<&Map<String, Value>>) -> bool {
+    if matches!(kind, "secret" | "lore" | "quest") {
+        return true;
+    }
+    let Some(def) = def else {
+        return false;
+    };
+    if def.get("reveal").and_then(Value::as_str) == Some("staff") {
+        return true;
+    }
+    if def.get("visibility").and_then(Value::as_str) == Some("hidden") {
+        return true;
+    }
+    if def
+        .get("portal")
+        .and_then(Value::as_object)
+        .and_then(|p| p.get("visibility"))
+        .and_then(Value::as_str)
+        == Some("hidden")
+    {
+        return true;
+    }
+    false
+}
+
+fn sanitize_entry_in_place(kind: &str, def: &mut Map<String, Value>) {
+    match kind {
+        "room" => {
+            if def.get("access").and_then(Value::as_str) == Some("restricted") {
+                def.remove("desc");
+                def.remove("details");
+            }
+        }
+        "npc" | "person" => {
+            def.remove("tags");
+            if let Some(profile) = def.get_mut("profile").and_then(Value::as_object_mut) {
+                let enabled = profile
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let bg = profile
+                    .get("background")
+                    .and_then(Value::as_str)
+                    .map(public_role_clause)
+                    .unwrap_or_default();
+                profile.clear();
+                profile.insert("enabled".to_owned(), Value::Bool(enabled));
+                if !bg.is_empty() {
+                    profile.insert("background".to_owned(), Value::String(bg));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Project an authoring JSON pack down to player-safe client geometry and public
+/// metadata, stripping `"brief"`, `"digest"`, `"secret"`/`"lore"`/`"quest"`
+/// entries, `"reveal": "staff"`, `"visibility": "hidden"` exits, restricted
+/// room prose, and private NPC prompt fields.
+#[must_use]
+pub fn project_pack_for_client(raw_json: &str) -> Option<String> {
+    let mut doc: Value = serde_json::from_str(raw_json).ok()?;
+    let root = doc.as_object_mut()?;
+    root.remove("brief");
+    if let Some(manifest) = root.get_mut("manifest").and_then(Value::as_object_mut) {
+        manifest.remove("digest");
+        manifest.insert("projected".to_owned(), Value::Bool(true));
+    }
+    if let Some(entries) = root.get_mut("entries").and_then(Value::as_object_mut) {
+        let drop_keys: Vec<String> = entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
+                let def = entry.get("def").and_then(Value::as_object);
+                entry_is_staff_or_hidden(kind, def).then_some(key.clone())
+            })
+            .collect();
+        for key in drop_keys {
+            entries.remove(&key);
+        }
+        for entry in entries.values_mut() {
+            let kind = entry
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            if let Some(def) = entry.get_mut("def").and_then(Value::as_object_mut) {
+                sanitize_entry_in_place(&kind, def);
+            }
+        }
+    }
+    serde_json::to_string(&doc).ok()
+}
+
+struct PackCollector {
+    entries: Vec<ClientPackEntry>,
+    pack_rows: Vec<Value>,
+    by_id: BTreeMap<String, usize>,
+}
+
+impl PackCollector {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            pack_rows: Vec::new(),
+            by_id: BTreeMap::new(),
+        }
+    }
+
+    fn push_projected(
+        &mut self,
+        id: &str,
+        category: &'static str,
+        raw_json: &str,
+        aliases: &[&str],
+    ) {
+        if self.by_id.contains_key(id) {
+            return;
+        }
+        let Some(projected) = project_pack_for_client(raw_json) else {
+            return;
+        };
+        let sha = sha256_hex(projected.as_bytes());
+        let idx = self.entries.len();
+        self.pack_rows.push(json!({
+            "id": id,
+            "category": category,
+            "sha256": sha,
+            "bytes": projected.len(),
+        }));
+        self.entries.push(ClientPackEntry {
+            id: Arc::from(id),
+            category,
+            sha256: Arc::from(sha),
+            json: Arc::from(projected),
+        });
+        self.by_id.insert(id.to_owned(), idx);
+        for &alias in aliases {
+            if !alias.is_empty() {
+                self.by_id.entry(alias.to_owned()).or_insert(idx);
+            }
+        }
+    }
+
+    fn push_manifest_neighborhood_if_applicable(&mut self, raw_json: &str) {
+        let Ok(doc) = serde_json::from_str::<Value>(raw_json) else {
+            return;
+        };
+        let Some(manifest) = doc.get("manifest").and_then(Value::as_object) else {
+            return;
+        };
+        if manifest.get("kind").and_then(Value::as_str) != Some("neighborhood") {
+            return;
+        }
+        let Some(id) = manifest.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let short = id.strip_prefix("neighborhood.").unwrap_or("");
+        self.push_projected(id, "neighborhood", raw_json, &[short]);
+    }
+
+    fn push_fielded_pack_if_client_relevant(&mut self, raw_json: &str) {
+        let Ok(doc) = serde_json::from_str::<Value>(raw_json) else {
+            return;
+        };
+        let manifest_id = doc
+            .get("manifest")
+            .and_then(|m| m.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let Some(entries) = doc.get("entries").and_then(Value::as_object) else {
+            return;
+        };
+        // Identify single-family unit, weapon, or arena seed packs for 3D clients.
+        let mut first_unit: Option<&str> = None;
+        let mut first_weapon: Option<&str> = None;
+        let mut first_arena: Option<&str> = None;
+        for (entry_id, entry) in entries {
+            match entry.get("kind").and_then(Value::as_str) {
+                Some("unit") if first_unit.is_none() => first_unit = Some(entry_id.as_str()),
+                Some("weapon") if first_weapon.is_none() => first_weapon = Some(entry_id.as_str()),
+                Some("arena") if first_arena.is_none() => first_arena = Some(entry_id.as_str()),
+                _ => {}
+            }
+        }
+        if let Some(unit_id) = first_unit {
+            let slug = unit_id.strip_prefix("tacsim.unit.").unwrap_or(unit_id);
+            self.push_projected(slug, "unit", raw_json, &[unit_id, manifest_id]);
+        } else if let Some(weapon_id) = first_weapon {
+            let slug = weapon_id
+                .strip_prefix("tacsim.weapon.")
+                .unwrap_or(weapon_id);
+            self.push_projected(slug, "weapon", raw_json, &[weapon_id, manifest_id]);
+        } else if let Some(arena_id) = first_arena {
+            let slug = arena_id.strip_prefix("tacsim.arena.").unwrap_or(arena_id);
+            let client_id = format!("arena.{slug}");
+            self.push_projected(&client_id, "arena", raw_json, &[arena_id, manifest_id]);
+        }
+    }
+}
+
+/// Lazily computed static bundle of projected client content packs and SHA-256 digests.
 #[must_use]
 pub fn client_content_bundle() -> &'static ClientContentBundle {
     static BUNDLE: OnceLock<ClientContentBundle> = OnceLock::new();
     BUNDLE.get_or_init(|| {
-        let mut entries = Vec::with_capacity(CLIENT_PACK_SOURCES.len());
-        let mut pack_rows = Vec::with_capacity(CLIENT_PACK_SOURCES.len());
-        for &(id, category, raw_json) in CLIENT_PACK_SOURCES {
-            let sha = sha256_hex(raw_json.as_bytes());
-            pack_rows.push(json!({
-                "id": id,
-                "category": category,
-                "sha256": sha,
-                "bytes": raw_json.len(),
-            }));
-            entries.push(ClientPackEntry {
-                id,
-                category,
-                sha256: Arc::from(sha),
-                json: Arc::from(raw_json),
-            });
+        let mut col = PackCollector::new();
+
+        // 1. Starter OOC & Staff Lobby neighborhoods (`mush-atlas`)
+        for &(_id, json_src) in &mush_atlas::starter::SOURCES {
+            col.push_manifest_neighborhood_if_applicable(json_src);
         }
-        let manifest_packs_value = Value::Array(pack_rows);
-        let manifest_doc = json!({
-            "version": SCHEMA_VERSION,
-            "packs": manifest_packs_value,
-        });
-        let manifest_str = serde_json::to_string(&manifest_doc)
-            .unwrap_or_else(|_| "{\"version\":1,\"packs\":[]}".to_owned());
+
+        // 2. All station, surface site, wide site, and relay neighborhoods (`tacsim`)
+        for &(_id, json_src) in STATION_SOURCES
+            .iter()
+            .chain(SITE_SOURCES.iter())
+            .chain(WIDE_SITE_SOURCES.iter())
+        {
+            col.push_manifest_neighborhood_if_applicable(json_src);
+        }
+        for json_src in crate::relay_content::GEOGRAPHY {
+            col.push_manifest_neighborhood_if_applicable(json_src);
+        }
+
+        // 3. Station public cast metadata (`cast.<slug>`, with lore & prompt internals stripped)
+        for &(pack_id, json_src) in &CAST_SOURCES {
+            let slug = pack_id.strip_prefix("tacsim.cast.").unwrap_or(pack_id);
+            let client_id = format!("cast.{slug}");
+            col.push_projected(&client_id, "cast", json_src, &[pack_id]);
+        }
+
+        // 4. Economy goods table & trade corridor lane
+        col.push_projected("goods", "market", GOODS_JSON, &["tacsim.goods"]);
+        col.push_projected(
+            "ceres_phobos",
+            "lane",
+            LANE_JSON,
+            &["tacsim.lane.ceres_phobos"],
+        );
+
+        // 5. All fielded units, weapons, and arena definitions (`fielded_sources` + conduct carrier)
+        for src in fielded_sources() {
+            col.push_fielded_pack_if_client_relevant(&src.bytes);
+        }
+        col.push_fielded_pack_if_client_relevant(CONDUCT_CARRIER_JSON);
+
+        // 6. Simulator arena ground atlases
+        col.push_projected(
+            "arena_atlas.proving_ground",
+            "arena_atlas",
+            PROVING_GROUND_ATLAS_JSON,
+            &["tacsim.proving_ground"],
+        );
+        col.push_projected(
+            "arena_atlas.mars_canyon",
+            "arena_atlas",
+            MARS_CANYON_ATLAS_JSON,
+            &["tacsim.mars_canyon"],
+        );
+        col.push_projected(
+            "arena_atlas.winter_valley",
+            "arena_atlas",
+            WINTER_VALLEY_ATLAS_JSON,
+            &["tacsim.winter_valley"],
+        );
+
         ClientContentBundle {
-            manifest_json: Arc::from(manifest_str),
-            manifest_packs_value,
-            entries,
+            manifest_packs_value: Value::Array(col.pack_rows),
+            entries: col.entries,
+            by_id: col.by_id,
         }
     })
-}
-
-/// One HTTP-served content pack entry: `(id, sha256, json)`.
-pub type HttpContentPackEntry = (String, Arc<str>, Arc<str>);
-
-/// Exported tuple for `WebBridge::with_content_packs`: `(manifest_json, packs)`.
-#[must_use]
-pub fn http_content_packs() -> (Arc<str>, Vec<HttpContentPackEntry>) {
-    let bundle = client_content_bundle();
-    let packs = bundle
-        .entries
-        .iter()
-        .map(|e| (e.id.to_owned(), Arc::clone(&e.sha256), Arc::clone(&e.json)))
-        .collect();
-    (Arc::clone(&bundle.manifest_json), packs)
 }
 
 /// Register the `port.trade` and `tacsim.content` pulled panel feeds and query handlers.
@@ -348,12 +432,13 @@ impl QueryHandler for ClientContentQuery {
             .unwrap_or("manifest");
         let data = if op == "pack" {
             let req_id = params.get("id").and_then(Value::as_str).unwrap_or("");
-            match bundle.entries.iter().find(|e| e.id == req_id) {
+            match bundle.find(req_id) {
                 Some(entry) => json!({
                     "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
                     "op": "pack",
                     "found": true,
-                    "id": entry.id,
+                    "id": entry.id.as_ref(),
+                    "requested_id": req_id,
                     "category": entry.category,
                     "sha256": entry.sha256.as_ref(),
                     "json": entry.json.as_ref(),
@@ -389,17 +474,10 @@ fn actor_credit_balance(w: &World, actor: ObjId) -> (i64, String) {
     let Some(instrument) = InstrumentId::new(CREDIT) else {
         return (0, "0.00cr".to_owned());
     };
-    let who = PrincipalId::Object(actor);
-    let available_minor = economy
-        .snapshot()
-        .accounts_of(&who)
-        .find(|a| a.instrument == instrument)
-        .map_or(0_i64, |a| {
-            a.posted_balance
-                .minor()
-                .saturating_sub(a.held_amount.minor())
-                .max(0)
-        });
+    let available = own_account(w, actor)
+        .and_then(mush_economy::Account::available)
+        .unwrap_or(Amount::ZERO);
+    let available_minor = available.minor().max(0);
     let text = mush_economy::render_amount(
         economy.snapshot(),
         &instrument,
@@ -408,22 +486,72 @@ fn actor_credit_balance(w: &World, actor: ObjId) -> (i64, String) {
     (available_minor, text)
 }
 
-fn resolve_actor_venue(w: &World, actor: ObjId) -> Option<mush_market::MarketId> {
-    let loc = w.get(actor).and_then(|o| o.location)?;
+/// Resolve the market venue where `actor` can actually execute `Presence::Here`
+/// trades (`PortVenueGate` excludes hull rooms, so no hull-room fallback is used).
+fn resolve_actor_venue(w: &World, actor: ObjId) -> (Option<mush_market::MarketId>, Option<String>) {
+    let Some(loc) = w.get(actor).and_then(|o| o.location) else {
+        return (None, None);
+    };
     use mush_market::VenueGate as _;
     if let Some(v) = PortVenueGate.venue_of_room(w, loc) {
-        return Some(v);
+        return (Some(v), None);
     }
-    // If aboard a docked hull, resolve the port venue of the hull's berth.
-    if let Some((view, _)) = hull_of_room(w, loc)
-        && let Berth::Docked { def, .. } = berth_of(w, view.hull())
-    {
-        return mush_market::MarketId::new(def.venue.as_str());
-    }
-    None
+    let docked_port_hint =
+        hull_of_room(w, loc).and_then(|(view, _)| match berth_of(w, view.hull()) {
+            Berth::Docked { def, .. } if !def.venue.as_str().is_empty() => Some(port_name(def)),
+            _ => None,
+        });
+    (None, docked_port_hint)
 }
 
-fn build_port_trade_frame(ctx: Option<&HookReadContext<'_>>, w: &World, actor: ObjId) -> Value {
+fn format_price(w: &World, instrument: Option<&InstrumentId>, amount: Amount) -> String {
+    if let (Some(economy), Some(inst)) = (w.module_state::<EconomyStore>(), instrument) {
+        mush_economy::render_amount(economy.snapshot(), inst, amount)
+    } else {
+        money(w, amount)
+    }
+}
+
+fn build_open_quotes_json(w: &World, market_store: &MarketStore, actor: ObjId) -> Vec<Value> {
+    let buyer = PrincipalId::Object(actor);
+    let now = w.now();
+    let mut out = Vec::new();
+    for q in market_store.quotes_of_buyer(&buyer) {
+        if q.contract.is_some() || q.settled.is_some() || now >= q.expires.at {
+            continue;
+        }
+        let listing_still_matches = market_store
+            .listing(q.listing)
+            .is_some_and(|l| l.revision == q.observed.listing && l.quantity >= q.quantity);
+        if !listing_still_matches {
+            continue;
+        }
+        let total_minor = q
+            .price
+            .minor()
+            .saturating_mul(i64::try_from(q.quantity).unwrap_or(i64::MAX));
+        out.push(json!({
+            "quote_id": q.id.0,
+            "listing_id": q.listing.0,
+            "good": q.catalog.code.as_str(),
+            "market": q.market.as_str(),
+            "quantity": q.quantity,
+            "unit_price_minor": q.price.minor(),
+            "total_minor": total_minor,
+            "price_text": money(w, q.price),
+            "total_text": money(w, Amount::from_minor(total_minor)),
+            "expires_at": q.expires.at,
+        }));
+    }
+    out
+}
+
+fn build_port_trade_frame(
+    ctx: Option<&HookReadContext<'_>>,
+    w: &World,
+    actor: ObjId,
+    params: &Value,
+) -> Value {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return json!({
             "schema": { "id": PORT_TRADE_FEED, "version": SCHEMA_VERSION },
@@ -437,45 +565,58 @@ fn build_port_trade_frame(ctx: Option<&HookReadContext<'_>>, w: &World, actor: O
         });
     }
     let (balance_minor, balance_text) = actor_credit_balance(w, actor);
-    let venue = resolve_actor_venue(w, actor);
+    let (venue, aboard_docked_port) = resolve_actor_venue(w, actor);
     let venue_port_label = venue
         .as_ref()
         .and_then(|v| port_of_venue(w, v))
         .map(|(def, _)| port_name(def));
 
+    let after_cursor = params.get("after").and_then(Value::as_u64).map(ListingId);
+
     let mut listings_json = Vec::new();
-    if let (Some(market_store), Some(v)) = (w.module_state::<MarketStore>(), venue.as_ref()) {
-        let filter = MarketFilter::Market(v.clone());
-        let page = mush_market::visible(w, actor, Some(&filter), MARKET_PAGE, None);
-        let goods = store.goods();
-        for id in &page.ids {
-            let Some(l) = market_store.listing(*id) else {
-                continue;
-            };
-            let is_bid = l.source.is_wanted();
-            let side = if is_bid { "bid" } else { "ask" };
-            let good_code = l.catalog.code.to_string();
-            let good_label = goods
-                .and_then(|g| {
-                    mush_core::CanonicalId::new(&good_code)
-                        .ok()
-                        .and_then(|cid| g.good(&cid))
-                })
-                .map_or_else(|| good_code.clone(), |row| row.label.clone());
-            let vendor_name = market_store.vendor(l.vendor).map_or_else(
-                || format!("vendor {}", l.vendor),
-                |vend| vend.name.to_string(),
-            );
-            listings_json.push(json!({
-                "id": l.id.0,
-                "side": side,
-                "good": good_code,
-                "good_label": good_label,
-                "vendor_name": vendor_name,
-                "unit_price_minor": l.price.minor(),
-                "price_text": money(w, l.price),
-                "available_qty": l.quantity,
-            }));
+    let mut next_after: Option<u64> = None;
+    let mut open_quotes_json = Vec::new();
+
+    if let Some(market_store) = w.module_state::<MarketStore>() {
+        open_quotes_json = build_open_quotes_json(w, market_store, actor);
+        if let Some(v) = venue.as_ref() {
+            let filter = MarketFilter::Market(v.clone());
+            let page = mush_market::visible(w, actor, Some(&filter), MARKET_PAGE, after_cursor);
+            next_after = page.next.map(|id| id.0);
+            let goods = store.goods();
+            for id in &page.ids {
+                let Some(l) = market_store.listing(*id) else {
+                    continue;
+                };
+                let summary = mush_market::summarize_listing(w, l);
+                let is_bid = l.source.is_wanted();
+                let side = if is_bid { "bid" } else { "ask" };
+                let good_code = l.catalog.code.to_string();
+                let good_label = goods
+                    .and_then(|g| {
+                        mush_core::CanonicalId::new(&good_code)
+                            .ok()
+                            .and_then(|cid| g.good(&cid))
+                    })
+                    .map_or_else(|| good_code.clone(), |row| row.label.clone());
+                let seller_display = if summary.seller_name.is_empty() {
+                    l.market.as_str().to_owned()
+                } else {
+                    summary.seller_name
+                };
+                listings_json.push(json!({
+                    "id": l.id.0,
+                    "side": side,
+                    "good": good_code,
+                    "good_label": good_label,
+                    "vendor_name": seller_display,
+                    "is_personal": l.is_personal(),
+                    "funded": summary.funded,
+                    "unit_price_minor": summary.price.minor(),
+                    "price_text": format_price(w, summary.instrument.as_ref(), summary.price),
+                    "available_qty": l.quantity,
+                }));
+            }
         }
     }
 
@@ -512,24 +653,33 @@ fn build_port_trade_frame(ctx: Option<&HookReadContext<'_>>, w: &World, actor: O
         }))
     });
 
+    let actor_room = w.get(actor).and_then(|o| o.location);
+    let berth_json = actor_room.and_then(|room| berth_gallery_json(w, store, actor, room));
+    let simulator_json = actor_room.and_then(|room| simulator_lobby_json(w, actor, room));
+
     json!({
         "schema": { "id": PORT_TRADE_FEED, "version": SCHEMA_VERSION },
         "enabled": true,
         "venue": venue.as_ref().map(mush_market::MarketId::as_str),
         "port_name": venue_port_label,
+        "aboard_docked_port": aboard_docked_port,
         "balance_minor": balance_minor,
         "balance_text": balance_text,
         "listings": listings_json,
+        "next_after": next_after,
+        "open_quotes": open_quotes_json,
         "ship": ship_json,
+        "berth": berth_json,
+        "simulator": simulator_json,
     })
 }
 
 impl QueryHandler for PortTradeQuery {
-    fn query(&self, w: &World, actor: ObjId, _params: &Value) -> Result<OutputEvent, RichText> {
+    fn query(&self, w: &World, actor: ObjId, params: &Value) -> Result<OutputEvent, RichText> {
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static(PORT_TRADE_FEED),
             kind: PanelFrameKind::Keyframe,
-            data: build_port_trade_frame(None, w, actor),
+            data: build_port_trade_frame(None, w, actor, params),
         })
     }
 
@@ -537,12 +687,12 @@ impl QueryHandler for PortTradeQuery {
         &self,
         context: &HookReadContext<'_>,
         actor: ObjId,
-        _params: &Value,
+        params: &Value,
     ) -> Result<OutputEvent, RichText> {
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static(PORT_TRADE_FEED),
             kind: PanelFrameKind::Keyframe,
-            data: build_port_trade_frame(Some(context), context.world(), actor),
+            data: build_port_trade_frame(Some(context), context.world(), actor, params),
         })
     }
 }
@@ -554,22 +704,90 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn client_content_bundle_hashes_and_parses_all_packs() -> TestResult {
+    fn client_content_bundle_strips_secrets_hidden_exits_and_prompt_internals() -> TestResult {
         let bundle = client_content_bundle();
         check!(!bundle.entries.is_empty());
-        let parsed_manifest: Value = serde_json::from_str(&bundle.manifest_json)?;
-        check_eq!(parsed_manifest["version"], json!(SCHEMA_VERSION));
+
         for entry in &bundle.entries {
             check_eq!(entry.sha256.len(), 64);
             check!(!entry.json.is_empty());
             let parsed: Value = serde_json::from_str(&entry.json)?;
             check!(parsed.is_object());
+            check!(parsed.get("brief").is_none());
+            if let Some(entries) = parsed.get("entries").and_then(Value::as_object) {
+                for (_id, row) in entries {
+                    let kind = row.get("kind").and_then(Value::as_str).unwrap_or("");
+                    check_ne!(kind, "secret");
+                    check_ne!(kind, "lore");
+                    check_ne!(kind, "quest");
+                    if let Some(def) = row.get("def").and_then(Value::as_object) {
+                        check_ne!(def.get("reveal").and_then(Value::as_str), Some("staff"));
+                        check_ne!(
+                            def.get("visibility").and_then(Value::as_str),
+                            Some("hidden")
+                        );
+                        let portal_vis = def
+                            .get("portal")
+                            .and_then(Value::as_object)
+                            .and_then(|p| p.get("visibility"))
+                            .and_then(Value::as_str);
+                        check_ne!(portal_vis, Some("hidden"));
+                        if let Some(prof) = def.get("profile").and_then(Value::as_object) {
+                            check!(prof.get("persona").is_none());
+                            check!(prof.get("knows").is_none());
+                            check!(prof.get("does_not_know").is_none());
+                            check!(prof.get("fallback").is_none());
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(ceres) = bundle.find("neighborhood.ceres_freeport") else {
+            return crate::test_checks::failed("missing ceres_freeport pack");
+        };
+        check!(!ceres.json.contains("secret.slowdown"));
+        check!(!ceres.json.contains("exit.c14_c15"));
+        check!(!ceres.json.contains("exit.c05_c16"));
+        Ok(())
+    }
+
+    #[test]
+    fn client_content_bundle_covers_every_content_neighborhood_and_unit_file() -> TestResult {
+        let bundle = client_content_bundle();
+        let content_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("content");
+
+        for entry in std::fs::read_dir(content_root.join("atlas"))? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if let Some(pack_id) = fname
+                .strip_prefix("neighborhood.")
+                .and_then(|s| s.strip_suffix(".json"))
+                .map(|slug| format!("neighborhood.{slug}"))
+                && bundle.find(&pack_id).is_none()
+            {
+                return crate::test_checks::failed(&format!(
+                    "neighborhood file `{fname}` missing from client_content_bundle"
+                ));
+            }
+        }
+
+        for entry in std::fs::read_dir(content_root.join("units"))? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if let Some(stem) = fname.strip_suffix(".json")
+                && bundle.find(stem).is_none()
+            {
+                return crate::test_checks::failed(&format!(
+                    "unit file `{fname}` missing from client_content_bundle"
+                ));
+            }
         }
         Ok(())
     }
 
     #[test]
-    fn client_content_query_answers_manifest_and_pack() -> TestResult {
+    fn client_content_query_answers_manifest_and_aliases() -> TestResult {
         let tw = mush_testkit::TestWorld::new();
         let w = &tw.engine().world;
         let q = ClientContentQuery;
@@ -581,17 +799,18 @@ mod tests {
         };
         check_eq!(feed.as_str(), CLIENT_CONTENT_FEED);
         check_eq!(data["op"], json!("manifest"));
-        check!(data["packs"].as_array().is_some_and(|a| !a.is_empty()));
+        check!(data["packs"].as_array().is_some_and(|a| a.len() >= 50));
 
-        let Ok(dray) = q.query(w, ObjId(1), &json!({"op": "pack", "id": "dray"})) else {
-            return crate::test_checks::failed("pack query failed");
-        };
-        let OutputEvent::Panel { data: pdata, .. } = dray else {
-            return crate::test_checks::failed("expected panel frame");
-        };
-        check_eq!(pdata["found"], json!(true));
-        check_eq!(pdata["id"], json!("dray"));
-        check!(pdata["json"].as_str().is_some_and(|s| s.contains("dray")));
+        for alias in ["dray", "tacsim.unit.dray", "tacsim.pack.dray"] {
+            let Ok(dray) = q.query(w, ObjId(1), &json!({"op": "pack", "id": alias})) else {
+                return crate::test_checks::failed("pack query failed");
+            };
+            let OutputEvent::Panel { data: pdata, .. } = dray else {
+                return crate::test_checks::failed("expected panel frame");
+            };
+            check_eq!(pdata["found"], json!(true));
+            check_eq!(pdata["id"], json!("dray"));
+        }
         Ok(())
     }
 }

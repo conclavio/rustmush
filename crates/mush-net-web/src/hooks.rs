@@ -465,16 +465,4 @@ pub trait WebHooks: Send + Sync {
     fn metrics(&self) -> Arc<Metrics> {
         Arc::new(Metrics::new())
     }
-
-    /// Optional read-only JSON manifest of client content packs (`GET /api/content/manifest`).
-    /// Default: `None` (answered with `404`).
-    fn content_manifest(&self) -> Option<Arc<str>> {
-        None
-    }
-
-    /// Optional read-only `(sha256, json)` for one client content pack
-    /// (`GET /api/content/packs/{id}`). Default: `None` (answered with `404`).
-    fn content_pack(&self, _id: &str) -> Option<(Arc<str>, Arc<str>)> {
-        None
-    }
 }

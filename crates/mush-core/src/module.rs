@@ -606,6 +606,16 @@ impl<'a> HookReadContext<'a> {
         self.registry
     }
 
+    /// Whether `observer` may perceive `subject` under the live registry's
+    /// `Perceive` hooks (`false` when no registry is attached).
+    #[must_use]
+    pub fn can_perceive(&self, observer: ObjId, subject: ObjId) -> bool {
+        let Some(reg) = self.registry else {
+            return false;
+        };
+        can_perceive(reg, self.world, observer, subject, self.typed_state.lens())
+    }
+
     #[must_use]
     pub const fn typed_state_available(&self) -> bool {
         self.typed_state.is_available()
@@ -5716,7 +5726,7 @@ pub fn room_ambient(
         map.insert(key, value);
     };
     for h in reg.hooks(HookPoint::RoomAmbient) {
-        let ctx = HookReadContext::for_module(w, lens, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module).with_registry(reg);
         for (key, value) in h.hook.room_ambient(&ctx, looker, room) {
             offer(key, value, &h.module);
         }

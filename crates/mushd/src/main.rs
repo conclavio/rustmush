@@ -526,7 +526,6 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     web_config.asset_pack =
         mush_net_ssh::assets::AssetPack::shipped().map(mush_net_ssh::assets::AssetPack::hello_info);
     let web_listen = web_config.listen;
-    let (content_manifest, content_packs) = mush_server::modules::http_content_packs();
     let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(
         WebBridge::new(
             Arc::clone(&accounts),
@@ -536,8 +535,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             Arc::clone(&store),
             panels,
         )
-        .with_metrics(Arc::clone(&metrics))
-        .with_content_packs(content_manifest, content_packs),
+        .with_metrics(Arc::clone(&metrics)),
     );
     let (web_stop, web_stop_rx) = tokio::sync::oneshot::channel::<()>();
     let web_join = tokio::spawn(async move {

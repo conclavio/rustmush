@@ -27,6 +27,7 @@ namespace TacSim.UI
         public event Action<string> OnCommandSubmitted;
         public event Action<bool> OnComposingChanged;
         public event Action OnRefreshTradeRequested;
+        public event Action<ulong> OnLoadMoreTradeRequested;
         public event Action<MarketListingRow, int, bool> OnMarketBuyRequested;
         public event Action<MarketListingRow, int, bool> OnMarketSellRequested;
         public event Action<MushServerRequest, string> OnRequestChoiceSubmitted;
@@ -117,6 +118,7 @@ namespace TacSim.UI
         private Transform _modalButtonsRoot;
         private InputField _npcSayInput;
         private string _activeNpcTargetName;
+        private string _modalCommandPrefix;
         private string _modalBaseIntro = string.Empty;
         private readonly List<string> _modalResponseLines = new List<string>();
 
@@ -720,6 +722,9 @@ namespace TacSim.UI
 
         private void HandleInputComposingEdited(string rawValue, bool isNpcSayBox)
         {
+            if (isNpcSayBox && !string.IsNullOrEmpty(_modalCommandPrefix))
+                return;
+
             string trimmed = rawValue != null ? rawValue.TrimStart() : string.Empty;
             bool shouldCompose = !string.IsNullOrEmpty(trimmed) &&
                 (isNpcSayBox || (trimmed[0] != '+' && trimmed[0] != '@' && trimmed[0] != '/'));
@@ -742,12 +747,21 @@ namespace TacSim.UI
             OnComposingChanged?.Invoke(active);
         }
 
+        public string GetModalInputValue() => _npcSayInput != null ? _npcSayInput.text.Trim() : string.Empty;
+
         private void SubmitNpcInput()
         {
             if (_npcSayInput == null || string.IsNullOrWhiteSpace(_npcSayInput.text)) return;
             string spoken = _npcSayInput.text.Trim();
-            _npcSayInput.text = string.Empty;
             SetComposingState(false);
+
+            if (!string.IsNullOrEmpty(_modalCommandPrefix))
+            {
+                OnCommandSubmitted?.Invoke($"{_modalCommandPrefix} {spoken}");
+                return;
+            }
+
+            _npcSayInput.text = string.Empty;
             if (!string.IsNullOrEmpty(_activeNpcTargetName))
                 OnCommandSubmitted?.Invoke($"say {_activeNpcTargetName}, {spoken}");
             else
@@ -895,7 +909,7 @@ namespace TacSim.UI
                 case "room.c05_registry":
                 case "room.l05_registry":
                     AddQuickBtn("Co-op Terms", () => OnCommandSubmitted?.Invoke("+coop"));
-                    AddQuickBtn("Enrol 'Salt Moth'", () => OnCommandSubmitted?.Invoke("+coop/enrol Salt Moth"));
+                    AddQuickBtn("Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"));
                     AddQuickBtn("Statement", () => OnCommandSubmitted?.Invoke("+coop/statement"));
                     break;
                 case "room.c07_exchange":
@@ -944,7 +958,7 @@ namespace TacSim.UI
                     AddQuickBtn("Look Around", () => OnCommandSubmitted?.Invoke("look"));
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
                     AddQuickBtn("Credits", () => OnCommandSubmitted?.Invoke("+credit"));
-                    AddQuickBtn("OOC Portal (+ooc)", () => OnCommandSubmitted?.Invoke("+ooc"));
+                    AddQuickBtn("OOC Portal (ooc)", () => OnCommandSubmitted?.Invoke("ooc"));
                     break;
             }
         }
@@ -1089,8 +1103,11 @@ namespace TacSim.UI
             if (_boundTradeState.Listings.Count == 0)
             {
                 var emptyRow = CreatePanel(_listingsContentRoot, "EmptyNotice", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.06f, 0.11f, 0.17f, 0.9f));
-                emptyRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 54f);
-                var msg = CreateText(emptyRow.transform, "No cached listings yet — click <b>REFRESH BOARD</b> to query live +market/list asks & bids.", 14, FontStyle.Italic, TextAnchor.MiddleCenter, new Color(0.75f, 0.88f, 0.98f));
+                emptyRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 58f);
+                string emptyMsg = !string.IsNullOrEmpty(_boundTradeState.AboardDockedPortHint)
+                    ? $"You are aboard your hull at <b>{_boundTradeState.AboardDockedPortHint}</b> — step ashore (<b>+ship/leave</b>) to trade on the port exchange."
+                    : "No cached listings yet — visit a port exchange/chandlery or click <b>REFRESH BOARD</b>.";
+                var msg = CreateText(emptyRow.transform, emptyMsg, 14, FontStyle.Italic, TextAnchor.MiddleCenter, new Color(0.75f, 0.88f, 0.98f));
                 msg.supportRichText = true;
                 SetRect(msg.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 0f), new Vector2(-12f, 0f));
                 return;
@@ -1149,6 +1166,16 @@ namespace TacSim.UI
                 }
             }
 
+            if (_boundTradeState.NextAfterListingId.HasValue)
+            {
+                ulong afterId = _boundTradeState.NextAfterListingId.Value;
+                var moreRow = CreatePanel(_listingsContentRoot, "LoadMoreRow", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.08f, 0.16f, 0.24f, 0.94f));
+                moreRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 42f);
+                var moreBtn = CreateButton(moreRow.transform, "LOAD MORE LISTINGS", new Color(0.16f, 0.42f, 0.58f), () =>
+                    OnLoadMoreTradeRequested?.Invoke(afterId));
+                SetRect(moreBtn.GetComponent<RectTransform>(), new Vector2(0.25f, 0f), new Vector2(0.75f, 1f), new Vector2(0f, 4f), new Vector2(0f, -4f));
+            }
+
             LayoutRebuilder.ForceRebuildLayoutImmediate(_listingsContentRoot.GetComponent<RectTransform>());
         }
 
@@ -1178,7 +1205,13 @@ namespace TacSim.UI
             CreateButton(_quickActionsContainer, label, new Color(0.11f, 0.24f, 0.34f, 0.95f), onClick);
         }
 
-        public void ShowDetailModal(string header, string body, List<(string label, Action action)> actions = null, string npcName = null)
+        public void ShowDetailModal(
+            string header,
+            string body,
+            List<(string label, Action action)> actions = null,
+            string npcName = null,
+            string commandPrefix = null,
+            string defaultInputValue = null)
         {
             if (_modalPanel == null) return;
             if (_tradePanel != null) _tradePanel.SetActive(false);
@@ -1191,7 +1224,11 @@ namespace TacSim.UI
             if (_modalScrollRect != null)
                 _modalScrollRect.verticalNormalizedPosition = 1f;
             _activeNpcTargetName = npcName;
-            _npcSayInput.gameObject.SetActive(!string.IsNullOrEmpty(npcName));
+            _modalCommandPrefix = commandPrefix;
+            bool showInput = !string.IsNullOrEmpty(npcName) || !string.IsNullOrEmpty(commandPrefix);
+            _npcSayInput.gameObject.SetActive(showInput);
+            if (showInput)
+                _npcSayInput.text = defaultInputValue ?? string.Empty;
 
             for (int i = _modalButtonsRoot.childCount - 1; i >= 0; i--)
                 Destroy(_modalButtonsRoot.GetChild(i).gameObject);

@@ -34,9 +34,29 @@ namespace TacSim.Net
             if (!s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
                 !s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
-                s = "http://" + s;
+                s = (IsLoopbackAuthority(s) ? "http://" : "https://") + s;
             }
             return s;
+        }
+
+        private static bool IsLoopbackAuthority(string rawAuthority)
+        {
+            if (string.IsNullOrWhiteSpace(rawAuthority))
+                return true;
+            string hostPart = rawAuthority;
+            int slash = hostPart.IndexOf('/');
+            if (slash >= 0) hostPart = hostPart.Substring(0, slash);
+            if (hostPart.StartsWith("[", StringComparison.Ordinal))
+            {
+                int close = hostPart.IndexOf(']');
+                string v6 = close > 1 ? hostPart.Substring(1, close - 1) : hostPart;
+                return string.Equals(v6, "::1", StringComparison.OrdinalIgnoreCase);
+            }
+            int colon = hostPart.IndexOf(':');
+            string host = (colon >= 0 ? hostPart.Substring(0, colon) : hostPart).Trim();
+            return string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(host, "0.0.0.0", StringComparison.OrdinalIgnoreCase);
         }
 
         public static string ToWebSocketBaseUrl(string httpBaseUrl)

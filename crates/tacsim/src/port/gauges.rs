@@ -234,7 +234,7 @@ pub fn goods_list(
 
 /// A single-good compartment's good, quantity and capacity (qty +
 /// [`max_more`]). `None` for a compartment that is not single-good.
-fn single_reading<'a>(
+pub(crate) fn single_reading<'a>(
     goods: &'a GoodsTable,
     comp: &Compartment,
     contents: &BTreeMap<CanonicalId, u64>,

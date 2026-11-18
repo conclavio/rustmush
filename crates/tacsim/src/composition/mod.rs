@@ -15,8 +15,6 @@ pub mod salvage_source;
 pub mod seat_audit;
 pub mod sim_routes;
 
-pub use crate::client_sync::http_content_packs;
-
 use std::sync::Arc;
 
 use mush_core::module::GameModule;

@@ -15,10 +15,12 @@ namespace TacSim.World
         public string ItemName;
         public string GoodCode;
         public int Quantity;
+        public long UnitPriceMinor;
         public string UnitPriceText;
         public decimal UnitPriceMajor;
         public string Venue;
         public string VendorName;
+        public bool IsPersonal;
         public bool IsWantedBid;
         public bool IsFunded = true;
     }
@@ -26,18 +28,14 @@ namespace TacSim.World
     /// <summary>
     /// Authoritative client trade, credit, hold-gauge, and sailing-plan state for the
     /// Visual Commodity Exchange, Dual Mass/Volume Hold Bars, and Sailing Plan Builder.
-    /// Consumes structured `port.trade` panel keyframes and `ambient.tacsim.stowage` first,
-    /// with seamless fallback to `+market/list` / `+ship` / `+credit` line parsing for older servers.
+    /// Consumes structured `port.trade` panel keyframes (with post-spread pricing, pagination,
+    /// and correlated `open_quotes` verification before `+market/accept`), with safe fallback
+    /// line parsing for older servers.
     /// </summary>
     public sealed class TacSimTradeAndShipState
     {
-        // Fallback line parsers for older mushd builds without `port.trade`
         private static readonly Regex ListingRegex = new Regex(
             @"^#(\d+)\s+(.+?)\s+[—\-]+\s+(wanted\s+)?(\d+)\s+[×x]\s+([^\s\[]+)\s+\[([^\]]+)\](?:\s+(?:at|by)\s+(.+?))?(\s+[—\-]+\s+not buying)?(\s+\(hidden\))?\s*$",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-        private static readonly Regex QuoteRegex = new Regex(
-            @"^Quote\s+#(\d+)\b",
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         private static readonly Regex ShipHoldSummaryRegex = new Regex(
@@ -60,6 +58,10 @@ namespace TacSim.World
             @"^\s*LIMIT:\s*(\d+)\s*t\s*[·|]\s*(\d+)\s*m(?:³|3)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+        private static readonly Regex AvailableCreditRegex = new Regex(
+            @"(\d[\d,]*\.\d{2}\s*cr|\d[\d,]*\s*cr)\s+available\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
         private static readonly Regex CreditAmountRegex = new Regex(
             @"(\d[\d,]*\.\d{2}\s*cr|\d[\d,]*\s*cr)\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -72,6 +74,10 @@ namespace TacSim.World
         public bool SelectedSellAll { get; set; }
         public string SelectedDestinationPort { get; set; } = "stickney";
 
+        public string ActiveVenue { get; private set; } = string.Empty;
+        public string AboardDockedPortHint { get; private set; } = string.Empty;
+        public ulong? NextAfterListingId { get; private set; }
+
         // Live hull capacity gauges
         public int HoldMassTonnes { get; private set; }
         public int HoldMassLimitTonnes { get; private set; } = 100;
@@ -83,9 +89,11 @@ namespace TacSim.World
         public int StoresLimitCrewDays { get; private set; } = 120;
         public string CreditsText { get; private set; } = "— cr";
 
-        // Pending 1-click buy quote -> accept state
-        private ulong? _pendingAutoAcceptListingId;
-        private float _pendingAutoAcceptExpiresAt;
+        // Pending correlated 1-click buy intent (matched strictly against structured open_quotes)
+        private ulong? _pendingBuyListingId;
+        private int _pendingBuyQuantity;
+        private long _pendingBuyMaxTotalMinor;
+        private float _pendingBuyExpiresAt;
         private bool _clearListingsOnNextRow;
 
         public event Action OnStateChanged;
@@ -105,12 +113,95 @@ namespace TacSim.World
             _clearListingsOnNextRow = true;
         }
 
-        public string BeginOneClickBuy(ulong listingId, int quantity, float currentTimeS)
+        public string BeginOneClickBuy(ulong listingId, int quantity, float currentTimeS, long displayedUnitPriceMinor = 0)
         {
             int safeQty = Mathf.Max(1, quantity);
-            _pendingAutoAcceptListingId = listingId;
-            _pendingAutoAcceptExpiresAt = currentTimeS + 8.0f;
-            return $"+market/quote #{listingId}={safeQty}";
+            if (displayedUnitPriceMinor <= 0)
+            {
+                var found = Listings.Find(r => r.ListingId == listingId);
+                if (found != null)
+                {
+                    displayedUnitPriceMinor = found.UnitPriceMinor > 0
+                        ? found.UnitPriceMinor
+                        : (long)Math.Round(found.UnitPriceMajor * 100m);
+                }
+            }
+
+            _pendingBuyListingId = listingId;
+            _pendingBuyQuantity = safeQty;
+            _pendingBuyMaxTotalMinor = displayedUnitPriceMinor > 0 ? displayedUnitPriceMinor * safeQty : 0;
+            _pendingBuyExpiresAt = currentTimeS + 8.0f;
+            // Canonical `+market/quote` syntax accepts `#<id> <qty>` or `#<id>=<qty>`
+            return $"+market/quote #{listingId} {safeQty}";
+        }
+
+        public void CancelPendingBuy()
+        {
+            _pendingBuyListingId = null;
+            _pendingBuyQuantity = 0;
+            _pendingBuyMaxTotalMinor = 0;
+        }
+
+        /// <summary>
+        /// Correlates a pending 1-click buy against structured `open_quotes` in `port.trade`.
+        /// Only emits `+market/accept #&lt;quote_id&gt;` when `listing_id`, `quantity`, AND
+        /// `total_minor &lt;= expectedMaxTotalMinor` all agree. If the seller's price moved up,
+        /// cancels auto-accept and returns a warning so the player explicitly decides.
+        /// </summary>
+        public bool TryResolvePendingQuoteFromFeed(
+            JsonNode data,
+            float currentTimeS,
+            out string acceptCommand,
+            out string priceMovedWarning)
+        {
+            acceptCommand = null;
+            priceMovedWarning = null;
+
+            if (!_pendingBuyListingId.HasValue)
+                return false;
+
+            if (currentTimeS > _pendingBuyExpiresAt)
+            {
+                CancelPendingBuy();
+                return false;
+            }
+
+            if (data == null || !data.IsObject)
+                return false;
+
+            var quotes = data["open_quotes"].AsArray();
+            if (quotes == null || quotes.Count == 0)
+                return false;
+
+            ulong wantedListing = _pendingBuyListingId.Value;
+            int wantedQty = _pendingBuyQuantity;
+            long maxTotal = _pendingBuyMaxTotalMinor;
+
+            // Scan newest quote first in case buyer has an older open quote on the same listing
+            for (int i = quotes.Count - 1; i >= 0; i--)
+            {
+                var q = quotes[i];
+                if (!q.IsObject) continue;
+                ulong qid = (ulong)Math.Max(0L, q.Long("quote_id", 0));
+                ulong lid = (ulong)Math.Max(0L, q.Long("listing_id", 0));
+                int qty = q.Int("quantity", 0);
+                long totalMinor = q.Long("total_minor", -1);
+                if (qid == 0 || lid != wantedListing || qty != wantedQty || totalMinor < 0)
+                    continue;
+
+                CancelPendingBuy();
+                if (maxTotal > 0 && totalMinor > maxTotal)
+                {
+                    string totalTxt = q.Str("total_text", $"{(totalMinor / 100.0):0.00}cr");
+                    priceMovedWarning =
+                        $"Quote #{qid} for listing #{lid} ({qty} units) priced at {totalTxt}, above displayed {(maxTotal / 100.0):0.00}cr — auto-accept held. Run `+market/accept #{qid}` to confirm.";
+                    return true;
+                }
+
+                acceptCommand = $"+market/accept #{qid}";
+                return true;
+            }
+            return false;
         }
 
         public static string FormatOneClickSellCommand(ulong listingId, int quantity, bool sellAll)
@@ -121,9 +212,9 @@ namespace TacSim.World
         }
 
         /// <summary>
-        /// Hydrates credits, market asks/bids, and own-ship stowage directly from structured `port.trade` JSON!
+        /// Hydrates credits, paginated market asks/bids, and own-ship stowage from structured `port.trade` JSON.
         /// </summary>
-        public void ApplyPortTradeFeed(JsonNode data)
+        public void ApplyPortTradeFeed(JsonNode data, bool appendPage = false)
         {
             if (data == null || !data.IsObject || !data.Bool("enabled", false))
                 return;
@@ -132,12 +223,21 @@ namespace TacSim.World
             if (!string.IsNullOrEmpty(balTxt))
                 CreditsText = balTxt;
 
-            string venue = data.Str("venue", string.Empty);
+            ActiveVenue = data.Str("venue", string.Empty);
+            AboardDockedPortHint = data.Str("aboard_docked_port", string.Empty);
+
+            var nextNode = data["next_after"];
+            NextAfterListingId = (nextNode != null && !nextNode.IsNull && nextNode.AsLong(0) > 0)
+                ? (ulong?)((ulong)nextNode.AsLong(0))
+                : null;
+
             var listArr = data["listings"].AsArray();
             if (listArr != null)
             {
-                Listings.Clear();
+                if (!appendPage)
+                    Listings.Clear();
                 _clearListingsOnNextRow = false;
+
                 for (int i = 0; i < listArr.Count; i++)
                 {
                     var l = listArr[i];
@@ -148,23 +248,31 @@ namespace TacSim.World
                     string goodCode = l.Str("good", string.Empty);
                     string goodLabel = l.Str("good_label", goodCode);
                     int qty = l.Int("available_qty", 0);
+                    long priceMinor = l.Long("unit_price_minor", 0);
                     string priceTxt = l.Str("price_text", "0.00cr");
                     string vendor = l.Str("vendor_name", string.Empty);
                     bool isBid = string.Equals(side, "bid", StringComparison.OrdinalIgnoreCase);
+                    bool funded = l.ContainsKey("funded") ? l.Bool("funded", qty > 0) : qty > 0;
 
-                    Listings.Add(new MarketListingRow
+                    var row = new MarketListingRow
                     {
                         ListingId = id,
                         ItemName = goodLabel,
                         GoodCode = goodCode,
                         Quantity = qty,
+                        UnitPriceMinor = priceMinor,
                         UnitPriceText = priceTxt,
-                        UnitPriceMajor = ParseDecimalMoney(priceTxt),
-                        Venue = venue,
+                        UnitPriceMajor = priceMinor > 0 ? priceMinor / 100m : ParseDecimalMoney(priceTxt),
+                        Venue = ActiveVenue,
                         VendorName = vendor,
+                        IsPersonal = l.Bool("is_personal", false),
                         IsWantedBid = isBid,
-                        IsFunded = qty > 0
-                    });
+                        IsFunded = funded
+                    };
+
+                    int existing = Listings.FindIndex(r => r.ListingId == id);
+                    if (existing >= 0) Listings[existing] = row;
+                    else Listings.Add(row);
                 }
             }
 
@@ -296,14 +404,16 @@ namespace TacSim.World
                 bool notBuying = lm.Groups[8].Success && !string.IsNullOrWhiteSpace(lm.Groups[8].Value);
 
                 var good = FindGoodByNameOrCode(itemName);
+                decimal decPrice = ParseDecimalMoney(priceTxt);
                 var row = new MarketListingRow
                 {
                     ListingId = lid,
                     ItemName = itemName,
                     GoodCode = good != null ? good.Id : itemName,
                     Quantity = qty,
+                    UnitPriceMinor = (long)Math.Round(decPrice * 100m),
                     UnitPriceText = priceTxt,
-                    UnitPriceMajor = ParseDecimalMoney(priceTxt),
+                    UnitPriceMajor = decPrice,
                     Venue = venue,
                     VendorName = vendor,
                     IsWantedBid = isWanted,
@@ -318,30 +428,16 @@ namespace TacSim.World
                 return true;
             }
 
-            Match qm = QuoteRegex.Match(line);
-            if (qm.Success && ulong.TryParse(qm.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out ulong quoteId))
-            {
-                if (_pendingAutoAcceptListingId.HasValue && currentTimeS <= _pendingAutoAcceptExpiresAt)
-                {
-                    _pendingAutoAcceptListingId = null;
-                    _clearListingsOnNextRow = true;
-                    followUpCommands = new List<string>
-                    {
-                        $"+market/accept #{quoteId}",
-                        "+ship",
-                        "+credit",
-                        "+market/list"
-                    };
-                    return true;
-                }
-            }
+            // Note: Blind text-scraped auto-accept is intentionally omitted — purchase confirmation
+            // correlates structured `open_quotes` via `TryResolvePendingQuoteFromFeed` so an
+            // unrelated quote or moved price is never accepted blindly.
 
             if (line.StartsWith("Agreed. Contract #", StringComparison.OrdinalIgnoreCase) ||
                 line.IndexOf("your payment is escrowed", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 line.IndexOf("reaches you once the goods have moved", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 _clearListingsOnNextRow = true;
-                followUpCommands = new List<string> { "+ship", "+credit", "+market/list" };
+                followUpCommands = new List<string> { "ui:refresh_trade" };
             }
 
             Match hm = ShipHoldSummaryRegex.Match(line);
@@ -390,28 +486,38 @@ namespace TacSim.World
                 mutated = true;
             }
 
-            if (!lm.Success && !qm.Success &&
-                (line.IndexOf("available", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                 line.IndexOf("balance", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                 line.StartsWith("Cash:", StringComparison.OrdinalIgnoreCase) ||
-                 line.StartsWith("Account", StringComparison.OrdinalIgnoreCase) ||
-                 line.IndexOf("credit", StringComparison.OrdinalIgnoreCase) >= 0))
+            if (!lm.Success)
             {
-                Match cm = CreditAmountRegex.Match(line);
-                if (cm.Success)
+                // Prefer `{available} available` in `+credit` ("Credit: 100.00cr posted, 30.00cr held, 70.00cr available.")
+                Match availM = AvailableCreditRegex.Match(line);
+                if (availM.Success)
                 {
-                    CreditsText = cm.Groups[1].Value.Replace(" ", "");
+                    CreditsText = availM.Groups[1].Value.Replace(" ", "");
                     mutated = true;
+                }
+                else if (line.StartsWith("Cash:", StringComparison.OrdinalIgnoreCase) ||
+                         line.IndexOf("balance", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Match cm = CreditAmountRegex.Match(line);
+                    if (cm.Success)
+                    {
+                        CreditsText = cm.Groups[1].Value.Replace(" ", "");
+                        mutated = true;
+                    }
                 }
             }
 
-            if (Regex.IsMatch(line, @"^\d+\.\s+(?:buy|sell|depart|stop|await)\b", RegexOptions.IgnoreCase))
+            if (Regex.IsMatch(line, @"^\d+[.:]\s*(?:buy|sell|depart|stop|await)\b", RegexOptions.IgnoreCase) ||
+                line.StartsWith("Order ", StringComparison.OrdinalIgnoreCase) && line.IndexOf(" filed:", StringComparison.OrdinalIgnoreCase) > 0)
             {
                 if (SailingOrderLines.Count >= 16) SailingOrderLines.RemoveAt(0);
                 SailingOrderLines.Add(line);
                 mutated = true;
             }
-            else if (line.IndexOf("Sailing plan cleared", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            else if (line.IndexOf("sailing plan is cleared", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     line.IndexOf("Sailing plan cleared", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     line.IndexOf("holds no orders", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     line.IndexOf("has no orders", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      line.IndexOf("No orders are filed", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 SailingOrderLines.Clear();

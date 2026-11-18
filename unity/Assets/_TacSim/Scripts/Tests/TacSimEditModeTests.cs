@@ -229,12 +229,31 @@ namespace TacSim.Tests
             Assert.AreEqual("+market/sell 9=25", TacSimTradeAndShipState.FormatOneClickSellCommand(9UL, 25, sellAll: false));
             Assert.AreEqual("+market/sell 9=all", TacSimTradeAndShipState.FormatOneClickSellCommand(9UL, 25, sellAll: true));
 
-            // 1-click buy Quote -> Accept auto-chain
-            string quoteCmd = state.BeginOneClickBuy(4UL, 15, currentTimeS: 10f);
-            Assert.AreEqual("+market/quote #4=15", quoteCmd);
-            Assert.IsTrue(state.IngestServerLine("Quote #27: 15 × 100.00cr = 1500.00cr — good until 2026-11-17T03:00:00Z (real time). It reserves nothing; take it up with +market/accept #27.", 11f, out var followUps));
-            Assert.IsNotNull(followUps);
-            Assert.AreEqual("+market/accept #27", followUps[0]);
+            // Correlated 1-click buy Quote -> Accept verification (never blind text-scraping!)
+            string quoteCmd = state.BeginOneClickBuy(4UL, 15, currentTimeS: 10f, displayedUnitPriceMinor: 10000);
+            Assert.AreEqual("+market/quote #4 15", quoteCmd);
+
+            // Unrelated text quote MUST NOT trigger blind auto-accept
+            Assert.IsFalse(state.IngestServerLine("Quote #987: 999 × 500.00cr = 499500.00cr — good until 2026-11-17T03:00:00Z.", 11f, out var unrelatedFollowUps));
+            Assert.IsNull(unrelatedFollowUps);
+
+            // Unrelated open_quotes row in port.trade MUST NOT match pending intent (#4, qty 15)
+            var unrelatedFeed = JsonNode.Parse(@"{""enabled"":true,""open_quotes"":[{""quote_id"":987,""listing_id"":99,""quantity"":999,""total_minor"":49950000}]}");
+            Assert.IsFalse(state.TryResolvePendingQuoteFromFeed(unrelatedFeed, 11f, out string badAccept, out _));
+            Assert.IsNull(badAccept);
+
+            // Price move upward above displayed max total MUST hold auto-accept and warn pilot
+            var movedPriceFeed = JsonNode.Parse(@"{""enabled"":true,""open_quotes"":[{""quote_id"":26,""listing_id"":4,""quantity"":15,""total_minor"":165000,""total_text"":""1650.00cr""}]}");
+            Assert.IsTrue(state.TryResolvePendingQuoteFromFeed(movedPriceFeed, 11f, out string heldAccept, out string priceWarn));
+            Assert.IsNull(heldAccept);
+            Assert.IsNotNull(priceWarn);
+
+            // Exact correlated quote within displayed price emits `+market/accept #27`
+            state.BeginOneClickBuy(4UL, 15, currentTimeS: 12f, displayedUnitPriceMinor: 10000);
+            var validQuoteFeed = JsonNode.Parse(@"{""enabled"":true,""open_quotes"":[{""quote_id"":27,""listing_id"":4,""quantity"":15,""total_minor"":150000,""total_text"":""1500.00cr""}]}");
+            Assert.IsTrue(state.TryResolvePendingQuoteFromFeed(validQuoteFeed, 13f, out string goodAccept, out string noWarn));
+            Assert.AreEqual("+market/accept #27", goodAccept);
+            Assert.IsNull(noWarn);
 
             // Parse canonical crates/tacsim/src/port/gauges.rs +ship & +credit lines
             Assert.IsTrue(state.IngestServerLine("Hold: cargo 29/100 t · 11.6/120 m³ · tank 42/80 t · locker 20/120 crew-days.", 12f, out _));
@@ -243,8 +262,15 @@ namespace TacSim.Tests
             Assert.AreEqual(42, state.TankTonnes);
             Assert.AreEqual(20, state.StoresCrewDays);
 
-            Assert.IsTrue(state.IngestServerLine("Cash: 23500.00cr available; the buyout is 90000.00cr.", 12f, out _));
-            Assert.AreEqual("23500.00cr", state.CreditsText);
+            // Must parse AVAILABLE balance (375.00cr), not POSTED balance (500.00cr)!
+            Assert.IsTrue(state.IngestServerLine("Credit: 500.00cr posted, 125.00cr held, 375.00cr available.", 12f, out _));
+            Assert.AreEqual("375.00cr", state.CreditsText);
+
+            // Canonical sailing plan clear phrase ("The sailing plan is cleared.")
+            Assert.IsTrue(state.IngestServerLine("Order 1 filed: buy volatiles 10. The sailing plan is at revision 1.", 12f, out _));
+            Assert.AreEqual(1, state.SailingOrderLines.Count);
+            Assert.IsTrue(state.IngestServerLine("The sailing plan is cleared.", 13f, out _));
+            Assert.AreEqual(0, state.SailingOrderLines.Count);
         }
 
         [Test]
@@ -422,29 +448,42 @@ namespace TacSim.Tests
         {
             var cursor = new ViewStreamCursor();
 
-            // Delta before snapshot must trigger resubscribe
-            var orphanDelta = JsonNode.Parse(@"{""kind"":""delta"",""generation"":""g1"",""base_sequence"":1,""sequence"":2}");
+            // Canonical Rust ViewEnvelope has NO "kind" field — base_sequence presence distinguishes deltas!
+            var orphanDelta = JsonNode.Parse(@"{""view"":""arena.cockpit"",""generation"":""g1"",""base_sequence"":1,""sequence"":2,""data"":{""speed"":3}}");
             Assert.AreEqual(ViewCursorDisposition.NeedsResubscribe, MushProtocol.EvaluateViewCursor(cursor, orphanDelta));
 
-            // Snapshot establishes baseline
-            var snap = JsonNode.Parse(@"{""kind"":""snapshot"",""generation"":""g1"",""sequence"":5}");
+            // Canonical snapshot (no base_sequence) establishes baseline
+            var snap = JsonNode.Parse(@"{""view"":""arena.cockpit"",""generation"":""g1"",""sequence"":5,""data"":{""speed"":2,""health"":100}}");
             Assert.AreEqual(ViewCursorDisposition.ApplySnapshot, MushProtocol.EvaluateViewCursor(cursor, snap));
             Assert.AreEqual(5UL, cursor.LastSequence);
 
-            // Contiguous delta advances cursor
-            var delta6 = JsonNode.Parse(@"{""kind"":""delta"",""generation"":""g1"",""base_sequence"":5,""sequence"":6}");
+            // Canonical contiguous delta (with base_sequence, no "kind") merges without losing health!
+            var delta6 = JsonNode.Parse(@"{""view"":""arena.cockpit"",""generation"":""g1"",""base_sequence"":5,""sequence"":6,""data"":{""speed"":3}}");
             Assert.AreEqual(ViewCursorDisposition.ApplyDelta, MushProtocol.EvaluateViewCursor(cursor, delta6));
             Assert.AreEqual(6UL, cursor.LastSequence);
+
+            // Verify end-to-end MushWsClient ViewEnvelope delta preserves existing snapshot fields
+            using (var ws = new MushWsClient())
+            {
+                JsonNode latestView = null;
+                ws.OnPanelUpdated += (id, payload) => { if (id == "arena.cockpit") latestView = payload; };
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":1,""ts"":10,""t"":""view"",""d"":{""view"":""arena.cockpit"",""generation"":""g1"",""sequence"":5,""data"":{""speed"":2,""health"":100}}}"));
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":2,""ts"":11,""t"":""view"",""d"":{""view"":""arena.cockpit"",""generation"":""g1"",""base_sequence"":5,""sequence"":6,""data"":{""speed"":3}}}"));
+                ws.PumpMainThread();
+                Assert.IsNotNull(latestView);
+                Assert.AreEqual(3, latestView.Int("speed"));
+                Assert.AreEqual(100, latestView.Int("health"), "Canonical ViewEnvelope delta must merge into snapshot without dropping unchanged keys");
+            }
 
             // Duplicate sequence is ignored
             Assert.AreEqual(ViewCursorDisposition.IgnoreDuplicateOrStale, MushProtocol.EvaluateViewCursor(cursor, delta6));
 
             // Gap in base_sequence triggers clean resubscribe
-            var gappedDelta = JsonNode.Parse(@"{""kind"":""delta"",""generation"":""g1"",""base_sequence"":8,""sequence"":9}");
+            var gappedDelta = JsonNode.Parse(@"{""view"":""arena.cockpit"",""generation"":""g1"",""base_sequence"":8,""sequence"":9,""data"":{}}");
             Assert.AreEqual(ViewCursorDisposition.NeedsResubscribe, MushProtocol.EvaluateViewCursor(cursor, gappedDelta));
 
             // Generation rotation on delta triggers resubscribe
-            var wrongGen = JsonNode.Parse(@"{""kind"":""delta"",""generation"":""g2"",""base_sequence"":6,""sequence"":7}");
+            var wrongGen = JsonNode.Parse(@"{""view"":""arena.cockpit"",""generation"":""g2"",""base_sequence"":6,""sequence"":7,""data"":{}}");
             Assert.AreEqual(ViewCursorDisposition.NeedsResubscribe, MushProtocol.EvaluateViewCursor(cursor, wrongGen));
 
             // WS Close Code & Query invariants
@@ -453,6 +492,43 @@ namespace TacSim.Tests
             Assert.AreEqual(WsCloseDisposition.ReconnectBackoff, MushWsClient.ClassifyCloseCode(1012));
             Assert.AreEqual("char=42", MushWsClient.BuildWsQuery("42", 0UL));
             Assert.AreEqual("char=42&resume=108", MushWsClient.BuildWsQuery("42", 108UL));
+
+            // Bare remote hosts default to https:// / wss://; loopback stays http:// / ws://
+            Assert.AreEqual("https://dev1.conclav.io", MushAuthClient.NormalizeBaseUrl("dev1.conclav.io"));
+            Assert.AreEqual("wss://dev1.conclav.io", MushAuthClient.ToWebSocketBaseUrl("dev1.conclav.io"));
+            Assert.AreEqual("http://127.0.0.1:8080", MushAuthClient.NormalizeBaseUrl("127.0.0.1:8080"));
+            Assert.AreEqual("http://localhost:8080", MushAuthClient.NormalizeBaseUrl("localhost:8080"));
+        }
+
+        [Test]
+        public void P0_WsClient_ResetsSeqOnFreshIncarnation_AndEpochFencesDisconnectedQueue()
+        {
+            using (var ws = new MushWsClient())
+            {
+                int dispatchedRooms = 0;
+                ws.OnRoomReceived += _ => dispatchedRooms++;
+
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":1000,""ts"":1,""t"":""room"",""d"":{""id"":""#1"",""name"":""Arrivals""}}"));
+                ws.PumpMainThread();
+                Assert.AreEqual(1000UL, ws.LastSeq);
+                Assert.AreEqual(1, dispatchedRooms);
+
+                // Non-replayed resume resets cursor to 0, then fresh incarnation seq=1 updates LastSeq=1!
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":0,""ts"":2,""t"":""resumed"",""d"":{""replayed"":false}}"));
+                ws.PumpMainThread();
+                Assert.AreEqual(0UL, ws.LastSeq);
+
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":1,""ts"":3,""t"":""room"",""d"":{""id"":""#1"",""name"":""Arrivals""}}"));
+                ws.PumpMainThread();
+                Assert.AreEqual(1UL, ws.LastSeq);
+                Assert.AreEqual(2, dispatchedRooms);
+
+                // Queued inbound message followed by Disconnect() must NOT dispatch on PumpMainThread()!
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":2,""ts"":4,""t"":""room"",""d"":{""id"":""#2"",""name"":""Concourse""}}"));
+                ws.Disconnect();
+                ws.PumpMainThread();
+                Assert.AreEqual(2, dispatchedRooms, "Disconnect() must drain and epoch-fence queued envelopes");
+            }
         }
 
         [Test]
@@ -579,6 +655,137 @@ namespace TacSim.Tests
             Assert.IsTrue(trade.Listings[1].IsWantedBid);
             Assert.AreEqual(50, trade.HoldMassTonnes);
             Assert.AreEqual(75, trade.TankTonnes);
+
+            // Consolidated single-key `ambient.occupants`
+            var occRoom = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                ""id"": ""#10"",
+                ""name"": ""Concourse"",
+                ""ambient"": {
+                    ""occupants"": {
+                        ""npcs"": [""#21""],
+                        ""dormant"": [""#22""],
+                        ""players"": [""#23""],
+                        ""things"": [""#24""]
+                    }
+                }
+            }"));
+            Assert.IsTrue(occRoom.NpcIds.Contains("#21"));
+            Assert.IsTrue(occRoom.DormantNpcIds.Contains("#22"));
+            Assert.IsTrue(occRoom.PlayerIds.Contains("#23"));
+            Assert.IsTrue(occRoom.ThingIds.Contains("#24"));
+        }
+
+        [Test]
+        public void P0_ContentSync_IsolatesServers_NotifiesWarmCache_AndPacesWithinFloodBudget()
+        {
+            string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimSyncTest_" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                string serverAGoods = @"{""goods"":[{""id"":""metals"",""label"":""Server A Metal""}]}";
+                string shaA = TacSimContentSync.ComputeSha256Hex(serverAGoods);
+
+                var sync = new TacSimContentSync();
+                int updateEvents = 0;
+                sync.OnPacksUpdated += count => updateEvents += count;
+
+                sync.InitializeDiskCacheForServer("https://server-a.example.com", tempDir);
+                Assert.IsTrue(sync.StoreVerifiedPack("goods", shaA, serverAGoods));
+                // Persist manifest on server A by simulating pack panel arrival
+                using (var ws = new MushWsClient())
+                {
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""goods"",""sha256"":""{shaA}"",""json"":{JsonNode.FromString(serverAGoods).ToJson()}}}"), 1f);
+                }
+                Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _));
+
+                // Switching to Server B MUST clear Server A's dynamic packs!
+                sync.InitializeDiskCacheForServer("https://server-b.example.com", tempDir);
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Switching servers must clear previous server's dynamic packs");
+
+                // Switching back to Server A with warm disk cache MUST hydrate packs AND fire OnPacksUpdated!
+                int beforeWarm = updateEvents;
+                sync.InitializeDiskCacheForServer("https://server-a.example.com", tempDir);
+                Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out string warmJson));
+                Assert.AreEqual(serverAGoods, warmJson);
+                Assert.Greater(updateEvents, beforeWarm, "Warm-cache activation must raise OnPacksUpdated so already-constructed models refresh");
+
+                // Cold 20-pack manifest MUST pace requests (<= MaxInFlightPackRequests = 4 at once)
+                sync.InitializeDiskCacheForServer("https://server-c.example.com", tempDir);
+                var packsArr = JsonNode.NewArray();
+                for (int i = 0; i < 20; i++)
+                {
+                    var p = JsonNode.NewObject();
+                    p["id"] = JsonNode.FromString($"unit_{i}");
+                    p["category"] = JsonNode.FromString("unit");
+                    p["sha256"] = JsonNode.FromString(new string((char)('a' + (i % 6)), 64));
+                    p["bytes"] = JsonNode.FromLong(100);
+                    packsArr.Add(p);
+                }
+                var bigManifest = JsonNode.NewObject();
+                bigManifest["op"] = JsonNode.FromString("manifest");
+                bigManifest["packs"] = packsArr;
+
+                using (var ws = new MushWsClient())
+                {
+                    sync.HandleWebSocketContentPanel(ws, bigManifest, nowRealtime: 10f);
+                    Assert.AreEqual(20, sync.PendingPackCount);
+                    // Even if PumpPackQueue is called immediately on next frame, in-flight stays capped at 4!
+                    sync.PumpPackQueue(ws, nowRealtime: 10.02f);
+                    Assert.AreEqual(20, sync.PendingPackCount);
+                }
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+                try { if (System.IO.Directory.Exists(tempDir)) System.IO.Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        [Test]
+        public void P0_SurfaceSiteMap512_RigHopperTelemetry_AndDockingTapeBudgetHold()
+        {
+            // 1. Parse canonical `site.rigs[].hopper` ("3/6 t" and "empty")
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.TryParseHopperTonnes("3/6 t", out int loadedT, out int capT));
+            Assert.AreEqual(3, loadedT);
+            Assert.AreEqual(6, capT);
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.TryParseHopperTonnes("empty", out int emptyT, out _));
+            Assert.AreEqual(0, emptyT);
+
+            // 2. Decode 512-site `site.map` window centered around [256, 256] (`x0=224, y0=224, span=2`)
+            var siteFrame = JsonNode.Parse(@"{
+                ""width"": 32,
+                ""height"": 32,
+                ""cell_cm"": 1000,
+                ""rows"": [[["","", 32]]],
+                ""you"": [16, 16],
+                ""origin_cell"": [224, 224],
+                ""site"": {
+                    ""site"": ""Urvara Reach"",
+                    ""addressed"": 1,
+                    ""grid"": { ""x0"": 224, ""y0"": 224, ""span"": 2, ""cell_cm"": 1000 },
+                    ""rigs"": [
+                        { ""slot"": 1, ""cell"": [256, 256], ""charge_pct"": 17, ""hopper"": ""3/6 t"" }
+                    ]
+                }
+            }");
+            var grid = TacSimTerrainDecoder.DecodeSiteMapFrame(siteFrame);
+            Assert.IsNotNull(grid);
+            Assert.IsTrue(grid.IsFromLiveServerFeed);
+            Assert.AreEqual(224, grid.OriginCellX);
+            Assert.AreEqual(224, grid.OriginCellY);
+            Assert.AreEqual(2, grid.SpanCells);
+            Assert.AreEqual(16, grid.SiteToLocalCellX(256));
+            Assert.AreEqual(16, grid.SiteToLocalCellY(256));
+            Assert.AreEqual(256, grid.LocalToSiteCellX(16));
+            Assert.AreEqual(258, grid.LocalToSiteCellX(17), "Nearby click at local cell 17 on span=2 window maps to site cell 258, never clamped near 157");
+
+            // 3. Alternating RCS stress input hits IsTapeBudgetExhausted before exceeding 8,192-char gateway limit
+            var stress = DockingClientSession.CreateStandardPortPractice("dock.stress.1", "Ceres");
+            for (int f = 0; f < 1800 && !stress.IsTapeBudgetExhausted; f++)
+            {
+                stress.Step60Fps(new DockingControlInput { TransX = (sbyte)(f % 2 == 0 ? 1 : -1) });
+            }
+            Assert.IsTrue(stress.IsTapeBudgetExhausted);
+            Assert.LessOrEqual(stress.FormatTapeCommand().Length, 8192);
         }
     }
 }

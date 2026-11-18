@@ -233,6 +233,7 @@ namespace TacSim.Core
 
             SpaceStage.OnDockingTapeReadyToSubmit += HandleDockingTapeReady;
             SpaceStage.OnDockingAborted += HandleDockingAborted;
+            SpaceStage.OnDockingEndedByServer += HandleDockingEndedByServer;
             SpaceStage.OnSpaceAlert += msg => Hud.AppendLogLine($"<color=#FFAA44>[HELM]</color> {msg}");
             SpaceStage.OnOrbitalTargetClicked += (id, isRock) =>
             {
@@ -271,6 +272,7 @@ namespace TacSim.Core
                     _ws.SendComposing(active);
             };
             Hud.OnRefreshTradeRequested += RequestPortTradeRefresh;
+            Hud.OnLoadMoreTradeRequested += HandleLoadMoreTradeRequested;
             Hud.OnMarketBuyRequested += HandleMarketBuyRequested;
             Hud.OnMarketSellRequested += HandleMarketSellRequested;
             Hud.OnRequestChoiceSubmitted += (req, choice) => _ws?.SendChoiceResponse(req, choice);
@@ -288,7 +290,7 @@ namespace TacSim.Core
             _contentSync.OnSyncLog += msg => Hud.AppendLogLine($"<color=#77CCFF>[PACK SYNC]</color> {msg}");
             _contentSync.OnPacksUpdated += _ => RefreshLoadedContentAfterSync();
 
-            _ws.OnHelloReceived += () => _contentSync.RequestWebSocketManifestIfNeeded(_ws);
+            _ws.OnHelloReceived += () => _contentSync.RequestManifestOverWebSocket(_ws, Time.realtimeSinceStartup);
             _ws.OnRoomReceived += HandleServerRoomView;
             _ws.OnNarrativeReceived += HandleServerNarrative;
             _ws.OnChannelReceived += HandleServerChannel;
@@ -300,11 +302,14 @@ namespace TacSim.Core
             _ws.OnFatalSessionEnded += HandleFatalSessionEnded;
         }
 
+        private bool _awaitingAppendedTradePage;
+
         private void Update()
         {
             if (_ws != null)
             {
                 _ws.PumpMainThread();
+                _contentSync?.PumpPackQueue(_ws, Time.realtimeSinceStartup);
                 if (Hud != null && _ws.State != _lastBadgeState)
                 {
                     _lastBadgeState = _ws.State;
@@ -411,8 +416,8 @@ namespace TacSim.Core
                 _pendingMoveTarget = null;
                 _nextMoveStepAllowedAt = 0f;
 
-                Hud.SetLoginStatus($"Syncing content packs from <b>{session.BaseHttpUrl}</b>...");
-                await _contentSync.SyncOverHttpAsync(session.BaseHttpUrl);
+                Hud.SetLoginStatus($"Loading server pack cache for <b>{session.BaseHttpUrl}</b>...");
+                _contentSync.InitializeDiskCacheForServer(session.BaseHttpUrl);
 
                 Hud.SetLoginStatus($"Attaching WebSocket to <b>{chosen.Name}</b>...");
                 Player.VisualSpawner.BuildPlayerVisual(AssetCatalog, avatar);
@@ -647,21 +652,43 @@ namespace TacSim.Core
                 npcName: name);
         }
 
+        private static string SuggestUniqueHullName()
+        {
+            string[] prefixes = { "Drift", "Quiet", "Cinder", "Pale", "Copper", "Vesta", "Tether", "Iron" };
+            string[] nouns = { "Lantern", "Kestrel", "Barge", "Moth", "Spindle", "Compass", "Anchor", "Cairn" };
+            int seed = Math.Abs(Environment.TickCount);
+            return $"{prefixes[seed % prefixes.Length]} {nouns[(seed / 13) % nouns.Length]} {(seed % 89) + 10}";
+        }
+
+        private void ShowCoopEnrolPrompt()
+        {
+            string suggested = SuggestUniqueHullName();
+            Hud.ShowDetailModal(
+                "CO-OP FIRST CAPTAIN PROGRAMME DESK",
+                "The Co-op stakes the Dray hull and your first hold; it takes its lay from settled sales until buyout.\n\nEnter your hull's registry name below (must be unique on the server) and click <b>Enrol Charter Hull</b>:",
+                new List<(string, Action)>
+                {
+                    ("Read Terms (+coop)", () => ExecutePlayerCommand("+coop")),
+                    ("Enrol Charter Hull", () =>
+                    {
+                        string chosenName = Hud.GetModalInputValue();
+                        if (string.IsNullOrWhiteSpace(chosenName))
+                            chosenName = suggested;
+                        ExecutePlayerCommand($"+coop/enrol {chosenName}");
+                    }),
+                    ("Account Statement", () => ExecutePlayerCommand("+coop/statement"))
+                },
+                commandPrefix: "+coop/enrol",
+                defaultInputValue: suggested);
+        }
+
         private void OpenServiceDeskModal(string deskKey)
         {
             Audio?.PlayUiClick();
             switch (deskKey)
             {
                 case "desk:coop":
-                    Hud.ShowDetailModal(
-                        "CO-OP FIRST CAPTAIN PROGRAMME DESK",
-                        "The Co-op stakes the Dray hull and your first hold; it takes its lay from settled sales until buyout.",
-                        new List<(string, Action)>
-                        {
-                            ("Read Terms (+coop)", () => ExecutePlayerCommand("+coop")),
-                            ("Enrol 'Salt Moth'", () => ExecutePlayerCommand("+coop/enrol Salt Moth")),
-                            ("Account Statement", () => ExecutePlayerCommand("+coop/statement"))
-                        });
+                    ShowCoopEnrolPrompt();
                     break;
 
                 case "desk:exchange":
@@ -700,6 +727,7 @@ namespace TacSim.Core
 
         private void OpenVisualTradeTerminal(string title, bool openSailingTab)
         {
+            _awaitingAppendedTradePage = false;
             Hud.OpenTradeAndSailingModal(title, openSailingTab);
             TradeState.NotifyMarketRefreshRequested();
             if (_ws == null || !_ws.IsConnected)
@@ -725,6 +753,7 @@ namespace TacSim.Core
 
         private void RequestPortTradeRefresh()
         {
+            _awaitingAppendedTradePage = false;
             if (_ws == null || !_ws.IsConnected)
                 return;
 
@@ -741,12 +770,28 @@ namespace TacSim.Core
             }
         }
 
+        private void HandleLoadMoreTradeRequested(ulong afterListingId)
+        {
+            if (_ws == null || !_ws.IsConnected || !_ws.HasAdvertisedPanel("port.trade"))
+                return;
+            _awaitingAppendedTradePage = true;
+            var p = JsonNode.NewObject();
+            p["after"] = JsonNode.FromLong((long)afterListingId);
+            _ws.SendPanelSubscribe("port.trade", p);
+        }
+
         private void HandleMarketBuyRequested(MarketListingRow row, int quantity, bool maxFit)
         {
             if (row == null) return;
             Audio?.PlayUiClick();
-            string quoteCmd = TradeState.BeginOneClickBuy(row.ListingId, quantity, Time.time);
+            long unitMinor = row.UnitPriceMinor > 0 ? row.UnitPriceMinor : (long)Math.Round(row.UnitPriceMajor * 100m);
+            string quoteCmd = TradeState.BeginOneClickBuy(row.ListingId, quantity, Time.time, unitMinor);
             ExecutePlayerCommand(quoteCmd);
+            if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("port.trade"))
+            {
+                _awaitingAppendedTradePage = false;
+                _ws.SendPanelSubscribe("port.trade");
+            }
         }
 
         private void HandleMarketSellRequested(MarketListingRow row, int quantity, bool sellAll)
@@ -755,6 +800,11 @@ namespace TacSim.Core
             Audio?.PlayUiClick();
             string sellCmd = TacSimTradeAndShipState.FormatOneClickSellCommand(row.ListingId, quantity, sellAll);
             ExecutePlayerCommand(sellCmd);
+            if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("port.trade"))
+            {
+                _awaitingAppendedTradePage = false;
+                _ws.SendPanelSubscribe("port.trade");
+            }
         }
 
         public void ExecutePlayerCommand(string cmd)
@@ -762,6 +812,16 @@ namespace TacSim.Core
             if (string.IsNullOrWhiteSpace(cmd)) return;
             Audio?.PlayUiClick();
 
+            if (cmd == "ui:open_coop_enrol")
+            {
+                ShowCoopEnrolPrompt();
+                return;
+            }
+            if (cmd == "ui:refresh_trade")
+            {
+                RequestPortTradeRefresh();
+                return;
+            }
             if (cmd == "ui:open_exchange")
             {
                 OpenVisualTradeTerminal("PORT EXCHANGE & HOLD LOGISTICS", openSailingTab: false);
@@ -782,8 +842,22 @@ namespace TacSim.Core
                 if (_ws != null && _ws.IsConnected)
                 {
                     FlushPendingRoomMovesBeforeAction();
-                    _ws.SendLine("+tv/1 launch go");
+                    int slot = SurfaceStage != null ? SurfaceStage.AddressedRigSlot : 1;
+                    _ws.SendLine($"+tv/{slot} launch go");
                 }
+                return;
+            }
+            if (cmd == "surface:scan" || cmd == "surface:sound" || cmd == "surface:mine" ||
+                cmd == "surface:unload" || cmd == "surface:recover" || cmd == "surface:claim_stake")
+            {
+                int slot = SurfaceStage != null ? SurfaceStage.AddressedRigSlot : 1;
+                string realCmd = cmd == "surface:scan" ? $"+tv/{slot} scan go"
+                               : cmd == "surface:sound" ? $"+tv/{slot} sound go"
+                               : cmd == "surface:mine" ? $"+tv/{slot} mine go"
+                               : cmd == "surface:unload" ? $"+tv/{slot} unload go"
+                               : cmd == "surface:recover" ? $"+tv/{slot} recover go"
+                               : $"+claim/stake {slot} go";
+                ExecutePlayerCommand(realCmd);
                 return;
             }
             if (cmd.StartsWith("surface:family:", StringComparison.OrdinalIgnoreCase))
@@ -802,24 +876,50 @@ namespace TacSim.Core
             }
             if (cmd.StartsWith("space:rock:", StringComparison.OrdinalIgnoreCase))
             {
-                string rId = cmd.Substring("space:rock:".Length).Trim();
+                string rId = cmd.Substring("space:rock:".Length).Trim().ToUpperInvariant();
                 SpaceStage.SelectRock(rId);
                 Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
-                if (_ws != null && _ws.IsConnected) _ws.SendLine($"+mine/approach {SpaceStage.SelectedRockId}");
+                if (_ws != null && _ws.IsConnected)
+                    _ws.SendLine($"+helm/approach {rId}");
                 return;
             }
             if (cmd == "space:mine_laser")
             {
+                if (string.IsNullOrEmpty(SpaceStage.SelectedRockId))
+                {
+                    Hud.AppendLogLine("<color=#FFAA55>[MINING]</color> Select an orbital rock (`A`, `B`, or `C`) first.");
+                    return;
+                }
                 CameraRig.SetMode(CameraRigMode.OrbitalExterior);
-                SpaceStage.TriggerMiningLaser();
-                if (_ws != null && _ws.IsConnected) _ws.SendLine($"+mine/laser {SpaceStage.SelectedRockId}");
+                if (_ws != null && _ws.IsConnected)
+                {
+                    _ws.SendLine($"+mine/laser {SpaceStage.SelectedRockId}");
+                    if (SpaceStage.HasTargetableRock(SpaceStage.SelectedRockId))
+                        SpaceStage.TriggerMiningLaser();
+                }
                 return;
             }
             if (cmd == "space:mine_drones")
             {
+                if (string.IsNullOrEmpty(SpaceStage.SelectedRockId))
+                {
+                    Hud.AppendLogLine("<color=#FFAA55>[MINING]</color> Select an orbital rock (`A`, `B`, or `C`) before launching collector drones.");
+                    return;
+                }
                 CameraRig.SetMode(CameraRigMode.OrbitalExterior);
-                SpaceStage.ToggleDroneSortie(true);
-                if (_ws != null && _ws.IsConnected) _ws.SendLine("+mine/drones launch");
+                if (_ws != null && _ws.IsConnected)
+                    _ws.SendLine($"+mine/drones {SpaceStage.SelectedRockId} 1");
+                return;
+            }
+            if (cmd == "space:mine_stake")
+            {
+                if (string.IsNullOrEmpty(SpaceStage.SelectedRockId))
+                {
+                    Hud.AppendLogLine("<color=#FFAA55>[MINING]</color> Select an orbital rock (`A`, `B`, or `C`) before staking a claim.");
+                    return;
+                }
+                if (_ws != null && _ws.IsConnected)
+                    _ws.SendLine($"+mine/stake {SpaceStage.SelectedRockId}");
                 return;
             }
             if (cmd.StartsWith("space:lock:", StringComparison.OrdinalIgnoreCase))
@@ -827,15 +927,20 @@ namespace TacSim.Core
                 string tgt = cmd.Substring("space:lock:".Length).Trim();
                 SpaceStage.SetLockedContact(tgt);
                 Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
-                if (_ws != null && _ws.IsConnected) _ws.SendLine($"+tac/lock {SpaceStage.LockedContactId}");
+                if (_ws != null && _ws.IsConnected && !string.IsNullOrEmpty(SpaceStage.LockedContactId))
+                    _ws.SendLine($"+tac/lock {SpaceStage.LockedContactId}");
                 return;
             }
             if (cmd == "space:tac_beam" || cmd == "space:tac_railgun" || cmd == "space:tac_torp")
             {
                 CameraRig.SetMode(CameraRigMode.OrbitalExterior);
                 string kind = cmd == "space:tac_railgun" ? "railgun" : (cmd == "space:tac_torp" ? "torp" : "beam");
-                SpaceStage.TriggerNavalWeaponVfx(kind);
-                if (_ws != null && _ws.IsConnected) _ws.SendLine($"+tac/{kind}");
+                if (_ws != null && _ws.IsConnected)
+                {
+                    _ws.SendLine($"+tac/{kind}");
+                    if (SpaceStage.HasPerceivedContact(SpaceStage.LockedContactId))
+                        SpaceStage.TriggerNavalWeaponVfx(kind);
+                }
                 return;
             }
             if (cmd.StartsWith("helm:thrust:", StringComparison.OrdinalIgnoreCase))
@@ -937,23 +1042,35 @@ namespace TacSim.Core
             _stageDirector?.ApplySoundscapeForCamera(mode, _isAboardShip);
         }
 
-        private void HandleDockingTapeReady(string tapeCommand)
+        private void HandleDockingTapeReady(string tapeCommand, bool isClampCandidate)
         {
-            Audio?.PlayDockHardClamp();
-            Hud.AppendLogLine($"<color=#55FF99>[HARD CLAMP!]</color> Submitting RLE verification tape: <color=#AADDFF>{tapeCommand}</color>");
-            SpaceStage.StopDockingSession();
-
+            Hud.AppendLogLine(isClampCandidate
+                ? "<color=#88DDFF>[DOCKING]</color> Collar gates aligned — submitting 60 Hz RLE tape for server verification..."
+                : "<color=#FFAA66>[DOCKING]</color> Collar contact outside gate tolerance — submitting 60 Hz RLE tape...");
             if (_ws != null && _ws.IsConnected)
-            {
                 _ws.SendLine(tapeCommand);
+        }
+
+        private void HandleDockingEndedByServer(string outcome)
+        {
+            string norm = (outcome ?? "closed").ToLowerInvariant();
+            if (norm == "clamped")
+            {
+                Audio?.PlayDockHardClamp();
+                Hud.AppendLogLine("<color=#55FF99>[HARD CLAMP CONFIRMED]</color> Authoritative server collar seal locked.");
                 CameraRig.SetMode(CameraRigMode.ShipBridgeHolo);
                 Audio?.SetSoundscape(AmbientSoundscape.ShipInterior);
+            }
+            else
+            {
+                Hud.AppendLogLine($"<color=#FF8866>[DOCKING CLOSED]</color> Session ended ({norm}).");
+                CameraRig.SetMode(Player.IsSeatedAtHelm ? CameraRigMode.OrbitalExterior : CameraRigMode.ThirdPersonWalk);
             }
         }
 
         private void HandleDockingAborted()
         {
-            Hud.AppendLogLine("<color=#FF8866>[DOCKING]</color> Approach aborted by pilot.");
+            Hud.AppendLogLine("<color=#FF8866>[DOCKING]</color> Approach aborted.");
             if (_ws != null && _ws.IsConnected)
                 _ws.SendLine("+helm/dock abort");
             CameraRig.SetMode(CameraRigMode.OrbitalExterior);
@@ -977,6 +1094,8 @@ namespace TacSim.Core
                 if (rv.TacSim.Mode == "simulator" && ArenaStage != null)
                 {
                     ApplySimulatorRoomAmbient(rv.TacSim);
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("port.trade"))
+                        _ws.SendPanelSubscribe("port.trade");
                 }
             }
 
@@ -1118,6 +1237,50 @@ namespace TacSim.Core
             Hud.Overlays?.RefreshLobbySelectionHighlights();
         }
 
+        private void ApplySimulatorTradeRoster(JsonNode simNode)
+        {
+            if (simNode == null || !simNode.IsObject || ArenaStage == null) return;
+            string ms = simNode.Str("match_state", string.Empty);
+            if (!string.IsNullOrEmpty(ms))
+                ArenaStage.LiveLobbyMatchState = ms;
+            int ai = simNode.Int("ai_fill", 0);
+            if (ai > 0)
+                ArenaStage.SelectedLobbyAiCount = ai;
+            string myTeam = simNode.Str("my_team", string.Empty);
+            if (!string.IsNullOrEmpty(myTeam))
+                ArenaStage.SelectedLobbyTeam = myTeam;
+            string myUnit = simNode.Str("my_unit", string.Empty);
+            if (!string.IsNullOrEmpty(myUnit))
+                ArenaStage.SelectedLobbyUnit = myUnit.Replace("tacsim.unit.", string.Empty);
+
+            var slotsArr = simNode["slots"].AsArray();
+            if (slotsArr != null && slotsArr.Count > 0)
+            {
+                var sb = new StringBuilder(192);
+                sb.Append("CLAIMED SLOTS: ");
+                for (int i = 0; i < slotsArr.Count; i++)
+                {
+                    var s = slotsArr[i];
+                    if (!s.IsObject) continue;
+                    if (i > 0) sb.Append("  |  ");
+                    string team = s.Str("team", "red");
+                    string col = string.Equals(team, "red", StringComparison.OrdinalIgnoreCase) ? "#FF7766" : "#66BBFF";
+                    string tag = s.Bool("seated", false) ? " [IN POD]" : string.Empty;
+                    string shortUnit = s.Str("unit", "line_tank").Replace("tacsim.unit.", string.Empty);
+                    string safeName = MushProtocol.EscapeUnityRichText(s.Str("pilot_name", string.Empty));
+                    sb.AppendFormat("<color={0}>{1}{2}</color> {3} ({4}){5}",
+                        col,
+                        string.Equals(team, "red", StringComparison.OrdinalIgnoreCase) ? "R" : "B",
+                        s.Int("index", 1),
+                        safeName,
+                        shortUnit,
+                        tag);
+                }
+                ArenaStage.LiveLobbySlotSummary = sb.ToString();
+            }
+            Hud.Overlays?.RefreshLobbySelectionHighlights();
+        }
+
         private static string FindExitToCeresFreeport(MushRoomView rv)
         {
             if (rv == null || rv.Exits == null) return null;
@@ -1187,11 +1350,12 @@ namespace TacSim.Core
                 for (int i = 0; i < followUps.Count; i++)
                 {
                     string nextCmd = followUps[i];
-                    if (nextCmd.StartsWith("+market/accept", StringComparison.OrdinalIgnoreCase))
-                        Hud.AppendLogLine($"<color=#66EEAA>[AUTO-ACCEPT]</color> {nextCmd}");
+                    if (nextCmd == "ui:refresh_trade")
+                    {
+                        RequestPortTradeRefresh();
+                        continue;
+                    }
                     _ws.SendLine(nextCmd);
-                    if (nextCmd.StartsWith("+market/", StringComparison.OrdinalIgnoreCase) && _ws.HasAdvertisedPanel("port.trade"))
-                        _ws.SendPanelSubscribe("port.trade");
                 }
             }
         }
@@ -1201,17 +1365,42 @@ namespace TacSim.Core
             switch (feed)
             {
                 case "tacsim.content":
-                    _contentSync?.HandleWebSocketContentPanel(_ws, data);
+                    _contentSync?.HandleWebSocketContentPanel(_ws, data, Time.realtimeSinceStartup);
                     break;
                 case "port.trade":
-                    TradeState?.ApplyPortTradeFeed(data);
+                {
+                    bool append = _awaitingAppendedTradePage;
+                    _awaitingAppendedTradePage = false;
+                    TradeState?.ApplyPortTradeFeed(data, appendPage: append);
+                    if (TradeState != null &&
+                        TradeState.TryResolvePendingQuoteFromFeed(data, Time.time, out string acceptCmd, out string priceWarn))
+                    {
+                        if (!string.IsNullOrEmpty(acceptCmd) && _ws != null && _ws.IsConnected)
+                        {
+                            Hud.AppendLogLine($"<color=#66EEAA>[QUOTE VERIFIED]</color> {acceptCmd}");
+                            _ws.SendLine(acceptCmd);
+                            _ws.SendPanelSubscribe("port.trade");
+                        }
+                        else if (!string.IsNullOrEmpty(priceWarn))
+                        {
+                            Hud.AppendLogLine($"<color=#FFBB55>[PRICE MOVED]</color> {priceWarn}");
+                            if (Hud.IsModalOpen)
+                                Hud.AppendModalResponseLine($"<color=#FFBB55>{priceWarn}</color>");
+                        }
+                    }
+                    if (data != null && data.IsObject && data["simulator"].IsObject && ArenaStage != null)
+                        ApplySimulatorTradeRoster(data["simulator"]);
                     break;
+                }
                 case "space.holotank":
                     ShipInterior.PopulateHoloBlips(data);
+                    SpaceStage.ApplyHolotankFeed(data);
+                    Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
                     break;
                 case "space.cockpit":
                     SpaceStage.ApplyCockpitFeed(data);
                     Hud.UpdateHelmStatus(SpaceStage.ThrottlePermille, SpaceStage.EmconPosture);
+                    Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
                     break;
                 case "space.docking":
                     SpaceStage.StartDockingFromFeed(data);

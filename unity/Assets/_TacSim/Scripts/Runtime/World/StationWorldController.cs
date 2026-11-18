@@ -148,6 +148,9 @@ namespace TacSim.World
 
             foreach (var ex in Pack.Exits)
             {
+                if (ex.Hidden)
+                    continue;
+
                 if (!Pack.Rooms.TryGetValue(ex.FromRoom, out var rA) || !Pack.Rooms.TryGetValue(ex.ToRoom, out var rB))
                     continue;
 
@@ -734,14 +737,19 @@ namespace TacSim.World
             CreateBox(go.transform, "DoorPost_B", pos + stripOffset, new Vector3(0.14f, boxSize.y, 0.14f), postMat, false);
 
             // DOTTEAM Heavy Station Kit portal arch / locked bulkhead door dressing (auto-aligned flush in wall plane!)
-            if (Catalog != null && ex.Mode != "stair" && ex.Mode != "ladder")
+            if (ex.Mode != "stair" && ex.Mode != "ladder")
             {
                 Vector3 floorCenter = new Vector3(pos.x, pos.y - boxSize.y * 0.5f, pos.z);
-                if (ex.Locked && Catalog.stationLockedDoor != null)
+                if (ex.Locked)
                 {
-                    SpawnAlignedDoorwayPrefab(Catalog.stationLockedDoor, go.transform, "LockedBulkheadDoor", floorCenter, horizontal, 3.1f, 4.2f, keepColliders: true);
+                    // Always place a solid physics bulkhead blocker across locked doorways so the player avatar cannot walk into a restricted room
+                    Vector3 blockerSize = horizontal ? new Vector3(4.3f, 3.2f, 0.36f) : new Vector3(0.36f, 3.2f, 4.3f);
+                    Material sealedMat = UrpMaterialFactory.GetOpaque("SealedBulkheadLeaf", new Color(0.24f, 0.20f, 0.20f), 0.35f, 0.65f);
+                    CreateBox(go.transform, "SealedBulkheadBlocker", floorCenter + Vector3.up * 1.6f, blockerSize, sealedMat, withCollider: true);
+                    if (Catalog != null && Catalog.stationLockedDoor != null)
+                        SpawnAlignedDoorwayPrefab(Catalog.stationLockedDoor, go.transform, "LockedBulkheadDoor", floorCenter, horizontal, 3.1f, 4.2f, keepColliders: true);
                 }
-                else if (!ex.Locked && Catalog.stationDoorFrame != null)
+                else if (Catalog != null && Catalog.stationDoorFrame != null)
                 {
                     SpawnAlignedDoorwayPrefab(Catalog.stationDoorFrame, go.transform, "HeavyPortalArch", floorCenter, horizontal, 3.35f, 5.4f, keepColliders: false);
                 }
@@ -1237,9 +1245,10 @@ namespace TacSim.World
 
         public void ShowActorSpeech(string actorId, string actorName, string text)
         {
+            string safeText = MushProtocol.EscapeUnityRichText(text);
             if (!string.IsNullOrEmpty(actorId) && _actorBillboards.TryGetValue(actorId, out var bb) && bb != null)
             {
-                bb.ShowSpeech(text);
+                bb.ShowSpeech(safeText);
                 return;
             }
             // Fallback match by primary name
@@ -1248,7 +1257,7 @@ namespace TacSim.World
                 if (kv.Value != null && kv.Value.name.IndexOf(actorName ?? string.Empty, StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     if (_actorBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
-                        b2.ShowSpeech(text);
+                        b2.ShowSpeech(safeText);
                     break;
                 }
             }
@@ -1411,7 +1420,8 @@ namespace TacSim.World
                 bbGo.transform.SetParent(npcGo.transform, false);
                 bbGo.transform.localPosition = new Vector3(0f, 2.15f, 0f);
                 var bb = bbGo.AddComponent<WorldBillboard>();
-                bb.NameplateText = CreateTmp3D(bbGo.transform, "Nameplate", Vector3.zero, isNpc ? $"{item.Name}\n<size=65%><color=#88CCFF>[NPC]</color></size>" : item.Name, 2.2f, Color.white);
+                string safeActorName = MushProtocol.EscapeUnityRichText(item.Name);
+                bb.NameplateText = CreateTmp3D(bbGo.transform, "Nameplate", Vector3.zero, isNpc ? $"{safeActorName}\n<size=65%><color=#88CCFF>[NPC]</color></size>" : safeActorName, 2.2f, Color.white);
                 bb.SpeechBubbleText = CreateTmp3D(bbGo.transform, "SpeechBubble", new Vector3(0f, 0.55f, 0f), "", 2.0f, new Color(1f, 0.95f, 0.65f));
                 bb.SpeechBubbleText.gameObject.SetActive(false);
 

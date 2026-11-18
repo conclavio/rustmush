@@ -4497,10 +4497,12 @@ const MAX_AMBIENT_NPCS: usize = 16;
 /// Maximum inanimate thing object IDs published in `RoomView.ambient["things"]`.
 const MAX_AMBIENT_THINGS: usize = 32;
 
-/// Publishes `RoomView.ambient["npcs"]` (`["#12", ...]`), `dormant_npcs`,
-/// `players`, and `things` for perceivable occupants in `room` so 3D and
-/// spatial clients can distinguish NPC cast characters, connected player
-/// avatars, and inanimate props/hulls without extra queries.
+/// Publishes `RoomView.ambient["occupants"]` (`{ "npcs": [...], "dormant": [...],
+/// "players": [...], "things": [...] }`) for perceivable occupants in `room`
+/// (enforcing both `Flags::DARK` and registered `HookPoint::Perceive` concealers)
+/// using a single ambient key so 3D and spatial clients can distinguish NPC cast
+/// characters, connected player avatars, and inanimate props/hulls without
+/// exhausting `MAX_AMBIENT_KEYS`.
 struct NpcAmbient;
 
 impl EventHook for NpcAmbient {
@@ -4539,6 +4541,9 @@ impl EventHook for NpcAmbient {
             if o.flags.contains(Flags::DARK) && !see_hidden && !perm::controls(w, looker, c) {
                 continue;
             }
+            if !ctx.can_perceive(looker, c) {
+                continue;
+            }
             match o.kind {
                 ObjKind::Npc => {
                     if enabled_npc(w, c) {
@@ -4562,29 +4567,27 @@ impl EventHook for NpcAmbient {
                 ObjKind::Room | ObjKind::Exit => {}
             }
         }
-        let mut out = Vec::new();
+        let mut obj = serde_json::Map::new();
         if !npcs.is_empty() {
-            out.push((SmolStr::new_static("npcs"), serde_json::Value::Array(npcs)));
+            obj.insert("npcs".to_owned(), serde_json::Value::Array(npcs));
         }
         if !dormant_npcs.is_empty() {
-            out.push((
-                SmolStr::new_static("dormant_npcs"),
-                serde_json::Value::Array(dormant_npcs),
-            ));
+            obj.insert("dormant".to_owned(), serde_json::Value::Array(dormant_npcs));
         }
         if !players.is_empty() {
-            out.push((
-                SmolStr::new_static("players"),
-                serde_json::Value::Array(players),
-            ));
+            obj.insert("players".to_owned(), serde_json::Value::Array(players));
         }
         if !things.is_empty() {
-            out.push((
-                SmolStr::new_static("things"),
-                serde_json::Value::Array(things),
-            ));
+            obj.insert("things".to_owned(), serde_json::Value::Array(things));
         }
-        out
+        if obj.is_empty() {
+            Vec::new()
+        } else {
+            vec![(
+                SmolStr::new_static("occupants"),
+                serde_json::Value::Object(obj),
+            )]
+        }
     }
 }
 
@@ -4595,5 +4598,104 @@ fn format_speech(name: &str, kind: NarrativeKind, text: &str) -> String {
         NarrativeKind::Pose => format!("{name} {text}"),
         NarrativeKind::SemiPose => format!("{name}{text}"),
         _ => text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::Perceive;
+
+    struct ConcealOne(ObjId);
+
+    impl EventHook for ConcealOne {
+        fn perceives(
+            &self,
+            _ctx: &HookReadContext<'_>,
+            _observer: ObjId,
+            subject: ObjId,
+        ) -> Perceive {
+            if subject == self.0 {
+                Perceive::Conceal
+            } else {
+                Perceive::Abstain
+            }
+        }
+    }
+
+    struct ConcealModule(ObjId);
+
+    impl GameModule for ConcealModule {
+        fn name(&self) -> &'static str {
+            "test_conceal"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.hook(HookPoint::Perceive, Arc::new(ConcealOne(self.0)));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn npc_ambient_enforces_perceive_concealers_and_uses_single_occupants_key() {
+        let concealed_id = ObjId(4);
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(NpcModule::new()),
+            Box::new(ConcealModule(concealed_id)),
+        ]);
+        let room = mush_core::LIMBO;
+        let looker = tw.spawn_player("Looker");
+        let visible_thing = tw
+            .world_mut()
+            .create(ObjKind::Thing, "VisibleCrate", mush_core::GOD, Some(room))
+            .expect("create visible thing");
+        let hidden_thing = tw
+            .world_mut()
+            .create(ObjKind::Thing, "ConcealedTank", mush_core::GOD, Some(room))
+            .expect("create concealed thing");
+        assert_eq!(hidden_thing, concealed_id);
+
+        let lens = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+        let view = mush_core::output::room_view(tw.registry(), tw.world(), looker, room, lens)
+            .expect("room renders");
+
+        assert!(
+            view.contents
+                .iter()
+                .any(|o| o.id == visible_thing.to_string()),
+            "visible thing is in RoomView.contents"
+        );
+        assert!(
+            !view
+                .contents
+                .iter()
+                .any(|o| o.id == hidden_thing.to_string()),
+            "concealed thing is omitted from RoomView.contents"
+        );
+
+        assert!(
+            !view.ambient.contains_key("things") && !view.ambient.contains_key("npcs"),
+            "legacy top-level ambient keys are gone"
+        );
+        let occ = view
+            .ambient
+            .get("occupants")
+            .expect("single occupants key present");
+        let things = occ
+            .get("things")
+            .and_then(serde_json::Value::as_array)
+            .expect("things array present");
+        assert!(
+            things
+                .iter()
+                .any(|v| v.as_str() == Some(&visible_thing.to_string())),
+            "visible thing present in ambient['occupants']['things']"
+        );
+        assert!(
+            !things
+                .iter()
+                .any(|v| v.as_str() == Some(&hidden_thing.to_string())),
+            "concealed thing must not leak into ambient['occupants']['things']"
+        );
     }
 }

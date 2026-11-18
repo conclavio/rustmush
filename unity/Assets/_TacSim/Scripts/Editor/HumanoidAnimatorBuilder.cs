@@ -20,7 +20,7 @@ namespace TacSim.Editor
         {
             EnsureFolder("Assets/_TacSim", "Generated");
 
-            AnimationClip idleClip = FindImportedIdaFaberIdleClip() ?? CreateBreathingIdleClip();
+            AnimationClip idleClip = CreateBreathingIdleClip();
             AnimationClip walkClip = CreateStrideClip("TacSim_Walk", strideAngle: 26f, kneeBend: -32f, armSwing: 20f, periodSec: 0.92f);
             AnimationClip runClip = CreateStrideClip("TacSim_Run", strideAngle: 44f, kneeBend: -55f, armSwing: 36f, periodSec: 0.64f);
             AnimationClip seatedClip = CreateSeatedHelmClip();

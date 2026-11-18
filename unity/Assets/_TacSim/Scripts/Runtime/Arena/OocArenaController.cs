@@ -154,12 +154,16 @@ namespace TacSim.Arena
             Catalog = catalog;
             TerrainGrid = grid ?? TacSimTerrainDecoder.LoadStaticArena("proving_ground");
 
+            if (_terrainRoot != null)
+                TacSimTerrainDecoder.DestroyTerrainChunkResources(_terrainRoot);
+
             for (int i = transform.childCount - 1; i >= 0; i--)
             {
                 var ch = transform.GetChild(i).gameObject;
                 if (Application.isPlaying) Destroy(ch);
                 else DestroyImmediate(ch);
             }
+            _terrainRoot = null;
             _contactRigs.Clear();
             _activeTracers.Clear();
 

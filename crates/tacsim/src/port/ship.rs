@@ -1451,17 +1451,6 @@ impl EventHook for ShipLook {
                 }
                 Berth::UnderWay | Berth::Elsewhere => (false, false, None),
             };
-            let can_read_full_stowage = helm_of(w, looker).is_some_and(|c| c.hull == hull)
-                || view
-                    .interior
-                    .gauges
-                    .iter()
-                    .any(|(comp, rooms)| comp.as_str() == "cargo" && rooms.contains(&tid));
-            let stowage = if can_read_full_stowage {
-                hull_stowage_json(ctx, w, store, &view)
-            } else {
-                None
-            };
             return vec![(
                 SmolStr::new_static("tacsim"),
                 serde_json::json!({
@@ -1475,13 +1464,11 @@ impl EventHook for ShipLook {
                     "docked": docked,
                     "settled_pad": settled_pad,
                     "port": port_entry,
-                    "stowage": stowage,
                 }),
             )];
         }
         if let Some(map) = store.port_maps().find(|m| m.presentation == Some(room.0)) {
             let mut docked_count: usize = 0;
-            let mut docked_hulls = Vec::new();
             for h in crate::port::coop::programme_ports(w)
                 .into_iter()
                 .flat_map(|p| p.map.hulls.iter().map(|r| ObjId(r.hull)))
@@ -1491,49 +1478,31 @@ impl EventHook for ShipLook {
                     Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
                 ) {
                     docked_count = docked_count.saturating_add(1);
-                    if docked_hulls.len() < 16 {
-                        let (mark, unit) = match hull_view(w, h) {
-                            Some(hv) => (hv.row.mark.clone(), hv.unit.to_string()),
-                            None => (String::new(), String::new()),
-                        };
-                        docked_hulls.push(serde_json::json!({
-                            "id": h.to_string(),
-                            "name": name_of(w, h),
-                            "mark": mark,
-                            "unit": unit,
-                        }));
-                    }
                 }
             }
-            let (own_hull, own_hull_name, own_hull_docked_here, own_stowage) =
-                match helm_of(w, looker) {
-                    Some(charter) => {
-                        let docked_here = matches!(
-                            berth_of(w, charter.hull),
-                            Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
-                        );
-                        let stow = hull_view(w, charter.hull)
-                            .and_then(|hv| hull_stowage_json(ctx, w, store, &hv));
-                        (
-                            Some(charter.hull.to_string()),
-                            Some(name_of(w, charter.hull)),
-                            docked_here,
-                            stow,
-                        )
-                    }
-                    None => (None, None, false, None),
-                };
+            let (own_hull, own_hull_name, own_hull_docked_here) = match helm_of(w, looker) {
+                Some(charter) => {
+                    let docked_here = matches!(
+                        berth_of(w, charter.hull),
+                        Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+                    );
+                    (
+                        Some(charter.hull.to_string()),
+                        Some(name_of(w, charter.hull)),
+                        docked_here,
+                    )
+                }
+                None => (None, None, false),
+            };
             return vec![(
                 SmolStr::new_static("tacsim"),
                 serde_json::json!({
                     "mode": "berth_gallery",
                     "port_entry": map.entry.to_string(),
                     "docked_count": docked_count,
-                    "docked_hulls": docked_hulls,
                     "own_hull": own_hull,
                     "own_hull_name": own_hull_name,
                     "own_hull_docked_here": own_hull_docked_here,
-                    "own_stowage": own_stowage,
                 }),
             )];
         }
@@ -1556,30 +1525,23 @@ impl EventHook for ShipLook {
                 let mut my_team: Option<&'static str> = None;
                 let mut my_slot: Option<u8> = None;
                 let mut my_unit: Option<String> = None;
-                let mut slots_json = Vec::with_capacity(centre.slots.len());
                 for s in &centre.slots {
-                    let side_word = if s.team == crate::arena::state::PartyId::RED {
-                        "red"
-                    } else {
-                        "blue"
-                    };
-                    let unit_id = s
-                        .unit_type
-                        .as_ref()
-                        .map_or_else(|| "line_tank".to_owned(), ToString::to_string);
                     if s.pilot == looker {
-                        my_team = Some(side_word);
+                        my_team = Some(if s.team == crate::arena::state::PartyId::RED {
+                            "red"
+                        } else {
+                            "blue"
+                        });
                         my_slot = Some(s.index);
-                        my_unit = Some(unit_id.clone());
+                        my_unit = Some(slot_unit_id(
+                            w,
+                            &centre.arena,
+                            s.unit_type.as_deref(),
+                            s.team,
+                            s.index,
+                        ));
+                        break;
                     }
-                    slots_json.push(serde_json::json!({
-                        "team": side_word,
-                        "index": s.index,
-                        "pilot": s.pilot.to_string(),
-                        "pilot_name": name_of(w, s.pilot),
-                        "unit": unit_id,
-                        "seated": s.is_seated() && !s.left,
-                    }));
                 }
                 return vec![(
                     SmolStr::new_static("tacsim"),
@@ -1592,13 +1554,155 @@ impl EventHook for ShipLook {
                         "my_team": my_team,
                         "my_slot": my_slot,
                         "my_unit": my_unit,
-                        "slots": slots_json,
                     }),
                 )];
             }
         }
         Vec::new()
     }
+}
+
+fn slot_unit_id(
+    w: &World,
+    arena: &str,
+    picked: Option<&str>,
+    team: crate::arena::state::PartyId,
+    index: u8,
+) -> String {
+    if let Some(picked) = picked {
+        return picked.to_owned();
+    }
+    CanonicalId::new(arena)
+        .ok()
+        .and_then(|aid| {
+            let s = w.module_state::<TacsimStore>()?;
+            let def = s.definitions().arenas.get(&aid)?;
+            def.tanks
+                .iter()
+                .filter(|t| t.team == team)
+                .nth(usize::from(index.saturating_sub(1)))
+                .map(|t| t.unit.to_string())
+        })
+        .unwrap_or_else(|| crate::definitions::content::LINE_TANK.to_owned())
+}
+
+/// Structured berth gallery roster (`docked_hulls` and actor charter summary)
+/// when `room` is a port presentation gallery (`None` elsewhere). Served over
+/// pulled `port.trade` rather than `RoomView.ambient` so `ambient` stays scalar
+/// and well within `MAX_AMBIENT_BYTES`.
+pub(crate) fn berth_gallery_json(
+    w: &World,
+    store: &TacsimStore,
+    looker: ObjId,
+    room: ObjId,
+) -> Option<serde_json::Value> {
+    let map = store.port_maps().find(|m| m.presentation == Some(room.0))?;
+    let mut docked_count: usize = 0;
+    let mut docked_hulls = Vec::new();
+    for h in crate::port::coop::programme_ports(w)
+        .into_iter()
+        .flat_map(|p| p.map.hulls.iter().map(|r| ObjId(r.hull)))
+    {
+        if matches!(
+            berth_of(w, h),
+            Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+        ) {
+            docked_count = docked_count.saturating_add(1);
+            if docked_hulls.len() < 16 {
+                let (mark, unit) = match hull_view(w, h) {
+                    Some(hv) => (hv.row.mark.clone(), hv.unit.to_string()),
+                    None => (String::new(), String::new()),
+                };
+                docked_hulls.push(serde_json::json!({
+                    "id": h.to_string(),
+                    "name": name_of(w, h),
+                    "mark": mark,
+                    "unit": unit,
+                }));
+            }
+        }
+    }
+    let (own_hull, own_hull_name, own_hull_docked_here) = match helm_of(w, looker) {
+        Some(charter) => {
+            let docked_here = matches!(
+                berth_of(w, charter.hull),
+                Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+            );
+            (
+                Some(charter.hull.to_string()),
+                Some(name_of(w, charter.hull)),
+                docked_here,
+            )
+        }
+        None => (None, None, false),
+    };
+    Some(serde_json::json!({
+        "port_entry": map.entry.to_string(),
+        "docked_count": docked_count,
+        "docked_hulls": docked_hulls,
+        "own_hull": own_hull,
+        "own_hull_name": own_hull_name,
+        "own_hull_docked_here": own_hull_docked_here,
+    }))
+}
+
+/// Structured simulator lobby/team/pod roster (`slots`, `match_state`, `my_unit`)
+/// when `room` is part of the simulator centre (`None` elsewhere). Served over
+/// pulled `port.trade` rather than `RoomView.ambient`.
+pub(crate) fn simulator_lobby_json(
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+) -> Option<serde_json::Value> {
+    let sim_role = crate::match_::centre::room_role(w, room).or_else(|| {
+        crate::match_::centre::pod_slot(w, room)
+            .map(|(team, _)| crate::match_::centre::CentreRoom::Team(team))
+    })?;
+    let centre = crate::match_::centre_of(w)?;
+    let room_word = match sim_role {
+        crate::match_::centre::CentreRoom::Lobby => "lobby",
+        crate::match_::centre::CentreRoom::Team(p) if p == crate::arena::state::PartyId::RED => {
+            "red"
+        }
+        crate::match_::centre::CentreRoom::Team(_) => "blue",
+    };
+    let in_pod = crate::match_::centre::pod_slot(w, room).is_some();
+    let mut my_team: Option<&'static str> = None;
+    let mut my_slot: Option<u8> = None;
+    let mut my_unit: Option<String> = None;
+    let mut slots_json = Vec::with_capacity(centre.slots.len());
+    for s in &centre.slots {
+        let side_word = if s.team == crate::arena::state::PartyId::RED {
+            "red"
+        } else {
+            "blue"
+        };
+        let unit_id = slot_unit_id(w, &centre.arena, s.unit_type.as_deref(), s.team, s.index);
+        if s.pilot == looker {
+            my_team = Some(side_word);
+            my_slot = Some(s.index);
+            my_unit = Some(unit_id.clone());
+        }
+        slots_json.push(serde_json::json!({
+            "team": side_word,
+            "index": s.index,
+            "pilot": s.pilot.to_string(),
+            "pilot_name": name_of(w, s.pilot),
+            "unit": unit_id,
+            "seated": s.is_seated() && !s.left,
+        }));
+    }
+    Some(serde_json::json!({
+        "room": room_word,
+        "in_pod": in_pod,
+        "arena": centre.arena.as_str(),
+        "match_state": centre.state.as_str(),
+        "ai_fill": centre.ai_side_size,
+        "my_team": my_team,
+        "my_slot": my_slot,
+        "my_unit": my_unit,
+        "slots": slots_json,
+    }))
 }
 
 /// Structured stowage gauges for `view` (cargo mass/volume, reaction mass tankage,
@@ -1646,8 +1750,12 @@ pub(crate) fn hull_stowage_json(
                 tank_limit_kg = comp.limits.get(&mass_id).copied().unwrap_or(0);
             }
             "provisions" => {
-                stores_days = contents.values().copied().sum();
-                stores_limit_days = comp.limits.values().next().copied().unwrap_or(0);
+                if let Some((_good, qty, cap)) =
+                    crate::port::gauges::single_reading(goods, comp, contents).ok()?
+                {
+                    stores_days = qty;
+                    stores_limit_days = cap;
+                }
             }
             _ => {}
         }

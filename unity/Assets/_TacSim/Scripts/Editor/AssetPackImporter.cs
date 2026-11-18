@@ -8,17 +8,17 @@ using UnityEngine;
 namespace TacSim.Editor
 {
     /// <summary>
-    /// One-click &amp; CLI importer for Vertical Slice 1 commercial 3D assets from C:\Users\faeni\3d_assets
+    /// On-demand menu &amp; CLI importer for optional local commercial 3D asset packs
     /// (kept strictly gitignored outside Assets/_TacSim/ per licensing rules):
     /// 1) Imports Ida Faber characters (Stellar Trooper, Cyberpunk Street Fighter, Techwear Girls, Astra, Celeste)
     /// 2) Imports Vattalus Fenris Frigate, DOTTEAM Heavy Station Kit, MSGDI Space Hulls, Solar System Planet Creator, FORGE3D Effects
     /// 3) Unpacks nested URP shader upgrade .unitypackages
     /// 4) Converts Built-in Standard PBR materials in Heavy Station Kit &amp; MSGDI to Universal Render Pipeline/Lit
-    /// 5) Configures Humanoid rigs, builds TacSimHumanoid.controller, and populates Resources/TacSimAssetCatalog.asset
+    /// 5) Configures Humanoid rigs, refreshes TacSimHumanoid.controller, and populates Resources/TacSimAssetCatalog.asset
     /// </summary>
     public static class AssetPackImporter
     {
-        public const string DefaultAssetVaultPath = @"C:\Users\faeni\3d_assets";
+        public const string AssetVaultEditorPrefKey = "TacSim.AssetVaultRoot";
         public const string CatalogAssetPath = "Assets/_TacSim/Resources/TacSimAssetCatalog.asset";
 
         private static readonly string[] CuratedVerticalSlicePackages =
@@ -64,13 +64,13 @@ namespace TacSim.Editor
         public static void ImportFromMenu()
         {
             string root = ResolveAssetVaultRoot();
-            if (!Directory.Exists(root))
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
             {
-                EditorUtility.DisplayDialog(
-                    "TacSim Asset Importer",
-                    $"Could not find 3D asset folder at:\n{root}\n\nSet TACSIM_3D_ASSETS environment variable or place packs in {DefaultAssetVaultPath}.",
-                    "OK");
-                return;
+                string picked = EditorUtility.OpenFolderPanel("Select Local 3D Asset Vault Folder (.unitypackage root)", string.Empty, string.Empty);
+                if (string.IsNullOrWhiteSpace(picked) || !Directory.Exists(picked))
+                    return;
+                EditorPrefs.SetString(AssetVaultEditorPrefKey, picked);
+                root = picked;
             }
 
             RunFullImportPipeline(root);
@@ -83,6 +83,8 @@ namespace TacSim.Editor
         public static void ImportAllBatch()
         {
             string root = ResolveAssetVaultRoot();
+            if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+                throw new DirectoryNotFoundException("Set TACSIM_3D_ASSETS environment variable to your local 3D asset vault before running ImportAllBatch.");
             RunFullImportPipeline(root);
         }
 
@@ -116,7 +118,10 @@ namespace TacSim.Editor
             string env = Environment.GetEnvironmentVariable("TACSIM_3D_ASSETS");
             if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env))
                 return env;
-            return DefaultAssetVaultPath;
+            string saved = EditorPrefs.GetString(AssetVaultEditorPrefKey, string.Empty);
+            if (!string.IsNullOrWhiteSpace(saved) && Directory.Exists(saved))
+                return saved;
+            return string.Empty;
         }
 
         public static void RunFullImportPipeline(string vaultRoot)
@@ -376,30 +381,6 @@ namespace TacSim.Editor
                     importer.SaveAndReimport();
                 }
             }
-        }
-
-        [InitializeOnLoadMethod]
-        private static void AutoEnsureCatalogHydratedOnLoad()
-        {
-            EditorApplication.delayCall += () =>
-            {
-                if (EditorApplication.isPlayingOrWillChangePlaymode) return;
-                SanitizeVendorScriptsForUrp();
-                var catalog = AssetDatabase.LoadAssetAtPath<TacSimAssetCatalog>(CatalogAssetPath);
-                if (catalog == null) return;
-                if (catalog.stationDoorFrame == null ||
-                    catalog.shipHelmSeatPrefab == null ||
-                    catalog.shipyardCradlePrefab == null ||
-                    catalog.lineTankPrefab == null ||
-                    catalog.prospectorRoverPrefab == null ||
-                    catalog.corvetteExteriorPrefab == null ||
-                    catalog.maleNpcCharacterPrefabs == null ||
-                    catalog.maleNpcCharacterPrefabs.Count == 0)
-                {
-                    UpgradeStandardMaterialsToUrpLit();
-                    PopulateOrRefreshCatalog(catalog.humanoidAnimator);
-                }
-            };
         }
 
         public static TacSimAssetCatalog PopulateOrRefreshCatalog(RuntimeAnimatorController controller = null)

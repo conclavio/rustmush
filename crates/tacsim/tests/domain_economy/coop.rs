@@ -2655,4 +2655,104 @@ fn room_ambient_publishes_berth_gallery_and_ship_interior_metadata() {
         ship_tac.get("port").and_then(|v| v.as_str()),
         Some("ceres_port")
     );
+    assert!(
+        gal_tac.get("docked_hulls").is_none() && ship_tac.get("stowage").is_none(),
+        "RoomView.ambient['tacsim'] remains scalar-only without roster/stowage arrays"
+    );
+}
+
+#[test]
+fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores_days() {
+    let (mut rig, who) = enrolled();
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+
+    let query_trade = |tw: &mut mush_testkit::TestWorld, actor: ObjId| -> serde_json::Value {
+        let (mut out, mut fx) = (mush_core::Outbox::new(), mush_core::Effects::new());
+        tw.engine_mut().step(
+            mush_core::Inbound::Query {
+                conn: 1,
+                actor,
+                id: 1,
+                name: smol_str::SmolStr::new_static(tacsim::client_sync::PORT_TRADE_FEED),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        out.events()
+            .iter()
+            .find_map(|(_, event)| match event {
+                mush_proto::OutputEvent::Reply { event, .. } => match event.as_ref() {
+                    mush_proto::OutputEvent::Panel { data, .. } => Some(data.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("port.trade reply panel")
+    };
+
+    let station_frame = query_trade(&mut rig.tw, who);
+    assert!(
+        station_frame["venue"].as_str().is_some(),
+        "station port room exposes market venue: {station_frame}"
+    );
+    assert_eq!(
+        station_frame["ship"]["stowage"]["stores_limit_days"].as_u64(),
+        Some(120),
+        "Dray provisions limit is reported in crew-days (120), not kg (480)"
+    );
+    assert!(
+        station_frame["berth"]["docked_hulls"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "berth gallery roster is served over port.trade"
+    );
+    let listings = station_frame["listings"]
+        .as_array()
+        .expect("listings array");
+    let first_ask = listings
+        .iter()
+        .find(|row| {
+            row["side"].as_str() == Some("ask") && row["available_qty"].as_u64().unwrap_or(0) > 0
+        })
+        .expect("at least one live ask at Ceres");
+    let ask_id = first_ask["id"].as_u64().expect("ask id");
+    let ask_price = first_ask["unit_price_minor"]
+        .as_i64()
+        .expect("ask unit_price_minor");
+
+    let quote_out = run(&mut rig.tw, who, &format!("+market/quote #{ask_id} 1"));
+    assert!(
+        quote_out.contains("Quote #"),
+        "expected quote confirmation, got: {quote_out}"
+    );
+
+    let after_quote = query_trade(&mut rig.tw, who);
+    let open_quotes = after_quote["open_quotes"]
+        .as_array()
+        .expect("open_quotes array");
+    let matching_quote = open_quotes
+        .iter()
+        .find(|q| q["listing_id"].as_u64() == Some(ask_id) && q["quantity"].as_u64() == Some(1))
+        .expect("open_quotes records correlated buyer quote");
+    assert_eq!(
+        matching_quote["unit_price_minor"].as_i64(),
+        Some(ask_price),
+        "displayed listing price matches actual quote execution price"
+    );
+    assert_eq!(matching_quote["total_minor"].as_i64(), Some(ask_price));
+
+    // Boarding the docked hull must clear `venue` so hull-room trades refused by
+    // `PortVenueGate` are never advertised as executable in place.
+    let _ = run(&mut rig.tw, who, "+ship/board");
+    let aboard_frame = query_trade(&mut rig.tw, who);
+    assert!(
+        aboard_frame["venue"].is_null(),
+        "hull interior must not advertise an executable market venue: {aboard_frame}"
+    );
+    assert_eq!(
+        aboard_frame["aboard_docked_port"].as_str(),
+        Some("Ceres Freeport")
+    );
 }

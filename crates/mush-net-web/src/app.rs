@@ -73,8 +73,6 @@ pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Opt
 
     let mut ops = Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/content/manifest", get(content_manifest_endpoint))
-        .route("/api/content/packs/{id}", get(content_pack_endpoint))
         .route("/ws", get(ws::ws_route));
     if metrics_enabled {
         // Gated behind `web.metrics_enabled` (opt-in, default off). Public-safe:
@@ -259,60 +257,6 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
         )],
         body,
     )
-}
-
-#[derive(serde::Deserialize, Default)]
-struct ContentPackQuery {
-    #[serde(default)]
-    digest: Option<String>,
-}
-
-/// `GET /api/content/manifest` -> SHA-256 index of dynamic client content packs.
-async fn content_manifest_endpoint(State(state): State<AppState>) -> axum::response::Response {
-    match state.hooks.content_manifest() {
-        Some(manifest) => (
-            StatusCode::OK,
-            [
-                (
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json; charset=utf-8"),
-                ),
-                (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
-            ],
-            manifest.to_string(),
-        )
-            .into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// `GET /api/content/packs/{id}` -> raw JSON payload for one content pack.
-/// When `?digest=<sha256>` matches the pack's digest, sets `Cache-Control: immutable`.
-async fn content_pack_endpoint(
-    State(state): State<AppState>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    axum::extract::Query(q): axum::extract::Query<ContentPackQuery>,
-) -> axum::response::Response {
-    let Some((sha256, json_body)) = state.hooks.content_pack(&id) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let cache_ctrl = if q.digest.as_deref() == Some(sha256.as_ref()) {
-        HeaderValue::from_static("public, max-age=31536000, immutable")
-    } else {
-        HeaderValue::from_static("no-cache")
-    };
-    (
-        StatusCode::OK,
-        [
-            (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json; charset=utf-8"),
-            ),
-            (header::CACHE_CONTROL, cache_ctrl),
-        ],
-        json_body.to_string(),
-    )
-        .into_response()
 }
 
 /// Serves until the process ends. See
