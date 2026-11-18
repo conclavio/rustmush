@@ -24,7 +24,7 @@
 //! them.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use mush_core::module::{ModError, Registrar};
 use mush_core::{HookReadContext, ObjId, QueryHandler, World};
@@ -166,7 +166,20 @@ fn sanitize_entry_in_place(kind: &str, def: &mut Map<String, Value>) {
             }
         }
         "npc" | "person" => {
-            def.remove("tags");
+            // Strict public-surface allowlist: strips `lore` (guarded/secret facts),
+            // `lore_tags`, `knowledge`, `tags`, `abilities`, `schedule`, `memory`,
+            // and any non-public NPC authoring metadata.
+            const ALLOWED_NPC_KEYS: &[&str] = &[
+                "name",
+                "aliases",
+                "room",
+                "home",
+                "enabled",
+                "short_desc",
+                "desc",
+                "profile",
+            ];
+            def.retain(|k, _| ALLOWED_NPC_KEYS.contains(&k.as_str()));
             if let Some(profile) = def.get_mut("profile").and_then(Value::as_object_mut) {
                 let enabled = profile
                     .get("enabled")
@@ -188,13 +201,7 @@ fn sanitize_entry_in_place(kind: &str, def: &mut Map<String, Value>) {
     }
 }
 
-/// Project an authoring JSON pack down to player-safe client geometry and public
-/// metadata, stripping `"brief"`, `"digest"`, `"secret"`/`"lore"`/`"quest"`
-/// entries, `"reveal": "staff"`, `"visibility": "hidden"` exits, restricted
-/// room prose, and private NPC prompt fields.
-#[must_use]
-pub fn project_pack_for_client(raw_json: &str) -> Option<String> {
-    let mut doc: Value = serde_json::from_str(raw_json).ok()?;
+fn project_pack_value_for_client(mut doc: Value) -> Option<String> {
     let root = doc.as_object_mut()?;
     root.remove("brief");
     if let Some(manifest) = root.get_mut("manifest").and_then(Value::as_object_mut) {
@@ -227,6 +234,17 @@ pub fn project_pack_for_client(raw_json: &str) -> Option<String> {
     serde_json::to_string(&doc).ok()
 }
 
+/// Project an authoring JSON pack down to player-safe client geometry and public
+/// metadata, stripping `"brief"`, `"digest"`, `"secret"`/`"lore"`/`"quest"`
+/// entries, `"reveal": "staff"`, `"visibility": "hidden"` exits, restricted
+/// room prose, guarded NPC `def.lore`, and private NPC prompt fields.
+#[must_use]
+pub fn project_pack_for_client(raw_json: &str) -> Option<String> {
+    let doc: Value = serde_json::from_str(raw_json).ok()?;
+    project_pack_value_for_client(doc)
+}
+
+#[derive(Clone)]
 struct PackCollector {
     entries: Vec<ClientPackEntry>,
     pack_rows: Vec<Value>,
@@ -242,19 +260,24 @@ impl PackCollector {
         }
     }
 
-    fn push_projected(
+    fn finish(self) -> ClientContentBundle {
+        ClientContentBundle {
+            manifest_packs_value: Value::Array(self.pack_rows),
+            entries: self.entries,
+            by_id: self.by_id,
+        }
+    }
+
+    fn push_projected_string(
         &mut self,
         id: &str,
         category: &'static str,
-        raw_json: &str,
+        projected: String,
         aliases: &[&str],
     ) {
         if self.by_id.contains_key(id) {
             return;
         }
-        let Some(projected) = project_pack_for_client(raw_json) else {
-            return;
-        };
         let sha = sha256_hex(projected.as_bytes());
         let idx = self.entries.len();
         self.pack_rows.push(json!({
@@ -277,6 +300,38 @@ impl PackCollector {
         }
     }
 
+    fn push_projected(
+        &mut self,
+        id: &str,
+        category: &'static str,
+        raw_json: &str,
+        aliases: &[&str],
+    ) {
+        if self.by_id.contains_key(id) {
+            return;
+        }
+        let Some(projected) = project_pack_for_client(raw_json) else {
+            return;
+        };
+        self.push_projected_string(id, category, projected, aliases);
+    }
+
+    fn push_projected_value(
+        &mut self,
+        id: &str,
+        category: &'static str,
+        doc: Value,
+        aliases: &[&str],
+    ) {
+        if self.by_id.contains_key(id) {
+            return;
+        }
+        let Some(projected) = project_pack_value_for_client(doc) else {
+            return;
+        };
+        self.push_projected_string(id, category, projected, aliases);
+    }
+
     fn push_manifest_neighborhood_if_applicable(&mut self, raw_json: &str) {
         let Ok(doc) = serde_json::from_str::<Value>(raw_json) else {
             return;
@@ -294,44 +349,371 @@ impl PackCollector {
         self.push_projected(id, "neighborhood", raw_json, &[short]);
     }
 
-    fn push_fielded_pack_if_client_relevant(&mut self, raw_json: &str) {
-        let Ok(doc) = serde_json::from_str::<Value>(raw_json) else {
-            return;
-        };
+    fn push_fielded_value_if_client_relevant(&mut self, doc: Value) {
         let manifest_id = doc
             .get("manifest")
             .and_then(|m| m.get("id"))
             .and_then(Value::as_str)
-            .unwrap_or("");
-        let Some(entries) = doc.get("entries").and_then(Value::as_object) else {
-            return;
-        };
-        // Identify single-family unit, weapon, or arena seed packs for 3D clients.
-        let mut first_unit: Option<&str> = None;
-        let mut first_weapon: Option<&str> = None;
-        let mut first_arena: Option<&str> = None;
-        for (entry_id, entry) in entries {
-            match entry.get("kind").and_then(Value::as_str) {
-                Some("unit") if first_unit.is_none() => first_unit = Some(entry_id.as_str()),
-                Some("weapon") if first_weapon.is_none() => first_weapon = Some(entry_id.as_str()),
-                Some("arena") if first_arena.is_none() => first_arena = Some(entry_id.as_str()),
-                _ => {}
+            .unwrap_or("")
+            .to_owned();
+        let (first_unit, first_weapon, first_arena) = {
+            let Some(entries) = doc.get("entries").and_then(Value::as_object) else {
+                return;
+            };
+            let mut u: Option<String> = None;
+            let mut wp: Option<String> = None;
+            let mut ar: Option<String> = None;
+            for (entry_id, entry) in entries {
+                match entry.get("kind").and_then(Value::as_str) {
+                    Some("unit") if u.is_none() => u = Some(entry_id.clone()),
+                    Some("weapon") if wp.is_none() => wp = Some(entry_id.clone()),
+                    Some("arena") if ar.is_none() => ar = Some(entry_id.clone()),
+                    _ => {}
+                }
             }
-        }
+            (u, wp, ar)
+        };
         if let Some(unit_id) = first_unit {
-            let slug = unit_id.strip_prefix("tacsim.unit.").unwrap_or(unit_id);
-            self.push_projected(slug, "unit", raw_json, &[unit_id, manifest_id]);
+            let slug = unit_id
+                .strip_prefix("tacsim.unit.")
+                .unwrap_or(&unit_id)
+                .to_owned();
+            self.push_projected_value(&slug, "unit", doc, &[&unit_id, &manifest_id]);
         } else if let Some(weapon_id) = first_weapon {
             let slug = weapon_id
                 .strip_prefix("tacsim.weapon.")
-                .unwrap_or(weapon_id);
-            self.push_projected(slug, "weapon", raw_json, &[weapon_id, manifest_id]);
+                .unwrap_or(&weapon_id)
+                .to_owned();
+            self.push_projected_value(&slug, "weapon", doc, &[&weapon_id, &manifest_id]);
         } else if let Some(arena_id) = first_arena {
-            let slug = arena_id.strip_prefix("tacsim.arena.").unwrap_or(arena_id);
+            let slug = arena_id.strip_prefix("tacsim.arena.").unwrap_or(&arena_id);
             let client_id = format!("arena.{slug}");
-            self.push_projected(&client_id, "arena", raw_json, &[arena_id, manifest_id]);
+            self.push_projected_value(&client_id, "arena", doc, &[&arena_id, &manifest_id]);
         }
     }
+
+    fn push_fielded_pack_if_client_relevant(&mut self, raw_json: &str) {
+        let Ok(doc) = serde_json::from_str::<Value>(raw_json) else {
+            return;
+        };
+        self.push_fielded_value_if_client_relevant(doc);
+    }
+}
+
+/// Reconcile a serialized neighborhood document with the live world's applied
+/// [`mush_atlas::Records`] (`RoomGeo` footprints/floors/names and `StructureRec`
+/// floors), so worlds running an older applied revision or live geometry edits
+/// receive exact matching room bounds and room sets.
+fn reconcile_neighborhood_with_live_records(
+    w: &World,
+    records: &mush_atlas::Records,
+    pack_id: &mush_core::CanonicalId,
+    doc: &mut Value,
+) {
+    let live_rooms: BTreeMap<String, &mush_atlas::RoomGeo> = records
+        .roomgeo
+        .values()
+        .filter(|geo| &geo.key.pack == pack_id)
+        .map(|geo| (geo.key.entry.as_str().to_owned(), geo))
+        .collect();
+    if live_rooms.is_empty() {
+        return;
+    }
+
+    let Some(entries) = doc
+        .as_object_mut()
+        .and_then(|root| root.get_mut("entries"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+
+    // Drop room entries that are not part of the world's currently applied revision.
+    let unapplied_rooms: Vec<String> = entries
+        .iter()
+        .filter_map(|(k, v)| {
+            let is_room = v.get("kind").and_then(Value::as_str) == Some("room");
+            (is_room && !live_rooms.contains_key(k)).then_some(k.clone())
+        })
+        .collect();
+    for k in unapplied_rooms {
+        entries.remove(&k);
+    }
+
+    // Overlay live RoomGeo footprint, floor, access, and live room object name.
+    for (entry_key, geo) in &live_rooms {
+        let row = entries
+            .entry(entry_key.clone())
+            .or_insert_with(|| json!({ "kind": "room", "def": {} }));
+        if let Some(def) = row.get_mut("def").and_then(Value::as_object_mut) {
+            if let Some(obj) = w.get(geo.room) {
+                def.insert("name".to_owned(), Value::String(obj.name.to_string()));
+            }
+            match &geo.footprint {
+                mush_atlas::Footprint::Rect(mush_atlas::Rect2(
+                    mush_atlas::Point2(x0, y0),
+                    mush_atlas::Point2(x1, y1),
+                )) => {
+                    def.insert("bounds".to_owned(), json!([[*x0, *y0], [*x1, *y1]]));
+                }
+                mush_atlas::Footprint::Polygon(mush_atlas::Polygon2(pts)) if !pts.is_empty() => {
+                    let mut min_x = f64::INFINITY;
+                    let mut min_y = f64::INFINITY;
+                    let mut max_x = f64::NEG_INFINITY;
+                    let mut max_y = f64::NEG_INFINITY;
+                    for mush_atlas::Point2(px, py) in pts {
+                        min_x = min_x.min(*px);
+                        min_y = min_y.min(*py);
+                        max_x = max_x.max(*px);
+                        max_y = max_y.max(*py);
+                    }
+                    def.insert("bounds".to_owned(), json!([[min_x, min_y], [max_x, max_y]]));
+                }
+                mush_atlas::Footprint::Anchor { point, radius_m } => {
+                    let r = radius_m.max(2.0);
+                    def.insert(
+                        "bounds".to_owned(),
+                        json!([[point.0 - r, point.1 - r], [point.0 + r, point.1 + r]]),
+                    );
+                }
+                mush_atlas::Footprint::Polygon(_) => {}
+            }
+            if let mush_atlas::SurfaceRef::Floor {
+                structure, index, ..
+            } = &geo.surface
+            {
+                def.insert("structure".to_owned(), json!(structure.entry.as_str()));
+                def.insert("floor".to_owned(), json!(*index));
+            }
+            def.insert(
+                "access".to_owned(),
+                json!(match geo.access {
+                    mush_atlas::Access::Public => "public",
+                    mush_atlas::Access::Restricted => "restricted",
+                }),
+            );
+        }
+    }
+
+    // Overlay live StructureRec floor definitions when present.
+    for (skey, st) in &records.structures {
+        if &skey.pack != pack_id {
+            continue;
+        }
+        let row = entries
+            .entry(skey.entry.as_str().to_owned())
+            .or_insert_with(|| json!({ "kind": "structure", "def": {} }));
+        if let Some(def) = row.get_mut("def").and_then(Value::as_object_mut)
+            && let Ok(floors_val) = serde_json::to_value(&st.floors)
+        {
+            def.insert("floors".to_owned(), floors_val);
+        }
+    }
+}
+
+/// Build the player-safe client content bundle for the live `w` world and `actor`,
+/// honoring `ContentState` applied/retired latches, `AtlasState` operator packs
+/// and live `Records` geometry, `TacsimStore` applied revisions, and staff-only
+/// neighborhood visibility. Falls back to [`client_content_bundle`] only on a
+/// bare detached `World` with neither `AtlasState` nor `TacsimStore` composed.
+#[must_use]
+pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
+    let atlas = w.module_state::<mush_atlas::AtlasState>();
+    let store = w.module_state::<TacsimStore>();
+    if atlas.is_none() && store.is_none() {
+        let base = client_content_bundle();
+        return ClientContentBundle {
+            manifest_packs_value: base.manifest_packs_value.clone(),
+            entries: base.entries.clone(),
+            by_id: base.by_id.clone(),
+        };
+    }
+
+    let is_staff_viewer = mush_atlas::is_staff(w, actor);
+    let content = w.module_state::<mush_content::ContentState>();
+    let mut col = PackCollector::new();
+
+    // 1. Live world neighborhoods & cast packs from `AtlasState` (`shelf` + `records`)
+    if let Some(atlas) = atlas {
+        for (id, pack) in &atlas.shelf {
+            if let Some(content) = content {
+                let Some(applied) = content.latches.applied(id) else {
+                    continue;
+                };
+                if applied.is_retired() {
+                    continue;
+                }
+            }
+            if !is_staff_viewer && id.as_str() == "neighborhood.staff_lobby" {
+                continue;
+            }
+            if let Some(arena_slug) = id
+                .as_str()
+                .strip_prefix("tacsim.")
+                .filter(|s| matches!(*s, "proving_ground" | "mars_canyon" | "winter_valley"))
+            {
+                if let Ok(doc) = serde_json::to_value(pack) {
+                    let client_id = format!("arena_atlas.{arena_slug}");
+                    col.push_projected_value(&client_id, "arena_atlas", doc, &[id.as_str()]);
+                }
+                continue;
+            }
+            if pack.manifest().kind() == mush_content::PackKind::Neighborhood {
+                if let Ok(mut doc) = serde_json::to_value(pack) {
+                    reconcile_neighborhood_with_live_records(w, &atlas.records, id, &mut doc);
+                    let short = id.as_str().strip_prefix("neighborhood.").unwrap_or("");
+                    col.push_projected_value(id.as_str(), "neighborhood", doc, &[short]);
+                }
+            } else if let Some(cast_slug) = id.as_str().strip_prefix("tacsim.cast.")
+                && let Ok(doc) = serde_json::to_value(pack)
+            {
+                let client_id = format!("cast.{cast_slug}");
+                col.push_projected_value(&client_id, "cast", doc, &[id.as_str()]);
+            }
+        }
+
+        // Synthesize any applied neighborhood present in `atlas.records` whose source
+        // pack is no longer on `atlas.shelf`.
+        let mut record_packs = std::collections::BTreeSet::new();
+        for nkey in atlas.records.neighborhoods.keys() {
+            record_packs.insert(nkey.pack.clone());
+        }
+        for pack_id in record_packs {
+            if col.by_id.contains_key(pack_id.as_str()) {
+                continue;
+            }
+            if !is_staff_viewer && pack_id.as_str() == "neighborhood.staff_lobby" {
+                continue;
+            }
+            if content.is_some_and(|c| {
+                c.latches
+                    .applied(&pack_id)
+                    .is_some_and(mush_content::Applied::is_retired)
+            }) {
+                continue;
+            }
+            let version = content
+                .and_then(|c| c.latches.applied(&pack_id))
+                .map_or(1, mush_content::Applied::version);
+            let mut doc = json!({
+                "manifest": {
+                    "id": pack_id.as_str(),
+                    "version": version,
+                    "kind": "neighborhood",
+                    "projected": true,
+                },
+                "entries": {},
+            });
+            reconcile_neighborhood_with_live_records(w, &atlas.records, &pack_id, &mut doc);
+            let short = pack_id.as_str().strip_prefix("neighborhood.").unwrap_or("");
+            col.push_projected_value(pack_id.as_str(), "neighborhood", doc, &[short]);
+        }
+    }
+
+    // 2. Station public cast fallback when cast packs were seeded outside `atlas.shelf`
+    for &(pack_id, json_src) in &CAST_SOURCES {
+        let Ok(cid) = mush_core::CanonicalId::new(pack_id) else {
+            continue;
+        };
+        if let Some(content) = content {
+            match content.latches.applied(&cid) {
+                Some(a) if a.is_retired() => continue,
+                None if !content.latches.all().count().eq(&0) => {
+                    // Include only if its companion neighborhood is applied or no cast latch exists
+                    let slug = pack_id.strip_prefix("tacsim.cast.").unwrap_or(pack_id);
+                    let nb_id = format!("neighborhood.{slug}");
+                    if !col.by_id.contains_key(&nb_id) {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let slug = pack_id.strip_prefix("tacsim.cast.").unwrap_or(pack_id);
+        let client_id = format!("cast.{slug}");
+        col.push_projected(&client_id, "cast", json_src, &[pack_id]);
+    }
+
+    // 3. Live `TacsimStore` rules & campaign-seed packs at their world-applied versions
+    if let Some(store) = store {
+        let mut unique_ids = std::collections::BTreeSet::new();
+        for loaded in store.packs() {
+            unique_ids.insert(loaded.pack.manifest().id().clone());
+        }
+        for id in unique_ids {
+            if content.is_some_and(|c| {
+                c.latches
+                    .applied(&id)
+                    .is_some_and(mush_content::Applied::is_retired)
+            }) {
+                continue;
+            }
+            let active_ver = store.applied_in(w, &id).or_else(|| {
+                store.newest_loaded(&id).filter(|&v| {
+                    store.pack(&id, v).is_some_and(|lp| {
+                        lp.pack.manifest().kind() != mush_content::PackKind::CampaignSeed
+                    })
+                })
+            });
+            let Some(ver) = active_ver else {
+                continue;
+            };
+            let Some(loaded) = store.pack(&id, ver) else {
+                continue;
+            };
+            let Ok(doc) = loaded.pack.canonical_value() else {
+                continue;
+            };
+            if id.as_str() == "tacsim.goods" {
+                col.push_projected_value("goods", "market", doc, &["tacsim.goods"]);
+            } else if loaded.pack.manifest().kind() == mush_content::PackKind::CampaignSeed {
+                let has_location = doc
+                    .get("entries")
+                    .and_then(Value::as_object)
+                    .is_some_and(|e| {
+                        e.values()
+                            .any(|row| row.get("kind").and_then(Value::as_str) == Some("location"))
+                    });
+                if has_location {
+                    let slug = id
+                        .as_str()
+                        .strip_prefix("tacsim.lane.")
+                        .unwrap_or(id.as_str());
+                    col.push_projected_value(slug, "lane", doc, &[id.as_str()]);
+                }
+            } else {
+                col.push_fielded_value_if_client_relevant(doc);
+            }
+        }
+
+        // Companion ground heightfield atlases for active simulator arenas
+        for (arena_key, atlas_key, raw_src, alias) in [
+            (
+                "arena.proving_ground",
+                "arena_atlas.proving_ground",
+                PROVING_GROUND_ATLAS_JSON,
+                "tacsim.proving_ground",
+            ),
+            (
+                "arena.mars_canyon",
+                "arena_atlas.mars_canyon",
+                MARS_CANYON_ATLAS_JSON,
+                "tacsim.mars_canyon",
+            ),
+            (
+                "arena.winter_valley",
+                "arena_atlas.winter_valley",
+                WINTER_VALLEY_ATLAS_JSON,
+                "tacsim.winter_valley",
+            ),
+        ] {
+            if col.by_id.contains_key(arena_key) && !col.by_id.contains_key(atlas_key) {
+                col.push_projected(atlas_key, "arena_atlas", raw_src, &[alias]);
+            }
+        }
+    }
+
+    col.finish()
 }
 
 /// Lazily computed static bundle of projected client content packs and SHA-256 digests.
@@ -408,6 +790,58 @@ pub fn client_content_bundle() -> &'static ClientContentBundle {
     })
 }
 
+fn world_content_fingerprint(w: &World, actor: ObjId) -> String {
+    let mut h = Sha256::new();
+    let is_staff_viewer = mush_atlas::is_staff(w, actor);
+    h.update([u8::from(is_staff_viewer)]);
+    if let Some(content) = w.module_state::<mush_content::ContentState>() {
+        h.update(b"|content:");
+        for applied in content.latches.all() {
+            h.update(applied.pack().as_str().as_bytes());
+            h.update(b":");
+            h.update(applied.version().to_le_bytes());
+            h.update(applied.digest().as_bytes());
+            h.update([u8::from(applied.is_retired())]);
+        }
+    }
+    if let Some(atlas) = w.module_state::<mush_atlas::AtlasState>() {
+        h.update(b"|shelf:");
+        for (id, pack) in &atlas.shelf {
+            h.update(id.as_str().as_bytes());
+            h.update(pack.manifest().version().to_le_bytes());
+            h.update(pack.manifest().digest().as_bytes());
+        }
+        h.update(b"|geo:");
+        for (room_id, geo) in &atlas.records.roomgeo {
+            h.update(room_id.0.to_le_bytes());
+            h.update(geo.revision.to_le_bytes());
+            if let Some(obj) = w.get(*room_id) {
+                h.update(obj.name.as_bytes());
+            }
+            if let Ok(fp_bytes) = serde_json::to_vec(&geo.footprint) {
+                h.update(&fp_bytes);
+            }
+        }
+    }
+    if let Some(store) = w.module_state::<TacsimStore>() {
+        h.update(b"|tacsim:");
+        for loaded in store.packs() {
+            let id = loaded.pack.manifest().id();
+            h.update(id.as_str().as_bytes());
+            h.update(loaded.pack.manifest().version().to_le_bytes());
+            let applied = store.applied_in(w, id).unwrap_or(0);
+            h.update(applied.to_le_bytes());
+        }
+    }
+    let digest = h.finalize();
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
+}
+
 /// Register the `port.trade` and `tacsim.content` pulled panel feeds and query handlers.
 ///
 /// # Errors
@@ -417,15 +851,40 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     drop(reg.panel_feed(PORT_TRADE_FEED)?);
     reg.query_handler(PORT_TRADE_FEED, Arc::new(PortTradeQuery))?;
     drop(reg.panel_feed(CLIENT_CONTENT_FEED)?);
-    reg.query_handler(CLIENT_CONTENT_FEED, Arc::new(ClientContentQuery))?;
+    reg.query_handler(CLIENT_CONTENT_FEED, Arc::new(ClientContentQuery::new()))?;
     Ok(())
 }
 
-struct ClientContentQuery;
+struct ClientContentQuery {
+    cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
+}
+
+impl ClientContentQuery {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(None),
+        }
+    }
+
+    fn bundle_for(&self, w: &World, actor: ObjId) -> Arc<ClientContentBundle> {
+        let fp = world_content_fingerprint(w, actor);
+        if let Ok(guard) = self.cache.lock()
+            && let Some((cached_fp, cached_bundle)) = guard.as_ref()
+            && *cached_fp == fp
+        {
+            return Arc::clone(cached_bundle);
+        }
+        let built = Arc::new(world_content_bundle(w, actor));
+        if let Ok(mut guard) = self.cache.lock() {
+            *guard = Some((fp, Arc::clone(&built)));
+        }
+        built
+    }
+}
 
 impl QueryHandler for ClientContentQuery {
-    fn query(&self, _w: &World, _actor: ObjId, params: &Value) -> Result<OutputEvent, RichText> {
-        let bundle = client_content_bundle();
+    fn query(&self, w: &World, actor: ObjId, params: &Value) -> Result<OutputEvent, RichText> {
+        let bundle = self.bundle_for(w, actor);
         let op = params
             .get("op")
             .and_then(Value::as_str)
@@ -454,7 +913,7 @@ impl QueryHandler for ClientContentQuery {
             json!({
                 "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
                 "op": "manifest",
-                "packs": bundle.manifest_packs_value,
+                "packs": bundle.manifest_packs_value.clone(),
             })
         };
         Ok(OutputEvent::Panel {
@@ -732,6 +1191,10 @@ mod tests {
                             .and_then(|p| p.get("visibility"))
                             .and_then(Value::as_str);
                         check_ne!(portal_vis, Some("hidden"));
+                        // Nested `def.lore` (guarded/secret NPC knowledge) must never appear
+                        check!(def.get("lore").is_none());
+                        check!(def.get("lore_tags").is_none());
+                        check!(def.get("knowledge").is_none());
                         if let Some(prof) = def.get("profile").and_then(Value::as_object) {
                             check!(prof.get("persona").is_none());
                             check!(prof.get("knows").is_none());
@@ -741,6 +1204,8 @@ mod tests {
                     }
                 }
             }
+            check!(!entry.json.contains("\"secrecy\":\"guarded\""));
+            check!(!entry.json.contains("\"secrecy\":\"secret\""));
         }
 
         let Some(ceres) = bundle.find("neighborhood.ceres_freeport") else {
@@ -790,7 +1255,7 @@ mod tests {
     fn client_content_query_answers_manifest_and_aliases() -> TestResult {
         let tw = mush_testkit::TestWorld::new();
         let w = &tw.engine().world;
-        let q = ClientContentQuery;
+        let q = ClientContentQuery::new();
         let Ok(ev) = q.query(w, ObjId(1), &json!({"op": "manifest"})) else {
             return crate::test_checks::failed("manifest query failed");
         };

@@ -65,6 +65,7 @@ namespace TacSim.Net
         public bool IsConnected => _isConnected && _ws != null && _ws.State == WebSocketState.Open;
         public MushWsConnectionState State { get; private set; } = MushWsConnectionState.Disconnected;
         public ulong LastSeq => _lastSeq;
+        public int OutboundQueueCount => _outbound.Count;
         public MushObjRef ActiveCharacter { get; private set; }
         public string ConnectedServer { get; private set; }
         public IReadOnlyCollection<string> AdvertisedPanels => _advertisedPanels;

@@ -70,9 +70,47 @@ namespace TacSim.Space
         private bool _pendingAbort;
         private bool _tapeSubmittedAwaitingServer;
 
-        public bool HasTargetableRock(string rockId) => !string.IsNullOrEmpty(rockId) && _knownRockIds.Contains(rockId);
-        public bool HasPerceivedContact(string designator) =>
-            !string.IsNullOrEmpty(designator) && _namedOrbitalTargets.ContainsKey(designator) && !_knownRockIds.Contains(designator);
+        public bool HasTargetableRock(string rockId) => !string.IsNullOrEmpty(rockId) && _knownRockIds.Contains(rockId.Trim().ToUpperInvariant());
+        public bool HasPerceivedContact(string designator)
+        {
+            if (string.IsNullOrEmpty(designator)) return false;
+            return ResolveContactKey(designator, out string key) && !_knownRockIds.Contains(key);
+        }
+
+        public bool IsDroneSortieActive => _droneSortieActive;
+        public string OwnShipHolotankId { get; private set; } = string.Empty;
+
+        public bool TryGetTargetPosition(string id, out Vector3 worldPos)
+        {
+            if (ResolveContactKey(id, out string key) && _namedOrbitalTargets.TryGetValue(key, out var tr) && tr != null)
+            {
+                worldPos = tr.position;
+                return true;
+            }
+            worldPos = Vector3.zero;
+            return false;
+        }
+
+        private bool ResolveContactKey(string id, out string resolvedKey)
+        {
+            resolvedKey = null;
+            if (string.IsNullOrWhiteSpace(id)) return false;
+            string trimmed = id.Trim();
+            if (_namedOrbitalTargets.ContainsKey(trimmed))
+            {
+                resolvedKey = trimmed;
+                return true;
+            }
+            foreach (var k in _namedOrbitalTargets.Keys)
+            {
+                if (string.Equals(k, trimmed, StringComparison.OrdinalIgnoreCase))
+                {
+                    resolvedKey = k;
+                    return true;
+                }
+            }
+            return false;
+        }
 
         public void BuildSpaceStage(TacSimAssetCatalog catalog)
         {
@@ -249,7 +287,8 @@ namespace TacSim.Space
         }
 
         /// <summary>
-        /// Reconciles 3D orbital contacts and asteroid cluster rocks strictly from authoritative `space.holotank` JSON.
+        /// Reconciles 3D orbital contacts and asteroid cluster rocks strictly from authoritative `space.holotank` JSON
+        /// (`x_km`/`y_km`/`z_km`, filtering `you: true` as the observer's own hull reference origin).
         /// </summary>
         public void ApplyHolotankFeed(JsonNode holotank)
         {
@@ -264,9 +303,35 @@ namespace TacSim.Space
             }
             _namedOrbitalTargets.Clear();
             _knownRockIds.Clear();
+            OwnShipHolotankId = string.Empty;
 
             Material rockMat = UrpMaterialFactory.GetOpaque("AsteroidOre", new Color(0.32f, 0.28f, 0.24f), 0.15f, 0.2f);
             Material veinMat = UrpMaterialFactory.GetEmissive("OreVein", new Color(0.22f, 0.72f, 0.85f), new Color(0.25f, 0.95f, 1.0f) * 1.4f);
+
+            double obsXKm = 0.0;
+            double obsYKm = 0.0;
+            double obsZKm = 0.0;
+            var contactsArr = holotank["contacts"].AsArray() ?? holotank["blips"].AsArray();
+            if (contactsArr != null)
+            {
+                for (int i = 0; i < contactsArr.Count; i++)
+                {
+                    var c = contactsArr[i];
+                    if (c.IsObject && c.Bool("you", false))
+                    {
+                        OwnShipHolotankId = c.Str("id", string.Empty).Trim();
+                        obsXKm = c.Double("x_km", 0.0);
+                        obsYKm = c.Double("y_km", 0.0);
+                        obsZKm = c.Double("z_km", 0.0);
+                        double burnMag = Math.Abs(c.Double("ax_mps2", 0.0)) +
+                                         Math.Abs(c.Double("ay_mps2", 0.0)) +
+                                         Math.Abs(c.Double("az_mps2", 0.0));
+                        if (burnMag > 0.01)
+                            ThrottlePermille = Mathf.Max(ThrottlePermille, 350f);
+                        break;
+                    }
+                }
+            }
 
             var rocksArr = holotank["rocks"].AsArray() ?? holotank["cluster"]?["rocks"].AsArray();
             if (rocksArr != null)
@@ -278,18 +343,21 @@ namespace TacSim.Space
                     string rId = rk.Str("id", rk.Str("letter", string.Empty)).Trim().ToUpperInvariant();
                     if (string.IsNullOrEmpty(rId)) continue;
                     string spectral = rk.Str("spectral", rk.Str("label", "Pocket"));
-                    Vector3 offset = ParseRelativeOffset(rk, defaultRadius: 48f, index: r);
+                    Vector3 offset = ComputeRelativeStageOffset(rk, obsXKm, obsYKm, obsZKm, defaultRadius: 48f, index: r);
                     SpawnOreRockTarget(rId, $"ROCK {rId} [{spectral}]", OrbitalStageOrigin + offset, r, rockMat, veinMat);
                 }
             }
 
-            var contactsArr = holotank["contacts"].AsArray() ?? holotank["blips"].AsArray();
             if (contactsArr != null)
             {
                 for (int i = 0; i < contactsArr.Count; i++)
                 {
                     var c = contactsArr[i];
                     if (!c.IsObject) continue;
+                    // Never spawn the observer's own hull (`you: true`) as an external targetable contact!
+                    if (c.Bool("you", false))
+                        continue;
+
                     string kind = c.Str("kind", string.Empty);
                     string id = c.Str("designator", c.Str("id", string.Empty)).Trim();
                     if (string.IsNullOrEmpty(id)) continue;
@@ -297,9 +365,12 @@ namespace TacSim.Space
                     if (string.Equals(kind, "rock", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(kind, "asteroid", StringComparison.OrdinalIgnoreCase))
                     {
-                        string lbl = c.Str("label", c.Str("name", $"ROCK {id}"));
-                        Vector3 offset = ParseRelativeOffset(c, defaultRadius: 50f, index: i);
-                        SpawnOreRockTarget(id.ToUpperInvariant(), lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
+                        string rKey = id.ToUpperInvariant();
+                        string lbl = c.Str("label", c.Str("name", $"ROCK {rKey}"));
+                        Vector3 offset = ComputeRelativeStageOffset(c, obsXKm, obsYKm, obsZKm, defaultRadius: 50f, index: i);
+                        SpawnOreRockTarget(rKey, lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
+                        if (c.Bool("locked", false))
+                            SelectedRockId = rKey;
                         continue;
                     }
 
@@ -307,9 +378,11 @@ namespace TacSim.Space
                     bool hostile = relation.IndexOf("hostile", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                    relation.IndexOf("enemy", StringComparison.OrdinalIgnoreCase) >= 0;
                     string name = c.Str("name", c.Str("label", id));
-                    Vector3 pos = OrbitalStageOrigin + ParseRelativeOffset(c, defaultRadius: 85f, index: i);
+                    Vector3 pos = OrbitalStageOrigin + ComputeRelativeStageOffset(c, obsXKm, obsYKm, obsZKm, defaultRadius: 85f, index: i);
                     Color col = hostile ? new Color(1f, 0.42f, 0.36f) : new Color(0.45f, 0.82f, 1f);
                     SpawnNavalContact(id, $"{id} — {name}", pos, Quaternion.Euler(0f, 180f, 0f), col, hostile);
+                    if (c.Bool("locked", false))
+                        LockedContactId = id;
                 }
             }
 
@@ -324,21 +397,58 @@ namespace TacSim.Space
                 LockedContactId = string.Empty;
         }
 
-        private static Vector3 ParseRelativeOffset(JsonNode node, float defaultRadius, int index)
+        public static Vector3 ComputeRelativeStageOffset(
+            JsonNode node,
+            double obsXKm,
+            double obsYKm,
+            double obsZKm,
+            float defaultRadius,
+            int index)
         {
-            var rel = node["rel_pos_m"].AsArray() ?? node["pos_m"].AsArray();
+            // 1. Canonical `mushd` `space.holotank` 3D coordinates (`x_km`, `y_km`, `z_km`)
+            if (node != null && node.IsObject &&
+                (node.ContainsKey("x_km") || node.ContainsKey("y_km") || node.ContainsKey("z_km")))
+            {
+                double dxKm = node.Double("x_km", 0.0) - obsXKm;
+                double dyKm = node.Double("y_km", 0.0) - obsYKm;
+                double dzKm = node.Double("z_km", 0.0) - obsZKm;
+                // Bubble axes: +x = bearing 0° (Unity +Z), +y = bearing 90° (Unity +X), +z = elevation up (Unity +Y)
+                Vector3 deltaMeters = new Vector3(
+                    (float)(dyKm * 1000.0),
+                    (float)(dzKm * 1000.0),
+                    (float)(dxKm * 1000.0));
+                float distMeters = deltaMeters.magnitude;
+                if (distMeters <= 0.01f)
+                    return new Vector3(0f, 0f, 18f);
+                float visualRadius = Mathf.Clamp(22f + 16f * Mathf.Log(1f + distMeters / 250f), 18f, 220f);
+                return (deltaMeters / distMeters) * visualRadius;
+            }
+
+            // 2. Explicit metre offset arrays (`rel_pos_m` / `pos_m`)
+            var rel = node?["rel_pos_m"].AsArray() ?? node?["pos_m"].AsArray();
             if (rel != null && rel.Count >= 3)
             {
-                Vector3 raw = new Vector3(rel[0].AsFloat(0f), rel[2].AsFloat(0f), rel[1].AsFloat(0f)) * 0.04f;
-                float mag = raw.magnitude;
-                if (mag > 0.1f)
-                    return raw.normalized * Mathf.Clamp(mag, 26f, 140f);
+                Vector3 deltaMeters = new Vector3(rel[1].AsFloat(0f), rel[2].AsFloat(0f), rel[0].AsFloat(0f));
+                float distMeters = deltaMeters.magnitude;
+                if (distMeters > 0.01f)
+                {
+                    float visualRadius = Mathf.Clamp(22f + 16f * Mathf.Log(1f + distMeters / 250f), 18f, 220f);
+                    return (deltaMeters / distMeters) * visualRadius;
+                }
             }
-            float bearingDeg = node.Float("bearing_deg", index * 55f);
-            float rangeM = node.Float("range_m", defaultRadius * 20f);
-            float scaledDist = Mathf.Clamp(rangeM * 0.04f, 28f, 135f);
-            float rad = bearingDeg * Mathf.Deg2Rad;
-            return new Vector3(Mathf.Sin(rad) * scaledDist, ((index % 3) - 1) * 8f, Mathf.Cos(rad) * scaledDist);
+
+            // 3. Spherical `bearing_deg` / `pitch_deg` / `range_m` (e.g. `space.cockpit` contact projection)
+            float bearingDeg = node != null ? node.Float("bearing_deg", index * 55f) : index * 55f;
+            float pitchDeg = node != null ? node.Float("pitch_deg", 0f) : 0f;
+            float rangeM = node != null ? node.Float("range_m", defaultRadius * 25f) : defaultRadius * 25f;
+            float scaledDist = Mathf.Clamp(22f + 16f * Mathf.Log(1f + Mathf.Max(1f, rangeM) / 250f), 24f, 180f);
+            float bRad = bearingDeg * Mathf.Deg2Rad;
+            float pRad = pitchDeg * Mathf.Deg2Rad;
+            float cosP = Mathf.Cos(pRad);
+            return new Vector3(
+                Mathf.Sin(bRad) * cosP * scaledDist,
+                Mathf.Sin(pRad) * scaledDist,
+                Mathf.Cos(bRad) * cosP * scaledDist);
         }
 
         private void SpawnOreRockTarget(string id, string label, Vector3 pos, int idx, Material rockMat, Material veinMat)
@@ -432,7 +542,7 @@ namespace TacSim.Space
         public void SetLockedContact(string designator)
         {
             if (!string.IsNullOrWhiteSpace(designator))
-                LockedContactId = designator.Trim().ToUpperInvariant();
+                LockedContactId = designator.Trim();
         }
 
         public void TriggerMiningLaser(string rockId = null, float durationSec = 4.2f)
@@ -509,7 +619,7 @@ namespace TacSim.Space
 
         private Transform ResolveExactTarget(string id)
         {
-            if (!string.IsNullOrEmpty(id) && _namedOrbitalTargets.TryGetValue(id, out var tr) && tr != null)
+            if (ResolveContactKey(id, out string key) && _namedOrbitalTargets.TryGetValue(key, out var tr) && tr != null)
                 return tr;
             return null;
         }
@@ -577,31 +687,67 @@ namespace TacSim.Space
             BowDockingCameraAnchor.localRotation = Quaternion.identity;
         }
 
+        public static bool ExtractLockedContactIdFromFireNode(JsonNode fireObj, out string lockId, out bool explicitClear)
+        {
+            lockId = string.Empty;
+            explicitClear = false;
+            if (fireObj == null || !fireObj.IsObject)
+                return false;
+
+            var lockNode = fireObj["lock"];
+            string serverLock = lockNode.IsObject
+                ? lockNode.Str("id", string.Empty)
+                : fireObj.Str("lock_id", fireObj.Str("lock", fireObj.Str("locked", string.Empty)));
+            if (!string.IsNullOrEmpty(serverLock))
+            {
+                lockId = serverLock.Trim();
+                return true;
+            }
+            if ((fireObj.ContainsKey("lock_id") && fireObj["lock_id"].IsNull) ||
+                (fireObj.ContainsKey("lock") && fireObj["lock"].IsNull))
+            {
+                explicitClear = true;
+                return true;
+            }
+            return false;
+        }
+
         public void ApplyCockpitFeed(JsonNode cockpit)
         {
             if (cockpit == null || !cockpit.IsObject) return;
             ShipYawDeg = cockpit.Float("yaw_deg", ShipYawDeg);
             ShipPitchDeg = cockpit.Float("pitch_deg", ShipPitchDeg);
-            ShipRollDeg = cockpit.Float("roll_deg", ShipPitchDeg);
-            ShipRollDeg = cockpit.Float("roll_deg", 0f);
+            ShipRollDeg = cockpit.Float("roll_deg", ShipRollDeg);
             ThrottlePermille = cockpit.Float("thrust_permille", cockpit.Float("throttle_permille", ThrottlePermille));
             EmconPosture = cockpit.Str("emcon", EmconPosture);
 
-            var fireObj = cockpit["fire"];
-            if (fireObj.IsObject)
+            if (ExtractLockedContactIdFromFireNode(cockpit["fire"], out string serverLock, out bool clearLock))
             {
-                string serverLock = fireObj.Str("lock", fireObj.Str("locked", string.Empty));
                 if (!string.IsNullOrEmpty(serverLock))
                     LockedContactId = serverLock;
+                else if (clearLock)
+                    LockedContactId = string.Empty;
             }
 
-            string matchedRock = cockpit.Str("matched_rock", string.Empty);
+            var miningObj = cockpit["mining"];
+            string matchedRock = miningObj.IsObject
+                ? miningObj.Str("matched_rock", miningObj.Str("approaching_rock", cockpit.Str("matched_rock", string.Empty)))
+                : cockpit.Str("matched_rock", string.Empty);
             if (!string.IsNullOrEmpty(matchedRock))
                 SelectedRockId = matchedRock.Trim().ToUpperInvariant();
 
-            int activeDrones = cockpit.Int("active_drones", -1);
+            int activeDrones = miningObj.IsObject
+                ? miningObj.Int("active_drones", cockpit.Int("active_drones", -1))
+                : cockpit.Int("active_drones", -1);
             if (activeDrones >= 0)
                 ToggleDroneSortie(activeDrones > 0);
+
+            if (miningObj.IsObject && miningObj["laser"].IsObject)
+            {
+                string laserRock = miningObj["laser"].Str("rock", SelectedRockId);
+                if (!string.IsNullOrEmpty(laserRock))
+                    SelectedRockId = laserRock.Trim().ToUpperInvariant();
+            }
 
             if (PlayerShipTransform != null)
                 PlayerShipTransform.rotation = Quaternion.Euler(-ShipPitchDeg, ShipYawDeg, -ShipRollDeg);

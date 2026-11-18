@@ -732,13 +732,17 @@ fn room_ambient_publishes_atlas_and_npc_metadata_without_crowding_ic_time() {
         "authored room details are listed in ambient['atlas'].details: {atlas}"
     );
 
-    let npcs = rv
+    let occupants = rv
         .ambient
+        .get("occupants")
+        .and_then(|v| v.as_object())
+        .expect("room with NPC emits ambient['occupants']");
+    let npcs = occupants
         .get("npcs")
         .and_then(|v| v.as_array())
-        .expect("room with NPC emits ambient['npcs']");
+        .expect("ambient['occupants'] lists visible npcs");
     assert!(
         !npcs.is_empty(),
-        "welcome hall NPCs should be advertised in ambient['npcs']"
+        "welcome hall NPCs should be advertised in ambient['occupants']['npcs']"
     );
 }

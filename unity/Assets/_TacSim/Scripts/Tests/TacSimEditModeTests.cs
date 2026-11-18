@@ -230,8 +230,9 @@ namespace TacSim.Tests
             Assert.AreEqual("+market/sell 9=all", TacSimTradeAndShipState.FormatOneClickSellCommand(9UL, 25, sellAll: true));
 
             // Correlated 1-click buy Quote -> Accept verification (never blind text-scraping!)
+            // `mush-market` reads quantity from the `=` right-hand side (`+market/quote #<id>=<qty>`)
             string quoteCmd = state.BeginOneClickBuy(4UL, 15, currentTimeS: 10f, displayedUnitPriceMinor: 10000);
-            Assert.AreEqual("+market/quote #4 15", quoteCmd);
+            Assert.AreEqual("+market/quote #4=15", quoteCmd);
 
             // Unrelated text quote MUST NOT trigger blind auto-accept
             Assert.IsFalse(state.IngestServerLine("Quote #987: 999 × 500.00cr = 499500.00cr — good until 2026-11-17T03:00:00Z.", 11f, out var unrelatedFollowUps));
@@ -708,16 +709,31 @@ namespace TacSim.Tests
                 Assert.AreEqual(serverAGoods, warmJson);
                 Assert.Greater(updateEvents, beforeWarm, "Warm-cache activation must raise OnPacksUpdated so already-constructed models refresh");
 
-                // Cold 20-pack manifest MUST pace requests (<= MaxInFlightPackRequests = 4 at once)
+                // Pruning check: delivering an authoritative empty manifest MUST delete removed packs from memory AND saved manifest!
+                var emptyManifest = JsonNode.Parse(@"{""op"":""manifest"",""packs"":[]}");
+                using (var wsPrune = new MushWsClient())
+                {
+                    sync.HandleWebSocketContentPanel(wsPrune, emptyManifest, nowRealtime: 5f);
+                }
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Pruned pack must be evicted from memory");
+                // Re-hydrating Server A's disk cache proves `goods` was also removed from persisted manifest.json
+                sync.InitializeDiskCacheForServer("https://server-a.example.com", tempDir);
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Pruned pack must not reappear from disk manifest");
+
+                // Inter-batch pacing check: 37-pack manifest with instantaneous completions at t=10f MUST emit strictly 4 requests at t=10f!
                 sync.InitializeDiskCacheForServer("https://server-c.example.com", tempDir);
                 var packsArr = JsonNode.NewArray();
-                for (int i = 0; i < 20; i++)
+                var packPayloads = new System.Collections.Generic.List<(string id, string sha, string json)>();
+                for (int i = 0; i < 37; i++)
                 {
+                    string pj = $@"{{""unit"":{i}}}";
+                    string psha = TacSimContentSync.ComputeSha256Hex(pj);
+                    packPayloads.Add(($"unit_{i}", psha, pj));
                     var p = JsonNode.NewObject();
                     p["id"] = JsonNode.FromString($"unit_{i}");
                     p["category"] = JsonNode.FromString("unit");
-                    p["sha256"] = JsonNode.FromString(new string((char)('a' + (i % 6)), 64));
-                    p["bytes"] = JsonNode.FromLong(100);
+                    p["sha256"] = JsonNode.FromString(psha);
+                    p["bytes"] = JsonNode.FromLong(pj.Length);
                     packsArr.Add(p);
                 }
                 var bigManifest = JsonNode.NewObject();
@@ -726,11 +742,38 @@ namespace TacSim.Tests
 
                 using (var ws = new MushWsClient())
                 {
-                    sync.HandleWebSocketContentPanel(ws, bigManifest, nowRealtime: 10f);
-                    Assert.AreEqual(20, sync.PendingPackCount);
-                    // Even if PumpPackQueue is called immediately on next frame, in-flight stays capped at 4!
-                    sync.PumpPackQueue(ws, nowRealtime: 10.02f);
-                    Assert.AreEqual(20, sync.PendingPackCount);
+                    sync.HandleWebSocketContentPanel(ws, bigManifest, nowRealtime: 10.0f);
+                    Assert.AreEqual(4, ws.OutboundQueueCount, "Initial batch at t=10.0f must emit at most 4 pack requests");
+
+                    // Immediately complete all 4 in-flight packs at the exact same timestamp t=10.0f:
+                    for (int i = 0; i < 4; i++)
+                    {
+                        var (pid, psha, pjson) = packPayloads[i];
+                        var reply = JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""{pid}"",""sha256"":""{psha}"",""json"":{JsonNode.FromString(pjson).ToJson()}}}");
+                        sync.HandleWebSocketContentPanel(ws, reply, nowRealtime: 10.0f);
+                    }
+                    // Completing a batch at t=10.0f MUST NOT emit another batch before MinBatchIntervalSec (0.45s)!
+                    sync.PumpPackQueue(ws, nowRealtime: 10.10f);
+                    Assert.AreEqual(4, ws.OutboundQueueCount, "Pacing must hold between batches before 0.45s has elapsed");
+
+                    // Advancing past 0.45s dispatches exactly the next batch of 4 (total 8):
+                    sync.PumpPackQueue(ws, nowRealtime: 10.50f);
+                    Assert.AreEqual(8, ws.OutboundQueueCount, "Next batch of 4 dispatches once 0.45s interval elapses");
+                }
+
+                // Finite retry check: a pack that repeatedly times out MUST stop after MaxPackAttempts (3), never looping forever!
+                sync.InitializeDiskCacheForServer("https://server-d.example.com", tempDir);
+                string retryJson = @"{""x"":1}";
+                string retrySha = TacSimContentSync.ComputeSha256Hex(retryJson);
+                var oneManifest = JsonNode.Parse($@"{{""op"":""manifest"",""packs"":[{{""id"":""flaky_pack"",""category"":""unit"",""sha256"":""{retrySha}"",""bytes"":7}}]}}");
+                using (var wsRetry = new MushWsClient())
+                {
+                    sync.HandleWebSocketContentPanel(wsRetry, oneManifest, nowRealtime: 0f);
+                    for (int cycle = 1; cycle <= 10; cycle++)
+                    {
+                        sync.PumpPackQueue(wsRetry, nowRealtime: cycle * 6.0f);
+                    }
+                    Assert.AreEqual(TacSimContentSync.MaxPackAttempts, wsRetry.OutboundQueueCount, "Timed-out pack must stop retrying at MaxPackAttempts");
                 }
             }
             finally
@@ -743,14 +786,86 @@ namespace TacSim.Tests
         [Test]
         public void P0_SurfaceSiteMap512_RigHopperTelemetry_AndDockingTapeBudgetHold()
         {
-            // 1. Parse canonical `site.rigs[].hopper` ("3/6 t" and "empty")
-            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.TryParseHopperTonnes("3/6 t", out int loadedT, out int capT));
-            Assert.AreEqual(3, loadedT);
-            Assert.AreEqual(6, capT);
-            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.TryParseHopperTonnes("empty", out int emptyT, out _));
-            Assert.AreEqual(0, emptyT);
+            // 1. Parse canonical `tv::hopper_text` ("3 of 6 t", "12 of 12 t", "empty", and "3/6 t")
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.TryParseHopperTonnes("3 of 6 t", out int loadedOf, out int capOf, out bool hasCapOf));
+            Assert.AreEqual(3, loadedOf);
+            Assert.AreEqual(6, capOf);
+            Assert.IsTrue(hasCapOf);
 
-            // 2. Decode 512-site `site.map` window centered around [256, 256] (`x0=224, y0=224, span=2`)
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.TryParseHopperTonnes("12 of 12 t", out int loaded12, out int cap12, out bool hasCap12));
+            Assert.AreEqual(12, loaded12);
+            Assert.AreEqual(12, cap12);
+            Assert.IsTrue(hasCap12);
+
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.TryParseHopperTonnes("empty", out int emptyT, out _, out bool hasCapEmpty));
+            Assert.AreEqual(0, emptyT);
+            Assert.IsFalse(hasCapEmpty, "'empty' carries no capacity figure so prior unit capacity is preserved");
+
+            // 2. Verify 28x28 drive window (`origin [114, 114]`, rig `[128, 128]`) maps to +145m (never double-subtracting to -995m!)
+            var driveWindowFrame = JsonNode.Parse(@"{
+                ""width"": 28,
+                ""height"": 28,
+                ""cell_cm"": 1000,
+                ""rows"": [[["","", 28]]],
+                ""you"": [14, 14],
+                ""origin_cell"": [114, 114],
+                ""site"": {
+                    ""site"": ""Occator Rim"",
+                    ""addressed"": 1,
+                    ""grid"": { ""x0"": 114, ""y0"": 114, ""span"": 1, ""cell_cm"": 1000 },
+                    ""clock"": { ""now_ic"": 1005, ""rate"": 2.0 },
+                    ""rigs"": [
+                        {
+                            ""slot"": 1,
+                            ""cell"": [128, 128],
+                            ""charge_pct"": 82,
+                            ""hopper"": ""3 of 6 t"",
+                            ""leg"": {
+                                ""started_ic"": 1000,
+                                ""waypoints"": [
+                                    { ""x_cm"": 128500, ""y_cm"": 128500, ""at_s"": 0 },
+                                    { ""x_cm"": 130500, ""y_cm"": 128500, ""at_s"": 10 },
+                                    { ""x_cm"": 130500, ""y_cm"": 132500, ""at_s"": 30 }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }");
+            var driveGrid = TacSimTerrainDecoder.DecodeSiteMapFrame(driveWindowFrame);
+            Assert.IsNotNull(driveGrid);
+            Assert.AreEqual(114, driveGrid.OriginCellX);
+            Assert.AreEqual(114, driveGrid.OriginCellY);
+            UnityEngine.Vector3 rigLocalViaSite = driveGrid.SiteCellToLocalPos(128, 128, 0f);
+            UnityEngine.Vector3 rigLocalViaCell = driveGrid.CellToLocalPos(driveGrid.SiteToLocalCellX(128), driveGrid.SiteToLocalCellY(128), 0f);
+            Assert.AreEqual(145f, rigLocalViaSite.x, 0.05f, "Rig at [128,128] on window [114,114] must land at +145m, never -995m");
+            Assert.AreEqual(145f, rigLocalViaSite.z, 0.05f);
+            Assert.AreEqual(145f, rigLocalViaCell.x, 0.05f);
+            Assert.AreEqual(145f, rigLocalViaCell.z, 0.05f);
+
+            // 3. Verify `{x_cm, y_cm, at_s}` object waypoint parsing & piecewise IC leg interpolation
+            var wps = new System.Collections.Generic.List<TacSim.Surface.RoverLegWaypoint>();
+            var legJson = driveWindowFrame["site"]["rigs"][0]["leg"];
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.ParseLegWaypoints(legJson, out long startedIc, wps));
+            Assert.AreEqual(1000L, startedIc);
+            Assert.AreEqual(3, wps.Count);
+            // At t=+5s IC: halfway along East leg (128500 -> 130500 = 129500 cm -> +155m local X, +145m local Z)
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.EvaluateLegPositionCm(wps, 5.0, out double x5, out double y5, out float h5, out _, out bool mov5));
+            Assert.AreEqual(129500.0, x5, 0.5);
+            Assert.AreEqual(128500.0, y5, 0.5);
+            Assert.AreEqual(90f, h5, 0.5f, "Eastward segment should face ~90 deg");
+            Assert.IsTrue(mov5);
+            UnityEngine.Vector3 pos5 = driveGrid.SiteCmToLocalPos(x5, y5, 0f);
+            Assert.AreEqual(155f, pos5.x, 0.05f);
+            Assert.AreEqual(145f, pos5.z, 0.05f);
+            // At t=+20s IC: halfway along North turn leg (130500, 130500 -> +165m local X, +165m local Z, facing 0 deg North)
+            Assert.IsTrue(TacSim.Surface.SurfaceMiningController.EvaluateLegPositionCm(wps, 20.0, out double x20, out double y20, out float h20, out _, out bool mov20));
+            Assert.AreEqual(130500.0, x20, 0.5);
+            Assert.AreEqual(130500.0, y20, 0.5);
+            Assert.AreEqual(0f, h20, 0.5f, "Northward segment should face 0 deg");
+            Assert.IsTrue(mov20);
+
+            // 4. Decode 512-site `site.map` window centered around [256, 256] (`x0=224, y0=224, span=2`)
             var siteFrame = JsonNode.Parse(@"{
                 ""width"": 32,
                 ""height"": 32,
@@ -763,7 +878,7 @@ namespace TacSim.Tests
                     ""addressed"": 1,
                     ""grid"": { ""x0"": 224, ""y0"": 224, ""span"": 2, ""cell_cm"": 1000 },
                     ""rigs"": [
-                        { ""slot"": 1, ""cell"": [256, 256], ""charge_pct"": 17, ""hopper"": ""3/6 t"" }
+                        { ""slot"": 1, ""cell"": [256, 256], ""charge_pct"": 17, ""hopper"": ""3 of 6 t"" }
                     ]
                 }
             }");
@@ -778,7 +893,30 @@ namespace TacSim.Tests
             Assert.AreEqual(256, grid.LocalToSiteCellX(16));
             Assert.AreEqual(258, grid.LocalToSiteCellX(17), "Nearby click at local cell 17 on span=2 window maps to site cell 258, never clamped near 157");
 
-            // 3. Alternating RCS stress input hits IsTapeBudgetExhausted before exceeding 8,192-char gateway limit
+            // 5. Canonical `space.holotank` (`x_km`/`y_km`/`z_km`, `you: true`) & `space.cockpit` (`fire.lock` object, `mining`)
+            var ownShipNode = JsonNode.Parse(@"{""id"":""ship.7"",""you"":true,""x_km"":3.8,""y_km"":0.0,""z_km"":0.0}");
+            var contactAhead = JsonNode.Parse(@"{""id"":""corvette_1"",""kind"":""ship"",""you"":false,""x_km"":15.8,""y_km"":0.0,""z_km"":0.0}");
+            var contactStarboardHigh = JsonNode.Parse(@"{""id"":""raider_1"",""kind"":""ship"",""you"":false,""x_km"":3.8,""y_km"":42.0,""z_km"":12.0}");
+            UnityEngine.Vector3 offAhead = TacSim.Space.SpaceFlightController.ComputeRelativeStageOffset(contactAhead, 3.8, 0.0, 0.0, 85f, 1);
+            UnityEngine.Vector3 offStarboard = TacSim.Space.SpaceFlightController.ComputeRelativeStageOffset(contactStarboardHigh, 3.8, 0.0, 0.0, 85f, 2);
+            Assert.Greater(UnityEngine.Vector3.Distance(offAhead, offStarboard), 60f, "Widely separated x_km/y_km/z_km server contacts must never collapse to the same position");
+            Assert.Greater(offAhead.z, 50f, "+x_km ahead maps to +Z forward");
+            Assert.AreEqual(0f, offAhead.x, 0.01f);
+            Assert.Greater(offStarboard.x, 70f, "+y_km starboard maps to +X");
+            Assert.Greater(offStarboard.y, 15f, "+z_km elevation maps to +Y");
+            Assert.IsNotNull(ownShipNode);
+
+            var fireWithObjectLock = JsonNode.Parse(@"{""mounts"":[],""lock_id"":""raider_1"",""lock"":{""id"":""raider_1"",""label"":""Corsair"",""range_m"":14200,""facet"":""fore""}}");
+            Assert.IsTrue(TacSim.Space.SpaceFlightController.ExtractLockedContactIdFromFireNode(fireWithObjectLock, out string parsedLock, out bool parsedClear));
+            Assert.AreEqual("raider_1", parsedLock);
+            Assert.IsFalse(parsedClear);
+
+            var fireCleared = JsonNode.Parse(@"{""mounts"":[],""lock_id"":null,""lock"":null}");
+            Assert.IsTrue(TacSim.Space.SpaceFlightController.ExtractLockedContactIdFromFireNode(fireCleared, out string emptyLock, out bool shouldClear));
+            Assert.AreEqual(string.Empty, emptyLock);
+            Assert.IsTrue(shouldClear);
+
+            // 6. Alternating RCS stress input hits IsTapeBudgetExhausted before exceeding 8,192-char gateway limit
             var stress = DockingClientSession.CreateStandardPortPractice("dock.stress.1", "Ceres");
             for (int f = 0; f < 1800 && !stress.IsTapeBudgetExhausted; f++)
             {

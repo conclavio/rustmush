@@ -118,10 +118,52 @@ namespace TacSim.World
             return Classes[cy * Width + cx];
         }
 
-        public Vector3 CellToLocalPos(int cx, int cy, float yOffset = 0f)
+        /// <summary>
+        /// Converts a window-local cell index <c>(0 .. Width-1, 0 .. Height-1)</c> into local mesh metres.
+        /// </summary>
+        public Vector3 CellToLocalPos(int localCx, int localCy, float yOffset = 0f)
         {
-            float lx = (cx - OriginCellX + 0.5f) * CellSizeM;
-            float lz = (cy - OriginCellY + 0.5f) * CellSizeM;
+            float lx = (localCx + 0.5f) * CellSizeM;
+            float lz = (localCy + 0.5f) * CellSizeM;
+            float ly = SampleElevationMeters(lx, lz) + yOffset;
+            return new Vector3(lx, ly, lz);
+        }
+
+        public bool IsSiteCellInWindow(int siteX, int siteY)
+        {
+            int span = Math.Max(1, SpanCells);
+            return siteX >= OriginCellX && siteY >= OriginCellY &&
+                   siteX < OriginCellX + Width * span &&
+                   siteY < OriginCellY + Height * span;
+        }
+
+        /// <summary>
+        /// Converts an authoritative site/arena cell <c>(siteX, siteY)</c> into local mesh metres,
+        /// accounting for <see cref="OriginCellX"/>, <see cref="OriginCellY"/>, and <see cref="SpanCells"/> once.
+        /// </summary>
+        public Vector3 SiteCellToLocalPos(int siteX, int siteY, float yOffset = 0f)
+        {
+            float siteCellMeters = CellSizeM / Math.Max(1, SpanCells);
+            float maxCoordX = Math.Max(0f, Width * CellSizeM);
+            float maxCoordZ = Math.Max(0f, Height * CellSizeM);
+            float lx = Mathf.Clamp((siteX - OriginCellX + 0.5f) * siteCellMeters, 0f, maxCoordX);
+            float lz = Mathf.Clamp((siteY - OriginCellY + 0.5f) * siteCellMeters, 0f, maxCoordZ);
+            float ly = SampleElevationMeters(lx, lz) + yOffset;
+            return new Vector3(lx, ly, lz);
+        }
+
+        /// <summary>
+        /// Converts authoritative site centimetres <c>(x_cm, y_cm)</c> (e.g. from <c>LegWaypoint</c>) into local mesh metres.
+        /// </summary>
+        public Vector3 SiteCmToLocalPos(double xCm, double yCm, float yOffset = 0f)
+        {
+            float siteCellMeters = CellSizeM / Math.Max(1, SpanCells);
+            double originXCm = OriginCellX * (siteCellMeters * 100.0);
+            double originYCm = OriginCellY * (siteCellMeters * 100.0);
+            float maxCoordX = Math.Max(0f, Width * CellSizeM);
+            float maxCoordZ = Math.Max(0f, Height * CellSizeM);
+            float lx = Mathf.Clamp((float)((xCm - originXCm) * 0.01), 0f, maxCoordX);
+            float lz = Mathf.Clamp((float)((yCm - originYCm) * 0.01), 0f, maxCoordZ);
             float ly = SampleElevationMeters(lx, lz) + yOffset;
             return new Vector3(lx, ly, lz);
         }

@@ -131,8 +131,8 @@ namespace TacSim.World
             _pendingBuyQuantity = safeQty;
             _pendingBuyMaxTotalMinor = displayedUnitPriceMinor > 0 ? displayedUnitPriceMinor * safeQty : 0;
             _pendingBuyExpiresAt = currentTimeS + 8.0f;
-            // Canonical `+market/quote` syntax accepts `#<id> <qty>` or `#<id>=<qty>`
-            return $"+market/quote #{listingId} {safeQty}";
+            // `mush-market` reads quantity from the `=` right-hand side (`+market/quote #<id>=<qty>`)
+            return $"+market/quote #{listingId}={safeQty}";
         }
 
         public void CancelPendingBuy()

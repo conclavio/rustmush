@@ -29,6 +29,7 @@ namespace TacSim.Net
     public sealed class TacSimContentSync
     {
         public const int MaxInFlightPackRequests = 4;
+        public const int MaxPackAttempts = 3;
         private const float MinBatchIntervalSec = 0.45f;
         private const float RequestRetryTimeoutSec = 5.0f;
 
@@ -37,7 +38,8 @@ namespace TacSim.Net
         private readonly Queue<ContentPackManifestItem> _pendingPacks = new Queue<ContentPackManifestItem>();
         private readonly Dictionary<string, (ContentPackManifestItem item, float sentAt, int attempts)> _inFlightPacks =
             new Dictionary<string, (ContentPackManifestItem, float, int)>(StringComparer.Ordinal);
-        private float _lastDispatchRealtime = -10f;
+        private readonly Dictionary<string, int> _attemptCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        private float _lastDispatchRealtime = -1000f;
         private bool _manifestReceived;
 
         public event Action<string> OnSyncLog;
@@ -136,6 +138,8 @@ namespace TacSim.Net
             _localDigests.Clear();
             _pendingPacks.Clear();
             _inFlightPacks.Clear();
+            _attemptCounts.Clear();
+            _lastDispatchRealtime = -1000f;
             // Clear any dynamic packs retained from a previous server connection before hydrating this server's cache.
             TacSimContentLoader.ClearDynamicPacks();
 
@@ -277,8 +281,8 @@ namespace TacSim.Net
 
             _inFlightPacks.Clear();
             _pendingPacks.Clear();
+            _attemptCounts.Clear();
             _manifestReceived = false;
-            _lastDispatchRealtime = nowRealtime;
 
             var p = JsonNode.NewObject();
             p["op"] = JsonNode.FromString("manifest");
@@ -297,13 +301,14 @@ namespace TacSim.Net
                 var changed = ComputeChangedPacks(_localDigests, remote);
                 _pendingPacks.Clear();
                 _inFlightPacks.Clear();
+                _attemptCounts.Clear();
                 for (int i = 0; i < changed.Count; i++)
                     _pendingPacks.Enqueue(changed[i]);
 
                 if (_pendingPacks.Count > 0)
                 {
                     OnSyncLog?.Invoke($"[ContentSync] Syncing {_pendingPacks.Count} updated pack(s) over WebSocket...");
-                    PumpPackQueue(ws, nowRealtime, forceImmediate: true);
+                    PumpPackQueue(ws, nowRealtime);
                 }
             }
             else if (op == "pack")
@@ -320,11 +325,14 @@ namespace TacSim.Net
                     string json = data.Str("json", string.Empty);
                     if (StoreVerifiedPack(id, sha, json))
                     {
+                        _attemptCounts.Remove(id);
+                        if (!string.IsNullOrEmpty(reqId))
+                            _attemptCounts.Remove(reqId);
                         PersistLocalManifest();
                         OnPacksUpdated?.Invoke(1);
                     }
                 }
-                PumpPackQueue(ws, nowRealtime, forceImmediate: false);
+                PumpPackQueue(ws, nowRealtime);
             }
         }
 
@@ -343,17 +351,33 @@ namespace TacSim.Net
             if (staleKeys.Count == 0) return;
 
             for (int i = 0; i < staleKeys.Count; i++)
-                _localDigests.Remove(staleKeys[i]);
+            {
+                string key = staleKeys[i];
+                _localDigests.Remove(key);
+                if (!string.IsNullOrEmpty(_cacheRootDir))
+                {
+                    try
+                    {
+                        string packFile = Path.Combine(_cacheRootDir, "packs", SanitizeFileSlug(key) + ".json");
+                        if (File.Exists(packFile))
+                            File.Delete(packFile);
+                    }
+                    catch { /* ignore disk delete errors */ }
+                }
+            }
 
+            // Persist the reduced manifest BEFORE reloading dynamic packs into memory!
+            PersistLocalManifest();
             TacSimContentLoader.ClearDynamicPacks();
             LoadCachedPacksIntoMemory();
-            PersistLocalManifest();
+            OnPacksUpdated?.Invoke(staleKeys.Count);
         }
 
         /// <summary>
         /// Call from Update() to pace queued pack downloads within session rate limits and retry timed-out packs.
+        /// Enforces <see cref="MinBatchIntervalSec"/> both within and between batches and caps retries at <see cref="MaxPackAttempts"/>.
         /// </summary>
-        public void PumpPackQueue(MushWsClient ws, float nowRealtime, bool forceImmediate = false)
+        public void PumpPackQueue(MushWsClient ws, float nowRealtime)
         {
             if (ws == null) return;
 
@@ -375,7 +399,7 @@ namespace TacSim.Net
                     {
                         var entry = _inFlightPacks[timedOut[i]];
                         _inFlightPacks.Remove(timedOut[i]);
-                        if (entry.attempts < 4)
+                        if (entry.attempts < MaxPackAttempts)
                             _pendingPacks.Enqueue(entry.item);
                     }
                 }
@@ -384,7 +408,8 @@ namespace TacSim.Net
             if (_pendingPacks.Count == 0 || _inFlightPacks.Count >= MaxInFlightPackRequests)
                 return;
 
-            if (!forceImmediate && nowRealtime - _lastDispatchRealtime < MinBatchIntervalSec && _inFlightPacks.Count > 0)
+            // Unconditionally enforce minimum interval between dispatch bursts, even after an earlier batch completes.
+            if (nowRealtime - _lastDispatchRealtime < MinBatchIntervalSec)
                 return;
 
             int sent = 0;
@@ -396,7 +421,11 @@ namespace TacSim.Net
                 {
                     continue;
                 }
-                _inFlightPacks[next.Id] = (next, nowRealtime, 1);
+                int attempt = (_attemptCounts.TryGetValue(next.Id, out int prev) ? prev : 0) + 1;
+                if (attempt > MaxPackAttempts)
+                    continue;
+                _attemptCounts[next.Id] = attempt;
+                _inFlightPacks[next.Id] = (next, nowRealtime, attempt);
                 var p = JsonNode.NewObject();
                 p["op"] = JsonNode.FromString("pack");
                 p["id"] = JsonNode.FromString(next.Id);

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using TacSim.Core;
@@ -10,17 +11,27 @@ using UnityEngine.EventSystems;
 
 namespace TacSim.Surface
 {
+    public struct RoverLegWaypoint
+    {
+        public long XCm;
+        public long YCm;
+        public double AtSec;
+    }
+
     /// <summary>
     /// Pure-online 3D Planetary Surface Heightfield, Landed Dray-P Pad, and
     /// Articulated Prospector Rover (`+tv`) driven by authoritative `mushd` `site.map`
-    /// (`rows`, `site.grid`, `site.rigs[]`, `readings[]`, `others[]`) and `tv.status` feeds.
+    /// (`rows`, `site.grid`, `site.clock`, `site.rigs[]`, `readings[]`, `others[]`) and `tv.status` feeds.
     /// </summary>
     public sealed class SurfaceMiningController : MonoBehaviour
     {
         public static readonly Vector3 SurfaceStageOrigin = new Vector3(1200f, 0f, 0f);
         private static readonly Regex HopperPairRegex = new Regex(
-            @"(\d+)\s*/\s*(\d+)\s*t",
+            @"(\d+)\s*(?:of|/)\s*(\d+)\s*t\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        private static double MonotonicSeconds() =>
+            Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
         public TacSimAssetCatalog Catalog;
         public DecodedTerrainGrid TerrainGrid { get; private set; }
@@ -62,6 +73,15 @@ namespace TacSim.Surface
         private float _roverSpeedKph;
         private bool _hasDriveWaypoint;
         private float _nextKeyboardDriveCommandAt;
+
+        private readonly List<RoverLegWaypoint> _activeLegWaypoints = new List<RoverLegWaypoint>();
+        private long _activeLegStartedIc;
+        private double _clockBaseIcSec;
+        private double _clockRateIcPerRealSec = 1.0;
+        private double _clockBaseMonotonicSec;
+
+        public IReadOnlyList<RoverLegWaypoint> ActiveLegWaypoints => _activeLegWaypoints;
+        public long ActiveLegStartedIc => _activeLegStartedIc;
 
         private readonly List<string> _recentSiteLines = new List<string>();
         public IReadOnlyList<string> RecentSiteLines => _recentSiteLines;
@@ -257,8 +277,14 @@ namespace TacSim.Surface
 
         public static bool TryParseHopperTonnes(string hopperText, out int loadedTonnes, out int capacityTonnes)
         {
+            return TryParseHopperTonnes(hopperText, out loadedTonnes, out capacityTonnes, out _);
+        }
+
+        public static bool TryParseHopperTonnes(string hopperText, out int loadedTonnes, out int capacityTonnes, out bool hasExplicitCapacity)
+        {
             loadedTonnes = 0;
             capacityTonnes = 6;
+            hasExplicitCapacity = false;
             if (string.IsNullOrWhiteSpace(hopperText))
                 return false;
 
@@ -269,6 +295,7 @@ namespace TacSim.Surface
             {
                 loadedTonnes = Mathf.Max(0, ld);
                 capacityTonnes = Mathf.Max(1, cap);
+                hasExplicitCapacity = true;
                 return true;
             }
 
@@ -278,6 +305,130 @@ namespace TacSim.Surface
                 return true;
             }
             return false;
+        }
+
+        public static bool ParseLegWaypoints(JsonNode legNode, out long startedIc, List<RoverLegWaypoint> outWaypoints)
+        {
+            startedIc = 0;
+            outWaypoints?.Clear();
+            if (legNode == null || !legNode.IsObject || outWaypoints == null)
+                return false;
+
+            startedIc = legNode.Long("started_ic", 0L);
+            var wps = legNode["waypoints"].AsArray();
+            if (wps == null || wps.Count == 0)
+                return false;
+
+            for (int i = 0; i < wps.Count; i++)
+            {
+                var wp = wps[i];
+                if (wp.IsObject)
+                {
+                    if (!wp.ContainsKey("x_cm") || !wp.ContainsKey("y_cm"))
+                        continue;
+                    outWaypoints.Add(new RoverLegWaypoint
+                    {
+                        XCm = wp.Long("x_cm", 0L),
+                        YCm = wp.Long("y_cm", 0L),
+                        AtSec = Math.Max(0.0, wp.Double("at_s", 0.0))
+                    });
+                }
+                else if (wp.IsArray && wp.AsArray().Count >= 2)
+                {
+                    var arr = wp.AsArray();
+                    long rx = arr[0].AsLong(0L);
+                    long ry = arr[1].AsLong(0L);
+                    outWaypoints.Add(new RoverLegWaypoint
+                    {
+                        XCm = rx > 1024 ? rx : rx * 1000L + 500L,
+                        YCm = ry > 1024 ? ry : ry * 1000L + 500L,
+                        AtSec = arr.Count >= 3 ? Math.Max(0.0, arr[2].AsDouble(0.0)) : i * 10.0
+                    });
+                }
+            }
+            return outWaypoints.Count > 0;
+        }
+
+        /// <summary>
+        /// Exact port of <c>tacsim::port::site_map::leg_position</c>: piecewise-linear interpolation
+        /// across <c>{x_cm, y_cm, at_s}</c> waypoints by elapsed IC seconds since <c>started_ic</c>.
+        /// </summary>
+        public static bool EvaluateLegPositionCm(
+            IReadOnlyList<RoverLegWaypoint> waypoints,
+            double elapsedIcSec,
+            out double xCm,
+            out double yCm,
+            out float headingDeg,
+            out double segmentSpeedMps,
+            out bool stillMoving)
+        {
+            xCm = 0.0;
+            yCm = 0.0;
+            headingDeg = 180f;
+            segmentSpeedMps = 0.0;
+            stillMoving = false;
+            if (waypoints == null || waypoints.Count == 0)
+                return false;
+
+            var first = waypoints[0];
+            if (elapsedIcSec <= first.AtSec)
+            {
+                xCm = first.XCm;
+                yCm = first.YCm;
+                if (waypoints.Count >= 2)
+                {
+                    var second = waypoints[1];
+                    double dx0 = second.XCm - first.XCm;
+                    double dy0 = second.YCm - first.YCm;
+                    if (Math.Abs(dx0) > 0.01 || Math.Abs(dy0) > 0.01)
+                        headingDeg = Mathf.Atan2((float)dx0, (float)dy0) * Mathf.Rad2Deg;
+                    stillMoving = waypoints[waypoints.Count - 1].AtSec > elapsedIcSec;
+                }
+                return true;
+            }
+
+            for (int i = 0; i < waypoints.Count - 1; i++)
+            {
+                var a = waypoints[i];
+                var b = waypoints[i + 1];
+                if (elapsedIcSec <= b.AtSec)
+                {
+                    double dx = b.XCm - a.XCm;
+                    double dy = b.YCm - a.YCm;
+                    if (Math.Abs(dx) > 0.01 || Math.Abs(dy) > 0.01)
+                        headingDeg = Mathf.Atan2((float)dx, (float)dy) * Mathf.Rad2Deg;
+
+                    if (b.AtSec <= a.AtSec)
+                    {
+                        xCm = b.XCm;
+                        yCm = b.YCm;
+                        stillMoving = i + 1 < waypoints.Count - 1;
+                        return true;
+                    }
+
+                    double span = b.AtSec - a.AtSec;
+                    double t = (elapsedIcSec - a.AtSec) / span;
+                    xCm = a.XCm + dx * t;
+                    yCm = a.YCm + dy * t;
+                    segmentSpeedMps = (Math.Sqrt(dx * dx + dy * dy) * 0.01) / span;
+                    stillMoving = true;
+                    return true;
+                }
+            }
+
+            var last = waypoints[waypoints.Count - 1];
+            xCm = last.XCm;
+            yCm = last.YCm;
+            if (waypoints.Count >= 2)
+            {
+                var prev = waypoints[waypoints.Count - 2];
+                double dxl = last.XCm - prev.XCm;
+                double dyl = last.YCm - prev.YCm;
+                if (Math.Abs(dxl) > 0.01 || Math.Abs(dyl) > 0.01)
+                    headingDeg = Mathf.Atan2((float)dxl, (float)dyl) * Mathf.Rad2Deg;
+            }
+            stillMoving = false;
+            return true;
         }
 
         private void ApplyRigRowNode(JsonNode rig)
@@ -294,10 +445,10 @@ namespace TacSim.Surface
             else if (rig.ContainsKey("hopper"))
             {
                 string hopStr = rig.Str("hopper", string.Empty);
-                if (TryParseHopperTonnes(hopStr, out int ld, out int cap))
+                if (TryParseHopperTonnes(hopStr, out int ld, out int cap, out bool hasCap))
                 {
                     HopperLoadedTonnes = ld;
-                    if (hopStr.IndexOf('/') >= 0)
+                    if (hasCap)
                         HopperCapacityTonnes = cap;
                 }
             }
@@ -355,7 +506,15 @@ namespace TacSim.Surface
                 if (holdObj.IsObject)
                     HoldUnreservedTonnes = holdObj.Int("room_t", HoldUnreservedTonnes);
 
-                // 2. Read authoritative battery, hopper ("3/6 t"), cell, and active leg from `site.rigs[]`!
+                var clockObj = siteBlock["clock"];
+                if (clockObj.IsObject && clockObj.ContainsKey("now_ic"))
+                {
+                    _clockBaseIcSec = clockObj.Double("now_ic", _clockBaseIcSec);
+                    _clockRateIcPerRealSec = Math.Max(0.0, clockObj.Double("rate", 1.0));
+                    _clockBaseMonotonicSec = MonotonicSeconds();
+                }
+
+                // 2. Read authoritative battery, hopper ("3 of 6 t"), cell, and active leg from `site.rigs[]`!
                 var rigsArr = siteBlock["rigs"].AsArray();
                 if (rigsArr != null && rigsArr.Count > 0)
                 {
@@ -381,6 +540,13 @@ namespace TacSim.Surface
                             AuthoritativeSiteCellX = rc[0].AsInt(AuthoritativeSiteCellX);
                             AuthoritativeSiteCellY = rc[1].AsInt(AuthoritativeSiteCellY);
                             UpdateRoverTargetFromSiteCell(AuthoritativeSiteCellX, AuthoritativeSiteCellY, matchedRig["leg"]);
+                            positionedFromRigRow = true;
+                        }
+                        else if (matchedRig.ContainsKey("cell") && matchedRig["cell"].IsNull)
+                        {
+                            _activeLegWaypoints.Clear();
+                            _hasDriveWaypoint = false;
+                            RigOnGround = false;
                             positionedFromRigRow = true;
                         }
                     }
@@ -435,38 +601,41 @@ namespace TacSim.Surface
         {
             if (TerrainGrid == null) return;
 
-            int targetSiteX = siteX;
-            int targetSiteY = siteY;
-            if (legNode != null && legNode.IsObject)
+            _activeLegWaypoints.Clear();
+            bool hasLeg = ParseLegWaypoints(legNode, out _activeLegStartedIc, _activeLegWaypoints);
+            if (hasLeg && _clockBaseMonotonicSec <= 0.0)
             {
-                var wps = legNode["waypoints"].AsArray();
-                if (wps != null && wps.Count > 0)
-                {
-                    var lastWp = wps[wps.Count - 1].AsArray();
-                    if (lastWp != null && lastWp.Count >= 2)
-                    {
-                        // Waypoints in `site.rigs[].leg` are either site cells or centimetres (1000 cm / cell)
-                        int rawX = lastWp[0].AsInt(siteX);
-                        int rawY = lastWp[1].AsInt(siteY);
-                        targetSiteX = rawX > 1024 ? rawX / 1000 : rawX;
-                        targetSiteY = rawY > 1024 ? rawY / 1000 : rawY;
-                    }
-                }
+                _clockBaseIcSec = _activeLegStartedIc;
+                _clockRateIcPerRealSec = 1.0;
+                _clockBaseMonotonicSec = MonotonicSeconds();
             }
 
-            int localCx = TerrainGrid.SiteToLocalCellX(targetSiteX);
-            int localCy = TerrainGrid.SiteToLocalCellY(targetSiteY);
-            _roverTargetLocalPos = TerrainGrid.CellToLocalPos(localCx, localCy, 0f);
-            _hasDriveWaypoint = true;
+            Vector3 curLocalPos;
+            if (hasLeg && EvaluateLegPositionCm(
+                    _activeLegWaypoints,
+                    Math.Max(0.0, _clockBaseIcSec - _activeLegStartedIc),
+                    out double xCm,
+                    out double yCm,
+                    out float legHeading,
+                    out _,
+                    out bool moving))
+            {
+                curLocalPos = TerrainGrid.SiteCmToLocalPos(xCm, yCm, 0f);
+                _roverTargetLocalPos = curLocalPos;
+                _roverHeadingDeg = legHeading;
+                _hasDriveWaypoint = moving;
+            }
+            else
+            {
+                curLocalPos = TerrainGrid.SiteCellToLocalPos(siteX, siteY, 0f);
+                _roverTargetLocalPos = curLocalPos;
+                _hasDriveWaypoint = true;
+            }
             RigOnGround = true;
 
-            // Snap immediately if no rover visual was initialized near the live window yet
             if (ActiveRoverRig?.Root != null)
             {
-                int curLocalX = TerrainGrid.SiteToLocalCellX(siteX);
-                int curLocalY = TerrainGrid.SiteToLocalCellY(siteY);
-                Vector3 curLocalPos = TerrainGrid.CellToLocalPos(curLocalX, curLocalY, 0f);
-                if (Vector3.Distance(ActiveRoverRig.Root.transform.position - SurfaceStageOrigin, curLocalPos) > TerrainGrid.CellSizeM * 8f)
+                if (!hasLeg || Vector3.Distance(ActiveRoverRig.Root.transform.position - SurfaceStageOrigin, curLocalPos) > TerrainGrid.CellSizeM * 4f)
                 {
                     ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + curLocalPos;
                 }
@@ -477,7 +646,11 @@ namespace TacSim.Surface
         {
             if (_markersRoot == null || TerrainGrid == null) return;
             for (int i = _markersRoot.childCount - 1; i >= 0; i--)
-                Destroy(_markersRoot.GetChild(i).gameObject);
+            {
+                var ch = _markersRoot.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(ch);
+                else DestroyImmediate(ch);
+            }
 
             if (readings == null) return;
             for (int i = 0; i < readings.Count; i++)
@@ -485,11 +658,11 @@ namespace TacSim.Surface
                 var r = readings[i];
                 var cell = r["cell"].AsArray();
                 if (cell == null || cell.Count < 2) continue;
-                int localCx = TerrainGrid.SiteToLocalCellX(cell[0].AsInt(AuthoritativeSiteCellX));
-                int localCy = TerrainGrid.SiteToLocalCellY(cell[1].AsInt(AuthoritativeSiteCellY));
+                int siteCx = cell[0].AsInt(AuthoritativeSiteCellX);
+                int siteCy = cell[1].AsInt(AuthoritativeSiteCellY);
                 string txt = r.Str("text", "Ore Reading");
                 bool isRich = txt.IndexOf("rich", StringComparison.OrdinalIgnoreCase) >= 0;
-                SpawnBeaconPillar(localCx, localCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
+                SpawnBeaconPillarAtSiteCell(siteCx, siteCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
             }
         }
 
@@ -497,7 +670,11 @@ namespace TacSim.Surface
         {
             if (_otherRigsRoot == null || TerrainGrid == null) return;
             for (int i = _otherRigsRoot.childCount - 1; i >= 0; i--)
-                Destroy(_otherRigsRoot.GetChild(i).gameObject);
+            {
+                var ch = _otherRigsRoot.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(ch);
+                else DestroyImmediate(ch);
+            }
 
             if (others == null) return;
             for (int i = 0; i < others.Count; i++)
@@ -505,9 +682,9 @@ namespace TacSim.Surface
                 var o = others[i];
                 var c = o["cell"].AsArray();
                 if (c == null || c.Count < 2) continue;
-                int localCx = TerrainGrid.SiteToLocalCellX(c[0].AsInt(AuthoritativeSiteCellX));
-                int localCy = TerrainGrid.SiteToLocalCellY(c[1].AsInt(AuthoritativeSiteCellY));
-                Vector3 wp = SurfaceStageOrigin + TerrainGrid.CellToLocalPos(localCx, localCy, 0f);
+                int siteCx = c[0].AsInt(AuthoritativeSiteCellX);
+                int siteCy = c[1].AsInt(AuthoritativeSiteCellY);
+                Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 0f);
                 string tag = o.Bool("sounding", false) ? "OTHER RIG [SOUNDING!]" : "OTHER RIG [o]";
                 TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, _otherRigsRoot, tag, wp, 90f, isEscort: true);
             }
@@ -533,10 +710,10 @@ namespace TacSim.Surface
             }
         }
 
-        private void SpawnBeaconPillar(int cx, int cy, string label, Color color)
+        private void SpawnBeaconPillarAtSiteCell(int siteCx, int siteCy, string label, Color color)
         {
-            Vector3 wp = SurfaceStageOrigin + TerrainGrid.CellToLocalPos(cx, cy, 0f);
-            var root = new GameObject($"PocketBeacon_{cx}_{cy}");
+            Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 0f);
+            var root = new GameObject($"PocketBeacon_{siteCx}_{siteCy}");
             root.transform.SetParent(_markersRoot, false);
             root.transform.position = wp;
 
@@ -625,23 +802,46 @@ namespace TacSim.Surface
                 }
             }
 
-            // Smoothly interpolate toward the authoritative server cell / active leg waypoint
+            // Follow authoritative `{x_cm, y_cm, at_s}` leg waypoints on the IC clock when present,
+            // or hold at the authoritative server cell otherwise.
             Vector3 localPos = ActiveRoverRig.Root.transform.position - SurfaceStageOrigin;
-            float maxMetersPerSec = 14f;
-            if (_hasDriveWaypoint)
+            if (_activeLegWaypoints.Count > 0)
+            {
+                double nowIc = _clockBaseIcSec + Math.Max(0.0, MonotonicSeconds() - _clockBaseMonotonicSec) * _clockRateIcPerRealSec;
+                double elapsedIc = nowIc - _activeLegStartedIc;
+                if (EvaluateLegPositionCm(
+                        _activeLegWaypoints,
+                        elapsedIc,
+                        out double xCm,
+                        out double yCm,
+                        out float legHeading,
+                        out double segMps,
+                        out bool moving))
+                {
+                    AuthoritativeSiteCellX = (int)Math.Floor(xCm / 1000.0);
+                    AuthoritativeSiteCellY = (int)Math.Floor(yCm / 1000.0);
+                    localPos = TerrainGrid.SiteCmToLocalPos(xCm, yCm, 0f);
+                    _roverHeadingDeg = Mathf.MoveTowardsAngle(_roverHeadingDeg, legHeading, 180f * dt);
+                    _roverSpeedKph = moving ? (float)(segMps * Math.Max(0.25, _clockRateIcPerRealSec) * 3.6) : 0f;
+                    if (!moving)
+                        _activeLegWaypoints.Clear();
+                }
+            }
+            else if (_hasDriveWaypoint)
             {
                 Vector3 toTarget = _roverTargetLocalPos - localPos;
                 toTarget.y = 0f;
-                if (toTarget.magnitude > 0.65f)
+                if (toTarget.magnitude > 0.35f)
                 {
                     float desiredYaw = Mathf.Atan2(toTarget.x, toTarget.z) * Mathf.Rad2Deg;
-                    _roverHeadingDeg = Mathf.MoveTowardsAngle(_roverHeadingDeg, desiredYaw, 120f * dt);
-                    Vector3 step = toTarget.normalized * Mathf.Min(toTarget.magnitude, maxMetersPerSec * dt);
+                    _roverHeadingDeg = Mathf.MoveTowardsAngle(_roverHeadingDeg, desiredYaw, 150f * dt);
+                    Vector3 step = toTarget.normalized * Mathf.Min(toTarget.magnitude, 14f * dt);
                     localPos += step;
-                    _roverSpeedKph = 38f;
+                    _roverSpeedKph = 24f;
                 }
                 else
                 {
+                    localPos = _roverTargetLocalPos;
                     _hasDriveWaypoint = false;
                     _roverSpeedKph = 0f;
                 }
@@ -651,8 +851,8 @@ namespace TacSim.Surface
                 _roverSpeedKph = Mathf.MoveTowards(_roverSpeedKph, 0f, 40f * dt);
             }
 
-            float maxCoordX = Mathf.Max(TerrainGrid.CellSizeM, (TerrainGrid.Width - 1) * TerrainGrid.CellSizeM);
-            float maxCoordZ = Mathf.Max(TerrainGrid.CellSizeM, (TerrainGrid.Height - 1) * TerrainGrid.CellSizeM);
+            float maxCoordX = Mathf.Max(TerrainGrid.CellSizeM, TerrainGrid.Width * TerrainGrid.CellSizeM);
+            float maxCoordZ = Mathf.Max(TerrainGrid.CellSizeM, TerrainGrid.Height * TerrainGrid.CellSizeM);
             localPos.x = Mathf.Clamp(localPos.x, 0f, maxCoordX);
             localPos.z = Mathf.Clamp(localPos.z, 0f, maxCoordZ);
             localPos.y = TerrainGrid.SampleElevationMeters(localPos.x, localPos.z);

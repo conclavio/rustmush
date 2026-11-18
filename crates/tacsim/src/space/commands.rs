@@ -838,7 +838,7 @@ pub(crate) fn push_docking_closed_panel(
     }
 }
 
-fn build_tier1_space_panel_payloads(
+pub(crate) fn build_tier1_space_panel_payloads(
     w: &World,
     hull: ObjId,
 ) -> Option<(serde_json::Value, serde_json::Value)> {
@@ -890,11 +890,90 @@ fn build_tier1_space_panel_payloads(
         .map(super::bubble::CanopyBodyProjection::to_feed_json)
         .collect();
 
-    let holotank = serde_json::json!({
-        "title": format!("{} ({})", callsign, site_id.to_ascii_uppercase()),
-        "range_km": 250.0,
-        "pdc_range_km": 15.0,
-        "contacts": [{
+    let mut holotank_contacts = Vec::new();
+    let mut holotank_range_km = 250.0_f64;
+    let mut mining_json = serde_json::Value::Null;
+    if let Some(cs) = book.cluster_sessions.get(&hull) {
+        let [sx, sy, sz] = cs.ship_pos_m;
+        let [svx, svy, svz] = cs.ship_vel_mmps;
+        holotank_range_km = 8.0;
+        holotank_contacts.push(serde_json::json!({
+            "id": format!("ship.{}", hull.0),
+            "label": callsign,
+            "kind": "ship",
+            "relation": "own",
+            "you": true,
+            "locked": false,
+            "x_km": (sx as f64) / 1_000.0,
+            "y_km": (sy as f64) / 1_000.0,
+            "z_km": (sz as f64) / 1_000.0,
+            "vx_kms": (svx as f64) / 1_000_000.0,
+            "vy_kms": (svy as f64) / 1_000_000.0,
+            "vz_kms": (svz as f64) / 1_000_000.0,
+            "ax_mps2": 0,
+            "ay_mps2": 0,
+            "az_mps2": 0,
+        }));
+        if let Some(cluster) = super::mining::cluster_by_id(w, &cs.cluster) {
+            for spec in cluster.rocks() {
+                let [rx, ry, rz] = spec.pos_m;
+                let [rvx, rvy, rvz] = spec.vel_mmps;
+                let id_str = spec.letter.to_string();
+                let locked = cs
+                    .matched_rock
+                    .or(cs.approaching_rock)
+                    .is_some_and(|ch| ch == spec.letter);
+                holotank_contacts.push(serde_json::json!({
+                    "id": id_str,
+                    "alias": spec.alias,
+                    "label": format!("ROCK {} ({})", spec.letter, spec.spectral.code()),
+                    "kind": "rock",
+                    "spectral": spec.spectral.code(),
+                    "relation": "neutral",
+                    "you": false,
+                    "locked": locked,
+                    "x_km": (rx as f64) / 1_000.0,
+                    "y_km": (ry as f64) / 1_000.0,
+                    "z_km": (rz as f64) / 1_000.0,
+                    "vx_kms": (rvx as f64) / 1_000_000.0,
+                    "vy_kms": (rvy as f64) / 1_000_000.0,
+                    "vz_kms": (rvz as f64) / 1_000_000.0,
+                    "ax_mps2": 0,
+                    "ay_mps2": 0,
+                    "az_mps2": 0,
+                }));
+            }
+        }
+        let drones_json: Vec<serde_json::Value> = cs
+            .active_drones
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "slot": d.slot,
+                    "rock": d.rock_letter.to_string(),
+                    "family": d.family.label(),
+                })
+            })
+            .collect();
+        let laser_json = cs.active_laser.as_ref().map(|l| {
+            serde_json::json!({
+                "rock": l.rock_letter.to_string(),
+                "family": l.family.label(),
+                "started_ic": l.started_ic,
+                "due_ic": l.due_ic,
+                "yield_t": l.yield_t,
+            })
+        });
+        mining_json = serde_json::json!({
+            "cluster": cs.cluster.as_str(),
+            "matched_rock": cs.matched_rock.map(|c| c.to_string()),
+            "approaching_rock": cs.approaching_rock.map(|c| c.to_string()),
+            "active_drones": cs.active_drones.len(),
+            "drones": drones_json,
+            "laser": laser_json,
+        });
+    } else {
+        holotank_contacts.push(serde_json::json!({
             "id": format!("ship.{}", hull.0),
             "label": callsign,
             "kind": "ship",
@@ -910,7 +989,14 @@ fn build_tier1_space_panel_payloads(
             "ax_mps2": 0,
             "ay_mps2": 0,
             "az_mps2": 0,
-        }],
+        }));
+    }
+
+    let holotank = serde_json::json!({
+        "title": format!("{} ({})", callsign, site_id.to_ascii_uppercase()),
+        "range_km": holotank_range_km,
+        "pdc_range_km": 15.0,
+        "contacts": holotank_contacts,
         "torpedoes": [],
     });
     let mut tier1_ship = mush_tactics::module::unit_of(w, hull)
@@ -961,7 +1047,7 @@ fn build_tier1_space_panel_payloads(
     {
         heat_permille = heat_permille.max(cs.frontier_bloom_heat.saturating_mul(10).min(1_000));
     }
-    let cockpit = serde_json::json!({
+    let mut cockpit = serde_json::json!({
         "callsign": callsign,
         "site_id": site_id,
         "yaw_deg": cam_yaw_deg,
@@ -978,6 +1064,17 @@ fn build_tier1_space_panel_payloads(
         "bodies": bodies_json,
         "contacts": [],
     });
+    if !mining_json.is_null()
+        && let Some(obj) = cockpit.as_object_mut()
+    {
+        if let Some(matched) = mining_json.get("matched_rock").cloned() {
+            obj.insert("matched_rock".to_owned(), matched);
+        }
+        if let Some(drones) = mining_json.get("active_drones").cloned() {
+            obj.insert("active_drones".to_owned(), drones);
+        }
+        obj.insert("mining".to_owned(), mining_json);
+    }
     Some((holotank, cockpit))
 }
 

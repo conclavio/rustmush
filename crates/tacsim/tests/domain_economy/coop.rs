@@ -2714,15 +2714,16 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
     let first_ask = listings
         .iter()
         .find(|row| {
-            row["side"].as_str() == Some("ask") && row["available_qty"].as_u64().unwrap_or(0) > 0
+            row["side"].as_str() == Some("ask") && row["available_qty"].as_u64().unwrap_or(0) >= 10
         })
-        .expect("at least one live ask at Ceres");
+        .expect("at least one live ask at Ceres with >= 10 units");
     let ask_id = first_ask["id"].as_u64().expect("ask id");
     let ask_price = first_ask["unit_price_minor"]
         .as_i64()
         .expect("ask unit_price_minor");
 
-    let quote_out = run(&mut rig.tw, who, &format!("+market/quote #{ask_id} 1"));
+    // Verify canonical `=` right-hand-side quantity syntax (`+market/quote #<id>=10`).
+    let quote_out = run(&mut rig.tw, who, &format!("+market/quote #{ask_id}=10"));
     assert!(
         quote_out.contains("Quote #"),
         "expected quote confirmation, got: {quote_out}"
@@ -2734,14 +2735,25 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
         .expect("open_quotes array");
     let matching_quote = open_quotes
         .iter()
-        .find(|q| q["listing_id"].as_u64() == Some(ask_id) && q["quantity"].as_u64() == Some(1))
-        .expect("open_quotes records correlated buyer quote");
+        .find(|q| q["listing_id"].as_u64() == Some(ask_id) && q["quantity"].as_u64() == Some(10))
+        .expect("open_quotes records correlated 10-unit buyer quote");
     assert_eq!(
         matching_quote["unit_price_minor"].as_i64(),
         Some(ask_price),
         "displayed listing price matches actual quote execution price"
     );
-    assert_eq!(matching_quote["total_minor"].as_i64(), Some(ask_price));
+    assert_eq!(matching_quote["total_minor"].as_i64(), Some(ask_price * 10));
+
+    // Verify live-world `tacsim.content` omits staff_lobby for regular players and serves applied Ceres Freeport.
+    let live_bundle = tacsim::client_sync::world_content_bundle(rig.tw.world(), who);
+    assert!(
+        live_bundle.find("neighborhood.ceres_freeport").is_some(),
+        "live world bundle includes applied Ceres Freeport"
+    );
+    assert!(
+        live_bundle.find("neighborhood.staff_lobby").is_none(),
+        "live world bundle omits staff_lobby for non-staff players"
+    );
 
     // Boarding the docked hull must clear `venue` so hull-room trades refused by
     // `PortVenueGate` are never advertised as executable in place.

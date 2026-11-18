@@ -210,7 +210,7 @@ namespace TacSim.Arena
             for (int i = 0; i < TerrainGrid.KeySpots.Count; i++)
             {
                 var sp = TerrainGrid.KeySpots[i];
-                Vector3 localPos = TerrainGrid.CellToLocalPos(sp.CellX, sp.CellY, 0f);
+                Vector3 localPos = TerrainGrid.SiteCellToLocalPos(sp.CellX, sp.CellY, 0f);
                 Vector3 worldPos = ArenaStageOrigin + localPos;
 
                 bool isHold = string.Equals(sp.Letter, TerrainGrid.HoldSpotLetter, StringComparison.OrdinalIgnoreCase);
@@ -502,7 +502,7 @@ namespace TacSim.Arena
         private void SyncLiveContact3DRig(ArenaContactState cs)
         {
             if (_unitsRoot == null || TerrainGrid == null) return;
-            Vector3 localPos = TerrainGrid.CellToLocalPos(cs.CellX, cs.CellY, 0f);
+            Vector3 localPos = TerrainGrid.SiteCellToLocalPos(cs.CellX, cs.CellY, 0f);
             Vector3 worldPos = ArenaStageOrigin + localPos;
 
             if (!_contactRigs.TryGetValue(cs.Designator, out var rig) || rig?.Root == null)
