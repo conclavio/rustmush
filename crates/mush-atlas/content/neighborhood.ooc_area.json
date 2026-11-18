@@ -3,7 +3,7 @@
     "id": "neighborhood.ooc_area",
     "version": 7,
     "kind": "neighborhood",
-    "digest": "547ed6b6d52787fb5cdb0aa079f432103d3f5ab967ced08a0f094fc4dbc18dd5",
+    "digest": "23698d37280a67a033cfd6c5e801c058475a529f2f756f59ec145b27545c9418",
     "requires": [
       {
         "id": "region.limbo",
@@ -12,10 +12,10 @@
     ]
   },
   "brief": {
-    "prose": "The OOC Area: a hall by the south gate where newcomers arrive from Limbo, three short tutorial rooms (moving, talking, building), a lounge with the notice board, the simulator center in the annexe east of the hall (a lobby with the team selector, and a red and a blue room of six pods each), and the bus stop outside where the studio tour departs. Public, no secrets, one player-built games room allowed.",
+    "prose": "The OOC Area: a hall by the south gate where newcomers arrive from Limbo, three short tutorial rooms (moving, talking, building), a lounge with the notice board, the simulator centre in the annexe east of the hall (a lobby with the team selector, and a red and a blue room of six pods each), and the bus stop outside where the studio tour departs. Public, no secrets, one player-built games room allowed.",
     "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
     "answers": {
-      "q.public_role": "arrival, tutorial and the simulator center",
+      "q.public_role": "arrival, tutorial and the simulator centre",
       "q.secrets": "none",
       "q.hydration": "one player-built games room"
     }

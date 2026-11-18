@@ -19,7 +19,7 @@ const PINNED: [(&str, &str); 3] = [
     ),
     (
         OOC_AREA_PACK,
-        "547ed6b6d52787fb5cdb0aa079f432103d3f5ab967ced08a0f094fc4dbc18dd5",
+        "23698d37280a67a033cfd6c5e801c058475a529f2f756f59ec145b27545c9418",
     ),
     (
         STAFF_LOBBY_PACK,

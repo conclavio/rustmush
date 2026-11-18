@@ -17,7 +17,7 @@
             "tier": "public"
           },
           {
-            "fact": "the corridor's one refinery, at Phobos: \"metals → structural alloys, volatiles → propellant\" (§4.3). Kasei buys Ceres concentrate and water ice at the receiving counter and sells alloy stock and propellant at the exchange. Its intake and its funds are finite and posted; when either reads zero the clerk stops signing. The ice it buys is Phobos's water — the refinery's process water, the Yard's and the habitat's, and the Republic's reserve — which is why the bid stands above anything the stacks alone would pay; its reaction mass sells at a Republic-posted price, a strategic asset the Republic keeps fueled for the Guard and the Yard, dearer than Occator's crude and unrelated to the ice bid (doc 18 §4.3).",
+            "fact": "the corridor's one refinery, at Phobos: \"metals → structural alloys, volatiles → propellant\" (§4.3). Kasei buys Ceres concentrate and water ice at the receiving counter and sells alloy stock and propellant at the exchange. Its intake and its funds are finite and posted; when either reads zero the clerk stops signing. The ice it buys is Phobos's water — the refinery's process water, the Yard's and the habitat's, and the Republic's reserve — which is why the bid stands above anything the stacks alone would pay; its reaction mass sells at a Republic-posted price, a strategic asset the Republic keeps fuelled for the Guard and the Yard, dearer than Occator's crude and unrelated to the ice bid (doc 18 §4.3).",
             "subject": "Kasei Metals",
             "tier": "public"
           },
@@ -32,7 +32,7 @@
             "tier": "public"
           },
           {
-            "fact": "\"A decade of tax refusal and the Phobos yard strike; two years of intermittent shooting in orbit\" ended with the Republic of Mars recognized in 2312, inheriting Concord-era treaties and debt (§2). The strike photograph over the Shift Board's hatch is the yard's founding document; the Yardmaster is in it.",
+            "fact": "\"A decade of tax refusal and the Phobos yard strike; two years of intermittent shooting in orbit\" ended with the Republic of Mars recognised in 2312, inheriting Concord-era treaties and debt (§2). The strike photograph over the Shift Board's hatch is the yard's founding document; the Yardmaster is in it.",
             "subject": "The Settlement",
             "tier": "public"
           },
@@ -135,7 +135,7 @@
       "def": {
         "name": "Pavla Adeyinka-Rusk",
         "profile": {
-          "background": "Harbormaster's clerk: berth status, sailing plans, the captain's minutiae.",
+          "background": "Harbourmaster's clerk: berth status, sailing plans, the captain's minutiae.",
           "does_not_know": [
             "what any hull carries",
             "why the Guard holds a cradle on the pad empty",
@@ -151,7 +151,7 @@
             "that +ship/board works from the berth gallery and +ship/leave from the hull's own airlock, and neither anywhere else",
             "the clocks, Freeport time against Coprates standard, and the offset."
           ],
-          "persona": "the harbormaster's clerk, which is to say the harbormaster on every day the harbormaster is at the pad. Brisk, exact about hours, kind to anyone who files early and curt to anyone who files late. Keeps two clocks and resents the question about them.",
+          "persona": "the harbourmaster's clerk, which is to say the harbourmaster on every day the harbourmaster is at the pad. Brisk, exact about hours, kind to anyone who files early and curt to anyone who files late. Keeps two clocks and resents the question about them.",
           "speech_style": "quick, administrative, fond of \"filed\" and \"cleared\"; gives the hour in Freeport time, then in Coprates standard, then sighs."
         },
         "room": "room.p05_harbourmaster",
@@ -246,7 +246,7 @@
           ],
           "fallback": [
             "Declare, attest, proceed. The concourse is through the far doors; +atlas names the rest.",
-            "Berthing is the harbormaster's; +ship tells you where your hull stands. The Guard reads manifests, not minds."
+            "Berthing is the harbourmaster's; +ship tells you where your hull stands. The Guard reads manifests, not minds."
           ],
           "interfaces": [
             "atlas",
@@ -256,7 +256,7 @@
             "the posted charges and what each form is for (none collected in the slice; she says so if asked, as \"waived under the current notice\")",
             "the station's layout, the locks, the concourse, which desk does what",
             "that the Guard pickets Kirkwood from 2347 and calls it customs assertion",
-            "how to reach the harbormaster and file a sailing plan."
+            "how to reach the harbourmaster and file a sailing plan."
           ],
           "persona": "a petty officer on the customs rotation, which the Guard treats as a punishment and she treats as a posting. Formal, correct, faintly proud of the forms; believes the corridor is the Republic's to keep and that a manifest tells you more than a scan does. Local, Settlement-born, has never been to Coprates.",
           "speech_style": "clipped, procedural, every sentence a line from a form; says \"declare\", \"attest\", \"in order\"; never raises her voice, lowers it instead."
@@ -321,7 +321,7 @@
     }
   },
   "manifest": {
-    "digest": "eca3f7dfcc9240e4bc375f38ef65eeccc74943b5c2f04051d13a290a9454cdb4",
+    "digest": "6ec16c00e8ae9d8e38c27b869880501b7e3ef2426a21392423eb1eed0137b1ce",
     "id": "tacsim.cast.stickney_yards",
     "kind": "campaign_seed",
     "requires": [

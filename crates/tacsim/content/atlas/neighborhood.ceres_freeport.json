@@ -739,9 +739,9 @@
         "desc": "The gallery runs the length of the visiting berths: a strip of armourglass on one side, a rail of chipped yellow paint on the other that marks the public viewing line, and a deck plate that hums with the pumps two floors down. Beyond the glass the cradles sit in hard floodlight, a Dray's blunt hull webbed with reaction-mass hoses, umbilicals slack on the deck, and past the last cradle the dark where the working berths go on out of sight. The air is cold and carries the ozone of cycled locks. A berth board stands by the pressure doors, and the doors themselves, stickered and scarred, lead north into the Pressure Lobby.",
         "details": {
           "berth board": "Cradle numbers down one side, hull names and whose paper they fly down the other: Co-op, Tycho Mutual, a Lantern Haulage tender, two rows marked LAID UP. The bottom line reads BOARDING: CREW OF RECORD ONLY.",
-          "cradles": "Umbilicals for power, water, reaction mass and air, color-banded; the hoses are the thick ones. Every cradle carries an Occator inspection sticker and a Port Watch seal.",
+          "cradles": "Umbilicals for power, water, reaction mass and air, colour-banded; the hoses are the thick ones. Every cradle carries an Occator inspection sticker and a Port Watch seal.",
           "the dark": "Past the floodlit cradles the berths continue without lights. The Squadron's berth is out there somewhere; nothing on the board says which.",
-          "viewing line": "Yellow paint, worn to the primer where ten years of visitors have leaned on the rail. A stencil every few meters: PAST THIS LINE, CREW."
+          "viewing line": "Yellow paint, worn to the primer where ten years of visitors have leaned on the rail. A stencil every few metres: PAST THIS LINE, CREW."
         },
         "footprint": {
           "rect": [
@@ -810,7 +810,7 @@
         "details": {
           "crest": "A rayed circle over a wave: the Port Watch. Under it, small, the Freeport Council's motto, LICENSED, NOT GOVERNED.",
           "customs counter": "A declaration slot, a chit printer, a Port Watch seal on a chain. The sign over it reads ARRIVALS: DECLARE WHAT YOU CARRY. VISITING CREW: NOTHING, USUALLY.",
-          "notice wall": "The Freeport's rules of the port, the Registry's hours, a Co-op notice headed FIRST CAPTAINS: ENROLL AT THE DESK, and a Port Watch bulletin about Republic pickets at Kirkwood asking for manifests.",
+          "notice wall": "The Freeport's rules of the port, the Registry's hours, a Co-op notice headed FIRST CAPTAINS: ENROL AT THE DESK, and a Port Watch bulletin about Republic pickets at Kirkwood asking for manifests.",
           "stair door": "Glass, with DOCKMASTER / FREIGHT DECK on it and a public-access green stripe. The stair beyond is steel and loud."
         },
         "footprint": {
@@ -842,7 +842,7 @@
       "def": {
         "desc": "The widest space on the deck and the loudest: boots on plate, a tannoy that clears its throat every few minutes, the Exchange ticker crawling along the east arch. Overhead the lighting is bright, bluish and new, bolted to a ceiling that is neither. A backlit map of the port stands in the middle on a pedestal with a directory under it, and benches around it hold crews waiting for clearances, for pay, for each other. The air smells of too many people and the sweet-metal tang of recycled water. Doors lead north to the Clearing and south to the Slack Line; Arrivals is west, the Exchange east.",
         "details": {
-          "benches": "Bolted down, scratched with hull names and registry marks. One reads FPC-D-0388, HALF MEASURE, GOT HOME: a Co-op hull from before the program pool, long since bought out.",
+          "benches": "Bolted down, scratched with hull names and registry marks. One reads FPC-D-0388, HALF MEASURE, GOT HOME: a Co-op hull from before the programme pool, long since bought out.",
           "directory": "REGISTRY & CO-OP DESK, north of Arrivals. CERES CLEARING, north of here. EXCHANGE HALL, east. TYCHO MUTUAL, north of the Exchange. CHANDLERY, south of the Exchange. THE SLACK LINE, south. DOCKMASTER, down the Arrivals stair.",
           "map": "The Public Deck and the Freight Deck in cutaway, with a pulsing dot at the pedestal, and in small letters along the bottom: ATLAS SERVICE AVAILABLE.",
           "ticker": "Occator volatiles and reaction mass by the tonne, the Exchange's concentrate, the alloy bid, and a departures line: hull, destination, clearance time. It updates when the board does."
@@ -877,8 +877,8 @@
         "desc": "Two counters share one room and do not share a style. The Registry's half is dark wood over steel, a brass plate reading REGISTRY OF CLAIMS, BELT MIRROR, and a glass case of forms in numbered pigeonholes; a ledger screen glows green behind it. The Co-op's half is a folding table that became permanent, under a banner of the cooperative's linked-hands mark and a board headed FIRST CAPTAINS' LAY. The room is quiet enough to hear the ledger screen's fan and smells of paper, toner and the wood polish somebody applies to the Registry side only. A frosted door in the back wall is marked AUTHORITY. Arrivals is south.",
         "details": {
           "authority door": "Frosted glass, PORT AUTHORITY, STAFF, and a ladder behind it going up. The lock is a Council lock, not a Port Watch one.",
-          "lay board": "THE CO-OP STAKES THE HULL AND THE FIRST HOLD. THE CO-OP TAKES ITS LAY FROM EVERY SETTLED RUN UNTIL YOU BUY THE HULL OUT AT THE REGISTRY'S FIGURE. ONE ENROLLMENT PER PILOT. The figure for a new Dray from the Yard, 120,000cr, is chalked underneath as a comparison.",
-          "ledger screen": "Registry marks scrolling: FPC-D- and a four-digit number for each Dray on the Co-op's Freeport paper. Buyouts are entered here, in a different color. There are three.",
+          "lay board": "THE CO-OP STAKES THE HULL AND THE FIRST HOLD. THE CO-OP TAKES ITS LAY FROM EVERY SETTLED RUN UNTIL YOU BUY THE HULL OUT AT THE REGISTRY'S FIGURE. ONE ENROLMENT PER PILOT. The figure for a new Dray from the Yard, 120,000cr, is chalked underneath as a comparison.",
+          "ledger screen": "Registry marks scrolling: FPC-D- and a four-digit number for each Dray on the Co-op's Freeport paper. Buyouts are entered here, in a different colour. There are three.",
           "pigeonholes": "Title transfer. Charter party. Lay agreement. Lien. Export permit. Claim. Each form has a Registry number and a smaller Luna number beside it; the Luna number is the one that counts, the clerk will tell anyone who asks."
         },
         "footprint": {
@@ -908,7 +908,7 @@
     },
     "room.c06_clearing": {
       "def": {
-        "desc": "A small hall that wants to be a large one. The floor is the only tiled floor on the deck, gray and polished to a dull shine, and footsteps ring on it; the lighting is low and even, from fittings older than the concourse. One teller window stands in a wall of brushed steel with a brass CERES CLEARING over it and a smaller plate under that: FISCAL AGENT TO THE FREEPORT. CLEARED THROUGH LUNA. A vault door the size of a hull hatch is set into the far wall and has not been opened in years. The air is cool and faintly dry, like a records room. The concourse is south.",
+        "desc": "A small hall that wants to be a large one. The floor is the only tiled floor on the deck, grey and polished to a dull shine, and footsteps ring on it; the lighting is low and even, from fittings older than the concourse. One teller window stands in a wall of brushed steel with a brass CERES CLEARING over it and a smaller plate under that: FISCAL AGENT TO THE FREEPORT. CLEARED THROUGH LUNA. A vault door the size of a hull hatch is set into the far wall and has not been opened in years. The air is cool and faintly dry, like a records room. The concourse is south.",
         "details": {
           "rate board": "The credit, cr, cleared at Luna; no second currency listed. A line in smaller type notes that the Republic \"has floated\" a mark for yard-time at Phobos. The line has been there a while.",
           "teller window": "Armourglass, a slot, a chit reader. A card in the corner: STATEMENTS ON REQUEST. ADVANCES: NO. The NO is printed, not written.",
@@ -975,11 +975,11 @@
     },
     "room.c08_chandlery": {
       "def": {
-        "desc": "Shelving to the ceiling on three sides, stacked with gray cases stencilled PROVISIONS / 10 CREW-DAYS and the Co-op's linked hands, and a cage at the back where the counted stock lives. The light is the harsh white of a stockroom and the air smells of cardboard, sealant and the vanilla note of ration bars. A counter at the front has a chit reader and a clipboard of loading schedules; in the corner, under a drop-and-flame sign, a second, smaller counter handles reaction mass with a schedule board and no hoses at all, because the hoses are at the berth. A handwritten sign reads TWO ABOARD, TWICE THE DAYS. The Exchange is north.",
+        "desc": "Shelving to the ceiling on three sides, stacked with grey cases stencilled PROVISIONS / 10 CREW-DAYS and the Co-op's linked hands, and a cage at the back where the counted stock lives. The light is the harsh white of a stockroom and the air smells of cardboard, sealant and the vanilla note of ration bars. A counter at the front has a chit reader and a clipboard of loading schedules; in the corner, under a drop-and-flame sign, a second, smaller counter handles reaction mass with a schedule board and no hoses at all, because the hoses are at the berth. A handwritten sign reads TWO ABOARD, TWICE THE DAYS. The Exchange is north.",
         "details": {
           "bunkering counter": "Occator's. REACTION MASS BY THE TONNE, LOADED AT THE BERTH ON YOUR SCHEDULE. An order here is a line on the loading schedule; the berth does the loading whether or not the captain is awake.",
           "cage": "Chain-link, padlocked, the counted stock behind it. The sign reads WHEN IT'S GONE IT'S GONE: the chandlery sells what it has, not what it can print.",
-          "cases": "Ten crew-days to the case: food, potable stores, scrubber cartridges. Four kilos a crew-day, the stencil says, and a hundredth of a cubic meter, so the captain can do the arithmetic.",
+          "cases": "Ten crew-days to the case: food, potable stores, scrubber cartridges. Four kilos a crew-day, the stencil says, and a hundredth of a cubic metre, so the captain can do the arithmetic.",
           "chit board": "WANTED — YARD FITTINGS, CRATED — THE BID THIS CYCLE, PER TONNE, ON THE CHIT — CO-OP FLEET STORES, in the chandler's hand with the Co-op's linked hands under it; the figure is the chit's own and is rewritten when the Co-op rewrites it: the Co-op buys the Yard's pressure fittings, ducting and tank sections for its Drays and the Kirkwood tank farm, and a Dray back from Stickney sells them here. Under it, smaller: CRATED MEANS CRATED. THEY CUBE OUT BEFORE THEY WEIGH OUT.",
           "loading schedules": "Clipboard sheets, one per hull: what loads, when, from which hall. The dockmaster keeps the master copy."
         },
@@ -1010,7 +1010,7 @@
     },
     "room.c09_tycho": {
       "def": {
-        "desc": "A carpeted office, the only carpet on the deck, in Luna gray with the Tycho Mutual crater-and-ring mark woven into it at the door. The light is soft and indirect; the air is warmer than the hall outside and smells of carpet and cold coffee. A desk, two chairs, one of them for sitting down to hear a valuation. On the wall a hull-registry board lists the corridor's insured Drays by registry mark, with a column for VALUATION and a line at the bottom: NEW DRAY, STICKNEY YARDS, LIST 120,000cr. A brochure rack holds the Re-float Program's terms. The Exchange is south.",
+        "desc": "A carpeted office, the only carpet on the deck, in Luna grey with the Tycho Mutual crater-and-ring mark woven into it at the door. The light is soft and indirect; the air is warmer than the hall outside and smells of carpet and cold coffee. A desk, two chairs, one of them for sitting down to hear a valuation. On the wall a hull-registry board lists the corridor's insured Drays by registry mark, with a column for VALUATION and a line at the bottom: NEW DRAY, STICKNEY YARDS, LIST 120,000cr. A brochure rack holds the Re-float Program's terms. The Exchange is south.",
         "details": {
           "brochure": "RE-FLOAT: for members who have lost everything, a Dray or a Cairn on lease, upkeep on the cadence, no sale, no uninsured deployment. The assessor is at Kirkwood. Tycho owns the wrecks it pays out on.",
           "chair": "Better than the other one. It is where a captain sits to hear what the hull is worth.",
@@ -1079,7 +1079,7 @@
       "def": {
         "desc": "The stair comes down into noise: pump vibration that was a hum upstairs is a drone here, with the clank of a transfer crane somewhere behind the wall. The office is a counter and a glassed-in window onto the transfer junction, where pallets move under sodium light along painted lanes and nobody on the public side goes. A departures board above the counter lists every hull with clearance, its berth and its time; a rack of sailing-plan forms sits under it, each a column of boxes for departure, loading, bunkering, stores. The light is sodium orange, the air smells of hydraulic fluid and cold, and the floor is wet in the corner. A heavy door marked FREIGHT, BERTH HOLDERS stays shut.",
         "details": {
-          "departures board": "HULL / BERTH / FOR / CLEARANCE / ARRIVES. Stickney Yards by Kirkwood is most of the column. A laden Dray makes it in two to three weeks in a good season, and the board's small print says the season is good; it gives the hour of clearance and the day the harbormaster at the far end expects the hull.",
+          "departures board": "HULL / BERTH / FOR / CLEARANCE / ARRIVES. Stickney Yards by Kirkwood is most of the column. A laden Dray makes it in two to three weeks in a good season, and the board's small print says the season is good; it gives the hour of clearance and the day the harbourmaster at the far end expects the hull.",
           "freight door": "FREIGHT TRANSFER JUNCTION, BERTH HOLDERS, with a reader for a berth marker. Shut, and it stays shut for anyone without a berth.",
           "sailing plan forms": "DEPART AT. LOAD: WHAT, FROM WHERE, WHEN. BUNKER. STORES. SELL AT DESTINATION: WHAT, NOT UNDER. CREW OF RECORD. SIGNED. A filed plan is the captain's signed instrument: the berth loads and bunkers it, the Exchange's and Kasei's clerks settle its sales against the captain's lines, and the dockmaster clears the hull at its hour, whether the captain is at the counter or asleep in a bunk upstairs; the ship's ROM only flies the cleared route.",
           "window": "The transfer junction: lanes, pallets, a crane, the sealed thresholds of the service lift to the berth gallery. Beyond it the bonded hall's roller doors and, further, the tank gallery's barriers. All of it behind glass."
@@ -1112,7 +1112,7 @@
     "room.c15_maintenance": {
       "def": {
         "access": "restricted",
-        "desc": "A corridor that is mostly pipe: water, reaction mass and air in color-banded runs along both walls, a grated floor over a drainage channel, and the pumps close enough now to feel in the teeth. Work lights hang from the pipe brackets and leave the ends of the corridor dark. The air is wet, warm and smells of ozone and lubricant. At the near end a manifold the height of a person carries Occator's drop-and-flame and a row of valve wheels with tags; beside it a second, squatter manifold wears the Exchange's mark, and a chain-link cage holds the chandlery's counted stock on pallets. Everything has an inspection sticker. Nothing has a chair. Stencils point to areas that do not exist yet.",
+        "desc": "A corridor that is mostly pipe: water, reaction mass and air in colour-banded runs along both walls, a grated floor over a drainage channel, and the pumps close enough now to feel in the teeth. Work lights hang from the pipe brackets and leave the ends of the corridor dark. The air is wet, warm and smells of ozone and lubricant. At the near end a manifold the height of a person carries Occator's drop-and-flame and a row of valve wheels with tags; beside it a second, squatter manifold wears the Exchange's mark, and a chain-link cage holds the chandlery's counted stock on pallets. Everything has an inspection sticker. Nothing has a chair. Stencils point to areas that do not exist yet.",
         "details": {
           "cage": "The Co-op chandlery's reserve: provisions cases on pallets, counted and sealed. The storefront upstairs is the shop window; this is the shelf.",
           "exchange manifold": "FREEPORT EXCHANGE: CONCENTRATE, and the alloy intake behind a second valve.",
@@ -1260,7 +1260,7 @@
     }
   },
   "manifest": {
-    "digest": "efc1a2a281f651bf7d3f694ea6e94d95ccd55d2847dc8078b6b5804efd36d502",
+    "digest": "853e63e30f75f3c4caa70c08cf8585cc6da73b25566a8669792783a93b9e0f10",
     "id": "neighborhood.ceres_freeport",
     "kind": "neighborhood",
     "requires": [

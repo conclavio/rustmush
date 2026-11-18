@@ -88,7 +88,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         CERES_PACK,
-        "efc1a2a281f651bf7d3f694ea6e94d95ccd55d2847dc8078b6b5804efd36d502",
+        "853e63e30f75f3c4caa70c08cf8585cc6da73b25566a8669792783a93b9e0f10",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -96,7 +96,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         STICKNEY_PACK,
-        "b0bb2e7caaa7fd715da8798eb0049dcd343c8a26a377466cc1d8c3b5cbaeb559",
+        "43fc3279b531a93eb1479371549bfdc1270216dc6a6ebdaba56043c5009daafd",
     ),
     // Doc 19 cut A.8: the three moon stations.
     (
