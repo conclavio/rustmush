@@ -117,18 +117,22 @@ const UNSIGNED: &str = "00000000000000000000000000000000000000000000000000000000
 /// `destroy_core` on the turret. Was `e4f00866…` at version 3.
 /// **Doc 49 unit CC.2** moved `tacsim.pack.laser_mk1` (Q-49-19): a 5,000 ms cycle, the floor.
 /// Was `3fd9565a…`.
+/// **Doc 49 unit CC.3** moved all three (Q-49-6, Q-49-27, Q-49-28): the charge at 120 (a beam
+/// counts a fifth against armour), the laser's note (heat refuses a shot that would cross the
+/// ceiling), and the laser tank at version 5 with the 105 back as its main gun. Were
+/// `1128f466…`, `8b0b713d…` and `85ff14c1…`.
 const DIGESTS: [(&str, &str); 3] = [
     (
         "tacsim.pack.laser_charge",
-        "1128f466f9c5839bbebef59a0f1e57a5e5aafca5e19dc9f0406913b077abeceb",
+        "96066c09d5ebefb27436b6a1f293397297113070f81d595fce79f6c2e479fa6f",
     ),
     (
         "tacsim.pack.laser_mk1",
-        "8b0b713dd284fa6ca5b8c2a4ea21ea257050490319c6fd06ed8a5d8dfa5c3981",
+        "a253135fc2be2a4b68be2a53e364497275d4ef308b6c73b4da9518fe4c997f39",
     ),
     (
         "tacsim.pack.line_tank_laser",
-        "85ff14c1c80a67af98d9b42953dd5f3de234b6adea2daa59101a0b72c37918a4",
+        "a01dbcc1039addd5469b75db521a40a17a6faa0d3ad267fd99c47117dff5d285",
     ),
 ];
 
@@ -818,15 +822,26 @@ fn x1_heat_rises_per_shot_falls_per_pulse_and_refuses_the_shot_at_the_ceiling() 
     assert_eq!(Refusal::Overheated.as_str(), "overheated");
 
     // The fall is a rate over arena time: three a second, so two seconds of
-    // pulses take it to 54 and the weapon comes back.
+    // pulses take it to 54. **Doc 49 unit CC.3** (Q-49-28): a shot that would carry
+    // the platform past its ceiling is refused, so at 54 the laser is still held
+    // (until CC.3 the shot was capped at the ceiling and came back here); five
+    // seconds more take it to 39, under the 40 a pulse needs, and it fires.
     let mut wall = 0_i64;
     run(&mut arena, &mut wall, 500, 4);
     assert_eq!(heat(&arena), Some(54), "two seconds at three a second");
     ready(&mut arena);
+    assert_eq!(
+        arena.resolve_fire(RED, "laser", arena.now_ms),
+        Err(Refusal::Overheated),
+        "54 and a pulse's 20 would cross the 60"
+    );
+    run(&mut arena, &mut wall, 500, 10);
+    assert_eq!(heat(&arena), Some(39), "five seconds more");
+    ready(&mut arena);
     arena
         .resolve_fire(RED, "laser", arena.now_ms)
         .expect("cooled enough to fire");
-    assert_eq!(heat(&arena), Some(60), "and straight back to the ceiling");
+    assert_eq!(heat(&arena), Some(59), "and back under the ceiling");
 
     // Twenty seconds empties it, and it floors at zero rather than going under.
     run(&mut arena, &mut wall, 1_000, 30);
@@ -932,8 +947,11 @@ fn x1_the_ground_a_beam_crosses_widens_its_cone_and_a_rounds_is_untouched() {
 }
 
 /// **W2 holds**: the laser's damage against the line tank's armour is small by
-/// definition, and one pulse cannot take a facet — which is what makes a laser a
-/// thing you wear a tank down with.
+/// definition, and one pulse cannot take a facet. **Doc 49 unit CC.3** (Q-49-27,
+/// Q-49-6): a beam spends a facet's armour at
+/// [`tacsim::arena::damage::BEAM_ARMOR_PERMILLE`] of its damage, so the claim is about
+/// that share: smaller than a 105 shell, and smaller than the thinnest facet on the
+/// line tank. A laser is the anti-drone fit, not a tank-killer.
 #[test]
 fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
     let catalog = catalog();
@@ -956,17 +974,16 @@ fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
         .map(|facet| facet.armor)
         .min()
         .expect("the tank has armour");
+    let against = laser.damage * tacsim::arena::damage::BEAM_ARMOR_PERMILLE / 1_000;
     assert!(
-        laser.damage < he.damage,
-        "a pulse is smaller than a 105 shell: {} against {}",
-        laser.damage,
+        against < he.damage,
+        "against armour a pulse is smaller than a 105 shell: {against} against {}",
         he.damage
     );
     assert!(
-        laser.damage < thinnest,
+        against < thinnest,
         "and smaller than the thinnest facet on the line tank, so no one pulse \
-         takes one: {} against {thinnest}",
-        laser.damage
+         takes one: {against} against {thinnest}"
     );
 
     // And through the pipeline: a pulse that lands spends its damage on armour and
@@ -998,8 +1015,8 @@ fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
         })
         .sum();
     assert!(
-        spent == 0 || spent == i64::from(laser.damage),
-        "the pulse either missed or spent exactly its damage on armour: {spent}"
+        spent == 0 || spent == i64::from(against),
+        "the pulse either missed or spent exactly its share on armour: {spent}"
     );
     assert!(
         !journal.iter().any(|(_, kind, _)| matches!(
@@ -1008,6 +1025,167 @@ fn x1_a_laser_pulse_against_the_line_tanks_armour_is_small_by_definition() {
         )),
         "and no pulse of this weapon is ever a kill by itself"
     );
+}
+
+/// **Doc 49 unit CC.3 (Q-49-6, Q-49-27, Q-49-28): a drone falls quickly; a tank does
+/// not.** The laser tank fires its laser, four cells off, at a drone and then at a line
+/// tank, its cycle and its heat cleared between charges so the count is the beam's
+/// alone. Three charges that land drop the drone, from whatever face they strike; seven
+/// that land never wreck the line tank, whose cheapest wreck (its rear, hull or turret)
+/// takes eight. Each charge that lands takes at most a beam's share, a fifth of it, of the
+/// armour it strikes. Rounds are conserved: every charge that left the mount is one off its
+/// store, and a charge refused for heat is none.
+#[test]
+fn cc3_a_laser_drops_a_drone_quickly_and_not_a_tank() {
+    for (target, landed_at_most, wrecked) in [
+        (content::DRONE_MK1, 3, true),
+        (content::LINE_TANK, 7, false),
+    ] {
+        let mut arena = duel_against(target);
+        let store = |arena: &Arena| {
+            arena
+                .unit(RED)
+                .map_or(0, |state| state.weapon_ammo("laser"))
+        };
+        // Every facet's armour on the target, summed.
+        let armour = |arena: &Arena| -> i64 {
+            arena.unit(BLUE).map_or(0, |state| {
+                state
+                    .unit
+                    .cells()
+                    .filter(|(addr, _)| {
+                        matches!(addr, mush_tactics::CellAddr::Facet { cell, .. } if cell.as_str() == "armor")
+                    })
+                    .map(|(_, scalar)| scalar.current)
+                    .sum()
+            })
+        };
+        let plate = armour(&arena);
+        let start = store(&arena);
+        let (mut fired, mut landed) = (0_u32, 0_u32);
+        while landed < landed_at_most && fired < 400 {
+            if arena.unit(BLUE).is_some_and(|state| state.limits.wreck) {
+                break;
+            }
+            ready(&mut arena);
+            cool(&mut arena, RED);
+            let seq = arena
+                .resolve_fire(RED, "laser", arena.now_ms)
+                .unwrap_or_else(|refusal| panic!("{target}: the charge leaves: {refusal:?}"));
+            fired += 1;
+            let mut journal = Vec::new();
+            arena.resolve_impact(seq, arena.now_ms, &mut journal);
+            if journal
+                .iter()
+                .any(|(_, kind, _)| matches!(kind, tacsim::arena::ledger::EventKind::Hit { .. }))
+            {
+                landed += 1;
+            }
+        }
+        let wreck = arena.unit(BLUE).is_some_and(|state| state.limits.wreck);
+        assert_eq!(
+            wreck, wrecked,
+            "{target}: {landed} charges landed of {fired} fired"
+        );
+        // Each charge that landed took at most a beam's share of the armour it struck: a
+        // fifth of the charge, where a round would take all of it.
+        let share = 120 * i64::from(tacsim::arena::damage::BEAM_ARMOR_PERMILLE) / 1_000;
+        assert!(
+            plate - armour(&arena) <= share * i64::from(landed),
+            "{target}: {landed} charges took {} of the armour",
+            plate - armour(&arena)
+        );
+        assert!(
+            landed <= landed_at_most && landed > 0,
+            "{target}: {landed} landed"
+        );
+        assert_eq!(
+            store(&arena),
+            start - fired,
+            "{target}: every charge fired is one off the store"
+        );
+        // A charge refused for heat leaves the store as it was.
+        at_the_ceiling(&mut arena, RED);
+        ready(&mut arena);
+        assert_eq!(
+            arena.resolve_fire(RED, "laser", arena.now_ms),
+            Err(Refusal::Overheated)
+        );
+        assert_eq!(
+            store(&arena),
+            start - fired,
+            "{target}: a refused charge is none"
+        );
+    }
+}
+
+/// [`duel`]'s laser tank against `target` at blue's cell, locked on it, on the
+/// laser's extension rows and the drone's.
+fn duel_against(target: &str) -> Arena {
+    let rows: Vec<(&str, &str)> = content::EXTENSIONS
+        .iter()
+        .chain(content::EXTENSIONS_DRONE.iter())
+        .copied()
+        .collect();
+    let catalog = catalog_of(&content::extension_sources_of(&rows));
+    let mut arena = arena_of(
+        &catalog,
+        vec![
+            unit_of(
+                &catalog,
+                content::LINE_TANK_LASER,
+                RED,
+                PartyId::RED,
+                RED_CELL,
+            ),
+            unit_of(&catalog, target, BLUE, PartyId::BLUE, BLUE_CELL),
+        ],
+        &[],
+    );
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena
+        .resolve_lock(RED, contact, arena.now_ms)
+        .expect("the lock holds");
+    arena
+}
+
+/// Empty the platform's heat cell, through one plan as [`at_the_ceiling`] fills it.
+fn cool(arena: &mut Arena, unit: mush_core::ObjId) {
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr: heat_addr(HEAT_CELL),
+            value: 0,
+        }],
+        None,
+        Some(SmolStr::new("test:cool")),
+    )
+    .expect("a one-op plan");
+    let cold = {
+        let state = arena.unit(unit).unwrap_or_else(|| panic!("the unit"));
+        mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("the plan applies")
+            .0
+    };
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = cold;
+    }
 }
 
 /// **The check-in hands the heat back** (doc 16 §3.1's `CustodyIn`), because it is
@@ -8589,6 +8767,8 @@ fn o3_the_target_binds_creates_refits_and_checks_out() {
 /// note shortened to fit the bound), the heavy to 4 (`degrade_core` on its
 /// turret; its tracks sentence shortened). Were `294b4874…` and `6f08cfc9…`;
 /// the Mk2 carries no core word (its torso is `destroy_unit`) and is unmoved.
+/// **Doc 49 unit CC.3** moved the Mk2 (version 3, Q-49-6): the 105 in its right arm beside the
+/// laser, the laser to the left arm and the machine gun to the torso. Was `886f86da…`.
 const DIGESTS_CHASSIS: [(&str, &str); 3] = [
     (
         "tacsim.pack.scout_mk1",
@@ -8600,7 +8780,7 @@ const DIGESTS_CHASSIS: [(&str, &str); 3] = [
     ),
     (
         "tacsim.pack.biped_mk2",
-        "886f86daea7132c3a3953bd3248513ad7a2386c5b7089cb1264043170811f3b6",
+        "07d3c901b1638582f1ebf8337d916a75cb60cce3685949f07eca8918f5ad9183",
     ),
 ];
 
@@ -8655,8 +8835,9 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
         // 16b cut AE.2 moved the scout car and the heavy to version 2 (their
         // guns); 17b cut M3.1 moved all three one more for their cores — the
         // scout and the heavy to 3, the Mk2 to 2 (was "1 else 2"); 17b cut
-        // M3.6 the scout and the heavy to 4 for the core words (was "2 else 3").
-        let version = if id == "tacsim.pack.biped_mk2" { 2 } else { 4 };
+        // M3.6 the scout and the heavy to 4 for the core words (was "2 else 3");
+        // doc 49 unit CC.3 the Mk2 to 3 for the 105 beside its laser (was "2 else 4").
+        let version = if id == "tacsim.pack.biped_mk2" { 3 } else { 4 };
         assert_eq!(pack.manifest().version(), version, "{id}'s version");
     }
     assert_eq!(pinned.len(), content::EXTENSIONS_CHASSIS.len());
@@ -8798,8 +8979,8 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
         }
     }
 
-    // The Mk2's beam is in its right arm (X.2's mount fallback), its coaxial in
-    // its left; the scout's guns are, since cut AE.2, the autocannon first and
+    // The Mk2's guns are in its arms (X.2's mount fallback) and, since doc 49 unit
+    // CC.3, its torso; the scout's guns are, since cut AE.2, the autocannon first and
     // the coaxial slaved to it.
     let (_, mk2) = cells_of(content::BIPED_MK2, 22);
     let weapons = tacsim::match_::weapon_summaries(&fielded, &mk2);
@@ -8809,8 +8990,11 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
             .find(|weapon| weapon.id.as_str() == id)
             .map(|weapon| weapon.mount_section.to_string())
     };
-    assert_eq!(mount("laser"), Some("right_arm".to_owned()));
-    assert_eq!(mount("machine_gun"), Some("left_arm".to_owned()));
+    // Doc 49 unit CC.3 (Q-49-6): the 105 in the right arm, the laser in the left, the
+    // machine gun in the torso.
+    assert_eq!(mount("cannon"), Some("right_arm".to_owned()));
+    assert_eq!(mount("laser"), Some("left_arm".to_owned()));
+    assert_eq!(mount("machine_gun"), Some("torso".to_owned()));
     let (_, scout_cells) = cells_of(content::SCOUT_MK1, 23);
     assert_eq!(
         tacsim::match_::weapon_summaries(&fielded, &scout_cells)
@@ -10146,7 +10330,8 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
             4,
             Some("tacsim.pack.missile_lr"),
         ),
-        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2, None),
+        // Doc 49 unit CC.3 (Q-49-6): version 3, the 105 beside the laser.
+        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 3, None),
     ] {
         let pack = tacsim::pack::load_pack(json)
             .unwrap_or_else(|error| panic!("{id} does not verify: {error}"));

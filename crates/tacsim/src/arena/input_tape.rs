@@ -20,7 +20,9 @@ use super::state::{Arena, MatchEnd, StopReason};
 pub const TAPE_FORMAT: u16 = 2;
 /// Bump whenever native execution or input application changes without an ABI
 /// change. Also captures the script body, physics and snapshot protocol below.
-pub const REPLAY_ENGINE: &str = "tacsim-engine-cf0-v1";
+/// Doc 49 unit CC.3: `cc3` (was `cf0`), the combat kernel's beam against armour (Q-49-27)
+/// and the heat refusal (Q-49-28), so a tape recorded under the old rules is refused.
+pub const REPLAY_ENGINE: &str = "tacsim-engine-cc3-v1";
 pub const DEFAULT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const MIN_MAX_BYTES: u64 = 4 * 1024 * 1024;
 pub const MAX_MAX_BYTES: u64 = 128 * 1024 * 1024;

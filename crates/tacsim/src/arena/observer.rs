@@ -161,6 +161,7 @@ mod tests {
             from_cell: None,
             from_height_cm: 0,
             damage: 1,
+            beam: false,
             resolution: crate::arena::resolution::Resolution::blind(
                 "front",
                 1_000,

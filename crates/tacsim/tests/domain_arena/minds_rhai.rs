@@ -5132,10 +5132,12 @@ fn doctored_hull(
 }
 
 /// The seated blue's beam, heavy enough to take a turret through its plate
-/// and internals in one round.
+/// and internals in one round. Doc 49 unit CC.3 (Q-49-27): a beam counts a fifth of
+/// its damage against armour, so 2,000 where it was 1,000 (the turret's 220 of side
+/// plate takes 1,100 of it and its 150 of internals the rest).
 fn heavy_beam() -> WeaponSummary {
     WeaponSummary {
-        damage: 1_000,
+        damage: 2_000,
         ..beam()
     }
 }

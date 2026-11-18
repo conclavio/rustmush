@@ -1036,6 +1036,8 @@ async fn in9_a_yard_built_laser_tank_keeps_her_beam_charge() {
         "line_tank_laser",
         (21, 7),
         &[
+            // Doc 49 unit CC.3 (Q-49-6): the 105 beside the laser.
+            "tacsim.part.weapon.cannon_105",
             "tacsim.part.weapon.laser_mk1",
             "tacsim.part.weapon.mg_coax",
             "tacsim.part.sensor.visual_mk1",

@@ -1,10 +1,14 @@
 {
   "manifest": {
     "id": "tacsim.pack.line_tank_laser",
-    "version": 4,
+    "version": 5,
     "kind": "rules_definition",
-    "digest": "85ff14c1c80a67af98d9b42953dd5f3de234b6adea2daa59101a0b72c37918a4",
+    "digest": "a01dbcc1039addd5469b75db521a40a17a6faa0d3ad267fd99c47117dff5d285",
     "requires": [
+      {
+        "id": "tacsim.pack.cannon_105",
+        "version": 1
+      },
       {
         "id": "tacsim.pack.laser_mk1",
         "version": 1
@@ -88,6 +92,15 @@
           }
         ],
         "components": [
+          {
+            "id": "cannon",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.cannon_105",
+              "coaxial": false
+            }
+          },
           {
             "id": "laser",
             "section": "turret",
@@ -193,7 +206,7 @@
         "sensor_height_cm": 150,
         "heat_max": 60,
         "heat_dissipation_per_s": 3,
-        "note": "The line tank with the 105 swapped for the Mk1 laser, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same coaxial and the same sight, so a match between the two is a match between the weapons. The two numbers cut X.1 adds are the ones the swap needs. 60 is three pulses of the laser's 20, which is what makes the third shot the one that locks the turret out rather than the first. 3 a second empties that ceiling in twenty seconds, so a tank that fires its three and waits is firing about one pulse every seven seconds sustained, against the cannon's six-second cycle. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of, so a tank with no tracks neither drives nor turns. Version 3 (17b cut M3.1): a line core in the turret. Version 4 (17b cut M3.6): losing the turret destroys its core."
+        "note": "The line tank with the Mk1 laser beside its 105: the same five sections, armour, facet table, silhouettes, tracked mode, coaxial and sight. Doc 49 unit CC.3 (Q-49-6): lasers are the anti-drone fit, so the projectile main gun stays for armour and the laser takes drones and soft targets. The cannon is listed first, so Class I's two slots arm it and the laser. The two numbers cut X.1 adds are the laser's heat: a 60 ceiling against its 20 a pulse, and 3 a second of cooling. A pulse that would cross the ceiling is refused (Q-49-28), so sustained fire locks out now and then. Version 2 (16b cut M.4): both tracks carry disable_motion_when_all_of. Version 3 (17b cut M3.1): a line core in the turret. Version 4 (17b cut M3.6): losing the turret destroys its core. Version 5 (CC.3): the 105 back as the main gun, the laser beside it."
       }
     }
   }

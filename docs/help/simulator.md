@@ -162,9 +162,11 @@ What the shipped server can field:
 
   line_tank           the stock tank: a 105 mm cannon, a coaxial machine gun
                       and a Mk1 sight.
-  line_tank_laser     the same hull with a beam weapon where the cannon sat,
-                      keeping the coaxial machine gun. It carries no cannon at
-                      all, and the beam makes heat.
+  line_tank_laser     the stock tank with a laser beside its cannon and its
+                      coaxial machine gun. The laser is for drones and soft
+                      targets: it does little to a tank's armour. It makes
+                      heat, and a shot that would take the machine past its
+                      ceiling is refused until it cools.
   line_tank_thermal   the stock tank with a thermal sight: it picks a stopped
                       machine out of cover that the eye would lose, at shorter
                       range, not through a canopy, and slower to tell apart.
@@ -184,10 +186,11 @@ What the shipped server can field:
                       the ford slowly, and a slope a tank climbs can refuse it.
   heavy_mk1           a heavy tank: the stock gun and a missile rack on nearly
                       twice the armour, at two thirds the speed.
-  biped_mk2           a two-legged machine with the beam weapon in one arm and a
-                      thermal sight in its head. It makes heat, and it walks
-                      where a tank will not: the thick woods and a face a tank
-                      is refused. It pays less than a tank to cross rubble.
+  biped_mk2           a two-legged machine with the stock cannon in one arm, a
+                      laser in the other and a thermal sight in its head. The
+                      laser makes heat, and the machine walks where a tank
+                      will not: the thick woods and a face a tank is refused.
+                      It pays less than a tank to cross rubble.
   drone_mk1           a small tracked drone: a sight on a mast, no gun, quick
                       and easy to kill. What it sees, its side sees. It holds
                       no ground and decides nothing: a side whose guns are all
@@ -197,9 +200,9 @@ What the shipped server can field:
 Five things worth knowing before you pick one:
 
 * a bare `FIRE` fires the **cannon** whenever the machine has one, and
-  otherwise the first weapon it carries. The laser tank carries no cannon, so
-  its bare `FIRE` is its beam; name the weapon (`FIRE laser`, `FIRE
-  machine_gun`) and there is nothing to remember.
+  otherwise the first mount it carries. The laser machines carry a cannon
+  too, so their bare `FIRE` is the cannon; name the mount (`FIRE laser`,
+  `FIRE machine_gun`) and there is nothing to remember.
 * every machine pays its own way across a cell. A walker takes the thick woods
   that stop a tank and pays less than a tank for rubble; a wheeled car is
   stopped by ground a tank crosses and is quickest on a road; and the slope
