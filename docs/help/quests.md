@@ -48,8 +48,8 @@ name prefixes; the service also prints exact commands using the giver's object
 number.
 
 Ilse's invitation is a reason to read `+coop` and decide whether the First
-Captain programme suits you. Enrolment is once per account; never enrol just to
-clear a journal entry. A current qualifying enrolment can already exist when
+Captain programme suits you. The Co-op stakes each account once; never enrol just
+to clear a journal entry. A current qualifying enrolment can already exist when
 you accept. `+coop/statement` reads your record, and `+quest/check Ilse` verifies
 it at her desk.
 

@@ -57,8 +57,11 @@ pub const COOP_VERB: &str = "+coop";
 pub const COOP_HELP: &str = "+coop  --  The Belt Carriers' Cooperative's First Captain \
      programme. The Co-op stakes a new captain a Dray on a working charter and twenty-five \
      thousand in working cash, takes a quarter of trading margin over its reference prices until \
-     the hull is bought out, and enrols each pilot once, ever. +coop reads the terms and how many \
-     Drays are free, anywhere.\n+coop/enrol <name>  sign at the Registry & Co-op desk in Ceres \
+     the hull is bought out, and stakes each pilot once, ever. A Dray that goes a real week (168 IC \
+     days at the live 24:1 clock) without a departure goes back to the Co-op; a pilot whose charter \
+     ended so, or by +coop/release, may +coop/enrol again for the next free Dray, with no second \
+     stake. A charter staff revoke is not renewed. +coop reads the terms and how many Drays are \
+     free, anywhere.\n+coop/enrol <name>  sign at the Registry & Co-op desk in Ceres \
      Freeport: Ceres Clearing opens your credit account, the Co-op charters you its next free \
      Dray under the name you give it (its registry mark stays), stakes you, and opens the ship's \
      hold in your name.\n+coop/statement  your charter's terms, its sales and the Co-op's share \
@@ -90,8 +93,8 @@ const MAX_ENROLMENT_TEXT_BYTES: usize = 120;
 pub const REGISTRAR_LINE: &str = "The Co-op stakes new captains: a Co-op Dray on a working \
      charter, twenty-five thousand in working cash, and a quarter of your trading margin to the \
      Co-op until you buy the hull out at the price on your papers. Sell under the Co-op's \
-     reference price and the Co-op takes nothing. Go a week without a departure and the Co-op \
-     takes its Dray back.";
+     reference price and the Co-op takes nothing. Go a real week without a departure and the Co-op \
+     takes its Dray back; you may charter another, with no second stake.";
 
 /// The Co-op desk officer who countersigns (18a §4; doc 18 §2 step 4).
 pub const COUNTERSIGN: &str = "Ilse Oduya-Brandt";
@@ -115,9 +118,30 @@ pub const NAME_USAGE: &str = "Usage: +coop/enrol <a name for your ship>";
 /// The gateway account is unknown (fail closed).
 pub const NO_ACCOUNT_MATCH: &str =
     "The Registry cannot match you to an account, so the Co-op cannot enrol you.";
-/// One enrolment per gateway account, ever (D-18-25).
+/// One charter per gateway account at a time (D-18-25, as the owner's 2026-11-17 ruling amends
+/// it: a recalled pilot may charter again, so the account holds one charter at a time, not one
+/// ever).
 pub const ENROLLED_ONCE: &str =
-    "The Registry already has you on its books: the Co-op enrols each pilot once, ever.";
+    "The Registry already has you on its books: the Co-op charters each pilot one Dray at a time.";
+/// **A graduate at the desk** (the owner's 2026-11-17 ruling): the programme is for captains
+/// with no hull, and a graduate owns theirs.
+pub const GRADUATED_ONCE: &str =
+    "You bought your Dray out: the Co-op charters only captains who have no hull of their own.";
+/// **A staff-revoked charter is final** (the owner's 2026-11-17 ruling keeps staff's word):
+/// `{name}`, `{mark}`.
+pub const REVOKED_FINAL: &str =
+    "Staff revoked your charter of the {name} ({mark}); the Co-op does not charter you again.";
+/// **A recalled charter whose hull is not back yet** (the owner's 2026-11-17 ruling): the old
+/// hull goes back first, so the account never holds two. `{name}`, `{mark}`.
+pub const RECHARTER_WAIT: &str =
+    "The Co-op has not yet taken back the {name} ({mark}); charter again once she is in its pool.";
+/// **The way back** (the owner's 2026-11-17 ruling): told with every recall a pilot may come
+/// back from, and on `+coop` after one. `{office}`, `{port}`.
+pub const RECHARTER_HINT: &str =
+    "To fly again, charter another Dray: +coop/enrol <ship name> at the {office} in {port}.";
+/// **A re-charter's terms line** (the owner's 2026-11-17 ruling: the stake is paid once, ever):
+/// `{buyout}`, `{countersign}`.
+pub const RECHARTERED_TERMS: &str = "No second stake: the Co-op stakes a captain once. Buyout {buyout}. {countersign} countersigns.";
 /// The account's enrolment document does not read.
 pub const BOOKS_UNREADABLE: &str =
     "The Co-op's books for your account cannot be read right now. Ask staff to look at them.";
@@ -1219,7 +1243,12 @@ pub(crate) fn terms_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
                         .replace("{mark}", &e.mark)
                 }
                 Books::Present(e) if e.status == EnrolmentStatus::Revoked => {
-                    format!("Your charter of the {} ({}) has ended.", e.name, e.mark)
+                    let ended = format!("Your charter of the {} ({}) has ended.", e.name, e.mark);
+                    // The owner's 2026-11-17 ruling: the way back, unless staff revoked it.
+                    match recharter_hint(ctx.w) {
+                        Some(hint) if may_recharter(ctx.w, e).is_ok() => format!("{ended} {hint}"),
+                        _ => ended,
+                    }
                 }
                 Books::Present(e) => CHARTER_NOT_IN_FORCE
                     .replace("{name}", &e.name)
@@ -1323,6 +1352,10 @@ pub(crate) fn statement_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
 
 /// Everything `+coop/enrol` resolved before its first write (step 9).
 struct EnrolPlan {
+    /// **A re-charter** (the owner's 2026-11-17 ruling): the account's last charter ended by
+    /// dormancy, release or a lease ended elsewhere, and its hull is back in the pool. The
+    /// stake is not paid again, and `stake_minor` is the first charter's.
+    recharter: bool,
     account: mush_core::AccountId,
     trust: PrincipalId,
     trust_scope: OrgScopeId,
@@ -1345,6 +1378,53 @@ struct EnrolPlan {
     programme: CanonicalId,
     pack: CanonicalId,
     entry: CanonicalId,
+}
+
+/// **Whether the account's last charter lets it charter again** (the owner's 2026-11-17
+/// ruling, amending D-18-25's "once, ever"): `Ok` with the first charter's stake when the
+/// charter ended by dormancy, by `+coop/release` or by a lease ended outside the programme's
+/// verbs, its lease is over and its hold vault is no longer the pilot's (the recall's return
+/// half has run, so the account never holds two hulls). A live, pending or graduated charter, a
+/// staff revocation, and a hull not back yet each refuse with their own line.
+fn may_recharter(w: &World, e: &Enrolment) -> Result<i64, String> {
+    let named = |line: &str| line.replace("{name}", &e.name).replace("{mark}", &e.mark);
+    match (&e.status, &e.ended) {
+        (EnrolmentStatus::Graduated, _) => return Err(GRADUATED_ONCE.to_owned()),
+        (EnrolmentStatus::Revoked, Some(EndCause::Revoked { .. })) => {
+            return Err(named(REVOKED_FINAL));
+        }
+        (
+            EnrolmentStatus::Revoked,
+            Some(EndCause::Dormant | EndCause::Released | EndCause::LeaseEnded),
+        ) => {}
+        _ => return Err(ENROLLED_ONCE.to_owned()),
+    }
+    let Some(economy) = w.module_state::<EconomyStore>() else {
+        return Err(FAILED.to_owned());
+    };
+    let snapshot = economy.snapshot();
+    let lease_over = snapshot
+        .contract(ContractId(e.lease))
+        .is_none_or(|c| c.state.is_terminal());
+    let hold_back = snapshot
+        .vault(mush_economy::VaultId(e.vault))
+        .is_none_or(|v| v.owner != PrincipalId::Object(e.pilot));
+    if !(lease_over && hold_back) {
+        return Err(named(RECHARTER_WAIT));
+    }
+    Ok(e.stake_minor)
+}
+
+/// [`RECHARTER_HINT`] filled with the programme's desk and port; `None` off the programme.
+#[must_use]
+pub fn recharter_hint(w: &World) -> Option<String> {
+    let port = programme_port(w)?;
+    let (_, office, port_name) = office_of(w, &port);
+    Some(
+        RECHARTER_HINT
+            .replace("{office}", &office)
+            .replace("{port}", &port_name),
+    )
 }
 
 /// Steps 1–9: every check and every resolution, read-only. `Err` carries the
@@ -1380,8 +1460,9 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Err(NOT_ENABLED.to_owned());
     };
-    match store.enrolment_state(account) {
-        EnrolmentState::Present(_) => return Err(ENROLLED_ONCE.to_owned()),
+    let first_stake = match store.enrolment_state(account) {
+        // The owner's 2026-11-17 ruling: a recalled pilot may charter again.
+        EnrolmentState::Present(e) => Some(may_recharter(w, e)?),
         EnrolmentState::Unreadable => {
             tracing::error!(
                 "tacsim: +coop/enrol found an unreadable enrolment for the enrolling account; \
@@ -1389,8 +1470,8 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
             );
             return Err(BOOKS_UNREADABLE.to_owned());
         }
-        EnrolmentState::Absent => {}
-    }
+        EnrolmentState::Absent => None,
+    };
     if live_charter(w, actor).is_some() {
         return Err(ENROLLED_ONCE.to_owned());
     }
@@ -1409,13 +1490,18 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     // 8. The capital (`pool_can_fund`'s shape).
     let scale = credit_scale(w);
     let programme = port.programme;
-    let (Some(stake_minor), Some(floor_minor), Some(buyout_minor)) = (
+    let (Some(new_stake_minor), Some(floor_minor), Some(buyout_minor)) = (
         minor_of(programme.stake_major, scale),
         minor_of(programme.floor_major, scale),
         minor_of(programme.buyout_major, scale),
     ) else {
         tracing::error!("tacsim: +coop/enrol: the programme's amounts overflow the credit scale");
         return Err(FAILED.to_owned());
+    };
+    // A re-charter pays no stake, so it needs none of the programme's capital.
+    let (stake_minor, staked_now) = match first_stake {
+        Some(first) => (first, 0),
+        None => (new_stake_minor, new_stake_minor),
     };
     let Some(economy) = w.module_state::<EconomyStore>() else {
         tracing::error!("tacsim: +coop/enrol: the economy is not composed");
@@ -1429,7 +1515,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         .snapshot()
         .account(trust_account)
         .and_then(Account::available)
-        .and_then(|available| available.minor().checked_sub(stake_minor))
+        .and_then(|available| available.minor().checked_sub(staked_now))
         .is_some_and(|left| left >= floor_minor);
     if !funded {
         return Err(NO_CAPITAL.to_owned());
@@ -1495,6 +1581,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         .map(|g| name_of(w, ObjId(g)))
         .ok_or_else(|| failed("the gallery"))?;
     let plan = EnrolPlan {
+        recharter: first_stake.is_some(),
         account,
         trust,
         trust_scope,
@@ -1716,12 +1803,28 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         unwind_lease(ctx, lease, &plan);
         return Err(failed_after_writes(ctx));
     }
-    // 10e. The stake — the post is the last fallible step.
+    // 10e. The stake — the post is the last fallible step. A re-charter pays none (the
+    // owner's 2026-11-17 ruling: the stake is paid once, ever).
+    if !plan.recharter {
+        post_stake(ctx, lease, &plan, actor, pilot_account)?;
+    }
+    // ---- past the post nothing is fallible (L6) ----
+    finish_enrol(ctx, &plan, actor, lease, vault_id, pilot_account, opened)
+}
+
+/// Step 10e, the stake's post: `Err` after the lease is unwound.
+fn post_stake(
+    ctx: &mut Ctx<'_>,
+    lease: ContractId,
+    plan: &EnrolPlan,
+    actor: ObjId,
+    pilot_account: AccountId,
+) -> Result<(), CmdError> {
     let (Some(debit), credit_amount) = (
         Amount::from_minor(plan.stake_minor).checked_neg(),
         Amount::from_minor(plan.stake_minor),
     ) else {
-        unwind_lease(ctx, lease, &plan);
+        unwind_lease(ctx, lease, plan);
         return Err(failed_after_writes(ctx));
     };
     let stake_plan = EconomyPlan {
@@ -1748,14 +1851,27 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )
     };
     match mush_economy::post(ctx, &stake_plan) {
-        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {}
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
         other => {
             tracing::error!(lease = lease.0, outcome = ?other, "tacsim: +coop/enrol: the stake did not post");
-            unwind_lease(ctx, lease, &plan);
-            return Err(failed_after_writes(ctx));
+            unwind_lease(ctx, lease, plan);
+            Err(failed_after_writes(ctx))
         }
     }
-    // ---- past the post nothing is fallible (L6) ----
+}
+
+/// Steps 10f–11, past the post, where nothing is fallible (L6): the hold vault, the hull's
+/// name, the enrolment document and the reply. `Err` only when the final document does not
+/// check (doc 18 cut IC8), after the writes.
+fn finish_enrol(
+    ctx: &mut Ctx<'_>,
+    plan: &EnrolPlan,
+    actor: ObjId,
+    lease: ContractId,
+    vault_id: mush_economy::VaultId,
+    pilot_account: AccountId,
+    opened: bool,
+) -> Result<(), CmdError> {
     // 10f. The hold vault on the hull's stowage (backing proved in step 9). Cut
     // IC13: a recalled hull's re-homed hold is re-owned to the pilot instead, with
     // the fuel and stores the last captain left in it (owner item O1).
@@ -1806,7 +1922,7 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // 10h. The enrolment document, checked again on its final value (doc 18 cut
     // IC8, lead 2d): past the writes a failure is `failed_after_writes`, logged.
     let enrolment = enrolment_of(
-        &plan,
+        plan,
         actor,
         lease.0,
         vault_id.0,
@@ -1835,8 +1951,17 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             plan.mark, plan.laid_up_name, plan.name, plan.gallery_name
         ),
     );
-    let stake = money_minor(ctx, plan.stake_minor);
     let buyout = money_minor(ctx, plan.buyout_minor);
+    if plan.recharter {
+        say(
+            ctx,
+            RECHARTERED_TERMS
+                .replace("{buyout}", &buyout)
+                .replace("{countersign}", COUNTERSIGN),
+        );
+        return Ok(());
+    }
+    let stake = money_minor(ctx, plan.stake_minor);
     say(
         ctx,
         format!("{stake} staked to you. Buyout {buyout}. {COUNTERSIGN} countersigns."),
@@ -2312,6 +2437,19 @@ mod tests {
     /// **Doc 20 cut SM.2 (lead override 3)**: no line of a mining site's port shuts the
     /// desk, in any state — its Map, Rooms, Domain and Site lines are reported only — while
     /// the very same lines of a station still shut it.
+    /// **The owner's 2026-11-17 ruling**: the shipped programme's recall window is seven real
+    /// days, which the help states as 168 IC days at the live 24:1 clock; a change to either
+    /// fails here until the other follows.
+    #[test]
+    fn coop_the_shipped_recall_window_is_a_real_week() {
+        let doc: serde_json::Value = serde_json::from_str(crate::definitions::content::LANE_JSON)
+            .unwrap_or_else(|error| panic!("the lane is JSON: {error}"));
+        let days = &doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"];
+        assert_eq!(days, &serde_json::json!(7), "the recall window, real days");
+        assert!(COOP_HELP.contains("a real week (168 IC days at the live 24:1 clock)"));
+        assert!(REGISTRAR_LINE.contains("Go a real week without a departure"));
+    }
+
     #[test]
     fn sm2_a_sites_lines_never_gate_enrolment() {
         let site = CanonicalId::new("ahuna_port").ok();

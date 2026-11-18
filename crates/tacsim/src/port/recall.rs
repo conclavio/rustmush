@@ -59,9 +59,9 @@ pub const COOP_STAFF_VERB: &str = "@coop";
 
 /// `@coop`'s help (cut IC13).
 pub const COOP_STAFF_HELP: &str = "@coop/revoke <pilot>=<why>  (staff) end a First Captain's \
-     charter now and take the Dray back into the Co-op's pool: the same recall a week without a \
-     departure makes (the hull docked at Ceres, her cargo hold empty, nothing in flight). \
-     Attributed: the reason is recorded and told to the pilot.";
+     charter now and take the Dray back into the Co-op's pool: the same recall a real week (168 IC \
+     days) without a departure makes (the hull docked at Ceres, her cargo hold empty, nothing in flight). \
+     Attributed: the reason is recorded and told to the pilot, and a revoked pilot is not chartered again.";
 
 /// Seconds in a real day.
 const DAY_SECS: i64 = 86_400;
@@ -95,7 +95,7 @@ pub const HELD_DORMANT: &str = "a week without a departure: the Co-op holds the 
 pub const PUT_ASHORE: &str =
     "The Co-op's dockhands see you ashore: the {name} is the Co-op's again.";
 /// The dormancy notice: `{name}` (the pilot's name for her), `{mark}`.
-pub const DORMANT_NOTICE: &str = "The Co-op has taken back the {name} ({mark}): a week without a departure. The stake stays yours.";
+pub const DORMANT_NOTICE: &str = "The Co-op has taken back the {name} ({mark}): a real week without a departure. The stake stays yours.";
 /// The revocation notice: `{name}`, `{mark}`, `{why}`.
 pub const REVOKED_NOTICE: &str = "The Co-op has revoked your charter of the {name} ({mark}): {why}";
 /// The return arm completing an ended charter: `{name}`, `{mark}`.
@@ -587,6 +587,12 @@ pub(crate) fn recall(
     if let Some(line) = notice {
         crate::port_tick::notify(ctx, e.pilot, &line);
     }
+    // The owner's 2026-11-17 ruling: a recalled pilot is told the way back.
+    if matches!(cause, RecallCause::Dormant)
+        && let Some(hint) = crate::port::coop::recharter_hint(ctx.w)
+    {
+        crate::port_tick::notify(ctx, e.pilot, &hint);
+    }
     Ok(done)
 }
 
@@ -688,6 +694,10 @@ pub(crate) fn release_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .replace("{tank}", &group_thousands(done.tank))
                 .replace("{locker}", &group_thousands(done.locker)),
         );
+    }
+    // The owner's 2026-11-17 ruling: the way back to a ship.
+    if let Some(hint) = crate::port::coop::recharter_hint(ctx.w) {
+        say(ctx, hint);
     }
     Ok(())
 }
