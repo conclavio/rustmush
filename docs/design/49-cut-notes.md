@@ -2132,6 +2132,28 @@ or pin moves.
     in the same tick be answered first. The ledger then pops the `FIRE` with it, as answers in
     order would. That is the only way the ack loses its place.
   - AM.1's test keeps skipping shared ticks, and the lane is unchanged.
+- **The swallowed ack is known and harmless to the discipline** (checked after #652 merged, at
+  CC.2's request). It needs two things at once: the rig answering a line typed in the `FIRE`'s
+  tick before the `FIRE` itself, and a full-width channel line within the stale tail before the
+  ack. Only AM.1's own test says such a channel line. If it does happen:
+  - **No second round leaves.** The gun's `FIRE` mark stays outstanding for `ACK_PAIR_MS`
+    (2 s), and the lane never types a gun again while its mark waits. In the rig, the next
+    `WEAPONSTATUS` came at 1,670 ms, inside the mark, and its `cycling` row set the gun's clock.
+    With no row inside the 2 s, the gun is typed once more and the game's own pre-check refuses
+    it as still cycling.
+  - **The count runs one round high until the next row the picture accepts.** That row's
+    figure replaces the count (`shots_since_read` goes back to 0). Rows come every 3 s while
+    locked (8 s once every cycle is learned), at most `POLL_STARVE_MS` (2 s) overdue. The
+    cannon's 15 s cycle outlasts that, so its floor and reserve read the right count. The
+    exception is a one-line-a-second lane holding a contact, whose `CONTACTS` can keep the row
+    off (`POLL_STARVE_MS`'s own caveat).
+  - **A gun that cycles inside the row cadence** (the 5 s coaxial gun or laser) can decide on
+    the high count before the row lands. At worst it fires one round into its reserve, or at
+    the 35% floor one shot past the half-magazine line, and only if it reaches that line before
+    the row lands. The next row puts it right.
+  - **No cycle is learned from that row**, as there is no ack to bound it. If it was the main
+    gun's first shot (as in CC.2's run), the exchange and halt windows wait for its next acked
+    shot.
 - **The win-rate lanes** (`arena_win_rate`, `arena_muster_rate`; weekly and on dispatch,
   report-only) were not run. They fly this bot against the stock mind and would measure the
   discipline in fights.
