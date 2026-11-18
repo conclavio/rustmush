@@ -169,6 +169,45 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
     )
     .await
     .expect("send ConnUp");
+
+    // Prove the world answers this connection BEFORE the flood, while the
+    // gateway still drains: one small `say` must come back as a `Deliver`.
+    // Checking for output after the cut instead is racy — the teardown can
+    // land mid-`Deliver` (each flood echo is larger than the receive buffer),
+    // and a reset discards whatever the kernel had buffered, so a healthy
+    // server could leave the drain nothing whole to read.
+    let warm_up = GatewayRequest::new(
+        7,
+        0,
+        GatewayInput::Cmd {
+            conn: 1,
+            actor: GOD,
+            line: "say ready".to_string(),
+        },
+    );
+    write_frame(&mut writer, &ToServer::Input(warm_up.clone()))
+        .await
+        .expect("send the warm-up line");
+    write_frame(
+        &mut writer,
+        &ToServer::GatewayReleased {
+            request: warm_up.uid,
+        },
+    )
+    .await
+    .expect("release the warm-up line");
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match frames.read::<ToGateway>().await {
+                Ok(Some(ToGateway::Deliver { .. })) => break,
+                Ok(Some(_)) => {}
+                other => panic!("the boundary closed before the warm-up output: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the world produced output for the attached connection");
+
     let teardown_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     tokio::time::timeout_at(teardown_deadline, async {
         let timeout_notification = timed_out.notified();
@@ -180,7 +219,7 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
                 let line = format!("say {}", "w".repeat(6000));
                 let mut pace = tokio::time::interval(Duration::from_millis(10));
                 pace.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                for sequence in 0.. {
+                for sequence in 1.. {
                     // Cadence bounds the outstanding frame count while the
                     // blocked writer's real one-second timeout elapses.
                     pace.tick().await;
@@ -224,16 +263,23 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
     // EOF (`Ok(None)`) — the writer tore the boundary down by dropping its half.
     // Bound the drain so a regression (writer never tears down) fails fast rather
     // than hanging.
-    let mut saw_deliver = false;
     let torn_down = tokio::time::timeout_at(teardown_deadline, async {
         loop {
             match frames.read::<ToGateway>().await {
-                Ok(Some(ToGateway::Deliver { .. })) => saw_deliver = true,
                 Ok(Some(_)) => {}
                 // Clean EOF: the server dropped its writer half (the teardown).
                 Ok(None) => break true,
-                // A reset/broken pipe is also a torn-down boundary.
-                Err(_) => break true,
+                // A reset, a broken pipe, or a cut mid-frame is also a
+                // torn-down boundary. A frame that fails to decode is not: a
+                // writer that went on after abandoning a frame part-written
+                // corrupts the stream without tearing anything down.
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe => break true,
+                    _ => panic!("the boundary failed without a teardown: {e}"),
+                },
             }
         }
     })
@@ -241,10 +287,6 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
     .expect("the wedged boundary must be torn down, not hang");
 
     assert!(torn_down, "the server tore the boundary down");
-    assert!(
-        saw_deliver,
-        "the world produced output before the boundary was torn down"
-    );
 
     // Closing our side lets the server's reader EOF; the link is closed, the
     // server runs on (doc 33 GG.2) until the test process ends.
