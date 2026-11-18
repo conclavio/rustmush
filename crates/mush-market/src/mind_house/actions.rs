@@ -108,22 +108,22 @@ fn presentation(action: &DefinitionRef) -> Result<mush_core::ActionPresentation,
         "list_house_mind" => (
             "list",
             "List",
-            "Publish current scoped house terms using an owner licence.",
+            "Publish current scoped house terms using an owner license.",
         ),
         "quote_house_mind" => (
             "quote",
             "Quote",
-            "Read and freeze current terms for a listed house licence.",
+            "Read and freeze current terms for a listed house license.",
         ),
         "purchase_house_mind" => (
             "fund",
             "Fund",
-            "Place the quoted price in escrow; this does not yet grant a licence.",
+            "Place the quoted price in escrow; this does not yet grant a license.",
         ),
         "settle_house_mind" => (
             "grant",
             "Complete",
-            "Settle an exact funded purchase and grant its licence.",
+            "Settle an exact funded purchase and grant its license.",
         ),
         "refund_house_mind" => (
             "refund",

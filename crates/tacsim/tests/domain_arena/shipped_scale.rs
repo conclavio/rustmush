@@ -570,7 +570,7 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
     let moved = support::cell_of(&crowded, red_two).expect("red 2 opened on the window");
     assert_ne!(
         moved, taken,
-        "the override was honoured onto a cell another unit already held"
+        "the override was honored onto a cell another unit already held"
     );
     // And it was relocated the way production relocates one: into its own side's
     // entry zone, not to some third place of the rig's own.
@@ -1105,12 +1105,12 @@ fn af1_the_shipped_centre_encodes_under_the_expectation() {
         wall += CADENCE_MS;
     }
     let snapshot =
-        tacsim::arena::Snapshot::encode(&arena).expect("the shipped centre encodes between pulses");
+        tacsim::arena::Snapshot::encode(&arena).expect("the shipped center encodes between pulses");
     let bytes = snapshot.bytes().len();
     println!("af1_shipped_bytes={bytes} at_ms={}", arena.now_ms);
     assert!(
         bytes < 512 * 1024,
-        "the shipped centre's snapshot is {bytes} bytes, past the 512 KiB expectation"
+        "the shipped center's snapshot is {bytes} bytes, past the 512 KiB expectation"
     );
     let state: serde_json::Value =
         serde_json::from_slice(snapshot.bytes()).expect("the state string is JSON");
@@ -1151,7 +1151,7 @@ fn af1_the_shipped_centre_encodes_under_the_expectation() {
         );
         assert!(
             continued == reference,
-            "at {cadence} ms the resumed centre is not the uninterrupted one \
+            "at {cadence} ms the resumed center is not the uninterrupted one \
              (tape {} against {} bytes, {} against {} substeps)",
             continued.0.len(),
             reference.0.len(),

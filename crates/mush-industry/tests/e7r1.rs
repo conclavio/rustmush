@@ -572,7 +572,7 @@ fn e7r1_r1_the_sweep_releases_a_cancelled_order_and_a_repeat_writes_nothing() {
     let hold = budget_hold(&tw, id).expect("the record survives");
     assert!(
         matches!(hold.status, HoldStatus::Released),
-        "a cancelled order gives the money back: {:?}",
+        "a canceled order gives the money back: {:?}",
         hold.status
     );
     assert_eq!(bal(&tw, budget), 100, "unspent");
@@ -1549,7 +1549,7 @@ fn vf_c2c_a_paused_order_still_holds_its_budget_and_its_slot_and_releases_them_o
 
     set_state(&mut tw, &families, id, WorkOrderState::Cancelled);
     fire(&mut tw);
-    assert_eq!(held(&tw, budget), 0, "cancelling gives it back");
+    assert_eq!(held(&tw, budget), 0, "canceling gives it back");
     assert_eq!(bal(&tw, budget), 100);
 }
 

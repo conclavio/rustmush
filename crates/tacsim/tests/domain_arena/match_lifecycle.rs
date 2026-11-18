@@ -256,13 +256,13 @@ impl Rig {
 
     fn state(&self) -> MatchState {
         match_::centre_of(self.tw.world())
-            .expect("the centre is on the match book")
+            .expect("the center is on the match book")
             .state
     }
 
     fn centre(&self) -> tacsim::match_::Centre {
         match_::centre_of(self.tw.world())
-            .expect("the centre is on the match book")
+            .expect("the center is on the match book")
             .clone()
     }
 
@@ -330,7 +330,7 @@ impl Rig {
         let match_id = self
             .centre()
             .match_id
-            .expect("a boarding centre has a match id");
+            .expect("a boarding center has a match id");
         let mut out = Outbox::new();
         let engine = self.tw.engine_mut();
         let mut ctx = Ctx {
@@ -353,7 +353,7 @@ impl Rig {
         let match_id = self
             .centre()
             .match_id
-            .expect("a boarding centre has a match id");
+            .expect("a boarding center has a match id");
         let mut out = Outbox::new();
         let engine = self.tw.engine_mut();
         let mut ctx = Ctx {
@@ -388,7 +388,7 @@ impl Rig {
         let match_id = self
             .centre()
             .match_id
-            .expect("a running centre has a match id");
+            .expect("a running center has a match id");
         let mut out = Outbox::new();
         let engine = self.tw.engine_mut();
         let mut ctx = Ctx {
@@ -956,7 +956,7 @@ async fn sim_outside_the_centre_is_refused_with_one_line() {
         let said = rig.say(0, line);
         assert!(
             said.contains(match_::OUTSIDE_CENTRE),
-            "`{line}` outside the centre: {said}"
+            "`{line}` outside the center: {said}"
         );
         assert_eq!(
             said.lines()
@@ -965,10 +965,10 @@ async fn sim_outside_the_centre_is_refused_with_one_line() {
             1,
             "exactly one line: {said}"
         );
-        for other in ["Usage:", "Which side?", "Simulator centre"] {
+        for other in ["Usage:", "Which side?", "Simulator center"] {
             assert!(
                 !said.contains(other),
-                "`{line}` outside the centre also said `{other}`: {said}"
+                "`{line}` outside the center also said `{other}`: {said}"
             );
         }
     }
@@ -978,7 +978,7 @@ async fn sim_outside_the_centre_is_refused_with_one_line() {
     // gets the true answer instead of a corridor that is not there.
     assert!(
         match_::centre_rooms(rig.tw.world()).is_some(),
-        "the rig's OOC pack carries the centre"
+        "the rig's OOC pack carries the center"
     );
 
     // A pilot **inside a pod** is in that pod's team room as far as the check is
@@ -1006,7 +1006,7 @@ async fn sim_outside_the_centre_is_refused_with_one_line() {
         .expect("the pilot walks in");
     let said = rig.say(0, "sim status");
     assert!(!said.contains(match_::OUTSIDE_CENTRE), "{said}");
-    assert!(said.contains("Simulator centre"), "{said}");
+    assert!(said.contains("Simulator center"), "{said}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,7 +1058,7 @@ async fn the_staff_shortcut_and_the_lobby_read_one_state() {
 
     // And `@arena/status` prints the centre the lobby would print.
     let said = rig.staff("@arena/status");
-    assert!(said.contains("Simulator centre: running"), "{said}");
+    assert!(said.contains("Simulator center: running"), "{said}");
 
     // A second shortcut is refused while the first is checked out.
     let said = rig.staff(&format!(
@@ -1070,7 +1070,7 @@ async fn the_staff_shortcut_and_the_lobby_read_one_state() {
     assert!(said.contains("holding a match"), "{said}");
     // As is a lobby claim.
     let said = rig.say(0, "sim team red");
-    assert!(said.contains("centre is running"), "{said}");
+    assert!(said.contains("center is running"), "{said}");
 
     let said = rig.staff("@arena/reset");
     assert!(
@@ -1622,7 +1622,7 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
     let overheard = rig.say_overheard(0, "sim unit biped_mk1", 1);
     assert!(
         overheard.contains("Slot red 1 will field biped_mk1."),
-        "the choice is announced to the centre: {overheard}"
+        "the choice is announced to the center: {overheard}"
     );
 
     // The pod's OWN type clears the choice rather than recording it.
@@ -1729,7 +1729,7 @@ async fn q8_sim_unit_refuses_an_unknown_type_no_slot_and_a_wrong_state() {
     let said = rig.say(0, "sim unit biped_mk1");
     assert!(
         said.contains(
-            "The simulator centre is boarding; that is not something you can do to it now."
+            "The simulator center is boarding; that is not something you can do to it now."
         ),
         "{said}"
     );
@@ -1957,7 +1957,7 @@ async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
     // middle headline is the true one and the row underneath it says why.
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is idle, but not clean:"),
+        said.contains("The simulator center is idle, but not clean:"),
         "{said}"
     );
     assert!(
@@ -2174,7 +2174,7 @@ async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
     let said = rig.say(2, "sim unit biped_mk1");
     assert!(
         said.contains(
-            "The simulator centre is boarding; that is not something you can do to it now."
+            "The simulator center is boarding; that is not something you can do to it now."
         ),
         "{said}"
     );
@@ -2187,7 +2187,7 @@ async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
     assert!(rig.seat(1));
     assert_eq!(rig.state(), MatchState::Running);
     let said = rig.say(2, "sim unit biped_mk1");
-    assert!(said.contains("The simulator centre is running;"), "{said}");
+    assert!(said.contains("The simulator center is running;"), "{said}");
     assert!(!said.contains("SIM TEAM"), "{said}");
 
     // A terminal centre takes a claim — it clears the last match's board first —
@@ -2402,7 +2402,7 @@ async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
     assert_eq!(
         rig.state(),
         MatchState::Running,
-        "a centre took `Stopping`; the gate's second arm is reachable now and \
+        "a center took `Stopping`; the gate's second arm is reachable now and \
          this block should read the board in it"
     );
     let record = rig
@@ -2414,7 +2414,7 @@ async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
                 .module_state::<tacsim::match_::MatchBook>()
                 .and_then(|book| book.get(match_id).map(|record| record.state))
         })
-        .expect("a running centre has a match on the book");
+        .expect("a running center has a match on the book");
     assert_eq!(
         record,
         MatchState::Stopping,
@@ -2799,7 +2799,7 @@ async fn d3_a_refused_check_out_calls_the_lobby_off_and_frees_the_pods() {
         let match_id = rig
             .centre()
             .match_id
-            .expect("a boarding centre has a match id");
+            .expect("a boarding center has a match id");
         let mut out = Outbox::new();
         {
             let engine = rig.tw.engine_mut();
@@ -2906,7 +2906,7 @@ async fn d3_an_early_refusal_of_run_calls_the_lobby_off() {
         let match_id = rig
             .centre()
             .match_id
-            .expect("a boarding centre has a match id");
+            .expect("a boarding center has a match id");
         let mut out = Outbox::new();
         let refusal = {
             let engine = rig.tw.engine_mut();
@@ -3035,7 +3035,7 @@ async fn d3_the_last_leave_returns_the_centre_to_its_default() {
     assert_eq!(
         rig.centre(),
         tacsim::match_::Centre::default(),
-        "the last leave left something on the centre"
+        "the last leave left something on the center"
     );
     assert_eq!(rig.schema_of(PartyId::RED, 1), "tacsim.unit.line_tank");
     // And a reset over it has nothing at all to say, which is only true of a
@@ -3240,18 +3240,18 @@ async fn d3_concede_is_the_leads_alone_and_only_while_a_match_runs() {
     // Outside `Running`: the state refusal, in `Idle`, in `Selection` and in
     // `Boarding`.
     let said = rig.say(0, "sim concede");
-    assert!(said.contains("The simulator centre is idle;"), "{said}");
+    assert!(said.contains("The simulator center is idle;"), "{said}");
     rig.say(0, "sim team red");
     rig.say(1, "sim team red");
     rig.say(2, "sim team blue");
     let said = rig.say(0, "sim concede");
     assert!(
-        said.contains("The simulator centre is selection;"),
+        said.contains("The simulator center is selection;"),
         "{said}"
     );
     rig.say(0, "sim start");
     let said = rig.say(0, "sim concede");
-    assert!(said.contains("The simulator centre is boarding;"), "{said}");
+    assert!(said.contains("The simulator center is boarding;"), "{said}");
 
     assert!(!rig.seat(0));
     assert!(!rig.seat(1));
@@ -3797,14 +3797,14 @@ async fn d3_the_reset_has_a_headline_for_a_centre_that_is_idle_but_not_clean() {
     rig.staff("sim abort");
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is reset; its slots and pods are free."),
+        said.contains("The simulator center is reset; its slots and pods are free."),
         "{said}"
     );
 
     // (b) Nothing at all.
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is already idle; nothing changed."),
+        said.contains("The simulator center is already idle; nothing changed."),
         "{said}"
     );
 
@@ -3818,7 +3818,7 @@ async fn d3_the_reset_has_a_headline_for_a_centre_that_is_idle_but_not_clean() {
     );
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is idle, but not clean:"),
+        said.contains("The simulator center is idle, but not clean:"),
         "{said}"
     );
     assert!(
@@ -3852,7 +3852,7 @@ async fn d3_the_not_started_yet_line_is_boardings_alone() {
     let said = rig.say(0, "status");
     assert!(
         said.contains(tacsim::match_::OUTSIDE_COCKPIT),
-        "an idle centre answered the boarding line: {said}"
+        "an idle center answered the boarding line: {said}"
     );
 
     // In `Boarding`, with a real billet on a roster tank — a real `BOARD`, which
@@ -3908,8 +3908,8 @@ async fn d3_the_not_started_yet_line_is_boardings_alone() {
     let said = rig.say(1, "status");
     assert!(
         said.contains(tacsim::match_::OUTSIDE_COCKPIT),
-        "a billet on a machine the centre does not field was told to wait for the \
-         centre's match: {said}"
+        "a billet on a machine the center does not field was told to wait for the \
+         center's match: {said}"
     );
     assert!(!said.contains(tacsim::match_::NOT_STARTED_YET), "{said}");
 
@@ -3928,18 +3928,18 @@ async fn d3_the_not_started_yet_line_is_boardings_alone() {
     let said = rig.say(0, "status");
     assert!(
         said.contains(tacsim::match_::OUTSIDE_COCKPIT),
-        "a terminal centre answered the boarding line: {said}"
+        "a terminal center answered the boarding line: {said}"
     );
     // The spare's billet was never the centre's to give back, so it is still
     // held — and the terminal centre is what refuses now, not the missing seat.
     assert!(
         rig.holds_billet(1, own),
-        "the eject swept a billet on a unit the centre does not own"
+        "the eject swept a billet on a unit the center does not own"
     );
     let said = rig.say(1, "status");
     assert!(
         said.contains(tacsim::match_::OUTSIDE_COCKPIT),
-        "a terminal centre answered the boarding line to a billet-holder: {said}"
+        "a terminal center answered the boarding line to a billet-holder: {said}"
     );
 }
 
@@ -4234,7 +4234,7 @@ async fn m1_a_busy_arena_is_told_to_try_again_and_nothing_changes() {
             .clone();
         assert_eq!(record.state, MatchState::Running, "the record moved");
         assert!(record.ended.is_none(), "a result was written");
-        assert_eq!(rig.state(), MatchState::Running, "the centre moved");
+        assert_eq!(rig.state(), MatchState::Running, "the center moved");
     };
 
     // `SIM ABORT`: the sentence to the one who typed it, and nothing to the room.
@@ -4319,7 +4319,7 @@ fn board_both(rig: &mut Rig) {
 /// tank is cold until somebody types `STARTUP`, so the first frame is the
 /// opening pose.
 async fn opening_of_red_one(rig: &mut Rig) -> ((i64, i64), u32) {
-    let match_id = rig.centre().match_id.expect("a running centre has a match");
+    let match_id = rig.centre().match_id.expect("a running center has a match");
     let pilot = rig.pilot(0);
     for _ in 0..600 {
         rig.pump();
@@ -4385,7 +4385,7 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     // Every refusal, in the order they are asked.
     let said = rig.staff("@arena/pose RZ=90 97");
     assert!(
-        said.contains("POSE refused. There is no slot RZ on this centre."),
+        said.contains("POSE refused. There is no slot RZ on this center."),
         "{said}"
     );
     let said = rig.staff("@arena/pose RA=300 97");
@@ -4398,8 +4398,8 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
             rig.tw.world(),
             &smol_str::SmolStr::new_static(match_::CENTRE_ARENA),
         )
-        .expect("the centre's ground builds")
-        .expect("the centre's arena");
+        .expect("the center's ground builds")
+        .expect("the center's arena");
         let terrain = &definition.terrain;
         (0..terrain.height())
             .flat_map(|y| (0..terrain.width()).map(move |x| (x, y)))
@@ -4474,7 +4474,7 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     let said = rig.staff("@arena/pose RA=94 97");
     assert!(
         said.contains(
-            "POSE refused. The simulator centre is running; set opening cells before the match starts."
+            "POSE refused. The simulator center is running; set opening cells before the match starts."
         ),
         "{said}"
     );
@@ -4519,13 +4519,13 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     assert!(said.contains("RA opens at cell (90, 97)"), "{said}");
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is reset; its slots and pods are free.")
+        said.contains("The simulator center is reset; its slots and pods are free.")
             && said.contains("1 opening cell override(s) cleared."),
         "{said}"
     );
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is already idle; nothing changed.")
+        said.contains("The simulator center is already idle; nothing changed.")
             && !said.contains("override(s) cleared"),
         "a second reset has nothing to clear: {said}"
     );
@@ -4533,10 +4533,10 @@ async fn u4_arena_pose_opens_a_slot_on_its_cell_for_the_next_match_and_no_later(
     assert!(said.contains("RA opens at cell (90, 97)"), "{said}");
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is reset; its slots and pods are free.")
+        said.contains("The simulator center is reset; its slots and pods are free.")
             && said.contains("1 opening cell override(s) cleared.")
             && !said.contains("nothing changed"),
-        "an override is the only thing an idle, clean centre held: {said}"
+        "an override is the only thing an idle, clean center held: {said}"
     );
     let said = rig.staff("@arena/pose");
     assert!(said.contains("No opening cell is overridden."), "{said}");
@@ -4563,8 +4563,8 @@ async fn ae1_a_scout_car_posed_on_rubble_opens_in_its_zone_and_the_match_starts(
         rig.tw.world(),
         &smol_str::SmolStr::new_static(match_::CENTRE_ARENA),
     )
-    .expect("the centre's ground builds")
-    .expect("the centre's arena");
+    .expect("the center's ground builds")
+    .expect("the center's arena");
     // The shipped rubble patch, which the world-side precheck admits and a car
     // cannot stand on.
     let rubble = (106_u16, 66_u16);
@@ -4781,7 +4781,7 @@ async fn v2_the_result_names_every_unit_by_the_arenas_callsign_and_counts_its_ta
     assert_eq!(
         bystander,
         vec![
-            "The centre's last match:".to_owned(),
+            "The center's last match:".to_owned(),
             format!(
                 "  #{}  aborted  {}  1 v 1  {}",
                 match_id.0,
@@ -5158,7 +5158,7 @@ async fn v3_sim_report_refuses_in_order_and_both_reads_complete_through_the_modu
     rig.tick_to(1);
     let said = rig.say(0, "sim report");
     assert!(
-        said.contains("You have not flown a match the centre remembers."),
+        said.contains("You have not flown a match the center remembers."),
         "{said}"
     );
     let said = rig.say(0, "sim report twelve");
@@ -5213,7 +5213,7 @@ async fn v3_sim_report_refuses_in_order_and_both_reads_complete_through_the_modu
 
     let said = rig.say(0, "sim report 99");
     assert!(
-        said.contains("The centre remembers its last 20 matches; match 99 is not one of them."),
+        said.contains("The center remembers its last 20 matches; match 99 is not one of them."),
         "{said}"
     );
     let said = rig.say(2, &format!("sim report {id}"));
@@ -5344,7 +5344,7 @@ async fn z3_twelve_pilots_claim_six_a_side_start_and_board() {
     let mut tanks: Vec<ObjId> = Vec::new();
     for n in 0..12 {
         let pod = rig.pod(n).expect("every claimed slot locks its pod");
-        let (team, index) = match_::pod_slot(rig.tw.world(), pod).expect("a centre pod");
+        let (team, index) = match_::pod_slot(rig.tw.world(), pod).expect("a center pod");
         let tank = match_::tank_of(rig.tw.world(), pod).expect("every pod has its tank");
         assert_eq!(
             match_::tank_for_slot(rig.tw.world(), team, index),
@@ -5384,7 +5384,7 @@ async fn z3_the_reset_walks_twelve_tanks() {
     assert_eq!(tanks.len(), 12);
     let said = rig.staff("@arena/reset");
     assert!(
-        said.contains("The simulator centre is idle, but not clean:"),
+        said.contains("The simulator center is idle, but not clean:"),
         "{said}"
     );
     for tank in &tanks {
@@ -5577,7 +5577,7 @@ async fn z3_eight_pods_field_four_a_side_even_beside_twelve_tanks() {
     assert_eq!(rig.state(), MatchState::Boarding);
     for n in 0..4 {
         let pod = rig.pod(n).expect("every claimed slot locks its pod");
-        let (team, index) = match_::pod_slot(rig.tw.world(), pod).expect("a centre pod");
+        let (team, index) = match_::pod_slot(rig.tw.world(), pod).expect("a center pod");
         assert!(team == PartyId::RED && index <= 4, "{team:?} {index}");
         assert!(match_::tank_of(rig.tw.world(), pod).is_some());
     }
@@ -5749,7 +5749,7 @@ fn o3_a_range_result_reads_as_a_range_in_the_ring() {
     assert_eq!(
         lines,
         vec![
-            "The centre's last match:".to_owned(),
+            "The center's last match:".to_owned(),
             "  #5  aborted [range]  30 s  1 v 1  2026-09-24 14:02 UTC  (you flew RA)".to_owned(),
         ]
     );
@@ -6278,7 +6278,7 @@ async fn ae3_the_lobby_cap_is_per_side_by_effective_type_and_reads_the_config() 
     rig.say(1, "sim team red");
     let said = rig.say(1, "sim unit line_tank");
     assert!(
-        said.contains("A side fields at most 1 armoured machine; pick another type."),
+        said.contains("A side fields at most 1 armored machine; pick another type."),
         "red slot 1 flies its pod's line tank without having chosen it: {said}"
     );
     let said = rig.say(1, "sim unit biped_mk1");
@@ -6677,7 +6677,7 @@ async fn af2_the_world_side_cost_at_the_first_and_the_last_snapshot_of_a_minute_
             set_of(&writes, &live_key).expect("every snapshot rides with its live record");
         let live = match_::LiveRecord::from_document(&document).expect("the live record decodes");
         let at = std::time::Instant::now();
-        let encoded = live.to_document().expect("the live record serialises");
+        let encoded = live.to_document().expect("the live record serializes");
         let live_encode_ms = at.elapsed().as_secs_f64() * 1_000.0;
         // The round trip on real data: nothing a derive carries is dropped or
         // altered between what the world wrote and what the boot would read.
@@ -9924,7 +9924,7 @@ async fn m3_an_over_subscribed_roster_is_refused_by_name_at_check_out() {
         refused.map_err(|error| error.to_string()),
         Err(
             "Spare Hull 1: This tank would think 18,000 ops a second; its side's half of the \
-             centre's pool is 138,000 and 126,000 are spoken for."
+             center's pool is 138,000 and 126,000 are spoken for."
                 .to_owned()
         )
     );
@@ -10225,7 +10225,7 @@ async fn m5_sim_mind_lists_only_what_the_character_holds_and_what_fits() {
             UNCHOSEN.to_owned(),
             format!("Fits line_tank (II): Standard Doctrine, up to two of {SIX}."),
             "Your mind will seal at Class I.".to_owned(),
-            "Red's half of the centre's pool is 249,500 ops a second and 1,500 are spoken for."
+            "Red's half of the center's pool is 249,500 ops a second and 1,500 are spoken for."
                 .to_owned(),
         ]
         .join("\n")
@@ -10246,7 +10246,7 @@ async fn m5_sim_mind_lists_only_what_the_character_holds_and_what_fits() {
             UNCHOSEN.to_owned(),
             format!("Fits drone_mk1 (I): Standard Doctrine, up to two of {SIX}."),
             "Your mind will seal at Class I.".to_owned(),
-            "Blue's half of the centre's pool is 249,000 ops a second and 1,500 are spoken for."
+            "Blue's half of the center's pool is 249,000 ops a second and 1,500 are spoken for."
                 .to_owned(),
         ]
         .join("\n")
@@ -10260,7 +10260,7 @@ async fn m5_sim_mind_lists_only_what_the_character_holds_and_what_fits() {
             format!("Fits line_tank (II): Standard Doctrine, up to two of {SIX}."),
             "Fits line_tank (II): Fixture I, up to two of Line or Sniper.".to_owned(),
             "Your mind will seal at Class I.".to_owned(),
-            "Red's half of the centre's pool is 249,000 ops a second and 1,500 are spoken for."
+            "Red's half of the center's pool is 249,000 ops a second and 1,500 are spoken for."
                 .to_owned(),
         ]
         .join("\n"),
@@ -10423,7 +10423,7 @@ async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() 
     let before = rig.centre();
     assert_eq!(
         rig.say(0, "sim mind Fixture II"),
-        "This tank would think 6,000 ops a second; its side's half of the centre's pool is \
+        "This tank would think 6,000 ops a second; its side's half of the center's pool is \
          1,900 and 400 are spoken for."
     );
     assert_eq!(rig.centre(), before, "a refused mind changes no selection");
@@ -10445,7 +10445,7 @@ async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() 
     let before = rig.centre();
     assert_eq!(
         rig.say(0, "sim unit line_tank"),
-        "This tank would think 6,000 ops a second; its side's half of the centre's pool is \
+        "This tank would think 6,000 ops a second; its side's half of the center's pool is \
          1,900 and 0 are spoken for."
     );
     assert_eq!(
@@ -10478,7 +10478,7 @@ async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() 
     let before = rig.centre();
     assert_eq!(
         rig.say(0, "sim unit line_tank"),
-        "This tank would think 1,500 ops a second; its side's half of the centre's pool is \
+        "This tank would think 1,500 ops a second; its side's half of the center's pool is \
          1,900 and 1,500 are spoken for."
     );
     assert_eq!(
@@ -10489,7 +10489,7 @@ async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() 
     let said = rig.say(0, "sim mind");
     assert!(
         said.ends_with(
-            "Red's half of the centre's pool is 1,900 ops a second and 1,900 are spoken for."
+            "Red's half of the center's pool is 1,900 ops a second and 1,900 are spoken for."
         ),
         "{said}"
     );
@@ -10501,7 +10501,7 @@ async fn m5_the_later_of_sim_unit_and_sim_mind_is_refused_with_the_arithmetic() 
     let before = rig.centre();
     assert_eq!(
         rig.say(1, "sim team red"),
-        "This tank would think 1,500 ops a second; its side's half of the centre's pool is \
+        "This tank would think 1,500 ops a second; its side's half of the center's pool is \
          1,900 and 1,500 are spoken for."
     );
     assert_eq!(
@@ -11502,7 +11502,7 @@ async fn m5_sim_mind_and_sim_ai_mind_reuse_the_lobby_refusals() {
     assert_eq!(rig.say(2, "sim mind Standard"), no_slot, "selection");
     assert_eq!(rig.say(2, "sim mind none"), no_slot, "selection");
     rig.say(0, "sim start");
-    let boarding = "The simulator centre is boarding; that is not something you can do to it now.";
+    let boarding = "The simulator center is boarding; that is not something you can do to it now.";
     assert_eq!(rig.say(0, "sim mind Standard"), boarding);
     assert_eq!(rig.say(0, "sim mind none"), boarding);
     assert_eq!(rig.say(2, "sim mind Standard"), boarding, "no slot");
@@ -11528,7 +11528,7 @@ async fn m5_sim_mind_and_sim_ai_mind_reuse_the_lobby_refusals() {
     rig.say(0, "sim start");
     assert_eq!(
         rig.say(0, "sim ai mind Standard"),
-        "The simulator centre is boarding; that is not something you can do to it now."
+        "The simulator center is boarding; that is not something you can do to it now."
     );
 }
 
@@ -11562,7 +11562,7 @@ async fn m5_a_holding_lost_before_check_out_calls_the_match_off_by_slot() {
     let match_id = rig
         .centre()
         .match_id
-        .expect("a boarding centre has a match id");
+        .expect("a boarding center has a match id");
     let mut out = Outbox::new();
     let refused = {
         let engine = rig.tw.engine_mut();
@@ -12425,7 +12425,7 @@ async fn m5_the_seal_line_reaches_the_choosing_pilot_alone_before_good_hunting()
         "Good hunting stays last: {to_ada}"
     );
     for (who, other) in [("Bo", &heard[1]), ("Cy", &heard[2]), ("Di", &heard[3])] {
-        assert!(other.contains(hunting), "{who} hears the centre: {other}");
+        assert!(other.contains(hunting), "{who} hears the center: {other}");
         assert!(!other.contains("Sealed for this sortie"), "{who}: {other}");
         assert!(!other.contains("Skirmisher"), "{who}: {other}");
         assert!(!other.contains("Rearguard"), "{who}: {other}");
@@ -12598,7 +12598,7 @@ async fn m6_class_and_roster_changes_refuse_before_publishing_an_oversized_pool(
     assert_eq!(
         rig.centre(),
         before,
-        "refused cap does not mutate the centre"
+        "refused cap does not mutate the center"
     );
     assert_eq!(preview_class(&rig, PartyId::RED, 2), CoreClass::I);
     rig.say(1, "sim team red");
@@ -12611,7 +12611,7 @@ async fn m6_class_and_roster_changes_refuse_before_publishing_an_oversized_pool(
     assert_eq!(
         rig.centre(),
         before,
-        "refused roster does not mutate the centre"
+        "refused roster does not mutate the center"
     );
 }
 

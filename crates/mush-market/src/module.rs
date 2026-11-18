@@ -1267,7 +1267,7 @@ pub(crate) fn deliver(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
             ctx,
             q,
             contract,
-            "the catalogue entry it names is gone".to_string(),
+            "the catalog entry it names is gone".to_string(),
         );
         return;
     };

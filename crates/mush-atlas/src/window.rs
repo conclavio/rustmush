@@ -806,7 +806,7 @@ impl Windows {
 pub fn register_cell_size(w: &mut World, cell_cm: u16) -> Result<(), String> {
     if !RESOLUTIONS_CM.contains(&cell_cm) {
         return Err(format!(
-            "a cell size is one of {RESOLUTIONS_CM:?} centimetres, not {cell_cm}"
+            "a cell size is one of {RESOLUTIONS_CM:?} centimeters, not {cell_cm}"
         ));
     }
     let st = w
@@ -1003,7 +1003,7 @@ fn frame_for(st: &AtlasState, req: &OpenRequest) -> Result<(WindowFrame, BTreeSe
     )
     .ok_or_else(|| {
         format!(
-            "no registered cell size fits {} by {} metres under {} cells",
+            "no registered cell size fits {} by {} meters under {} cells",
             metres(bbox.width()),
             metres(bbox.height()),
             st.windows.max_cells

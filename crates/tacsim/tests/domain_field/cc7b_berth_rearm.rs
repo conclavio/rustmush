@@ -71,7 +71,7 @@ fn kg(rig: &Rig, good: &str) -> i128 {
 /// An enrolled pilot and her chartered Dray, docked at Ceres, which has a workshop.
 fn chartered(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -199,7 +199,7 @@ async fn cc7b_a_dray_rearms_her_point_defence_from_her_hold_and_the_stores() {
     assert_eq!(
         u64::try_from(order.fee_minor).expect("a fee"),
         labour(&rig, hull, 1_500) + bought,
-        "the fee is the labour and the two boxes bought"
+        "the fee is the labor and the two boxes bought"
     );
     assert_eq!(
         available(&rig, pilot),
@@ -279,7 +279,7 @@ async fn cc7b_a_corvette_rearms_her_tubes_and_spinal_gun_from_her_hold_and_the_s
     assert_eq!(
         u64::try_from(order.fee_minor).expect("a fee"),
         labour(&rig, hull, 6 + 4) + bought,
-        "the fee is the labour and the rounds bought"
+        "the fee is the labor and the rounds bought"
     );
 
     let _ = to_ic(&mut rig, order.due_ic + 60);

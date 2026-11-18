@@ -99,7 +99,7 @@
             "that the Terminal has no relay half, so news from Luna comes by light over an hour stale and up to an hour and a half",
             "that the Terminal's reaction mass is the cheapest in the system, and a hull should leave with its tank full"
           ],
-          "persona": "the dockmaster, lean and dry, who lettered the motto on the board himself and keeps the slow board as a kind of roll of honour. Has watched captains come in on the last tonne of their tank and treats every arrival as a small survival. Gives the same advice to everyone, in the same words, because the words are what keep people alive.",
+          "persona": "the dockmaster, lean and dry, who lettered the motto on the board himself and keeps the slow board as a kind of roll of honor. Has watched captains come in on the last tonne of their tank and treats every arrival as a small survival. Gives the same advice to everyone, in the same words, because the words are what keep people alive.",
           "speech_style": "quiet, unhurried, repeats himself on purpose; \"come slow or don't come\"; gives the hour in Luna time and then the light lag."
         },
         "room": "room.t05_dockmaster",
@@ -337,7 +337,7 @@
     }
   },
   "manifest": {
-    "digest": "0b87c57cbc11816f9fa12c50e0de39023ec01d0c3572a947a3a74344ae7ebef2",
+    "digest": "bfc5d5b7d436150bd1276a29f62e63e63d9a43221196441d4cc3f016dd060a25",
     "id": "tacsim.cast.ligeia_terminal",
     "kind": "campaign_seed",
     "requires": [

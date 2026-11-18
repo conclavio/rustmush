@@ -7050,7 +7050,7 @@ mod tests {
         assert_eq!(
             app.input_text(),
             "+roll strength+brawl+lu",
-            "uncategorised: not a trait"
+            "uncategorized: not a trait"
         );
         app.feed_input(&[0x15]);
         app.feed_input(b"+roll wil\t");

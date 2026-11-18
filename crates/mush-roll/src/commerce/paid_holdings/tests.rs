@@ -388,7 +388,7 @@ fn paid_holdings_audit_requires_exactly_one_row_per_pointer() -> TestResult {
             vec![row(7, 1)?]
         )
         .is_err(),
-        "one pointer per licence"
+        "one pointer per license"
     );
     check_eq!(
         PaidHolding::key_for(h(8), licence(2)?),

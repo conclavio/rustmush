@@ -271,7 +271,7 @@ fn an_inactive_scope_and_another_organisations_scope_do_not_act() -> Result {
     check_eq!(
         org_actor(r.world(), guild, theirs, member),
         Err(OrgActorError::NotForOrg),
-        "a scope of another organisation"
+        "a scope of another organization"
     );
     command(
         &mut r.engine,

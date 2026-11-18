@@ -78,7 +78,7 @@ pub(crate) fn owner(rig: &Rig, vault: VaultId) -> PrincipalId {
 /// A captain chartered into `name`, at the desk.
 pub(crate) fn captain(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let who = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, who, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, who, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), who).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")

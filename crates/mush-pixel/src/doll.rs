@@ -173,7 +173,7 @@ pub fn draw_doll_page(frame: &mut Frame, cockpit: &Value) {
         .and_then(Value::as_str)
         .unwrap_or("?");
     let unit = look.map_or("UNKNOWN UNIT", |l| l.label.as_str());
-    let title = format!("ARMOUR - {callsign} - {unit}");
+    let title = format!("ARMOR - {callsign} - {unit}");
     let fits = usize::try_from((w - 4 * s) / (6 * s)).unwrap_or(0);
     text(
         frame,
@@ -392,7 +392,7 @@ mod tests {
         assert_ne!(
             draw(Some(hurt), 640, 230).hash(),
             f.hash(),
-            "the turret's colour moved"
+            "the turret's color moved"
         );
         assert_ne!(draw(Some(cockpit()), 640, 480).hash(), f.hash());
     }

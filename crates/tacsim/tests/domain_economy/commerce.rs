@@ -596,7 +596,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot (`Salt Moth`), standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, "+coop/enrol Salt Moth");
+    let out = run(&mut rig.tw, pilot, "+coop/enroll Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -955,6 +955,26 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     no_refused_writes(&rig.tw);
 }
 
+/// **US spelling is canonical** (owner, 2026-11-17): the switch is `+coop/enroll`,
+/// the British `+coop/enrol` stays an alias of it, and `help +coop` says so.
+#[test]
+fn the_british_enrol_switch_is_an_alias_of_enroll() {
+    let mut rig = stocked();
+    let british = pilot(&mut rig, "Ada", 1);
+    let out = run(&mut rig.tw, british, "+coop/enrol Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+    assert!(tacsim::port::live_charter(rig.tw.world(), british).is_some());
+    let us = pilot(&mut rig, "Bea", 2);
+    let out = run(&mut rig.tw, us, "+coop/enroll Grey Heron");
+    assert!(out.contains("now the Grey Heron"), "{out}");
+    let help = run(&mut rig.tw, us, "help +coop");
+    assert!(help.contains("/enroll"), "{help}");
+    assert!(
+        help.contains("(switch aliases: /enrol = /enroll)"),
+        "{help}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 4. The clerk's authority
 // ---------------------------------------------------------------------------
@@ -1239,7 +1259,7 @@ fn ic8_the_ship_presence_and_the_gate_refusals() {
     let mut rig = stocked();
     let (me, row) = chartered(&mut rig, "Pilot", 1);
     let other = pilot(&mut rig, "Other", 2);
-    let out = run(&mut rig.tw, other, "+coop/enrol Grey Heron");
+    let out = run(&mut rig.tw, other, "+coop/enroll Grey Heron");
     assert!(out.contains("now the Grey Heron"), "{out}");
     let other_charter = tacsim::port::live_charter(rig.tw.world(), other).expect("a charter");
     let other_row = port_map(&rig.tw, "ceres_port")
@@ -1483,7 +1503,7 @@ fn ic8_the_board_counts_down_to_sold_out() {
         "  30 mm AP rounds: 12.00cr/round",
         "  7.62 mm ball, boxed: 25.00cr/box",
         "  105 mm HE rounds: 150.00cr/round",
-        "  anti-armour missiles, canistered: 1500.00cr/round",
+        "  anti-armor missiles, canistered: 1500.00cr/round",
     ]) {
         assert!(line.starts_with(want), "{want}:\n{out}");
     }

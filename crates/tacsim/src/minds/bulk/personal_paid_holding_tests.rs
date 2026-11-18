@@ -35,7 +35,7 @@ impl mush_core::module::QueryHandler for Query {
             .get("licence")
             .and_then(Value::as_u64)
             .and_then(|v| LicenceId::new(v).ok())
-            .ok_or_else(|| mush_proto::RichText::plain("fixture licence"))?;
+            .ok_or_else(|| mush_proto::RichText::plain("fixture license"))?;
         let request = match args.get("holder").and_then(Value::as_u64) {
             Some(holder) => PersonalFiledRequest::admission(
                 ObjId(

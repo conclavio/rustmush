@@ -330,7 +330,7 @@ impl SpaceMountDef {
                 if laser.modes.offence.is_none() && laser.modes.defence.is_none() {
                     return Err(DefinitionError::value(
                         entry,
-                        "a laser works in at least one mode, offence or defence",
+                        "a laser works in at least one mode, offense or defense",
                     ));
                 }
                 if let Some(mode) = laser.modes.offence {

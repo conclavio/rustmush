@@ -986,7 +986,7 @@ fn vf_c8b_a_station_declaring_no_channels_is_not_a_drive_gate() {
     let refused = run_as(&mut tw, loader, &depart_line(fx.carrier));
     assert!(
         !under_way(&tw, fx.carrier),
-        "an unauthored channel set is not a licence to fly: {refused}"
+        "an unauthored channel set is not a license to fly: {refused}"
     );
     assert!(refused.contains("Permission denied"), "{refused}");
 

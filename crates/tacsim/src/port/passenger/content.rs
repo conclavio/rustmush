@@ -102,20 +102,20 @@ impl PassengerApplier {
             })
             .ok_or_else(|| format!("{id}: NPC {npc_entry} has not been created"))?;
         if existing.is_some_and(|old| old != npc) {
-            return Err(format!("{id}: a traveller role cannot move to another NPC"));
+            return Err(format!("{id}: a traveler role cannot move to another NPC"));
         }
         if let Some(old) = ctx.w.attr(npc, ATTR) {
             let old: TravellerDef = old
                 .as_json()
                 .cloned()
-                .ok_or("existing traveller role is not JSON")
+                .ok_or("existing traveler role is not JSON")
                 .and_then(|value| {
-                    serde_json::from_value(value).map_err(|_| "existing traveller role is invalid")
+                    serde_json::from_value(value).map_err(|_| "existing traveler role is invalid")
                 })?;
             old.check()?;
             if old.key != def.key {
                 return Err(format!(
-                    "{id}: NPC already belongs to another traveller role"
+                    "{id}: NPC already belongs to another traveler role"
                 ));
             }
         }
@@ -180,7 +180,7 @@ impl EntryApplier for PassengerApplier {
     ) -> Result<(), String> {
         if existing.is_some_and(|npc| ctx.w.get(npc).is_some()) {
             return Err(format!(
-                "{id}: a live traveller role cannot be removed through a content pack"
+                "{id}: a live traveler role cannot be removed through a content pack"
             ));
         }
         Ok(())
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(pack.manifest().version(), 2);
         assert_eq!(
             pack.manifest().digest().to_hex(),
-            "6227037e1826315321291239035e39a8814c213d87f854c02780080495be39d0"
+            "417b0d61dd460e746cb9b0b75be1f7460610f81e6c0c152cb665cbc569095561"
         );
         let (npc, def) = definition(
             &pack,
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(original.manifest().id(), current.manifest().id());
         assert_eq!(
             original.manifest().digest().to_hex(),
-            "02d9fdcfae813fd566ed64a7d30b15104b9c847ac3193fe001e1614708b824c4"
+            "332f285b34febcba999c33b6502cbfeef5911d09ec19c190fd9036d21d2bfff7"
         );
         let role = id("passenger.leila");
         assert_eq!(

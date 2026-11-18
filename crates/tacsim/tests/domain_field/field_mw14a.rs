@@ -316,7 +316,7 @@ async fn advanced(at: &Ground) -> (Field, (u16, u16)) {
             .members()
             .iter()
             .all(|member| member.controller.character() != Some(flown.organiser)),
-        "the organiser launched the roster and is in none of its units"
+        "the organizer launched the roster and is in none of its units"
     );
     let ramp = cell_of(&field.rig, flown.unit(2)).expect("the rig stands at the ramp");
     let ordered = until_composed(

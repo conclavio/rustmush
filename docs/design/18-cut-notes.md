@@ -84,7 +84,7 @@ withdrew it and paged. The floor is now zero (`mush-market/src/lot.rs`).
 ### Pins re-blessed
 
 - `region.limbo` content digest `f127f7d7cc79b6d1f8f2e0b11f49f57497e101af0fe19cdd8cfaad0631501ef0`
-  → `46beb771027b8fa0e4056d9374259f4a32321c8b308aeb0e721c737b7b1cc94e`, in the pack's own
+  → `5555c18076ffccedf400959faf2fbc8258bb5eca8e0cb075d27c63d6cee7d11a`, in the pack's own
   `digest` field and in `mush-atlas/tests/starter.rs` `PINNED`. No other pin moved; the panic
   budgets are unchanged.
 

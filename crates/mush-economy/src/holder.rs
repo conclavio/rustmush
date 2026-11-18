@@ -60,7 +60,7 @@ impl TryFrom<HolderWire> for Holder {
                 // M8c F8: organisation 0 is an organisation (mush-org mints
                 // from 0); only the acting character must be someone.
                 if acting.0 == 0 {
-                    return Err("organisation holder names no acting character");
+                    return Err("organization holder names no acting character");
                 }
                 Ok(Self::Organization { org, acting })
             }

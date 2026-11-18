@@ -529,7 +529,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot (`Salt Moth`), standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, "+coop/enrol Salt Moth");
+    let out = run(&mut rig.tw, pilot, "+coop/enroll Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -2617,7 +2617,7 @@ fn ic14_an_unreadable_sailing_plan_fails_closed_everywhere() {
         line.contains(", 1 departing.") && line.ends_with("[ready]"),
         "{line}"
     );
-    let port = tacsim::port::programme_port(rig.tw.world()).expect("the programme port");
+    let port = tacsim::port::programme_port(rig.tw.world()).expect("the program port");
     assert!(!tacsim::port::coop::hull_is_free(
         rig.tw.world(),
         &port,
@@ -2625,7 +2625,7 @@ fn ic14_an_unreadable_sailing_plan_fails_closed_everywhere() {
     ));
     // A second pilot still enrols, on another hull.
     let second = self::pilot(&mut rig, "Second", 2);
-    let out = run(&mut rig.tw, second, "+coop/enrol Tern");
+    let out = run(&mut rig.tw, second, "+coop/enroll Tern");
     assert!(out.contains("now the Tern"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), second).expect("a charter");
     assert_ne!(charter.hull, hull, "never the dark hull");
@@ -2649,7 +2649,7 @@ fn ic14_an_unreadable_sailing_plan_fails_closed_everywhere() {
 #[test]
 fn ic14_a_free_hull_whose_sailing_plan_does_not_read_is_never_lent() {
     let rig = stocked();
-    let port = tacsim::port::programme_port(rig.tw.world()).expect("the programme port");
+    let port = tacsim::port::programme_port(rig.tw.world()).expect("the program port");
     let free_before: Vec<u32> = tacsim::port::coop::free_hulls(rig.tw.world(), &port)
         .iter()
         .map(|row| row.hull)
@@ -2674,7 +2674,7 @@ fn ic14_a_free_hull_whose_sailing_plan_does_not_read_is_never_lent() {
         store(&rig.tw).voyage_state(ObjId(dark)),
         VoyageState::Unreadable
     ));
-    let port = tacsim::port::programme_port(rig.tw.world()).expect("the programme port");
+    let port = tacsim::port::programme_port(rig.tw.world()).expect("the program port");
     let row = port
         .map
         .hulls
@@ -2693,7 +2693,7 @@ fn ic14_a_free_hull_whose_sailing_plan_does_not_read_is_never_lent() {
     assert_eq!(free_after, expected, "only the dark hull leaves the pool");
     // A new pilot enrols on the next free hull, never the dark one.
     let newcomer = pilot(&mut rig, "Newcomer", 3);
-    let out = run(&mut rig.tw, newcomer, "+coop/enrol Tern");
+    let out = run(&mut rig.tw, newcomer, "+coop/enroll Tern");
     assert!(out.contains("now the Tern"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), newcomer).expect("a charter");
     assert_eq!(charter.hull, ObjId(next), "the next free hull is lent");
@@ -3128,7 +3128,7 @@ pub(crate) fn flown_into_pickets(workers: u32, count: usize) -> (Rig, Vec<(ObjId
         let seed = i64::try_from(n).expect("small") + 1;
         let skipper = pilot(&mut rig, &format!("Skipper{n}"), seed);
         let name = format!("Picket Runner {n}");
-        let enrol = run(&mut rig.tw, skipper, &format!("+coop/enrol {name}"));
+        let enrol = run(&mut rig.tw, skipper, &format!("+coop/enroll {name}"));
         assert!(enrol.contains(&format!("now the {name}")), "{enrol}");
         let charter = tacsim::port::live_charter(rig.tw.world(), skipper).expect("a charter");
         let row = port_map(&rig.tw, "ceres_port")
@@ -4434,7 +4434,7 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     let mut rig = stocked_with(Roster::default());
     let (pilot_actor, row) = chartered(&mut rig, "Pilot", 1);
     let rival_actor = pilot(&mut rig, "Rival", 2);
-    let _ = run(&mut rig.tw, rival_actor, "+coop/enrol Rival Moth");
+    let _ = run(&mut rig.tw, rival_actor, "+coop/enroll Rival Moth");
     let _hull = ObjId(row.hull);
     let vault_id = hold_vault(&rig.tw, &row);
 
@@ -4531,17 +4531,17 @@ fn sfr5_chartered_dray_p_buys_licence_matches_velocity_in_pallas_mines_into_stow
     // Verify unlicensed mining or staking is refused (`D-35-13`: Freeport Registry licence required).
     let unlic_stake = run(&mut rig.tw, pilot_actor, "+mine/stake C metals");
     assert!(
-        unlic_stake.contains("prospecting licence") && unlic_stake.contains("Freeport Registry"),
+        unlic_stake.contains("prospecting license") && unlic_stake.contains("Freeport Registry"),
         "unlicensed stake refused: {unlic_stake}"
     );
 
     // Buy the 2,500 cr (168 IC-day) Freeport Registry prospecting licence for both pilots.
-    let lic_out = run(&mut rig.tw, pilot_actor, "+licence/buy go");
+    let lic_out = run(&mut rig.tw, pilot_actor, "+license/buy go");
     assert!(
         lic_out.contains("Freeport Registry") && lic_out.contains("2500.00cr"),
-        "licence/buy go output: {lic_out}"
+        "license/buy go output: {lic_out}"
     );
-    let _ = run(&mut rig.tw, rival_actor, "+licence/buy go");
+    let _ = run(&mut rig.tw, rival_actor, "+license/buy go");
 
     // 3. Verify `+helm/match A` from standoff (`3,800 m`, `12 m/s`) is refused (`35a` §5 #11: never teleports!).
     let match_far = run(&mut rig.tw, pilot_actor, "+helm/match A");
@@ -4821,7 +4821,7 @@ fn sfr6_kirkwood_customs_picket_story_1_end_to_end_rhai_doctrine_triad_combat_an
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot);
 
-    let lic_out = run(&mut rig.tw, pilot, "+licence/buy go");
+    let lic_out = run(&mut rig.tw, pilot, "+license/buy go");
     assert!(
         lic_out.contains("Freeport Registry") && lic_out.contains("2500.00cr"),
         "{lic_out}"
@@ -6727,7 +6727,7 @@ fn sfr12_domain_bubbles_and_real_hulls_share_kirkwood_bubble_tow_real_raider_thi
 
     // Charter *Escort Hawk* (armed Dray escort):
     let pilot_escort = pilot(&mut rig, "Escort", 2);
-    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enrol Escort Hawk");
+    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enroll Escort Hawk");
     assert!(
         enrol_escort.contains("now the Escort Hawk"),
         "{enrol_escort}"
@@ -7328,6 +7328,19 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
             "reviving pilot must clear ship.crew_linkdead"
         );
     }
+    // US spelling (owner, 2026-11-17): the dual-mode laser words take both spellings.
+    for (word, said) in [
+        ("offense", "Offense"),
+        ("offence", "Offense"),
+        ("defense", "Defense"),
+        ("defence", "Defense"),
+    ] {
+        let out = run(&mut rig.tw, gunner, &format!("+tac/pdc {word}"));
+        assert!(
+            out.contains(&format!("switched to {said}")),
+            "+tac/pdc {word}: {out}"
+        );
+    }
 }
 
 /// **Doc 35b cut SF.R14 acceptance (`D-35-17`, `35b` §4 #1–#5, §8 `SF.R14`)** — verifies:
@@ -7534,7 +7547,7 @@ fn sfr14_authoring_loads_clusters_doctrines_and_outer_bodies_from_packs_opens_pi
     //    clears it by heaving to until the interdictor stands her down.
     let _ = heave_to_until_stood_down(&mut rig2, pilot2, hull2);
 
-    let lic2 = run(&mut rig2.tw, pilot2, "+licence/buy go");
+    let lic2 = run(&mut rig2.tw, pilot2, "+license/buy go");
     assert!(lic2.contains("Freeport Registry"), "{lic2}");
     let dec2 = run(&mut rig2.tw, pilot2, "+helm/decouple");
     assert!(dec2.contains("Decoupled"), "{dec2}");
@@ -8119,7 +8132,7 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
     let constant_challenge = tacsim::space::DockingChallenge::standard_port(sid1.clone());
     assert_ne!(
         ch1.start_pose, constant_challenge.start_pose,
-        "per-session start_pose must be randomised away from constant standard_port"
+        "per-session start_pose must be randomized away from constant standard_port"
     );
     let hand_typed_constant_rle = client_solve_docking_rle(&constant_challenge);
     let fail1_out = run(
@@ -8131,7 +8144,7 @@ fn sfr16_client_docking_game_randomised_pose_and_neptune_canopy() {
         (fail1_out.contains("Docking input tape rejected: collar gates not aligned")
             || fail1_out.contains("[DOCKING] Hard collar bounce"))
             && !fail1_out.contains("Hard dock and magnetic collar seal confirmed"),
-        "hand-typed constant-pose tape must fail against randomised pose: {fail1_out}"
+        "hand-typed constant-pose tape must fail against randomized pose: {fail1_out}"
     );
     let fail1_burn = drain(&mut rig.tw);
     land_quietly(&mut rig, &fail1_burn);
@@ -8684,7 +8697,7 @@ fn sfr17_hole_closeout_ii_abort_undock_expedition_dock_gates_salvage_hold_and_30
     let mut rig_mc = stocked();
     let (pilot_c1, row_c1) = chartered(&mut rig_mc, "PilotC1", 1);
     let pilot_c2 = self::pilot(&mut rig_mc, "PilotC2", 2);
-    let _ = run(&mut rig_mc.tw, pilot_c2, "+coop/enrol Escort Hawk");
+    let _ = run(&mut rig_mc.tw, pilot_c2, "+coop/enroll Escort Hawk");
     let charter_c2 = tacsim::port::live_charter(rig_mc.tw.world(), pilot_c2).expect("c2 charter");
     let row_c2 = port_map(&rig_mc.tw, "ceres_port")
         .hulls
@@ -8829,7 +8842,7 @@ fn sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settl
     seed_pool(&mut rig, vault_miner, "strategic_ore", 51, LotId(1083));
 
     let pilot_escort = pilot(&mut rig, "Escort", 2);
-    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enrol Escort Hawk");
+    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enroll Escort Hawk");
     assert!(
         enrol_escort.contains("now the Escort Hawk"),
         "{enrol_escort}"
@@ -8849,7 +8862,7 @@ fn sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settl
     // Also charter a third hull (*Late Runner*) at Ceres before departure so we can launch it
     // after the first bubble closes to verify `cleared_interdiction_legs` prevents re-promotion:
     let pilot_late = pilot(&mut rig, "LatePilot", 3);
-    let enrol_late = run(&mut rig.tw, pilot_late, "+coop/enrol Late Runner");
+    let enrol_late = run(&mut rig.tw, pilot_late, "+coop/enroll Late Runner");
     assert!(enrol_late.contains("now the Late Runner"), "{enrol_late}");
     let charter_late =
         tacsim::port::live_charter(rig.tw.world(), pilot_late).expect("late charter");
@@ -8867,7 +8880,7 @@ fn sfr18_multi_carrier_bubble_per_carrier_party_inspection_escort_disabled_settl
     // decouples on the Kirkwood leg. Her journey stays parked in `Promoted` on the picket's
     // domain for the whole story, and must not hold that domain's activation open at step 4.
     let pilot_drift = pilot(&mut rig, "Drifter", 4);
-    let enrol_drift = run(&mut rig.tw, pilot_drift, "+coop/enrol Drift Wood");
+    let enrol_drift = run(&mut rig.tw, pilot_drift, "+coop/enroll Drift Wood");
     assert!(enrol_drift.contains("now the Drift Wood"), "{enrol_drift}");
     let charter_drift =
         tacsim::port::live_charter(rig.tw.world(), pilot_drift).expect("drifter charter");
@@ -9203,7 +9216,7 @@ fn two_tugs_into_kirkwood(drive_down_b: bool) -> TwoTugs {
     seed_pool(&mut rig, vault_a, "provisions", 19, LotId(1092));
 
     let pilot_b = pilot(&mut rig, "SalvorB", 2);
-    let enrol_b = run(&mut rig.tw, pilot_b, "+coop/enrol Second Tug");
+    let enrol_b = run(&mut rig.tw, pilot_b, "+coop/enroll Second Tug");
     assert!(enrol_b.contains("now the Second Tug"), "{enrol_b}");
     let charter_b = tacsim::port::live_charter(rig.tw.world(), pilot_b).expect("b charter");
     let row_b = port_map(&rig.tw, "ceres_port")
@@ -9621,7 +9634,7 @@ fn sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy() {
                 .map(|c| c.state),
             Some(mush_economy::ContractState::Cancelled)
         ),
-        "the released claim's contract is cancelled"
+        "the released claim's contract is canceled"
     );
     let _ = run(&mut rig.tw, pilot_a, "+helm/approach derelict");
     let rel_draws = drain(&mut rig.tw);
@@ -9807,7 +9820,7 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
     } = salvage_scene();
     // A chartered pilot: the enrolment opens the credit account the job escrows from.
     let owner = pilot(&mut rig, "RaiderOwner", 3);
-    let enrol = run(&mut rig.tw, owner, "+coop/enrol Third Tug");
+    let enrol = run(&mut rig.tw, owner, "+coop/enroll Third Tug");
     assert!(enrol.contains("now the Third Tug"), "{enrol}");
     let moved = run(
         &mut rig.tw,
@@ -10094,7 +10107,7 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
     seed_pool(&mut rig, vault_empty, "provisions", 20, LotId(2002));
 
     let pilot_loaded = pilot(&mut rig, "LoadedPilot", 2);
-    let enrol_loaded = run(&mut rig.tw, pilot_loaded, "+coop/enrol Loaded Miner");
+    let enrol_loaded = run(&mut rig.tw, pilot_loaded, "+coop/enroll Loaded Miner");
     assert!(
         enrol_loaded.contains("now the Loaded Miner"),
         "{enrol_loaded}"
@@ -10927,7 +10940,7 @@ fn sfr22_authoring_ii_clusters_from_pack_sealed_minds_and_drone_excursions() {
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot);
 
-    let _ = run(&mut rig.tw, pilot, "+licence/buy go");
+    let _ = run(&mut rig.tw, pilot, "+license/buy go");
     let _ = run(&mut rig.tw, pilot, "+ship/undock ceres_halo throttle=500");
     let transit_burn = drain_space_and_industry(&mut rig.tw);
     land_quietly(&mut rig, &transit_burn);
@@ -11082,7 +11095,7 @@ fn sfr23_mining_and_sensing_remainders() {
     let vault_1 = hold_vault(&rig.tw, &row_1);
 
     let pilot_2 = pilot(&mut rig, "MinerTwo", 2);
-    let enrol_2 = run(&mut rig.tw, pilot_2, "+coop/enrol Second Miner");
+    let enrol_2 = run(&mut rig.tw, pilot_2, "+coop/enroll Second Miner");
     assert!(enrol_2.contains("now the Second Miner"), "{enrol_2}");
     let charter_2 = tacsim::port::live_charter(rig.tw.world(), pilot_2).expect("charter 2");
     let row_2 = port_map(&rig.tw, "ceres_port")
@@ -11094,7 +11107,7 @@ fn sfr23_mining_and_sensing_remainders() {
     let vault_2 = hold_vault(&rig.tw, &row_2);
 
     let pilot_std = pilot(&mut rig, "StdPilot", 3);
-    let enrol_std = run(&mut rig.tw, pilot_std, "+coop/enrol Plain Hauler");
+    let enrol_std = run(&mut rig.tw, pilot_std, "+coop/enroll Plain Hauler");
     assert!(enrol_std.contains("now the Plain Hauler"), "{enrol_std}");
     let charter_std = tacsim::port::live_charter(rig.tw.world(), pilot_std).expect("charter std");
     let row_std = port_map(&rig.tw, "ceres_port")
@@ -11140,9 +11153,9 @@ fn sfr23_mining_and_sensing_remainders() {
         "expected +helm/autopilot <cluster_id> in refusal, got: {outside_ping}"
     );
 
-    let _ = run(&mut rig.tw, pilot_1, "+licence/buy go");
-    let _ = run(&mut rig.tw, pilot_2, "+licence/buy go");
-    let _ = run(&mut rig.tw, pilot_std, "+licence/buy go");
+    let _ = run(&mut rig.tw, pilot_1, "+license/buy go");
+    let _ = run(&mut rig.tw, pilot_2, "+license/buy go");
+    let _ = run(&mut rig.tw, pilot_std, "+license/buy go");
     sweep(&mut rig.tw, 6);
 
     // Fly all 3 hulls to `kirkwood_gap_3_1`:
@@ -12385,7 +12398,7 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
                 .map(|c| c.state),
             Some(mush_economy::ContractState::Cancelled)
         ),
-        "the released claim's contract is cancelled"
+        "the released claim's contract is canceled"
     );
     let after_deadline = deadline_real_s + 10;
     rig.tw.set_now(after_deadline);
@@ -14347,7 +14360,7 @@ fn mw9_an_escort_that_heaves_to_is_stood_down_alone_though_she_fired_and_the_run
     load(&mut rig, &row_runner, 53, 19);
 
     let pilot_escort = pilot(&mut rig, "Escort", 2);
-    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enrol Escort Hawk");
+    let enrol_escort = run(&mut rig.tw, pilot_escort, "+coop/enroll Escort Hawk");
     assert!(
         enrol_escort.contains("now the Escort Hawk"),
         "{enrol_escort}"
@@ -14608,7 +14621,7 @@ fn interdictor_doctrine(
 /// A second chartered hull, the *Escort Hawk*, loaded and with her pilot at C01's lock.
 fn second_chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, ObjId) {
     let second = pilot(rig, who, seed);
-    let enrol = run(&mut rig.tw, second, "+coop/enrol Escort Hawk");
+    let enrol = run(&mut rig.tw, second, "+coop/enroll Escort Hawk");
     assert!(enrol.contains("now the Escort Hawk"), "{enrol}");
     let charter = tacsim::port::live_charter(rig.tw.world(), second).expect("a second charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -15162,7 +15175,7 @@ fn dray_p_matched_at_ceres_halo(rig: &mut Rig) -> (ObjId, ObjId, VaultId) {
     set_rate(&mut rig.tw, 3_600);
     board(rig, pilot);
 
-    let _ = run(&mut rig.tw, pilot, "+licence/buy go");
+    let _ = run(&mut rig.tw, pilot, "+license/buy go");
     let _ = run(&mut rig.tw, pilot, "+ship/undock ceres_halo throttle=500");
     let burn = drain_space_and_industry(&mut rig.tw);
     land_quietly(rig, &burn);
@@ -16122,7 +16135,7 @@ fn cc7_a_hulls_magazines_survive_check_in_a_restart_and_check_out() {
         let full = rounds(&ship);
         assert!(
             ship.pdcs.len() >= 2 && ship.pdcs[0].ammo_remaining > 300,
-            "the Dray carries point defence: {full:?}"
+            "the Dray carries point defense: {full:?}"
         );
         ship.pdcs[0].ammo_remaining -= 300;
         tacsim::space::check_in_space_unit(ctx, hull, &ship, at_ic).expect("she checks in");

@@ -1253,7 +1253,7 @@ async fn assert_help(rig: &mut Rig, who: ObjId) {
     for (topic, title) in [
         ("ports", "# Ports"),
         ("ships", "# Ships"),
-        ("coop", "# The Co-op's First Captain programme"),
+        ("coop", "# The Co-op's First Captain program"),
         ("orders", "# The sailing plan"),
         ("trade", "# Trading"),
     ] {
@@ -1321,11 +1321,11 @@ async fn ic12_part_one_a_leg_by_hand() {
         terms.contains(&format!("Drays free: {drays} of {drays}.")),
         "{terms}"
     );
-    let enrolled = run(&mut rig, pilot, "+coop/enrol Salt Moth").await;
+    let enrolled = run(&mut rig, pilot, "+coop/enroll Salt Moth").await;
     assert!(enrolled.contains("now the Salt Moth"), "{enrolled}");
     let ship = run(&mut rig, pilot, "+ship").await;
     assert!(ship.contains("Salt Moth (Dray): docked "), "{ship}");
-    assert!(ship.contains("Programme: 0 sales;"), "{ship}");
+    assert!(ship.contains("Program: 0 sales;"), "{ship}");
     let row = hull_row(&rig.tw, pilot);
     let hull = ObjId(row.hull);
     let hold = hold_of(&rig.tw, &row);
@@ -1702,7 +1702,7 @@ async fn ic12_part_one_a_leg_by_hand() {
     let permille = store(&rig.tw)
         .enrolment_of(pilot)
         .map(|e| e.share_permille)
-        .expect("the enrolment");
+        .expect("the enrollment");
     let mut contracts: Vec<(ContractId, i64)> = Vec::new();
     let (mut margins, mut shares_billed) = (0_i64, 0_i64);
     for (bid, ask, good, qty) in [
@@ -1886,7 +1886,7 @@ async fn enrol(rig: &mut Rig, pilot: ObjId, name: &str) -> HullRow {
     let c05 = station_room(&rig.tw, "ceres_port", "room.c05_registry");
     walk(rig, pilot, "c", c03).await;
     walk(rig, pilot, "registry", c05).await;
-    let enrolled = run(rig, pilot, &format!("+coop/enrol {name}")).await;
+    let enrolled = run(rig, pilot, &format!("+coop/enroll {name}")).await;
     assert!(enrolled.contains(&format!("now the {name}")), "{enrolled}");
     let row = hull_row(&rig.tw, pilot);
     let hold = hold_of(&rig.tw, &row);
@@ -2386,7 +2386,7 @@ async fn ic12_part_two_the_queue_runs_the_return() {
     let permille = store(&rig.tw)
         .enrolment_of(wren)
         .map(|e| e.share_permille)
-        .expect("the enrolment");
+        .expect("the enrollment");
     let mut shares = 0_i64;
     let sold = sales_of(&rig.tw, wren);
     assert_eq!(sold.len(), 2, "two sales");
@@ -3623,7 +3623,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     refused(
         &mut rig,
         vexa,
-        "+coop/enrol Long Haul",
+        "+coop/enroll Long Haul",
         tacsim::port::coop::ENROLLED_ONCE,
         &snap,
     )
@@ -3664,7 +3664,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
         ],
     )
     .await;
-    let out = run(&mut rig, cass, "+coop/enrol Grey Heron").await;
+    let out = run(&mut rig, cass, "+coop/enroll Grey Heron").await;
     assert_eq!(
         out.trim(),
         tacsim::port::coop::NOT_OPEN,
@@ -5822,7 +5822,7 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
     let who = pilot(&mut rig, "Fleetwright", "fleetwright").await;
     let observer = pilot(&mut rig, "MobileObserver", "mobileobserver").await;
     let p = tacsim::relay_mobile::current(rig.tw.world())
-        .expect("dormant Fleet programme")
+        .expect("dormant Fleet program")
         .clone();
     assert_eq!(p.progress(), 0);
     assert!(p.launch.is_none());

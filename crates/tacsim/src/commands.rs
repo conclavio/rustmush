@@ -108,7 +108,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/time show                   the live world-time generation, its rate,                    the generations left, and each subsystem's declared catch-up policy.
                    @tacsim/time rate=<n>               (staff) open ONE new world-time rate                    generation at <n> IC seconds per real second, and announce each subsystem's                    declared policy for it. It is one attributed act on the kernel's own                    timeline: no second timeline is created and no earlier fact is reinterpreted.
                    @tacsim/port status                 (staff) the port readiness report: every binding the port entries made — rooms, domains, orgs, accounts and capital — with the lane, the sky and the world rate.
-                   @tacsim/port clear #<hull>          (staff) stand down a programme hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told.\n\
+                   @tacsim/port clear #<hull>          (staff) stand down a program hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told.\n\
                    @tacsim/port seed <port> <design> <mark>=org:<organization>\n\
                    \x20                                 (staff) commission one ship of <design> for an organization (a House) at <port> under the fresh <mark>: the port's next fires lay her up, dock her and title her to it on its root scope. A member granted unit.deploy there may take her out.\n\
                    @tacsim/tv close #<rig>             (staff) stop a rig's work and clear its plan and queued unload in place.\n\
@@ -251,11 +251,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::Raw,
             // Doc 20 cut SM.3a: `refit` re-binds a chartered hull's unit through
             // `mush_tactics::module::refit_unit` and writes nothing else.
-            switches: ["enrol", "statement", "buyout", "release", "refit"]
+            switches: ["enroll", "statement", "buyout", "release", "refit"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
+            // US spelling is canonical; the British `/enrol` stays an alias so
+            // nothing that already types it breaks.
+            switch_aliases: vec![("enrol".into(), "enroll".into())],
             help: crate::port::coop::COOP_HELP.into(),
             ..CommandSpec::default()
         },
@@ -515,6 +518,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
         CommandSpec {
             name: crate::port::licence::LICENCE_VERB.into(),
+            aliases: vec![crate::port::licence::LICENCE_VERB_ALIAS.into()],
             shape: ArgShape::Raw,
             switches: ["buy", "show"].iter().copied().map(SmolStr::new).collect(),
             help: crate::port::licence::LICENCE_HELP.into(),
@@ -2010,7 +2014,7 @@ const GROUND_HELP: &str = "\
 Staff-only live ground draft staging (doc 30 §8, Q-30-5). Signs and hot-shelves
 a GroundDraft (`tacsim.<id>` + `tacsim.pack.<id>`) into the running TacSim store
 and Atlas shelf without a server restart; `/apply` applies both packs immediately
-when the simulator centre is idle.";
+when the simulator center is idle.";
 
 fn resolve_ground_draft(w: &World, raw: &str) -> Result<crate::ground::GroundDraft, CmdError> {
     let trimmed = raw.trim();

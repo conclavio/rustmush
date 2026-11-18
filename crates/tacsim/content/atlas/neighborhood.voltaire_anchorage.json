@@ -49,7 +49,7 @@
       "def": {
         "from": "room.d04_concourse",
         "names": [
-          "Roadsmaster <RM>;rm;roadsmaster;harbourmaster;harbour",
+          "Roadsmaster <RM>;rm;roadsmaster;harbormaster;harbourmaster;harbor;harbour",
           "Concourse <C>;c;concourse;out"
         ],
         "portal": {
@@ -641,8 +641,8 @@
         "desc": "The gallery runs the length of the visiting cradles behind a row of thick ports, each framing a berth number, a boarding tube and a hull lashed down by four tie-downs. Deimos holds even less than Phobos, so a hull does not land here so much as settle, and the cradles keep what settles into them. The deck is a convention of painted chevrons; handlines run at shoulder height and every bench has a tether loop. The air is old scrubber air, cold off the tank steel, with new tether rubber in it. A berth board lists each cradle and its bond status. The pressure lobby is inward.",
         "details": {
           "berth board": "Cradle by cradle: the hull, its registry, its agent of record, and IN BOND or CLEARED FOR STICKNEY. A docked hull's name lights when a pilot is aboard.",
-          "handlines": "Braided line at shoulder height with clip points every two metres. Traffic keeps right, and a stencil says so in Republic typeface.",
-          "ports": "Laminated glass with a Republic inspection sticker in each corner, dated. Beyond them the floor of Voltaire is grey and smooth, its old craters filled in with dust.",
+          "handlines": "Braided line at shoulder height with clip points every two meters. Traffic keeps right, and a stencil says so in Republic typeface.",
+          "ports": "Laminated glass with a Republic inspection sticker in each corner, dated. Beyond them the floor of Voltaire is gray and smooth, its old craters filled in with dust.",
           "tie downs": "Four cable tie-downs to a cradle, ratcheted by hand from the boarding tube. On Deimos a hull resting on the crater floor would walk off it under the push of its own pumps."
         },
         "footprint": {
@@ -748,7 +748,7 @@
           "clock": "Coprates standard, in Republic typeface. There is no Freeport clock on the concourse; that one hangs in the roadsmaster's office.",
           "handlines": "Two lines crossing the hall corner to corner. Where they cross, a ring of painted bands tells newcomers to clip on before they let go.",
           "patrol notice": "ORBITAL GUARD — VIGIL EXERCISES OFF THE ROADS — HOLD TO FILED PLANS. It is reissued every month with the same text and a new date.",
-          "station map": "The Roads Deck above and the Tank Deck below, the Tank Deck drawn as a grey band marked RESERVE PERSONNEL except for the receiving hall, which is marked PUBLIC."
+          "station map": "The Roads Deck above and the Tank Deck below, the Tank Deck drawn as a gray band marked RESERVE PERSONNEL except for the receiving hall, which is marked PUBLIC."
         },
         "footprint": {
           "rect": [
@@ -777,7 +777,7 @@
     },
     "room.d05_harbourmaster": {
       "def": {
-        "desc": "A half-door with a counter on top of it closes off a cramped office that runs back toward the crater wall. A board on the back wall shows every cradle in the Roads and the two approach lanes beyond them, the old ark moorings drawn in grey. Two clocks hang under it, Coprates standard and Freeport time. A sailing-plan pad lies open on the counter beside a tray of clearance stamps, and a radio carries the Guard's approach channel at a volume that is just not words. The office smells of stamp ink and of the small heater under the desk, which ticks. The concourse is out the half-door.",
+        "desc": "A half-door with a counter on top of it closes off a cramped office that runs back toward the crater wall. A board on the back wall shows every cradle in the Roads and the two approach lanes beyond them, the old ark moorings drawn in gray. Two clocks hang under it, Coprates standard and Freeport time. A sailing-plan pad lies open on the counter beside a tray of clearance stamps, and a radio carries the Guard's approach channel at a volume that is just not words. The office smells of stamp ink and of the small heater under the desk, which ticks. The concourse is out the half-door.",
         "details": {
           "clocks": "Coprates standard on the left and Freeport time on the right. The card between them gives the offset and has been corrected in pencil.",
           "hop card": "Pinned by the counter: DEIMOS TO PHOBOS, ABOUT THREE HOURS IN A GOOD SEASON, A TONNE OF REACTION MASS. Under it, in pencil: always a good season.",
@@ -886,7 +886,7 @@
           "blank panel": "Where an ask board would hang, a blank panel stencilled NO SALES IN BOND. The Reserve's bunkers are sold at the commissary.",
           "inspection crate": "An instrument-board crate with its lid off, the foam cut to the boards' shape. A tag reads INSPECTED IN BOND and carries the Commissioner's seal number; boards cube out long before they weigh out.",
           "pencil note": "Under the alloy line, in a clerk's pencil: LUNAR. KASEI CANNOT ROLL IT. And under that, in another hand, one word: tribute.",
-          "stair well": "A stair in a railed well, seven metres down to the Tank Deck, with a handline beside it for those who prefer to float it. RECEIVING HALL — PUBLIC; the arrow is green."
+          "stair well": "A stair in a railed well, seven meters down to the Tank Deck, with a handline beside it for those who prefer to float it. RECEIVING HALL — PUBLIC; the arrow is green."
         },
         "footprint": {
           "rect": [
@@ -985,7 +985,7 @@
     "room.d15_spine": {
       "def": {
         "access": "restricted",
-        "desc": "A service corridor runs along the back of the tank gallery, cable trays overhead and manifold valves down one wall, each tagged with a date and an initial. Two wire cages hold what backs the counters above: the Reserve's intake manifold and the Syrtis bonded cage. At the far end a glassed office looks out over the tanks: three desks, three dark terminals, nameplates face down. The air is cold and loud with pumps, and the deck plates smell of hydraulic fluid. RESERVE PERSONNEL ONLY is stencilled every ten metres. The receiving hatch is the way out.",
+        "desc": "A service corridor runs along the back of the tank gallery, cable trays overhead and manifold valves down one wall, each tagged with a date and an initial. Two wire cages hold what backs the counters above: the Reserve's intake manifold and the Syrtis bonded cage. At the far end a glassed office looks out over the tanks: three desks, three dark terminals, nameplates face down. The air is cold and loud with pumps, and the deck plates smell of hydraulic fluid. RESERVE PERSONNEL ONLY is stencilled every ten meters. The receiving hatch is the way out.",
         "details": {
           "cages": "RESERVE — INTAKE & STORE. SYRTIS — BONDED. Each cage carries a manifest clipped to its door, and the manifests are the station's real stock, not the boards upstairs.",
           "gauges": "Level gauges for every tank bank, repeated from the gallery. Each face is covered by a hinged plate under a seal.",
@@ -1092,7 +1092,7 @@
     }
   },
   "manifest": {
-    "digest": "362430c60f0c79e718e6a272b3bd502c380da6867b10c52e5a0abe6cdfcabd0e",
+    "digest": "9c7e01ed975d80ca98ebd9cfda1e021feaeaa7cb90a7f8b449b9831ef1e8d255",
     "id": "neighborhood.voltaire_anchorage",
     "kind": "neighborhood",
     "requires": [

@@ -88,7 +88,7 @@ fn prospecting_licence_grace_is_at_least_28_ic_days() {
     let days = find(&lane, "licence")
         .and_then(|licence| licence.get("grace_ic_days"))
         .and_then(Value::as_i64)
-        .expect("the lane authors a licence grace");
+        .expect("the lane authors a license grace");
     at_least("lane licence.grace_ic_days", days * 86_400);
 }
 

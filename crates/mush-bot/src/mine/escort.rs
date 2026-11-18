@@ -935,7 +935,7 @@ mod tests {
         assert!(is_hit_scored("Hit on X2."));
         assert!(is_hit_scored("Hit."));
         assert!(!is_hit_scored(
-            "Hit on the hull's front facet: 280 of 400 armour left."
+            "Hit on the hull's front facet: 280 of 400 armor left."
         ));
         let rows = [
             "cannon (105)  ready  38 of 40 round(s)".to_owned(),

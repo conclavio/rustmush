@@ -392,9 +392,7 @@ pub fn check_entry(e: &CatalogEntry) -> Result<(), RecordError> {
         || e.catalog.code.trim().is_empty()
         || e.catalog.code.len() > MAX_CATALOG_CODE_BYTES
     {
-        return Err(RecordError(
-            "a catalog entry names no usable catalogue code",
-        ));
+        return Err(RecordError("a catalog entry names no usable catalog code"));
     }
     if !e
         .catalog
@@ -402,9 +400,7 @@ pub fn check_entry(e: &CatalogEntry) -> Result<(), RecordError> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
     {
-        return Err(RecordError(
-            "a catalogue code holds a character a key cannot",
-        ));
+        return Err(RecordError("a catalog code holds a character a key cannot"));
     }
     if e.name.trim().is_empty() || e.name.len() > MAX_ENTRY_NAME_BYTES {
         return Err(RecordError("a catalog entry's name is empty or too long"));
@@ -816,7 +812,7 @@ impl TryFrom<ListingWire> for Listing {
             return Err(RecordError("a listing's quantity is out of range"));
         }
         if w.catalog.code.trim().is_empty() || w.catalog.code.len() > MAX_CATALOG_CODE_BYTES {
-            return Err(RecordError("a listing names no usable catalogue code"));
+            return Err(RecordError("a listing names no usable catalog code"));
         }
         if w.definition_version == 0 {
             return Err(RecordError("a listing's definition version is zero"));
@@ -1378,7 +1374,7 @@ impl TryFrom<QuoteWire> for Quote {
             return Err(RecordError("a quote's quantity is out of range"));
         }
         if w.catalog.code.trim().is_empty() || w.catalog.code.len() > MAX_CATALOG_CODE_BYTES {
-            return Err(RecordError("a quote names no usable catalogue code"));
+            return Err(RecordError("a quote names no usable catalog code"));
         }
         if w.definition_version == 0 {
             return Err(RecordError("a quote's definition version is zero"));

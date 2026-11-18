@@ -1627,7 +1627,7 @@ impl ArenaConfig {
             // hauler the first); the sentence names the fieldable three.
             if !class.fieldable() {
                 return Err(format!(
-                    "[tacsim.arena.max_units_by_class] names a class that is not armour, \
+                    "[tacsim.arena.max_units_by_class] names a class that is not armor, \
                      walker or drone: {}",
                     class.as_str()
                 ));
@@ -2400,7 +2400,7 @@ mod tests {
         assert_eq!(
             cfg.validate(),
             Err(
-                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
                  drone: hauler"
                     .to_owned()
             )
@@ -2418,7 +2418,7 @@ mod tests {
         assert_eq!(
             cfg.validate(),
             Err(
-                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
                  drone: vehicle"
                     .to_owned()
             )

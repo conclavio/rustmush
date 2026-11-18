@@ -3,11 +3,11 @@
     "id": "region.freeport_commons",
     "version": 1,
     "kind": "region",
-    "digest": "0128a8b67e95da3dfef1c587208f249f736e79e37925a033b8ff3fd53ce4a0ff",
+    "digest": "2a59fbb1a546539122c0fcde151f78bd0127ea85c1802ab5b7b1c681e6c30f63",
     "requires": []
   },
   "brief": {
-    "prose": "Freeport Commons is the Registry's oldest working ground, five kilometres north of the Freeport on the floor of Occator: open to anyone the Registry licenses, staked by nobody, and worked over since the Outbound opened the Belt, so every block has given up a share of what it held. The pad is a cleared square of fused regolith with the Freeport's lights on the southern horizon."
+    "prose": "Freeport Commons is the Registry's oldest working ground, five kilometers north of the Freeport on the floor of Occator: open to anyone the Registry licenses, staked by nobody, and worked over since the Outbound opened the Belt, so every block has given up a share of what it held. The pad is a cleared square of fused regolith with the Freeport's lights on the southern horizon."
   },
   "entries": {
     "region.freeport_commons": {

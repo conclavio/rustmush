@@ -90,7 +90,7 @@ fn command_entries_are_viewer_filtered_sorted_and_deterministic() {
     assert!(player.iter().any(|n| n == "WHO"), "{player:?}");
     assert!(
         !player.iter().any(|n| n == "@wizonly" || n == "@powered"),
-        "gated verbs are absent for a player, not greyed: {player:?}"
+        "gated verbs are absent for a player, not grayed: {player:?}"
     );
     let mut sorted = player.clone();
     sorted.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));

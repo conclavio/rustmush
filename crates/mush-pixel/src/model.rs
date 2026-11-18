@@ -408,7 +408,7 @@ mod tests {
             if let Some(id) = &l.model {
                 assert!(
                     entry(id).is_some(),
-                    "look {} names {id}, not in the catalogue",
+                    "look {} names {id}, not in the catalog",
                     l.id
                 );
                 assert!(crate::bake::model(id).is_some(), "{id}: embedded");

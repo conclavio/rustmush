@@ -114,7 +114,7 @@
                 "repeater": "A sealed box with a green link light and a red one. Green means the bridge has the rig; red means nobody does, and the rig sits still until somebody does.",
                 "seat": "Empty, its harness clipped back. A stencil on the headrest says CREW SEAT; rigs like this one are driven from the bridge.",
                 "spades": "Two folded steel blades on rams at the tail. Dug into the regolith they hold the wrecker still while the winch takes a casualty's weight.",
-                "stores gauge": "Tonnes and cubic metres in the tool locker against its two limits, 1 t and 2 m3."
+                "stores gauge": "Tonnes and cubic meters in the tool locker against its two limits, 1 t and 2 m3."
               },
               "id": "cab",
               "kind": "walkable",
@@ -266,7 +266,7 @@
     }
   },
   "manifest": {
-    "digest": "a6f556916ef9ac97004e6a819b536e5aaf3f1cf80919b4bc14b07a4c08d584b7",
+    "digest": "a4a2fb1f61d7d6544c8b8dd5c701fbbd109c4ba941f78e167c7a82daec1169eb",
     "id": "tacsim.pack.tv_wrecker",
     "kind": "rules_definition",
     "requires": [

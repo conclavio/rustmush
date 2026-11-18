@@ -31,7 +31,7 @@ pub(crate) const USAGE_RATE_FILE: &str = "@mind/rate <name>@<rev>; @mind/file <n
 pub(crate) const USAGE_FILED: &str =
     "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]";
 pub(crate) const USAGE_FORK: &str =
-    "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)";
+    "@mind/fork <license>=<name> (from an Open license; @mind/localcopy copies your own drafts)";
 
 /// `MAX_CHARTER_NAME_BYTES` (80): the filing's own charter-name bound.
 const MAX_CHARTER_NAME: usize = mush_roll::commerce::records::MAX_CHARTER_NAME_BYTES;

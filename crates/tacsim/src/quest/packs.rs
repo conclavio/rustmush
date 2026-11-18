@@ -52,23 +52,23 @@ mod tests {
         }
         assert_eq!(
             packs[0].manifest().digest().to_hex(),
-            "8e32dd2b54e360de9e3b49cb2d26ab29b04e8e7092af53f9f5d57b9ae9f26863"
+            "301e09f0fa594021b296a2ec356d54a64dc117345084e3b1c4d15dc99804aa48"
         );
         assert_eq!(
             packs[1].manifest().digest().to_hex(),
-            "554d015d860808e35e0de99678841f7b68f7a0d39efdf62b59bb473a7e79f1f4"
+            "4eb6f8b8f310f795debc20ae8d7e4f4810ea2ea56705d36adb4925b2594a5a0d"
         );
         assert_eq!(
             packs[2].manifest().digest().to_hex(),
-            "8d9cdd3fe91f97ca6871bbbe9556e1c2b47a707ae7ae7f6c1396d502355f97e7"
+            "522dbb14ea7d8580178c90267d988f62ee3e80c9537743086ab3a23931838e72"
         );
         assert_eq!(
             packs[3].manifest().digest().to_hex(),
-            "6d38a545d42a91333c9a3f2a85716d8c999f4e87686f257070106d495741f933"
+            "93867df0c6d78e5b840ad9661434b01ce4c119d773db134af54de107740b174a"
         );
         assert_eq!(
             packs[4].manifest().digest().to_hex(),
-            "03c64ad7904943334144cacf4facaa7e48dea7715beab650b920c95510d2db8f"
+            "ca683a10cc932f89affa4ad5ff731d89c2d66759ae865bda8c2bee29ddeeb059"
         );
         assert_eq!(
             packs[5].manifest().digest().to_hex(),

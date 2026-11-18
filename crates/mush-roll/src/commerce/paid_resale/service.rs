@@ -452,7 +452,7 @@ fn tick(ctx: &mut mush_core::Ctx<'_>, service: &Service) -> Result<(), Publicati
     Ok(())
 }
 fn unavailable() -> mush_core::CmdError {
-    mush_core::CmdError::msg("Paid licence settlement processing is unavailable.")
+    mush_core::CmdError::msg("Paid license settlement processing is unavailable.")
 }
 fn drive(ctx: &mut mush_core::Ctx<'_>, s: &Service) -> Result<(), mush_core::CmdError> {
     if ctx.actor != s.actor || ctx.dispatch_actor() != Some(s.actor) || !ctx.args.raw().is_empty() {

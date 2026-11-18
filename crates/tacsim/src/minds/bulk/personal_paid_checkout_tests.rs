@@ -639,7 +639,7 @@ impl PlayerWorld {
         let engine = boxed_fixture_engine(saved.world()?, Registry::new(), modules)?;
         let mut this = Self::assemble(engine, &f.accounts, saved, &shared, manifest, minds_facts)?;
         let lobby = match_::centre_object(&this.engine.world, match_::LOBBY_ENTRY)
-            .ok_or("shipped OOC centre")?;
+            .ok_or("shipped OOC center")?;
         this.arrive(lobby)?;
         check_eq!(this.state()?, MatchState::Idle);
         Ok(this)
@@ -785,7 +785,7 @@ impl PlayerWorld {
     }
     fn state(&self) -> TestResult<MatchState> {
         Ok(match_::centre_of(&self.engine.world)
-            .ok_or("actual centre")?
+            .ok_or("actual center")?
             .state)
     }
     fn select(&mut self) -> TestResult {
@@ -821,7 +821,7 @@ impl PlayerWorld {
                 );
             }
         }
-        let centre = match_::centre_of(&self.engine.world).ok_or("selected centre")?;
+        let centre = match_::centre_of(&self.engine.world).ok_or("selected center")?;
         let own = centre
             .slots
             .iter()

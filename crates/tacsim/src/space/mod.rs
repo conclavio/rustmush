@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn sub_metre_position_remainder_accumulates_slow_velocity_across_250ms_substeps() {
         let mut bubble =
-            LocalSpaceBubble::new("bubble.submetre", "site.test", "Sub-Metre Remainder", 2_000);
+            LocalSpaceBubble::new("bubble.submetre", "site.test", "Sub-Meter Remainder", 2_000);
         // Dray-P moving at 0.49 m/s (490 mm/s) after 1 s of 0.49 m/s^2 acceleration.
         // Without `pos_rem_um`, `(490 * 250) / 1_000_000 == 0` on every 250 ms substep (`35a` §5.2).
         let dray = SpaceShipState::new_dray(

@@ -109,7 +109,7 @@ fn terminal_wreck(
                 .traces
                 .recent(OWN, Some(THINKS))
                 .pop()
-                .ok_or("cancelled trace")?;
+                .ok_or("canceled trace")?;
             check_eq!(row.think_seq, sequence);
             check!(!row.settled);
             check!(matches!(

@@ -17,7 +17,7 @@
       "venue_permille": 20,
       "parent_royalty_permille": 0,
       "derived": false,
-      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the license can be resold.",
       "split_line": "Price 1250cr: Registry 5%, venue 2%, charter owner the rest.",
       "publication": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe",
       "seller_account": "acct-7f3a9e",
@@ -37,7 +37,7 @@
       "venue_permille": 0,
       "parent_royalty_permille": 100,
       "derived": true,
-      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence cannot be resold.",
+      "terms_line": "One seat for 30 IC days plus 7 days of Grace; the license cannot be resold.",
       "split_line": "Price 99.50cr: Registry 5%, parents 10%, charter owner the rest.",
       "protocol": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe"
     }

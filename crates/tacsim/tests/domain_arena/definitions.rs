@@ -642,11 +642,11 @@ fn cc2_the_floor_is_five_seconds_and_automatic_defence_keeps_the_engines() {
     };
     assert!(
         tacsim::pack::load_pack(&automatic(1_000)).is_ok(),
-        "automatic defence keeps the engine's floor"
+        "automatic defense keeps the engine's floor"
     );
     let error = tacsim::pack::load_pack(&automatic(999)).expect_err("under the engine's floor");
     assert!(
-        error.to_string().contains("the automatic-defence floor"),
+        error.to_string().contains("the automatic-defense floor"),
         "{error}"
     );
 }
@@ -945,7 +945,7 @@ fn a_fresh_boot_makes_the_twelve_tanks_and_a_second_makes_no_thirteenth() {
             unit.0
         );
         let (_, pose) = mush_sim::pose_of(tw.world(), *unit).expect("it is placed");
-        assert_eq!(pose.x_cm % 1_000, 500, "on a cell centre");
+        assert_eq!(pose.x_cm % 1_000, 500, "on a cell center");
         assert_eq!(pose.y_cm % 1_000, 500);
     }
 
@@ -1326,7 +1326,7 @@ fn m4_an_entry_zone_of_water_is_refused_by_name() {
     );
     assert_eq!(
         refused.to_string(),
-        format!("arena {id}: team red's entry zone has no passable cell with a passable neighbour")
+        format!("arena {id}: team red's entry zone has no passable cell with a passable neighbor")
     );
 }
 

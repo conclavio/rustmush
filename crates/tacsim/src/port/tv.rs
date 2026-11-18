@@ -78,12 +78,12 @@ pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain 
 +tv/bay in|out  from the cargo hold, enter the carrier's vehicle bay; from the bay, return to the hold.
 +tv/<n> board  in the carrier's bay, take the rig's physical helm billet with current OperateCrew permission; then use +focus and @station/handoff yourself.
 +tv/<n> leave  step from a rig in the bay into the carrier and give back your billet. Field units must return first.
-+tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
-+tv/lease escort [go]  the same for an escort line tank, armed for escort work: 2500.00cr a term of 168 IC days and a 15000.00cr deposit. It needs the escort clearance: a prospecting licence in force (its grace does not serve), no lease of yours forfeit, no other armed lease of yours, and none written off in the last 28 IC days. Board it in the bay (+tv/<n> board) and fly it from its cab: its one console carries the helm, the sensors and the guns.
++tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting license in force or in its grace (+license). Without go it shows the terms and signs nothing.
++tv/lease escort [go]  the same for an escort line tank, armed for escort work: 2500.00cr a term of 168 IC days and a 15000.00cr deposit. It needs the escort clearance: a prospecting license in force (its grace does not serve), no lease of yours forfeit, no other armed lease of yours, and none written off in the last 28 IC days. Board it in the bay (+tv/<n> board) and fly it from its cab: its one console carries the helm, the sensors and the guns.
 +tv/<n>/permissions [go]  at Occator's counter: inspect or request an explicit operational loan for the actual rental. Operate/crew and command may be delegated within this lease; deploy and recover/load may not. No title or refit right, and no additional charge.
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released, less what Occator's workshop tariff charges to restore any damage, at most the whole deposit. A rig wrecked out of the bay is written off instead: the lease ends, Occator keeps the deposit, and the wreck stays where it fell.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
-+tv/<n> launch [mind=<mind>] [org=<org>] [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s). A rig with a core flies the mind you name sealed aboard, filed:<licence> for a licence you hold (org=<org> for one your organisation holds) or, on an ungoverned core, draft:<name>; without one it flies Standard Doctrine.
++tv/<n> launch [mind=<mind>] [org=<org>] [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s). A rig with a core flies the mind you name sealed aboard, filed:<license> for a license you hold (org=<org> for one your organization holds) or, on an ungoverned core, draft:<name>; without one it flies Standard Doctrine.
 +tv/<n> recover [go]  bring rig n up the ramp into the bay (300 IC s); a rig further off drives to the ramp first, even while the instruments are dark. With ore in its hopper it unloads into the hold next, on its own.
 +tv/<n> drive <target> [go]  drive rig n over the ground to a pocket (C117), a field (C-NW), a block (C), a site cell (140,96) or a bearing (ne 300); the preview names the charge left after the trip home.
 +tv[/<n>]/map [site] [family]  the site map around rig n, or the whole site: your own readings, the rigs and the hull.
@@ -126,7 +126,7 @@ pub const WRITE_OFF_PREVIEW: &str = "Rig {n} ({mark}) is a wreck and will not co
 pub const WRITTEN_OFF: &str =
     "Occator writes {mark} off where it fell; the deposit is Occator's, and the lease is ended.";
 /// **Doc 32 cut CF.6c**, the escort clearance: the licence not in force.
-pub const ESCORT_LICENCE: &str = "Occator lets an armed hull only to a captain whose prospecting licence is in force, not in its grace (+licence).";
+pub const ESCORT_LICENCE: &str = "Occator lets an armed hull only to a captain whose prospecting license is in force, not in its grace (+license).";
 /// The escort clearance: a lease of the lessee's forfeit: `{mark}`.
 pub const ESCORT_FORFEIT: &str =
     "Occator lets no armed hull while a lease of yours is forfeit: return {mark} first.";
@@ -220,7 +220,7 @@ pub const TERM_RENEWED: &str =
 pub const TERM_FORFEIT: &str = "{mark}'s lease ran past its term and your account cannot pay {owed}: Occator keeps the {deposit} deposit.";
 /// **No licence in force** (doc 20 cut SM.5; §4.3, §9.1): the lease is the one
 /// non-mining act that reads the prospecting licence.
-pub const LEASE_LICENCE: &str = "Occator leases rigs only to a licensed prospector: +licence/buy takes the Freeport Registry's licence, from anywhere.";
+pub const LEASE_LICENCE: &str = "Occator leases rigs only to a licensed prospector: +license/buy takes the Freeport Registry's license, from anywhere.";
 /// A step that should not fail did.
 pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
@@ -291,7 +291,7 @@ pub const LAUNCHED: &str = "Rig {n} is down the {ramp} on {site}.";
 /// had lapsed (or been revoked) at the dispatch and the rig flies Standard Doctrine: `{n}`,
 /// `{licence}`, `{state}`.
 pub const LAUNCHED_DOCTRINE: &str =
-    "Licence {licence} is {state}: rig {n} flies Standard Doctrine sealed aboard.";
+    "License {licence} is {state}: rig {n} flies Standard Doctrine sealed aboard.";
 /// A recover with the rig in the bay already: `{n}`.
 pub const RECOVER_IN_BAY: &str = "Rig {n} is in the bay already.";
 /// A recover with the rig not on this hull's ground: `{n}`, `{name}`.
@@ -532,7 +532,7 @@ pub const DRIVE_FILED_LAUNCH: &str =
 /// empty — never from the ground.
 pub const ARRIVED: &str = "Rig {n} arrives at {addr}{reading}.";
 /// A target that does not parse: `{n}`.
-pub const DRIVE_USAGE: &str = "Drive where? +tv/{n} drive <pocket>|<field>|<block>|<x>,<y>|<bearing> <metres>, as C117, C-NW, C, 140,96 or ne 300.";
+pub const DRIVE_USAGE: &str = "Drive where? +tv/{n} drive <pocket>|<field>|<block>|<x>,<y>|<bearing> <meters>, as C117, C-NW, C, 140,96 or ne 300.";
 /// The rig stands on the target's cell already: `{n}`.
 pub const DRIVE_HERE: &str = "Rig {n} is there already.";
 /// The target is off the site: `{site}`.
@@ -648,7 +648,7 @@ pub const MINE_RUNNING: &str = "Rig {n} is drilling {addr}, cycle {k} of {cycles
 pub const MINE_NO_FOOTING: &str =
     "Rig {n} stands on {terrain}; the drill bites rock, regolith or ice.";
 /// No licence at all (every other standing prints `+licence`'s own line).
-pub const MINE_NO_LICENCE: &str = "Mining needs a prospecting licence: +licence/buy takes the Freeport Registry's, from anywhere.";
+pub const MINE_NO_LICENCE: &str = "Mining needs a prospecting license: +license/buy takes the Freeport Registry's, from anywhere.";
 /// A forfeit deposit: `{n}`, `{counter}`, `{port}`.
 pub const MINE_FORFEIT: &str = "Rig {n}'s deposit is forfeit; it mines nothing until it goes back to the {counter} in {port}. +tv/{n} recover brings it home.";
 /// An ended lease: `{n}`, `{counter}`, `{port}`.
@@ -2904,7 +2904,7 @@ fn status_lines(
     let Some(view) = hull_view(w, hull) else {
         tracing::error!(
             hull = hull.0,
-            "tacsim: +tv found no programme view of the hull"
+            "tacsim: +tv found no program view of the hull"
         );
         return Err(dark());
     };
@@ -2939,7 +2939,7 @@ fn status_lines(
         return Err(dark());
     }
     let lessor = lessor_of(w, &port).ok_or_else(|| {
-        tracing::error!("tacsim: +tv: the programme port authors no rig lessor");
+        tracing::error!("tacsim: +tv: the program port authors no rig lessor");
         dark()
     })?;
     let pool_unit = Some(&lessor.pool.unit);
@@ -5349,11 +5349,10 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
     if crate::port::yard::yard_of_hull(w, hull).is_some() {
         return Err("the yard hull is never repossessed".to_owned());
     }
-    let view =
-        hull_view(w, hull).ok_or_else(|| format!("hull #{} has no programme view", hull.0))?;
-    let port = programme_port(w).ok_or_else(|| "no programme port".to_owned())?;
+    let view = hull_view(w, hull).ok_or_else(|| format!("hull #{} has no program view", hull.0))?;
+    let port = programme_port(w).ok_or_else(|| "no program port".to_owned())?;
     let lessor =
-        lessor_of(w, &port).ok_or_else(|| "the programme port authors no rig lessor".to_owned())?;
+        lessor_of(w, &port).ok_or_else(|| "the program port authors no rig lessor".to_owned())?;
     let store = w
         .module_state::<TacsimStore>()
         .ok_or_else(|| "the layer's state is absent".to_owned())?;
@@ -6347,7 +6346,7 @@ mod tests {
 
     /// A filled `LICENCE_LAPSED`, for the rights clause.
     const LICENCE_LAPSED_FILLED: &str =
-        "Your licence lapsed at 05-21 14:00. +licence/buy takes a new one from today.";
+        "Your license lapsed at 05-21 14:00. +license/buy takes a new one from today.";
 
     /// Doc 20 cut SM.3a (lead ruling 9): the terms due past the end are whole
     /// terms, the first counted at the boundary.

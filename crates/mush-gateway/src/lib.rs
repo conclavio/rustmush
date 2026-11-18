@@ -597,7 +597,7 @@ impl ToServerTx {
             let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             let cancelled = lifecycle.observe_session_gone(actor);
             for conn in cancelled {
-                tracing::warn!(conn, %actor, "link-dead expiry cancelled an in-progress reconnect reservation");
+                tracing::warn!(conn, %actor, "link-dead expiry canceled an in-progress reconnect reservation");
             }
             return self.enqueue_raw(msg);
         }
@@ -1044,7 +1044,7 @@ impl SocketGatewayLink {
                         tracing::warn!(
                             conn,
                             %actor,
-                            "gap-time link-dead expiry cancelled a reconnect reservation"
+                            "gap-time link-dead expiry canceled a reconnect reservation"
                         );
                     }
                 }
@@ -3721,7 +3721,7 @@ mod tests {
         assert_eq!(
             link.try_reserve_connection(5, ObjId(5)),
             ConnectionAdmission::Reserved,
-            "cancelling unused custody must make exactly one slot available"
+            "canceling unused custody must make exactly one slot available"
         );
     }
 

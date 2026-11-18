@@ -67,7 +67,7 @@ pair still consumes physical capacity. Existing accepted traffic keeps its terms
 Quotes freeze class, recipient, content units, tariff and payer for 600 IC seconds.
 Buying reserves real funds; the account's normal debit and approval rules apply.
 The first serialized unit on an Exchange pair settles the whole fee. An unsent reservation
-expires after one IC day from quoting or can be cancelled for full release.
+expires after one IC day from quoting or can be canceled for full release.
 Consumed service has no refund. To upgrade unused Standard, cancel its reservation
 and quote Priority. Repeating a purchase does not reserve or charge again.
 The Exchange's initial capital comes from an existing finite clearing balance;
@@ -180,7 +180,7 @@ collection at or after the agreed endpoint. A new term requires a new agreement;
 separate operator sanctions remain available during a treaty.
 
 The service retains at most 128 subscription/quote rows, eight current quotes per
-issuer and 32 treaty counterparties. Expired quotes and cancelled debt-free records
+issuer and 32 treaty counterparties. Expired quotes and canceled debt-free records
 may be retired for room. Active obligations and outstanding debt are never evicted.
 Notices are queued through the existing economic-notice inbox, not instant mail.
 Routing reads current billing status directly; a delayed notice cannot grant service.
@@ -335,15 +335,15 @@ installation. It files intelligence and advances the Concord's anti-proliferatio
 front once per pair. Repeated inspections and restarts do not advance it again.
 
 
-## Concord Fleet mobile programme
+## Concord Fleet mobile program
 
-`+relayfleet` shows **A Half Afloat**, the dormant eight-segment relief programme.
+`+relayfleet` shows **A Half Afloat**, the dormant eight-segment relief program.
 Its Halcyon capital hull begins without a working relay. Fleet command is a real
 `@asset/assign` relationship; treasury and hold access use normal organization grants.
 
 - `+relayfleet/fund` authorizes six actual 10,000-credit payments from the finite
   Fleet treasury to the Lunar refit yard. The first is due immediately; subsequent
-  payments are at least 30 IC days apart. Insufficient funds pause the programme.
+  payments are at least 30 IC days apart. Insufficient funds pause the program.
 - `+relayfleet/consent yes` records Postmaster Solveig Adebayo-Krishnan's decision
   through an authorized Exchange representative.
 - `+relayfleet/refit wo#<16-hex>` installs both titled halves of a completed
@@ -364,7 +364,7 @@ half and orphans its mate, with the same consequences as destroying a fixed node
 
 Postmaster Solveig Adebayo-Krishnan works at the Malapert compound. The public
 counter displays the Exchange charter; the relay hall is staff restricted.
-`+clocks` shows their **Named service case** and **Fleet relief relay programme**
+`+clocks` shows their **Named service case** and **Fleet relief relay program**
 clocks; staff can inspect **Terms of Service** and **A Half Afloat** with `@front`. Fresh worlds start
 both clocks at zero, without a commissioned private or mobile pair.
 

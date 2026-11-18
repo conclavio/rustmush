@@ -912,7 +912,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     }
     assert!(
         bystander.contains("Match 1 is running") && bystander.contains(OVER),
-        "but the centre's own announcements did cross:\n{bystander}"
+        "but the center's own announcements did cross:\n{bystander}"
     );
 
     // ---- the winner's debrief, through the boundary (16b cut V.3) -----
@@ -949,7 +949,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     assert!(flew, "\"You flew R<letter>: \" missing from:\n{report}");
     let said = ada.ask("SIM REPORT 9", "not one of them").await;
     assert!(
-        said.contains("The centre remembers its last 20 matches; match 9 is not one of them."),
+        said.contains("The center remembers its last 20 matches; match 9 is not one of them."),
         "{said}"
     );
 
@@ -958,12 +958,12 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // Through `@arena/status` rather than `SIM STATUS`, because the staffer never
     // left Limbo and the lobby verbs are gated on the room (16b cut K.1) — which
     // is itself a refusal that had to cross the boundary to be read here.
-    let status = god.ask("@arena/status", "Simulator centre: ended").await;
+    let status = god.ask("@arena/status", "Simulator center: ended").await;
     assert!(
         status.contains("red"),
         "the outcome is on the board: {status}"
     );
-    god.say("@arena/reset", "centre is reset").await;
+    god.say("@arena/reset", "center is reset").await;
     god.say("@arena/status", "No match is running.").await;
     ada.say("lobby", "Simulator Lobby").await;
     ada.say("SIM TEAM red", "takes red slot 1").await;

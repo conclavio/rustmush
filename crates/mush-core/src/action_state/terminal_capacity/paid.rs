@@ -325,10 +325,10 @@ fn digest(domain: &str, value: &Value) -> Result<DefinitionDigest, ActionStateEr
     DefinitionDigest::for_canonical_value(domain, value).map_err(|_| refused("purchase digest"))
 }
 fn licence(value: &Value) -> Result<u64, ActionStateError> {
-    let text = value.as_str().ok_or_else(|| refused("purchase licence"))?;
-    let id: u64 = text.parse().map_err(|_| refused("purchase licence"))?;
+    let text = value.as_str().ok_or_else(|| refused("purchase license"))?;
+    let id: u64 = text.parse().map_err(|_| refused("purchase license"))?;
     if id == 0 || id.to_string() != text {
-        return Err(refused("purchase canonical licence"));
+        return Err(refused("purchase canonical license"));
     }
     Ok(id)
 }
@@ -547,13 +547,13 @@ fn outputs(view: &View<'_>, id: CommitToken, pair: &Pair) -> Result<(), ActionSt
         }
         return Ok(());
     }
-    let current = current.ok_or_else(|| refused("purchase paid licence missing"))?;
+    let current = current.ok_or_else(|| refused("purchase paid license missing"))?;
     renewal::validate_current_birth(view, &current, id)?;
     let term = term.ok_or_else(|| refused("purchase paid term missing"))?;
     paid_resale::validate_current_holder(view, &current, field(&pair.allocation, "holder")?, id)?;
     for name in ["charter", "line"] {
         if field(&current, name)? != field(&pair.allocation, name)? {
-            return Err(refused("purchase paid licence subject differs"));
+            return Err(refused("purchase paid license subject differs"));
         }
     }
     if number(&term, "format")? != 1

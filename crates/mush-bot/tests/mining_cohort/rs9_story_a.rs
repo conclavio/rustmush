@@ -499,7 +499,7 @@ pub(crate) async fn story_a(miner: mine::Miner, ground: &'static crate::grounds_
         &["taken in the carrier bay"],
     )
     .await;
-    assert_eq!(index, Some(0), "the mend and the armour:\n{said}");
+    assert_eq!(index, Some(0), "the mend and the armor:\n{said}");
     assert!(said.contains("No fee away from port"), "{said}");
     stamp("the bay's order is taken on the site");
 

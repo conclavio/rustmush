@@ -9,10 +9,10 @@
         "version": 4
       }
     ],
-    "digest": "6d38a545d42a91333c9a3f2a85716d8c999f4e87686f257070106d495741f933"
+    "digest": "93867df0c6d78e5b840ad9661434b01ce4c119d773db134af54de107740b174a"
   },
   "brief": {
-    "prose": "Ma offers an optional round of introductions to two ordinary Ceres NPCs. The player meets the real people at their desks and returns to Ma. No enrolment, trade, survey, passenger booking or claimed conversation is required; these services remain independent. Completion gives Ma's usual once-only personal relationship bonus."
+    "prose": "Ma offers an optional round of introductions to two ordinary Ceres NPCs. The player meets the real people at their desks and returns to Ma. No enrollment, trade, survey, passenger booking or claimed conversation is required; these services remain independent. Completion gives Ma's usual once-only personal relationship bonus."
   },
   "entries": {
     "quest.ma_port_connections": {
@@ -22,7 +22,7 @@
         "npc_pack": "neighborhood.ceres_freeport",
         "prerequisite": "open",
         "title": "People who keep the port moving",
-        "introduction": "Knowing a couple of faces helps a port feel less like a row of counters. Dov Akintola runs the Co-op Chandlery; Rosalind Qureshi-Mbeki works at the Exchange. Meet them at their desks, then come back and see me. Ask them about their work if you like. You need not buy anything, enrol with anyone or take a survey job for this introduction.",
+        "introduction": "Knowing a couple of faces helps a port feel less like a row of counters. Dov Akintola runs the Co-op Chandlery; Rosalind Qureshi-Mbeki works at the Exchange. Meet them at their desks, then come back and see me. Ask them about their work if you like. You need not buy anything, enroll with anyone or take a survey job for this introduction.",
         "destination": "ceres",
         "checkpoints": [
           {

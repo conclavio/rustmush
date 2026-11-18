@@ -3238,7 +3238,7 @@ fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // M2+M3: the state moves only once the refund posts, so the confirmation says
     // what actually happened rather than what was asked for.
     if live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()) {
-        info(ctx, format!("Contract #{id} is cancelled."));
+        info(ctx, format!("Contract #{id} is canceled."));
     } else {
         info(
             ctx,

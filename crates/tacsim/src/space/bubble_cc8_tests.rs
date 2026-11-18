@@ -401,13 +401,13 @@ fn cc8_a_switch_starts_the_new_modes_cycle_and_never_fires_early() {
     assert_eq!(
         first_laser(&bubble).cooldown_remaining_ms,
         0,
-        "ready in offence"
+        "ready in offense"
     );
     assert!(bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Defense));
     assert_eq!(
         first_laser(&bubble).cooldown_remaining_ms,
         4_000,
-        "the defence cycle starts"
+        "the defense cycle starts"
     );
     let _ = bubble.step_wall_ms_at(3_750, 1_001);
     assert_eq!(first_laser(&bubble).cooldown_remaining_ms, 250);
@@ -415,7 +415,7 @@ fn cc8_a_switch_starts_the_new_modes_cycle_and_never_fires_early() {
     assert_eq!(
         first_laser(&bubble).cooldown_remaining_ms,
         0,
-        "ready in defence"
+        "ready in defense"
     );
     // Back to offence, long after her last offence pulse: a whole offence cycle.
     assert!(bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Offense));
@@ -461,7 +461,7 @@ fn cc8_switching_back_within_one_offence_cycle_keeps_the_offence_cooldown() {
     assert_eq!(
         first_laser(&bubble).cooldown_remaining_ms,
         2_500,
-        "what was left of her offence cycle, not a fresh one and not none"
+        "what was left of her offense cycle, not a fresh one and not none"
     );
     // The other laser never left offence: it is on the same footing.
     let _ = bubble.step_wall_ms_at(2_250, 1_003);
@@ -512,19 +512,19 @@ fn cc8_each_mode_fires_on_its_own_cycle() {
             break;
         }
     }
-    assert!(stopped, "her laser in defence stops the torpedo");
+    assert!(stopped, "her laser in defense stops the torpedo");
     let screen = bubble.ships.get("screen").expect("the screen");
     let defence = screen
         .lasers
         .iter()
         .find(|laser| laser.mode == LaserMode::Defense)
-        .expect("her laser in defence");
-    assert_eq!(defence.cooldown_remaining_ms, 4_000, "the defence cycle");
+        .expect("her laser in defense");
+    assert_eq!(defence.cooldown_remaining_ms, 4_000, "the defense cycle");
     let offence = screen
         .lasers
         .iter()
         .find(|laser| laser.mode == LaserMode::Offense)
-        .expect("her laser in offence");
+        .expect("her laser in offense");
     assert_eq!(offence.cooldown_remaining_ms, 0, "untouched");
 }
 

@@ -106,7 +106,7 @@ async fn serve_tls_binds_and_answers_healthz_over_tls() {
 
     // The TLS branch echoes the configured address, not a bound one — that is
     // the documented behaviour this test is written around.
-    let signalled = bound_rx.await.expect("the bound channel is signalled");
+    let signalled = bound_rx.await.expect("the bound channel is signaled");
     assert_eq!(
         signalled, listen,
         "the TLS branch signals the configured listen address"

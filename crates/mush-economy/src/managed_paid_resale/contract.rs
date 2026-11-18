@@ -53,7 +53,7 @@ pub(super) fn accepted(
     let row = EconomicContract {
         id: i.contract,
         issuer: buyer.clone(),
-        name: "Paid mind licence resale".into(),
+        name: "Paid mind license resale".into(),
         consent: surface,
         consent_hash: hash,
         acceptances: vec![Acceptance {

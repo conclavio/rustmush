@@ -1610,7 +1610,7 @@ mod content_tests {
                     .lasers
                     .iter()
                     .all(|laser| laser.offence_allowed() && laser.mode == LaserMode::Offense),
-                "{dray}: both start in offence and may fire at a lock"
+                "{dray}: both start in offense and may fire at a lock"
             );
         }
     }

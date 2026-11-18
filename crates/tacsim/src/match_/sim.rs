@@ -588,7 +588,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    is nothing to abort, and SIM LEAVE is how a claimant gets out.\n\
                    SIM CONCEDE         give the running match up for your side. Its lead \
                    only: the other side wins it, and the result record says so.\n\
-                   SIM STATUS          the centre: its state, its sides, its slots and its \
+                   SIM STATUS          the center: its state, its sides, its slots and its \
                    pods. Also the bare SIM.\n\
                    SIM AI [n]          how many units a side fields when the server fills the \
                    unclaimed pods with machines. A side's lead or staff, before the \
@@ -600,16 +600,16 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    what this server can field and what you are flying; with a type, your pod's \
                    tank is refitted to it when the match starts. Your own slot only, before the \
                    match starts, and the pod goes back to its own tank afterwards.\n\
-                   SIM HISTORY         the centre's last twenty matches, newest first: who \
+                   SIM HISTORY         the center's last twenty matches, newest first: who \
                    won and why, how long, how many a side, when; your own callsign on the ones \
                    you flew.\n\
                    SIM REPORT [match]  your own debrief of a match you flew (the newest, bare): \
                    your shots and what became of each, the hits on your own tank, what you \
                    destroyed, and the public outcome — told as your own sensors told it, so a \
                    target they had not told apart stays a contact.\n\
-                   SIM REPLAY <match>  watch a finished match the centre remembers, both sides, \
+                   SIM REPLAY <match>  watch a finished match the center remembers, both sides, \
                    one keyframe at a time: the match number, then next, prev or a time like \
-                   1:30, and a callsign to centre the window on.\n\
+                   1:30, and a callsign to center the window on.\n\
                    SIM MODE [mode]     which rule the match is fought under: skirmish \
                    (eliminate the other side) or hold (keep the ground's key spot uncontested \
                    for its time). A side's lead or staff sets it during selection; bare, it \

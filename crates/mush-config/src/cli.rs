@@ -177,7 +177,7 @@ pub enum CliError {
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CliError::UnknownArg { arg } => write!(f, "unrecognised argument `{arg}`"),
+            CliError::UnknownArg { arg } => write!(f, "unrecognized argument `{arg}`"),
             CliError::MissingValue { flag } => write!(f, "`{flag}` needs a value"),
             CliError::Repeated { flag } => write!(f, "`{flag}` given more than once"),
             CliError::InvalidValue { flag, value } => {

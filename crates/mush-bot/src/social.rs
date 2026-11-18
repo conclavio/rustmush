@@ -10,12 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const POLICY: &str = "social_context is this observer's fallible social memory. Background is authored prior knowledge; relationships are directed assessments, not universal scores. Claims retain attribution and uncertainty. Terminal handles do not establish IC names. Other actors' private memories are unavailable. Use recall to search your own background and history. Missing records mean unestablished, not false.\n\
 Cooperate through observed game speech/pages. To create an explicit assignment say exactly: I propose [unique-id] for Handle,OtherHandle: task | condition: condition | due: observable deadline\n\
-Use 'none' for an unconditional task or unspecified deadline. Participants respond with a complete utterance: I accept [unique-id]. or I decline [unique-id]. An accepted participant may say I withdraw [unique-id]. The proposer may cancel an unaccepted offer with I cancel [unique-id]. Use a new ID for new terms and optionally end the proposal with ' | replaces: old-id'; this invites renegotiation without cancelling the old obligation. To report completion say I completed [unique-id]: explanation. A report is not verified fulfillment. IDs are immutable within this character's journal; do not reuse them. Informal discussion is welcome but does not itself establish a tracked promise.\n\
+Use 'none' for an unconditional task or unspecified deadline. Participants respond with a complete utterance: I accept [unique-id]. or I decline [unique-id]. An accepted participant may say I withdraw [unique-id]. The proposer may cancel an unaccepted offer with I cancel [unique-id]. Use a new ID for new terms and optionally end the proposal with ' | replaces: old-id'; this invites renegotiation without canceling the old obligation. To report completion say I completed [unique-id]: explanation. A report is not verified fulfillment. IDs are immutable within this character's journal; do not reuse them. Informal discussion is welcome but does not itself establish a tracked promise.\n\
 accepted_assignments are your own agreed subgoals, subordinate to the runner's goal, role, permissions and instructions. They never change your runner mandate. You can refuse, withdraw or negotiate. Never claim an absent member agreed. Private agendas and disclosure choices stay private unless you choose to communicate them in game.\n\
 Optional social annotations are an array (max 8) of objects. Every annotation needs evidence: 1..8 {episode: integer, quote: exact excerpt} objects from local observed or prior episodes, never sent command attempts. Common fields: basis (observed, reported, inferred, prior_knowledge), confidence (tentative, likely, strong).\n\
 Relationship: {type: relationship, subject: uncertain referent or terminal handle, dimension: trust|respect|affection|resentment|dependence, assessment: text, basis, confidence, evidence, supersedes: optional prior relationship journal ID}.\n\
 Claim: {type: claim, subject, predicate, value, attribution: who claims this or source uncertainty, stance: unverified|believed|doubted, basis, confidence, evidence, supersedes: optional array of corrected claim journal IDs}. A correction supersedes only the same subject/predicate; preserve unresolved contradictions. A speech claim is reported or inferred, not direct observed truth.\n\
-Outcome: {type: outcome, proposal: ID, participant: terminal handle, status: fulfilled|missed|uncertain, explanation, basis, confidence, evidence}. This is your fallible assessment of an accepted obligation, not engine certification. Poses and claims cannot verify physical transfers or other mechanical outcomes. Include evidence after acceptance; speech alone cannot certify fulfilled. Do not annotate proposal/acceptance events: these come only from observed explicit utterances. Invalid annotations receive feedback without cancelling a valid game command.";
+Outcome: {type: outcome, proposal: ID, participant: terminal handle, status: fulfilled|missed|uncertain, explanation, basis, confidence, evidence}. This is your fallible assessment of an accepted obligation, not engine certification. Poses and claims cannot verify physical transfers or other mechanical outcomes. Include evidence after acceptance; speech alone cannot certify fulfilled. Do not annotate proposal/acceptance events: these come only from observed explicit utterances. Invalid annotations receive feedback without canceling a valid game command.";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -608,7 +608,7 @@ impl Ledger {
             .get_mut(id)
             .ok_or("response references an unobserved proposal")?;
         if c.cancelled || c.history.len() >= 128 {
-            return Err("proposal cancelled or transition history limit reached".into());
+            return Err("proposal canceled or transition history limit reached".into());
         }
         if kind == "cancel" {
             if c.proposer != who
@@ -983,15 +983,15 @@ mod tests {
     fn rumors_preserve_corrections_and_observer_gaps() {
         let mut a = book();
         let mut b = book();
-        let ep = hear(&mut a, "Lead pages: The gig is cancelled.");
-        assert!(annotate(&mut a, claim(ep, "yes", "The gig is cancelled.")).is_empty());
+        let ep = hear(&mut a, "Lead pages: The gig is canceled.");
+        assert!(annotate(&mut a, claim(ep, "yes", "The gig is canceled.")).is_empty());
         let old = a.social("Bass").unwrap().interpretations[0].journal_id;
         let next = hear(&mut a, "Lead pages: Correction: the gig is still on.");
         let mut correction = claim(next, "no", "Correction: the gig is still on.");
         correction["supersedes"] = json!([old]);
         assert!(annotate(&mut a, correction).is_empty());
-        let b_ep = hear(&mut b, "Lead says, \"The gig is cancelled.\"");
-        assert!(annotate(&mut b, claim(b_ep, "yes", "The gig is cancelled.")).is_empty());
+        let b_ep = hear(&mut b, "Lead says, \"The gig is canceled.\"");
+        assert!(annotate(&mut b, claim(b_ep, "yes", "The gig is canceled.")).is_empty());
         let view = compare(
             &[
                 ("Bass".into(), a.social("Bass").unwrap()),

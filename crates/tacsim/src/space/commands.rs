@@ -124,14 +124,14 @@ pub const TAC_SWITCHES: [&str; 8] = [
 
 /// Help text for `+tac`.
 pub const TAC_HELP: &str = "\
-+tac  --  Ship tactical sensors, fire control, and point defence (doc 35 §6, D-35-9, D-35-10).
++tac  --  Ship tactical sensors, fire control, and point defense (doc 35 §6, D-35-9, D-35-10).
 +tac[/status]                         Show tactical weapon mounts, locks, and sensor status.
 +tac/scan                             Run passive/active IR sensor pass with light-lag (mush-propagation).
 +tac/lock <contact|off>               Acquire or clear fire-control lock on a detected contact.
 +tac/beam [<contact>]                 Fire offensive laser mounts at a detected hostile contact.
 +tac/torp [<contact>[=<count>]]       Launch torpedo salvo (default 1) at a detected hostile contact.
 +tac/railgun [<contact>]              Fire spinal/turret railguns at a detected hostile contact.
-+tac/pdc <auto|manual|point|offense>  Configure point-defence autocannons or dual-mode laser mounts.
++tac/pdc <auto|manual|point|offense>  Configure point-defense autocannons or dual-mode laser mounts.
 +tac/hail <contact|port>[=<message>]  Hail a detected contact, or an open port from free flight (`d / c`, `D-35-10`).";
 
 /// Feed identifier for the 3D holotank tactical display (`SF.2`, `SF.7`).
@@ -4300,7 +4300,7 @@ pub(crate) fn debit_hull_propellant_for_dv(
     .map_err(|e| CmdError::msg(e.to_string()))?;
     if burn_kg > live_kg {
         return Err(CmdError::msg(format!(
-            "Insufficient propellant: manoeuvre requires {burn_kg} kg ({dv_mps} m/s Δv), tank holds {live_kg} kg."
+            "Insufficient propellant: maneuver requires {burn_kg} kg ({dv_mps} m/s Δv), tank holds {live_kg} kg."
         )));
     }
     let remaining_after = live_kg.saturating_sub(burn_kg);
@@ -4320,7 +4320,7 @@ pub(crate) fn debit_hull_propellant_for_dv(
         && remaining_after < reserve.reserve_kg
     {
         return Err(CmdError::msg(format!(
-            "RETURN_RESERVE warning: manoeuvre requires {burn_kg} kg, leaving {remaining_after} kg below the {} kg return reserve to {nearest_port}.",
+            "RETURN_RESERVE warning: maneuver requires {burn_kg} kg, leaving {remaining_after} kg below the {} kg return reserve to {nearest_port}.",
             reserve.reserve_kg
         )));
     }

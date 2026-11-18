@@ -1050,11 +1050,11 @@ fn mind_param(
         Some(value) => Some(mush_org::OrgId(
             value
                 .as_u64()
-                .ok_or_else(|| invalid("an organisation is its number"))?,
+                .ok_or_else(|| invalid("an organization is its number"))?,
         )),
     };
     match parameters.get("mind") {
-        None if org.is_some() => Err(invalid("an organisation names a mind's licence")),
+        None if org.is_some() => Err(invalid("an organization names a mind's license")),
         None => Ok(None),
         Some(value) => value
             .as_str()
@@ -1445,7 +1445,7 @@ impl SurfaceActProvider {
                 None => mush_economy::Holder::Character(actor),
             };
             let licence = mush_roll::commerce::LicenceId::new(*licence)
-                .map_err(|_| invalid("a claim names its licence"))?;
+                .map_err(|_| invalid("a claim names its license"))?;
             let mut sealed = crate::surface::dispatch::assemble(
                 mind_seal,
                 launch.licence_state,
@@ -1500,7 +1500,7 @@ impl SurfaceActProvider {
                         .unwrap_or_else(|_| {
                             port_error(
                                 ActionErrorCode::ProviderRejected,
-                                "the licence's seats are held",
+                                "the license's seats are held",
                             )
                         }));
                     }

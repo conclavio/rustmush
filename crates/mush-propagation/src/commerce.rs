@@ -620,7 +620,7 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Ok(());
         }
         if p.phase != Phase::Quoted || now >= p.quote_until {
-            return Err(fail("Quote expired or cancelled; obtain a fresh quote."));
+            return Err(fail("Quote expired or canceled; obtain a fresh quote."));
         }
         if market.active(p.envelope).is_some() {
             return Err(fail("This copy already has a reservation."));

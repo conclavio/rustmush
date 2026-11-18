@@ -1245,9 +1245,9 @@ impl Fold {
                         format!("the {section}, through the {armor_section}'s {facet} facet")
                     };
                     let text = if *armor_left > 0 {
-                        format!("hit on {place}: {armor_left} armour left.")
+                        format!("hit on {place}: {armor_left} armor left.")
                     } else {
-                        format!("hit on {place}: armour gone, {internals_left} inside.")
+                        format!("hit on {place}: armor gone, {internals_left} inside.")
                     };
                     let _ = self.push_line(t_ms, seq, text);
                 }
@@ -1357,7 +1357,7 @@ impl Fold {
                     };
                     format!("ordered {recipient}{holding}: {objective}.")
                 } else {
-                    format!("cancelled {recipient}'s standing order.")
+                    format!("canceled {recipient}'s standing order.")
                 };
                 let _ = self.push_line(t_ms, seq, text);
             }
@@ -1857,7 +1857,7 @@ impl Fold {
                 ..
             } => format!(
                 "{word} unit={} sortie={} mind=\"{mind}\" class={} governed={governed} \
-                 licence={licence} principal={}",
+                 license={licence} principal={}",
                 unit(id),
                 sortie,
                 class.as_str(),
@@ -2207,7 +2207,7 @@ pub fn untracked_header(match_id: MatchId, running: bool, page: &Page) -> Vec<St
         format!("Match {} is still running.", match_id.0)
     } else {
         format!(
-            "Match {} is not among the centre's last {HISTORY_DEPTH} matches.",
+            "Match {} is not among the center's last {HISTORY_DEPTH} matches.",
             match_id.0
         )
     };
@@ -2396,7 +2396,7 @@ pub fn request(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
     let (row, live) = {
         let Some(book) = ctx.w.module_state::<MatchBook>() else {
             return Err(CmdError::msg(
-                "You have not flown a match the centre remembers.",
+                "You have not flown a match the center remembers.",
             ));
         };
         match named {
@@ -2406,7 +2406,7 @@ pub fn request(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
                     .find(|row| row.pilot_unit(actor).is_some())
                     .cloned()
                     .ok_or_else(|| {
-                        CmdError::msg("You have not flown a match the centre remembers.")
+                        CmdError::msg("You have not flown a match the center remembers.")
                     })?;
                 (row, false)
             }
@@ -2431,7 +2431,7 @@ pub fn request(ctx: &mut Ctx<'_>, word: &str) -> Result<(), CmdError> {
         .is_some_and(|book| book.remembered(id).is_some());
     if !remembered {
         return Err(CmdError::msg(format!(
-            "The centre remembers its last {HISTORY_DEPTH} matches; match {} is not one of them.",
+            "The center remembers its last {HISTORY_DEPTH} matches; match {} is not one of them.",
             id.0
         )));
     }
@@ -2547,7 +2547,7 @@ pub fn request_page(ctx: &mut Ctx<'_>, args: &str) -> Result<(), CmdError> {
             Some(id) => id,
             None => book
                 .and_then(|book| book.history().next().map(|row| row.id))
-                .ok_or_else(|| CmdError::msg("The centre remembers no match."))?,
+                .ok_or_else(|| CmdError::msg("The center remembers no match."))?,
         };
         let row = book.and_then(|book| book.remembered(match_id).cloned().map(Box::new));
         let record = book.and_then(|book| book.get(match_id));
@@ -2758,7 +2758,7 @@ fn pilot_read(
             actor,
             NOTICE_CATEGORY,
             format!(
-                "The centre remembers its last {HISTORY_DEPTH} matches; match {id} is not one of \
+                "The center remembers its last {HISTORY_DEPTH} matches; match {id} is not one of \
                  them."
             ),
         );
@@ -3321,8 +3321,8 @@ mod tests {
                 "  0:50  machine_gun at a contact: hit.",
                 "  1:00  a contact destroyed by your round.",
                 // The victim's own knowledge, and never who fired.
-                "  1:10  hit on the hull's front facet: 33 armour left.",
-                "  1:11  hit on the engine, through the hull's rear facet: armour gone, 40 inside.",
+                "  1:10  hit on the hull's front facet: 33 armor left.",
+                "  1:11  hit on the engine, through the hull's rear facet: armor gone, 40 inside.",
                 "  2:05  your left_track destroyed: the tank is slowed.",
             ]
         );
@@ -3388,9 +3388,9 @@ mod tests {
         assert_eq!(
             report.lines,
             vec![
-                "  0:43  hit on the turret's front facet: armour gone, 0 inside.",
+                "  0:43  hit on the turret's front facet: armor gone, 0 inside.",
                 "  0:43  your turret destroyed: its weapons are gone.",
-                "  0:51  hit on the hull's front facet: 180 armour left.",
+                "  0:51  hit on the hull's front facet: 180 armor left.",
                 // Its own round finished RA — which it never held, so it is a contact.
                 "  3:12  a contact destroyed by your round.",
             ]
@@ -3720,11 +3720,11 @@ mod tests {
             staff.lines,
             vec![
                 "  0:00.000  mind_sealed unit=RA(#101) sortie=51539607653 mind=\"Standard \
-                 Doctrine\" class=I governed=true licence=doctrine principal=RA(#101)",
+                 Doctrine\" class=I governed=true license=doctrine principal=RA(#101)",
                 "  0:00.000  mind_sealed unit=#301 sortie=51539607853 mind=\"Standard Doctrine\" \
-                 class=I governed=true licence=doctrine principal=\"red lance leader 1\"",
+                 class=I governed=true license=doctrine principal=\"red lance leader 1\"",
                 "  0:00.000  mind_sealed unit=BA(#201) sortie=51539607753 mind=\"Standard \
-                 Doctrine\" class=I governed=true licence=doctrine principal=-",
+                 Doctrine\" class=I governed=true license=doctrine principal=-",
                 "  0:01.000  mind_fault unit=RA(#101) think_seq=3 cause=ops",
                 "  0:02.000  mind_dropped unit=RA(#101) cause=strikes fault=ops ops=1500",
                 "  0:03.000  mind_dropped unit=BA(#201) cause=core",

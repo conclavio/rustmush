@@ -3,14 +3,14 @@
     "id": "tacsim.passengers.stickney",
     "version": 2,
     "kind": "campaign_seed",
-    "digest": "6227037e1826315321291239035e39a8814c213d87f854c02780080495be39d0",
+    "digest": "417b0d61dd460e746cb9b0b75be1f7460610f81e6c0c152cb665cbc569095561",
     "requires": [
       { "id": "neighborhood.ceres_freeport", "version": 4 },
       { "id": "neighborhood.stickney_yards", "version": 4 }
     ]
   },
   "brief": {
-    "prose": "One independent traveller at the Shift Board, with a funded passage request home to Ceres and a small observational follow-up for the captain who brought her home. Her identity, memories and completed journey persist; this pack never resets her for the next captain."
+    "prose": "One independent traveler at the Shift Board, with a funded passage request home to Ceres and a small observational follow-up for the captain who brought her home. Her identity, memories and completed journey persist; this pack never resets her for the next captain."
   },
   "entries": {
     "npc.leila_mensah_kovacs": {
@@ -33,7 +33,7 @@
           "knows": [
             "The Shift Board is Stickney's mess and bar; its notice wall advertises Ceres runs.",
             "Her calibration job at Stickney is finished, and her home is Ceres Freeport.",
-            "She is travelling with one small personal tool case, not a cargo shipment."
+            "She is traveling with one small personal tool case, not a cargo shipment."
           ],
           "does_not_know": [
             "A captain's ship, authority, balances, fuel, stores or sailing plan until the relevant service verifies them.",

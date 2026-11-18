@@ -5189,18 +5189,18 @@ pub fn register(
                    order, as the unit's own seat.\n\
                    @arena/abort [<match>]              (staff) stop a match; its units check \
                    back in when the arena answers.\n\
-                   @arena/reset                        (staff) return the simulator centre to \
+                   @arena/reset                        (staff) return the simulator center to \
                    idle: every slot and pod a finished or failed match left behind is \
                    released, every pilot is out of their pod with the cockpit billet given \
                    back, and every stock tank is put back at its spec and at its authored \
                    muster cell. Idempotent, and says what it found; refused while a match is \
                    still checked out. A player's own `SIM TEAM` does the same thing on a \
-                   finished centre, so two pilots need no staff for a rematch.\n\
+                   finished center, so two pilots need no staff for a rematch.\n\
                    @arena/release <unit>               (staff) clear one unit's stranded \
                    deployed marker: it is restored from its own check-out snapshot and its \
                    cockpit seat is freed. For a unit a refused check-in left unusable; refused \
                    while its match is still live, where @arena/abort is the verb.\n\
-                   @arena/pose <callsign>=<x> <y>[ <heading>]   (staff) open that centre slot \
+                   @arena/pose <callsign>=<x> <y>[ <heading>]   (staff) open that center slot \
                    (RA, BC: as the board prints it) on that arena cell for the next match, \
                    facing the heading or its side's own; `=off` gives it its authored cell \
                    back, and bare lists what is set. Refused while a match runs; cleared when \
@@ -5210,7 +5210,7 @@ pub fn register(
                    event with object numbers, contact ids and the draws, positions left out, \
                    under a header with the seed and every unit's pilot, at most 200 lines a \
                    page; its `Next:` goes on from the chunk the page was cut short in. Bare, \
-                   the newest match the centre remembers; a running or older match's tape is \
+                   the newest match the center remembers; a running or older match's tape is \
                    read too. A read.\n\
                    @arena/tempo <match>=<period_ms> | <match>=off | <match>   (staff) floor \
                    the wake interval of a running match, in steps of the engaged period up \
@@ -5229,7 +5229,7 @@ pub fn register(
                    whole field reaches your panel on arena.observer at most once an arena \
                    second, every unit by callsign, cell and object number, and screen 0 of \
                    the TUI and the web draws it; the line client prints none of it. For a \
-                   staffer with no centre slot and no seat; at most eight a match. `off` \
+                   staffer with no center slot and no seat; at most eight a match. `off` \
                    stops it, and so do a disconnect and the match's end; bare says what you \
                    watch."
                 .into(),
@@ -6951,7 +6951,7 @@ mod tests {
             [
                 "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)",
                 "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]",
-                "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
+                "@mind/fork <license>=<name> (from an Open license; @mind/localcopy copies your own drafts)",
             ],
             "{help}"
         );

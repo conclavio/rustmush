@@ -367,7 +367,7 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     let floor = cost.floor_minor_for_secs(u64::try_from(secs).expect("secs"), berths);
     assert!(
         floor > 0 && floor < tacsim::port::bay_work::BayQuote::cost_minor(&priced.jobs),
-        "the floor is under the tariff's labour at 1x: {floor}"
+        "the floor is under the tariff's labor at 1x: {floor}"
     );
     assert!(
         floor_line(&quote).contains(&format!("{}", floor / 100)),
@@ -478,7 +478,7 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     assert_eq!(
         hold_pool(&mut rig.tw, vault, "industrial_parts"),
         40 - parts_t - 1,
-        "fifty points of armour take a tonne of parts from the hold"
+        "fifty points of armor take a tonne of parts from the hold"
     );
 
     // (5) Stowed back in its slot, unheld; the fee is the operator's.
@@ -560,7 +560,7 @@ async fn gc8_who_may_have_a_hull_worked_on() {
     ));
     // A holder of Occator's `unit.maintain_refit`: the grant is read through Org.
     let mechanic = crate::driving_rig::pilot(&mut rig, "Mechanic", 3);
-    let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
+    let enrolled = run(&mut rig.tw, mechanic, "+coop/enroll Grey Heron");
     assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
     let occator = port_map(&rig.tw, "ceres_port").orgs[&crate::driving_rig::cid("occator")].org;
     let granted = run(
@@ -606,7 +606,7 @@ pub(crate) fn floor_line(quote: &str) -> &str {
 
 pub(crate) fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
     let mechanic = crate::driving_rig::pilot(rig, "Mechanic", 3);
-    let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
+    let enrolled = run(&mut rig.tw, mechanic, "+coop/enroll Grey Heron");
     assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
     let occator = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")].org;
     let _ = run(

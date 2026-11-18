@@ -281,7 +281,7 @@ pub(crate) fn preflight(
         for good in named {
             if !codes.contains(good.as_str()) {
                 return Err(format!(
-                    "{id}: vendor {}: {good} has no catalogue entry",
+                    "{id}: vendor {}: {good} has no catalog entry",
                     vendor.org
                 ));
             }

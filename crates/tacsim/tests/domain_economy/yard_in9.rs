@@ -309,7 +309,7 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
 
     // ---- The captain: enrolled and released, an account and no hull ----
     let captain = pilot(&mut rig, "Builder", 1);
-    let out = run(&mut rig.tw, captain, "+coop/enrol Long Ox");
+    let out = run(&mut rig.tw, captain, "+coop/enroll Long Ox");
     assert!(out.contains("now the Long Ox"), "{out}");
     let out = run(&mut rig.tw, captain, "+coop/release");
     assert!(!out.contains("Usage"), "{out}");
@@ -372,7 +372,7 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
             .hulls
             .iter()
             .all(|row| row.hull != dray.0),
-        "never a programme row"
+        "never a program row"
     );
     assert!(tacsim::port::owned::provenance(rig.tw.world(), dray_order).is_some());
     assert_eq!(
@@ -609,7 +609,7 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
 /// moved to Stickney's Service Counter (a fixture standing for a passage).
 fn free_captain(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
     let captain = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, captain, "+coop/enrol Long Ox");
+    let out = run(&mut rig.tw, captain, "+coop/enroll Long Ox");
     assert!(out.contains("now the Long Ox"), "{out}");
     let out = run(&mut rig.tw, captain, "+coop/release");
     assert!(

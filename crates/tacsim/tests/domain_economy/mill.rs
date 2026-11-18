@@ -586,7 +586,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot whose ship is named `name`.
 fn chartered(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1106,7 +1106,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
     let capture = Capture::default();
     let dispatch = capture_dispatch(capture.clone(), tracing::Level::INFO);
     let out = tracing::dispatcher::with_default(&dispatch, || {
-        run(&mut rig.tw, pilot, &format!("+coop/enrol {who} Ship"))
+        run(&mut rig.tw, pilot, &format!("+coop/enroll {who} Ship"))
     });
     if out.contains(&format!("now the {who} Ship")) {
         Ok(out)

@@ -411,7 +411,7 @@ fn reconcile_exact(ctx: &mut Ctx<'_>, pages: &mut usize) {
         tracing::error!(
             tenancy = id.0,
             obligation,
-            "housing: an exact tenancy's rent obligation is missing or cancelled; paging"
+            "housing: an exact tenancy's rent obligation is missing or canceled; paging"
         );
         if *pages < MAX_BOOT_PAGES {
             *pages += 1;
@@ -421,7 +421,7 @@ fn reconcile_exact(ctx: &mut Ctx<'_>, pages: &mut usize) {
                 EscalationSubject::HousingTenancy(id.0),
                 format!(
                     "tenancy #{id} is funded by obligation #{obligation}, which is missing or \
-                     cancelled. Its status is untouched — a record we mirror going away is not \
+                     canceled. Its status is untouched — a record we mirror going away is not \
                      evidence anybody missed a payment, so it is NOT eviction-pending"
                 ),
                 vec![
@@ -648,7 +648,7 @@ fn reconcile_ended_leases(ctx: &mut Ctx<'_>, pages: &mut usize) {
         let (level, outcome) = match &ending {
             crate::flow::LeaseEnding::Ended => (
                 "ended",
-                "it has been ended now and its rent obligation cancelled".to_string(),
+                "it has been ended now and its rent obligation canceled".to_string(),
             ),
             crate::flow::LeaseEnding::Retrying => (
                 "retrying",

@@ -252,7 +252,7 @@ fn resale_buyer_offer_audit_is_clock_free() -> TestResult {
     for (case, rows) in [
         ("missing", vec![(key(BUYER), row(BUYER, &[10, 99]))]),
         ("another buyer", vec![(key(BUYER), row(BUYER, &[10, 12]))]),
-        ("another licence", vec![(key(BUYER), row(BUYER, &[10, 13]))]),
+        ("another license", vec![(key(BUYER), row(BUYER, &[10, 13]))]),
         ("accepted", vec![(key(BUYER), row(BUYER, &[10, 11]))]),
         ("crossed key", vec![(key(ObjId(9)), row(BUYER, &[10]))]),
     ] {

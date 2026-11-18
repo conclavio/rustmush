@@ -40,7 +40,7 @@ pub(crate) fn register_views(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             switches: vec![SmolStr::new_static("region")],
             help:
                 "+atlas                 the neighborhood you are in, as a map (north up, five to\n\
-                   \x20                      ten metres a character) and a list of its rooms and\n\
+                   \x20                      ten meters a character) and a list of its rooms and\n\
                    \x20                      who is in them\n\
                    +atlas <place>         a neighborhood by name\n\
                    +atlas/region          the region: every neighborhood's footprint, the\n\
@@ -107,7 +107,7 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @atlas/window                      every open window: its size, rooms, opener\n\
                    @atlas/window open [<rooms>|<x0>,<y0>,<x1>,<y1>][=<cell cm>]   open a window over\n\
                    \x20                                  the rooms named (yours by default) or an\n\
-                   \x20                                  extent in metres; the map is drawn off-loop\n\
+                   \x20                                  extent in meters; the map is drawn off-loop\n\
                    @atlas/window close <n>            close it, releasing everyone where they stand\n\
                    @atlas/feature <feature>=<state>   set a feature's state: intact, damaged[:n] or\n\
                    \x20                                  destroyed; every window over it redraws\n\

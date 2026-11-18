@@ -43,7 +43,7 @@ impl VenueGate for Gate {
                 || self.venue_of_room(w, self.0.room).as_ref() != Some(venue))
         {
             return Err(VenueRefusal {
-                line: "Visit the configured mind catalogue counter.".into(),
+                line: "Visit the configured mind catalog counter.".into(),
             });
         }
         Ok(())

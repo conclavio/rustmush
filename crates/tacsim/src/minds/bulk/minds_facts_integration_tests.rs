@@ -178,7 +178,7 @@ fn current_term(w: &PlayerWorld, id: LicenceId) -> TestResult<PaidTermRecord> {
         rows(&disk(w), "roll", "roll_mind_personal_paid_licence")
             .into_iter()
             .find(|v| v.get("id") == Some(&json!(id)))
-            .ok_or("actual current licence")?,
+            .ok_or("actual current license")?,
     )?;
     Ok(serde_json::from_value(
         rows(&disk(w), "roll", "roll_mind_paid_term")
@@ -797,7 +797,7 @@ fn unattestable(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         .find(|v| v.get("requester") == Some(&json!(GOD)))
         .ok_or("actual original birth")?;
     let licence: LicenceId =
-        serde_json::from_value(birth_wire.get("licence").cloned().ok_or("owner licence")?)?;
+        serde_json::from_value(birth_wire.get("licence").cloned().ok_or("owner license")?)?;
     let term: mush_roll::commerce::records::OwnerTerm = serde_json::from_value(
         rows(&disk(&w), "roll", "roll_mind_owner_term")
             .into_iter()
@@ -966,7 +966,7 @@ fn unattestable(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     let ring = rows(&disk(&w), "roll", MARKS)
         .into_iter()
         .find(|v| v.get("licence") == Some(&json!(licence)))
-        .ok_or("the licence's ring")?;
+        .ok_or("the license's ring")?;
     let marks = ring.get("marks").and_then(Value::as_array).ok_or("marks")?;
     check_eq!(marks.len(), 64);
     check_eq!(
@@ -1007,7 +1007,7 @@ fn retained_after_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResul
         birth_wire
             .get("licence")
             .cloned()
-            .ok_or("actual original owner licence")?,
+            .ok_or("actual original owner license")?,
     )?;
     let term: mush_roll::commerce::records::OwnerTerm = serde_json::from_value(
         rows(&disk(&w), "roll", "roll_mind_owner_term")

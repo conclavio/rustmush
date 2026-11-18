@@ -20,7 +20,7 @@ pub const CREDIT_VERB: &str = "+credit";
 /// `+credit`'s help.
 pub const CREDIT_HELP: &str = "+credit  --  Your credit account: what is posted to it, what is \
      held against purchases you have accepted, and what you can spend now, in credits. It reads \
-     anywhere. An account is opened in your name when you enrol with a backer at the Registry & \
+     anywhere. An account is opened in your name when you enroll with a backer at the Registry & \
      Co-op desk.";
 
 /// No account in the actor's name.

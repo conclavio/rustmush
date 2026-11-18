@@ -3,11 +3,11 @@
     "id": "region.occator_rim",
     "version": 1,
     "kind": "region",
-    "digest": "df4e7b42c6b4b3dd924c6e5fe21cc06be178a23aeb8e0e80c423a2f94d5b8a3d",
+    "digest": "171783a21970a23210c22e93ab93125bb0e39922e963845eaee1a446c2dd1909",
     "requires": []
   },
   "brief": {
-    "prose": "Occator Rim stands on the northern rim of Occator crater, north of the Freeport at its centre. The Registry rules it; Occator Water & Propellant holds the four central blocks around the pad, and the outer ground is open to any licensed claimant. The rim ground is richer than the crater floor and has been surveyed as such since the Freeport's first decade."
+    "prose": "Occator Rim stands on the northern rim of Occator crater, north of the Freeport at its center. The Registry rules it; Occator Water & Propellant holds the four central blocks around the pad, and the outer ground is open to any licensed claimant. The rim ground is richer than the crater floor and has been surveyed as such since the Freeport's first decade."
   },
   "entries": {
     "region.occator_rim": {

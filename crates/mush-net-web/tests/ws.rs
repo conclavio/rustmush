@@ -635,7 +635,7 @@ async fn ws_rejects_bad_token_blocked_ip_and_missing_char() {
     );
     let (mut ws, _resp) = connect_async(req).await.expect("upgrade completes");
     let (code, reason) = recv_close(&mut ws).await;
-    assert_eq!(code, 4401, "the client must be able to recognise this");
+    assert_eq!(code, 4401, "the client must be able to recognize this");
     assert_eq!(reason, mush_net_web::SESSION_ENDED);
     {
         let st = hooks.state();

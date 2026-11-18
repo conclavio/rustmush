@@ -397,7 +397,7 @@ fn the_function_head_matcher_recognises_every_visibility_it_must() {
     ] {
         assert!(
             opens_a_function(head).is_some(),
-            "the matcher must recognise `{head}`"
+            "the matcher must recognize `{head}`"
         );
     }
     for head in [
@@ -538,7 +538,7 @@ fn the_optional_store_matcher_recognises_every_spelling_it_must() {
     ] {
         assert!(
             takes_optional_store(shape),
-            "the matcher must recognise `{shape}`"
+            "the matcher must recognize `{shape}`"
         );
     }
     for shape in [

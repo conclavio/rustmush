@@ -22,7 +22,7 @@ The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 │right_track  destroyed  0/24    ││""""""""""""""""""""~~~~~~~~~~""""""││  Position: cell (64, 97) then, (70, 101) now.│
 │  right 0/24                    ││""""""@"""""""""""""~~~~~~~~~~""""""││  Contacts: new BA, X3; lost X2.              │
 │turret  intact  30/30           ││""""""""""""""""""""~~~~~A~~~~""""""││  Sections: left_track intact then, destroyed │
-│  top 18/20                     ││""""""""""""""""""""~~~~~~~~~~""""""││now; hull armour 230 then, 90 now.            │
+│  top 18/20                     ││""""""""""""""""""""~~~~~~~~~~""""""││now; hull armor 230 then, 90 now.             │
 │                                ││""""""""""""""""""""""""""""""""""""││  Rounds spent: cannon 3, machine_gun 40.     │
 │                                ││""""""""""""""""""""""""""""""""""""││  Power online.                               │
 │                                ││+ RB  ? X3  A The Ford              ││                                              │

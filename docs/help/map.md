@@ -1,7 +1,7 @@
 # The map (`+map`, `+move`)
 
 A **map** is a window over the atlas's ground (`help atlas`): the rooms of a
-scene and the ground between them as a grid of cells, one metre each on the
+scene and the ground between them as a grid of cells, one meter each on the
 street, drawn from the tiles the packs authored. It opens when a scene needs
 one — a timestop opens a map over its room by itself; a scene's facilitator
 opens one with `+map/open` — and everyone in those rooms stands on it, on a
@@ -58,7 +58,7 @@ Anywhere else a walk is free.
 ## Staff
 
 `@atlas/window` lists the open maps; `@atlas/window open [<rooms>|<x0>,<y0>,<x1>,<y1>][=<cell cm>]`
-opens one by hand over rooms or an extent in metres (a map over more than
+opens one by hand over rooms or an extent in meters (a map over more than
 65,536 cells coarsens to the next cell size rather than refusing);
 `@atlas/window close <n>` closes it. `@atlas/feature <feature>=<state>` sets a
 feature's state — `intact`, `damaged`, `destroyed` — and every map over it

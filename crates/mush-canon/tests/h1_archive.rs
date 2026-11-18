@@ -278,7 +278,7 @@ fn h1_the_staff_archive_shows_everything_with_ids_and_marks_retcons_on_the_page(
     // A retcon of `second` sits in chunk 3 — the same page as its target.
     let (_, d) = push(
         &mut engine,
-        "Retcon of canon #1: it was a rumour",
+        "Retcon of canon #1: it was a rumor",
         CanonScope::Secret,
         &[],
         Some(second),

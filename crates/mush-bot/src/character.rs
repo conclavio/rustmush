@@ -7,7 +7,7 @@ use crate::Result;
 
 pub const POLICY: &str = "The runner-authored character_profile describes who you play: biography, values,\n\
 motivations, preferences and speaking style. Use it consistently alongside current memories and beliefs.\n\
-Motivations influence choices within the runner's goal; an interest or favourite team is not a new task.\n\
+Motivations influence choices within the runner's goal; an interest or favorite team is not a new task.\n\
 Opinions are subjective. Do not invent current scores, past encounters or world facts to flesh them out.\n\
 Unspecified biography is unknown; do not make up permanent personal history just to keep talking.\n\
 Use voice examples as guidance, not canned lines. Adapt to context, mood, relationships and new evidence.\n\
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn appearance_is_optional_bounded_authored_portrayal_without_creating_game_evidence() {
         let legacy =
-            Character::parse(r#"{"name":"Rose","background":"A travelling bookbinder."}"#).unwrap();
+            Character::parse(r#"{"name":"Rose","background":"A traveling bookbinder."}"#).unwrap();
         assert!(legacy.appearance.is_empty());
         assert!(
             serde_json::to_value(&legacy)

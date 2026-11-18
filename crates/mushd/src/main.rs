@@ -831,7 +831,7 @@ mod tests {
 
         let handle = tokio::spawn(std::future::pending::<()>());
         handle.abort();
-        let cancelled = handle.await.expect_err("the task was cancelled");
+        let cancelled = handle.await.expect_err("the task was canceled");
         let detail = world_fault_detail(Err(cancelled)).expect("a cancellation is a fault");
         assert!(detail.contains("without a value"), "{detail}");
     }

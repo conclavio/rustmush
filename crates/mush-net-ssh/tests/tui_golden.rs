@@ -1338,7 +1338,7 @@ fn a_reclaims_catch_up_rings_before_the_frames_notices() {
         "  Position: cell (64, 97) then, (70, 101) now.",
         "  Contacts: new BA, X3; lost X2.",
         "  Sections: left_track intact then, destroyed",
-        "now; hull armour 230 then, 90 now.",
+        "now; hull armor 230 then, 90 now.",
         "  Rounds spent: cannon 3, machine_gun 40.",
         "  Power online.",
     ] {

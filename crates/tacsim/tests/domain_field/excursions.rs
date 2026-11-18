@@ -1078,7 +1078,7 @@ pub(crate) fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered pilot whose hull the yard has made a Dray-P.
 pub(crate) fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1121,7 +1121,7 @@ pub(crate) fn docked_dray(
     (tank, locker): (u64, u64),
 ) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -4684,7 +4684,7 @@ fn staff_close_is_reported_once_after_a_new_action_starts() {
     // Doc 23 cut S.3 (A1): the close abandoned the rig's open epoch, so its notice is the
     // owner's one notice of the abandonment.
     let notice = format!(
-        "Staff closed rig #{}'s excursion and cancelled its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.",
+        "Staff closed rig #{}'s excursion and canceled its work. It stands where it is, abandoned, until staff bring it home; its hopper is unchanged.",
         tv.0
     );
 

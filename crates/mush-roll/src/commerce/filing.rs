@@ -781,7 +781,7 @@ impl ActionProvider for InitialFilingBuilder {
                 if self.dependent.is_some() { "File a dependent mind privately" } else if self.house { "File an original house mind" } else { "File an original mind" },
                 if self.dependent.is_some() { "File an exact rated revision under current immediate-parent rights." }
                 else if self.house { "File an owned rated revision to an authorized organization scope." } else {
-                    "File an owned rated revision privately and issue its charter and owner licence."
+                    "File an owned rated revision privately and issue its charter and owner license."
                 },
             )
             .map_err(|_| bad())?,

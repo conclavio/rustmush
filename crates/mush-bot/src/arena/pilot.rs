@@ -5310,7 +5310,7 @@ mod tests {
         picture.apply(
             NOW,
             &classify(&format!(
-                "Hit on the hull's front facet: {quarter} of 400 armour left."
+                "Hit on the hull's front facet: {quarter} of 400 armor left."
             )),
         );
         let orders = decide(&picture, &mut pilot);
@@ -5324,7 +5324,7 @@ mod tests {
         picture.apply(
             NOW,
             &classify(&format!(
-                "Hit on the hull's front facet: {} of 400 armour left.",
+                "Hit on the hull's front facet: {} of 400 armor left.",
                 quarter + 1
             )),
         );
@@ -5594,7 +5594,7 @@ mod tests {
         let (mut picture, mut pilot) = armed(keeps, 95);
         picture.apply(
             NOW - 50,
-            &classify("Hit on the hull's front facet: 300 of 400 armour left."),
+            &classify("Hit on the hull's front facet: 300 of 400 armor left."),
         );
         assert_eq!(fires(&picture, &mut pilot), ["cannon"], "answering BA");
         assert_eq!(pilot.fired_on, BTreeSet::from(["BA".to_owned()]));
@@ -5622,7 +5622,7 @@ mod tests {
         hold(&mut picture, contact("BB", Some(Side::Blue), 270, 500));
         picture.apply(
             NOW - 50,
-            &classify("Hit on the hull's left facet: 200 of 250 armour left."),
+            &classify("Hit on the hull's left facet: 200 of 250 armor left."),
         );
         assert!(
             fires(&picture, &mut pilot).is_empty(),
@@ -6540,7 +6540,7 @@ mod tests {
         picture.apply(
             NOW,
             &classify(&format!(
-                "Hit on the hull's front facet: {quarter} of 400 armour left."
+                "Hit on the hull's front facet: {quarter} of 400 armor left."
             )),
         );
         decide(&picture, &mut pilot);
@@ -6556,7 +6556,7 @@ mod tests {
         hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
         picture.apply(
             NOW,
-            &classify("Hit on the hull's rear facet: armour gone, 140 of 200 inside."),
+            &classify("Hit on the hull's rear facet: armor gone, 140 of 200 inside."),
         );
         assert_eq!(picture.own.sections["hull"].facets["rear"], (0, 0));
         assert!(!hull_failing(&picture));
@@ -7304,7 +7304,7 @@ mod tests {
         picture.apply(at, &classify(line));
     }
 
-    const LEFT_HIT: &str = "Hit on the hull's left facet: 200 of 250 armour left.";
+    const LEFT_HIT: &str = "Hit on the hull's left facet: 200 of 250 armor left.";
 
     /// **A side or rear hit turns the bow to the shooter** (cut AL.2).
     #[test]
@@ -7336,7 +7336,7 @@ mod tests {
         hit(
             &mut picture,
             NOW + 1_000,
-            "Hit on the turret's right facet: 200 of 220 armour left.",
+            "Hit on the turret's right facet: 200 of 220 armor left.",
         );
         let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 1_000);
         assert_eq!(
@@ -7368,7 +7368,7 @@ mod tests {
         hit(
             &mut picture,
             NOW,
-            "Hit on the hull's rear facet: 100 of 150 armour left.",
+            "Hit on the hull's rear facet: 100 of 150 armor left.",
         );
         let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
         assert_eq!((orders.heading, orders.speed), (Some(220), Some(0)));
@@ -7423,8 +7423,8 @@ mod tests {
 
         // A front or top hit does nothing.
         for line in [
-            "Hit on the hull's front facet: 300 of 400 armour left.",
-            "Hit on the turret's top facet: 80 of 100 armour left.",
+            "Hit on the hull's front facet: 300 of 400 armor left.",
+            "Hit on the turret's top facet: 80 of 100 armor left.",
         ] {
             let (mut picture, mut pilot) = flying();
             hit(&mut picture, NOW, line);
@@ -8226,7 +8226,7 @@ mod tests {
             ("left_track", ("left", 270), ("right", 90)),
         ] {
             let line =
-                |facet: &str| format!("Hit on the hull's {facet} facet: 200 of 250 armour left.");
+                |facet: &str| format!("Hit on the hull's {facet} facet: 200 of 250 armor left.");
             // A shooter in the dead-side arc, BA held due north.
             let (mut picture, mut pilot) = one_track(track);
             hold(&mut picture, contact_rel("BA", 0, 450, 0));
@@ -8274,7 +8274,7 @@ mod tests {
             hit(
                 &mut picture,
                 NOW,
-                "Hit on the hull's rear facet: 100 of 150 armour left.",
+                "Hit on the hull's rear facet: 100 of 150 armor left.",
             );
             pilot.decide(&picture, &hold_doctrine(), NOW);
             assert_eq!(pilot.threat.map(|(b, _)| whole(b)), Some(180), "{track}");
@@ -8305,7 +8305,7 @@ mod tests {
             (NOW + 40, "No such contact."),
             (
                 NOW + 50,
-                "Hit on the hull's left facet: 200 of 250 armour left.",
+                "Hit on the hull's left facet: 200 of 250 armor left.",
             ),
             // (Read after the turn into the hit is flown: a held stop
             // outranks the turn, and its sentence is said only when flown.)
@@ -9370,7 +9370,7 @@ mod tests {
             "  mode: range — 2 targets on the blue side",
         ] {
             let mut picture = running();
-            picture.apply(POWER - 5_000, &classify("Simulator centre: selection"));
+            picture.apply(POWER - 5_000, &classify("Simulator center: selection"));
             picture.apply(POWER - 5_000, &classify(mode));
             assert_ne!(picture.match_mode, MatchMode::Skirmish);
             picture.apply(POWER, &classify("Power online."));

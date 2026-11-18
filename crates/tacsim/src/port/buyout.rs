@@ -314,7 +314,7 @@ fn plan_buyout(ctx: &Ctx<'_>) -> Result<BuyoutPlan, String> {
         Books::Absent => return Err(NO_CHARTER.to_owned()),
         Books::Unreadable => {
             tracing::error!(
-                "tacsim: +coop/buyout found an unreadable enrolment for the asker's account; \
+                "tacsim: +coop/buyout found an unreadable enrollment for the asker's account; \
                  staff repair the tacsim:coop: document"
             );
             return Err(BOOKS_UNREADABLE.to_owned());
@@ -601,7 +601,7 @@ pub(crate) fn settle_buyout(ctx: &mut Ctx<'_>, e: &Enrolment) {
     let Some(buyout) = e.buyout else {
         tracing::error!(
             pilot = e.pilot.0,
-            "tacsim: a buyout-pending enrolment names no buyout contract"
+            "tacsim: a buyout-pending enrollment names no buyout contract"
         );
         return;
     };
@@ -620,7 +620,7 @@ pub(crate) fn settle_buyout(ctx: &mut Ctx<'_>, e: &Enrolment) {
         tracing::error!(
             contract = buyout,
             pilot = e.pilot.0,
-            "tacsim: a buyout's contract does not read; the enrolment stays buyout-pending"
+            "tacsim: a buyout's contract does not read; the enrollment stays buyout-pending"
         );
         return;
     };
@@ -643,7 +643,7 @@ fn graduate(ctx: &mut Ctx<'_>, e: &Enrolment) {
         tracing::error!(
             hull = e.hull.0,
             pilot = e.pilot.0,
-            "tacsim: a buyout settled but the hull is not titled to the pilot; the enrolment \
+            "tacsim: a buyout settled but the hull is not titled to the pilot; the enrollment \
              graduates all the same"
         );
     }
@@ -769,7 +769,7 @@ pub(crate) fn relet(ctx: &mut Ctx<'_>, e: &Enrolment, attempt: u8, give_up: bool
                 attempt,
                 pilot = e.pilot.0,
                 hull = e.hull.0,
-                "tacsim: a refunded buyout's re-lease failed; the enrolment stays buyout-pending \
+                "tacsim: a refunded buyout's re-lease failed; the enrollment stays buyout-pending \
                  and the recall arm retries under a backoff"
             );
             if attempt <= 1 {
@@ -797,7 +797,7 @@ pub(crate) fn relet(ctx: &mut Ctx<'_>, e: &Enrolment, attempt: u8, give_up: bool
                 hull = e.hull.0,
                 buyout = e.buyout,
                 attempts = attempt,
-                "tacsim: a refunded buyout's re-charter failed {attempt} times; the enrolment is \
+                "tacsim: a refunded buyout's re-charter failed {attempt} times; the enrollment is \
                  revoked and the hull returns through the recall arm once docked empty at Ceres; \
                  `@contract/show #<buyout>`"
             );

@@ -936,7 +936,7 @@ fn flow(
 ) -> TestResult<(Durable, LicenceId, Durable)> {
     let birth = one(rows(&snapshot.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
-        serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
+        serde_json::from_value(birth.get("licence").cloned().ok_or("owner license")?)?;
     let owner_term: mush_roll::commerce::records::OwnerTerm =
         serde_json::from_value(one(rows(&snapshot.disk, "roll", "roll_mind_owner_term"))?)?;
     let mut w = Rig::house(registry, Compose::NONE).boot(snapshot)?;

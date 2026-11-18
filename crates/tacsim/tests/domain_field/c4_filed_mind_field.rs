@@ -287,8 +287,8 @@ pub(crate) async fn file_own_mind(world: &mut M8World, name: &str, source: &str)
                 .as_u64()
                 .or_else(|| licence.as_str().and_then(|text| text.parse().ok()))
         })
-        .unwrap_or_else(|| panic!("the filing names its owner's licence: {row}"));
-    eprintln!("C4_FIELD filed {name}: owner's licence {licence}");
+        .unwrap_or_else(|| panic!("the filing names its owner's license: {row}"));
+    eprintln!("C4_FIELD filed {name}: owner's license {licence}");
     licence
 }
 
@@ -841,7 +841,7 @@ async fn story(script: Option<&str>) {
         assert_eq!(
             named.as_str(),
             licence.expect("filed").to_string(),
-            "under the pilot's owner's licence"
+            "under the pilot's owner's license"
         );
         assert_eq!(
             state,

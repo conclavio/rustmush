@@ -431,7 +431,7 @@ fn passenger_seeded_capital(tw: &TestWorld) -> i64 {
         .sum();
     assert_eq!(
         total, 100_000,
-        "each of the two authored travellers receives one 500cr purse"
+        "each of the two authored travelers receives one 500cr purse"
     );
     total
 }
@@ -1199,7 +1199,7 @@ fn ic3_a_cancelled_tranche_reads_missing_not_pending() {
     let kasei = map.orgs.get(&cid("kasei")).expect("kasei's row");
     let obligation = kasei.capital[0].obligation;
     let out = run(&mut tw, GOD, &format!("@obligation/cancel #{obligation}"));
-    assert!(out.contains("cancelled"), "{out}");
+    assert!(out.contains("canceled"), "{out}");
     sweep(&mut tw, 3_600);
     let out = report(&mut tw);
     assert!(
@@ -1874,10 +1874,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 .orgs
                 .iter()
                 .find(|o| o.id == programme.org)
-                .expect("the programme org");
+                .expect("the program org");
             let row = map.orgs.get(&programme.org).expect("a row");
             want.push(format!(
-                "  {entry} programme {}: {}, account #{}, floor {}.00cr, stake {}.00cr for each of \
+                "  {entry} program {}: {}, account #{}, floor {}.00cr, stake {}.00cr for each of \
                  {} hulls. [ready]",
                 programme.id,
                 org.name,
@@ -1927,7 +1927,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 .find(|o| o.id == licence.org)
                 .expect("the issuer org");
             want.push(format!(
-                "  {entry} licence tacsim.licence.freeport: the {} issues it at {}.00cr for {} IC \
+                "  {entry} license tacsim.licence.freeport: the {} issues it at {}.00cr for {} IC \
                  days with {} IC days' grace; extraction reads it. [ready]",
                 issuer.name, licence.fee_major, licence.term_ic_days, licence.grace_ic_days
             ));
@@ -2235,7 +2235,7 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
             ],
         ),
         (
-            "a programme org not in orgs",
+            "a program org not in orgs",
             Box::new(|doc| {
                 doc["entries"]["ceres_port"]["def"]["programme"]["org"] = json!("kasei");
             }),

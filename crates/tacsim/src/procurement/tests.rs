@@ -417,7 +417,7 @@ fn rows_check_their_bounds_and_change_only_phase() -> TestResult {
     check_eq!(
         r.key().key_text(),
         "00000000000000000003/2350/05/000001",
-        "the organisation, the month, the ordinal"
+        "the organization, the month, the ordinal"
     );
     check!(
         r.key()

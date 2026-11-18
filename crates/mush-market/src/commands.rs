@@ -72,9 +72,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    bounded page at a time. A filter you may not use simply shows nothing. \
                    With no filter, where you stand in a port, you see that port's board.\n\
                    +market/show <listing>             one listing.\n\
-                   +market/depth <catalogue>:<code> [market=<venue>]\n\
+                   +market/depth <catalog>:<code> [market=<venue>]\n\
                    \x20                                 the PUBLIC picture of a good, named by \
-                   its catalogue and code (a port good reads tacsim:<good>, as tacsim:metals): \
+                   its catalog and code (a port good reads tacsim:<good>, as tacsim:metals): \
                    last trade, \
                    a price band, bucketed depth and the window's volume. It names no account, no \
                    listing, no counterparty and no seller's quantity, and it is the same for \
@@ -144,7 +144,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .collect(),
             help: "@market/catalog load <pack>        load or reload a content pack. A bad entry \
                    fails the PACK and names it; the server keeps running.\n\
-                   @market/catalog list [<pack>]      what is in the catalogue.\n\
+                   @market/catalog list [<pack>]      what is in the catalog.\n\
                    @market/catalog show <ruleset>:<code>\n\
                    @market/vendor create <org>=<vault> [name=<text>] [market=<venue>] [buy=<permille>]\n\
                    @market/vendor fund <vendor>=<amount> [faucet=<id>] [period=<secs>]\n\
@@ -1582,7 +1582,7 @@ fn admin_catalog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 })
                 .unwrap_or_default();
             if out.is_empty() {
-                out.push("The catalogue is empty.".to_string());
+                out.push("The catalog is empty.".to_string());
             }
             lines(ctx, out);
             Ok(())

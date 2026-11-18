@@ -312,7 +312,7 @@ async fn ex3_the_house_buys_its_bill_on_the_board_and_a_missed_leg_refunds() {
     crate::in10_pools::settle(&mut rig, 40);
     for i in 0..8_i64 {
         let captain = crate::driving_rig::pilot(&mut rig, &format!("Captain{i}"), i + 1);
-        let out = run(&mut rig.tw, captain, &format!("+coop/enrol Hull {i}"));
+        let out = run(&mut rig.tw, captain, &format!("+coop/enroll Hull {i}"));
         assert!(out.contains("now the Hull"), "{out}");
         crate::in10_pools::settle(&mut rig, 1);
     }

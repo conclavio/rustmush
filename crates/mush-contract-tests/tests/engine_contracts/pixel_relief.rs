@@ -61,7 +61,7 @@ fn every_cell_height_reaches_the_picture_exactly() {
             );
         }
     }
-    assert!(picture.is_baked(), "the colour map is on");
+    assert!(picture.is_baked(), "the color map is on");
     // A feed with no heights is drawn flat, as before.
     let mut flat = frame.clone();
     flat.as_object_mut().expect("an object").remove("elev");

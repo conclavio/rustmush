@@ -1733,7 +1733,7 @@ impl Live {
 async fn the_bot_reads_a_live_centre_over_its_own_ssh_client() {
     tokio::time::timeout(Duration::from_secs(90), live_centre())
         .await
-        .expect("the live centre finishes inside 90 s");
+        .expect("the live center finishes inside 90 s");
 }
 
 async fn live_centre() {

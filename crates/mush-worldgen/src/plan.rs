@@ -40,7 +40,7 @@ const PLAN_MAX_TOKENS: u32 = 4096;
 pub const SCHEMA: &str = "\
 A pack is JSON: {\"manifest\": {\"id\", \"version\", \"kind\", \"requires\": [{\"id\", \"version\"}]}, \
 \"entries\": {\"<entry id>\": {\"kind\": \"<kind>\", \"def\": {...}}}}. Entry ids are [a-z0-9_.] \
-(e.g. room.lobby, exit.lobby_street, site.cafe). Coordinates are region metres, [x, y]. Kinds:\n\
+(e.g. room.lobby, exit.lobby_street, site.cafe). Coordinates are region meters, [x, y]. Kinds:\n\
 - site: {name, site_kind (site.park, site.shop, ...), footprint: [[x,y],...] (a polygon), entrances: [exit ids]}\n\
 - room: {name, desc, surface: \"ground\" | {\"floor\": [structure id, index]}, footprint: {\"rect\": [[x0,y0],[x1,y1]]} \
 | {\"polygon\": [[x,y],...]}, site?: site id, kind?: outdoor|indoor|circulation, access?: public|restricted, \
@@ -128,7 +128,7 @@ pub fn user_prompt(snap: &PlanSnapshot) -> String {
             ));
             if let Some(fp) = &snap.footprint {
                 out.push_str(&format!(
-                    "Reserved footprint (region metres): {}\n",
+                    "Reserved footprint (region meters): {}\n",
                     serde_json::to_string(fp).unwrap_or_default()
                 ));
             }

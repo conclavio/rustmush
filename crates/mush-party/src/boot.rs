@@ -68,7 +68,7 @@ fn parse(data: &ModuleBootData) -> Loaded {
             continue;
         }
         let Some(digits) = key.strip_prefix("party:") else {
-            tracing::warn!(%key, "party: unrecognised persisted key; dropping");
+            tracing::warn!(%key, "party: unrecognized persisted key; dropping");
             dropped.push(key.clone());
             continue;
         };

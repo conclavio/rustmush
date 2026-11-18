@@ -2316,7 +2316,7 @@ fn ws02_s5b_the_sweep_cancels_a_drafted_order_whose_pin_is_not_the_authoritys() 
     assert_eq!(
         drift_of(&world, forged),
         None,
-        "a cancelled order is no longer a drifted DRAFT"
+        "a canceled order is no longer a drifted DRAFT"
     );
 }
 

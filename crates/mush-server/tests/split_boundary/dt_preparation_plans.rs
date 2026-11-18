@@ -137,7 +137,7 @@ fn plan(rig: &Rig) -> Value {
 async fn stock_surface_rigs_have_real_unoccupied_helm_consoles_across_restart() -> TestResult {
     let store = InMemoryStore::new();
     let rig = fixture(&store).await?;
-    let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme port")?;
+    let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("program port")?;
     let rigs = port
         .map
         .vehicles
@@ -893,8 +893,8 @@ async fn field_commander_fixture_capped(
         hire_field_operator(&mut rig, store, commander).await?;
     }
     let (hull, ceres, crew, site) = {
-        let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("programme port")?;
-        let row = port.map.hulls.first().ok_or("programme hull")?;
+        let port = tacsim::port::coop::programme_port(rig.world.world()).ok_or("program port")?;
+        let row = port.map.hulls.first().ok_or("program hull")?;
         let site = rig
             .world
             .world()
@@ -1118,9 +1118,9 @@ async fn rented_mining_fixture(store: &InMemoryStore) -> TestResult<(Rig, ObjId)
     };
     let desk = room(&rig.world, "room.c05_registry")?;
     rig.world.world_mut().move_to(rig.organizer, desk)?;
-    ordinary(&mut rig.world, rig.organizer, "+coop/enrol Field Moth")?;
+    ordinary(&mut rig.world, rig.organizer, "+coop/enroll Field Moth")?;
     ordinary(&mut rig.world, rig.organizer, "+coop/refit prospector")?;
-    ordinary(&mut rig.world, rig.organizer, "+licence/buy go")?;
+    ordinary(&mut rig.world, rig.organizer, "+license/buy go")?;
     let counter = room(&rig.world, "room.c07_exchange")?;
     rig.world.world_mut().move_to(rig.organizer, counter)?;
     ordinary(&mut rig.world, rig.organizer, "+tv/lease go")?;

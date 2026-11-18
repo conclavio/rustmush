@@ -809,7 +809,7 @@ fn next(w: &World, shop: &Shop, requester: ObjId, request: &mut Request) -> Next
             };
             let id = json!({ "order": order.id.to_string() });
             if order.cancelled {
-                return Next::GiveUp("the integration was cancelled");
+                return Next::GiveUp("the integration was canceled");
             }
             if accepted_here && !reserve_sent && !order.worked && order.completed.is_none() {
                 return Next::Submit {

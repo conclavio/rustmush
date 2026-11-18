@@ -652,7 +652,7 @@ mod tests {
                 (25_000, "New contact X1: bearing 090°, far."),
                 (
                     31_000,
-                    "Hit on the hull's front facet: 300 of 400 armour left.",
+                    "Hit on the hull's front facet: 300 of 400 armor left.",
                 ),
                 (33_000, "Hit on X1: turret."),
             ]);

@@ -2232,8 +2232,8 @@ pub(crate) fn put_enrolment(ctx: &mut Ctx<'_>, e: &crate::port::coop::Enrolment)
             // Never the key: its tail is the account's canonical hash.
             tracing::error!(
                 pilot = e.pilot.0, %error,
-                "tacsim: an enrolment did not serialize; a minimal document is written so the key \
-                 still bars re-enrolment. Repair the document by hand."
+                "tacsim: an enrollment did not serialize; a minimal document is written so the key \
+                 still bars re-enrollment. Repair the document by hand."
             );
             serde_json::json!({
                 "schema": e.schema,
@@ -2262,7 +2262,7 @@ pub(crate) fn put_licence(ctx: &mut Ctx<'_>, record: &crate::port::licence::Lice
             // Never the key: its tail is the account's canonical hash.
             tracing::error!(
                 holder = record.holder.0, %error,
-                "tacsim: a licence did not serialize; a minimal document is written so the key \
+                "tacsim: a license did not serialize; a minimal document is written so the key \
                  still bars the account. Repair the document by hand."
             );
             serde_json::json!({
@@ -3267,7 +3267,7 @@ fn load_enrolment(store: &mut TacsimStore, key: &str, value: &serde_json::Value)
             if crate::port::coop::enrolment_key(e.account) == key {
                 Ok(e)
             } else {
-                Err("the enrolment disagrees with its own key".to_owned())
+                Err("the enrollment disagrees with its own key".to_owned())
             }
         });
     match enrolment {
@@ -3276,8 +3276,8 @@ fn load_enrolment(store: &mut TacsimStore, key: &str, value: &serde_json::Value)
         }
         Err(error) => tracing::warn!(
             %error,
-            "tacsim: an enrolment document is unreadable; skipped (its key still bars that \
-             account's re-enrolment; repair the document by hand)"
+            "tacsim: an enrollment document is unreadable; skipped (its key still bars that \
+             account's re-enrollment; repair the document by hand)"
         ),
     }
 }
@@ -3295,7 +3295,7 @@ fn load_licence(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
             if crate::port::licence::licence_key(record.account) == key {
                 Ok(record)
             } else {
-                Err("the licence disagrees with its own key".to_owned())
+                Err("the license disagrees with its own key".to_owned())
             }
         });
     match record {
@@ -3304,7 +3304,7 @@ fn load_licence(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
         }
         Err(error) => tracing::warn!(
             %error,
-            "tacsim: a licence document is unreadable; skipped (its key still bars that \
+            "tacsim: a license document is unreadable; skipped (its key still bars that \
              account; repair the document by hand)"
         ),
     }

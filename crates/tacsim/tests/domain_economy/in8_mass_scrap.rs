@@ -78,7 +78,7 @@ fn dent(rig: &mut Rig, hull: ObjId, mut points: i64) {
             });
         }
     }
-    assert_eq!(points, 0, "the armour holds the dent");
+    assert_eq!(points, 0, "the armor holds the dent");
     damage(rig, hull, ops);
 }
 

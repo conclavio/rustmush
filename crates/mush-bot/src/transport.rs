@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn refused_verbs_are_only_refused_as_the_verb() {
         for command in [
-            "say type @sshkey/add and I will owe you a favour",
+            "say type @sshkey/add and I will owe you a favor",
             "pose quits the game of cards.",
             "look",
             "@emit The wind picks up.",

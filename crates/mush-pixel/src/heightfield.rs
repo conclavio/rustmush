@@ -1723,10 +1723,10 @@ mod tests {
     fn heights_interpolate_between_cell_centres() {
         let mut t = Terrain::new(Map::new(4, 4, 1000));
         t.set_elev_cm(1, 1, 1000);
-        assert_eq!(t.height(1.5, 1.5), 1.0, "a cell centre is its own height");
+        assert_eq!(t.height(1.5, 1.5), 1.0, "a cell center is its own height");
         assert!(
             (t.height(2.0, 1.5) - 0.5).abs() < 1e-6,
-            "half way to a flat neighbour"
+            "half way to a flat neighbor"
         );
         assert_eq!(t.height(3.5, 3.5), 0.0);
         assert_eq!(
@@ -1768,7 +1768,7 @@ mod tests {
         let edges: usize = (0..h)
             .map(|y| (1..w).filter(|&x| f.get(x, y) != f.get(x - 1, y)).count())
             .sum();
-        assert!(edges <= 800, "the face is toothed: {edges} colour edges");
+        assert!(edges <= 800, "the face is toothed: {edges} color edges");
     }
 
     /// From the crater's floor the rim stands above the horizon all round;

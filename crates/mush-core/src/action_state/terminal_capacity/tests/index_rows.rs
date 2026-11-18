@@ -288,7 +288,7 @@ fn index_roll_mind_paid_holdings_entitlement_grant_is_required_and_exact() -> R 
     );
     for (case, extra) in [
         ("a second holder's row", holding_row(OTHER, 1)),
-        ("a wrong licence", holding_row(BUYER, 2)),
+        ("a wrong license", holding_row(BUYER, 2)),
     ] {
         let write = |t: &mut ActionTxn<'_>, h: &Handles| {
             release(t, h)?;
@@ -352,7 +352,7 @@ fn index_roll_mind_paid_holdings_house_grant_is_required_and_exact() -> R {
     refuses(
         house::tests::house_terminal(&mut f, true, Some(&crossed)),
         HOUSE,
-        "the holder's key carrying a wrong licence",
+        "the holder's key carrying a wrong license",
     );
     let at_refund = |t: &mut ActionTxn<'_>, h: &Handles| put_holding(t, h, BUYER, 1);
     refuses(
@@ -563,7 +563,7 @@ fn index_market_mind_paid_resale_buyer_offers_paid_resale_offer_is_required_and_
     for (case, key, head) in [
         ("another buyer's row", resale_key(9, 1), resale_head(9)),
         (
-            "a wrong licence",
+            "a wrong license",
             resale_key(OTHER, 2),
             json!({"format":1,"buyer":OTHER,"licence":"2"}),
         ),
@@ -986,8 +986,8 @@ fn boot_refuses_an_index_that_disagrees_with_its_heads() -> R {
     boot_refuses(
         registry,
         &omitted,
-        "owner index omits a held licence",
-        "holdings: held licence not indexed",
+        "owner index omits a held license",
+        "holdings: held license not indexed",
     );
     let (other, row) = holding_row(OTHER, 1);
     let mut crossed = with_row(registry, &disk, &held, ("roll", HOLDINGS, &other), row)?;

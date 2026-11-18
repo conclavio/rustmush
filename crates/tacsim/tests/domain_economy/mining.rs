@@ -638,7 +638,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -2748,7 +2748,7 @@ fn sm7_rights_gate_mining_and_never_the_way_home() {
     let entitlement = store(&rig.tw)
         .licence_of_holder(p)
         .map(|record| record.entitlement)
-        .expect("P's licence");
+        .expect("P's license");
     let freeze = |rig: &mut Rig, status: mush_economy::AccountStatus| {
         let ok = support::with_ctx(&mut rig.tw, |ctx| {
             mush_economy::set_account_status(ctx, mush_economy::AccountId(entitlement), status)
@@ -2761,7 +2761,7 @@ fn sm7_rights_gate_mining_and_never_the_way_home() {
         .replace("{account}", &entitlement.to_string());
     let (out, queued) = command(&mut rig, p, "+tv/1 mine");
     assert_eq!(out.trim(), suspended);
-    assert_eq!(out, run(&mut rig.tw, p, "+licence"), "+licence's own line");
+    assert_eq!(out, run(&mut rig.tw, p, "+license"), "+license's own line");
     assert!(queued.is_empty());
     freeze(&mut rig, mush_economy::AccountStatus::Active);
     // Other: the account's licence held by another character.
@@ -2773,7 +2773,7 @@ fn sm7_rights_gate_mining_and_never_the_way_home() {
     let other = LICENCE_OTHER.replace("{issuer}", REGISTRY);
     let (out, _) = command(&mut rig, p, "+tv/1 mine");
     assert_eq!(out.trim(), other);
-    assert_eq!(out, run(&mut rig.tw, p, "+licence"));
+    assert_eq!(out, run(&mut rig.tw, p, "+license"));
     assert_ne!(out.trim(), MINE_NO_LICENCE);
     // Restored to P; then no licence at all: P's gateway account swapped for a fresh one (the
     // licence is keyed by the account, so nothing is found), then put back.

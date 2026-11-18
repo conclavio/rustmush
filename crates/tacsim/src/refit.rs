@@ -52,7 +52,7 @@ pub fn registry_of(catalog: &Catalog) -> Result<DefinitionRegistry, String> {
         .values()
         .next()
         .map(|binding| binding.spec.definition.key().owner.clone())
-        .ok_or("the catalogue binds no unit")?;
+        .ok_or("the catalog binds no unit")?;
     let mut builder = DefinitionRegistryBuilder::new();
     for descriptor in &catalog.descriptors {
         let owner = owner.clone();

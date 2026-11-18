@@ -60,7 +60,7 @@ there and its margin with `@facility/terms <facility>=public|owner
 stays open to every customer.
 
 A fee is fixed when an order is booked. If the owner raises it before the work
-starts, the order is cancelled, and its booking fee and bill go back to the
+starts, the order is canceled, and its booking fee and bill go back to the
 customer.
 
 ## Posting a bid
@@ -140,7 +140,7 @@ command that takes it:
 
 - **Retrieval:** bring a hull to a port for its title holder. Take it with
   +salvage/accept. You then have the retrieval window to deliver her.
-- **Passage:** carry a waiting traveller to their destination. The fare shown is
+- **Passage:** carry a waiting traveler to their destination. The fare shown is
   their opening offer; +passage/offer opens the haggling. The fare is paid on
   arrival.
 - **Survey:** Occator's commissions for fresh soundings of one block. Take one

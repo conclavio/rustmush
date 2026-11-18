@@ -78,7 +78,7 @@ describe("decodeMarketView", () => {
       levyPermille: 50,
       venuePermille: 20,
       parentRoyaltyPermille: 0,
-      termsLine: "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+      termsLine: "One seat for 30 IC days plus 7 days of Grace; the license can be resold.",
       splitLine: "Price 1250cr: Registry 5%, venue 2%, charter owner the rest.",
     });
     expect(view!.own).toEqual({
@@ -311,7 +311,7 @@ describe("MarketStore", () => {
       name: "Drift Kestrel",
       step: "pay",
       confirm: [
-        "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+        "One seat for 30 IC days plus 7 days of Grace; the license can be resold.",
         "Price 1250cr: Registry 5%, venue 2%, charter owner the rest.",
         "Your quote: 1250cr, 240s left.",
       ],
@@ -439,9 +439,9 @@ describe("MarketStore", () => {
     store.openAccept();
     if (store.form?.kind === "accept") store.form.number = "41";
     store.begin({ act: "resell_accept", licence: 41, price: null });
-    expect(store.reply({ status: "shown", lines: ["Vex offers licence 41 to you for 5cr.", "Accept it with: price=5"] })).toBe("shown");
-    expect(store.form).toMatchObject({ kind: "accept", shown: ["Vex offers licence 41 to you for 5cr.", "Accept it with: price=5"] });
-    expect(store.notice).toBe("Vex offers licence 41 to you for 5cr.");
+    expect(store.reply({ status: "shown", lines: ["Vex offers license 41 to you for 5cr.", "Accept it with: price=5"] })).toBe("shown");
+    expect(store.form).toMatchObject({ kind: "accept", shown: ["Vex offers license 41 to you for 5cr.", "Accept it with: price=5"] });
+    expect(store.notice).toBe("Vex offers license 41 to you for 5cr.");
 
     store.begin({ act: "resell_accept", licence: 41, price: "5" });
     expect(store.reply({ status: "error", code: "no_offer_at", message: "No offer names you at that price." })).toBe("error");
@@ -502,7 +502,7 @@ describe("MarketStore", () => {
     // Esc on the pending form: it closes the window, not the request.
     store.closeForm();
     expect(store.pending).toBe(true);
-    const lines = ["Vex offers licence 41 to you for 5cr.", "Accept it with: price=5"];
+    const lines = ["Vex offers license 41 to you for 5cr.", "Accept it with: price=5"];
     expect(store.reply({ status: "shown", lines })).toBe("shown");
     expect(store.form).toEqual({ kind: "notice", title: "Offers", lines });
     expect(store.notice).toBe(lines[0]);

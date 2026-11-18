@@ -45,7 +45,7 @@ pub(crate) fn register(
         let refusal = ActionError::new(
             ActionErrorCode::ProviderRejected,
             false,
-            "This paid licence transfer is unavailable or has changed.",
+            "This paid license transfer is unavailable or has changed.",
         )
         .map_err(error)?;
         if index < 3 {

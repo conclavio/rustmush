@@ -3026,9 +3026,9 @@ fn l2_running_match(
     tw.run(pilots[0], "sim ai 3");
     tw.run(pilots[0], "sim start");
     let match_id = tacsim::match_::centre_of(tw.world())
-        .expect("the centre")
+        .expect("the center")
         .match_id
-        .expect("a boarding centre has a match id");
+        .expect("a boarding center has a match id");
     // Each pilot walks to their side's room and boards, as a player does
     // (`tests/cockpit.rs`' `fly`): the match is checked out at the last
     // `BOARD`, with every claimed tank seated, so the record's rosters carry
@@ -3039,10 +3039,10 @@ fn l2_running_match(
             &PartyId::RED => tacsim::match_::RED_ROOM_ENTRY,
             _ => tacsim::match_::BLUE_ROOM_ENTRY,
         };
-        let room = tacsim::match_::centre_object(tw.world(), entry).expect("a centre room");
+        let room = tacsim::match_::centre_object(tw.world(), entry).expect("a center room");
         tw.world_mut()
             .move_to(*pilot, room)
-            .expect("the centre's rooms take anybody");
+            .expect("the center's rooms take anybody");
         tw.run(*pilot, "board");
         let pod = tacsim::match_::pod_of(tw.world(), *pilot).expect("a claimed slot locks a pod");
         let unit =
@@ -3051,7 +3051,7 @@ fn l2_running_match(
     }
     assert_eq!(
         tacsim::match_::centre_of(tw.world())
-            .expect("the centre")
+            .expect("the center")
             .state,
         tacsim::match_::MatchState::Running,
         "every pilot boarded"

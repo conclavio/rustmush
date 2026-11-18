@@ -528,7 +528,7 @@ fn submit(ctx: &mut Ctx<'_>, mut order: Order) -> Result<(), String> {
         })?;
         if !initial_passages_ready(ctx.w, &order, &passages) {
             return Err(
-                "the named traveller no longer has an available passage for this character".into(),
+                "the named traveler no longer has an available passage for this character".into(),
             );
         }
         order.passage_availability_hash = initial_passages_hash(&passages)?;
@@ -1569,8 +1569,8 @@ mod tests {
         row.checks.push(CheckEvidence {
             checkpoint: "bench".into(),
             room: ObjId(20),
-            detail_hash: detail_hash("The traveller arrived and the fare was paid.")?,
-            detail_text: "The traveller arrived and the fare was paid.".into(),
+            detail_hash: detail_hash("The traveler arrived and the fare was paid.")?,
+            detail_text: "The traveler arrived and the fare was paid.".into(),
             at: Stamp {
                 at_ic: 60,
                 at_utc: 60,

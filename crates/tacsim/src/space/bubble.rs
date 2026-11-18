@@ -3615,7 +3615,7 @@ mod cc6_tests {
         bubble.insert_ship(dray);
         assert!(
             !bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Defense),
-            "her fit allows no defence on this laser"
+            "her fit allows no defense on this laser"
         );
         assert!(
             bubble.set_laser_mode("her", "laser_ventral", LaserMode::Defense),
@@ -3680,7 +3680,7 @@ mod cc6_tests {
         assert_eq!(
             Some(split.cooldown_ms),
             def.modes.offence.map(|mode| mode.cycle_ms),
-            "offence keeps its own"
+            "offense keeps its own"
         );
     }
 }

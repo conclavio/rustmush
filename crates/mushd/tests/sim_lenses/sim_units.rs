@@ -713,7 +713,7 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
     // the match is on, so it names nobody's machine.
     let seen = ask_whole(&mut bo, "SIM STATUS").await;
     assert!(
-        seen.contains("Simulator centre:"),
+        seen.contains("Simulator center:"),
         "the board answers from a pod: {seen}"
     );
     for leak in ["biped_mk1", "line_tank_laser", "[line_tank"] {
@@ -1621,7 +1621,7 @@ async fn m5_sim_unit_is_never_refused_for_the_pool_at_the_stock_constants() {
     let help = help.split_whitespace().collect::<Vec<&str>>().join(" ");
     assert!(
         help.contains(
-            "A choice the centre's compute cannot carry is refused with the arithmetic: how \
+            "A choice the center's compute cannot carry is refused with the arithmetic: how \
              much this tank would think a second, its side's half of the pool, and what is \
              spoken for."
         ),

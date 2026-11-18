@@ -3,7 +3,7 @@
     "id": "tacsim.quests.first_steps",
     "version": 1,
     "kind": "campaign_seed",
-    "digest": "554d015d860808e35e0de99678841f7b68f7a0d39efdf62b59bb473a7e79f1f4",
+    "digest": "4eb6f8b8f310f795debc20ae8d7e4f4810ea2ea56705d36adb4925b2594a5a0d",
     "requires": [
       { "id": "neighborhood.ceres_freeport", "version": 4 },
       { "id": "neighborhood.stickney_yards", "version": 4 },
@@ -11,7 +11,7 @@
     ]
   },
   "brief": {
-    "prose": "Four independent invitations to try existing services: a Co-op charter, a small fittings trade, meeting a real traveller and ordinary surface readings. Each can be declined or left alone. None unlocks another or gates the services it explains. Verified completion gives a one-time personal relationship bonus with its giver, not credits or faction standing. Existing NPC identities, profiles and authority remain their own."
+    "prose": "Four independent invitations to try existing services: a Co-op charter, a small fittings trade, meeting a real traveler and ordinary surface readings. Each can be declined or left alone. None unlocks another or gates the services it explains. Verified completion gives a one-time personal relationship bonus with its giver, not credits or faction standing. Existing NPC identities, profiles and authority remain their own."
   },
   "entries": {
     "quest.oduya_first_hull": {
@@ -21,19 +21,19 @@
         "npc_pack": "neighborhood.ceres_freeport",
         "prerequisite": "open",
         "title": "The papers behind a captain",
-        "introduction": "If the First Captain programme suits you, I can help you find your feet with the paperwork. Read +coop for the current terms before deciding. This invitation is optional: signing with the Co-op is your decision, and you can use the programme without taking this job.",
+        "introduction": "If the First Captain program suits you, I can help you find your feet with the paperwork. Read +coop for the current terms before deciding. This invitation is optional: signing with the Co-op is your decision, and you can use the program without taking this job.",
         "destination": "ceres",
         "checkpoints": [
           {
             "id": "enrolment",
-            "title": "Confirm your own Co-op enrolment",
+            "title": "Confirm your own Co-op enrollment",
             "room_pack": "neighborhood.ceres_freeport",
             "room_entry": "room.c05_registry",
-            "instructions": "At the Registry & Co-op Desk, +coop reads the terms and +coop/enrol <ship name> enrols you if eligible. The Co-op stakes each account once, so do not sign just to clear a journal entry. Use +coop/statement for your own record, then +quest/check Ilse here to verify an actual enrolment. Finish with +quest/finish Ilse.",
+            "instructions": "At the Registry & Co-op Desk, +coop reads the terms and +coop/enroll <ship name> enrolls you if eligible. The Co-op stakes each account once, so do not sign just to clear a journal entry. Use +coop/statement for your own record, then +quest/check Ilse here to verify an actual enrollment. Finish with +quest/finish Ilse.",
             "objective": { "kind": "coop_enrolment" }
           }
         ],
-        "completion": "The captain brought their own completed Co-op enrolment back to my desk. Their papers came through the actual programme, and I have recorded that follow-through."
+        "completion": "The captain brought their own completed Co-op enrollment back to my desk. Their papers came through the actual program, and I have recorded that follow-through."
       }
     },
     "quest.dov_fittings": {
@@ -95,7 +95,7 @@
             "title": "Complete an ordinary surface scan",
             "room_pack": "neighborhood.ceres_freeport",
             "room_entry": "room.c07_exchange",
-            "instructions": "If needed, help mining explains the licence, Dray-P refit and rig lease. Choose a real site with +chart/ground and plan the outward and home legs. Use +tv/1 scan to preview, then +tv/1 scan go to complete an actual scan. You may also finish the sounding on this trip. Return to Qureshi at Ceres's Exchange Hall and use +quest/check Rosalind to record the scan receipt.",
+            "instructions": "If needed, help mining explains the license, Dray-P refit and rig lease. Choose a real site with +chart/ground and plan the outward and home legs. Use +tv/1 scan to preview, then +tv/1 scan go to complete an actual scan. You may also finish the sounding on this trip. Return to Qureshi at Ceres's Exchange Hall and use +quest/check Rosalind to record the scan receipt.",
             "objective": { "kind": "survey", "mode": "scan" }
           },
           {

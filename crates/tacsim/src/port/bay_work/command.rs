@@ -34,13 +34,13 @@ pub const BAY_USAGE: &str = "Usage: +bay[/quote] <hull>, +bay/order <hull>=<work
                              +bay/berth <hull>, +bay/stow <hull>[=<carrier>]";
 /// The help text.
 pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stands: a carrier's \
-    vehicle bay does armour, mending, unjamming and recharging at twice the time; a port \
+    vehicle bay does armor, mending, unjamming and recharging at twice the time; a port \
     workshop does everything, rebuilt sections and new parts too. +bay/order <hull>=<work> pays \
     the fee into escrow and holds the hull until the work is done on the IC clock \
     (all, armor, rebuild, mend, unjam, replace, rearm, or a section or part). +bay/cancel \
     releases the fee. At a port's workshop, +bay/berth <hull> takes a hull out of your docked \
     carrier's bay and +bay/stow <hull> puts it back; +bay/stow <hull>=<carrier> puts it in a     free slot of another carrier of yours docked here, as a hull the yard built for you. Munitions come from the carrier's hold \
-    when the work is done; armour and rebuilds draw from the hull's bale, which the first repair \
+    when the work is done; armor and rebuilds draw from the hull's bale, which the first repair \
     opens with a tonne each of structural alloys and industrial parts from the hold, topped up \
     by the tonne when it runs short. Away from port a carrier's bay works from her own hold for \
     no fee, and waits while a field is open on her site. In a workshop, or in a carrier's bay \
@@ -56,7 +56,7 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
     <hull> sells her bale's unused kilograms back to the workshop at the reference, the same \
     way. A ship docked at a port with a workshop is her own bay: +bay <ship> quotes \
     her space magazines too, and +bay/order <ship>=rearm loads them with torpedoes, spinal \
-    rounds and point-defence boxes from her hold, buying what her hold lacks from the \
+    rounds and point-defense boxes from her hold, buying what her hold lacks from the \
     workshop's stores at the goods' price, in whole units (a box is 500 rounds).";
 
 /// `#<id>`, or a thing of that name in the actor's room — never a scrapped shell by name (doc
@@ -438,7 +438,7 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 ),
                 OrderStatus::Done => "done".to_owned(),
                 OrderStatus::Cancelled => format!(
-                    "cancelled ({})",
+                    "canceled ({})",
                     order.note.as_deref().unwrap_or("no reason recorded")
                 ),
             };

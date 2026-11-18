@@ -162,7 +162,7 @@ fn command_of(literal: &str, in_table: bool) -> Option<(String, Vec<String>)> {
     }
     let caps = first.len() >= 3 && first.chars().all(|c| c.is_ascii_uppercase());
     // A cockpit line is upper case: `FIRE HOLD`, `HEADING {} QUIET`. One
-    // upper-case word alone outside a table or a send is a label ("ARMOUR",
+    // upper-case word alone outside a table or a send is a label ("ARMOR",
     // "HEAT"), not a command; with a second word, or as a table's or a send's
     // argument, it is a line a client sends.
     let words = literal.split_whitespace().count();

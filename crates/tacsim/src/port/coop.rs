@@ -55,13 +55,13 @@ pub const COOP_VERB: &str = "+coop";
 
 /// `+coop`'s help (doc 18 §4.1).
 pub const COOP_HELP: &str = "+coop  --  The Belt Carriers' Cooperative's First Captain \
-     programme. The Co-op stakes a new captain a Dray on a working charter and twenty-five \
+     program. The Co-op stakes a new captain a Dray on a working charter and twenty-five \
      thousand in working cash, takes a quarter of trading margin over its reference prices until \
      the hull is bought out, and stakes each pilot only once. A Dray that goes a real week (168 IC \
      days at the live 24:1 clock) without a departure goes back to the Co-op; a pilot whose charter \
-     ended so, or by +coop/release, may +coop/enrol again for the next free Dray, with no second \
+     ended so, or by +coop/release, may +coop/enroll again for the next free Dray, with no second \
      stake. A charter staff revoke is not renewed. +coop reads the terms and how many Drays are \
-     free, anywhere.\n+coop/enrol <name>  sign at the Registry & Co-op desk in Ceres \
+     free, anywhere.\n+coop/enroll <name>  sign at the Registry & Co-op desk in Ceres \
      Freeport: Ceres Clearing opens your credit account, the Co-op charters you its next free \
      Dray under the name you give it (its registry mark stays), stakes you, and opens the ship's \
      hold in your name.\n+coop/statement  your charter's terms, its sales and the Co-op's share \
@@ -109,15 +109,15 @@ pub const NEW_DRAY_MAJOR: u64 = 120_000;
 /// The description a chartered hull takes when it has none (lead ruling L10),
 /// `{mark}` replaced.
 pub const HULL_DESC_TEMPLATE: &str = "A Dray-class bulk hauler, {mark}, cradled with its \
-     umbilicals slack: blunt, grey and webbed with reaction-mass hoses.";
+     umbilicals slack: blunt, gray and webbed with reaction-mass hoses.";
 
 /// The programme is not on this world.
-pub const NOT_OPEN_HERE: &str = "The Co-op's programme is not open on this world.";
+pub const NOT_OPEN_HERE: &str = "The Co-op's program is not open on this world.";
 /// `+coop/enrol` with no name.
-pub const NAME_USAGE: &str = "Usage: +coop/enrol <a name for your ship>";
+pub const NAME_USAGE: &str = "Usage: +coop/enroll <a name for your ship>";
 /// The gateway account is unknown (fail closed).
 pub const NO_ACCOUNT_MATCH: &str =
-    "The Registry cannot match you to an account, so the Co-op cannot enrol you.";
+    "The Registry cannot match you to an account, so the Co-op cannot enroll you.";
 /// One charter per gateway account at a time (D-18-25, as the owner's 2026-11-17 ruling amends
 /// it: a recalled pilot may charter again, so the account holds one charter at a time, not one
 /// ever).
@@ -138,7 +138,7 @@ pub const RECHARTER_WAIT: &str =
 /// **The way back** (the owner's 2026-11-17 ruling): told with every recall a pilot may come
 /// back from, and on `+coop` after one. `{office}`, `{port}`.
 pub const RECHARTER_HINT: &str =
-    "To fly again, charter another Dray: +coop/enrol <ship name> at the {office} in {port}.";
+    "To fly again, charter another Dray: +coop/enroll <ship name> at the {office} in {port}.";
 /// **The terms line's last clause** (the owner's 2026-11-17 ruling): the stake is paid once
 /// per account, and the account holds one charter at a time.
 pub const TERMS_ONE_AT_A_TIME: &str = "one stake per pilot, and one Dray at a time.";
@@ -149,7 +149,7 @@ pub const RECHARTERED_TERMS: &str = "No second stake: the Co-op stakes a captain
 pub const BOOKS_UNREADABLE: &str =
     "The Co-op's books for your account cannot be read right now. Ask staff to look at them.";
 /// The readiness gate is shut (L1).
-pub const NOT_OPEN: &str = "The Co-op is not enrolling yet: the programme is still being set up.";
+pub const NOT_OPEN: &str = "The Co-op is not enrolling yet: the program is still being set up.";
 /// A ship name the Registry refuses.
 pub const BAD_NAME: &str = "A ship's name is 1 to 32 letters, digits, spaces, hyphens, \
      apostrophes or full stops, starting with a letter.";
@@ -165,11 +165,11 @@ pub const NO_HULL_UNFUNDED: &str = "The Trust has no Dray free and cannot yet fu
 pub const NO_HULL_ON_ORDER: &str =
     "The Trust has a Dray on order at {port}, due at Ceres in {days} IC days.";
 /// The programme's capital is at its floor.
-pub const NO_CAPITAL: &str = "The Co-op's programme has no capital left to stake a new captain.";
+pub const NO_CAPITAL: &str = "The Co-op's program has no capital left to stake a new captain.";
 /// An enrolment step that should not fail did (lead ruling L16: the text
 /// promises only that no charter stands).
 pub const FAILED: &str =
-    "The Registry could not complete your enrolment; your charter was not signed.";
+    "The Registry could not complete your enrollment; your charter was not signed.";
 /// No live charter and no ended one.
 pub const NO_CHARTER: &str = "You hold no charter.";
 
@@ -357,15 +357,15 @@ impl Enrolment {
             EnrolmentStatus::Graduated | EnrolmentStatus::Revoked
         );
         if self.ended.is_some() != over {
-            return Err("an enrolment carries an end iff it is graduated or revoked".to_owned());
+            return Err("an enrollment carries an end iff it is graduated or revoked".to_owned());
         }
         match (&self.status, &self.ended) {
             (EnrolmentStatus::Graduated, Some(EndCause::BoughtOut)) => {}
             (EnrolmentStatus::Graduated, _) => {
-                return Err("a graduated enrolment ended bought out".to_owned());
+                return Err("a graduated enrollment ended bought out".to_owned());
             }
             (_, Some(EndCause::BoughtOut)) => {
-                return Err("only a graduated enrolment ended bought out".to_owned());
+                return Err("only a graduated enrollment ended bought out".to_owned());
             }
             _ => {}
         }
@@ -1139,7 +1139,7 @@ pub(crate) fn programme_rows<'a>(
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn coop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_open(ctx)?;
-    if ctx.switches.has("enrol") {
+    if ctx.switches.has("enroll") {
         enrol(ctx)
     } else if ctx.switches.has("statement") {
         statement(ctx)
@@ -1263,7 +1263,7 @@ pub(crate) fn terms_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
                 Books::Absent => {
                     let (_, office, port_name) = office_of(ctx.w, &port);
                     format!(
-                        "Enrol at the {office} in {port_name}: +coop/enrol <a name for your ship>."
+                        "Enroll at the {office} in {port_name}: +coop/enroll <a name for your ship>."
                     )
                 }
             },
@@ -1272,11 +1272,11 @@ pub(crate) fn terms_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
         (lines, warn_lease, books_dark)
     };
     if let Some(lease) = warn_lease {
-        tracing::warn!(lease, "tacsim: a live charter has no readable enrolment");
+        tracing::warn!(lease, "tacsim: a live charter has no readable enrollment");
     }
     if books_dark {
         tracing::error!(
-            "tacsim: +coop found an unreadable enrolment for the asker's account; staff repair the \
+            "tacsim: +coop found an unreadable enrollment for the asker's account; staff repair the \
              tacsim:coop: document"
         );
     }
@@ -1299,7 +1299,7 @@ pub(crate) fn statement_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
         if let Some(charter) = live_charter(ctx.w, actor) {
             tracing::warn!(
                 lease = charter.contract.0,
-                "tacsim: +coop/statement found a live charter with no readable enrolment"
+                "tacsim: +coop/statement found a live charter with no readable enrollment"
             );
             return Err(CmdError::msg(BOOKS_UNREADABLE));
         }
@@ -1337,7 +1337,7 @@ pub(crate) fn statement_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
     };
     Ok(vec![
         format!(
-            "Statement: the {} ({}), First Captain programme.",
+            "Statement: the {} ({}), First Captain program.",
             e.name, e.mark
         ),
         format!(
@@ -1449,7 +1449,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     let here = w.get(actor).and_then(|o| o.location);
     if office.is_none() || here != office {
         return Err(format!(
-            "Enrolment is signed at the {office_name} in {port_name}."
+            "Enrollment is signed at the {office_name} in {port_name}."
         ));
     }
     // 3. The gateway account (fail closed).
@@ -1468,7 +1468,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         EnrolmentState::Present(e) => Some(may_recharter(w, e)?),
         EnrolmentState::Unreadable => {
             tracing::error!(
-                "tacsim: +coop/enrol found an unreadable enrolment for the enrolling account; \
+                "tacsim: +coop/enroll found an unreadable enrollment for the enrolling account; \
                  staff repair the tacsim:coop: document"
             );
             return Err(BOOKS_UNREADABLE.to_owned());
@@ -1481,7 +1481,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     // 5. The readiness gate (L1).
     let report = readiness_in(ctx);
     if let Err(line) = enrol_gate(&report) {
-        tracing::info!(line = %line.text, "tacsim: +coop/enrol is closed by the readiness gate");
+        tracing::info!(line = %line.text, "tacsim: +coop/enroll is closed by the readiness gate");
         return Err(NOT_OPEN.to_owned());
     }
     // 6. The name.
@@ -1498,7 +1498,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         minor_of(programme.floor_major, scale),
         minor_of(programme.buyout_major, scale),
     ) else {
-        tracing::error!("tacsim: +coop/enrol: the programme's amounts overflow the credit scale");
+        tracing::error!("tacsim: +coop/enroll: the program's amounts overflow the credit scale");
         return Err(FAILED.to_owned());
     };
     // A re-charter pays no stake, so it needs none of the programme's capital.
@@ -1507,11 +1507,11 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         None => (new_stake_minor, new_stake_minor),
     };
     let Some(economy) = w.module_state::<EconomyStore>() else {
-        tracing::error!("tacsim: +coop/enrol: the economy is not composed");
+        tracing::error!("tacsim: +coop/enroll: the economy is not composed");
         return Err(FAILED.to_owned());
     };
     let Some(trust_account) = port.trust_account() else {
-        tracing::error!("tacsim: +coop/enrol: the Trust has no programme account");
+        tracing::error!("tacsim: +coop/enroll: the Trust has no program account");
         return Err(FAILED.to_owned());
     };
     let funded = economy
@@ -1525,7 +1525,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     }
     // 9. Resolve, still read-only.
     let failed = |what: &str| {
-        tracing::error!(what, "tacsim: +coop/enrol could not resolve a step");
+        tracing::error!(what, "tacsim: +coop/enroll could not resolve a step");
         FAILED.to_owned()
     };
     // A frozen economy refuses the offer (`offer_lease`'s first check), but
@@ -1533,7 +1533,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     // command's refusal discards that write while RAM keeps the account. So the
     // freeze is read here, before the first write, and nothing is written.
     if economy.is_frozen() {
-        tracing::warn!("tacsim: +coop/enrol refused: the economy is frozen");
+        tracing::warn!("tacsim: +coop/enroll refused: the economy is frozen");
         return Err(FAILED.to_owned());
     }
     let trust = port.trust().ok_or_else(|| failed("the Trust"))?;
@@ -1568,7 +1568,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
             tracing::error!(
                 vault = v.id.0,
                 owner = ?v.owner,
-                "tacsim: +coop/enrol: the stowage holds a vault that is not the Trust's own"
+                "tacsim: +coop/enroll: the stowage holds a vault that is not the Trust's own"
             );
             return Err(failed("the stowage vault"));
         }
@@ -1611,7 +1611,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     // Doc 18 cut IC8 (lead 2d): the document's own invariants, checked on every
     // field the plan already knows, before the first write.
     if let Err(error) = enrolment_of(&plan, actor, 0, 0, 0, w.now()).check() {
-        tracing::error!(%error, "tacsim: +coop/enrol: the enrolment would not check");
+        tracing::error!(%error, "tacsim: +coop/enroll: the enrollment would not check");
         return Err(FAILED.to_owned());
     }
     Ok(plan)
@@ -1691,11 +1691,11 @@ fn unwind_lease(ctx: &mut Ctx<'_>, lease: ContractId, plan: &EnrolPlan) {
             tracing::error!(
                 lease = lease.0,
                 ?outcome,
-                "tacsim: +coop/enrol ended its own lease"
+                "tacsim: +coop/enroll ended its own lease"
             );
         }
         Err(error) => {
-            tracing::error!(lease = lease.0, %error, "tacsim: +coop/enrol could not end its own lease");
+            tracing::error!(lease = lease.0, %error, "tacsim: +coop/enroll could not end its own lease");
         }
     }
 }
@@ -1720,7 +1720,7 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .module_state_mut::<EconomyStore>()
                 .and_then(EconomyStore::alloc_account)
             else {
-                tracing::error!("tacsim: +coop/enrol: the account allocator is spent");
+                tracing::error!("tacsim: +coop/enroll: the account allocator is spent");
                 return Err(CmdError::msg(FAILED));
             };
             let name = SmolStr::new(name_of(ctx.w, actor));
@@ -1755,7 +1755,7 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .module_state_mut::<EconomyStore>()
                 .and_then(EconomyStore::alloc_vault)
             else {
-                tracing::error!("tacsim: +coop/enrol: the vault allocator is spent");
+                tracing::error!("tacsim: +coop/enroll: the vault allocator is spent");
                 return Err(failed_after_writes(ctx));
             };
             id
@@ -1784,7 +1784,7 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ) {
         Ok(lease) => lease,
         Err(error) => {
-            tracing::error!(%error, "tacsim: +coop/enrol: the lease was not offered");
+            tracing::error!(%error, "tacsim: +coop/enroll: the lease was not offered");
             return Err(failed_after_writes(ctx));
         }
     };
@@ -1801,7 +1801,7 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !(accepted && active) {
         tracing::error!(
             lease = lease.0,
-            "tacsim: +coop/enrol: the lease did not come into force"
+            "tacsim: +coop/enroll: the lease did not come into force"
         );
         unwind_lease(ctx, lease, &plan);
         return Err(failed_after_writes(ctx));
@@ -1856,7 +1856,7 @@ fn post_stake(
     match mush_economy::post(ctx, &stake_plan) {
         Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
         other => {
-            tracing::error!(lease = lease.0, outcome = ?other, "tacsim: +coop/enrol: the stake did not post");
+            tracing::error!(lease = lease.0, outcome = ?other, "tacsim: +coop/enroll: the stake did not post");
             unwind_lease(ctx, lease, plan);
             Err(failed_after_writes(ctx))
         }
@@ -1901,8 +1901,8 @@ fn finish_enrol(
                     vault = id.0,
                     hull = plan.hull.0,
                     pilot = actor.0,
-                    "tacsim: +coop/enrol: invariant breach: the re-homed hold vault was not \
-                     re-owned; the enrolment stands; re-own the hold vault by hand"
+                    "tacsim: +coop/enroll: invariant breach: the re-homed hold vault was not \
+                     re-owned; the enrollment stands; re-own the hold vault by hand"
                 );
             }
         }
@@ -1911,7 +1911,7 @@ fn finish_enrol(
     // description is written under the hull's own owner, never the pilot's
     // (D-18-22).
     if let Err(error) = ctx.w.set_name(plan.hull, &plan.name) {
-        tracing::error!(hull = plan.hull.0, %error, "tacsim: +coop/enrol could not rename the hull");
+        tracing::error!(hull = plan.hull.0, %error, "tacsim: +coop/enroll could not rename the hull");
     }
     if ctx.w.attr(plan.hull, "desc").is_none() {
         let desc = HULL_DESC_TEMPLATE.replace("{mark}", &plan.mark);
@@ -1919,7 +1919,7 @@ fn finish_enrol(
             .w
             .set_attr(plan.hull, "desc", Attr::text(desc, plan.hull_owner))
         {
-            tracing::error!(hull = plan.hull.0, %error, "tacsim: +coop/enrol could not describe the hull");
+            tracing::error!(hull = plan.hull.0, %error, "tacsim: +coop/enroll could not describe the hull");
         }
     }
     // 10h. The enrolment document, checked again on its final value (doc 18 cut
@@ -1933,7 +1933,7 @@ fn finish_enrol(
         ctx.w.now(),
     );
     if let Err(error) = enrolment.check() {
-        tracing::error!(lease = lease.0, %error, "tacsim: +coop/enrol: the enrolment did not check");
+        tracing::error!(lease = lease.0, %error, "tacsim: +coop/enroll: the enrollment did not check");
         return Err(failed_after_writes(ctx));
     }
     put_enrolment(ctx, &enrolment);

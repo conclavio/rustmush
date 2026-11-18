@@ -335,10 +335,10 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
         } => {
             let npc = external_object(w, pack, &npc_pack, &npc, "npc")?;
             let traveller = crate::port::passenger::traveller(w, npc)
-                .ok_or("paid passage objective must name an authored traveller")?;
+                .ok_or("paid passage objective must name an authored traveler")?;
             if traveller.origin != origin || traveller.destination != destination {
                 return Err(
-                    "paid passage objective must match the traveller's authored route".into(),
+                    "paid passage objective must match the traveler's authored route".into(),
                 );
             }
             Objective::PaidPassage {

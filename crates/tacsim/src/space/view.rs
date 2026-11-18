@@ -1468,7 +1468,7 @@ mod cc9_tests {
                 "pdc_dorsal",
                 "pdc_ventral"
             ],
-            "Halcyon's full fit: every mount, point defence among them"
+            "Halcyon's full fit: every mount, point defense among them"
         );
         let ship = &bubble.ships["halcyon"];
         let dorsal = mount(&picture, "laser_dorsal");
@@ -1563,7 +1563,7 @@ mod cc9_tests {
         assert_eq!(
             (ventral.mode, ventral.state),
             (Some(LaserMode::Defense), MountState::Ready),
-            "a laser in defence is ready to stop a torpedo"
+            "a laser in defense is ready to stop a torpedo"
         );
         assert!(!ventral.cycled(), "and not to fire at her lock");
         let spinal = mount(&picture, "rail_spinal");
@@ -1669,7 +1669,7 @@ mod cc9_tests {
             u32::from(ship.lasers[0].heat_cost_permille)
         );
         assert!(row("laser_dorsal").ready);
-        assert!(!row("laser_ventral").ready, "in defence");
+        assert!(!row("laser_ventral").ready, "in defense");
         assert_eq!(
             row("laser_ventral").ready_in_ms,
             0,
@@ -1685,7 +1685,7 @@ mod cc9_tests {
         );
         assert!(
             view.weapons.iter().all(|row| !row.id.starts_with("pdc")),
-            "point defence fires on its own"
+            "point defense fires on its own"
         );
 
         let read = |expr: &str| shown(&eval_in(context_on(view.clone()), expr).expect(expr));

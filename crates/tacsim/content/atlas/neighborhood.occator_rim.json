@@ -3,7 +3,7 @@
     "id": "neighborhood.occator_rim",
     "version": 1,
     "kind": "neighborhood",
-    "digest": "18ac2c2dabf0a50e30fa6ced16b5a6ccfaefb3ddf09d382f08860bfce316a517",
+    "digest": "48160fa84c67c263342907e61376f29f3ff3180365f4b0dda4a47421230692b1",
     "requires": [
       {
         "id": "region.occator_rim",
@@ -12,7 +12,7 @@
     ]
   },
   "brief": {
-    "prose": "Occator Rim stands on the northern rim of Occator crater, north of the Freeport at its centre. The Registry rules it; Occator Water & Propellant holds the four central blocks around the pad, and the outer ground is open to any licensed claimant. The rim ground is richer than the crater floor and has been surveyed as such since the Freeport's first decade."
+    "prose": "Occator Rim stands on the northern rim of Occator crater, north of the Freeport at its center. The Registry rules it; Occator Water & Propellant holds the four central blocks around the pad, and the outer ground is open to any licensed claimant. The rim ground is richer than the crater floor and has been surveyed as such since the Freeport's first decade."
   },
   "entries": {
     "neighborhood": {
@@ -93,7 +93,7 @@
       "def": {
         "name": "Occator Rim Pad",
         "short_desc": "A cleared landing square on the northern rim of Occator, the crater falling away to the south.",
-        "desc": "The pad is cut into the rim crest and levelled, tie-down rings around its edge and the Registry number FR-07 painted at its corners. Occator Water & Propellant's boundary posts stand on four sides of it, each with the company's blue band. To the south the ground drops away into the crater, its floor grey and wide, the bright faculae at its centre always in view, white against the grey. North of the crest the rim slopes off into broken ground under a close horizon.",
+        "desc": "The pad is cut into the rim crest and leveled, tie-down rings around its edge and the Registry number FR-07 painted at its corners. Occator Water & Propellant's boundary posts stand on four sides of it, each with the company's blue band. To the south the ground drops away into the crater, its floor gray and wide, the bright faculae at its center always in view, white against the gray. North of the crest the rim slopes off into broken ground under a close horizon.",
         "surface": "ground",
         "footprint": {
           "rect": [
@@ -113,7 +113,7 @@
         ],
         "details": {
           "boundary posts": "Steel posts with a blue band and a claim plate: the holder's name, the block letters and the tenure date. The plates are bolted, not painted.",
-          "faculae": "The bright deposits at the crater's centre, where the Freeport stands. From the rim they are a white smear on the grey."
+          "faculae": "The bright deposits at the crater's center, where the Freeport stands. From the rim they are a white smear on the gray."
         }
       }
     },

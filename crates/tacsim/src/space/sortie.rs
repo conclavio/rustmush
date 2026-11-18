@@ -1286,7 +1286,7 @@ mod tests {
         assert_eq!(
             bubble.work_rock(DRONE_SHIP, ROCK_SHIP),
             0,
-            "a metre out of reach"
+            "a meter out of reach"
         );
         place(bubble, COLLECTOR_REACH_M, 5_001);
         assert_eq!(

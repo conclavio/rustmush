@@ -82,7 +82,7 @@ fn open_cmd(ctx: &mut Ctx<'_>, actor: ObjId, rest: &str) -> Result<(), CmdError>
         Some((w, c)) => (
             w.trim(),
             Some(c.trim().parse::<u16>().map_err(|_| {
-                CmdError::msg("The cell size is centimetres: 100, 200, 500 or 1000.")
+                CmdError::msg("The cell size is centimeters: 100, 200, 500 or 1000.")
             })?),
         ),
         None => (rest.trim(), None),

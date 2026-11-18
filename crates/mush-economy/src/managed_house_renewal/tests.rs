@@ -359,7 +359,7 @@ fn a_house_offer_needs_its_organisation_scope_and_title_current() -> TestResult 
     let f = Fixture::from_seed(seeded(|org, _| {
         org.exec_ok(GOD, "@org/status House=suspended");
     })?)?;
-    check!(f.prepare().is_err(), "a suspended organisation");
+    check!(f.prepare().is_err(), "a suspended organization");
 
     let f = Fixture::from_seed(seeded(|org, scope| {
         org.exec_ok(GOD, &format!("@org/scope retire House=#{}", scope.0));
@@ -374,7 +374,7 @@ fn a_house_offer_needs_its_organisation_scope_and_title_current() -> TestResult 
     })?)?;
     let elsewhere = scope_named(&f, "Other", "elsewhere")?;
     move_to(&mut f, elsewhere)?;
-    check!(f.prepare().is_err(), "another organisation's scope");
+    check!(f.prepare().is_err(), "another organization's scope");
 
     // The title on another scope of the same organisation.
     let mut f = Fixture::<House>::new()?;
@@ -402,7 +402,7 @@ fn a_house_offer_needs_its_organisation_scope_and_title_current() -> TestResult 
     f.state.snapshot.put_asset(title);
     check!(
         f.prepare().is_err(),
-        "a title the organisation does not hold"
+        "a title the organization does not hold"
     );
     Ok(())
 }
@@ -426,7 +426,7 @@ fn a_house_offer_pays_its_remainder_to_the_scoped_treasury() -> TestResult {
     f.offer.terms.remainder.owner = PrincipalId::Object(stranger);
     check!(
         f.prepare().is_err(),
-        "a remainder that is not the organisation's"
+        "a remainder that is not the organization's"
     );
 
     // The organisation's own account, off the scope or on another.

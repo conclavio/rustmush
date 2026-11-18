@@ -98,7 +98,7 @@ pub const fn admitted_class(chosen: Option<CoreClass>, fill_class: CoreClass) ->
 /// (119 with every figure at six digits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "This tank would think {} ops a second; its side's half of the centre's pool is {} and {} are \
+    "This tank would think {} ops a second; its side's half of the center's pool is {} and {} are \
      spoken for.",
     thousands(*.would),
     thousands(*.half),
@@ -339,7 +339,7 @@ mod tests {
                 spoken: 92_000,
             }
             .to_string(),
-            "This tank would think 96,000 ops a second; its side's half of the centre's pool is \
+            "This tank would think 96,000 ops a second; its side's half of the center's pool is \
              100,000 and 92,000 are spoken for."
         );
         let widest = PoolRefusal {

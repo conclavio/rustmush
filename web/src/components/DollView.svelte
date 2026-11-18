@@ -57,7 +57,7 @@
   viewBox="0 0 {doll.width} {doll.height}"
   style="aspect-ratio: {doll.width} / {doll.height}"
   role="img"
-  aria-label="{label} armour"
+  aria-label="{label} armor"
   shape-rendering="crispEdges"
 >
   {#each squares as sq (sq.y * doll.width + sq.x)}

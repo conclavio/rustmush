@@ -98,7 +98,7 @@ that applies wins:
    their leaders or owners openly share an organization: an organization
    membership, a faction membership or a faction's principalship that fellow
    members may know of. A covert or officers-only membership makes nobody a
-   Friend, since a Friend's colour on a cockpit would give it away. A raider
+   Friend, since a Friend's color on a cockpit would give it away. A raider
    band is a faction of its own, so a captain who openly stands in it is its
    Friend until it fires on them.
 4. **Neutral**, for a party told apart that is none of these. A contact your
@@ -140,7 +140,7 @@ The site map you mine by is the map you fight by.
 
 **On open ground**, `+tv/map` (the TUI's quarry screen, the web's quarry tab)
 draws the presence picture: every other flight on the ground. Within 200 m of one
-of your rigs a flight shows at its cell as `o` and is listed in metres under
+of your rigs a flight shows at its cell as `o` and is listed in meters under
 "Other rigs:". Farther out it is a row giving its bearing and band, which is what
 `+field/mark` and `+field/fire` take. A loud sounding heard from beyond that range
 marks its row "(a sounding)".
@@ -562,7 +562,7 @@ rig sent home is as safe as the carrier is.
 **What the mind will and will not do while you are away.** It never opens fire
 first. It fires only on a unit whose fire has arrived on your unit in this
 field, hit or miss. A party you or your leader marked Hostile is not enough, nor
-is one your organisation declared Hostile, and neither is fire on a friend. (A
+is one your organization declared Hostile, and neither is fire on a friend. (A
 unit left on GUARD also answers for your other units: see *Postures*.) This
 binds any mind, one you wrote and filed as much as the house default: a shot it
 asks for at anyone else is refused. It never mines or trades for you.
@@ -628,7 +628,7 @@ trades.
   fired on another unit of yours in this field: a rig you launched and left,
   the unit you sit in, the carrier you command. A quarrel between strangers
   beside it is not its business, whoever you marked Hostile and whatever your
-  organisation declared. It answers for your units that are in the field: one
+  organization declared. It answers for your units that are in the field: one
   that has gone aboard is safe, and is no longer answered for. A mind of your
   own may move, and it answers for your other units only within ten cells of
   where it took the unit; past that it answers for itself alone.
@@ -689,7 +689,7 @@ order reaches one:
 **Trying one first.** In the simulator `MIND POSTURE` sets a practice posture
 on the tank you fly, for that match only, and `MIND AWAY` lets go of its
 controls so you can watch its mind fly it under the rules above (`help
-simulator`, *Practising a posture*).
+simulator`, *Practicing a posture*).
 
 **Reading it.** `STATUS` in the seat and `+tv` aboard the carrier each show a
 line "posture GUARD" for a unit that holds one other than RETURN. A unit on
@@ -725,7 +725,7 @@ gun, in a one-seat cab. At 8 t it rides a Dray-P's bay beside one prospector.
 
 It needs the **escort clearance**:
 
-- your prospecting licence in force, not in its grace;
+- your prospecting license in force, not in its grace;
 - no lease of yours forfeit;
 - one armed hull at a time;
 - none written off in the last 28 IC days.

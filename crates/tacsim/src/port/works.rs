@@ -1830,7 +1830,7 @@ fn cancel(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
         })
         .unwrap_or(0);
     let line = format!(
-        "Order {} cancelled: the bill comes back to your hold; the booking fee {} and the work \
+        "Order {} canceled: the bill comes back to your hold; the booking fee {} and the work \
          done, {}, are forfeit.",
         c.id,
         cr(ctx, c.booking_minor),

@@ -628,7 +628,7 @@ pub fn tactics_catalog_with(cfg: &crate::TacsimConfig) -> mush_tactics::UnitCata
     match built {
         Ok(catalog) => catalog.units,
         Err(error) => {
-            tracing::error!(%error, "tacsim: the host's packs did not bind; the tactics catalogue is the shipped one");
+            tracing::error!(%error, "tacsim: the host's packs did not bind; the tactics catalog is the shipped one");
             tactics_catalog()
         }
     }

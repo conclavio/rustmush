@@ -667,7 +667,7 @@ fn show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
                     ) {
                         "contract ended; refund pending"
                     } else if row.cancelled.is_some() {
-                        "cancelled; refund pending"
+                        "canceled; refund pending"
                     } else if row.completed.is_some() {
                         "survey logged; settlement pending"
                     } else if ctx.w.world_ic_now().at > row.deadline_ic {
@@ -850,7 +850,7 @@ fn cancel(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
         Ok(true) => say(
             ctx,
             format!(
-                "Commission {id} cancelled. Any reserved reward returns to Occator when its refund settles."
+                "Commission {id} canceled. Any reserved reward returns to Occator when its refund settles."
             ),
         ),
         Ok(false) => say(

@@ -85,7 +85,7 @@ fn market_page() -> Value {
                 "transferable": true, "term_seconds": 2_592_000, "grace_seconds": 604_800,
                 "price_minor": "125000", "price_text": "1250cr", "levy_permille": 50,
                 "venue_permille": 20, "parent_royalty_permille": 0, "derived": false,
-                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the license can be resold.",
                 "split_line": "Price 1250cr: Registry 5%, venue 2%, charter owner the rest.",
                 "publication": TOKEN, "seller_account": ACCOUNT, "digest": DIGEST
             },
@@ -94,7 +94,7 @@ fn market_page() -> Value {
                 "transferable": false, "term_seconds": 2_592_000, "grace_seconds": 604_800,
                 "price_minor": "9950", "price_text": "99.50cr", "levy_permille": 50,
                 "venue_permille": 0, "parent_royalty_permille": 100, "derived": true,
-                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence cannot be resold.",
+                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the license cannot be resold.",
                 "split_line": "Price 99.50cr: Registry 5%, parents 10%, charter owner the rest.",
                 "protocol": TOKEN
             }
@@ -162,7 +162,7 @@ fn third_page() -> Value {
                 "transferable": true, "term_seconds": 2_592_000, "grace_seconds": 604_800,
                 "price_minor": "5000", "price_text": "50cr", "levy_permille": 50,
                 "venue_permille": 0, "parent_royalty_permille": 0, "derived": false,
-                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the license can be resold.",
                 "split_line": "Price 50cr: Registry 5%, charter owner the rest."
             },
             {
@@ -170,7 +170,7 @@ fn third_page() -> Value {
                 "transferable": true, "term_seconds": 2_592_000, "grace_seconds": 604_800,
                 "price_minor": "7000", "price_text": "70cr", "levy_permille": 50,
                 "venue_permille": 0, "parent_royalty_permille": 0, "derived": false,
-                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the licence can be resold.",
+                "terms_line": "One seat for 30 IC days plus 7 days of Grace; the license can be resold.",
                 "split_line": "Price 70cr: Registry 5%, charter owner the rest."
             }
         ],
@@ -394,7 +394,7 @@ fn market_rows_at_the_floor_fit_and_leak_nothing() {
     let offered = wide
         .iter()
         .find(|l| l.starts_with("41"))
-        .expect("licence 41");
+        .expect("license 41");
     assert!(offered.ends_with("renew offer"), "{offered:?}");
     // A bad shape, a closed market.
     let bad = text(&render_market_rows(
@@ -509,7 +509,7 @@ fn bare_keys_send_nothing_and_enter_sends_one_valid_market_action() {
     // `k` on an owner row is not a renewal.
     let _ = app.feed_input(b"k");
     assert!(
-        frame_text(&mut app, 120, 34).contains("This licence is not renewable now."),
+        frame_text(&mut app, 120, 34).contains("This license is not renewable now."),
         "the status line names it"
     );
     // `b` over the first listing: a live quote, so `pay`.
@@ -602,7 +602,7 @@ fn bare_keys_send_nothing_and_enter_sends_one_valid_market_action() {
     let _ = app.feed_input(b"x");
     assert!(
         frame_text(&mut app, 160, 34).contains(
-            "Withdraw filed mind #7 Drift Kestrel? New sales stop; licences already sold keep working. Enter withdraws; Esc cancels."
+            "Withdraw filed mind #7 Drift Kestrel? New sales stop; licenses already sold keep working. Enter withdraws; Esc cancels."
         ),
         "the withdrawal's confirm"
     );
@@ -758,7 +758,7 @@ fn staged_shown_and_error_replies_drive_the_form() {
     let _ = app.apply_event(&keyframe("mind.holdings", paid_page()));
     let _ = app.feed_input(b"k");
     let (id, _) = one_market(&app.feed_input(b"\r"));
-    let handed = "Handing licence 41 to the renewal service.";
+    let handed = "Handing license 41 to the renewal service.";
     let asks = reply(
         &mut app,
         id,
@@ -776,7 +776,7 @@ fn staged_shown_and_error_replies_drive_the_form() {
     let frame = frame_text(&mut app, 120, 34);
     assert!(frame.contains(handed), "{frame}");
     assert!(
-        !frame.contains("Renew licence 41"),
+        !frame.contains("Renew license 41"),
         "the form closed: {frame}"
     );
     // A session boundary forgets the pending id: the late reply is ignored.
@@ -814,8 +814,8 @@ fn staged_shown_and_error_replies_drive_the_form() {
 fn no_form(frame: &str) -> bool {
     [
         "Buy listing",
-        "Renew licence",
-        "Offer licence",
+        "Renew license",
+        "Offer license",
         "Offer filed mind",
         "Accept an offer",
         "List filed mind",

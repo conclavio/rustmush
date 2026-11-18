@@ -1952,7 +1952,7 @@ mod tests {
         assert_eq!(
             index.in_range(&pose(500, 500), 900, &arena.units),
             vec![ObjId(10), ObjId(11), ObjId(12)],
-            "the cell window answered the wrong neighbours"
+            "the cell window answered the wrong neighbors"
         );
         assert_eq!(
             index.in_range(&pose(500, 500), 599, &arena.units),
@@ -2348,7 +2348,7 @@ mod tests {
                     cell: (10, 4)
                 },
             ],
-            "the neighbour in the cut row was skipped, or the corner unit found without its slot"
+            "the neighbor in the cut row was skipped, or the corner unit found without its slot"
         );
         assert_eq!(
             walked.iter().map(id_and_row).collect::<Vec<_>>(),

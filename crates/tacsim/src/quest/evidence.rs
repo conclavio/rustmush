@@ -1086,9 +1086,9 @@ fn paid_passage_proof(
     let booking = crate::port::passenger::store::list(ctx)?
         .into_iter()
         .find(|booking| booking.npc == *npc)
-        .ok_or("Complete the named traveller's passage and wait for the fare to settle.")?;
+        .ok_or("Complete the named traveler's passage and wait for the fare to settle.")?;
     let (transaction, settled_at) = passage_settlement(ctx.w, &booking)
-        .ok_or("Complete the named traveller's passage and wait for the fare to settle.")?;
+        .ok_or("Complete the named traveler's passage and wait for the fare to settle.")?;
     let proof = ObjectiveProof::PaidPassage {
         booking: Box::new(booking),
         transaction,
@@ -1102,7 +1102,7 @@ fn paid_passage_proof(
             &Stamp::now(ctx.w),
         )
         .map_err(|_| {
-            "The named traveller must arrive on your passage after this quest was accepted."
+            "The named traveler must arrive on your passage after this quest was accepted."
                 .to_owned()
         })?;
     Ok(proof)
@@ -1184,11 +1184,11 @@ pub(crate) fn capture(
         ),
         Objective::Passenger { npc } => {
             if !ctx.can_perceive(row.actor, *npc) || !ctx.can_perceive(*npc, row.actor) {
-                return Err("Meet the traveller in person first.".into());
+                return Err("Meet the traveler in person first.".into());
             }
             Some(
                 passenger_proof(ctx.w, row.actor, *npc, checkpoint)
-                    .ok_or("Meet the traveller at the named bar first.")?,
+                    .ok_or("Meet the traveler at the named bar first.")?,
             )
         }
         Objective::Contact { npc } => {
@@ -1238,14 +1238,14 @@ pub(crate) fn capture(
             super::detail(ctx.w, checkpoint).ok_or("The public detail is unavailable.")?
         }
         Some(ObjectiveProof::CoopEnrolment { .. }) => {
-            "Your own Co-op enrolment has a paid stake and a live charter.".into()
+            "Your own Co-op enrollment has a paid stake and a live charter.".into()
         }
         Some(ObjectiveProof::Passenger {
             origin,
             destination,
             ..
         }) => format!(
-            "You met the traveller in person. Their public route is {origin} to {destination}."
+            "You met the traveler in person. Their public route is {origin} to {destination}."
         ),
         Some(ObjectiveProof::Trade { purchase, sale }) => format!(
             "Paid purchase of {} {} at {}, followed by a paid delivery sale of {} at {} from the same hold.",
@@ -1263,7 +1263,7 @@ pub(crate) fn capture(
             commission.offer.as_str()
         ),
         Some(ObjectiveProof::PaidPassage { booking, .. }) => format!(
-            "Your agreed passage carried the named traveller from {} to {} after this quest was accepted, and its fare was paid.",
+            "Your agreed passage carried the named traveler from {} to {} after this quest was accepted, and its fare was paid.",
             booking.origin, booking.destination
         ),
     };

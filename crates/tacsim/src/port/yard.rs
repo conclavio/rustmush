@@ -136,7 +136,7 @@ pub const HOUSE_RIG_LINE: &str = "  {org}'s own rig, run by its dispatcher; no l
 pub const DISPATCHER_NAME: &str = "{name} dispatcher";
 /// **The house licence account's name** (O-8/O-18): `{org}` the house's name ("Occator Water &
 /// Propellant standing prospecting licence"). Stored on a kept world's account.
-pub const HOUSE_LICENCE_NAME: &str = "{org} standing prospecting licence";
+pub const HOUSE_LICENCE_NAME: &str = "{org} standing prospecting license";
 
 /// Dispatch line, order 1 (Missing): `{entry}`, `{org}`.
 pub const DISPATCH_MISSING: &str = "{entry} dispatch {org}: the yard is not laid up.";
@@ -145,10 +145,10 @@ pub const DISPATCH_MISSING: &str = "{entry} dispatch {org}: the yard is not laid
 pub const DISPATCH_UNREADABLE: &str = "{entry} dispatch {org}: {what} cannot be read.";
 /// Order 3 (Flagged; an unreachable guard — the instrument is a pinned constant).
 pub const DISPATCH_NO_INSTRUMENT: &str =
-    "{entry} dispatch {org}: no licence instrument is set, so the house cannot be licensed.";
+    "{entry} dispatch {org}: no license instrument is set, so the house cannot be licensed.";
 /// Order 4 (Flagged).
 pub const DISPATCH_LICENCE_INACTIVE: &str =
-    "{entry} dispatch {org}: its licence account is not active.";
+    "{entry} dispatch {org}: its license account is not active.";
 /// Order 5a (Flagged): `{n}`, `{mark}` — while the rig is out of the bay; once staff have brought
 /// it in, its stranded plan reads order 5b (clear it to start the rig again).
 pub const DISPATCH_STRANDED: &str = "{entry} dispatch {org}: rig {n} ({mark}) is stranded on the ground. Staff bring it into its bay with @tacsim/tv home #{tv}.";
@@ -164,7 +164,7 @@ pub const DISPATCH_STALLED: &str = "{entry} dispatch {org}: rig {n} ({mark}) hol
 pub const DISPATCH_NOT_OPEN: &str = "{entry} dispatch {org}: {rigs} in the {hull}'s bay; the site is not open, so nothing is filed.";
 /// Order 7 (Pending).
 pub const DISPATCH_OWED: &str =
-    "{entry} dispatch {org}: waiting on the Registry's seeds, licence and survey.";
+    "{entry} dispatch {org}: waiting on the Registry's seeds, license and survey.";
 /// Order 8 (Ready): `{ore}`, `{rigs}`, `{hull}`, `{total_t}`.
 pub const DISPATCH_WORKED_OUT: &str = "{entry} dispatch {org}: its blocks read worked out in {ore}; {rigs} parked in the {hull}'s bay, {total_t} t delivered in all.";
 /// Order 9 (Ready): `{out}`, `{rigs}`, `{working}`, `{filed}`, `{day_t}`, `{ore}`, `{total_t}`.
@@ -1727,7 +1727,7 @@ pub(crate) fn clerk_item(
                     site = %entry,
                     runbook = "doc 20 cut SM.12b: the house's seeds cannot be read (a block \
                                record, the dispatcher's chart row, or no dispatcher); the papers \
-                               go on and the house's licence and survey wait",
+                               go on and the house's license and survey wait",
                     "tacsim: a yard's owed items cannot be read"
                 );
             }
@@ -1749,9 +1749,9 @@ fn clerk_licence(ctx: &mut Ctx<'_>, yard: &ClerkYard, now: i64) -> Option<Step> 
             tracing::error!(
                 site = %entry,
                 why,
-                runbook = "doc 20 cut SM.12b: the house's standing licence cannot be recorded; \
+                runbook = "doc 20 cut SM.12b: the house's standing license cannot be recorded; \
                            the papers go on and the clerk retries every fire",
-                "tacsim: a yard's house licence was not recorded"
+                "tacsim: a yard's house license was not recorded"
             );
         }
         None
@@ -3291,14 +3291,14 @@ mod tests {
             line(DispatchRead::NoInstrument),
             (
                 LineState::Flagged,
-                format!("{head}no licence instrument is set, so the house cannot be licensed.")
+                format!("{head}no license instrument is set, so the house cannot be licensed.")
             )
         );
         assert_eq!(
             line(DispatchRead::LicenceInactive),
             (
                 LineState::Flagged,
-                format!("{head}its licence account is not active.")
+                format!("{head}its license account is not active.")
             )
         );
         assert_eq!(
@@ -3387,7 +3387,7 @@ mod tests {
             line(DispatchRead::Owed),
             (
                 LineState::Pending,
-                format!("{head}waiting on the Registry's seeds, licence and survey.")
+                format!("{head}waiting on the Registry's seeds, license and survey.")
             )
         );
         assert_eq!(

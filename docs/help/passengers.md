@@ -9,7 +9,7 @@ At Ceres's Slack Line, Nadia Okafor-Sato is a maintenance scheduler arranging a
 trip to Stickney. `+passage Nadia` reads her current situation. Ma can introduce
 you through an optional quest, but meeting, talking with or carrying Nadia does
 not require it. Neither an introduction nor a quest commits you to a booking.
-Both travellers are shared, persistent people; check the live service rather
+Both travelers are shared, persistent people; check the live service rather
 than assuming they are still looking for a captain.
 
 Ma also offers "See her safely there", an optional favor for completing Nadia's
@@ -52,9 +52,9 @@ After Leila's completed, paid passage, you can meet her again at Ceres's Visitin
 Berth Gallery. `+quest Leila` checks for her authored follow-up, "A second
 reading". It uses the same person and relationship; see `help quests`.
 
-## Authoring another traveller
+## Authoring another traveler
 
-A traveller uses an ordinary `npc` entry plus a `passenger` entry in the same
+A traveler uses an ordinary `npc` entry plus a `passenger` entry in the same
 content pack. Keep their stable entry IDs when revising dialogue. Persona,
 background, public lore and goals give them a reason to travel; the passenger
 entry supplies the engine's route and financial limits.
@@ -102,7 +102,7 @@ Fare amounts are minor currency units: 100 means one credit. Require
 `0 < opening_fare_minor <= max_fare_minor <= funding_minor`, with funding at
 most 100,000,000 minor units. The maximum and funding are staff-only
 configuration; keep them out of persona, goals, lore and fallback lines.
-The engine derives the traveller identity from the pack and passenger entry IDs.
+The engine derives the traveler identity from the pack and passenger entry IDs.
 There can be only one passenger role per NPC.
 
 Give the NPC the `passenger` interface to read its status and offer a fare to
@@ -117,12 +117,12 @@ for staff to upgrade those dependencies. Use `@atlas/pack plan <pack>` and
 `@atlas/pack apply <fingerprint>`, then apply the passenger pack or restart.
 Existing station versions are never upgraded automatically.
 The independent `tacsim.passengers.ceres@1` adds Nadia at the Slack Line using
-the same traveller template and dependency rules. It does not require the
+the same traveler template and dependency rules. It does not require the
 optional `tacsim.quests.first_steps` pack.
 Worlds that already applied passenger version 1 can plan and apply version 2
 through the same commands. The upgrade adds Leila's quest role to her existing
 identity, including if she has already reached Ceres.
 
 Reapplying the passenger role changes source configuration only. Live booking
-state, funds, location, inventory and memories remain. Removing a live traveller
+state, funds, location, inventory and memories remain. Removing a live traveler
 role through pack retirement is refused.

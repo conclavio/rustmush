@@ -978,7 +978,7 @@ pub fn reconcile(
             target: "industry",
             order = %order,
             runbook = why.runbook(),
-            "industry: a drafted work order is cancelled — its pinned recipe is no longer \
+            "industry: a drafted work order is canceled — its pinned recipe is no longer \
              the one its pack publishes; `@wo/submit` refuses it and the requester must \
              `@wo/cancel` it and redraft"
         );
@@ -987,7 +987,7 @@ pub fn reconcile(
         tracing::error!(
             target: "industry",
             orders = drifted.len(),
-            "industry: the sweep cancelled drafted work orders whose pinned recipes have \
+            "industry: the sweep canceled drafted work orders whose pinned recipes have \
              drifted from their packs"
         );
     }

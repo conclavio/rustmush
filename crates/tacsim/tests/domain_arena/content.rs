@@ -174,11 +174,11 @@ const DIGESTS: [(&str, &str); 18] = [
     // Doc 49 unit CC.6 (Q-49-11): space content as data.
     (
         "tacsim.pack.raider_heavy",
-        "148bd49020546a2d4f6074846d35892b6d2768a12ddced672deb971a1a09421c",
+        "d124c6d940d387576e1d69e9088127ead173ccd2599a0d4cb412c02e2b4a7c31",
     ),
     (
         "tacsim.pack.space_mounts",
-        "e6f36a20c83af8980d3dd4cc3c502ae4a741f14846cfb8c58c0fb547e86354cd",
+        "769176632d836e5ec693aed2e81d11258b59b79657c901195e809e603cf5ae8b",
     ),
     (
         "tacsim.pack.space_fits",
@@ -1730,7 +1730,7 @@ fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     let refused = tw.seen_by(&events, mush_core::GOD).join("\n");
     assert!(
         refused.contains(
-            "tacsim.arena.proving_ground: a match is running; apply with the centre idle"
+            "tacsim.arena.proving_ground: a match is running; apply with the center idle"
         ),
         "{refused}"
     );
@@ -2851,14 +2851,16 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9e4dfbd81a42";
+const DRAY_DIGEST: &str = "29251cd41240e93b151230fb76840673a8e678144273675883e4d8c2f6d24a85";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4). Doc 48 unit PL.3: v9, the three space munitions rows (was
 /// `dfdef8b3…` at v8). Doc 48 unit PL.2b: v10, the relay blank (was `4377ca07…` at v9).
-const GOODS_DIGEST: &str = "c1bb52b4340126883682ded1d3c82662443124e17e1046055ca45cff83264b80";
+/// US spelling (2026-11-18): two labels, anti-armor and point-defense, and nothing else (was
+/// `c1bb52b4…`).
+const GOODS_DIGEST: &str = "7fb4b1491b9da718fe26e7d59416a767782db8d3e869926e8e36577c948358ed";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3636,7 +3638,7 @@ fn ic2_the_goods_table_is_pinned() {
             ),
             (
                 "ammo_missile",
-                "anti-armour missiles, canistered",
+                "anti-armor missiles, canistered",
                 Some("munitions"),
                 GoodClass::Trade,
                 "round",
@@ -4070,7 +4072,7 @@ fn ic2_the_goods_table_is_pinned() {
             ),
             (
                 "pd_box",
-                "point-defence rounds, boxed",
+                "point-defense rounds, boxed",
                 Some("munitions"),
                 GoodClass::Trade,
                 "box",
@@ -4156,11 +4158,11 @@ fn ic2_the_goods_table_is_pinned() {
 
 /// **The terrain vehicle's pin** (doc 20 cut SM.3a; §4.1, D-20-6). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const TV_DIGEST: &str = "2d03e9c0a53217b3e2a4b102b925274dc0fa6b90490a7e5e69bb137583f0f27f";
+const TV_DIGEST: &str = "10fd633345f7680498024544fb18faaa6249f42cb302e80579bc1b1a5c87444e";
 
 /// **The Dray-P's pin** (doc 20 cut SM.3a; §4.3, D-20-7). Re-signed in place
 /// under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_P_DIGEST: &str = "f9c02c3b3c0ad103c98df4826bad75cbca07e87c03e98b938f1d314d3be25306";
+const DRAY_P_DIGEST: &str = "ed4c6a7e620560b6b656d9acf54db7e6bea7b56a8ae16192c7b6649e435b622c";
 
 /// **The tools' pins** (doc 20 cut SM.3a; §4.1): each tool's canonical digest
 /// under `tacsim.tools.v1`. Printed under `TACSIM_WRITE_CONTENT=1` and copied here

@@ -191,7 +191,7 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
     );
     assert!(
         nothing_landed(&landed),
-        "Bo cannot fork it from Ada's owner's licence: {refused}"
+        "Bo cannot fork it from Ada's owner's license: {refused}"
     );
     assert!(
         world.rows("roll_mind_draft_parent").is_empty(),
@@ -221,11 +221,11 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
 
     // 2. An ordinary open fork files privately and cannot list.
     let [open] = buys(&mut world, bo.who, &open_code)[..] else {
-        panic!("Bo holds one open licence")
+        panic!("Bo holds one open license")
     };
     let (forking, landed) = acts(&mut world, bo.who, &format!("@mind/fork {open}=private"));
     assert!(
-        forking.contains(&format!("Forking licence {open} as private.")) && landed.len() == 1,
+        forking.contains(&format!("Forking license {open} as private.")) && landed.len() == 1,
         "{forking}"
     );
     let (private, private_owner) = saves_rates_and_files(
@@ -238,7 +238,7 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
     assert_eq!(
         naming(&world, "roll_mind_owner_parent", "licence", private_owner).len(),
         1,
-        "the open fork's owner's licence names its parent grant"
+        "the open fork's owner's license names its parent grant"
     );
     assert!(
         filed_source(&mut world, bo.who, private_owner).is_ok(),
@@ -263,7 +263,7 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
 
     // 3. An open-resale derivative lists and pays its parent.
     let [resale] = buys(&mut world, bo.who, &resale_code)[..] else {
-        panic!("Bo holds one open-resale licence")
+        panic!("Bo holds one open-resale license")
     };
     // Open-resale rights bought later do not make the open fork listable.
     requalifies(&mut world, bo, private_owner, resale);
@@ -278,7 +278,7 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
     );
     let (forking, landed) = acts(&mut world, bo.who, &format!("@mind/fork {resale}=child"));
     assert!(
-        forking.contains(&format!("Forking licence {resale} as child.")) && landed.len() == 1,
+        forking.contains(&format!("Forking license {resale} as child.")) && landed.len() == 1,
         "{forking}"
     );
     let (child, child_owner) = saves_rates_and_files(
@@ -292,7 +292,7 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
     assert_eq!(
         binding.len(),
         1,
-        "the fork's owner's licence names its parent grant"
+        "the fork's owner's license names its parent grant"
     );
     let own_source = filed_source(&mut world, bo.who, child_owner)
         .unwrap_or_else(|refused| panic!("Bo reads his fork's source: {refused}"));
@@ -314,7 +314,7 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
     assert!(terms.contains("parent royalties 10%"), "{terms}");
     let before = [ada, bo, cy].map(|p| wallet(&world, p.who));
     let [paid] = buys(&mut world, cy.who, &child_code)[..] else {
-        panic!("Cy holds one licence of the fork")
+        panic!("Cy holds one license of the fork")
     };
     assert_eq!(
         [ada, bo, cy].map(|p| wallet(&world, p.who)),
@@ -342,7 +342,7 @@ async fn c4_story_2_a_fork_is_private_its_resale_derivative_pays_its_parent_and_
     let dee_before = wallet(&world, dee.who);
     let (revoking, landed) = acts(&mut world, operator, &format!("@registry/revoke {resale}"));
     assert!(
-        revoking.contains(&format!("Revoking licence {resale}.")) && landed.len() == 1,
+        revoking.contains(&format!("Revoking license {resale}.")) && landed.len() == 1,
         "{revoking}"
     );
     let (_, paying) = attempts(&mut world, dee.who, &format!("+minds/buy/pay {child_code}"));

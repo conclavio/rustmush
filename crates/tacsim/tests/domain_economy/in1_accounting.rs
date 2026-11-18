@@ -73,7 +73,7 @@ pub(crate) fn dent_one(rig: &mut Rig, hull: ObjId) {
         .cells()
         .find(|(addr, cell)| matches!(addr, CellAddr::Facet { .. }) && cell.current > cell.min)
         .map(|(addr, cell)| (addr.clone(), *cell))
-        .expect("an armoured facet");
+        .expect("an armored facet");
     damage(
         rig,
         hull,

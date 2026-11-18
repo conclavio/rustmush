@@ -168,7 +168,7 @@ fn main() {
             eprintln!("fixture_instruments.png: {err}");
         }
         println!(
-            "map {}x{} cells, {contacts} contacts, frame {}x{}, {} colours",
+            "map {}x{} cells, {contacts} contacts, frame {}x{}, {} colors",
             map.width(),
             map.height(),
             frame.width(),
@@ -214,7 +214,7 @@ fn main() {
             eprintln!("relief.png: {err}");
         }
         println!(
-            "heightfield 640x480 over the proving ground: render {relief_us} us, {} colours, png {} bytes",
+            "heightfield 640x480 over the proving ground: render {relief_us} us, {} colors, png {} bytes",
             relief.count_colours(300),
             relief_png.len()
         );
@@ -235,7 +235,7 @@ fn main() {
             eprintln!("relief_baked.png: {err}");
         }
         println!(
-            "heightfield baked: bake {bake_ms} ms once, render {baked_us} us, {} colours, png {} bytes",
+            "heightfield baked: bake {bake_ms} ms once, render {baked_us} us, {} colors, png {} bytes",
             baked.count_colours(300),
             baked_png.len()
         );
@@ -277,7 +277,7 @@ fn main() {
                 eprintln!("{name}.png: {err}");
             }
             println!(
-                "{name}: {} colours, png {} bytes",
+                "{name}: {} colors, png {} bytes",
                 f.count_colours(300),
                 bytes.len()
             );
@@ -332,7 +332,7 @@ fn main() {
         if let Err(err) = std::fs::write(format!("{out_dir}/sprites.png"), png::encode(&f)) {
             eprintln!("sprites.png: {err}");
         }
-        println!("sprites: {} colours", f.count_colours(300));
+        println!("sprites: {} colors", f.count_colours(300));
     }
     // Doc 21 cut G.5b: the orbital view, the chart fixture drawn as a scene,
     // in the TUI's picture shape and at 4:3 — `chart.png` and `chart43.png`.
@@ -354,7 +354,7 @@ fn main() {
                 eprintln!("{name}.png: {err}");
             }
             println!(
-                "{name}: {w}x{h} drawn in {us} us, {} colours, png {} bytes",
+                "{name}: {w}x{h} drawn in {us} us, {} colors, png {} bytes",
                 f.count_colours(300),
                 bytes.len()
             );
@@ -380,7 +380,7 @@ fn main() {
                 eprintln!("{name}.png: {err}");
             }
             println!(
-                "{name}: {w}x{h} drawn in {us} us, {} colours, png {} bytes",
+                "{name}: {w}x{h} drawn in {us} us, {} colors, png {} bytes",
                 f.count_colours(300),
                 bytes.len()
             );
@@ -420,7 +420,7 @@ fn main() {
                 eprintln!("{name}.png: {err}");
             }
             println!(
-                "{name}: {w}x{h} drawn in {us} us, {} colours, png {} bytes",
+                "{name}: {w}x{h} drawn in {us} us, {} colors, png {} bytes",
                 f.count_colours(300),
                 bytes.len()
             );

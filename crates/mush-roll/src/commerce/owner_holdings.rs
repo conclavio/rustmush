@@ -463,7 +463,7 @@ mod tests {
     }
     /// A character's own title never asks the organisation predicate.
     fn never(_: mush_org::OrgId, _: Option<mush_org::OrgScopeId>) -> bool {
-        panic!("a character title asked the organisation predicate")
+        panic!("a character title asked the organization predicate")
     }
     #[test]
     fn title_is_current_e4_title_not_source_author_or_staff_or_assignment() {

@@ -134,11 +134,11 @@ fn prepare_public(
     let offer = matching.next().ok_or_else(|| {
         let verbs: Vec<_> = projected.iter().map(|o| o.presentation().verb.to_string()).collect();
         let room = world.engine.world.get(actor).and_then(|o| o.location);
-        format!("signed personal licence public offer: wanted {verb} for {id} as {actor:?} in {room:?}; projected {verbs:?}")
+        format!("signed personal license public offer: wanted {verb} for {id} as {actor:?} in {room:?}; projected {verbs:?}")
     })?;
     check!(
         matching.next().is_none(),
-        "ambiguous actual personal licence line offer"
+        "ambiguous actual personal license line offer"
     );
     let asked = parameters.clone();
     let req = invocation(number, actor, owner, parameters.clone())?;
@@ -356,7 +356,7 @@ fn file(
     )?;
     let value = serde_json::to_value(op)?;
     let owner =
-        serde_json::from_value::<LicenceId>(value.get("licence").ok_or("owner licence")?.clone())?;
+        serde_json::from_value::<LicenceId>(value.get("licence").ok_or("owner license")?.clone())?;
     let snapshot = capture(&world, &disk(&world));
     let _cold = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
     Ok((snapshot, owner))
@@ -800,7 +800,7 @@ fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestRes
             ORG + 3,
             json!({"listing": token(ORG + 1), "org": org.0 + 1000})
         ))?,
-        "an unknown organisation: refused"
+        "an unknown organization: refused"
     );
     world.say(
         GOD,
@@ -842,7 +842,7 @@ fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestRes
     check_eq!(
         quote.get("buyer"),
         Some(&json!({"org": org, "acting": GOD})),
-        "the holder is the organisation, GOD acting"
+        "the holder is the organization, GOD acting"
     );
     check_eq!(quote.get("payer"), Some(&json!(treasury)));
     commit(
@@ -913,7 +913,7 @@ fn org_buys(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> TestRes
         disk(&world)
             .keys()
             .any(|(ns, key)| ns == "roll" && key.contains(&format!("org/{:020}/licence/", org.0))),
-        "the organisation's holding is indexed under the organisation"
+        "the organization's holding is indexed under the organization"
     );
     let snapshot = capture(&world, &disk(&world));
     let cold = Rig::personal(f, Compose::ENTITLEMENTS).boot(&snapshot)?;
@@ -963,7 +963,7 @@ fn org_members(f: &PurchaseFixture, granted: &Durable, owner: LicenceId) -> Test
             .ok_or("the Guild")?;
         (guild.id, guild.root_scope)
     };
-    check_eq!(org, mush_org::OrgId(0), "F8: the Guild is organisation 0");
+    check_eq!(org, mush_org::OrgId(0), "F8: the Guild is organization 0");
     let instrument = store(&world)?
         .snapshot()
         .account(WalletId(0))
@@ -1075,7 +1075,7 @@ fn org_members_with(
     check_eq!(
         quote.get("buyer"),
         Some(&json!({"org": org, "acting": member})),
-        "the holder is the organisation, the member acting"
+        "the holder is the organization, the member acting"
     );
     // Doc 17h §3 M8f H1 (the lead's ruling): only the quoting member funds
     // an organisation's quote; another granted member is refused.
@@ -1126,7 +1126,7 @@ fn org_members_with(
     check_eq!(
         hold.placed_by,
         EconomicOwner::Organization(org),
-        "the hold is placed by the organisation"
+        "the hold is placed by the organization"
     );
     // S1: the quoting member loses its grant; the second member refunds,
     // under a grant limited at the price (doc 17h §3 M8f P2a: the Refund asks
@@ -1163,7 +1163,7 @@ fn org_members_with(
             .ok_or("treasury")?
             .held_amount,
         Amount::ZERO,
-        "the organisation's escrow is released"
+        "the organization's escrow is released"
     );
     check_eq!(
         allocation(world, base + 5)?.phase(),
@@ -1536,7 +1536,7 @@ async fn customer(
         source_answer(&mut world,BUYER,a.licence(),None)?;
         source_answer(&mut world,BUYER,owner,None)?;
         assert!(rows(&disk(&world),"roll","roll_mind_personal_paid_licence").iter().filter_map(|r|serde_json::from_value::<PersonalPaidLicence>(r.clone()).ok())
-            .all(|licence|licence.holder()!=mush_economy::Holder::Character(GOD) || licence.id()==a.licence()),"customer bought no ancestor licence");
+            .all(|licence|licence.holder()!=mush_economy::Holder::Character(GOD) || licence.id()==a.licence()),"customer bought no ancestor license");
         // New sortie under the customer's own Grace still works after the
         // issuer's selected parent has ended; no ancestor is re-resolved.
         world.say(GOD,"SIM TEAM red")?;world.say(GOD,"SIM AI 1")?;world.say(GOD,"SIM UNIT heavy_mk1")?;

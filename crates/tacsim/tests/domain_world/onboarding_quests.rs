@@ -140,9 +140,9 @@ fn coop_lesson_recognizes_real_enrolment_and_awards_once_after_restart() {
     let (out, queued) = command(&mut rig, actor, &format!("+quest/check #{}", npc.0));
     assert!(
         queued.is_empty(),
-        "no ship without ordinary enrolment: {out}"
+        "no ship without ordinary enrollment: {out}"
     );
-    let out = run(&mut rig.tw, actor, "+coop/enrol Optional Moth");
+    let out = run(&mut rig.tw, actor, "+coop/enroll Optional Moth");
     assert!(out.contains("now the Optional Moth"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), actor).unwrap();
     let before = relationship(&rig.tw, npc, actor);
@@ -172,7 +172,7 @@ fn coop_lesson_recognizes_real_enrolment_and_awards_once_after_restart() {
 fn established_captain_can_accept_guidance_after_using_the_ordinary_service() {
     let mut rig = stocked();
     let actor = pilot(&mut rig, "AlreadyCaptain", 804);
-    let out = run(&mut rig.tw, actor, "+coop/enrol Earlier Moth");
+    let out = run(&mut rig.tw, actor, "+coop/enroll Earlier Moth");
     assert!(out.contains("now the Earlier Moth"), "{out}");
     let npc = giver(&rig.tw, "quest.oduya_first_hull");
     accept(&mut rig, actor, npc);
@@ -231,7 +231,7 @@ fn traveller_departure_invalidates_pending_discovery_and_hides_new_offers() {
     let resolved = resolve_with_guards(&rig, submit);
     let elsewhere = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
     teleport(&mut rig.tw, nadia, elsewhere);
-    let resolved = resolved.expect("check resolves while the traveller is present");
+    let resolved = resolved.expect("check resolves while the traveler is present");
     assert!(
         !rig.tw
             .engine()
@@ -312,7 +312,7 @@ fn ordinary_scan_and_sounding_complete_the_lesson_without_a_commission() {
 fn ceres_traveller_can_be_carried_and_paid_without_accepting_any_quest() {
     let mut rig = stocked();
     let actor = pilot(&mut rig, "NadiasCaptain", 809);
-    let out = run(&mut rig.tw, actor, "+coop/enrol Handover Moth");
+    let out = run(&mut rig.tw, actor, "+coop/enroll Handover Moth");
     assert!(out.contains("now the Handover Moth"), "{out}");
     let hull = tacsim::port::live_charter(rig.tw.world(), actor)
         .unwrap()

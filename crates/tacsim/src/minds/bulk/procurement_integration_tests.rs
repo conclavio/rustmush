@@ -564,7 +564,7 @@ fn run(
     check_eq!(
         allocation.holder(),
         mush_economy::Holder::Organization { org, acting: agent },
-        "the licence is the House's, its agent acting"
+        "the license is the House's, its agent acting"
     );
     check!(matches!(allocation.phase(), PurchasePhase::Granted { .. }));
     // P5: the House holds exactly the one line it bought; the parent's line,
@@ -667,7 +667,7 @@ fn run(
     check_eq!(
         roll_read(world, GOD, org)?,
         "holdings 0",
-        "a lapsed licence"
+        "a lapsed license"
     );
     world.engine.world.set_now(now);
 

@@ -1833,7 +1833,7 @@ fn i3_a_place_at_a_beat_is_one_line_and_one_pose_at_three_cadences() {
                 .unit(BLUE)
                 .map(|state| (state.pose.x_cm, state.pose.y_cm)),
             Some((8_500, 11_500)),
-            "cadence {cadence}: the pose is the cell's centre"
+            "cadence {cadence}: the pose is the cell's center"
         );
         assert_eq!(arena.index.occupant(8, 11), Some(BLUE));
         assert!(

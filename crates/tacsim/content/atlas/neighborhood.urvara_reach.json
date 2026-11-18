@@ -3,7 +3,7 @@
     "id": "neighborhood.urvara_reach",
     "version": 1,
     "kind": "neighborhood",
-    "digest": "8d6b450a9d55b68151e1906534155e7c8a7183781068f277104862dc8efa8e90",
+    "digest": "6f5bcdde63128018ea3094a3a2cc401bf552d8d3281eb599b67891806b3c9ac4",
     "requires": [
       {
         "id": "region.urvara_reach",
@@ -94,7 +94,7 @@
       "def": {
         "name": "Urvara Reach Pad",
         "short_desc": "A cleared landing square on a rock bench of Urvara's floor, the basin's central ridge low on the northern horizon.",
-        "desc": "The pad is levelled into a bench of dark rock and edged with tie-down rings, the Registry number FR-31 painted in its middle. The benches step down to the south toward a pale plain where ice lies close under the regolith. To the north the ridge at the middle of Urvara stands up out of the floor, a long grey line against black sky. The survey stakes run out of sight in every direction: this claim is twice as wide as a standard Registry site.",
+        "desc": "The pad is leveled into a bench of dark rock and edged with tie-down rings, the Registry number FR-31 painted in its middle. The benches step down to the south toward a pale plain where ice lies close under the regolith. To the north the ridge at the middle of Urvara stands up out of the floor, a long gray line against black sky. The survey stakes run out of sight in every direction: this claim is twice as wide as a standard Registry site.",
         "surface": "ground",
         "footprint": {
           "rect": [
@@ -114,7 +114,7 @@
         ],
         "details": {
           "survey stakes": "Orange-capped stakes at every block corner, sixteen blocks of 1,280 m, the Registry's first double-span survey on Ceres.",
-          "benches": "Steps of dark rock a few metres high, the floor of the basin broken as it settled. The ice-cut plain below them is softer going."
+          "benches": "Steps of dark rock a few meters high, the floor of the basin broken as it settled. The ice-cut plain below them is softer going."
         }
       }
     },

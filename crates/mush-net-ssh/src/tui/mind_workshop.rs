@@ -450,7 +450,7 @@ impl MindWorkshop {
             }
             MindResponse::Cancelled { .. } => {
                 self.form = None;
-                self.message = "Job cancelled.".into();
+                self.message = "Job canceled.".into();
             }
             _ => {
                 self.message = "Unexpected mind response; refresh before editing.".into();

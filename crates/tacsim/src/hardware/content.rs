@@ -181,7 +181,7 @@ impl HardwareCatalogueDef {
             || self.monthly_dies.iter().any(|n| !(1..=1024).contains(n))
         {
             return Err(bad(
-                "catalogue differs from the v1 credit or fitting protocol",
+                "catalog differs from the v1 credit or fitting protocol",
             ));
         }
         // Doc 48 unit PL.7: the prices are the catalogue's own, bounded as the economy's policy

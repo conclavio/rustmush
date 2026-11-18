@@ -1200,7 +1200,7 @@ fn exact(body: &str) -> Option<Line> {
         },
         "Target destroyed." => Line::Killed { designator: None },
         "Only a side's lead or staff can start the match." => Line::NotLead,
-        "This server has no simulator centre." => Line::NoCentre,
+        "This server has no simulator center." => Line::NoCentre,
         "Nobody is in the simulator; a match takes at least one pilot." => Line::NobodyPlaying,
         "The simulator is through the lobby." => Line::OutsideCentre,
         "You hold no slot in the simulator." => Line::NoSlot,
@@ -1807,13 +1807,13 @@ fn hit_taken(rest: &str) -> Option<Line> {
         return None;
     }
     let (armour, internals) = if let Some(inside) = figures
-        .strip_prefix("armour gone, ")
+        .strip_prefix("armor gone, ")
         .and_then(|rest| rest.strip_suffix(" inside"))
     {
         let (left, max) = inside.split_once(" of ")?;
         (None, Some((int(left)?, int(max)?)))
     } else {
-        let (left, max) = figures.strip_suffix(" armour left")?.split_once(" of ")?;
+        let (left, max) = figures.strip_suffix(" armor left")?.split_once(" of ")?;
         (Some((int(left)?, int(max)?)), None)
     };
     Some(Line::HitTaken {
@@ -1912,7 +1912,7 @@ fn slot_sentence<'a>(body: &'a str, verb: &str) -> Option<(&'a str, Side, u8, &'
 
 /// The centre's announcements and refusals (`help simulator`).
 fn lobby(body: &str) -> Option<Line> {
-    if let Some(rest) = body.strip_prefix("Simulator centre: ") {
+    if let Some(rest) = body.strip_prefix("Simulator center: ") {
         let (head, tail) = match rest.split_once(" — ") {
             Some((head, tail)) => (head, Some(tail.to_owned())),
             None => (rest, None),
@@ -2008,7 +2008,7 @@ fn lobby(body: &str) -> Option<Line> {
         return Some(Line::LayerOff);
     }
     if let Some(state) = body
-        .strip_prefix("The simulator centre is ")
+        .strip_prefix("The simulator center is ")
         .and_then(|rest| rest.strip_suffix("; that is not something you can do to it now."))
     {
         return Some(Line::WrongCentreState {
@@ -2997,7 +2997,7 @@ mod tests {
     #[test]
     fn the_victims_lines() {
         assert_eq!(
-            classify("Hit on the hull's front facet: 280 of 400 armour left."),
+            classify("Hit on the hull's front facet: 280 of 400 armor left."),
             Line::HitTaken {
                 section: "hull".into(),
                 through: None,
@@ -3008,7 +3008,7 @@ mod tests {
             }
         );
         assert_eq!(
-            classify("Hit on the hull's front facet: armour gone, 140 of 200 inside."),
+            classify("Hit on the hull's front facet: armor gone, 140 of 200 inside."),
             Line::HitTaken {
                 section: "hull".into(),
                 through: None,
@@ -3019,7 +3019,7 @@ mod tests {
             }
         );
         assert_eq!(
-            classify("Hit on the engine, through the hull's rear facet: 90 of 150 armour left."),
+            classify("Hit on the engine, through the hull's rear facet: 90 of 150 armor left."),
             Line::HitTaken {
                 section: "engine".into(),
                 through: Some("hull".into()),
@@ -3143,7 +3143,7 @@ mod tests {
     #[test]
     fn the_lobby_and_the_centre() {
         assert_eq!(
-            classify("Simulator centre: idle"),
+            classify("Simulator center: idle"),
             Line::Board {
                 state: "idle".into(),
                 match_id: None,
@@ -3151,7 +3151,7 @@ mod tests {
             }
         );
         assert_eq!(
-            classify("Simulator centre: ended (match 8) — blue wins: red conceded"),
+            classify("Simulator center: ended (match 8) — blue wins: red conceded"),
             Line::Board {
                 state: "ended".into(),
                 match_id: Some(8),
@@ -3398,14 +3398,14 @@ mod tests {
         );
         assert_eq!(
             classify(
-                "The simulator centre is running; that is not something you can do to it now."
+                "The simulator center is running; that is not something you can do to it now."
             ),
             Line::WrongCentreState {
                 state: "running".into()
             }
         );
         assert_eq!(
-            classify("This server has no simulator centre."),
+            classify("This server has no simulator center."),
             Line::NoCentre
         );
         assert_eq!(
@@ -3485,7 +3485,7 @@ mod tests {
             "Your tank can neither move nor shoot. The match runs on: wait it",
             "BA destroyed.",
             "Hit on BA: turret.",
-            "Hit on the hull's front facet: 280 of 400 armour left.",
+            "Hit on the hull's front facet: 280 of 400 armor left.",
             "The left_track is destroyed: the tank cannot move.",
             "FIRE cannon refused. Still cycling: 4 s to go.",
             "Firing cannon.",
@@ -3763,7 +3763,7 @@ mod tests {
                 )
             }),
             (
-                "Hit on the hull's front facet: 280 of 400 armour left.",
+                "Hit on the hull's front facet: 280 of 400 armor left.",
                 |l| {
                     matches!(
                         l,
@@ -3775,7 +3775,7 @@ mod tests {
                 },
             ),
             (
-                "Hit on the hull's front facet: armour gone, 140 of 200 inside.",
+                "Hit on the hull's front facet: armor gone, 140 of 200 inside.",
                 |l| {
                     matches!(
                         l,
@@ -3905,11 +3905,11 @@ mod tests {
                     }
                 )
             }),
-            ("This server has no simulator centre.", |l| {
+            ("This server has no simulator center.", |l| {
                 *l == Line::NoCentre
             }),
             (
-                "Simulator centre: ended (match 3) — draw: both sides are out of ammunition",
+                "Simulator center: ended (match 3) — draw: both sides are out of ammunition",
                 |l| {
                     matches!(
                         l,

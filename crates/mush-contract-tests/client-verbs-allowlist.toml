@@ -24,8 +24,8 @@ head = "+crew"
 reason = "a content reference the content studio lists (`command_refs`, tacsim content_studio.rs), not a line the client sends"
 
 [[allow]]
-head = "ARMOUR"
-reason = "a cockpit label in a format string (\"ARMOUR {}\"), not a command"
+head = "ARMOR"
+reason = "a cockpit label in a format string (\"ARMOR {}\"), not a command"
 
 [[allow]]
 head = "PIXEL"

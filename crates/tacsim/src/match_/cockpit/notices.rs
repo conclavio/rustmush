@@ -160,9 +160,9 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
                 format!("the {section}, through the {armor_section}'s {facet} facet")
             };
             if *armor_left > 0 {
-                format!("Hit on {place}: {armor_left} of {armor_max} armour left.")
+                format!("Hit on {place}: {armor_left} of {armor_max} armor left.")
             } else {
-                format!("Hit on {place}: armour gone, {internals_left} of {internals_max} inside.")
+                format!("Hit on {place}: armor gone, {internals_left} of {internals_max} inside.")
             }
         }
         // **16b cut D.2** (`B-15`): the round found a section that was already
@@ -723,7 +723,7 @@ pub(super) fn section_clause(id: &str, then: &SectionWords, now: &SectionWords) 
     }
     let mut clauses: Vec<String> = Vec::new();
     if now.armour < then.armour {
-        clauses.push(format!("armour {} then, {} now", then.armour, now.armour));
+        clauses.push(format!("armor {} then, {} now", then.armour, now.armour));
     }
     if now.internals < then.internals {
         clauses.push(format!(

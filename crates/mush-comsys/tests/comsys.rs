@@ -2065,7 +2065,7 @@ fn z4_ensure_channel_makes_one_channel_once_and_reasserts_its_locks() {
     assert_eq!(set_keys(&ops_three), vec![format!("chan:{}", id.0)]);
     let c = state(&engine).channels.get(&id).expect("the net").clone();
     assert_eq!(c.perms, net_perms(), "the module's locks, re-asserted");
-    assert_eq!(c.color.ansi, "red", "a recoloured net keeps its colour");
+    assert_eq!(c.color.ansi, "red", "a recoloured net keeps its color");
 }
 
 /// A name `@channel/create` would refuse is refused here too, and nothing is

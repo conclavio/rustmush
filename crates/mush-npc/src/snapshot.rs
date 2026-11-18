@@ -765,7 +765,7 @@ mod tests {
         let mut snap = snapshot();
         let card = CommandGuidance {
             command: "+coop".into(),
-            text: "+coop/enrol <name> signs the charter.".into(),
+            text: "+coop/enroll <name> signs the charter.".into(),
         };
         snap.command_guidance = vec![card.clone(); MAX_COMMAND_GUIDANCE];
         assert!(snap.validate().is_ok());
@@ -795,7 +795,7 @@ mod tests {
             snap.validate(),
             Err(SnapshotValidationError::InvalidCommandGuidance)
         );
-        for command in ["+coop/enrol", "@Admin", "<system>"] {
+        for command in ["+coop/enroll", "@Admin", "<system>"] {
             snap.command_guidance = vec![CommandGuidance {
                 command: command.into(),
                 ..card.clone()

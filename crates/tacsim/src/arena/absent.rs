@@ -754,7 +754,7 @@ mod tests {
         assert_eq!(
             permits(&hold, &Ask::Fire { at: 8 }),
             Err(Denied::FiredFirst),
-            "only a guard answers for a neighbour"
+            "only a guard answers for a neighbor"
         );
         // A standing order's hold holds for a guard too.
         for at in [7, 8] {

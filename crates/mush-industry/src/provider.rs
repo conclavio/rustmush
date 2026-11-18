@@ -3938,7 +3938,7 @@ impl IndustryProvider {
             .put_work_order(txn, order.revision(), next)
             .map_err(|source| refuse(&source))?;
         data.insert("order".to_owned(), json!(id.to_string()));
-        Ok(format!("Cancelled {id}."))
+        Ok(format!("Canceled {id}."))
     }
 
     /// B6 / R2 (independent verify fold) — restamp reconciles a paused production
@@ -4141,10 +4141,10 @@ impl IndustryProvider {
 }
 
 /// The cutoff's refusal for an order that has finished its work.
-pub const CANCEL_DONE: &str = "That order's work is done; it can no longer be cancelled.";
+pub const CANCEL_DONE: &str = "That order's work is done; it can no longer be canceled.";
 /// The cutoff's refusal for an order past half its work units.
 pub const CANCEL_PAST_HALF: &str =
-    "That order is past half its work; it can no longer be cancelled.";
+    "That order is past half its work; it can no longer be canceled.";
 
 /// **Whether `order` is past the cancel cutoff** (doc 39 cut IN.3, §4.12, Q-39-29): the refusal
 /// for an order awaiting delivery, or one more than half of whose work units are done; `None`

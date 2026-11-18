@@ -3,7 +3,7 @@
 While aboard a carrier hull, bridge crew operate the vessel through three station-gated command families:
 
 - **`+helm`** — bridge stations, standing orders, attitude, propulsion, flight guidance, docking, and towing.
-- **`+tac`** — passive and active infrared sensors, fire-control locks, the space ordnance triad, and point defence.
+- **`+tac`** — passive and active infrared sensors, fire-control locks, the space ordnance triad, and point defense.
 - **`+mine`** — zero-G orbital cluster prospecting, Freeport Registry claims, mining lasers, and collector drones.
 
 All three commands require you to be physically aboard a carrier hull and seated at a bridge station (`command`, `helm`, `tactical`, `ew`, `engineering`, or `flight_ops`) that grants the corresponding control channel (`movement`, `sensors`, or `fire`; a captain or crew member at `command` controls all three). On the graphical terminal and web client, press `v` on the chart screen to cycle between the bridge holotank (`space.holotank`), the pilot canopy (`space.cockpit`), and the docking approach view (`space.docking`).
@@ -37,7 +37,7 @@ Assign or claim a bridge station before issuing flight or tactical orders:
 ```
 
 - `+helm/heading <yaw_deg>[,<pitch_deg>]` sets nose attitude in degrees (`yaw_deg` `0..360`, optional `pitch_deg` `-90..90`) and writes `StandingOrder::Heading`.
-- `+helm/roll <roll_deg>` sets bank angle in degrees (`-180..180`) to rotate fresh armour facets toward incoming fire.
+- `+helm/roll <roll_deg>` sets bank angle in degrees (`-180..180`) to rotate fresh armor facets toward incoming fire.
 - `+helm/thrust <permille>[,<x>,<y>,<z>] [force]` sets main-drive throttle in permille (`0..1000`), with an optional 3D direction vector and `force` to override the return-reserve warning, and writes `StandingOrder::Thrust`.
 - `+helm/burn <ax>,<ay>,<az> [<s_ic>] [force]` executes a timed reaction-mass burn in m/s² (`-100..100` per axis; a burn asked above the drive's rating for the ship's mass flies at that rating, which is under 1 m/s² for a laden Dray, and a derelict on your tow line counts as mass) for `<s_ic>` IC seconds (`1..86400`, default `60`) against `stow.propellant`. Pass `force` to burn into the return reserve.
 - `+helm/guidance <attitude_deg|mode>` sets a guidance yaw (`0..359`) or flight-computer mode (`manual`, `prograde`, `retrograde`, `radial_in`, `radial_out`, `normal`, `anti_normal`, `intercept`, `match`).
@@ -67,7 +67,7 @@ Assign or claim a bridge station before issuing flight or tactical orders:
 - `+helm/tow release` lets the derelict go. If she has not been brought into a port, your custody of her ends and the salvage claim on her is withdrawn; a claim is only ever awarded on a derelict a port has.
 - An open docking session cuts your own main drive and leaves you coasting; every other ship in the bubble keeps flying. `+helm/dock` is refused while a hostile contact is operational in the bubble, whether or not your sensors hold it.
 - A passage's reaction mass and provisions are drawn from the hold when it is engaged. `+helm/autopilot` is refused while an earlier action of the captain's is still committing; type it again. If the draw cannot be made, the drive is cut and the ship drifts where she is.
-- If every crew member aboard loses their link, the drive is cut for a five-minute grace; point defence stays on AUTO. Crew are whoever holds a bridge station and the captain; a passenger's link does not count either way. The five minutes run from the last of the crew to drop. Past it a backup mind has the helm until one of you is back or the ship has docked. It makes for the port she filed for (the port she left, if she filed for a cluster or a body), paid from her tank and locker like any passage; if she cannot afford that it takes the nearest open port she can; if she can afford none it holds where she is and waits for a tow. Stopped by a customs picket, it heaves to and submits her to inspection, and you pay the fine or lose the ore as if you had typed `+helm/submit`. Stopped by an interdictor, it heaves to and is stood down. It never fires, mines or trades. The moment your link is back the helm is yours, and any burn the mind had ordered is cut. Quitting while in space hands her to the backup mind at once.
+- If every crew member aboard loses their link, the drive is cut for a five-minute grace; point defense stays on AUTO. Crew are whoever holds a bridge station and the captain; a passenger's link does not count either way. The five minutes run from the last of the crew to drop. Past it a backup mind has the helm until one of you is back or the ship has docked. It makes for the port she filed for (the port she left, if she filed for a cluster or a body), paid from her tank and locker like any passage; if she cannot afford that it takes the nearest open port she can; if she can afford none it holds where she is and waits for a tow. Stopped by a customs picket, it heaves to and submits her to inspection, and you pay the fine or lose the ore as if you had typed `+helm/submit`. Stopped by an interdictor, it heaves to and is stood down. It never fires, mines or trades. The moment your link is back the helm is yours, and any burn the mind had ordered is cut. Quitting while in space hands her to the backup mind at once.
 
 ---
 
@@ -85,12 +85,12 @@ Vacuum detection resolves through light-lagged infrared propagation, comparing t
 +tac/lock <contact|off>
 ```
 
-- `+tac/status` (or bare `+tac`) shows your lock, point-defence mode and heat, then one row a mount and a row for the lock (see "Reading your mounts" below).
+- `+tac/status` (or bare `+tac`) shows your lock, point-defense mode and heat, then one row a mount and a row for the lock (see "Reading your mounts" below).
 - `+tac/scan` runs a passive/active infrared sensor pass with light-lag across the active space bubble.
 - `+tac/lock <contact|off>` acquires or clears a fire-control lock on a detected contact.
 - `+tac/hail <contact|port>[=<message>]` sends a radio hail from any bridge station. In a bubble it goes to a contact on your scope; from free flight or a cluster it goes to an open port. The range is measured, and a hail to a distant port arrives after the light has crossed (minutes between Ceres and Mars). At most four of your hails are in flight at once.
 
-### Space Ordnance Triad and Point Defence
+### Space Ordnance Triad and Point Defense
 
 Space engagements combine three offensive mount classes with distinct flight profiles and counterplay:
 
@@ -101,28 +101,28 @@ Space engagements combine three offensive mount classes with distinct flight pro
 +tac/pdc <auto|manual|point|offense>
 ```
 
-- `+tac/beam [<contact>]` fires your lasers in offence at a detected hostile contact. Its effective reach is `25 km`: inside it a pulse does at least half its close-range damage, and past it less and less. A pulse still lands out to the laser's full reach (`150 km` on a turret, `100 km` on the customs corvette's heavier laser), but there it is a token, a point or two: enough to answer fire, not to hurt a hull. Lasers are for drones and soft targets; the torpedoes and the spinal gun hurt a hull. A laser in offence cycles in `5 s`, and each pulse builds hull heat.
+- `+tac/beam [<contact>]` fires your lasers in offense at a detected hostile contact. Its effective reach is `25 km`: inside it a pulse does at least half its close-range damage, and past it less and less. A pulse still lands out to the laser's full reach (`150 km` on a turret, `100 km` on the customs corvette's heavier laser), but there it is a token, a point or two: enough to answer fire, not to hurt a hull. Lasers are for drones and soft targets; the torpedoes and the spinal gun hurt a hull. A laser in offense cycles in `5 s`, and each pulse builds hull heat.
 - `+tac/torp [<contact>[=<count>]]` launches a torpedo salvo (default `1`) at a detected hostile contact (`10–500 km` envelope, accelerating under 3D proportional navigation before ballistic coast).
 - `+tac/railgun [<contact>]` fires spinal or turret railguns at a detected hostile contact along a world-frame lead solution (`10–250 km` envelope; countered by lateral jinking thrust during time-of-flight).
-- `+tac/pdc <auto|manual|point|offense>` configures point-defence autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire.
+- `+tac/pdc <auto|manual|point|offense>` configures point-defense autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire.
 
 When fire disables a hull's drive or structure, the vessel remains in place as an open-epoch derelict with its flight recorder and cargo intact for salvage and towing.
 
 ### Reading your mounts
 
-Space has no chance roll. A mount that reads `ready` fires when you tell it to, and an offence laser that fires lands, with less damage the farther off its mark is. Torpedoes and the spinal gun's round fly to their mark, and a hull that burns while they fly can be elsewhere when they arrive. So the rows show facts, not odds. `+tac/status`, the pilot canopy's lower-left panel and the terminal client's MOUNTS column under the canopy or the holotank show the same rows:
+Space has no chance roll. A mount that reads `ready` fires when you tell it to, and an offense laser that fires lands, with less damage the farther off its mark is. Torpedoes and the spinal gun's round fly to their mark, and a hull that burns while they fly can be elsewhere when they arrive. So the rows show facts, not odds. `+tac/status`, the pilot canopy's lower-left panel and the terminal client's MOUNTS column under the canopy or the holotank show the same rows:
 
 ```text
 Mount          Kind      Rounds/mode     Ready       At the lock
-laser_dorsal   laser     offence         ready       7 a pulse
-laser_ventral  laser     defence         in 0.6 s    7 a pulse
+laser_dorsal   laser     offense         ready       7 a pulse
+laser_ventral  laser     defense         in 0.6 s    7 a pulse
 torp_bow       tubes     16/16           ready
 rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s
 pdc_port       point def 4000 left       ready
 Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.
 ```
 
-- **Rounds/mode** shows the rounds left of what your fit stows. A laser keeps no magazine, so it shows its mode: `offence` fires at your lock, and `defence` stops incoming torpedoes inside `45 km` on its own, on its own `4 s` cycle. Switch with `+tac/pdc offense` or `+tac/pdc point`; your fit says which modes each laser may take. A switch never fires early: the new mode's cycle starts when you switch, so a laser switched to defence stops nothing for `4 s`, and one switched to offence waits `5 s`. Switch back to offence within `5 s` of its last offence pulse and it keeps what was left of that cycle instead. Point defence shows the rounds left in its drum; a rotary fires a burst every `0.5 s` at a torpedo in its last `4 km`.
+- **Rounds/mode** shows the rounds left of what your fit stows. A laser keeps no magazine, so it shows its mode: `offence` fires at your lock, and `defence` stops incoming torpedoes inside `45 km` on its own, on its own `4 s` cycle. Switch with `+tac/pdc offense` or `+tac/pdc point`; your fit says which modes each laser may take. A switch never fires early: the new mode's cycle starts when you switch, so a laser switched to defense stops nothing for `4 s`, and one switched to offense waits `5 s`. Switch back to offense within `5 s` of its last offense pulse and it keeps what was left of that cycle instead. Point defense shows the rounds left in its drum; a rotary fires a burst every `0.5 s` at a torpedo in its last `4 km`.
 - **Ready** shows `ready`, how long the mount's cycle has to run, or what holds it back: `empty`, `down` (damage has put a rotary out of action), `too hot` (one more shot would take your heat past its ceiling), or `past reach` (your lock lies beyond the mount's reach).
 - **At the lock** shows, for a lock your sensors hold within the mount's reach, the damage one laser pulse lands at that range, and how long a spinal round takes to fly there. The longer it flies, the more time she has to burn out of its path.
 - **The lock row** shows how far off your lock is, and which of her five hull bands faces you: `front`, `left`, `right`, `rear` or `top`. That band takes what you land. If your sensors lose her, the row says so.
@@ -131,9 +131,9 @@ A ship mind reads the same figures: `space_mount(v, id)` gives one of her mounts
 
 ### Magazines
 
-Your ship's magazines are hers to keep. The torpedoes, spinal rounds and point-defence rounds she fires stay fired: when the fight ends her magazines hold what she left in them, and they still hold it at the next fight and after a server restart. A bay repair mends her and does not rearm her. `+tac/status` shows what each magazine holds.
+Your ship's magazines are hers to keep. The torpedoes, spinal rounds and point-defense rounds she fires stay fired: when the fight ends her magazines hold what she left in them, and they still hold it at the next fight and after a server restart. A bay repair mends her and does not rearm her. `+tac/status` shows what each magazine holds.
 
-Rearm her docked at a port with a workshop. `+bay <ship>` quotes the rounds each magazine is short and where they come from, and `+bay/order <ship>=rearm` loads them. The torpedoes, spinal rounds and point-defence boxes come from her hold where it carries them, and what her hold lacks is bought from the workshop's stores at the goods' price. You pay the workshop's labour on top, and the work takes its time on the IC clock. Rounds load in whole units: a point-defence box holds 500 rounds, so a rotary short by fewer than 500 waits until it is short by a whole box.
+Rearm her docked at a port with a workshop. `+bay <ship>` quotes the rounds each magazine is short and where they come from, and `+bay/order <ship>=rearm` loads them. The torpedoes, spinal rounds and point-defense boxes come from her hold where it carries them, and what her hold lacks is bought from the workshop's stores at the goods' price. You pay the workshop's labor on top, and the work takes its time on the IC clock. Rounds load in whole units: a point-defense box holds 500 rounds, so a rotary short by fewer than 500 waits until it is short by a whole box.
 
 A patrol is resupplied. The customs corvette and the belt raider you meet on a leg sail with full magazines every time, whatever an earlier fight cost them.
 
@@ -154,7 +154,7 @@ When your carrier arrives at an orbital resource cluster, use `+mine` to prospec
 
 - `+mine/status` (or bare `+mine`) shows the active orbital cluster, velocity-matched rock, extraction cycles, and `stow.ore` hold usage.
 - `+mine/ping [<rock>]` pings asteroid pockets (`A`, `B`, `C`) for spectral class (`C-type`, `S-type`, `M-type`), ore reserves (`metal_ore`, `ice_ore`, `carbon_ore`, `strategic_ore`), and claim tenure.
-- `+mine/stake <rock> [<family>]` stakes a 168-day Freeport Registry claim on an open pinged asteroid block (requires a live Registry prospecting licence).
+- `+mine/stake <rock> [<family>]` stakes a 168-day Freeport Registry claim on an open pinged asteroid block (requires a live Registry prospecting license).
 - `+mine/contest <rock>` contests an existing player claim within the 30-day Registry contest window.
 - `+mine/laser <rock> [<family>]` starts a timed 60 s mining-laser extraction cycle on rock `A`, `B`, or `C` into the hull's `stow.ore` hold.
 - `+mine/drones <rock> [<1..4>] [<family>]` launches up to 4 collector drones (`ExcursionId`) against rock `A`, `B`, or `C`. Each drone flies itself: out to the rock, lifts ore a tonne at a time until its hold of 4 t is full or the rock is worked out, and back to its bay. What it brings into `stow.ore` is what it lifted and carried home, and you are told when it is back aboard. A sortie takes a minute or so. A drone that has not made its bay after four minutes is reeled in empty. While any drone is out the ship holds her station: `+helm/approach`, and `+helm/match` on another rock, are refused until they are back aboard. If you leave the cluster with drones out they are left behind and bring nothing. Launch from at least 250 m off the rock (an approach leaves you at 600 m). While your whole crew is away, drones that are out lift nothing and come home.

@@ -1105,7 +1105,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1252,7 +1252,7 @@ fn sm6_extract_refuses_a_surface_block() {
     let body = deposit(&mut rig.tw, row.deposit).expect("the deposit is open");
     let remaining = pool(&mut rig.tw, row.vault, row.good.as_str());
     let licence = mush_economy::InstrumentId::new(tacsim::economy::LICENCE_FREEPORT)
-        .expect("the licence instrument");
+        .expect("the license instrument");
     assert_eq!(
         mush_industry::extraction_authorized(
             rig.tw.world(),

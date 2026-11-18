@@ -3,14 +3,14 @@
     "id": "tacsim.pack.missile_round",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "c78c278540294313b357a290497cf7d8e9cd7ce0f6004dab92a9b3cef2ecdd44",
+    "digest": "9c4c4cb04834e29e69e30a0fdf020a2c808d59dc8f51fc6b0f8bd1eff4babd82",
     "requires": []
   },
   "entries": {
     "tacsim.ammunition.missile_round": {
       "kind": "ammunition",
       "def": {
-        "label": "anti-armour missile",
+        "label": "anti-armor missile",
         "damage": 350,
         "penetration_class": "shaped",
         "count_per_load": 4,

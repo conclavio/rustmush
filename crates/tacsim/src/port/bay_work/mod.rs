@@ -1641,7 +1641,7 @@ fn close_order(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str, release: bool
     ctx.out.sys_to_actor(
         requester,
         "tacsim",
-        format!("The bay order on #{} is cancelled: {note}", record.hull.0),
+        format!("The bay order on #{} is canceled: {note}", record.hull.0),
     );
 }
 
@@ -1662,7 +1662,7 @@ pub fn cancel_order(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     if record.owed.is_some() {
         return Err(SETTLING.to_owned());
     }
-    close_cancelled(ctx, record, "cancelled by order");
+    close_cancelled(ctx, record, "canceled by order");
     Ok(())
 }
 
@@ -2189,7 +2189,7 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     hull = hull.0,
                     act = owed.act,
                     op = kind.word(),
-                    "tacsim: a bay act (a hot flag, a cancelled order's release or a part \
+                    "tacsim: a bay act (a hot flag, a canceled order's release or a part \
                      commission) was refused every try and was not written; staff write it by \
                      hand"
                 );

@@ -1185,7 +1185,7 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
     let c08 = station_room(&rig.tw, "ceres_port", "room.c08_chandlery");
     walk(rig, pilot, "c", c03).await;
     walk(rig, pilot, "registry", c05).await;
-    let enrolled = run(rig, pilot, &format!("+coop/enrol {HULL}")).await;
+    let enrolled = run(rig, pilot, &format!("+coop/enroll {HULL}")).await;
     assert!(enrolled.contains(&format!("now the {HULL}")), "{enrolled}");
     let base = closed_sum(&rig.tw, &[pilot]);
     let refit = run(rig, pilot, "+coop/refit prospector").await;
@@ -1197,12 +1197,12 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
     let hold = hold_of(&rig.tw, &row);
     rig.hold = Some(hold);
     assert_stowage_within_limits(rig, hold, &[]);
-    let preview = run(rig, pilot, "+licence/buy").await;
-    assert!(!preview.is_empty(), "the licence's terms");
-    let _ = run(rig, pilot, "+licence/buy go").await;
+    let preview = run(rig, pilot, "+license/buy").await;
+    assert!(!preview.is_empty(), "the license's terms");
+    let _ = run(rig, pilot, "+license/buy go").await;
     let queued = drain_players(rig).await;
     land_all(rig, &queued).await;
-    let licence = run(rig, pilot, "+licence").await;
+    let licence = run(rig, pilot, "+license").await;
     assert!(licence.contains("in force"), "{licence}");
     walk(rig, pilot, "out", c03).await;
     walk(rig, pilot, "concourse", c04).await;
@@ -1446,7 +1446,7 @@ async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
         lines[1],
         format!("+market/sell {bid}=all sells 12 for {}.", cr(price * 12))
     );
-    let programme = port_def("ceres_port").programme.expect("the programme");
+    let programme = port_def("ceres_port").programme.expect("the program");
     let reference = i64::try_from(programme.reference_minor[&cid("metal_ore")]).expect("fits");
     let (_, share) = margin_and_share(price, reference, 12, programme.share_permille);
     let sold = run(rig, pilot, &format!("+market/sell {bid}=all")).await;

@@ -775,20 +775,20 @@ impl Server {
                     self.look_answer_ms,
                     &format!("{room}\nThe room you are in."),
                 ),
-                None => self.say(self.look_answer_ms, "Limbo #0\nA grey place with no edges."),
+                None => self.say(self.look_answer_ms, "Limbo #0\nA gray place with no edges."),
             },
             "ooc" => self.say(3, "Welcome Hall #2\nA bright hall."),
             "simulator" => self.say(3, "Simulator Lobby #50\nThe lobby of the simulator."),
             "SIM STATUS" => {
                 if self.no_centre {
-                    self.say(3, "This server has no simulator centre.");
+                    self.say(3, "This server has no simulator center.");
                 } else {
                     let board = self.board.clone();
                     let red = self.red_row.clone().unwrap_or_else(|| "nobody".into());
                     self.say(
                         3,
                         &format!(
-                            "Simulator centre: {board}\n  red: {red}\n  blue: nobody\n  AI fill: each side fields 1; machines take the unclaimed pods."
+                            "Simulator center: {board}\n  red: {red}\n  blue: nobody\n  AI fill: each side fields 1; machines take the unclaimed pods."
                         ),
                     );
                 }
@@ -1908,7 +1908,7 @@ fn the_report_says_won_lost_draw_timeout_and_blocked() {
     assert!(run.until(10_000, |run| run.lane.result().is_some()));
     let result = run.lane.result().expect("a result");
     assert_eq!(result.status, "blocked");
-    assert_eq!(result.outcome, "This server has no simulator centre.");
+    assert_eq!(result.outcome, "This server has no simulator center.");
     assert!(run.lane.report().matches.is_empty());
 }
 
@@ -3359,7 +3359,7 @@ fn cc10_the_reserve_answers_the_unit_that_fired_on_the_tank() {
     // BA's row reads `rel 270°`: the left facet's face.
     run.server.now = run.now;
     run.server
-        .say(0, "Hit on the hull's left facet: 200 of 250 armour left.");
+        .say(0, "Hit on the hull's left facet: 200 of 250 armor left.");
     assert!(
         run.until(u64::from(SIZE + 2) * Server::cycle_ms("cannon"), |run| {
             GUNS.iter().all(|weapon| shots_of(run, weapon) == SIZE)
@@ -4288,7 +4288,7 @@ fn a_side_hit_turns_the_bow() {
     let left = (bow + 270) % 360;
     run.server.now = run.now;
     run.server
-        .say(0, "Hit on the hull's left facet: 200 of 250 armour left.");
+        .say(0, "Hit on the hull's left facet: 200 of 250 armor left.");
     let hit = run.now;
     // Read at the next step, decided and typed at the tick after it.
     run.until(STEP_MS + TICK_MS, |_| false);
@@ -5078,7 +5078,7 @@ fn a_wrapped_board_row_never_swallows_a_claim() {
         .find(|(_, chunk)| chunk.text().contains("takes red slot 1"))
         .expect("the claim queued");
     claim.1 = Chunk::Text(format!(
-        "Simulator centre: selection\r\n  red: nobody\r\n{}\r\n{}",
+        "Simulator center: selection\r\n  red: nobody\r\n{}\r\n{}",
         row.replace('\n', "\r\n"),
         claim.1.text()
     ));
@@ -6220,7 +6220,7 @@ fn the_reapproach_backs_off_and_waits_on_the_scripted_server() {
         run.server.say(
             0,
             &format!(
-                "Hit on the hull's front facet: {} of 400 armour left.",
+                "Hit on the hull's front facet: {} of 400 armor left.",
                 390 - 10 * i
             ),
         );
@@ -6972,7 +6972,7 @@ fn a_reapproach_at_the_edge_holds_rather_than_backing_into_it() {
         run.server.say(
             0,
             &format!(
-                "Hit on the hull's front facet: {} of 400 armour left.",
+                "Hit on the hull's front facet: {} of 400 armor left.",
                 390 - 10 * i
             ),
         );

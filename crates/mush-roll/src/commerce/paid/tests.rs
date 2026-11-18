@@ -49,7 +49,7 @@ fn term(value: &Value) -> Result<PaidTermRecord, Box<dyn std::error::Error>> {
 fn refused_licence(value: &Value) -> TestResult {
     require(
         PersonalPaidLicence::decode(&serde_json::to_vec(value)?).is_err(),
-        "invalid licence decoded",
+        "invalid license decoded",
     )
 }
 fn refused_term(value: &Value) -> TestResult {
@@ -90,7 +90,7 @@ fn source_form_and_licence_transferability_are_independent_closed_terms() -> Tes
     let value = licence_value();
     require(
         serde_json::to_value(licence(&value)?)? == value,
-        "licence did not round trip",
+        "license did not round trip",
     )
 }
 
@@ -204,12 +204,12 @@ fn complete_record_bytes_are_bounded_before_decode() -> TestResult {
     bytes.resize(MAX_PAID_LICENCE_BYTES, b' ');
     require(
         PersonalPaidLicence::decode(&bytes).is_ok(),
-        "exact licence bound refused",
+        "exact license bound refused",
     )?;
     bytes.push(b' ');
     require(
         PersonalPaidLicence::decode(&bytes) == Err(PublicationError::Capacity),
-        "oversized licence not bounded",
+        "oversized license not bounded",
     )?;
     let mut bytes = serde_json::to_vec(&term_value())?;
     bytes.resize(MAX_PAID_TERM_BYTES, b' ');

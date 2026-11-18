@@ -848,7 +848,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
         let tacsim::port::PortMapState::Present(map) = store.port_map(&lane, &ceres) else {
             panic!("ceres_port's port map is readable");
         };
-        assert_eq!(map.hulls.len(), 8, "the eight programme hulls");
+        assert_eq!(map.hulls.len(), 8, "the eight program hulls");
         let trust = map
             .orgs
             .get(&CanonicalId::new("coop_trust").expect("a canonical id"))
@@ -1109,17 +1109,17 @@ async fn the_boot_says_whether_the_simulator_is_there() {
         "the layer went on and the boot must say so: {said}"
     );
     assert!(
-        said.contains("simulator centre ready: the arena is applied and its tanks are standing"),
-        "and then whether the centre is whole: {said}"
+        said.contains("simulator center ready: the arena is applied and its tanks are standing"),
+        "and then whether the center is whole: {said}"
     );
     assert!(
         said.contains("roster_tanks=12 of 12 pods=12 of 12"),
-        "doc 16 §3.3's stock tanks and the centre's pods, both counted against the twelve \
+        "doc 16 §3.3's stock tanks and the center's pods, both counted against the twelve \
          16b cut Z.3 seats: {said}"
     );
     assert!(
         !said.contains("NOT ready") && !said.contains("partly ready"),
-        "a whole centre must not warn: {said}"
+        "a whole center must not warn: {said}"
     );
     assert_eq!(
         said.matches("simulator slots clamped").count(),
@@ -1150,7 +1150,7 @@ async fn the_boot_says_whether_the_simulator_is_there() {
         "the disabled layer must warn: {said}"
     );
     assert!(
-        !said.contains("simulator centre ready") && !said.contains("simulator centre NOT ready"),
+        !said.contains("simulator center ready") && !said.contains("simulator center NOT ready"),
         "with no layer there is no arena, so there is no readiness either way to report: {said}"
     );
     drop(fx);

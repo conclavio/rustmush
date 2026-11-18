@@ -986,13 +986,13 @@ fn sm12b_the_yard_is_laid_up_and_submits_nothing() {
     let (_, bay_room) = view.bay().expect("the yard's bay is laid up");
     assert_eq!(hull_row.rooms.get(&cid("bay")).copied(), Some(bay_room.0));
     let ceres = port_map(&tw, "ceres_port");
-    assert_eq!(ceres.hulls.len(), 8, "the programme's eight hulls");
+    assert_eq!(ceres.hulls.len(), 8, "the program's eight hulls");
     assert!(
         ceres
             .hulls
             .iter()
             .all(|programme| !programme.rooms.values().any(|room| *room == bay_room.0)),
-        "the yard's bay is on the yard's row and no programme row"
+        "the yard's bay is on the yard's row and no program row"
     );
     assert_eq!(
         ceres
@@ -1155,7 +1155,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1561,7 +1561,7 @@ fn filings(queued: &[AuthoritativeSubmit], d: ObjId) -> Vec<&AuthoritativeSubmit
 
 /// The house's licence account.
 fn licence_account(tw: &TestWorld) -> mush_economy::AccountId {
-    mush_economy::AccountId(yard(tw).licence.expect("the house licence").account)
+    mush_economy::AccountId(yard(tw).licence.expect("the house license").account)
 }
 
 // ---------------------------------------------------------------------------
@@ -1615,11 +1615,11 @@ fn sm12b_the_clerk_seeds_the_house_licence_and_surveys() {
         }
         if !had && yard(&rig.tw).licence.is_some() {
             log.push((n, "licence".to_owned()));
-            unmoved(&books, &balances(&rig.tw), "the licence moves no money");
+            unmoved(&books, &balances(&rig.tw), "the license moves no money");
             assert_eq!(
                 contract_count(&rig.tw),
                 contracts,
-                "the licence is no contract"
+                "the license is no contract"
             );
         }
         if log
@@ -1653,7 +1653,7 @@ fn sm12b_the_clerk_seeds_the_house_licence_and_surveys() {
         assert_eq!(pair[0].0 + 1, pair[1].0, "one item a clerk fire: {log:?}");
     }
     // The licence: the house's, Active, in the licence instrument, a century.
-    let licence = yard(&rig.tw).licence.expect("the house licence");
+    let licence = yard(&rig.tw).licence.expect("the house license");
     assert_eq!(
         licence.until_ic,
         licence.from_ic + tacsim::surface::tenure::SEEDED_TERM_IC_SECS
@@ -1675,7 +1675,7 @@ fn sm12b_the_clerk_seeds_the_house_licence_and_surveys() {
     );
     assert_eq!(
         account.name.as_str(),
-        "Occator Water & Propellant standing prospecting licence"
+        "Occator Water & Propellant standing prospecting license"
     );
     assert!(matches!(
         tacsim::port::licence_standing(rig.tw.world(), d, ic_now(&rig.tw)),
@@ -1897,7 +1897,7 @@ fn sm12b_the_dispatcher_files_through_the_players_compiler() {
     let head = "occator_port dispatch occator: ";
     assert_eq!(
         dispatch_line(&mut rig.tw),
-        format!("{head}waiting on the Registry's seeds, licence and survey. [pending]")
+        format!("{head}waiting on the Registry's seeds, license and survey. [pending]")
     );
     until_surveyed(&mut rig);
     assert_eq!(
@@ -2861,8 +2861,8 @@ fn sm12b_the_dispatcher_rearms_only_on_its_rule() {
     let ok = support::with_ctx(&mut rig.tw, |ctx| {
         mush_economy::set_account_status(ctx, account, mush_economy::AccountStatus::Frozen)
     });
-    assert!(ok, "staff froze the house's licence account");
-    until(&mut rig, 1_500, "plan 3 ends on the licence", &|rig| {
+    assert!(ok, "staff froze the house's license account");
+    until(&mut rig, 1_500, "plan 3 ends on the license", &|rig| {
         plan_of(&mut rig.tw, first).is_some_and(|plan| {
             matches!(
                 plan.state,
@@ -2873,10 +2873,10 @@ fn sm12b_the_dispatcher_rearms_only_on_its_rule() {
             )
         })
     });
-    quiet(&mut rig, "a frozen licence");
+    quiet(&mut rig, "a frozen license");
     assert_eq!(
         dispatch_line(&mut rig.tw),
-        "occator_port dispatch occator: its licence account is not active. [flagged]"
+        "occator_port dispatch occator: its license account is not active. [flagged]"
     );
 }
 
@@ -3472,7 +3472,7 @@ fn sm12b_staff_read_the_dispatcher_as_its_operator() {
         rows[0]
     );
     let p = pilot(&mut rig, "Ash", 6);
-    let out = run(&mut rig.tw, p, "+coop/enrol Salt Moth");
+    let out = run(&mut rig.tw, p, "+coop/enroll Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
     let player = run(&mut rig.tw, p, "+tv");
     assert!(!player.contains("OWP-YT-"), "{player}");
@@ -3675,7 +3675,7 @@ fn sm12b_a_delivery_is_one_receipted_bundle() {
                 .filter(|op| op.ns != "atlas")
                 .map(|op| format!("{}:{}", op.ns, op_key(op)))
                 .collect();
-            println!("SM.12b T13 the licence fire's writes: {keys:?}");
+            println!("SM.12b T13 the license fire's writes: {keys:?}");
             let mut sorted = keys.clone();
             sorted.sort();
             let mut want = vec![
@@ -3686,7 +3686,7 @@ fn sm12b_a_delivery_is_one_receipted_bundle() {
             want.sort();
             assert_eq!(
                 sorted, want,
-                "the licence fire writes item 8's three and nothing else"
+                "the license fire writes item 8's three and nothing else"
             );
             licence_writes = Some(keys.len());
         }
@@ -3773,7 +3773,7 @@ fn sm12b_a_delivery_is_one_receipted_bundle() {
     assert!(refused.contains("nothing is due for delivery"), "{refused}");
     assert_eq!(ledger_of(&mut rig.tw), Some(ledger));
     println!(
-        "SM.12b writes: deliver {} (fresh pool {}), survey {}, licence {}",
+        "SM.12b writes: deliver {} (fresh pool {}), survey {}, license {}",
         counted[1],
         counted[0],
         survey_writes.first().copied().unwrap_or(0),
@@ -3908,7 +3908,7 @@ fn sm12b_the_dispatch_line_reads_the_yard() {
     let _ = open_occator(&mut rig);
     assert_eq!(
         dispatch_line(&mut rig.tw),
-        format!("{head}waiting on the Registry's seeds, licence and survey. [pending]")
+        format!("{head}waiting on the Registry's seeds, license and survey. [pending]")
     );
     until_surveyed(&mut rig);
     assert_eq!(
@@ -4058,7 +4058,7 @@ fn sm12b_the_house_standing_reads_the_industry_account() {
     assert_eq!(
         verdict(&rig.tw),
         Err(mush_industry::ExtractionRefusal::LicenceInactive),
-        "the industry predicate refuses the house on its frozen licence"
+        "the industry predicate refuses the house on its frozen license"
     );
     // A later, higher-id `Active` account of the house in the instrument: the lowest id is read.
     let later = support::with_ctx(&mut rig.tw, |ctx| {
@@ -4103,13 +4103,13 @@ fn sm12b_the_house_standing_reads_the_industry_account() {
     );
     assert_eq!(
         dispatch_line(&mut rig.tw),
-        "occator_port dispatch occator: its licence account is not active. [flagged]"
+        "occator_port dispatch occator: its license account is not active. [flagged]"
     );
     for _ in 0..30 {
         let (_, queued) = fire(&mut rig);
         assert!(
             filings(&queued, d).is_empty(),
-            "no plan compiles on a suspended licence"
+            "no plan compiles on a suspended license"
         );
         land_all(&mut rig, &queued);
     }

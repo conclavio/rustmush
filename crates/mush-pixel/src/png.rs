@@ -172,7 +172,7 @@ pub fn decode_rgba(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
         2 => 3,
         4 => 2,
         6 => 4,
-        c => return Err(format!("colour type {c} is not read")),
+        c => return Err(format!("color type {c} is not read")),
     };
     if w == 0 || h == 0 || w > 16_384 || h > 16_384 {
         return Err(format!("a {w}x{h} image"));

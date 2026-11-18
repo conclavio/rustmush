@@ -371,7 +371,7 @@ async fn scenario(
             .first()
             .and_then(|row| row.get("licence"))
             .and_then(|v| v.as_str())
-            .ok_or("paid licence")?
+            .ok_or("paid license")?
             .to_string();
         let events = w.say(
             BUYER,
@@ -385,7 +385,7 @@ async fn scenario(
         all_tasks.push(w.tasks.clone());
         run(&mut w, id, &manifest, START, Ending::Cancelled).await?;
         let cancelled = Durable::capture(&w.engine, &disk(&w));
-        let cancelled_head = head(&w, id, &manifest).ok_or("cancelled current head")?;
+        let cancelled_head = head(&w, id, &manifest).ok_or("canceled current head")?;
         let cancelled_job = job(&w, &cancelled_head)?.job();
         let tasks = w.tasks.clone();
         drop(w);

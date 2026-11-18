@@ -630,7 +630,7 @@ pub(crate) fn chartered(ctx: &Ctx<'_>) -> Result<Enrolment, String> {
         Books::Absent => return Err(NO_CHARTER.to_owned()),
         Books::Unreadable => {
             tracing::error!(
-                "tacsim: +coop/release found an unreadable enrolment for the asker's account; \
+                "tacsim: +coop/release found an unreadable enrollment for the asker's account; \
                  staff repair the tacsim:coop: document"
             );
             return Err(BOOKS_UNREADABLE.to_owned());

@@ -28,8 +28,8 @@ pub const FILING: &str = "Filing {reference} as {charter}.";
 pub const NO_FILED: &str = "You own no filed mind {filed}.";
 pub const UPDATING: &str = "Filing {reference} on the line of filed mind {filed}.";
 pub const WITHDRAWING: &str = "Withdrawing filed revision {filed}.";
-pub const ATTESTING: &str = "Renewing your owner's licence for filed mind {filed}.";
-pub const FORKING: &str = "Forking licence {licence} as {name}.";
+pub const ATTESTING: &str = "Renewing your owner's license for filed mind {filed}.";
+pub const FORKING: &str = "Forking license {licence} as {name}.";
 
 /// The Registry service's own refusal, which `@mind/rate` shares with
 /// `@registry/rate` (`registry_service::command`).
@@ -53,7 +53,7 @@ pub const AMBIGUOUS: &str =
     "Two listings here share the code {code}; use +actions and +act for these.";
 pub const DETAIL: &str = "Listing {code}: {name}, {form}{derived}, class {class} and above.";
 pub const TERMS_LINE: &str =
-    "One seat for {term} IC days plus {grace} days of Grace; the licence {resale}.";
+    "One seat for {term} IC days plus {grace} days of Grace; the license {resale}.";
 pub const SPLIT: &str = "Price {price}: Registry {levy}%{venue}{parents}, charter owner the rest.";
 pub const QUOTING: &str =
     "Asking for a quote on listing {code}. +minds {code} shows it once it is confirmed.";
@@ -66,7 +66,7 @@ pub const BAD_FORM: &str = "form is sealed, open or open-resale.";
 pub const BAD_ROYALTY: &str =
     "royalty is a whole number from 0 to 300 per mille, and 0 on a sealed listing.";
 pub const BAD_TRANSFER: &str = "transfer is yes or no.";
-pub const HOLD_HEAD: &str = "Your mind licences:";
+pub const HOLD_HEAD: &str = "Your mind licenses:";
 pub const HOLD_OWNER: &str = "  filed {filed:<8}  {kind:<9}  {name:<20}  {phase}{flags}";
 pub const HOLD_MORE: &str = "More: +minds/holdings {section} {cursor}";
 
@@ -75,21 +75,21 @@ pub const HOLD_MORE: &str = "More: +minds/holdings {section} {cursor}";
 // indexes (they waited in `words::pending` until then; the names are
 // unchanged). `HOLD_EMPTY` is the bare `+minds/holdings`' answer for an
 // actor with nothing in either section, never a paged section's.
-pub const HOLD_EMPTY: &str = "You hold no mind licences.";
+pub const HOLD_EMPTY: &str = "You hold no mind licenses.";
 pub const YOUR_QUOTE: &str =
     "Your quote: {price}, good for {seconds} more seconds. Pay it with +minds/buy/pay {code}.";
 pub const QUOTE_EXPIRED: &str = "Your quote has expired. Ask for a new one with +minds/buy {code}.";
 pub const YOUR_ESCROW: &str =
-    "Your payment is held in escrow. Take the licence with +minds/buy/complete {code}.";
+    "Your payment is held in escrow. Take the license with +minds/buy/complete {code}.";
 pub const ASK: &str = "Ask for a quote with +minds/buy {code}.";
 pub const NO_QUOTE: &str =
     "You have no quote on listing {code}. Ask for one with +minds/buy {code}.";
 pub const PAYING: &str = "Paying your quote on listing {code} into escrow.";
 pub const NO_PURCHASE: &str = "You have no paid purchase waiting on listing {code}.";
-pub const COMPLETING: &str = "Taking the licence from listing {code}.";
+pub const COMPLETING: &str = "Taking the license from listing {code}.";
 pub const REFUNDING: &str = "Asking for your payment on listing {code} back.";
 pub const HOLD_PAID: &str =
-    "  licence {licence:<8}  {kind:<9}  {name:<20}  {form:<11}  {phase}{flags}";
+    "  license {licence:<8}  {kind:<9}  {name:<20}  {form:<11}  {phase}{flags}";
 pub const HOLD_WAIT_HEAD: &str = "Purchases waiting:";
 pub const HOLD_WAIT: &str =
     "  listing {code}  paid into escrow: +minds/buy/complete {code} or +minds/buy/refund {code}";
@@ -103,12 +103,12 @@ pub const HOLD_WAIT: &str =
 // `RENEW_PAYING`, `RENEW_DECLINING`) moved, verbatim, to
 // `mush_market::mind_renewal::player`; `NO_LICENCE` and `NO_RENEWAL` stay
 // here, the two refusals `+minds/renew` gives itself (`renew`'s doc).
-pub const NO_LICENCE: &str = "You hold no licence {licence}.";
+pub const NO_LICENCE: &str = "You hold no license {licence}.";
 /// M8c B3: `org=<org>` names an organisation the actor does not act for
 /// (`org_holder`), one it may not see, or none at all, alike.
-pub const NOT_FOR_ORG: &str = "You do not act for that organisation.";
-pub const NO_RENEWAL: &str = "Licence {licence} has no renewal offer waiting for you. Ask for one with +minds/renew {licence}.";
-pub const RESELLING: &str = "Offering licence {licence} to {player} for {price}.";
+pub const NOT_FOR_ORG: &str = "You do not act for that organization.";
+pub const NO_RENEWAL: &str = "License {licence} has no renewal offer waiting for you. Ask for one with +minds/renew {licence}.";
+pub const RESELLING: &str = "Offering license {licence} to {player} for {price}.";
 pub const RESELL_TELL: &str =
     "Once that is confirmed, they accept with +minds/resell/accept {licence} price={amount}.";
 pub const CHARTERING: &str = "Offering filed mind {filed} and its charter to {player} for {price}.";
@@ -117,7 +117,7 @@ pub const CHARTER_TELL: &str =
 pub const NO_PLAYER: &str = "No player is named {name}.";
 pub const BAD_PRICE: &str = "price is in credits, from 0.01 to 1000000, such as price=12.50.";
 pub const RECALLING: &str = "Recalling filed revision {filed}.";
-pub const REVOKING: &str = "Revoking licence {licence}.";
+pub const REVOKING: &str = "Revoking license {licence}.";
 pub const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
 /// Doc 17h cut M8a: `@registry/inspect <hull>` staged, after the facts printed.
 pub const INSPECTING: &str = "Inspecting hull #{hull}.";
@@ -145,14 +145,14 @@ pub const ALREADY_FINED: &str = "That inspection has already been fined.";
 /// Doc 17h cut M8d D4: `@registry/revoke principal=` staged.
 pub const REVOKING_PRINCIPAL: &str = "Revoking {who} for {days} IC days.";
 /// M8d fix round K2: the revoked principal's one notice (the lead's wording).
-pub const PRINCIPALS_BARRED: &str = "The Registry has barred your mind licences until {until}.";
+pub const PRINCIPALS_BARRED: &str = "The Registry has barred your mind licenses until {until}.";
 /// M8d D4: the provider's receipt, rendered from the record it wrote.
-pub const PRINCIPAL_REVOKED: &str = "{who} holds no new licence until {until}.";
+pub const PRINCIPAL_REVOKED: &str = "{who} holds no new license until {until}.";
 /// M8d D4: `<who>` names no live character and no organisation the operator may see.
-pub const NO_SUCH_PRINCIPAL: &str = "No such character or organisation.";
+pub const NO_SUCH_PRINCIPAL: &str = "No such character or organization.";
 /// M8d D4: `<who>` names both a character and an organisation.
 pub const AMBIGUOUS_PRINCIPAL: &str =
-    "That name is a character and an organisation; name the character as #<n>.";
+    "That name is a character and an organization; name the character as #<n>.";
 /// M8d D4: the named inspection read no ungoverned core.
 pub const NOTHING_TO_REVOKE: &str = "That inspection found nothing to revoke for.";
 /// Doc 17h cut M8g G3: the author's receipt for a filed quirk claim (the lead's wording; one
@@ -195,17 +195,17 @@ pub const FINED: &str =
 /// `trade::accept_plan`). Live since 17g C2g over 17g C2f's per-buyer offer
 /// indexes (the market's `ResaleOffers` and Roll's `CharterOffers` reads).
 pub mod named {
-    pub const OFFER: &str = "Licence {licence} is offered to you for {price}; the offer is open {minutes} more minutes.";
+    pub const OFFER: &str = "License {licence} is offered to you for {price}; the offer is open {minutes} more minutes.";
     pub const ACCEPT_HOW: &str = "Accept it with +minds/resell/accept {licence} price={amount}.";
-    pub const NO_OFFER: &str = "You have no offer for licence {licence}.";
-    pub const NO_OFFER_AT: &str = "None of your offers for licence {licence} is at {price}.";
+    pub const NO_OFFER: &str = "You have no offer for license {licence}.";
+    pub const NO_OFFER_AT: &str = "None of your offers for license {licence} is at {price}.";
     pub const CHARTER_OFFER: &str = "Filed mind {filed} and its charter are offered to you for {price}; the offer is open {minutes} more minutes.";
     pub const CHARTER_ACCEPT_HOW: &str =
         "Accept it with +minds/charter/accept {filed} price={amount}.";
     pub const NO_CHARTER_OFFER: &str = "You have no offer for filed mind {filed}.";
     pub const NO_CHARTER_OFFER_AT: &str =
         "None of your offers for filed mind {filed} is at {price}.";
-    pub const ACCEPTING: &str = "Accepting the offer for licence {licence} at {price}.";
+    pub const ACCEPTING: &str = "Accepting the offer for license {licence} at {price}.";
     pub const FUNDING_CHARTER: &str = "Paying {price} for filed mind {filed} into escrow; the transfer settles once no sortie under it is out.";
 }
 
@@ -217,7 +217,7 @@ pub mod named {
 /// handed to the renewal service's `front` continuation (`renew::run_renew`).
 /// Typed-only: `+minds/renew` on the line stays silent, as 17g C2h built it,
 /// and the service's own words follow on the actor's ordinary output.
-pub const RENEW_HANDED: &str = "Handing licence {licence} to the renewal service.";
+pub const RENEW_HANDED: &str = "Handing license {licence} to the renewal service.";
 
 /// 17g C3a (the C3 plan §2.1, "the `parse → run` split with typed
 /// refusals"): a refusal with the word it came from. The line prints `text`

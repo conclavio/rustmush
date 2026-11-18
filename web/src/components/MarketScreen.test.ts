@@ -98,7 +98,7 @@ describe("MarketScreen", () => {
     rig.market.openBuy();
     flushSync();
     expect(screen.getByRole("dialog", { name: "Buy listing 0a1b2c3d: Drift Kestrel" })).toBeTruthy();
-    expect(screen.getByText("One seat for 30 IC days plus 7 days of Grace; the licence can be resold.")).toBeTruthy();
+    expect(screen.getByText("One seat for 30 IC days plus 7 days of Grace; the license can be resold.")).toBeTruthy();
     expect(screen.getByText("Price 1250cr: Registry 5%, venue 2%, charter owner the rest.")).toBeTruthy();
     expect(screen.getByText("Your quote: 1250cr, 240s left.")).toBeTruthy();
     // The default step is pay (a live quote), painted the TUI's way.
@@ -180,11 +180,11 @@ describe("MarketScreen", () => {
     await fireEvent.submit(formEl());
     expect(rig.submitMarket).toHaveBeenCalledWith({ act: "resell_accept", licence: 41, price: null });
     rig.market.begin({ act: "resell_accept", licence: 41, price: null });
-    rig.market.reply({ status: "shown", lines: ["Vex offers licence 41 to you for 5cr.", "Accept it with: price=5"] });
+    rig.market.reply({ status: "shown", lines: ["Vex offers license 41 to you for 5cr.", "Accept it with: price=5"] });
     flushSync();
     expect(screen.getByRole("dialog", { name: "Accept an offer" })).toBeTruthy();
     expect(screen.getByText("Accept it with: price=5")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toBe("Vex offers licence 41 to you for 5cr.");
+    expect(screen.getByRole("status").textContent).toBe("Vex offers license 41 to you for 5cr.");
     noLine(rig);
   });
 
@@ -251,7 +251,7 @@ describe("MarketScreen", () => {
     rig.market.openAccept();
     rig.market.begin({ act: "resell_accept", licence: 41, price: null });
     flushSync();
-    rig.market.reply({ status: "shown", lines: ["Vex offers licence 41 to you for 5cr."] });
+    rig.market.reply({ status: "shown", lines: ["Vex offers license 41 to you for 5cr."] });
     flushSync();
     await Promise.resolve();
     expect(document.activeElement).toBe(formEl().querySelector("input"));
@@ -266,7 +266,7 @@ describe("MarketScreen", () => {
     flushSync();
     expect(
       screen.getByText(
-        "Withdraw filed mind #7 Drift Kestrel? New sales stop; licences already sold keep working. Enter withdraws; Esc cancels.",
+        "Withdraw filed mind #7 Drift Kestrel? New sales stop; licenses already sold keep working. Enter withdraws; Esc cancels.",
       ),
     ).toBeTruthy();
     await fireEvent.keyDown(window, { key: "Escape" });

@@ -290,7 +290,7 @@ async fn four_lines_typed_ahead_behind_a_commit_are_all_answered_in_order() {
     );
     let set = find_from(&heard, 0, "Set.");
     let room = find_from(&heard, set, "Simulator Lobby");
-    let board = find_from(&heard, room, "Simulator centre:");
+    let board = find_from(&heard, room, "Simulator center:");
     let who = find_from(&heard, board, "Doing");
     assert!(
         set < room && room < board && board < who,
@@ -435,7 +435,7 @@ async fn brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice(
     assert!(
         pairs[2]
             .iter()
-            .any(|line| line.contains("Simulator centre:")),
+            .any(|line| line.contains("Simulator center:")),
         "the third pair is the board: {pairs:?}"
     );
     assert!(
@@ -444,7 +444,7 @@ async fn brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice(
         "the fourth pair is the WHO table, header to footer: {pairs:?}"
     );
     // No answer leaks into another line's pair.
-    for (n, needle) in ["Set.", "Simulator centre:", "in your room."]
+    for (n, needle) in ["Set.", "Simulator center:", "in your room."]
         .into_iter()
         .enumerate()
     {

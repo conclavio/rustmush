@@ -869,7 +869,7 @@ fn the_fixtures_carry_the_shipped_packs_numbers() {
             assert_eq!(
                 cell_of(&arena, BLUE, &armor(id, name)),
                 facet.get("armor").and_then(serde_json::Value::as_i64),
-                "the {id}.{name} armour has drifted"
+                "the {id}.{name} armor has drifted"
             );
         }
     }
@@ -1092,7 +1092,7 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
             .get("lock_range_m")
             .and_then(serde_json::Value::as_u64),
         Some(fine),
-        "the lock reads to ten metres and the scope to fifty: {payload}"
+        "the lock reads to ten meters and the scope to fifty: {payload}"
     );
     let row = payload
         .get("contacts")
@@ -1154,7 +1154,7 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
     assert_eq!(
         tacsim::match_::cockpit::range_line(&frame, &held_row, 1_000),
         format!("Range to {designator}: {fine} m."),
-        "a locked contact reads to the nearest ten metres"
+        "a locked contact reads to the nearest ten meters"
     );
     let mut unlocked = frame.clone();
     unlocked.lock = None;
@@ -1689,7 +1689,7 @@ fn the_armour_floors_the_overflow_reaches_the_internals_and_the_wreck_is_one_pla
     let armour: Vec<u32> = hits.iter().map(|(_, armor, _)| *armor).collect();
     assert!(
         armour.windows(2).all(|pair| pair[0] >= pair[1]),
-        "the armour floors rather than going negative: {hits:?}"
+        "the armor floors rather than going negative: {hits:?}"
     );
     assert_eq!(armour.last().copied(), Some(0));
     assert!(
@@ -2176,7 +2176,7 @@ fn one_scripted_engagement_at_three_cadences_is_one_hit_sequence() {
     );
     assert_eq!(first.rounds_fired, 3);
     assert_eq!(first.rounds_left, 37, "three rounds of forty spent");
-    assert_eq!(first.armor_left, Some(0), "the rear armour is gone");
+    assert_eq!(first.armor_left, Some(0), "the rear armor is gone");
     assert_eq!(first.internals_left, Some(0), "and so are the internals");
     assert_eq!(
         first.ended,
@@ -2568,7 +2568,7 @@ fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
     // And nothing about what it did. A gunner sees the strike, not the internals.
     for line in &shooter {
         assert!(
-            !line.contains("armour") && !line.contains("facet") && !line.contains("internals"),
+            !line.contains("armor") && !line.contains("facet") && !line.contains("internals"),
             "the shooter reads the target's damage: {line}"
         );
     }
@@ -2580,7 +2580,7 @@ fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
         .cloned()
         .unwrap_or_else(|| panic!("the victim was told nothing: {victim:?}"));
     assert!(
-        struck.contains("facet") && struck.contains("armour"),
+        struck.contains("facet") && struck.contains("armor"),
         "{struck}"
     );
     // Red is due south of blue, so the round arrives at the rear band, whose
@@ -2764,15 +2764,15 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
     assert_eq!(
         heard
             .iter()
-            .filter(|line| line.contains("armour gone"))
+            .filter(|line| line.contains("armor gone"))
             .count(),
         2,
-        "only the rounds that found armour say `armour gone`: {heard:?}"
+        "only the rounds that found armor say `armor gone`: {heard:?}"
     );
     assert!(
         !heard
             .iter()
-            .any(|line| line.contains("armour gone, 0 of 0 inside")),
+            .any(|line| line.contains("armor gone, 0 of 0 inside")),
         "a round on a spent section is not reported as one that got through: {heard:?}"
     );
     assert_eq!(
@@ -2839,7 +2839,7 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
     }
     assert!(
         published.get("struck").is_some_and(|n| *n >= 2),
-        "the rounds that found armour: {published:?}"
+        "the rounds that found armor: {published:?}"
     );
     assert_eq!(published.get("struck_spent"), Some(&3), "{published:?}");
     assert_eq!(published.get("section_lost"), Some(&1), "{published:?}");
@@ -3030,7 +3030,7 @@ fn the_frame_carries_the_tanks_own_status_block_and_status_prints_it_in_eighty_c
     let engine = block("engine");
     assert!(
         engine.facets.is_empty(),
-        "the engine declares no armour of its own (doc 16 §3.3)"
+        "the engine declares no armor of its own (doc 16 §3.3)"
     );
     assert_eq!(
         engine.internals,
@@ -3171,13 +3171,13 @@ fn a_round_struck_through_another_sections_armour_quotes_that_sections_numbers()
     // 150 of rear armour, one 120-round: 30 left, of 150.
     assert!(
         victim.contains(
-            &"Hit on the engine, through the hull's rear facet: 30 of 150 armour left.".to_owned()
+            &"Hit on the engine, through the hull's rear facet: 30 of 150 armor left.".to_owned()
         ),
         "{victim:?}"
     );
     for line in &victim {
         assert!(
-            !line.contains("of 0 armour"),
+            !line.contains("of 0 armor"),
             "a maximum of nought under a positive current: {line}"
         );
     }
@@ -3186,7 +3186,7 @@ fn a_round_struck_through_another_sections_armour_quotes_that_sections_numbers()
     assert_eq!(
         cell_of(&arena, BLUE, &internals("engine")),
         Some(120),
-        "the armour held, so nothing overflowed into the engine"
+        "the armor held, so nothing overflowed into the engine"
     );
 }
 
@@ -3973,7 +3973,7 @@ mod money {
             let unit = match_::tank_of(tw.world(), pod).expect("the pod's tank");
             let match_id = match_::centre_of(tw.world())
                 .and_then(|centre| centre.match_id)
-                .expect("a boarding centre has a match id");
+                .expect("a boarding center has a match id");
             let mut out = Outbox::new();
             let engine = tw.engine_mut();
             let mut ctx = Ctx {
@@ -4114,7 +4114,7 @@ fn the_advertised_chance_is_read_off_the_plot_and_the_shot_off_the_tank() {
             .iter()
             .zip(&rows)
             .all(|(was, now)| was.same_as(now) && now.p_permille == Some(300)),
-        "the pilot would have been pushed a frame for a manoeuvre they cannot see"
+        "the pilot would have been pushed a frame for a maneuver they cannot see"
     );
 
     // And the fixture really can tell the two apart: the *shot* is resolved
@@ -5208,7 +5208,7 @@ fn d2_the_refusals_the_wreck_and_the_spent_section_are_one_list_at_three_cadence
         .filter(|(_, (_, encoded, _, _))| encoded.contains("section_destroyed"))
         .map(|(at, _)| at)
         .nth(1)
-        .unwrap_or_else(|| panic!("the run takes grey's hull and then blue's turret"));
+        .unwrap_or_else(|| panic!("the run takes gray's hull and then blue's turret"));
     let spent_rounds = first
         .events
         .get(turret_gone + 1..)
@@ -5241,7 +5241,7 @@ fn d2_the_refusals_the_wreck_and_the_spent_section_are_one_list_at_three_cadence
     assert!(
         victim
             .iter()
-            .any(|line| line.contains("armour gone") || line.contains("armour left")),
+            .any(|line| line.contains("armor gone") || line.contains("armor left")),
         "{victim:?}"
     );
     assert!(

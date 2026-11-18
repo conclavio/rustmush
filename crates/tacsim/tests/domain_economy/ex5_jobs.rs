@@ -117,7 +117,7 @@ fn ex5_the_board_lists_retrieval_passage_and_survey_as_typed_kinds() {
     let passage = stickney
         .iter()
         .find(|s| s.kind == ServiceKind::Passage)
-        .unwrap_or_else(|| panic!("a traveller on Stickney's board: {stickney:?}"));
+        .unwrap_or_else(|| panic!("a traveler on Stickney's board: {stickney:?}"));
     assert!(passage.negotiable, "a fare to open");
     assert!(passage.take.starts_with("+passage/offer #"), "{passage:?}");
     // A kind filter narrows it; the rendered board stays within 120 columns.

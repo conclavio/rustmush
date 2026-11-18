@@ -63,11 +63,11 @@ pub const SHIP_VERB: &str = "+ship";
 
 /// `+ship`'s help (doc 18 §4.2).
 pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what its hold carries \
-     against both of its limits (tonnes and cubic metres), its tank and its stores locker, and \
-     your programme standing. It reads anywhere.\n+ship/board  in the berth gallery where your \
+     against both of its limits (tonnes and cubic meters), its tank and its stores locker, and \
+     your program standing. It reads anywhere.\n+ship/board  in the berth gallery where your \
      Dray is cradled, cycle its lock and go aboard.\n+ship/leave  in your Dray's Airlock while it \
      is docked, cycle out into the berth gallery.\n+ship/hold  the hold, the tank and the locker, \
-     good by good, in tonnes and cubic metres.\n+ship/plan [<port>]  a dry run of the passage to \
+     good by good, in tonnes and cubic meters.\n+ship/plan [<port>]  a dry run of the passage to \
      <port> (or every port this berth clears for): the hold's room by mass and by packed volume, \
      the payload, the burn, the stores and the passage time. It writes nothing.\n+ship/undock \
      <port>  from aboard your Dray, docked, file the passage and take her out now; the burn is \
@@ -82,9 +82,9 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      runs under your signature while you are off watch.\n+ship/captives  the people you hold \
      aboard: a crew taken in a hull your carrier loaded.\n+ship/release <who>  let one of them \
      go, for nothing: docked at a port they are set down in its arrivals; anywhere else they \
-     ride on as a passenger.\n+ship/mind  the mind sealed aboard.\n+ship/mind filed:<licence> \
-     [org=<organisation>] [go]  at your berth in a port, on a hull that carries a core: seal a \
-     filed mind you hold a licence to. It has her helm and sensors while her crew has no link, \
+     ride on as a passenger.\n+ship/mind  the mind sealed aboard.\n+ship/mind filed:<license> \
+     [org=<organization>] [go]  at your berth in a port, on a hull that carries a core: seal a \
+     filed mind you hold a license to. It has her helm and sensors while her crew has no link, \
      until she next docks at a port.\n+ship/mind off [go]  unseal it at your berth.\n\
      +ship/posture [return|guard|hold]  read, or from aboard her set, the posture she holds \
      when her crew has no link: RETURN makes for her filed port, HOLD and GUARD stay where she \
@@ -137,9 +137,9 @@ pub const SHIP_DOCKED_DEPARTS: &str =
 /// `+ship`'s first line anywhere else.
 pub const SHIP_ELSEWHERE: &str = "{name} ({class}): not at a berth.";
 /// `+ship`'s programme line when the enrolment document does not read (L21).
-pub const SHIP_BOOKS_DARK: &str = "Programme: the Co-op's books cannot be read.";
+pub const SHIP_BOOKS_DARK: &str = "Program: the Co-op's books cannot be read.";
 /// `+ship`'s programme line for a graduate (doc 18 cut IC13); `{name}` the hull's.
-pub const SHIP_GRADUATED: &str = "Programme: graduated; the {name} is yours.";
+pub const SHIP_GRADUATED: &str = "Program: graduated; the {name} is yours.";
 /// `+ship`'s hold line when a pool or the goods table does not read.
 pub const HOLD_DARK: &str = "Hold: the gauges are dark.";
 
@@ -890,7 +890,7 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         };
         let programme = match charter.standing {
             Standing::Fleet => {
-                "Programme: Concord Fleet; current economic command assignment.".into()
+                "Program: Concord Fleet; current economic command assignment.".into()
             }
             // Cut IC13: a graduate's line names the hull (the graduated enrolment's
             // name, else the hull's own).
@@ -920,12 +920,12 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                             ),
                             None => e.buyout_minor.to_string(),
                         };
-                        format!("Programme: {} sale{plural}; buyout {buyout}.", e.sales)
+                        format!("Program: {} sale{plural}; buyout {buyout}.", e.sales)
                     }
                     None => {
                         tracing::warn!(
                             lease = contract.0,
-                            "tacsim: +ship found a live charter with no readable enrolment"
+                            "tacsim: +ship found a live charter with no readable enrollment"
                         );
                         SHIP_BOOKS_DARK.to_owned()
                     }

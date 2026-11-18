@@ -258,7 +258,7 @@ impl ActionProvider for Provider {
                 kind:mush_core::ProjectedParameterKind::Text {maximum_bytes:20},
             }]).map_err(|_|fail())?,targets:mush_core::ProjectedTargetSchema::None,
             required_channels:Vec::new(),expires:None,
-            presentation:mush_core::ActionPresentation::new("roll-registry-revocation","Revoke a licence term",
+            presentation:mush_core::ActionPresentation::new("roll-registry-revocation","Revoke a license term",
                 "Revoke the current accepted term through its original grace end. Running sorties retain their captured warrant.").map_err(|_|fail())?,
             guards:guards.finish().map_err(|_|fail())?,
         }))

@@ -1399,7 +1399,7 @@ mod tests {
     #[test]
     fn m1b1_the_card_round_trips() {
         let card = line(&ReflexConfig::default());
-        let text = serde_json::to_string(&card).expect("a card serialises");
+        let text = serde_json::to_string(&card).expect("a card serializes");
         let back: StockCard = serde_json::from_str(&text).expect("and reads back");
         assert_eq!(back, card);
         assert!(text.contains("\"stance\":\"hold\""), "{text}");

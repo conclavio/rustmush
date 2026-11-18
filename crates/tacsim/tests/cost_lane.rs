@@ -1339,7 +1339,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// `+coop/refit prospector`, `+licence/buy go` — the licence counted as `licence.buy`).
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1349,7 +1349,7 @@ fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRo
         .expect("the hull's row");
     let out = run(&mut rig.tw, pilot, "+coop/refit prospector");
     assert!(out.contains("as a Dray-P"), "{out}");
-    let (out, _) = normal_cmd(rig, pilot, "+licence/buy go", "licence.buy");
+    let (out, _) = normal_cmd(rig, pilot, "+license/buy go", "licence.buy");
     assert!(
         out.contains("licenses you to prospect at its sites until"),
         "the pilot is licensed: {out}"
@@ -3057,7 +3057,7 @@ fn tick_writes(
             assert_eq!(
                 ops.len(),
                 counted.len(),
-                "the census's house-licence fire wrote beyond its counted keys: {ops:?}"
+                "the census's house-license fire wrote beyond its counted keys: {ops:?}"
             );
         }
         rig.tally.landed(
@@ -3079,7 +3079,7 @@ fn tick_writes(
 /// the hold by staff, at Ceres (not yet aboard). The licence and each lease counted under their
 /// variants.
 fn kit_up(rig: &mut Rig, (who, seed, name): (&str, i64, &str), n_rigs: usize) -> (ObjId, HullRow) {
-    rig.variant = "the first licence on an account".to_owned();
+    rig.variant = "the first license on an account".to_owned();
     let (pilot, row) = prospector(rig, who, seed, name);
     for n in 0..n_rigs {
         rig.variant = if n == 0 {
@@ -3347,9 +3347,9 @@ fn sm12c_every_act_kind_counts_its_writes_in_tenure() {
     let (out, _) = normal_cmd(&mut rig, ada, "+tv/2 lease return go", "lease.return");
     println!("cost_lane: C1 lease return: {out}");
     rig.variant = "a renewal in force".to_owned();
-    let (out, _) = normal_cmd(&mut rig, ada, "+licence/buy go", "licence.buy");
+    let (out, _) = normal_cmd(&mut rig, ada, "+license/buy go", "licence.buy");
     assert!(
-        out.contains("licenses you to prospect") || out.contains("extends your licence"),
+        out.contains("licenses you to prospect") || out.contains("extends your license"),
         "{out}"
     );
     board(&mut rig, ada);
@@ -6835,7 +6835,7 @@ impl Script {
             {
                 let out = run(&mut rig.tw, p.who, &format!("@contract/cancel #{fee}"));
                 println!("cost_lane: month: pilot {i} withdraws its fee on {letter}: {out}");
-                if out.contains(&format!("Contract #{fee} is cancelled.")) {
+                if out.contains(&format!("Contract #{fee} is canceled.")) {
                     self.withdrawn = true;
                 } else {
                     self.notes.push(format!(
@@ -7040,7 +7040,7 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
         let seed = i64::try_from(i).unwrap_or(0) + 100;
         rig.variant = "the month".to_owned();
         let pilot = pilot(&mut rig, &who, seed);
-        let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+        let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
         let Some(charter) = tacsim::port::live_charter(rig.tw.world(), pilot) else {
             kit_errors.push(format!("pilot {i}: {out}"));
             continue;
@@ -7052,7 +7052,7 @@ fn sm12c_cost_lane_cohort_over_an_ic_month() {
             .expect("the hull's row");
         let out = run(&mut rig.tw, pilot, "+coop/refit prospector");
         assert!(out.contains("as a Dray-P"), "pilot {i}: {out}");
-        let (out, _) = normal_cmd(&mut rig, pilot, "+licence/buy go", "licence.buy");
+        let (out, _) = normal_cmd(&mut rig, pilot, "+license/buy go", "licence.buy");
         assert!(out.contains("licenses you to prospect"), "pilot {i}: {out}");
         let _ = lease_one(&mut rig, pilot);
         let _ = lease_one(&mut rig, pilot);

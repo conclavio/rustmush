@@ -35,7 +35,7 @@ Return ONLY one JSON object with fields: action, command, summary, memory, wait_
 action is command, wait, recall, arena, done, or blocked. command is one line when action=command, otherwise null.\n\
 Use recall with query to search older experiences before guessing; it sends no game command.\n\
 Use an exact remembered place name as the query to also retrieve a route there, or #record-id to inspect evidence.\n\
-Use action arena with side red or blue to hand the character to the runner's simulator pilot: from Limbo, the Welcome Hall or the simulator centre it claims a slot, fights the match to its end and reports the result, which ends this goal. Use it only when the goal is to fight in the simulator.\n\
+Use action arena with side red or blue to hand the character to the runner's simulator pilot: from Limbo, the Welcome Hall or the simulator center it claims a slot, fights the match to its end and reports the result, which ends this goal. Use it only when the goal is to fight in the simulator.\n\
 summary is a short user-facing action explanation or evidence-based outcome; do not provide private\n\
 chain-of-thought. memory is a concise string or null; wait_ms is 100..30000 for wait, otherwise 0.\n\
 If wait_ms is omitted on a wait action, the runner waits 1000 ms. For example:\n\
@@ -610,7 +610,7 @@ mod tests {
             "Return ONLY one JSON object with fields: action, command, summary, memory, wait_ms; optional query, side and beliefs."
         ));
         assert!(system.contains("action is command, wait, recall, arena, done, or blocked."));
-        assert!(system.contains("Use action arena with side red or blue to hand the character to the runner's simulator pilot: from Limbo, the Welcome Hall or the simulator centre it claims a slot, fights the match to its end and reports the result, which ends this goal. Use it only when the goal is to fight in the simulator."));
+        assert!(system.contains("Use action arena with side red or blue to hand the character to the runner's simulator pilot: from Limbo, the Welcome Hall or the simulator center it claims a slot, fights the match to its end and reports the result, which ends this goal. Use it only when the goal is to fight in the simulator."));
     }
 
     fn model(extra: Value) -> Model {

@@ -1362,7 +1362,7 @@ fn seller(
             .module_state::<TacsimStore>()
             .and_then(TacsimStore::goods)
             .and_then(|goods| goods.good(good).map(|g| g.reference_major))
-            .ok_or("no catalogue price")?;
+            .ok_or("no catalog price")?;
         let minor = minor_of(major, scale)
             .and_then(|minor| u64::try_from(minor).ok())
             .ok_or("a price overflows")?;

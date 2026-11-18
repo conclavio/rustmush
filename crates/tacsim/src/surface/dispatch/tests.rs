@@ -135,7 +135,7 @@ fn m8e_a_held_filed_mind_seals_with_its_licence_word() -> TestResult {
     check_eq!(
         sealed.mark_licence(),
         Some(7),
-        "a mind that flies marks its licence"
+        "a mind that flies marks its license"
     );
     check_eq!(
         doctrine_clause(&sealed.facts, "1"),
@@ -182,7 +182,7 @@ fn m8e_a_lapsed_licence_seals_doctrine_and_names_the_licence() -> TestResult {
             doctrine_clause(&sealed.facts, "1").as_deref(),
             Some(
                 format!(
-                    "Licence 7 is {}: rig 1 flies Standard Doctrine sealed aboard.",
+                    "License 7 is {}: rig 1 flies Standard Doctrine sealed aboard.",
                     state.as_str()
                 )
                 .as_str()
@@ -468,7 +468,7 @@ fn s4b1_a_licensed_mind_needs_the_hull_titled_where_claims_open() -> TestResult 
         None,
         "no economy composed: nothing to name; the Open refuses"
     );
-    check!(MIND_UNTITLED.contains("titled to you, leased to you, or held by an organisation"));
+    check!(MIND_UNTITLED.contains("titled to you, leased to you, or held by an organization"));
     check!(!MIND_UNTITLED.contains("weapon"));
     Ok(())
 }

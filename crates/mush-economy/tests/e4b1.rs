@@ -4090,7 +4090,7 @@ fn lb_rent_after_end_end_lease_posts_under_the_key_once_cancels_the_rent_and_ref
     // Two more rent periods fall due: nothing is charged.
     sweep_at(&mut tw, 200);
     sweep_at(&mut tw, 300);
-    assert_eq!(bal(&tw, r.pat_acct), 900, "a cancelled lease charged rent");
+    assert_eq!(bal(&tw, r.pat_acct), 900, "a canceled lease charged rent");
     assert_eq!(bal(&tw, r.quinn_acct), 100);
 
     // Idempotent: a second end is `AlreadyEnded` and posts nothing.
@@ -4188,7 +4188,7 @@ fn lb_rent_after_end_end_lease_on_an_offered_lease_writes_the_state_alone() {
         snap(&tw)
             .obligations()
             .all(|o| o.cause != ObligationCause::Contract(id)),
-        "a cancelled lease minted rent"
+        "a canceled lease minted rent"
     );
     assert!(
         snap(&tw)
@@ -4991,7 +4991,7 @@ fn vf_m3_the_ruleset_obligation_seams_ask_who_is_asking() {
     assert_eq!(
         vf.ruleset(),
         Err(EconomyError::Unauthorized),
-        "a stranger cancelled somebody else's standing debt"
+        "a stranger canceled somebody else's standing debt"
     );
     assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
 

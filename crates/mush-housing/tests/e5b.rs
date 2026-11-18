@@ -4502,7 +4502,7 @@ fn lb_rent_after_end_ending_a_pending_tenancy_ends_the_offered_lease() {
                 .count()
         })
         .unwrap_or(0);
-    assert_eq!(minted, 0, "a cancelled lease minted rent");
+    assert_eq!(minted, 0, "a canceled lease minted rent");
     skip_wall(&mut tw, 86_400);
     period(&mut tw, &r, 1);
     assert_eq!(balance(&tw, pat_acct), 1_000);
