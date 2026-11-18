@@ -179,7 +179,7 @@ In real time, a price moves at most about 22% in a real day (four steps).
 From the usual price it can reach the ceiling or the floor in about four real
 days.
 
-  +market/history <catalogue>:<code> [market=<venue>]
+  +market/history <catalog>:<code> [market=<venue>]
 
 Shows a house's ask and bid for a good at this venue, an IC week a row, newest
 first, for the last 24 IC weeks (about a real week). A good reads as

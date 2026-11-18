@@ -734,7 +734,7 @@ pub mod crew {
 /// reads them yet; each is held to the game's own text below.
 pub mod history {
     /// `mush_market::history::HISTORY_USAGE`.
-    pub const HISTORY_USAGE: &str = "Usage: +market/history <catalogue>:<code>";
+    pub const HISTORY_USAGE: &str = "Usage: +market/history <catalog>:<code>";
     /// `mush_market::history::HISTORY_NO_VENUE`'s head.
     pub const HISTORY_NO_VENUE: &str = "Name a market with market=";
     /// `mush_market::history::HISTORY_NONE`'s head.
@@ -1804,6 +1804,11 @@ mod tests {
             "market::NOT_FOR_ORG",
             "dispatch::MIND_NOT_FOR_ORG",
             "the same constant, the other way round",
+        ),
+        (
+            "history::HISTORY_NO_PRICE",
+            "haul::NO_LOCKER",
+            "a partial needle, read after \"ask \" or \"bid \" in a +market/history row",
         ),
     ];
 

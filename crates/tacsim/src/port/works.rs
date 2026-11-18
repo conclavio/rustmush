@@ -120,7 +120,7 @@ pub const WORKS_HELP: &str = "+works                          the works here: wh
                               organization's treasury orders a hull for it: its yard agent is \
                               funded with the price, buys the bill here, and she is handed over \
                               docked here, titled to the organization.\n\
-                              +works/collect <order>          the output (or a cancelled bill) into \
+                              +works/collect <order>          the output (or a canceled bill) into \
                               your docked hold; at a yard, the hull's commission: she is handed \
                               over docked here (a ship) or on the workshop floor (a rig), titled to \
                               you, her magazines empty.\n\

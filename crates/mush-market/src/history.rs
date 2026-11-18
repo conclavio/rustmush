@@ -257,7 +257,7 @@ pub(crate) fn load_series(store: &mut MarketStore, key: &str, value: &serde_json
 // ---- +market/history -------------------------------------------------------------------------
 
 /// `+market/history` usage.
-pub const HISTORY_USAGE: &str = "Usage: +market/history <catalogue>:<code> [market=<venue>]";
+pub const HISTORY_USAGE: &str = "Usage: +market/history <catalog>:<code> [market=<venue>]";
 /// No venue here and none named.
 pub const HISTORY_NO_VENUE: &str = "Name a market with market=<venue>; you are not at one here.";
 /// No series yet: `{good}`.
@@ -275,7 +275,7 @@ pub const HISTORY_LAST_WEEK: &str = "last IC week";
 /// A side nobody posts.
 pub const HISTORY_NO_PRICE: &str = "none";
 
-/// `+market/history <catalogue>:<code> [market=<venue>]`.
+/// `+market/history <catalog>:<code> [market=<venue>]`.
 pub(crate) fn history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let arg = ctx.args.raw().trim().to_string();
     let mut catalog = None;
