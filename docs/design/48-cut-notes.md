@@ -1506,6 +1506,17 @@ NPC-to-NPC personal listings through a distinctly owned Thing the same way, or r
 **Owed to the owner (flagged by the lead).** A return or scrap with nothing whole pays nothing
 (provisional default).
 
+**Meeting EX.4 on main (2026-11-17).** EX.3b and EX.4 (#654) merged apart, and main at 9f62136e8
+failed five scrap stories (`in8_mass_scrap`'s two `ex3_` stories and its whole escort, both
+`rs6c_tycho` stories). EX.4's `post_bid` charges the bidder a listing fee in the escrow's own
+post, and the desk's purse is topped up to each row's price only, so the escrow post was refused
+and the leg withdrawn. By doc 48 a house's listings pay no fee, and the desk is the house's buyer,
+a personal bidder only because GOD-owned NPCs act for each other (the open defect above). The fix
+is a seam answer, not a purse top-up. `mush_market::VenueFees::house_lists` defaults to no and
+`fees::listing_fee_accounts` reads it at every listing fee. TacSim's `PortFees` answers yes for
+the port's own desk Thing (`PortMap.desk`). The board story now asserts the desk's purse ends
+empty.
+
 ## EX.4
 
 **Survey.**
