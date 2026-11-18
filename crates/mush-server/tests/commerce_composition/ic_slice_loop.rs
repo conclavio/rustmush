@@ -552,6 +552,27 @@ fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> Strin
 }
 
 /// One typed line as the pilot, asserting where it leaves them.
+/// **`+market/list`, every page** (doc 48 unit PL.8: the workshops' part bids fill the first):
+/// each page in turn, following `(more: +market/list after=N)` until none is offered.
+async fn market_list_all(rig: &mut Rig, who: ObjId) -> String {
+    let mut all = String::new();
+    let mut line = "+market/list".to_owned();
+    for _ in 0..16 {
+        let page = run(rig, who, &line).await;
+        all.push_str(&page);
+        all.push('\n');
+        let Some(after) = page
+            .split("(more: +market/list after=")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+        else {
+            break;
+        };
+        line = format!("+market/list after={after}");
+    }
+    all
+}
+
 async fn walk(rig: &mut Rig, pilot: ObjId, word: &str, to: ObjId) {
     let out = run(rig, pilot, word).await;
     assert_eq!(location(&rig.tw, pilot), Some(to), "`{word}`: {out}");
@@ -1692,7 +1713,7 @@ async fn ic12_part_one_a_leg_by_hand() {
     let kasei = port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")].clone();
     let metals_bid = ListingId(kasei.bids[&cid("metals")].listing);
     let ice_bid = ListingId(kasei.bids[&cid("volatiles")].listing);
-    let listed = run(&mut rig, pilot, "+market/list").await;
+    let listed = market_list_all(&mut rig, pilot).await;
     assert!(listed.contains(&format!("#{metals_bid} ")), "{listed}");
     assert!(listed.contains(&format!("#{ice_bid} ")), "{listed}");
     let (metals_intake, ice_intake) = (

@@ -134,6 +134,9 @@ pub const SECOND_SOUNDING_AFTER_MS: u64 = 150_000;
 pub const SETTLE_MS: u64 = 2_000;
 /// How long `+market/list`'s board must be quiet before it is whole.
 pub const QUIET_MS: u64 = 1_000;
+/// **The most `+market/list` pages one board read follows** (doc 48 unit PL.8): a port's board
+/// outgrew the market's twenty-row page once its workshop bid for every part.
+pub const MAX_LIST_PAGES: usize = 8;
 /// The timed step after `+licence/buy go`: the purchase lands on the world's
 /// next step.
 pub const LICENCE_GO_MS: u64 = 2_000;
@@ -265,7 +268,8 @@ pub struct LaneResult {
 /// exactly `c`, `registry`, `out`, `concourse`, `exchange`, `chandlery`,
 /// `arrivals`, `lobby`, `gallery`; `+coop/enrol <name>`; `+coop/refit
 /// prospector`; `+licence/buy`, `+licence/buy go`, `+licence`; `+tv/lease`,
-/// `+tv/lease go`; `+tv`; `+chart`; `+market/list`; `+market/quote
+/// `+tv/lease go`; `+tv`; `+chart`; `+market/list`, `+market/list after=<n>` (doc 48 unit PL.8:
+/// a board's next page); `+market/quote
 /// <n>=<qty>`; `+market/accept <n>`; `+ship/plan <site word|ceres>`;
 /// `+ship/board`; `+ship/lift <site word|ceres>`; `+ship/leave`; `+tv/map
 /// site`; `+tv/1 launch go`; `+tv/1 scan`; `+tv/1 scan go`; `+tv/1 sound go`;
@@ -330,6 +334,10 @@ pub fn in_vocabulary(line: &str) -> bool {
             .is_some_and(|(n, qty)| digits(n) && digits(qty));
     }
     if let Some(n) = line.strip_prefix("+market/accept ") {
+        return digits(n);
+    }
+    // Doc 48 unit PL.8: a board read whole, page by page.
+    if let Some(n) = line.strip_prefix("+market/list after=") {
         return digits(n);
     }
     if let Some(rest) = line.strip_prefix("+market/sell ") {
@@ -491,6 +499,9 @@ pub struct Lane {
     // -- the loop's own state ------------------------------------------------
     exchange_rows: Vec<Listing>,
     chandlery_rows: Vec<Listing>,
+    /// The board being read: its pages so far, and how many (doc 48 unit PL.8).
+    list_pages: Vec<String>,
+    list_page_count: usize,
     fuel_ask: u64,
     food_ask: u64,
     bunker_rounds: usize,
@@ -554,6 +565,8 @@ impl Lane {
             report,
             exchange_rows: Vec::new(),
             chandlery_rows: Vec::new(),
+            list_pages: Vec::new(),
+            list_page_count: 0,
             fuel_ask: 0,
             food_ask: 0,
             bunker_rounds: 0,
@@ -1284,7 +1297,7 @@ impl Lane {
             (Kind::Chart, _) => {
                 self.send(Beat::KitUp, Kind::List(Board::Exchange), "+market/list", 0)
             }
-            (Kind::List(board), _) => self.after_list(now_ms, *board, &raw),
+            (Kind::List(board), _) => self.after_list_page(now_ms, *board, &raw),
             (Kind::BunkerPlan, _) => self.after_bunker_plan(now_ms, &raw),
             (Kind::Quote, _) => match lines::quote_number(&text) {
                 Some(quote) => self.send(
@@ -1476,6 +1489,30 @@ impl Lane {
                 format!("beat {}: no walk follows `{word}`", beat.as_str()),
             ),
         }
+    }
+
+    /// **One `+market/list` page** (doc 48 unit PL.8): a board longer than a page is read whole,
+    /// following its `(more: +market/list after=N)` line up to [`MAX_LIST_PAGES`], before its
+    /// rows are read.
+    fn after_list_page(&mut self, now_ms: u64, board: Board, raw: &[String]) {
+        self.list_pages.extend(raw.iter().cloned());
+        let more = raw.iter().find_map(|line| {
+            line.trim()
+                .strip_prefix("(more: +market/list after=")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .map(str::to_owned)
+        });
+        if let Some(after) = more
+            && self.list_page_count + 1 < MAX_LIST_PAGES
+        {
+            self.list_page_count += 1;
+            let line = format!("+market/list after={after}");
+            self.send(self.beat, Kind::List(board), &line, 0);
+            return;
+        }
+        let pages = std::mem::take(&mut self.list_pages);
+        self.list_page_count = 0;
+        self.after_list(now_ms, board, &pages);
     }
 
     /// A `+market/list` board read whole.

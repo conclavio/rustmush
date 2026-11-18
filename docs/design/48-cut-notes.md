@@ -3786,7 +3786,13 @@ EX.3 and PL.6.
     buyer asks. The workshop now lists a stores part publicly, and the private ask must hold it
     first.
   - `sm5_a_hold_of_ore_sells_in_one_act_against_the_cap` pages `+market/list`, since the part
-    bids fill its first page.
+    bids fill its first page; so does mush-server's `ic12_part_one_a_leg_by_hand`
+    (`market_list_all`).
+  - **The mining bot reads a board whole** (`mush-bot` `mine::lane` `after_list_page`). Ceres's
+    board outgrew the market's twenty-row page, and the lane read one page, so its ore bids and
+    bunker asks fell off it (PR CI's `bot-stories`). It now follows
+    `(more: +market/list after=N)`, up to eight pages, before it reads the rows, and
+    `+market/list after=<n>` joins the lanes' closed vocabulary.
 - **Suites:**
   - tacsim whole 4,862 of 4,867, the five failures the pins above, then fixed and rerun;
   - mush-market 266;
