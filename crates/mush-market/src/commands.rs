@@ -410,6 +410,56 @@ pub(crate) fn catalog_instrument(w: &mush_core::World) -> Option<mush_economy::I
     vendor_instrument_of(w, vendor)
 }
 
+/// Read-only summary of a market listing's effective post-spread execution
+/// price, currency instrument, seller/shop display name, and funding state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListingSummary {
+    /// Post-spread unit execution price (`trade::price_for`).
+    pub price: mush_economy::Amount,
+    /// Display instrument (`listing_instrument`), if resolvable.
+    pub instrument: Option<mush_economy::InstrumentId>,
+    /// Vendor or personal seller display name (`seller::seller_name`).
+    pub seller_name: String,
+    /// For standing bids (`l.source.is_wanted()`), whether the bid can currently
+    /// fund at least one unit (`true` for asks with `l.quantity > 0`).
+    pub funded: bool,
+}
+
+/// Summarize `l`'s effective post-spread price, instrument, seller name, and
+/// bid funding state using the exact rules of `+market/list`.
+#[must_use]
+pub fn summarize_listing(w: &mush_core::World, l: &crate::record::Listing) -> ListingSummary {
+    let store = w.module_state::<MarketStore>();
+    let seller_name = crate::seller::seller_name(w, l);
+    let price = crate::trade::price_for(l, store);
+    let instrument = listing_instrument(w, l);
+    let funded = if l.source.is_wanted() {
+        let personal = l.is_personal() && crate::seller::bid_funds(w, l, 1);
+        let vendor_funded = store
+            .and_then(|s| s.vendor(l.vendor))
+            .and_then(|v| {
+                w.module_state::<mush_economy::EconomyStore>()?
+                    .snapshot()
+                    .account(v.account)
+                    .map(|a| {
+                        a.posted_balance
+                            .minor()
+                            .saturating_sub(a.held_amount.minor())
+                    })
+            })
+            .is_some_and(|available| available >= price.minor());
+        (personal || vendor_funded) && l.quantity > 0
+    } else {
+        l.quantity > 0
+    };
+    ListingSummary {
+        price,
+        instrument,
+        seller_name,
+        funded,
+    }
+}
+
 pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String {
     let name = ctx
         .w

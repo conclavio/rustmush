@@ -805,7 +805,40 @@ pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
 }
 
-fn build_tier1_space_panel_payloads(
+/// Emit a terminal `space.docking` keyframe to every crew member aboard `hull`
+/// when a docking session closes (`aborted`, `out_of_gate`, `bounced`,
+/// `clamped`, `expired`). Carries `"refused": true` so `mush-pixel` renders its
+/// `"NO DOCKING CAMERA"` placeholder and `"closed": true` + `"outcome"` so
+/// graphical clients transition cleanly out of docking mode.
+pub(crate) fn push_docking_closed_panel(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    session_id: &str,
+    outcome: &'static str,
+) {
+    let mut recipients = all_aboard_crew_for_hull(ctx.w, hull);
+    if hull_aboard_for_actor(ctx.w, ctx.actor) == Some(hull) && !recipients.contains(&ctx.actor) {
+        recipients.push(ctx.actor);
+    }
+    let data = serde_json::json!({
+        "refused": true,
+        "closed": true,
+        "session_id": session_id,
+        "outcome": outcome,
+    });
+    for actor in recipients {
+        ctx.out.push(
+            Audience::Actor(actor),
+            OutputEvent::Panel {
+                feed: SPACE_DOCKING_FEED.into(),
+                kind: PanelFrameKind::Keyframe,
+                data: data.clone(),
+            },
+        );
+    }
+}
+
+pub(crate) fn build_tier1_space_panel_payloads(
     w: &World,
     hull: ObjId,
 ) -> Option<(serde_json::Value, serde_json::Value)> {
@@ -857,11 +890,90 @@ fn build_tier1_space_panel_payloads(
         .map(super::bubble::CanopyBodyProjection::to_feed_json)
         .collect();
 
-    let holotank = serde_json::json!({
-        "title": format!("{} ({})", callsign, site_id.to_ascii_uppercase()),
-        "range_km": 250.0,
-        "pdc_range_km": 15.0,
-        "contacts": [{
+    let mut holotank_contacts = Vec::new();
+    let mut holotank_range_km = 250.0_f64;
+    let mut mining_json = serde_json::Value::Null;
+    if let Some(cs) = book.cluster_sessions.get(&hull) {
+        let [sx, sy, sz] = cs.ship_pos_m;
+        let [svx, svy, svz] = cs.ship_vel_mmps;
+        holotank_range_km = 8.0;
+        holotank_contacts.push(serde_json::json!({
+            "id": format!("ship.{}", hull.0),
+            "label": callsign,
+            "kind": "ship",
+            "relation": "own",
+            "you": true,
+            "locked": false,
+            "x_km": (sx as f64) / 1_000.0,
+            "y_km": (sy as f64) / 1_000.0,
+            "z_km": (sz as f64) / 1_000.0,
+            "vx_kms": (svx as f64) / 1_000_000.0,
+            "vy_kms": (svy as f64) / 1_000_000.0,
+            "vz_kms": (svz as f64) / 1_000_000.0,
+            "ax_mps2": 0,
+            "ay_mps2": 0,
+            "az_mps2": 0,
+        }));
+        if let Some(cluster) = super::mining::cluster_by_id(w, &cs.cluster) {
+            for spec in cluster.rocks() {
+                let [rx, ry, rz] = spec.pos_m;
+                let [rvx, rvy, rvz] = spec.vel_mmps;
+                let id_str = spec.letter.to_string();
+                let locked = cs
+                    .matched_rock
+                    .or(cs.approaching_rock)
+                    .is_some_and(|ch| ch == spec.letter);
+                holotank_contacts.push(serde_json::json!({
+                    "id": id_str,
+                    "alias": spec.alias,
+                    "label": format!("ROCK {} ({})", spec.letter, spec.spectral.code()),
+                    "kind": "rock",
+                    "spectral": spec.spectral.code(),
+                    "relation": "neutral",
+                    "you": false,
+                    "locked": locked,
+                    "x_km": (rx as f64) / 1_000.0,
+                    "y_km": (ry as f64) / 1_000.0,
+                    "z_km": (rz as f64) / 1_000.0,
+                    "vx_kms": (rvx as f64) / 1_000_000.0,
+                    "vy_kms": (rvy as f64) / 1_000_000.0,
+                    "vz_kms": (rvz as f64) / 1_000_000.0,
+                    "ax_mps2": 0,
+                    "ay_mps2": 0,
+                    "az_mps2": 0,
+                }));
+            }
+        }
+        let drones_json: Vec<serde_json::Value> = cs
+            .active_drones
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "slot": d.slot,
+                    "rock": d.rock_letter.to_string(),
+                    "family": d.family.label(),
+                })
+            })
+            .collect();
+        let laser_json = cs.active_laser.as_ref().map(|l| {
+            serde_json::json!({
+                "rock": l.rock_letter.to_string(),
+                "family": l.family.label(),
+                "started_ic": l.started_ic,
+                "due_ic": l.due_ic,
+                "yield_t": l.yield_t,
+            })
+        });
+        mining_json = serde_json::json!({
+            "cluster": cs.cluster.as_str(),
+            "matched_rock": cs.matched_rock.map(|c| c.to_string()),
+            "approaching_rock": cs.approaching_rock.map(|c| c.to_string()),
+            "active_drones": cs.active_drones.len(),
+            "drones": drones_json,
+            "laser": laser_json,
+        });
+    } else {
+        holotank_contacts.push(serde_json::json!({
             "id": format!("ship.{}", hull.0),
             "label": callsign,
             "kind": "ship",
@@ -877,7 +989,14 @@ fn build_tier1_space_panel_payloads(
             "ax_mps2": 0,
             "ay_mps2": 0,
             "az_mps2": 0,
-        }],
+        }));
+    }
+
+    let holotank = serde_json::json!({
+        "title": format!("{} ({})", callsign, site_id.to_ascii_uppercase()),
+        "range_km": holotank_range_km,
+        "pdc_range_km": 15.0,
+        "contacts": holotank_contacts,
         "torpedoes": [],
     });
     let mut tier1_ship = mush_tactics::module::unit_of(w, hull)
@@ -928,7 +1047,7 @@ fn build_tier1_space_panel_payloads(
     {
         heat_permille = heat_permille.max(cs.frontier_bloom_heat.saturating_mul(10).min(1_000));
     }
-    let cockpit = serde_json::json!({
+    let mut cockpit = serde_json::json!({
         "callsign": callsign,
         "site_id": site_id,
         "yaw_deg": cam_yaw_deg,
@@ -945,6 +1064,17 @@ fn build_tier1_space_panel_payloads(
         "bodies": bodies_json,
         "contacts": [],
     });
+    if !mining_json.is_null()
+        && let Some(obj) = cockpit.as_object_mut()
+    {
+        if let Some(matched) = mining_json.get("matched_rock").cloned() {
+            obj.insert("matched_rock".to_owned(), matched);
+        }
+        if let Some(drones) = mining_json.get("active_drones").cloned() {
+            obj.insert("active_drones".to_owned(), drones);
+        }
+        obj.insert("mining".to_owned(), mining_json);
+    }
     Some((holotank, cockpit))
 }
 
@@ -5384,7 +5514,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let spent_kg = session
             .live_stepper
             .rcs_spent_kg(&session.challenge.rcs_authority);
-        debit_hull_propellant_kg(ctx, hull, spent_kg)?;
+        if let Err(e) = debit_hull_propellant_kg(ctx, hull, spent_kg) {
+            ctx.out.error(ctx.actor, e.to_string());
+        }
         unpause_hull_after_docking(ctx, hull, &now);
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -5394,6 +5526,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 session.challenge.session_id
             ),
         );
+        push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "aborted");
         push_space_panels(ctx, hull);
         return Ok(());
     }
@@ -5412,7 +5545,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let spent_kg = session
                 .live_stepper
                 .rcs_spent_kg(&session.challenge.rcs_authority);
-            debit_hull_propellant_kg(ctx, hull, spent_kg)?;
+            if let Err(e) = debit_hull_propellant_kg(ctx, hull, spent_kg) {
+                ctx.out.error(ctx.actor, e.to_string());
+            }
             unpause_hull_after_docking(ctx, hull, &now);
             ctx.out.sys_to_actor(
                 ctx.actor,
@@ -5422,6 +5557,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     session.challenge.session_id
                 ),
             );
+            push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "aborted");
             push_space_panels(ctx, hull);
             return Ok(());
         }
@@ -5491,7 +5627,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg.max(1))?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg.max(1)) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
                 unpause_hull_after_docking(ctx, hull, &now);
                 ctx.out.error(
                     ctx.actor,
@@ -5511,6 +5649,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         session.challenge.session_id,
                     ),
                 );
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "out_of_gate");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }
@@ -5518,7 +5657,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
                 unpause_hull_after_docking(ctx, hull, &now);
                 ctx.out.sys_to_actor(
                     ctx.actor,
@@ -5528,6 +5669,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         session.challenge.session_id, report.frames_replayed, report.rcs_spent_kg
                     ),
                 );
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "aborted");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }
@@ -5538,7 +5680,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
                 apply_collar_scrape_damage(ctx, hull, front_armor_damage, now.at);
                 unpause_hull_after_docking(ctx, hull, &now);
                 let line = format!(
@@ -5550,6 +5694,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 );
                 crate::port::voyage::narrate_hull(ctx, hull, &line);
                 ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "bounced");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }
@@ -5557,19 +5702,48 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
 
                 match session.target {
                     super::docking::DockingTargetKind::PortBerth {
                         ref port_id,
                         ref port_name,
                     } => {
-                        let (dest_parent, _) =
-                            resolve_port_destination_parent(ctx.w, hull, port_id)?;
+                        let dest_parent =
+                            match resolve_port_destination_parent(ctx.w, hull, port_id) {
+                                Ok((parent, _)) => parent,
+                                Err(e) => {
+                                    unpause_hull_after_docking(ctx, hull, &now);
+                                    ctx.out.error(ctx.actor, e.to_string());
+                                    push_docking_closed_panel(
+                                        ctx,
+                                        hull,
+                                        &session.challenge.session_id,
+                                        "refused",
+                                    );
+                                    push_space_panels(ctx, hull);
+                                    return Ok(());
+                                }
+                            };
                         // `SF.R25` (doc 35d §6.1): the dock is taken before anything is torn
-                        // down, so a refused dock leaves the hull where she was.
-                        mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
-                            .map_err(CmdError::msg)?;
+                        // down, so a refused dock leaves the hull where she was while cleanly
+                        // closing the session and unpausing the hull.
+                        if let Err(e) =
+                            mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
+                        {
+                            unpause_hull_after_docking(ctx, hull, &now);
+                            ctx.out.error(ctx.actor, e);
+                            push_docking_closed_panel(
+                                ctx,
+                                hull,
+                                &session.challenge.session_id,
+                                "refused",
+                            );
+                            push_space_panels(ctx, hull);
+                            return Ok(());
+                        }
                         let (removed_bubble, was_last) =
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                                 book.free_flights.remove(&hull);
@@ -5680,10 +5854,22 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                     tug != hull && t.derelict_hull == derelict_hull
                                 })
                         }) {
-                            return Err(CmdError::msg(format!(
-                                "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
-                                derelict_hull.0
-                            )));
+                            unpause_hull_after_docking(ctx, hull, &now);
+                            ctx.out.error(
+                                ctx.actor,
+                                format!(
+                                    "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
+                                    derelict_hull.0
+                                ),
+                            );
+                            push_docking_closed_panel(
+                                ctx,
+                                hull,
+                                &session.challenge.session_id,
+                                "refused",
+                            );
+                            push_space_panels(ctx, hull);
+                            return Ok(());
                         }
                         // Doc 41 cut RS.8 (Q-36-46): the pin names the derelict's real title
                         // and the bubble's witnesses.
@@ -5722,6 +5908,7 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
                     }
                 }
+                push_docking_closed_panel(ctx, hull, &session.challenge.session_id, "clamped");
                 push_space_panels(ctx, hull);
                 return Ok(());
             }
@@ -6780,6 +6967,7 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             super::mining::ore_specific_volume_l_per_t(family),
         ),
     );
+    push_space_panels(ctx, hull);
     Ok(())
 }
 
@@ -7075,6 +7263,7 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             super::sortie::DRONE_HOLD_T
         ),
     );
+    push_space_panels(ctx, hull);
     Ok(())
 }
 

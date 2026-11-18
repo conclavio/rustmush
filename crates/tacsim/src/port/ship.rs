@@ -43,6 +43,7 @@ use mush_economy::{CustodyRef, EconomyStore, VaultId};
 use mush_inventory::record::EndpointRef;
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use mush_sim::data::{SpatialParent, SpatialState};
+use smol_str::SmolStr;
 
 use crate::commands::NOT_ENABLED;
 use crate::definitions::content::LANE_PACK;
@@ -1428,15 +1429,359 @@ impl EventHook for ShipLook {
             .map(|line| RichText::new().text(line))
             .collect()
     }
+
+    fn room_ambient(
+        &self,
+        ctx: &HookReadContext<'_>,
+        looker: ObjId,
+        room: ObjId,
+    ) -> Vec<(SmolStr, serde_json::Value)> {
+        let w = ctx.world();
+        let Some(store) = w.module_state::<TacsimStore>() else {
+            return Vec::new();
+        };
+        if !store.enabled() {
+            return Vec::new();
+        }
+        if let Some((view, tid)) = hull_of_room(w, room) {
+            let hull = view.hull();
+            let (docked, settled_pad, port_entry) = match berth_of(w, hull) {
+                Berth::Docked { map, def } => {
+                    (true, def.site.is_some(), Some(map.entry.to_string()))
+                }
+                Berth::UnderWay | Berth::Elsewhere => (false, false, None),
+            };
+            return vec![(
+                SmolStr::new_static("tacsim"),
+                serde_json::json!({
+                    "mode": "interior",
+                    "hull_id": hull.to_string(),
+                    "hull_name": name_of(w, hull),
+                    "mark": view.row.mark,
+                    "unit": view.unit.to_string(),
+                    "class": view.class_word(),
+                    "room": tid.to_string(),
+                    "docked": docked,
+                    "settled_pad": settled_pad,
+                    "port": port_entry,
+                }),
+            )];
+        }
+        if let Some(map) = store.port_maps().find(|m| m.presentation == Some(room.0)) {
+            let mut docked_count: usize = 0;
+            for h in crate::port::coop::programme_ports(w)
+                .into_iter()
+                .flat_map(|p| p.map.hulls.iter().map(|r| ObjId(r.hull)))
+            {
+                if matches!(
+                    berth_of(w, h),
+                    Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+                ) {
+                    docked_count = docked_count.saturating_add(1);
+                }
+            }
+            let (own_hull, own_hull_name, own_hull_docked_here) = match helm_of(w, looker) {
+                Some(charter) => {
+                    let docked_here = matches!(
+                        berth_of(w, charter.hull),
+                        Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+                    );
+                    (
+                        Some(charter.hull.to_string()),
+                        Some(name_of(w, charter.hull)),
+                        docked_here,
+                    )
+                }
+                None => (None, None, false),
+            };
+            return vec![(
+                SmolStr::new_static("tacsim"),
+                serde_json::json!({
+                    "mode": "berth_gallery",
+                    "port_entry": map.entry.to_string(),
+                    "docked_count": docked_count,
+                    "own_hull": own_hull,
+                    "own_hull_name": own_hull_name,
+                    "own_hull_docked_here": own_hull_docked_here,
+                }),
+            )];
+        }
+        let sim_role = crate::match_::centre::room_role(w, room).or_else(|| {
+            crate::match_::centre::pod_slot(w, room)
+                .map(|(team, _)| crate::match_::centre::CentreRoom::Team(team))
+        });
+        if let Some(role) = sim_role {
+            let room_word = match role {
+                crate::match_::centre::CentreRoom::Lobby => "lobby",
+                crate::match_::centre::CentreRoom::Team(p)
+                    if p == crate::arena::state::PartyId::RED =>
+                {
+                    "red"
+                }
+                crate::match_::centre::CentreRoom::Team(_) => "blue",
+            };
+            let in_pod = crate::match_::centre::pod_slot(w, room).is_some();
+            if let Some(centre) = crate::match_::centre_of(w) {
+                let mut my_team: Option<&'static str> = None;
+                let mut my_slot: Option<u8> = None;
+                let mut my_unit: Option<String> = None;
+                for s in &centre.slots {
+                    if s.pilot == looker {
+                        my_team = Some(if s.team == crate::arena::state::PartyId::RED {
+                            "red"
+                        } else {
+                            "blue"
+                        });
+                        my_slot = Some(s.index);
+                        my_unit = Some(slot_unit_id(
+                            w,
+                            &centre.arena,
+                            s.unit_type.as_deref(),
+                            s.team,
+                            s.index,
+                        ));
+                        break;
+                    }
+                }
+                return vec![(
+                    SmolStr::new_static("tacsim"),
+                    serde_json::json!({
+                        "mode": "simulator",
+                        "room": room_word,
+                        "in_pod": in_pod,
+                        "match_state": centre.state.as_str(),
+                        "ai_fill": centre.ai_side_size,
+                        "my_team": my_team,
+                        "my_slot": my_slot,
+                        "my_unit": my_unit,
+                    }),
+                )];
+            }
+        }
+        Vec::new()
+    }
 }
 
-/// Register [`ShipLook`] on the `LookRendered` point.
+fn slot_unit_id(
+    w: &World,
+    arena: &str,
+    picked: Option<&str>,
+    team: crate::arena::state::PartyId,
+    index: u8,
+) -> String {
+    if let Some(picked) = picked {
+        return picked.to_owned();
+    }
+    CanonicalId::new(arena)
+        .ok()
+        .and_then(|aid| {
+            let s = w.module_state::<TacsimStore>()?;
+            let def = s.definitions().arenas.get(&aid)?;
+            def.tanks
+                .iter()
+                .filter(|t| t.team == team)
+                .nth(usize::from(index.saturating_sub(1)))
+                .map(|t| t.unit.to_string())
+        })
+        .unwrap_or_else(|| crate::definitions::content::LINE_TANK.to_owned())
+}
+
+/// Structured berth gallery roster (`docked_hulls` and actor charter summary)
+/// when `room` is a port presentation gallery (`None` elsewhere). Served over
+/// pulled `port.trade` rather than `RoomView.ambient` so `ambient` stays scalar
+/// and well within `MAX_AMBIENT_BYTES`.
+pub(crate) fn berth_gallery_json(
+    w: &World,
+    store: &TacsimStore,
+    looker: ObjId,
+    room: ObjId,
+) -> Option<serde_json::Value> {
+    let map = store.port_maps().find(|m| m.presentation == Some(room.0))?;
+    let mut docked_count: usize = 0;
+    let mut docked_hulls = Vec::new();
+    for h in crate::port::coop::programme_ports(w)
+        .into_iter()
+        .flat_map(|p| p.map.hulls.iter().map(|r| ObjId(r.hull)))
+    {
+        if matches!(
+            berth_of(w, h),
+            Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+        ) {
+            docked_count = docked_count.saturating_add(1);
+            if docked_hulls.len() < 16 {
+                let (mark, unit) = match hull_view(w, h) {
+                    Some(hv) => (hv.row.mark.clone(), hv.unit.to_string()),
+                    None => (String::new(), String::new()),
+                };
+                docked_hulls.push(serde_json::json!({
+                    "id": h.to_string(),
+                    "name": name_of(w, h),
+                    "mark": mark,
+                    "unit": unit,
+                }));
+            }
+        }
+    }
+    let (own_hull, own_hull_name, own_hull_docked_here) = match helm_of(w, looker) {
+        Some(charter) => {
+            let docked_here = matches!(
+                berth_of(w, charter.hull),
+                Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+            );
+            (
+                Some(charter.hull.to_string()),
+                Some(name_of(w, charter.hull)),
+                docked_here,
+            )
+        }
+        None => (None, None, false),
+    };
+    Some(serde_json::json!({
+        "port_entry": map.entry.to_string(),
+        "docked_count": docked_count,
+        "docked_hulls": docked_hulls,
+        "own_hull": own_hull,
+        "own_hull_name": own_hull_name,
+        "own_hull_docked_here": own_hull_docked_here,
+    }))
+}
+
+/// Structured simulator lobby/team/pod roster (`slots`, `match_state`, `my_unit`)
+/// when `room` is part of the simulator centre (`None` elsewhere). Served over
+/// pulled `port.trade` rather than `RoomView.ambient`.
+pub(crate) fn simulator_lobby_json(
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+) -> Option<serde_json::Value> {
+    let sim_role = crate::match_::centre::room_role(w, room).or_else(|| {
+        crate::match_::centre::pod_slot(w, room)
+            .map(|(team, _)| crate::match_::centre::CentreRoom::Team(team))
+    })?;
+    let centre = crate::match_::centre_of(w)?;
+    let room_word = match sim_role {
+        crate::match_::centre::CentreRoom::Lobby => "lobby",
+        crate::match_::centre::CentreRoom::Team(p) if p == crate::arena::state::PartyId::RED => {
+            "red"
+        }
+        crate::match_::centre::CentreRoom::Team(_) => "blue",
+    };
+    let in_pod = crate::match_::centre::pod_slot(w, room).is_some();
+    let mut my_team: Option<&'static str> = None;
+    let mut my_slot: Option<u8> = None;
+    let mut my_unit: Option<String> = None;
+    let mut slots_json = Vec::with_capacity(centre.slots.len());
+    for s in &centre.slots {
+        let side_word = if s.team == crate::arena::state::PartyId::RED {
+            "red"
+        } else {
+            "blue"
+        };
+        let unit_id = slot_unit_id(w, &centre.arena, s.unit_type.as_deref(), s.team, s.index);
+        if s.pilot == looker {
+            my_team = Some(side_word);
+            my_slot = Some(s.index);
+            my_unit = Some(unit_id.clone());
+        }
+        slots_json.push(serde_json::json!({
+            "team": side_word,
+            "index": s.index,
+            "pilot": s.pilot.to_string(),
+            "pilot_name": name_of(w, s.pilot),
+            "unit": unit_id,
+            "seated": s.is_seated() && !s.left,
+        }));
+    }
+    Some(serde_json::json!({
+        "room": room_word,
+        "in_pod": in_pod,
+        "arena": centre.arena.as_str(),
+        "match_state": centre.state.as_str(),
+        "ai_fill": centre.ai_side_size,
+        "my_team": my_team,
+        "my_slot": my_slot,
+        "my_unit": my_unit,
+        "slots": slots_json,
+    }))
+}
+
+/// Structured stowage gauges for `view` (cargo mass/volume, reaction mass tankage,
+/// and crew stores), read via the live typed-state snapshot. Returns `None` if
+/// the goods table or any pool cannot be read right now.
+pub(crate) fn hull_stowage_json(
+    ctx: &HookReadContext<'_>,
+    w: &World,
+    store: &TacsimStore,
+    view: &HullView<'_>,
+) -> Option<serde_json::Value> {
+    let goods = store.goods()?;
+    let read = |endpoint: EndpointRef, good: &CanonicalId| {
+        crate::port_tick::read_pool_in(ctx, endpoint, good)
+    };
+    let readings = readings_with(goods, compartments(view), hold_vault(w, view), &read).ok()?;
+    let mass_id = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
+    let vol_id = CanonicalId::new(crate::definitions::logistics::VOLUME_L).ok()?;
+    let mut cargo_kg: u64 = 0;
+    let mut cargo_limit_kg: u64 = 0;
+    let mut cargo_l: u64 = 0;
+    let mut cargo_limit_l: u64 = 0;
+    let mut tank_kg: u64 = 0;
+    let mut tank_limit_kg: u64 = 0;
+    let mut stores_days: u64 = 0;
+    let mut stores_limit_days: u64 = 0;
+    let mut items = Vec::new();
+    for (comp_id, comp, contents) in &readings {
+        let comp_load = crate::port::capacity::load(goods, comp, contents).ok()?;
+        match comp_id.as_str() {
+            "cargo" => {
+                cargo_kg = comp_load.get(&mass_id).copied().unwrap_or(0);
+                cargo_limit_kg = comp.limits.get(&mass_id).copied().unwrap_or(0);
+                cargo_l = comp_load.get(&vol_id).copied().unwrap_or(0);
+                cargo_limit_l = comp.limits.get(&vol_id).copied().unwrap_or(0);
+                for (good_id, qty) in contents {
+                    items.push(serde_json::json!({
+                        "good": good_id.as_str(),
+                        "qty": *qty,
+                    }));
+                }
+            }
+            "propellant" => {
+                tank_kg = comp_load.get(&mass_id).copied().unwrap_or(0);
+                tank_limit_kg = comp.limits.get(&mass_id).copied().unwrap_or(0);
+            }
+            "provisions" => {
+                if let Some((_good, qty, cap)) =
+                    crate::port::gauges::single_reading(goods, comp, contents).ok()?
+                {
+                    stores_days = qty;
+                    stores_limit_days = cap;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(serde_json::json!({
+        "cargo_kg": cargo_kg,
+        "cargo_limit_kg": cargo_limit_kg,
+        "cargo_l": cargo_l,
+        "cargo_limit_l": cargo_limit_l,
+        "tank_kg": tank_kg,
+        "tank_limit_kg": tank_limit_kg,
+        "stores_days": stores_days,
+        "stores_limit_days": stores_limit_days,
+        "items": items,
+    }))
+}
+
+/// Register [`ShipLook`] on the `LookRendered` and `RoomAmbient` points.
 ///
 /// # Errors
 ///
 /// Never today; the `Result` is the registrar's shape.
 pub fn register_hooks(reg: &mut Registrar<'_>) -> Result<(), ModError> {
-    reg.hook(HookPoint::LookRendered, Arc::new(ShipLook));
+    let hook: Arc<dyn EventHook> = Arc::new(ShipLook);
+    reg.hook(HookPoint::LookRendered, Arc::clone(&hook));
+    reg.hook(HookPoint::RoomAmbient, hook);
     Ok(())
 }
 

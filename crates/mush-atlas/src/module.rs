@@ -31,8 +31,8 @@ use std::time::Duration;
 
 use mush_content::{Pack, PackError, load_pack};
 use mush_core::module::{
-    EventHook, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, Registrar,
-    WorldEventKind,
+    EventHook, GameModule, HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx,
+    Registrar, WorldEventKind,
 };
 use mush_core::{
     CanonicalId, CommandCompatibility, Ctx, JobQueueSpec, ModuleOp, ModuleWrite, ObjId, Role,
@@ -451,6 +451,7 @@ impl GameModule for AtlasModule {
         reg.hook(HookPoint::MoveAttempt, Arc::clone(&hook));
         reg.hook(HookPoint::LookRendered, Arc::clone(&hook));
         reg.hook(HookPoint::Perceive, hook);
+        reg.hook(HookPoint::RoomAmbient, Arc::new(AtlasAmbient));
         reg.subscribe_moved("travel_discovery", 1, Arc::new(crate::travel::on_moved))?;
         // S4: a character who walks onto, off or across a window's rooms.
         reg.subscribe_moved("window_arrival", 1, Arc::new(crate::window::on_moved))?;
@@ -752,6 +753,85 @@ impl mush_core::QueryHandler for MapQuery {
             kind: mush_proto::PanelFrameKind::Keyframe,
             data,
         })
+    }
+}
+
+/// Maximum room-detail keywords published in `RoomView.ambient["atlas"].details`.
+const MAX_AMBIENT_DETAILS: usize = 16;
+
+/// Publishes structured atlas pack/entry/surface/detail metadata on `RoomView.ambient["atlas"]`
+/// so 3D and spatial clients can bind a room `#dbref` to its authored pack entry and interactive
+/// plaques without scraping prose.
+struct AtlasAmbient;
+
+impl EventHook for AtlasAmbient {
+    fn room_ambient(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _looker: ObjId,
+        room: ObjId,
+    ) -> Vec<(SmolStr, serde_json::Value)> {
+        let w = ctx.world();
+        let Some(state) = w.module_state::<AtlasState>() else {
+            return Vec::new();
+        };
+        let Some(geo) = state.records.roomgeo.get(&room) else {
+            return Vec::new();
+        };
+        let mut detail_set = std::collections::BTreeSet::new();
+        if let Some(obj) = w.get(room) {
+            for (name, _) in obj.attrs.iter() {
+                let folded = name.folded();
+                let tail = folded
+                    .strip_prefix(DETAIL_PREFIX)
+                    .or_else(|| folded.strip_prefix("detail:"));
+                if let Some(keyword) = tail
+                    && !keyword.is_empty()
+                {
+                    detail_set.insert(keyword.to_owned());
+                    if detail_set.len() >= MAX_AMBIENT_DETAILS {
+                        break;
+                    }
+                }
+            }
+        }
+        let details: Vec<String> = detail_set.into_iter().collect();
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "pack".to_owned(),
+            serde_json::Value::String(geo.key.pack.to_string()),
+        );
+        obj.insert(
+            "entry".to_owned(),
+            serde_json::Value::String(geo.key.entry.to_string()),
+        );
+        obj.insert(
+            "neighborhood_pack".to_owned(),
+            serde_json::Value::String(geo.neighborhood.pack.to_string()),
+        );
+        obj.insert(
+            "neighborhood_entry".to_owned(),
+            serde_json::Value::String(geo.neighborhood.entry.to_string()),
+        );
+        if let Some(site) = &geo.site {
+            obj.insert(
+                "site_entry".to_owned(),
+                serde_json::Value::String(site.entry.to_string()),
+            );
+        }
+        obj.insert(
+            "surface".to_owned(),
+            serde_json::Value::String(crate::frame::surface_label(&geo.surface)),
+        );
+        if !details.is_empty() {
+            obj.insert(
+                "details".to_owned(),
+                serde_json::Value::Array(
+                    details.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
+        }
+        vec![(SmolStr::new_static(NS), serde_json::Value::Object(obj))]
     }
 }
 

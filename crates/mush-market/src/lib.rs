@@ -118,7 +118,7 @@ mod test_checks;
 mod api;
 mod boot;
 mod commands;
-pub use commands::ACCEPT_SIGNS;
+pub use commands::{ACCEPT_SIGNS, ListingSummary, summarize_listing};
 mod facts;
 pub mod fees;
 pub mod history;

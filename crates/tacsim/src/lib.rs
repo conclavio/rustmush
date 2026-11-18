@@ -109,6 +109,7 @@ pub mod arena_bridge;
 /// that directory's no-I/O gate can stay strict.
 pub mod arena_task;
 pub mod carrier_damage;
+pub mod client_sync;
 pub mod commands;
 pub mod composition;
 pub mod config;
@@ -993,6 +994,8 @@ impl GameModule for TacsimRuleset {
         design::register(reg)?;
         // Doc 34 cut CS.0a: the staff content studio's `content_studio` invoke.
         content_studio::register(reg)?;
+        // Structured graphical client sync & port trade feeds (`port.trade`, `tacsim.content`).
+        client_sync::register(reg)?;
         // 16b cut T.2: the arena's world side — the `arena.cockpit` and
         // `arena.map` feeds (16b cut Q.3 named the first for doc 16 and added the
         // second), the

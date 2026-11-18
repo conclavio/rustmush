@@ -3532,7 +3532,7 @@ fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         return;
     }
     let wall_now_s = ctx.w.now();
-    let expired: Vec<ObjId> = ctx
+    let expired: Vec<(ObjId, String)> = ctx
         .w
         .module_state::<SpaceBubbleBook>()
         .map(|b| {
@@ -3547,14 +3547,14 @@ fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                             >= super::docking::DOCKING_SESSION_TIMEOUT_WALL_S * 3_600
                     }
                 })
-                .map(|(&hull, _)| hull)
+                .map(|(&hull, s)| (hull, s.challenge.session_id.clone()))
                 .collect()
         })
         .unwrap_or_default();
     if expired.is_empty() {
         return;
     }
-    for hull in expired {
+    for (hull, session_id) in expired {
         if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
             book.docking_sessions.remove(&hull);
         }
@@ -3564,6 +3564,8 @@ fn expire_stale_docking_sessions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             hull,
             "[DOCKING] Session wall deadline (60s) expired; collar approach aborted with 15 kg RCS spent and hull unpaused.",
         );
+        super::commands::push_docking_closed_panel(ctx, hull, &session_id, "expired");
+        super::commands::push_space_panels(ctx, hull);
     }
 }
 

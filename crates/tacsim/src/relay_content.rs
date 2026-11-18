@@ -21,7 +21,7 @@ pub const HISTORICAL_JSON: &str = include_str!("../content/relays/luna_ceres-v1.
 pub const CHARTER: &str = "Concord-chartered neutral common carrier under the 2312 Settlement. The Exchange staffs the Luna star, publishes tariffs and records a named principal and reason for every service restriction. Independent sanctions survive an arrears cure.";
 pub const LEGACY_CHARTER: &str =
     "Concord-chartered relay operator; R1 installs topology, not paid service.";
-const GEOGRAPHY: [&str; 6] = [
+pub const GEOGRAPHY: [&str; 6] = [
     include_str!("../content/atlas/region.kirkwood_depot.json"),
     include_str!("../content/atlas/region.mercury_relay.json"),
     include_str!("../content/atlas/neighborhood.malapert_exchange.json"),

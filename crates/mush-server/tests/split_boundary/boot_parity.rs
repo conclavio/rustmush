@@ -311,6 +311,8 @@ fn expected_panels() -> Vec<&'static str> {
     // Doc 31 cut UD.3b: the pulled looks feed of the published unit designs,
     // registered with the designer's invoke, after the port's feeds.
     panels.push("unit.looks");
+    panels.push("port.trade");
+    panels.push("tacsim.content");
     // 16b cut T.2: the arena's cockpit frame feed, registered by the TacSim LAYER
     // (module `tacsim`) rather than by the sheet (module `pilot`) — hence after
     // `tacsim.sheet` in registration order. It is registered whether or not
