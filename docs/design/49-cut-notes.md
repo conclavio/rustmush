@@ -979,7 +979,135 @@ The motor's path cells per window (the lead's follow-up to CC.2's harness breach
 
 ## CC.3
 
-Not built.
+The ground laser (Q-49-6, Q-49-27, Q-49-28). Built 2026-11-17 on CC.1b's tip (`f380cf615`,
+PR #661), stacked on it. The defect PR it waited on (#623, a yard-built laser keeps its charge)
+had merged.
+
+**Survey.**
+- **Against armour.** A charge did 25 against everything: five charges dropped a drone, the same
+  as four coaxial bursts. A charge heavy enough to drop drones quickly would have out-damaged the
+  cannon against a tank's armour per minute, which Q-49-6 forbids.
+- **Heat.** A shot that would have crossed the ceiling was capped at it, and only a platform
+  already at the ceiling was refused. At the 5 s cycle the cooling always made room, so heat never
+  held a shot back.
+- **The mounts.** `line_tank_laser` was the line tank with its 105 swapped for the laser, and
+  `biped_mk2` carried the laser and a machine gun. Neither carried a main gun.
+- **The ripple.** An agent surveyed every reader of the two units and the laser packs outside
+  `content/`:
+  - the bay refit and its family rule (the cannon must stay ahead of the machine gun);
+  - the bare-FIRE rule (a mount called `cannon` wins it);
+  - the hull bills, the pixel looks, mushd's `sim_units` story, the help page;
+  - the harness cohorts and the lance lane, which field the laser tank.
+
+**Built.**
+- **The combat kernel against armour** (`arena/damage.rs`, Q-49-27). A beam spends a facet's armour
+  at `BEAM_ARMOR_PERMILLE` (200, a fifth) of its damage, and stops there while the facet holds.
+  Once the facet goes down, what is left of the beam reaches the internals in full. A projectile
+  spends armour point for point, as before. The round records that it is a beam at acceptance
+  (`Shot.beam`), as it records its damage, so a turret shot off in flight still lands its beam.
+- **Heat refuses** (`arena/heat.rs`, Q-49-28). A shot whose heat would carry the platform past its
+  ceiling is refused (`UnitState::refuses_heat`). The same rule is read by:
+  - the arena's FIRE;
+  - the frame's reading (`FrameHeat::refuses`), and through it the cockpit's FIRE and
+    `WEAPONSTATUS`;
+  - the mind's `would_overheat`, which T1 and T2 share.
+
+  The status line's OVERHEATED still means "at the ceiling".
+- **The laser content** (Q-49-6):
+  - the charge is 120 where it was 25: against armour a fifth of that is a fifth of a 105 shell,
+    and a drone falls in three;
+  - the laser keeps X.1's heat: a 60 ceiling, 20 a pulse, 3 a second of cooling;
+  - `line_tank_laser` version 5 carries the 105 back as its main gun, listed first, with the laser
+    and the coaxial gun beside it, so Class I's two slots arm the cannon and the laser;
+  - `biped_mk2` version 3 carries the 105 in its right arm, the laser in its left and the machine
+    gun in its torso;
+  - the notes are rewritten under the 1,024-byte bound, and "what you wear a tank down with" is
+    gone.
+- **Replays:** `REPLAY_ENGINE` is `tacsim-engine-cc3-v1`, so a tape recorded under the old rules is
+  refused.
+- **Help:** `docs/help/simulator.md`'s laser tank, Mk2 and bare-FIRE entries.
+
+**Measured.** All counts are charges that landed:
+- **A drone falls in three**, from whatever face they strike: ten seconds at the laser's cycle.
+  It took five.
+- **A line tank is never wrecked by seven.** Its cheapest wreck, through its rear hull or rear
+  turret, takes eight: at least 35 s at the laser's cycle, before any heat lockout. Three 105
+  rounds can wreck it from the rear.
+- **Sustained fire locks out.** From cold the laser fires nine charges at its cycle. After that a
+  charge waits about 1.7 s for the platform to cool to 40, so it fires about one every 6.7 s where
+  it fired every 5.
+- **The lance lane** (twin, Gate A at 0 divergences): its thinks cost p50 865, p99 1,185, max 1,257
+  (CC.1b: 1,001, 1,185, 1,269), under `LANCE_THINK_BOUND`'s 1,450 and the two-tank lanes' 1,350.
+
+**Tests.**
+- **New:**
+  - `arena::damage` `cc3_a_beam_spends_armour_at_a_fifth_and_reaches_the_internals_in_full`: a
+    facet that holds, the beam that takes it down, a beam too weak to dent it, and a facet already
+    down;
+  - `arena::heat` `cc3_a_shot_that_would_cross_the_ceiling_is_refused_and_one_onto_it_is_not`:
+    the unit and the frame agree, and the status line keeps "at the ceiling";
+  - `domain_arena` `extensions::cc3_a_laser_drops_a_drone_quickly_and_not_a_tank`: the drone in
+    three and the tank surviving seven. Rounds are conserved: every charge fired is one off the
+    store, and a charge refused for heat is none.
+- **Mutations**, each caught:
+  - a beam spending armour as a round does: the beam test, the acceptance test and both X.1
+    tests;
+  - a beam leaking its remainder into the internals while its facet holds: the beam test;
+  - heat refusing only at the ceiling again: the heat test, the no-heat mirror, X.1's heat test
+    and the hot-gun reflex test;
+  - the frame reading the old rule, so the mind does too: the heat test and the no-heat
+    mirror.
+- **Re-pinned by record:**
+
+  | File and test | What moved |
+  |---|---|
+  | `extensions.rs` `DIGESTS`, `DIGESTS_CHASSIS` | the laser charge, the laser, the laser tank and the Mk2 |
+  | `content.rs` `m4_…`, `extensions.rs` `ae1_…`, `ae2_…` | the versions: the laser tank 4 → 5, the Mk2 2 → 3 |
+  | `extensions.rs` `x1_heat_rises_…` | at 54 the laser is held (it crossed back in at 54 until CC.3); it fires at 39 |
+  | `extensions.rs` `x1_a_laser_pulse_…` | the claim is a beam's share against armour |
+  | `stock_mind.rs` `d2_…`, `reflex.rs` `t1_an_overheated_machine…` | a shot that would cross the ceiling is held by the mind, as the engine refuses it |
+  | `reflex.rs` `t1_an_unreachable_order_and_a_hot_gun…` | its one shot starts at 40 and lands on the ceiling |
+  | `conditions.rs` `m1b2_t1_…` | its field takes the laser tank's 105 off, so the heat story stays on the laser and the coaxial (S1, S2); its sink comes back at ten times the authored rate, so the platform is under 40 at every ready after the cooling and the laser keeps the lattice the re-lock's citation lands on |
+  | `minds.rs` `m1b0_…` (two), `minds_rhai.rs` `m3_…` (three) | their hand-built beams: five for the one point of armour (was one), 2,000 to shoot a turret off (was 1,000) |
+  | bare FIRE: `weapons.rs` `ae2_…`, `content.rs` `e1_…`'s list, `cockpit/tests.rs` `ae2_…` | the laser machines' bare FIRE is the 105, and a dry 105 falls to the laser |
+  | `cockpit/tests.rs` `cc4_…` | the widest rounds row is the Mk2's (cannon, laser, machine gun), under 120 columns |
+  | `refit.rs` `ud4_…`, `hardware/flow/bay.rs` `ud4b_…` | the laser goes in beside the 105 and comes off alone; no cannon comes back to the bay |
+  | `content/industry/hulls-v2.json`, `port/bill.rs` | the laser tank's bill 21 / 7 → 19 / 7 and the Mk2's 39 / 17 → 37 / 16 (the designs' own bills), re-signed |
+  | `domain_economy/yard_in9.rs` | the yard-built laser tank's parts take the 105 |
+  | `twin.rs` `COVERAGE` | the lance lane, 8,433 / 133 → 8,105 / 177 |
+  | `resimulation.rs` `m7_…` | the replay engine's `cc3` |
+  | `mushd` `sim_units.rs` | the laser tank shows its 105, and its pilot names the laser |
+  | `tests/harness_baseline/arena.linux.json` (`#[ignore]`d, run by name) | the record `cc3_deterministic_update`, 89 leaves: both cohorts field the laser tank, whose ROM arms its first mount, now the 105, so the fights moved (shots 1,691 → 1,362, the ledger 2,692,554 → 2,500,995 bytes), and the busiest wake's path cells read 48,128, exactly CC.2b's window budget. Timing p50 −11.1%, p99 −14.6%, window p99 −12.7% against TS.21's |
+
+- **Sweep**, on the final tree:
+  - `tacsim`'s whole suite: 4,834 tests, all passing but `m1b2_t1`, whose cooling was then
+    raised (above) and which passes, run again on Windows;
+  - mushd's `sim_lenses`, 95 tests;
+  - `mush-pixel`, `mush-core`, `mush-economy`, `mush-industry` and the contract tests: 2,649
+    tests;
+  - the bot job: 815 tests.
+- **The harness**, in release: every lane under `TACSIM_ASSERT=1`, the path-cell bound included.
+  Then the delta on the re-blessed file: its deterministic block equal (106 fields), and the four
+  minds blocks equal, with p50 −9.4%, p99 −9.1% and window p99 −6.1%.
+- **Guards**, on the final tree:
+  - `cargo fmt -p tacsim -p mushd --check`;
+  - `cargo clippy -p tacsim -p mushd --all-targets -- -D warnings`;
+  - the M7 memory-size pass;
+  - `cargo doc -p tacsim --no-deps --document-private-items` with `-D warnings`.
+
+**Divergences.**
+- **A beam's share is a kernel constant**, not a field on the round. Q-49-27 makes it a rule of the
+  combat kernel for every beam, and the ground ships one beam.
+- **No snapshot format bump.** `Shot.beam` is skipped when false, so no shape moves, and a shot
+  written before CC.3 decodes as a projectile, which it was.
+- **The heat figures are X.1's.** Under the refusal they lock sustained fire out after nine
+  charges, the "now and then" Q-49-28 asks for. No pack's heat moved.
+- **The Mk2's machine gun moved to its torso**, so its arms carry the 105 (the Mk1's arm) and the
+  laser.
+
+**Not built.**
+- **The space lasers** (Q-49-7) are the space kernel's, in CC.8.
+- **The charge store stays 500** (Q-49-28), and Q-41-7's free recharge away from port stands.
 
 ## CC.4
 
