@@ -1433,6 +1433,11 @@ EX.1b's #637), then EX.3b on main after it, which closes EX.3.
     back to the desk's purse, Occator's stock takes nothing, the tonnes stay the captain's, and
     the captain is paid exactly the parts' rows. The desk is the clerk's, laid up once (the same
     Thing and purse at the second scrap), and the money census's total is unchanged by the sale.
+  - `in8_mass_scrap::ex3_a_restart_between_the_landing_and_the_sale_completes_it` (the lead's
+    condition on the step a bulk row waits): a Dray's mint lands and the holder's dissolve of its
+    94 t lot is lost with a crash. In the gap the lot sits in the captain's scrap vault and no bid
+    stands, so nothing is escrowed (the bid is posted and sold into in one later step). After the
+    restart the sale on her record dissolves the lot again and sells it into Occator's stock.
   - `house_sweep_rs6c`'s two Tycho stories: Tycho's dispatcher, a GOD-owned NPC holder, sells a
     swept wreck's matter into the desk's bids (its trades on the tape), and the credit reaches
     Tycho through the float.
@@ -1481,7 +1486,9 @@ EX.1b's #637), then EX.3b on main after it, which closes EX.3.
   the landing line, scrap paths only), `bay_work/record.rs` (`BayHull.sale`), `bay_work/strip.rs`,
   `bay_work/command.rs` (the scrap and return lines, the help), `mush-bot`'s table.
 - **A bulk row sells a step after its mint lands**, not in the same step: the market sells bulk
-  from a pool, and the scrap mints its tonnes as a lot, which the holder dissolves first.
+  from a pool, and the scrap mints its tonnes as a lot, which the holder dissolves first. Accepted by
+  the lead on two conditions, both held: the matter sits in the holder's vault in the gap (and no
+  bid stands to be funded), and a restart in the gap completes the sale (the story above).
 - **The sale is one row a step**, since a seller with a submission queued is refused.
 - **The bulk price is rounded up** (at most a minor a tonne over the value), and a tonne carrying
   only the shop bale's earlier remainder sells at 1 minor.

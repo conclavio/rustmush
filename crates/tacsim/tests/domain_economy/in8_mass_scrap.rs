@@ -882,3 +882,83 @@ async fn ex3_scrap_sells_on_the_board_past_twenty_tonnes_and_a_missed_leg_refund
         "the parts were paid for, and the tonne was not"
     );
 }
+
+/// **Doc 48 cut EX.3: a restart between a scrap's landing and its bulk row's sale** (the lead's
+/// condition on the step between them). A whole Dray is scrapped at Ceres; its mint lands, and the
+/// holder's dissolve of the 94 t lot, staged in that step, is lost with a crash. In the gap the
+/// matter sits in the captain's scrap vault and no bid stands, so nothing is escrowed. After the
+/// restart the sale on her record dissolves the lot again and sells it: the 94 t reach
+/// Occator's stock and the captain is paid.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ex3_a_restart_between_the_landing_and_the_sale_completes_it() {
+    let mut rig = stocked();
+    let (pilot, row) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    mint(&mut rig, pilot);
+    fund_occator(&mut rig);
+    at_counter(&mut rig, pilot);
+    let bay = ObjId(row.rooms[&cid("bay")]);
+    let workshop = station_room(&rig.tw, "ceres_port", "room.c14_dockmaster");
+    let stores =
+        mush_economy::VaultId(port_map(&rig.tw, "ceres_port").vendors[&cid("occator")].vault);
+    let dray = spare_of(&rig, "tacsim.unit.dray", &[ObjId(row.hull)]);
+    title_to(&mut rig, dray, pilot);
+    put(&mut rig, dray, bay, true);
+    put(&mut rig, pilot, workshop, false);
+    let berthed = run(&mut rig.tw, pilot, &format!("+bay/berth #{}", dray.0));
+    assert!(berthed.contains("berthed in the workshop"), "{berthed}");
+    let stock_before = hold_pool(&mut rig.tw, stores, "structural_alloys");
+    let paid_before = credit(&rig, pilot);
+    let out = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", dray.0));
+    assert!(out.contains("(94 t whole)"), "{out}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    // The mint lands; the step's dissolve is dropped, as a crash before it landed would.
+    let mut landed = false;
+    for _ in 0..12 {
+        let (_, queued) = fire(&mut rig);
+        let kept: Vec<_> = queued
+            .into_iter()
+            .filter(|submit| !submit.action.key().id.as_str().contains("dissolve"))
+            .collect();
+        land_quietly(&mut rig, &kept);
+        if record(&rig, dray).owed.is_none() {
+            landed = true;
+            break;
+        }
+    }
+    assert!(landed, "the mint landed");
+    let sale = record(&rig, dray).sale.expect("the sale is on her record");
+    let scrap = tacsim::port::bay_work::scrap::scrap_vault(rig.tw.world(), pilot, "ceres")
+        .expect("the captain's scrap vault");
+    let lot = lot_record(
+        &mut rig,
+        tacsim::port::bay_work::act::lot_id(dray, sale.act, 0).expect("the lot"),
+    )
+    .expect("the alloys' lot");
+    assert_eq!(
+        (lot.quantity(), lot.endpoint()),
+        (94, EndpointRef(scrap)),
+        "the matter sits in the holder's vault"
+    );
+    let desk = desk_of(&rig, "ceres_port");
+    let bids = desk.map_or(0, |desk| {
+        rig.tw
+            .world()
+            .module_state::<mush_market::MarketStore>()
+            .map_or(0, |m| {
+                m.personal_listings_of(&mush_org::PrincipalId::Object(desk))
+                    .count()
+            })
+    });
+    assert_eq!(bids, 0, "no bid stands in the gap, so nothing is escrowed");
+
+    // The restart: the sale on her record finishes it.
+    let mut rig = crate::driving_rig::reboot(rig, &[pilot]);
+    sold_out(&mut rig, dray, pilot);
+    assert_eq!(
+        hold_pool(&mut rig.tw, stores, "structural_alloys") - stock_before,
+        94,
+        "94 t into Occator's stock after the restart"
+    );
+    assert!(credit(&rig, pilot) > paid_before, "the captain is paid");
+}
