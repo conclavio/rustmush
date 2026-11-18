@@ -14,7 +14,8 @@
 //! Who the operator and the sink are is the game's answer ([`VenueFees`], composition-frozen
 //! like every seam here). **With none installed, or a venue it does not answer for, nothing is
 //! charged**: every listing and sale is exactly as before EX.4. A vendor's (a house's) listings
-//! pay none of these.
+//! pay none of these, nor does a personal listing the game says its house posts
+//! ([`VenueFees::house_lists`]: TacSim's buy-back desk).
 
 use mush_core::{Ctx, World};
 use mush_economy::{AccountId, Amount, PayoutShare, Share};
@@ -54,12 +55,34 @@ pub struct VenueFeeAccounts {
 pub trait VenueFees: Send + Sync + std::fmt::Debug {
     /// The accounts `venue`'s fees go to, in its own currency; `None` charges nothing there.
     fn accounts(&self, w: &World, venue: &MarketId) -> Option<VenueFeeAccounts>;
+
+    /// **Whether `payer` lists at `venue` as the venue's own house**, though through a personal
+    /// listing (a house's listings pay none of these): its listings then pay no listing fee.
+    /// Unanswered, nobody does.
+    fn house_lists(&self, _w: &World, _venue: &MarketId, _payer: &PrincipalId) -> bool {
+        false
+    }
 }
 
 /// The accounts `venue` charges, when the composition installed a seam that answers for it.
 #[must_use]
 pub fn venue_accounts(w: &World, venue: &MarketId) -> Option<VenueFeeAccounts> {
     crate::module::venue_fees(w)?.accounts(w, venue)
+}
+
+/// **The accounts `payer`'s listing fee at `venue` is paid to**: `None` when the venue charges
+/// nothing there or `payer` lists as its house ([`VenueFees::house_lists`]).
+#[must_use]
+pub fn listing_fee_accounts(
+    w: &World,
+    venue: &MarketId,
+    payer: &PrincipalId,
+) -> Option<VenueFeeAccounts> {
+    let seam = crate::module::venue_fees(w)?;
+    if seam.house_lists(w, venue, payer) {
+        return None;
+    }
+    seam.accounts(w, venue)
 }
 
 /// `permille` of `amount`, floored, in minor units; zero on overflow or a non-positive amount.
@@ -91,7 +114,7 @@ pub(crate) fn charge_listing_fee(
     listing: ListingId,
     listed: Amount,
 ) -> Result<Option<(Amount, String)>, MarketError> {
-    let Some(accounts) = venue_accounts(ctx.w, venue) else {
+    let Some(accounts) = listing_fee_accounts(ctx.w, venue, payer) else {
         return Ok(None);
     };
     let fee = listing_fee(listed, accounts.listing_floor);
