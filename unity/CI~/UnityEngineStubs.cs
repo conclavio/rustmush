@@ -426,7 +426,7 @@ namespace UnityEngine
 
     public class Object
     {
-        public string name { get; set; } = string.Empty;
+        public virtual string name { get; set; } = string.Empty;
         public HideFlags hideFlags { get; set; }
         public static void Destroy(Object obj, float t = 0f)
         {
@@ -504,6 +504,11 @@ namespace UnityEngine
     {
         public GameObject gameObject { get; internal set; }
         public Transform transform => gameObject?.transform;
+        public override string name
+        {
+            get => gameObject != null ? gameObject.name : base.name;
+            set { if (gameObject != null) gameObject.name = value; else base.name = value; }
+        }
 
         public T GetComponent<T>() => gameObject != null ? gameObject.GetComponent<T>() : default;
         public T GetComponentInChildren<T>(bool includeInactive = false) => gameObject != null ? gameObject.GetComponentInChildren<T>(includeInactive) : default;
@@ -749,6 +754,7 @@ namespace UnityEngine
     {
         public int width { get; set; }
         public int height { get; set; }
+        public int anisoLevel { get; set; }
         public TextureWrapMode wrapMode { get; set; }
         public FilterMode filterMode { get; set; }
     }
@@ -756,6 +762,7 @@ namespace UnityEngine
     {
         public Texture2D(int width, int height) { this.width = width; this.height = height; }
         public Texture2D(int width, int height, TextureFormat textureFormat, bool mipChain) : this(width, height) { }
+        public Texture2D(int width, int height, TextureFormat textureFormat, bool mipChain, bool linear) : this(width, height) { }
         public static Texture2D whiteTexture { get; } = new Texture2D(4, 4);
         public void SetPixel(int x, int y, Color color) { }
         public void SetPixels32(Color32[] colors) { }

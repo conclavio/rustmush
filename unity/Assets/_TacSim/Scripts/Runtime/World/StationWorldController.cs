@@ -311,23 +311,37 @@ namespace TacSim.World
             BuildVerticalWallIfCanonical(root, room, room.MinX, isWestOfRoom: true, elev, height, wallTint, isStickneyOrRock, vDoors);
             BuildVerticalWallIfCanonical(root, room, room.MaxX, isWestOfRoom: false, elev, height, wallTint, isStickneyOrRock, vDoors);
 
-            // Room Name Sign & Ambient Light
+            // Overhead matte coffered ceiling when no upper-deck floor slab sits directly above this room
+            if (!HasUpperFloorSlabCovering(room))
+            {
+                Vector2 ceilTiling = new Vector2(Mathf.Max(1f, Mathf.Round(size2d.x / 4.0f)), Mathf.Max(1f, Mathf.Round(size2d.y / 4.0f)));
+                Material ceilMat = UrpMaterialFactory.GetStationCeilingMaterial($"Roof_{room.EntryId}", wallTint, ceilTiling);
+                CreateBox(root, "RoofCeiling", AtlasToUnity(center2d.x, elev + height + 0.03f, center2d.y), new Vector3(size2d.x, 0.06f, size2d.y), ceilMat, withCollider: false);
+            }
+
+            // Recessed architectural ceiling luminaire + soft diffused room light (no bare glaring ceiling hotspot!)
             Color lightColor = GetRoomLightColor(room.EntryId, isStickneyOrRock);
+            float fixtureLenX = Mathf.Clamp(size2d.x * 0.28f, 1.8f, 4.4f);
+            Material housingMat = UrpMaterialFactory.GetOpaque("CeilingFixtureHousing", new Color(0.14f, 0.17f, 0.21f), 0.22f, 0.45f);
+            Material diffuserMat = UrpMaterialFactory.GetEmissive("CeilingDiffuser_" + room.EntryId, lightColor * 0.85f, lightColor * 1.15f);
+            CreateBox(root, "CeilingFixtureHousing", AtlasToUnity(center2d.x, elev + height - 0.06f, center2d.y), new Vector3(fixtureLenX, 0.10f, 0.62f), housingMat, withCollider: false);
+            CreateBox(root, "CeilingLightDiffuser", AtlasToUnity(center2d.x, elev + height - 0.11f, center2d.y), new Vector3(fixtureLenX - 0.16f, 0.03f, 0.44f), diffuserMat, withCollider: false);
+
             var lightGo = new GameObject("RoomLight");
             lightGo.transform.SetParent(root, false);
-            lightGo.transform.position = AtlasToUnity(center2d.x, elev + height - 0.5f, center2d.y);
+            lightGo.transform.position = AtlasToUnity(center2d.x, elev + height - 1.25f, center2d.y);
             var lt = lightGo.AddComponent<Light>();
             lt.type = LightType.Point;
             lt.color = lightColor;
-            lt.range = Mathf.Max(size2d.x, size2d.y) * 0.95f;
-            lt.intensity = room.Restricted ? 1.6f : 3.4f;
+            lt.range = Mathf.Max(size2d.x, size2d.y) * 1.05f;
+            lt.intensity = room.Restricted ? 1.25f : 2.15f;
             _roomLights[room.EntryId] = lt;
 
             // Floating architectural sector header
             Color signCol = room.EntryId == "room.sim_red" ? new Color(1f, 0.42f, 0.38f)
                           : room.EntryId == "room.sim_blue" ? new Color(0.42f, 0.78f, 1f)
                           : new Color(0.65f, 0.88f, 1.0f);
-            CreateWorldSign(root, room.Name.ToUpperInvariant(), AtlasToUnity(center2d.x, elev + 3.55f, room.MaxY - 0.28f), Quaternion.identity, 2.5f, signCol);
+            CreateWorldSign(root, room.Name.ToUpperInvariant(), AtlasToUnity(center2d.x, elev + 3.55f, room.MaxY - 0.28f), Quaternion.identity, 2.1f, signCol);
 
             // World-space live status / market board across all ports & Simulator Lobby
             if (isBerthGallery ||
@@ -346,17 +360,38 @@ namespace TacSim.World
                 _roomBoards[room.EntryId] = boardTmp;
             }
 
-            // Spawn up to 3 authored room detail plaques as grounded interactive [E] inspection terminals
+            // Spawn up to 3 authored room detail plaques as grounded, non-overlapping [E] inspection terminals:
+            // enforce >= 3.6m separation along the south wall, spilling onto clear East / West wall spans in narrow offices!
+            var placedSouthXs = new List<float>();
+            var placedEastYs = new List<float>();
+            var placedWestYs = new List<float>();
             int detailIdx = 0;
             foreach (var det in room.Details)
             {
                 if (detailIdx >= 3) break;
-                float desiredX = Mathf.Lerp(room.MinX + 3.8f, room.MaxX - 3.8f, (detailIdx + 1f) / 4f);
-                float px = SelectClearHorizontalWallX(room, room.MinY, hDoors, desiredX, halfClearanceM: 2.9f);
-                float pz = isBerthGallery ? room.MinY + 1.65f : room.MinY + 0.68f;
-                Vector3 plaqueFloorPos = AtlasToUnity(px, elev, pz);
-
-                CreateDetailPlaque(root, det.Key, det.Value, plaqueFloorPos);
+                float desiredX = Mathf.Lerp(room.MinX + 3.4f, room.MaxX - 3.4f, (detailIdx + 1f) / (Mathf.Min(3, room.Details.Count) + 1f));
+                if (TrySelectNonOverlappingHorizontalWallX(room, room.MinY, hDoors, placedSouthXs, desiredX, halfClearanceM: 2.2f, minPlaqueSpacingM: 3.6f, out float southX))
+                {
+                    placedSouthXs.Add(southX);
+                    float pz = isBerthGallery ? room.MinY + 1.65f : room.MinY + 0.68f;
+                    CreateDetailPlaque(root, det.Key, det.Value, AtlasToUnity(southX, elev, pz), inwardYawDeg: 0f);
+                }
+                else if (TrySelectNonOverlappingVerticalWallY(room, room.MaxX, vDoors, placedEastYs, room.Center2D.y, halfClearanceM: 2.2f, minPlaqueSpacingM: 3.4f, out float eastY))
+                {
+                    placedEastYs.Add(eastY);
+                    CreateDetailPlaque(root, det.Key, det.Value, AtlasToUnity(room.MaxX - 0.72f, elev, eastY), inwardYawDeg: -90f);
+                }
+                else if (TrySelectNonOverlappingVerticalWallY(room, room.MinX, vDoors, placedWestYs, room.Center2D.y, halfClearanceM: 2.2f, minPlaqueSpacingM: 3.4f, out float westY))
+                {
+                    placedWestYs.Add(westY);
+                    CreateDetailPlaque(root, det.Key, det.Value, AtlasToUnity(room.MinX + 0.72f, elev, westY), inwardYawDeg: 90f);
+                }
+                else
+                {
+                    float fallbackX = SelectClearHorizontalWallX(room, room.MinY, hDoors, desiredX, halfClearanceM: 2.0f);
+                    float pz = isBerthGallery ? room.MinY + 1.65f : room.MinY + 0.68f;
+                    CreateDetailPlaque(root, det.Key, det.Value, AtlasToUnity(fallbackX, elev, pz), inwardYawDeg: 0f);
+                }
                 detailIdx++;
             }
 
@@ -728,6 +763,22 @@ namespace TacSim.World
                         CreateBox(stairRoot, $"Step_{i}", AtlasToUnity(cx, y, ay), new Vector3(4.8f, 0.34f, 0.72f), stairMat, true);
                     }
 
+                    // Architectural dark-steel stair side stringers & handrails (no glowing cyan doorway posts on stairs!)
+                    Material railMat = UrpMaterialFactory.GetOpaque("StairRailSteel", new Color(0.20f, 0.23f, 0.27f), 0.32f, 0.65f);
+                    Vector3 topMid = AtlasToUnity(cx, elevTop + 0.85f, ayTop);
+                    Vector3 botMid = AtlasToUnity(cx, elevBot + 0.85f, ayBot);
+                    Vector3 spanDelta = botMid - topMid;
+                    float spanLen = spanDelta.magnitude;
+                    if (spanLen > 0.5f)
+                    {
+                        Quaternion slopeRot = Quaternion.LookRotation(spanDelta.normalized, Vector3.up);
+                        Vector3 midCenter = (topMid + botMid) * 0.5f;
+                        var railL = CreateBox(stairRoot, "StairRail_L", midCenter + new Vector3(-2.46f, 0f, 0f), new Vector3(0.10f, 0.12f, spanLen), railMat, false);
+                        railL.transform.rotation = slopeRot;
+                        var railR = CreateBox(stairRoot, "StairRail_R", midCenter + new Vector3(2.46f, 0f, 0f), new Vector3(0.10f, 0.12f, spanLen), railMat, false);
+                        railR.transform.rotation = slopeRot;
+                    }
+
                     CreatePortalTrigger(
                         portalsRoot,
                         ex,
@@ -766,7 +817,7 @@ namespace TacSim.World
                                            ((ex.Locked && Catalog.stationLockedDoor != null) ||
                                             (!ex.Locked && Catalog.stationDoorFrame != null));
 
-            if (!hasCommercialDoorPrefab)
+            if (!isStairOrLadder && !hasCommercialDoorPrefab)
             {
                 Material postMat = ex.Locked
                     ? UrpMaterialFactory.GetEmissive("LockedDoorGlow", new Color(0.55f, 0.14f, 0.12f), new Color(1.0f, 0.25f, 0.18f) * 1.1f)
@@ -845,9 +896,9 @@ namespace TacSim.World
                 {
                     Vector3 counterTop = new Vector3(mid.x, elev + feat.HeightM, mid.z);
                     if (Catalog.stationConsoleProp != null)
-                        SpawnWallAlignedConsoleProp(Catalog.stationConsoleProp, transform, $"DeskConsole_{feat.EntryId}", counterTop + new Vector3(-0.45f, 0f, 0f), alignAlongX: true, targetHeightM: 0.68f, maxDimensionM: 1.1f);
+                        SpawnWallAlignedConsoleProp(Catalog.stationConsoleProp, transform, $"DeskConsole_{feat.EntryId}", counterTop + new Vector3(-0.45f, 0f, 0f), inwardYawDeg: 180f, targetHeightM: 0.68f, maxDimensionM: 1.1f);
                     if (Catalog.stationDisplayProp != null)
-                        SpawnWallAlignedConsoleProp(Catalog.stationDisplayProp, transform, $"DeskDisplay_{feat.EntryId}", counterTop + new Vector3(0.55f, 0f, 0f), alignAlongX: true, targetHeightM: 0.58f, maxDimensionM: 0.95f);
+                        SpawnWallAlignedConsoleProp(Catalog.stationDisplayProp, transform, $"DeskDisplay_{feat.EntryId}", counterTop + new Vector3(0.55f, 0f, 0f), inwardYawDeg: 180f, targetHeightM: 0.58f, maxDimensionM: 0.95f);
                 }
 
                 AttachServiceDeskInteractable(counterGo, feat.RoomId);
@@ -1464,11 +1515,22 @@ namespace TacSim.World
 
                 var bbGo = new GameObject("Billboard");
                 bbGo.transform.SetParent(npcGo.transform, false);
-                bbGo.transform.localPosition = new Vector3(0f, 2.15f, 0f);
+                bbGo.transform.localPosition = new Vector3(0f, 2.08f, 0f);
                 var bb = bbGo.AddComponent<WorldBillboard>();
+                bb.AnchorLocalY = 2.08f;
+                Vector3 roomMinW = AtlasToUnity(room.MinX, elev, room.MinY);
+                Vector3 roomMaxW = AtlasToUnity(room.MaxX, elev, room.MaxY);
+                bb.SetRoomSafeBounds(roomMinW.x, roomMaxW.x, roomMinW.z, roomMaxW.z, wallMarginM: 1.50f);
+
                 string safeActorName = MushProtocol.EscapeUnityRichText(item.Name);
-                bb.NameplateText = CreateTmp3D(bbGo.transform, "Nameplate", Vector3.zero, isNpc ? $"{safeActorName}\n<size=65%><color=#88CCFF>[NPC]</color></size>" : safeActorName, 2.2f, Color.white);
-                bb.SpeechBubbleText = CreateTmp3D(bbGo.transform, "SpeechBubble", new Vector3(0f, 0.55f, 0f), "", 2.0f, new Color(1f, 0.95f, 0.65f));
+                bb.NameplateText = CreateTmp3D(bbGo.transform, "Nameplate", Vector3.zero, isNpc ? $"{safeActorName}\n<size=68%><color=#88CCFF>[NPC]</color></size>" : safeActorName, 1.32f, Color.white);
+                bb.NameplateText.rectTransform.sizeDelta = new Vector2(2.60f, 0.58f);
+
+                // Bottom-anchored compact speech bubble so multi-line dialogue grows UPWARD above the nameplate without clipping into walls!
+                bb.SpeechBubbleText = CreateTmp3D(bbGo.transform, "SpeechBubble", new Vector3(0f, 0.34f, 0f), "", 1.05f, new Color(1f, 0.95f, 0.65f));
+                bb.SpeechBubbleText.rectTransform.pivot = new Vector2(0.5f, 0.0f);
+                bb.SpeechBubbleText.rectTransform.sizeDelta = new Vector2(2.50f, 2.20f);
+                bb.SpeechBubbleText.alignment = TextAlignmentOptions.Bottom;
                 bb.SpeechBubbleText.gameObject.SetActive(false);
 
                 var wi = npcGo.AddComponent<WorldInteractable>();
@@ -1565,19 +1627,31 @@ namespace TacSim.World
 
         private Vector3 ComputeNpcStandSpot(AtlasRoomDef room, float elev, int idx)
         {
+            float safeMinX = room.MinX + 1.75f;
+            float safeMaxX = room.MaxX - 1.75f;
+            float safeMinY = room.MinY + 1.65f;
+            float safeMaxY = room.MaxY - 1.85f; // keep clear of north-wall StatusBoardRoot
+
             // Stand behind the room's authored counter if one exists!
             foreach (var f in Pack.Features)
             {
                 if (f.FeatureKind == "counter" && f.RoomId == room.EntryId)
                 {
-                    float cx = Mathf.Lerp(f.PointA.x + 1.8f, f.PointB.x - 1.8f, ((idx * 37) % 100) / 100f);
-                    float behindY = f.PointA.y > room.Center2D.y ? f.PointA.y + 1.15f : f.PointA.y - 1.15f;
+                    float x0 = Mathf.Max(safeMinX, Mathf.Min(f.PointA.x, f.PointB.x) + 1.4f);
+                    float x1 = Mathf.Min(safeMaxX, Mathf.Max(f.PointA.x, f.PointB.x) - 1.4f);
+                    // Bias first clerk toward east half of counter so they don't stand directly in front of the west-side StatusBoard!
+                    float t = idx == 0 ? 0.68f : (((idx * 37) % 100) / 100f);
+                    float cx = x1 > x0 ? Mathf.Lerp(x0, x1, t) : room.Center2D.x;
+                    float behindY = f.PointA.y > room.Center2D.y ? f.PointA.y + 1.05f : f.PointA.y - 1.05f;
+                    behindY = safeMinY < safeMaxY ? Mathf.Clamp(behindY, safeMinY, safeMaxY) : room.Center2D.y;
                     return AtlasToUnity(cx, elev, behindY);
                 }
             }
             Vector2 c = room.Center2D;
             float angle = idx * 1.35f;
-            return AtlasToUnity(c.x + Mathf.Cos(angle) * 3.2f, elev, c.y + Mathf.Sin(angle) * 2.6f);
+            float rx = safeMinX < safeMaxX ? Mathf.Clamp(c.x + Mathf.Cos(angle) * 2.8f, safeMinX, safeMaxX) : c.x;
+            float ry = safeMinY < safeMaxY ? Mathf.Clamp(c.y + Mathf.Sin(angle) * 2.2f, safeMinY, safeMaxY) : c.y;
+            return AtlasToUnity(rx, elev, ry);
         }
 
         private Material GetWallMaterialForSpan(string entryId, Color wallTint, float spanM, float heightM, bool isRockCut)
@@ -1587,82 +1661,70 @@ namespace TacSim.World
                              entryId.IndexOf("chandlery", StringComparison.OrdinalIgnoreCase) >= 0 ||
                              entryId.IndexOf("pressure", StringComparison.OrdinalIgnoreCase) >= 0;
 
+            // Note: DOTTEAM Heavy Station Kit's `B2_Walls*_A.png` and `B2_Floors_A.png` are non-tileable UV-unwrap trim atlases
+            // authored for custom 3D mesh UVs; use seamless 2K rock textures only on rock-cut ports, and use seamless procedural
+            // architectural bulkhead/deck PBR + normal maps on pressurized station walls & floors!
             Texture alb = null;
             Texture nrm = null;
-            Texture met = null;
-            if (Catalog != null)
+            if (isRockCut && Catalog != null && Catalog.stationRockAlbedo != null)
             {
-                if (isRockCut && Catalog.stationRockAlbedo != null)
-                {
-                    alb = Catalog.stationRockAlbedo;
-                    nrm = Catalog.stationRockNormal;
-                }
-                else if (isFreight && Catalog.stationFreightWallAlbedo != null)
-                {
-                    alb = Catalog.stationFreightWallAlbedo;
-                    nrm = Catalog.stationFreightWallNormal;
-                    met = Catalog.stationWallMetallic;
-                }
-                else
-                {
-                    alb = Catalog.stationWallAlbedo;
-                    nrm = Catalog.stationWallNormal;
-                    met = Catalog.stationWallMetallic;
-                }
+                alb = Catalog.stationRockAlbedo;
+                nrm = Catalog.stationRockNormal;
             }
 
-            Vector2 tiling = new Vector2(Mathf.Max(1f, Mathf.Round(spanM / 4.2f)), Mathf.Max(1f, Mathf.Round(heightM / 4.2f)));
+            Color tinted = isFreight && !isRockCut
+                ? new Color(wallTint.r * 0.98f, wallTint.g * 0.92f, wallTint.b * 0.84f, 1f)
+                : wallTint;
+
+            Vector2 tiling = new Vector2(Mathf.Max(1f, Mathf.Round(spanM / 4.2f)), Mathf.Max(1f, Mathf.Round(heightM / 4.5f)));
             return UrpMaterialFactory.GetTiledPbrSurface(
                 $"Wall_{LoadedPackId}_{entryId}",
                 alb,
                 nrm,
-                met,
-                wallTint,
+                null,
+                tinted,
                 tiling,
                 isFloor: false,
-                smoothness: isRockCut ? 0.22f : 0.40f,
-                metallic: isRockCut ? 0.12f : 0.48f);
+                smoothness: isRockCut ? 0.18f : 0.26f,
+                metallic: isRockCut ? 0.08f : 0.36f);
         }
 
         private Material GetFloorMaterialForSlab(string entryId, float widthX, float depthZ)
         {
             Color floorTint;
-            float smooth = 0.42f;
-            float metal = 0.48f;
+            float smooth = 0.22f;
+            float metal = 0.34f;
             switch (entryId)
             {
                 case "room.c06_clearing":
-                    floorTint = new Color(0.42f, 0.46f, 0.50f);
-                    smooth = 0.62f;
-                    metal = 0.30f;
+                    floorTint = new Color(0.40f, 0.44f, 0.49f);
+                    smooth = 0.28f;
+                    metal = 0.28f;
                     break;
                 case "room.c09_tycho":
                 case "room.c16_authority":
                     floorTint = new Color(0.34f, 0.38f, 0.45f);
-                    smooth = 0.22f;
-                    metal = 0.15f;
+                    smooth = 0.18f;
+                    metal = 0.16f;
                     break;
                 case "room.c10_slack_line":
                     floorTint = new Color(0.32f, 0.26f, 0.24f);
-                    smooth = 0.30f;
-                    metal = 0.35f;
+                    smooth = 0.20f;
+                    metal = 0.25f;
                     break;
                 case "room.c14_dockmaster":
                 case "room.c15_maintenance":
-                    floorTint = new Color(0.35f, 0.32f, 0.28f);
-                    smooth = 0.32f;
-                    metal = 0.55f;
+                    floorTint = new Color(0.34f, 0.32f, 0.29f);
+                    smooth = 0.22f;
+                    metal = 0.40f;
                     break;
                 default:
                     floorTint = new Color(0.30f, 0.35f, 0.41f);
                     break;
             }
 
-            Texture alb = Catalog != null ? Catalog.stationFloorAlbedo : null;
-            Texture nrm = Catalog != null ? Catalog.stationFloorNormal : null;
-            Texture met = Catalog != null ? Catalog.stationFloorMetallic : null;
             Vector2 tiling = new Vector2(Mathf.Max(1f, Mathf.Round(widthX / 4.0f)), Mathf.Max(1f, Mathf.Round(depthZ / 4.0f)));
-            return UrpMaterialFactory.GetTiledPbrSurface($"Floor_{entryId}", alb, nrm, met, floorTint, tiling, isFloor: true, smoothness: smooth, metallic: metal);
+            return UrpMaterialFactory.GetTiledPbrSurface($"Floor_{entryId}", null, null, null, floorTint, tiling, isFloor: true, smoothness: smooth, metallic: metal);
         }
 
         private static Color GetRoomLightColor(string entryId, bool isRockCutPort = false)
@@ -1680,6 +1742,155 @@ namespace TacSim.World
                 case "room.c14_dockmaster":    return new Color(1.0f, 0.68f, 0.32f);
                 default:                       return new Color(0.86f, 0.93f, 1.0f);
             }
+        }
+
+        private bool HasUpperFloorSlabCovering(AtlasRoomDef room)
+        {
+            if (Pack == null) return false;
+            Vector2 c = room.Center2D;
+            foreach (var other in Pack.Rooms.Values)
+            {
+                if (other.FloorIndex == room.FloorIndex + 1 &&
+                    c.x >= other.MinX && c.x <= other.MaxX &&
+                    c.y >= other.MinY && c.y <= other.MaxY)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool TrySelectNonOverlappingHorizontalWallX(
+            AtlasRoomDef room,
+            float yWall,
+            List<(int floor, float yWall, float centerX, AtlasExitDef exit)> hDoors,
+            List<float> existingXs,
+            float desiredX,
+            float halfClearanceM,
+            float minPlaqueSpacingM,
+            out float chosenX)
+        {
+            chosenX = desiredX;
+            float minSafe = room.MinX + halfClearanceM;
+            float maxSafe = room.MaxX - halfClearanceM;
+            if (minSafe >= maxSafe)
+                return false;
+
+            float clamped = Mathf.Clamp(desiredX, minSafe, maxSafe);
+            if (IsHorizontalSlotClear(room.FloorIndex, yWall, clamped, halfClearanceM + 2.2f, hDoors, existingXs, minPlaqueSpacingM))
+            {
+                chosenX = clamped;
+                return true;
+            }
+
+            for (float offset = 1.0f; offset <= (maxSafe - minSafe); offset += 1.0f)
+            {
+                float right = clamped + offset;
+                if (right <= maxSafe && IsHorizontalSlotClear(room.FloorIndex, yWall, right, halfClearanceM + 2.2f, hDoors, existingXs, minPlaqueSpacingM))
+                {
+                    chosenX = right;
+                    return true;
+                }
+                float left = clamped - offset;
+                if (left >= minSafe && IsHorizontalSlotClear(room.FloorIndex, yWall, left, halfClearanceM + 2.2f, hDoors, existingXs, minPlaqueSpacingM))
+                {
+                    chosenX = left;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsHorizontalSlotClear(
+            int floor,
+            float yWall,
+            float candidateX,
+            float doorDistM,
+            List<(int floor, float yWall, float centerX, AtlasExitDef exit)> hDoors,
+            List<float> existingXs,
+            float minPlaqueSpacingM)
+        {
+            if (ConflictsWithHorizontalDoor(floor, yWall, candidateX, doorDistM, hDoors))
+                return false;
+            if (existingXs != null)
+            {
+                for (int i = 0; i < existingXs.Count; i++)
+                {
+                    if (Mathf.Abs(existingXs[i] - candidateX) < minPlaqueSpacingM)
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool TrySelectNonOverlappingVerticalWallY(
+            AtlasRoomDef room,
+            float xWall,
+            List<(int floor, float xWall, float centerY, AtlasExitDef exit)> vDoors,
+            List<float> existingYs,
+            float desiredY,
+            float halfClearanceM,
+            float minPlaqueSpacingM,
+            out float chosenY)
+        {
+            chosenY = desiredY;
+            float minSafe = room.MinY + halfClearanceM;
+            float maxSafe = room.MaxY - halfClearanceM;
+            if (minSafe >= maxSafe)
+                return false;
+
+            float clamped = Mathf.Clamp(desiredY, minSafe, maxSafe);
+            if (IsVerticalSlotClear(room.FloorIndex, xWall, clamped, halfClearanceM + 2.2f, vDoors, existingYs, minPlaqueSpacingM))
+            {
+                chosenY = clamped;
+                return true;
+            }
+
+            for (float offset = 1.0f; offset <= (maxSafe - minSafe); offset += 1.0f)
+            {
+                float north = clamped + offset;
+                if (north <= maxSafe && IsVerticalSlotClear(room.FloorIndex, xWall, north, halfClearanceM + 2.2f, vDoors, existingYs, minPlaqueSpacingM))
+                {
+                    chosenY = north;
+                    return true;
+                }
+                float south = clamped - offset;
+                if (south >= minSafe && IsVerticalSlotClear(room.FloorIndex, xWall, south, halfClearanceM + 2.2f, vDoors, existingYs, minPlaqueSpacingM))
+                {
+                    chosenY = south;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsVerticalSlotClear(
+            int floor,
+            float xWall,
+            float candidateY,
+            float doorDistM,
+            List<(int floor, float xWall, float centerY, AtlasExitDef exit)> vDoors,
+            List<float> existingYs,
+            float minPlaqueSpacingM)
+        {
+            if (vDoors != null)
+            {
+                for (int i = 0; i < vDoors.Count; i++)
+                {
+                    var d = vDoors[i];
+                    if (d.floor == floor && Mathf.Abs(d.xWall - xWall) < 0.35f && Mathf.Abs(d.centerY - candidateY) < doorDistM)
+                        return false;
+                }
+            }
+            if (existingYs != null)
+            {
+                for (int i = 0; i < existingYs.Count; i++)
+                {
+                    if (Mathf.Abs(existingYs[i] - candidateY) < minPlaqueSpacingM)
+                        return false;
+                }
+            }
+            return true;
         }
 
         private static float SelectClearHorizontalWallX(
@@ -1733,20 +1944,20 @@ namespace TacSim.World
             Transform parent,
             string instanceName,
             Vector3 floorPos,
-            bool alignAlongX,
+            float inwardYawDeg,
             float targetHeightM,
             float maxDimensionM)
         {
-            // Face into the room (+Z when placed against the south wall); if the vendor mesh's wide desk axis is Z rather than X,
-            // rotate -90 deg around Y so the console's front screen faces into the room (+Z) rather than standing edge-on!
+            // Spawn grounded at identity first to inspect the vendor mesh's unrotated wide desk axis, then rotate by `inwardYawDeg`
+            // (plus -90 deg if the mesh's wide desk axis is Z rather than X) so the console screen always faces into the room!
             var inst = PrefabFittingHelper.SpawnGrounded(prefab, parent, instanceName, floorPos, Quaternion.identity, targetHeightM, maxDimensionM, keepColliders: false);
             if (inst == null) return null;
 
             if (PrefabFittingHelper.TryComputeRendererBounds(inst, out Bounds b))
             {
                 bool wideAlongZ = b.size.z > b.size.x * 1.05f;
-                bool needsQuarterTurn = (alignAlongX && wideAlongZ) || (!alignAlongX && !wideAlongZ);
-                inst.transform.rotation = needsQuarterTurn ? Quaternion.Euler(0f, -90f, 0f) : Quaternion.identity;
+                float baseOffsetYaw = wideAlongZ ? -90f : 0f;
+                inst.transform.rotation = Quaternion.Euler(0f, inwardYawDeg + baseOffsetYaw, 0f);
                 if (PrefabFittingHelper.TryComputeRendererBounds(inst, out Bounds bAligned))
                 {
                     inst.transform.position += new Vector3(
@@ -1784,11 +1995,11 @@ namespace TacSim.World
             return tmp;
         }
 
-        private void CreateDetailPlaque(Transform parent, string keyword, string textBody, Vector3 floorPos)
+        private void CreateDetailPlaque(Transform parent, string keyword, string textBody, Vector3 floorPos, float inwardYawDeg = 0f)
         {
             var plaqueRoot = new GameObject($"Plaque_{keyword}");
             plaqueRoot.transform.SetParent(parent, false);
-            plaqueRoot.transform.position = floorPos;
+            plaqueRoot.transform.SetPositionAndRotation(floorPos, Quaternion.Euler(0f, inwardYawDeg, 0f));
 
             var bc = plaqueRoot.AddComponent<BoxCollider>();
             bc.size = new Vector3(0.95f, 1.35f, 0.75f);
@@ -1796,25 +2007,26 @@ namespace TacSim.World
 
             if (Catalog != null && Catalog.stationConsoleProp != null)
             {
-                SpawnWallAlignedConsoleProp(Catalog.stationConsoleProp, plaqueRoot.transform, "ObservationConsole", floorPos, alignAlongX: true, targetHeightM: 1.12f, maxDimensionM: 1.25f);
+                SpawnWallAlignedConsoleProp(Catalog.stationConsoleProp, plaqueRoot.transform, "ObservationConsole", floorPos, inwardYawDeg, targetHeightM: 1.12f, maxDimensionM: 1.25f);
             }
             else
             {
                 Material postMat = UrpMaterialFactory.GetOpaque("LecternPost", new Color(0.16f, 0.20f, 0.25f), 0.45f, 0.65f);
                 Material screenMat = UrpMaterialFactory.GetEmissive("LecternScreen", new Color(0.08f, 0.22f, 0.30f), new Color(0.15f, 0.65f, 0.85f) * 0.8f);
-                CreateBox(plaqueRoot.transform, "LecternPedestal", floorPos + new Vector3(0f, 0.48f, 0f), new Vector3(0.22f, 0.96f, 0.22f), postMat, false);
-                var face = CreateBox(plaqueRoot.transform, "LecternPlate", floorPos + new Vector3(0f, 0.98f, 0.04f), new Vector3(0.68f, 0.08f, 0.42f), screenMat, false);
+                var ped = CreateBox(plaqueRoot.transform, "LecternPedestal", floorPos + new Vector3(0f, 0.48f, 0f), new Vector3(0.22f, 0.96f, 0.22f), postMat, false);
+                ped.transform.localRotation = Quaternion.identity;
+                var face = CreateBox(plaqueRoot.transform, "LecternPlate", floorPos + plaqueRoot.transform.forward * 0.04f + new Vector3(0f, 0.98f, 0f), new Vector3(0.68f, 0.08f, 0.42f), screenMat, false);
                 face.transform.localRotation = Quaternion.Euler(28f, 0f, 0f);
             }
 
-            // Orient toward a viewer inside the room looking South (-Z) AND attach WorldBillboard so the label is never mirrored!
+            // Orient toward a viewer inside the room AND attach WorldBillboard so the label is never mirrored!
             var labelGo = new GameObject("PlaqueLabelBillboard");
             labelGo.transform.SetParent(plaqueRoot.transform, false);
-            labelGo.transform.localPosition = new Vector3(0f, 1.48f, 0f);
+            labelGo.transform.localPosition = new Vector3(0f, 1.44f, 0f);
             labelGo.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
             var bb = labelGo.AddComponent<WorldBillboard>();
-            var labelTmp = CreateTmp3D(labelGo.transform, "PlaqueTitle", Vector3.zero, $"[{keyword.ToUpperInvariant()}]", 1.45f, new Color(0.55f, 0.90f, 1f));
-            labelTmp.rectTransform.sizeDelta = new Vector2(3.4f, 0.65f);
+            var labelTmp = CreateTmp3D(labelGo.transform, "PlaqueTitle", Vector3.zero, $"[{keyword.ToUpperInvariant()}]", 1.08f, new Color(0.55f, 0.90f, 1f));
+            labelTmp.rectTransform.sizeDelta = new Vector2(2.40f, 0.48f);
             bb.NameplateText = labelTmp;
 
             var wi = plaqueRoot.AddComponent<WorldInteractable>();
@@ -1833,7 +2045,16 @@ namespace TacSim.World
             float cx = (minX + maxX) * 0.5f + _originOffsetX;
             float cz = (minY + maxY) * 0.5f + _originOffsetZ;
             Material mat = GetFloorMaterialForSlab(entryId, w, d);
-            CreateBox(parent, name, new Vector3(cx, elev - 0.15f, cz), new Vector3(w, 0.30f, d), mat, true);
+            CreateBox(parent, name, new Vector3(cx, elev - 0.14f, cz), new Vector3(w, 0.28f, d), mat, true);
+
+            // Attach a matte coffered ceiling soffit underneath any upper-deck floor slab so rooms below see a true
+            // architectural ceiling (preserving all staircase cutouts!) rather than upside-down floor tiles!
+            if (elev > 0.5f)
+            {
+                Vector2 ceilTiling = new Vector2(Mathf.Max(1f, Mathf.Round(w / 4.0f)), Mathf.Max(1f, Mathf.Round(d / 4.0f)));
+                Material ceilMat = UrpMaterialFactory.GetStationCeilingMaterial($"Soffit_{entryId}", new Color(0.32f, 0.36f, 0.42f), ceilTiling);
+                CreateBox(parent, name + "_CeilingSoffit", new Vector3(cx, elev - 0.30f, cz), new Vector3(w, 0.04f, d), ceilMat, withCollider: false);
+            }
         }
 
         private static GameObject CreateBox(Transform parent, string name, Vector3 worldPos, Vector3 scale, Material mat, bool withCollider)

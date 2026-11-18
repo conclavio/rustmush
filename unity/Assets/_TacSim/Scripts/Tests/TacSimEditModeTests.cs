@@ -1444,6 +1444,10 @@ namespace TacSim.Tests
                 var allTransforms = coord.StationWorld.GetComponentsInChildren<UnityEngine.Transform>(true);
                 int boardCount = 0;
                 int plaqueCount = 0;
+                int diffuserCount = 0;
+                int ceilingCount = 0;
+                var plaquesByRoom = new Dictionary<UnityEngine.Transform, List<UnityEngine.Transform>>();
+
                 for (int i = 0; i < allTransforms.Length; i++)
                 {
                     var tr = allTransforms[i];
@@ -1452,6 +1456,14 @@ namespace TacSim.Tests
                         boardCount++;
                         Assert.AreEqual(UnityEngine.Vector3.one, tr.parent.localScale, "BoardText parent StatusBoardRoot must stay at uniform (1,1,1) scale");
                         Assert.AreEqual(UnityEngine.Vector3.one, tr.localScale, "BoardText must not be stretched across doorways");
+                    }
+                    else if (tr.name == "CeilingLightDiffuser")
+                    {
+                        diffuserCount++;
+                    }
+                    else if (tr.name == "RoofCeiling" || tr.name.EndsWith("_CeilingSoffit", System.StringComparison.Ordinal))
+                    {
+                        ceilingCount++;
                     }
                     else if (tr.name.StartsWith("Plaque_", System.StringComparison.Ordinal))
                     {
@@ -1467,10 +1479,64 @@ namespace TacSim.Tests
                         Assert.IsNotNull(labelBillboard, $"Plaque '{tr.name}' must have PlaqueLabelBillboard");
                         Assert.IsNotNull(labelBillboard.GetComponent<WorldBillboard>(), "Plaque label must carry WorldBillboard so text never renders mirrored");
                         Assert.Less(UnityEngine.Quaternion.Angle(labelBillboard.localRotation, UnityEngine.Quaternion.Euler(0f, 180f, 0f)), 0.5f);
+
+                        if (tr.parent != null)
+                        {
+                            if (!plaquesByRoom.TryGetValue(tr.parent, out var list))
+                            {
+                                list = new List<UnityEngine.Transform>();
+                                plaquesByRoom[tr.parent] = list;
+                            }
+                            list.Add(tr);
+                        }
                     }
                 }
                 Assert.Greater(boardCount, 0, "Expected Ceres Freeport diegetic status boards");
                 Assert.Greater(plaqueCount, 0, "Expected Ceres Freeport detail plaques ([CASES], [ROLLER DOOR], etc.)");
+                Assert.Greater(diffuserCount, 0, "Expected recessed ceiling luminaire fixtures");
+                Assert.Greater(ceilingCount, 0, "Expected matte coffered ceiling soffits/roofs");
+
+                // Verify plaques within the same room (e.g. [LAY BOARD] & [LEDGER SCREEN] in Registry) never overlap!
+                foreach (var kv in plaquesByRoom)
+                {
+                    var roomPlaques = kv.Value;
+                    for (int a = 0; a < roomPlaques.Count; a++)
+                    {
+                        for (int b = a + 1; b < roomPlaques.Count; b++)
+                        {
+                            float sep = UnityEngine.Vector3.Distance(roomPlaques[a].position, roomPlaques[b].position);
+                            Assert.GreaterOrEqual(sep, 2.5f, $"Plaques '{roomPlaques[a].name}' and '{roomPlaques[b].name}' in '{kv.Key.name}' must not overlap");
+                        }
+                    }
+                }
+
+                // Verify stairs NEVER spawn cyan DoorPost_A / DoorPost_B even in fallback mode (`Catalog == null`)!
+                var portals = coord.StationWorld.GetComponentsInChildren<ExitPortalTrigger>(true);
+                int stairPortals = 0;
+                for (int p = 0; p < portals.Length; p++)
+                {
+                    if (UnityEngine.Mathf.Abs(portals[p].axisAToB.y) > 0.2f)
+                    {
+                        stairPortals++;
+                        Assert.IsNull(portals[p].transform.Find("DoorPost_A"), "Inter-floor stair portals must never spawn cyan DoorPost_A bars");
+                        Assert.IsNull(portals[p].transform.Find("DoorPost_B"), "Inter-floor stair portals must never spawn cyan DoorPost_B bars");
+                    }
+                }
+                Assert.Greater(stairPortals, 0, "Expected inter-floor stair portals in Ceres Freeport");
+
+                // Verify WorldBillboard clamps speech bubbles away from walls!
+                var testActorGo = new UnityEngine.GameObject("WallCornerActor");
+                testActorGo.transform.SetParent(rootGo.transform, false);
+                testActorGo.transform.position = new UnityEngine.Vector3(9.8f, 0f, -9.8f);
+                var testBbGo = new UnityEngine.GameObject("Billboard");
+                testBbGo.transform.SetParent(testActorGo.transform, false);
+                var testBb = testBbGo.AddComponent<WorldBillboard>();
+                testBb.SetRoomSafeBounds(-10f, 10f, -10f, 10f, wallMarginM: 1.5f);
+                var bbLateUpdate = typeof(WorldBillboard).GetMethod("LateUpdate", flags);
+                Assert.IsNotNull(bbLateUpdate);
+                bbLateUpdate.Invoke(testBb, null);
+                Assert.LessOrEqual(testBbGo.transform.position.x, 8.501f, "Speech billboard must clamp inside east wall margin");
+                Assert.GreaterOrEqual(testBbGo.transform.position.z, -8.501f, "Speech billboard must clamp inside south wall margin");
 
                 // Rebuild a secondary StationWorld with commercial door prefabs assigned -> zero fallback cyan DoorPost_A / DoorPost_B!
                 mockDoorFrame = UnityEngine.GameObject.CreatePrimitive(UnityEngine.PrimitiveType.Cube);
