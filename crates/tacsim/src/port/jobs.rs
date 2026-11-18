@@ -15,6 +15,8 @@ impl ServiceBoard for PortJobs {
         let mut out = crate::surface::retrieval::services(w, venue);
         out.extend(crate::port::passenger::board::services(w, venue));
         out.extend(crate::port::survey::services(w, venue));
+        // Doc 48 cut EX.7: players listed for crew hire, standing in the port.
+        out.extend(crate::detachment::crew::wages::services(w, venue));
         out.truncate(MAX_SERVICES_SHOWN + 1);
         out
     }

@@ -2041,14 +2041,17 @@ pub enum ServiceKind {
     Passage,
     /// Sound one block of a site afresh (Occator's survey commission): the fact is the log.
     Survey,
+    /// A seat for a wage (doc 48 cut EX.7, Q-48-14): a player offering themselves as crew.
+    Crew,
 }
 
 impl ServiceKind {
     /// Every kind, in board order.
-    pub const ALL: [ServiceKind; 3] = [
+    pub const ALL: [ServiceKind; 4] = [
         ServiceKind::Retrieval,
         ServiceKind::Passage,
         ServiceKind::Survey,
+        ServiceKind::Crew,
     ];
 
     /// The word a filter names and the board prints.
@@ -2058,6 +2061,7 @@ impl ServiceKind {
             ServiceKind::Retrieval => "retrieval",
             ServiceKind::Passage => "passage",
             ServiceKind::Survey => "survey",
+            ServiceKind::Crew => "crew",
         }
     }
 
@@ -2068,6 +2072,7 @@ impl ServiceKind {
             ServiceKind::Retrieval => "Retrieval",
             ServiceKind::Passage => "Passage",
             ServiceKind::Survey => "Survey",
+            ServiceKind::Crew => "Crew",
         }
     }
 
@@ -2107,6 +2112,8 @@ pub enum ServiceTerm {
     /// No deadline of its own: the kind's host settles it on performance (a passage, which
     /// refunds after one IC year).
     OnPerformance,
+    /// Paid by the IC day while it lasts (doc 48 cut EX.7: a crew member's wage).
+    Daily,
 }
 
 /// **One open service on a venue's board** (doc 48 cut EX.5, Q-48-3, -12): a value the host

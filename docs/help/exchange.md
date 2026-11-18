@@ -132,7 +132,7 @@ sale at that port. A house's own hulls at their home port owe nothing.
 
 ## The job board
 
-  +market/jobs [retrieval|passage|survey] [market=<venue>]
+  +market/jobs [retrieval|passage|survey|crew] [market=<venue>]
 
 Lists the jobs posted at the port you stand in, or at the market you name.
 Each job says what it pays, any bond you would escrow, when it is due, and the
@@ -145,6 +145,9 @@ command that takes it:
   arrival.
 - **Survey:** Occator's commissions for fresh soundings of one block. Take one
   with +survey/accept; you have 28 IC days from accepting.
+- **Crew:** a player offering to crew for a wage, while they stand in the port.
+  The pay shown is the scale wage they ask, by the IC day; page them to agree
+  terms. List yourself with +sortie/available (see help detachments).
 
 A job paying more than 10,000 cr asks for a bond of a fifth of its pay. The bond
 is escrowed from your account when you take the job. It comes back with the pay

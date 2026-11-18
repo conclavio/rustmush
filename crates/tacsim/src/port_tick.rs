@@ -2146,6 +2146,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::pools::tick(ctx);
     // Doc 48 cut EX.4: the berth and locker charges, in step with the world.
     crate::port::berth::tick(ctx);
+    // Doc 48 cut EX.7: each hire's wage, in step with the crew contracts.
+    crate::detachment::crew::wages::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
