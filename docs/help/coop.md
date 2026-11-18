@@ -14,8 +14,10 @@ reads the terms and how many Drays are free, from anywhere.
                   prices that goes to the Co-op on every sale
   the buyout      the price at which the hull becomes yours, fixed on your
                   papers when you sign
-  once, ever      one enrolment per account, ever: no other character on
-                  your account can enrol after you
+  one at a time   one charter per account at a time: no other character on
+                  your account can enrol while it stands
+  one stake       the stake is paid once per account, ever: a second
+                  charter comes with no second stake
 
 ## Signing
 
@@ -36,9 +38,11 @@ from it and file its sailing plan; nobody else can board it on your charter.
 `+coop/statement` shows your charter's terms, its sales so far, the Co-op's
 share of them, and your cash against the buyout.
 
-A charter ends in one of three ways: you buy the hull out, you hand it back, or
-you go a week without a departure and the Co-op takes it back. Whichever way it
-ends, the Co-op enrols each pilot once, ever: you cannot enrol again.
+A charter ends in one of four ways: you buy the hull out, you hand it back, you
+go a real week without a departure and the Co-op takes it back, or staff revoke
+it. If you handed her back or the Co-op took her back, you can charter again (see
+"Chartering again" below). A buyout or a staff revocation is final: the Co-op
+does not charter you again.
 
 ## Buying the hull out
 
@@ -81,7 +85,8 @@ returns your deposit, one past it keeps it.
 
 ## A week without a departure
 
-A charter is for working the lane. If your Dray goes a week of real time without a
+A charter is for working the lane. If your Dray goes a week of real time (seven
+real days: 168 IC days at the live clock's 24 IC hours to the real hour) without a
 departure, the Co-op takes her back: when she is docked at Ceres Freeport with an
 empty cargo hold, her charter ends, anyone aboard is seen ashore, and her
 reaction mass and stores stay with her. If she is anywhere else, or still carries
@@ -89,7 +94,18 @@ cargo, the Co-op stops her sailing plan instead, and it stays stopped until you
 restart it with `+ship/order resume`; she is taken back once she lies docked at
 Ceres with an empty cargo hold while the week is still unbroken. Any departure,
 by hand or from your plan, resets the week. The stake stays yours, and you are
-told the next time you are on watch.
+told the next time you are on watch, with the way to charter again.
+
+## Chartering again
+
+Once the Co-op has your Dray back, whether you handed her back or a week without
+a departure ended her charter, `+coop/enrol <name>` at the Registry & Co-op desk
+charters you its next free Dray, as the first time did, on the terms as they
+stand that day. There is no second stake: the Co-op stakes a captain once, ever,
+and your credit account is the one you already have. While your last Dray is
+still on her way back (not yet docked at Ceres with an empty cargo hold), the
+desk asks you to wait until she is back in the pool. `+coop` says when you can
+charter again.
 
 ## The Registry's prospecting licence
 

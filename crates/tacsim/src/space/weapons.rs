@@ -35,6 +35,11 @@ const fn is_zero_u16(value: &u16) -> bool {
     *value == 0
 }
 
+/// Whether a field holds nought: what a mount's document leaves out.
+const fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
 /// **The shipped row `id`** (`crates/tacsim/content/space/mounts.json`): what the test-only
 /// `standard_*` constructors build from, so no test writes a mount's numbers of its own.
 #[cfg(test)]
@@ -175,7 +180,17 @@ pub struct LaserMount {
     /// the offence mode's; `None` when the two are one cycle, as on every shipped row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defence_cooldown_ms: Option<u32>,
+    /// The cycle left in her current mode, wall milliseconds. Absent from her document when
+    /// nought (doc 49 unit CC.8): an idle laser saves the bytes her per-mode cycle costs, so a
+    /// long heave-to's saved space state keeps under its 64 KiB budget.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub cooldown_remaining_ms: u32,
+    /// **Her offence cycle, still running behind a switch to defence** (Q-49-24; doc 49 unit
+    /// CC.8): what was left of it when she switched, counting down while she stands in
+    /// defence. Switching back to offence while any is left keeps it; with none left the
+    /// switch starts a whole offence cycle. Nought, and absent from her document, otherwise.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub offence_left_ms: u32,
 }
 
 impl LaserMount {
@@ -203,7 +218,50 @@ impl LaserMount {
             cooldown_ms,
             defence_cooldown_ms: defence.filter(|cycle| *cycle != cooldown_ms),
             cooldown_remaining_ms: 0,
+            offence_left_ms: 0,
         }
+    }
+
+    /// The cycle of `mode`, wall milliseconds (Q-49-24: the cycle belongs to the mode).
+    #[must_use]
+    pub fn cycle_ms(&self, mode: LaserMode) -> u32 {
+        match mode {
+            LaserMode::Offense => self.cooldown_ms,
+            LaserMode::Defense => self.defence_cycle_ms(),
+        }
+    }
+
+    /// **Switch her to `mode`** (Q-49-24; doc 49 unit CC.8). A switch never fires early: the
+    /// new mode's cycle starts from the switch. Her offence cycle keeps running behind a
+    /// switch to defence, so switching back within one offence cycle keeps what is left of it,
+    /// and a switch is no way round the floor. A switch to the mode she is in changes nothing.
+    /// The caller checks that her fit allows `mode`.
+    pub fn switch_mode(&mut self, mode: LaserMode) {
+        if self.mode == mode {
+            return;
+        }
+        match mode {
+            LaserMode::Defense => {
+                self.offence_left_ms = self.cooldown_remaining_ms;
+                self.cooldown_remaining_ms = self.defence_cycle_ms();
+            }
+            LaserMode::Offense => {
+                self.cooldown_remaining_ms = if self.offence_left_ms > 0 {
+                    self.offence_left_ms
+                } else {
+                    self.cooldown_ms
+                };
+                self.offence_left_ms = 0;
+            }
+        }
+        self.mode = mode;
+    }
+
+    /// Run her cycles on by `step_ms`: the current mode's, and the offence cycle behind a
+    /// switch to defence.
+    pub fn cool(&mut self, step_ms: u32) {
+        self.cooldown_remaining_ms = self.cooldown_remaining_ms.saturating_sub(step_ms);
+        self.offence_left_ms = self.offence_left_ms.saturating_sub(step_ms);
     }
 
     /// The defence mode's cycle, wall milliseconds.

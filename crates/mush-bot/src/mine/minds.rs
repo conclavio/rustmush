@@ -769,6 +769,31 @@ pub mod venue {
     pub const CHARTERED_ASK: &str = "Chartered cargo cannot go on a personal ask yet.";
 }
 
+/// **The way back to a Co-op Dray** (the owner's 2026-11-17 ruling): the recall after a real
+/// week idle (168 IC days), its notice and the desk's re-charter (`tacsim::port::coop`,
+/// `tacsim::port::recall`). No lane reads them yet; each is held to the game's own text below.
+pub mod coop {
+    /// `tacsim::port::coop::ENROLLED_ONCE`'s tail: a live charter on the account.
+    pub const ENROLLED_ONCE: &str = "the Co-op charters each pilot one Dray at a time.";
+    /// `tacsim::port::coop::GRADUATED_ONCE`'s tail: a graduate at the desk.
+    pub const GRADUATED_ONCE: &str =
+        "the Co-op charters only captains who have no hull of their own.";
+    /// `tacsim::port::coop::REVOKED_FINAL`'s tail: a staff-revoked charter.
+    pub const REVOKED_FINAL: &str = "the Co-op does not charter you again.";
+    /// `tacsim::port::coop::RECHARTER_WAIT`'s tail: the last Dray not back yet.
+    pub const RECHARTER_WAIT: &str = "; charter again once she is in its pool.";
+    /// `tacsim::port::coop::RECHARTER_HINT`'s head: the way back.
+    pub const RECHARTER_HINT: &str =
+        "To fly again, charter another Dray: +coop/enrol <ship name> at the ";
+    /// `tacsim::port::coop::RECHARTERED_TERMS`'s head: a re-charter's terms.
+    pub const RECHARTERED_TERMS: &str = "No second stake: the Co-op stakes a captain once. Buyout ";
+    /// `tacsim::port::coop::REGISTRAR_LINE`'s last sentence: the recall and the way back.
+    pub const REGISTRAR_LINE: &str =
+        "takes its Dray back; you may charter another, with no second stake.";
+    /// `tacsim::port::recall::DORMANT_NOTICE`'s tail: the recall after a real week idle.
+    pub const DORMANT_NOTICE: &str = "): a real week without a departure. The stake stays yours.";
+}
+
 /// **The partial needles**: rows (`family::NAME`) whose needle alone does not identify the
 /// sentence. Each needle's doc says what a reader must use beside it. A test holds this list to
 /// the table: every row whose needle is shorter than [`PARTIAL_BELOW`] characters (trimmed) is
@@ -840,6 +865,29 @@ mod tests {
             use tacsim::port::proceeds as game;
             rows!("";
                 CHARTERED_ASK,
+            )
+        });
+        rows
+    }
+
+    fn coop_rows() -> Vec<Row> {
+        use super::coop as bot;
+        let mut rows = {
+            use tacsim::port::coop as game;
+            rows!("";
+                ENROLLED_ONCE,
+                GRADUATED_ONCE,
+                REVOKED_FINAL,
+                RECHARTER_WAIT,
+                RECHARTER_HINT,
+                RECHARTERED_TERMS,
+                REGISTRAR_LINE,
+            )
+        };
+        rows.extend({
+            use tacsim::port::recall as game;
+            rows!("";
+                DORMANT_NOTICE,
             )
         });
         rows
@@ -1209,7 +1257,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 13] = [
+        let families: [(&str, Vec<Row>); 14] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1223,6 +1271,7 @@ mod tests {
             ("core_resale", core_resale_rows()),
             ("venue", venue_rows()),
             ("scrap", scrap_rows()),
+            ("coop", coop_rows()),
         ];
         families
             .into_iter()
@@ -1833,6 +1882,40 @@ mod tests {
                 .replace("{tonnes}", "20.0")
                 .replace("{owed}", "1,234,567.89 cr");
             assert!(filled.chars().count() < 120, "venue::{name}: {filled}");
+        }
+    }
+
+    // The owner's 2026-11-17 ruling: the way back to a Co-op Dray.
+    #[test]
+    fn coop_needles_are_in_step() {
+        in_step("coop", &coop_rows());
+    }
+    #[test]
+    fn coop_needles_are_distinct() {
+        distinct(&qualified("coop", coop_rows()), &[]);
+    }
+    /// Every Co-op sentence fits the 120-column floor with a long ship name, the mark, the desk
+    /// and the port filled in, one sentence at a time (of the registrar's line, its last).
+    #[test]
+    fn coop_sentences_fit_120_columns() {
+        for (name, sentence, _) in coop_rows() {
+            let filled = sentence
+                .replace("{name}", "Patience Wen of Kirkwood")
+                .replace("{mark}", "FPC-D-0408")
+                .replace("{office}", "Registry & Co-op Desk")
+                .replace("{port}", "Ceres Freeport")
+                .replace("{buyout}", "90,000.00cr")
+                .replace("{countersign}", "Ilse Oduya-Brandt");
+            // The registrar's line is several sentences; only its last is this ruling's.
+            let lines: Vec<&str> = filled.split_inclusive(". ").collect();
+            let checked: Vec<&str> = if name == "REGISTRAR_LINE" {
+                lines.last().copied().into_iter().collect()
+            } else {
+                lines
+            };
+            for line in checked {
+                assert!(line.chars().count() < 120, "coop::{name}: {line}");
+            }
         }
     }
 

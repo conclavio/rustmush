@@ -1539,8 +1539,445 @@ Runs were on conclav.dev, with the patch applied on `73d05678b`.
 
 ## CC.8
 
-Not built.
+The space palette and doctrines (Q-49-7, Q-49-10, Q-49-19, Q-49-24, Q-49-25, Q-49-26). Built
+2026-11-16 on main `b4254e826`, with CC.6 (#627), CC.9 (#634) and CC.7's first part (#640) merged.
+
+**Survey.**
+
+- **What a lone shooter did to a screen, on the values CC.6 carried** (measured, see "The screen
+  measurement" below): every stock screen stopped all eight torpedoes of a lone corvette's
+  magazine, at 60, 150 and 300 km standing off and on a 6 km/s closing pass. Two rotaries alone
+  stopped both rounds of every salvo, so no defence cycle could make a hauler's screen leak while
+  their 15 km envelope stood. That is doc 48b's W-49-4, confirmed.
+- **The cycles.** One cooldown served both of a laser's modes: a switch changed the mode and
+  nothing else, so a laser idle in defence fired the moment it was switched to offence.
+- **The doctrines** fired as §3.4 (corrected) says: the picket its laser, the interdictor its laser
+  and at most one torpedo a check-out, the raider her opener and then lasers and her spinal gun.
+  Every one of them leaned on a 500 km, 110-a-pulse laser on a 1 s cycle.
+- **The stories leaned on it too.** Doc 35's SF.R stories in `voyage.rs` had a chartered Dray
+  beam the interdictor to a derelict in four seconds, and the picket's corvette laser the raider
+  to one in twenty-four. On the ruled palette no story hull can do either; see Divergences.
+- **The geometry doc 47's stories fly.** The raider ambushes from 120 km, closing at 20 m/s
+  (`content/space/picket_cast.json`), and AP.9's and CO.2's stories assert that the Dray's
+  answer *arrives* on her. That sets the offence laser's reach (Divergences).
+- **`speed(n)` in space is a standing burn**, not a speed goal: after her opener the raider
+  burned flat out for the rest of the fight, past 1 km/s, so she never held a course.
+
+**Built.**
+
+- **The palette** (`content/space/mounts.json`, `fits.json`, re-signed; `DIGESTS` re-pinned):
+
+  | Mount | Cycle | Reach | What it does | Note |
+  |---|---|---|---|---|
+  | Twin torpedo tubes | 8 s reload, a salvo of two | to 500 km | 180 a round | as before; magazines 8 (16 on Halcyon), persisting (CC.7) |
+  | Turret laser, offence | **5 s** (the floor, Q-49-19) | **150 km** | **30** close in, 15 at 25 km, 7 at 45 km, 1 past 100 km | was 110 at 1 s to 500 km |
+  | Customs corvette's heavier laser, offence | **5 s** | **100 km** | **45** close in, 22 at 25 km, 2 at 100 km | was 180 at 1 s to 160 km |
+  | Either laser, defence | **4 s, automatic** (provisional) | 45 km | stops a torpedo | Q-49-10, Q-49-24 |
+  | Spinal gun (and the raider's slower one) | **6 s** | 250 km | 145 a round | 24 rounds (32 on Halcyon) |
+  | Point-defence rotary | 0.5 s, automatic | **4 km** (provisional) | two bursts stop a torpedo | was 15 km |
+
+  Every laser stays dual-mode (Q-49-25). The Dray and Dray-P start both in offence, to answer
+  fire; the corvette, the interdictor and now the belt raider start their second in defence; Halcyon
+  starts both in offence and screens with four rotaries.
+- **The cycle per mode and the switch rules** (`space/bubble.rs`'s `set_laser_mode`, through
+  `LaserMount::switch_mode` and `cool` in `space/weapons.rs`):
+  - each mode fires on its own cycle: an offence pulse starts the 5 s cycle, a torpedo stopped in
+    defence starts the defence cycle;
+  - a switch never fires early: the new mode's cycle starts from the switch, so a laser switched
+    to defence stops nothing for 4 s and one switched to offence waits 5 s;
+  - her offence cycle keeps running behind a switch to defence (`offence_left_ms`, absent from her
+    document when nought), so switching back within one offence cycle keeps what was left of it,
+    neither a fresh cycle nor none: a switch is no way round the floor;
+  - the fit names each laser's modes, and a mode it does not allow is refused (CC.6's rule, kept).
+  - `fire_picture`'s states needed no change: they read the cycle left in her current mode.
+- **The three doctrines, rewritten** (`content/minds/`; `picket_cast.json`'s three digests moved
+  with them). Each reads `space_mount(v, id)` and fires only what can land:
+  - a spinal round only at a hull that has held her course since the doctrine's last think (it
+    remembers her velocity), since a hull that burns is not where the round was aimed;
+  - a laser in offence only while her lock lies within its reach (`lock_damage` is not `()`);
+  - a salvo of two torpedoes at each reload, at a hull whose screen lets them through.
+
+  Per doctrine:
+  - **Kirkwood picket:** the spinal gun and the laser at a hostile (the raider), where it fired
+    its laser alone; its tubes only at a hull that ran the picket, a hauler, since the raider's
+    warship's screen stops a lone salvo.
+  - **Interdictor:** the laser and the spinal gun at any hull that will not heave to, and the
+    tubes only at a hull radiating for a fight. It closes until it is closing at 50 m/s, then
+    holds its drive: `speed(n)` left standing carried it past her ever faster, and the closing
+    speed it piled up left no Dray able to heave to. Its hail and heave-to logic is unchanged,
+    and so is what MW.9's and MW.10's stories read (it closes on a hull that will not stop).
+  - **Belt raider:** her opener as before; then her torch dies (`hold()`) and she presses from
+    where she is. She prefers a prey radiating for a fight to one that is not, among those customs
+    have finished with, and presses only the former, as before.
+- **Help:** `docs/help/space.md`, `+tac/beam` and "Reading your mounts": the reach and the falloff
+  in words, the per-mode cycles, the switch rules, the rotary's envelope.
+
+**The screen measurement** (Q-49-26). A lone corvette fires her whole tube magazine, a salvo of
+two at each reload, at each stock hull as her fit lays her screen ("as fitted"), and again with
+every laser in defence ("braced"). Ranges: 30, 60, 150 and 300 km standing off, and a pass from
+200 km closing at 6 km/s. The rig that printed this table and swept the defence cycle and the
+envelope was a one-off and is not kept; `cc8_a_warships_screen_stops_a_lone_salvo_and_a_haulers_leaks`
+holds its outcomes at 150 km, 300 km and on the closing pass.
+
+| Stock screen | As fitted, 30 and 60 km | As fitted, 150 km, 300 km and the closing pass | Braced |
+|---|---|---|---|
+| Dray, Dray-P (haulers) | stops all eight | **lets one round of each salvo through**: four of eight land, and the fourth disables her | stops all eight; she has nothing left to answer with |
+| Customs corvette, interdictor, belt raider | stops all eight | stops all eight | stops all eight |
+| Halcyon | stops all eight | stops all eight (four rotaries) | stops all eight |
+
+- **The defence cycle, 4 s, provisional.** Swept at 3, 4, 5 and 6 s: at 3 s and 4 s every warship's
+  screen stops a lone salvo at every range measured; at 5 s and 6 s a warship lets one round
+  through on the closing pass. 4 s is the longest that holds.
+- **The rotary's envelope, 4 km, provisional.** At 15 km a hauler's two rotaries stop everything
+  whatever the defence cycle, which is the review's finding. At 5 km a hauler leaks only at
+  300 km; at 3 km and 4 km she leaks from 150 km out. Close in her screen holds, since slow rounds
+  give the rotaries time.
+- **The spinal gun's dodge stays, priced in her change of speed** (24 rounds at a Dray): a Dray
+  that coasts takes every round at every range; one that burns across the line while a round
+  flies dodges all 24 from 60 km out (none at 30 km), and spends 71 m/s (at 60 km) to 107 m/s of
+  her change of speed doing it.
+- **The offence laser** at the raider's ambush range of 120 km lands a point a pulse: the Dray's
+  answer arrives, and does little.
+- **Decoys are not counted.** A decoy is the pilot's to launch (`+tac/decoy`) and spoofs one round
+  each: a Dray carries four.
+
+**The story** (`space::tick::thinks_tests::cc8_a_corvette_disables_a_dray_that_dodges`): the
+interdictor, flown by its shipped doctrine, takes a Dray 160 km off who is radiating for a fight
+and will not heave to. Her pilot burns across the line of every spinal round in flight at her.
+Every round is dodged, each dodge costs her change of speed, and the doctrine fires only when she
+has held her course; her hauler's screen lets the torpedoes through, and she is disabled. The
+interdictor takes no harm.
+
+**Tests.**
+
+All runs were on conclav.dev, in a throwaway clone, with the unit's patch applied on main
+`73d05678b` (main `b4254e826` merged forward with PL.3, PL.4, EX.0 and EX.2).
+
+- **New tests** (`space::bubble::cc8_tests`, `src/space/bubble_cc8_tests.rs`):
+  - `cc8_every_shipped_fit_flies_the_ruled_palette`: every fit's cycles (8, 6, 5, 4 and 0.5 s), the
+    spinal magazines, every laser dual-mode, and the start modes;
+  - `cc8_an_offence_laser_is_short_and_weak_against_a_hull`;
+  - `cc8_a_switch_starts_the_new_modes_cycle_and_never_fires_early`,
+    `cc8_switching_back_within_one_offence_cycle_keeps_the_offence_cooldown`,
+    `cc8_each_mode_fires_on_its_own_cycle`;
+  - `cc8_a_warships_screen_stops_a_lone_salvo_and_a_haulers_leaks`: the measurement's outcomes,
+    held at 150 km, 300 km and on the closing pass;
+  - `cc8_the_spinal_guns_dodge_stays_and_costs_her_change_of_speed`.
+- **The story**: `space::tick::thinks_tests::cc8_a_corvette_disables_a_dray_that_dodges`.
+- **Retired**: `space::custody::content_tests::cc6_every_shipped_fit_carries_the_rust_tables_values`,
+  for `cc6_a_hull_with_no_fit_of_her_own_flies_the_drays`.
+- **Suites, all passing:**
+  - `cargo nextest run -P ci -p tacsim`: 4,795 tests. Doc 47's space stories are among them:
+    `space_ap9.rs`, `field_ap11.rs`, the `tick_thinks_tests.rs` return-fire tests, MW.9, MW.11,
+    MW.13 and MW.21, and every `voyage.rs` story;
+  - the bot job (`cargo nextest run -P ci -p mush-bot`, less its two long stories): 796 tests.
+- **Guards, all passing**:
+  - `cargo fmt -p tacsim --check` and `cargo clippy -p tacsim --all-targets -- -D warnings`;
+  - the lint job's M7 memory-size pass;
+  - `mush-contract-tests`' `ci_policy` guards: census, panic budget, restriction lints and the
+    fiat budget;
+  - `engine_contracts` (the help lint and the space story lints);
+  - rustdoc with `-D warnings`, in both modes.
+- **Pins moved, by record**:
+  - the two space pack signatures in `DIGESTS`;
+  - the three doctrine digests in `picket_cast.json`;
+  - the story re-pins in the table above.
+- **The arena** was not touched. One `domain_arena` cockpit test failed once, under load, and
+  passed on its own and in the final run.
+
+**Divergences.**
+
+- **The rotary's envelope moved**, beyond the defence cycle Q-49-26 names: measured, no defence
+  cycle can make a hauler's screen leak while two rotaries alone stop every salvo (above).
+- **The offence laser's effective reach is 25 km**: inside it a pulse does at least half its
+  close-range damage (15 of 30 on the turret, 22 of 45 on the corvette's heavier laser). Past it a
+  pulse still lands out to a full reach of 150 km (100 km on the heavier laser), but as a token:
+  a point at 120 km. The reason is gameplay. A Dray's answer to a raider ambushing from 120 km is
+  a token, but a real one: R-47-2 and R-47-3 hold, and the raider knows she has been answered.
+  Every hurt at range comes from the tubes and the spinal gun, which the rewritten doctrines use
+  (Q-49-26). The lead accepted this reading of Q-49-7 (a short reach, little to a hull) and put it
+  to the owner, who may veto it. No story asserts more than a token answer at range.
+- **The belt raider's second laser starts in defence**, so her screen is a warship's.
+- **Halcyon's spinal gun stows 32**, its own fit's figure, beside the palette's 24.
+- **A laser's `cooldown_remaining_ms` is left out of her document when nought.** The per-mode
+  cycle put `defence_cooldown_ms` on every laser in every copy of a bubble's saved state, and a
+  ten-minute heave-to's document grew past the 64 KiB budget `voyage.rs`'s sfr10 holds it to
+  (65,891 B). Leaving out an idle laser's cooldown wins the bytes back; it reads back as nought.
+  A binary from before this unit cannot read a laser saved without it (pre-launch: no document
+  needs it).
+- **The doctrines changed behaviour beyond the lasers**, each for a reason the stories showed:
+  - the raider's torch dies after her opener: a raider that burns flat out can never be hurt by a
+    lone corvette, since the dodge stays;
+  - the raider prefers a fighting prey: once a quiet carrier was the nearest cleared, she pressed
+    nobody, and an escort she had opened on sailed away (sfr18);
+  - the picket keeps its tubes for a runner: its salvos at the raider were all stopped, and their
+    thirty-second flights kept every docking under fire long after the raider was down;
+  - the interdictor caps its closing speed at 50 m/s.
+
+  The picket's corvette now disables the raider in about fifty seconds with spinal rounds, where
+  it took about twenty-four with the old laser.
+- **Doc 35's SF.R stories changed how they reach their precondition**, because no story hull can
+  now make an interdictor derelict by play (measured: four minutes of close laser fight leave a
+  jinking Dray and the interdictor both standing), and the story lint forbids writing bubble state
+  off the command path. Each story still makes its doc 35 assertion at full strength, but one
+  (sfr7, below). Every precondition is reached by play, with no staff fiat a story did not already
+  have. The helpers are `heave_to_until_stood_down` (MW.9's recipe: burn against her drift until
+  the interdictor stands her down), and `picket_until_the_raider_is_down` /
+  `convoy_until_the_raider_is_down` (the stocked lane; clear the Kirkwood picket's customs; the
+  corvette's spinal rounds disable the raider once she coasts). In a picket's bubble the raider
+  holds the bubble's interdictor slot, so `interdictor_hull` reads her.
+
+  | Story | What it tests | Old precondition | New precondition | Re-pinned |
+  |---|---|---|---|---|
+  | sfr1 | promotion, the paused leg timer, the wall-clock bubble, resume to dock | a Dray beams the interdictor to a derelict in 4 s | she fires on it, then heaves to until it stands her down | `steps` and `wall_elapsed_ms`: the 4 one-second steps and the capped 30 s step, plus the seconds she spent heaving to, read from the run |
+  | sfr2 (1) | custody check-out, damage persisted on check-in, the NPC derelict's open epoch and no claim before `+helm/tow` | the interdictor's volleys hurt her; her beams disable it | stocked lane: the raider's opening round finds her stern; the corvette disables the raider | the derelict's life support read as its 48 hours less the seconds the bubble ran on |
+  | sfr2 (3) | a carrier disabled in a bubble checks in `Immobile` with a 48-hour window | the interdictor disables her in 16 s | the same, stern on, so her drive goes before her hull | the window, 16 → 120 s |
+  | sfr6 | the picket triad end to end, the dodge, the fine | the corvette lasers the raider down in 24 s | the corvette's spinal rounds, once the raider coasts | the window, 24 s → until the bubble closes |
+  | sfr7 | the docking session, forged tapes, the bounce, clamp, tow, dock at the port | a derelict interdictor 18 km off | stocked lane, the raider's derelict; the far `+helm/dock` is tried once the corvette's last rounds are done | the approach, 3 ticks → until flown; **one assertion changed**: "the bubble does not step while she docks" became "she is held, her drive cut, and the bubble stays open" (SF.R25: a picket's bubble keeps its 1 s cadence for the corvette; the interdiction bubble had gone to its cruise cadence). Put to the lead |
+  | sfr9 | the docking and `+helm/run` gates; a derelict carrier's journey fails | beams disable the interdictor; it disables a Dray in 16 s | heave to; the same Dray, given 120 s | the window, 16 → 120 s |
+  | sfr11 | the one propellant ledger, no refill on re-entry | beams disable the interdictor | heave to | none (its figures are read from the run) |
+  | sfr14 | authored packs, picket only at Kirkwood, drone minds | beams end the 2-ship interdiction | heave to | none |
+  | sfr15 (2) | a stripped rotary opens a gap in the screen | torpedoes 5 km out, inside the 15 km envelope | 3.5 km out, inside the 4 km envelope | the start distance |
+  | sfr15 (3) | rear damage, clamp, tow, dock, bay repair to full | the interdictor's volleys; its derelict | stocked lane: the raider's opening round on her stern; the raider's derelict | the damage line, `drive 172/250, hull 524/600` → `drive 207/250, hull 558/600`, by record |
+  | sfr17 (C) | a 30 s late tick; one carrier's salvage hold does not hold the other; the hold expires | beams disable the interdictor | a two-carrier convoy at the picket; the raider's derelict | the second carrier resumes once the corvette's last rounds are done: next tick → within 20 |
+  | sfr18 | per-carrier inspection, a disabled escort settled, stand-down | the raider's lasers disable the escort | unchanged; the raider now presses the escort, who shows fight, before the quiet smuggler | none |
+  | sfr20 (5) | the rear split, a stripped rotary persisting through check-in and check-out | ticks timed to 1 s volleys; beams end it | bow on until a rotary is stripped, stern on until the drive is hurt; then heave to | the tick counts, now read from the fight |
+  | sfr21 | prepared bubble input, standing orders, the per-entity store, the approach debit, an `OutOfGate` session | beams disable the interdictor | stocked lane; she shows herself again and clears customs; the raider's derelict | none |
+
+  The picket's own doctrine test (`space::picket::tests`) reads the new doctrine: the corvette no
+  longer fires torpedoes at the raider.
+
+  **Runtime.** The fights are stepped a wall second at a time while they last; each helper stops
+  when its condition holds, and no story strides through an idle wait. Measured on conclav.dev,
+  the 37 SF.R, MW.9, MW.10, CR.6 and RS.8 stories ran 286 s on main and 320 s on this branch.
+  The branch run shared the box with 350 other tests: stories this unit did not touch (sfr13,
+  sfr26b) rose by as much as the rewritten ones (about a second each), so part of the 34 s is load.
+- **Files outside the row**, each the least this needed. The lead approved them, and the SF.R
+  stories' change of premise:
+  - `space/weapons.rs`: the per-mode cycle's state and the switch;
+  - `space/custody.rs`: CC.6's `table_before_cc6` test retired, as CC.6's hand-over asked;
+  - `space/view.rs`, `space/picket.rs`: a test each whose premise the palette moved;
+  - `space/tick_thinks_tests.rs`: the story;
+  - `content/space/picket_cast.json`: the three digests;
+  - `tests/domain_arena/content.rs`: the two pack signatures;
+  - `tests/domain_world/voyage.rs`: the SF.R stories above;
+  - `docs/help/space.md`.
+
+**Not built.**
+
+- **Firing one laser alone.** Naming any laser still fires every ready laser in offence, as one
+  battery (CC.6's divergence).
+- **A mind cannot switch a laser's mode**: the mind API has no verb for it, so the switch rules
+  bind players (`+tac/pdc point|offense`). The house default's Dray answers in offence.
+- **Collector drones are not soft.** A collector drone is a Dray's hull section (600 internals), so
+  an offence laser takes minutes to bring one down, though Q-49-7 makes lasers the drones' answer.
+  That is mining content.
+- **The Δv price of a dodge is real but small**: these hulls carry far more change of speed than
+  any fight spends (a Dray's, on her 6,000 km/s exhaust, runs past a thousand kilometres a
+  second), so a dodge's few metres a
+  second never bind. A raider that burned flat out could not be hurt by a lone corvette at all;
+  the doctrine, not the price, keeps her from it. Pricing the dodge so it binds is the owner's
+  call, and not this unit's.
+- **CC.7's second part** (the berth rearm) is untouched.
 
 ## CC.10
 
-Not built.
+The bot (Q-49-17). Built 2026-11-17 on CC.2's tip (`929ca6790`, PR #649). Once #649 and CC.2b
+(#651) had landed, it was rebased onto main `c847b5dd2`; the runs below are at `929ca6790`. It
+changes only `crates/mush-bot/` and the bot's guide (`docs/bot/guide.md`). No game crate, content
+or pin moves.
+
+**Survey.**
+- **The fire gate** (`pilot.rs`, `fireable`) fired every gun that was ready, had rounds left and
+  did not read 0%. So it fired at any chance over nothing, down to the last round: the full-rate
+  client Q-49-17 names.
+- **The bot cannot read content.** It is an outside client (`crates/mush-bot/AGENTS.md`: game
+  crates only in its tests). So "from content" means two things:
+  - what its own screens tell it: each gun's cycle, learned from the `cycling (N s)` row read
+    just after its own `FIRE`, and each gun's magazine, from its `WEAPONSTATUS` row;
+  - what the help says: `help minds` gives the Line card's discipline in words ("fires at 35% or
+    better on any face, 50% once a gun is under half its magazine. It keeps a quarter of each
+    gun's rounds back, and spends them only to answer a unit that has fired on it, or to cover
+    its way home").
+- **The windows.** Cut AN.2's exchange (`EXCHANGE_WINDOW_MS`, 20 s) and the halt's longest
+  (`HALT_MAX_MS`, 60 s) were literals tuned on the 6 s cannon and the 1 s coaxial gun.
+  - Under CC.2's palette, 20 s holds about one cannon round and four of the coaxial gun's.
+    `EXCHANGE_MIN_TAKEN`'s eight hits could not be reached.
+  - `HALT_STILL_MS` reads the scope's 50 m rounding against a machine's speed. No gun moves it.
+- **The lane's poll reservation** (`lane.rs`, `reserve_ok`) kept a line free for every gun "due",
+  using the old gate's test. A gun the new gate holds is due at every tick, so it would have held
+  back every poll that can wait.
+- **The commander's system prompt** told the model that the pilot fires every ready gun on its
+  cycle.
+
+**Built.**
+- **The discipline** (`pilot.rs`, `disciplined`; Q-49-17 with CC.1's card):
+  - `FLOOR_PERCENT` (35), and `LOW_MAGAZINE_FLOOR_PERCENT` (50) once a gun holds under half its
+    magazine (`floor_percent`).
+  - `RESERVE_PERCENT` (25), rounded down as the card's `keeps` rounds (`reserve_rounds`).
+  - A gun fires only at its floor or better, and only over its reserve. Below the reserve it
+    fires only when the lock is a unit the pilot blames for a hit taken this match, or while its
+    own fall back or a `withdraw` flies. Then any round left goes, still at the floor.
+  - **The chance must be read under the lock it holds**: the gun's own row since the last lock
+    line, or for the main gun the lock line's own figure (the game's lock line prints the chance
+    of the gun a bare `FIRE` fires). With no chance read, the gun waits. The old gate fired on a
+    chance it had not read.
+- **Answering fire** (`Pilot::fired_on`, `take_fired_on`, `blamed`). The hit line says nothing of
+  who fired, so the blame uses the threat turn's reading:
+  - the nearest live hostile, held young, whose row's relative bearing lies in the struck facet's
+    45-degree face (front included);
+  - else the lock.
+
+  The blame follows a rename (`was`). It is kept for the match, as the game's `fired_on_by` is.
+- **Covering** (`Pilot::covering`): the pilot's own fall back (`withdraw_until_ms`) or a doctrine
+  `withdraw`, read at each decision.
+- **The windows, counted in the main gun's learned cycle** (`Pilot::main_cycle_ms`: the cannon's,
+  else the first gun's):
+  - `EXCHANGE_WINDOW_CYCLES` (4) replaces `EXCHANGE_WINDOW_MS`. It is 60 s on the ruled 15 s
+    cannon and 24 s on the old 6 s one. It is tunable 2..=5, which spans the old 10 to 30 s.
+  - `HALT_MAX_CYCLES` (10) replaces `HALT_MAX_MS`. It is exactly the old 60 s on the 6 s cannon,
+    and 150 s now.
+  - Until the main gun's cycle is learned, the exchange reads `(0, 0)` and is not judged, and the
+    halt has no cap of its own. The halt still ends on its other three ends (a hit, the band, its
+    hostile stopped coming on), each of which comes.
+  - `EXCHANGE_MIN_TAKEN` and `EXCHANGE_MARGIN` stay; see **Not built**.
+- **The lane's reservation** keeps a line only for a gun `Pilot::may_fire`, the same predicate
+  the pilot fires on.
+- **Text.**
+  - The pilot's module head gives the discipline among the help sentences it flies on.
+  - The commander's prompt (`COMMANDER_POLICY`) states the floor and the reserve where it said
+    "fires every ready" gun.
+  - The bot's guide gives the discipline, the halt's cap and the exchange's window in cycles.
+    Its example note now reads `… in 60 s`.
+
+**Tests.**
+- **New, in `pilot.rs`:** `cc10_a_gun_fires_only_at_its_floor_and_keeps_its_reserve`. It checks,
+  through the names:
+  - the floor and its rise;
+  - the reserve, and one round over it;
+  - answering a hit on the front face, and following a rename;
+  - a hit from the other arc, which blames the hostile there and not the lock;
+  - covering under a `withdraw` and under the fall back;
+  - the chance read under the lock, the lock line standing in for the main gun only;
+  - `may_fire`.
+- **Changed, in `pilot.rs`:**
+  - The halt test now also checks that the halt still runs one millisecond before ten cycles, and
+    that with no cycle learned it has no cap of its own.
+  - The exchange and halt tests count in a learned 15 s cannon (`learn_main`).
+  - The test fixture `weapon()` is a gun clear of the discipline (30 of 40, 62% read). It was 10
+    of 40 with no chance read.
+- **New, in `tests/arena_lane.rs`**, on the scripted server with a new `chance` knob (62% unless
+  set):
+  - `cc10_a_gun_under_its_floor_never_fires_and_one_at_it_does`: at 34% for two cannon cycles,
+    no `FIRE` and no round spent; at 35%, both guns fire;
+  - `cc10_a_magazine_is_fired_to_its_floor_and_its_reserve_and_no_further`: eight rounds a gun.
+    At 35% each gun stops at half its magazine. At 50% it fires on to its reserve and keeps it for
+    four cycles more. Nothing is ever refused as empty.
+  - `cc10_the_reserve_answers_the_unit_that_fired_on_the_tank`: fired down to its reserve, the
+    tank holds for two cycles. Then a hit on its left face, where BA's row stands, and both guns
+    fire their reserve to the last round.
+- **Changed, in `tests/arena_lane.rs`:**
+  - The two re-approach stories read the window from the lane's own pilot (`exchange_window`).
+    The helper asserts that window is the shipped cannon's cycle times `EXCHANGE_WINDOW_CYCLES`.
+  - The crowded minute's own copy of the reservation rule calls `Pilot::may_fire`.
+  - `full_rate`'s doc says what it measures now: the clock, with both guns kept clear of the
+    discipline.
+  - **Three scenes counted in the cannon's cycles**, which failed on the first run. The coaxial
+    gun's first shot now waits for a chance read under the lock, so both cycles are learned at
+    12 s, not 26 s, and every later coincidence moves. Under CC.2's palette a gun is due inside a
+    given second about a fifth as often as with the 1 s coaxial gun these scenes were tuned on.
+    Each span was measured on conclav.dev before it was set:
+    - **The crowded minute** (`a_due_gun_keeps_its_slot_from_a_poll`) asserts that a `STATUS`
+      was held back for a due gun.
+      - Over 60 s, no notice phase from 0 to 990 ms held one back, and no start delay from 0 to
+        30 s did either.
+      - Over 120 s, one delay of twelve did. Over 180 s, every delay did.
+      - The scene now runs `DUE_SCENE_CYCLES` (12) of the cannon's cycles, 180 s. That is 72 s
+        on the 6 s cannon the minute was tuned on.
+      - The machine gun's floor scales with the span. The reservation's own bound keeps its
+        tuned figure, at least one held tick per 250 of a minute (5).
+    - **The doubt's search** (`the_doubts_weaponstatus_skips_the_poll_gap`) found its moment at
+      180 s and 240 s, and not at 60, 90 or 120 s. It now searches the same twelve cycles.
+    - **The lattice rigs** (`the_lattice_at_the_live_edge`) run `LATTICE_SPAN_CYCLES` (20) of
+      the cannon's cycles: 120 s on the 6 s cannon, 300 s now. At 120 s the ruled cannon fired
+      eight lines, so one refusal broke the one-in-ten bound: on read 1 of 8 where off read 2
+      of 9. At 300 s, on reads 1 of 20 against off's 3 of 22, and the machine gun 2 of 56
+      against 9 of 63.
+
+      The same test at CC.2's base read 0 of 7. So the bound held there by a margin of one
+      line.
+- **New, in `tests/arena_contract.rs`:** `the_pilots_floor_and_reserve_are_the_line_cards`. It
+  holds the bot's figures to `tacsim::arena::card`'s Line card: `LINE_MIN_ODDS_PERMILLE`,
+  `low_magazine_floor`, `LINE_RESERVE_PCT`. It also checks `floor_for` and `keeps` against the
+  bot's `floor_percent` and `reserve_rounds` for every magazine to 600 and every round in it.
+- **New, in `commander.rs`:** `the_policy_names_the_floor_and_the_reserve`.
+- **Mutations** (on conclav.dev). Each ruling's production line was put back the old way, one
+  at a time, and the new and changed tests were run against it. All passed unmutated, and every
+  mutation failed at least one:
+
+  | Mutation (the line put back) | Failed |
+  |---|---|
+  | No floor (any chance over nothing) | the pilot test; the lane's floor test and magazine test |
+  | No rise under half a magazine | the pilot test; the contract test; the lane's magazine test |
+  | No reserve | the pilot test; the lane's magazine test and answering test |
+  | The reserve never answers fire | the pilot test; the lane's answering test |
+  | The reserve never covers a withdrawal | the pilot test |
+  | A chance read before the lock line counts | the pilot test |
+  | The halt's longest a literal 60 s | the halt test |
+  | The exchange's window a literal 20 s | the exchange-count test; both lane re-approach stories |
+- **Runs**, on conclav.dev, each in a throwaway clone of `929ca6790` with the unit's patch:
+  - **The first round** found the three scenes above failing (799 of 802 in the bot job). It also
+    ran the guards and the mutation pass.
+  - **The final patch:**
+    - the bot job (`mush-bot` without `mining_cohort` and `arena_mind_isolation`, as CI's bot
+      shard runs it): 802 of 802;
+    - `arena_mind_isolation` (CI's bot-stories shard): passed in the first round;
+    - the doc tests: passed;
+    - `mush-contract-tests` whole: 200, with the census, the panic budget, the restriction lints
+      and the help-page lint among them;
+    - `cargo fmt -p mush-bot --check`, `cargo clippy -p mush-bot --all-targets -- -D warnings`,
+      and `cargo doc -p mush-bot --no-deps --document-private-items` with `-D warnings`: clean;
+    - the CI lint job's M7 memory-size pass: clean. It covers six game crates and no file this
+      unit changed.
+  - **MW.19's minds lane** (`scripts/bot-minds-lane.sh`, the nightly `bot-minds-lane` job):
+    passed in 3,763 s on the final patch. The rating took 2,875 s on a box other sessions were
+    loading (MW.19 measured about 25 minutes), and sent the author no line it had not asked for.
+    It drives `src/mine/`, which this unit does not touch; it shares only `arena::lines`, which
+    this unit leaves unchanged.
+  - `mining_cohort` was not run. It flies the mine module only, and CI's bot-stories shard runs
+    it.
+
+**Divergences.**
+- **The windows count in the main gun's cycle, not the fastest gun's.**
+  - Twenty of the fastest gun's cycles would also have given back the old 20 s exactly.
+  - But the pilot learns a gun's cycle only by firing it, and the floor keeps the coaxial gun
+    quiet at range (CC.2's mind fired 1.3 coaxial rounds a fight at 35%).
+  - Keyed to the fastest gun it had learned, the window would have been 300 s of the cannon most
+    of the time.
+- **The blame is a reading, not the game's record.** The game's `fired_on_by` counts every unit
+  whose round reached the hull. The bot reads one hostile per decision off the newest hit's face.
+  Two shooters in one face between two decisions blame the nearer one.
+- **Covering is the bot's two withdrawals.** The re-approach's and the return's back-offs are
+  tactics, not the way home, and keep the reserve.
+- **No dry withdrawal.** Q-49-23's "at its reserve on every mount counts as dry for withdrawal" is
+  the stock mind's edge. The bot's own withdrawal rule (a failing hull) is unchanged. A bot at its
+  reserve holds it until it is fired on.
+
+**Not built.**
+- **The exchange's counts** (`EXCHANGE_MIN_TAKEN` 8, `EXCHANGE_MARGIN` 4) were tuned on the 1 s
+  coaxial gun.
+  - In 60 s a single disciplined machine lands about three cannon rounds, so a re-approach now
+    needs two machines' fire.
+  - The re-approach ships off (cut AO.3), so the default bot is unaffected.
+  - Sizing the counts to the palette is a measured round's work, one constant at a time.
+- **CC.2's channel-line finding is a rig artifact, not a lane defect.**
+  - In the game, `Firing {w}.` is the cockpit's own reply, said as `FIRE` returns
+    (`weapons_fire.rs`, after `forward_intent`). So one session's answers come back in the order
+    it typed them.
+  - The rig's `fire_answer_ms = 20` delays the `FIRE`'s answer alone, which lets a `RANGE` typed
+    in the same tick be answered first. The ledger then pops the `FIRE` with it, as answers in
+    order would. That is the only way the ack loses its place.
+  - AM.1's test keeps skipping shared ticks, and the lane is unchanged.
+- **The win-rate lanes** (`arena_win_rate`, `arena_muster_rate`; weekly and on dispatch,
+  report-only) were not run. They fly this bot against the stock mind and would measure the
+  discipline in fights.
