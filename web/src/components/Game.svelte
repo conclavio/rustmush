@@ -141,7 +141,7 @@
       if (app.minds.open) app.minds.open = false; else void app.minds.show();
       return;
     }
-    if (app.minds.open || app.mindReadoutOpen) return;
+    if (app.minds.open || app.mindReadoutOpen || app.tacsim.activeModal !== null) return;
     // Only explicit shell modifiers may leave a focused control. Bare
     // Enter, Space, Tab, arrows and typing belong to that control.
     if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && isInteractiveControl(ev.target)) return;
