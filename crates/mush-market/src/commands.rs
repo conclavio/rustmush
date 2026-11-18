@@ -1929,6 +1929,7 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         MarketVisibility::Public
                     },
                     ttl_secs: days.saturating_mul(86_400),
+                    private_to: None,
                 },
             ) {
                 Ok(id) => {

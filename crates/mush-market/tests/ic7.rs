@@ -2200,6 +2200,7 @@ fn ic7_a_draw_listing_is_checked_against_its_storefront() {
                 object: None,
                 visibility: mush_market::MarketVisibility::Public,
                 ttl_secs: 86_400,
+                private_to: None,
             },
         )
         .map_err(|e| format!("{e:?}"))
@@ -2433,6 +2434,7 @@ fn ic14_a_catalogue_reload_does_not_change_a_listings_mechanics() {
                 object: None,
                 visibility: mush_market::MarketVisibility::Public,
                 ttl_secs: 86_400,
+                private_to: None,
             },
         )
     })
@@ -2771,6 +2773,7 @@ fn sm12a_restock_ask_refuses_and_writes_nothing() {
                 object: None,
                 visibility: mush_market::MarketVisibility::Public,
                 ttl_secs: 86_400,
+                private_to: None,
             },
         )
     })
@@ -2792,6 +2795,7 @@ fn sm12a_restock_ask_refuses_and_writes_nothing() {
                 object: None,
                 visibility: mush_market::MarketVisibility::Public,
                 ttl_secs: 86_400,
+                private_to: None,
             },
         )
     })

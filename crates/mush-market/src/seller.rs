@@ -207,7 +207,7 @@ fn lot_entry(store: &MarketStore, commodity: &mush_core::CanonicalId) -> Option<
 }
 
 /// The private-offer rule at posting: a live person who is not the seller.
-fn check_private(
+pub(crate) fn check_private(
     w: &World,
     seller: &PrincipalId,
     to: Option<&PrincipalId>,

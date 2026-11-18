@@ -208,6 +208,29 @@ fn story(venue: &str, entry: &str) {
         rig.tw.set_now(t);
         let _ = second(&mut rig);
     }
+    // Doc 48 cut EX.3: the dispatcher sells the wreck's matter to the workshop on the board, a
+    // row a step, each paid as it settles.
+    for _ in 0..3_600 {
+        let selling = matches!(
+            crate::driving_rig::store(&rig.tw).bay_hull(wreck),
+            Some(tacsim::port::bay_work::BayHullState::Present(row)) if row.sale.is_some()
+        );
+        let unsettled = rig
+            .tw
+            .world()
+            .module_state::<mush_market::MarketStore>()
+            .is_some_and(|m| {
+                m.quotes_of_seller(&PrincipalId::Object(dispatcher))
+                    .any(|q| q.settled.is_none())
+            });
+        if !selling && !unsettled {
+            break;
+        }
+        lowest = lowest.min(float(&rig));
+        let t = rig.tw.world().now().saturating_add(1);
+        rig.tw.set_now(t);
+        let _ = second(&mut rig);
+    }
     // The credit lands and the float's surplus goes to Tycho.
     for _ in 0..120 {
         lowest = lowest.min(float(&rig));
@@ -236,6 +259,26 @@ fn story(venue: &str, entry: &str) {
     assert!(
         tycho_balance(&rig) > before_scrap,
         "the scrap's credit went to Tycho"
+    );
+    // Doc 48 cut EX.3: Tycho's dispatcher, a GOD-owned NPC, sold the wreck's matter into the
+    // bids of Ceres' buy-back desk, the clerk's own Thing (it could not sell into a GOD-owned
+    // clerk's: any two GOD-owned NPCs act for each other).
+    let desk = port_map(&rig.tw, "ceres_port")
+        .desk
+        .map(|desk| ObjId(desk.thing))
+        .expect("Ceres' buy-back desk");
+    let sold = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .map_or(0, |m| {
+            m.quotes_of_seller(&PrincipalId::Object(dispatcher))
+                .filter(|q| q.buyer == PrincipalId::Object(desk) && q.is_trade())
+                .count()
+        });
+    assert!(
+        sold > 0,
+        "the dispatcher's sales to the desk are on the tape"
     );
     assert_eq!(
         crate::in11_matter::census(&mut rig)["balance"],

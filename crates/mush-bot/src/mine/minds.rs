@@ -736,6 +736,15 @@ pub mod core_resale {
     pub const RESALE_BUSY: &str = "You are already doing something; try again in a moment.";
 }
 
+/// **The scrap sold on the board** (doc 48 cut EX.3, `tacsim::port::bay_work::scrap`): what the
+/// holder hears when nothing whole is sold, or a row is given up.
+pub mod scrap {
+    /// `tacsim::port::bay_work::scrap::NOTHING_WHOLE`.
+    pub const NOTHING_WHOLE: &str = "scrap is paid by the whole tonne";
+    /// `tacsim::port::bay_work::scrap::SALE_GIVEN_UP`'s middle.
+    pub const SALE_GIVEN_UP: &str = "; it stays in your scrap at ";
+}
+
 /// **The exchange at the venue** (doc 48 cut EX.1b): a player's locker (`+locker`,
 /// `tacsim::port::locker`) and the venue gate's new refusals (`tacsim::port::market`). No lane
 /// reads them yet; each is held to the game's own text below.
@@ -922,6 +931,15 @@ mod tests {
             NOT_LISTABLE,
             NOT_FOR_ORG,
             ALREADY_FOR_SALE,
+        )
+    }
+
+    fn scrap_rows() -> Vec<Row> {
+        use super::scrap as bot;
+        use tacsim::port::bay_work::scrap as game;
+        rows!("";
+            NOTHING_WHOLE,
+            SALE_GIVEN_UP,
         )
     }
 
@@ -1234,7 +1252,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 13] = [
+        let families: [(&str, Vec<Row>); 14] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1247,6 +1265,7 @@ mod tests {
             ("hull_sale", hull_sale_rows()),
             ("core_resale", core_resale_rows()),
             ("venue", venue_rows()),
+            ("scrap", scrap_rows()),
             ("coop", coop_rows()),
         ];
         families
@@ -1829,6 +1848,15 @@ mod tests {
     #[test]
     fn core_resale_needles_are_distinct() {
         distinct(&qualified("core_resale", core_resale_rows()), &[]);
+    }
+    // Doc 48 cut EX.3: the scrap sold on the board.
+    #[test]
+    fn scrap_needles_are_in_step() {
+        in_step("scrap", &scrap_rows());
+    }
+    #[test]
+    fn scrap_needles_are_distinct() {
+        distinct(&qualified("scrap", scrap_rows()), &[]);
     }
     // Doc 48 cut EX.1b: the exchange at the venue.
     #[test]
