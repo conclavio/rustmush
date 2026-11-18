@@ -1551,11 +1551,24 @@ namespace TacSim.Tests
                 commercialStation.BuildStation(tempCatalog, "neighborhood.ceres_freeport");
 
                 var commTransforms = commercialStation.GetComponentsInChildren<UnityEngine.Transform>(true);
+                bool foundViewingHandrail = false;
+                bool foundViewingStanchion = false;
+                bool foundDockingBoom = false;
                 for (int i = 0; i < commTransforms.Length; i++)
                 {
-                    Assert.AreNotEqual("DoorPost_A", commTransforms[i].name, "Fallback cyan DoorPost_A must be suppressed when commercial door prefabs exist");
-                    Assert.AreNotEqual("DoorPost_B", commTransforms[i].name, "Fallback cyan DoorPost_B must be suppressed when commercial door prefabs exist");
+                    string tn = commTransforms[i].name;
+                    Assert.AreNotEqual("DoorPost_A", tn, "Fallback cyan DoorPost_A must be suppressed when commercial door prefabs exist");
+                    Assert.AreNotEqual("DoorPost_B", tn, "Fallback cyan DoorPost_B must be suppressed when commercial door prefabs exist");
+                    Assert.AreNotEqual("ViewingRail", tn, "Floating neon-yellow ViewingRail bar must be replaced by stanchion handrail");
+                    Assert.IsFalse(tn.StartsWith("UmbilicalArm_", System.StringComparison.Ordinal), "Orange UmbilicalArm blocks must be replaced by sleek DockingBoom");
+                    Assert.IsFalse(tn.StartsWith("UnlitWorkingBerth_", System.StringComparison.Ordinal), "Floating grey UnlitWorkingBerth slabs must be replaced");
+                    if (tn == "ViewingHandrail") foundViewingHandrail = true;
+                    if (tn == "ViewingStanchion_0") foundViewingStanchion = true;
+                    if (tn == "DockingBoom_0") foundDockingBoom = true;
                 }
+                Assert.IsTrue(foundViewingHandrail, "Expected brushed-steel ViewingHandrail in Berth Gallery");
+                Assert.IsTrue(foundViewingStanchion, "Expected grounded ViewingStanchion posts in Berth Gallery");
+                Assert.IsTrue(foundDockingBoom, "Expected sleek DockingBoom on exterior cradles");
 
                 // 3. HUD narrow-aspect (`1100 x 756`) non-overlap check: CommsDrawer right edge < QuickActionStrip / Helm / Rover left edge
                 UnityEngine.RectTransform commsRt = null;

@@ -287,7 +287,6 @@ namespace TacSim.World
             {
                 Material glassMat = UrpMaterialFactory.GetArmourglass("BerthGlass", new Color(0.32f, 0.68f, 0.90f, 0.11f));
                 Material sillMat = GetWallMaterialForSpan(room.EntryId, wallTint, size2d.x, 0.6f, isStickneyOrRock);
-                Material yellowRail = UrpMaterialFactory.GetEmissive("ViewingLine", new Color(0.85f, 0.68f, 0.12f), new Color(0.8f, 0.55f, 0.05f) * 0.6f);
 
                 // Knee-high bulkhead sill + framed clear armourglass + vertical steel mullions every 8 m
                 float sillH = 0.55f;
@@ -300,7 +299,22 @@ namespace TacSim.World
                     float mx = Mathf.Lerp(room.MinX + 0.15f, room.MaxX - 0.15f, m / (float)mullionCount);
                     CreateBox(root, $"ViewportMullion_{m}", AtlasToUnity(mx, elev + height * 0.5f, room.MinY), new Vector3(0.24f, height, 0.28f), trimMat, false);
                 }
-                CreateBox(root, "ViewingRail", AtlasToUnity(center2d.x, elev + 0.95f, room.MinY + 1.4f), new Vector3(Mathf.Max(2f, size2d.x - 6f), 0.10f, 0.12f), yellowRail, true);
+
+                // Grounded brushed-steel observation guardrail with stanchion posts + flush muted deck safety strip (no floating yellow bar!)
+                Material railSteel = UrpMaterialFactory.GetOpaque("ObservationHandrail", new Color(0.26f, 0.30f, 0.35f), 0.48f, 0.72f);
+                Material safetyLineMat = UrpMaterialFactory.GetOpaque("DeckSafetyLine", new Color(0.48f, 0.36f, 0.14f), 0.18f, 0.12f);
+                float railSpanX = Mathf.Max(2f, size2d.x - 4f);
+                float railAtlasY = room.MinY + 0.92f;
+                CreateBox(root, "ViewingHandrail", AtlasToUnity(center2d.x, elev + 0.96f, railAtlasY), new Vector3(railSpanX, 0.055f, 0.065f), railSteel, false);
+                CreateBox(root, "ViewingKneeRail", AtlasToUnity(center2d.x, elev + 0.52f, railAtlasY), new Vector3(railSpanX, 0.030f, 0.030f), railSteel, false);
+                CreateBox(root, "DeckSafetyInlay", AtlasToUnity(center2d.x, elev + 0.004f, railAtlasY + 0.22f), new Vector3(railSpanX, 0.006f, 0.065f), safetyLineMat, false);
+
+                int stanchions = Mathf.Max(2, Mathf.RoundToInt(railSpanX / 6.0f));
+                for (int st = 0; st <= stanchions; st++)
+                {
+                    float sx = Mathf.Lerp(center2d.x - railSpanX * 0.5f, center2d.x + railSpanX * 0.5f, st / (float)stanchions);
+                    CreateBox(root, $"ViewingStanchion_{st}", AtlasToUnity(sx, elev + 0.48f, railAtlasY), new Vector3(0.055f, 0.96f, 0.055f), railSteel, false);
+                }
             }
             else
             {
@@ -474,10 +488,10 @@ namespace TacSim.World
             if (Catalog.stationPipeProp != null)
             {
                 float pipeY = elev + height - 0.45f;
-                PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, root, "OverheadPipe_N", AtlasToUnity(room.Center2D.x, pipeY, room.MaxY - 0.75f), Quaternion.identity, 6.2f, false);
+                PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, root, "OverheadPipe_N", AtlasToUnity(room.Center2D.x, pipeY, room.MaxY - 0.75f), Quaternion.identity, 6.2f, false, scaleUpToTarget: false);
                 if (room.EntryId == "room.c02_pressure" || room.EntryId == "room.c14_dockmaster" || room.EntryId == "room.c15_maintenance")
                 {
-                    PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, root, "OverheadPipe_S", AtlasToUnity(room.Center2D.x, pipeY, room.MinY + 0.85f), Quaternion.identity, 6.2f, false);
+                    PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, root, "OverheadPipe_S", AtlasToUnity(room.Center2D.x, pipeY, room.MinY + 0.85f), Quaternion.identity, 6.2f, false, scaleUpToTarget: false);
                 }
             }
 
@@ -1115,7 +1129,6 @@ namespace TacSim.World
             Material cradleMat = UrpMaterialFactory.GetOpaque("CradleTruss", new Color(0.20f, 0.23f, 0.28f), 0.38f, 0.72f);
             Material darkCradleMat = UrpMaterialFactory.GetOpaque("UnlitSquadronTruss", new Color(0.06f, 0.08f, 0.11f), 0.25f, 0.6f);
             Material hullMat = UrpMaterialFactory.GetOpaque("DrayHullPlate", new Color(0.48f, 0.46f, 0.42f), 0.38f, 0.55f);
-            Material hoseMat = UrpMaterialFactory.GetEmissive("Umbilical", new Color(0.85f, 0.48f, 0.12f), new Color(0.95f, 0.45f, 0.08f) * 0.65f);
             Material beaconRed = UrpMaterialFactory.GetEmissive("BerthNavLight", new Color(0.9f, 0.2f, 0.15f), new Color(1f, 0.25f, 0.18f) * 2.2f);
             Material starMat = UrpMaterialFactory.GetEmissive("BerthBackdropStar", Color.white, new Color(0.85f, 0.92f, 1.0f) * 2.4f);
 
@@ -1133,30 +1146,38 @@ namespace TacSim.World
             }
 
             string[] defaultNames = { "CRADLE 01 — SLACK WATER", "CRADLE 02 — COLD COMFORT", "CRADLE 03 — NINTH LEDGER", "CRADLE 04 — PATIENCE WEN", "CRADLE 05 — TALLY HO" };
+            Material boomSteel = UrpMaterialFactory.GetOpaque("MooringBoomSteel", new Color(0.16f, 0.19f, 0.23f), 0.35f, 0.72f);
             int cradleCount = 5;
             for (int i = 0; i < cradleCount; i++)
             {
-                float cx = Mathf.Lerp(galleryMinX + 10f, galleryMaxX - 18f, i / (float)(cradleCount - 1));
-                Vector3 cPos = AtlasToUnity(cx, galleryElev, galleryMinY - 14.5f);
+                float cx = Mathf.Lerp(galleryMinX + 12f, galleryMaxX - 16f, i / (float)(cradleCount - 1));
+                Vector3 cPos = AtlasToUnity(cx, galleryElev + 1.8f, galleryMinY - 22.0f);
                 if (Catalog != null && Catalog.shipyardCradlePrefab != null)
                 {
-                    PrefabFittingHelper.SpawnCentered(Catalog.shipyardCradlePrefab, berthsRoot, $"ShipyardCradle_{i}", cPos, Quaternion.identity, 24f, keepColliders: false);
+                    PrefabFittingHelper.SpawnCentered(Catalog.shipyardCradlePrefab, berthsRoot, $"ShipyardCradle_{i}", cPos, Quaternion.identity, 26f, keepColliders: false);
                 }
                 else
                 {
-                    CreateBox(berthsRoot, $"CradleGantry_{i}", cPos + new Vector3(0f, -2.5f, 0f), new Vector3(10f, 1.2f, 22f), cradleMat, false);
+                    // Open skeletal mooring cradle frame when commercial shipyard prefabs are absent
+                    CreateBox(berthsRoot, $"CradleKeel_{i}", cPos + new Vector3(0f, -4.2f, 0f), new Vector3(1.2f, 0.6f, 22f), cradleMat, false);
+                    CreateBox(berthsRoot, $"CradleRibFore_{i}", cPos + new Vector3(0f, -1.2f, 7.5f), new Vector3(11.5f, 0.5f, 0.7f), cradleMat, false);
+                    CreateBox(berthsRoot, $"CradleRibAft_{i}", cPos + new Vector3(0f, -1.2f, -7.5f), new Vector3(11.5f, 0.5f, 0.7f), cradleMat, false);
                 }
-                CreateBox(berthsRoot, $"UmbilicalArm_{i}", cPos + new Vector3(0f, 1.8f, 8.5f), new Vector3(1.2f, 1.2f, 11f), hoseMat, false);
-                CreateBox(berthsRoot, $"CradleBeacon_{i}", cPos + new Vector3(-4.2f, 4.2f, 8f), new Vector3(0.28f, 0.28f, 0.28f), beaconRed, false);
+
+                // Sleek dark-steel docking collar boom connecting station exterior bulkhead to cradle bow (no giant orange blocks!)
+                Vector3 stationAnchor = AtlasToUnity(cx, galleryElev + 0.8f, galleryMinY - 5.2f);
+                CreateBox(berthsRoot, $"DockingBoom_{i}", stationAnchor, new Vector3(0.42f, 0.34f, 9.6f), boomSteel, false);
+                CreateBox(berthsRoot, $"DockingCollarRing_{i}", stationAnchor + new Vector3(0f, 0f, -4.8f), new Vector3(1.35f, 1.15f, 0.35f), cradleMat, false);
+                CreateBox(berthsRoot, $"CradleBeacon_{i}", stationAnchor + new Vector3(-0.62f, 0.58f, -4.8f), new Vector3(0.14f, 0.14f, 0.14f), beaconRed, false);
 
                 // Hard floodlight illuminating the moored hull so it stands out brightly through the glass!
                 var floodGo = new GameObject($"CradleFloodlight_{i}");
                 floodGo.transform.SetParent(berthsRoot, false);
-                floodGo.transform.position = cPos + new Vector3(0f, 7.5f, 9.5f);
+                floodGo.transform.position = cPos + new Vector3(3.5f, 8.5f, 11.5f);
                 var pt = floodGo.AddComponent<Light>();
                 pt.type = LightType.Point;
-                pt.range = 28f;
-                pt.intensity = 6.5f;
+                pt.range = 36f;
+                pt.intensity = 7.5f;
                 pt.color = new Color(0.86f, 0.94f, 1.0f);
 
                 GameObject hullPrefab = (i % 2 == 0 && Catalog != null && Catalog.drayExteriorHullPrefab != null)
@@ -1165,17 +1186,18 @@ namespace TacSim.World
                     ? Catalog.corvetteExteriorPrefab
                     : (Catalog != null ? Catalog.visitingFreighterPrefab : null);
 
+                Quaternion shipYaw = Quaternion.Euler(0f, (i % 2 == 0) ? -14f : 12f, 0f);
                 GameObject shipGo = hullPrefab != null
-                    ? PrefabFittingHelper.SpawnCentered(hullPrefab, berthsRoot, $"CradledHull_{i + 1}", cPos, Quaternion.identity, 20f, keepColliders: false)
+                    ? PrefabFittingHelper.SpawnCentered(hullPrefab, berthsRoot, $"CradledHull_{i + 1}", cPos, shipYaw, 20f, keepColliders: false)
                     : BuildSculptedDrayExterior(berthsRoot, cPos, hullMat, cradleMat, $"CradledDray_{i + 1}");
 
                 if (i == 0 && shipGo != null) _dockedShipVisual = shipGo.transform;
                 _cradleHullObjects.Add(shipGo);
 
-                // Hull callsign sign facing into the Berth Gallery window
-                var signTmp = CreateTmp3D(berthsRoot, $"CradleHullSign_{i}", Vector3.zero, defaultNames[i], 3.2f, new Color(0.72f, 0.94f, 1f));
-                signTmp.rectTransform.sizeDelta = new Vector2(16f, 2.4f);
-                signTmp.transform.position = cPos + new Vector3(0f, 5.4f, 6.5f);
+                // Hull callsign sign framed cleanly above each moored ship
+                var signTmp = CreateTmp3D(berthsRoot, $"CradleHullSign_{i}", Vector3.zero, defaultNames[i], 2.7f, new Color(0.72f, 0.94f, 1f));
+                signTmp.rectTransform.sizeDelta = new Vector2(16f, 2.2f);
+                signTmp.transform.position = cPos + new Vector3(0f, 7.4f, 9.5f);
                 signTmp.transform.rotation = Quaternion.Euler(0f, 180f, 0f);
                 _cradleHullSigns.Add(signTmp);
 
@@ -1185,20 +1207,27 @@ namespace TacSim.World
                         Catalog.collectorDronePrefab,
                         berthsRoot,
                         $"YardTenderDrone_{i}",
-                        cPos + new Vector3(6.2f, 3.2f, 4.5f),
+                        cPos + new Vector3(7.4f, 3.6f, 6.0f),
                         Quaternion.Euler(0f, -125f, 0f),
-                        3.8f,
+                        3.6f,
                         keepColliders: false);
                     if (drone != null) _berthDrones.Add(drone.transform);
                 }
             }
 
-            // "The dark": unlit working & Squadron berths continuing beyond the floodlit cradles!
+            // "The dark": distant unlit working & Squadron berths continuing beyond the floodlit cradles (using real shipyard gantries, never flat grey slabs!)
             for (int u = 0; u < 2; u++)
             {
-                Vector3 darkPos = AtlasToUnity(galleryMaxX + 8f + u * 18f, galleryElev - 0.5f, galleryMinY - 18f - u * 6f);
-                CreateBox(berthsRoot, $"UnlitWorkingBerth_{u}", darkPos + new Vector3(0f, -2.2f, 0f), new Vector3(9.5f, 1.0f, 20f), darkCradleMat, false);
-                CreateBox(berthsRoot, $"UnlitGantryRib_{u}", darkPos + new Vector3(0f, 2.0f, 4f), new Vector3(10.5f, 6.5f, 0.8f), darkCradleMat, false);
+                Vector3 darkPos = AtlasToUnity(galleryMaxX + 16f + u * 24f, galleryElev + 1.0f, galleryMinY - 28f - u * 10f);
+                if (Catalog != null && Catalog.shipyardCradlePrefab != null)
+                {
+                    PrefabFittingHelper.SpawnCentered(Catalog.shipyardCradlePrefab, berthsRoot, $"UnlitSquadronCradle_{u}", darkPos, Quaternion.Euler(0f, -10f, 0f), 24f, keepColliders: false);
+                }
+                else
+                {
+                    CreateBox(berthsRoot, $"UnlitTrussSpine_{u}", darkPos + new Vector3(0f, -3.5f, 0f), new Vector3(0.8f, 0.5f, 18f), darkCradleMat, false);
+                    CreateBox(berthsRoot, $"UnlitTrussArch_{u}", darkPos + new Vector3(0f, 2.5f, 4f), new Vector3(9.5f, 0.45f, 0.45f), darkCradleMat, false);
+                }
             }
         }
 

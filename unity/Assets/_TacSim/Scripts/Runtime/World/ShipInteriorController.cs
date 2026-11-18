@@ -181,7 +181,7 @@ namespace TacSim.World
                     _cargoPalletsRoot.SetParent(cRoot, false);
                     // Overhead crane rail & baseline stowage bay markers
                     if (Catalog.stationPipeProp != null)
-                        PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, cRoot, "HoldOverheadRail", worldFloorCenter + new Vector3(0f, comp.LocalSize.y - 0.35f, 0f), Quaternion.Euler(0f, 90f, 0f), 8.5f, false);
+                        PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, cRoot, "HoldOverheadRail", worldFloorCenter + new Vector3(0f, comp.LocalSize.y - 0.35f, 0f), Quaternion.Euler(0f, 90f, 0f), 8.5f, false, scaleUpToTarget: false);
                     UpdateCargoVisualFill(20); // Default light dunnage until live +ship/hold arrives
                     break;
 
@@ -193,7 +193,7 @@ namespace TacSim.World
                     }
                     if (Catalog.stationPipeProp != null)
                     {
-                        PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, cRoot, "CoolantManifold", worldFloorCenter + new Vector3(0f, 2.6f, -3.2f), Quaternion.identity, 6.2f, false);
+                        PrefabFittingHelper.SpawnCentered(Catalog.stationPipeProp, cRoot, "CoolantManifold", worldFloorCenter + new Vector3(0f, 2.6f, -3.2f), Quaternion.identity, 6.2f, false, scaleUpToTarget: false);
                     }
                     if (Catalog.shipVentMistPrefab != null)
                     {

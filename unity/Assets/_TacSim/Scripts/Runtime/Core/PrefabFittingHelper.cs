@@ -72,13 +72,16 @@ namespace TacSim.Core
             Quaternion worldRot,
             float maxDimensionM = 0f,
             bool keepColliders = false,
-            Texture overrideAlbedo = null)
+            Texture overrideAlbedo = null,
+            bool scaleUpToTarget = true)
         {
             if (prefab == null) return null;
 
             var inst = UnityEngine.Object.Instantiate(prefab, parent);
             inst.name = instanceName;
-            inst.transform.SetPositionAndRotation(centerWorldPos, worldRot);
+            // Measure unrotated mesh bounds first so 3/4 yaw rotations don't inflate AABB dimensions,
+            // and scale BOTH miniature vendor prefabs (e.g. MSGDI ~0.5m ships/cradles) and oversized prefabs to target world meters!
+            inst.transform.SetPositionAndRotation(centerWorldPos, Quaternion.identity);
             inst.transform.localScale = Vector3.one;
 
             PrepareInstance(inst, keepColliders, overrideAlbedo);
@@ -88,13 +91,18 @@ namespace TacSim.Core
                 if (maxDimensionM > 0.01f)
                 {
                     float maxAxis = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
-                    if (maxAxis > maxDimensionM && maxAxis > 0.001f)
+                    if (maxAxis > 0.0005f && (scaleUpToTarget || maxAxis > maxDimensionM))
                     {
                         inst.transform.localScale = Vector3.one * (maxDimensionM / maxAxis);
-                        TryComputeRendererBounds(inst, out b);
                     }
                 }
-                inst.transform.position += (centerWorldPos - b.center);
+                inst.transform.rotation = worldRot;
+                if (TryComputeRendererBounds(inst, out Bounds bRotated))
+                    inst.transform.position += (centerWorldPos - bRotated.center);
+            }
+            else
+            {
+                inst.transform.rotation = worldRot;
             }
             return inst;
         }
