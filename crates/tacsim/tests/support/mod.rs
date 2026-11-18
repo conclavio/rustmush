@@ -2624,6 +2624,16 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
         .as_object_mut()
         .expect("entries")
         .remove("lore.qureshi_personal");
+    // The registry's lay board as v2 published it (the owner's 2026-11-17 ruling re-worded it
+    // in place).
+    let board = old_ceres["entries"]["room.c05_registry"]["def"]["details"]["lay board"]
+        .as_str()
+        .expect("the lay board")
+        .replace(
+            "ONE STAKE PER PILOT, ONE HULL AT A TIME.",
+            "ONE ENROLMENT PER PILOT.",
+        );
+    old_ceres["entries"]["room.c05_registry"]["def"]["details"]["lay board"] = board.into();
     *ceres = mush_content::load_pack(&ground::sign(&old_ceres.to_string()))
         .expect("published Ceres verifies");
     assert_eq!(
