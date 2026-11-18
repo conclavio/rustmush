@@ -2300,7 +2300,7 @@ pub fn cockpit_legend(arrows_held: bool, letters_held: bool, weapons_free: bool)
     };
     let gate = if weapons_free { "f:hold" } else { "f:free" };
     format!(
-        "{turn} w/s:speed x:stop q/e:look c:centre spc:steady v:view {gate} g:volley t/T:lock F1-6:order p:text"
+        "{turn} w/s:speed x:stop q/e:look c:center spc:steady v:view {gate} g:volley t/T:lock F1-6:order p:text"
     )
 }
 

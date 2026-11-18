@@ -65,5 +65,8 @@ mod state_slot_owners;
 mod typed_state_lens;
 #[path = "engine_contracts/unit_looks.rs"]
 mod unit_looks;
+// The game speaks American English: help, content, commands and prose literals.
+#[path = "engine_contracts/us_spelling.rs"]
+mod us_spelling;
 #[path = "engine_contracts/vitals_projection_clean.rs"]
 mod vitals_projection_clean;

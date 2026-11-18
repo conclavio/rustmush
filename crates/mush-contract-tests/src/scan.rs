@@ -93,6 +93,23 @@ pub fn relative(root: &Path, path: &Path) -> String {
 /// would open a string that never closes. A `b` or `r` that ends an identifier
 /// is not a literal prefix; the `r` after a `b` prefix is.
 pub fn strip_comments_and_literals(src: &str) -> String {
+    lex(src, |_, _| {})
+}
+
+/// The byte range of every string literal in `src`, quotes and any `r#`/`b`
+/// prefix included, in source order; comments are skipped, so a quote inside
+/// one opens nothing. The same lexer as [`strip_comments_and_literals`], so a
+/// gate that reads literals and a gate that blanks them agree on where each
+/// one starts and ends.
+pub fn string_literals(src: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    lex(src, |from, to| spans.push(from..to));
+    spans
+}
+
+/// The one lexer: blanks comments and literal interiors, and reports each
+/// string literal's span to `literal`.
+fn lex(src: &str, mut literal: impl FnMut(usize, usize)) -> String {
     let bytes = src.as_bytes();
     let mut out = bytes.to_vec();
     let len = bytes.len();
@@ -176,6 +193,7 @@ pub fn strip_comments_and_literals(src: &str) -> String {
                 let end = src[body..]
                     .find(&terminator)
                     .map_or(len, |rel| body + rel + terminator.len());
+                literal(i, end);
                 blank(&mut out, i, end);
                 i = end;
                 continue;
@@ -196,6 +214,7 @@ pub fn strip_comments_and_literals(src: &str) -> String {
                     break;
                 }
             }
+            literal(start, i.min(len));
             blank(&mut out, start, i.min(len));
             continue;
         }

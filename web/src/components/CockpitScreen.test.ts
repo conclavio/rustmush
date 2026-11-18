@@ -583,7 +583,7 @@ describe("the picture", () => {
 describe("the doll", () => {
   it("draws the fixture tank's look grid at the top of the damage pane", async () => {
     await seated();
-    const doll = screen.getByRole("img", { name: "Tracked tank armour" });
+    const doll = screen.getByRole("img", { name: "Tracked tank armor" });
     expect(doll.getAttribute("viewBox")).toBe("0 0 24 16");
     // 24 x 16 less the gaps between the tracks and the hull.
     expect(doll.querySelectorAll("rect").length).toBe(24 * 16 - 2 * 16);

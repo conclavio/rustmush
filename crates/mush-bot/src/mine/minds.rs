@@ -94,7 +94,7 @@ pub mod renewal {
     /// `mush_market::mind_renewal::player::RENEW_NOT_DUE`.
     pub const RENEW_NOT_DUE: &str = "is not due for renewal; its term has";
     /// `mush_market::mind_renewal::player::RENEWING`.
-    pub const RENEWING: &str = "Asking for a renewal offer on licence";
+    pub const RENEWING: &str = "Asking for a renewal offer on license";
     /// `mush_market::mind_renewal::player::RENEW_OFFER`.
     pub const RENEW_OFFER: &str = "IC days); the offer is open";
     /// `mush_market::mind_renewal::player::RENEW_HOW`.
@@ -104,7 +104,7 @@ pub mod renewal {
     /// `mush_market::mind_renewal::player::RENEW_PAYING`.
     pub const RENEW_PAYING: &str = "into escrow; it completes on its own.";
     /// `mush_market::mind_renewal::player::RENEW_DECLINING`.
-    pub const RENEW_DECLINING: &str = "Turning down the renewal offer on licence";
+    pub const RENEW_DECLINING: &str = "Turning down the renewal offer on license";
     /// `mush_market::mind_renewal::player::RENEW_STOPPED`.
     pub const RENEW_STOPPED: &str = "Nothing further will be tried.";
     /// `mush_market::mind_renewal::player::STATUS_NONE`.
@@ -126,7 +126,7 @@ pub mod claim {
     /// `tacsim::surface::excursion::CLAIM_STILL_OPEN`.
     pub const CLAIM_STILL_OPEN: &str = "that rig's mind claim is still open";
     /// `tacsim::surface::excursion::CLAIM_REFUSED`.
-    pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is cancelled and the rig stays in its bay.";
+    pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is canceled and the rig stays in its bay.";
     /// `tacsim::surface::excursion::CLAIM_CANCELLED`.
     pub const CLAIM_CANCELLED: &str =
         "The launch could not start; the mind's claim is closed and the rig stays in its bay.";
@@ -142,10 +142,10 @@ pub mod dispatch {
     pub const MIND_PENDING: &str =
         "is changing hands; it is not sealed aboard until the transfer settles.";
     /// `tacsim::surface::dispatch::MIND_NO_LICENCE`.
-    pub const MIND_NO_LICENCE: &str = "You hold no licence";
+    pub const MIND_NO_LICENCE: &str = "You hold no license";
     /// `tacsim::surface::dispatch::MIND_GOVERNED_DRAFT`.
     pub const MIND_GOVERNED_DRAFT: &str =
-        "A governed core seals no unfiled draft; name a filed licence.";
+        "A governed core seals no unfiled draft; name a filed license.";
     /// `tacsim::surface::dispatch::MIND_NO_DRAFT`.
     pub const MIND_NO_DRAFT: &str = "You have no draft";
     /// `tacsim::surface::dispatch::MIND_NO_CORE`.
@@ -157,7 +157,7 @@ pub mod dispatch {
     /// `tacsim::surface::dispatch::MIND_UNTITLED`.
     pub use crate::mine::lines::MIND_UNTITLED;
     /// `tacsim::surface::dispatch::MIND_NOT_FOR_ORG`: the game re-exports `tacsim::minds::words::NOT_FOR_ORG`.
-    pub const MIND_NOT_FOR_ORG: &str = "You do not act for that organisation.";
+    pub const MIND_NOT_FOR_ORG: &str = "You do not act for that organization.";
 }
 
 /// A field unit's mind taking it home while its pilot is away (doc 44 MW.7):
@@ -202,11 +202,11 @@ pub mod absent {
 /// `+ship/mind`, a mind sealed aboard a ship (doc 44 MW.13): `tacsim::port::ship_mind`.
 pub mod ship_mind {
     /// `tacsim::port::ship_mind::MIND_USAGE`.
-    pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<licence>";
+    pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<license>";
     /// `tacsim::port::ship_mind::MIND_NONE`.
     pub const MIND_NONE: &str = "If you lose your link, the house default takes her home.";
     /// `tacsim::port::ship_mind::MIND_ADMITTING`.
-    pub const MIND_ADMITTING: &str = "The Registry is admitting licence ";
+    pub const MIND_ADMITTING: &str = "The Registry is admitting license ";
     /// `tacsim::port::ship_mind::MIND_ABOARD`.
     pub const MIND_ABOARD: &str =
         "It has her helm and sensors while her crew has no link, until she next docks at a port.";
@@ -233,7 +233,7 @@ pub mod ship_mind {
     pub const MIND_LAPSED: &str = "; nothing is sealed aboard.";
     /// `tacsim::port::ship_mind::MIND_PREVIEW`.
     pub const MIND_PREVIEW: &str =
-        "and holds a seat of the licence until she next docks at a port. Add go to seal it.";
+        "and holds a seat of the license until she next docks at a port. Add go to seal it.";
     /// `tacsim::port::ship_mind::MIND_NOT_SEALED`.
     pub const MIND_NOT_SEALED: &str = " has no mind sealed aboard to unseal.";
     /// `tacsim::port::ship_mind::MIND_NOT_YOURS`.
@@ -241,7 +241,7 @@ pub mod ship_mind {
     /// `tacsim::port::ship_mind::MIND_NOT_YET`.
     pub const MIND_NOT_YET: &str = "'s mind claim yet; try again in a moment.";
     /// `tacsim::port::ship_mind::MIND_OFF_PREVIEW`.
-    pub const MIND_OFF_PREVIEW: &str = ": its claim closes and the licence's seat is free.";
+    pub const MIND_OFF_PREVIEW: &str = ": its claim closes and the license's seat is free.";
     /// `tacsim::port::ship_mind::MIND_SEALED`.
     pub const MIND_SEALED: &str = "The Registry admits the claim: ";
     /// `tacsim::port::ship_mind::MIND_REFUSED`.
@@ -318,9 +318,9 @@ pub mod market {
     /// `tacsim::minds::words::WITHDRAWING`.
     pub const WITHDRAWING: &str = "Withdrawing filed revision";
     /// `tacsim::minds::words::ATTESTING`.
-    pub const ATTESTING: &str = "Renewing your owner's licence for filed mind";
+    pub const ATTESTING: &str = "Renewing your owner's license for filed mind";
     /// `tacsim::minds::words::FORKING`.
-    pub const FORKING: &str = "Forking licence";
+    pub const FORKING: &str = "Forking license";
     /// `tacsim::minds::words::RATING_UNAVAILABLE`.
     pub const RATING_UNAVAILABLE: &str = "The owned Registry computation is unavailable.";
     /// `tacsim::minds::words::COUNTER`.
@@ -345,7 +345,7 @@ pub mod market {
     /// that also starts with "Listing " and holds ", class ".
     pub const DETAIL: &str = "and above.";
     /// `tacsim::minds::words::TERMS_LINE`.
-    pub const TERMS_LINE: &str = "days of Grace; the licence";
+    pub const TERMS_LINE: &str = "days of Grace; the license";
     /// `tacsim::minds::words::SPLIT`.
     pub const SPLIT: &str = "charter owner the rest.";
     /// `tacsim::minds::words::QUOTING`.
@@ -362,21 +362,21 @@ pub mod market {
     /// `tacsim::minds::words::BAD_TRANSFER`.
     pub const BAD_TRANSFER: &str = "transfer is yes or no.";
     /// `tacsim::minds::words::HOLD_HEAD`.
-    pub const HOLD_HEAD: &str = "Your mind licences:";
+    pub const HOLD_HEAD: &str = "Your mind licenses:";
     /// `tacsim::minds::words::HOLD_OWNER`. Partial: a holdings row's indent; a reader takes it
     /// only from a line that starts with it, after `HOLD_HEAD`, spaces not collapsed.
     pub const HOLD_OWNER: &str = "  filed ";
     /// `tacsim::minds::words::HOLD_MORE`.
     pub const HOLD_MORE: &str = "More: +minds/holdings";
     /// `tacsim::minds::words::HOLD_EMPTY`.
-    pub const HOLD_EMPTY: &str = "You hold no mind licences.";
+    pub const HOLD_EMPTY: &str = "You hold no mind licenses.";
     /// `tacsim::minds::words::YOUR_QUOTE`.
     pub const YOUR_QUOTE: &str = "more seconds. Pay it with +minds/buy/pay";
     /// `tacsim::minds::words::QUOTE_EXPIRED`.
     pub const QUOTE_EXPIRED: &str = "Your quote has expired. Ask for a new one with +minds/buy";
     /// `tacsim::minds::words::YOUR_ESCROW`.
     pub const YOUR_ESCROW: &str =
-        "Your payment is held in escrow. Take the licence with +minds/buy/complete";
+        "Your payment is held in escrow. Take the license with +minds/buy/complete";
     /// `tacsim::minds::words::ASK`.
     pub const ASK: &str = "Ask for a quote with +minds/buy";
     /// `tacsim::minds::words::NO_QUOTE`.
@@ -386,25 +386,25 @@ pub mod market {
     /// `tacsim::minds::words::NO_PURCHASE`.
     pub const NO_PURCHASE: &str = "You have no paid purchase waiting on listing";
     /// `tacsim::minds::words::COMPLETING`.
-    pub const COMPLETING: &str = "Taking the licence from listing";
+    pub const COMPLETING: &str = "Taking the license from listing";
     /// `tacsim::minds::words::REFUNDING`.
     pub const REFUNDING: &str = "Asking for your payment on listing";
     /// `tacsim::minds::words::HOLD_PAID`. Partial: a holdings row's indent; a reader takes it
     /// only from a line that starts with it, after `HOLD_HEAD`, spaces not collapsed.
-    pub const HOLD_PAID: &str = "  licence ";
+    pub const HOLD_PAID: &str = "  license ";
     /// `tacsim::minds::words::HOLD_WAIT_HEAD`.
     pub const HOLD_WAIT_HEAD: &str = "Purchases waiting:";
     /// `tacsim::minds::words::HOLD_WAIT`.
     pub const HOLD_WAIT: &str = "paid into escrow: +minds/buy/complete";
     /// `tacsim::minds::words::NO_LICENCE`.
-    pub const NO_LICENCE: &str = "You hold no licence";
+    pub const NO_LICENCE: &str = "You hold no license";
     /// `tacsim::minds::words::NOT_FOR_ORG`.
-    pub const NOT_FOR_ORG: &str = "You do not act for that organisation.";
+    pub const NOT_FOR_ORG: &str = "You do not act for that organization.";
     /// `tacsim::minds::words::NO_RENEWAL`.
     pub const NO_RENEWAL: &str =
         "has no renewal offer waiting for you. Ask for one with +minds/renew";
     /// `tacsim::minds::words::RESELLING`.
-    pub const RESELLING: &str = "Offering licence";
+    pub const RESELLING: &str = "Offering license";
     /// `tacsim::minds::words::RESELL_TELL`.
     pub const RESELL_TELL: &str = "Once that is confirmed, they accept with +minds/resell/accept";
     /// `tacsim::minds::words::CHARTERING`.
@@ -418,7 +418,7 @@ pub mod market {
     /// `tacsim::minds::words::RECALLING`.
     pub const RECALLING: &str = "Recalling filed revision";
     /// `tacsim::minds::words::REVOKING`.
-    pub const REVOKING: &str = "Revoking licence";
+    pub const REVOKING: &str = "Revoking license";
     /// `tacsim::minds::words::REGISTRY_OFF`.
     pub const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
     /// `tacsim::minds::words::INSPECTING`.
@@ -446,14 +446,14 @@ pub mod market {
     /// " IC days.".
     pub const REVOKING_PRINCIPAL: &str = "Revoking ";
     /// `tacsim::minds::words::PRINCIPALS_BARRED`.
-    pub const PRINCIPALS_BARRED: &str = "The Registry has barred your mind licences until";
+    pub const PRINCIPALS_BARRED: &str = "The Registry has barred your mind licenses until";
     /// `tacsim::minds::words::PRINCIPAL_REVOKED`.
-    pub const PRINCIPAL_REVOKED: &str = "holds no new licence until";
+    pub const PRINCIPAL_REVOKED: &str = "holds no new license until";
     /// `tacsim::minds::words::NO_SUCH_PRINCIPAL`.
-    pub const NO_SUCH_PRINCIPAL: &str = "No such character or organisation.";
+    pub const NO_SUCH_PRINCIPAL: &str = "No such character or organization.";
     /// `tacsim::minds::words::AMBIGUOUS_PRINCIPAL`.
     pub const AMBIGUOUS_PRINCIPAL: &str =
-        "That name is a character and an organisation; name the character as #<n>.";
+        "That name is a character and an organization; name the character as #<n>.";
     /// `tacsim::minds::words::NOTHING_TO_REVOKE`.
     pub const NOTHING_TO_REVOKE: &str = "That inspection found nothing to revoke for.";
     /// `tacsim::minds::words::CLAIM_FILED`.
@@ -499,9 +499,9 @@ pub mod market {
         /// `tacsim::minds::words::named::ACCEPT_HOW`.
         pub const ACCEPT_HOW: &str = "Accept it with +minds/resell/accept";
         /// `tacsim::minds::words::named::NO_OFFER`.
-        pub const NO_OFFER: &str = "You have no offer for licence";
+        pub const NO_OFFER: &str = "You have no offer for license";
         /// `tacsim::minds::words::named::NO_OFFER_AT`.
-        pub const NO_OFFER_AT: &str = "None of your offers for licence";
+        pub const NO_OFFER_AT: &str = "None of your offers for license";
         /// `tacsim::minds::words::named::CHARTER_OFFER`.
         pub const CHARTER_OFFER: &str = "and its charter are offered to you for";
         /// `tacsim::minds::words::named::CHARTER_ACCEPT_HOW`.
@@ -511,7 +511,7 @@ pub mod market {
         /// `tacsim::minds::words::named::NO_CHARTER_OFFER_AT`.
         pub const NO_CHARTER_OFFER_AT: &str = "None of your offers for filed mind";
         /// `tacsim::minds::words::named::ACCEPTING`.
-        pub const ACCEPTING: &str = "Accepting the offer for licence";
+        pub const ACCEPTING: &str = "Accepting the offer for license";
         /// `tacsim::minds::words::named::FUNDING_CHARTER`.
         pub const FUNDING_CHARTER: &str =
             "into escrow; the transfer settles once no sortie under it is out.";
@@ -1280,11 +1280,11 @@ mod tests {
     const HULL_SALE_EXCLUDED: &[(&str, &str)] = &[
         (
             "HULL_PACK",
-            "the hulls' catalogue pack name, not a sentence the game prints",
+            "the hulls' catalog pack name, not a sentence the game prints",
         ),
         (
             "HULL_CODE_PREFIX",
-            "a hull entry's catalogue-code prefix, not a sentence",
+            "a hull entry's catalog-code prefix, not a sentence",
         ),
     ];
     /// `hardware/sale/resale.rs` (doc 48 unit EX.2b).
@@ -1349,7 +1349,7 @@ mod tests {
         (
             "dispatch::MIND_NO_LICENCE",
             "market::NO_LICENCE",
-            "the same text, \"You hold no licence {licence}.\", for a launch's mind= and for +minds",
+            "the same text, \"You hold no license {licence}.\", for a launch's mind= and for +minds",
         ),
         (
             "market::NO_LICENCE",

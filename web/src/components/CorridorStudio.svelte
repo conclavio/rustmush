@@ -781,7 +781,7 @@
           {/if}
 
           <details class="raw-drawer">
-            <summary>Advanced Port Sub-JSON (rooms, programme, vehicles)</summary>
+            <summary>Advanced Port Sub-JSON (rooms, program, vehicles)</summary>
             <label class="sub-editor">
               <span>Port Room Role Bindings (<code>rooms</code>)</span>
               <textarea

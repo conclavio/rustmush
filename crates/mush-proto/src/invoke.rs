@@ -1350,7 +1350,7 @@ mod tests {
         let market = |action: MarketAction| InvokeRequest::Mind(MindRequest::Market { action });
         let resell = |player: &str, price: &str| {
             market(MarketAction::Resell {
-                license: 7,
+                licence: 7,
                 player: player.into(),
                 price: price.into(),
             })
@@ -1397,7 +1397,7 @@ mod tests {
             check_eq!(resell("Cy", price).validate().is_ok(), ok, "{price:?}");
             check_eq!(
                 market(MarketAction::ResellAccept {
-                    license: 7,
+                    licence: 7,
                     price: Some(price.into()),
                 })
                 .validate()

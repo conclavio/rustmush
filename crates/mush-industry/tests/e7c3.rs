@@ -2955,3 +2955,15 @@ fn ws02_a2_a_clockstamp_object_submitted_for_term_stays_refused() {
         "and nothing was written"
     );
 }
+
+/// **US spelling is canonical** (owner, 2026-11-17): the verb is `@license`, and the
+/// British `@licence` stays an alias of it, answering the same line.
+#[test]
+fn the_british_licence_verb_is_an_alias_of_license() {
+    let (mut world, _) = boot();
+    let player = world.spawn_player("Reader");
+    let us = world.exec_ok(player, "@license/show");
+    assert!(!us.is_empty(), "@license/show answers");
+    assert_eq!(world.exec_ok(player, "@licence/show"), us);
+    assert_eq!(world.exec_ok(player, "@licence"), world.exec_ok(player, "@license"));
+}

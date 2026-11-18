@@ -949,6 +949,23 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     no_refused_writes(&rig.tw);
 }
 
+/// **US spelling is canonical** (owner, 2026-11-17): the switch is `+coop/enroll`,
+/// the British `+coop/enrol` stays an alias of it, and `help +coop` says so.
+#[test]
+fn the_british_enrol_switch_is_an_alias_of_enroll() {
+    let mut rig = stocked();
+    let british = pilot(&mut rig, "Ada", 1);
+    let out = run(&mut rig.tw, british, "+coop/enrol Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+    assert!(tacsim::port::live_charter(rig.tw.world(), british).is_some());
+    let us = pilot(&mut rig, "Bea", 2);
+    let out = run(&mut rig.tw, us, "+coop/enroll Grey Heron");
+    assert!(out.contains("now the Grey Heron"), "{out}");
+    let help = run(&mut rig.tw, us, "help +coop");
+    assert!(help.contains("/enroll"), "{help}");
+    assert!(help.contains("(switch aliases: /enrol = /enroll)"), "{help}");
+}
+
 // ---------------------------------------------------------------------------
 // 4. The clerk's authority
 // ---------------------------------------------------------------------------

@@ -1,0 +1,501 @@
+# The US-spelling gate's word lists (tests/engine_contracts/us_spelling.rs).
+#
+# The game speaks American English. Every `[[word]]` below is a British spelling
+# that may not appear in player-facing text: help pages, content packs' player
+# text, command names and switches, and the prose string literals of production
+# source (the sentences the game prints, the mush-bot sentence table among them).
+# Words are matched whole and case-folded; the failure names the US form.
+#
+# Not checked, by design: identifiers, JSON keys, Redis keys, content ids, design
+# docs and design notes. A word glued to `:`, `.`, `_`, `{`/`}`, a quote or a
+# path slash is an identifier (`tacsim:licence:`, `{licence}`, `licence/<id>`,
+# `"licence":`) and is skipped; so is a word in a code span on its own
+# (`` `offence` ``, a mode keyword). A word right after `@`, `+` or `/` is a
+# command token: the registry check covers those, and a British alias may be
+# named in prose.
+#
+# `[[allow]]` admits one word in one file, for a proper noun or a quoted
+# in-world name: `file` is repo-relative, `word` is as written (case-sensitive),
+# `context` is a substring of the surrounding text that must be present, and
+# `reason` says why. A row no text needs any more fails the gate.
+
+[ise]
+# Each stem takes the endings e, es, ed, ing, ation, ations, er and ers, with an
+# optional un-, re-, dis- or de- prefix: `organis` covers organise, organisation,
+# reorganised and disorganised. The US form swaps the stem's last `s` for `z`.
+# `emphasis` takes only e, es, ed and ing (emphasis itself is US spelling).
+stems = [
+  "organis",
+  "recognis",
+  "authoris",
+  "realis",
+  "normalis",
+  "apologis",
+  "capitalis",
+  "prioritis",
+  "optimis",
+  "minimis",
+  "maximis",
+  "serialis",
+  "initialis",
+  "specialis",
+  "standardis",
+  "utilis",
+  "categoris",
+  "summaris",
+  "customis",
+  "finalis",
+  "synchronis",
+  "visualis",
+  "memoris",
+  "stabilis",
+  "neutralis",
+  "criticis",
+  "emphasis",
+  "localis",
+  "randomis",
+  "sanitis",
+  "characteris",
+  "mobilis",
+  "militaris",
+  "colonis",
+  "civilis",
+  "centralis",
+  "rationalis",
+  "harmonis",
+  "legitimis",
+  "subsidis",
+  "symbolis",
+  "theoris",
+  "vaporis",
+  "digitalis",
+]
+
+[[word]]
+british = "enrol"
+us = "enroll"
+
+[[word]]
+british = "enrols"
+us = "enrolls"
+
+[[word]]
+british = "enrolment"
+us = "enrollment"
+
+[[word]]
+british = "enrolments"
+us = "enrollments"
+
+[[word]]
+british = "licence"
+us = "license"
+
+[[word]]
+british = "licences"
+us = "licenses"
+
+[[word]]
+british = "licenced"
+us = "licensed"
+
+[[word]]
+british = "armour"
+us = "armor"
+
+[[word]]
+british = "armours"
+us = "armors"
+
+[[word]]
+british = "armoured"
+us = "armored"
+
+[[word]]
+british = "armouring"
+us = "armoring"
+
+[[word]]
+british = "armoury"
+us = "armory"
+
+[[word]]
+british = "colour"
+us = "color"
+
+[[word]]
+british = "colours"
+us = "colors"
+
+[[word]]
+british = "coloured"
+us = "colored"
+
+[[word]]
+british = "colouring"
+us = "coloring"
+
+[[word]]
+british = "centre"
+us = "center"
+
+[[word]]
+british = "centres"
+us = "centers"
+
+[[word]]
+british = "centred"
+us = "centered"
+
+[[word]]
+british = "defence"
+us = "defense"
+
+[[word]]
+british = "defences"
+us = "defenses"
+
+[[word]]
+british = "offence"
+us = "offense"
+
+[[word]]
+british = "offences"
+us = "offenses"
+
+[[word]]
+british = "metre"
+us = "meter"
+
+[[word]]
+british = "metres"
+us = "meters"
+
+[[word]]
+british = "kilometre"
+us = "kilometer"
+
+[[word]]
+british = "kilometres"
+us = "kilometers"
+
+[[word]]
+british = "centimetre"
+us = "centimeter"
+
+[[word]]
+british = "centimetres"
+us = "centimeters"
+
+[[word]]
+british = "millimetre"
+us = "millimeter"
+
+[[word]]
+british = "millimetres"
+us = "millimeters"
+
+[[word]]
+british = "programme"
+us = "program"
+
+[[word]]
+british = "programmes"
+us = "programs"
+
+[[word]]
+british = "catalogue"
+us = "catalog"
+
+[[word]]
+british = "catalogues"
+us = "catalogs"
+
+[[word]]
+british = "catalogued"
+us = "cataloged"
+
+[[word]]
+british = "cheque"
+us = "check"
+
+[[word]]
+british = "cheques"
+us = "checks"
+
+[[word]]
+british = "grey"
+us = "gray"
+
+[[word]]
+british = "greys"
+us = "grays"
+
+[[word]]
+british = "greyed"
+us = "grayed"
+
+[[word]]
+british = "greyish"
+us = "grayish"
+
+[[word]]
+british = "manoeuvre"
+us = "maneuver"
+
+[[word]]
+british = "manoeuvres"
+us = "maneuvers"
+
+[[word]]
+british = "manoeuvred"
+us = "maneuvered"
+
+[[word]]
+british = "manoeuvring"
+us = "maneuvering"
+
+[[word]]
+british = "manoeuvrable"
+us = "maneuverable"
+
+[[word]]
+british = "travelled"
+us = "traveled"
+
+[[word]]
+british = "travelling"
+us = "traveling"
+
+[[word]]
+british = "traveller"
+us = "traveler"
+
+[[word]]
+british = "travellers"
+us = "travelers"
+
+[[word]]
+british = "cancelled"
+us = "canceled"
+
+[[word]]
+british = "cancelling"
+us = "canceling"
+
+[[word]]
+british = "labelled"
+us = "labeled"
+
+[[word]]
+british = "labelling"
+us = "labeling"
+
+[[word]]
+british = "modelling"
+us = "modeling"
+
+[[word]]
+british = "modelled"
+us = "modeled"
+
+[[word]]
+british = "signalling"
+us = "signaling"
+
+[[word]]
+british = "signalled"
+us = "signaled"
+
+[[word]]
+british = "fuelled"
+us = "fueled"
+
+[[word]]
+british = "fuelling"
+us = "fueling"
+
+[[word]]
+british = "levelled"
+us = "leveled"
+
+[[word]]
+british = "levelling"
+us = "leveling"
+
+[[word]]
+british = "totalled"
+us = "totaled"
+
+[[word]]
+british = "channelled"
+us = "channeled"
+
+[[word]]
+british = "judgement"
+us = "judgment"
+
+[[word]]
+british = "judgements"
+us = "judgments"
+
+[[word]]
+british = "ageing"
+us = "aging"
+
+[[word]]
+british = "fulfil"
+us = "fulfill"
+
+[[word]]
+british = "fulfils"
+us = "fulfills"
+
+[[word]]
+british = "fulfilment"
+us = "fulfillment"
+
+[[word]]
+british = "draught"
+us = "draft"
+
+[[word]]
+british = "draughts"
+us = "drafts"
+
+[[word]]
+british = "storey"
+us = "story"
+
+[[word]]
+british = "storeys"
+us = "stories"
+
+[[word]]
+british = "behaviour"
+us = "behavior"
+
+[[word]]
+british = "behaviours"
+us = "behaviors"
+
+[[word]]
+british = "behavioural"
+us = "behavioral"
+
+[[word]]
+british = "favour"
+us = "favor"
+
+[[word]]
+british = "favours"
+us = "favors"
+
+[[word]]
+british = "favoured"
+us = "favored"
+
+[[word]]
+british = "favourite"
+us = "favorite"
+
+[[word]]
+british = "favourable"
+us = "favorable"
+
+[[word]]
+british = "honour"
+us = "honor"
+
+[[word]]
+british = "honours"
+us = "honors"
+
+[[word]]
+british = "honoured"
+us = "honored"
+
+[[word]]
+british = "neighbour"
+us = "neighbor"
+
+[[word]]
+british = "neighbours"
+us = "neighbors"
+
+[[word]]
+british = "neighbouring"
+us = "neighboring"
+
+[[word]]
+british = "neighbourhood"
+us = "neighborhood"
+
+[[word]]
+british = "harbour"
+us = "harbor"
+
+[[word]]
+british = "harbours"
+us = "harbors"
+
+[[word]]
+british = "harbourmaster"
+us = "harbormaster"
+
+[[word]]
+british = "harbourmasters"
+us = "harbormasters"
+
+[[word]]
+british = "rumour"
+us = "rumor"
+
+[[word]]
+british = "rumours"
+us = "rumors"
+
+[[word]]
+british = "vapour"
+us = "vapor"
+
+[[word]]
+british = "labour"
+us = "labor"
+
+[[word]]
+british = "practise"
+us = "practice"
+
+[[word]]
+british = "practised"
+us = "practiced"
+
+[[word]]
+british = "practising"
+us = "practicing"
+
+[[word]]
+british = "analyse"
+us = "analyze"
+
+[[word]]
+british = "analysed"
+us = "analyzed"
+
+[[word]]
+british = "analysing"
+us = "analyzing"
+
+[[word]]
+british = "paralyse"
+us = "paralyze"
+
+[[word]]
+british = "paralysed"
+us = "paralyzed"
+
+[[word]]
+british = "whilst"
+us = "while"
+

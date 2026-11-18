@@ -106,7 +106,7 @@ export function formTitle(form: MarketForm): string {
 
 /** The withdrawal's confirm sentence (the TUI's, verbatim). */
 export function withdrawText(filed: number, name: string): string {
-  return `Withdraw filed mind #${filed} ${name}? New sales stop; licences already sold keep working. Enter withdraws; Esc cancels.`;
+  return `Withdraw filed mind #${filed} ${name}? New sales stop; licenses already sold keep working. Enter withdraws; Esc cancels.`;
 }
 
 /** The seller's instruction after a staged offer, from the typed fields (the

@@ -1114,6 +1114,24 @@ fn sm5_a_bare_buy_previews_and_commits_nothing() {
     }
 }
 
+/// **US spelling is canonical** (owner, 2026-11-17): the verb is `+license`, and
+/// the British `+licence` stays an alias, so a pilot who types the old spelling
+/// buys and reads the same license.
+#[test]
+fn the_british_licence_verb_is_an_alias_of_license() {
+    let mut rig = stocked();
+    let (pilot, _) = dray_p(&mut rig, "Pilot", 1, "Salt Moth");
+    let out = run(&mut rig.tw, pilot, "+licence/buy go");
+    assert!(
+        out.contains(" licenses you to prospect at its sites until "),
+        "{out}"
+    );
+    let _ = licence(&rig, pilot);
+    let british = run(&mut rig.tw, pilot, "+licence");
+    assert!(!british.trim().is_empty());
+    assert_eq!(british, run(&mut rig.tw, pilot, "+license"));
+}
+
 /// **A2: the licence lapses after its grace, read at the next act** (§9.1, lead ruling 5):
 /// bought at `t0`, a lease at `t0 + 195 d` (grace) goes through; at `t0 + 197 d` the lease
 /// refuses `LEASE_LICENCE`, `+licence` prints the lapse at `t0 + 196 d` and the gate errs; no
