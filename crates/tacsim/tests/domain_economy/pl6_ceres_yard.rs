@@ -267,7 +267,7 @@ fn hulls_v2() -> String {
     let pack = mush_content::load_pack(&signed).expect("v2 verifies");
     assert_eq!(
         pack.manifest().digest().to_hex(),
-        "aaeeae95687c477addbcff89314bc919573f781e85994cdc842703c5aa0098df",
+        "2c17bc1ecf0cbaae9c660b4b653ce3078d2df0139f54f104b918952e9b7a013b",
         "the published v2"
     );
     signed

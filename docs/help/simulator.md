@@ -164,7 +164,7 @@ What the shipped server can field:
                       and a Mk1 sight.
   line_tank_laser     the stock tank with a laser beside its cannon and its
                       coaxial machine gun. The laser is for drones and soft
-                      targets: it does little to a tank's armour. It makes
+                      targets: it does little to a tank's armor. It makes
                       heat, and a shot that would take the machine past its
                       ceiling is refused until it cools.
   line_tank_thermal   the stock tank with a thermal sight: it picks a stopped

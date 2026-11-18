@@ -1179,7 +1179,7 @@ describe("16b cut Y.4: the catch-up report", () => {
       "  The machine was a new state word under no order.",
       "  Position: unknown.",
       "  Contacts: new ABCDEFGH; none lost.",
-      `  Sections: ${"s".repeat(24)} armour 9 then, 4 now.`,
+      `  Sections: ${"s".repeat(24)} armor 9 then, 4 now.`,
       "  Rounds spent: w 2.",
       "  Power on[31mline.",
     ]);

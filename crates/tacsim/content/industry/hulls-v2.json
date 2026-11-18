@@ -1,6 +1,6 @@
 {
   "manifest": {
-    "digest": "2c17bc1ecf0cbaae9c660b4b653ce3078d2df0139f54f104b918952e9b7a013b",
+    "digest": "89d42f120c573269f08c176fdaf9028d68cfb179853ea02e921bac168c289995",
     "id": "tacsim.industry.hulls",
     "kind": "rules_definition",
     "requires": [],

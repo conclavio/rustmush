@@ -60,7 +60,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             .copied()
             .map(SmolStr::new)
             .collect(),
-            help: "+market/history <catalogue>:<code> [market=<venue>]\n\
+            help: "+market/history <catalog>:<code> [market=<venue>]\n\
                    \x20                                 the houses' ask and bid for a good at \
                    this venue, an IC week a row, for the last 24 IC weeks.\n\
                    +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]\n\

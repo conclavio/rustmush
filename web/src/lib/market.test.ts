@@ -368,7 +368,7 @@ describe("MarketStore", () => {
     expect(formTitle(store.form!)).toBe("Withdraw filed mind 7");
     expect(store.build()).toEqual({ act: "withdraw", filed: 7 });
     expect(withdrawText(7, "Drift Kestrel")).toBe(
-      "Withdraw filed mind #7 Drift Kestrel? New sales stop; licences already sold keep working. Enter withdraws; Esc cancels.",
+      "Withdraw filed mind #7 Drift Kestrel? New sales stop; licenses already sold keep working. Enter withdraws; Esc cancels.",
     );
 
     store.openOffer();
