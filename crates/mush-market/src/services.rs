@@ -50,6 +50,8 @@ pub const TERM_BY: &str = "due within {days} IC days";
 pub const TERM_TODAY: &str = "due today";
 /// Settled on performance.
 pub const TERM_ON_PERFORMANCE: &str = "paid on arrival";
+/// Paid by the IC day (a crew member's wage).
+pub const TERM_DAILY: &str = "paid by the IC day";
 /// More than the board shows.
 pub const JOBS_MORE: &str = "(More are posted than one board shows.)";
 
@@ -85,6 +87,7 @@ fn term_words(w: &World, term: ServiceTerm) -> String {
             }
         }
         ServiceTerm::OnPerformance => TERM_ON_PERFORMANCE.to_string(),
+        ServiceTerm::Daily => TERM_DAILY.to_string(),
     }
 }
 

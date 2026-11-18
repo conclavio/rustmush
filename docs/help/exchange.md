@@ -145,6 +145,9 @@ command that takes it:
   arrival.
 - **Survey:** Occator's commissions for fresh soundings of one block. Take one
   with +survey/accept; you have 28 IC days from accepting.
+- **Crew:** a player offering to crew for a wage, while they stand in the port.
+  The pay shown is the scale wage they ask, by the IC day; page them to agree
+  terms. List yourself with +sortie/available (see help detachments).
 - **Haul:** carry a shipper's goods from their locker here to their locker at
   another port. Take one with +haul/accept while your hull is docked here; you
   have 28 IC days from accepting.

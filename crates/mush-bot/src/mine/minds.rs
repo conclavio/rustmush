@@ -683,6 +683,8 @@ pub mod jobs {
     pub const TERM_TODAY: &str = "due today";
     /// `mush_market::services::TERM_ON_PERFORMANCE`.
     pub const TERM_ON_PERFORMANCE: &str = "paid on arrival";
+    /// `mush_market::services::TERM_DAILY` (doc 48 cut EX.7).
+    pub const TERM_DAILY: &str = "paid by the IC day";
     /// `mush_market::services::JOBS_MORE`.
     pub const JOBS_MORE: &str = "(More are posted than one board shows.)";
     /// `tacsim::surface::retrieval::ACCEPT_USAGE`'s head.
@@ -693,6 +695,39 @@ pub mod jobs {
     pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was accepted.";
     /// `tacsim::surface::retrieval::ORG_NO_ACCOUNT`.
     pub const ORG_NO_ACCOUNT: &str = "That organization has no account to be paid into.";
+}
+
+/// **Crew wages and crew for hire** (doc 48 cut EX.7): `+sortie/crew`'s wage, a contract's wage
+/// line and `+sortie/available` (`tacsim::detachment::crew::wages`). The DT lane reads
+/// [`crew::OFFERS_WAGES`] as the offers' end; the rest are held to the game's own text below.
+pub mod crew {
+    /// `tacsim::detachment::crew::wages::OFFER_WAGE`'s head. Partial: read the wage after it.
+    pub const OFFER_WAGE: &str = "; wage ";
+    /// `tacsim::detachment::crew::wages::OFFERS_WAGES`'s head: the offers' footer.
+    pub const OFFERS_WAGES: &str = "A hire's wage is ";
+    /// `tacsim::detachment::crew::wages::OFFERS_ABOARD`.
+    pub const OFFERS_ABOARD: &str = "Hiring does not move the character aboard.";
+    /// `tacsim::detachment::crew::wages::WAGE_LINE`'s head. Partial: read the wage after it.
+    pub const WAGE_LINE: &str = "Wage: ";
+    /// `tacsim::detachment::crew::wages::WAGE_NONE`.
+    pub const WAGE_NONE: &str =
+        "No wage is charged: the hiring port has no authority to pay it to.";
+    /// `tacsim::detachment::crew::wages::LIST_USAGE`'s head.
+    pub const LIST_USAGE: &str = "Usage: +sortie/available <duty>[,<duty>] [officer]";
+    /// `tacsim::detachment::crew::wages::LISTED`'s tail. Partial: read the wage before it.
+    pub const LISTED: &str = " an IC day.";
+    /// `tacsim::detachment::crew::wages::LISTING_SHOW`'s tail.
+    pub const LISTING_SHOW: &str = ", shown there on its board.";
+    /// `tacsim::detachment::crew::wages::NOT_LISTED`.
+    pub const NOT_LISTED: &str = "You are not listed for crew hire.";
+    /// `tacsim::detachment::crew::wages::UNLISTED`.
+    pub const UNLISTED: &str = "You are no longer listed for crew hire.";
+    /// `tacsim::detachment::crew::wages::LIST_AT_PORT`.
+    pub const LIST_AT_PORT: &str = "List yourself for crew hire from a port's station.";
+    /// `tacsim::detachment::crew::wages::BOARD_SUBJECT`'s middle: a listed player on the board.
+    pub const BOARD_SUBJECT: &str = " for hire (";
+    /// `tacsim::detachment::crew::wages::BOARD_TAKE`'s head. Partial: read the name after it.
+    pub const BOARD_TAKE: &str = "page ";
 }
 
 /// **The price history** (doc 48 cut EX.8): `+market/history` (`mush_market::history`). No lane
@@ -1051,6 +1086,27 @@ mod tests {
     const HISTORY_RS: &str = include_str!("../../../mush-market/src/history.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
     const CORE_RESALE_RS: &str = include_str!("../../../tacsim/src/hardware/sale/resale.rs");
+    const WAGES_RS: &str = include_str!("../../../tacsim/src/detachment/crew/wages.rs");
+
+    fn crew_rows() -> Vec<Row> {
+        use super::crew as bot;
+        use tacsim::detachment::crew::wages as game;
+        rows!("";
+            OFFER_WAGE,
+            OFFERS_WAGES,
+            OFFERS_ABOARD,
+            WAGE_LINE,
+            WAGE_NONE,
+            LIST_USAGE,
+            LISTED,
+            LISTING_SHOW,
+            NOT_LISTED,
+            UNLISTED,
+            LIST_AT_PORT,
+            BOARD_SUBJECT,
+            BOARD_TAKE,
+        )
+    }
     const HAUL_RS: &str = include_str!("../../../tacsim/src/services/haul.rs");
     const ESCORT_RS: &str = include_str!("../../../tacsim/src/services/escort.rs");
 
@@ -1093,6 +1149,7 @@ mod tests {
             TERM_BY,
             TERM_TODAY,
             TERM_ON_PERFORMANCE,
+            TERM_DAILY,
             JOBS_MORE,
         )
     }
@@ -2202,6 +2259,27 @@ mod tests {
     #[test]
     fn jobs_census() {
         census("services.rs", SERVICES_RS, &job_board_rows(), &[]);
+    }
+    // Doc 48 cut EX.7: crew wages and crew for hire.
+    #[test]
+    fn crew_needles_are_in_step() {
+        in_step("crew", &crew_rows());
+    }
+    #[test]
+    fn crew_census() {
+        census(
+            "wages.rs",
+            WAGES_RS,
+            &crew_rows(),
+            &[
+                ("WAGE_NS_PREFIX", "a namespace, never shown"),
+                ("LISTING_ATTR", "an attribute name, never shown"),
+            ],
+        );
+    }
+    #[test]
+    fn crew_needles_are_distinct() {
+        distinct(&qualified("crew", crew_rows()), &[]);
     }
     #[test]
     fn jobs_needles_are_distinct() {

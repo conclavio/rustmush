@@ -2037,7 +2037,100 @@ the guard; it is still refused by the family below it.
 
 ## EX.7
 
-Not built.
+**Crew wages and crew for hire** (Q-48-14, -33, -54). Stacked on EX.5 (#657).
+
+**Survey.**
+- **The crew model** (`tacsim/src/detachment/crew/`, doc 42's custody beside it):
+  - A hire is one typed `CrewContract` per NPC in `tacsim.crew_contracts`. It names the NPC, the employer, the IC stamp and the staff-authored `HireTerms`: the hiring port's venue, the mission scope and one to three duties.
+  - Only a player standing in a port room can accept an offer, so the employer is always a player.
+  - Nothing ended a contract but doc 42's capture exit (`tacsim_crew_captured`, Q-42-26), which removes the contract and the roster reservation together.
+  - `+sortie/crew` said "These offers have no wage charge", and the help said pay was future work.
+- **EX.4's class** (`create_player_obligation`): a daily obligation a player owes, grace raised to at least `PLAYER_OWED_MIN_GRACE` (28) periods, a missed period accruing into a one-term arrears debt under the record's namespace, paid and reinstated on funding. The berth tick (`port::berth::tick`) keeps its records in step with the world each port fire; it reads only its own two prefixes.
+- **EX.5's board:** a venue's board is the projection of its hosts' services; `Offered` was declared for EX.7's self-listing and nothing produced it.
+- **NPCs hold no accounts.** No NPC crew member has a wallet, so a wage cannot be paid to the person.
+
+**Built.**
+
+*The wage* (`detachment/crew/wages.rs`, Q-48-33's figures, provisional).
+- **Every standing contract owes a wage** from the employer's own account to the hiring port's authority (the port def's `authority` org, Ceres' Freeport Registry), as one player-owed obligation under `tacsim.crew.wage.<npc>`:
+  - **10 cr an IC day for a rating** (a contract scoped `subordinate_operator`): 240 cr a real day at 24:1, 1,680 cr a real week;
+  - **20 cr for an officer** (`detachment_commander`): 480 cr a real day, 3,360 cr a real week.
+- **Grace is EX.4's 28 periods**: 28 IC days, 28 real hours. A day the employer cannot pay accrues as arrears, paid as soon as the account is funded. Past 28 the wage is delinquent and stops accruing until funded (EX.4's class).
+- **A missed wage never ends the contract.** Nothing here unseats, unhires or moves the crew member; no player is held for being offline (the owner's 28-IC-day rule holds through the grace).
+- **The port tick keeps it in step** (`wages::tick`, one line in `port_tick.rs` after the berth's): it scans the contracts page by page, opens a wage for each one without, reprices one whose scale changed, and ends a wage whose contract is gone or changed employer. Its arrears stand. No new store record: the obligation is the record.
+- **The surfaces:**
+  - `+sortie/crew` shows each offer's wage and a footer with the two scale wages;
+  - `+sortie/contract #<npc>` shows the wage, its payee and the arrears.
+
+*Crew for hire* (Q-48-14's second half).
+- **`+sortie/available <duty>[,<duty>] [officer]`** lists a player at the port whose station they stand in, as a rating or an officer, for those duties. `+sortie/available` alone shows the listing and `+sortie/unavailable` withdraws it.
+- The listing is the player's own attribute (`crew:listing`, wizard-only, hidden, owned by the player and read only when it is), never a contract.
+- **The board** (`wages::services`, one line in `port/jobs.rs`): each listed player standing in the port's station is an `Offered` `Crew` service, asking the scale wage as an opening figure, paid by the IC day; the take is `page <name>`.
+- **mush-market:** `ServiceKind::Crew` ("crew") and `ServiceTerm::Daily` ("paid by the IC day", `TERM_DAILY`) are appended; `JOBS_USAGE` names `crew`.
+
+*The technician* (doc 38 Q-38-15, Q-48-14's third half).
+- **`CrewDuty::Technician`** is a duty kind: contract terms may carry it (up to four duties now), `+sortie/crew` and the contract print it, and a player may list for it. No sortie activates for it (`+sortie/activate`'s purposes are unchanged) and no bay job consumes it yet.
+
+*Help and sentences.* `help detachments` gains the wage paragraph, the technician and crew-for-hire paragraphs and two command rows; `help exchange`'s job board gains the crew kind. The bot table gains the `crew` family, with a census over `wages.rs`; the DT lane reads the offers' new footer (`crew::OFFERS_WAGES`) where it read "no wage charge"; the `jobs` family gains `TERM_DAILY` and the new usage.
+
+**What this relies on from the crew model.**
+- One contract per NPC, keyed by the NPC, whose employer is a player: the wage's namespace is the NPC's, and its debtor the employer.
+- The contract is ended only by doc 42's capture exit (or by a staff hand). The wage follows it: ended at the next port fire, its arrears standing. Doc 42's invariants are untouched: the wage reads the contract and writes only the economy.
+- The terms' scope is staff-authored and hashed into the contract, so a hire's rank cannot change under it.
+
+**The `acts_for` defect.** No wage is paid to or by a GOD-owned NPC: the payer is always the employing player, and the payee the hiring port's authority, an organization's account. So no GOD-owned NPC pair ever stands on either side of a wage.
+
+**Tests.**
+
+- **The done-when, test by test** (`tests/domain_economy/ex7_wages.rs`, at 24:1, one fire an IC day):
+  - **A hire owes 10 cr (rating) or 20 cr (officer) an IC day, under EX.4's grace; a wage paid:**
+    `ex7_a_hire_is_paid_its_wage_by_the_ic_day`. A captain hires Ilya Mendes (a rating) and Sana
+    Okonkwo (an officer) through `+sortie/crew`, whose offer line and footer show the wages. Each
+    wage opens at 1,000 and 2,000 minor units, from her account to the Freeport Registry, with at
+    least 28 periods of grace. Over three IC days each settles three periods: she pays 90 cr and the
+    Registry receives it, beside her charter's berth (`driving_rig::berth_paid`).
+    `+sortie/contract` shows the wage and no arrears.
+  - **A wage missed under grace:** `ex7_a_missed_wage_accrues_under_grace_and_is_paid_once_funded`.
+    A broke captain's rating misses five IC days: the wage is in `Grace`, 50 cr stands in arrears,
+    the contract stands and shows them. Funded, the next fire pays the arrears and the day's wage.
+  - **A player lists themselves for crew hire; the technician is a kind:**
+    `ex7_a_player_lists_themselves_for_crew_hire_on_the_board`. `+sortie/available technician,mining`
+    lists a player at Ceres; `+market/jobs crew` shows "Crew: rating for hire (mining, technician).
+    Pays 10.00cr to open." with "paid by the IC day" and `page <name>`. An officer's listing asks
+    20 cr, an unknown duty is refused, and `+sortie/unavailable` takes them off the board.
+  - **Unit tests** (`wages.rs`): the namespace, each duty's word read back, and every sentence at its
+    widest fill within 120 columns.
+- **Tests that failed before EX.7, and why:** every test above. Before EX.7 no hire owed anything,
+  there was no listing, no crew kind on the board and no technician duty.
+- **Changed expectations:** the bot's DT lane waited for "These offers have no wage charge"; it now
+  waits for the offers' wage footer.
+- **On conclav.dev** (on EX.5's head d9601be5 plus this cut):
+  - fmt, clippy (tacsim, mush-bot, mush-market, all targets), the 64 KiB memory-size pass, the
+    contract guards (`feature_matrix_inventory`, `panic_budget`, `restriction_lints`), the help lint
+    (`help_commands`) and rustdoc (tacsim and mush-market, both modes) pass;
+  - tacsim lib, crew and jobs: 30 of 30; `mush-market` lib: 148 of 148; `mush-bot` lib: 561 of 561;
+  - `domain_economy`: the three EX.7 stories with EX.4's and EX.5's, 9 of 9;
+  - `domain_field`: the crew-custody, DT and roster stories, 18 of 18.
+- **No mutation loop was run.** The wage ending with its contract is not reached by any story
+  (below).
+
+**Divergences.**
+- **The wage is paid to the hiring port's authority, not to the crew member.** NPCs hold no accounts, and a wallet per NPC would put GOD-owned accounts on the payee side (the open `acts_for` defect). The authority keeps the hiring hall, as it keeps the berth; the wage is one of §5.4's sinks, as the berth is. A port with no authority charges no wage, and the contract says so (`WAGE_NONE`). Every shipped crew offer is at Ceres, which has one.
+- **Files beyond `detachment/crew/`**, each a line or a few:
+  - `port_tick.rs` (the tick), `port/jobs.rs` (the board), `port/passenger/mod.rs` (`station_rooms` re-exported);
+  - `mush-market/src/record.rs` and `services.rs` (`ServiceKind::Crew`, `ServiceTerm::Daily`, `TERM_DAILY`, `JOBS_USAGE`). EX.6 appends its kinds to the same enum, `ALL` and `JOBS_USAGE`; whoever merges second resolves;
+  - the bot's `mine/minds.rs` and `mine/detachment.rs`, `docs/help/detachments.md` and `exchange.md`, and the new story file.
+- **Hiring a listed player is not a new verb.** A player's crew seat is the existing player slot of a detachment; the listing is an offer to talk, and any wage between two players is theirs to draft (`@contract/draft`).
+
+**Expensive to reverse (flagged).**
+- **`ServiceKind::Crew`'s word** ("crew") and **`ServiceTerm::Daily`**, appended to EX.5's flagged record.
+- **`CrewDuty::Technician`'s word** ("technician"): it is in the hashed terms of any contract that carries it.
+
+**Not built.**
+- **A wage between two players:** a listed player's agreement is drafted by hand.
+- **What a technician does:** no bay job or sortie reads the duty.
+- **Ending a hire by choice:** there is still no dismissal verb, so a wage runs until doc 42's capture exit ends the contract. Q-48-33's alternative (stopping the wage while a hire is off duty) is not built.
+- **The wage ending with its contract** is not reached by a story: it needs CR.1's capture exit (the `crew_custody` story), and that story does not read the wage.
 
 ## EX.8
 
