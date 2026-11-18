@@ -8,7 +8,7 @@ use mush_testkit::TestWorld;
 /// `+licence/buy go` as `pilot`, from wherever they stand (the verb is accepted from
 /// anywhere), asserting the Registry licensed them; what the pilot heard.
 pub fn buy_licence(tw: &mut TestWorld, pilot: ObjId) -> String {
-    let events = tw.run(pilot, "+licence/buy go");
+    let events = tw.run(pilot, "+license/buy go");
     let out = tw.seen_by(&events, pilot).join("\n");
     assert!(
         out.contains("licenses you to prospect at its sites until"),

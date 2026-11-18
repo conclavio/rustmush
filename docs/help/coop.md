@@ -1,4 +1,4 @@
-# The Co-op's First Captain programme
+# The Co-op's First Captain program
 
 The Belt Carriers' Cooperative stakes new captains. Sign with it and you fly a
 Co-op Dray on a working charter, with working cash to fill the first hold; the
@@ -14,19 +14,23 @@ reads the terms and how many Drays are free, from anywhere.
                   prices that goes to the Co-op on every sale
   the buyout      the price at which the hull becomes yours, fixed on your
                   papers when you sign
-  once, ever      one enrolment per account, ever: no other character on
-                  your account can enrol after you
+  one at a time   one charter per account at a time: no other character on
+                  your account can enroll while it stands
+  one stake       the stake is paid only once per account: a second
+                  charter comes with no second stake
 
 ## Signing
 
-`+coop/enrol <name>` at the Registry & Co-op desk in Ceres Freeport (`registry`
+`+coop/enroll <name>` at the Registry & Co-op desk in Ceres Freeport (`registry`
 from Arrivals). In one act Ceres Clearing opens a credit account in your name,
 the Co-op charters you its next free Dray under the name you give it (its
 registry mark stays), stakes you, and opens the ship's hold in your name. A name
 is 1 to 32 letters, digits, spaces, hyphens, apostrophes or full stops, starting
 with a letter, and no two Drays share one.
 
-While the programme is still being set up on a world, the desk answers that the
+`+coop/enrol`, the British spelling, still works as an alias of `+coop/enroll`.
+
+While the program is still being set up on a world, the desk answers that the
 Co-op is not enrolling yet; try again later.
 
 ## The charter
@@ -36,9 +40,11 @@ from it and file its sailing plan; nobody else can board it on your charter.
 `+coop/statement` shows your charter's terms, its sales so far, the Co-op's
 share of them, and your cash against the buyout.
 
-A charter ends in one of three ways: you buy the hull out, you hand it back, or
-you go a week without a departure and the Co-op takes it back. Whichever way it
-ends, the Co-op enrols each pilot once, ever: you cannot enrol again.
+A charter ends in one of four ways: you buy the hull out, you hand it back, you
+go a real week without a departure and the Co-op takes it back, or staff revoke
+it. If you handed her back or the Co-op took her back, you can charter again (see
+"Chartering again" below). A buyout or a staff revocation is final: the Co-op
+does not charter you again.
 
 ## Buying the hull out
 
@@ -54,7 +60,7 @@ plan that comes due waits, and runs once the title is yours.
 From then on the Dray is yours. You fly her on your own title, and the Co-op's
 share stops: your sales pay the Co-op nothing. `+coop` and `+ship` say so. You can
 still refit her at the yard and lease Occator's rigs on your title, with the same
-licence, fee and deposit requirements. Return any rigs before the buyout, then
+license, fee and deposit requirements. Return any rigs before the buyout, then
 lease again once title has passed.
 
 ## The yard's refit
@@ -81,7 +87,8 @@ returns your deposit, one past it keeps it.
 
 ## A week without a departure
 
-A charter is for working the lane. If your Dray goes a week of real time without a
+A charter is for working the lane. If your Dray goes a week of real time (seven
+real days: 168 IC days at the live clock's 24 IC hours to the real hour) without a
 departure, the Co-op takes her back: when she is docked at Ceres Freeport with an
 empty cargo hold, her charter ends, anyone aboard is seen ashore, and her
 reaction mass and stores stay with her. If she is anywhere else, or still carries
@@ -89,20 +96,31 @@ cargo, the Co-op stops her sailing plan instead, and it stays stopped until you
 restart it with `+ship/order resume`; she is taken back once she lies docked at
 Ceres with an empty cargo hold while the week is still unbroken. Any departure,
 by hand or from your plan, resets the week. The stake stays yours, and you are
-told the next time you are on watch.
+told the next time you are on watch, with the way to charter again.
 
-## The Registry's prospecting licence
+## Chartering again
+
+Once the Co-op has your Dray back, whether you handed her back or a week without
+a departure ended her charter, `+coop/enroll <name>` at the Registry & Co-op desk
+charters you its next free Dray, as the first time did, on the terms as they
+stand that day. There is no second stake: the Co-op stakes a captain only once,
+and your credit account is the one you already have. While your last Dray is
+still on her way back (not yet docked at Ceres with an empty cargo hold), the
+desk asks you to wait until she is back in the pool. `+coop` says when you can
+charter again.
+
+## The Registry's prospecting license
 
 To work ore at the Freeport Registry's mining sites you need its prospecting
-licence. `+licence` (or `+licence/show`) reads yours, from anywhere: in force
+license. `+license` (or `+license/show`) reads yours, from anywhere: in force
 until when, or in its grace, or lapsed.
 
-`+licence/buy` says what a licence would cost and how long it would run, and
-buys nothing; `+licence/buy go` buys exactly that, from anywhere: 2500.00cr for
+`+license/buy` says what a license would cost and how long it would run, and
+buys nothing; `+license/buy go` buys exactly that, from anywhere: 2500.00cr for
 168 IC days, then 28 IC days' grace, paid to the Registry as a public contract. The
-licence holds through its grace; bought while it still stands, in force or in
+license holds through its grace; bought while it still stands, in force or in
 grace, the new term runs on from the day the old one ends, and bought after it
-has lapsed, it runs from today. One licence an account: no other character on
+has lapsed, it runs from today. One license an account: no other character on
 your account can hold one beside it. Occator leases its rigs only to a licensed
 prospector (`help ships`).
 

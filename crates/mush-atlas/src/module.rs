@@ -589,7 +589,7 @@ fn parse(data: &ModuleBootData, w: &World) -> Loaded {
             continue;
         }
         let Some((kind, _)) = key.split_once(':') else {
-            tracing::warn!(%key, "atlas: unrecognised persisted key; dropping");
+            tracing::warn!(%key, "atlas: unrecognized persisted key; dropping");
             dropped.push(key.clone());
             continue;
         };

@@ -1,6 +1,6 @@
 {
   "brief": {
-    "prose": "Kirkwood Depot is a Co-op-hosted transfer stop under Freeport licence. Tycho finances the depot; Republic pickets watch its approaches. The Exchange keeps its own sealed relay compound."
+    "prose": "Kirkwood Depot is a Co-op-hosted transfer stop under Freeport license. Tycho finances the depot; Republic pickets watch its approaches. The Exchange keeps its own sealed relay compound."
   },
   "entries": {
     "region.kirkwood_depot": {
@@ -47,7 +47,7 @@
     }
   },
   "manifest": {
-    "digest": "0c4187a8757fe7f7fed9179f09f0a62e83db606ea25f2a9cdffebca6ccd76627",
+    "digest": "48dd4138e2f3e6f0e5f5bb8fce32f1eefbaa1a1bbb7940a427c71058be937635",
     "id": "region.kirkwood_depot",
     "kind": "region",
     "requires": [],

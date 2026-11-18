@@ -687,7 +687,7 @@ fn funding_uses_actual_e4_hold_and_retains_an_inert_complete_consent() -> TestRe
     );
     check!(
         prepared.contract.consent.terms.deliverables.is_empty(),
-        "licence is a paired typed effect, not a fabricated E4 object"
+        "license is a paired typed effect, not a fabricated E4 object"
     );
     let mut landed = before.clone();
     prepared.delta.clone().apply_to(&mut landed);

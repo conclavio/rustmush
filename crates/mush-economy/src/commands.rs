@@ -178,8 +178,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                      compartment, or staff). It records a\n\
                    \x20                                      disputed claim; title never moves, and a\n\
                    \x20                                      later purchase is evidence, not guilt.\n\
-                   @asset/catalog <obj>=<ruleset>:<code>|none    set the catalogue reference\n\
-                   \x20                                      (staff). It is what a catalogue-keyed\n\
+                   @asset/catalog <obj>=<ruleset>:<code>|none    set the catalog reference\n\
+                   \x20                                      (staff). It is what a catalog-keyed\n\
                    \x20                                      rule reads; changing it bumps the\n\
                    \x20                                      record's revision, so an outstanding\n\
                    \x20                                      quote priced against the old code\n\
@@ -2271,7 +2271,7 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
                 );
             }
         }
-        Verdict::Denied => info(ctx, format!("Denied request #{id}; it is cancelled.")),
+        Verdict::Denied => info(ctx, format!("Denied request #{id}; it is canceled.")),
     }
     Ok(())
 }
@@ -3344,7 +3344,7 @@ fn asset_catalog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Vec::new(),
     );
     let outcome = api::post(ctx, &plan);
-    finish_asset(ctx, object, outcome, "Catalogue reference set")
+    finish_asset(ctx, object, outcome, "Catalog reference set")
 }
 
 /// `<principal> [scope=<id>]` — the owner half shared by `title` and `transfer`.
@@ -4980,6 +4980,7 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         settled_total: 0,
         missed_total: 0,
         service_terms: None,
+        arrears: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,
@@ -5340,14 +5341,14 @@ fn obligation_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if matches!(o.status, ObligationStatus::Cancelled) {
         return Err(CmdError::msg(format!(
-            "Obligation #{} is already cancelled.",
+            "Obligation #{} is already canceled.",
             o.id
         )));
     }
     let next = transition(&o, ObligationStatus::Cancelled, None);
     let id = next.id;
     api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id} cancelled."));
+    info(ctx, format!("Obligation #{id} canceled."));
     ctx.gate_on_durable_ack();
     Ok(())
 }

@@ -2722,7 +2722,7 @@ mod tests {
                 event: Box::new(OutputEvent::Room(mush_proto::RoomView {
                     name: "Limbo".into(),
                     id: "#0".into(),
-                    desc: RichText::plain("A grey nowhere."),
+                    desc: RichText::plain("A gray nowhere."),
                     contents: vec![],
                     exits: vec![mush_proto::ExitRef {
                         name: "east".into(),

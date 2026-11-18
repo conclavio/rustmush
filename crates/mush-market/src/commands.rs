@@ -54,20 +54,27 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "list", "show", "depth", "quote", "accept", "sell", "orders", "vendors", "post",
-                "bid", "withdraw", "mine",
+                "bid", "withdraw", "mine", "jobs", "history",
             ]
             .iter()
             .copied()
             .map(SmolStr::new)
             .collect(),
-            help: "+market/list [legal=<class>|tag=<tag>|market=<venue>] [after=<id>]\n\
+            help: "+market/history <catalog>:<code> [market=<venue>]\n\
+                   \x20                                 the houses' ask and bid for a good at \
+                   this venue, an IC week a row, for the last 24 IC weeks.\n\
+                   +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]\n\
+                   \x20                                 the jobs posted on this board: what \
+                   each pays, any bond its taker escrows, when it is due, and the command \
+                   that takes it.\n\
+                   +market/list [legal=<class>|tag=<tag>|market=<venue>] [after=<id>]\n\
                    \x20                                 what is for sale, newest first, one \
                    bounded page at a time. A filter you may not use simply shows nothing. \
                    With no filter, where you stand in a port, you see that port's board.\n\
                    +market/show <listing>             one listing.\n\
-                   +market/depth <catalogue>:<code> [market=<venue>]\n\
+                   +market/depth <catalog>:<code> [market=<venue>]\n\
                    \x20                                 the PUBLIC picture of a good, named by \
-                   its catalogue and code (a port good reads tacsim:<good>, as tacsim:metals): \
+                   its catalog and code (a port good reads tacsim:<good>, as tacsim:metals): \
                    last trade, \
                    a price band, bucketed depth and the window's volume. It names no account, no \
                    listing, no counterparty and no seller's quantity, and it is the same for \
@@ -137,7 +144,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .collect(),
             help: "@market/catalog load <pack>        load or reload a content pack. A bad entry \
                    fails the PACK and names it; the server keeps running.\n\
-                   @market/catalog list [<pack>]      what is in the catalogue.\n\
+                   @market/catalog list [<pack>]      what is in the catalog.\n\
                    @market/catalog show <ruleset>:<code>\n\
                    @market/vendor create <org>=<vault> [name=<text>] [market=<venue>] [buy=<permille>]\n\
                    @market/vendor fund <vendor>=<amount> [faucet=<id>] [period=<secs>]\n\
@@ -191,7 +198,7 @@ fn require_staff(ctx: &Ctx<'_>) -> Result<(), CmdError> {
 
 /// Parse `<ruleset>:<code>` into a [`CatalogRef`] — the same grammar
 /// `@asset/title … catalog=` takes (E6b).
-fn parse_catalog(s: &str) -> Option<CatalogRef> {
+pub(crate) fn parse_catalog(s: &str) -> Option<CatalogRef> {
     let (r, c) = s.trim().split_once(':')?;
     let (r, c) = (r.trim(), c.trim());
     if r.is_empty() || c.is_empty() {
@@ -239,6 +246,10 @@ fn market_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         withdraw(ctx)
     } else if ctx.switches.has("mine") {
         mine(ctx)
+    } else if ctx.switches.has("jobs") {
+        crate::services::jobs(ctx)
+    } else if ctx.switches.has("history") {
+        crate::history::history(ctx)
     } else {
         list(ctx)
     }
@@ -679,7 +690,7 @@ fn default_market(
 
 /// The venue of the room the actor stands in, when a composition's presence gate names
 /// one (doc 18 §4.3 `venue_of_room`, cut IC7) — the `market=` default.
-fn gate_venue(ctx: &Ctx<'_>) -> Option<MarketId> {
+pub(crate) fn gate_venue(ctx: &Ctx<'_>) -> Option<MarketId> {
     let gate = crate::module::venue_gate(ctx.w)?;
     let room = ctx.w.get(ctx.actor).and_then(|o| o.location)?;
     gate.venue_of_room(ctx.w, room)
@@ -1070,6 +1081,8 @@ struct SellerWords {
     to: Option<String>,
     market: Option<String>,
     days: Option<i64>,
+    /// Doc 48 cut PL.9: `as=<org>`, the organization the actor lists for.
+    as_org: Option<String>,
 }
 
 fn seller_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<SellerWords> {
@@ -1087,6 +1100,7 @@ fn seller_words<'a>(words: impl Iterator<Item = &'a str>) -> Option<SellerWords>
             "into" => out.into.replace(digits.parse::<u64>().ok()?).is_none(),
             "to" => out.to.replace(value.to_owned()).is_none(),
             "market" => out.market.replace(value.to_owned()).is_none(),
+            "as" => out.as_org.replace(value.to_owned()).is_none(),
             "days" => out
                 .days
                 .replace(value.parse::<i64>().ok().filter(|d| *d > 0)?)
@@ -1113,6 +1127,20 @@ fn seller_venue(
     .ok_or(crate::seller::NAME_VENUE)?;
     let instrument = market_instrument(ctx.w, &market).ok_or(crate::seller::NO_CURRENCY)?;
     Ok((market, instrument))
+}
+
+/// Who a `+market/post` lists as: the actor, or with `as=<org>` (doc 48 cut PL.9) an
+/// organization the actor acts for, by name, alias or id, with or without `org:`. An unknown,
+/// hidden or foreign organization reads [`crate::seller::NOT_FOR_ORG`].
+fn listing_seller(ctx: &Ctx<'_>, as_org: Option<&str>) -> Result<mush_org::PrincipalId, CmdError> {
+    let Some(name) = as_org else {
+        return Ok(mush_org::PrincipalId::Object(ctx.actor));
+    };
+    let name = name.strip_prefix("org:").unwrap_or(name);
+    mush_economy::resolve_org_visible(ctx, name)
+        .map(mush_org::PrincipalId::Organization)
+        .filter(|org| mush_economy::acts_for(ctx.w, ctx.actor, org))
+        .ok_or_else(|| CmdError::msg(crate::seller::NOT_FOR_ORG))
 }
 
 /// `to=<player>`: a player by name or `#dbref`.
@@ -1144,8 +1172,9 @@ fn for_only(ctx: &Ctx<'_>, to: Option<&mush_org::PrincipalId>) -> String {
     }
 }
 
-/// `+market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>]` — list one
-/// exact lot (doc 48 cut EX.1a; Q-48-49).
+/// `+market/post <lot> price=<n> [to=<player>] [market=<venue>] [days=<n>] [as=<org>]` — list
+/// one exact lot (doc 48 cut EX.1a; Q-48-49), for an organization the actor acts for with
+/// `as=` (PL.9).
 fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_string();
     // Doc 48 cut EX.2: `#<object>` lists one titled object (a hull).
@@ -1164,6 +1193,7 @@ fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(price) = parsed.price else {
         return Err(CmdError::msg(crate::seller::POST_USAGE));
     };
+    let seller = listing_seller(ctx, parsed.as_org.as_deref())?;
     let (market, instrument) = match seller_venue(ctx, parsed.market.as_deref()) {
         Ok(venue) => venue,
         Err(line) => return Err(CmdError::msg(line)),
@@ -1176,7 +1206,7 @@ fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         },
     };
     let spec = crate::seller::PersonalAsk {
-        seller: mush_org::PrincipalId::Object(ctx.actor),
+        seller,
         market,
         instrument: instrument.clone(),
         lot,
@@ -1220,8 +1250,9 @@ fn post(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// `+market/post #<object> price=<n> [to=<player>] [market=<venue>] [days=<n>]` — list one
-/// titled object you hold (doc 48 cut EX.2; Q-48-7, -52).
+/// `+market/post #<object> price=<n> [to=<player>] [market=<venue>] [days=<n>] [as=<org>]` —
+/// list one titled object you hold (doc 48 cut EX.2; Q-48-7, -52), or that an organization you
+/// act for holds (PL.9: a facility).
 fn post_object(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
     let mut words = raw.split_whitespace();
     let object = words
@@ -1240,6 +1271,7 @@ fn post_object(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
     let Some(price) = parsed.price else {
         return Err(CmdError::msg(crate::seller::POST_USAGE));
     };
+    let seller = listing_seller(ctx, parsed.as_org.as_deref())?;
     let (market, instrument) = match seller_venue(ctx, parsed.market.as_deref()) {
         Ok(venue) => venue,
         Err(line) => return Err(CmdError::msg(line)),
@@ -1252,7 +1284,7 @@ fn post_object(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
         },
     };
     let spec = crate::seller::PersonalAssetAsk {
-        seller: mush_org::PrincipalId::Object(ctx.actor),
+        seller,
         market,
         instrument: instrument.clone(),
         object,
@@ -1295,7 +1327,7 @@ fn bid(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut words = raw.split_whitespace();
     let catalog = words.next().and_then(parse_catalog);
     let parsed = seller_words(words);
-    let (Some(catalog), Some(parsed)) = (catalog, parsed) else {
+    let (Some(catalog), Some(parsed)) = (catalog, parsed.filter(|p| p.as_org.is_none())) else {
         return Err(CmdError::msg(crate::seller::BID_USAGE));
     };
     let (Some(price), Some(quantity), Some(into)) = (parsed.price, parsed.qty, parsed.into) else {
@@ -1600,7 +1632,7 @@ fn admin_catalog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 })
                 .unwrap_or_default();
             if out.is_empty() {
-                out.push("The catalogue is empty.".to_string());
+                out.push("The catalog is empty.".to_string());
             }
             lines(ctx, out);
             Ok(())
@@ -1958,6 +1990,7 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         MarketVisibility::Public
                     },
                     ttl_secs: days.saturating_mul(86_400),
+                    private_to: None,
                 },
             ) {
                 Ok(id) => {

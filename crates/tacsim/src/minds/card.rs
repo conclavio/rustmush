@@ -248,7 +248,7 @@ mod tests {
                 .chain(["get"])
                 .collect::<Vec<_>>()
         );
-        let stored = serde_json::to_value(line(&cfg)).expect("a card serialises");
+        let stored = serde_json::to_value(line(&cfg)).expect("a card serializes");
         assert_eq!(stored.as_object().map(serde_json::Map::len), Some(24));
     }
 }

@@ -51,7 +51,7 @@ pub(super) fn refusal() -> Result<ActionError, mush_core::ModError> {
     ActionError::new(
         ActionErrorCode::ProviderRejected,
         false,
-        "No house mind licence is available under these terms.",
+        "No house mind license is available under these terms.",
     )
     .map_err(super::error)
 }

@@ -943,7 +943,7 @@ fn cancel(
         || flight.phase != Phase::Departing
         || !facts::in_bay(world, &flight)
     {
-        return Err("Only an unlaunched member can be cancelled.".into());
+        return Err("Only an unlaunched member can be canceled.".into());
     }
     let mut next = flight.clone();
     next.phase = Phase::Cancelled;

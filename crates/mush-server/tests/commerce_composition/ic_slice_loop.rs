@@ -769,6 +769,24 @@ fn available(tw: &TestWorld, account: mush_economy::AccountId) -> i64 {
         .expect("the account's available funds")
 }
 
+/// **What `who` has paid in berth fees, ever** (doc 48 cut EX.4): every berth period of
+/// theirs that settled, at its fee. A story that checks a wallet to the minor unit across
+/// IC days subtracts the berth it paid over them.
+fn berth_paid(tw: &TestWorld, who: &PrincipalId) -> i64 {
+    economy(tw)
+        .snapshot()
+        .obligations()
+        .filter(|o| {
+            &o.debtor == who
+                && o.arrears.as_ref().is_some_and(|a| {
+                    a.namespace
+                        .starts_with(tacsim::port::berth::BERTH_NS_PREFIX)
+                })
+        })
+        .map(|o| o.amount.minor() * i64::from(o.settled_total))
+        .sum()
+}
+
 /// The money render (`5600.00cr`).
 fn cr(minor: i64) -> String {
     format!("{}.{:02}cr", minor / 100, minor % 100)
@@ -863,6 +881,17 @@ fn price_of(tw: &TestWorld, id: ListingId) -> i64 {
         .listing(id)
         .map(|l| l.price.minor())
         .expect("the listing")
+}
+
+/// **What `buyer` paid on `listing`** (doc 48 cut EX.8): the price on their newest quote of it,
+/// or the board's when they have none. A house's price steps with its stock once an IC week, so a
+/// story that reads the board after the buy reads the stepped price, not the one paid.
+fn paid_on(tw: &TestWorld, buyer: ObjId, listing: ListingId) -> i64 {
+    market(tw)
+        .quotes_of_buyer(&PrincipalId::Object(buyer))
+        .filter(|q| q.listing == listing)
+        .max_by_key(|q| q.id)
+        .map_or_else(|| price_of(tw, listing), |q| q.price.minor())
 }
 
 /// `+market/quote <listing>=<qty>`, `+market/accept <quote>`, the Draw landed; the
@@ -1224,7 +1253,7 @@ async fn assert_help(rig: &mut Rig, who: ObjId) {
     for (topic, title) in [
         ("ports", "# Ports"),
         ("ships", "# Ships"),
-        ("coop", "# The Co-op's First Captain programme"),
+        ("coop", "# The Co-op's First Captain program"),
         ("orders", "# The sailing plan"),
         ("trade", "# Trading"),
     ] {
@@ -1292,11 +1321,11 @@ async fn ic12_part_one_a_leg_by_hand() {
         terms.contains(&format!("Drays free: {drays} of {drays}.")),
         "{terms}"
     );
-    let enrolled = run(&mut rig, pilot, "+coop/enrol Salt Moth").await;
+    let enrolled = run(&mut rig, pilot, "+coop/enroll Salt Moth").await;
     assert!(enrolled.contains("now the Salt Moth"), "{enrolled}");
     let ship = run(&mut rig, pilot, "+ship").await;
     assert!(ship.contains("Salt Moth (Dray): docked "), "{ship}");
-    assert!(ship.contains("Programme: 0 sales;"), "{ship}");
+    assert!(ship.contains("Program: 0 sales;"), "{ship}");
     let row = hull_row(&rig.tw, pilot);
     let hull = ObjId(row.hull);
     let hold = hold_of(&rig.tw, &row);
@@ -1673,7 +1702,7 @@ async fn ic12_part_one_a_leg_by_hand() {
     let permille = store(&rig.tw)
         .enrolment_of(pilot)
         .map(|e| e.share_permille)
-        .expect("the enrolment");
+        .expect("the enrollment");
     let mut contracts: Vec<(ContractId, i64)> = Vec::new();
     let (mut margins, mut shares_billed) = (0_i64, 0_i64);
     for (bid, ask, good, qty) in [
@@ -1738,7 +1767,10 @@ async fn ic12_part_one_a_leg_by_hand() {
     }
     let credit = run(&mut rig, pilot, "+credit").await;
     assert!(
-        credit.contains(&format!("{} available", cr(stake - costs + nets))),
+        credit.contains(&format!(
+            "{} available",
+            cr(stake - costs + nets - berth_paid(&rig.tw, &PrincipalId::Object(pilot)))
+        )),
         "{credit}"
     );
     assert_eq!(
@@ -1854,7 +1886,7 @@ async fn enrol(rig: &mut Rig, pilot: ObjId, name: &str) -> HullRow {
     let c05 = station_room(&rig.tw, "ceres_port", "room.c05_registry");
     walk(rig, pilot, "c", c03).await;
     walk(rig, pilot, "registry", c05).await;
-    let enrolled = run(rig, pilot, &format!("+coop/enrol {name}")).await;
+    let enrolled = run(rig, pilot, &format!("+coop/enroll {name}")).await;
     assert!(enrolled.contains(&format!("now the {name}")), "{enrolled}");
     let row = hull_row(&rig.tw, pilot);
     let hold = hold_of(&rig.tw, &row);
@@ -2354,12 +2386,15 @@ async fn ic12_part_two_the_queue_runs_the_return() {
     let permille = store(&rig.tw)
         .enrolment_of(wren)
         .map(|e| e.share_permille)
-        .expect("the enrolment");
+        .expect("the enrollment");
     let mut shares = 0_i64;
     let sold = sales_of(&rig.tw, wren);
     assert_eq!(sold.len(), 2, "two sales");
+    // Doc 48 cut EX.8: each sale's own share, to find the reference ask it was struck against.
+    let mut share_of_sale: BTreeMap<u64, i64> = BTreeMap::new();
     for q in &sold {
         let lines = settlement(&rig.tw, q.contract.expect("a contract"));
+        share_of_sale.insert(q.id.0, lines.get(&trust).copied().unwrap_or(0));
         let paid = -lines.get(&kasei_account).copied().unwrap_or(0);
         let net = lines.get(&me).copied().unwrap_or(0);
         let share = lines.get(&trust).copied().unwrap_or(0);
@@ -2367,31 +2402,49 @@ async fn ic12_part_two_the_queue_runs_the_return() {
         assert_eq!(lines.values().sum::<i64>(), 0);
         shares += share;
     }
-    // The statement's margin and share, computed from the posted prices: each sale's
-    // margin over the Ceres reference ask, its share floored at the frozen permille.
+    // The statement's margin and share, computed from the prices struck: each sale's margin
+    // over the Ceres reference ask, its share floored at the frozen permille. Doc 48 cut EX.8: the
+    // reference is the Ceres house ask at the sale's moment, which steps with its stock once an
+    // IC week, so it is one of the prices the venue's history (or the board) has posted for it.
     let (mut margins, mut billed) = (0_i64, 0_i64);
-    // Doc 39 cut IN.5: Kasei's concentrate bid refreshes, so its standing listing is read anew.
-    let metals_now = ListingId(
-        port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")].bids[&cid("metals")].listing,
-    );
-    for (bid, ask, qty) in [
+    let ceres = mush_market::MarketId::new("ceres").expect("Ceres's venue");
+    for (good, ask, qty) in [
         (
-            metals_now,
+            "metals",
             listing_of(&rig.tw, "ceres_port", "freeport_exchange", "metals"),
             outfit.metals,
         ),
         (
-            ListingId(kasei.bids[&cid("volatiles")].listing),
+            "volatiles",
             listing_of(&rig.tw, "ceres_port", "occator", "volatiles"),
             outfit.ice,
         ),
     ] {
-        let (margin, share) = margin_and_share(
-            price_of(&rig.tw, bid),
-            price_of(&rig.tw, ask),
-            qty,
-            permille,
-        );
+        let sale = sold
+            .iter()
+            .find(|q| q.catalog.code.as_str() == good)
+            .unwrap_or_else(|| panic!("the {good} sale"));
+        let paid = sale.price.minor();
+        let mut references = vec![price_of(&rig.tw, ask)];
+        if let Some(series) = mush_market::price_series(
+            rig.tw.world(),
+            &ceres,
+            &tacsim::port::price::catalog_of_good(&cid(good)),
+        ) {
+            references.extend(
+                series
+                    .periods
+                    .iter()
+                    .filter_map(|p| p.ask.map(|a| a.price.minor())),
+            );
+        }
+        let (margin, share) = references
+            .iter()
+            .map(|reference| margin_and_share(paid, *reference, qty, permille))
+            .find(|(_, share)| *share == share_of_sale[&sale.id.0])
+            .unwrap_or_else(|| {
+                panic!("the {good} sale's share against no posted Ceres ask: {references:?}")
+            });
         margins += margin;
         billed += share;
     }
@@ -2608,11 +2661,15 @@ fn stickney_buys(
     let goods = goods();
     let label = |good: &str| goods.good(&cid(good)).expect("the good").label.clone();
     let ask = |org: &str, good: &str| listing_of(tw, "stickney_port", org, good);
-    let fuel_price = price_of(tw, ask("kasei", "propellant"));
-    let food_price = price_of(tw, ask("yard_commissary", "provisions"));
+    // Doc 48 cut EX.8: what Wren paid, read from the quotes (the board steps after).
+    let fuel_price = paid_on(tw, wren, ask("kasei", "propellant"));
+    let food_price = paid_on(tw, wren, ask("yard_commissary", "provisions"));
     let parts_listing = ask("stickney_yards", "industrial_parts");
     let alloy_listing = ask("kasei", "structural_alloys");
-    let (parts_price, alloy_price) = (price_of(tw, parts_listing), price_of(tw, alloy_listing));
+    let (parts_price, alloy_price) = (
+        paid_on(tw, wren, parts_listing),
+        paid_on(tw, wren, alloy_listing),
+    );
     assert!(fuel_price <= 6_000, "under the fill's max=60");
     assert!(
         parts_price <= 60_000 && alloy_price <= 60_000,
@@ -3566,7 +3623,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     refused(
         &mut rig,
         vexa,
-        "+coop/enrol Long Haul",
+        "+coop/enroll Long Haul",
         tacsim::port::coop::ENROLLED_ONCE,
         &snap,
     )
@@ -3607,7 +3664,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
         ],
     )
     .await;
-    let out = run(&mut rig, cass, "+coop/enrol Grey Heron").await;
+    let out = run(&mut rig, cass, "+coop/enroll Grey Heron").await;
     assert_eq!(
         out.trim(),
         tacsim::port::coop::NOT_OPEN,
@@ -4596,6 +4653,8 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
     // it back. Both are read before the order is filed (order 2's sale has settled).
     let me = credit_account(&rig.tw, &PrincipalId::Object(ben));
     let (balance, free) = (posted(&rig.tw, me), available(&rig.tw, me));
+    // Doc 48 cut EX.4: the berth his hull owes while the story waits is paid from this wallet.
+    let berth_before = berth_paid(&rig.tw, &PrincipalId::Object(ben));
     let cutoff = mush_market::DRAW_WINDOW_SECS - mush_market::DRAW_SETTLE_MARGIN_SECS;
     let alloys = listing_of(&rig.tw, P, "kasei", "structural_alloys");
     let escrow = price_of(&rig.tw, alloys) * 5;
@@ -4658,9 +4717,10 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
         ),
         "the Draw's contract expired (its refund)"
     );
+    let berth = berth_paid(&rig.tw, &PrincipalId::Object(ben)) - berth_before;
     assert_eq!(
         (posted(&rig.tw, me), available(&rig.tw, me)),
-        (balance, free),
+        (balance - berth, free - berth),
         "the escrow is released exactly: nothing paid, nothing held"
     );
     assert_no_pages(&rig.tw);
@@ -5762,7 +5822,7 @@ async fn r9b_fleet_front_real_refit_passage_and_carrier_loss() {
     let who = pilot(&mut rig, "Fleetwright", "fleetwright").await;
     let observer = pilot(&mut rig, "MobileObserver", "mobileobserver").await;
     let p = tacsim::relay_mobile::current(rig.tw.world())
-        .expect("dormant Fleet programme")
+        .expect("dormant Fleet program")
         .clone();
     assert_eq!(p.progress(), 0);
     assert!(p.launch.is_none());

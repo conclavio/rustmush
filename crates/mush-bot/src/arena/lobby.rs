@@ -107,7 +107,7 @@ pub const BOARD_ROOM_TRIES: u32 = 3;
 
 /// The blocker when the character cannot walk to the centre.
 pub const UNREACHABLE: &str = "The simulator is not reachable from here: the pilot starts from Limbo, \
-                               the Welcome Hall or the simulator centre.";
+                               the Welcome Hall or the simulator center.";
 
 /// **Every line the lobby can type.**
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1352,7 +1352,7 @@ impl Lobby {
                     self.decide_survey(now_ms, picture);
                 }
             }
-            Line::NoCentre => self.block(now_ms, "This server has no simulator centre.", picture),
+            Line::NoCentre => self.block(now_ms, "This server has no simulator center.", picture),
             Line::LayerOff => self.block(now_ms, raw.trim(), picture),
             Line::OutsideCentre => self.block(now_ms, UNREACHABLE, picture),
             _ => {}
@@ -1424,7 +1424,7 @@ impl Lobby {
         let since = *self.busy_since.get_or_insert(now_ms);
         if now_ms >= since.saturating_add(self.settings.wait_start_s * 1_000) {
             let sentence = format!(
-                "The centre stayed busy for {} s.",
+                "The center stayed busy for {} s.",
                 self.settings.wait_start_s
             );
             return self.block(now_ms, &sentence, picture);
@@ -1464,7 +1464,7 @@ impl Lobby {
                 let since = *self.busy_since.get_or_insert(now_ms);
                 if now_ms >= since.saturating_add(self.settings.wait_start_s * 1_000) {
                     let sentence = format!(
-                        "The centre stayed busy for {} s.",
+                        "The center stayed busy for {} s.",
                         self.settings.wait_start_s
                     );
                     return self.block(now_ms, &sentence, picture);
@@ -1950,7 +1950,7 @@ mod tests {
         fn walk_in(&mut self) {
             assert_eq!(self.at(0).as_deref(), Some("look"));
             self.hear("Limbo #0");
-            self.hear("A grey nowhere.");
+            self.hear("A gray nowhere.");
             assert_eq!(self.next(3_000).as_deref(), Some("ooc"));
             self.hear("Welcome Hall #2");
             assert_eq!(self.next(100).as_deref(), Some("simulator"));
@@ -1959,7 +1959,7 @@ mod tests {
         }
 
         fn board(&mut self, state: &str, red: &str, blue: &str) {
-            self.hear(&format!("Simulator centre: {state}"));
+            self.hear(&format!("Simulator center: {state}"));
             self.hear(&format!("  red: {red}"));
             self.hear(&format!("  blue: {blue}"));
         }
@@ -2099,8 +2099,8 @@ mod tests {
     fn the_centre_refusals_block_with_their_sentences() {
         for (line, sentence) in [
             (
-                "This server has no simulator centre.",
-                "This server has no simulator centre.",
+                "This server has no simulator center.",
+                "This server has no simulator center.",
             ),
             (
                 "The TacSim layer is off on this server, so the simulator cannot run.",
@@ -2148,7 +2148,7 @@ mod tests {
         }
         assert_eq!(
             rig.lobby.blocker(),
-            Some("The centre stayed busy for 30 s.")
+            Some("The center stayed busy for 30 s.")
         );
     }
 
@@ -2238,7 +2238,7 @@ mod tests {
         let mut rig = Rig::new(Side::Red);
         rig.walk_in();
         // A board whose row did not arrive whole: no window to read.
-        rig.hear("Simulator centre: selection");
+        rig.hear("Simulator center: selection");
         rig.hear("  blue: nobody");
         assert_eq!(rig.next(1_000).as_deref(), Some("SIM TEAM red"));
         rig.hear("Pilot takes red slot 1. `SIM START` begins the match.");
@@ -2901,7 +2901,7 @@ mod tests {
         for answer in [
             "Only a side's lead or staff can start the match.",
             "The blue side has no pilots; a match takes at least one a side.",
-            "The simulator centre is running; that is not something you can do to it now.",
+            "The simulator center is running; that is not something you can do to it now.",
             "Nobody is in the simulator; a match takes at least one pilot.",
             "The arena is busy; try that again in a moment.",
         ] {
@@ -2924,8 +2924,8 @@ mod tests {
         for answer in [
             "You already hold red slot 2. `SIM LEAVE` gives it up.",
             "The red side is full: it takes 1 pilot(s).",
-            "The simulator centre is running; that is not something you can do to it now.",
-            "This server has no simulator centre.",
+            "The simulator center is running; that is not something you can do to it now.",
+            "This server has no simulator center.",
             "The TacSim layer is off on this server, so the simulator cannot run.",
             "The simulator is through the lobby.",
             "Nobody is in the simulator; a match takes at least one pilot.",
@@ -3582,7 +3582,7 @@ mod tests {
         let to_ooc = |rig: &mut Rig| -> u64 {
             assert_eq!(rig.at(0).as_deref(), Some("look"));
             rig.hear("Limbo #0");
-            rig.hear("A grey nowhere.");
+            rig.hear("A gray nowhere.");
             assert_eq!(rig.next(3_000).as_deref(), Some("ooc"));
             assert_eq!(rig.lobby.step(), Step::Walk);
             rig.now

@@ -113,7 +113,7 @@
                 "hitch box": "A recovery hitch's controls: a heavier coupling than a prospector's, rated to three times the rig's own mass.",
                 "repeater": "A sealed box with a green link light and a red one. Green means the bridge has the rig; red means nobody does, and the rig sits still until somebody does.",
                 "seat": "Empty, its harness clipped back. A stencil on the headrest says CREW SEAT; rigs like this one are driven from the bridge.",
-                "stores gauge": "Tonnes and cubic metres in the stores bin against its two limits, 2.7 t and 4.8 m3, and a second dial for the opened bale's alloys and fittings, in kilograms."
+                "stores gauge": "Tonnes and cubic meters in the stores bin against its two limits, 2.7 t and 4.8 m3, and a second dial for the opened bale's alloys and fittings, in kilograms."
               },
               "id": "cab",
               "kind": "walkable",
@@ -269,7 +269,7 @@
     }
   },
   "manifest": {
-    "digest": "7e2d0f1d5782f1cabb647b576a2e5ea71e03a19d7274f45795d776224cd5ce84",
+    "digest": "1317fb1e3fbc675d827881059d63aa81b4b4abe4bbb3d28653a98a54c8e1c7b7",
     "id": "tacsim.pack.tv_tender",
     "kind": "rules_definition",
     "requires": [

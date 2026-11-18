@@ -182,7 +182,7 @@
             "units": 1
           }
         ],
-        "label": "Anti-armour missiles",
+        "label": "Anti-armor missiles",
         "output_lots": "pooled",
         "outputs": [
           {
@@ -402,7 +402,7 @@
             "units": 1
           }
         ],
-        "label": "Point-defence rounds, boxed",
+        "label": "Point-defense rounds, boxed",
         "output_lots": "pooled",
         "outputs": [
           {
@@ -798,7 +798,7 @@
     }
   },
   "manifest": {
-    "digest": "f0696744e0c75a46d46be0c2dba678519d4ed8759d111560d32cad8ec4f26579",
+    "digest": "94360fdd484bde462a669e26743f15a2bfb8be74d858a9cb99cf3bb7032b2d8c",
     "id": "tacsim.industry.recipes",
     "kind": "rules_definition",
     "requires": [],

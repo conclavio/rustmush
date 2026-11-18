@@ -89,7 +89,7 @@ async fn in11_probe_the_census_holds_still_on_a_settled_world() {
 /// A captain with an account and no hull, on the Service Counter's floor at Stickney.
 fn free_captain(rig: &mut crate::driving_rig::Rig) -> mush_core::ObjId {
     let captain = crate::driving_rig::pilot(rig, "Matter", 7);
-    let out = run(&mut rig.tw, captain, "+coop/enrol Long Ox");
+    let out = run(&mut rig.tw, captain, "+coop/enroll Long Ox");
     assert!(out.contains("now the Long Ox"), "{out}");
     let _ = run(&mut rig.tw, captain, "+coop/release");
     let treasury = crate::driving_rig::port_map(&rig.tw, "ceres_port")

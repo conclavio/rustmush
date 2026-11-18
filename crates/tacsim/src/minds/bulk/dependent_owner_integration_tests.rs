@@ -487,7 +487,7 @@ fn inspect_filed_child(
     let op = operation(filed)?;
     let value = serde_json::to_value(&op)?;
     let licence = serde_json::from_value::<mush_roll::commerce::LicenceId>(
-        value.get("licence").ok_or("issued owner licence")?.clone(),
+        value.get("licence").ok_or("issued owner license")?.clone(),
     )?
     .get();
     let owner_term: OwnerTerm = serde_json::from_value(

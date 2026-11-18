@@ -554,6 +554,14 @@ pub(crate) fn validate_core_sale(
 ) -> PlanResult {
     validate_guarded(proof.plan(), snapshot, env, PlanGuard::CoreSale(proof))
 }
+/// Doc 48 unit EX.2b: the only path that may re-title a managed core to a player.
+pub(crate) fn validate_core_resale(
+    proof: &crate::registry_filing::core_sale::resale::ClosedCoreResalePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::CoreResale(proof))
+}
 pub(crate) fn validate_charter_pending(
     proof: &crate::managed_charter_transfer::ClosedCharterPendingPlan,
     snapshot: &EconomySnapshot,
@@ -615,6 +623,7 @@ enum PlanGuard<'a> {
     CharterPending(&'a crate::managed_charter_transfer::ClosedCharterPendingPlan),
     Seizure(&'a crate::registry_filing::seizure::ClosedSeizurePlan),
     CoreSale(&'a crate::registry_filing::core_sale::ClosedCoreSalePlan),
+    CoreResale(&'a crate::registry_filing::core_sale::resale::ClosedCoreResalePlan),
     CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
     CoreRefit(&'a crate::core_refit::ClosedRefitPlan),
     BayRefit(&'a crate::bay_refit::ClosedBayPlan),
@@ -634,6 +643,7 @@ impl PlanGuard<'_> {
             Self::CharterPending(proof) => proof.check(plan, snapshot),
             Self::Seizure(proof) => proof.check(plan, snapshot),
             Self::CoreSale(proof) => proof.check(plan, snapshot),
+            Self::CoreResale(proof) => proof.check(plan, snapshot),
             _ => crate::managed_title::require_unmanaged_mutations(plan, snapshot),
         }
     }
@@ -653,6 +663,7 @@ impl PlanGuard<'_> {
             Self::CharterPending(proof) => proof.check(plan, snapshot),
             Self::Seizure(proof) => proof.check(plan, snapshot),
             Self::CoreSale(proof) => proof.check(plan, snapshot),
+            Self::CoreResale(proof) => proof.check(plan, snapshot),
         }
     }
 }
@@ -1102,7 +1113,7 @@ fn caps(plan: &EconomyPlan) -> Result<(), EconomyError> {
                 || c.code.len() > crate::commands::MAX_CATALOG_PART_BYTES =>
             {
                 return Err(EconomyError::TooLarge(
-                    "a catalogue reference half is empty or too long",
+                    "a catalog reference half is empty or too long",
                 ));
             }
             _ => {}

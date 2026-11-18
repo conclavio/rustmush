@@ -126,7 +126,7 @@ pub mod claim {
     /// `tacsim::surface::excursion::CLAIM_STILL_OPEN`.
     pub const CLAIM_STILL_OPEN: &str = "that rig's mind claim is still open";
     /// `tacsim::surface::excursion::CLAIM_REFUSED`.
-    pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is cancelled and the rig stays in its bay.";
+    pub const CLAIM_REFUSED: &str = "The Registry did not admit the mind's claim; the launch is canceled and the rig stays in its bay.";
     /// `tacsim::surface::excursion::CLAIM_CANCELLED`.
     pub const CLAIM_CANCELLED: &str =
         "The launch could not start; the mind's claim is closed and the rig stays in its bay.";
@@ -142,10 +142,10 @@ pub mod dispatch {
     pub const MIND_PENDING: &str =
         "is changing hands; it is not sealed aboard until the transfer settles.";
     /// `tacsim::surface::dispatch::MIND_NO_LICENCE`.
-    pub const MIND_NO_LICENCE: &str = "You hold no licence";
+    pub const MIND_NO_LICENCE: &str = "You hold no license";
     /// `tacsim::surface::dispatch::MIND_GOVERNED_DRAFT`.
     pub const MIND_GOVERNED_DRAFT: &str =
-        "A governed core seals no unfiled draft; name a filed licence.";
+        "A governed core seals no unfiled draft; name a filed license.";
     /// `tacsim::surface::dispatch::MIND_NO_DRAFT`.
     pub const MIND_NO_DRAFT: &str = "You have no draft";
     /// `tacsim::surface::dispatch::MIND_NO_CORE`.
@@ -157,7 +157,7 @@ pub mod dispatch {
     /// `tacsim::surface::dispatch::MIND_UNTITLED`.
     pub use crate::mine::lines::MIND_UNTITLED;
     /// `tacsim::surface::dispatch::MIND_NOT_FOR_ORG`: the game re-exports `tacsim::minds::words::NOT_FOR_ORG`.
-    pub const MIND_NOT_FOR_ORG: &str = "You do not act for that organisation.";
+    pub const MIND_NOT_FOR_ORG: &str = "You do not act for that organization.";
 }
 
 /// A field unit's mind taking it home while its pilot is away (doc 44 MW.7):
@@ -202,11 +202,11 @@ pub mod absent {
 /// `+ship/mind`, a mind sealed aboard a ship (doc 44 MW.13): `tacsim::port::ship_mind`.
 pub mod ship_mind {
     /// `tacsim::port::ship_mind::MIND_USAGE`.
-    pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<licence>";
+    pub const MIND_USAGE: &str = "Usage: +ship/mind | +ship/mind filed:<license>";
     /// `tacsim::port::ship_mind::MIND_NONE`.
     pub const MIND_NONE: &str = "If you lose your link, the house default takes her home.";
     /// `tacsim::port::ship_mind::MIND_ADMITTING`.
-    pub const MIND_ADMITTING: &str = "The Registry is admitting licence ";
+    pub const MIND_ADMITTING: &str = "The Registry is admitting license ";
     /// `tacsim::port::ship_mind::MIND_ABOARD`.
     pub const MIND_ABOARD: &str =
         "It has her helm and sensors while her crew has no link, until she next docks at a port.";
@@ -233,7 +233,7 @@ pub mod ship_mind {
     pub const MIND_LAPSED: &str = "; nothing is sealed aboard.";
     /// `tacsim::port::ship_mind::MIND_PREVIEW`.
     pub const MIND_PREVIEW: &str =
-        "and holds a seat of the licence until she next docks at a port. Add go to seal it.";
+        "and holds a seat of the license until she next docks at a port. Add go to seal it.";
     /// `tacsim::port::ship_mind::MIND_NOT_SEALED`.
     pub const MIND_NOT_SEALED: &str = " has no mind sealed aboard to unseal.";
     /// `tacsim::port::ship_mind::MIND_NOT_YOURS`.
@@ -241,7 +241,7 @@ pub mod ship_mind {
     /// `tacsim::port::ship_mind::MIND_NOT_YET`.
     pub const MIND_NOT_YET: &str = "'s mind claim yet; try again in a moment.";
     /// `tacsim::port::ship_mind::MIND_OFF_PREVIEW`.
-    pub const MIND_OFF_PREVIEW: &str = ": its claim closes and the licence's seat is free.";
+    pub const MIND_OFF_PREVIEW: &str = ": its claim closes and the license's seat is free.";
     /// `tacsim::port::ship_mind::MIND_SEALED`.
     pub const MIND_SEALED: &str = "The Registry admits the claim: ";
     /// `tacsim::port::ship_mind::MIND_REFUSED`.
@@ -318,9 +318,9 @@ pub mod market {
     /// `tacsim::minds::words::WITHDRAWING`.
     pub const WITHDRAWING: &str = "Withdrawing filed revision";
     /// `tacsim::minds::words::ATTESTING`.
-    pub const ATTESTING: &str = "Renewing your owner's licence for filed mind";
+    pub const ATTESTING: &str = "Renewing your owner's license for filed mind";
     /// `tacsim::minds::words::FORKING`.
-    pub const FORKING: &str = "Forking licence";
+    pub const FORKING: &str = "Forking license";
     /// `tacsim::minds::words::RATING_UNAVAILABLE`.
     pub const RATING_UNAVAILABLE: &str = "The owned Registry computation is unavailable.";
     /// `tacsim::minds::words::COUNTER`.
@@ -345,7 +345,7 @@ pub mod market {
     /// that also starts with "Listing " and holds ", class ".
     pub const DETAIL: &str = "and above.";
     /// `tacsim::minds::words::TERMS_LINE`.
-    pub const TERMS_LINE: &str = "days of Grace; the licence";
+    pub const TERMS_LINE: &str = "days of Grace; the license";
     /// `tacsim::minds::words::SPLIT`.
     pub const SPLIT: &str = "charter owner the rest.";
     /// `tacsim::minds::words::QUOTING`.
@@ -362,21 +362,21 @@ pub mod market {
     /// `tacsim::minds::words::BAD_TRANSFER`.
     pub const BAD_TRANSFER: &str = "transfer is yes or no.";
     /// `tacsim::minds::words::HOLD_HEAD`.
-    pub const HOLD_HEAD: &str = "Your mind licences:";
+    pub const HOLD_HEAD: &str = "Your mind licenses:";
     /// `tacsim::minds::words::HOLD_OWNER`. Partial: a holdings row's indent; a reader takes it
     /// only from a line that starts with it, after `HOLD_HEAD`, spaces not collapsed.
     pub const HOLD_OWNER: &str = "  filed ";
     /// `tacsim::minds::words::HOLD_MORE`.
     pub const HOLD_MORE: &str = "More: +minds/holdings";
     /// `tacsim::minds::words::HOLD_EMPTY`.
-    pub const HOLD_EMPTY: &str = "You hold no mind licences.";
+    pub const HOLD_EMPTY: &str = "You hold no mind licenses.";
     /// `tacsim::minds::words::YOUR_QUOTE`.
     pub const YOUR_QUOTE: &str = "more seconds. Pay it with +minds/buy/pay";
     /// `tacsim::minds::words::QUOTE_EXPIRED`.
     pub const QUOTE_EXPIRED: &str = "Your quote has expired. Ask for a new one with +minds/buy";
     /// `tacsim::minds::words::YOUR_ESCROW`.
     pub const YOUR_ESCROW: &str =
-        "Your payment is held in escrow. Take the licence with +minds/buy/complete";
+        "Your payment is held in escrow. Take the license with +minds/buy/complete";
     /// `tacsim::minds::words::ASK`.
     pub const ASK: &str = "Ask for a quote with +minds/buy";
     /// `tacsim::minds::words::NO_QUOTE`.
@@ -386,25 +386,25 @@ pub mod market {
     /// `tacsim::minds::words::NO_PURCHASE`.
     pub const NO_PURCHASE: &str = "You have no paid purchase waiting on listing";
     /// `tacsim::minds::words::COMPLETING`.
-    pub const COMPLETING: &str = "Taking the licence from listing";
+    pub const COMPLETING: &str = "Taking the license from listing";
     /// `tacsim::minds::words::REFUNDING`.
     pub const REFUNDING: &str = "Asking for your payment on listing";
     /// `tacsim::minds::words::HOLD_PAID`. Partial: a holdings row's indent; a reader takes it
     /// only from a line that starts with it, after `HOLD_HEAD`, spaces not collapsed.
-    pub const HOLD_PAID: &str = "  licence ";
+    pub const HOLD_PAID: &str = "  license ";
     /// `tacsim::minds::words::HOLD_WAIT_HEAD`.
     pub const HOLD_WAIT_HEAD: &str = "Purchases waiting:";
     /// `tacsim::minds::words::HOLD_WAIT`.
     pub const HOLD_WAIT: &str = "paid into escrow: +minds/buy/complete";
     /// `tacsim::minds::words::NO_LICENCE`.
-    pub const NO_LICENCE: &str = "You hold no licence";
+    pub const NO_LICENCE: &str = "You hold no license";
     /// `tacsim::minds::words::NOT_FOR_ORG`.
-    pub const NOT_FOR_ORG: &str = "You do not act for that organisation.";
+    pub const NOT_FOR_ORG: &str = "You do not act for that organization.";
     /// `tacsim::minds::words::NO_RENEWAL`.
     pub const NO_RENEWAL: &str =
         "has no renewal offer waiting for you. Ask for one with +minds/renew";
     /// `tacsim::minds::words::RESELLING`.
-    pub const RESELLING: &str = "Offering licence";
+    pub const RESELLING: &str = "Offering license";
     /// `tacsim::minds::words::RESELL_TELL`.
     pub const RESELL_TELL: &str = "Once that is confirmed, they accept with +minds/resell/accept";
     /// `tacsim::minds::words::CHARTERING`.
@@ -418,7 +418,7 @@ pub mod market {
     /// `tacsim::minds::words::RECALLING`.
     pub const RECALLING: &str = "Recalling filed revision";
     /// `tacsim::minds::words::REVOKING`.
-    pub const REVOKING: &str = "Revoking licence";
+    pub const REVOKING: &str = "Revoking license";
     /// `tacsim::minds::words::REGISTRY_OFF`.
     pub const REGISTRY_OFF: &str = "Registry recall and revocation are not configured here.";
     /// `tacsim::minds::words::INSPECTING`.
@@ -446,14 +446,14 @@ pub mod market {
     /// " IC days.".
     pub const REVOKING_PRINCIPAL: &str = "Revoking ";
     /// `tacsim::minds::words::PRINCIPALS_BARRED`.
-    pub const PRINCIPALS_BARRED: &str = "The Registry has barred your mind licences until";
+    pub const PRINCIPALS_BARRED: &str = "The Registry has barred your mind licenses until";
     /// `tacsim::minds::words::PRINCIPAL_REVOKED`.
-    pub const PRINCIPAL_REVOKED: &str = "holds no new licence until";
+    pub const PRINCIPAL_REVOKED: &str = "holds no new license until";
     /// `tacsim::minds::words::NO_SUCH_PRINCIPAL`.
-    pub const NO_SUCH_PRINCIPAL: &str = "No such character or organisation.";
+    pub const NO_SUCH_PRINCIPAL: &str = "No such character or organization.";
     /// `tacsim::minds::words::AMBIGUOUS_PRINCIPAL`.
     pub const AMBIGUOUS_PRINCIPAL: &str =
-        "That name is a character and an organisation; name the character as #<n>.";
+        "That name is a character and an organization; name the character as #<n>.";
     /// `tacsim::minds::words::NOTHING_TO_REVOKE`.
     pub const NOTHING_TO_REVOKE: &str = "That inspection found nothing to revoke for.";
     /// `tacsim::minds::words::CLAIM_FILED`.
@@ -499,9 +499,9 @@ pub mod market {
         /// `tacsim::minds::words::named::ACCEPT_HOW`.
         pub const ACCEPT_HOW: &str = "Accept it with +minds/resell/accept";
         /// `tacsim::minds::words::named::NO_OFFER`.
-        pub const NO_OFFER: &str = "You have no offer for licence";
+        pub const NO_OFFER: &str = "You have no offer for license";
         /// `tacsim::minds::words::named::NO_OFFER_AT`.
-        pub const NO_OFFER_AT: &str = "None of your offers for licence";
+        pub const NO_OFFER_AT: &str = "None of your offers for license";
         /// `tacsim::minds::words::named::CHARTER_OFFER`.
         pub const CHARTER_OFFER: &str = "and its charter are offered to you for";
         /// `tacsim::minds::words::named::CHARTER_ACCEPT_HOW`.
@@ -511,7 +511,7 @@ pub mod market {
         /// `tacsim::minds::words::named::NO_CHARTER_OFFER_AT`.
         pub const NO_CHARTER_OFFER_AT: &str = "None of your offers for filed mind";
         /// `tacsim::minds::words::named::ACCEPTING`.
-        pub const ACCEPTING: &str = "Accepting the offer for licence";
+        pub const ACCEPTING: &str = "Accepting the offer for license";
         /// `tacsim::minds::words::named::FUNDING_CHARTER`.
         pub const FUNDING_CHARTER: &str =
             "into escrow; the transfer settles once no sortie under it is out.";
@@ -647,16 +647,119 @@ pub mod exchange {
     pub const NO_SUCH_ASSET: &str = "No such asset.";
     /// `mush_market::seller::NOT_LISTABLE` (doc 48 cut EX.2).
     pub const NOT_LISTABLE: &str = "That is not something this market lists for you.";
+    /// `mush_market::seller::NOT_FOR_ORG` (doc 48 cut PL.9): `as=<org>` for an org not yours.
+    pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was listed.";
     /// `mush_market::seller::ALREADY_FOR_SALE`'s head (doc 48 cut EX.2).
     pub const ALREADY_FOR_SALE: &str = "That is already up for sale";
+}
+
+/// **The job board** (doc 48 cut EX.5): `+market/jobs` (`mush_market::services`) and the
+/// retrieval join's new sentences (`tacsim::surface::retrieval`). No lane reads them yet; each is
+/// held to the game's own text below.
+pub mod jobs {
+    /// `mush_market::services::JOBS_USAGE`.
+    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|haul|escort]";
+    /// `mush_market::services::JOBS_NO_VENUE`.
+    pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=";
+    /// `mush_market::services::JOBS_NONE`.
+    pub const JOBS_NONE: &str = "No jobs are posted on this board.";
+    /// `mush_market::services::JOBS_HEAD`'s head.
+    pub const JOBS_HEAD: &str = "Jobs on this board (";
+    /// `mush_market::services::JOB_LINE`'s middle: a job's pay. Partial: read the amount after it.
+    pub const JOB_LINE: &str = ". Pays ";
+    /// `mush_market::services::JOB_NEGOTIABLE`: a pay that is an opening figure. Partial: read
+    /// it after the amount on a job's line.
+    pub const JOB_NEGOTIABLE: &str = " to open";
+    /// `mush_market::services::JOB_BOND`'s head. Partial: read it on a job's line.
+    pub const JOB_BOND: &str = ", bond ";
+    /// `mush_market::services::JOB_TAKE`'s tail: the verb that takes the job. Partial: read the
+    /// command after it.
+    pub const JOB_TAKE: &str = ". Take it: ";
+    /// `mush_market::services::TERM_FROM_ACCEPTANCE`'s tail.
+    pub const TERM_FROM_ACCEPTANCE: &str = " IC days from acceptance";
+    /// `mush_market::services::TERM_BY`'s head. Partial: read the days after it.
+    pub const TERM_BY: &str = "due within ";
+    /// `mush_market::services::TERM_TODAY`. Partial: read it on a job's line.
+    pub const TERM_TODAY: &str = "due today";
+    /// `mush_market::services::TERM_ON_PERFORMANCE`.
+    pub const TERM_ON_PERFORMANCE: &str = "paid on arrival";
+    /// `mush_market::services::TERM_DAILY` (doc 48 cut EX.7).
+    pub const TERM_DAILY: &str = "paid by the IC day";
+    /// `mush_market::services::JOBS_MORE`.
+    pub const JOBS_MORE: &str = "(More are posted than one board shows.)";
+    /// `tacsim::surface::retrieval::ACCEPT_USAGE`'s head.
+    pub const ACCEPT_USAGE: &str = "Usage: +salvage/accept <job> [as=<org>] [go]";
+    /// `tacsim::surface::retrieval::BOND_CLAUSE`'s head: the bond a job's taker escrows.
+    pub const BOND_CLAUSE: &str = " You escrow a bond of ";
+    /// `tacsim::surface::retrieval::NOT_FOR_ORG`.
+    pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was accepted.";
+    /// `tacsim::surface::retrieval::ORG_NO_ACCOUNT`.
+    pub const ORG_NO_ACCOUNT: &str = "That organization has no account to be paid into.";
+}
+
+/// **Crew wages and crew for hire** (doc 48 cut EX.7): `+sortie/crew`'s wage, a contract's wage
+/// line and `+sortie/available` (`tacsim::detachment::crew::wages`). The DT lane reads
+/// [`crew::OFFERS_WAGES`] as the offers' end; the rest are held to the game's own text below.
+pub mod crew {
+    /// `tacsim::detachment::crew::wages::OFFER_WAGE`'s head. Partial: read the wage after it.
+    pub const OFFER_WAGE: &str = "; wage ";
+    /// `tacsim::detachment::crew::wages::OFFERS_WAGES`'s head: the offers' footer.
+    pub const OFFERS_WAGES: &str = "A hire's wage is ";
+    /// `tacsim::detachment::crew::wages::OFFERS_ABOARD`.
+    pub const OFFERS_ABOARD: &str = "Hiring does not move the character aboard.";
+    /// `tacsim::detachment::crew::wages::WAGE_LINE`'s head. Partial: read the wage after it.
+    pub const WAGE_LINE: &str = "Wage: ";
+    /// `tacsim::detachment::crew::wages::WAGE_NONE`.
+    pub const WAGE_NONE: &str =
+        "No wage is charged: the hiring port has no authority to pay it to.";
+    /// `tacsim::detachment::crew::wages::LIST_USAGE`'s head.
+    pub const LIST_USAGE: &str = "Usage: +sortie/available <duty>[,<duty>] [officer]";
+    /// `tacsim::detachment::crew::wages::LISTED`'s tail. Partial: read the wage before it.
+    pub const LISTED: &str = " an IC day.";
+    /// `tacsim::detachment::crew::wages::LISTING_SHOW`'s tail.
+    pub const LISTING_SHOW: &str = ", shown there on its board.";
+    /// `tacsim::detachment::crew::wages::NOT_LISTED`.
+    pub const NOT_LISTED: &str = "You are not listed for crew hire.";
+    /// `tacsim::detachment::crew::wages::UNLISTED`.
+    pub const UNLISTED: &str = "You are no longer listed for crew hire.";
+    /// `tacsim::detachment::crew::wages::LIST_AT_PORT`.
+    pub const LIST_AT_PORT: &str = "List yourself for crew hire from a port's station.";
+    /// `tacsim::detachment::crew::wages::BOARD_SUBJECT`'s middle: a listed player on the board.
+    pub const BOARD_SUBJECT: &str = " for hire (";
+    /// `tacsim::detachment::crew::wages::BOARD_TAKE`'s head. Partial: read the name after it.
+    pub const BOARD_TAKE: &str = "page ";
+}
+
+/// **The price history** (doc 48 cut EX.8): `+market/history` (`mush_market::history`). No lane
+/// reads them yet; each is held to the game's own text below.
+pub mod history {
+    /// `mush_market::history::HISTORY_USAGE`.
+    pub const HISTORY_USAGE: &str = "Usage: +market/history <catalog>:<code>";
+    /// `mush_market::history::HISTORY_NO_VENUE`'s head.
+    pub const HISTORY_NO_VENUE: &str = "Name a market with market=";
+    /// `mush_market::history::HISTORY_NONE`'s head.
+    pub const HISTORY_NONE: &str = "No price history is kept here for ";
+    /// `mush_market::history::HISTORY_HEAD`'s head.
+    pub const HISTORY_HEAD: &str = "House prices of ";
+    /// `mush_market::history::HISTORY_ROW`'s middle. Partial: read the price after it.
+    pub const HISTORY_ROW: &str = ": ask ";
+    /// `mush_market::history::HISTORY_THIS_WEEK`.
+    pub const HISTORY_THIS_WEEK: &str = "this IC week";
+    /// `mush_market::history::HISTORY_WEEKS_AGO`'s tail.
+    pub const HISTORY_WEEKS_AGO: &str = " IC weeks ago";
+    /// `mush_market::history::HISTORY_LAST_WEEK`.
+    pub const HISTORY_LAST_WEEK: &str = "last IC week";
+    /// `mush_market::history::HISTORY_NO_PRICE`. Partial: read it after "ask " or "bid ".
+    pub const HISTORY_NO_PRICE: &str = "none";
 }
 
 /// **A hull listed on the exchange** (doc 48 cut EX.2): what `+market/post #<hull>` refuses in
 /// the game's words, `tacsim::port::hull_sale`. No lane reads them yet; each is held to the
 /// game's own text below.
 pub mod hull_sale {
-    /// `tacsim::port::hull_sale::HULL_CORED`: a governed core fitted, refused for now.
-    pub const HULL_CORED: &str = "governed core fitted cannot be listed yet";
+    /// `tacsim::port::hull_sale::HULL_CORED`: a governed core fitted; since doc 48 unit EX.2b
+    /// she sells with it by private offer.
+    pub const HULL_CORED: &str = "sells only with her governed core, by private offer";
     /// `tacsim::port::hull_sale::HULL_HOLD_LADEN`.
     pub const HULL_HOLD_LADEN: &str = "hold must be empty before she is listed";
     /// `tacsim::port::hull_sale::HULL_HOLD_DARK`'s tail.
@@ -665,6 +768,217 @@ pub mod hull_sale {
     pub const HULL_IN_BAY: &str = "stow her before she is listed.";
     /// `tacsim::port::hull_sale::HULL_RIG_ABOARD`'s tail.
     pub const HULL_RIG_ABOARD: &str = "return it to Occator before she is listed.";
+}
+
+/// **A governed core resold to a player** (doc 48 unit EX.2b): `+core/offer`, `+core/offers` and
+/// `+core/accept`, in the game's words, `tacsim::hardware::sale::resale`. No lane reads them
+/// yet; each is held to the game's own text below.
+/// **Doc 48 cut EX.6**: the haul's sentences (`tacsim::services::haul`).
+pub mod haul {
+    /// `tacsim::services::haul::HAUL_USAGE`.
+    pub const HAUL_USAGE: &str = "Usage: +haul  |  +haul/post <qty> <good> to=<port> fee=<cr>";
+    /// `tacsim::services::haul::POST_PREVIEW`.
+    pub const POST_PREVIEW: &str = "). +haul/post ... go posts it.";
+    /// `tacsim::services::haul::POSTED`.
+    pub const POSTED: &str = "escrowed and paid on delivery.";
+    /// `tacsim::services::haul::NO_VENUE`.
+    pub const NO_VENUE: &str = "There is no market here to ship from.";
+    /// `tacsim::services::haul::NO_LOCKER`.
+    pub const NO_LOCKER: &str = "A haul ships from your locker, and you have none here yet (+";
+    /// `tacsim::services::haul::SHORT`.
+    pub const SHORT: &str = "Your locker here holds too little";
+    /// `tacsim::services::haul::NO_GOOD`.
+    pub const NO_GOOD: &str = "No good answers to";
+    /// `tacsim::services::haul::NO_PORT`.
+    pub const NO_PORT: &str = "; name a port of the lane.";
+    /// `tacsim::services::haul::SAME_PORT`.
+    pub const SAME_PORT: &str = "A haul goes to another port.";
+    /// `tacsim::services::haul::OVER_CAP`.
+    pub const OVER_CAP: &str = "A declared value is at most the reference price of the goods";
+    /// `tacsim::services::haul::NO_REFERENCE`.
+    pub const NO_REFERENCE: &str = "That good has no reference price, so its value cannot be dec";
+    /// `tacsim::services::haul::POST_FAILED`.
+    pub const POST_FAILED: &str = "The haul could not be posted:";
+    /// `tacsim::services::haul::NO_SUCH_JOB`.
+    pub const NO_SUCH_JOB: &str = "; +market/jobs haul lists them.";
+    /// `tacsim::services::haul::OWN_JOB`.
+    pub const OWN_JOB: &str = "That haul is your own.";
+    /// `tacsim::services::haul::NOT_DOCKED`.
+    pub const NOT_DOCKED: &str = ", and your hull is not docked there.";
+    /// `tacsim::services::haul::NO_ROOM`.
+    pub const NO_ROOM: &str = "Your hold has no room for those goods.";
+    /// `tacsim::services::haul::GOODS_GONE`.
+    pub const GOODS_GONE: &str = "The shipper's goods are no longer there to load.";
+    /// `tacsim::services::haul::ACCEPT_PREVIEW`.
+    pub const ACCEPT_PREVIEW: &str = ". The goods are declared at";
+    /// `tacsim::services::haul::ACCEPTED`.
+    pub const ACCEPTED: &str = ". The goods load into your hold, held for the job; deliver t";
+    /// `tacsim::services::haul::ACCEPT_FAILED`.
+    pub const ACCEPT_FAILED: &str = "The haul could not be taken:";
+    /// `tacsim::services::haul::TOLD_TAKEN`.
+    pub const TOLD_TAKEN: &str = "has taken haul";
+    /// `tacsim::services::haul::NOT_THERE`.
+    pub const NOT_THERE: &str = "Your hull is not docked at";
+    /// `tacsim::services::haul::TOO_LATE`.
+    pub const TOO_LATE: &str = "The haul's term has ended; the goods go back to the shipper.";
+    /// `tacsim::services::haul::NOT_ABOARD`.
+    pub const NOT_ABOARD: &str = "You carry no goods for haul";
+    /// `tacsim::services::haul::DELIVER_PREVIEW`.
+    pub const DELIVER_PREVIEW: &str = ". +haul/deliver <job> go hands them over.";
+    /// `tacsim::services::haul::DELIVERING`.
+    pub const DELIVERING: &str = "are handed over; the fee and your bond follow.";
+    /// `tacsim::services::haul::TOLD_DELIVERED`.
+    pub const TOLD_DELIVERED: &str = "is delivered to your locker at";
+    /// `tacsim::services::haul::TOLD_RETURNED`.
+    pub const TOLD_RETURNED: &str = "was not delivered in time; its goods are back in your locker";
+    /// `tacsim::services::haul::NOT_WITHDRAWABLE`.
+    pub const NOT_WITHDRAWABLE: &str =
+        "Only the shipper withdraws a haul, and only before it is tak";
+    /// `tacsim::services::haul::WITHDRAWN`.
+    pub const WITHDRAWN: &str = "is withdrawn; the fee comes back.";
+    /// `tacsim::services::haul::NONE`.
+    pub const NONE: &str = "You have no hauls.";
+    /// `tacsim::services::haul::HEAD`.
+    pub const HEAD: &str = "Your hauls, posted and taken:";
+    /// `tacsim::services::haul::ROW`.
+    pub const ROW: &str = "on hire from";
+}
+
+/// **Doc 48 cut EX.6**: the escort's sentences (`tacsim::services::escort`).
+pub mod escort {
+    /// `tacsim::services::escort::ESCORT_USAGE`.
+    pub const ESCORT_USAGE: &str = "Usage: +escort  |  +escort/post <hull> to=<port>|field=<site";
+    /// `tacsim::services::escort::POST_PREVIEW`.
+    pub const POST_PREVIEW: &str = "IC days. +escort/post ... go posts it.";
+    /// `tacsim::services::escort::POSTED`.
+    pub const POSTED: &str = "escrowed and paid when she is seen through.";
+    /// `tacsim::services::escort::NOT_YOURS`.
+    pub const NOT_YOURS: &str = "You hold no title to that hull and do not fly her.";
+    /// `tacsim::services::escort::NOT_DOCKED`.
+    pub const NOT_DOCKED: &str = "She is not docked at a port, so there is no passage to escor";
+    /// `tacsim::services::escort::NO_PORT`.
+    pub const NO_PORT: &str = "; she has no passage there.";
+    /// `tacsim::services::escort::SAME_PORT`.
+    pub const SAME_PORT: &str = "Her passage goes to another port.";
+    /// `tacsim::services::escort::NO_VENUE`.
+    pub const NO_VENUE: &str = "There is no market here to post at.";
+    /// `tacsim::services::escort::ALREADY`.
+    pub const ALREADY: &str = "An escort of her is open already (";
+    /// `tacsim::services::escort::POST_FAILED`.
+    pub const POST_FAILED: &str = "The escort could not be posted:";
+    /// `tacsim::services::escort::NO_SUCH_JOB`.
+    pub const NO_SUCH_JOB: &str = "; +market/jobs escort lists them.";
+    /// `tacsim::services::escort::OWN_JOB`.
+    pub const OWN_JOB: &str = "That escort is your own.";
+    /// `tacsim::services::escort::SAME_HULL`.
+    pub const SAME_HULL: &str = "She cannot escort herself.";
+    /// `tacsim::services::escort::ACCEPT_PREVIEW`.
+    pub const ACCEPT_PREVIEW: &str = "Take the escort: stay near";
+    /// `tacsim::services::escort::BOND_CLAUSE`.
+    pub const BOND_CLAUSE: &str = "is escrowed: it comes back with the fee if she is seen throu";
+    /// `tacsim::services::escort::ACCEPTED`.
+    pub const ACCEPTED: &str = "for the whole journey.";
+    /// `tacsim::services::escort::ACCEPT_FAILED`.
+    pub const ACCEPT_FAILED: &str = "The escort could not be taken:";
+    /// `tacsim::services::escort::TOLD_TAKEN`.
+    pub const TOLD_TAKEN: &str = "has taken escort";
+    /// `tacsim::services::escort::TOLD_STARTED`.
+    pub const TOLD_STARTED: &str = ": the journey has begun.";
+    /// `tacsim::services::escort::TOLD_KEPT`.
+    pub const TOLD_KEPT: &str = "of the journey. The fee follows.";
+    /// `tacsim::services::escort::TOLD_FAILED`.
+    pub const TOLD_FAILED: &str = "has failed, and its fee is not paid:";
+    /// `tacsim::services::escort::WHY_WRECKED`.
+    pub const WHY_WRECKED: &str = "she was wrecked";
+    /// `tacsim::services::escort::WHY_CAPTURED`.
+    pub const WHY_CAPTURED: &str = "she was captured";
+    /// `tacsim::services::escort::WHY_LEFT`.
+    pub const WHY_LEFT: &str = "the escort left the journey";
+    /// `tacsim::services::escort::WHY_FAR`.
+    pub const WHY_FAR: &str = "the escort was near her for only";
+    /// `tacsim::services::escort::NOT_WITHDRAWABLE`.
+    pub const NOT_WITHDRAWABLE: &str =
+        "Only the poster withdraws an escort, and only before it is t";
+    /// `tacsim::services::escort::WITHDRAWN`.
+    pub const WITHDRAWN: &str = "is withdrawn; your fee is back in your account.";
+    /// `tacsim::services::escort::NONE`.
+    pub const NONE: &str = "You have no escorts.";
+    /// `tacsim::services::escort::HEAD`.
+    pub const HEAD: &str = "Your escorts:";
+    /// `tacsim::services::escort::ROW`.
+    pub const ROW: &str = ", escorted on";
+}
+
+pub mod core_resale {
+    /// `tacsim::hardware::sale::resale::RESALE_OFFER_USAGE`.
+    pub const RESALE_OFFER_USAGE: &str = "Usage: +core/offer <core or ship>=<player> price=<n>";
+    /// `tacsim::hardware::sale::resale::RESALE_ACCEPT_USAGE`.
+    pub const RESALE_ACCEPT_USAGE: &str = "Usage: +core/accept <core or ship>";
+    /// `tacsim::hardware::sale::resale::RESALE_OFF`.
+    pub const RESALE_OFF: &str = "do not change hands between players";
+    /// `tacsim::hardware::sale::resale::RESALE_NOT_CORE`.
+    pub const RESALE_NOT_CORE: &str = "neither a governed core nor a ship of yours";
+    /// `tacsim::hardware::sale::resale::RESALE_NOT_YOURS`.
+    pub const RESALE_NOT_YOURS: &str = "title is not yours alone, so you cannot offer it";
+    /// `tacsim::hardware::sale::resale::RESALE_NOT_HELD`.
+    pub const RESALE_NOT_HELD: &str = "You are not holding that core.";
+    /// `tacsim::hardware::sale::resale::RESALE_FITTED`'s middle.
+    pub const RESALE_FITTED: &str = "offer her with it: +core/offer #";
+    /// `tacsim::hardware::sale::resale::RESALE_DESTROYED`.
+    pub const RESALE_DESTROYED: &str = "A destroyed core is not offered for sale.";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_PLAYER`.
+    pub const RESALE_NO_PLAYER: &str = "There is no player by that name to offer it to.";
+    /// `tacsim::hardware::sale::resale::RESALE_SELF`.
+    pub const RESALE_SELF: &str = "You cannot sell a core to yourself.";
+    /// `tacsim::hardware::sale::resale::RESALE_PRICE`'s tail.
+    pub const RESALE_PRICE: &str = "leaves you something after the venue's cut and the levy";
+    /// `tacsim::hardware::sale::resale::RESALE_OFFERED`'s tail.
+    pub const RESALE_OFFERED: &str = "Nothing moves until they accept.";
+    /// `tacsim::hardware::sale::resale::RESALE_OFFERED_HULL`'s middle.
+    pub const RESALE_OFFERED_HULL: &str = " with her core #";
+    /// `tacsim::hardware::sale::resale::RESALE_WITHDRAWN`'s head.
+    pub const RESALE_WITHDRAWN: &str = "Your offer of core #";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_OWN_OFFER`.
+    pub const RESALE_NO_OWN_OFFER: &str = "You have no standing offer of that core.";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_OFFER`.
+    pub const RESALE_NO_OFFER: &str = "No offer of that stands for you.";
+    /// `tacsim::hardware::sale::resale::RESALE_LAPSED`.
+    pub const RESALE_LAPSED: &str = "That offer has lapsed; ask the seller to offer it again.";
+    /// `tacsim::hardware::sale::resale::RESALE_CHANGED`'s tail.
+    pub const RESALE_CHANGED: &str = "what it sells has changed since it was made";
+    /// `tacsim::hardware::sale::resale::RESALE_QUOTE`'s middle.
+    pub const RESALE_QUOTE: &str = " offers you core #";
+    /// `tacsim::hardware::sale::resale::RESALE_QUOTE_HULL`'s tail.
+    pub const RESALE_QUOTE_HULL: &str = ", cuts included.";
+    /// `tacsim::hardware::sale::resale::RESALE_HOW`'s tail.
+    pub const RESALE_HOW: &str = "your money leaves your account only as it passes to you";
+    /// `tacsim::hardware::sale::resale::RESALE_SHORT`'s head.
+    pub const RESALE_SHORT: &str = "Your credit account cannot cover ";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_ACCOUNT`.
+    pub const RESALE_NO_ACCOUNT: &str = "You hold no credit account to pay from.";
+    /// `tacsim::hardware::sale::resale::RESALE_ACCEPTING`'s head.
+    pub const RESALE_ACCEPTING: &str = "You accept the offer of core #";
+    /// `tacsim::hardware::sale::resale::RESALE_BOUGHT`'s middle.
+    pub const RESALE_BOUGHT: &str = " and its title are yours, for ";
+    /// `tacsim::hardware::sale::resale::RESALE_BOUGHT_HULL`'s middle.
+    pub const RESALE_BOUGHT_HULL: &str = " are yours, with both titles, for ";
+    /// `tacsim::hardware::sale::resale::RESALE_SOLD`'s middle.
+    pub const RESALE_SOLD: &str = "; you are paid ";
+    /// `tacsim::hardware::sale::resale::RESALE_NO_OFFERS`.
+    pub const RESALE_NO_OFFERS: &str = "No core offers stand to or from you.";
+    /// `tacsim::hardware::sale::resale::RESALE_OFFER_ROW`'s tail.
+    pub const RESALE_OFFER_ROW: &str = " days left to accept it.";
+    /// `tacsim::hardware::sale::resale::RESALE_BUSY`.
+    pub const RESALE_BUSY: &str = "You are already doing something; try again in a moment.";
+}
+
+/// **The scrap sold on the board** (doc 48 cut EX.3, `tacsim::port::bay_work::scrap`): what the
+/// holder hears when nothing whole is sold, or a row is given up.
+pub mod scrap {
+    /// `tacsim::port::bay_work::scrap::NOTHING_WHOLE`.
+    pub const NOTHING_WHOLE: &str = "scrap is paid by the whole tonne";
+    /// `tacsim::port::bay_work::scrap::SALE_GIVEN_UP`'s middle.
+    pub const SALE_GIVEN_UP: &str = "; it stays in your scrap at ";
 }
 
 /// **The exchange at the venue** (doc 48 cut EX.1b): a player's locker (`+locker`,
@@ -678,7 +992,7 @@ pub mod venue {
     /// `tacsim::port::locker::LOCKER_NO_VENUE`.
     pub const LOCKER_NO_VENUE: &str = "There is no market here to keep a locker at.";
     /// `tacsim::port::locker::LOCKER_SHOW`'s tail: what a locker holds and owes.
-    pub const LOCKER_SHOW: &str = " owed (collection starts later).";
+    pub const LOCKER_SHOW: &str = " t held, charged ";
     /// `tacsim::port::locker::LOCKER_NONE`'s tail.
     pub const LOCKER_NONE: &str = "+locker/open opens one.";
     /// `tacsim::port::market::NOT_AT_VENUE`'s tail: a non-port venue, away from it.
@@ -687,8 +1001,33 @@ pub mod venue {
     pub const VENUE_UNPLACED: &str = " market has no place to trade in, so it cannot trade.";
     /// `tacsim::port::market::LOCKER_ELSEWHERE`'s head: another venue's or player's locker.
     pub const LOCKER_ELSEWHERE: &str = "That locker is not yours at ";
-    /// `tacsim::port::proceeds::CHARTERED_ASK`'s head: no personal ask from a chartered hold.
-    pub const CHARTERED_ASK: &str = "Chartered cargo cannot go on a personal ask yet.";
+}
+
+/// **The way back to a Co-op Dray** (the owner's 2026-11-17 ruling): the recall after a real
+/// week idle (168 IC days), its notice and the desk's re-charter (`tacsim::port::coop`,
+/// `tacsim::port::recall`). No lane reads them yet; each is held to the game's own text below.
+pub mod coop {
+    /// `tacsim::port::coop::ENROLLED_ONCE`'s tail: a live charter on the account.
+    pub const ENROLLED_ONCE: &str = "the Co-op charters each pilot one Dray at a time.";
+    /// `tacsim::port::coop::GRADUATED_ONCE`'s tail: a graduate at the desk.
+    pub const GRADUATED_ONCE: &str =
+        "the Co-op charters only captains who have no hull of their own.";
+    /// `tacsim::port::coop::REVOKED_FINAL`'s tail: a staff-revoked charter.
+    pub const REVOKED_FINAL: &str = "the Co-op does not charter you again.";
+    /// `tacsim::port::coop::RECHARTER_WAIT`'s tail: the last Dray not back yet.
+    pub const RECHARTER_WAIT: &str = "; charter again once she is in its pool.";
+    /// `tacsim::port::coop::RECHARTER_HINT`'s head: the way back.
+    pub const RECHARTER_HINT: &str =
+        "To fly again, charter another Dray: +coop/enroll <ship name> at the ";
+    /// `tacsim::port::coop::RECHARTERED_TERMS`'s head: a re-charter's terms.
+    pub const RECHARTERED_TERMS: &str = "No second stake: the Co-op stakes a captain once. Buyout ";
+    /// `tacsim::port::coop::REGISTRAR_LINE`'s last sentence: the recall and the way back.
+    pub const REGISTRAR_LINE: &str =
+        "takes its Dray back; you may charter another, with no second stake.";
+    /// `tacsim::port::coop::TERMS_ONE_AT_A_TIME`: the `+coop` terms line's last clause.
+    pub const TERMS_ONE_AT_A_TIME: &str = "one stake per pilot, and one Dray at a time.";
+    /// `tacsim::port::recall::DORMANT_NOTICE`'s tail: the recall after a real week idle.
+    pub const DORMANT_NOTICE: &str = "): a real week without a departure. The stake stays yours.";
 }
 
 /// **The partial needles**: rows (`family::NAME`) whose needle alone does not identify the
@@ -703,6 +1042,14 @@ pub const PARTIAL: &[&str] = &[
     "market::HOLD_PAID",
     "market::REVOKING_PRINCIPAL",
     "market::CLAIM_LINE",
+    "jobs::JOB_LINE",
+    "jobs::JOB_NEGOTIABLE",
+    "jobs::JOB_BOND",
+    "jobs::JOB_TAKE",
+    "jobs::TERM_BY",
+    "jobs::TERM_TODAY",
+    "history::HISTORY_ROW",
+    "history::HISTORY_NO_PRICE",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -735,7 +1082,33 @@ mod tests {
     const WORDS_RS: &str = include_str!("../../../tacsim/src/minds/market_commands/words.rs");
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
     const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
+    const SERVICES_RS: &str = include_str!("../../../mush-market/src/services.rs");
+    const HISTORY_RS: &str = include_str!("../../../mush-market/src/history.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
+    const CORE_RESALE_RS: &str = include_str!("../../../tacsim/src/hardware/sale/resale.rs");
+    const WAGES_RS: &str = include_str!("../../../tacsim/src/detachment/crew/wages.rs");
+
+    fn crew_rows() -> Vec<Row> {
+        use super::crew as bot;
+        use tacsim::detachment::crew::wages as game;
+        rows!("";
+            OFFER_WAGE,
+            OFFERS_WAGES,
+            OFFERS_ABOARD,
+            WAGE_LINE,
+            WAGE_NONE,
+            LIST_USAGE,
+            LISTED,
+            LISTING_SHOW,
+            NOT_LISTED,
+            UNLISTED,
+            LIST_AT_PORT,
+            BOARD_SUBJECT,
+            BOARD_TAKE,
+        )
+    }
+    const HAUL_RS: &str = include_str!("../../../tacsim/src/services/haul.rs");
+    const ESCORT_RS: &str = include_str!("../../../tacsim/src/services/escort.rs");
 
     fn venue_rows() -> Vec<Row> {
         use super::venue as bot;
@@ -757,13 +1130,83 @@ mod tests {
                 LOCKER_ELSEWHERE,
             )
         });
+        rows
+    }
+
+    fn job_board_rows() -> Vec<Row> {
+        use super::jobs as bot;
+        use mush_market::services as game;
+        rows!("";
+            JOBS_USAGE,
+            JOBS_NO_VENUE,
+            JOBS_NONE,
+            JOBS_HEAD,
+            JOB_LINE,
+            JOB_NEGOTIABLE,
+            JOB_BOND,
+            JOB_TAKE,
+            TERM_FROM_ACCEPTANCE,
+            TERM_BY,
+            TERM_TODAY,
+            TERM_ON_PERFORMANCE,
+            TERM_DAILY,
+            JOBS_MORE,
+        )
+    }
+
+    fn jobs_rows() -> Vec<Row> {
+        use super::jobs as bot;
+        let mut rows = job_board_rows();
         rows.extend({
-            use tacsim::port::proceeds as game;
+            use tacsim::surface::retrieval as game;
             rows!("";
-                CHARTERED_ASK,
+                ACCEPT_USAGE,
+                BOND_CLAUSE,
+                NOT_FOR_ORG,
+                ORG_NO_ACCOUNT,
             )
         });
         rows
+    }
+
+    fn coop_rows() -> Vec<Row> {
+        use super::coop as bot;
+        let mut rows = {
+            use tacsim::port::coop as game;
+            rows!("";
+                ENROLLED_ONCE,
+                GRADUATED_ONCE,
+                REVOKED_FINAL,
+                RECHARTER_WAIT,
+                RECHARTER_HINT,
+                RECHARTERED_TERMS,
+                REGISTRAR_LINE,
+                TERMS_ONE_AT_A_TIME,
+            )
+        };
+        rows.extend({
+            use tacsim::port::recall as game;
+            rows!("";
+                DORMANT_NOTICE,
+            )
+        });
+        rows
+    }
+
+    fn history_rows() -> Vec<Row> {
+        use super::history as bot;
+        use mush_market::history as game;
+        rows!("";
+            HISTORY_USAGE,
+            HISTORY_NO_VENUE,
+            HISTORY_NONE,
+            HISTORY_HEAD,
+            HISTORY_ROW,
+            HISTORY_THIS_WEEK,
+            HISTORY_WEEKS_AGO,
+            HISTORY_LAST_WEEK,
+            HISTORY_NO_PRICE,
+        )
     }
 
     fn exchange_rows() -> Vec<Row> {
@@ -807,7 +1250,17 @@ mod tests {
             ASSET_POSTED,
             NO_SUCH_ASSET,
             NOT_LISTABLE,
+            NOT_FOR_ORG,
             ALREADY_FOR_SALE,
+        )
+    }
+
+    fn scrap_rows() -> Vec<Row> {
+        use super::scrap as bot;
+        use tacsim::port::bay_work::scrap as game;
+        rows!("";
+            NOTHING_WHOLE,
+            SALE_GIVEN_UP,
         )
     }
 
@@ -820,6 +1273,143 @@ mod tests {
             HULL_HOLD_DARK,
             HULL_IN_BAY,
             HULL_RIG_ABOARD,
+        )
+    }
+
+    fn haul_rows() -> Vec<Row> {
+        use super::haul as bot;
+        use tacsim::services::haul as game;
+        rows!("";
+            HAUL_USAGE,
+            POST_PREVIEW,
+            POSTED,
+            NO_VENUE,
+            NO_LOCKER,
+            SHORT,
+            NO_GOOD,
+            NO_PORT,
+            SAME_PORT,
+            OVER_CAP,
+            NO_REFERENCE,
+            POST_FAILED,
+            NO_SUCH_JOB,
+            OWN_JOB,
+            NOT_DOCKED,
+            NO_ROOM,
+            GOODS_GONE,
+            ACCEPT_PREVIEW,
+            ACCEPTED,
+            ACCEPT_FAILED,
+            TOLD_TAKEN,
+            NOT_THERE,
+            TOO_LATE,
+            NOT_ABOARD,
+            DELIVER_PREVIEW,
+            DELIVERING,
+            TOLD_DELIVERED,
+            TOLD_RETURNED,
+            NOT_WITHDRAWABLE,
+            WITHDRAWN,
+            NONE,
+            HEAD,
+            ROW,
+        )
+    }
+    const HAUL_EXCLUDED: &[(&str, &str)] = &[
+        ("HAUL_VERB", "the verb's name"),
+        ("HAUL_PREFIX", "the record's key prefix, never printed"),
+        ("HAUL_ACTION", "the legs' action id, never printed"),
+        ("HAUL_OUTCOME", "the legs' outcome id, never printed"),
+        ("HAUL_FAMILY", "the ledger's family name, never printed"),
+        (
+            "HAUL_HELP",
+            "the verb's help, read through help, not answered",
+        ),
+        ("CHANNEL", "the channel lines go out on, never printed"),
+    ];
+
+    fn escort_rows() -> Vec<Row> {
+        use super::escort as bot;
+        use tacsim::services::escort as game;
+        rows!("";
+            ESCORT_USAGE,
+            POST_PREVIEW,
+            POSTED,
+            NOT_YOURS,
+            NOT_DOCKED,
+            NO_PORT,
+            SAME_PORT,
+            NO_VENUE,
+            ALREADY,
+            POST_FAILED,
+            NO_SUCH_JOB,
+            OWN_JOB,
+            SAME_HULL,
+            ACCEPT_PREVIEW,
+            BOND_CLAUSE,
+            ACCEPTED,
+            ACCEPT_FAILED,
+            TOLD_TAKEN,
+            TOLD_STARTED,
+            TOLD_KEPT,
+            TOLD_FAILED,
+            WHY_WRECKED,
+            WHY_CAPTURED,
+            WHY_LEFT,
+            WHY_FAR,
+            NOT_WITHDRAWABLE,
+            WITHDRAWN,
+            NONE,
+            HEAD,
+            ROW,
+        )
+    }
+    const ESCORT_EXCLUDED: &[(&str, &str)] = &[
+        ("ESCORT_VERB", "the verb's name"),
+        ("ESCORT_PREFIX", "the record's key prefix, never printed"),
+        ("PROVIDER", "the fact's namespace, never printed"),
+        ("FACT_KEPT", "the fact's kind, never printed"),
+        (
+            "ESCORT_HELP",
+            "the verb's help, read through help, not answered",
+        ),
+        ("CHANNEL", "the channel lines go out on, never printed"),
+    ];
+
+    fn core_resale_rows() -> Vec<Row> {
+        use super::core_resale as bot;
+        use tacsim::hardware::sale::resale as game;
+        rows!("";
+            RESALE_OFFER_USAGE,
+            RESALE_ACCEPT_USAGE,
+            RESALE_OFF,
+            RESALE_NOT_CORE,
+            RESALE_NOT_YOURS,
+            RESALE_NOT_HELD,
+            RESALE_FITTED,
+            RESALE_DESTROYED,
+            RESALE_NO_PLAYER,
+            RESALE_SELF,
+            RESALE_PRICE,
+            RESALE_OFFERED,
+            RESALE_OFFERED_HULL,
+            RESALE_WITHDRAWN,
+            RESALE_NO_OWN_OFFER,
+            RESALE_NO_OFFER,
+            RESALE_LAPSED,
+            RESALE_CHANGED,
+            RESALE_QUOTE,
+            RESALE_QUOTE_HULL,
+            RESALE_HOW,
+            RESALE_SHORT,
+            RESALE_NO_ACCOUNT,
+            RESALE_ACCEPTING,
+            RESALE_BOUGHT,
+            RESALE_BOUGHT_HULL,
+            RESALE_SOLD,
+            RESALE_NO_OFFERS,
+            RESALE_OFFER_ROW,
+            RESALE_BUSY,
         )
     }
 
@@ -1083,7 +1673,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 11] = [
+        let families: [(&str, Vec<Row>); 18] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1093,8 +1683,15 @@ mod tests {
             ("ship_mind", ship_mind_rows()),
             ("practice", practice_rows()),
             ("exchange", exchange_rows()),
+            ("jobs", jobs_rows()),
+            ("history", history_rows()),
             ("hull_sale", hull_sale_rows()),
+            ("core_resale", core_resale_rows()),
+            ("haul", haul_rows()),
+            ("escort", escort_rows()),
             ("venue", venue_rows()),
+            ("scrap", scrap_rows()),
+            ("coop", coop_rows()),
         ];
         families
             .into_iter()
@@ -1122,11 +1719,29 @@ mod tests {
     const HULL_SALE_EXCLUDED: &[(&str, &str)] = &[
         (
             "HULL_PACK",
-            "the hulls' catalogue pack name, not a sentence the game prints",
+            "the hulls' catalog pack name, not a sentence the game prints",
         ),
         (
             "HULL_CODE_PREFIX",
-            "a hull entry's catalogue-code prefix, not a sentence",
+            "a hull entry's catalog-code prefix, not a sentence",
+        ),
+    ];
+    /// `hardware/sale/resale.rs` (doc 48 unit EX.2b).
+    const CORE_RESALE_EXCLUDED: &[(&str, &str)] = &[
+        ("OFFER_ACTION", "the offer's action id, never printed"),
+        ("OFFER_OUTCOME", "the offer's outcome id, never printed"),
+        ("RESALE_ACTION", "the acceptance's action id, never printed"),
+        (
+            "RESALE_OUTCOME",
+            "the acceptance's outcome id, never printed",
+        ),
+        (
+            "OFFER_FAMILY",
+            "the offers' store family name, never printed",
+        ),
+        (
+            "RESALE_HELP",
+            "the verb's help text, read by help, not a line the bot waits on",
         ),
     ];
     /// `ship_mind.rs`.
@@ -1173,7 +1788,7 @@ mod tests {
         (
             "dispatch::MIND_NO_LICENCE",
             "market::NO_LICENCE",
-            "the same text, \"You hold no licence {licence}.\", for a launch's mind= and for +minds",
+            "the same text, \"You hold no license {licence}.\", for a launch's mind= and for +minds",
         ),
         (
             "market::NO_LICENCE",
@@ -1189,6 +1804,11 @@ mod tests {
             "market::NOT_FOR_ORG",
             "dispatch::MIND_NOT_FOR_ORG",
             "the same constant, the other way round",
+        ),
+        (
+            "history::HISTORY_NO_PRICE",
+            "haul::NO_LOCKER",
+            "a partial needle, read after \"ask \" or \"bid \" in a +market/history row",
         ),
     ];
 
@@ -1623,6 +2243,53 @@ mod tests {
     fn exchange_needles_are_distinct() {
         distinct(&qualified("exchange", exchange_rows()), &[]);
     }
+    // Doc 48 cut EX.8: the price history.
+    #[test]
+    fn history_needles_are_in_step() {
+        in_step("history", &history_rows());
+    }
+    #[test]
+    fn history_census() {
+        census("history.rs", HISTORY_RS, &history_rows(), &[]);
+    }
+    #[test]
+    fn history_needles_are_distinct() {
+        distinct(&qualified("history", history_rows()), &[]);
+    }
+    // Doc 48 cut EX.5: the job board.
+    #[test]
+    fn jobs_needles_are_in_step() {
+        in_step("jobs", &jobs_rows());
+    }
+    #[test]
+    fn jobs_census() {
+        census("services.rs", SERVICES_RS, &job_board_rows(), &[]);
+    }
+    // Doc 48 cut EX.7: crew wages and crew for hire.
+    #[test]
+    fn crew_needles_are_in_step() {
+        in_step("crew", &crew_rows());
+    }
+    #[test]
+    fn crew_census() {
+        census(
+            "wages.rs",
+            WAGES_RS,
+            &crew_rows(),
+            &[
+                ("WAGE_NS_PREFIX", "a namespace, never shown"),
+                ("LISTING_ATTR", "an attribute name, never shown"),
+            ],
+        );
+    }
+    #[test]
+    fn crew_needles_are_distinct() {
+        distinct(&qualified("crew", crew_rows()), &[]);
+    }
+    #[test]
+    fn jobs_needles_are_distinct() {
+        distinct(&qualified("jobs", jobs_rows()), &[]);
+    }
     // Doc 48 cut EX.2: a hull listed on the exchange.
     #[test]
     fn hull_sale_needles_are_in_step() {
@@ -1640,6 +2307,64 @@ mod tests {
     #[test]
     fn hull_sale_needles_are_distinct() {
         distinct(&qualified("hull_sale", hull_sale_rows()), &[]);
+    }
+    // Doc 48 cut EX.6: the haul.
+    #[test]
+    fn haul_needles_are_in_step() {
+        in_step("haul", &haul_rows());
+    }
+    #[test]
+    fn haul_census() {
+        census("services/haul.rs", HAUL_RS, &haul_rows(), HAUL_EXCLUDED);
+    }
+    #[test]
+    fn haul_needles_are_distinct() {
+        distinct(&qualified("haul", haul_rows()), &[]);
+    }
+    // Doc 48 cut EX.6: the escort.
+    #[test]
+    fn escort_needles_are_in_step() {
+        in_step("escort", &escort_rows());
+    }
+    #[test]
+    fn escort_census() {
+        census(
+            "services/escort.rs",
+            ESCORT_RS,
+            &escort_rows(),
+            ESCORT_EXCLUDED,
+        );
+    }
+    #[test]
+    fn escort_needles_are_distinct() {
+        distinct(&qualified("escort", escort_rows()), &[]);
+    }
+    // Doc 48 unit EX.2b: a governed core resold to a player.
+    #[test]
+    fn core_resale_needles_are_in_step() {
+        in_step("core_resale", &core_resale_rows());
+    }
+    #[test]
+    fn core_resale_census() {
+        census(
+            "hardware/sale/resale.rs",
+            CORE_RESALE_RS,
+            &core_resale_rows(),
+            CORE_RESALE_EXCLUDED,
+        );
+    }
+    #[test]
+    fn core_resale_needles_are_distinct() {
+        distinct(&qualified("core_resale", core_resale_rows()), &[]);
+    }
+    // Doc 48 cut EX.3: the scrap sold on the board.
+    #[test]
+    fn scrap_needles_are_in_step() {
+        in_step("scrap", &scrap_rows());
+    }
+    #[test]
+    fn scrap_needles_are_distinct() {
+        distinct(&qualified("scrap", scrap_rows()), &[]);
     }
     // Doc 48 cut EX.1b: the exchange at the venue.
     #[test]
@@ -1660,6 +2385,40 @@ mod tests {
                 .replace("{tonnes}", "20.0")
                 .replace("{owed}", "1,234,567.89 cr");
             assert!(filled.chars().count() < 120, "venue::{name}: {filled}");
+        }
+    }
+
+    // The owner's 2026-11-17 ruling: the way back to a Co-op Dray.
+    #[test]
+    fn coop_needles_are_in_step() {
+        in_step("coop", &coop_rows());
+    }
+    #[test]
+    fn coop_needles_are_distinct() {
+        distinct(&qualified("coop", coop_rows()), &[]);
+    }
+    /// Every Co-op sentence fits the 120-column floor with a long ship name, the mark, the desk
+    /// and the port filled in, one sentence at a time (of the registrar's line, its last).
+    #[test]
+    fn coop_sentences_fit_120_columns() {
+        for (name, sentence, _) in coop_rows() {
+            let filled = sentence
+                .replace("{name}", "Patience Wen of Kirkwood")
+                .replace("{mark}", "FPC-D-0408")
+                .replace("{office}", "Registry & Co-op Desk")
+                .replace("{port}", "Ceres Freeport")
+                .replace("{buyout}", "90,000.00cr")
+                .replace("{countersign}", "Ilse Oduya-Brandt");
+            // The registrar's line is several sentences; only its last is this ruling's.
+            let lines: Vec<&str> = filled.split_inclusive(". ").collect();
+            let checked: Vec<&str> = if name == "REGISTRAR_LINE" {
+                lines.last().copied().into_iter().collect()
+            } else {
+                lines
+            };
+            for line in checked {
+                assert!(line.chars().count() < 120, "coop::{name}: {line}");
+            }
         }
     }
 

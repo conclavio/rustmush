@@ -3,11 +3,11 @@
     "id": "region.limbo",
     "version": 2,
     "kind": "region",
-    "digest": "46beb771027b8fa0e4056d9374259f4a32321c8b308aeb0e721c737b7b1cc94e",
+    "digest": "5555c18076ffccedf400959faf2fbc8258bb5eca8e0cb075d27c63d6cee7d11a",
     "requires": []
   },
   "brief": {
-    "prose": "The Lot: a four-hundred-metre square of studio back lot, flat and paved, with a raised loading dock behind the lobby building. Two neighborhoods stand on it — the OOC Area by the south gate and the Staff Lobby in the north-east — joined by the studio tour, a bus loop past the security gate and the water tower. It is the first content of every fresh world: where newcomers arrive, learn the commands, and meet the staff.",
+    "prose": "The Lot: a four-hundred-meter square of studio back lot, flat and paved, with a raised loading dock behind the lobby building. Two neighborhoods stand on it — the OOC Area by the south gate and the Staff Lobby in the north-east — joined by the studio tour, a bus loop past the security gate and the water tower. It is the first content of every fresh world: where newcomers arrive, learn the commands, and meet the staff.",
     "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
     "answers": {
       "q.scale": "one lot, walkable end to end",

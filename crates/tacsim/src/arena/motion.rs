@@ -2205,7 +2205,7 @@ mod tests {
         }
         assert!(
             poses.iter().all(|end| *end == (3_999, true)),
-            "the tank is held at the same centimetre at every partition: {poses:?}"
+            "the tank is held at the same centimeter at every partition: {poses:?}"
         );
         assert!(
             counts.iter().all(|count| count.1 == 1),
@@ -2527,7 +2527,7 @@ mod tests {
         assert_eq!(
             Clock::substep_ms(&cfg, 1_000, 5_000),
             199,
-            "the bound is one centimetre short of a cell"
+            "the bound is one centimeter short of a cell"
         );
         assert_eq!(
             Clock::substep_ms(&cfg, 1_000, 4_999),
@@ -2683,7 +2683,7 @@ mod tests {
             assert_eq!(
                 arena.unit(A).map(|unit| unit.carry),
                 Some(crate::arena::state::MotionCarry::default()),
-                "{cause:?}: a refused substep banked what it never travelled"
+                "{cause:?}: a refused substep banked what it never traveled"
             );
         }
 
@@ -2922,7 +2922,7 @@ mod tests {
         assert_eq!(
             (held.carry.east, held.carry.north),
             (0, 0),
-            "a hold banked a fraction of a centimetre it was clamped back out of"
+            "a hold banked a fraction of a centimeter it was clamped back out of"
         );
         assert!(
             held.speed_cms > 111,

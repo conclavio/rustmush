@@ -1,13 +1,13 @@
 # The atlas
 
-The atlas is the game's map: every place has geometry — a region in metres, the
+The atlas is the game's map: every place has geometry — a region in meters, the
 neighborhoods on it, the sites and buildings in them, and the footprint of every
 room — and the map is drawn from that geometry, filtered for you. It is a map,
 not a hint: a room you may not enter is not on your map unless you are standing
 in it or you are staff.
 
   +atlas             the neighborhood you are in: a text map, north up, five to
-                     ten metres a character, then its rooms and who is in them
+                     ten meters a character, then its rooms and who is in them
   +atlas <place>     a neighborhood by name
   +atlas/region      the region: neighborhoods, corridors and checkpoints
 

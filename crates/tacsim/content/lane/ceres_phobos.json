@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 38,
+    "version": 40,
     "kind": "campaign_seed",
-    "digest": "3e569568d289eb5ccf2523d418a7d545d5b7ff5ac5aec2978f56e83e8a308ff8",
+    "digest": "80a752d67beb2de7c7d15e14d2a5f69c7c95fbd64eedf2db9bec3d03ab7bc178",
     "requires": []
   },
   "entries": {
@@ -2857,7 +2857,11 @@
         "works": { "room": "neighborhood.ceres_freeport.room.c15_maintenance", "operator": "freeport_works",
                    "capabilities": ["tacsim.works"], "slots": 2, "customers": "public",
                    "cost": { "capital_major": 3000000, "lifetime_years": 25, "upkeep_permille": 20,
-                             "staff": 8, "wage_major": 150, "margin_permille": 250 } }
+                             "staff": 8, "wage_major": 150, "margin_permille": 250 } },
+        "yard": { "room": "neighborhood.ceres_freeport.room.c01_berth_gallery", "operator": "freeport_works",
+                  "capabilities": ["tacsim.yard"], "slots": 2, "customers": "public",
+                  "cost": { "capital_major": 5000000, "lifetime_years": 30, "upkeep_permille": 20,
+                            "staff": 8, "wage_major": 150, "margin_permille": 250 } }
       }
     },
     "stickney_port": {
@@ -2888,9 +2892,11 @@
           { "org": "kasei", "storefront": "neighborhood.stickney_yards.item.kasei_manifold",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.achterberg",
             "stock": [ { "good": "structural_alloys", "qty": 7000, "grade": 50, "issue": 1 },
-                       { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
+                       { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 },
+                       { "good": "strategic_ore", "qty": 120, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "structural_alloys", "price_major": 450, "boards": ["exchange"] },
-                       { "good": "propellant", "price_major": 60, "boards": ["exchange"] } ],
+                       { "good": "propellant", "price_major": 60, "boards": ["exchange"] },
+                       { "good": "strategic_ore", "price_major": 850, "boards": ["exchange", "yard"] } ],
             "bids":  [ { "good": "metals", "price_major": 280, "intake": 4000, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 40, "cap": 4000 } },
                        { "good": "volatiles", "price_major": 200, "intake": 9600, "boards": ["receiving", "exchange"] } ],
             "mill":  [ { "kind": "refine", "ore": "metals", "into": "structural_alloys", "ratio": { "ore": 5, "product": 4 }, "batch_t": 20, "per_ic_day_t": 40 } ] },
@@ -2904,7 +2910,8 @@
                        { "good": "carbon_ore", "qty": 20, "grade": 50, "issue": 1 },
                        { "good": "torpedo", "qty": 8, "grade": 50, "issue": 1 },
                        { "good": "spinal_round", "qty": 48, "grade": 50, "issue": 1 },
-                       { "good": "pd_box", "qty": 12, "grade": 50, "issue": 1 } ],
+                       { "good": "pd_box", "qty": 12, "grade": 50, "issue": 1 },
+                       { "good": "instrument_boards", "qty": 120, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "industrial_parts", "price_major": 520, "boards": ["exchange", "yard"] },
                        { "good": "ammo_ap_30", "price_major": 12, "boards": ["yard"] },
                        { "good": "ammo_ball_762", "price_major": 25, "boards": ["yard"] },
@@ -2912,7 +2919,8 @@
                        { "good": "ammo_missile", "price_major": 1500, "boards": ["yard"] },
                        { "good": "torpedo", "price_major": 4000, "boards": ["yard"] },
                        { "good": "spinal_round", "price_major": 600, "boards": ["yard"] },
-                       { "good": "pd_box", "price_major": 250, "boards": ["yard"] } ],
+                       { "good": "pd_box", "price_major": 250, "boards": ["yard"] },
+                       { "good": "instrument_boards", "price_major": 1000, "boards": ["exchange", "yard"] } ],
             "bids":  [ { "good": "strategic_ore", "price_major": 700, "intake": 12, "boards": ["exchange", "yard"], "refresh": { "per_ic_day": 2, "cap": 12 } },
                        { "good": "tacsim.part.plant.light_mk1", "price_major": 4000, "intake": 4, "boards": ["yard"] },
                        { "good": "carbon_ore", "price_major": 60, "intake": 20, "boards": ["exchange", "yard"], "refresh": { "per_ic_day": 2, "cap": 20 } },
@@ -2948,7 +2956,7 @@
                              "staff": 8, "wage_major": 150, "margin_permille": 250 },
                    "buys": [ { "good": "structural_alloys", "vendor": "kasei", "floor": 10, "lot": 5 } ] },
         "yard": { "room": "neighborhood.stickney_yards.room.p12_observation", "operator": "stickney_yards",
-                  "capabilities": ["tacsim.yard"], "slots": 2, "customers": "public",
+                  "capabilities": ["tacsim.yard", "tacsim.yard.heavy"], "slots": 2, "customers": "public",
                   "cost": { "capital_major": 10000000, "lifetime_years": 30, "upkeep_permille": 20,
                             "staff": 12, "wage_major": 150, "margin_permille": 250 } }
       }

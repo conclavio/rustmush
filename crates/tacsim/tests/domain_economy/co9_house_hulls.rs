@@ -77,7 +77,7 @@ async fn co9_a_house_is_seeded_a_hull_and_its_pilot_takes_her_out() {
 
     // A Co-op captain with a charter hull: a player's holding the House's must not touch.
     let captain = pilot(&mut rig, "Charterer", 1);
-    let out = run(&mut rig.tw, captain, "+coop/enrol Long Ox");
+    let out = run(&mut rig.tw, captain, "+coop/enroll Long Ox");
     assert!(out.contains("now the Long Ox"), "{out}");
     let charter_hull = helm(&rig, captain).expect("the captain's charter hull");
     let charter_title = title_of(&rig, charter_hull);

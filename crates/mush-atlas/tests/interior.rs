@@ -276,7 +276,7 @@ fn participant(tw: &mut TestWorld, obj: ObjId) {
                 attached_at: 0,
             },
         )
-        .expect("the behaviour attaches");
+        .expect("the behavior attaches");
 }
 
 /// Plan and apply the shelved pack, returning what staff were told by each.
@@ -471,7 +471,7 @@ fn the_shipped_version_upgrades_a_world_at_version_three_and_moves_nothing() {
     let (planned, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
     assert!(
         planned.contains("19 create, 1 update, 0 retire"),
-        "the upgrade creates the simulator centre, updates only the neighborhood          (its raised room budget), and retires nothing:
+        "the upgrade creates the simulator center, updates only the neighborhood          (its raised room budget), and retires nothing:
 {planned}"
     );
     assert!(

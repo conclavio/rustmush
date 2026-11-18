@@ -1641,7 +1641,7 @@ fn close_order(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str, release: bool
     ctx.out.sys_to_actor(
         requester,
         "tacsim",
-        format!("The bay order on #{} is cancelled: {note}", record.hull.0),
+        format!("The bay order on #{} is canceled: {note}", record.hull.0),
     );
 }
 
@@ -1662,7 +1662,7 @@ pub fn cancel_order(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
     if record.owed.is_some() {
         return Err(SETTLING.to_owned());
     }
-    close_cancelled(ctx, record, "cancelled by order");
+    close_cancelled(ctx, record, "canceled by order");
     Ok(())
 }
 
@@ -2065,10 +2065,13 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                 strip::land_mint(ctx, hull, owed.by, why, lots);
                 // Doc 39 cut IN.8: a workshop scrap's or a return's lots are the operator's,
                 // and its credit and shop bale land with them.
+                // Doc 48 cut EX.3: into the holder's scrap vault, which the workshop buys on the
+                // board as the mint lands.
                 let into = if let Some(settle) = settle {
                     scrap::land(ctx, hull, owed.act, owed.by, settle);
                     format!(
-                        "the workshop's stores, and {} is paid to you",
+                        "your scrap at {}, which the workshop buys for {}",
+                        settle.venue,
                         crate::port::board::money(
                             ctx.w,
                             mush_economy::Amount::from_minor(
@@ -2186,7 +2189,7 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                     hull = hull.0,
                     act = owed.act,
                     op = kind.word(),
-                    "tacsim: a bay act (a hot flag, a cancelled order's release or a part \
+                    "tacsim: a bay act (a hot flag, a canceled order's release or a part \
                      commission) was refused every try and was not written; staff write it by \
                      hand"
                 );
@@ -2236,6 +2239,15 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         .unwrap_or_default();
     for hull in owing {
         settle(ctx, hull);
+    }
+    // Doc 48 cut EX.3: a landed scrap's or return's next row, sold on the board.
+    let selling = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(TacsimStore::bay_selling_hulls)
+        .unwrap_or_default();
+    for hull in selling {
+        scrap::sell_step(ctx, hull);
     }
     if ctx.w.world_timeline().freeze().is_some() {
         return;

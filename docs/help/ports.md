@@ -1,9 +1,9 @@
 # Ports
 
 The corridor has five ports. **Ceres Freeport** is the Belt's market: the
-Co-op's Registry desk, the Exchange, the chandlery and the berths. **Stickney
-Yards** sits on Phobos above Mars: the Yard builds hulls, and Kasei Metals buys
-what the Belt ships in. **Aitken Highport** is the Concord's civil anchorage in
+Co-op's Registry desk, the Exchange, the chandlery, the berths, and Freeport
+Works' yard for the light hulls. **Stickney Yards** sits on Phobos above Mars:
+the Yard builds every hull, and Kasei Metals buys what the Belt ships in. **Aitken Highport** is the Concord's civil anchorage in
 low polar orbit over Luna: the Belt's concentrate and ice come up to it, and
 lunar alloy and the basin fabs' instrument boards leave it. **Voltaire
 Anchorage** is the Republic's bonded anchorage on Deimos, over the Republic
@@ -64,7 +64,9 @@ You walk it by its exit words. From Arrivals:
   arrivals      back to Arrivals from the desk or the concourse
   lobby         (from Arrivals) the Pressure Lobby
   gallery       (from the lobby) the Visiting Berth Gallery, where the Drays
-                are cradled
+                are cradled; Freeport Works' yard builds the light hulls here
+                (the Dray, the Dray-P and the four rigs; `+yard`), and Stickney
+                builds the heavy ones
 
 ## Stickney Yards
 
@@ -211,7 +213,7 @@ registry marks, registered title and agent, and public clearance status. A priva
 registry stays unnamed. The berth field names the gallery; registry marks tell
 hulls apart.
 
-At the dockmaster or harbourmaster, `look` also shows filed departures and the
+At the dockmaster or harbormaster, `look` also shows filed departures and the
 origin port's underway sailings. FILED is a scheduled departure awaiting clearance;
 CLEARED has a frozen passage and arrival estimate; OVERDUE is a runnable departure
 whose hour has passed. IDLE means no current public clearance. A captain's cargo

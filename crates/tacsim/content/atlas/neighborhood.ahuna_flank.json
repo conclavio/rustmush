@@ -3,7 +3,7 @@
     "id": "neighborhood.ahuna_flank",
     "version": 1,
     "kind": "neighborhood",
-    "digest": "9540fa38dd76ba938a3a0ec8eff9908cb17a892123fdcc65df07617781d72614",
+    "digest": "e30fa62c389ba5492600d9695dc6514e6e47a645a8831449475240de8dcd8bc8",
     "requires": [
       {
         "id": "region.ahuna_flank",
@@ -93,7 +93,7 @@
       "def": {
         "name": "Ahuna Flank Pad",
         "short_desc": "A cleared landing square on the lower slope of Ahuna Mons, the mountain's bright streaks rising to the north.",
-        "desc": "The pad is cut into the slope and levelled with fused regolith, tie-down rings around its edge and the Registry number FR-22 painted in its middle. Uphill to the north the flank of Ahuna Mons climbs steeply, streaked with bright salt that runs down its sides in long fingers. Downhill the ground breaks into blocks and rubble the mountain has shed. The light off the streaks is hard and white. The horizon to the south is close and stony.",
+        "desc": "The pad is cut into the slope and leveled with fused regolith, tie-down rings around its edge and the Registry number FR-22 painted in its middle. Uphill to the north the flank of Ahuna Mons climbs steeply, streaked with bright salt that runs down its sides in long fingers. Downhill the ground breaks into blocks and rubble the mountain has shed. The light off the streaks is hard and white. The horizon to the south is close and stony.",
         "surface": "ground",
         "footprint": {
           "rect": [

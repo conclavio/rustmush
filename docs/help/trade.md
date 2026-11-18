@@ -7,7 +7,7 @@ buy what Ceres wants (the Yard's crated fittings and alloy stock), bunker for
 the return, and fly home to sell again. Each sale pays you the price less the
 Co-op's share of the margin (`help coop`); everything else you spend is yours.
 
-That is the shuttle, the programme's first run. Past it the lane runs to three
+That is the shuttle, the program's first run. Past it the lane runs to three
 ports on the moons — Aitken Highport over Luna, Voltaire Anchorage on Deimos and
 Ligeia Terminal over Titan (`help ports`) — and two longer runs, the ring and
 the Titan expedition, below.
@@ -19,7 +19,7 @@ good — concentrate, alloy, carbon billet — weighs the hold out long before i
 fills it; a bulky good — ice, crated fittings, crated instrument boards — fills
 it long before it weighs it out. A hold of
 either alone wastes the other limit. On these routes the bulky good tends to pay
-more margin per tonne and the dense good more per cubic metre, so neither alone
+more margin per tonne and the dense good more per cubic meter, so neither alone
 is best: the best full load mixes the two so that both limits are met at once.
 How much of each depends on the prices of the day, so it moves when they do.
 
@@ -43,7 +43,7 @@ port keeps back the money the next departure needs (`help orders`).
 
 Prices are the boards' (`help ports`): they are posted by each house, they move
 when the houses move them, and stock and intake are finite. Read them where you
-stand with `+market/list`; `+market/depth <catalogue>:<code>` gives the public
+stand with `+market/list`; `+market/depth <catalog>:<code>` gives the public
 picture of one good.
 
 ## A worked two legs

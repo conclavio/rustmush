@@ -195,6 +195,9 @@ pub(crate) fn core_her(world: &mut M8World) -> (ObjId, ObjId) {
     );
     // The core: a preview, then the order.
     let before = credit(world, captain).1;
+    // Doc 48 cut EX.4: her own Dray at Ceres owes her berth while the shop works.
+    let me = PrincipalId::Object(captain);
+    let berth_before = crate::driving_rig::berth_paid(world.rig.tw.world(), &me);
     let preview = run(&mut world.rig.tw, captain, "+core/buy II");
     assert!(preview.contains("8000.00cr"), "{preview}");
     assert_eq!(credit(world, captain).1, before, "a preview pays nothing");
@@ -223,7 +226,9 @@ pub(crate) fn core_her(world: &mut M8World) -> (ObjId, ObjId) {
     assert!(heard.contains(head(CORE_DELIVERED)), "{heard}");
     assert_eq!(
         credit(world, captain).1,
-        before - CoreClass::II.finished_minor(),
+        before
+            - CoreClass::II.finished_minor()
+            - (crate::driving_rig::berth_paid(world.rig.tw.world(), &me) - berth_before),
         "the core's price"
     );
     let core = cores_in_hand(world, captain)[0];
@@ -252,6 +257,7 @@ pub(crate) fn core_her(world: &mut M8World) -> (ObjId, ObjId) {
     );
     let _ = run(&mut world.rig.tw, captain, "+ship/leave");
     let paid = credit(world, captain).1;
+    let berth_paid = crate::driving_rig::berth_paid(world.rig.tw.world(), &me);
     let preview = run(
         &mut world.rig.tw,
         captain,
@@ -275,7 +281,8 @@ pub(crate) fn core_her(world: &mut M8World) -> (ObjId, ObjId) {
     assert!(heard.contains(head(CORE_FITTED)), "{heard}");
     assert_eq!(
         credit(world, captain).1,
-        paid - mush_economy::core_refit::FITTING_MINOR,
+        paid - mush_economy::core_refit::FITTING_MINOR
+            - (crate::driving_rig::berth_paid(world.rig.tw.world(), &me) - berth_paid),
         "the fitting fee"
     );
     (core, hull)
@@ -357,9 +364,9 @@ fn co6_the_shop_fits_only_her_own_ship_at_the_shop() {
     );
 }
 
-/// **Doc 48 cut EX.2: a hull with a governed core fitted is not listed, for now.** Her core
-/// changes hands only through its own sale, which is not open, and the refusal says so; nothing
-/// is listed.
+/// **Doc 48 cut EX.2: a hull with a governed core fitted is not listed on the exchange.** Since
+/// doc 48 unit EX.2b she sells only with her core, by her seller's private offer
+/// (`+core/offer`), and the refusal says so; nothing is listed.
 #[test]
 fn ex2_a_hull_with_a_governed_core_fitted_is_not_listed_yet() {
     let mut world = world();
@@ -373,7 +380,10 @@ fn ex2_a_hull_with_a_governed_core_fitted_is_not_listed_yet() {
         captain,
         &format!("+market/post #{} price=5000000", hull.0),
     );
-    assert!(out.contains(tacsim::port::hull_sale::HULL_CORED), "{out}");
+    let routed = tacsim::port::hull_sale::HULL_CORED
+        .replace("{name}", "Salt Moth")
+        .replace("{n}", &hull.0.to_string());
+    assert!(out.contains(&routed), "{out}");
     // Nor is the core itself listed: a governed core sells only in its own family.
     let out = run(
         &mut world.rig.tw,

@@ -51,7 +51,7 @@ Profile fields (`@agent/set <npc>/<field>=<value>`):
   interfaces      Registered services this NPC can use for the asker
                   (";"-separated provider ids, e.g. help; coop).
   command_refs    Registered command names or aliases whose public help grounds
-                  the NPC's advice (";"-separated, e.g. +coop; +licence).
+                  the NPC's advice (";"-separated, e.g. +coop; +license).
   public_faction  A public faction id or name: the organization this NPC openly
                   represents. Empty clears it. Separate from the private intel
                   principal; grants no membership or intel clearance.
@@ -67,18 +67,18 @@ arguments. At most eight references are accepted. Missing commands are omitted;
 staff-only help never enters conversational guidance, even when staff are asking.
 Advice does not execute a command or bypass its normal eligibility checks.
 
-Travellers can also use the `passenger` service to discuss a real passage and
+Travelers can also use the `passenger` service to discuss a real passage and
 quote a fare. The captain accepts the exact quote and arranges boarding;
 conversation alone does neither. See [Passengers](passengers.md) for Leila at
-Stickney's Shift Board, Nadia at Ceres's Slack Line and the reusable traveller
+Stickney's Shift Board, Nadia at Ceres's Slack Line and the reusable traveler
 content template. Their service reports current availability after booking or
-arrival; a quest never resets a traveller.
+arrival; a quest never resets a traveler.
 
 The `help` service can look up command names and aliases as well as prose topics.
 Command help is sent privately to the asker and uses that player's permissions.
 
 At the Ceres Registry, Ilse Oduya-Brandt can privately read your current Co-op
-terms and statement, explain enrolment and buyout, and point to licence, claim,
+terms and statement, explain enrollment and buyout, and point to license, claim,
 registry and survey commands. She keeps her numbered, form-proud manner; the
 player signs and submits forms. Survey commissions belong to Occator's desk.
 Private figures are read afresh and never enter her reusable working memory.
@@ -121,7 +121,7 @@ An NPC knows things two ways. **Episodic** memory is what it remembers
 *experiencing* — what was said and what it observed. The `remember` tool adds
 subjective beliefs; the rolling summary compresses conversation. **World** (or semantic) knowledge is what
 it knows by virtue of *who and where it is* — a bartender knows the local streets;
-the simulator's docent knows the centre — whether or not it has ever met you.
+the simulator's docent knows the center — whether or not it has ever met you.
 World knowledge is authored by staff; episodic memory accrues in play.
 
 For an ongoing conversation, address the NPC once by name. Follow-up speech from
@@ -192,7 +192,7 @@ small observational errand to the captain who brought her home. Use
 `+quest Leila` and `help quests`; dialogue alone never accepts or completes the work.
 
 At Ceres, Ilse, Dov, Yusra and Rosalind also offer independent introductions to
-Co-op enrolment, a small fittings trade, meeting Nadia and ordinary surface
+Co-op enrollment, a small fittings trade, meeting Nadia and ordinary surface
 readings. Ask `+quest/offer <giver>` at their desk or bar. Each verified completion
 grants +10 personal trust and +5 disposition with that giver once, without extra
 credits or faction standing. These are optional invitations: every underlying
@@ -387,7 +387,7 @@ Anchorage and Ligeia Terminal — the clerks, agents and officers are NPCs of th
 kind. They answer questions about their port, their house and the
 trade in character, and their names sign their houses' business: each line on a
 board names the clerk who signs for it, and a sale line names who countersigns.
-They never move money or goods themselves — every purchase, sale and enrolment
+They never move money or goods themselves — every purchase, sale and enrollment
 is a command you type, and with the model off their fallback lines name those
 commands. The principals behind the houses are on record and never wake: they
 are major NPCs that ship parked. A server whose `mushd.toml` sets
@@ -415,7 +415,7 @@ into a proposal, its status, its questions), `rules` (character generation,
 a rules topic), `request` (file a request, your own tickets), `help` (a
 help topic). Talk to the NPC and it answers through them.
 
-An authored traveller may also have `passenger` (passage status and fare offers)
+An authored traveler may also have `passenger` (passage status and fare offers)
 and `quest` (the current asker's follow-up invitation and progress). The player
 accepts and performs these actions through `+passage` and `+quest`. A quest
 service's private answer is not shared with bystanders or retained as public

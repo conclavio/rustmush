@@ -43,6 +43,26 @@ made on it does not settle, and its price goes back to the buyer a day later.
 When the sale settles her title passes to the buyer, and her hold goes with
 her.
 
+## Listing a facility
+
+`+market/post #<facility> price=<n> [to=<player>] [market=<venue>] [days=<n>] [as=<org>]`
+
+lists a port's refinery, works or yard whose title you hold, or with `as=<org>`
+one an organization you act for holds; the organization is paid. It is sold only
+when idle: no order open there and nothing in its stores. The relay foundry,
+the workshops and the medical rooms are not for sale, nor is a facility whose
+stores a vendor trades from.
+
+When the sale settles, the facility passes to the buyer with its stores, and
+its takings are paid to the buyer from then on. The buyer sets who may order
+there and its margin with `@facility/terms <facility>=public|owner
+[margin=<permille>]`. Its running costs stay as it was built. A sold yard
+stays open to every customer.
+
+A fee is fixed when an order is booked. If the owner raises it before the work
+starts, the order is canceled, and its booking fee and bill go back to the
+customer.
+
 ## Posting a bid
 
 `+market/bid <ruleset>:<code> qty=<n> price=<n> into=<vault> [to=<player>] [market=<venue>] [days=<n>]`
@@ -83,13 +103,115 @@ there. It need not be your first hull, only one whose hold you may trade from.
 
 With no hull of yours docked there, it goes into your locker at that market.
 `+locker/open` opens one where you stand, and `+locker` shows what it holds and
-owes. A locker holds 20 t and 40 m3, and owes 1 cr an IC day for each tonne
-it holds. Nothing collects that yet.
+owes. A locker holds 20 t and 40 m3, and costs 1 cr an IC day for each tonne
+it holds, taken from your own account. A day you cannot pay is owed as arrears,
+and paid once your account is funded.
 
 A market that belongs to no port, such as a counter, trades only with people
 standing at it.
 
 ## Chartered cargo
 
-Goods in a Co-op chartered hold cannot go on a personal ask yet. Sell them
-into a house's bid instead, which pays the Co-op its share.
+Goods in a Co-op chartered hold may go on a personal ask. When they sell, the
+Co-op takes its share of the margin over its reference price, as it does on a
+sale into a house's bid, and you are paid the rest.
+
+## Fees
+
+At a port, the port's authority takes a listing fee of 1% of what you list (at
+least 10 cr), once, when you post it, and 3% of each sale. A further 1% of each
+sale is a levy to the port's treasury. A house's own listings pay none of these.
+
+## Berths
+
+A hull docked at a port with an authority owes it 5 cr an IC day, from her
+title holder's account. A day you cannot pay is owed as arrears, and paid once
+your account is funded; a long absence stops adding to it after about ten real
+days. Arrears never keep a hull at her berth, but they are paid out of her next
+sale at that port. A house's own hulls at their home port owe nothing.
+
+## The job board
+
+  +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]
+
+Lists the jobs posted at the port you stand in, or at the market you name.
+Each job says what it pays, any bond you would escrow, when it is due, and the
+command that takes it:
+
+- **Retrieval:** bring a hull to a port for its title holder. Take it with
+  +salvage/accept. You then have the retrieval window to deliver her.
+- **Passage:** carry a waiting traveler to their destination. The fare shown is
+  their opening offer; +passage/offer opens the haggling. The fare is paid on
+  arrival.
+- **Survey:** Occator's commissions for fresh soundings of one block. Take one
+  with +survey/accept; you have 28 IC days from accepting.
+- **Crew:** a player offering to crew for a wage, while they stand in the port.
+  The pay shown is the scale wage they ask, by the IC day; page them to agree
+  terms. List yourself with +sortie/available (see help detachments).
+- **Haul:** carry a shipper's goods from their locker here to their locker at
+  another port. Take one with +haul/accept while your hull is docked here; you
+  have 28 IC days from accepting.
+- **Escort:** stay near a hull through her passage or her field sortie. Take
+  one with +escort/accept and the hull or rig you escort with.
+
+A job paying more than 10,000 cr asks for a bond of a fifth of its pay. The bond
+is escrowed from your account when you take the job. It comes back with the pay
+when the work is done, and goes to the poster if the work is not done in time.
+
+To take a retrieval for your organization, add as=<org>:
++salvage/accept <job> as=<org> go. You need the right to spend the
+organization's money. The pay goes to its account, and its bond comes from
+there.
+
+## House prices
+
+A house's ask and bid move with its stock, once an IC week (seven real hours).
+An ask whose storefront runs short rises, and one that holds more than its
+usual stock falls. A bid falls as it fills, and rises again when the house
+wants more. Each step is at most 5% of the price, and a price stays between half
+and twice the house's authored price. A bid's reach premium, for a port that is
+far from its suppliers, is added on top.
+
+A house that has gone into debt raises its asks 10% an IC week, whatever its
+stock, and stops posting bids until it is solvent again.
+
+In real time, a price moves at most about 22% in a real day (four steps).
+From the usual price it can reach the ceiling or the floor in about four real
+days.
+
+  +market/history <catalog>:<code> [market=<venue>]
+
+Shows a house's ask and bid for a good at this venue, an IC week a row, newest
+first, for the last 24 IC weeks (about a real week). A good reads as
+tacsim:<good>, for example +market/history tacsim:metals.
+
+## Hauls
+
+  +haul/post <qty> <good> to=<port> fee=<cr> [value=<cr>] [go]
+
+Posts a job to carry goods from your locker at this port to your locker at
+another. The fee is escrowed from your account and paid on delivery. You
+declare the goods' value, at most their reference price; the hauler escrows a
+bond of a quarter of it, which is yours if the goods are not delivered.
+
+  +haul/accept <job> [as=<org>] [go]
+
+Takes a haul with your hull docked at its origin. The goods load into your
+hold held for the job: you cannot sell, burn or move them. Deliver them with
++haul/deliver <job> go at the destination within 28 IC days, and the fee and
+your bond follow. Goods still aboard when the term ends go back to the
+shipper at your next port. +haul lists your hauls; +haul/withdraw takes back
+one nobody has taken.
+
+## Escorts
+
+  +escort/post <hull> to=<port> fee=<cr> [go]
+  +escort/post <hull> field=<site> fee=<cr> [go]
+
+Posts a job to escort your hull on her next passage from the port she lies at,
+or on her next sortie in a field. Whoever takes it with +escort/accept <job>
+with=<hull> must stay near her for nine tenths of the journey: on the same
+passage or in the same bubble in space, in the same field in a sortie. A link
+drop inside the linkdead grace does not count against the escort. The job
+fails if she is wrecked or captured, or the escort leaves her. +escort lists
+your escorts.

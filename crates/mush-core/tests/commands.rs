@@ -444,12 +444,12 @@ fn building_verbs_refuse_a_kernel_command_word_for_an_exit() {
 fn desc_and_look_detail() {
     let mut g = Game::new();
     let ann = g.ann;
-    let out = g.run(GOD, "@desc here=A quiet grey void.");
+    let out = g.run(GOD, "@desc here=A quiet gray void.");
     assert_error_contains(&out, GOD, "Set.");
     let out = g.run(ann, "look");
     assert!(out.events().iter().any(|(_, e)| matches!(
         e,
-        OutputEvent::Room(rv) if rv.desc.to_plain_text() == "A quiet grey void."
+        OutputEvent::Room(rv) if rv.desc.to_plain_text() == "A quiet gray void."
     )));
     // look <keyword> via detail: attributes on the room.
     g.run(GOD, "@set here/detail:mist=Curls of silver mist.");
@@ -461,7 +461,7 @@ fn desc_and_look_detail() {
     // 16b cut D.5: with no module composed, no detail prefix is registered and
     // `look` behaves exactly as it always did — a namespaced detail attribute
     // is nobody's keyword.
-    g.run(GOD, "@set here/atlas:detail:fog=A grey haze.");
+    g.run(GOD, "@set here/atlas:detail:fog=A gray haze.");
     let out = g.run(ann, "look fog");
     assert_error_contains(&out, ann, "I don't see that here.");
 }
@@ -2258,4 +2258,61 @@ fn set_flag_refuses_a_missing_attribute_an_unknown_name_and_the_object_form() {
     assert_error_contains(&out, ann, "object flag, not an attribute flag");
     assert!(!g.w.get(ann).unwrap().flags.contains(Flags::DARK));
     assert!(attr_flags(&g, ann, "diary").is_empty());
+}
+
+/// **A switch alias** (2026-11-17, the US-spelling renames): a typed `/alias`
+/// passes the switch gate and reaches the handler as its canonical switch, the
+/// registry refuses an alias row that names no switch or shadows one, and the
+/// help header lists the alias.
+#[test]
+fn a_switch_alias_reaches_the_handler_as_its_canonical_switch() {
+    use mush_core::{CommandSpec, Ctx, RegistryError};
+    use std::sync::Arc;
+
+    let spec = |aliases: Vec<(&str, &str)>| CommandSpec {
+        name: "+sign".into(),
+        switches: vec!["enroll".into(), "list".into()],
+        switch_aliases: aliases
+            .into_iter()
+            .map(|(alias, canonical)| (alias.into(), canonical.into()))
+            .collect(),
+        ..CommandSpec::default()
+    };
+    let echo = || {
+        Arc::new(|ctx: &mut Ctx<'_>| {
+            let seen: Vec<&str> = ctx.switches.iter().collect();
+            ctx.out
+                .info(ctx.actor, format!("switches: {}", seen.join(",")));
+            Ok(())
+        })
+    };
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.reg
+        .register(spec(vec![("enrol", "enroll")]), echo())
+        .expect("a well-formed alias registers");
+    for line in ["+sign/enroll", "+sign/enrol", "+sign/ENROL"] {
+        let out = g.run(ann, line);
+        assert_eq!(actor_texts(&out, ann), vec!["switches: enroll"], "{line}");
+    }
+    let out = g.run(ann, "+sign/enrolment");
+    assert_error_contains(&out, ann, "Unknown switch \"/enrolment\"");
+
+    let mut reg = Registry::new();
+    assert!(matches!(
+        reg.register(spec(vec![("enrol", "join")]), echo()),
+        Err(RegistryError::SwitchAlias(_))
+    ));
+    assert!(matches!(
+        reg.register(spec(vec![("list", "enroll")]), echo()),
+        Err(RegistryError::SwitchAlias(_))
+    ));
+
+    let header = mush_core::commands::info::help_entry(&g.reg, &g.w, ann, "+sign")
+        .expect("+sign has help")
+        .header;
+    assert!(
+        header.contains("(switch aliases: /enrol = /enroll)"),
+        "{header}"
+    );
 }

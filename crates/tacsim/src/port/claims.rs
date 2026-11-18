@@ -120,7 +120,7 @@ pub const REGISTRAR_CLAUSE: &str = " The Registrar suspends the {paper}'s paper 
 pub const RENEW_SHORT: &str = "Block {block} at {site}: worked {worked} of {floor} t this term, so it cannot be renewed; it lapses at {until}.";
 /// Short of the Registrar's floor: `{block}`, `{site}`, `{worked}`, `{floor}`, `{paper}`,
 /// `{until}`.
-pub const RENEW_PAPER_SHORT: &str = "Block {block} at {site}: worked {worked} of {floor} t this term; the Registrar honours only worked ground, so the {paper}'s paper stands and your claim lapses at {until}.";
+pub const RENEW_PAPER_SHORT: &str = "Block {block} at {site}: worked {worked} of {floor} t this term; the Registrar honors only worked ground, so the {paper}'s paper stands and your claim lapses at {until}.";
 /// The renewal filed: `{block}`, `{site}`, `{fee}`.
 pub const RENEW_FILED: &str =
     "You renew block {block} at {site}; {fee} is held until the Registry records it.";
@@ -983,7 +983,7 @@ pub(crate) fn plan_claim(
     now: i64,
 ) -> Result<ClaimPlan, String> {
     let registry = registry_info(w).ok_or_else(|| {
-        tracing::error!("tacsim: the Registry's licence port, org or account is not present");
+        tracing::error!("tacsim: the Registry's license port, org or account is not present");
         CLAIMS_FAILED.to_owned()
     })?;
     match ask {

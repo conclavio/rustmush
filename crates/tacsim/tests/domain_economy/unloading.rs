@@ -540,9 +540,13 @@ fn starts<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q Auth
         .collect()
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -561,7 +565,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 fn typed<K, V>(
@@ -597,7 +601,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -2694,8 +2698,8 @@ fn sm8_rights_never_bar_the_way_home_or_the_unload() {
     warm(&mut rig);
     // … the licence reads lapsed, and the lease is forfeit (the store's record, and the lease
     // gate — mining's first — answering for it).
-    let licence = run(&mut rig.tw, p, "+licence");
-    assert!(licence.contains("lapsed"), "the licence lapsed: {licence}");
+    let licence = run(&mut rig.tw, p, "+license");
+    assert!(licence.contains("lapsed"), "the license lapsed: {licence}");
     assert!(
         store(&rig.tw)
             .tv_lease_on(tv)
@@ -3592,13 +3596,13 @@ fn staff_close_releases_a_running_mines_lock_without_yielding_ore() {
     assert!(record_of(&mut rig.tw, tv).is_some_and(|record| record.plan.is_none()));
     assert!(
         land(&mut rig, finishes[0]).is_err(),
-        "the cancelled cycle is stale"
+        "the canceled cycle is stale"
     );
     let cursor = typed(&mut rig.tw, &pockets, &mining.deposit);
     let after = cursor.as_ref().and_then(|cursor| cursor.row(mining.number));
     assert!(
         after.is_none_or(|row| row.lock.is_none()),
-        "the cancelled rig releases its lock"
+        "the canceled rig releases its lock"
     );
     assert_eq!(after.map_or(0, |row| row.drawn_t), before.drawn_t);
     assert_eq!(pool(&mut rig.tw, hop, "metal_ore"), held);

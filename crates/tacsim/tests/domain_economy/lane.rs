@@ -80,7 +80,9 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 48 unit PL.2: v36, the farms, the fab and Titan's carbon mill (was `4db678a2…` at v35).
 /// Doc 48 unit PL.3: v37, Stickney Yards' munitions processes (was `a38bdfa0…` at v36).
 /// Doc 48 unit EX.3: v38, the port orgs' market roles (was `f668f711…` at v37).
-const LANE_DIGEST: &str = "3e569568d289eb5ccf2523d418a7d545d5b7ff5ac5aec2978f56e83e8a308ff8";
+/// Doc 48 unit PL.6: v40, the Ceres yard and Stickney's heavy-yard capability (was `622abacb…` at
+/// v39; `3e569568…` at v38).
+const LANE_DIGEST: &str = "80a752d67beb2de7c7d15e14d2a5f69c7c95fbd64eedf2db9bec3d03ab7bc178";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -344,7 +346,7 @@ fn floor_strip_licence_grace_rebuilds_the_published_v29() {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
     assert_eq!(
         doc["entries"]["ceres_port"]["def"]["licence"]["grace_ic_days"], 28,
-        "owner rule, 2026-11-04: the licence's grace is 28 IC days"
+        "owner rule, 2026-11-04: the license's grace is 28 IC days"
     );
     doc["manifest"]["version"] = 29.into();
     doc["manifest"]["digest"] = UNSIGNED.into();
@@ -360,8 +362,48 @@ fn floor_strip_licence_grace_rebuilds_the_published_v29() {
     );
 }
 
-/// **Doc 48 unit EX.3: `strip_roles` rebuilds the published v37** — the shipped v38 less the
-/// port orgs' market roles, re-signed at 37, is PL.3's lane digest.
+/// **Doc 48 unit PL.6: `strip_ceres_yard` rebuilds the published v39** — the shipped v40 less
+/// Ceres's yard and Stickney's heavy-yard capability, re-signed at 39, is PL.5's lane digest.
+#[test]
+fn pl6_strip_ceres_yard_rebuilds_the_published_v39() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 39.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_ceres_yard(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_ceres_yard(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v39 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "622abacb89a45844f1c5b0ceef26dbc58edd361e38e817544fac8682fb3dd145"
+    );
+}
+
+/// **Doc 48 unit PL.5: `strip_escrow_asks` rebuilds the published v38** — the shipped lane less
+/// Ceres's yard (v40) and Kasei's strategic-ore and Stickney Yards' instrument-board stock rows
+/// and asks, re-signed at 38, is EX.3's lane digest.
+#[test]
+fn pl5_strip_escrow_asks_rebuilds_the_published_v38() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 38.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_escrow_asks(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_escrow_asks(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v38 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "3e569568d289eb5ccf2523d418a7d545d5b7ff5ac5aec2978f56e83e8a308ff8"
+    );
+}
+
+/// **Doc 48 unit EX.3: `strip_roles` rebuilds the published v37** — the shipped lane less
+/// Stickney's escrow asks (v39) and the port orgs' market roles, re-signed at 37, is PL.3's lane
+/// digest.
 #[test]
 fn ex3_strip_roles_rebuilds_the_published_v37() {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
@@ -526,8 +568,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        38,
-        "lane v38 since doc 48 unit EX.3 (v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        40,
+        "lane v40 since doc 48 unit PL.6 (v39 at doc 48 unit PL.5, v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
@@ -1622,7 +1664,7 @@ fn sm3a_the_lane_carries_the_refit_row_and_occators_rigs() {
     let Some(PackEntry::Port(ceres)) = pack.entry(&cid("ceres_port")) else {
         panic!("ceres_port is a port entry");
     };
-    let programme = ceres.programme.as_ref().expect("the programme");
+    let programme = ceres.programme.as_ref().expect("the program");
     assert_eq!(
         programme.refits,
         BTreeMap::from([(cid("prospector"), cid("tacsim.unit.dray_p"))])
@@ -1713,15 +1755,15 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
         (
             // Doc 20 cut SM.5: the sentence names the licence block too; doc 36 cut GC.7: and
             // the workshop block; doc 36 cut GC.13: and the medical block.
-            "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and no \
-             vehicles, licence, workshop or medical block; its pad is its gallery",
+            "site: a site authors no orgs, rooms, program, vendors, premium or emergency, and no \
+             vehicles, license, workshop or medical block; its pad is its gallery",
             Box::new(move |doc| {
                 let block = vehicles(doc);
                 doc["entries"]["ahuna_port"]["def"]["vehicles"] = block;
             }),
         ),
         (
-            "programme coop.first_captain: refit `standard` is the programme's own unit and is \
+            "program coop.first_captain: refit `standard` is the program's own unit and is \
              never authored",
             Box::new(|doc| {
                 doc["entries"]["ceres_port"]["def"]["programme"]["refits"] =
@@ -1740,8 +1782,8 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
             }),
         ),
         (
-            "vehicles kasei.rig_lease: port stickney_port authors no programme; rigs are leased \
-             into the programme's hulls",
+            "vehicles kasei.rig_lease: port stickney_port authors no program; rigs are leased \
+             into the program's hulls",
             Box::new(move |doc| {
                 let mut block = vehicles(doc);
                 block["id"] = json!("kasei.rig_lease");
@@ -1775,7 +1817,7 @@ fn sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper() {
     let Some(PackEntry::Port(ceres)) = pack.entry(&cid("ceres_port")) else {
         panic!("ceres_port is a port entry");
     };
-    let licence = ceres.licence.as_ref().expect("the licence block");
+    let licence = ceres.licence.as_ref().expect("the license block");
     assert_eq!(
         (
             licence.fee_major,
@@ -1854,7 +1896,7 @@ fn sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper() {
     assert_eq!(
         mush_content::parse_pack(&v11)
             .expect(
-                "the v11 shape parses (its licence block predates the claim fees, so only its \
+                "the v11 shape parses (its license block predates the claim fees, so only its \
                  bytes are compared)",
             )
             .manifest()
@@ -1932,13 +1974,13 @@ fn sm10_a_paper_naming_no_row_or_the_sites_own_issuer_is_refused() {
             }),
         ),
         (
-            "licence: claim_stake_major must be 1..=1000000, not 0",
+            "license: claim_stake_major must be 1..=1000000, not 0",
             Box::new(|doc| {
                 doc["entries"]["ceres_port"]["def"]["licence"]["claim_stake_major"] = json!(0);
             }),
         ),
         (
-            "licence: claim_term_major must be 1..=1000000, not 1000001",
+            "license: claim_term_major must be 1..=1000000, not 1000001",
             Box::new(|doc| {
                 doc["entries"]["ceres_port"]["def"]["licence"]["claim_term_major"] =
                     json!(1_000_001);

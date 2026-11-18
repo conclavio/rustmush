@@ -120,12 +120,13 @@ use mush_bot::arena::{
         SNAPSHOT_SETTLE_MS, Weapon, bearing_deg,
     },
     pilot::{
-        ENTRY_KEEP_OUT_M, EXCHANGE_MARGIN, EXCHANGE_MIN_TAKEN, EXCHANGE_WINDOW_MS, FOLLOW_BAND_M,
-        FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS, HELD_MARK_AHEAD_M,
-        HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M, HELD_TURN_DEG, HOLD_BOW_DEG, HOLD_SLACK_M,
-        ONE_TRACK_COMMIT_MS, ONE_TRACK_DEADBAND_DEG, OPENING_ARRIVE_M, OPENING_COVER_M,
-        OPENING_ROOM_M, REAPPROACH_MAX_MS, REAPPROACH_OPEN_M, REAPPROACH_WAIT_MS, STALL_MS,
-        UNIDENTIFIED_WAIT_MS, WITHDRAW_MS, clamp_arena, hull_failing,
+        ENTRY_KEEP_OUT_M, EXCHANGE_MARGIN, EXCHANGE_MIN_TAKEN, EXCHANGE_WINDOW_CYCLES,
+        FLOOR_PERCENT, FOLLOW_BAND_M, FRESH_PLOT_MS, FRESH_READ_MS, HEADING_STEP_DEG, HELD_FOR_MS,
+        HELD_MARK_AHEAD_M, HELD_MARK_HALF_WIDTH_M, HELD_MARK_NEAR_M, HELD_TURN_DEG, HOLD_BOW_DEG,
+        HOLD_SLACK_M, LOW_MAGAZINE_FLOOR_PERCENT, ONE_TRACK_COMMIT_MS, ONE_TRACK_DEADBAND_DEG,
+        OPENING_ARRIVE_M, OPENING_COVER_M, OPENING_ROOM_M, Pilot, REAPPROACH_MAX_MS,
+        REAPPROACH_OPEN_M, REAPPROACH_WAIT_MS, STALL_MS, UNIDENTIFIED_WAIT_MS, WITHDRAW_MS,
+        clamp_arena, floor_percent, hull_failing, reserve_rounds,
     },
     report::{self, GapStats},
     settings::{Engagement, Opening, Settings},
@@ -308,6 +309,10 @@ struct Server {
     /// Guns whose rows read `0% to hit` while locked (cut AL.1). Empty unless
     /// a test sets one.
     no_chance: BTreeSet<String>,
+    /// **The chance every other gun's row and the lock line print while
+    /// locked** (the game's doc 49 cut CC.10), per cent: 62 unless a test sets
+    /// it, as every row printed before that cut.
+    chance: u32,
     /// How long a `FIRE`'s answer (its ack or its refusal) takes (cut AL.1):
     /// 3 ms unless a test slows it past a tick, as a remote server may.
     fire_answer_ms: u64,
@@ -458,6 +463,7 @@ impl Server {
             cycling_refusals_at: Vec::new(),
             lost: BTreeSet::new(),
             no_chance: BTreeSet::new(),
+            chance: 62,
             fire_answer_ms: 3,
             ba_at: None,
             pos: (60, 970),
@@ -699,9 +705,9 @@ impl Server {
             None => "ready".into(),
         };
         let chance = match self.locked {
-            Some(_) if self.no_chance.contains(weapon) => "  band 3 of 3  0% to hit",
-            Some(_) => "  band 1 of 3  62% to hit",
-            None => "",
+            Some(_) if self.no_chance.contains(weapon) => "  band 3 of 3  0% to hit".to_owned(),
+            Some(_) => format!("  band 1 of 3  {}% to hit", self.chance),
+            None => String::new(),
         };
         let (left, size) = self.rounds_of(weapon);
         format!("{weapon}{short}  {state}  {left} of {size} round(s){chance}")
@@ -769,20 +775,20 @@ impl Server {
                     self.look_answer_ms,
                     &format!("{room}\nThe room you are in."),
                 ),
-                None => self.say(self.look_answer_ms, "Limbo #0\nA grey place with no edges."),
+                None => self.say(self.look_answer_ms, "Limbo #0\nA gray place with no edges."),
             },
             "ooc" => self.say(3, "Welcome Hall #2\nA bright hall."),
             "simulator" => self.say(3, "Simulator Lobby #50\nThe lobby of the simulator."),
             "SIM STATUS" => {
                 if self.no_centre {
-                    self.say(3, "This server has no simulator centre.");
+                    self.say(3, "This server has no simulator center.");
                 } else {
                     let board = self.board.clone();
                     let red = self.red_row.clone().unwrap_or_else(|| "nobody".into());
                     self.say(
                         3,
                         &format!(
-                            "Simulator centre: {board}\n  red: {red}\n  blue: nobody\n  AI fill: each side fields 1; machines take the unclaimed pods."
+                            "Simulator center: {board}\n  red: {red}\n  blue: nobody\n  AI fill: each side fields 1; machines take the unclaimed pods."
                         ),
                     );
                 }
@@ -872,7 +878,7 @@ impl Server {
                 } else {
                     let mut reply = String::new();
                     if let Some(lock) = &self.locked {
-                        reply.push_str(&format!("Locked on {lock}, 62% to hit.\n"));
+                        reply.push_str(&format!("Locked on {lock}, {}% to hit.\n", self.chance));
                     }
                     reply.push_str(&rows.join("\n"));
                     self.say(3, &reply);
@@ -962,7 +968,8 @@ impl Server {
                 } else if let Some(target) = line.strip_prefix("LOCK ") {
                     self.say(3, &format!("Locking {target}."));
                     self.locked = Some(target.to_owned());
-                    self.say(500, &format!("Locked on {target}, 62% to hit."));
+                    let chance = self.chance;
+                    self.say(500, &format!("Locked on {target}, {chance}% to hit."));
                 } else if let Some(weapon) = line.strip_prefix("FIRE ") {
                     self.fire_lines += 1;
                     *self.fire_lines_by.entry(weapon.to_owned()).or_default() += 1;
@@ -1709,10 +1716,12 @@ fn a_due_fire_beats_a_due_poll() {
             >= 5,
         "the one-a-second ring never bound"
     );
-    // At four a second, every tick that sends the main gun sends it first.
+    // At four a second, every tick that sends the main gun sends it first. Three shots: the
+    // first shot's window above and two of the cannon's cycles (doc 49 unit CC.2: read from the
+    // content, 15 s; the 30 s this ran for held three at the 6 s cannon).
     let mut run = to_the_fight(base());
     sight_a_hostile(&mut run);
-    run.until(30_000, |_| false);
+    run.until(20_000 + 2 * Server::cycle_ms("cannon"), |_| false);
     let fires = run.sends_of("FIRE cannon", 0);
     assert!(fires.len() >= 3, "{fires:?}");
     for fire in fires {
@@ -1899,7 +1908,7 @@ fn the_report_says_won_lost_draw_timeout_and_blocked() {
     assert!(run.until(10_000, |run| run.lane.result().is_some()));
     let result = run.lane.result().expect("a result");
     assert_eq!(result.status, "blocked");
-    assert_eq!(result.outcome, "This server has no simulator centre.");
+    assert_eq!(result.outcome, "This server has no simulator center.");
     assert!(run.lane.report().matches.is_empty());
 }
 
@@ -2895,8 +2904,12 @@ fn a_withdraw_on_a_failing_hull_holds_then_lapses() {
         angle_between(again, 0) <= HOLD_BOW_DEG,
         "holding again after the lapse: {again}"
     );
+    // From the hold's own end, the tick it lapsed in (doc 49 unit CC.2: under the
+    // 15 s cannon the stop goes in that tick, at `first + hold_ms`; at the 6 s
+    // cannon, with more shots claiming the line budget, it went at `lapse` or
+    // after).
     assert_eq!(
-        speed_sends(&run, lapse, run.now)
+        speed_sends(&run, first + hold_ms, run.now)
             .last()
             .map(|(_, kph)| *kph),
         Some(0),
@@ -3115,6 +3128,12 @@ fn both_gaps(run: &Run, from: u64) -> (BTreeMap<String, GapStats>, BTreeMap<Stri
 /// **Full rate** on a rig whose pulse is `pulse_ms`: locked on BA for two
 /// minutes, both cycles read whole; each gun's two gap counts and its
 /// refusals printed. The run and when the two minutes began.
+///
+/// **The game's doc 49 cut CC.10** (Q-49-17): full rate is the clock's
+/// measure, not the pilot's tactic. The rig's 62% and its 200 rounds a gun
+/// keep both guns over the floor and the reserve for the whole two minutes,
+/// so the discipline holds nothing back here. What the discipline holds back
+/// is asserted by the `cc10_` tests.
 fn full_rate(pulse_ms: Option<u64>) -> (Run, u64) {
     let mut run = to_the_fight_with(base(), |server| {
         server.pulse_ms = pulse_ms;
@@ -3206,19 +3225,177 @@ fn full_rate_on_the_arenas_lattice() {
     }
 }
 
+// -- the game's doc 49 cut CC.10: the stock card's discipline ----------------
+
+/// **The shots each gun of a magazine of `size` fires at `chance` before the
+/// discipline holds it**, read through the pilot's own names: from the full
+/// load down, each round while the floor of what is left is at most `chance`
+/// and what is left is over the reserve.
+fn disciplined_shots(size: u32, chance: u32) -> u32 {
+    let shots = (0..size)
+        .map(|spent| size - spent)
+        .take_while(|left| floor_percent(*left, size) <= chance && *left > reserve_rounds(size))
+        .count();
+    u32::try_from(shots).unwrap_or(u32::MAX)
+}
+
+/// The shots `weapon` has had leave the scripted server.
+fn shots_of(run: &Run, weapon: &str) -> u32 {
+    count(&run.server.shots, weapon)
+}
+
+/// **A gun under its floor never fires; at it, it does** (the game's doc 49
+/// cut CC.10, Q-49-17). Locked on BA with every row and the lock line at one
+/// point under [`FLOOR_PERCENT`], for two of the cannon's cycles: no `FIRE` is
+/// typed and no round is spent. The chance moved to the floor, both guns fire.
+#[test]
+fn cc10_a_gun_under_its_floor_never_fires_and_one_at_it_does() {
+    let mut run = to_the_fight_with(base(), |server| {
+        server.chance = FLOOR_PERCENT - 1;
+        server.magazine = Some(200);
+    });
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let locked = run.now;
+    run.until(2 * Server::cycle_ms("cannon"), |_| false);
+    for weapon in GUNS {
+        assert!(
+            run.sends_of(&format!("FIRE {weapon}"), locked).is_empty(),
+            "{weapon} fired under the floor: {:?}",
+            run.lines()
+        );
+        assert_eq!(shots_of(&run, weapon), 0, "{weapon}");
+    }
+    assert!(
+        run.lane
+            .picture()
+            .weapons
+            .iter()
+            .all(|w| w.percent == Some(FLOOR_PERCENT - 1)),
+        "the chance was read: {:?}",
+        run.lane.picture().weapons
+    );
+    run.server.chance = FLOOR_PERCENT;
+    assert!(
+        run.until(2 * Server::cycle_ms("cannon"), |run| {
+            GUNS.iter().all(|weapon| shots_of(run, weapon) > 0)
+        }),
+        "at the floor both fire: {:?}",
+        run.server.shots
+    );
+}
+
+/// **A magazine is fired down to its floor and its reserve, and no further**
+/// (the game's doc 49 cut CC.10, Q-49-17). An eight-round magazine a gun, BA
+/// held at each chance: at [`FLOOR_PERCENT`] each gun stops at half its
+/// magazine, where the floor rises; at [`LOW_MAGAZINE_FLOOR_PERCENT`] it fires
+/// on to its reserve and keeps it, a minute and more past its last shot. No
+/// `FIRE` is ever refused as empty: the magazine is never spent on shots
+/// under the floor.
+#[test]
+fn cc10_a_magazine_is_fired_to_its_floor_and_its_reserve_and_no_further() {
+    const SIZE: u32 = 8;
+    for chance in [FLOOR_PERCENT, LOW_MAGAZINE_FLOOR_PERCENT] {
+        let shots = disciplined_shots(SIZE, chance);
+        assert!(shots > 0, "{chance}%: a shot at least");
+        let mut run = to_the_fight_with(base(), |server| {
+            server.chance = chance;
+            server.magazine = Some(SIZE);
+        });
+        sight_a_hostile(&mut run);
+        assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+        // Every shot allowed, then four cycles more of the slower gun.
+        let enough = u64::from(shots + 4) * Server::cycle_ms("cannon");
+        run.until(enough, |_| false);
+        for weapon in GUNS {
+            assert_eq!(
+                shots_of(&run, weapon),
+                shots,
+                "{chance}%: {weapon}: {:?}",
+                run.server.shots
+            );
+        }
+        assert!(
+            !run.said.iter().any(|s| s.contains("is empty")),
+            "{chance}%: {:?}",
+            run.said
+        );
+    }
+    // The two chances stop at different points: the floor's rise is seen.
+    assert!(
+        disciplined_shots(SIZE, FLOOR_PERCENT)
+            < disciplined_shots(SIZE, LOW_MAGAZINE_FLOOR_PERCENT)
+    );
+}
+
+/// **The reserve answers the unit that fired on the tank** (the game's doc 49
+/// cut CC.10, Q-49-17; `help minds`: "spends them only to answer a unit that
+/// has fired on it"). Fired down to its reserve on BA, the tank holds for two
+/// of the cannon's cycles; then a hit on its left facet, where BA's row
+/// stands, blames BA, and both guns fire their reserve to the last round.
+#[test]
+fn cc10_the_reserve_answers_the_unit_that_fired_on_the_tank() {
+    const SIZE: u32 = 8;
+    let mut run = to_the_fight_with(base(), |server| {
+        server.chance = 95;
+        server.magazine = Some(SIZE);
+    });
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let kept = SIZE - reserve_rounds(SIZE);
+    assert_eq!(disciplined_shots(SIZE, 95), kept);
+    assert!(
+        run.until(u64::from(kept + 2) * Server::cycle_ms("cannon"), |run| {
+            GUNS.iter().all(|weapon| shots_of(run, weapon) == kept)
+        }),
+        "fired to the reserve: {:?}",
+        run.server.shots
+    );
+    run.until(2 * Server::cycle_ms("cannon"), |_| false);
+    for weapon in GUNS {
+        assert_eq!(shots_of(&run, weapon), kept, "the reserve kept: {weapon}");
+    }
+    assert!(run.lane.pilot().fired_on.is_empty());
+    // BA's row reads `rel 270°`: the left facet's face.
+    run.server.now = run.now;
+    run.server
+        .say(0, "Hit on the hull's left facet: 200 of 250 armor left.");
+    assert!(
+        run.until(u64::from(SIZE + 2) * Server::cycle_ms("cannon"), |run| {
+            GUNS.iter().all(|weapon| shots_of(run, weapon) == SIZE)
+        }),
+        "the reserve answers BA: {:?}",
+        run.server.shots
+    );
+    assert!(run.lane.pilot().fired_on.contains("BA"));
+    assert!(
+        !run.said.iter().any(|s| s.contains("is empty")),
+        "{:?}",
+        run.said
+    );
+}
+
 /// The reservation's rule, worked out from the lane's picture and its sends: a
 /// poll sent at `now` after `before` (the lines typed inside the window before
 /// it) leaves a slot, inside `max` lines a window, for each gun the pilot may
 /// fire that is due inside the window (none while it fires nothing: no lock, a
 /// friendly one, every gun in doubt; never a gun read at `0%`).
-fn leaves_the_guns_a_slot(picture: &Picture, before: &[&Send], now: u64, max: usize) -> bool {
+fn leaves_the_guns_a_slot(
+    pilot: &Pilot,
+    picture: &Picture,
+    before: &[&Send],
+    now: u64,
+    max: usize,
+) -> bool {
     if picture.lock.is_none() || picture.lock_friendly || picture.weapons_doubt.is_some() {
         return true;
     }
     let mut due: Vec<u64> = picture
         .weapons
         .iter()
-        .filter(|w| !picture.struck.contains(&w.id) && w.rounds_left() > 0 && w.percent != Some(0))
+        .filter(|w| {
+            !picture.struck.contains(&w.id) && w.rounds_left() > 0 && pilot.may_fire(picture, w)
+        })
         .filter_map(|w| w.next_ready_ms)
         .map(|at| at.max(now))
         .filter(|d| *d < now + LIMIT_WINDOW_MS)
@@ -3246,6 +3423,20 @@ const CROWDED_NOTICE_PHASE_MS: u64 = 600;
 const _: () =
     assert!(CROWDED_NOTICE_PHASE_MS.is_multiple_of(STEP_MS) && CROWDED_NOTICE_PHASE_MS < 1_000);
 
+/// **How many of the cannon's cycles a scene that waits for a gun to fall
+/// due against the polls runs** (the game's doc 49 cut CC.10): the crowded
+/// minute ([`a_crowded_minute`]) and the doubt's search
+/// ([`the_doubts_weaponstatus_skips_the_poll_gap`]). Under CC.2's palette a
+/// gun is due inside a given second about a fifth as often as at the 1 s
+/// coaxial gun the scenes were tuned on, and both scenes are phase
+/// coincidences. Flown over a crowded span of 60 s, 120 s and 180 s against
+/// the minute's start delayed 0 to 30 s: at 60 s no delay held a `STATUS`
+/// back (and no notice phase from 0 to 990 did either); at 180 s every delay
+/// did. The doubt's search found its moment at 180 s and 240 s, not at 60 to
+/// 120 s. Twelve cycles is 180 s of the 15 s cannon, and 72 s of the 6 s
+/// cannon the scenes were tuned on.
+const DUE_SCENE_CYCLES: u64 = 12;
+
 /// What a crowded minute came to: whether both cycles were learned before
 /// it, ticks with the ring full, ticks a due `STATUS` was held back, of those
 /// the ones the reservation alone held (a slot free), polls that went
@@ -3260,7 +3451,9 @@ struct Crowded {
     statuses: Vec<u64>,
 }
 
-/// **A crowded minute** on a lane typing at most `max` lines a second: locked,
+/// **A crowded minute** on a lane typing at most `max` lines a second (the
+/// game's doc 49 cut CC.10: a "minute" of [`DUE_SCENE_CYCLES`] of the cannon's
+/// cycles, 180 s at the ruled cannon): locked,
 /// with a contact notice every second so `CONTACTS` (and the lock's `RANGE`
 /// after every second reply) crowd the ring. Checked tick by tick against the
 /// lane's own picture: no poll that can wait goes in a tick where it leaves no
@@ -3288,12 +3481,16 @@ fn a_crowded_minute(max: usize) -> Crowded {
     // Fewer lines a second may leave the post-shot read no slot inside the
     // cannon's first second; then the minute checks `STATUS` alone (a
     // `WEAPONSTATUS` may be the post-shot read, whose cadence is not a poll's
-    // that can wait).
-    let learned = run.until(20_000, cycles_learned);
+    // that can wait). Doc 49 unit CC.2: the window holds one cannon cycle more
+    // (read from the content), so a cycle the first shot's read missed is
+    // learned on the second shot, as it was inside 20 s at the 6 s cannon.
+    let learned = run.until(20_000 + Server::cycle_ms("cannon"), cycles_learned);
     run.server
         .contacts
         .push("X7  unknown  bearing 180° (rel 090°)  far  500 m  1 s".into());
     let start = run.now;
+    // The game's doc 49 cut CC.10: the scene's span in the cannon's cycles.
+    let span = DUE_SCENE_CYCLES * Server::cycle_ms("cannon");
     let mut seen = Crowded {
         learned,
         crowded: 0,
@@ -3306,7 +3503,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
     for send in &run.sent {
         last_poll.insert(send.line.clone(), send.lane_ms);
     }
-    while run.now < start + 60_000 {
+    while run.now < start + span {
         if run.now % 1_000 == CROWDED_NOTICE_PHASE_MS {
             run.server.now = run.now;
             run.server.say(0, "New contact X7: bearing 180°, far.");
@@ -3318,6 +3515,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
         }
         let now = run.now;
         let picture = run.lane.picture();
+        let pilot = run.lane.pilot();
         let tick: Vec<&Send> = run.sent[sent_before..].iter().collect();
         let earlier: Vec<&Send> = run.sent[..sent_before]
             .iter()
@@ -3342,7 +3540,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
                 seen.starved += 1;
             }
             assert!(
-                overdue || leaves_the_guns_a_slot(picture, &before, now, max),
+                overdue || leaves_the_guns_a_slot(pilot, picture, &before, now, max),
                 "{max} a second: {} at {now} left no slot: {:?}; sent {:?}",
                 send.line,
                 picture.weapons,
@@ -3366,7 +3564,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
             let all: Vec<&Send> = earlier.iter().chain(tick.iter()).copied().collect();
             if all.len() < max {
                 assert!(
-                    !leaves_the_guns_a_slot(picture, &all, now, max)
+                    !leaves_the_guns_a_slot(pilot, picture, &all, now, max)
                         && now < at + STATUS_EVERY_MS + POLL_STARVE_MS,
                     "{max} a second: STATUS held back at {now} with a slot free and the \
                      guns' slots kept: {:?}; sent {:?}",
@@ -3398,7 +3596,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
                 && ba_fresh
                 && picture.weapons_doubt.is_none()
                 && w.rounds_left() > 0
-                && w.percent != Some(0)
+                && pilot.may_fire(picture, w)
                 && w.next_ready_ms.is_some_and(|at| at <= now)
                 && (fired || !picture.fire_pending(weapon))
                 && last_fire.is_none_or(|at| now >= at + FIRE_GAP_MS);
@@ -3423,7 +3621,7 @@ fn a_crowded_minute(max: usize) -> Crowded {
         "the machine gun fired {} times in the crowded minute",
         fires.len()
     );
-    let floor = 60_000 / (Server::cycle_ms("machine_gun") + FIRE_SLACK_MAX_MS + 2 * TICK_MS);
+    let floor = span / (Server::cycle_ms("machine_gun") + FIRE_SLACK_MAX_MS + 2 * TICK_MS);
     assert!(
         fires.len() as u64 >= floor,
         "{max} a second: the machine gun kept firing: {} of at least {floor}",
@@ -3460,6 +3658,8 @@ fn a_due_gun_keeps_its_slot_from_a_poll() {
     }
     let fewer = a_crowded_minute(max - 1);
     assert!(fewer.crowded > 100, "the ring was crowded: {fewer:?}");
+    // A minute's ticks: the bound the scene was tuned to, over a crowded span
+    // of [`DUE_SCENE_CYCLES`] (doc 49 cut CC.10: 8 to 20 such ticks in it).
     let ticks = 60_000 / TICK_MS;
     assert!(
         u64::from(fewer.reserved) * 250 >= ticks,
@@ -3724,7 +3924,9 @@ fn the_turret_can_go(run: &Run, lines: usize) -> bool {
         && in_window <= lines
 }
 
-/// **The doubt's `WEAPONSTATUS` skips the poll gap** (cut AL.1): the turret
+/// **The doubt's `WEAPONSTATUS` skips the poll gap** (cut AL.1; the moment is
+/// searched for over [`DUE_SCENE_CYCLES`] of the cannon's cycles since the
+/// game's doc 49 cut CC.10, a minute before): the turret
 /// lost inside [`POLL_GAP_MS`] of the last `WEAPONSTATUS`, with a slot free,
 /// is asked about at the next tick all the same, and nothing is fired before
 /// its reply.
@@ -3733,7 +3935,7 @@ fn the_doubts_weaponstatus_skips_the_poll_gap() {
     let mut run = to_the_fight(base());
     locked_and_learned(&mut run);
     assert!(
-        run.until(60_000, |run| {
+        run.until(DUE_SCENE_CYCLES * Server::cycle_ms("cannon"), |run| {
             let next_tick = (run.now / TICK_MS + 1) * TICK_MS;
             the_turret_can_go(run, 3)
                 && last_weapons(run).is_some_and(|at| next_tick < at + POLL_GAP_MS)
@@ -3770,7 +3972,9 @@ fn an_empty_gun_is_not_fired_again() {
     assert!(run.until(30_000, |run| about_to_fire(run, "machine_gun")));
     run.server.rounds.insert("machine_gun".into(), 0);
     let dry_at = run.now;
-    run.until(20_000, |_| false);
+    // Two cannon shots after the dry gun: two of its cycles (doc 49 unit CC.2: read from the
+    // content; 20 s held them at the 6 s cannon).
+    run.until(20_000.max(2 * Server::cycle_ms("cannon")), |_| false);
     let mg = run.sends_of("FIRE machine_gun", dry_at);
     assert_eq!(mg.len(), 1, "one FIRE, refused as empty: {mg:?}");
     assert_eq!(
@@ -4084,7 +4288,7 @@ fn a_side_hit_turns_the_bow() {
     let left = (bow + 270) % 360;
     run.server.now = run.now;
     run.server
-        .say(0, "Hit on the hull's left facet: 200 of 250 armour left.");
+        .say(0, "Hit on the hull's left facet: 200 of 250 armor left.");
     let hit = run.now;
     // Read at the next step, decided and typed at the tick after it.
     run.until(STEP_MS + TICK_MS, |_| false);
@@ -4645,10 +4849,28 @@ fn a_full_width_channel_line_never_swallows_an_expected_answer() {
     let mut acked = false;
     for _ in 0..5 {
         let from = run.now + 1;
-        assert!(run.until(15_000, |run| !run.sends_of("FIRE cannon", from).is_empty()));
+        // Doc 49 unit CC.2: one cannon cycle (read from the content) past the 15 s this
+        // waited at the 6 s cannon.
+        assert!(run.until(15_000 + Server::cycle_ms("cannon"), |run| {
+            !run.sends_of("FIRE cannon", from).is_empty()
+        }));
         let shots = run.lane.picture().tally.shots;
         assert!(run.lane.picture().fire_pending("cannon"));
         if run.server.acks.last() != Some(&(run.now + 20, "cannon".to_owned())) {
+            continue;
+        }
+        // AM.1's case is a `FIRE` alone in its tick (doc 49 unit CC.2). Under the 15 s
+        // cannon the first acked shot can share its tick with a poll (`RANGE`), and then
+        // the channel line does take the ack: the shot is counted only off the next
+        // `WEAPONSTATUS`, 1,670 ms later. CC.10 found it a rig artifact (the game answers
+        // in order) and harmless to the discipline (its cut note); the next shot is tried
+        // here.
+        let fired_at = run.sends_of("FIRE cannon", from).first().copied();
+        if run
+            .sent
+            .iter()
+            .any(|s| Some(s.lane_ms) == fired_at && s.line != "FIRE cannon")
+        {
             continue;
         }
         // The echo at +1, the channel line at +10, the ack at +20.
@@ -4856,7 +5078,7 @@ fn a_wrapped_board_row_never_swallows_a_claim() {
         .find(|(_, chunk)| chunk.text().contains("takes red slot 1"))
         .expect("the claim queued");
     claim.1 = Chunk::Text(format!(
-        "Simulator centre: selection\r\n  red: nobody\r\n{}\r\n{}",
+        "Simulator center: selection\r\n  red: nobody\r\n{}\r\n{}",
         row.replace('\n', "\r\n"),
         claim.1.text()
     ));
@@ -5929,6 +6151,26 @@ fn a_mover_is_fired_on_from_the_halt() {
     assert_ne!(run.lane.picture_json()["pilot"]["rule"], "halt");
 }
 
+/// **The exchange's window, once the pilot has learned the main gun's cycle**
+/// (the game's doc 49 cut CC.10): the lane's own pilot counts it in
+/// [`EXCHANGE_WINDOW_CYCLES`] of the cannon's cycle, which it learns from the
+/// cannon's first shot, and the cycle is the shipped cannon's (the rig's,
+/// read from the content).
+fn exchange_window(run: &mut Run) -> u64 {
+    assert!(
+        run.until(20_000, |run| run
+            .lane
+            .pilot()
+            .exchange_window_ms()
+            .is_some()),
+        "the cannon's cycle learned: {:?}",
+        run.lane.picture().weapons
+    );
+    let window = run.lane.pilot().exchange_window_ms().unwrap_or_default();
+    assert_eq!(window, Server::cycle_ms("cannon") * EXCHANGE_WINDOW_CYCLES);
+    window
+}
+
 #[test]
 fn the_reapproach_backs_off_and_waits_on_the_scripted_server() {
     // Mid-field, so the backing off stays on the ground. Cut AO.3: the
@@ -5966,17 +6208,19 @@ fn the_reapproach_backs_off_and_waits_on_the_scripted_server() {
     run.server.say(0, "New contact BA: bearing 090°, far.");
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
     // Hits taken on the front, enough to out-hit the pilot (two over the
-    // floor), inside three quarters of the exchange's window: ten in 15 s at
-    // the shipped figures.
+    // floor), inside three quarters of the exchange's window (the game's doc
+    // 49 cut CC.10: counted in the cannon's cycles, learned from its first
+    // shot).
+    let window = exchange_window(&mut run);
     let taken = EXCHANGE_MIN_TAKEN.max(EXCHANGE_MARGIN) + 2;
-    let spacing = EXCHANGE_WINDOW_MS * 3 / 4 / taken as u64;
+    let spacing = window * 3 / 4 / taken as u64;
     let hits = run.now;
     for i in 0..taken as u32 {
         run.server.now = run.now;
         run.server.say(
             0,
             &format!(
-                "Hit on the hull's front facet: {} of 400 armour left.",
+                "Hit on the hull's front facet: {} of 400 armor left.",
                 390 - 10 * i
             ),
         );
@@ -6099,7 +6343,8 @@ fn with_the_knobs_off_the_lane_is_as_it_was() {
 /// its ready instant ([`LIVE_EDGE_LAG_MS`] since cut AO.2, the edge the
 /// muster runs read; AN.3 flew 100, inside the "+50 to +150" an earlier
 /// reading of the transcripts gave); a 200-round magazine. Locked on BA with both cycles learned first,
-/// then two minutes. Prints each gun's two gap counts and its refusals; the
+/// then [`LATTICE_SPAN_CYCLES`] of the cannon's cycles (two minutes before the game's
+/// doc 49 cut CC.10). Prints each gun's two gap counts and its refusals; the
 /// run, when the two minutes began, and each gun's `FIRE` lines and
 /// still-cycling refusals in them.
 fn at_the_lattice_floor(
@@ -6116,7 +6361,7 @@ fn at_the_lattice_floor(
     let start = run.now;
     let lines = run.server.fire_lines_by.clone();
     let refusals = run.server.cycling_refusals_by.clone();
-    run.until(120_000, |_| false);
+    run.until(LATTICE_SPAN_CYCLES * Server::cycle_ms("cannon"), |_| false);
     assert_eq!(
         run.lane.picture().lock.as_deref(),
         Some("BA"),
@@ -6148,6 +6393,13 @@ fn at_the_lattice_floor(
 /// about a lattice step past that instant, not the +100 an earlier reading
 /// gave.
 const LIVE_EDGE_LAG_MS: u64 = 250;
+
+/// **How many of the cannon's cycles the lattice rigs run** (the game's doc 49
+/// cut CC.10): twenty, the 120 s they ran at the 6 s cannon. At the ruled 15 s
+/// cannon, 120 s held eight cannon lines, so one refusal broke the
+/// one-in-ten bound: the lattice on read 1 of 8 where off read 2 of 9, and at
+/// twenty cycles 1 of 20 where off read 3 of 22.
+const LATTICE_SPAN_CYCLES: u64 = 20;
 
 /// **The lattice at the live edge** (cut AO.2; it replaces AN.3's floor test,
 /// whose +100 ms edge and 1 250 ms machine-gun floor the live runs refuted):
@@ -6709,16 +6961,18 @@ fn a_reapproach_at_the_edge_holds_rather_than_backing_into_it() {
     run.server.now = run.now;
     run.server.say(0, "New contact BA: bearing 090°, far.");
     assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
-    // Hits taken on the front, enough to out-hit the pilot.
+    // Hits taken on the front, enough to out-hit the pilot, inside three
+    // quarters of the exchange's window (the game's doc 49 cut CC.10).
+    let window = exchange_window(&mut run);
     let taken = EXCHANGE_MIN_TAKEN.max(EXCHANGE_MARGIN) + 2;
-    let spacing = EXCHANGE_WINDOW_MS * 3 / 4 / taken as u64;
+    let spacing = window * 3 / 4 / taken as u64;
     let hits = run.now;
     for i in 0..taken as u32 {
         run.server.now = run.now;
         run.server.say(
             0,
             &format!(
-                "Hit on the hull's front facet: {} of 400 armour left.",
+                "Hit on the hull's front facet: {} of 400 armor left.",
                 390 - 10 * i
             ),
         );

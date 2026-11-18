@@ -70,12 +70,16 @@ impl LaunchComposition {
                 mush_industry::core_production::CoreOriginMode::Active,
             ),
         };
-        let hardware = crate::hardware::GovernedHardware::prepare(
-            layer,
-            origin,
-            deployment.hardware.deployment(&deployment.registry_issuer),
-            &filing,
-        )?;
+        let mut site = deployment.hardware.deployment(&deployment.registry_issuer);
+        // Doc 48 unit EX.2b: where the fitting shop buys cores back, players resell them to one
+        // another too, the venue's cut to the launch's venue and the levy to its Registry.
+        if site.buy_back_permille.is_some() {
+            site.resale = Some(crate::hardware::sale::resale::ResaleTerms::provisional(
+                deployment.venue.recipient.clone(),
+                deployment.registry.clone(),
+            ));
+        }
+        let hardware = crate::hardware::GovernedHardware::prepare(layer, origin, site, &filing)?;
         let roster = hardware.roster_policy()?;
         // Capture the same finite hardware catalogue the actual layer will
         // register. Preserve the host's already verified packs (including the
@@ -296,7 +300,7 @@ impl LaunchComposition {
 pub(crate) fn market_help(market: &PlayerMarket) -> String {
     let terms = &market.terms;
     format!(
-        "Player market: personal filing costs {filing}. A personal Pin listed at the counter sells for {price} for {term} IC days plus {grace} days Grace; the Registry takes {levy}%, any parent royalty is paid next, and the charter owner gets the rest. It renews for {renewal} on its own accepted offer, open {renewal_window}; a Pin bought from a market-original-mind-list listing does not renew. A licence resale offer stays open {resale_window} and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within {settle_window}. Registry recall and revocation belong to the configured Registry operators. Read the listings here with +minds and your licences with +minds/holdings; help personal-minds lists every market command.",
+        "Player market: personal filing costs {filing}. A personal Pin listed at the counter sells for {price} for {term} IC days plus {grace} days Grace; the Registry takes {levy}%, any parent royalty is paid next, and the charter owner gets the rest. It renews for {renewal} on its own accepted offer, open {renewal_window}; a Pin bought from a market-original-mind-list listing does not renew. A license resale offer stays open {resale_window} and pays the seller the rest; buying a resold House Pin needs the same standing as buying it new. A pending charter transfer settles within {settle_window}. Registry recall and revocation belong to the configured Registry operators. Read the listings here with +minds and your licenses with +minds/holdings; help personal-minds lists every market command.",
         filing = credits(content::FILING_MINOR),
         price = credits(terms.price_minor),
         term = content::TERM_SECONDS / 86_400,

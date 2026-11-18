@@ -3658,7 +3658,7 @@ mod tests {
         let mut by_json: std::collections::BTreeMap<Vec<u8>, u64> =
             std::collections::BTreeMap::new();
         for notice in &notices {
-            let json = serde_json::to_vec(notice).expect("a notice serialises");
+            let json = serde_json::to_vec(notice).expect("a notice serializes");
             let hash = fv(notice);
             if let Some(seen) = by_json.insert(json, hash) {
                 assert_eq!(seen, hash, "equal JSON, equal fold: {notice:?}");

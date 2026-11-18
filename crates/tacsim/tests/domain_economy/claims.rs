@@ -486,9 +486,13 @@ fn fire_landing(rig: &mut Rig) -> Vec<(Audience, OutputEvent)> {
     events
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -511,7 +515,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 fn typed<K, V>(
@@ -544,7 +548,7 @@ fn pilot_on(rig: &mut Rig, who: &str, account: &str) -> ObjId {
 /// A chartered, licensed (two terms) pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, account: &str, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot_on(rig, who, account);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -556,8 +560,8 @@ fn prospector(rig: &mut Rig, who: &str, account: &str, name: &str) -> (ObjId, Hu
     assert!(out.contains("as a Dray-P"), "{out}");
     support::licence::buy_licence(&mut rig.tw, pilot);
     // A second term, so the licence outlives a claim's first term.
-    let out = run(&mut rig.tw, pilot, "+licence/buy go");
-    assert!(out.contains("extends your licence"), "{out}");
+    let out = run(&mut rig.tw, pilot, "+license/buy go");
+    assert!(out.contains("extends your license"), "{out}");
     (pilot, row)
 }
 
@@ -1641,9 +1645,9 @@ fn claim_lines(text: &str) -> String {
 
 /// Re-license `pilot` (a new term from anywhere).
 fn relicense(rig: &mut Rig, pilot: ObjId) {
-    let out = run(&mut rig.tw, pilot, "+licence/buy go");
+    let out = run(&mut rig.tw, pilot, "+license/buy go");
     assert!(
-        out.contains("licenses you to prospect") || out.contains("extends your licence"),
+        out.contains("licenses you to prospect") || out.contains("extends your license"),
         "{out}"
     );
 }
@@ -1946,7 +1950,7 @@ fn sm10_a_self_issued_claim_authorises_nothing_at_a_registry_site() {
     recharge(&mut rig, tp);
     let (out, queued) = command(&mut rig, p, "+tv/1 mine go");
     assert!(out.contains("That block is under claim."), "{out}");
-    assert!(queued.is_empty(), "it authorises nothing");
+    assert!(queued.is_empty(), "it authorizes nothing");
 }
 
 // ---------------------------------------------------------------------------

@@ -87,10 +87,10 @@ impl ExtractionRefusal {
             Self::ClaimUncomparable => {
                 "the claim's term is stamped on another clock generation, so it cannot be compared"
             }
-            Self::NoLicence => "the acting principal holds no extraction licence",
-            Self::LicenceInactive => "the acting principal's extraction licence is not active",
+            Self::NoLicence => "the acting principal holds no extraction license",
+            Self::LicenceInactive => "the acting principal's extraction license is not active",
             Self::NoLicenceInstrument => {
-                "this server names no extraction-licence instrument; wire one with \
+                "this server names no extraction-license instrument; wire one with \
                  IndustryModule::with_extraction_licence"
             }
             Self::Unworkable => "that body is collapsed or suspended",

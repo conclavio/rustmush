@@ -14,14 +14,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::definitions::DefinitionError;
 
-/// **W14, asserted here** (16b §9 "Constants"): no weapon cycles faster than a
-/// second.
+/// **The cycle floor** (doc 49 Q-49-2, Q-49-19, unit CC.2): no mount a player
+/// or a mind fires cycles faster than five seconds.
 ///
-/// The floor is a property of the *engine's* tempo rather than of any weapon:
-/// `Tempo::Engaged` is 500 ms and a weapon that could fire every substep would
-/// make a match's shot count a function of how finely the arena happened to
-/// substep. It is refused on load, so a content edit cannot smuggle one in.
-pub const CYCLE_FLOOR_MS: u32 = 1_000;
+/// The owner's ruling of 2026-11-15, from play-testing ("the shots happen too
+/// fast"): at 5 s the cadence tax (the 250 ms lattice plus typing time) is
+/// about a twentieth of a cycle, and every shot is a decision. It is refused on
+/// load, so a content edit cannot bring back a one-second gun. An
+/// automatic-defence mount ([`WeaponDef::automatic_defence`]) keeps
+/// [`AUTOMATIC_DEFENCE_FLOOR_MS`] instead. Until CC.2 the floor was W14's
+/// 1,000 ms (16b §9), which is now the automatic-defence floor.
+pub const CYCLE_FLOOR_MS: u32 = 5_000;
+
+/// **W14's floor, kept for automatic defence** (16b §9 "Constants"; doc 49
+/// Q-49-2, Q-49-10): an automatic-defence mount (point defence, a laser in its
+/// defence mode) answers incoming rounds, not contacts, and nobody types it,
+/// so it keeps the engine's own floor. That floor is a property of the
+/// engine's tempo: `Tempo::Engaged` is 500 ms, and a mount that could fire
+/// every substep would make a match's shot count a function of how finely the
+/// arena happened to substep. No ground mount ships in this class yet.
+pub const AUTOMATIC_DEFENCE_FLOOR_MS: u32 = 1_000;
 
 /// The slowest a weapon may cycle: an hour, past any match at the stock cap
 /// (fifteen minutes since 16b cut AP.2; `MatchConfig::validate` sets the cap no
@@ -104,7 +116,8 @@ pub struct WeaponDef {
     pub mount: Mount,
     /// The range bands, nearest first.
     pub bands: Vec<RangeBand>,
-    /// The cycle, milliseconds. At or above [`CYCLE_FLOOR_MS`].
+    /// The cycle, milliseconds. At or above [`CYCLE_FLOOR_MS`], or
+    /// [`AUTOMATIC_DEFENCE_FLOOR_MS`] for an automatic-defence mount.
     pub cycle_ms: u32,
     /// The ammunition family this weapon fires — an entry id another pack entry
     /// declares, checked at load.
@@ -115,6 +128,14 @@ pub struct WeaponDef {
     pub muzzle_speed_cms: u32,
     /// Heat per shot. Zero on both stock weapons; the cell exists for lasers.
     pub heat_per_shot: u32,
+    /// **An automatic-defence mount** (doc 49 Q-49-2, Q-49-10, unit CC.2):
+    /// one that answers incoming rounds on its own, which nobody types. It
+    /// keeps [`AUTOMATIC_DEFENCE_FLOOR_MS`] where every other mount is held to
+    /// [`CYCLE_FLOOR_MS`]. Absent (and so `false`) on every shipped ground
+    /// mount, and written only when set, so a pack that does not set it signs
+    /// as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic_defence: bool,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -130,6 +151,18 @@ impl WeaponDef {
             .map(|band| band.max_range_cm)
             .max()
             .unwrap_or(0)
+    }
+
+    /// **The floor this mount's cycle is held to** (doc 49 unit CC.2):
+    /// [`AUTOMATIC_DEFENCE_FLOOR_MS`] for an automatic-defence mount, else
+    /// [`CYCLE_FLOOR_MS`].
+    #[must_use]
+    pub const fn cycle_floor_ms(&self) -> u32 {
+        if self.automatic_defence {
+            AUTOMATIC_DEFENCE_FLOOR_MS
+        } else {
+            CYCLE_FLOOR_MS
+        }
     }
 
     /// Re-run every bound.
@@ -172,11 +205,17 @@ impl WeaponDef {
             }
             previous = band.max_range_cm;
         }
-        if self.cycle_ms < CYCLE_FLOOR_MS || self.cycle_ms > MAX_CYCLE_MS {
+        let floor = self.cycle_floor_ms();
+        if self.cycle_ms < floor || self.cycle_ms > MAX_CYCLE_MS {
             return Err(DefinitionError::value(
                 entry,
                 format!(
-                    "cycle_ms is {CYCLE_FLOOR_MS} to {MAX_CYCLE_MS} (W14's floor); {} is not",
+                    "cycle_ms is {floor} to {MAX_CYCLE_MS} ({}); {} is not",
+                    if self.automatic_defence {
+                        "the automatic-defense floor"
+                    } else {
+                        "the 5 s floor"
+                    },
                     self.cycle_ms
                 ),
             ));

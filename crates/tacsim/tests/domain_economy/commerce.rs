@@ -490,9 +490,13 @@ fn stock_ready(tw: &mut TestWorld) -> (bool, String) {
     (ready, out)
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// **Fire and land the port tick until both ports are stocked and listed.** Bounded.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         if stock_ready(&mut rig.tw).0 {
             return;
         }
@@ -500,7 +504,7 @@ fn stock(rig: &mut Rig) {
         land_all(rig, &queued);
     }
     let (_, out) = stock_ready(&mut rig.tw);
-    panic!("the ports were not stocked within 40 fires:\n{out}");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires:\n{out}");
 }
 
 /// Read one typed value through an owner-stamped transaction.
@@ -592,7 +596,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot (`Salt Moth`), standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, "+coop/enrol Salt Moth");
+    let out = run(&mut rig.tw, pilot, "+coop/enroll Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -877,7 +881,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     // carbon row; doc 39 cut IN.7: the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
     // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
-    assert_eq!(all.len(), 22, "Ceres 10 and Stickney 12");
+    // Doc 48 unit PL.5 (lane v39): twenty-four, Kasei's strategic ore and the Yards' boards.
+    assert_eq!(all.len(), 24, "Ceres 10 and Stickney 14");
     for (id, receipt) in all
         .iter()
         .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
@@ -931,7 +936,8 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
     // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
-    assert_eq!(all.len(), 22);
+    // Doc 48 unit PL.5 (lane v39): twenty-four, Kasei's strategic ore and the Yards' boards.
+    assert_eq!(all.len(), 24);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
     for (_, receipt) in all
@@ -947,6 +953,26 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
         assert_eq!(held, sum, "{good}");
     }
     no_refused_writes(&rig.tw);
+}
+
+/// **US spelling is canonical** (owner, 2026-11-17): the switch is `+coop/enroll`,
+/// the British `+coop/enrol` stays an alias of it, and `help +coop` says so.
+#[test]
+fn the_british_enrol_switch_is_an_alias_of_enroll() {
+    let mut rig = stocked();
+    let british = pilot(&mut rig, "Ada", 1);
+    let out = run(&mut rig.tw, british, "+coop/enrol Salt Moth");
+    assert!(out.contains("now the Salt Moth"), "{out}");
+    assert!(tacsim::port::live_charter(rig.tw.world(), british).is_some());
+    let us = pilot(&mut rig, "Bea", 2);
+    let out = run(&mut rig.tw, us, "+coop/enroll Grey Heron");
+    assert!(out.contains("now the Grey Heron"), "{out}");
+    let help = run(&mut rig.tw, us, "help +coop");
+    assert!(help.contains("/enroll"), "{help}");
+    assert!(
+        help.contains("(switch aliases: /enrol = /enroll)"),
+        "{help}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,7 +1259,7 @@ fn ic8_the_ship_presence_and_the_gate_refusals() {
     let mut rig = stocked();
     let (me, row) = chartered(&mut rig, "Pilot", 1);
     let other = pilot(&mut rig, "Other", 2);
-    let out = run(&mut rig.tw, other, "+coop/enrol Grey Heron");
+    let out = run(&mut rig.tw, other, "+coop/enroll Grey Heron");
     assert!(out.contains("now the Grey Heron"), "{out}");
     let other_charter = tacsim::port::live_charter(rig.tw.world(), other).expect("a charter");
     let other_row = port_map(&rig.tw, "ceres_port")
@@ -1477,7 +1503,7 @@ fn ic8_the_board_counts_down_to_sold_out() {
         "  30 mm AP rounds: 12.00cr/round",
         "  7.62 mm ball, boxed: 25.00cr/box",
         "  105 mm HE rounds: 150.00cr/round",
-        "  anti-armour missiles, canistered: 1500.00cr/round",
+        "  anti-armor missiles, canistered: 1500.00cr/round",
     ]) {
         assert!(line.starts_with(want), "{want}:\n{out}");
     }
@@ -2588,7 +2614,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
     // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
-    assert_eq!(receipts(&mut rig.tw).len(), 22);
+    // Doc 48 unit PL.5 (lane v39): twenty-four, Kasei's strategic ore and the Yards' boards.
+    assert_eq!(receipts(&mut rig.tw).len(), 24);
     no_refused_writes(&rig.tw);
 }
 

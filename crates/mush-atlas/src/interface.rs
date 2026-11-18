@@ -172,7 +172,7 @@ impl InterfaceAbilityProvider for TravelInterface {
             },
             InterfaceAbility {
                 name: SmolStr::new_static("travel.status"),
-                description: "The asker's own journey, if they are travelling: where they are and what is next."
+                description: "The asker's own journey, if they are traveling: where they are and what is next."
                     .to_string(),
                 params_schema: json!({ "type": "object", "properties": {} }),
                 command: SmolStr::new_static("+travel/status"),
@@ -249,7 +249,7 @@ impl InterfaceAbilityProvider for TravelInterface {
                         crate::travel::position_line(st, ctx.w, j)
                     )
                 } else {
-                    "You are not travelling.".to_string()
+                    "You are not traveling.".to_string()
                 };
                 Ok(InterfaceReply::text(line))
             }

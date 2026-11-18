@@ -224,7 +224,7 @@ fn command(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         .transpose()?;
     let result = own(ctx, s, ctx.actor, licence, generation).map_err(|_| unavailable())?;
     let text = result.map(Notice::text).unwrap_or_else(|| {
-        "No Registry revocation is recorded for the selected term of your licence.".to_owned()
+        "No Registry revocation is recorded for the selected term of your license.".to_owned()
     });
     ctx.out.sys_to_actor(ctx.actor, crate::NS, text);
     Ok(())

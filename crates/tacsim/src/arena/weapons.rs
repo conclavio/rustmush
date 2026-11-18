@@ -609,6 +609,14 @@ pub struct Shot {
     /// because a turret shot off in flight takes the weapon row with it and the
     /// round already in the air still carries what it was loaded with.
     pub damage: u32,
+    /// **Whether the round is a beam** (doc 49 unit CC.3, Q-49-27), recorded at
+    /// acceptance off the weapon ([`WeaponSummary::is_beam`]) for the reason
+    /// [`Shot::damage`] is: the impact counts a beam's damage reduced against a
+    /// section's armour and in full against its internals
+    /// ([`crate::arena::damage::BEAM_ARMOR_PERMILLE`]). Skipped when `false`, so a
+    /// projectile's shot is written as it was.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub beam: bool,
     /// **The resolution taken at acceptance** (16b cut W.2; doc 16 §3.5's five
     /// steps), which is the moment the doc resolves at. The impact reads it and
     /// re-resolves only the angular size, and only when the target turned.
@@ -1113,11 +1121,16 @@ impl Arena {
         // (the reflex's copy until 17b cut M4.6) answers the same question the
         // same way, so the machine and the pilot agree about whether the gun
         // works.
-        if state.overheated()
-            && state
-                .heat
-                .as_ref()
-                .is_some_and(|heat| heat.per_shot(weapon) > 0)
+        //
+        // **Doc 49 unit CC.3** (Q-49-28): the shot is refused when its own heat would
+        // carry the platform past the ceiling, not only once the platform is at it. A
+        // shot was capped at the ceiling until CC.3, so the cooling always made room at
+        // the laser's cycle and heat never held one back; now sustained fire locks out
+        // until the platform has shed enough for the next shot.
+        if state
+            .heat
+            .as_ref()
+            .is_some_and(|heat| state.refuses_heat(heat.per_shot(weapon)))
         {
             return Err(Refusal::Overheated);
         }
@@ -1205,6 +1218,7 @@ impl Arena {
                 from_cell,
                 from_height_cm,
                 damage: summary.damage,
+                beam: summary.is_beam(),
                 resolution,
             },
         );
@@ -1707,11 +1721,12 @@ mod tests {
     /// cannon if carried, else the first weapon in component order — witnessed
     /// on the carriers that rule now has to choose on. The scout car lists its
     /// autocannon first, so that is its gun; the heavy carries a cannon beside
-    /// its rack, so the cannon is; the stock tank's cannon and the laser tank's
-    /// beam are what they were. An emptied autocannon leaves the scout fighting
-    /// on its coaxial, as every tank does; and the contact band word on the
-    /// scout is banded off the autocannon's own 1 km and 2 km, held to the
-    /// sight — which differs from the coaxial's only past the coaxial's 1.2 km,
+    /// its rack, so the cannon is; the stock tank's cannon is what it was, and
+    /// since doc 49 unit CC.3 (Q-49-6) the laser tank carries the 105 beside its
+    /// laser, so its bare `FIRE` is the cannon too. An emptied autocannon leaves
+    /// the scout fighting on its coaxial, as every tank does; and the contact band
+    /// word on the scout is banded off the autocannon's own 1 km and 2 km, held to
+    /// the sight — which differs from the coaxial's only past the coaxial's 1.2 km,
     /// where a teammate's plot can be `far` for the one gun and `beyond` for the
     /// other.
     #[test]
@@ -1747,7 +1762,7 @@ mod tests {
                 both("autocannon"),
                 both("cannon"),
                 both("cannon"),
-                both("laser")
+                both("cannon")
             ]
         );
 
@@ -2713,7 +2728,7 @@ mod tests {
         assert_eq!(
             practice.clone().resolve_fire_by(RED, "cannon", 0, mind),
             Err(Refusal::Unwarranted),
-            "HOLD does not answer for its neighbour"
+            "HOLD does not answer for its neighbor"
         );
         practice.note_fired_on(BLUE, RED);
         assert_eq!(
@@ -2814,7 +2829,7 @@ mod tests {
             &mut dropped,
             &reds_seat(3, ControlState::Released, Some(OWNER)),
         );
-        for (arena, which) in [(&plain, "never practised"), (&dropped, "practised")] {
+        for (arena, which) in [(&plain, "never practiced"), (&dropped, "practised")] {
             let state = arena.unit(RED).expect("red");
             assert_eq!(state.controller, Controller::Mind, "{which}");
             assert!(!state.absent, "{which}: bound by no rule");
@@ -3043,7 +3058,7 @@ mod tests {
             assert_eq!(
                 other.clone().resolve_fire_by(RED, "cannon", 0, mind),
                 Err(Refusal::Unwarranted),
-                "{posture} does not answer for its neighbour"
+                "{posture} does not answer for its neighbor"
             );
             assert_eq!(shown(&other), None, "{posture}");
             // Each still answers for itself.

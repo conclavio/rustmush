@@ -499,9 +499,13 @@ fn status(tw: &mut TestWorld) -> String {
     run(tw, GOD, "@tacsim/port status")
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -515,7 +519,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 fn typed<K, V>(
@@ -551,7 +555,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot whose ship is named `name`.
 fn chartered(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -997,7 +1001,7 @@ fn bay_of(row: &HullRow) -> ObjId {
 
 /// The pilot's live charter's Trust lease.
 fn trust_lease(tw: &TestWorld, pilot: ObjId) -> u64 {
-    store(tw).enrolment_of(pilot).expect("an enrolment").lease
+    store(tw).enrolment_of(pilot).expect("an enrollment").lease
 }
 
 /// A `MakeWriter` that collects formatted log lines (`boot_parity.rs`'s).
@@ -1593,7 +1597,7 @@ fn sm3a_refit_prospector_and_back() {
     assert_eq!(
         store(&rig.tw).enrolment_of(pilot).cloned(),
         before,
-        "the enrolment document is unchanged"
+        "the enrollment document is unchanged"
     );
     no_refused_writes(&rig.tw);
 }
@@ -2105,7 +2109,7 @@ fn sm3a_buyout_is_refused_with_a_rig_aboard() {
     let e = store(&rig.tw)
         .enrolment_of(pilot)
         .cloned()
-        .expect("an enrolment");
+        .expect("an enrollment");
     assert_eq!(e.status, tacsim::port::EnrolmentStatus::Active);
     assert_eq!(e.buyout, None, "no buyout contract");
     let out = at_occator(&mut rig, pilot, "+tv/1 lease return go");

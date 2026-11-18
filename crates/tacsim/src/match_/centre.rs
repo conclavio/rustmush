@@ -409,22 +409,22 @@ impl Readiness {
             None
         } else if self.rooms && self.tanks > 0 {
             Some(format!(
-                "simulator centre partly ready: {} of {whole} pods, {} of {whole} tanks; the \
+                "simulator center partly ready: {} of {whole} pods, {} of {whole} tanks; the \
                  lobby fields the smaller count a side; take the packs by hand \
                  (deploy/README.md)",
                 self.pods, self.tanks
             ))
         } else if self.rooms {
             Some(
-                "simulator centre NOT ready: its rooms and pods are here but the arena's roster \
+                "simulator center NOT ready: its rooms and pods are here but the arena's roster \
                  is empty, so `SIM START` will refuse. Take the arena pack by hand with \
                  `@atlas/pack plan tacsim.pack.proving_ground` and `@atlas/pack apply`, with the \
-                 centre idle (deploy/README.md)."
+                 center idle (deploy/README.md)."
                     .to_owned(),
             )
         } else {
             Some(
-                "simulator centre NOT ready: this world has no centre rooms. An existing world \
+                "simulator center NOT ready: this world has no center rooms. An existing world \
                  latched `neighborhood.ooc_area` below the shipped version; take the upgrade with \
                  `@atlas/pack plan` and `@atlas/pack apply` (deploy/README.md)."
                     .to_owned(),
@@ -630,14 +630,14 @@ pub(crate) mod tests {
         assert_eq!(
             reading(true, 8, 8).warning().as_deref(),
             Some(
-                "simulator centre partly ready: 8 of 12 pods, 8 of 12 tanks; the lobby fields \
+                "simulator center partly ready: 8 of 12 pods, 8 of 12 tanks; the lobby fields \
                  the smaller count a side; take the packs by hand (deploy/README.md)"
             )
         );
         assert_eq!(
             reading(true, 12, 8).warning().as_deref(),
             Some(
-                "simulator centre partly ready: 12 of 12 pods, 8 of 12 tanks; the lobby fields \
+                "simulator center partly ready: 12 of 12 pods, 8 of 12 tanks; the lobby fields \
                  the smaller count a side; take the packs by hand (deploy/README.md)"
             ),
             "the pods first, the tanks second"
@@ -651,17 +651,17 @@ pub(crate) mod tests {
         assert_eq!(
             reading(true, 12, 0).warning().as_deref(),
             Some(
-                "simulator centre NOT ready: its rooms and pods are here but the arena's roster \
+                "simulator center NOT ready: its rooms and pods are here but the arena's roster \
                  is empty, so `SIM START` will refuse. Take the arena pack by hand with \
                  `@atlas/pack plan tacsim.pack.proving_ground` and `@atlas/pack apply`, with the \
-                 centre idle (deploy/README.md)."
+                 center idle (deploy/README.md)."
             )
         );
         for (pods, tanks) in [(0, 0), (12, 12)] {
             assert_eq!(
                 reading(false, pods, tanks).warning().as_deref(),
                 Some(
-                    "simulator centre NOT ready: this world has no centre rooms. An existing \
+                    "simulator center NOT ready: this world has no center rooms. An existing \
                      world latched `neighborhood.ooc_area` below the shipped version; take the \
                      upgrade with `@atlas/pack plan` and `@atlas/pack apply` \
                      (deploy/README.md)."
@@ -675,7 +675,7 @@ pub(crate) mod tests {
             readiness(twelve_pods_and_eight_tanks().world())
                 .warning()
                 .is_some_and(|line| line.starts_with(
-                    "simulator centre partly ready: 12 of 12 \
+                    "simulator center partly ready: 12 of 12 \
                                                        pods, 8 of 12 tanks;"
                 ))
         );

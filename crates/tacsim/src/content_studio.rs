@@ -471,12 +471,12 @@ fn code_bound_npcs() -> BTreeMap<(String, String), Vec<String>> {
         (
             "neighborhood.ceres_freeport",
             "npc.oduya",
-            "crates/tacsim/src/port/relationships.rs (Freeport Harbourmaster desk)",
+            "crates/tacsim/src/port/relationships.rs (Freeport Harbormaster desk)",
         ),
         (
             "tacsim.cast.ceres_freeport",
             "npc.oduya",
-            "crates/tacsim/src/port/relationships.rs (Freeport Harbourmaster desk)",
+            "crates/tacsim/src/port/relationships.rs (Freeport Harbormaster desk)",
         ),
         (
             "neighborhood.ceres_freeport",
@@ -2335,7 +2335,7 @@ fn synthesize_npc_patch(scope: &str, brief: &str, lower: &str, context: &Value) 
         brief.trim()
     );
     let background = format!(
-        "Worked the docks and repair gantries around {station_label} for years before taking independent contracts. Known along the corridor for keeping ageing drives and frames running under tight turnaround schedules."
+        "Worked the docks and repair gantries around {station_label} for years before taking independent contracts. Known along the corridor for keeping aging drives and frames running under tight turnaround schedules."
     );
     let speech_style =
         "Clipped, practical dock-register; cites pressures, seals, and shift hours without wasted words."

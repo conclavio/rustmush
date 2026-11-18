@@ -1218,7 +1218,7 @@ mod tests {
         let room = OutputEvent::Room(RoomView {
             name: "Limbo".into(),
             id: "#0".into(),
-            desc: RichText::plain("A grey nowhere."),
+            desc: RichText::plain("A gray nowhere."),
             contents: vec![ObjRef::new("#7", "Nick")],
             exits: vec![mush_proto::ExitRef {
                 name: "east".into(),

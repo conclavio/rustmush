@@ -3,7 +3,7 @@
     "id": "neighborhood.freeport_commons",
     "version": 1,
     "kind": "neighborhood",
-    "digest": "c112498ef5d5228518434ba336bea4809b91d118a1b08c0ec6275f0ad2b63375",
+    "digest": "4b958d78af312544f069d33a72b17387a2fcb43e0cd457e63982349b8337a0f3",
     "requires": [
       {
         "id": "region.freeport_commons",
@@ -12,7 +12,7 @@
     ]
   },
   "brief": {
-    "prose": "Freeport Commons is the Registry's oldest working ground, five kilometres north of the Freeport on the floor of Occator: open to anyone the Registry licenses, staked by nobody, and worked over since the Outbound opened the Belt, so every block has given up a share of what it held. The pad is a cleared square of fused regolith with the Freeport's lights on the southern horizon."
+    "prose": "Freeport Commons is the Registry's oldest working ground, five kilometers north of the Freeport on the floor of Occator: open to anyone the Registry licenses, staked by nobody, and worked over since the Outbound opened the Belt, so every block has given up a share of what it held. The pad is a cleared square of fused regolith with the Freeport's lights on the southern horizon."
   },
   "entries": {
     "neighborhood": {
@@ -93,7 +93,7 @@
       "def": {
         "name": "Freeport Commons Pad",
         "short_desc": "A cleared landing square on the floor of Occator, the Freeport's lights low on the southern horizon.",
-        "desc": "The pad is a square of fused regolith forty metres on a side, swept clean and ringed with tie-down rings set flush in the ground. A Registry number, FR-01, is painted at each corner in faded orange. Beyond the square the crater floor is grey and trampled flat, scored with old wheel ruts and spoil heaps from the better part of a century of working, ice glinting where the ruts cut deep. The horizon is close. To the south the Freeport's mast lights blink over the curve of the ground.",
+        "desc": "The pad is a square of fused regolith forty meters on a side, swept clean and ringed with tie-down rings set flush in the ground. A Registry number, FR-01, is painted at each corner in faded orange. Beyond the square the crater floor is gray and trampled flat, scored with old wheel ruts and spoil heaps from the better part of a century of working, ice glinting where the ruts cut deep. The horizon is close. To the south the Freeport's mast lights blink over the curve of the ground.",
         "surface": "ground",
         "footprint": {
           "rect": [
@@ -113,7 +113,7 @@
         ],
         "details": {
           "tie downs": "Steel rings in concrete collars, every one of them scuffed bright by cable. The Registry inspects them yearly and stamps the collar.",
-          "spoil heaps": "Low grey mounds of worked regolith, each with a Registry stake and a date. The oldest stakes have lost their paint."
+          "spoil heaps": "Low gray mounds of worked regolith, each with a Registry stake and a date. The oldest stakes have lost their paint."
         }
       }
     },

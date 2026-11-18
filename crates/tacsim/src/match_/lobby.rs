@@ -543,7 +543,7 @@ pub enum SimError {
     #[error("{reason}")]
     MindAdmission { reason: String },
     /// This world has no simulator centre (no OOC pack at version 4).
-    #[error("This server has no simulator centre.")]
+    #[error("This server has no simulator center.")]
     NoCentre,
     /// The actor is not in one of the centre's three rooms.
     #[error("{OUTSIDE_CENTRE}")]
@@ -642,7 +642,7 @@ pub enum SimError {
         why: String,
     },
     /// The centre is not in a state that admits this.
-    #[error("The simulator centre is {state}; that is not something you can do to it now.")]
+    #[error("The simulator center is {state}; that is not something you can do to it now.")]
     WrongState {
         /// What state it is in.
         state: &'static str,
@@ -975,7 +975,7 @@ pub enum SimError {
     /// has no verb yet, and `deploy/README.md` says so.
     #[error(
         "The simulator has no unit for {team} slot {index}. Staff apply the arena pack with \
-         @atlas/pack plan tacsim.pack.proving_ground and @atlas/pack apply, while the centre is \
+         @atlas/pack plan tacsim.pack.proving_ground and @atlas/pack apply, while the center is \
          idle."
     )]
     NoUnit {
@@ -2700,7 +2700,7 @@ pub fn fits_line(
 #[must_use]
 pub fn pool_line(team: PartyId, half: u64, spoken: u64) -> String {
     format!(
-        "{}'s half of the centre's pool is {} ops a second and {} are spoken for.",
+        "{}'s half of the center's pool is {} ops a second and {} are spoken for.",
         side_word(team),
         crate::match_::pool::thousands(half),
         crate::match_::pool::thousands(spoken)
@@ -2856,7 +2856,7 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
             let access = super::original_access::HoldingAccess::from_ctx(ctx);
             let mut lines = mind_read_lines(&access, actor, state, slot.as_ref());
             if access.enabled() {
-                lines.push("Original-owner filings: SIM MIND /filed; choose with SIM MIND filed:<licence>.".into());
+                lines.push("Original-owner filings: SIM MIND /filed; choose with SIM MIND filed:<license>.".into());
             }
             for line in lines {
                 ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
@@ -5789,10 +5789,10 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
     let mut rows = Vec::new();
     let head = match centre.match_id {
         Some(match_id) => format!(
-            "Simulator centre: {} (match {match_id})",
+            "Simulator center: {} (match {match_id})",
             centre.state.as_str()
         ),
-        None => format!("Simulator centre: {}", centre.state.as_str()),
+        None => format!("Simulator center: {}", centre.state.as_str()),
     };
     rows.push(match (centre.outcome, centre.outcome_reason) {
         // **16b cut Q.7**: `Spent` is a draw, and a draw for a reason nobody can
@@ -6241,7 +6241,7 @@ mod tests {
         assert_eq!(
             refused.map_err(|error| error.to_string()),
             Err(
-                "This tank would think 400 ops a second; its side's half of the centre's pool is \
+                "This tank would think 400 ops a second; its side's half of the center's pool is \
                  4,494 and 4,400 are spoken for."
                     .to_owned()
             )
@@ -6310,8 +6310,8 @@ mod tests {
             ],
             ..Centre::default()
         };
-        let encoded = serde_json::to_value(&centre).expect("centre serializes");
-        let restored: Centre = serde_json::from_value(encoded).expect("live centre decodes");
+        let encoded = serde_json::to_value(&centre).expect("center serializes");
+        let restored: Centre = serde_json::from_value(encoded).expect("live center decodes");
         assert_eq!(restored.fill_classes, centre.fill_classes);
         centre.resettle_leads();
         assert_eq!(centre.fill_classes.len(), 2);
@@ -6357,7 +6357,7 @@ mod tests {
         assert_eq!(
             slots_per_side(whole.world(), &cfg),
             PODS_PER_SIDE,
-            "but the centre has six pods a side"
+            "but the center has six pods a side"
         );
         assert_eq!(
             slots_per_side(old.world(), &cfg),
@@ -6385,7 +6385,7 @@ mod tests {
         assert_eq!(
             slots_per_side(bare.world(), &cfg),
             1,
-            "never zero, even with no centre"
+            "never zero, even with no center"
         );
     }
 
@@ -6636,7 +6636,7 @@ mod tests {
         );
         assert_eq!(
             line(UnitClass::Armour, 1),
-            "A side fields at most 1 armoured machine; pick another type."
+            "A side fields at most 1 armored machine; pick another type."
         );
         assert_eq!(
             line(UnitClass::Drone, 0),
@@ -6644,7 +6644,7 @@ mod tests {
         );
         assert_eq!(
             line(UnitClass::Armour, 0),
-            "This server fields no armoured machines; pick another type."
+            "This server fields no armored machines; pick another type."
         );
         assert_eq!(
             SimError::NoGun { team: "red" }.to_string(),

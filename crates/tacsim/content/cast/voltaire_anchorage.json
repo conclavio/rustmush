@@ -12,7 +12,7 @@
             "tier": "public"
           },
           {
-            "fact": "From 2308 the Concord fuelled its blockade of Mars from a depot under the floor of Voltaire. The Roads draw one lesson from it: a blockade costs more propellant than the tariffs it defends.",
+            "fact": "From 2308 the Concord fueled its blockade of Mars from a depot under the floor of Voltaire. The Roads draw one lesson from it: a blockade costs more propellant than the tariffs it defends.",
             "subject": "The blockade depot",
             "tier": "public"
           },
@@ -245,7 +245,7 @@
           "fallback": [
             "Syrtis buys light alloy and instrument boards, Concord origin, in bond. The board has the figures; I sign the lines.",
             "Kasei cannot roll it, and the Yard will not frame a hull without it. Coprates calls the difference tribute. Coprates pays it.",
-            "Boards cube out before they weigh out, captain. Plan the hold by the cubic metre.",
+            "Boards cube out before they weigh out, captain. Plan the hold by the cubic meter.",
             "Nothing leaves bond but by the hop to Stickney, under the Commissioner's seal."
           ],
           "interfaces": [
@@ -340,7 +340,7 @@
             "that the Reserve buys Titan's carbon billet for Mars's soil"
           ],
           "persona": "the Titan Concession Company's agent at the Roads: polished, cheerful, always the first in the room with Titan's news and never the last to know what it is worth. Speaks of the Company as a proprietor speaks of an estate, and of the Selk Townships with a courtesy that is not quite warmth. Keeps the Titan card in the Long Straw more current than the Company's own notices.",
-          "speech_style": "bright, brisk, a saleswoman's ease; \"the Company\" always capitalised in her voice; gives Titan's news first and its meaning second."
+          "speech_style": "bright, brisk, a saleswoman's ease; \"the Company\" always capitalized in her voice; gives Titan's news first and its meaning second."
         },
         "room": "room.d10_long_straw",
         "room_pack": "neighborhood.voltaire_anchorage",
@@ -354,7 +354,7 @@
     }
   },
   "manifest": {
-    "digest": "ec8e5696c59fb91c0c08d5c0d9d3892afc2b33ee2c58d1ffc49aedc17ab957da",
+    "digest": "b44722a48ad760bebf748801900e2b4ed9d4892ae68c7e0660720159070cd885",
     "id": "tacsim.cast.voltaire_anchorage",
     "kind": "campaign_seed",
     "requires": [

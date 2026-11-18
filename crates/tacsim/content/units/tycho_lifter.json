@@ -174,7 +174,7 @@
               "details": {
                 "builders plate": "STICKNEY YARDS, PHOBOS, LIFTER-CLASS HEAVY RECOVERY HAULER, a hull number and a year. Under it a second stencil, newer, Tycho Mutual's roundel and a fleet number.",
                 "outer door": "The seal light: green when a berth gallery is on the other side and the clamps are on, red and steady under way. Beyond it, under way, there is nothing but the dark and the ship's own running lights.",
-                "pressure gauge": "Station-normal, ship-normal, and a hand-painted line between them that somebody labelled \"fine\".",
+                "pressure gauge": "Station-normal, ship-normal, and a hand-painted line between them that somebody labeled \"fine\".",
                 "suit locker": "Two suits, inspected and tagged, and the space for a third."
               },
               "id": "airlock",
@@ -183,11 +183,11 @@
               "short_desc": "A two-person lock, scuffed white, a suit locker and a pressure gauge."
             },
             {
-              "desc": "The lifter's spine: a narrow pressurised run of grab-rails and cable trays, with a ladder well up to the bridge and a deck hatch down to the hold, the crew compartment's hatch aft and the lock forward. Cargo tie-points stud the deck along the whole length. The hum of the drive is felt through the handrails more than heard, and the air moves with a steady draught from the scrubbers. A manifest slate is clipped by the bridge ladder, its figures the hold's own.",
+              "desc": "The lifter's spine: a narrow pressurised run of grab-rails and cable trays, with a ladder well up to the bridge and a deck hatch down to the hold, the crew compartment's hatch aft and the lock forward. Cargo tie-points stud the deck along the whole length. The hum of the drive is felt through the handrails more than heard, and the air moves with a steady draft from the scrubbers. A manifest slate is clipped by the bridge ladder, its figures the hold's own.",
               "details": {
-                "cable trays": "Power, data, air, in colour-banded runs; a tag on each says which deck plate to lift.",
-                "manifest slate": "The hold's contents by good, in tonnes and in cubic metres, two columns with the hold's two limits at their feet, and the tank and the locker under a line.",
-                "tie points": "Recessed rings every metre, for the day the passage is cargo too."
+                "cable trays": "Power, data, air, in color-banded runs; a tag on each says which deck plate to lift.",
+                "manifest slate": "The hold's contents by good, in tonnes and in cubic meters, two columns with the hold's two limits at their feet, and the tank and the locker under a line.",
+                "tie points": "Recessed rings every meter, for the day the passage is cargo too."
               },
               "id": "passage",
               "kind": "walkable",
@@ -199,7 +199,7 @@
               "details": {
                 "ROM pane": "CLASS 0. It flies a filed sailing plan to the second and contracts for nothing; the signature on the plan is the captain's, and under the Warrant so is the liability.",
                 "checklist": "BEFORE CLEARANCE: tank ≥ burn. Locker ≥ days. Payload under the rail. Crew of record aboard. Plan filed. Someone has ticked every box in pen and then added \"sleep\".",
-                "displays": "COURSE: the route, the leg, the ETA, docked or under way. TANKAGE: reaction mass aboard and the burn the plan needs. STORES: crew-days against the passage. HOLD: tonnes and cubic metres by good against both limits, FULL lit under whichever reads it, or both. BERTH: the gallery's name, or SEALED.",
+                "displays": "COURSE: the route, the leg, the ETA, docked or under way. TANKAGE: reaction mass aboard and the burn the plan needs. STORES: crew-days against the passage. HOLD: tonnes and cubic meters by good against both limits, FULL lit under whichever reads it, or both. BERTH: the gallery's name, or SEALED.",
                 "sailing plan": "A paper copy of the sailing plan, the orders numbered, the departure hour circled."
               },
               "id": "bridge",
@@ -221,13 +221,13 @@
               "short_desc": "Two curtained bunks, a fold-down galley, a water still that ticks as it cools."
             },
             {
-              "desc": "A tall, cold bay of bulk bins, canister racks and lashing rails under blue work light, crossed by a catwalk from the deck hatch to the engineering ladder. The load cells' readout glows on the forward bulkhead: tonnes and cubic metres by good, and the hold's two limits under them. Frost forms on the ice canisters and nowhere else; the concentrate bins are dusted grey; yard crates, when there are any, take the bay the bins leave. The air is dry and tastes of metal, and every footfall on the catwalk rings down into the stowage frames below. The passage is up; engineering is down.",
+              "desc": "A tall, cold bay of bulk bins, canister racks and lashing rails under blue work light, crossed by a catwalk from the deck hatch to the engineering ladder. The load cells' readout glows on the forward bulkhead: tonnes and cubic meters by good, and the hold's two limits under them. Frost forms on the ice canisters and nowhere else; the concentrate bins are dusted gray; yard crates, when there are any, take the bay the bins leave. The air is dry and tastes of metal, and every footfall on the catwalk rings down into the stowage frames below. The passage is up; engineering is down.",
               "details": {
                 "bins": "Strapped bulk containers in stowage frames, numbered; behind them the racks nobody walks, where the cargo physically is.",
                 "crates": "Yard crates, mostly air and dunnage; four of them fill a bay a single bin of concentrate outweighs.",
                 "frost": "On the water-ice canisters only. It is how a crew tells ice from concentrate in the dark.",
                 "lashing rails": "Rated and stencilled; a captain who overloads the hold will not get past the rail, and the cells say so first.",
-                "load cells": "One line per good the hold accepts, tonnes and cubic metres side by side, a TOTAL line under them and a LIMIT line under that, with FULL lit under whichever limit reads it, or both; cubic metres to a tenth, truncated, never rounded up. The figures are the cargo's own and change with every lot that comes aboard or leaves.",
+                "load cells": "One line per good the hold accepts, tonnes and cubic meters side by side, a TOTAL line under them and a LIMIT line under that, with FULL lit under whichever limit reads it, or both; cubic meters to a tenth, truncated, never rounded up. The figures are the cargo's own and change with every lot that comes aboard or leaves.",
                 "racks": "The canister racks fill before the bins weigh out: ice runs out of room, concentrate runs out of rating."
               },
               "id": "hold",
@@ -423,7 +423,7 @@
     }
   },
   "manifest": {
-    "digest": "6319e50c913fb19b9c971615326cfd73c1bb3c629e75a8c7b8805c0e2be71e38",
+    "digest": "2b34e5359bf5cd38c8e90f32cede59779ed9455d31a378fc71953030f877b2ad",
     "id": "tacsim.pack.tycho_lifter",
     "kind": "rules_definition",
     "requires": [

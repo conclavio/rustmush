@@ -1,6 +1,6 @@
 {
   "brief": {
-    "prose": "The Co-op hosts the Exchange under a Freeport licence. This checked strategic site supplies the Kirkwood endpoint without inventing a new trade-voyage route."
+    "prose": "The Co-op hosts the Exchange under a Freeport license. This checked strategic site supplies the Kirkwood endpoint without inventing a new trade-voyage route."
   },
   "entries": {
     "exit.relay": {
@@ -84,7 +84,7 @@
     "room.counter": {
       "def": {
         "access": "public",
-        "desc": "Co-op freight notices share a wall with the Exchange tariff board. A Freeport licence and Tycho financing plate hang above the counter. Beyond the pressure port, picket lights mark the approach.",
+        "desc": "Co-op freight notices share a wall with the Exchange tariff board. A Freeport license and Tycho financing plate hang above the counter. Beyond the pressure port, picket lights mark the approach.",
         "details": {
           "charter": "Concord-chartered neutral common carrier under the 2312 Settlement. Every suspension names its principal and reason; independent sanctions survive an arrears cure.",
           "tariffs": "Published service terms are available with +relay. All mail is IC and transits. Standard pays the declared wait; Priority and Sovereign wait for capacity; Deferred waits for an off-peak window."
@@ -202,7 +202,7 @@
     }
   },
   "manifest": {
-    "digest": "fe585584e7631ed5904c4402d5042f451ff487a417aaf5b259b27db0fcc4e328",
+    "digest": "2717ede9f772bac06845061320b5e05b5b91c00f3f1bd097131b6ed0e25cac86",
     "id": "neighborhood.kirkwood_depot",
     "kind": "neighborhood",
     "requires": [

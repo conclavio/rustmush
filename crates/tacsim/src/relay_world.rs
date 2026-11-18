@@ -134,7 +134,7 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
         if s.postmaster != mobile.postmaster
             || s.facts.iter().any(|f| f.restriction.operator != operator.0)
         {
-            return Err("Terms programme identity drift".into());
+            return Err("Terms program identity drift".into());
         }
     } else {
         if ctx

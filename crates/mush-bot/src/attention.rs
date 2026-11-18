@@ -494,7 +494,7 @@ mod tests {
         assert!(a.has_pending());
         a.acknowledge(snapshot, true);
         assert!(!a.has_pending());
-        a.feed("Marco says, \"And your favourite team?\"\n");
+        a.feed("Marco says, \"And your favorite team?\"\n");
         assert!(a.has_pending());
         assert!(
             a.records

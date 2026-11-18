@@ -21,21 +21,23 @@ Commons on Vesta (`help travel`).
 ## The loop
 
 **1. Kit up.** At Ceres Freeport the Freeport Registry licenses prospectors
-(`+licence/buy`, `help coop`), the Co-op's yard refits a chartered or owned Dray
+(`+license/buy`, `help coop`), the Co-op's yard refits a chartered or owned Dray
 into a Dray-P (`+coop/refit prospector`), and Occator leases terrain vehicles
 into its bay at the Exchange Hall counter (`+tv/lease`, `help ships`). A lease
-needs a licence in force or in its grace. After buying out your Dray, your title lets you
+needs a license in force or in its grace. After buying out your Dray, your title lets you
 refit her and lease rigs on the same terms. Return any rigs before the buyout;
 once title has passed, you can lease them again.
 
-  +licence/buy [go]        the Freeport Registry's prospecting licence
-  +licence                 your licence: in force, in its grace, or lapsed
+  +license/buy [go]        the Freeport Registry's prospecting license
+  +license                 your license: in force, in its grace, or lapsed
   +coop/refit prospector   a Dray-P: a two-slot vehicle bay and a stern ramp
   +tv/lease [go]           lease a rig into a free bay slot
   +tv/lease escort [go]    lease an escort line tank, armed, under the escort clearance
 
+`+licence`, the British spelling, still works as an alias of `+license`.
+
 Occator also leases an armed escort hull into the same bay (`+tv/lease escort`).
-It needs the escort clearance: a licence in force (its grace does not serve), no
+It needs the escort clearance: a license in force (its grace does not serve), no
 lease of yours forfeit, one armed hull at a time, and none written off in the
 last 28 IC days. You board it in the bay and fly it from its cab, which carries
 the helm, the sensors and the guns. A leased rig wrecked out of the bay is
@@ -81,7 +83,7 @@ map, and yours never show on theirs.
   +tv[/<n>]                each rig: where it stands, its charge, its act
   +tv/<n> launch [go]      down the ramp onto the site
   +tv/<n> launch mind=<mind> [org=<org>] [go]  a rig with a core flies that mind
-                           sealed aboard: filed:<licence>, or draft:<name> on an
+                           sealed aboard: filed:<license>, or draft:<name> on an
                            ungoverned core
   +tv[/<n>]/map [site] [family]  the site map around the rig, or the whole site
 
@@ -139,7 +141,7 @@ ramp, and one that would leave less than 5 % after it is refused. A drive to a
 place the rig could not come back from is refused, and a way too winding to
 hold in 32 waypoints is refused too: drive to a nearer point first. From the
 bay the rig goes down the ramp first, one act 300 IC s longer. When it arrives
-you hear where, with your reading of that pocket if you have one. No licence
+you hear where, with your reading of that pocket if you have one. No license
 and no claim is needed to drive anywhere on a site.
 
   +tv/<n> drive <target> [go]  drive to a pocket, a field, a block, a cell or a
@@ -165,10 +167,10 @@ then on. `+tv/1 mine stop` lets the cycle in flight finish and keep its ore; the
 cycles after it are dropped at no cost. While a rig drills you may scan or sound
 from it, preview its next drive, read the map and work your other rig.
 
-Mining needs a prospecting licence in force or in its grace, and open ground or
+Mining needs a prospecting license in force or in its grace, and open ground or
 the commons: "That block is under claim." refuses a block someone holds. Only
 one rig works a pocket at a time: "Another rig is working that pocket." A
-licence that lapses, or a claim filed, mid-run stops the run after the cycle in
+license that lapses, or a claim filed, mid-run stops the run after the cycle in
 flight, and the rig can always come home with `+tv/1 recover go`.
 
   +tv/<n> mine [family] [cycles] [go]  mine the pocket the rig stands on
@@ -268,14 +270,14 @@ with `family=`, or the best your first address reads; it never changes while the
 plan runs. A plan names only places you have read yourself and may mine: a
 pocket or block you have no reading of answers "You have no reading there.", a
 block under someone else's claim "That block is under claim.", and the plan
-needs your licence and the rig's lease like any act. A plan names at most 16
+needs your license and the rig's lease like any act. A plan names at most 16
 pockets and blocks and makes at most 64 steps.
 
 Between steps the rig drives itself, recovers into the bay at every full hopper
 and unloads into the hold, and comes home and parks when no cycle fits the
 hold's unreserved room, its list is worked out, or its 288 IC hours have run;
 the hours stop new steps, never one in flight. A plan fills one hold and never
-starts again: you file each shift. It re-reads your licence, the rig's lease
+starts again: you file each shift. It re-reads your license, the rig's lease
 and the block's claim at every step's start; if one has lapsed it stops mining,
 comes home, unloads and parks, and says why. It waits while you are off the
 helm or ashore, never past its 288 IC hours: then it ends where the rig stands.

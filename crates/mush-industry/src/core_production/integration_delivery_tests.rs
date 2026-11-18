@@ -121,7 +121,7 @@ impl FactoryRig {
             .find(|a| {
                 a.owner == PrincipalId::Object(self.buyer) && a.instrument.as_str() == LICENCE
             })
-            .ok_or("personal licence account")?
+            .ok_or("personal license account")?
             .id;
         let faucet = s
             .accounts()
@@ -129,7 +129,7 @@ impl FactoryRig {
                 matches!(&a.owner, PrincipalId::System(n) if n.as_str() == "core.licence.fixture")
                     && a.instrument.as_str() == LICENCE
             })
-            .ok_or("licence issuer account")?
+            .ok_or("license issuer account")?
             .id;
         self.control(&format!("@econ/mint {}={} 1", faucet.0, account.0))?;
         check_eq!(self.balance(account)?.0, Amount::from_minor(1));

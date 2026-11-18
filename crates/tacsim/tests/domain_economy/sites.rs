@@ -90,11 +90,11 @@ fn site_files() -> Vec<String> {
 const PINNED: [(&str, &str); 12] = [
     (
         "region.freeport_commons",
-        "0128a8b67e95da3dfef1c587208f249f736e79e37925a033b8ff3fd53ce4a0ff",
+        "2a59fbb1a546539122c0fcde151f78bd0127ea85c1802ab5b7b1c681e6c30f63",
     ),
     (
         "neighborhood.freeport_commons",
-        "c112498ef5d5228518434ba336bea4809b91d118a1b08c0ec6275f0ad2b63375",
+        "4b958d78af312544f069d33a72b17387a2fcb43e0cd457e63982349b8337a0f3",
     ),
     (
         "region.kerwan_floor",
@@ -102,7 +102,7 @@ const PINNED: [(&str, &str); 12] = [
     ),
     (
         "neighborhood.kerwan_floor",
-        "3501aa8a84a862c4a4c3e06595e3d5f434b5fcd46b6b5e03ab02f00137129c6e",
+        "50cc744eb80cb4735f51cc6f153feb98867619f926f488a0dac77ee392d26668",
     ),
     (
         "region.ahuna_flank",
@@ -110,7 +110,7 @@ const PINNED: [(&str, &str); 12] = [
     ),
     (
         "neighborhood.ahuna_flank",
-        "9540fa38dd76ba938a3a0ec8eff9908cb17a892123fdcc65df07617781d72614",
+        "e30fa62c389ba5492600d9695dc6514e6e47a645a8831449475240de8dcd8bc8",
     ),
     (
         "region.juling_shadow",
@@ -118,15 +118,15 @@ const PINNED: [(&str, &str); 12] = [
     ),
     (
         "neighborhood.juling_shadow",
-        "97655785413243d6e9bac03a59d9af99a2db6bf7d0029db8cb87f969fad05c5a",
+        "7e57dfc4457aaca49fd4fca9a7d881ee803814d0cc84d744ca7e6441a7f24001",
     ),
     (
         "region.occator_rim",
-        "df4e7b42c6b4b3dd924c6e5fe21cc06be178a23aeb8e0e80c423a2f94d5b8a3d",
+        "171783a21970a23210c22e93ab93125bb0e39922e963845eaee1a446c2dd1909",
     ),
     (
         "neighborhood.occator_rim",
-        "18ac2c2dabf0a50e30fa6ced16b5a6ccfaefb3ddf09d382f08860bfce316a517",
+        "48160fa84c67c263342907e61376f29f3ff3180365f4b0dda4a47421230692b1",
     ),
     (
         "region.rheasilvia_commons",
@@ -134,7 +134,7 @@ const PINNED: [(&str, &str); 12] = [
     ),
     (
         "neighborhood.rheasilvia_commons",
-        "f61a052ca48765dd22fd0d1000e5aee9853e954c5a0ebfa3db2b98fad4ec9487",
+        "d4c3ab02e43759152620e495aed3074318a821c70026dbb08b5bbb7f663e1689",
     ),
 ];
 
@@ -654,9 +654,13 @@ fn status(tw: &mut TestWorld) -> String {
     run(tw, GOD, "@tacsim/port status")
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -677,7 +681,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 fn typed<K, V>(
@@ -726,7 +730,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot (`Salt Moth`).
 fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, "+coop/enrol Salt Moth");
+    let out = run(&mut rig.tw, pilot, "+coop/enroll Salt Moth");
     assert!(out.contains("now the Salt Moth"), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1013,8 +1017,8 @@ fn sm2_the_lane_carries_six_sites() {
     // its port and its two routes, four entries; `s1_the_lane_carries_the_512_site`). Doc 36 cut
     // GC.7: v18 (the munitions rows and the two workshops; no new entry).
     assert_eq!(
-        LANE_VERSION, 38,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6, v23 since doc 42 cut CR.2, v24 since doc 39 cut IN.5, v26 since doc 39 cut IN.7, v27 since doc 39 cut IN.9, v28 since doc 41 cut RS.6a, v29 since doc 39 cut IN.10, v31 since the player-response floor, v32 since doc 39 cut IN.11, v33 since the owner's IN.11 house-restock ruling, v34 since doc 47 unit CO.10, v35 since doc 48 unit PL.1, v36 since doc 48 unit PL.2, v37 since doc 48 unit PL.3, v38 since doc 48 unit EX.3"
+        LANE_VERSION, 40,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10, v13 since relay R9b, v14 since doc 20 cut SM.12a, v15 since doc 20 cut SM.12b, v16 since doc 32 cut CF.6c, v17 since doc 32 cut S.1, v18 since doc 36 cut GC.7, v19 since doc 36 cut GC.13, v20 since doc 39 cut IN.1, v21 since doc 41 cut RS.1, v22 since doc 39 cut IN.6, v23 since doc 42 cut CR.2, v24 since doc 39 cut IN.5, v26 since doc 39 cut IN.7, v27 since doc 39 cut IN.9, v28 since doc 41 cut RS.6a, v29 since doc 39 cut IN.10, v31 since the player-response floor, v32 since doc 39 cut IN.11, v33 since the owner's IN.11 house-restock ruling, v34 since doc 47 unit CO.10, v35 since doc 48 unit PL.1, v36 since doc 48 unit PL.2, v37 since doc 48 unit PL.3, v38 since doc 48 unit EX.3, v39 since doc 48 unit PL.5, v40 since doc 48 unit PL.6"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -1241,7 +1245,7 @@ fn sm2_the_site_packs_load_clean_and_are_pinned() {
                 && 1_280.0 <= corner(1, 0)
                 && corner(0, 1) <= 1_280.0
                 && 1_280.0 <= corner(1, 1),
-            "{name}: the pad covers the centre"
+            "{name}: the pad covers the center"
         );
         let craters: Vec<&Value> = entries
             .values()
@@ -1365,7 +1369,7 @@ fn sm2_the_validator_refuses_what_a_site_may_not_author() {
                     { "id": "ahuna_co", "name": "Ahuna Co", "capital_major": 1, "faction": "freeport" }
                 ]);
             }),
-            "site: a site authors no orgs, rooms, programme, vendors, premium or emergency",
+            "site: a site authors no orgs, rooms, program, vendors, premium or emergency",
         ),
         (
             "rooms on a site",
@@ -1373,7 +1377,7 @@ fn sm2_the_validator_refuses_what_a_site_may_not_author() {
                 doc["entries"]["ahuna_port"]["def"]["rooms"] =
                     serde_json::json!({ "registry": "neighborhood.ahuna_flank.room.pad" });
             }),
-            "site: a site authors no orgs, rooms, programme, vendors, premium or emergency",
+            "site: a site authors no orgs, rooms, program, vendors, premium or emergency",
         ),
         (
             "a held row without a holder",
@@ -3151,7 +3155,7 @@ fn s1_the_wide_site_packs_load_clean() {
         assert_eq!(
             rooms[0]["def"]["footprint"]["rect"],
             serde_json::json!([[2540, 2540], [2580, 2580]]),
-            "the pad covers the centre"
+            "the pad covers the center"
         );
         let craters: Vec<&Value> = entries
             .values()

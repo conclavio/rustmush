@@ -151,11 +151,11 @@ pub const REFITTED: &str = "as a Dray-P";
 /// Dray-P."): a hull a recall freed, chartered again (doc 41 cut RS.9c).
 pub const REFIT_ALREADY: &str = "is already a Dray-P.";
 /// `tacsim::port::licence::LICENCE_PREVIEW`'s tail (`licence.rs:138`).
-pub const LICENCE_PREVIEWED: &str = "+licence/buy go buys it.";
+pub const LICENCE_PREVIEWED: &str = "+license/buy go buys it.";
 /// `licence::LICENCE_IN_FORCE` (`licence.rs:112`).
 pub const LICENCE_IN_FORCE: &str = "in force until";
 /// `licence::LICENCE_NONE` (`licence.rs:109`).
-pub const LICENCE_NONE: &str = "You hold no prospecting licence";
+pub const LICENCE_NONE: &str = "You hold no prospecting license";
 /// `tacsim::port::tv::LEASE_PREVIEW`'s tail after its `{go}` (doc 32 §17): the preview names the
 /// command that signs it, `+tv/lease go` or `+tv/lease escort go` ([`lease_previewed`]).
 pub const LEASE_PREVIEWED: &str = " signs it.";

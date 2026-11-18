@@ -176,7 +176,7 @@ fn stickney_variant(version: u32, ratio: u32) -> String {
         // The Co-op's margin references that read Stickney's asks go with them.
         let reference = doc["entries"]["ceres_port"]["def"]["programme"]["reference"]
             .as_object_mut()
-            .expect("the programme's references");
+            .expect("the program's references");
         reference.retain(|_, listing| {
             !listing
                 .as_str()

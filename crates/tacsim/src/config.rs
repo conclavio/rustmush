@@ -1438,10 +1438,15 @@ pub struct HarnessConfig {
     /// (`path_max_cells` expansions) and a `NoRoute` flood (the whole reachable
     /// region) are the two dearest of — both counted since the same cut.
     ///
-    /// Like every other key in this block it is a **threshold the harness
-    /// asserts**, never a throttle the arena applies: a controller that stopped
-    /// searching when a per-wake budget ran out would make a route a function of
-    /// the tempo, which D-16-2 forbids.
+    /// The harness asserts it, and since doc 49 unit CC.2b **the arena applies
+    /// the same figure**, but not per wake: the motor holds the whole field to
+    /// [`crate::arena::motor::PATH_CELLS_PER_WINDOW`] cells per `reflex.decide_ms`
+    /// window of arena time, and defers a search that has run out of what the
+    /// window left to a later window. A wake lies inside one window, so the
+    /// window's budget holds every wake to this bound. A budget per wake would
+    /// make a route a function of the tempo, which D-16-2 forbids; the window
+    /// does not. The motor never reads this key; its own test
+    /// (`cc2b_the_window_holds_its_path_cells`) holds the two figures equal.
     ///
     /// 48,128 since 16b cut AI.1, **measured before it was set**: the largest
     /// `peak_path_cells` of both arena lanes at seeds 2350 to 2353 after the
@@ -1622,7 +1627,7 @@ impl ArenaConfig {
             // hauler the first); the sentence names the fieldable three.
             if !class.fieldable() {
                 return Err(format!(
-                    "[tacsim.arena.max_units_by_class] names a class that is not armour, \
+                    "[tacsim.arena.max_units_by_class] names a class that is not armor, \
                      walker or drone: {}",
                     class.as_str()
                 ));
@@ -2395,7 +2400,7 @@ mod tests {
         assert_eq!(
             cfg.validate(),
             Err(
-                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
                  drone: hauler"
                     .to_owned()
             )
@@ -2413,7 +2418,7 @@ mod tests {
         assert_eq!(
             cfg.validate(),
             Err(
-                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                "[tacsim.arena.max_units_by_class] names a class that is not armor, walker or \
                  drone: vehicle"
                     .to_owned()
             )

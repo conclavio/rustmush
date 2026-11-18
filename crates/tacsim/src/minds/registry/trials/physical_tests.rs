@@ -341,7 +341,11 @@ fn physical_cycle_trial_reaches_real_terminal_with_identical_unmetered_hashes() 
     check_eq!(terminal.meter(), &before.summary);
     let observed = physical(&trial)?;
     check!(observed.rom_thinks > 0);
-    check_eq!(observed.cancelled_uncalled, 1, "actual final wreck suffix");
+    // The final wreck's uncalled suffix, by record. It was 1 until doc 49 unit CC.2: under the
+    // ruled palette's slower cycles the last wreck lands with no think of the wrecked unit's
+    // drawn and uncalled, so the suffix is empty. The suffix of one is held by
+    // `meter::physical::tests::wreck_terminal`, which builds it on purpose.
+    check_eq!(observed.cancelled_uncalled, 0, "actual final wreck suffix");
     trial.meter.require_complete()?;
     Ok(())
 }
@@ -461,11 +465,24 @@ const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !
 /// conclav.dev and run on Windows by hand at the same tree: the four rows equal. The rows were
 /// CC.9's, at 58,500 ms with the states `7970defd05f7722c`, `acd75c62f8ca64ff`,
 /// `514d012c9feb9a7a` and `1c4324486221d96d`.
+///
+/// **Re-blessed by doc 49 unit CC.2** (the ruled palette: the cannon at 15,000 ms and 24 rounds,
+/// the coaxial gun at 5,000 ms and 600): every case still ends in the same elimination and is
+/// filed the same `Loss`, at 241,500 ms where it was 106,500 (the cycles are slower), and each
+/// row's state hash, ledger digest and result digest moved with it (`docs/design/49-cut-notes.md`,
+/// CC.2). The rows were CC.1's, at 106,500 ms with the states `f36c0170528c436a`,
+/// `1a146dd84de19f37`, `156f01bfa5d7d6ab` and `175e93075fc7cffe`.
+///
+/// **Re-blessed by doc 49 unit CC.1b** (the Standard source: the Engage path's cost, behaviour
+/// unchanged): every case still ends in the same elimination, filed the same `Loss` at
+/// 241,500 ms; each row's state hash, ledger digest and result digest moved with the source the
+/// seals fold. The rows were CC.2's, with the states `3bd6b8ede853a30e`, `99394283e652f56a`,
+/// `e1c626cb05ff9c2d` and `97bdac8c9332faf6`.
 const C4_TRIAL_PINS: [&str; 4] = [
-    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=f36c0170528c436a ledger=adb379af3d927a2f3e2f555afdbe4ce0487e377009a2b91204d93367d0099197 result=bb615b00224ab10901b3b6824ccaf8292f5e6c576e9e8f59fcca6412048d1872",
-    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=1a146dd84de19f37 ledger=226c00ca99c583bfbd852d2643191e7105638f58c785cf03f02aa429b7373502 result=4b333e27bc3a1307085937a7901d7ed21ffb51bdb8d133d9a506c33c6e24b428",
-    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=156f01bfa5d7d6ab ledger=1f4aee34b5a2503af76f11318abcfa860998bd77c4fb508a65aae66a588e1a88 result=4005409dca901d554c2ed66a6cc8bda90a61eff7a65458968c0eb9d6eb4a7c8b",
-    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=106500 state=175e93075fc7cffe ledger=8c3dfe5bf55bdd165a963de2bf242aa385151861a1cd0c821b2c8f1d72de3ecc result=5164d66aa6948afeaf9f4174b3cd4df10cd01991dbc1b2bd1486e5eb388b90cc",
+    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=1695073aa3c6e8e4 ledger=466b863c96f4d01c1e9f9728108c38816f55d65ee5e4b38c9f5dc8d4e1e21523 result=a47bc22cba185afa446668ebc76e8cc46a1fbaf1732d7fcbaa761dda5d9bc2cf",
+    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=a98b1a5da034498c ledger=7caf678ccb21d283e75b9867a2a9372c239633f62a62df803748abd1c15d3483 result=ce49a19819b56b7546539636d1a000f064205d158447e2a246eb204c1b8f5315",
+    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=adac2a6b9dd1c969 ledger=1bef81a583fd300fffa13754c4f64b196942773d0f59c861f7ea803461c47a62 result=edd6cc38b1dbb0cc35e629534a852cb7aa7b34cab50bef9a89ed837e057551b8",
+    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=6665923b5b65f076 ledger=306d157e4dc49e706dead86bf4851105689ca6e95f8ec3615dd981d7d0930c22 result=6cd0c5bd88ac8dd1ef2f971d8e0df39c3aa4f8bb03f341505504024025b8dacd",
 ];
 
 /// Lower-case base-16 of `bytes`.

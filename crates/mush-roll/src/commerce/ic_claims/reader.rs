@@ -379,7 +379,7 @@ impl OwnerReadService for IcAdmissionReader {
                 None,
             ),
             (false, false) => {
-                tracing::debug!(target: "ic_claim", licence = request.licence.get(), "roll: IC admission: no licence row");
+                tracing::debug!(target: "ic_claim", licence = request.licence.get(), "roll: IC admission: no license row");
                 return Err(OwnerReadError::Refused);
             }
             (true, true) => return Err(OwnerReadError::Integrity),

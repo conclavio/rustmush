@@ -91,6 +91,19 @@
 //!   is at least 100 m nearer;
 //! * "Past a gun's last band the chance is 0%: the round is still fired and
 //!   spent" — so a gun whose last read said 0% is not fired;
+//! * **the stock card's discipline** (the game's doc 49 cut CC.10, Q-49-17;
+//!   [`disciplined`]): the machines' own Line card "fires at 35% or better on
+//!   any face, 50% once a gun is under half its magazine. It keeps a quarter
+//!   of each gun's rounds back, and spends them only to answer a unit that has
+//!   fired on it, or to cover its way home" (`help minds`). So a gun fires
+//!   only at its floor ([`FLOOR_PERCENT`], [`LOW_MAGAZINE_FLOOR_PERCENT`]) or
+//!   better, against a chance read under the lock it holds (its own row's
+//!   since the last lock line, or the lock line's for the main gun), and never
+//!   past its reserve ([`RESERVE_PERCENT`]) unless the lock is a unit it
+//!   blames for a hit taken ([`Pilot::fired_on`]) or its own fall back or a
+//!   `withdraw` flies. The pilot used to fire every ready gun at any chance
+//!   over nothing, to its last round: a full-rate client of a placeholder
+//!   palette, which measured the placeholder and not the game;
 //! * **each gun fires on its own clock** ([`super::picture`]'s module head): the
 //!   seconds of `cycling (N s)` and `Still cycling: N s to go.` are rounded up,
 //!   a row read inside the first second after the ack prints the whole cycle,
@@ -197,13 +210,13 @@
 //!   the re-approach's wait) is fired on with the tank stopped, bow on, until
 //!   it stops coming on (its row's range not shortening and no track published
 //!   for [`HALT_STILL_MS`]), comes to the band, finds the tank or
-//!   [`HALT_MAX_MS`] passes: the stopped tank lets it come. A row past the
+//!   [`Pilot::halt_max_ms`] passes: the stopped tank lets it come. A row past the
 //!   stock sight is a teammate's report and arms no halt;
 //! * **The re-approach** (cut AN.2; [`Reapproach`], `[arena] reapproach`, off
 //!   by default since cut AO.3): "Open the range past its sight and it comes
 //!   after you again; let the ground hide you and it drives at where it last
 //!   saw you" (`help simulator`). A stopped machine (no published track) inside the
-//!   stock sight that out-hits the pilot over [`EXCHANGE_WINDOW_MS`] is backed
+//!   stock sight that out-hits the pilot over [`Pilot::exchange_window_ms`] is backed
 //!   away from bow on, steering on its last plot (the pilot is blind between
 //!   480 and 600 m of a stopped machine: "a stopped tank can be seen out to …
 //!   480 m and a moving one out to all of it"), to [`REAPPROACH_OPEN_M`] from
@@ -423,14 +436,16 @@
 //! 240 000..=480 000, [`OPENING_COVER_M`] 20..=40 (never below 20: with
 //! [`OPENING_ARRIVE_M`] at 10 the tank could stop on the road),
 //! [`OPENING_STEP_MAX_M`] 60..=120, [`HALT_STILL_MS`] 4 000..=10 000,
-//! [`EXCHANGE_WINDOW_MS`] 10 000..=30 000, [`EXCHANGE_MIN_TAKEN`] 4..=12,
+//! [`EXCHANGE_WINDOW_CYCLES`] 2..=5 (the game's doc 49 cut CC.10: it was
+//! `EXCHANGE_WINDOW_MS`, 10 000..=30 000), [`EXCHANGE_MIN_TAKEN`] 4..=12,
 //! [`EXCHANGE_MARGIN`] 2..=8, [`REAPPROACH_OPEN_M`] 620..=700,
 //! [`REAPPROACH_MAX_MS`] 30 000..=90 000 (widened by cut AO.1, which raised it
 //! to 60 000 to cover the drive), [`REAPPROACH_WAIT_MS`]
 //! 30 000..=60 000 and [`REAPPROACH_PER_MATCH`] 1..=3. Not tunable:
 //! [`OPENING_BRIEF_WAIT_MS`], [`OPENING_STEP_KPH`], [`OPENING_ARRIVE_M`],
 //! [`OPENING_STEP_MS`], [`STOCK_SIGHT_M`] (the help's), [`HIDING`] (the
-//! help's), [`HALT_MAX_MS`] and [`REAPPROACH_REST_MS`]; and [`HUNT_TRAIL_MS`]
+//! help's), [`HALT_MAX_CYCLES`] (it was `HALT_MAX_MS`) and
+//! [`REAPPROACH_REST_MS`]; and [`HUNT_TRAIL_MS`]
 //! stays frozen with AK's.
 //!
 //! **AN.3's**, in this module, within these bounds (AN.3's runs may move these
@@ -466,7 +481,7 @@ use super::{
     Side,
     picture::{
         Contact, EventKind, Ground, MatchMode, Phase, Picture, Power, TRACK_WINDOW_MS, Track,
-        bearing_deg, distance_m,
+        Weapon, bearing_deg, distance_m,
     },
     settings::Opening,
 };
@@ -485,6 +500,20 @@ pub const RETARGET_NEARER_M: u32 = 100;
 pub const LOCK_EVERY_MS: u64 = 1_500;
 /// A `ready` read this soon after an ack may be the pre-shot frame.
 pub const READY_AFTER_ACK_MS: u64 = 1_500;
+/// **The floor** (the game's doc 49 cut CC.10, Q-49-17): a gun fires only at
+/// this chance or better, read against the lock. `help minds`' Line card,
+/// the stock machines' own discipline: "fires at 35% or better on any face".
+/// Not tunable: it is the help's.
+pub const FLOOR_PERCENT: u32 = 35;
+/// **…and this once the gun holds under half its magazine** ("50% once a gun
+/// is under half its magazine", the same card). Not tunable.
+pub const LOW_MAGAZINE_FLOOR_PERCENT: u32 = 50;
+/// **The reserve, per cent of each gun's magazine** (the game's doc 49 cut
+/// CC.10, Q-49-17; the same card: "It keeps a quarter of each gun's rounds
+/// back, and spends them only to answer a unit that has fired on it, or to
+/// cover its way home"). [`reserve_rounds`] rounds it down, as the card does.
+/// Not tunable.
+pub const RESERVE_PERCENT: u32 = 25;
 /// The orbit's radial correction: at most this many degrees off the tangent…
 pub const ORBIT_CORRECTION_DEG: f64 = 60.0;
 /// …reached this many metres off the band.
@@ -683,12 +712,22 @@ pub const HIDING: [&str; 4] = ["grass", "bare ground", "rubble", "light woods"];
 /// second reads 50 m nearer every five seconds, while its row-only fixes
 /// (about 55 m of sigma at 500 to 600 m) seldom carry a track in the window.
 /// Tunable 4 000..=10 000.
+///
+/// It reads the scope and a machine's speed, not a gun: the game's doc 49
+/// cut CC.10 left it as it was when it derived the halt's other end from the
+/// main gun ([`HALT_MAX_CYCLES`]).
 pub const HALT_STILL_MS: u64 = 6_000;
-/// …and at this, whatever. Not tunable.
-pub const HALT_MAX_MS: u64 = 60_000;
-/// **The exchange's window** (cut AN.2): hits taken and scored in the last
-/// this long. Tunable 10 000..=30 000.
-pub const EXCHANGE_WINDOW_MS: u64 = 20_000;
+/// **…and at this many of the main gun's cycles, whatever** (cut AN.2; the
+/// game's doc 49 cut CC.10, Q-49-17): the halt lasts at most ten rounds of the
+/// main gun, [`Pilot::halt_max_ms`]. Ten of the 6 s cannon the cut was tuned
+/// on are its old 60 s. Not tunable.
+pub const HALT_MAX_CYCLES: u64 = 10;
+/// **The exchange's window, in the main gun's cycles** (cut AN.2; the game's
+/// doc 49 cut CC.10, Q-49-17): hits taken and scored over the last this many
+/// cycles of the main gun, [`Pilot::exchange_window_ms`]. Four of the 6 s
+/// cannon the cut was tuned on are 24 s, where it held 20 s. Tunable 2..=5
+/// (12 to 30 s of that cannon, the old 10 000..=30 000 ms).
+pub const EXCHANGE_WINDOW_CYCLES: u64 = 4;
 /// A re-approach needs at least this many hits taken in the window…
 /// Tunable 4..=12.
 pub const EXCHANGE_MIN_TAKEN: usize = 8;
@@ -1344,7 +1383,7 @@ pub struct Pilot {
     pub reapproach_rest_until_ms: u64,
     /// **The exchange** (cut AN.2): each hit taken (`true`) and each hit
     /// scored on a named hostile (`false`) this match, oldest first, pruned to
-    /// [`EXCHANGE_WINDOW_MS`]. Fed every decision whatever the knobs say. It
+    /// [`Pilot::exchange_window_ms`]. Fed every decision whatever the knobs say. It
     /// holds times only, never a designator.
     pub exchange: VecDeque<(u64, bool)>,
     /// The newest event the exchange has read.
@@ -1354,6 +1393,23 @@ pub struct Pilot {
     /// named), read with the exchange every decision whatever the knobs say.
     /// [`BROKEN_HITS_MIN`] of them make a machine driving away broken.
     pub scored_on: BTreeMap<String, u32>,
+    /// **The hostiles blamed for a hit taken this match** (the game's doc 49
+    /// cut CC.10, Q-49-17): the units the pilot answers with its reserve
+    /// ([`disciplined`]). The hit line says nothing of who fired, so each is
+    /// the threat turn's reading (`Pilot::blamed`).
+    pub fired_on: BTreeSet<String>,
+    /// The newest hit taken [`Pilot::fired_on`] has read.
+    fired_on_seen_ms: u64,
+    /// **Covering its way home at the last decision** (the game's doc 49 cut
+    /// CC.10): its own fall back or a doctrine `withdraw` in force. Its guns
+    /// spend their reserve.
+    pub covering: bool,
+    /// **The main gun's cycle, as the picture has learned it** (the game's doc
+    /// 49 cut CC.10), read every decision: the cannon's, else the first gun's;
+    /// `None` until that gun has fired and its cycle was read whole. The
+    /// exchange's and the halt's windows are counted in it
+    /// ([`Pilot::exchange_window_ms`], [`Pilot::halt_max_ms`]).
+    pub main_cycle_ms: Option<u64>,
     /// **A broken machine followed home** in force (cut AN.3)…
     pub follow: Option<Follow>,
     /// …and **the return** after it (cut AN.3).
@@ -1434,6 +1490,10 @@ impl Default for Pilot {
             exchange: VecDeque::new(),
             exchange_seen_ms: 0,
             scored_on: BTreeMap::new(),
+            fired_on: BTreeSet::new(),
+            fired_on_seen_ms: 0,
+            covering: false,
+            main_cycle_ms: None,
             follow: None,
             ret: None,
             rule: None,
@@ -1971,10 +2031,37 @@ impl Pilot {
         Some((other.0 - q.0) * u.0 + (other.1 - q.1) * u.1)
     }
 
+    /// **The exchange's window** (the game's doc 49 cut CC.10, Q-49-17):
+    /// [`EXCHANGE_WINDOW_CYCLES`] of the main gun's learned cycle
+    /// ([`Pilot::main_cycle_ms`]), or `None` until that cycle is learned. The
+    /// two sides fly the same tanks, so the machine's main gun fires on the
+    /// pilot's own cadence, and a window counted in it holds as many of its
+    /// rounds on any palette.
+    #[must_use]
+    pub fn exchange_window_ms(&self) -> Option<u64> {
+        self.main_cycle_ms
+            .map(|cycle| cycle.saturating_mul(EXCHANGE_WINDOW_CYCLES))
+    }
+
+    /// **The halt's longest** (the game's doc 49 cut CC.10, Q-49-17):
+    /// [`HALT_MAX_CYCLES`] of the main gun's learned cycle, or `None` until it
+    /// is learned, when the halt runs to its other ends (a hit taken, the band,
+    /// its hostile stopped coming on: the halt's own judge).
+    #[must_use]
+    pub fn halt_max_ms(&self) -> Option<u64> {
+        self.main_cycle_ms
+            .map(|cycle| cycle.saturating_mul(HALT_MAX_CYCLES))
+    }
+
     /// **The exchange over its window** at `now_ms` (cut AN.2): `(taken,
-    /// scored)`.
+    /// scored)`. **The game's doc 49 cut CC.10**: the window is
+    /// [`Pilot::exchange_window_ms`], and with none learned yet the exchange
+    /// reads `(0, 0)`: it is judged in the main gun's cycles or not at all.
     pub fn exchange_counts(&self, now_ms: u64) -> (usize, usize) {
-        let inside = |at: u64| now_ms.saturating_sub(at) <= EXCHANGE_WINDOW_MS;
+        let Some(window_ms) = self.exchange_window_ms() else {
+            return (0, 0);
+        };
+        let inside = |at: u64| now_ms.saturating_sub(at) <= window_ms;
         let taken = self
             .exchange
             .iter()
@@ -2050,9 +2137,14 @@ impl Pilot {
             orders.lock = Some(target.clone());
         }
 
-        // Rule 5: fire.
+        // Rule 5: fire. The game's doc 49 cut CC.10: under the stock card's
+        // discipline, the reserve spent answering a unit blamed for a hit
+        // taken, or covering the way home.
+        self.covering = self.withdraw_until_ms.is_some_and(|until| now_ms < until)
+            || doctrine.stance == Stance::Withdraw;
         if let Some(target) = &target {
-            orders.fire = fireable(picture, target, other, now_ms);
+            let answering = self.answering(picture, target);
+            orders.fire = fireable(picture, target, other, now_ms, answering, self.covering);
         }
 
         // Rules 2 and 6: the speed ceilings, then movement.
@@ -2308,8 +2400,13 @@ impl Pilot {
         // Seen second (cut AL.3): the hostiles hurt, the newest hit taken, and
         // when each return not yet told apart was first seen.
         self.take_seen_second(picture, power_ms, now_ms);
+        // The game's doc 49 cut CC.10: the main gun's cycle the windows are
+        // counted in, read before the exchange prunes to its window.
+        self.main_cycle_ms = main_gun(picture).and_then(|gun| gun.cycle_ms);
         // The exchange (cut AN.2), whatever the knobs.
         self.take_exchange(picture, power_ms, now_ms);
+        // The game's doc 49 cut CC.10: the hostiles blamed for a hit taken.
+        self.take_fired_on(picture, other, power_ms);
         // Only a row young enough to be held counts (cut AK.1): a stale row
         // still listed after a failed hunt does not keep the search away, and
         // nor does a wreck's row, listed until it expires.
@@ -2764,10 +2861,10 @@ impl Pilot {
     /// **The exchange** (cut AN.2), every decision, from this match's events
     /// newer than the last read: a hit scored on a named hostile (`Hit on
     /// {d}…` without `(FRIENDLY)`; a bare `Hit.` names nobody) is `(at,
-    /// false)`, a hit taken `(at, true)`; entries older than
-    /// [`EXCHANGE_WINDOW_MS`] are pruned. Each such hit scored also counts
-    /// once for `d` in [`Pilot::scored_on`] (cut AN.3). Fed whatever the knobs
-    /// say.
+    /// false)`, a hit taken `(at, true)`; entries older than the window
+    /// ([`Pilot::exchange_window_ms`], the game's doc 49 cut CC.10) are pruned,
+    /// and none before it is learned. Each such hit scored also counts once
+    /// for `d` in [`Pilot::scored_on`] (cut AN.3). Fed whatever the knobs say.
     fn take_exchange(&mut self, picture: &Picture, power_ms: u64, now_ms: u64) {
         self.exchange_seen_ms = self.exchange_seen_ms.max(power_ms);
         let seen = self.exchange_seen_ms;
@@ -2798,13 +2895,113 @@ impl Pilot {
             }
             self.exchange_seen_ms = self.exchange_seen_ms.max(event.at_ms);
         }
+        let Some(window_ms) = self.exchange_window_ms() else {
+            return;
+        };
         while self
             .exchange
             .front()
-            .is_some_and(|(at, _)| now_ms.saturating_sub(*at) > EXCHANGE_WINDOW_MS)
+            .is_some_and(|(at, _)| now_ms.saturating_sub(*at) > window_ms)
         {
             self.exchange.pop_front();
         }
+    }
+
+    /// **Fire taken, blamed** (the game's doc 49 cut CC.10, Q-49-17), every
+    /// decision: the newest hit taken read since the last decision blames one
+    /// hostile, kept in [`Pilot::fired_on`] for the match. The stock card's
+    /// reserve answers "a unit that has fired on it" (`help minds`), and the
+    /// hit line says nothing of who fired, so the blame is the threat turn's
+    /// reading (`Pilot::take_hit`), every facet's arc read alike: the nearest
+    /// live hostile held young whose row's relative bearing lies in the struck
+    /// facet's 45-degree face (`front` 315..=45 clockwise from the bow, `right`
+    /// 45..=135, `rear` 135..=225, `left` 225..=315; a hit naming no facet, or
+    /// the top, any bearing), else the lock when it is a live hostile.
+    fn take_fired_on(&mut self, picture: &Picture, other: Side, power_ms: u64) {
+        self.fired_on_seen_ms = self.fired_on_seen_ms.max(power_ms);
+        let seen = self.fired_on_seen_ms;
+        let Some(newest) = picture
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::HitTaken && event.at_ms > seen)
+            .map(|event| event.at_ms)
+            .max()
+        else {
+            return;
+        };
+        self.fired_on_seen_ms = newest;
+        let facet = picture
+            .own
+            .last_hit
+            .as_ref()
+            .filter(|hit| hit.at_ms >= newest)
+            .map(|hit| hit.facet.as_str());
+        if let Some(d) = self.blamed(picture, other, facet) {
+            self.fired_on.insert(d);
+        }
+    }
+
+    /// **The hostile a hit on `facet` is blamed on** ([`Pilot::fired_on`]).
+    fn blamed(&self, picture: &Picture, other: Side, facet: Option<&str>) -> Option<String> {
+        let arc = match facet {
+            Some("front") => Some((315, 45)),
+            Some("right") => Some((45, 135)),
+            Some("rear") => Some((135, 225)),
+            Some("left") => Some((225, 315)),
+            _ => None,
+        };
+        let in_arc = |rel: u32| match arc {
+            None => true,
+            Some((from, to)) if from > to => rel >= from || rel <= to,
+            Some((from, to)) => (from..=to).contains(&rel),
+        };
+        picture
+            .contacts
+            .values()
+            .filter(|c| {
+                self.live_hostile(c, other)
+                    && c.range_m.is_some()
+                    && c.age_ms <= HUNT_STALE_PLOT_MS
+                    && in_arc(c.rel_deg)
+            })
+            .min_by_key(|c| c.range_m.unwrap_or(u32::MAX))
+            .map(|c| c.designator.clone())
+            .or_else(|| {
+                picture.lock.clone().filter(|lock| {
+                    picture
+                        .contacts
+                        .get(lock)
+                        .is_some_and(|c| self.live_hostile(c, other))
+                })
+            })
+    }
+
+    /// **Whether the pilot answers `target`'s fire** (the game's doc 49 cut
+    /// CC.10): it is blamed for a hit taken this match ([`Pilot::fired_on`]),
+    /// under its designator now or the one it had before its last rename.
+    #[must_use]
+    pub fn answering(&self, picture: &Picture, target: &str) -> bool {
+        self.fired_on.contains(target)
+            || picture
+                .contacts
+                .get(target)
+                .and_then(|c| c.was.as_ref())
+                .is_some_and(|was| self.fired_on.contains(was))
+    }
+
+    /// **Whether `weapon` may fire at the lock under the discipline now** (the
+    /// game's doc 49 cut CC.10): [`disciplined`], answering the lock's fire
+    /// ([`Pilot::answering`]) and covering as the last decision did
+    /// ([`Pilot::covering`]). The lane reserves a line only for a gun that may
+    /// (its poll reservation), as the pilot fires only those.
+    #[must_use]
+    pub fn may_fire(&self, picture: &Picture, weapon: &Weapon) -> bool {
+        let main = main_gun(picture).is_some_and(|gun| gun.id == weapon.id);
+        let answering = picture
+            .lock
+            .as_deref()
+            .is_some_and(|lock| self.answering(picture, lock));
+        disciplined(picture, weapon, main, answering, self.covering)
     }
 
     /// **The rules of cut AN.2, judged** every decision before any step
@@ -3598,7 +3795,7 @@ impl Pilot {
             stage: ReapproachStage::Open { since_ms: now_ms },
             plot_m,
         });
-        let window_s = EXCHANGE_WINDOW_MS / 1_000;
+        let window_s = self.exchange_window_ms().unwrap_or_default() / 1_000;
         self.note(format!(
             "Opening the range on {d}: {taken} hits taken to {scored} scored in {window_s} s; \
              backing off bow on."
@@ -3616,8 +3813,9 @@ impl Pilot {
     /// band and [`HOLD_SLACK_M`] (the doctrine's band, widened after a fall
     /// back as [`Pilot::engage`] widens it); [`HALT_STILL_MS`] in which its
     /// hostile's row has read no shorter range and it has published no track
-    /// (`has stopped`: it is not coming on); [`HALT_MAX_MS`] after it began;
-    /// and, with nothing said, its hostile no longer held young. A follow
+    /// (`has stopped`: it is not coming on); [`Pilot::halt_max_ms`] after it
+    /// began (the game's doc 49 cut CC.10: ten of the main gun's cycles, none
+    /// before that cycle is learned); and, with nothing said, its hostile no longer held young. A follow
     /// beginning (cut AN.3, [`Pilot::judge_follow`]) ends it too, the
     /// follow's own note said.
     fn judge_halt(&mut self, picture: &Picture, doctrine: &Doctrine, other: Side, now_ms: u64) {
@@ -3656,7 +3854,10 @@ impl Pilot {
             && now_ms >= halt.nearest_ms.saturating_add(HALT_STILL_MS)
         {
             Some(format!("The halt is over: {d} has stopped."))
-        } else if now_ms >= halt.since_ms.saturating_add(HALT_MAX_MS) {
+        } else if self
+            .halt_max_ms()
+            .is_some_and(|max_ms| now_ms >= halt.since_ms.saturating_add(max_ms))
+        {
             Some("The halt is over: its time is up.".to_owned())
         } else if young.is_none() {
             None
@@ -4676,11 +4877,98 @@ fn plausible_track(contact: &Contact) -> Option<&Track> {
         .filter(|track| track.speed_mps <= BROKEN_TRACK_MAX_MPS)
 }
 
+/// **The main gun** (the game's doc 49 cut CC.10): the cannon when the tank
+/// carries one, else its first gun. It is the gun a bare `FIRE` fires, and the
+/// one whose chance the lock line prints.
+fn main_gun(picture: &Picture) -> Option<&Weapon> {
+    picture
+        .weapons
+        .iter()
+        .find(|w| w.id == "cannon")
+        .or_else(|| picture.weapons.first())
+}
+
+/// **The floor of a gun holding `rounds` of a magazine of `rounds_max`** (the
+/// game's doc 49 cut CC.10, Q-49-17): [`FLOOR_PERCENT`], and
+/// [`LOW_MAGAZINE_FLOOR_PERCENT`] once it holds under half its magazine.
+#[must_use]
+pub fn floor_percent(rounds: u32, rounds_max: u32) -> u32 {
+    if u64::from(rounds).saturating_mul(2) >= u64::from(rounds_max) {
+        FLOOR_PERCENT
+    } else {
+        LOW_MAGAZINE_FLOOR_PERCENT
+    }
+}
+
+/// **The rounds a gun keeps back of a magazine of `rounds_max`** (the game's
+/// doc 49 cut CC.10, Q-49-17): [`RESERVE_PERCENT`] of it, rounded down.
+#[must_use]
+pub fn reserve_rounds(rounds_max: u32) -> u32 {
+    let keeps = u64::from(RESERVE_PERCENT).saturating_mul(u64::from(rounds_max)) / 100;
+    u32::try_from(keeps).unwrap_or(u32::MAX)
+}
+
+/// **A gun's chance against the lock, as the pilot may act on it** (the game's
+/// doc 49 cut CC.10): its own row's, when read since the last lock line;
+/// else, for the main gun, the lock line's own (`Locked on BA, 62% to hit.`
+/// is the chance of the gun a bare `FIRE` fires); else none. A chance read
+/// against another lock, or before one, says nothing of this one.
+fn chance_now(picture: &Picture, weapon: &Weapon, main: bool) -> Option<u32> {
+    if weapon.chance_ms >= picture.lock_read_ms && weapon.percent.is_some() {
+        weapon.percent
+    } else if main {
+        picture.lock_percent
+    } else {
+        None
+    }
+}
+
+/// **The fire discipline, one gun's** (the game's doc 49 cut CC.10, Q-49-17):
+/// whether the stock card's discipline lets `weapon` fire at the lock now.
+///
+/// - **The floor.** Its chance against the lock (`chance_now`) is at least
+///   [`floor_percent`] of its rounds: 35%, and 50% under half its magazine. A
+///   chance not read is no chance, so a gun fires nothing until it has one.
+/// - **The reserve.** It holds more than [`reserve_rounds`] of its magazine,
+///   unless the pilot is answering fire (`answering`: the lock is a unit it
+///   blames for a hit taken, [`Pilot::fired_on`]) or covering its way home
+///   (`covering`: its own fall back or a doctrine `withdraw` flies). Then any
+///   round left goes, still at the floor.
+///
+/// A gun with no magazine read holds no reserve, as the card keeps none of
+/// nothing.
+#[must_use]
+pub fn disciplined(
+    picture: &Picture,
+    weapon: &Weapon,
+    main: bool,
+    answering: bool,
+    covering: bool,
+) -> bool {
+    let rounds = weapon.rounds_left();
+    let Some(chance) = chance_now(picture, weapon, main) else {
+        return false;
+    };
+    if chance < floor_percent(rounds, weapon.rounds_max) {
+        return false;
+    }
+    rounds > reserve_rounds(weapon.rounds_max) || (rounds > 0 && (answering || covering))
+}
+
 /// Rule 5: the guns to fire at `target`, main gun first. None while the
 /// picture holds every gun in doubt (a lost section's `its weapons are gone`,
 /// cut AL.1), and never a gun whose counted rounds are gone or one the tank
-/// said it does not carry.
-fn fireable(picture: &Picture, target: &str, other: Side, now_ms: u64) -> Vec<String> {
+/// said it does not carry. **The game's doc 49 cut CC.10** (Q-49-17): and
+/// only a gun its discipline lets fire ([`disciplined`]), where every ready
+/// gun with rounds left and a chance over nothing went.
+fn fireable(
+    picture: &Picture,
+    target: &str,
+    other: Side,
+    now_ms: u64,
+    answering: bool,
+    covering: bool,
+) -> Vec<String> {
     if picture.lock.as_deref() != Some(target)
         || picture.lock_friendly
         || picture.weapons_doubt.is_some()
@@ -4703,14 +4991,14 @@ fn fireable(picture: &Picture, target: &str, other: Side, now_ms: u64) -> Vec<St
         .unwrap_or(0);
     let order = std::iter::once(main).chain((0..picture.weapons.len()).filter(|i| *i != main));
     order
-        .filter_map(|index| picture.weapons.get(index))
-        .filter(|w| {
+        .filter_map(|index| picture.weapons.get(index).map(|w| (index == main, w)))
+        .filter(|(is_main, w)| {
             !picture.struck.contains(&w.id)
                 && w.rounds_left() > 0
-                && w.percent != Some(0)
+                && disciplined(picture, w, *is_main, answering, covering)
                 && believed_ready(w, now_ms)
         })
-        .map(|w| w.id.clone())
+        .map(|(_, w)| w.id.clone())
         .collect()
 }
 
@@ -4788,12 +5076,18 @@ mod tests {
         picture.contacts.insert(contact.designator.clone(), contact);
     }
 
+    /// A gun read 100 ms ago, clear of the discipline (the game's doc 49 cut
+    /// CC.10): over half its magazine, over its reserve, and its chance read
+    /// over the floor (no lock line is read in these pictures, so a row's
+    /// chance is always read since it).
     fn weapon(id: &str, ready: bool) -> Weapon {
         Weapon {
             id: id.into(),
             ready,
-            rounds: 10,
+            rounds: 30,
             rounds_max: 40,
+            percent: Some(62),
+            chance_ms: NOW - 100,
             read_ms: NOW - 100,
             ..Weapon::default()
         }
@@ -5016,7 +5310,7 @@ mod tests {
         picture.apply(
             NOW,
             &classify(&format!(
-                "Hit on the hull's front facet: {quarter} of 400 armour left."
+                "Hit on the hull's front facet: {quarter} of 400 armor left."
             )),
         );
         let orders = decide(&picture, &mut pilot);
@@ -5030,7 +5324,7 @@ mod tests {
         picture.apply(
             NOW,
             &classify(&format!(
-                "Hit on the hull's front facet: {} of 400 armour left.",
+                "Hit on the hull's front facet: {} of 400 armor left.",
                 quarter + 1
             )),
         );
@@ -5241,6 +5535,146 @@ mod tests {
         let (mut picture, mut pilot) = armed();
         picture.weapons = vec![weapon("laser", true), weapon("machine_gun", true)];
         assert_eq!(decide(&picture, &mut pilot).fire, ["laser", "machine_gun"]);
+    }
+
+    /// **The game's doc 49 cut CC.10** (Q-49-17): the stock card's
+    /// discipline, read through its names. A gun fires only at
+    /// [`FLOOR_PERCENT`], at [`LOW_MAGAZINE_FLOOR_PERCENT`] under half its
+    /// magazine, and never past [`reserve_rounds`] of it unless answering a
+    /// unit blamed for a hit taken or covering a withdrawal; and only on a
+    /// chance read under the lock it holds.
+    #[test]
+    fn cc10_a_gun_fires_only_at_its_floor_and_keeps_its_reserve() {
+        let armed = |rounds: u32, percent: u32| {
+            let (mut picture, pilot) = flying();
+            hold(&mut picture, contact("BA", Some(Side::Blue), 0, 450));
+            picture.lock = Some("BA".into());
+            let mut cannon = weapon("cannon", true);
+            cannon.rounds = rounds;
+            cannon.percent = Some(percent);
+            picture.weapons = vec![cannon];
+            (picture, pilot)
+        };
+        let full = weapon("cannon", true).rounds_max;
+        let half = full / 2;
+        let keeps = reserve_rounds(full);
+        assert!(
+            keeps > 0 && keeps + 1 < half,
+            "the fixture's magazine sizes the cases"
+        );
+        let fires = |picture: &Picture, pilot: &mut Pilot| decide(picture, pilot).fire;
+
+        // The floor, at half the magazine or more…
+        let (picture, mut pilot) = armed(half, FLOOR_PERCENT - 1);
+        assert!(fires(&picture, &mut pilot).is_empty(), "under the floor");
+        let (picture, mut pilot) = armed(half, FLOOR_PERCENT);
+        assert_eq!(fires(&picture, &mut pilot), ["cannon"], "at the floor");
+        // …and under half, where it rises.
+        let (picture, mut pilot) = armed(half - 1, LOW_MAGAZINE_FLOOR_PERCENT - 1);
+        assert!(
+            fires(&picture, &mut pilot).is_empty(),
+            "under the risen floor"
+        );
+        let (picture, mut pilot) = armed(half - 1, LOW_MAGAZINE_FLOOR_PERCENT);
+        assert_eq!(fires(&picture, &mut pilot), ["cannon"]);
+        assert_eq!(floor_percent(half, full), FLOOR_PERCENT);
+        assert_eq!(floor_percent(half - 1, full), LOW_MAGAZINE_FLOOR_PERCENT);
+
+        // The reserve: at it nothing goes, at any chance; one over, the shot.
+        let (picture, mut pilot) = armed(keeps, 95);
+        assert!(
+            fires(&picture, &mut pilot).is_empty(),
+            "the reserve is kept"
+        );
+        let (picture, mut pilot) = armed(keeps + 1, 95);
+        assert_eq!(fires(&picture, &mut pilot), ["cannon"]);
+
+        // Answering fire: a hit on the front facet with BA in that arc blames
+        // BA, and the reserve answers it, at the floor still.
+        let (mut picture, mut pilot) = armed(keeps, 95);
+        picture.apply(
+            NOW - 50,
+            &classify("Hit on the hull's front facet: 300 of 400 armor left."),
+        );
+        assert_eq!(fires(&picture, &mut pilot), ["cannon"], "answering BA");
+        assert_eq!(pilot.fired_on, BTreeSet::from(["BA".to_owned()]));
+        assert!(pilot.answering(&picture, "BA"));
+        picture.weapons[0].percent = Some(LOW_MAGAZINE_FLOOR_PERCENT - 1);
+        assert!(
+            fires(&picture, &mut pilot).is_empty(),
+            "the floor still holds"
+        );
+        picture.weapons[0].percent = Some(95);
+        picture.weapons[0].rounds = 0;
+        assert!(
+            fires(&picture, &mut pilot).is_empty(),
+            "nothing left to answer with"
+        );
+        // …under a new designator too: the blame follows the rename.
+        let (mut picture, mut pilot) = armed(keeps, 95);
+        pilot.fired_on.insert("X2".into());
+        if let Some(ba) = picture.contacts.get_mut("BA") {
+            ba.was = Some("X2".into());
+        }
+        assert_eq!(fires(&picture, &mut pilot), ["cannon"]);
+        // A hit from the other arc blames the hostile there, not the lock.
+        let (mut picture, mut pilot) = armed(keeps, 95);
+        hold(&mut picture, contact("BB", Some(Side::Blue), 270, 500));
+        picture.apply(
+            NOW - 50,
+            &classify("Hit on the hull's left facet: 200 of 250 armor left."),
+        );
+        assert!(
+            fires(&picture, &mut pilot).is_empty(),
+            "BA has not fired on it"
+        );
+        assert_eq!(pilot.fired_on, BTreeSet::from(["BB".to_owned()]));
+
+        // Covering the way home: a doctrine `withdraw`, or the pilot's own
+        // fall back, spends the reserve.
+        let (picture, mut pilot) = armed(keeps, 95);
+        let withdraw = Doctrine {
+            stance: Stance::Withdraw,
+            ..hold_doctrine()
+        };
+        assert_eq!(pilot.decide(&picture, &withdraw, NOW).fire, ["cannon"]);
+        assert!(pilot.covering);
+        let (picture, mut pilot) = armed(keeps, 95);
+        pilot.withdraw_until_ms = Some(NOW + 1_000);
+        assert_eq!(fires(&picture, &mut pilot), ["cannon"]);
+
+        // The chance is read under the lock it holds: a row read before the
+        // lock line says nothing of it. The main gun reads the lock line's
+        // own chance; any other gun waits for its row.
+        let (mut picture, mut pilot) = armed(full, 95);
+        picture.weapons.push(weapon("machine_gun", true));
+        picture.lock_read_ms = NOW - 50;
+        picture.lock_percent = Some(FLOOR_PERCENT);
+        assert_eq!(
+            fires(&picture, &mut pilot),
+            ["cannon"],
+            "on the lock line's chance"
+        );
+        picture.lock_percent = Some(FLOOR_PERCENT - 1);
+        assert!(fires(&picture, &mut pilot).is_empty());
+        picture.lock_percent = None;
+        assert!(
+            fires(&picture, &mut pilot).is_empty(),
+            "no chance read: no shot"
+        );
+        for gun in &mut picture.weapons {
+            gun.chance_ms = NOW - 10;
+        }
+        assert_eq!(fires(&picture, &mut pilot), ["cannon", "machine_gun"]);
+        // The lane reserves a line for a gun on the same rule.
+        assert!(
+            picture
+                .weapons
+                .iter()
+                .all(|gun| pilot.may_fire(&picture, gun))
+        );
+        picture.weapons[1].percent = Some(FLOOR_PERCENT - 1);
+        assert!(!pilot.may_fire(&picture, &picture.weapons[1]));
     }
 
     #[test]
@@ -6106,7 +6540,7 @@ mod tests {
         picture.apply(
             NOW,
             &classify(&format!(
-                "Hit on the hull's front facet: {quarter} of 400 armour left."
+                "Hit on the hull's front facet: {quarter} of 400 armor left."
             )),
         );
         decide(&picture, &mut pilot);
@@ -6122,7 +6556,7 @@ mod tests {
         hold(&mut picture, contact("BA", Some(Side::Blue), 0, 300));
         picture.apply(
             NOW,
-            &classify("Hit on the hull's rear facet: armour gone, 140 of 200 inside."),
+            &classify("Hit on the hull's rear facet: armor gone, 140 of 200 inside."),
         );
         assert_eq!(picture.own.sections["hull"].facets["rear"], (0, 0));
         assert!(!hull_failing(&picture));
@@ -6534,8 +6968,10 @@ mod tests {
         picture.weapons = vec![Weapon {
             id: "cannon".into(),
             ready: false,
-            rounds: 10,
+            rounds: 30,
             rounds_max: 40,
+            percent: Some(62),
+            chance_ms: NOW - 5_000,
             read_ms: NOW - 5_000,
             cycle_ms: Some(6_000),
             next_ready_ms: Some(NOW - 1_000),
@@ -6581,7 +7017,7 @@ mod tests {
         };
         let picture = armed();
         assert_eq!(
-            fireable(&picture, "BA", Side::Blue, NOW),
+            fireable(&picture, "BA", Side::Blue, NOW, false, false),
             ["cannon", "machine_gun"]
         );
         // Struck: the no-such-weapon answer takes it out of the list.
@@ -6590,24 +7026,33 @@ mod tests {
             NOW,
             &classify("That unit carries no weapon called `cannon`."),
         );
-        assert_eq!(fireable(&picture, "BA", Side::Blue, NOW), ["machine_gun"]);
+        assert_eq!(
+            fireable(&picture, "BA", Side::Blue, NOW, false, false),
+            ["machine_gun"]
+        );
         // …and a gun the struck set names is never fired, whatever the list says.
         let mut picture = armed();
         picture.struck.insert("machine_gun".into());
-        assert_eq!(fireable(&picture, "BA", Side::Blue, NOW), ["cannon"]);
+        assert_eq!(
+            fireable(&picture, "BA", Side::Blue, NOW, false, false),
+            ["cannon"]
+        );
         // Empty: every round the last row counted has been acked.
         let mut picture = armed();
         if let Some(mg) = picture.weapons.iter_mut().find(|w| w.id == "machine_gun") {
             mg.shots_since_read = mg.rounds;
         }
-        assert_eq!(fireable(&picture, "BA", Side::Blue, NOW), ["cannon"]);
+        assert_eq!(
+            fireable(&picture, "BA", Side::Blue, NOW, false, false),
+            ["cannon"]
+        );
         // Doubted: nothing at all until `WEAPONSTATUS` answers.
         let mut picture = armed();
         picture.apply(
             NOW,
             &classify("The turret is destroyed: its weapons are gone."),
         );
-        assert!(fireable(&picture, "BA", Side::Blue, NOW).is_empty());
+        assert!(fireable(&picture, "BA", Side::Blue, NOW, false, false).is_empty());
         picture.apply(NOW + 100, &classify("Locked on BA, 62% to hit."));
         picture.apply(
             NOW + 100,
@@ -6616,7 +7061,7 @@ mod tests {
         picture.apply(NOW + 101, &classify("Power online."));
         assert_eq!(picture.weapons_doubt, None);
         assert_eq!(
-            fireable(&picture, "BA", Side::Blue, NOW + 101),
+            fireable(&picture, "BA", Side::Blue, NOW + 101, false, false),
             ["machine_gun"]
         );
     }
@@ -6859,7 +7304,7 @@ mod tests {
         picture.apply(at, &classify(line));
     }
 
-    const LEFT_HIT: &str = "Hit on the hull's left facet: 200 of 250 armour left.";
+    const LEFT_HIT: &str = "Hit on the hull's left facet: 200 of 250 armor left.";
 
     /// **A side or rear hit turns the bow to the shooter** (cut AL.2).
     #[test]
@@ -6891,7 +7336,7 @@ mod tests {
         hit(
             &mut picture,
             NOW + 1_000,
-            "Hit on the turret's right facet: 200 of 220 armour left.",
+            "Hit on the turret's right facet: 200 of 220 armor left.",
         );
         let orders = pilot.decide(&picture, &hold_doctrine(), NOW + 1_000);
         assert_eq!(
@@ -6923,7 +7368,7 @@ mod tests {
         hit(
             &mut picture,
             NOW,
-            "Hit on the hull's rear facet: 100 of 150 armour left.",
+            "Hit on the hull's rear facet: 100 of 150 armor left.",
         );
         let orders = pilot.decide(&picture, &hold_doctrine(), NOW);
         assert_eq!((orders.heading, orders.speed), (Some(220), Some(0)));
@@ -6978,8 +7423,8 @@ mod tests {
 
         // A front or top hit does nothing.
         for line in [
-            "Hit on the hull's front facet: 300 of 400 armour left.",
-            "Hit on the turret's top facet: 80 of 100 armour left.",
+            "Hit on the hull's front facet: 300 of 400 armor left.",
+            "Hit on the turret's top facet: 80 of 100 armor left.",
         ] {
             let (mut picture, mut pilot) = flying();
             hit(&mut picture, NOW, line);
@@ -7781,7 +8226,7 @@ mod tests {
             ("left_track", ("left", 270), ("right", 90)),
         ] {
             let line =
-                |facet: &str| format!("Hit on the hull's {facet} facet: 200 of 250 armour left.");
+                |facet: &str| format!("Hit on the hull's {facet} facet: 200 of 250 armor left.");
             // A shooter in the dead-side arc, BA held due north.
             let (mut picture, mut pilot) = one_track(track);
             hold(&mut picture, contact_rel("BA", 0, 450, 0));
@@ -7829,7 +8274,7 @@ mod tests {
             hit(
                 &mut picture,
                 NOW,
-                "Hit on the hull's rear facet: 100 of 150 armour left.",
+                "Hit on the hull's rear facet: 100 of 150 armor left.",
             );
             pilot.decide(&picture, &hold_doctrine(), NOW);
             assert_eq!(pilot.threat.map(|(b, _)| whole(b)), Some(180), "{track}");
@@ -7860,7 +8305,7 @@ mod tests {
             (NOW + 40, "No such contact."),
             (
                 NOW + 50,
-                "Hit on the hull's left facet: 200 of 250 armour left.",
+                "Hit on the hull's left facet: 200 of 250 armor left.",
             ),
             // (Read after the turn into the hit is flown: a held stop
             // outranks the turn, and its sentence is said only when flown.)
@@ -8925,7 +9370,7 @@ mod tests {
             "  mode: range — 2 targets on the blue side",
         ] {
             let mut picture = running();
-            picture.apply(POWER - 5_000, &classify("Simulator centre: selection"));
+            picture.apply(POWER - 5_000, &classify("Simulator center: selection"));
             picture.apply(POWER - 5_000, &classify(mode));
             assert_ne!(picture.match_mode, MatchMode::Skirmish);
             picture.apply(POWER, &classify("Power online."));
@@ -9008,6 +9453,7 @@ mod tests {
         let mut cannon = weapon("cannon", true);
         cannon.read_ms = t - 100;
         picture.weapons = vec![cannon];
+        learn_main(&mut picture);
         (picture, pilot)
     }
 
@@ -9097,26 +9543,56 @@ mod tests {
         decide_at(&picture, &mut pilot, nearer + HALT_STILL_MS);
         assert_eq!(pilot.take_notes(), ["The halt is over: BA has stopped."]);
         assert_eq!(pilot.halt, None);
-        // Its time: still coming on (a track) after a minute.
+        // Its time: still coming on (a track) after ten of the main gun's
+        // cycles (the game's doc 49 cut CC.10; a minute of the old cannon).
         let (mut picture, mut pilot) = sighted_closing(590, t);
         decide_at(&picture, &mut pilot, t);
         pilot.take_notes();
+        // A moment short of it, still coming on: still halted.
+        let mut nearly = row_at(
+            ROOMY_MUSTER,
+            "BA",
+            Some(Side::Blue),
+            90,
+            570,
+            t + HALT_MS - 1,
+            0,
+        );
+        nearly.track = Some(Track {
+            course_deg: 270.0,
+            speed_mps: 3.0,
+        });
+        hold(&mut picture, nearly);
+        decide_at(&picture, &mut pilot, t + HALT_MS - 1);
+        assert!(pilot.halt.is_some(), "halted until its time");
+        assert!(pilot.take_notes().is_empty());
         let mut slow = row_at(
             ROOMY_MUSTER,
             "BA",
             Some(Side::Blue),
             90,
             560,
-            t + HALT_MAX_MS,
+            t + HALT_MS,
             0,
         );
         slow.track = Some(Track {
             course_deg: 270.0,
             speed_mps: 3.0,
         });
-        hold(&mut picture, slow);
-        decide_at(&picture, &mut pilot, t + HALT_MAX_MS);
+        hold(&mut picture, slow.clone());
+        decide_at(&picture, &mut pilot, t + HALT_MS);
         assert_eq!(pilot.take_notes(), ["The halt is over: its time is up."]);
+        // The game's doc 49 cut CC.10: with the main gun's cycle not learned,
+        // the halt has no time of its own and runs to its other ends.
+        let (mut picture, mut pilot) = sighted_closing(590, t);
+        picture.weapons[0].cycle_ms = None;
+        decide_at(&picture, &mut pilot, t);
+        pilot.take_notes();
+        hold(&mut picture, slow);
+        decide_at(&picture, &mut pilot, t + HALT_MS);
+        assert_eq!(pilot.halt_max_ms(), None);
+        assert!(pilot.halt.is_some(), "still halted, coming on");
+        assert!(pilot.take_notes().is_empty());
         // Lost: over, nothing said.
         let (mut picture, mut pilot) = sighted_closing(590, t);
         decide_at(&picture, &mut pilot, t);
@@ -9143,9 +9619,36 @@ mod tests {
         (picture, pilot)
     }
 
+    /// **The main gun's cycle these tests learn** (the game's doc 49 cut
+    /// CC.10): the ruled cannon's, 15 s. The windows below are read through
+    /// it and the tunable names, never as figures.
+    const MAIN_CYCLE_MS: u64 = 15_000;
+    /// The exchange's window at that cycle…
+    const EXCHANGE_MS: u64 = MAIN_CYCLE_MS * EXCHANGE_WINDOW_CYCLES;
+    /// …and the halt's longest.
+    const HALT_MS: u64 = MAIN_CYCLE_MS * HALT_MAX_CYCLES;
+
+    /// The picture has learned its main gun's cycle, [`MAIN_CYCLE_MS`]: a
+    /// cannon, ready and clear of the discipline, when it holds no gun.
+    fn learn_main(picture: &mut Picture) {
+        if picture.weapons.is_empty() {
+            picture.weapons.push(weapon("cannon", true));
+        }
+        let main = picture
+            .weapons
+            .iter()
+            .position(|w| w.id == "cannon")
+            .unwrap_or(0);
+        if let Some(gun) = picture.weapons.get_mut(main) {
+            gun.cycle_ms.get_or_insert(MAIN_CYCLE_MS);
+        }
+    }
+
     /// `taken` hits taken and `scored` hits scored on BA, all in the second
-    /// before `t`.
+    /// before `t`, on a picture that has learned its main gun's cycle (the
+    /// game's doc 49 cut CC.10: the exchange is judged in it).
     fn exchange(picture: &mut Picture, taken: usize, scored: usize, t: u64) {
+        learn_main(picture);
         for i in 0..taken {
             hit_taken(picture, t - 1_000 + i as u64);
         }
@@ -9176,7 +9679,7 @@ mod tests {
         format!(
             "Opening the range on BA: {OUT_TAKEN} hits taken to {OUT_SCORED} scored in {} s; \
              backing off bow on.",
-            EXCHANGE_WINDOW_MS / 1_000
+            EXCHANGE_MS / 1_000
         )
     }
 
@@ -9453,14 +9956,11 @@ mod tests {
         assert_eq!(pilot.exchange_counts(NOW), (OUT_TAKEN, OUT_SCORED));
         assert_eq!(pilot.reapproach, None);
         // Past the window, nothing.
-        let inside = NOW + EXCHANGE_WINDOW_MS - 1_000;
+        let inside = NOW + EXCHANGE_MS - 1_000;
         pilot.decide(&picture, &hold_doctrine(), inside);
         assert_eq!(pilot.exchange_counts(inside), (OUT_TAKEN, OUT_SCORED));
-        pilot.decide(&picture, &hold_doctrine(), NOW + EXCHANGE_WINDOW_MS + 1_001);
-        assert_eq!(
-            pilot.exchange_counts(NOW + EXCHANGE_WINDOW_MS + 1_001),
-            (0, 0)
-        );
+        pilot.decide(&picture, &hold_doctrine(), NOW + EXCHANGE_MS + 1_001);
+        assert_eq!(pilot.exchange_counts(NOW + EXCHANGE_MS + 1_001), (0, 0));
         assert!(pilot.exchange.is_empty(), "pruned");
     }
 

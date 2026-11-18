@@ -535,7 +535,7 @@ fn world() -> (M8World, ObjId) {
         let (buyer, row) = docked_dray(rig, ("Buyer", 1, "Salt Moth"), (53, 19));
         // The author is a pilot too: the Co-op's charter is what opens a player's wallet.
         let writer = crate::excursions::pilot(rig, "Author", 2);
-        let enrolled = run(&mut rig.tw, writer, "+coop/enrol Ink Moth");
+        let enrolled = run(&mut rig.tw, writer, "+coop/enroll Ink Moth");
         assert!(enrolled.contains("now the Ink Moth"), "{enrolled}");
         author = Some(writer);
         (buyer, row, Vec::new())
@@ -913,21 +913,21 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
         .filter(|row| row["holder"] == json!(buyer.0))
         .collect();
     let [paid] = paid.as_slice() else {
-        panic!("the buyer holds one paid licence: {paid:?}")
+        panic!("the buyer holds one paid license: {paid:?}")
     };
     let licence = number(paid, "id");
-    assert_ne!(licence, owner_licence, "her licence is not the author's");
+    assert_ne!(licence, owner_licence, "her license is not the author's");
     let holdings = types(&mut world, buyer, "+minds/holdings");
     fits(&holdings);
     assert!(
         holdings
             .lines()
-            .any(|line| line.contains(&format!("licence {licence} "))
+            .any(|line| line.contains(&format!("license {licence} "))
                 && line.contains("paid")
                 && line.contains("warden")
                 && line.contains("sealed")
                 && line.contains("Active")),
-        "she holds the licence: {holdings}"
+        "she holds the license: {holdings}"
     );
     let gallery =
         crate::excursions::station_room(&world.rig.tw, "ceres_port", "room.c01_berth_gallery");
@@ -955,7 +955,7 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
     assert_eq!(
         (sealed.mind.as_str(), sealed.licence.as_str()),
         ("warden", licence.to_string().as_str()),
-        "the author's mind, under the licence she bought"
+        "the author's mind, under the license she bought"
     );
     assert_eq!(
         (sealed.core_class, sealed.governed),
@@ -990,7 +990,7 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
             number(&opened_rows[0]["open"], "licence")
         ),
         (&json!(sealed.claim.to_hex()), &json!(buyer.0), licence),
-        "the claim the seal reads, dispatched by the buyer under her licence"
+        "the claim the seal reads, dispatched by the buyer under her license"
     );
     let at_her_berth = books(&mut world);
     let boundary = sail_and_lose_the_link(&mut world.rig, buyer, hull);
@@ -1032,7 +1032,7 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
     );
     assert!(
         took.drift > 10_000 && took.status == PicketInspectionStatus::AwaitingHeaveTo,
-        "she comes in over the picket's ten metres a second, under its hail: {took:?}"
+        "she comes in over the picket's ten meters a second, under its hail: {took:?}"
     );
     let ran = watch.step(&mut world.rig, hull);
     let braked = watch.step(&mut world.rig, hull);
@@ -1384,7 +1384,7 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
             wallets.0 - FEE_MINOR + AUTHORS_SHARE_MINOR,
             wallets.1 - PRICE_MINOR
         ),
-        "the two wallets read as they did when the licence was bought"
+        "the two wallets read as they did when the license was bought"
     );
     assert_eq!(
         world
@@ -1393,7 +1393,7 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
             .filter(|row| row["holder"] == json!(buyer.0))
             .collect::<Vec<_>>(),
         vec![paid.clone()],
-        "and she holds the one licence, as it was"
+        "and she holds the one license, as it was"
     );
 
     // 8. The claim closes once.

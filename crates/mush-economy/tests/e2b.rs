@@ -1126,12 +1126,14 @@ fn dt_title_lineage_checkpoint_preserves_history_and_old_format_replays_whole() 
         head["format"] = serde_json::json!(3);
         let fold = head["body"]["fold"].as_object_mut().expect("fold");
         // Format 4's field, and the receipt audits added after it (seizure, bay
-        // refit, doc 47 CO.13's core sale) that format 3 never carried.
+        // refit, doc 47 CO.13's core sale, doc 48 EX.2b's core resale) that format 3
+        // never carried.
         for field in [
             "title_lineage",
             "seizure_receipts",
             "bay_refit_receipts",
             "core_sale_receipts",
+            "core_resale_receipts",
         ] {
             fold.remove(field);
         }

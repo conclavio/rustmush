@@ -794,7 +794,7 @@ pub enum ArenaBuildError {
     /// so the content is refused when the arena is built. The sentence names the
     /// arena and the team, which are content, and no unit.
     #[error(
-        "arena {arena}: team {team}'s entry zone has no passable cell with a passable neighbour"
+        "arena {arena}: team {team}'s entry zone has no passable cell with a passable neighbor"
     )]
     EntryZoneUnusable {
         /// The arena entry.

@@ -541,7 +541,7 @@ async fn ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour() {
     assert_eq!(
         fired(&g.lines, hull),
         0,
-        "a rig on HOLD does not answer for its neighbour: {}",
+        "a rig on HOLD does not answer for its neighbor: {}",
         g.exchange()
     );
     assert!(g.stays(), "a rig on HOLD stays where it stood");
@@ -703,7 +703,7 @@ async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
     assert_eq!(
         arrived(&g.lines, hostile, kin),
         0,
-        "the story's premise: the intruder fired on the rig, not its neighbour"
+        "the story's premise: the intruder fired on the rig, not its neighbor"
     );
     let on_it = first(
         &g.lines,

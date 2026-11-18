@@ -230,7 +230,7 @@ fn live_commander_extra() -> String {
     outer.insert("arena".into(), toml::Value::Table(arena));
     format!(
         "\n{}",
-        toml::to_string(&outer).expect("the [arena] table serialises")
+        toml::to_string(&outer).expect("the [arena] table serializes")
     )
 }
 
@@ -290,7 +290,7 @@ fn live_lines(report: &Value) -> Vec<String> {
         _ => "unknown".to_owned(),
     };
     lines.push(format!(
-        "COST: {requests} request(s), {} answered, {} error(s), {} cancelled, {usd} USD",
+        "COST: {requests} request(s), {} answered, {} error(s), {} canceled, {usd} USD",
         count(&filed["responses"]),
         count(&filed["errors"]),
         count(&filed["cancelled"]),
@@ -407,7 +407,7 @@ persistent = false
             "LIVE COMMANDER: 1 of 5 for red against one machine at 1 v 1 (lost 0, drew 0, timed out 1, other 0)",
             "match 1: red; 12 shots, 9 hits, took 3; 187 s; commander 80 calls, 78 applied, 1 late, 3 overruled, 0 invalid, 1 errors, off: none",
             "match 2: timeout; 20 shots, 11 hits, took 6; 420 s; commander 150 calls, 149 applied, 0 late, 0 overruled, 1 invalid, 0 errors, off: answers arrive too late to use",
-            "COST: 230 request(s), 229 answered, 1 error(s), 0 cancelled, 0.0321 USD",
+            "COST: 230 request(s), 229 answered, 1 error(s), 0 canceled, 0.0321 USD",
         ]
     );
 

@@ -446,7 +446,7 @@ fn cmd_licence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         actor_principal(ctx.actor)
     } else if staff {
         crate::provider::parse_principal(&raw)
-            .ok_or_else(|| CmdError::msg("Usage: @licence/show [obj:<n>|org:<n>|sys:<name>]"))?
+            .ok_or_else(|| CmdError::msg("Usage: @license/show [obj:<n>|org:<n>|sys:<name>]"))?
     } else {
         // A principal may read their own standing and nobody else's.
         actor_principal(ctx.actor)
@@ -457,22 +457,22 @@ fn cmd_licence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .and_then(|store| store.licence().cloned())
     else {
         ctx.out
-            .info(ctx.actor, "This server issues no extraction licences.");
+            .info(ctx.actor, "This server issues no extraction licenses.");
         return Ok(());
     };
     if ctx.w.module_state::<EconomyStore>().is_none() {
         ctx.out
-            .info(ctx.actor, "This server issues no extraction licences.");
+            .info(ctx.actor, "This server issues no extraction licenses.");
         return Ok(());
     }
     match licence_accounts(ctx.w, &instrument, &who) {
         Some(status) => ctx.out.info(
             ctx.actor,
-            format!("Extraction licence in {}: {status:?}.", instrument.as_str()),
+            format!("Extraction license in {}: {status:?}.", instrument.as_str()),
         ),
         None => ctx.out.info(
             ctx.actor,
-            "No extraction licence stands for that principal.",
+            "No extraction license stands for that principal.",
         ),
     }
     Ok(())
@@ -871,6 +871,13 @@ fn cmd_extract(ctx: &mut Ctx<'_>, _families: &IndustryFamilies) -> Result<(), Cm
     )
 }
 
+/// Doc 48 unit PL.9 (Q-48-37): an owner naming the cost model, which stays staff-only.
+pub const TERMS_COST_STAFF: &str = "Only staff set a facility's cost model; its owner sets its customers and margin (margin=<permille>).";
+/// Doc 48 unit PL.9: a margin named on a facility no cost model prices.
+pub const TERMS_NO_PRICE: &str = "That facility has no price to set a margin on.";
+/// Doc 48 unit PL.9 (Q-48-53): a sold yard's doors closed.
+pub const TERMS_KEPT_PUBLIC: &str =
+    "That facility was sold to stay open to every customer; its doors cannot be closed.";
 /// The line an unknown, unreadable or unviewable facility renders.
 pub const NO_SUCH_FACILITY: &str = "No such facility.";
 /// The line an unknown or unviewable work order renders — byte-identical to the
@@ -1039,18 +1046,21 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
         );
         return Ok(());
     }
-    // ---- doc 39 cut IN.3: the customer policy and the cost model, staff-authored ----
+    // ---- doc 39 cut IN.3: the customer policy and the cost model ----
     //
-    // `@facility/terms <object>=public|owner [<capital>/<years>/<upkeep>/<staff>/<wage>/<margin>]`
-    // (the upkeep and the margin per mille). The lane's facility rows author both through the
-    // applier (IN.4's `cost`, this cut's `customers`); this is the staff hand a seed and a repair
-    // use until a row exists. Each half that changes bumps the policy revision, so a drafted
-    // order re-validates.
+    // Doc 48 unit PL.9 (Q-48-37): **the owner sets the customer policy and the margin**; the cost
+    // model's other inputs (capital, lifetime, upkeep, staff and wage) are authored with the
+    // facility and stay staff-only, since a running cost is a sink only if its payer cannot set
+    // it. The lane's facility rows author both through the applier; staff use the full form for a
+    // seed or a repair.
+    //
+    // `@facility/terms <object>=public|owner [margin=<permille>]` (staff, or the owner)
+    // `@facility/terms <object>=public|owner <capital>/<years>/<upkeep>/<staff>/<wage>/<margin>`
+    // (staff; the upkeep and the margin per mille). Each half that changes bumps the policy
+    // revision, so a drafted order re-validates.
     if ctx.switches.has("terms") {
-        const USAGE: &str = "Usage: @facility/terms <object>=public|owner                              [<capital>/<years>/<upkeep>/<staff>/<wage>/<margin>]";
-        if !crate::store::is_staff(ctx.w, ctx.actor) {
-            return Err(CmdError::msg(NO_SUCH_FACILITY));
-        }
+        const USAGE: &str = "Usage: @facility/terms <object>=public|owner [margin=<permille>]";
+        let staff = crate::store::is_staff(ctx.w, ctx.actor);
         let Ok(id) = ctx.args.lhs().trim().trim_start_matches('#').parse::<u32>() else {
             return Err(CmdError::msg(USAGE));
         };
@@ -1061,6 +1071,10 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
         else {
             return Err(CmdError::msg(NO_SUCH_FACILITY));
         };
+        // Existence-hiding, as `/owner`: a facility this actor may not set reads as none.
+        if !staff && !mush_economy::acts_for(ctx.w, ctx.actor, facility.owner()) {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        }
         let rhs = ctx.args.rhs().unwrap_or_default().to_owned();
         let mut words = rhs.split_whitespace();
         let customers = match words.next() {
@@ -1070,6 +1084,19 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
         };
         let cost = match words.next() {
             None => facility.cost().copied(),
+            Some(word) if word.starts_with("margin=") => {
+                let margin = word
+                    .trim_start_matches("margin=")
+                    .parse::<u32>()
+                    .map_err(|_| CmdError::msg(USAGE))?;
+                let mut cost = facility
+                    .cost()
+                    .copied()
+                    .ok_or_else(|| CmdError::msg(TERMS_NO_PRICE))?;
+                cost.margin_permille = margin;
+                Some(cost)
+            }
+            Some(_) if !staff => return Err(CmdError::msg(TERMS_COST_STAFF)),
             Some(spec) => {
                 let n: Vec<u64> = spec
                     .split('/')
@@ -1090,6 +1117,15 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
                 })
             }
         };
+        if words.next().is_some() {
+            return Err(CmdError::msg(USAGE));
+        }
+        // Doc 48 unit PL.9 (Q-48-53): a sold yard stays open to every customer.
+        if facility.holding() == crate::facility::Holding::OwnerPublic
+            && customers != crate::facility::Customers::Public
+        {
+            return Err(CmdError::msg(TERMS_KEPT_PUBLIC));
+        }
         let mut updated = facility.clone();
         if cost != facility.cost().copied() {
             updated = updated
@@ -1102,6 +1138,9 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
                 .map_err(|error| CmdError::msg(error.to_string()))?;
         }
         let policy = updated.policy_revision();
+        let margin = updated.cost().map_or_else(String::new, |c| {
+            format!(", margin {} per mille", c.margin_permille)
+        });
         crate::store::persist_facility(ctx.out, &updated);
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
             store.put_facility(updated);
@@ -1109,7 +1148,7 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
         ctx.out.info(
             ctx.actor,
             format!(
-                "Facility #{id}: customers {}; policy revision {policy}.",
+                "Facility #{id}: customers {}{margin}; policy revision {policy}.",
                 customers.word()
             ),
         );
@@ -1868,7 +1907,9 @@ pub fn register(
     reg.classify_commands(CommandCompatibility::ReadOnly);
     reg.command(
         CommandSpec {
-            name: "@licence".into(),
+            name: "@license".into(),
+            // The British spelling stays an alias so nothing that types it breaks.
+            aliases: vec!["@licence".into()],
             switches: vec!["show".into()],
             shape: ArgShape::EqPair,
             ..CommandSpec::default()

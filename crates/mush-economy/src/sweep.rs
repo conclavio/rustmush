@@ -534,6 +534,9 @@ fn disposition(e: &EconomyError) -> Disposition {
 /// the next fire — and if an obligation is starved often enough, the forgiveness it
 /// eventually takes is classified `Overload`, which escalates on repeat.
 fn settle_obligations(ctx: &mut Ctx<'_>, ev: Evidence) {
+    // Doc 48 cut EX.4 (Q-48-54): a delinquent player-owed record whose account is funded
+    // returns to the due pool first, so this fire attempts it.
+    api::reinstate_funded(ctx);
     let due: Vec<ObligationId> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
             return;
@@ -753,7 +756,11 @@ fn settle_one(ctx: &mut Ctx<'_>, id: ObligationId, ev: Evidence, posts: &mut usi
         match disposition {
             Disposition::Settled(outcome) => {
                 match advance_obligation(&o, period, outcome, clock_now) {
-                    Ok(next) => o = next,
+                    Ok(next) => {
+                        o = next;
+                        // Doc 48 cut EX.4: a funded account pays a player-owed record's arrears.
+                        api::collect_arrears(ctx, &mut o);
+                    }
                     Err(e) => {
                         // `OutOfOrder` (and a re-delivered duplicate, which `advance`
                         // absorbs) can only arise from a bug in THIS file's ordering, not
@@ -771,7 +778,11 @@ fn settle_one(ctx: &mut Ctx<'_>, id: ObligationId, ev: Evidence, posts: &mut usi
                     SettleOutcome::InsufficientAvailable,
                     clock_now,
                 ) {
-                    Ok(next) => o = next,
+                    Ok(next) => {
+                        o = next;
+                        // Doc 48 cut EX.4 (Q-48-54): a player-owed period is accrued, not lost.
+                        api::accrue_arrears(ctx, &mut o);
+                    }
                     Err(e) => {
                         tracing::error!(obligation = id.0, period, error = %e, "economy: sweep folded a miss out of order (programming error)");
                     }

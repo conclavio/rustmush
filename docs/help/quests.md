@@ -37,7 +37,7 @@ Restarting or repeating a command cannot repeat the completion bonus.
 
 | Giver and location | Invitation | What it verifies |
 | --- | --- | --- |
-| Ilse Oduya-Brandt, Registry & Co-op Desk | The papers behind a captain | Your own active Co-op enrolment, real charter and stake payment. |
+| Ilse Oduya-Brandt, Registry & Co-op Desk | The papers behind a captain | Your own active Co-op enrollment, real charter and stake payment. |
 | Dov Akintola, Co-op Chandlery | A small useful cargo | A fresh purchase of at least one tonne of crated fittings (`industrial_parts`) at Stickney, then a delivered sale to the Ceres Co-op. |
 | Yusra "Ma" Petrossian, the Slack Line | Someone at the next table | Meeting Nadia Okafor-Sato in person and learning her public route. |
 | Rosalind Qureshi-Mbeki, Exchange Hall | Wide first, then close | A fresh ordinary surface scan and sounding on a real site. |
@@ -48,8 +48,8 @@ name prefixes; the service also prints exact commands using the giver's object
 number.
 
 Ilse's invitation is a reason to read `+coop` and decide whether the First
-Captain programme suits you. Enrolment is once per account; never enrol just to
-clear a journal entry. A current qualifying enrolment can already exist when
+Captain program suits you. The Co-op stakes each account once; never enroll just
+to clear a journal entry. A current qualifying enrollment can already exist when
 you accept. `+coop/statement` reads your record, and `+quest/check Ilse` verifies
 it at her desk.
 
@@ -68,7 +68,7 @@ and the invitation never summons or resets her. A fare discussion through
 `+passage/offer Nadia` is a separate choice.
 
 Accept Rosalind's invitation before the scan and sounding. `help mining`
-explains the licence, refit and rig lease; choose a real site with
+explains the license, refit and rig lease; choose a real site with
 `+chart/ground`. Preview and submit the actual rig operations with `+tv/1 scan`,
 `+tv/1 scan go`, `+tv/1 sound` and `+tv/1 sound go`. Successful manual or planned
 operations count; quiet soundings also count. Both readings can be taken on the
@@ -100,11 +100,11 @@ Once the ordinary commission payment settles, return to the Exchange and use:
 
 The board has four shared, finite jobs. This invitation reserves none of them,
 and is unavailable when there is no eligible unfinished or available commission.
-Partial work, cancelled jobs and refunds cannot satisfy it. Your chart stays
+Partial work, canceled jobs and refunds cannot satisfy it. Your chart stays
 private. The quest adds Rosalind's once-only personal relationship bonus;
 Occator's ordinary payment and reputation effects are separate. Commissions
 remain available without either of her quests. Abandoning the quest leaves any
-commission in place; cancelling one uses the ordinary `+survey/cancel` command.
+commission in place; canceling one uses the ordinary `+survey/cancel` command.
 
 ## People who keep the port moving
 
@@ -133,7 +133,7 @@ Nadia's passage. Read Nadia's actual situation with `+passage Nadia`, then ask:
 Accept before Nadia arrives at Stickney. A passage you have already booked, or
 one with Nadia already aboard your ship, can count if arrival is still ahead.
 The favor is unavailable once she has arrived or while she is booked with
-another captain. She remains the same shared traveller; this quest never
+another captain. She remains the same shared traveler; this quest never
 reserves her for you or creates another passenger.
 
 Negotiate, book and board her through the ordinary `+passage` commands. Use
@@ -152,7 +152,7 @@ the favor does not cancel a booking or change your passenger obligations.
 ## A second reading
 
 After bringing Leila Mensah-Kovács home on a completed, paid passage, meet her
-again at Ceres's Visiting Berth Gallery. She is the same person you travelled
+again at Ceres's Visiting Berth Gallery. She is the same person you traveled
 with. `+quest Leila` checks whether her follow-up is available to you; an arrival
 whose fare is still settling is not yet a paid passage.
 
@@ -269,9 +269,9 @@ checkpoint objectives use these source shapes:
 Each still needs its title, instructions and bound `room_pack`/`room_entry`:
 that is where the player acknowledges the verified work with `+quest/check`.
 `detail` may be omitted for these objectives. A passenger objective verifies a
-local meeting with the real traveller, not a booking or completed passage.
+local meeting with the real traveler, not a booking or completed passage.
 Trade and survey evidence must come from actual work after acceptance. Use
-honest current availability when a shared traveller has already left.
+honest current availability when a shared traveler has already left.
 
 A `contact` objective can name any authored NPC, including ordinary station
 staff. Bind the NPC's pack as an explicit dependency and choose the room where
@@ -280,8 +280,8 @@ and present with the player when the check commits. Previously acknowledged
 meetings remain historical receipts if that NPC later moves. Contact checks do
 not assert that dialogue happened, transfer items or sign up for services.
 
-A `paid_passage` objective names an existing traveller and exact route. Its room
-is where the player reports the completed journey; the traveller does not have
+A `paid_passage` objective names an existing traveler and exact route. Its room
+is where the player reports the completed journey; the traveler does not have
 to return there. It requires the player's actual delivered booking and exact
 settled fare receipt. Delivery must occur after quest acceptance; an unfinished
 booking may already exist. Acceptance rechecks availability, and recording or
@@ -311,7 +311,7 @@ Accepted work keeps its frozen definition; a source edit does not silently
 change the invitation already accepted. Rebinding a source to another NPC or
 retiring a live source is refused.
 Write `completion` as the giver's account of what actually happened; it becomes
-their verified work experience and is labelled as their account in the journal.
+their verified work experience and is labeled as their account in the journal.
 
 The independent packs `tacsim.passengers.ceres@1` and
 `tacsim.quests.first_steps@1` require Ceres v4 and Stickney v4. New worlds load

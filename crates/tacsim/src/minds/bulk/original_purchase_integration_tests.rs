@@ -1415,7 +1415,7 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     check_eq!(
         purchase.get("licence"),
         Some(&json!("2")),
-        "shared allocator follows owner licence 1"
+        "shared allocator follows owner license 1"
     );
     for field in [
         "operation",

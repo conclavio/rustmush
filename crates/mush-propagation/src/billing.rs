@@ -570,7 +570,7 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Ok(());
         }
         if s.phase != Phase::Quoted || now >= s.quote_until {
-            return Err(fail("Subscription quote expired or cancelled."));
+            return Err(fail("Subscription quote expired or canceled."));
         }
         if book.subscriptions.values().any(|other| {
             other.id != s.id
@@ -610,7 +610,7 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         s.phase = Phase::Cancelled;
         audit(
             ctx,
-            format!("subscription {id} cancelled; existing arrears remain"),
+            format!("subscription {id} canceled; existing arrears remain"),
         );
     } else if ctx.switches.has("cure") {
         let v = api.subscription(ctx.w, &s).map_err(CmdError::msg)?;

@@ -1216,7 +1216,7 @@ async fn board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_i
     say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
     say(&mut ada, "SIM START", "is boarding").await;
     say(&mut ada, "red", "Red Room").await;
-    let seen = ask(&mut ada, "SIM", "Simulator centre:").await;
+    let seen = ask(&mut ada, "SIM", "Simulator center:").await;
     assert!(seen.contains("boarding"), "{seen}");
     assert!(
         !seen.contains("Simulator Lobby"),

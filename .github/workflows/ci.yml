@@ -1486,6 +1486,15 @@ jobs:
   # TACSIM_UNITS=100 TACSIM_MINDS_VARIANTS=fill_authored,stock_authored,rhai_authored cargo test --release -p tacsim --test harness tacsim_harness_arena_minds -- --exact --ignored --nocapture
   # TACSIM_LLM_COST_RUN=1 TACSIM_LLM_COST_MOCK=1 TACSIM_LLM_COST_UNITS=100 TACSIM_LLM_COST_MINUTES=15 cargo test --release -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture
 
+  # Doc 49 unit CC.2 (Q-49-3, Q-49-22): the ruled ground palette measured
+  # (crates/tacsim/tests/domain_arena/twin.rs): sixty one-against-one fights on the proving
+  # ground, the stock mind against itself and against a pilot who fires every ready mount, read
+  # for their ends, their lengths against the 900 s cap, rounds fired and hit by mount, and each
+  # mind's withdrawal. A measurement, never a gate, so no job runs it: it is run by hand on
+  # conclav.dev, and its figures are in doc 49's CC.2 cut note. Its tier is by-hand in
+  # crates/mush-contract-tests/test-tiers.toml, with its last run's revision. By hand:
+  # cargo test --release -p tacsim --test domain_arena twin::cc2_the_ruled_palette_measured -- --ignored --exact --nocapture
+
   # Doc 40 cut FR.7c: FR.7's round story at 256 and 512 (crates/mush-bot/tests/mining_cohort/
   # fr7_round.rs): the production root in the bot's test binary, the bot over SSH, a raid, a
   # reinforcement, a tow struck and released under fire, a jammed sight, a segment rolled and

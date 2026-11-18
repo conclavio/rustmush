@@ -15,7 +15,7 @@ use mush_testkit::TestWorld;
 const PINNED: [(&str, &str); 3] = [
     (
         REGION_PACK,
-        "46beb771027b8fa0e4056d9374259f4a32321c8b308aeb0e721c737b7b1cc94e",
+        "5555c18076ffccedf400959faf2fbc8258bb5eca8e0cb075d27c63d6cee7d11a",
     ),
     (
         OOC_AREA_PACK,

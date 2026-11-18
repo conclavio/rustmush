@@ -355,7 +355,7 @@ async fn author_commands_refuse_alike_for_foreign_and_missing_targets() -> TestR
                     check_eq!(
                         a,
                         vec![
-                            format!("Forking licence {typed_a} as probe copy."),
+                            format!("Forking license {typed_a} as probe copy."),
                             QUEUED.to_owned(),
                             DRIVER.to_owned()
                         ]
@@ -737,9 +737,9 @@ async fn author_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 /// C2e tests pin through the real granted read.
 const EMPTY: &str = "No minds are for sale at this counter.";
 const COUNTER: &str = "Listing and buying minds happen at a market counter.";
-const HOLD_HEAD: &str = "Your mind licences:";
+const HOLD_HEAD: &str = "Your mind licenses:";
 /// 17g C2g: bare `+minds/holdings` with nothing in either section.
-const HOLD_EMPTY: &str = "You hold no mind licences.";
+const HOLD_EMPTY: &str = "You hold no mind licenses.";
 /// 17g C2g: `/buy/pay` without exactly one personal credit account.
 const ACCOUNT: &str = "This needs exactly one personal credit account in your name.";
 fn no_quote(code: &str) -> String {
@@ -986,7 +986,7 @@ async fn market_commands_refuse_without_own_records() -> TestResult {
 /// and the grant changes nothing without `org=`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
-    const NOT_FOR_ORG: &str = "You do not act for that organisation.";
+    const NOT_FOR_ORG: &str = "You do not act for that organization.";
     const USAGE_FILED: &str = "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]";
     let mut w = world("mush-m8c-org-forms", 2).await?;
     let result = timeout(STEP * 10, async {
@@ -1037,7 +1037,7 @@ async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
             check_eq!(
                 admitted(&w.server, p.buyer, &unknown).await?,
                 vec![NOT_FOR_ORG.to_owned()],
-                "unknown organisation: {unknown}"
+                "unknown organization: {unknown}"
             );
         }
         acknowledged(
@@ -1060,11 +1060,11 @@ async fn org_forms_refuse_without_the_holder_grant() -> TestResult {
             ("+minds/holdings org=Guild", HOLD_EMPTY.to_owned()),
             (
                 "+minds/renew 1 org=Guild",
-                "You hold no licence 1.".to_owned(),
+                "You hold no license 1.".to_owned(),
             ),
             (
                 "+minds/renew/pay 1 org=Guild",
-                "You hold no licence 1.".to_owned(),
+                "You hold no license 1.".to_owned(),
             ),
             (
                 "@mind/attest 1 org=Guild",
@@ -1331,7 +1331,7 @@ async fn registry_commands_refuse_alike_for_every_principal_on_unknown_targets()
         let known = known_accounts(&w).await?;
         for (template, request) in [
             ("@registry/recall {n}", "Recalling filed revision {n}."),
-            ("@registry/revoke {n}", "Revoking licence {n}."),
+            ("@registry/revoke {n}", "Revoking license {n}."),
         ] {
             let mut replies = Vec::new();
             for (actor, name) in [(p.buyer, "buyer"), (p.god, "god"), (p.operator, "operator")] {
@@ -1426,12 +1426,12 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
         let p = w.launch.principals;
         for (actor, name) in [(p.buyer, "buyer"), (p.author, "author")] {
             for (template, reply) in [
-                ("+minds/renew {n}", "You hold no licence {n}."),
-                ("+minds/renew/pay {n}", "You hold no licence {n}."),
-                ("+minds/renew/decline {n}", "You hold no licence {n}."),
+                ("+minds/renew {n}", "You hold no license {n}."),
+                ("+minds/renew/pay {n}", "You hold no license {n}."),
+                ("+minds/renew/decline {n}", "You hold no license {n}."),
                 (
                     "+minds/resell {n}=LaunchAuthor price=5",
-                    "You hold no licence {n}.",
+                    "You hold no license {n}.",
                 ),
                 (
                     "+minds/charter {n}=LaunchAuthor price=1",
@@ -1503,7 +1503,7 @@ async fn trade_commands_refuse_without_own_records() -> TestResult {
                     let lines = admitted(&w.server, actor, &line).await?;
                     check_eq!(
                         lines,
-                        vec![format!("You hold no licence {typed}.")],
+                        vec![format!("You hold no license {typed}.")],
                         "{name}: {line}"
                     );
                     replies.push((lines, typed));
@@ -1609,7 +1609,7 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
                 // only; every other name is checked on every line (the C2d
                 // fix round, reviewer T5).
                 let seller_line =
-                    own.starts_with("Offering licence ") || own.starts_with("Offering filed mind ");
+                    own.starts_with("Offering license ") || own.starts_with("Offering filed mind ");
                 for other in [
                     "LaunchAuthor",
                     "LaunchBuyer",
@@ -1665,10 +1665,10 @@ async fn trade_replies_reach_only_the_actor() -> TestResult {
                         Some(NO_OFFER_999)
                     }
                     "+minds/charter/accept 999 price=1" => Some(NO_CHARTER_OFFER_999),
-                    "+minds/resell 1=LaunchAlt price=1" => Some("You hold no licence 1."),
+                    "+minds/resell 1=LaunchAlt price=1" => Some("You hold no license 1."),
                     // 17g C2h: live, and refused before any hand-off.
                     "+minds/renew 999" | "+minds/renew/pay 999" | "+minds/renew/decline 999" => {
-                        Some("You hold no licence 999.")
+                        Some("You hold no license 999.")
                     }
                     _ if line.contains("renewal/front ") => Some(RENEWAL_UNAVAILABLE),
                     _ => None,
@@ -1732,7 +1732,7 @@ async fn trade_commands_are_not_open_on_a_house_only_launch() -> TestResult {
 }
 
 /// 17g C2g: the accepts with no offer naming the actor.
-const NO_OFFER_999: &str = "You have no offer for licence 999.";
+const NO_OFFER_999: &str = "You have no offer for license 999.";
 const NO_CHARTER_OFFER_999: &str = "You have no offer for filed mind 999.";
 
 /// `@registry`'s help (17g C2d; doc 17h cut M8a adds the inspection line).

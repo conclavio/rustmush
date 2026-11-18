@@ -219,7 +219,13 @@ fn every_command_shaped_token_in_the_help_is_a_registered_verb() {
                 continue;
             };
             for switch in &token.switches {
-                if spec.switches.iter().any(|s| s.eq_ignore_ascii_case(switch)) {
+                // A switch alias (`+coop/enrol` for `/enroll`) is a registered spelling.
+                if spec.switches.iter().any(|s| s.eq_ignore_ascii_case(switch))
+                    || spec
+                        .switch_aliases
+                        .iter()
+                        .any(|(alias, _)| alias.eq_ignore_ascii_case(switch))
+                {
                     continue;
                 }
                 unknown.push(format!(

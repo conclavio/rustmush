@@ -678,6 +678,13 @@ pub(crate) fn drifts(pool: u64, reading: &AskReading) -> bool {
     }
 }
 
+/// Whether `org`, a vendor of the port, is throttled (doc 48 cut EX.8, Q-48-39).
+fn house_throttled(w: &World, map: &PortMap, org: &CanonicalId) -> bool {
+    map.orgs
+        .get(org)
+        .is_some_and(|row| crate::port::price::throttled(w, mush_org::OrgId(row.org)))
+}
+
 /// `price_major` in the credit's minor units on this world.
 fn ask_price(w: &World, price_major: u64) -> Option<Amount> {
     let scale = crate::port::apply::credit_scale(w);
@@ -853,6 +860,9 @@ pub(crate) fn stock_step(
     let Some((map, def)) = clerk_port(ctx.w, clerk) else {
         return Step::Idle;
     };
+    // Doc 48 cut EX.8 (Q-48-18): once an IC week the port's house prices step with its stock.
+    // Market documents only, written beside whatever this act does; it takes no act of its own.
+    crate::port::price::weekly_step(ctx, &map, &def);
     // Doc 19 cut A.4b: the emergency bids come first — life support before stock.
     if let Some(step) = emergency_step(ctx, state, fire, clerk, &map, &def) {
         return step;
@@ -985,7 +995,8 @@ pub(crate) fn stock_step(
                     mush_market::VendorId(vendor_id),
                     row.vault,
                     ask.good.clone(),
-                    ask.price_major,
+                    // Doc 48 cut EX.8: a re-listed ask starts from its carried factor.
+                    crate::port::price::ask_price_major(ctx.w, &def, &ask.good, ask.price_major),
                     pool,
                 ));
                 due_counters = Some((
@@ -1033,6 +1044,7 @@ pub(crate) fn stock_step(
         object: None,
         visibility: MarketVisibility::Public,
         ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+        private_to: None,
     };
     match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::list_goods(ctx, spec)) {
         Ok(Ok(_)) => {
@@ -1333,6 +1345,7 @@ fn part_ask_step(
         object: None,
         visibility: MarketVisibility::Public,
         ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+        private_to: None,
     };
     Some(
         match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::list_goods(ctx, spec)) {
@@ -1441,6 +1454,10 @@ fn bid_step(
         let Some(vendor_id) = row.vendor else {
             continue;
         };
+        // Doc 48 cut EX.8 (Q-48-39): a throttled house posts no new bids.
+        if house_throttled(ctx.w, map, &vendor.org) {
+            continue;
+        }
         for bid in &vendor.bids {
             // Doc 20 cut SM.5 (lead ruling 4): a refreshed intake is the drip's, and
             // `posts_afresh` is never consulted for it.
@@ -1707,6 +1724,10 @@ fn drip_step(
         let Some(vendor_id) = row.vendor.map(mush_market::VendorId) else {
             continue;
         };
+        // Doc 48 cut EX.8 (Q-48-39): a throttled house posts no new bids.
+        if house_throttled(ctx.w, map, &vendor.org) {
+            continue;
+        }
         for bid in &vendor.bids {
             let Some(refresh) = bid.refresh else {
                 continue;

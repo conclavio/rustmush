@@ -245,7 +245,7 @@ pub async fn stop_ledger_archive(job: Option<JoinHandle<()>>) {
     match job.await {
         Ok(()) => tracing::info!("ledger archive pass ended"),
         Err(error) if error.is_cancelled() => {
-            tracing::info!("ledger archive pass cancelled at shutdown");
+            tracing::info!("ledger archive pass canceled at shutdown");
         }
         // A panicked pass is worth naming: nothing has been purged since it died.
         Err(error) => tracing::error!(%error, "ledger archive pass ended badly"),
@@ -478,7 +478,7 @@ fn game_modules_with_optional_commerce(
     } else {
         tracing::warn!(
             "tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and \
-             no stock tanks are applied, so the simulator centre cannot start a match"
+             no stock tanks are applied, so the simulator center cannot start a match"
         );
     }
     // Doc 18 cut IC2 (lead ruling R2): the same switch loads the game's own seed
@@ -884,7 +884,7 @@ async fn build_engine_inner(
             tracing::info!(
                 %roster_tanks,
                 %pods,
-                "simulator centre ready: the arena is applied and its tanks are standing"
+                "simulator center ready: the arena is applied and its tanks are standing"
             );
             let configured = config.tacsim.match_.max_slots_per_side;
             let available = u32::from(tacsim::match_::PODS_PER_SIDE);
@@ -892,7 +892,7 @@ async fn build_engine_inner(
                 tracing::warn!(
                     configured_slots_per_side = configured,
                     available_pods_per_side = available,
-                    "simulator slots clamped to the centre's available pods"
+                    "simulator slots clamped to the center's available pods"
                 );
             }
         }

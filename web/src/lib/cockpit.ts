@@ -1748,7 +1748,7 @@ export function catchupLines(callsign: string, catchup: CockpitCatchup): string[
     }
     const clauses: string[] = [];
     if (is.armour < was.armour) {
-      clauses.push(`armour ${was.armour} then, ${is.armour} now`);
+      clauses.push(`armor ${was.armour} then, ${is.armour} now`);
     }
     if (is.internals < was.internals) {
       clauses.push(`internals ${was.internals} then, ${is.internals} now`);

@@ -367,7 +367,7 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     let floor = cost.floor_minor_for_secs(u64::try_from(secs).expect("secs"), berths);
     assert!(
         floor > 0 && floor < tacsim::port::bay_work::BayQuote::cost_minor(&priced.jobs),
-        "the floor is under the tariff's labour at 1x: {floor}"
+        "the floor is under the tariff's labor at 1x: {floor}"
     );
     assert!(
         floor_line(&quote).contains(&format!("{}", floor / 100)),
@@ -478,7 +478,7 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     assert_eq!(
         hold_pool(&mut rig.tw, vault, "industrial_parts"),
         40 - parts_t - 1,
-        "fifty points of armour take a tonne of parts from the hold"
+        "fifty points of armor take a tonne of parts from the hold"
     );
 
     // (5) Stowed back in its slot, unheld; the fee is the operator's.
@@ -560,7 +560,7 @@ async fn gc8_who_may_have_a_hull_worked_on() {
     ));
     // A holder of Occator's `unit.maintain_refit`: the grant is read through Org.
     let mechanic = crate::driving_rig::pilot(&mut rig, "Mechanic", 3);
-    let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
+    let enrolled = run(&mut rig.tw, mechanic, "+coop/enroll Grey Heron");
     assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
     let occator = port_map(&rig.tw, "ceres_port").orgs[&crate::driving_rig::cid("occator")].org;
     let granted = run(
@@ -606,7 +606,7 @@ pub(crate) fn floor_line(quote: &str) -> &str {
 
 pub(crate) fn mechanic(rig: &mut Rig, room: ObjId) -> ObjId {
     let mechanic = crate::driving_rig::pilot(rig, "Mechanic", 3);
-    let enrolled = run(&mut rig.tw, mechanic, "+coop/enrol Grey Heron");
+    let enrolled = run(&mut rig.tw, mechanic, "+coop/enroll Grey Heron");
     assert!(enrolled.contains("now the Grey Heron"), "{enrolled}");
     let occator = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")].org;
     let _ = run(
@@ -839,17 +839,29 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
         .filter(|c| c.is_salvageable())
         .count();
 
+    let stores = port_map(&rig.tw, "ceres_port").vendors[&cid("occator")].vault;
+    let stock_before = hold_pool(&mut rig.tw, VaultId(stores), "structural_alloys");
     let out = settled(&mut rig, pilot, &format!("+bay/scrap #{}", spare.0), spare);
     assert!(out.contains("is broken up"), "{out}");
-    let stores = port_map(&rig.tw, "ceres_port").vendors[&cid("occator")].vault;
-    let alloys = lot_record(
+    // Doc 48 cut EX.3: the lots mint into the captain's scrap vault at Ceres, which sells them to
+    // Occator on the board a row a step: each is in the one or, once sold, the other.
+    let scrap = tacsim::port::bay_work::scrap::scrap_vault(rig.tw.world(), pilot, "ceres")
+        .expect("the captain's scrap vault at Ceres");
+    let mine_or_sold = [EndpointRef(scrap), EndpointRef(VaultId(stores))];
+    // The tonne: its minted lot, or (dissolved for its sale) the scrap vault's pool, or (sold)
+    // Occator's stock.
+    let lot = lot_record(
         &mut rig,
         tacsim::port::bay_work::act::lot_id(spare, 1, 0).expect("the lot"),
-    )
-    .expect("the alloys' lot");
-    assert_eq!(alloys.commodity().as_str(), "structural_alloys");
-    assert_eq!(alloys.quantity(), 1, "1,539 kg: a tonne, {alloys:?}");
-    assert_eq!(alloys.endpoint(), EndpointRef(VaultId(stores)));
+    );
+    if let Some(alloys) = &lot {
+        assert_eq!(alloys.commodity().as_str(), "structural_alloys");
+        assert!(mine_or_sold.contains(&alloys.endpoint()), "{alloys:?}");
+    }
+    let tonnes = lot.map_or(0, |alloys| alloys.quantity())
+        + hold_pool(&mut rig.tw, scrap, "structural_alloys")
+        + (hold_pool(&mut rig.tw, VaultId(stores), "structural_alloys") - stock_before);
+    assert_eq!(tonnes, 1, "1,539 kg: a tonne");
     assert_eq!(
         hold_pool(&mut rig.tw, vault, "structural_alloys"),
         0,
@@ -862,7 +874,7 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
             continue;
         };
         assert!(found.commodity().as_str().starts_with("tacsim.part."));
-        assert_eq!(found.endpoint(), EndpointRef(VaultId(stores)));
+        assert!(mine_or_sold.contains(&found.endpoint()), "{found:?}");
         let part = provenance(&mut rig, lot);
         assert_eq!(part.parent_hull(), Some(spare));
         assert!(part.stripped().is_some_and(|s| s.scrapped));

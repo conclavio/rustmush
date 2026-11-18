@@ -677,7 +677,7 @@ fn lot(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> 
         }
         crate::record::Lineage::Grey {} => {
             if mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty) {
-                ctx.out.info(ctx.actor, "  grey: no origin recorded");
+                ctx.out.info(ctx.actor, "  gray: no origin recorded");
             }
         }
         crate::record::Lineage::Split { parent } => {

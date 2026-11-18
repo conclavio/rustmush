@@ -393,11 +393,15 @@ fn fire(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
     drain(&mut rig.tw)
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed (a site still opening is
 /// the site clerk's work, not the stock clerks').
 fn stock(rig: &mut Rig) {
     let clerks = site_clerks(&rig.tw);
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -420,7 +424,7 @@ fn stock(rig: &mut Rig) {
             .collect();
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 /// The six site clerks.
@@ -1101,7 +1105,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1248,7 +1252,7 @@ fn sm6_extract_refuses_a_surface_block() {
     let body = deposit(&mut rig.tw, row.deposit).expect("the deposit is open");
     let remaining = pool(&mut rig.tw, row.vault, row.good.as_str());
     let licence = mush_economy::InstrumentId::new(tacsim::economy::LICENCE_FREEPORT)
-        .expect("the licence instrument");
+        .expect("the license instrument");
     assert_eq!(
         mush_industry::extraction_authorized(
             rig.tw.world(),

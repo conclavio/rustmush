@@ -357,7 +357,7 @@ fn trust(map: &PortMap) -> (OrgId, OrgScopeId) {
 fn ic4_boot_lays_up_eight_drays_at_ceres() {
     let mut tw = boot(&Roster::production());
     let def = ceres_def();
-    let programme = def.programme.clone().expect("a programme");
+    let programme = def.programme.clone().expect("a program");
     let template = interior();
     let map = ceres_map(&tw);
     let gallery = ceres_room(&tw, "room.c01_berth_gallery");
@@ -1072,7 +1072,7 @@ fn ic4_the_readiness_report_counts_the_hulls() {
 /// **The registry issuer is the programme's** (doc 18 §4.2 schema addition 3).
 #[test]
 fn ic4_the_registry_issuer_is_the_programmes() {
-    let programme = ceres_def().programme.expect("a programme");
+    let programme = ceres_def().programme.expect("a program");
     assert_eq!(programme.issuer, REGISTRY_ISSUER);
     let tw = boot(&Roster::production());
     let issuer = SystemPrincipalId::new(REGISTRY_ISSUER).expect("a principal");

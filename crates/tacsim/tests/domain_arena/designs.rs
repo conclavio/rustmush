@@ -183,7 +183,7 @@ fn ud3_a_published_design_is_kept_never_republished_and_loads_after_a_restart() 
             .specs
             .keys()
             .any(|id| id.as_str() == ID),
-        "the design is in the catalogue the boot froze"
+        "the design is in the catalog the boot froze"
     );
     assert_eq!(snap(&tw).designs().count(), 1, "the registry row hydrated");
     // Doc 31 cut UD.3b (D-31-16): the looks feed answers the design's look and

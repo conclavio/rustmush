@@ -1942,7 +1942,7 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
             _ => None,
         }
     }
-    let range_m = column(row, "m").unwrap_or_else(|| panic!("one range, in metres: {row}"));
+    let range_m = column(row, "m").unwrap_or_else(|| panic!("one range, in meters: {row}"));
     assert_eq!(
         range_m % 50,
         0,
@@ -2132,8 +2132,8 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         .split_whitespace()
         .next()
         .and_then(|word| word.parse().ok())
-        .unwrap_or_else(|| panic!("a range in metres: {tail}"));
-    assert_eq!(metres % 10, 0, "a locked plot reads to ten metres: {tail}");
+        .unwrap_or_else(|| panic!("a range in meters: {tail}"));
+    assert_eq!(metres % 10, 0, "a locked plot reads to ten meters: {tail}");
     let bearing = ask(&mut ada, "BEARING", "Bearing to").await;
     let head = format!("Bearing to {renamed}: ");
     let tail = bearing
@@ -6275,7 +6275,7 @@ fn o1_board_shape(answer: &str) -> Vec<String> {
     let lines: Vec<&str> = answer.lines().map(str::trim).collect();
     let head = lines
         .iter()
-        .position(|line| line.starts_with("Simulator centre"))
+        .position(|line| line.starts_with("Simulator center"))
         .unwrap_or_else(|| panic!("no board head in {answer:?}"));
     let clock = lines
         .iter()
@@ -9152,7 +9152,7 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
             )
             && own
                 .iter()
-                .any(|line| line.starts_with("Blue's half of the centre's pool is "))
+                .any(|line| line.starts_with("Blue's half of the center's pool is "))
             && own.contains(&"Your mind will seal at Class I.".to_owned())
             && own.len() == 4,
         "Bo reads his own, and only it: {own:#?}"
@@ -9500,7 +9500,7 @@ fn m5_the_fog_sweep_finds_each_leak_it_names() {
     for clean in [
         "Red's fill carries a mind.",
         "The fills are not shown once a match starts.",
-        "Blue's half of the centre's pool is 244,000 ops a second and 1,500 are spoken for.",
+        "Blue's half of the center's pool is 244,000 ops a second and 1,500 are spoken for.",
         "a pool of 244000 ops",
         "a nonce of 18446744073709551615 and a stamp of 1760234567890",
         "Snipers and Hunters are words of their own",

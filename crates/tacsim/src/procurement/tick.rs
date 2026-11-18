@@ -717,7 +717,7 @@ fn choose_and_quote(
         state.page(
             org,
             "holdings",
-            "the House's current licences are unreadable",
+            "the House's current licenses are unreadable",
         );
         return Step::Refused;
     };
@@ -972,7 +972,7 @@ fn holdings(ctx: &Ctx<'_>, handles: &Handles, org: OrgId) -> Option<Vec<(Licence
     tracing::warn!(
         log_id = "tacsim.procurement.holdings_cut",
         org = org.0,
-        "tacsim: a House holds more licences than one choice reads; the cap counts the first"
+        "tacsim: a House holds more licenses than one choice reads; the cap counts the first"
     );
     Some(out)
 }

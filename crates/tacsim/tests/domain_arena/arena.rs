@@ -5888,9 +5888,12 @@ fn af1_catalog_shape_ignores_identity_but_walks_every_definition_field() {
 /// standing friends), the host's `state.end`, and the unit designator's new
 /// `unit {party, letter}` shape in place of `slot {team, slot}`. Measured:
 /// 739 paths.
-const AF1_SHAPE_DIGEST: &str = "f26e177004cad8740a40c4e1792d11035ecede02bc19c0c023f038f9c85e98ce";
+/// Doc 49 unit CC.2b, snapshot format 20: one path, `state.motors.cells:
+/// number` (the path cells the motor's `decide_ms` window has spent); nothing
+/// else moved. Measured: 740 paths. Was `f26e1770…c85e98ce`.
+const AF1_SHAPE_DIGEST: &str = "78bc6ca7e70536b893ed96e9e70ab5e58890cd54316a14682e00e1fb17a01bfe";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 739;
+const AF1_SHAPE_LINES: usize = 740;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -6212,7 +6215,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        19,
+        20,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -6378,7 +6381,8 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     // format-2 document is still refused by name.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
     // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
-    assert_eq!(SNAPSHOT_FORMAT, 19);
+    // Doc 49 unit CC.2b: 20, with the motor table's window cells.
+    assert_eq!(SNAPSHOT_FORMAT, 20);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -6464,7 +6468,8 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     // format-3 document is still refused by name.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
     // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
-    assert_eq!(SNAPSHOT_FORMAT, 19);
+    // Doc 49 unit CC.2b: 20, with the motor table's window cells.
+    assert_eq!(SNAPSHOT_FORMAT, 20);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -6689,7 +6694,8 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     // 13 and certificate-bearing format 14 before reading carried state.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
     // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
-    assert_eq!(SNAPSHOT_FORMAT, 19);
+    // Doc 49 unit CC.2b: 20, with the motor table's window cells.
+    assert_eq!(SNAPSHOT_FORMAT, 20);
     for old in [15_u32, 14, 13, 12, 11, 10, 9, 8, 7, 4] {
         let mut stale = snapshot.document.clone();
         stale["format"] = serde_json::json!(old);
@@ -6801,7 +6807,8 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
     // to 10.
     // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
     // Doc 32 cut CF.0: 19, with the parties' relation books and end condition.
-    assert_eq!(SNAPSHOT_FORMAT, 19);
+    // Doc 49 unit CC.2b: 20, with the motor table's window cells.
+    assert_eq!(SNAPSHOT_FORMAT, 20);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),

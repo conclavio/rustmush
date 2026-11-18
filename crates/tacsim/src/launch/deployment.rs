@@ -168,6 +168,9 @@ impl HardwareCoordinates {
                 max_fee_minor: b.max_fee_minor,
             }),
             buy_back_permille: self.buy_back_permille,
+            // Doc 48 unit EX.2b: the launch names the resale's recipients (its venue and its
+            // Registry), not these coordinates.
+            resale: None,
             depot_stock: self.depot_stock.clone(),
         }
     }

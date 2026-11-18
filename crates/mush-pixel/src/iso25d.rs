@@ -2968,7 +2968,7 @@ mod tests {
         assert_eq!(look.model.as_deref(), Some("mc.st.wrecker"));
         assert!(
             bake::model("mc.st.wrecker").is_some(),
-            "the bake ships in the catalogue"
+            "the bake ships in the catalog"
         );
         let (chain, height_cm) = bake::iso_chain(wrecker).expect("a chain");
         assert_eq!(height_cm, 250, "the wrecker's 2.5 m");
@@ -3582,7 +3582,7 @@ mod tests {
             assert!(fp_pic.draw(&mut fp_frame, &feeds, &look));
             assert!(
                 fp_frame.count_colours(256) <= 256,
-                "{biome} first-person stays within 256-colour PNG palette budget"
+                "{biome} first-person stays within 256-color PNG palette budget"
             );
             fp_hashes.push(fp_frame.hash());
 
@@ -3729,7 +3729,7 @@ mod tests {
                 "elev": encode_test_elev(256, 256),
                 "legend": [["\"", "grass"], ["=", "road"], [".", "ground"]],
                 "spots": [
-                    { "letter": "A", "name": "Centre Hub", "cell": [256, 256] },
+                    { "letter": "A", "name": "Center Hub", "cell": [256, 256] },
                     { "letter": "B", "name": "South Gate", "cell": [64, 64] }
                 ],
                 "rows": (0..256)

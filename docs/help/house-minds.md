@@ -1,4 +1,4 @@
-# House mind licences
+# House mind licenses
 
 Use `+actions` to read the actions currently available to your character.
 Choose the listed one-seat or two-seat product explicitly. A product appears
@@ -21,7 +21,7 @@ the exact `quote` token; grant and refund use the original funded `operation`
 token. Use the identifiers returned by the real service. Publishing requires
 current authorization over the house and its scoped title.
 
-Funding holds money in escrow. The licence is granted only when completion is
+Funding holds money in escrow. The license is granted only when completion is
 acknowledged. Keep the returned request identity while an operation is pending
 or its result is unknown; an absent response is not a refund or a failed sale.
 Refund does not require the house to regain current selling eligibility.
@@ -30,13 +30,13 @@ The server rechecks current authority when resolving and preparing the chosen
 offer. Old quotes, a different character's offer or changed terms may be refused.
 The old ambiguous `market-mind-house` name is no longer a selectable action.
 
-A house's own licence to a mind it filed runs 365 game days, then 3 days of
-Grace; its catalogue sells through both and stops when the Grace ends. A paid
-House licence runs 90 game days and renews for another 90.
+A house's own license to a mind it filed runs 365 game days, then 3 days of
+Grace; its catalog sells through both and stops when the Grace ends. A paid
+House license runs 90 game days and renews for another 90.
 
-Your House Pins appear in `+minds/holdings`. Renew one with `+minds/renew <licence>` and
-its `/pay` and `/decline` steps, as for a personal licence, and resell one with
-`+minds/resell <licence>=<player> price=<credits>`. A buyer of a resold House Pin needs the
+Your House Pins appear in `+minds/holdings`. Renew one with `+minds/renew <license>` and
+its `/pay` and `/decline` steps, as for a personal license, and resell one with
+`+minds/resell <license>=<player> price=<credits>`. A buyer of a resold House Pin needs the
 same standing as a buyer of a new one. Buying a House Pin still uses the actions above.
 
 Where `+minds/renew` is not open, including any launch without the player market, a House

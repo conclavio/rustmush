@@ -577,7 +577,7 @@
         "desc": "The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward.",
         "details": {
           "boarding collars": "Each collar ends at a lock plate and a cycle counter. The collars are the station's; a ship's own lock is on the other side of the counter.",
-          "handlines": "Braided line at shoulder height with a clip point every two metres. Traffic keeps to the right, and the sign says so in Concord typeface.",
+          "handlines": "Braided line at shoulder height with a clip point every two meters. Traffic keeps to the right, and the sign says so in Concord typeface.",
           "inspection slots": "Narrow windows in the far bulkhead onto the bearing race where the drum meets the hub. The drum's inner face goes past in them at walking pace, lamp after lamp.",
           "ports": "Thick laminated glass with an Orbital Access inspection seal in each corner, dated. Beyond them the boarding collars, and far below the long rim of the South Pole-Aitken basin.",
           "sailing board": "Cradle by cradle: the hull, its registry, its agent of record, CLEARED or HELD. A docked hull's name lights when a pilot is aboard."
@@ -612,7 +612,7 @@
     },
     "room.l02_pressure": {
       "def": {
-        "desc": "A round chamber between two pressure doors, each with an Orbital Access seal on its frame and a cycle counter glowing above it. At the centre the spoke opens, a ladder well lit in green that runs out toward the drum; weight begins somewhere along it and not here, where everything floats. A rail of tether clips rings the well. A placard in Concord typeface gives the order of operations if the gallery door fails to seal, and a smaller one beside it reads COME UP THE SPOKE SLOWLY. The air is still, a little over-pressured, and smells of door grease. The berth gallery is outward and the dockmaster's office beside.",
+        "desc": "A round chamber between two pressure doors, each with an Orbital Access seal on its frame and a cycle counter glowing above it. At the center the spoke opens, a ladder well lit in green that runs out toward the drum; weight begins somewhere along it and not here, where everything floats. A rail of tether clips rings the well. A placard in Concord typeface gives the order of operations if the gallery door fails to seal, and a smaller one beside it reads COME UP THE SPOKE SLOWLY. The air is still, a little over-pressured, and smells of door grease. The berth gallery is outward and the dockmaster's office beside.",
         "details": {
           "cycle counter": "Six digits over each door. The gallery side runs well ahead of the inner side, because cargo comes and goes more than people do.",
           "placard": "IN THE EVENT OF SEAL FAILURE: do not open the inner door, clip on, wait. Initialled by three inspectors, the last one this month.",
@@ -633,7 +633,7 @@
         },
         "kind": "indoor",
         "name": "Pressure Lobby",
-        "short_desc": "A round weightless chamber between two pressure doors, the spoke ladder's well at its centre.",
+        "short_desc": "A round weightless chamber between two pressure doors, the spoke ladder's well at its center.",
         "site": "site.aitken_drum",
         "surface": {
           "floor": [
@@ -682,11 +682,11 @@
       "def": {
         "desc": "The concourse is the drum's one wide hall, its floor curving gently up ahead and behind, so that the far end is always a little above eye level. Crews walk it in the long, slow strides of a sixth of a g, and newcomers bounce. The inner wall carries Orbital Access notices and Habitat Board conservation posters; the outer wall is viewports, and Earth comes past them once a turn. Hydroponic racks run down the middle under grow lamps, and the air is green and damp with them. Doors open to arrivals, the registry annex, the exchange and the victualling office.",
         "details": {
-          "conservation posters": "EVERY GRAM COMES BACK. A Habitat Board poster showing the loop as a circle with one small arrow leaving it, labelled LOSS.",
+          "conservation posters": "EVERY GRAM COMES BACK. A Habitat Board poster showing the loop as a circle with one small arrow leaving it, labeled LOSS.",
           "floor": "The deck curves with the drum. A ball set down rolls a little to one side as it goes, because the drum turns under it.",
           "hydroponic racks": "Leaf crops and algae columns under grow lamps, tended by the Habitat Board. A tag on each rack gives the carbon it holds in the loop.",
           "notices": "Orbital Access notices in Concord typeface: berthing rules, the spoke's hours of maintenance, a list of ports a Dray may file for from this hub, Deimos and Titan.",
-          "viewports": "Round, thick, a metre apart. Through them the lunar south goes past, and Earth once a turn."
+          "viewports": "Round, thick, a meter apart. Through them the lunar south goes past, and Earth once a turn."
         },
         "footprint": {
           "rect": [
@@ -719,7 +719,7 @@
         "details": {
           "brass plate": "THE REGISTRY, HIGHPORT ANNEX, LUNA. Below it: MIRRORED AT CERES BY TREATY.",
           "permit press": "An export permit is Registry paper: a stamped sheet bound to a crate's manifest. The press counts its strokes, and the count is entered in a register at the end of every shift.",
-          "registers": "Sealed volumes on rotating shelves, each spine dated. Claims, charters and licences, notarised, never granted; the Registry records what others grant.",
+          "registers": "Sealed volumes on rotating shelves, each spine dated. Claims, charters and licenses, notarised, never granted; the Registry records what others grant.",
           "seal": "The Registry's seal, founded at Luna about 2140 as the notary of last resort for the habitats' claims. The Concord's seal hangs elsewhere in the station; this one is older, and the annex keeps it higher."
         },
         "footprint": {
@@ -783,7 +783,7 @@
     },
     "room.l07_exchange": {
       "def": {
-        "desc": "The exchange is a broad spun room with its asks on one wall: Cabeus Works' alloy stock by the tonne and Crisium Instruments' crated boards by the tonne, each line with a quantity beside it that goes down. The opposite wall repeats the bids from receiving for anyone who will not take the stair. Sample billets of lunar alloy sit in a rack under the Cabeus line, grey and light in the hand, and a crate of boards stands open under Crisium's with its shock foam showing. A railed stair runs a spoke to receiving at the hub. The room smells of machine oil and foam. The concourse, the clearing house and the Cold Trap open off it.",
+        "desc": "The exchange is a broad spun room with its asks on one wall: Cabeus Works' alloy stock by the tonne and Crisium Instruments' crated boards by the tonne, each line with a quantity beside it that goes down. The opposite wall repeats the bids from receiving for anyone who will not take the stair. Sample billets of lunar alloy sit in a rack under the Cabeus line, gray and light in the hand, and a crate of boards stands open under Crisium's with its shock foam showing. A railed stair runs a spoke to receiving at the hub. The room smells of machine oil and foam. The concourse, the clearing house and the Cold Trap open off it.",
         "details": {
           "ask board": "LUNAR ALLOY STOCK, STRUCTURAL, and INSTRUMENT BOARDS, CRATED, each per tonne with the stock remaining. The figures are the houses' own and change when the houses say so.",
           "open crate": "Instrument boards from the chartered Earth-basin fabs, nested in shock foam. A chalked note on the lid: CUBES OUT BEFORE IT WEIGHS OUT.",
@@ -924,7 +924,7 @@
       "def": {
         "desc": "A cramped office where every surface is faced with hook pads, so that styluses, stamps and tea bulbs stay where they are put. The back wall is the sailing board: every hub cradle, its hull, CLEARED or HELD, and the next filed departure with its destination. A window gives onto the cradles and, beyond them on the same truss, the restricted slips of the lunar yards with their lamps hooded. The Orbital Access seal hangs over the desk on a tether. A clock reads Shackleton time and nothing else. The office smells of stamp ink and warm electronics. The pressure lobby is out, and receiving is through the inner door.",
         "details": {
-          "clock": "Shackleton time, the Concord's own, kept by the seat below. No second clock; the office does not apologise for it.",
+          "clock": "Shackleton time, the Concord's own, kept by the seat below. No second clock; the office does not apologize for it.",
           "passage card": "Pinned beside the board: TITAN, ONE SOUL, THROTTLED. The dockmaster gives the throttle word at the desk.",
           "sailing board": "Cradle, hull, CLEARED or HELD, and the hour of the next filed departure. The destination column reads Deimos or Titan and nothing else, because those are the only ways a Dray leaves this port.",
           "window": "The hub cradles, and past them the yards' slips trailing on the same truss. Hulls lie in them under hooded lamps; the slips are Concord Fleet's and closed to the trade."
@@ -957,7 +957,7 @@
     "room.l15_spine": {
       "def": {
         "access": "restricted",
-        "desc": "A service trunk runs from the hub toward the drum's bearings, cable trays on every face and four wire cages strapped along it: Cabeus's stock, the Board's intake manifold, Crisium's bonded cage and the victualling stores. Each cage carries a manifest, and the manifests are the station's real stock, not the boards in the public rooms. At the inner end a glassed office holds four desks with dark terminals and nameplates turned face down. The bearing hum is loud and constant, and the air smells of lubricant and cold cable. ORBITAL ACCESS PERSONNEL is stencilled every ten metres. The receiving hatch is the way out.",
+        "desc": "A service trunk runs from the hub toward the drum's bearings, cable trays on every face and four wire cages strapped along it: Cabeus's stock, the Board's intake manifold, Crisium's bonded cage and the victualling stores. Each cage carries a manifest, and the manifests are the station's real stock, not the boards in the public rooms. At the inner end a glassed office holds four desks with dark terminals and nameplates turned face down. The bearing hum is loud and constant, and the air smells of lubricant and cold cable. ORBITAL ACCESS PERSONNEL is stencilled every ten meters. The receiving hatch is the way out.",
         "details": {
           "bearings": "The race where the drum turns on the hub, felt here as a hum in the cable trays. A maintenance log hangs by the access plate, every entry initialled.",
           "cages": "Four plates: CABEUS WORKS, STOCK; HABITAT BOARD, INTAKE; CRISIUM INSTRUMENTS, BONDED; VICTUALLING, STORES. Each manifest is signed by the house's clerk of record.",
@@ -1063,7 +1063,7 @@
     }
   },
   "manifest": {
-    "digest": "d1803b265e71364964ca1538c0a8023bf1b77e8d4028114e20e13432ff8b278e",
+    "digest": "ffce4b47e94c21866470d622f5c40907e4cc4605aeaa6a614f1ff6afbd81e0a8",
     "id": "neighborhood.aitken_highport",
     "kind": "neighborhood",
     "requires": [

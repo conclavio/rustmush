@@ -2316,7 +2316,7 @@ fn ws02_s5b_the_sweep_cancels_a_drafted_order_whose_pin_is_not_the_authoritys() 
     assert_eq!(
         drift_of(&world, forged),
         None,
-        "a cancelled order is no longer a drifted DRAFT"
+        "a canceled order is no longer a drifted DRAFT"
     );
 }
 
@@ -2372,4 +2372,38 @@ fn ws02_s5b_a_republication_cancels_the_drafts_pinned_against_the_old_pack() {
     mode.store(0, std::sync::atomic::Ordering::Relaxed);
     world.modules_loaded(std::collections::HashMap::new());
     assert_eq!(drift_of(&world, order), None, "restored, and cleared");
+}
+
+/// **Doc 48 unit PL.9 (Q-48-45): the open-order index by facility**, which a facility's sale
+/// reads to know it is idle. The fixture installs an order below the commit observer, so the
+/// index reads none until the sweep's reconcile rebuilds it from the family: one at the order's
+/// facility, none at another.
+#[test]
+fn pl9_open_orders_are_indexed_by_facility() {
+    let (mut world, families) = boot_with_recipes();
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    let order = draft_order(0x7900, ObjId(7), 1, 500, 600);
+    {
+        let engine = world.engine_mut();
+        apply(engine, &families, |txn| {
+            families.open_work_order(txn, order)
+        })
+        .expect("open order");
+    }
+    let at = |world: &TestWorld, facility: u32| {
+        world
+            .world()
+            .module_state::<IndustryStore>()
+            .expect("store")
+            .open_orders_at(ObjId(facility))
+    };
+    assert_eq!(at(&world, 7), 0, "no announcement reached the index");
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        at(&world, 7),
+        1,
+        "reconcile noted the order at its facility"
+    );
+    assert_eq!(at(&world, 8), 0);
 }

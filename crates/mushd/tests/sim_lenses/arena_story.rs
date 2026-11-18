@@ -1180,7 +1180,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     );
     assert!(
         locked.contains("band 1 of 2"),
-        "a hundred and fifty metres is the cannon's inner band: {locked}"
+        "a hundred and fifty meters is the cannon's inner band: {locked}"
     );
 
     let fight_mark = ada.mark();
@@ -1307,7 +1307,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         bystander.contains("Match 1 is running")
             && bystander.contains(OVER)
             && bystander.contains("Ada takes red slot 1"),
-        "but the centre's own announcements did reach it:\n{bystander}"
+        "but the center's own announcements did reach it:\n{bystander}"
     );
 
     // **16b cut F.2**: the loser was told about the rounds that killed it. It
@@ -1898,7 +1898,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     }
     let said = ask(&mut ada, "SIM REPORT 9", "not one of them").await;
     assert!(
-        said.contains("The centre remembers its last 20 matches; match 9 is not one of them."),
+        said.contains("The center remembers its last 20 matches; match 9 is not one of them."),
         "{said}"
     );
 
@@ -1923,7 +1923,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         status.contains("red"),
         "the outcome is on the board: {status}"
     );
-    say(&mut god, "@arena/reset", "centre is reset").await;
+    say(&mut god, "@arena/reset", "center is reset").await;
     say(&mut god, "@arena/reset", "already idle; nothing changed").await;
     say(&mut god, "@arena/status", "No match is running.").await;
     // Both pilots walk back to the lobby and claim again: doc 16 §1's *a second

@@ -120,6 +120,8 @@ mod boot;
 mod commands;
 pub use commands::{ACCEPT_SIGNS, ListingSummary, summarize_listing};
 mod facts;
+pub mod fees;
+pub mod history;
 mod ids;
 pub mod interface;
 mod lot;
@@ -134,6 +136,7 @@ mod record;
 // Doc 48 cut EX.1a: the personal seller, its sentences and the standing-acceptance seam.
 pub(crate) mod renewal_twin;
 pub mod seller;
+pub mod services;
 mod store;
 mod trade;
 
@@ -183,6 +186,19 @@ pub use record::{
     MarketSource, MarketVisibility, NO_VENDOR, ObservedRevisions, PaidKind, PaidLot, ProceedsCut,
     Quote, RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, check_entry,
     declared_hash,
+};
+// Doc 48 cut EX.4: the fee seam.
+pub use fees::{VenueFeeAccounts, VenueFees};
+pub use module::venue_fees;
+// Doc 48 cut EX.5: services on the exchange.
+pub use module::service_board;
+pub use record::{MAX_SERVICES_SHOWN, Service, ServiceKind, ServiceSide, ServiceTerm};
+pub use services::{ServiceBoard, service_lines, services_at};
+// Doc 48 cut EX.8: the price history and the in-place reprice.
+pub use api::reprice_listing;
+pub use history::{
+    FACTOR_CEILING, FACTOR_FLOOR, HISTORY_PERIODS, MAX_PRICE_SERIES, PERIOD_IC_SECS, PricePeriod,
+    PriceSeries, PriceSide, SidePoint, latest_point, period_of, price_series, record_price,
 };
 // Doc 48 cut EX.2: the asset-state fact and a personal object listing's no-vault mark.
 pub use record::{FACT_ASSET_STATE, NO_VAULT};

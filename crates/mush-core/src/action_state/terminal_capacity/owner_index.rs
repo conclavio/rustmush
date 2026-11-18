@@ -1087,7 +1087,7 @@ fn audit_holdings(view: &View<'_>) -> Result<(), ActionStateError> {
         }
     }
     if !expected.is_empty() {
-        return Err(refused("owner index omits a held licence"));
+        return Err(refused("owner index omits a held license"));
     }
     Ok(())
 }

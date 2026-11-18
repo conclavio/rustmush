@@ -108,7 +108,7 @@ fn learns_nothing(leaks: &mut Vec<String>, seen: &str, digest8: &str, what: &str
         "unfiled",
         "unlicensed",
         "admission",
-        "licence draft",
+        "license draft",
         "sortie",
         &digest8.to_lowercase(),
     ] {
@@ -405,7 +405,7 @@ fn g4_an_ungoverned_core_sealing_a_draft_is_learned_through_the_built_channels_o
 
     // 3. The box read. The positive control first: the owner reads the sealed draft whole.
     let open_line = format!(
-        "{} out · surface from the bay of {}\n  {DRAFT_CANONICAL} · Class I · ungoverned · licence \
+        "{} out · surface from the bay of {}\n  {DRAFT_CANONICAL} · Class I · ungoverned · license \
          draft · seal {digest8}",
         tacsim::port::licence::ic_stamp(out_ic),
         hull_name(&rig, ObjId(row.hull)),

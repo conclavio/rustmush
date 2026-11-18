@@ -1605,8 +1605,8 @@ impl PortDef {
                 // Doc 20 cut SM.3a: nor a rig pool (rigs are leased at a station);
                 // cut SM.5: nor a licence (the Registry issues it at its station).
                 return Err(
-                    "site: a site authors no orgs, rooms, programme, vendors, premium or \
-                     emergency, and no vehicles, licence, workshop or medical block; its pad is \
+                    "site: a site authors no orgs, rooms, program, vendors, premium or \
+                     emergency, and no vehicles, license, workshop or medical block; its pad is \
                      its gallery"
                         .to_owned(),
                 );
@@ -2113,7 +2113,7 @@ impl PortDef {
             if workshop.multiplier_permille < floor {
                 return Err(format!(
                     "workshop: multiplier_permille {} is under the cost model's floor of {floor} \
-                     (the berth-hour over the tariff's labour hour)",
+                     (the berth-hour over the tariff's labor hour)",
                     workshop.multiplier_permille
                 ));
             }
@@ -2127,25 +2127,25 @@ impl PortDef {
     fn check_licence(&self, licence: &LicenceDef) -> Result<(), String> {
         if !self.orgs.iter().any(|org| org.id == licence.org) {
             return Err(format!(
-                "licence: org {} is not one of this port's orgs",
+                "license: org {} is not one of this port's orgs",
                 licence.org
             ));
         }
         if licence.fee_major == 0 || licence.fee_major > MAX_LICENCE_FEE_MAJOR {
             return Err(format!(
-                "licence: fee_major must be 1..={MAX_LICENCE_FEE_MAJOR}, not {}",
+                "license: fee_major must be 1..={MAX_LICENCE_FEE_MAJOR}, not {}",
                 licence.fee_major
             ));
         }
         if licence.term_ic_days == 0 || licence.term_ic_days > MAX_LICENCE_TERM_IC_DAYS {
             return Err(format!(
-                "licence: term_ic_days must be 1..={MAX_LICENCE_TERM_IC_DAYS}, not {}",
+                "license: term_ic_days must be 1..={MAX_LICENCE_TERM_IC_DAYS}, not {}",
                 licence.term_ic_days
             ));
         }
         if licence.grace_ic_days > licence.term_ic_days {
             return Err(format!(
-                "licence: grace_ic_days must be at most the term ({}), not {}",
+                "license: grace_ic_days must be at most the term ({}), not {}",
                 licence.term_ic_days, licence.grace_ic_days
             ));
         }
@@ -2156,7 +2156,7 @@ impl PortDef {
         ] {
             if value == 0 || value > MAX_LICENCE_FEE_MAJOR {
                 return Err(format!(
-                    "licence: {field} must be 1..={MAX_LICENCE_FEE_MAJOR}, not {value}"
+                    "license: {field} must be 1..={MAX_LICENCE_FEE_MAJOR}, not {value}"
                 ));
             }
         }
@@ -2626,33 +2626,33 @@ impl PortDef {
         let pid = &programme.id;
         let Some(org) = self.orgs.iter().find(|org| org.id == programme.org) else {
             return Err(format!(
-                "programme {pid}: org {} is not one of this port's orgs",
+                "program {pid}: org {} is not one of this port's orgs",
                 programme.org
             ));
         };
         room_key(&self.area, &programme.office)
-            .map_err(|detail| format!("programme {pid}: office: {detail}"))?;
+            .map_err(|detail| format!("program {pid}: office: {detail}"))?;
         if !principal_ok(&programme.issuer) {
             return Err(format!(
-                "programme {pid}: issuer `{}` is not a system principal id",
+                "program {pid}: issuer `{}` is not a system principal id",
                 programme.issuer
             ));
         }
         if programme.floor_major == 0 || programme.stake_major == 0 || programme.buyout_major == 0 {
             return Err(format!(
-                "programme {pid}: floor_major, stake_major and buyout_major must be at least 1"
+                "program {pid}: floor_major, stake_major and buyout_major must be at least 1"
             ));
         }
         if programme.pool == 0 || programme.pool > MAX_PROGRAMME_POOL {
             return Err(format!(
-                "programme {pid}: pool must be 1..={MAX_PROGRAMME_POOL}, not {}",
+                "program {pid}: pool must be 1..={MAX_PROGRAMME_POOL}, not {}",
                 programme.pool
             ));
         }
         let pool = usize::try_from(programme.pool).unwrap_or(usize::MAX);
         if programme.hull_names.len() != pool {
             return Err(format!(
-                "programme {pid}: hull_names must name {} hulls, one per pool slot, not {}",
+                "program {pid}: hull_names must name {} hulls, one per pool slot, not {}",
                 programme.pool,
                 programme.hull_names.len()
             ));
@@ -2661,12 +2661,12 @@ impl PortDef {
         for name in &programme.hull_names {
             if !label_ok(name) {
                 return Err(format!(
-                    "programme {pid}: a hull name must be non-blank and at most {MAX_LABEL_BYTES} bytes"
+                    "program {pid}: a hull name must be non-blank and at most {MAX_LABEL_BYTES} bytes"
                 ));
             }
             if !names.insert(name.as_str()) {
                 return Err(format!(
-                    "programme {pid}: hull name `{name}` is authored twice"
+                    "program {pid}: hull name `{name}` is authored twice"
                 ));
             }
         }
@@ -2678,13 +2678,13 @@ impl PortDef {
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
         {
             return Err(format!(
-                "programme {pid}: registry_prefix must be 1..={MAX_REGISTRY_PREFIX_BYTES} bytes \
+                "program {pid}: registry_prefix must be 1..={MAX_REGISTRY_PREFIX_BYTES} bytes \
                  of [A-Z0-9-], not `{prefix}`"
             ));
         }
         if programme.share_permille > 1_000 {
             return Err(format!(
-                "programme {pid}: share_permille must be 0..=1000, not {}",
+                "program {pid}: share_permille must be 0..=1000, not {}",
                 programme.share_permille
             ));
         }
@@ -2692,7 +2692,7 @@ impl PortDef {
             || programme.dormancy_real_days > MAX_DORMANCY_REAL_DAYS
         {
             return Err(format!(
-                "programme {pid}: dormancy_real_days must be 1..={MAX_DORMANCY_REAL_DAYS}, not {}",
+                "program {pid}: dormancy_real_days must be 1..={MAX_DORMANCY_REAL_DAYS}, not {}",
                 programme.dormancy_real_days
             ));
         }
@@ -2700,20 +2700,20 @@ impl PortDef {
         // the apply preflight's, where the catalog is.
         if programme.refits.len() > MAX_PROGRAMME_REFITS {
             return Err(format!(
-                "programme {pid}: refits holds at most {MAX_PROGRAMME_REFITS} rows, not {}",
+                "program {pid}: refits holds at most {MAX_PROGRAMME_REFITS} rows, not {}",
                 programme.refits.len()
             ));
         }
         for (word, unit) in &programme.refits {
             if word.as_str() == STANDARD_REFIT {
                 return Err(format!(
-                    "programme {pid}: refit `{STANDARD_REFIT}` is the programme's own unit and \
+                    "program {pid}: refit `{STANDARD_REFIT}` is the program's own unit and \
                      is never authored"
                 ));
             }
             if *unit == programme.unit {
                 return Err(format!(
-                    "programme {pid}: refit `{word}` names the programme's own unit {unit}"
+                    "program {pid}: refit `{word}` names the program's own unit {unit}"
                 ));
             }
         }
@@ -2722,7 +2722,7 @@ impl PortDef {
         // promise exactly one.
         if programme.per_account != 1 {
             return Err(format!(
-                "programme {pid}: per_account must be 1; this server keeps one enrolment per \
+                "program {pid}: per_account must be 1; this server keeps one enrollment per \
                  gateway account (D-18-25)"
             ));
         }
@@ -2737,12 +2737,12 @@ impl PortDef {
         match needed {
             Some(needed) if needed <= capital => Ok(()),
             Some(needed) => Err(format!(
-                "programme {pid}: floor_major + pool × stake_major is {needed}, more than org \
+                "program {pid}: floor_major + pool × stake_major is {needed}, more than org \
                  {}'s capital_major {}",
                 org.id, capital
             )),
             None => Err(format!(
-                "programme {pid}: floor_major + pool × stake_major overflows"
+                "program {pid}: floor_major + pool × stake_major overflows"
             )),
         }
     }
@@ -2888,8 +2888,8 @@ pub fn check_ports(
             }
             if def.programme.is_none() {
                 return fail(format!(
-                    "vehicles {}: port {id} authors no programme; rigs are leased into the \
-                     programme's hulls",
+                    "vehicles {}: port {id} authors no program; rigs are leased into the \
+                     program's hulls",
                     vehicles.id
                 ));
             }
@@ -2899,8 +2899,8 @@ pub fn check_ports(
         if let Some(licence) = &def.licence {
             if let Some((other, _)) = licensor {
                 return fail(format!(
-                    "licence: port {id} also authors a licence block (port {other}'s); a lane \
-                     has one licence issuer in phase 1"
+                    "license: port {id} also authors a license block (port {other}'s); a lane \
+                     has one license issuer in phase 1"
                 ));
             }
             licensor = Some((*id, &licence.org));
@@ -3001,7 +3001,7 @@ pub fn check_ports(
             && site.issuer != *org
         {
             return fail(format!(
-                "site: issuer {} is not the lane's licence issuer {org}",
+                "site: issuer {} is not the lane's license issuer {org}",
                 site.issuer
             ));
         }
@@ -3148,7 +3148,7 @@ pub fn check_ports(
                     .is_some_and(|row| row.family.is_some() && row.consumable.is_none());
                 if !trade {
                     return fail(format!(
-                        "programme {}: reference {good} is not a trade good of the goods table",
+                        "program {}: reference {good} is not a trade good of the goods table",
                         programme.id
                     ));
                 }
@@ -3166,7 +3166,7 @@ pub fn check_ports(
                 });
                 let Some((port, org)) = named else {
                     return fail(format!(
-                        "programme {}: reference {good} names `{listing}`, which is not \
+                        "program {}: reference {good} names `{listing}`, which is not \
                          `<port entry>/<org>` of this pack",
                         programme.id
                     ));
@@ -3180,7 +3180,7 @@ pub fn check_ports(
                     });
                     if !asks {
                         return fail(format!(
-                            "programme {}: reference {good} names `{listing}`, which posts no \
+                            "program {}: reference {good} names `{listing}`, which posts no \
                              ask for it",
                             programme.id
                         ));
@@ -3197,18 +3197,18 @@ pub fn check_ports(
                     .is_some_and(|row| row.family.is_some() && row.consumable.is_none());
                 if !trade {
                     return fail(format!(
-                        "programme {pid}: reference_minor {good} is not a trade good of the goods \
+                        "program {pid}: reference_minor {good} is not a trade good of the goods \
                          table"
                     ));
                 }
                 if *minor == 0 {
                     return fail(format!(
-                        "programme {pid}: reference_minor {good} must be at least 1"
+                        "program {pid}: reference_minor {good} must be at least 1"
                     ));
                 }
                 if programme.reference.contains_key(good) {
                     return fail(format!(
-                        "programme {pid}: {good} has both a reference listing and a fixed reference"
+                        "program {pid}: {good} has both a reference listing and a fixed reference"
                     ));
                 }
                 let asker = ports.iter().find(|(_, port)| {
@@ -3218,7 +3218,7 @@ pub fn check_ports(
                 });
                 if let Some((entry, _)) = asker {
                     return fail(format!(
-                        "programme {pid}: reference_minor {good}: a fixed reference is only for a \
+                        "program {pid}: reference_minor {good}: a fixed reference is only for a \
                          good no port of this lane asks, and port {entry} asks it"
                     ));
                 }
@@ -3343,7 +3343,7 @@ mod tests {
                 w.multiplier_permille = 1_000;
             }),
             "workshop: multiplier_permille 1000 is under the cost model's floor of 1006 \
-             (the berth-hour over the tariff's labour hour)"
+             (the berth-hour over the tariff's labor hour)"
         );
         assert_eq!(
             with(&|w| {
@@ -3935,34 +3935,34 @@ mod tests {
         assert_eq!(with(&|_| {}), "accepted");
         assert_eq!(
             with(&|l| l.org = cid("nobody")),
-            "licence: org nobody is not one of this port's orgs"
+            "license: org nobody is not one of this port's orgs"
         );
         assert_eq!(
             with(&|l| l.fee_major = 0),
-            format!("licence: fee_major must be 1..={MAX_LICENCE_FEE_MAJOR}, not 0")
+            format!("license: fee_major must be 1..={MAX_LICENCE_FEE_MAJOR}, not 0")
         );
         assert!(
-            with(&|l| l.fee_major = MAX_LICENCE_FEE_MAJOR + 1).starts_with("licence: fee_major")
+            with(&|l| l.fee_major = MAX_LICENCE_FEE_MAJOR + 1).starts_with("license: fee_major")
         );
         assert_eq!(
             with(&|l| l.term_ic_days = 0),
-            format!("licence: term_ic_days must be 1..={MAX_LICENCE_TERM_IC_DAYS}, not 0")
+            format!("license: term_ic_days must be 1..={MAX_LICENCE_TERM_IC_DAYS}, not 0")
         );
         assert!(
             with(&|l| l.term_ic_days = MAX_LICENCE_TERM_IC_DAYS + 1)
-                .starts_with("licence: term_ic_days")
+                .starts_with("license: term_ic_days")
         );
         assert_eq!(
             with(&|l| l.grace_ic_days = 169),
-            "licence: grace_ic_days must be at most the term (168), not 169"
+            "license: grace_ic_days must be at most the term (168), not 169"
         );
         assert_eq!(with(&|l| l.grace_ic_days = 168), "accepted");
         let mut site = site_port();
         site.licence = Some(Box::new(licence.clone()));
         assert_eq!(
             refused(&site),
-            "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and \
-             no vehicles, licence, workshop or medical block; its pad is its gallery"
+            "site: a site authors no orgs, rooms, program, vendors, premium or emergency, and \
+             no vehicles, license, workshop or medical block; its pad is its gallery"
         );
         assert!(
             serde_json::from_value::<LicenceDef>(serde_json::json!({
@@ -4045,7 +4045,7 @@ mod tests {
             check(&|p| {
                 p.reference_minor.insert(cid("metals"), 10_000);
             }),
-            "ceres_port: programme coop.first_captain: reference_minor metals: a fixed \
+            "ceres_port: program coop.first_captain: reference_minor metals: a fixed \
              reference is only for a good no port of this lane asks, and port stickney_port asks it"
         );
         assert_eq!(
@@ -4054,20 +4054,20 @@ mod tests {
                     .insert(cid("metal_ore"), "ceres_port/coop".to_owned());
                 p.reference_minor.insert(cid("metal_ore"), 3_500);
             }),
-            "ceres_port: programme coop.first_captain: metal_ore has both a reference listing \
+            "ceres_port: program coop.first_captain: metal_ore has both a reference listing \
              and a fixed reference"
         );
         assert_eq!(
             check(&|p| {
                 p.reference_minor.insert(cid("metal_ore"), 0);
             }),
-            "ceres_port: programme coop.first_captain: reference_minor metal_ore must be at least 1"
+            "ceres_port: program coop.first_captain: reference_minor metal_ore must be at least 1"
         );
         assert_eq!(
             check(&|p| {
                 p.reference_minor.insert(cid("provisions"), 100);
             }),
-            "ceres_port: programme coop.first_captain: reference_minor provisions is not a trade \
+            "ceres_port: program coop.first_captain: reference_minor provisions is not a trade \
              good of the goods table"
         );
     }

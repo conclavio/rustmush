@@ -119,7 +119,7 @@ fn current_generation(w: &PlayerWorld, owner: LicenceId) -> TestResult<Value> {
         .into_iter()
         .find(|v| v.get("id") == Some(&json!(owner)))
         .and_then(|v| v.get("term").cloned())
-        .ok_or("actual House owner licence")?)
+        .ok_or("actual House owner license")?)
 }
 
 /// M8c B4 (the brief's test 2, here rather than in the personal attestation
@@ -144,7 +144,7 @@ pub(super) fn attest_house(
 ) -> TestResult {
     let birth = one(rows(&snapshot.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
-        serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
+        serde_json::from_value(birth.get("licence").cloned().ok_or("owner license")?)?;
     let params = json!({"owner_licence": owner.get(), "org": organization.0});
     let personal = json!({"owner_licence": owner.get()});
     let plain = Rig::house(registry, Compose::HOUSE_RENEWALS)
@@ -156,14 +156,14 @@ pub(super) fn attest_house(
     );
     drop(plain);
     let mut w = Rig::house(registry, Compose::HOUSE_ATTESTATIONS).boot(snapshot)?;
-    check_eq!(organization, OrgId(0), "F8: organisation 0 attests");
+    check_eq!(organization, OrgId(0), "F8: organization 0 attests");
     check_ne!(
         roll_action(&w, HOUSE_ATTEST)?,
         roll_action(&w, PERSONAL_ATTEST)?,
         "the House action's definition is its own"
     );
     let uniform =
-        "The owner licence is unavailable, not due, or no longer eligible for attestation.";
+        "The owner license is unavailable, not due, or no longer eligible for attestation.";
     let refusal = |r: TestResult<(
         PreparedComposedTxn,
         mush_core::action::PreparedAuthoritativeAction,
@@ -225,7 +225,7 @@ pub(super) fn attest_house(
         .state()
         .orgs()
         .find(|o| o.name.as_str() == "Rival")
-        .ok_or("the other organisation")?
+        .ok_or("the other organization")?
         .id;
     command(
         &mut w,
@@ -244,7 +244,7 @@ pub(super) fn attest_house(
     ))?;
     check!(
         error.contains(uniform),
-        "another organisation does not hold the title: {error}"
+        "another organization does not hold the title: {error}"
     );
     let before = balance(
         &w,

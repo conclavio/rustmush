@@ -580,7 +580,7 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let open = ctx.w.module_state::<EconomyStore>().map_or(0, |st| {
         st.snapshot()
             .contracts()
-            .filter(|c| c.issuer == issuer && !c.state.is_terminal())
+            .filter(|c| c.issuer == issuer && counts_as_trade(c))
             .count()
     });
     if open >= MAX_OPEN_CONTRACTS_PER_ISSUER {
@@ -1648,15 +1648,11 @@ const PARTY_CAP_REFUSAL: &str = "a party is already on the most live contracts a
 /// How many open contracts one issuer may hold, as a refusal the seam can carry.
 const ISSUER_CAP_REFUSAL: &str = "that issuer already has the most open contracts allowed";
 
-/// **§9's issuer cap**: whether `issuer` already holds [`MAX_OPEN_CONTRACTS_PER_ISSUER`]
-/// non-terminal contracts, counted as `@contract/draft` and [`offer_contract`] count them.
-fn issuer_at_cap(store: &EconomyStore, issuer: &PrincipalId) -> bool {
-    store
-        .snapshot()
-        .contracts()
-        .filter(|c| &c.issuer == issuer && !c.state.is_terminal())
-        .count()
-        >= MAX_OPEN_CONTRACTS_PER_ISSUER
+/// **Whether `c` counts against §9's trade issuer cap**: every non-terminal contract but a live
+/// job (doc 48 cut EX.5, Q-48-44), which has its own budget ([`MAX_LIVE_JOBS_PER_PRINCIPAL`]) so
+/// standing jobs never block a player's trading.
+fn counts_as_trade(c: &EconomicContract) -> bool {
+    !c.state.is_terminal() && !(c.state.is_live() && job_shape(c).is_some())
 }
 
 /// **§9's party cap**: whether `party` is already on [`MAX_LIVE_CONTRACTS_PER_PARTY`] live
@@ -2441,6 +2437,7 @@ fn create_lease_obligations(ctx: &mut Ctx<'_>, id: ContractId) {
             settled_total: 0,
             missed_total: 0,
             service_terms: None,
+            arrears: None,
             forgiven_total: 0,
             suspensions: std::collections::BTreeSet::new(),
             revision: 1,
@@ -3241,7 +3238,7 @@ fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // M2+M3: the state moves only once the refund posts, so the confirmation says
     // what actually happened rather than what was asked for.
     if live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()) {
-        info(ctx, format!("Contract #{id} is cancelled."));
+        info(ctx, format!("Contract #{id} is canceled."));
     } else {
         info(
             ctx,
@@ -5283,7 +5280,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
     let open = ctx.w.module_state::<EconomyStore>().map_or(0, |st| {
         st.snapshot()
             .contracts()
-            .filter(|c| c.issuer == issuer && !c.state.is_terminal())
+            .filter(|c| c.issuer == issuer && counts_as_trade(c))
             .count()
     });
     if open >= MAX_OPEN_CONTRACTS_PER_ISSUER {
@@ -6627,24 +6624,43 @@ pub struct RetrievalSpec {
     pub deadline_ic: i64,
 }
 
-/// **Whether `c` is a retrieval contract**, and on which hull (doc 41 cut RS.5, Q-41-8): one
-/// consideration, the fee, from the issuer; nothing delivered, split or outcome-bound; exactly
-/// two conditions — the hull's title held (by the issuer, or by the principal the issuer answers
-/// for, doc 41's RS.9a follow-up) and one external fact (the delivery);
-/// a `WorldIc` deadline; `Public`; and at most one party beside the issuer (the acceptor).
+/// **A job's shape** (doc 48 cut EX.5, Q-48-12): what [`job_shape`] reads from a standing
+/// offer a stranger may join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JobShape {
+    /// The fee, escrowed whole by the poster at posting.
+    pub fee: Amount,
+    /// The poster's account the fee was escrowed from: where a forfeit bond is paid.
+    pub fee_account: AccountId,
+    /// The object whose title the poster must hold throughout (a retrieval's hull), if any.
+    pub object: Option<ObjId>,
+    /// The bond the acceptor escrowed at the join, if any (Q-48-13).
+    pub bond: Option<Amount>,
+}
+
+/// **Whether `c` is a job** (doc 48 cut EX.5, Q-48-12; generalised from doc 41 cut RS.5's
+/// retrieval, Q-41-8): a standing offer whose shape is its whole content.
+///
+/// - The issuer is the first party, and at most one party stands beside it (the acceptor).
+/// - The fee is the one consideration from the issuer; after a bonded join the acceptor's
+///   bond is the one more, and the expiry then forfeits both to the fee's account (the
+///   bond to the poster, the fee back), otherwise the expiry refunds.
+/// - Nothing delivered, split or outcome-bound; `Public`; a `WorldIc` deadline.
+/// - The conditions are one external fact (the performance), after the object's title held
+///   by the issuer (or by the principal the issuer answers for) when the job names an object.
 #[must_use]
-pub fn retrieval_contract_hull(c: &EconomicContract) -> Option<ObjId> {
+pub fn job_shape(c: &EconomicContract) -> Option<JobShape> {
     let consent = &c.consent;
     let issuer = principal_key(&c.issuer);
-    let others = consent
+    let others: Vec<&PrincipalId> = consent
         .parties
         .iter()
         .filter(|p| principal_key(p) != issuer)
-        .count();
+        .collect();
     if consent.managed.is_some()
         || consent.parties.first().map(principal_key) != Some(issuer)
-        || others > 1
-        || consent.parties.len() != others + 1
+        || others.len() > 1
+        || consent.parties.len() != others.len() + 1
         || !consent.terms.deliverables.is_empty()
         || !consent.terms.split.is_empty()
         || !consent.terms.outcomes.is_empty()
@@ -6655,17 +6671,46 @@ pub fn retrieval_contract_hull(c: &EconomicContract) -> Option<ObjId> {
     {
         return None;
     }
-    match consent.terms.consideration.as_slice() {
-        [fee] if principal_key(&fee.from) == issuer && fee.amount.minor() > 0 => {}
+    let (fee, bond) = match consent.terms.consideration.as_slice() {
+        [fee] if principal_key(&fee.from) == issuer && fee.amount.minor() > 0 => (fee, None),
+        [fee, bond]
+            if principal_key(&fee.from) == issuer
+                && fee.amount.minor() > 0
+                && bond.amount.minor() > 0
+                && others
+                    .first()
+                    .is_some_and(|p| principal_key(p) == principal_key(&bond.from)) =>
+        {
+            (fee, Some(bond.amount))
+        }
+        _ => return None,
+    };
+    match (&consent.terms.on_expiry, bond) {
+        (Expiry::Refund, None) => {}
+        (Expiry::Forfeit { to }, Some(_)) if *to == fee.account => {}
         _ => return None,
     }
-    match consent.conditions.as_slice() {
+    let object = match consent.conditions.as_slice() {
         [
             TypedCondition::TitleHeld { object, .. },
             TypedCondition::Fact { .. },
         ] => Some(*object),
-        _ => None,
-    }
+        [TypedCondition::Fact { .. }] => None,
+        _ => return None,
+    };
+    Some(JobShape {
+        fee: fee.amount,
+        fee_account: fee.account,
+        object,
+        bond,
+    })
+}
+
+/// **Whether `c` is a retrieval contract**, and on which hull (doc 41 cut RS.5, Q-41-8): a job
+/// ([`job_shape`]) that names the hull whose title its poster holds.
+#[must_use]
+pub fn retrieval_contract_hull(c: &EconomicContract) -> Option<ObjId> {
+    job_shape(c)?.object
 }
 
 /// The retrieval contract `id`, when it is one.
@@ -6677,6 +6722,13 @@ fn retrieval_of(ctx: &Ctx<'_>, id: ContractId) -> Option<EconomicContract> {
 #[must_use]
 pub fn retrieval_acceptor(c: &EconomicContract) -> Option<&PrincipalId> {
     retrieval_contract_hull(c)?;
+    job_acceptor(c)
+}
+
+/// **Who joined job `c`**: the party beside the issuer, if any (doc 48 cut EX.5).
+#[must_use]
+pub fn job_acceptor(c: &EconomicContract) -> Option<&PrincipalId> {
+    job_shape(c)?;
     let issuer = principal_key(&c.issuer);
     c.consent
         .parties
@@ -6736,11 +6788,106 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
     if !titled {
         return Err(ContractError::NoSuchAsset(spec.hull));
     }
+    post_standing(
+        ctx,
+        StandingJob {
+            name: spec.name,
+            poster: spec.poster,
+            poster_account: spec.poster_account,
+            fee: spec.fee,
+            conditions: vec![
+                TypedCondition::TitleHeld {
+                    object: spec.hull,
+                    by: holder,
+                },
+                TypedCondition::Fact {
+                    fact: spec.delivered,
+                },
+            ],
+            evidence: vec![EvidenceKind::TitleHeld, EvidenceKind::Fact],
+            deadline_ic: spec.deadline_ic,
+        },
+    )
+}
+
+/// **A job with no object** (doc 48 cut EX.6; Q-48-11, -12): a haul or an escort, whose one
+/// condition is its performance fact, named when the job is posted.
+#[derive(Clone, Debug)]
+pub struct JobSpec {
+    /// A short human label for `@contract/show`.
+    pub name: SmolStr,
+    /// The poster, who pays: the contract's issuer and first party.
+    pub poster: PrincipalId,
+    /// The poster's account the fee is escrowed from at posting.
+    pub poster_account: AccountId,
+    /// The fee, escrowed whole at posting and paid whole on performance.
+    pub fee: Amount,
+    /// The performance fact: the job's one condition.
+    pub fact: ExternalRef,
+    /// The posted deadline, World IC seconds; the join may bring it nearer (Q-48-58's term).
+    pub deadline_ic: i64,
+}
+
+/// **Post a job with no object** (doc 48 cut EX.6): [`post_retrieval`]'s standing offer with
+/// the one fact for its whole condition, so [`job_shape`] recognises it and [`join_job`] takes
+/// it.
+///
+/// # Errors
+///
+/// As [`post_retrieval`], less its title refusal.
+pub fn post_job(ctx: &mut Ctx<'_>, spec: JobSpec) -> Result<ContractId, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if spec.fee.minor() <= 0 {
+        return Err(ContractError::Infeasible("a job pays a positive fee"));
+    }
+    if spec.deadline_ic <= ctx.w.world_ic_now().at {
+        return Err(ContractError::Infeasible("the deadline has passed"));
+    }
+    if spec.name.is_empty() || spec.name.len() > MAX_CONTRACT_NAME_BYTES {
+        return Err(ContractError::TooLarge("the name is empty or too long"));
+    }
+    post_standing(
+        ctx,
+        StandingJob {
+            name: spec.name,
+            poster: spec.poster,
+            poster_account: spec.poster_account,
+            fee: spec.fee,
+            conditions: vec![TypedCondition::Fact { fact: spec.fact }],
+            evidence: vec![EvidenceKind::Fact],
+            deadline_ic: spec.deadline_ic,
+        },
+    )
+}
+
+/// What [`post_standing`] writes: a job's standing offer, checked by its caller.
+struct StandingJob {
+    name: SmolStr,
+    poster: PrincipalId,
+    poster_account: AccountId,
+    fee: Amount,
+    conditions: Vec<TypedCondition>,
+    evidence: Vec<EvidenceKind>,
+    deadline_ic: i64,
+}
+
+/// The standing offer every job posts (doc 41 cut RS.5, generalised by doc 48 cut EX.6): the
+/// poster held to the job budget and the party cap, one public contract with the fee escrowed
+/// under the poster's own authority, in force at once with the poster its only party.
+fn post_standing(ctx: &mut Ctx<'_>, spec: StandingJob) -> Result<ContractId, ContractError> {
+    let slots = spec.conditions.len();
     // Doc 48 §4.3 (the second review, doc 48b): a retrieval is a contract, so its poster is
     // held to §9's two caps as every other contract path holds an issuer and a party.
     if let Some(store) = ctx.w.module_state::<EconomyStore>() {
-        if issuer_at_cap(store, &spec.poster) {
-            return Err(ContractError::TooLarge(ISSUER_CAP_REFUSAL));
+        // Doc 48 cut EX.5 (Q-48-44): the job budget, apart from the trade issuer cap.
+        if job_budget_spent(store, &spec.poster) {
+            return Err(ContractError::TooLarge(JOB_CAP_REFUSAL));
         }
         if party_at_cap(store, &spec.poster) {
             return Err(ContractError::TooLarge(PARTY_CAP_REFUSAL));
@@ -6763,15 +6910,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
             on_expiry: Expiry::Refund,
             outcomes: Vec::new(),
         },
-        conditions: vec![
-            TypedCondition::TitleHeld {
-                object: spec.hull,
-                by: holder,
-            },
-            TypedCondition::Fact {
-                fact: spec.delivered,
-            },
-        ],
+        conditions: spec.conditions,
         deadline: Some(EconomicDeadline {
             clock: EconomicClock::WorldIc,
             at: spec.deadline_ic,
@@ -6779,7 +6918,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
         visibility: EconomicVisibility::Public,
         scope: None,
         adjudicator: None,
-        evidence: vec![EvidenceKind::TitleHeld, EvidenceKind::Fact],
+        evidence: spec.evidence,
     };
     let mut c = EconomicContract {
         id: ContractId(0),
@@ -6788,7 +6927,7 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
         consent_hash: [0u8; 32],
         consent,
         acceptances: Vec::new(),
-        satisfied: vec![None, None],
+        satisfied: vec![None; slots],
         escrow: Vec::new(),
         state: ContractState::Offered,
         settle_attempts: 0,
@@ -6853,34 +6992,124 @@ pub fn post_retrieval(ctx: &mut Ctx<'_>, spec: RetrievalSpec) -> Result<Contract
     }
 }
 
-/// **Accept a retrieval** (doc 41 cut RS.5, Q-41-8): `acceptor` joins contract `id` as its
-/// second party and accepts it in one write, with the fee's remainder pointed at
-/// `acceptor_account` — the one thing the generic engine lacks, since `acting_party` admits
-/// only a named party, so `@contract/accept` stays closed to strangers. Guarded by the shape:
-/// only a live retrieval with no acceptor yet, whose escrow the poster placed at posting.
-///
-/// The poster's acceptance is re-bound to the joined consent: the retrieval's shape is the
-/// poster's standing offer to whoever accepts it, and the shape check here is that offer's
-/// whole content — the fee, the hull, the fact and the deadline are unchanged; only the
-/// acceptor's name and account are filled in.
-///
-/// Authority: the acceptor escrows nothing, so no debit authority is asked; a character
-/// accepts for themselves (`ctx.actor`), and an organization only through the wiring's
-/// [`crate::contract::PartyCap::Accept`] (the host's house acceptor, run on a tick).
+/// **How many live jobs one principal may be on at once** (doc 48 cut EX.5, Q-48-44): a
+/// budget of its own, apart from the trade issuer cap, so standing jobs never block a
+/// player's trading. The poster's posts and the acceptor's joins both count.
+pub const MAX_LIVE_JOBS_PER_PRINCIPAL: usize = 16;
+
+/// The job budget's refusal, as the seam carries it.
+const JOB_CAP_REFUSAL: &str = "that principal is already on the most live jobs allowed";
+
+/// **A job's bond threshold** (doc 48 cut EX.5, Q-48-13, provisional): a fee above
+/// 10,000 cr asks the provider for a bond.
+pub const JOB_BOND_ABOVE_MINOR: i64 = 1_000_000;
+
+/// **A job's bond rate** (Q-48-13, provisional): 20% of the fee, in per-mille.
+pub const JOB_BOND_PERMILLE: i64 = 200;
+
+/// **The bond a job of `fee` asks its provider for** (doc 48 cut EX.5, Q-48-13): 20% of a fee
+/// above 10,000 cr, rounded down, and `None` at or under it.
+#[must_use]
+pub fn job_bond(fee: Amount) -> Option<Amount> {
+    (fee.minor() > JOB_BOND_ABOVE_MINOR)
+        .then(|| Amount::from_minor(fee.minor().saturating_mul(JOB_BOND_PERMILLE) / 1_000))
+        .filter(|bond| bond.minor() > 0)
+}
+
+/// Whether `principal` is already on [`MAX_LIVE_JOBS_PER_PRINCIPAL`] live jobs.
+fn job_budget_spent(store: &EconomyStore, principal: &PrincipalId) -> bool {
+    store
+        .snapshot()
+        .contracts()
+        .filter(|c| {
+            c.state.is_live() && job_shape(c).is_some() && c.consent.parties.contains(principal)
+        })
+        .count()
+        >= MAX_LIVE_JOBS_PER_PRINCIPAL
+}
+
+/// **What a job's join fills in** (doc 48 cut EX.5; Q-48-12, -13, -58).
+#[derive(Clone, Debug)]
+pub struct JoinTerms {
+    /// Who takes the job: a character for themselves, or an organization one of its members
+    /// accepts for.
+    pub acceptor: PrincipalId,
+    /// The acceptor's account: where the fee (and the bond, back) is paid on performance, and
+    /// what the bond is escrowed from.
+    pub account: AccountId,
+    /// The provider's bond, escrowed at the join and forfeit to the poster if the fact never
+    /// arrives ([`job_bond`]). `None`: no bond.
+    pub bond: Option<Amount>,
+    /// **"N IC days from acceptance"** (Q-48-58): the job's deadline becomes the join's IC time
+    /// plus this many IC seconds, never later than the posted deadline. `None`: the posted
+    /// deadline stands (a retrieval's, as before).
+    pub term_ic: Option<i64>,
+}
+
+/// **Accept a retrieval** (doc 41 cut RS.5, Q-41-8): [`join_job`] for a character taking a
+/// retrieval with no bond and the posted deadline.
 ///
 /// # Errors
 ///
-/// [`ContractError::NoStanding`] for a contract that is not a live retrieval, an acceptor who
-/// is the poster or who may not accept, or an account the acceptor does not own;
-/// [`ContractError::State`] when it already has an acceptor or is not in force;
-/// [`ContractError::TooLarge`] for an acceptor at §9's party cap;
-/// [`ContractError::Infeasible`] for a frozen economy.
+/// As [`join_job`]; [`ContractError::NoStanding`] for a contract that is not a retrieval.
 pub fn accept_retrieval(
     ctx: &mut Ctx<'_>,
     id: ContractId,
     acceptor: &PrincipalId,
     acceptor_account: AccountId,
 ) -> Result<(), ContractError> {
+    if retrieval_of(ctx, id).is_none() {
+        return Err(ContractError::NoStanding);
+    }
+    join_job(
+        ctx,
+        id,
+        JoinTerms {
+            acceptor: acceptor.clone(),
+            account: acceptor_account,
+            bond: None,
+            term_ic: None,
+        },
+    )
+}
+
+/// **Join a job** (doc 48 cut EX.5; Q-48-12, -13, -58; generalised from RS.5's
+/// `accept_retrieval`): `terms.acceptor` joins contract `id` as its second party and accepts it
+/// in one write, with the fee's remainder pointed at `terms.account`. Guarded by the shape
+/// ([`job_shape`]): only a live job with no acceptor yet, whose fee the poster escrowed at
+/// posting.
+///
+/// The poster's acceptance is re-bound to the joined consent: a job's shape is the poster's
+/// standing offer to whoever takes it, and the shape check here is that offer's whole content.
+/// The fee, the object and the fact are unchanged. The join fills in the acceptor's name and
+/// account; the bond and the term are the venue's posted terms for the kind (the market's
+/// service row), which the poster published, so the join writes them as posted:
+///
+/// - **The bond**, when given, is the acceptor's own consideration, escrowed now under the
+///   acceptor's debit authority, and the expiry forfeits the escrow to the poster's fee
+///   account: the fee back and the bond with it. On performance both are the acceptor's.
+/// - **The term**, when given, moves the deadline to the join plus the term, never past the
+///   posted deadline.
+///
+/// Authority: a character accepts for themselves (`ctx.actor`). An organization is accepted
+/// for by a member holding its spending capability (`economy.account.post` on its root
+/// scope, as [`crate::acts_for`] reads it), or through the wiring's
+/// [`crate::contract::PartyCap::Accept`] (the host's house acceptor, run on a tick).
+///
+/// Caps: the acceptor is held to §9's party cap and to the job budget
+/// ([`MAX_LIVE_JOBS_PER_PRINCIPAL`]); the join adds no contract, so the poster's caps, asked
+/// at the post, are not asked again.
+///
+/// # Errors
+///
+/// [`ContractError::NoStanding`] for a contract that is not a live job, an acceptor who is the
+/// poster or who may not accept, or an account the acceptor does not own;
+/// [`ContractError::State`] when it already has an acceptor or is not in force;
+/// [`ContractError::TooLarge`] for an acceptor at the party cap or the job budget;
+/// [`ContractError::Infeasible`] for a frozen economy, a non-positive bond or term, or a term
+/// that ends past the posted deadline; whatever the bond's escrow refuses (the acceptor's
+/// funds). Nothing is written when a check refuses.
+pub fn join_job(ctx: &mut Ctx<'_>, id: ContractId, terms: JoinTerms) -> Result<(), ContractError> {
     if ctx
         .w
         .module_state::<EconomyStore>()
@@ -6888,12 +7117,19 @@ pub fn accept_retrieval(
     {
         return Err(ContractError::Infeasible("the economy is frozen"));
     }
-    let standing = match acceptor {
+    let JoinTerms {
+        acceptor,
+        account,
+        bond,
+        term_ic,
+    } = terms;
+    let standing = match &acceptor {
         PrincipalId::Object(who) => *who == ctx.actor,
         PrincipalId::Organization(_) => {
-            crate::module::party_cap(ctx.w, acceptor, crate::contract::PartyCap::Accept)
+            crate::module::party_cap(ctx.w, &acceptor, crate::contract::PartyCap::Accept)
+                || crate::notice::acts_for(ctx.w, ctx.actor, &acceptor)
         }
-        _ => false,
+        PrincipalId::System(_) => false,
     };
     if !standing {
         return Err(ContractError::NoStanding);
@@ -6901,19 +7137,21 @@ pub fn accept_retrieval(
     let owns = ctx
         .w
         .module_state::<EconomyStore>()
-        .and_then(|store| store.snapshot().account(acceptor_account).cloned())
-        .is_some_and(|account| {
-            principal_key(&account.owner) == principal_key(acceptor)
-                && account.status == AccountStatus::Active
+        .and_then(|store| store.snapshot().account(account).cloned())
+        .is_some_and(|row| {
+            principal_key(&row.owner) == principal_key(&acceptor)
+                && row.status == AccountStatus::Active
         });
     if !owns {
         return Err(ContractError::NoStanding);
     }
-    let mut c = retrieval_of(ctx, id).ok_or(ContractError::NoStanding)?;
-    if principal_key(&c.issuer) == principal_key(acceptor) {
+    let mut c = live_contract(ctx, id)
+        .filter(|c| job_shape(c).is_some())
+        .ok_or(ContractError::NoStanding)?;
+    if principal_key(&c.issuer) == principal_key(&acceptor) {
         return Err(ContractError::NoStanding);
     }
-    if retrieval_acceptor(&c).is_some()
+    if job_acceptor(&c).is_some()
         || c.state != ContractState::Active
         || c.pending.is_some()
         || !c.fully_accepted()
@@ -6921,20 +7159,48 @@ pub fn accept_retrieval(
     {
         return Err(ContractError::State(id));
     }
-    // Doc 48 §4.3 (the second review, doc 48b): joining binds the acceptor as a party, so they
-    // are held to §9's party cap. It adds no contract, so the poster's issuer cap, asked at the
-    // post, is not asked again.
-    if ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_some_and(|store| party_at_cap(store, acceptor))
-    {
-        return Err(ContractError::TooLarge(PARTY_CAP_REFUSAL));
+    if let Some(store) = ctx.w.module_state::<EconomyStore>() {
+        if party_at_cap(store, &acceptor) {
+            return Err(ContractError::TooLarge(PARTY_CAP_REFUSAL));
+        }
+        if job_budget_spent(store, &acceptor) {
+            return Err(ContractError::TooLarge(JOB_CAP_REFUSAL));
+        }
     }
-    let now = ctx.w.now();
+    if bond.is_some_and(|b| b.minor() <= 0) {
+        return Err(ContractError::Infeasible("a bond is positive"));
+    }
+    if let Some(term) = term_ic {
+        if term <= 0 {
+            return Err(ContractError::Infeasible("a job's term is positive"));
+        }
+        let ends = ctx.w.world_ic_now().at.saturating_add(term);
+        let posted = c.consent.deadline.map(|d| d.at);
+        if posted.is_none_or(|at| ends > at) {
+            return Err(ContractError::Infeasible(
+                "the job's term ends past its posted deadline",
+            ));
+        }
+        c.consent.deadline = Some(EconomicDeadline {
+            clock: EconomicClock::WorldIc,
+            at: ends,
+        });
+    }
+    let fee_account = job_shape(&c)
+        .map(|j| j.fee_account)
+        .ok_or(ContractError::NoStanding)?;
     c.consent.parties.push(acceptor.clone());
-    c.consent.terms.remainder_to = acceptor_account;
+    c.consent.terms.remainder_to = account;
+    if let Some(bond) = bond {
+        c.consent.terms.consideration.push(Consideration {
+            from: acceptor.clone(),
+            account,
+            amount: bond,
+        });
+        c.consent.terms.on_expiry = Expiry::Forfeit { to: fee_account };
+    }
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
+    let now = ctx.w.now();
     for acceptance in &mut c.acceptances {
         acceptance.consent_hash = c.consent_hash;
     }
@@ -6944,7 +7210,73 @@ pub fn accept_retrieval(
         consent_hash: c.consent_hash,
     });
     c.roster_locked = true;
-    save(ctx, c).map_err(ContractError::Refused)?;
+    let Some(bond) = bond else {
+        save(ctx, c).map_err(ContractError::Refused)?;
+        ctx.gate_on_durable_ack();
+        return Ok(());
+    };
+    // The bond's escrow and the joined contract land in one post, so a bond the account
+    // cannot cover writes no join.
+    let predicted = HoldId(
+        ctx.w
+            .module_state::<EconomyStore>()
+            .map_or(0, EconomyStore::peek_next_hold),
+    );
+    c.escrow.push(predicted);
+    let joined = prepare_save(ctx, c.clone()).map_err(ContractError::Refused)?;
+    let actor = match &acceptor {
+        PrincipalId::Object(_) => acceptor.clone(),
+        _ => PrincipalId::Object(ctx.actor),
+    };
+    let mut plan = EconomyPlan::new(
+        cmd_key(ctx),
+        actor,
+        EconomicCause::Command {
+            serial: ctx.w.next_correlation_id(),
+        },
+        Vec::new(),
+    );
+    plan.visibility = c.consent.visibility.clone();
+    plan.description = format!("bond for job {}", c.id);
+    plan.hold_ops = vec![HoldOp::Place {
+        account,
+        amount: bond,
+        beneficiary: Some(api::contract_principal()),
+        purpose: HoldPurpose::Escrow { contract: id },
+        expires: None,
+    }];
+    let mut committed = c;
+    committed.revision = committed.revision.saturating_add(1);
+    let placed = match api::post_with_companions(ctx, &plan, PostAuth::World, vec![committed]) {
+        Ok(PostOutcome::Posted(txid)) => ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.transaction(txid).cloned())
+            .and_then(|t| {
+                t.hold_effects
+                    .iter()
+                    .find(|e| e.kind == HoldEffectKind::Placed)
+                    .map(|e| e.hold.id)
+            }),
+        Ok(PostOutcome::AlreadyPosted(_)) => {
+            return Err(ContractError::Infeasible(
+                "that bond was already placed; try again",
+            ));
+        }
+        Ok(PostOutcome::NeedsApproval(_)) => {
+            return Err(ContractError::Infeasible(
+                "the acceptor's account needs an approval to escrow the bond",
+            ));
+        }
+        Err(e) => return Err(ContractError::Refused(e)),
+    };
+    if let Some(placed) = placed.filter(|h| *h != predicted) {
+        tracing::warn!(
+            contract = id.0,
+            "economy: a job's bond hold id differed from the predicted one; healing the record"
+        );
+        api::install_contract_write(ctx, joined.landed_escrow(&[predicted], &[placed]));
+    }
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -6966,6 +7298,32 @@ pub fn cancel_retrieval(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, Contr
         return Err(ContractError::Infeasible("the economy is frozen"));
     }
     let c = retrieval_of(ctx, id).ok_or(ContractError::Infeasible("no such retrieval"))?;
+    if c.state.is_terminal() {
+        return Ok(true);
+    }
+    unwind(ctx, id, ContractState::Cancelled);
+    Ok(live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()))
+}
+
+/// **Cancel a job** (doc 48 cut EX.6): [`cancel_retrieval`] for any job ([`job_shape`]): the
+/// ordinary unwind, every escrow back to whoever placed it (the fee to the poster, a bond to
+/// its acceptor). The host decides when a job may be cancelled: before anyone takes it, or
+/// before the work has begun. Answers whether the contract is terminal afterwards.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] for a frozen economy or a contract that is not a job.
+pub fn cancel_job(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let c = live_contract(ctx, id)
+        .filter(|c| job_shape(c).is_some())
+        .ok_or(ContractError::Infeasible("no such job"))?;
     if c.state.is_terminal() {
         return Ok(true);
     }

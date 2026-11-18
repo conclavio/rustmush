@@ -286,9 +286,9 @@ pub fn in_vocabulary(line: &str) -> bool {
         "lobby",
         "gallery",
         "+coop/refit prospector",
-        "+licence/buy",
-        "+licence/buy go",
-        "+licence",
+        "+license/buy",
+        "+license/buy go",
+        "+license",
         "+tv/lease",
         "+tv/lease go",
         "+tv",
@@ -317,7 +317,7 @@ pub fn in_vocabulary(line: &str) -> bool {
     if FIXED.contains(&line) {
         return true;
     }
-    if let Some(name) = line.strip_prefix("+coop/enrol ") {
+    if let Some(name) = line.strip_prefix("+coop/enroll ") {
         return (1..=32).contains(&name.chars().count())
             && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
             && name
@@ -1269,11 +1269,11 @@ impl Lane {
             }
             (Kind::Walk { word, .. }, _) => self.after_walk(now_ms, step.beat, word),
             (Kind::Enrol, _) => self.send(Beat::KitUp, Kind::Refit, "+coop/refit prospector", 0),
-            (Kind::Refit, _) => self.send(Beat::KitUp, Kind::LicencePreview, "+licence/buy", 0),
+            (Kind::Refit, _) => self.send(Beat::KitUp, Kind::LicencePreview, "+license/buy", 0),
             (Kind::LicencePreview, _) => {
-                self.send(Beat::KitUp, Kind::LicenceGo, "+licence/buy go", 0)
+                self.send(Beat::KitUp, Kind::LicenceGo, "+license/buy go", 0)
             }
-            (Kind::LicenceGo, _) => self.send(Beat::KitUp, Kind::LicenceCheck, "+licence", 0),
+            (Kind::LicenceGo, _) => self.send(Beat::KitUp, Kind::LicenceCheck, "+license", 0),
             (Kind::LicenceCheck, _) => self.walk(Beat::KitUp, "out", ROOM_ARRIVALS, 0),
             (Kind::LeasePreview, _) => {
                 let line = self.lease_line(true);
@@ -1435,7 +1435,7 @@ impl Lane {
         match (beat, word) {
             (Beat::KitUp, "c") => self.walk(Beat::KitUp, "registry", ROOM_REGISTRY, 0),
             (Beat::KitUp, "registry") => {
-                let line = format!("+coop/enrol {}", self.settings.hull);
+                let line = format!("+coop/enroll {}", self.settings.hull);
                 self.send(Beat::KitUp, Kind::Enrol, &line, 0);
             }
             (Beat::KitUp, "out") => self.walk(Beat::KitUp, "concourse", ROOM_CONCOURSE, 0),
@@ -2155,7 +2155,7 @@ mod tests {
                 worked_out: BTreeSet::new(),
                 run_t: 12,
                 arrive_after_ms: 0,
-                busy: ["+licence/buy go", "+tv/1 launch go"].into_iter().collect(),
+                busy: ["+license/buy go", "+tv/1 launch go"].into_iter().collect(),
                 pushed: BTreeSet::new(),
                 refitted: false,
             }
@@ -2297,11 +2297,11 @@ mod tests {
                 "+coop/refit prospector" => lines(&[tacsim::port::refit::REFITTED_PROSPECTOR
                     .replace("{name}", HULL)
                     .replace("{mark}", "DRAY-07")]),
-                "+licence/buy" => lines(&[licence::LICENCE_PREVIEW
+                "+license/buy" => lines(&[licence::LICENCE_PREVIEW
                     .replace("{issuer}", "Freeport Registry")
                     .replace("{fee}", "2500.00cr")]),
-                "+licence/buy go" => String::new(),
-                "+licence" => lines(&[licence::LICENCE_IN_FORCE
+                "+license/buy go" => String::new(),
+                "+license" => lines(&[licence::LICENCE_IN_FORCE
                     .replace("{issuer}", "Freeport Registry")
                     .replace("{account}", "3")]),
                 "+tv/lease" => lines(&[n1(tv::LEASE_PREVIEW)
@@ -2487,7 +2487,7 @@ mod tests {
 
         fn answer_more(&mut self, line: &str) -> String {
             let n1 = |text: &str| text.replace("{n}", "1");
-            if let Some(name) = line.strip_prefix("+coop/enrol ") {
+            if let Some(name) = line.strip_prefix("+coop/enroll ") {
                 return lines(&[format!(
                     "The Co-op charters you DRAY-07, laid up as the Dray 7, now the {name}, \
                      cradled at the Visiting Berth Gallery."
@@ -2746,7 +2746,7 @@ mod tests {
         assert_eq!(sales, 2, "{:#?}", lines_of(&sent));
         // The world's transient refusals, typed again a moment later: the
         // licence purchase (a timed step) and the launch.
-        for busy in ["+licence/buy go", "+tv/1 launch go"] {
+        for busy in ["+license/buy go", "+tv/1 launch go"] {
             let times: Vec<u64> = sent
                 .iter()
                 .filter(|send| send.line == busy)
@@ -3129,7 +3129,7 @@ mod tests {
     fn the_vocabulary_is_closed() {
         for line in [
             "c",
-            "+coop/enrol Ardent Lode",
+            "+coop/enroll Ardent Lode",
             "+market/quote 3=6",
             "+market/accept 41",
             "+ship/plan kerwan",
@@ -3142,7 +3142,7 @@ mod tests {
         }
         for line in [
             "@tacsim/port status",
-            "+coop/enrol 9lives",
+            "+coop/enroll 9lives",
             "+market/quote 3",
             "+ship/plan vesta",
             "+tv/1 drive Q1 go",

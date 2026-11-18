@@ -1790,12 +1790,16 @@ impl LocalSpaceBubble {
     ///
     /// **A mode her fit does not allow is refused** (Q-49-24; doc 49 unit CC.6), so a laser
     /// fitted defence-only stays in defence whoever asks.
+    ///
+    /// **A switch never fires early** (Q-49-24; doc 49 unit CC.8): the new mode's cycle starts
+    /// from the switch, and switching back to offence within one offence cycle keeps what was
+    /// left of it ([`LaserMount::switch_mode`]).
     pub fn set_laser_mode(&mut self, ship_id: &str, laser_id: &str, mode: LaserMode) -> bool {
         if let Some(ship) = self.ships.get_mut(ship_id)
             && let Some(mount) = ship.lasers.iter_mut().find(|l| l.id == laser_id)
             && mount.allowed_modes.allows(mode)
         {
-            mount.mode = mode;
+            mount.switch_mode(mode);
             return true;
         }
         false
@@ -2661,7 +2665,7 @@ impl LocalSpaceBubble {
                 t.cooldown_remaining_ms = t.cooldown_remaining_ms.saturating_sub(step_ms);
             }
             for l in &mut ship.lasers {
-                l.cooldown_remaining_ms = l.cooldown_remaining_ms.saturating_sub(step_ms);
+                l.cool(step_ms);
             }
             for r in &mut ship.railguns {
                 r.cooldown_remaining_ms = r.cooldown_remaining_ms.saturating_sub(step_ms);
@@ -3611,7 +3615,7 @@ mod cc6_tests {
         bubble.insert_ship(dray);
         assert!(
             !bubble.set_laser_mode("her", "laser_dorsal", LaserMode::Defense),
-            "her fit allows no defence on this laser"
+            "her fit allows no defense on this laser"
         );
         assert!(
             bubble.set_laser_mode("her", "laser_ventral", LaserMode::Defense),
@@ -3646,8 +3650,22 @@ mod cc6_tests {
             Some(laser.defence_cycle_ms()),
             def.modes.defence.map(|mode| mode.cycle_ms)
         );
+        // Doc 49 unit CC.8: the shipped turret's two modes cycle apart, so her document
+        // carries the defence cycle; a row whose modes share one cycle leaves it out.
         assert_eq!(
-            laser.defence_cooldown_ms, None,
+            laser.defence_cooldown_ms,
+            def.modes.defence.map(|mode| mode.cycle_ms)
+        );
+        let mut shared = def.clone();
+        shared.modes.defence = def.modes.offence;
+        let one = crate::space::weapons::LaserMount::from_def(
+            "laser_1",
+            &shared,
+            LaserModes::BOTH,
+            LaserMode::Offense,
+        );
+        assert_eq!(
+            one.defence_cooldown_ms, None,
             "one cycle for both, so her document is as it was"
         );
         let mut slow = def.clone();
@@ -3662,7 +3680,11 @@ mod cc6_tests {
         assert_eq!(
             Some(split.cooldown_ms),
             def.modes.offence.map(|mode| mode.cycle_ms),
-            "offence keeps its own"
+            "offense keeps its own"
         );
     }
 }
+
+#[cfg(test)]
+#[path = "bubble_cc8_tests.rs"]
+mod cc8_tests;

@@ -4234,7 +4234,7 @@ pub fn catchup_words(callsign: &str, catchup: &Value) -> Vec<String> {
                     let mut clauses: Vec<String> = Vec::new();
                     let (armour_then, armour_now) = (figure(then, "armour"), figure(now, "armour"));
                     if armour_now < armour_then {
-                        clauses.push(format!("armour {armour_then} then, {armour_now} now"));
+                        clauses.push(format!("armor {armour_then} then, {armour_now} now"));
                     }
                     let (inside_then, inside_now) =
                         (figure(then, "internals"), figure(now, "internals"));
@@ -7917,7 +7917,7 @@ mod tests {
                 "  The machine was a new state word under no order.".to_string(),
                 "  Position: unknown.".to_string(),
                 "  Contacts: new ABCDEFGH; none lost.".to_string(),
-                format!("  Sections: {} armour 9 then, 4 now.", "s".repeat(24)),
+                format!("  Sections: {} armor 9 then, 4 now.", "s".repeat(24)),
                 "  Rounds spent: w 2.".to_string(),
                 "  Power on[31mline.".to_string(),
             ]

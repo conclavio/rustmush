@@ -344,7 +344,11 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// keep their words), the unit designators (`{"unit": {"party", "letter"}}`
 /// for the old slot form), every party's relation books and the field's end
 /// condition. Taken once, with the mind API and the frame.
-pub const SNAPSHOT_FORMAT: u32 = 19;
+/// **20 since doc 49 unit CC.2b:** the motor table carries the path cells its
+/// `decide_ms` window has spent (`MotorTable`'s `cells`), so a match resumed
+/// mid-window defers as an unbroken one does. Format 19 is refused by name
+/// before state decode; in-flight matches restart rather than migrating.
+pub const SNAPSHOT_FORMAT: u32 = 20;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///
@@ -1815,6 +1819,7 @@ mod tests {
                 from_cell: Some((5, 5)),
                 from_height_cm: 150,
                 damage: 120,
+                beam: false,
                 resolution: Resolution::blind("near", 3, mush_atlas::Cover::Partial),
             },
         )]));

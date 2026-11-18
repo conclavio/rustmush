@@ -860,10 +860,20 @@ pub fn accept_at(
             "You have no account this market can be paid from.",
         ));
     };
+    // Doc 48 cut EX.4 (Q-48-8, -56): a person's sale pays the venue's cut and levy and any
+    // proceeds policy's share beside the seller; a vendor's pays the vendor the whole price.
+    let payouts = if listing.is_personal() {
+        crate::fees::personal_ask_payouts(ctx.w, &listing, &q.buyer, q.quantity, q.price, payee)?
+    } else {
+        vec![PayoutShare {
+            to: payee,
+            share: Share::Exact(q.total()),
+        }]
+    };
     let spec = purchase_spec(
         &q,
         &listing,
-        payee,
+        payouts,
         representation,
         buyer_account,
         accepted_at,
@@ -1295,7 +1305,7 @@ fn restore_quantity(ctx: &mut Ctx<'_>, q: &Quote) {
 fn purchase_spec(
     q: &Quote,
     listing: &Listing,
-    payee: mush_economy::AccountId,
+    payouts: Vec<PayoutShare>,
     representation: Representation,
     buyer_account: mush_economy::AccountId,
     now: i64,
@@ -1312,10 +1322,19 @@ fn purchase_spec(
             outcome: SmolStr::new_static("delivered"),
             object,
             seller: listing.seller.clone(),
-            seller_account: payee,
+            seller_account: payouts.first().map_or(buyer_account, |p| p.to),
             buyer: q.buyer.clone(),
             buyer_account,
             price: total,
+            // Doc 48 cut EX.4: every row but the seller's (the venue's cut and levy).
+            others: payouts
+                .iter()
+                .skip(1)
+                .filter_map(|p| match p.share {
+                    Share::Exact(amount) => Some((p.to, amount)),
+                    _ => None,
+                })
+                .collect(),
             deadline: now.saturating_add(DEAL_WINDOW_SECS),
             // Doc 48 cut EX.2 (Q-48-52): it settles only on the state the quote priced.
             facts: q
@@ -1401,10 +1420,7 @@ fn purchase_spec(
         outcomes: vec![OutcomeTerms {
             name: SmolStr::new_static("delivered"),
             when,
-            payouts: vec![PayoutShare {
-                to: payee,
-                share: Share::Exact(total),
-            }],
+            payouts,
             expense_treatment: mush_economy::ExpenseTreatment::None,
             asset_consequences,
         }],
@@ -1457,6 +1473,9 @@ pub struct AssetSaleTerms {
     pub buyer_account: mush_economy::AccountId,
     /// The price, the whole of it.
     pub price: Amount,
+    /// Doc 48 cut EX.4: who besides the seller is paid out of the price (a venue's cut and levy),
+    /// each exactly; the seller is paid the rest.
+    pub others: Vec<(mush_economy::AccountId, Amount)>,
     /// When the deal lapses (real seconds); past it the escrow is refunded.
     pub deadline: i64,
     /// Settlement conditions after the title and the window, each a deterministic fact
@@ -1499,10 +1518,23 @@ pub fn asset_sale_spec(sale: &AssetSaleTerms) -> ContractSpec {
         outcomes: vec![OutcomeTerms {
             name: sale.outcome.clone(),
             when: (0..conditions.len()).collect(),
-            payouts: vec![PayoutShare {
-                to: sale.seller_account,
-                share: Share::Exact(sale.price),
-            }],
+            payouts: {
+                let taken = sale
+                    .others
+                    .iter()
+                    .fold(0_i64, |sum, (_, a)| sum.saturating_add(a.minor()));
+                let mut rows = vec![PayoutShare {
+                    to: sale.seller_account,
+                    share: Share::Exact(Amount::from_minor(
+                        sale.price.minor().saturating_sub(taken).max(0),
+                    )),
+                }];
+                rows.extend(sale.others.iter().map(|(to, amount)| PayoutShare {
+                    to: *to,
+                    share: Share::Exact(*amount),
+                }));
+                rows
+            },
             expense_treatment: mush_economy::ExpenseTreatment::None,
             asset_consequences: vec![0],
         }],
@@ -1665,7 +1697,7 @@ pub fn sell(
         .and_then(|s| s.snapshot().asset(object).and_then(|a| a.catalog.clone()))
     else {
         return Err(MarketError::bad(
-            "That has no catalogue entry, so no vendor can put a price on it.",
+            "That has no catalog entry, so no vendor can put a price on it.",
         ));
     };
     let Some(entry) = ctx
@@ -1674,7 +1706,7 @@ pub fn sell(
         .and_then(|s| s.entry_of(&catalog).cloned())
     else {
         return Err(MarketError::bad(
-            "That has no catalogue entry, so no vendor can put a price on it.",
+            "That has no catalog entry, so no vendor can put a price on it.",
         ));
     };
     let Some(baseline) = entry.baseline.filter(|b| b.minor() > 0) else {
@@ -3505,6 +3537,7 @@ mod tests {
             buyer_account: ba,
             price: Amount::from_minor(500),
             deadline: 1_000,
+            others: Vec::new(),
             facts: vec![pin.clone()],
         };
         let spec = asset_sale_spec(&terms);

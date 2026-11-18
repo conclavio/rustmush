@@ -65,7 +65,7 @@ pub const MAX_GOODS: usize = 256;
 // of every good must still take the next one. A larger catalogue moves the inventory cap with it.
 const _: () = assert!(
     MAX_GOODS <= mush_inventory::MAX_POOLS_PER_ENDPOINT,
-    "an endpoint must be able to pool every catalogue good"
+    "an endpoint must be able to pool every catalog good"
 );
 
 /// The longest ledger or quote unit word, bytes.
@@ -687,7 +687,7 @@ pub(crate) mod pl0_tests {
         assert_eq!(table.goods.len(), 100);
         let entries = table
             .catalog_entries()
-            .unwrap_or_else(|error| panic!("100 catalogue rows derive: {error}"));
+            .unwrap_or_else(|error| panic!("100 catalog rows derive: {error}"));
         assert_eq!(entries.len(), 100);
     }
 

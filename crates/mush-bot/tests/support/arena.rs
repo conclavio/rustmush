@@ -675,7 +675,7 @@ pub async fn pose(god: &mut Client, spec: &str) {
 pub const POSE_REFUSALS: [&str; 9] = [
     "POSE refused. ",
     "There is no slot ",
-    "The simulator centre is running; set opening cells",
+    "The simulator center is running; set opening cells",
     "is off the arena window.",
     "is impassable, or has no way out.",
     "opening cell.",

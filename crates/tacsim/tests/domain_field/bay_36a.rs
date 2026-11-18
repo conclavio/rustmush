@@ -343,7 +343,7 @@ async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
         land_quietly(&mut rig, &queued);
     }
     let cancelled = run(&mut rig.tw, pilot, &format!("+bay/cancel #{}", escort.0));
-    assert!(cancelled.contains("cancelled"), "{cancelled}");
+    assert!(cancelled.contains("canceled"), "{cancelled}");
 }
 
 /// **36a P0-6 (b) — no cancel while the draw settles.** The spare's rearm comes due on an empty

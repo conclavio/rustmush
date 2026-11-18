@@ -1,9 +1,17 @@
 //! Thin sortie adapters: inspect terms, then submit their exact acceptance.
-use super::{CrewDuty, CrewHandles, HireTerms, NpcMissionScope, offers, runtime::check_contract};
+use super::{CrewHandles, HireTerms, NpcMissionScope, offers, runtime::check_contract};
 use mush_core::{CanonicalHash, CmdError, Ctx, IdempotencyKeyText, ObjId, PerceivedRef};
 use serde_json::json;
 
-pub(crate) const SWITCHES: &[&str] = &["crew", "hire", "contract", "board", "unseat"];
+pub(crate) const SWITCHES: &[&str] = &[
+    "crew",
+    "hire",
+    "contract",
+    "board",
+    "unseat",
+    "available",
+    "unavailable",
+];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
 }
@@ -33,11 +41,7 @@ pub(crate) fn describe(terms: &HireTerms) -> String {
     let duties = terms
         .duties
         .iter()
-        .map(|duty| match duty {
-            CrewDuty::Mining => "mining",
-            CrewDuty::Combat => "combat",
-            CrewDuty::Recovery => "recovery",
-        })
+        .map(|duty| super::wages::duty_word(*duty))
         .collect::<Vec<_>>()
         .join(", ");
     format!("{scope}; duties: {duties}; hiring port: {}", terms.port)
@@ -52,6 +56,13 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .cloned()
         .ok_or_else(unavailable)?;
     let raw = ctx.args.raw().trim().to_owned();
+    // Doc 48 cut EX.7: a player lists themselves for crew hire, or withdraws.
+    if ctx.switches.has("available") || ctx.switches.has("unavailable") {
+        let said = super::wages::available(ctx, &raw, ctx.switches.has("unavailable"))
+            .map_err(CmdError::msg)?;
+        line(ctx, said);
+        return Ok(());
+    }
     if ctx.switches.has("board") || ctx.switches.has("unseat") {
         let npc = npc(&raw).or_else(|_| {
             mush_core::match_object(ctx.w, ctx.actor, &raw)
@@ -90,7 +101,12 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .to_owned();
             line(
                 ctx,
-                format!("{name} (#{}): {}", offer.npc.0, describe(&offer.terms)),
+                format!(
+                    "{name} (#{}): {}{}",
+                    offer.npc.0,
+                    describe(&offer.terms),
+                    super::wages::offer_clause(ctx.w, &offer.terms)
+                ),
             );
             line(
                 ctx,
@@ -101,10 +117,9 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 ),
             );
         }
-        line(
-            ctx,
-            "These offers have no wage charge. Hiring does not move the character aboard.",
-        );
+        let wages = super::wages::offers_footer(ctx.w);
+        line(ctx, wages);
+        line(ctx, super::wages::OFFERS_ABOARD);
         return Ok(());
     }
     if ctx.switches.has("contract") {
@@ -125,6 +140,8 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 describe(&contract.terms)
             ),
         );
+        let wage = super::wages::contract_line(ctx.w, &contract);
+        line(ctx, wage);
         line(
             ctx,
             "Contract recorded. Physical presence is checked separately at preparation and launch.",

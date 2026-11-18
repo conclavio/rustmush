@@ -190,7 +190,7 @@ fn generation(w: &PlayerWorld, owner: LicenceId) -> TestResult<Value> {
         .into_iter()
         .find(|v| v.get("id") == Some(&json!(owner)))
         .and_then(|v| v.get("term").cloned())
-        .ok_or("the House owner licence")?)
+        .ok_or("the House owner license")?)
 }
 
 fn owner_term(
@@ -252,7 +252,7 @@ pub(super) fn exercise(
 ) -> TestResult {
     let birth = one(rows(&saved.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
-        serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
+        serde_json::from_value(birth.get("licence").cloned().ok_or("owner license")?)?;
     let mut w = Rig::house(registry, TICKING).boot(saved)?;
     let house_agent = agent(registry, &mut w)?;
     let result = story(registry, &mut w, (organization, scope), owner, house_agent);

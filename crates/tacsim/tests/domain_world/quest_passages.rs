@@ -35,7 +35,7 @@ fn no_offer(rig: &mut Rig, actor: ObjId, ma: ObjId) {
     assert!(queued.is_empty(), "{offer}");
     assert!(
         !offer.contains("+quest/accept "),
-        "an unavailable traveller cannot be promised: {offer}"
+        "an unavailable traveler cannot be promised: {offer}"
     );
     assert!(progress(rig, actor).is_none());
 }
@@ -305,7 +305,7 @@ fn booked_passage_requires_delivery_payment_and_exact_receipt_then_rewards_ma_on
     assert_eq!(
         rig.tw.world().get(nadia).unwrap().location,
         nadia_room,
-        "recognizing the journey never respawns or recalls the traveller"
+        "recognizing the journey never respawns or recalls the traveler"
     );
     let finished = progress(&mut rig, actor).unwrap();
     assert!(finished["completed"].is_object());
@@ -349,7 +349,7 @@ fn arrival_closes_the_invitation_even_before_its_fare_is_paid() {
     let (out, queued) = command(&mut rig, actor, &old_invitation);
     assert!(
         queued.is_empty(),
-        "an old invitation cannot resurrect an arrived traveller: {out}"
+        "an old invitation cannot resurrect an arrived traveler: {out}"
     );
     assert!(progress(&mut rig, actor).is_none());
     refused(&mut rig, actor, ma, "check");

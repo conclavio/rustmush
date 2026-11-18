@@ -1398,7 +1398,7 @@ mod m5_tests {
         )
         .expect("the retained API 4 Standard source digest");
         let api7_source = crate::arena::snapshot::digest_from_text(
-            "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91",
+            "e9f1a863eabc057066304121fe74b48cce05c21f0a629abb8f8f240c9a02ed15",
         )
         .expect("the observed API 7 Standard source digest");
         assert_eq!(crate::minds::content::standard_digest().0, api7_source);
@@ -1472,19 +1472,25 @@ mod m5_tests {
         // did. Captured on Linux. They were `5d0a8af7…811d8b`, `9f752c1b…e53371`,
         // `9bc3d03b…f99609`, `2c31c30f…594f00`, `c0357d93…a5f8c0` and
         // `0e3ea202…5436b3` (the fixture and production rows share one).
+        // Doc 49 unit CC.2: the captured mount facts moved with the ruled palette
+        // (the cannon's and the coaxial gun's cycles and loads), so the line
+        // tank's and the heavy's six projections moved; the target carries no
+        // mount and kept its three. Captured on Linux. They were
+        // `aebce46a…8e8972`, `fa77fd72…f95644`, `5bc4842c…b517f5a` and
+        // `653f40f7…8240aa`.
         let api4_pinned = [
             "tacsim.unit.line_tank fixture \
-             aebce46a4406a67f3056d112fa2a7d8952db6416ea1e85442d1ae095228e8972",
+             4f2f2019f19d6d782c6f635f4b80decc26bae7de54cb4b5466f49ee05a79e4aa",
             "tacsim.unit.line_tank production_fixture \
-             aebce46a4406a67f3056d112fa2a7d8952db6416ea1e85442d1ae095228e8972",
+             4f2f2019f19d6d782c6f635f4b80decc26bae7de54cb4b5466f49ee05a79e4aa",
             "tacsim.unit.line_tank production_principal \
-             fa77fd72939ae83065db5054c0473e4931aca1a7a1280db27de306e864f95644",
+             89e695d52efe88e2a6ae6c80680e8f518ceed88cdee3cc3f867b3ed0ad403a68",
             "tacsim.unit.heavy_mk1 fixture \
-             5bc4842caa21159de90da7501f34305a8a6e46739c55950f687039e80b517f5a",
+             0bb95bd42c515285288d2ee802783a45fb53787cfcc7d3979c6b0f1f9ec5a4d1",
             "tacsim.unit.heavy_mk1 production_fixture \
-             5bc4842caa21159de90da7501f34305a8a6e46739c55950f687039e80b517f5a",
+             0bb95bd42c515285288d2ee802783a45fb53787cfcc7d3979c6b0f1f9ec5a4d1",
             "tacsim.unit.heavy_mk1 production_principal \
-             653f40f7be0d4561fc3b586cb1bd199f412abd5d3df8fe4070e72b833a8240aa",
+             5b98fb0152eec8c8b3aaef861271bbe9b0fb68f831b45827ccac74a0007ff329",
             "tacsim.unit.target_mk1 fixture \
              500c8a2b0a1be236db5232ee3221b4e49b1a0b13c9f15aaa00c25ab34bee8c75",
             "tacsim.unit.target_mk1 production_fixture \
@@ -1517,25 +1523,34 @@ mod m5_tests {
         // above moved with the card alone. Captured on Linux. The fixture rows were CC.9's
         // `eaa9e8da…e0ba23`, `70ce5e6c…1ec358` and `68730d0f…e99f44`; the production rows'
         // and the principal's moved likewise.
+        // Doc 49 unit CC.2: the ruled palette moved the captured mount facts of the line tank
+        // and the heavy (the cannon's and the coaxial gun's cycles and loads), so their six
+        // moved; the target carries no mount and kept its three. Captured on Linux. The line
+        // tank's and the heavy's fixture rows were CC.1's `e5b3f802…51d84` and `fee9ffcd…a7ff50`.
+        // Doc 49 unit CC.1b: the Standard source moved (the Engage path's cost, behaviour
+        // unchanged), so all nine moved with the source; the API 4 projection above still holds,
+        // so no custody did. Captured on Linux. The fixture rows were CC.2's `cec965b7…a81741`,
+        // `f47f29a8…9b50ca` and `c571a8c1…8735d0`; the production rows' and the principal's
+        // moved likewise.
         let pinned = [
             "tacsim.unit.line_tank fixture \
-             e5b3f802072da06bd59d8c68f85a999737f0beba600c4b7fda18aa989fd51d84",
+             ccf37c72f54b1ba1fe4ebdb31194c71a8aa9ca8aade426f09f0f8b189f226d63",
             "tacsim.unit.line_tank production_fixture \
-             e5b3f802072da06bd59d8c68f85a999737f0beba600c4b7fda18aa989fd51d84",
+             ccf37c72f54b1ba1fe4ebdb31194c71a8aa9ca8aade426f09f0f8b189f226d63",
             "tacsim.unit.line_tank production_principal \
-             a2c605cc8db3254f264381460ab51061ee5964471e5fc3aef1cdfacf3c72819e",
+             c26fb2254c35186c14b0b7bd6bdadf58ec425f121244fdf46427522ae688b283",
             "tacsim.unit.heavy_mk1 fixture \
-             fee9ffcd9bcba856f04f558c45b11f959da817913d3cda18c39fb39f34a7ff50",
+             7046981cf8e3cae8a9778c9ddc91246084bfccc7a504622dfa4f869b1cb905bc",
             "tacsim.unit.heavy_mk1 production_fixture \
-             fee9ffcd9bcba856f04f558c45b11f959da817913d3cda18c39fb39f34a7ff50",
+             7046981cf8e3cae8a9778c9ddc91246084bfccc7a504622dfa4f869b1cb905bc",
             "tacsim.unit.heavy_mk1 production_principal \
-             382327debeb0320f534d9f512a7c7e711c2f8b61d77292c1f1c88b429e41b185",
+             c2125d8ac4bf277a63defdb796bf97d6947de97717e0e67945ea145cd06e8baa",
             "tacsim.unit.target_mk1 fixture \
-             c571a8c1d99f7cfb8662a80ac6169b2a296cb249dd1f4544bc856c04518735d0",
+             4a2f2a227df4279dac723093e1481acf0d1dbb90ac34ff053cff3e8207f41298",
             "tacsim.unit.target_mk1 production_fixture \
-             c571a8c1d99f7cfb8662a80ac6169b2a296cb249dd1f4544bc856c04518735d0",
+             4a2f2a227df4279dac723093e1481acf0d1dbb90ac34ff053cff3e8207f41298",
             "tacsim.unit.target_mk1 production_principal \
-             9df4fe0bbdb9eb982df95f2eb910f6eac8bf7acdea557772ba854f90c0a30ac5",
+             36da7a31a7ff0069f361b4f271082adc4c88377f642d02d78ca7d7e46cdd5ae8",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }

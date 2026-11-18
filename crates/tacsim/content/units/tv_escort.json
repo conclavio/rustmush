@@ -3,7 +3,7 @@
     "id": "tacsim.pack.tv_escort",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "a210745a2f00955b87e3b52901cef4c4e3d0418a8aee7bb5ae755591dee8a780",
+    "digest": "c63317a765d606bdf1c3eaa7ed3707986f0420569a704d4e9ca34e8126fd3ef4",
     "requires": [
       {
         "id": "tacsim.pack.cannon_105",
@@ -365,7 +365,7 @@
               "short_desc": "A one-seat fighting cab under the turret ring, sight and trigger grips within reach.",
               "desc": "A cramped one-seat cab slung under the turret ring, the line tank's own fighting compartment cut down for one: drive yokes at the knees, the gunner's sight hooded at the brow, and trigger grips for the long gun and the coaxial machine gun on either arm of the seat. An Occator Water & Propellant lease tag is riveted beside the sight, and under it a newer plate that says ESCORT DUTY ONLY. The air smells of propellant smoke and cold metal.",
               "details": {
-                "sight": "A hooded periscope sight slaved to the turret. Its reticle reads range in metres and blinks red when the long gun is not laid.",
+                "sight": "A hooded periscope sight slaved to the turret. Its reticle reads range in meters and blinks red when the long gun is not laid.",
                 "grips": "Two trigger grips: the right for the 105 mm gun, the left for the coaxial machine gun. Both are dead until the console has power.",
                 "plate": "ESCORT DUTY ONLY, stamped by the Freeport Registry. An armed hull leased under escort clearance; the lessee answers for where it goes."
               }

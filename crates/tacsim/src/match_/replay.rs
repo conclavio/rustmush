@@ -1293,7 +1293,7 @@ pub fn replay_lines(
             let from_words = if focused {
                 replay.callsign(focus).to_owned()
             } else {
-                "the arena's centre".to_owned()
+                "the arena's center".to_owned()
             };
             lines.push(format!(
                 "Off the window: {} from {from_words}.",
@@ -1495,7 +1495,7 @@ fn still_running(id: MatchId) -> String {
 /// The ring does not hold it.
 fn not_remembered(id: MatchId) -> String {
     format!(
-        "The centre remembers its last {HISTORY_DEPTH} matches; match {} is not one of them.",
+        "The center remembers its last {HISTORY_DEPTH} matches; match {} is not one of them.",
         id.0
     )
 }

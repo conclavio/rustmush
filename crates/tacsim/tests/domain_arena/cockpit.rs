@@ -410,13 +410,13 @@ impl Rig {
 
     fn state(&self) -> MatchState {
         match_::centre_of(self.tw.world())
-            .expect("the centre is on the match book")
+            .expect("the center is on the match book")
             .state
     }
 
     fn centre(&self) -> tacsim::match_::Centre {
         match_::centre_of(self.tw.world())
-            .expect("the centre is on the match book")
+            .expect("the center is on the match book")
             .clone()
     }
 
@@ -455,11 +455,11 @@ impl Rig {
     /// Walk one pilot into the room `entry` names.
     fn walk_to(&mut self, n: usize, entry: &str) {
         let pilot = self.pilot(n);
-        let room = match_::centre_object(self.tw.world(), entry).expect("a centre room");
+        let room = match_::centre_object(self.tw.world(), entry).expect("a center room");
         self.tw
             .world_mut()
             .move_to(pilot, room)
-            .expect("the centre's rooms take anybody");
+            .expect("the center's rooms take anybody");
     }
 
     fn tick_to(&mut self, seconds: i64) {
@@ -1039,7 +1039,7 @@ async fn view_draws_the_platform_at_the_centre_of_a_grid() {
     assert_eq!(
         cell("you", 1),
         i64::from(cockpit::VIEW_ROWS / 2),
-        "and centred where the arena has room for it: {frame}"
+        "and centered where the arena has room for it: {frame}"
     );
     let units = frame
         .get("units")
@@ -3715,7 +3715,7 @@ async fn a_human_driving_an_npc_s_seat_reads_the_npc_s_cockpit() {
     rig.tw
         .world_mut()
         .move_to(npc, red_room)
-        .expect("the centre's rooms take anybody");
+        .expect("the center's rooms take anybody");
     rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
     let said = npc_says(&mut rig, "board");
     let pod = match_::pod_of(rig.tw.world(), npc)
@@ -3997,7 +3997,7 @@ fn d1_the_frame_carries_the_sight_and_the_pilots_own_scope() {
     assert_eq!(
         frame.get("sight_m").and_then(serde_json::Value::as_u64),
         Some(600),
-        "the platform's own nominal sight, metres: {frame}"
+        "the platform's own nominal sight, meters: {frame}"
     );
     assert_eq!(
         frame.get("scope").and_then(serde_json::Value::as_str),
@@ -4232,7 +4232,7 @@ async fn d1_untracking_a_match_drops_a_hint_no_frame_ever_confirmed() {
     let match_id = rig
         .centre()
         .match_id
-        .expect("a running centre has a match id");
+        .expect("a running center has a match id");
     if let Some(registry) = rig
         .tw
         .world_mut()
@@ -5192,7 +5192,7 @@ fn d4_the_locks_range_reads_the_plots_own_age_and_is_published_not_recomputed() 
         .and_then(|rows| rows.first())
         .and_then(|row| row.get("range_m"))
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or_else(|| panic!("the locked row's coarse metres: {payload}"));
+        .unwrap_or_else(|| panic!("the locked row's coarse meters: {payload}"));
     assert_eq!(coarse, 450);
     assert_eq!(
         payload
@@ -5206,7 +5206,7 @@ fn d4_the_locks_range_reads_the_plots_own_age_and_is_published_not_recomputed() 
             cockpit::lock_range_step_m(1_200)
         ),
         460,
-        "the coarse metres re-rounded to the lock's own step are a third figure"
+        "the coarse meters re-rounded to the lock's own step are a third figure"
     );
 }
 
@@ -8110,11 +8110,11 @@ async fn y3_a_reclaim_while_the_stop_is_in_flight_is_refused() {
         MatchState::Stopping,
         "the stop is in flight"
     );
-    assert_eq!(rig.state(), MatchState::Running, "the centre has not heard");
+    assert_eq!(rig.state(), MatchState::Running, "the center has not heard");
     let said = rig.say(0, "board");
     assert!(
         said.contains(
-            "The simulator centre is stopping; that is not something you can do to it now."
+            "The simulator center is stopping; that is not something you can do to it now."
         ),
         "{said}"
     );
@@ -9960,7 +9960,7 @@ async fn i1_sim_replay_prints_steps_centres_and_the_queries_read_the_cursor() {
     let (said, _) = i1_replay_as(&mut rig, I1_BYSTANDER, "99");
     assert_eq!(
         said,
-        "The centre remembers its last 20 matches; match 99 is not one of them."
+        "The center remembers its last 20 matches; match 99 is not one of them."
     );
     assert_eq!(i1_book(&rig, |book| book.replay_cursor(bystander)), None);
     assert_eq!(
@@ -10111,7 +10111,7 @@ async fn i1_the_ring_evicts_replays_cursors_and_grounds() {
     assert_eq!(
         said,
         format!(
-            "The centre remembers its last 20 matches; match {} is not one of them.",
+            "The center remembers its last 20 matches; match {} is not one of them.",
             first.0
         )
     );
@@ -11227,7 +11227,7 @@ async fn o1_sim_mode_reads_sets_refuses_announces_and_is_cleared_at_idle() {
     // A set outside `Selection`.
     assert_eq!(
         rig.say(0, "sim mode hold"),
-        "The simulator centre is idle; that is not something you can do to it now."
+        "The simulator center is idle; that is not something you can do to it now."
     );
     rig.say(0, "sim team red");
     rig.say(1, "sim team blue");
@@ -11255,7 +11255,7 @@ async fn o1_sim_mode_reads_sets_refuses_announces_and_is_cleared_at_idle() {
         match_::BLUE_ROOM_ENTRY,
     ]
     .into_iter()
-    .map(|entry| match_::centre_object(rig.tw.world(), entry).expect("a centre room"))
+    .map(|entry| match_::centre_object(rig.tw.world(), entry).expect("a center room"))
     .collect();
     for room in &rooms {
         assert!(
@@ -11284,7 +11284,7 @@ async fn o1_sim_mode_reads_sets_refuses_announces_and_is_cleared_at_idle() {
     rig.say(0, "sim start");
     assert_eq!(
         rig.say(0, "sim mode skirmish"),
-        "The simulator centre is boarding; that is not something you can do to it now."
+        "The simulator center is boarding; that is not something you can do to it now."
     );
     let board = lobby_board(&rig, 2);
     assert!(board.iter().any(|line| line == O1_BOARD_LINE), "{board:?}");
@@ -11432,7 +11432,7 @@ async fn o1_a_hold_is_won_and_every_record_says_hold() {
         board.first().map(String::as_str),
         Some(
             format!(
-                "Simulator centre: ended (match {match_id}) \u{2014} red wins: held The Crossroads"
+                "Simulator center: ended (match {match_id}) \u{2014} red wins: held The Crossroads"
             )
             .as_str()
         ),
@@ -11893,7 +11893,7 @@ async fn o2_untracking_a_match_drops_an_emcon_hint_no_frame_ever_confirmed() {
     let match_id = rig
         .centre()
         .match_id
-        .expect("a running centre has a match id");
+        .expect("a running center has a match id");
     let now = rig.tw.world().now();
     let Some(registry) = rig
         .tw
@@ -12053,7 +12053,7 @@ async fn o3_sim_range_reads_sets_refuses_and_starts_with_the_fill_off() {
     assert_eq!(rig.say(2, "sim range"), O3_NOT_SET);
     assert_eq!(
         rig.say(0, "sim range 2"),
-        "The simulator centre is idle; that is not something you can do to it now."
+        "The simulator center is idle; that is not something you can do to it now."
     );
     assert_eq!(
         rig.say(0, "sim range four"),
@@ -12097,7 +12097,7 @@ async fn o3_sim_range_reads_sets_refuses_and_starts_with_the_fill_off() {
         match_::RED_ROOM_ENTRY,
         match_::BLUE_ROOM_ENTRY,
     ] {
-        let room = match_::centre_object(rig.tw.world(), entry).expect("a centre room");
+        let room = match_::centre_object(rig.tw.world(), entry).expect("a center room");
         assert!(
             events.iter().any(|(audience, event)| matches!(
                 audience,
@@ -12437,7 +12437,7 @@ async fn o3_a_range_ends_when_its_target_is_out_of_action() {
     let board = lobby_board(&rig, 0);
     assert_eq!(
         board.first().map(String::as_str),
-        Some(format!("Simulator centre: ended (match {match_id}) \u{2014} red").as_str()),
+        Some(format!("Simulator center: ended (match {match_id}) \u{2014} red").as_str()),
         "{board:?}"
     );
     let writes: Vec<(String, serde_json::Value)> = rig
@@ -15728,9 +15728,9 @@ fn m2_a_range_term_is_strict_and_the_reply_reads_the_typed_figure() {
         .collect::<Vec<&str>>()
         .join(" ");
     for words in [
-        "range < 600 m strict rounded metres; range > 200 m is also available",
-        "Range comparisons use the same rounded metres as the plot.",
-        "A band is evaluated again when the rule runs; it is not frozen to the metres shown when you typed the rule.",
+        "range < 600 m strict rounded meters; range > 200 m is also available",
+        "Range comparisons use the same rounded meters as the plot.",
+        "A band is evaluated again when the rule runs; it is not frozen to the meters shown when you typed the rule.",
         "`MIND RULES [slot]` reads their complete terms.",
         "A full table is refused by the arena; `MIND RULE <slot> OFF` frees a slot.",
     ] {
@@ -17144,7 +17144,7 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
     for line in [
         "@mind/rate <name>@<rev>; @mind/file <name>@<rev>[=<charter name>] (Registry rating, then filing)",
         "@mind/update <filed> <name>@<rev>; @mind/withdraw <filed>; @mind/attest <filed> [org=<org>]",
-        "@mind/fork <licence>=<name> (from an Open licence; @mind/localcopy copies your own drafts)",
+        "@mind/fork <license>=<name> (from an Open license; @mind/localcopy copies your own drafts)",
         "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)",
     ] {
         assert!(
@@ -19935,7 +19935,7 @@ async fn ap10_a_hull_left_on_guard_in_a_practice_match_answers_only_for_its_pilo
             .filter(|(at, _)| *at > quiet_from)
             .collect::<Vec<_>>(),
         Vec::new(),
-        "HOLD does not answer for its neighbour"
+        "HOLD does not answer for its neighbor"
     );
     ap10_until(&mut rig, "the watching pilot's cockpit reads HOLD", |rig| {
         rig.frame(0)
@@ -20028,7 +20028,7 @@ async fn ap10_a_pilot_who_drops_while_practising_is_flown_by_their_sealed_mind_a
     assert_eq!(
         ap10_fired(&rig, hull),
         Vec::new(),
-        "practising GUARD, the hull does not fire first"
+        "practicing GUARD, the hull does not fire first"
     );
 
     // The drop.
@@ -20109,7 +20109,7 @@ async fn ap10_a_posture_never_left_changes_nothing_about_a_drop_and_exit_ends_a_
             let t0 = rig.staged_now_ms;
             ap10_clock_past(&mut rig, t0 + 6_000).await;
             ap10_tape_through(&mut rig, t0 + 6_000).await;
-            assert_eq!(ap10_fired(&rig, hull), Vec::new(), "practising HOLD");
+            assert_eq!(ap10_fired(&rig, hull), Vec::new(), "practicing HOLD");
             let said = rig.say(0, "exit");
             assert!(said.contains("you cannot take it back"), "{said}");
             let said = rig.say(0, "board");
@@ -20303,7 +20303,7 @@ async fn ap10_a_restart_ends_a_practice_and_the_resumed_hull_fights() {
     assert_eq!(
         ap10_fired(&rig, hull),
         Vec::new(),
-        "practising GUARD, the hull fired nothing before the restart"
+        "practicing GUARD, the hull fired nothing before the restart"
     );
     assert_eq!(
         ap10_saved(&rig, hull),

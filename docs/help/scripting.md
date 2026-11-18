@@ -1,7 +1,7 @@
 # Scripting
 
 Objects can carry small scripts written in **Rhai** (a pure-Rust scripting
-language). Scripts let a builder give an object behaviour — a greeting, a
+language). Scripts let a builder give an object behavior — a greeting, a
 room that reacts to arrivals, a lever that does something when used — without
 any softcode interpreter. They run sandboxed inside the game, with strict
 time and memory budgets, so a runaway script can never stall the world.

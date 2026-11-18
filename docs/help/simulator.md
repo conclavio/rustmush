@@ -1,6 +1,6 @@
 # The simulator
 
-The simulator centre is an out-of-character annexe off the Welcome Hall where
+The simulator center is an out-of-character annexe off the Welcome Hall where
 two sides fly stock tanks against each other on the proving ground. Nothing that
 happens in it is part of the story: it is practice, and a wrecked tank is put
 back at spec afterwards.
@@ -31,19 +31,19 @@ the same thing this topic does, in fewer words.
                       match is running there is nothing to abort: use SIM LEAVE.
   SIM CONCEDE         give the running match up for your side. Its lead only;
                       the other side wins and the result says so.
-  SIM STATUS          the centre: its state, its sides, its slots and its pods.
+  SIM STATUS          the center: its state, its sides, its slots and its pods.
                       While a match runs you read your own side in full and
                       every other side by slot, callsign and pilot alone.
                       The bare word SIM is the same thing.
   SIM AI [n]          how many units a side fields when the machines fill in.
                       A side's lead or staff sets it, during selection; the
-                      bare word reads the number for anybody in the centre, in
+                      bare word reads the number for anybody in the center, in
                       any state. On a range it reads `AI fill: none on a
                       range.`: the machines fill no pod there.
   SIM UNIT [type]     which unit type your own slot fields. The bare word lists
-                      what this server can field, for anybody in the centre, and
+                      what this server can field, for anybody in the center, and
                       adds what you are flying if you hold a slot. A choice the
-                      centre's compute cannot carry is refused with the
+                      center's compute cannot carry is refused with the
                       arithmetic: how much this tank would think a second, its
                       side's half of the pool, and what is spoken for.
   SIM MIND [mind]     which mind your own slot chooses for its tank, during
@@ -58,20 +58,20 @@ the same thing this topic does, in fewer words.
                       the other side) or hold (keep the ground's key spot
                       uncontested for its time). A side's lead or staff sets it
                       during selection; the bare word reads it and what this
-                      ground supports, for anybody in the centre.
+                      ground supports, for anybody in the center.
   SIM RANGE [n]       set up a range: your side against n targets that neither
                       move nor shoot, on the other side's pods; the match ends
                       when every target is out of action, or on SIM ABORT. A
                       side's lead or staff, with a number, during selection;
                       the bare word reads it.
-  SIM HISTORY         the centre's last twenty matches, newest first: who won
+  SIM HISTORY         the center's last twenty matches, newest first: who won
                       and why, how long, how many a side, when; your own
                       callsign on the ones you flew.
   SIM REPORT [match]  your own debrief of a match you flew: the newest one
                       bare, or the match number SIM HISTORY printed.
-  SIM REPLAY <match>  watch a finished match the centre remembers, both sides,
+  SIM REPLAY <match>  watch a finished match the center remembers, both sides,
                       one keyframe at a time: the match number, then next, prev
-                      or a time like 1:30, and a callsign to centre the window
+                      or a time like 1:30, and a callsign to center the window
                       on.
 
 A slot belongs to your **account**, not to your character, so an alt cannot take
@@ -91,14 +91,14 @@ otherwise. `SIM UNIT` says otherwise:
   SIM UNIT biped_mk1          Slot red 1 will field biped_mk1.
 
 It changes **your own** slot and only during selection, and everyone in the
-centre reads the line. `SIM UNIT line_tank` — the pod's own type — puts you back
+center reads the line. `SIM UNIT line_tank` — the pod's own type — puts you back
 to the default. A side fields at most one drone: the second pilot to ask reads
 `A side fields at most 1 drone; pick another type.` And a side needs a gun:
 `SIM START` refuses a side of drones alone, and a match whose side is left with
 only a drone at the boarding deadline is called off. The pod's tank is actually
 refitted when `SIM START` runs, and it is put back to the pod's own type the
 moment your slot goes — you giving it up, the boarding deadline dropping you,
-the centre going idle after the match, or a staff `@arena/reset`. Every
+the center going idle after the match, or a staff `@arena/reset`. Every
 `SIM START` also puts back any pod that nobody has chosen for, so nobody ever
 inherits anybody else's choice.
 
@@ -124,7 +124,7 @@ Doctrine on Line.
                               Fits line_tank (II): Standard Doctrine, up to two
                               of Line, Sentry, Sniper, Skirmisher, Hunter or
                               Rearguard.
-                              Red's half of the centre's pool is 244,000 ops a
+                              Red's half of the center's pool is 244,000 ops a
                               second and 1,500 are spoken for.
   SIM MIND Standard PROFILE Sniper, Line
                               Your slot will carry Standard Doctrine (Sniper,
@@ -162,9 +162,11 @@ What the shipped server can field:
 
   line_tank           the stock tank: a 105 mm cannon, a coaxial machine gun
                       and a Mk1 sight.
-  line_tank_laser     the same hull with a beam weapon where the cannon sat,
-                      keeping the coaxial machine gun. It carries no cannon at
-                      all, and the beam makes heat.
+  line_tank_laser     the stock tank with a laser beside its cannon and its
+                      coaxial machine gun. The laser is for drones and soft
+                      targets: it does little to a tank's armor. It makes
+                      heat, and a shot that would take the machine past its
+                      ceiling is refused until it cools.
   line_tank_thermal   the stock tank with a thermal sight: it picks a stopped
                       machine out of cover that the eye would lose, at shorter
                       range, not through a canopy, and slower to tell apart.
@@ -173,7 +175,7 @@ What the shipped server can field:
   line_tank_eccm      the stock tank carrying a counter-jamming filter, which
                       takes some of that back.
   biped_mk1           a two-legged machine: taller, quicker to turn and slower
-                      flat out, and its sight sits nine metres up.
+                      flat out, and its sight sits nine meters up.
   target_mk1          the range's target: the stock hull with no gun, no sight
                       and no engine speed. It is what `SIM RANGE` puts on the
                       other side's pods; you may pick it for your own slot, but
@@ -183,11 +185,12 @@ What the shipped server can field:
                       turn. Rubble, rock and the thick woods stop it, it takes
                       the ford slowly, and a slope a tank climbs can refuse it.
   heavy_mk1           a heavy tank: the stock gun and a missile rack on nearly
-                      twice the armour, at two thirds the speed.
-  biped_mk2           a two-legged machine with the beam weapon in one arm and a
-                      thermal sight in its head. It makes heat, and it walks
-                      where a tank will not: the thick woods and a face a tank
-                      is refused. It pays less than a tank to cross rubble.
+                      twice the armor, at two thirds the speed.
+  biped_mk2           a two-legged machine with the stock cannon in one arm, a
+                      laser in the other and a thermal sight in its head. The
+                      laser makes heat, and the machine walks where a tank
+                      will not: the thick woods and a face a tank is refused.
+                      It pays less than a tank to cross rubble.
   drone_mk1           a small tracked drone: a sight on a mast, no gun, quick
                       and easy to kill. What it sees, its side sees. It holds
                       no ground and decides nothing: a side whose guns are all
@@ -197,9 +200,9 @@ What the shipped server can field:
 Five things worth knowing before you pick one:
 
 * a bare `FIRE` fires the **cannon** whenever the machine has one, and
-  otherwise the first weapon it carries. The laser tank carries no cannon, so
-  its bare `FIRE` is its beam; name the weapon (`FIRE laser`, `FIRE
-  machine_gun`) and there is nothing to remember.
+  otherwise the first mount it carries. The laser machines carry a cannon
+  too, so their bare `FIRE` is the cannon; name the mount (`FIRE laser`,
+  `FIRE machine_gun`) and there is nothing to remember.
 * every machine pays its own way across a cell. A walker takes the thick woods
   that stop a tank and pays less than a tank for rubble; a wheeled car is
   stopped by ground a tank crosses and is quickest on a road; and the slope
@@ -208,16 +211,16 @@ Five things worth knowing before you pick one:
   will not take the tank.` or `Held: the slope ahead is too steep for the
   tank.`
 * the machines that fill the unclaimed pods always fly the pod's own tank.
-* the scout car's 30 mm autocannon fires three rounds a pull every three
-  seconds, out to 2 km: a cannon's damage a second in small bites, so it
-  strips a car or a drone quickly and a heavy slowly. Its bare `FIRE` is the
-  autocannon; `FIRE mg` is still the machine gun.
-* the heavy's missile rack is six rounds, one every ten seconds, and a round is
-  slow: 250 metres a second, so a shot at the edge of your sight, 600 m, is two
-  and a half seconds in the air and lands where the target was when you fired.
-  A machine on the move walks out from under it; one that has stopped, or a
-  target on the range, does not. The heavy's bare `FIRE` is still the cannon:
-  `FIRE missiles` names the rack.
+* the scout car's 30 mm autocannon fires three rounds a pull every ten
+  seconds, out to 2 km: a little less than a cannon's damage over a minute, in
+  small bites, so it strips a car or a drone quickly and a heavy slowly. Its
+  bare `FIRE` is the autocannon; `FIRE mg` is still the machine gun.
+* the heavy's missile rack is four rounds, one every thirty seconds, and a
+  round is slow: 250 meters a second, so a shot at the edge of your sight,
+  600 m, is two and a half seconds in the air and lands where the target was
+  when you fired. A machine on the move walks out from under it; one that has
+  stopped, or a target on the range, does not. The heavy's bare `FIRE` is still
+  the cannon: `FIRE missiles` names the rack.
 
 ## The ground
 
@@ -225,9 +228,9 @@ The proving ground is 2.56 km square: a river down its western third with one
 ford, an east-west road over the ford and the crossroads, a north-south road
 through the crossroads, three compounds, two woods and one bluff. The road and
 the ground either side of it are level going; away from them the land rises
-into hills — the northern highlands up to Signal Hill, some 100 metres over the
+into hills — the northern highlands up to Signal Hill, some 100 meters over the
 road, a knoll in the north-west, three hills in the open, The Bowl (a crater
-south-west of the crossroads, its rim 23 metres up and its floor 9 down), a ridge through the
+south-west of the crossroads, its rim 23 meters up and its floor 9 down), a ridge through the
 eastern woods and a raised shelf of bare ground in the south-east — and the
 river runs in a valley away from the ford. A tank drives all of it; a car
 keeps to gentler ground, and the roads are always its way through. A hill
@@ -235,7 +238,7 @@ hides what is behind it from everyone, the sim and your picture alike. `VIEW`
 letters the named ground and the legend names it: A The Ford, B The Crossroads,
 C North Barn, E East Compound, F The Bluff. `RANGE F` and `BEARING F` read them.
 
-The Bluff (F) is a mesa north-east of the crossroads, seven metres above the
+The Bluff (F) is a mesa north-east of the crossroads, seven meters above the
 grass, with a ramp down its north side. Its west, south and east faces are too
 steep for a tank or a car — `Held: the slope ahead is too steep for the
 tank.` — and a walker climbs them. A tank takes the ramp. The map draws ground,
@@ -303,7 +306,7 @@ The board reads
 
 and `SIM HISTORY`, `SIM REPORT` and `SIM REPLAY` tag the match `[range]`.
 `SIM REPORT` prints your hit rate in its head, on the line under the match's
-losses: `You flew RA: intact; 14 shots, 6 hits (42%).` When the centre goes idle
+losses: `You flew RA: intact; 14 shots, 6 hits (42%).` When the center goes idle
 the targets' pods get their own tanks back.
 
 The seat says so too, so a range is never mistaken for a fight: `STATUS` opens
@@ -333,7 +336,7 @@ band (600 m for the stock tank), however hurt it is. Open the range past its
 sight and it comes after you again; let the ground hide you and it drives at
 where it last saw you. Hurt badly enough it breaks off for its own entry zone —
 but it is not out of the match: on the way home it turns and fights only what is
-close (inside about 200 m) and only while it has armour left to do it with, with
+close (inside about 200 m) and only while it has armor left to do it with, with
 an empty magazine it keeps driving, once home it shoots back at whatever comes
 for it, and after twenty quiet seconds with nothing hostile in sight it turns
 round and comes back in, once. A tank whose pilot left does the same, so a
@@ -350,7 +353,7 @@ side's entry zone to look.
 With the fill switched off, `SIM AI` answers `AI fill is off on this server.`
 and both sides need a pilot of their own, as before.
 
-If you claim into a centre that is still showing the last match's result, your
+If you claim into a center that is still showing the last match's result, your
 claim clears the board first and puts the tanks back at muster. You do not need
 staff for a rematch.
 
@@ -368,7 +371,7 @@ or `blue`) and type:
   EXIT                climb back out.
 
 The match starts the moment every claimed slot is seated, or when the boarding
-window runs out and the unseated slots are dropped. Everyone in the centre reads
+window runs out and the unseated slots are dropped. Everyone in the center reads
 `Match N is running. Good hunting.` In the same moment each pilot is joined to
 their side's radio, `RedNet` or `BlueNet`, with their callsign as the alias
 (`ra hello`), until they climb out: `help cockpit`.
@@ -420,23 +423,23 @@ winner is recorded and the wrecks stand as evidence like any other end.
 
 And a match every pilot has walked out of ends itself. `EXIT` during a running
 match is final — the tank goes to its mind and you cannot take it back — so
-once the last pilot has left, nobody is in it who could abort it. The centre
+once the last pilot has left, nobody is in it who could abort it. The center
 gives it a few minutes and then closes it: `Match N ends: every pilot has left
 it.`, and the board reads `ended — timeout: every pilot had left`. A pilot whose
 tank has been destroyed but who stays in the pod is still in the match.
 
-However it ends, everyone in the centre reads
+However it ends, everyone in the center reads
 `Match N is over (red). Its units are checked in.`, the hatches open, and the
 tanks stand where they stopped, damaged as they ended — that is the match's own
 evidence, and `SIM STATUS` keeps showing the result until somebody starts the
 next match. Staff can read the full record with `@arena/status` and the tanks
 with `@unit/show`.
 
-The centre remembers its last twenty matches after the board has moved on.
+The center remembers its last twenty matches after the board has moved on.
 `SIM HISTORY` lists them, newest first — one line each, with the match number,
 how it ended, how long it ran, how many a side and when it finished:
 
-  The centre's last 2 matches, newest first:
+  The center's last 2 matches, newest first:
     #2  blue won (red eliminated)  4 m 32 s  1 v 1  2026-09-24 14:02 UTC  (you flew RA)
     #1  aborted (the server restarted)  0 s  0 v 0  2026-09-24 13:02 UTC
 
@@ -470,7 +473,7 @@ after the match.
 A match older than the last twenty has no report, and neither has one the server
 restarted during, or one played before the debrief existed.
 
-`SIM REPLAY 2` watches match 2 back, and it is public: anybody in the centre may
+`SIM REPLAY 2` watches match 2 back, and it is public: anybody in the center may
 watch any finished match it remembers, whether they flew in it or not. Where the
 report is your own cockpit's story, the replay is the arena's — every unit of
 both sides where the arena recorded it every 5 s, drawn on the ground as `VIEW`
@@ -479,7 +482,7 @@ wrecked since the keyframe before; the last keyframe runs on to the end of the
 match, so it shows the shot and the wreck that ended it. It names every unit by
 its callsign and nobody by name, and it reads nothing anybody's sensors saw.
 `SIM REPLAY 2 next` and `prev` step through it, `SIM REPLAY 2 1:30` jumps to a
-moment, and a callsign (`SIM REPLAY 2 BA`) centres the window on that tank. A
+moment, and a callsign (`SIM REPLAY 2 BA`) centers the window on that tank. A
 very long or very busy match is kept only in part, and every step of its replay
 says which part. A running match
 has no replay — `Match 3 is still running.` — and neither has one the server
@@ -497,7 +500,7 @@ not recorded.` On both, `u` moves the focus to the next tank and `x` closes.
 The next `SIM TEAM` clears the board, puts every tank back at spec, back at
 muster and back to their own types, and opens selection again.
 
-## Practising a posture
+## Practicing a posture
 
 A unit in the world holds a posture, RETURN, GUARD or HOLD: what its mind does
 with it when you are not at its controls (`help field`, *Postures*). A match is
@@ -550,7 +553,7 @@ you `EXIT`, the practice ends there and the tank is handled as any pilot's
 is: for the grace after a lost link it stands still and fires nothing, and
 once you are gone it goes to its mind and fights for your side, bound by no
 posture. `BOARD` takes it back after a drop as before. Coming back inside the
-grace gives you the controls; type `MIND AWAY` to practise again.
+grace gives you the controls; type `MIND AWAY` to practice again.
 
 ## Hints
 
@@ -565,11 +568,11 @@ and never a word about the other side.
 
 ## When there is no simulator
 
-`This server has no simulator centre.` means the world was seeded before the
-centre existed; staff have to take the content upgrade.
+`This server has no simulator center.` means the world was seeded before the
+center existed; staff have to take the content upgrade.
 
 `The TacSim layer is off on this server` means the arena and its tanks were
-never applied; staff have to turn the layer on and restart. The centre's rooms
+never applied; staff have to turn the layer on and restart. The center's rooms
 and pods are there either way, which is why the refusal says so out loud.
 
 See also: `help cockpit`, `help chargen` (the ratings the shooting reads),

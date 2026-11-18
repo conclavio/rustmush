@@ -165,13 +165,13 @@ async fn c4_story_7_minds_facts_settle_contracts_on_the_launch_and_survive_a_res
     to_the_counter(&mut world, bo.who);
     let code = listing_code(&mut world, bo.who, &["ledger", "sealed"]);
     let [licence] = buys(&mut world, bo.who, &code)[..] else {
-        panic!("Bo holds one new licence")
+        panic!("Bo holds one new license")
     };
     back_aboard(&mut world, bo);
     let lapse_1 = fact("licence.lapsed", &licence_key(licence), 1);
 
     // 2. A foreign caller cannot tell a private licence from a missing one.
-    let foreign = draft(&mut world, cy.who, "Not my licence");
+    let foreign = draft(&mut world, cy.who, "Not my license");
     let before = contract(&world, foreign);
     let private = says(
         &mut world,
@@ -188,14 +188,14 @@ async fn c4_story_7_minds_facts_settle_contracts_on_the_launch_and_survive_a_res
     );
     assert_eq!(
         private, missing,
-        "another holder's licence and none at all read alike"
+        "another holder's license and none at all read alike"
     );
     assert_eq!(
         contract(&world, foreign),
         before,
         "and neither attached anything"
     );
-    let own = draft(&mut world, bo.who, "My own licence");
+    let own = draft(&mut world, bo.who, "My own license");
     let attached = says(
         &mut world,
         bo.who,
@@ -210,7 +210,7 @@ async fn c4_story_7_minds_facts_settle_contracts_on_the_launch_and_survive_a_res
 
     // 3. Before the receipt: the resale pending under Bo's open claim.
     let (_, sealed) = seal(&mut world, bo, licence);
-    assert!(sealed, "Bo seals the licence aboard and the claim opens");
+    assert!(sealed, "Bo seals the license aboard and the claim opens");
     let (offered, staged) = acts(
         &mut world,
         bo.who,
@@ -328,7 +328,7 @@ async fn c4_story_7_minds_facts_settle_contracts_on_the_launch_and_survive_a_res
     fires(&mut world, 2);
     assert!(
         !nothing_landed(&landed),
-        "Ada attests her licence: {attested}"
+        "Ada attests her license: {attested}"
     );
     crate::c4_story_kit::to_ic(&mut world, grace_end + 60);
     let recorded = until(&mut world, 40, |world| {

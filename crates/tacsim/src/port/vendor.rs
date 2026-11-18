@@ -281,7 +281,7 @@ pub(crate) fn preflight(
         for good in named {
             if !codes.contains(good.as_str()) {
                 return Err(format!(
-                    "{id}: vendor {}: {good} has no catalogue entry",
+                    "{id}: vendor {}: {good} has no catalog entry",
                     vendor.org
                 ));
             }
@@ -522,6 +522,11 @@ pub(crate) fn put(
         .map_err(|error| format!("{id}: the hull catalog: {error}"))?;
     mush_market::load_pack(ctx, crate::port::hull_sale::HULL_PACK, hulls)
         .map_err(|error| format!("{id}: the hull catalog: {error:?}"))?;
+    // Doc 48 unit PL.9: a port's refinery, works and yard, which a facility lists as.
+    let facilities = crate::port::facility_sale::catalog_entries()
+        .map_err(|error| format!("{id}: the facility catalog: {error}"))?;
+    mush_market::load_pack(ctx, crate::port::facility_sale::FACILITY_PACK, facilities)
+        .map_err(|error| format!("{id}: the facility catalog: {error:?}"))?;
     let instrument = credit()?;
     let venue = MarketId::new(def.venue.as_str())
         .ok_or_else(|| format!("{id}: venue {} is not a market id", def.venue))?;

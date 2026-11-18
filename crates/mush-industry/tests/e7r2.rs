@@ -650,3 +650,278 @@ fn in4_order_price_is_the_fee_from_the_facilitys_cost_model() {
         "the hold is fee(order)"
     );
 }
+
+// ---- doc 48 unit PL.9: facilities as titled assets -------------------------
+
+/// Run `f` as staff with a `Ctx` over the world, its writes folded back.
+fn staff_hand<T>(tw: &mut TestWorld, f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T) -> T {
+    let mut out = mush_core::Outbox::new();
+    let engine = tw.engine_mut();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(smol_str::SmolStr::new("industry")),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    f(&mut ctx)
+}
+
+fn cost(margin: u32) -> mush_industry::cost::FacilityCostDef {
+    mush_industry::cost::FacilityCostDef {
+        capital_major: 100_000,
+        lifetime_years: 10,
+        upkeep_permille: 50,
+        staff: 2,
+        wage_major: 100,
+        margin_permille: margin,
+    }
+}
+
+/// **Doc 48 unit PL.9 (Q-48-37): a facility's owner sets its customers and margin, and only staff
+/// set its cost model.** Staff price facility #7 and hand it to Pat. A stranger reads
+/// `No such facility.`. Pat closes its doors and raises its margin to 400 per mille: the other
+/// cost fields are untouched and the policy revision moves. Pat naming the whole cost model is
+/// refused with its sentence, and so is a margin past its bound; neither writes. A margin on a
+/// facility nothing prices is refused too. Staff keep the full form.
+#[test]
+fn pl9_the_owner_sets_customers_and_margin_but_not_the_cost_model() {
+    let (mut tw, _families, _budget) = scene(0);
+    let pat = tw.spawn_player("Pat");
+    let sam = tw.spawn_player("Sam");
+    ok(
+        &mut tw,
+        GOD,
+        "@facility/terms 7=public 100000/10/50/2/100/250",
+    );
+    let stranger = err(&mut tw, sam, "@facility/terms 7=owner margin=10");
+    assert!(stranger.contains("No such facility."), "{stranger}");
+    ok(&mut tw, GOD, &format!("@facility/owner 7=#{}", pat.0));
+    let before = facility(&tw, ObjId(7));
+    let set = ok(&mut tw, pat, "@facility/terms 7=owner margin=400");
+    assert!(set.contains("margin 400 per mille"), "{set}");
+    let after = facility(&tw, ObjId(7));
+    assert_eq!(after.customers(), mush_industry::Customers::OwnerOnly);
+    assert_eq!(after.cost().copied(), Some(cost(400)));
+    assert!(after.policy_revision() > before.policy_revision());
+    let refused = err(&mut tw, pat, "@facility/terms 7=public 1/1/0/0/0/0");
+    assert!(
+        refused.contains(mush_industry::commands::TERMS_COST_STAFF),
+        "{refused}"
+    );
+    let _ = err(&mut tw, pat, "@facility/terms 7=public margin=99999");
+    assert_eq!(facility(&tw, ObjId(7)), after, "the refusals wrote nothing");
+    ok(&mut tw, GOD, "@facility/open 8=1 smelt");
+    let unpriced = err(&mut tw, GOD, "@facility/terms 8=public margin=10");
+    assert!(
+        unpriced.contains(mush_industry::commands::TERMS_NO_PRICE),
+        "{unpriced}"
+    );
+    ok(
+        &mut tw,
+        GOD,
+        "@facility/terms 7=public 100000/10/60/2/100/250",
+    );
+    assert_eq!(
+        facility(&tw, ObjId(7)).cost().map(|c| c.upkeep_permille),
+        Some(60)
+    );
+}
+
+/// **Doc 48 unit PL.9 (Q-48-45, Q-48-53): a sold facility is owner-held, so its authored re-term
+/// leaves it.**
+/// - An authored facility is re-termed by its content, as before.
+/// - Sold to Pat, it is Pat's, owner-held, its policy revision moved. Pat raises the margin and
+///   closes the doors, and the content's re-term (at another margin and upkeep) leaves both
+///   alone. The content's identity check still refuses another object's capabilities or slots.
+/// - A facility kept public by its sale (a yard) cannot be closed by its owner, nor by staff.
+/// - On the wire, an authored record writes no `holding`, and a held one round-trips.
+#[test]
+fn pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it() {
+    let (mut tw, _families, _budget) = scene(0);
+    let pat = tw.spawn_player("Pat");
+    let room = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Works", GOD, None)
+        .expect("the works");
+    let authored = |margin: u32, upkeep: u32| {
+        let mut c = cost(margin);
+        c.upkeep_permille = upkeep;
+        FacilityRecord::new(room, PrincipalId::Object(GOD), capabilities(&["smelt"]), 2)
+            .and_then(|r| r.with_authored_cost(c))
+            .map(|r| r.with_authored_customers(mush_industry::Customers::Public))
+            .expect("an authored record")
+    };
+    staff_hand(&mut tw, |ctx| {
+        mush_industry::store::install_authored_facility(ctx, authored(250, 50))
+    })
+    .expect("opened");
+    staff_hand(&mut tw, |ctx| {
+        mush_industry::store::install_authored_facility(ctx, authored(300, 50))
+    })
+    .expect("re-termed");
+    assert_eq!(
+        facility(&tw, room).cost().map(|c| c.margin_permille),
+        Some(300)
+    );
+    let unsold = facility(&tw, room);
+    staff_hand(&mut tw, |ctx| {
+        mush_industry::store::sell_facility(ctx, room, PrincipalId::Object(pat), false)
+    })
+    .expect("sold");
+    let sold = facility(&tw, room);
+    assert_eq!(sold.owner(), &PrincipalId::Object(pat));
+    assert_eq!(sold.holding(), mush_industry::Holding::Owner);
+    assert!(sold.policy_revision() > unsold.policy_revision());
+    ok(
+        &mut tw,
+        pat,
+        &format!("@facility/terms {}=owner margin=500", room.0),
+    );
+    let owned = facility(&tw, room);
+    staff_hand(&mut tw, |ctx| {
+        mush_industry::store::install_authored_facility(ctx, authored(250, 70))
+    })
+    .expect("the lane applies a held facility");
+    assert_eq!(facility(&tw, room), owned, "the owner's terms stand");
+    let drifted = FacilityRecord::new(room, PrincipalId::Object(GOD), capabilities(&["smelt"]), 3)
+        .expect("a record");
+    assert!(
+        staff_hand(&mut tw, |ctx| {
+            mush_industry::store::install_authored_facility(ctx, drifted)
+        })
+        .is_err(),
+        "the slots are still the content's"
+    );
+    // A yard: kept public.
+    staff_hand(&mut tw, |ctx| {
+        mush_industry::store::sell_facility(ctx, room, PrincipalId::Object(GOD), true)
+    })
+    .expect("sold again");
+    let yard = facility(&tw, room);
+    assert_eq!(yard.holding(), mush_industry::Holding::OwnerPublic);
+    assert_eq!(yard.customers(), mush_industry::Customers::Public);
+    let closed = err(&mut tw, GOD, &format!("@facility/terms {}=owner", room.0));
+    assert!(
+        closed.contains(mush_industry::commands::TERMS_KEPT_PUBLIC),
+        "{closed}"
+    );
+    assert_eq!(facility(&tw, room), yard);
+    // The wire.
+    let plain = serde_json::to_value(&unsold).expect("encodes");
+    assert!(plain.get("holding").is_none());
+    let held = serde_json::to_value(&yard).expect("encodes");
+    assert_eq!(held["holding"], serde_json::json!("owner_public"));
+    let back: FacilityRecord = serde_json::from_value(held.clone()).expect("decodes");
+    assert_eq!(back, yard);
+    let mut closed = held;
+    closed["customers"] = serde_json::json!("owner_only");
+    assert!(serde_json::from_value::<FacilityRecord>(closed).is_err());
+}
+
+/// **Doc 48 unit PL.6 (Q-48-25): a lane bump that only grows an authored facility's
+/// capabilities widens it in place.**
+/// - A yard opened with `yard` takes `yard` and `yard.heavy` with a new margin: the capacity
+///   revision stands (no order is interrupted), and the policy revision moves once, for the
+///   re-term alone.
+/// - Dropping a capability, swapping one, or growing the set while the slots or the owner change,
+///   is still drift, refused with nothing written.
+/// - A sold (owner-held) facility grows too: its capabilities are the content's; its owner, its
+///   terms and its revisions stay its buyer's.
+#[test]
+fn pl6_a_lane_bump_grows_a_facility_capabilities_in_place() {
+    let (mut tw, _families, _budget) = scene(0);
+    let pat = tw.spawn_player("Pat");
+    let room = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Yard", GOD, None)
+        .expect("the yard");
+    let authored = |words: &[&str], margin: u32, slots: u32| {
+        FacilityRecord::new(room, PrincipalId::Object(GOD), capabilities(words), slots)
+            .and_then(|r| r.with_authored_cost(cost(margin)))
+            .map(|r| r.with_authored_customers(mush_industry::Customers::Public))
+            .expect("an authored record")
+    };
+    let install = |tw: &mut TestWorld, record: FacilityRecord| {
+        staff_hand(tw, |ctx| {
+            mush_industry::store::install_authored_facility(ctx, record)
+        })
+    };
+    install(&mut tw, authored(&["yard"], 250, 2)).expect("opened");
+    let opened = facility(&tw, room);
+    install(&mut tw, authored(&["yard", "yard.heavy"], 300, 2)).expect("grown");
+    let grown = facility(&tw, room);
+    assert_eq!(grown.capabilities(), &capabilities(&["yard", "yard.heavy"]));
+    assert_eq!(
+        grown.capacity_revision(),
+        opened.capacity_revision(),
+        "no order is interrupted"
+    );
+    assert_eq!(
+        grown.cost().map(|c| c.margin_permille),
+        Some(300),
+        "re-termed in the same bump"
+    );
+    assert_eq!(
+        grown.policy_revision(),
+        opened.policy_revision() + 1,
+        "the re-term's bump alone"
+    );
+    // Drift, each refused before a write: a dropped capability; a grown set with another slot
+    // count; more capabilities that are not a superset (one swapped); a grown set under another
+    // owner.
+    let elsewhere = FacilityRecord::new(
+        room,
+        PrincipalId::Object(pat),
+        capabilities(&["yard", "yard.heavy", "yard.ship"]),
+        2,
+    )
+    .and_then(|r| r.with_authored_cost(cost(300)))
+    .map(|r| r.with_authored_customers(mush_industry::Customers::Public))
+    .expect("an authored record");
+    for drifted in [
+        authored(&["yard"], 300, 2),
+        authored(&["yard", "yard.heavy", "yard.ship"], 300, 3),
+        authored(&["yard.heavy", "yard.ship", "yard.slip"], 300, 2),
+        elsewhere,
+    ] {
+        assert!(install(&mut tw, drifted).is_err(), "drift is refused");
+        assert_eq!(facility(&tw, room), grown, "the refusal wrote nothing");
+    }
+    // Sold, then grown: the content's capabilities, the buyer's owner and terms.
+    staff_hand(&mut tw, |ctx| {
+        mush_industry::store::sell_facility(ctx, room, PrincipalId::Object(pat), false)
+    })
+    .expect("sold");
+    let sold = facility(&tw, room);
+    install(
+        &mut tw,
+        authored(&["yard", "yard.heavy", "yard.ship"], 250, 2),
+    )
+    .expect("the lane grows a held facility");
+    let held = facility(&tw, room);
+    assert_eq!(
+        held.capabilities(),
+        &capabilities(&["yard", "yard.heavy", "yard.ship"])
+    );
+    assert_eq!(
+        (
+            held.owner(),
+            held.holding(),
+            held.cost(),
+            held.policy_revision(),
+            held.capacity_revision()
+        ),
+        (
+            sold.owner(),
+            sold.holding(),
+            sold.cost(),
+            sold.policy_revision(),
+            sold.capacity_revision()
+        ),
+        "the buyer's owner, terms and revisions stand"
+    );
+}

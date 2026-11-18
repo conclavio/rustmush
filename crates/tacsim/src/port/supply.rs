@@ -116,7 +116,9 @@ pub(crate) fn supply_step(
         .w
         .module_state::<mush_industry::IndustryStore>()
         .and_then(|store| store.facility(room))
-        .cloned()?;
+        .cloned()
+        // Doc 48 unit PL.9: a sold works is its buyer's; the operator buys nothing into it.
+        .filter(|facility| facility.holding().is_authored())?;
     let stores = match crate::port::works::stores(ctx, &facility) {
         Ok(vault) => vault.0,
         Err(error) => {

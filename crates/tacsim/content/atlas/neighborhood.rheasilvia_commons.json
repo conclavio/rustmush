@@ -3,7 +3,7 @@
     "id": "neighborhood.rheasilvia_commons",
     "version": 1,
     "kind": "neighborhood",
-    "digest": "f61a052ca48765dd22fd0d1000e5aee9853e954c5a0ebfa3db2b98fad4ec9487",
+    "digest": "d4c3ab02e43759152620e495aed3074318a821c70026dbb08b5bbb7f663e1689",
     "requires": [
       {
         "id": "region.rheasilvia_commons",
@@ -93,7 +93,7 @@
       "def": {
         "name": "Rheasilvia Commons Pad",
         "short_desc": "A cleared landing square on the ridged floor of Rheasilvia basin on Vesta, the ground dark and metallic.",
-        "desc": "The pad is a cleared square of fused dust with tie-down rings sunk at its edges and the Registry number FR-V1 painted in its centre. Beyond the square the floor of Rheasilvia is ridged and broken, dark rock showing through a thin dust that has a faint metallic sheen in hard light. The ground slopes so gently it reads as flat, and the horizon is close in every direction. The basin's great central peak is beyond it, out of sight.",
+        "desc": "The pad is a cleared square of fused dust with tie-down rings sunk at its edges and the Registry number FR-V1 painted in its center. Beyond the square the floor of Rheasilvia is ridged and broken, dark rock showing through a thin dust that has a faint metallic sheen in hard light. The ground slopes so gently it reads as flat, and the horizon is close in every direction. The basin's great central peak is beyond it, out of sight.",
         "surface": "ground",
         "footprint": {
           "rect": [
@@ -113,7 +113,7 @@
         ],
         "details": {
           "dark rock": "Basalt and metal-rich breccia from Vesta's interior, laid bare when the basin was dug. It is heavy in the hand.",
-          "ridges": "Long low ridges running across the basin floor, each a few metres high. The pad was set between two of them."
+          "ridges": "Long low ridges running across the basin floor, each a few meters high. The pad was set between two of them."
         }
       }
     },

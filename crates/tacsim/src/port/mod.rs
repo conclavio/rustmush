@@ -132,6 +132,7 @@ pub mod apply;
 /// Doc 36 cut GC.8a: the bay's repair order, its facility classes and rights, berth and stow,
 /// and `+bay`.
 pub mod bay_work;
+pub mod berth;
 /// Doc 39 cut IN.9: the design's bill — §4.8's partition and §4.7's bill (Q-39-14).
 pub mod bill;
 pub mod board;
@@ -157,6 +158,7 @@ pub mod def;
 pub mod epoch;
 pub(crate) mod equipment;
 pub mod executor;
+pub mod facility_sale;
 pub mod families;
 pub mod gauges;
 /// Doc 20 cut SM.9: the `body.ground` panel and `+chart/ground` — the Registry's survey of a
@@ -169,6 +171,7 @@ pub mod house_sweep;
 pub mod hull;
 pub mod hull_sale;
 pub mod interface;
+pub mod jobs;
 pub mod licence;
 pub mod locker;
 pub mod map;

@@ -88,7 +88,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         CERES_PACK,
-        "853e63e30f75f3c4caa70c08cf8585cc6da73b25566a8669792783a93b9e0f10",
+        "bc3a5dfd1fb4dc6fc6b069e420e27246c33ef8d71d7f8ccfd30185572211fa29",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -105,15 +105,15 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         AITKEN_PACK,
-        "d1803b265e71364964ca1538c0a8023bf1b77e8d4028114e20e13432ff8b278e",
+        "ffce4b47e94c21866470d622f5c40907e4cc4605aeaa6a614f1ff6afbd81e0a8",
     ),
     (
         VOLTAIRE_REGION_PACK,
-        "b95670c974f68c50eaa7ba794e0810de145ab63a81dc8df252239b6bc273b619",
+        "98d9ceae7850a31f2124473952790cdfe526ee1f3ef65e060aff34870cc637f9",
     ),
     (
         VOLTAIRE_PACK,
-        "362430c60f0c79e718e6a272b3bd502c380da6867b10c52e5a0abe6cdfcabd0e",
+        "9c7e01ed975d80ca98ebd9cfda1e021feaeaa7cb90a7f8b449b9831ef1e8d255",
     ),
     (
         LIGEIA_REGION_PACK,
@@ -121,7 +121,7 @@ const PINNED: [(&str, &str); 10] = [
     ),
     (
         LIGEIA_PACK,
-        "4826b8fb58848615537fb768d156a28bad67fa9a854681a24d11d031d27d4086",
+        "bd921f85e472ae0c8d99433d1bffac2df6e1957236f87b68c594f004e72b26d1",
     ),
 ];
 
@@ -147,7 +147,25 @@ fn restore_oduya_v2(doc: &mut Value) {
             .expect("the shipped v2 profile");
 }
 
+/// The Co-op wording as Ceres v1 to v3 published it: the registry's lay board and Oduya's
+/// lore (the owner's 2026-11-17 ruling re-worded both in place for one stake per pilot and one
+/// hull at a time).
+fn restore_one_enrolment_wording(doc: &mut Value) {
+    let text = serde_json::to_string(doc)
+        .expect("serializes")
+        .replace(
+            "ONE STAKE PER PILOT, ONE HULL AT A TIME.",
+            "ONE ENROLMENT PER PILOT.",
+        )
+        .replace(
+            "one stake per gateway account and one charter at a time, renewable after a recall or a release;",
+            "one enrolment per gateway account;",
+        );
+    *doc = serde_json::from_str(&text).expect("parses");
+}
+
 fn restore_qureshi_v3(doc: &mut Value) {
+    restore_one_enrolment_wording(doc);
     doc["entries"]["npc.qureshi"]["def"] =
         serde_json::from_str(include_str!("../support/qureshi_v3_def.json"))
             .expect("the shipped v3 Qureshi definition");
@@ -578,8 +596,9 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     // Doc 39 cut IN.11: relay v23, v32; the IN.11 house-restock ruling: relay v24, v33.
                     // Doc 47 unit CO.10: relay v25, v34; doc 48 unit PL.1: relay v26, v35.
                     // Doc 48 unit PL.2: relay v27, v36; doc 48 unit PL.3: relay v28, v37.
-                    // Doc 48 unit EX.3: relay v29, v38.
-                    (LANE_PACK.into(), 38)
+                    // Doc 48 unit EX.3: relay v29, v38; doc 48 unit PL.5: relay v30, v39.
+                    // Doc 48 unit PL.6: relay v31, v40.
+                    (LANE_PACK.into(), 40)
                 ]
             ),
             "region.kirkwood_depot" | "region.mercury_relay" => assert!(requires.is_empty()),
@@ -1310,7 +1329,7 @@ fn ic1_a_fresh_world_boots_the_stations() {
     assert_eq!(
         npcs.len(),
         57,
-        "the station cast, two independent travellers and three permanent crew"
+        "the station cast, two independent travelers and three permanent crew"
     );
     let leila = obj(&tw, "tacsim.passengers.stickney", "npc.leila_mensah_kovacs");
     assert_eq!(
@@ -1445,7 +1464,7 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(29));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(31));
     assert_eq!(
         after.get("tacsim.passengers.stickney").map(|l| l.0),
         Some(2)
@@ -1718,7 +1737,7 @@ fn ic1_the_principals_never_wake() {
     tw.world_mut().move_to(GOD, c16).expect("placed");
     let _ = tw.run(pilot, "say Matthias Kalu, a word about Thursdays?");
     let _ = tw.run(GOD, "say Tomasz Wen, a word?");
-    let _ = tw.run(pilot, "say Ilse Oduya-Brandt, how do I enrol?");
+    let _ = tw.run(pilot, "say Ilse Oduya-Brandt, how do I enroll?");
     // Past every cooldown and coalescing window, driving each NPC turn the tick
     // defers exactly as the world task does: the off-loop runner on the LLM seam
     // (here the shipped default, `[llm].enabled = false`, no route, no provider),
@@ -1767,9 +1786,9 @@ fn ic1_the_principals_never_wake() {
                 );
                 let prompt = mush_npc::user_prompt(&snap);
                 for command in [
-                    "+coop/enrol",
+                    "+coop/enroll",
                     "+coop/buyout",
-                    "+licence",
+                    "+license",
                     "+claim/stake",
                     "+survey",
                     "+standing",
@@ -2209,7 +2228,7 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         !tw.world()
             .iter()
             .any(|o| o.name == "Postmaster Solveig Adebayo-Krishnan"),
-        "a deferred Exchange must not leave a half-created Fleet programme"
+        "a deferred Exchange must not leave a half-created Fleet program"
     );
     assert_eq!(
         version(&tw, CERES_PACK),
@@ -2251,7 +2270,7 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     // Doc 20 cut SM.12a: the shipped relay seed is v3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(29));
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(31));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()

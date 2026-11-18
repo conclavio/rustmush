@@ -3,7 +3,7 @@
     "id": "tacsim.pack.halcyon",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "dcfebfb682960d461b9e987f2b48cea7d765886de409c4125334e16db1523bb6",
+    "digest": "264d6e0c09aeebec5356aad3a9210708cb83f9544314212e0c9756e9c2895480",
     "requires": [
       {
         "id": "tacsim.pack.plants",
@@ -250,8 +250,8 @@
               "id": "crew",
               "name": "Watch Quarters",
               "kind": "walkable",
-              "short_desc": "Eight watch bunks surround a compact mess, water still and labelled provision lockers.",
-              "desc": "Eight watch bunks surround a compact mess, water still and labelled provision lockers."
+              "short_desc": "Eight watch bunks surround a compact mess, water still and labeled provision lockers.",
+              "desc": "Eight watch bunks surround a compact mess, water still and labeled provision lockers."
             },
             {
               "id": "hold",
@@ -264,8 +264,8 @@
               "id": "engineering",
               "name": "Reactor Watch",
               "kind": "walkable",
-              "short_desc": "Armoured reactor shielding separates the watch station from the main power trunks.",
-              "desc": "Armoured reactor shielding separates the watch station from the main power trunks."
+              "short_desc": "Armored reactor shielding separates the watch station from the main power trunks.",
+              "desc": "Armored reactor shielding separates the watch station from the main power trunks."
             },
             {
               "id": "stowage",

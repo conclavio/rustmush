@@ -278,7 +278,7 @@ fn outcome(outcome: &Outcome) -> String {
         Outcome::Applied => "applied".into(),
         Outcome::Refused { reason } => format!("refused: {reason}"),
         Outcome::Faulted { fault } => format!("fault: {fault:?}"),
-        Outcome::Cancelled { reason } => format!("cancelled: {reason:?}"),
+        Outcome::Cancelled { reason } => format!("canceled: {reason:?}"),
     }
 }
 

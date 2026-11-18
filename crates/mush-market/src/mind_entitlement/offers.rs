@@ -227,9 +227,9 @@ impl Provider {
                             inv.actor(),
                             Some(listing.price.minor()),
                         )
-                        .map_err(|_| "not acting for that organisation")?;
+                        .map_err(|_| "not acting for that organization")?;
                         let scope = mush_roll::commerce::org_holder::root_scope(world, org)
-                            .ok_or("not acting for that organisation")?;
+                            .ok_or("not acting for that organization")?;
                         (
                             Holder::Organization {
                                 org,

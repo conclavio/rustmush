@@ -17,7 +17,7 @@ dormant and every channel is yours.
 You choose in the lobby, during selection, for the slot you hold:
 
   SIM MIND                    your choice, what fits your tank's core, and
-                              your side's half of the centre's compute.
+                              your side's half of the center's compute.
   SIM MIND Standard           Standard Doctrine, flying Line.
   SIM MIND Standard PROFILE Sniper, Line
                               Standard Doctrine, flying Sniper, with Line
@@ -47,12 +47,12 @@ not:
 * **The class.** How many profiles a seal keeps is the class the mind thinks
   at on your tank's core: two at Class I, three at Class II, and four at
   Class III. Standard Doctrine is Class I. Authored minds declare their class;
-  the core and the centre's pool must support it. A tank with no core above
+  the core and the center's pool must support it. A tank with no core above
   Class 0 flies the ROM, the core's own fallback, and keeps one.
 * **The floor.** On a tank that carries a gun, no profile may fire at odds
   under the server's Compact floor (10% as shipped). Every preset clears 10%,
   and a hull with no gun is never asked.
-* **The pool.** Your side's half of the centre's compute has to carry it, and
+* **The pool.** Your side's half of the center's compute has to carry it, and
   a choice it cannot carry is refused with the arithmetic: how many ops a
   second this tank would think, your side's half, and what is spoken for.
 
@@ -71,7 +71,7 @@ Line is the Registry's doctrine as this server runs it: it closes to 70% of
 its reach and fires at 35% or better on any face, 50% once a gun is under half
 its magazine. It keeps a quarter of each gun's rounds back, and spends them
 only to answer a unit that has fired on it, or to cover its way home. It
-breaks off for its entry zone when its armour and internals fall under 35%,
+breaks off for its entry zone when its armor and internals fall under 35%,
 and comes back after 20 quiet seconds; at its reserve on every gun it breaks
 off too, and stays home. It drives a minute to where it last saw a contact,
 and goes looking after a minute and a half with nobody in sight. Each other

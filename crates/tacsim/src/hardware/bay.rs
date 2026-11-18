@@ -161,7 +161,7 @@ mod tests {
                 .expect("the shipped packs load"),
             crate::NS,
         )
-        .expect("the shipped catalogue builds");
+        .expect("the shipped catalog builds");
         let parts = ShippedParts::new(catalog.parts.clone());
         let of = |id| {
             parts

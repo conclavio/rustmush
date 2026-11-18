@@ -3,7 +3,7 @@
     "id": "tacsim.pack.mg_coax",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "d5a24fd7275500b239367b1da521c13a67ec8b767b800a8f9c7cf3797437766c",
+    "digest": "33eeb12f95eabe3a15e57825dca7296bfec1b515924f9682538a56c75af73e6b",
     "requires": [
       {
         "id": "tacsim.pack.ball_762",
@@ -31,12 +31,12 @@
             "dispersion_mrad": 16
           }
         ],
-        "cycle_ms": 1000,
+        "cycle_ms": 5000,
         "ammunition": "tacsim.ammunition.ball_762",
         "burst_rounds": 10,
         "muzzle_speed_cms": 85000,
         "heat_per_shot": 0,
-        "note": "Cut C's numbers. At the W14 floor exactly, so the shipped content proves the floor is reachable and not merely asserted. 1.2 km is inside visual detection at 60 cells (600 m) plus signature, so the coaxial is a weapon for a contact you have already classified. Ten rounds a pull against a 2,000-round belt is 200 bursts."
+        "note": "Doc 49 unit CC.2's cycle (Q-49-3): a burst of ten every 5,000 ms, at the floor every mount a player or a mind fires is held to, so the shipped content proves the floor is reachable and not merely asserted. A 600-round belt (Q-49-22) is sixty bursts, five minutes of fire. 1.2 km is inside visual detection at 60 cells (600 m) plus signature, so the coaxial gun is for a contact already classified."
       }
     }
   }

@@ -2104,7 +2104,7 @@ impl PixelView {
                 .current_encoder()
                 .map_or("nothing".to_string(), |e| e.name().to_string());
             return (
-                format!("ARMOUR  |  {probe}, drawing {drawing}, redrawn on change"),
+                format!("ARMOR  |  {probe}, drawing {drawing}, redrawn on change"),
                 "Enter: chat   Esc/q: close   ^]: detach".to_string(),
             );
         }
@@ -2300,7 +2300,7 @@ pub fn cockpit_legend(arrows_held: bool, letters_held: bool, weapons_free: bool)
     };
     let gate = if weapons_free { "f:hold" } else { "f:free" };
     format!(
-        "{turn} w/s:speed x:stop q/e:look c:centre spc:steady v:view {gate} g:volley t/T:lock F1-6:order p:text"
+        "{turn} w/s:speed x:stop q/e:look c:center spc:steady v:view {gate} g:volley t/T:lock F1-6:order p:text"
     )
 }
 
@@ -3219,7 +3219,7 @@ mod tests {
         );
         let (top, bottom) = v.hud(None, t0);
         assert!(
-            top.starts_with("ARMOUR") && bottom.contains("Esc/q"),
+            top.starts_with("ARMOR") && bottom.contains("Esc/q"),
             "{top} / {bottom}"
         );
         v.key(Key::Esc, t0);
@@ -3627,7 +3627,7 @@ mod tests {
                     "w/s:speed",
                     "x:stop",
                     "q/e:look",
-                    "c:centre",
+                    "c:center",
                     "spc:steady",
                     "v:view",
                     "g:volley",

@@ -879,7 +879,7 @@ mod tests {
         let pose = settle(&mut record, &cid("ahuna_port"), 1_100).expect("the drive stops");
         assert_eq!((pose.x_cm, pose.y_cm), (20_500, 10_500), "half way");
         assert_eq!(pose.heading_mdeg, 90_000);
-        assert!(record.act.is_none(), "the remainder is cancelled");
+        assert!(record.act.is_none(), "the remainder is canceled");
         assert_eq!(
             record.charge.value_cu, 49_000,
             "half the reservation is spent"

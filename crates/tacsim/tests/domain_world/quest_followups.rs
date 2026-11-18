@@ -516,7 +516,7 @@ fn independent_quests_on_one_giver_require_explicit_selection() {
     assert_eq!(offers.matches("+quest/accept ").count(), 2, "{offers}");
     accept(&mut rig, actor, npc, &first_key);
     accept(&mut rig, actor, npc, second_key);
-    let out = run(&mut rig.tw, actor, "+coop/enrol Two Reviews");
+    let out = run(&mut rig.tw, actor, "+coop/enroll Two Reviews");
     assert!(out.contains("now the Two Reviews"), "{out}");
     for switch in ["check", "finish", "abandon"] {
         let (out, queued) = command(&mut rig, actor, &format!("+quest/{switch} #{}", npc.0));

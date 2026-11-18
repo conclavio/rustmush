@@ -608,6 +608,120 @@ fn a_value_past_a_bound_refuses_naming_the_field() {
     );
 }
 
+/// **Doc 49 unit CC.2 (Q-49-2, Q-49-10, Q-49-19): the 5 s floor and the
+/// automatic-defence class.** A mount a player or a mind fires is held to
+/// 5,000 ms: the shipped coaxial gun loads at it and is refused a millisecond
+/// under it. A mount authored `automatic_defence` keeps the engine's own
+/// 1,000 ms floor instead (no ground mount ships in the class): the coaxial gun
+/// so marked loads at 1,000 ms and is refused at 999. Until CC.2 the floor was
+/// W14's 1,000 ms for every mount.
+#[test]
+fn cc2_the_floor_is_five_seconds_and_automatic_defence_keeps_the_engines() {
+    use tacsim::definitions::weapon::{AUTOMATIC_DEFENCE_FLOOR_MS, CYCLE_FLOOR_MS};
+    assert_eq!((CYCLE_FLOOR_MS, AUTOMATIC_DEFENCE_FLOOR_MS), (5_000, 1_000));
+    let shipped = "\"cycle_ms\": 5000";
+    assert!(
+        content::MG_COAX_JSON.contains(shipped),
+        "the coaxial gun ships at the floor"
+    );
+    assert!(tacsim::pack::load_pack(content::MG_COAX_JSON).is_ok());
+    let refused = |cycle: &str| {
+        let error = tacsim::pack::load_pack(&tampered(content::MG_COAX_JSON, shipped, cycle))
+            .expect_err("a cycle under its floor refuses");
+        let message = error.to_string();
+        assert!(message.contains("cycle_ms"), "{message}");
+        message
+    };
+    assert!(refused("\"cycle_ms\": 4999").contains("the 5 s floor"));
+    let automatic = |cycle: u32| {
+        tampered(
+            content::MG_COAX_JSON,
+            shipped,
+            &format!("\"cycle_ms\": {cycle}, \"automatic_defence\": true"),
+        )
+    };
+    assert!(
+        tacsim::pack::load_pack(&automatic(1_000)).is_ok(),
+        "automatic defense keeps the engine's floor"
+    );
+    let error = tacsim::pack::load_pack(&automatic(999)).expect_err("under the engine's floor");
+    assert!(
+        error.to_string().contains("the automatic-defense floor"),
+        "{error}"
+    );
+}
+
+/// **Doc 49 unit CC.2 (Q-49-3, Q-49-19, Q-49-22): the ruled ground palette, as
+/// shipped** — a content pin by design, so a retune is a reviewed edit here:
+/// cycles of 15 s (cannon), 5 s (coaxial gun), 10 s (autocannon), 30 s (missile
+/// rack) and 5 s (pulse laser); loads of 24, 600, 120 and 4, and the laser's
+/// 500 charges kept (Q-49-28).
+#[test]
+fn cc2_the_ground_palette_is_the_ruled_one() {
+    let def = |json: &str, entry: &str, field: &str| -> u64 {
+        let pack: serde_json::Value = serde_json::from_str(json).expect("the shipped pack parses");
+        pack["entries"][entry]["def"][field]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{entry} authors {field}"))
+    };
+    assert_eq!(
+        [
+            def(
+                content::CANNON_105_JSON,
+                "tacsim.weapon.cannon_105",
+                "cycle_ms"
+            ),
+            def(content::MG_COAX_JSON, "tacsim.weapon.mg_coax", "cycle_ms"),
+            def(
+                content::AUTOCANNON_30_JSON,
+                "tacsim.weapon.autocannon_30",
+                "cycle_ms"
+            ),
+            def(
+                content::MISSILE_LR_JSON,
+                "tacsim.weapon.missile_lr",
+                "cycle_ms"
+            ),
+            def(
+                content::LASER_MK1_JSON,
+                "tacsim.weapon.laser_mk1",
+                "cycle_ms"
+            ),
+        ],
+        [15_000, 5_000, 10_000, 30_000, 5_000]
+    );
+    assert_eq!(
+        [
+            def(
+                content::HE_105_JSON,
+                "tacsim.ammunition.he_105",
+                "count_per_load"
+            ),
+            def(
+                content::BALL_762_JSON,
+                "tacsim.ammunition.ball_762",
+                "count_per_load"
+            ),
+            def(
+                content::AP_30_JSON,
+                "tacsim.ammunition.ap_30",
+                "count_per_load"
+            ),
+            def(
+                content::MISSILE_ROUND_JSON,
+                "tacsim.ammunition.missile_round",
+                "count_per_load"
+            ),
+            def(
+                content::LASER_CHARGE_JSON,
+                "tacsim.ammunition.laser_charge",
+                "count_per_load"
+            ),
+        ],
+        [24, 600, 120, 4, 500]
+    );
+}
+
 #[test]
 fn a_filled_ecm_hook_refuses() {
     let edited = tampered(
@@ -831,7 +945,7 @@ fn a_fresh_boot_makes_the_twelve_tanks_and_a_second_makes_no_thirteenth() {
             unit.0
         );
         let (_, pose) = mush_sim::pose_of(tw.world(), *unit).expect("it is placed");
-        assert_eq!(pose.x_cm % 1_000, 500, "on a cell centre");
+        assert_eq!(pose.x_cm % 1_000, 500, "on a cell center");
         assert_eq!(pose.y_cm % 1_000, 500);
     }
 
@@ -1212,7 +1326,7 @@ fn m4_an_entry_zone_of_water_is_refused_by_name() {
     );
     assert_eq!(
         refused.to_string(),
-        format!("arena {id}: team red's entry zone has no passable cell with a passable neighbour")
+        format!("arena {id}: team red's entry zone has no passable cell with a passable neighbor")
     );
 }
 

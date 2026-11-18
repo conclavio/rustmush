@@ -101,7 +101,7 @@ Discovery happens in play.
   @faction/principal <f>=<npc>   Toggle an NPC voice of the faction.
   @faction/resource <f>=<kind>/<delta>[/<reason>]
                               Typed resource pools (influence.port,
-                              favours, standing — whatever the game defines),
+                              favors, standing — whatever the game defines),
                               every change cause-stamped.
   @faction/channel <f>        Show the current binding.
   @faction/channel <f>=<channel>

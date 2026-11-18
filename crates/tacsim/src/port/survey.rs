@@ -487,6 +487,76 @@ fn site_available(w: &World, offer: &SurveyOffer) -> bool {
     matches!(store.port_map(&pack, &site), crate::port::PortMapState::Present(map) if map.site.is_some())
 }
 
+/// **Whether an offer's commission is still open, read from the economy alone** (doc 48 cut EX.5):
+/// a board reads the world, and the commissions are typed action state a market verb cannot
+/// read, so the board asks the economy. A commission's contract names the offer in its logged
+/// fact's id (`<offer>/<contract>…`): one still live means it is taken, and one settled on the
+/// logged fact means it was done and paid, which never reopens. A cancelled or expired one, or
+/// one settled on the cancellation, leaves it open again.
+fn open_on_board(w: &World, offer: &SurveyOffer) -> bool {
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let prefix = format!("{}/", offer.id);
+    !store.snapshot().contracts().any(|c| {
+        let names_offer = matches!(
+            c.consent.conditions.first(),
+            Some(TypedCondition::Fact { fact })
+                if fact.provider == FACT_PROVIDER
+                    && fact.kind == FACT_KIND
+                    && fact.id.starts_with(&prefix)
+        );
+        names_offer
+            && (c.state.is_live()
+                || (matches!(c.state, ContractState::Settled { .. })
+                    && c.satisfied.first().is_some_and(Option::is_some)))
+    })
+}
+
+/// **Occator's open commissions on `venue`'s board** (doc 48 cut EX.5, Q-48-12): each offer still
+/// open, on the board of the programme port where Occator commissions. The term runs from
+/// acceptance (Q-48-58): the contract is written when the pilot takes it.
+#[must_use]
+pub fn services(w: &World, venue: &mush_market::MarketId) -> Vec<mush_market::Service> {
+    let Some(port) = crate::port::coop::programme_port(w) else {
+        return Vec::new();
+    };
+    if port.def.venue.as_str() != venue.as_str() {
+        return Vec::new();
+    }
+    let Some((occator, _)) = sponsor(w) else {
+        return Vec::new();
+    };
+    let instrument = mush_economy::InstrumentId::new(crate::economy::CREDIT);
+    let poster_name = crate::surface::retrieval::principal_name(w, &occator);
+    offers()
+        .iter()
+        .filter(|offer| site_available(w, offer) && open_on_board(w, offer))
+        .map(|offer| mush_market::Service {
+            kind: mush_market::ServiceKind::Survey,
+            side: mush_market::ServiceSide::Wanted,
+            venue: venue.clone(),
+            poster: occator.clone(),
+            poster_name: poster_name.clone().into(),
+            subject: format!(
+                "fresh soundings of {} block {}",
+                offer.site_name,
+                char::from(b'A' + offer.block)
+            )
+            .into(),
+            pay: Amount::from_minor(offer.reward_minor),
+            instrument: instrument.clone(),
+            negotiable: false,
+            bond: mush_economy::job_bond(Amount::from_minor(offer.reward_minor)),
+            term: mush_market::ServiceTerm::FromAcceptance {
+                ic_secs: offer.term_ic_s,
+            },
+            contract: None,
+            take: format!("+survey/accept {}", offer.id).into(),
+        })
+        .collect()
+}
+
 fn plan(ctx: &Ctx<'_>, offer: &SurveyOffer) -> Result<SurveyRecord, String> {
     let w: &World = ctx.w;
     if !mush_economy::has_fact_provider(w, FACT_PROVIDER) || !site_available(w, offer) {
@@ -597,7 +667,7 @@ fn show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
                     ) {
                         "contract ended; refund pending"
                     } else if row.cancelled.is_some() {
-                        "cancelled; refund pending"
+                        "canceled; refund pending"
                     } else if row.completed.is_some() {
                         "survey logged; settlement pending"
                     } else if ctx.w.world_ic_now().at > row.deadline_ic {
@@ -780,7 +850,7 @@ fn cancel(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
         Ok(true) => say(
             ctx,
             format!(
-                "Commission {id} cancelled. Any reserved reward returns to Occator when its refund settles."
+                "Commission {id} canceled. Any reserved reward returns to Occator when its refund settles."
             ),
         ),
         Ok(false) => say(

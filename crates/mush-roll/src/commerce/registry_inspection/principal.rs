@@ -213,7 +213,7 @@ mod tests {
         assert!(!r.bars(100 + 90 * 86_400), "the end is exclusive");
         assert_eq!(r.key(), format!("{:020}", 7));
         let org = record(PrincipalId::Organization(mush_org::OrgId(0)));
-        assert!(org.validate().is_ok(), "organisation 0 is an organisation");
+        assert!(org.validate().is_ok(), "organization 0 is an organization");
         assert_eq!(org.key(), format!("org/{:020}", 0));
         for bad in [
             record(PrincipalId::Object(ObjId(0))),

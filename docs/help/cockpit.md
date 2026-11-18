@@ -49,7 +49,7 @@ Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
                       are — power, speed, heading, position, the named
                       spot nearest you, what your own scope holds, the rounds
                       each of your mounts has left, your pod's switch if you
-                      carry one, and your armour and internals section by
+                      carry one, and your armor and internals section by
                       section. The rounds are one line, each mount's left
                       over its full load, in the order your machine carries
                       them:
@@ -190,7 +190,7 @@ the nearest third of your sensor's reach, `effective` the middle third, `far` th
 outer third and anything a teammate is passing you from beyond it. On a stock
 tank the sight reaches 600 m, so `close` runs to 200 m and `effective` to 400 m.
 
-It is **not** a judgement of your gun. Every gun this game ships out-reaches the
+It is **not** a judgment of your gun. Every gun this game ships out-reaches the
 sight that finds a target for it — the stock cannon makes 3 km and the stock
 sight sees 600 m — so a contact at 450 m reads `far` and is a shot the cannon
 takes comfortably. What the gun makes of the distance is the `% to hit` on your
@@ -208,7 +208,7 @@ Your **lock** reads finer than 50 m: it is a fire-control solution and the
 platform is tracking that one return continuously. How much finer is what the
 plot in front of you can carry — a fresh one reads to 10 m, a one-second plot to
 20, and a plot a couple of seconds old reads no better than the rest of the
-scope, because a tank making 60 kph has moved seventeen metres in each of those
+scope, because a tank making 60 kph has moved seventeen meters in each of those
 seconds. Both verbs read the same plot every other surface reads, and both say so
 when it is going stale: `Range to BA: 450 m, plotted 4 s ago.` With no lock and
 no name they answer `No lock: LOCK a contact first, or name one.`
@@ -283,7 +283,7 @@ power up out to about two thirds of that (heavy woods: about 257 m), and one
 whose power is down out to about an eighth. Stop before you are found; against
 the thermal sight, shut down.
 
-**The facet you show decides what a hit costs you.** Armour is per facet and a
+**The facet you show decides what a hit costs you.** Armor is per facet and a
 round lands on the face it arrives at: from within 45 degrees of your bow it
 strikes the front, from within 45 degrees of your stern the rear, and from
 anywhere else a side — and a side is twice the target, 7 m of flank against 3.5
@@ -367,8 +367,8 @@ your platform is not holding at all reads `Hit.`
 
 What you are told about your **own** tank is the other way round and complete:
 
-  Hit on the hull's front facet: 280 of 400 armour left.
-  Hit on the hull's front facet: armour gone, 140 of 200 inside.
+  Hit on the hull's front facet: 280 of 400 armor left.
+  Hit on the hull's front facet: armor gone, 140 of 200 inside.
   The left_track is destroyed: the tank is slowed.
   Hit on the left_track, which is already destroyed.
 
@@ -397,7 +397,7 @@ A rule joins at most four conditions with AND. There is no OR. Native terms are:
 
   odds >= 60            chance to hit, whole percent; optionally name the weapon
   aspect = side,rear    front, side or rear, comma-separated
-  range < 600 m         strict rounded metres; range > 200 m is also available
+  range < 600 m         strict rounded meters; range > 200 m is also available
   band = effective      close, effective or far, using the current plotted range
   rounds > 10           rounds remaining; < and whole-percent figures also work
   reserve               rounds > 0 while you fly
@@ -414,8 +414,8 @@ A rule joins at most four conditions with AND. There is no OR. Native terms are:
 
 Missing readings do not satisfy a condition. Percentages of ammunition use the
 weapon's full load without rounding the comparison. Range comparisons use the
-same rounded metres as the plot. A band is evaluated again when the rule runs;
-it is not frozen to the metres shown when you typed the rule.
+same rounded meters as the plot. A band is evaluated again when the rule runs;
+it is not frozen to the meters shown when you typed the rule.
 
 `LOCK nearest|best_odds|weakest|flank|newest WHEN ...` ranks only identified
 hostiles. Best odds uses the published weapon odds; weakest requires an earned
@@ -732,7 +732,7 @@ In `@tui`, on a terminal that can show pictures, the cockpit screen (`0`) is a
 first-person picture of the arena from your seat whenever you are seated,
 drawn in the terminal itself across the top two-thirds of the screen. Over the
 picture: a heading tape along the top (your heading read out under it, your
-contacts as coloured marks above it), the reticle in the middle with a box
+contacts as colored marks above it), the reticle in the middle with a box
 around the machine you have locked (its designator, range and your chance
 under it, or an arrow at the edge when it is off to one side), and your speed
 as a bar on the right. `p` swaps it for the text cockpit (the panes) and back,
@@ -741,9 +741,9 @@ screens as everywhere: the picture goes, and comes back when you press `0`,
 with your look, your lock cycle and your view as you left them. `Ctrl-]` still
 detaches.
 
-Under the picture, in plain text: your armour as a small picture of your own
-machine — a tank from above, a walker standing — each part coloured by what is
-left of it (green, yellow, red, grey when gone; parts that touch are told apart
+Under the picture, in plain text: your armor as a small picture of your own
+machine — a tank from above, a walker standing — each part colored by what is
+left of it (green, yellow, red, gray when gone; parts that touch are told apart
 by a lighter shade), with a line a section; your heat and your weapons (ready, or the seconds to the
 next shot, rounds left, your chance on the lock); your contacts, nearest
 first, with an arrow for where each one lies from where you are looking and
@@ -762,9 +762,9 @@ It shows what your cockpit screen shows and nothing more. A contact is drawn
 where your own scope plots it, as what it is once your scope has told it apart
 (a tank, a walker), showing the face your scope last saw — its front, its back,
 a side — rolling or striding while it moves, with a shadow under it; until then
-it is a plain grey shape. It is drawn **in its team's colour** — the red team red and
-the blue team blue, whichever side you are on, grey while your scope has not
-told it apart yet, dark brown a wreck — so the colour never says friend or foe:
+it is a plain gray shape. It is drawn **in its team's color** — the red team red and
+the blue team blue, whichever side you are on, gray while your scope has not
+told it apart yet, dark brown a wreck — so the color never says friend or foe:
 the contacts list does (`friend`), and the lock's box is yellow whoever it is
 on. A machine your scope does not hold is not drawn at all, however close it
 is.
@@ -799,8 +799,8 @@ While the picture is showing (the bottom line names the keys):
   c              look along your tank's heading again
   space          stop turning, and stop the look swinging (your speed stands)
   v              the overhead: the arena from above, north up, your tank at
-                 the centre with its heading, your contacts in their team's
-                 colours, your lock ringed, the named spots lettered, your
+                 the center with its heading, your contacts in their team's
+                 colors, your lock ringed, the named spots lettered, your
                  weapons' ranges and your sight as faint rings and your look
                  as a wedge; `v` again for the view from the seat
   f              weapons free or weapons hold (`FIRE FREE` / `FIRE HOLD`);
@@ -868,10 +868,10 @@ picture says `slow link: stepped down`), coming back up once the link has kept
 up for ten seconds.
 
 **The ground has height.** The picture draws the hills, the crater and the
-valleys as the sim has them, coloured by slope and the light from the
+valleys as the sim has them, colored by slope and the light from the
 north-west, with buildings and tree lines standing on them, out to a
-kilometre and a half. Your eye is your machine's own sight, at its own height:
-a tank's a metre and a half off the ground, a walker's nine. A contact the sim
+kilometer and a half. Your eye is your machine's own sight, at its own height:
+a tank's a meter and a half off the ground, a walker's nine. A contact the sim
 reports that a hill hides in the picture is still bracketed where it stands.
 
 **In the web client** the cockpit tab has the same picture above its map:
@@ -892,7 +892,7 @@ it the keys, the same letters as the terminal's cockpit:
   c              look along your tank's heading again
   space          stop turning, and stop the look swinging
   v              the overhead: the arena from above, your tank at the
-                 centre, drawn by the game (`overhead: drawn by the server`);
+                 center, drawn by the game (`overhead: drawn by the server`);
                  `v` again for the view from the seat
   f              weapons free or weapons hold (`FIRE FREE` / `FIRE HOLD`);
                  the header says which
@@ -907,7 +907,7 @@ Each of these sends its line exactly as if you had typed it, so the arena
 answers in the comms as it would; a key held with Ctrl, Alt or Cmd is left to
 the browser. The map, the panes and the orders below it work as before, and
 the damage pane opens with the same small picture of your machine the terminal
-draws, each part coloured by what is left of it.
+draws, each part colored by what is left of it.
 
 `@pixel/stats` tells this connection's picture in numbers: what your terminal
 showed and what it draws, the picture's size and clock, what the last frame

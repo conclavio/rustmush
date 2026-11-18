@@ -174,7 +174,7 @@ impl Phase {
             Self::Field => "on the surface",
             Self::Returning => "return pending",
             Self::Returned => "returned",
-            Self::Cancelled => "cancelled before departure",
+            Self::Cancelled => "canceled before departure",
         }
     }
     pub fn open(self) -> bool {

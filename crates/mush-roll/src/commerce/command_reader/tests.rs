@@ -746,7 +746,7 @@ fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
     let view = answer.into_own_paid().ok_or("an own paid view")?;
     check_eq!(view.licence(), licence);
     check_eq!(view.charter(), charter);
-    check!(!view.house(), "a personal licence");
+    check!(!view.house(), "a personal license");
     check_eq!(view.name(), "Original");
     check_eq!(view.form(), PaidForm::Open {});
     check!(!view.transferable(), "the term's own mark");
@@ -804,7 +804,7 @@ fn command_reader_trade_kinds_answer_only_their_own_party() -> TestResult {
         // 17g C2h: the head's pending operation, the token `+minds/renew/pay`
         // and `/decline` bind to, as a value only (never encoded below).
         check_eq!(view.renewal_operation(), Some(row.operation));
-        check!(!view.house(), "a personal licence reads the personal head");
+        check!(!view.house(), "a personal license reads the personal head");
         for forbidden in ["digest", "account", "contract", "consent", "operation"] {
             check!(!encoded.contains(forbidden), "{forbidden} in {encoded}");
         }
@@ -959,13 +959,13 @@ fn paid_section_pages_own_rows(f: &mut Fixture, other: ObjId) -> TestResult {
     check_eq!(
         (second, next),
         (vec![44], None),
-        "the neighbour's 45 never appears"
+        "the neighbor's 45 never appears"
     );
     let (theirs, next, _) = page(f, other, Value::Null)?;
     check_eq!(
         (theirs, next),
         (vec![45], None),
-        "the neighbour reads its own"
+        "the neighbor reads its own"
     );
     let third = f.engine.world.create(
         mush_core::ObjKind::Player,
@@ -984,11 +984,11 @@ fn paid_section_pages_own_rows(f: &mut Fixture, other: ObjId) -> TestResult {
     for row in rows.rows() {
         let n = row.licence().get();
         let (own, _) = read(f, GOD, json!({"paid": n}))??;
-        check_eq!(Some(row.clone()), own.into_own_paid(), "licence {n}");
+        check_eq!(Some(row.clone()), own.into_own_paid(), "license {n}");
         check_eq!(
             (row.revoked(), row.selling(), row.house(), row.renewal()),
             (n == 42, false, false, None),
-            "licence {n}"
+            "license {n}"
         );
         check!(row.transferable() && row.name() == "Original");
         check_eq!(row.phase(), OwnerPhase::Active { days_left: 90 });
@@ -1167,18 +1167,18 @@ fn org_paid_rows_answer_every_granted_member(f: &mut Fixture, other: ObjId) -> T
     check_eq!(
         page(f, third, Some(guild.0 + 1000))?,
         Err(OwnerReadError::Refused),
-        "an organisation that does not exist reads the same"
+        "an organization that does not exist reads the same"
     );
     // The own-paid view: with `org=` for every member; never bare.
     for member in [other, second] {
         let (answer, _) = read(f, member, json!({"paid": 46, "org": guild.0}))??;
-        let row = answer.into_own_paid().ok_or("the Guild's licence")?;
+        let row = answer.into_own_paid().ok_or("the Guild's license")?;
         check_eq!(row.licence().get(), 46);
     }
     check_eq!(
         read(f, other, json!({"paid": 46}))?.map(|_| ()),
         Err(OwnerReadError::Refused),
-        "the bare read never answers the organisation's licence"
+        "the bare read never answers the organization's license"
     );
     procurement_holdings_leave_out_a_revoked_term(f, guild, held, (filed, &content))?;
     // An inactive organisation stops the next read.
@@ -1186,7 +1186,7 @@ fn org_paid_rows_answer_every_granted_member(f: &mut Fixture, other: ObjId) -> T
     check_eq!(
         page(f, other, Some(guild.0))?,
         Err(OwnerReadError::Refused),
-        "an inactive organisation"
+        "an inactive organization"
     );
     Ok(())
 }
@@ -1495,13 +1495,13 @@ fn resale_step_on_a_granted_transferable_licence() -> TestResult {
     check_eq!(
         resale_step(&f.engine.world, licence),
         Ok(ResaleStep::Fund),
-        "an open paid claim on the granted licence"
+        "an open paid claim on the granted license"
     );
     let another = LicenceId::new(licence.get().checked_add(1).ok_or("licence")?)?;
     check_eq!(
         resale_step(&f.engine.world, another),
         Ok(ResaleStep::Accept),
-        "no claim on another licence"
+        "no claim on another license"
     );
     Ok(())
 }

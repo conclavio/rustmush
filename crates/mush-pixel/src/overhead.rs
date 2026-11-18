@@ -1485,7 +1485,7 @@ mod tests {
     #[test]
     fn the_overhead_draws_the_tank_the_contacts_and_the_ground() {
         let f = draw(&feeds(true), &Look::default(), 640, 276);
-        assert_eq!(f.get(320, 138), YOU, "the tank at the centre");
+        assert_eq!(f.get(320, 138), YOU, "the tank at the center");
         for want in [
             FRIEND,
             HOSTILE,
@@ -1557,7 +1557,7 @@ mod tests {
         };
         let camera = draw(Up::Camera, &Look::default());
         let (cx, cy) = (8 + 52, 8 + 52);
-        assert_eq!(camera.get(cx, cy), YOU, "the tank at the centre");
+        assert_eq!(camera.get(cx, cy), YOU, "the tank at the center");
         for d in 4..12 {
             assert_eq!(camera.get(cx, cy - d), YOU, "its ray straight up, {d}");
         }

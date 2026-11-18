@@ -37,7 +37,7 @@ pub(super) fn view_of<'w>(w: &'w World, rig: &RigAt) -> Result<(HullView<'w>, St
     let Some(view) = hull_view(w, rig.hull) else {
         tracing::warn!(
             hull = rig.hull.0,
-            "tacsim: a rig's hull has no programme view"
+            "tacsim: a rig's hull has no program view"
         );
         return Err(Refusal::Dark { name });
     };

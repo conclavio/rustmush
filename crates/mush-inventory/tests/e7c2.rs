@@ -1667,7 +1667,7 @@ fn vf_c1_every_lot_arm_reads_the_authorised_endpoint() {
             .unwrap_or(body.len());
         assert!(
             body[start..end].contains("endpoint_field(&parameters,"),
-            "{arm} must read the authorised endpoint"
+            "{arm} must read the authorized endpoint"
         );
     }
 }

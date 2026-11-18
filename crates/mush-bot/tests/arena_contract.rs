@@ -759,6 +759,43 @@ fn every_notice() -> Vec<FrameNotice> {
 // (1) The formatters
 // ---------------------------------------------------------------------------
 
+/// **The pilot's discipline is the stock card's** (the game's doc 49 cut
+/// CC.10, Q-49-17). The bot reads its floor and its reserve from `help minds`'
+/// Line card, so this holds its own figures to the game's card: the floor and
+/// the risen floor in whole per cent, the reserve's per cent, and, for every
+/// magazine up to the shipped coaxial gun's and every round in it, the floor
+/// and the rounds kept, computed both ways.
+#[test]
+fn the_pilots_floor_and_reserve_are_the_line_cards() {
+    use mush_bot::arena::pilot::{
+        FLOOR_PERCENT, LOW_MAGAZINE_FLOOR_PERCENT, RESERVE_PERCENT, floor_percent, reserve_rounds,
+    };
+    use tacsim::arena::card;
+    let line = card::line(&tacsim::config::ReflexConfig::default());
+    assert_eq!(u32::from(card::LINE_MIN_ODDS_PERMILLE), FLOOR_PERCENT * 10);
+    assert_eq!(u32::from(line.min_odds_permille), FLOOR_PERCENT * 10);
+    assert_eq!(
+        u32::from(line.low_magazine_floor()),
+        LOW_MAGAZINE_FLOOR_PERCENT * 10
+    );
+    assert_eq!(card::LINE_RESERVE_PCT, RESERVE_PERCENT);
+    assert_eq!(line.reserve_pct, RESERVE_PERCENT);
+    for rounds_max in 0..=600 {
+        assert_eq!(
+            line.keeps(rounds_max),
+            reserve_rounds(rounds_max),
+            "{rounds_max}"
+        );
+        for rounds in 0..=rounds_max {
+            assert_eq!(
+                u32::from(line.floor_for(rounds, rounds_max)),
+                floor_percent(rounds, rounds_max) * 10,
+                "{rounds} of {rounds_max}"
+            );
+        }
+    }
+}
+
 /// **`STATUS`'s rounds row at its widest fill** (the game's doc 49 cut CC.4):
 /// the heavy, the shipped unit with the most mounts, each at the full load its
 /// content fields it with. The game's own formatter prints it, the 120-column
@@ -1696,7 +1733,7 @@ impl Live {
 async fn the_bot_reads_a_live_centre_over_its_own_ssh_client() {
     tokio::time::timeout(Duration::from_secs(90), live_centre())
         .await
-        .expect("the live centre finishes inside 90 s");
+        .expect("the live center finishes inside 90 s");
 }
 
 async fn live_centre() {

@@ -1117,7 +1117,7 @@ mod tests {
         assert!(indirect_fire_path(&s, &[], a, b, 900).reaches());
         assert!(
             !indirect_fire_path(&s, &[], a, b, 100).reaches(),
-            "the canopy's top is eight metres"
+            "the canopy's top is eight meters"
         );
         // A beam through three cells of light woods reaches, attenuated 75.
         let mut s = surface(11, 1, TerrainClass::Paved);
@@ -1501,7 +1501,7 @@ mod tests {
         assert_eq!(
             (old(150, 250, 29, 59), old(250, 150, 30, 59)),
             (199, 200),
-            "the truncation the cut removed split this cell by a centimetre"
+            "the truncation the cut removed split this cell by a centimeter"
         );
         let mut row = surface(60, 1, TerrainClass::Ground);
         set(&mut row, 59, 0, TerrainClass::Ground, 100);

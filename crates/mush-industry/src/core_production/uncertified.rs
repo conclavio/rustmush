@@ -503,7 +503,7 @@ impl ActionProvider for Provider {
                 });
                 (
                     "issue-grey-die",
-                    "Issue a grey core die",
+                    "Issue a gray core die",
                     "Mint one die of the class with no origin recorded into a vault.",
                 )
             }

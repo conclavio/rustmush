@@ -3158,7 +3158,7 @@ mod tests {
         };
         let aboard = loaded_aboard(&stranded, ObjId(40), ObjId(90), 500).expect("aboard");
         assert_eq!(aboard.location, CrewLocation::Carrier { hull: ObjId(90) });
-        assert!(aboard.extraction.is_none(), "the extraction is cancelled");
+        assert!(aboard.extraction.is_none(), "the extraction is canceled");
         assert_eq!(
             aboard.condition,
             CrewCondition::Injured,

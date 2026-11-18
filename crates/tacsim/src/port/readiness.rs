@@ -1635,7 +1635,7 @@ fn port_lines(
                 Binding::Programme,
                 LineState::Ready,
                 format!(
-                    "{entry} programme {}: {org_name}, account #{account}, floor {}, stake {} for \
+                    "{entry} program {}: {org_name}, account #{account}, floor {}, stake {} for \
                      each of {} hulls.",
                     programme.id,
                     money_major(w, programme.floor_major),
@@ -1648,7 +1648,7 @@ fn port_lines(
                 Binding::Programme,
                 LineState::Missing,
                 format!(
-                    "{entry} programme {}: {org_name} has no account open.",
+                    "{entry} program {}: {org_name} has no account open.",
                     programme.id
                 ),
             ),

@@ -647,7 +647,7 @@ pub fn reduce_bake(
                         Err(_) => Ok(None),
                     }
                 };
-                let id = pass("id")?.ok_or("the colour-ID pass")?;
+                let id = pass("id")?.ok_or("the color-ID pass")?;
                 let normal = pass("n")?.ok_or("the normal pass")?;
                 let (mask, lit, depth) = (pass("m")?, pass("l")?, pass("d")?);
                 let codes = classify(&id, &normal, mask.as_deref(), &meta.id_classes);
@@ -860,7 +860,7 @@ mod tests {
                 .ok_or("facing")?;
             let pose = POSES.iter().position(|p| *p == pose_word).ok_or("pose")?;
             if pass != "id" && pass != "n" {
-                return Err("the synthetic bake has the colour-ID and normal passes only".into());
+                return Err("the synthetic bake has the color-ID and normal passes only".into());
             }
             let (id, n) = render(view, facing, pose);
             Ok(if pass == "id" { id } else { n })

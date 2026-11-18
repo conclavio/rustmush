@@ -55,7 +55,10 @@ fn command_refs_staff_edits_and_dialogue_use_public_registered_help() {
             .text
             .contains(&rig.engine.registry.spec_of("look").unwrap().help)
     );
-    let rejected = rig.staff(&format!("@agent/set #{}/command_refs=+coop/enrol", clerk.0));
+    let rejected = rig.staff(&format!(
+        "@agent/set #{}/command_refs=+coop/enroll",
+        clerk.0
+    ));
     assert!(!rejected.contains("Set command_refs"));
     let shown = rig.staff(&format!("@agent/show #{}", clerk.0));
     assert!(

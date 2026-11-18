@@ -79,9 +79,9 @@ fn texts(tw: &TestWorld, events: &[(Audience, OutputEvent)]) -> String {
 #[test]
 fn a_control_region_on_an_atlas_place_renders_its_footprint_in_territory() {
     let mut tw = world();
-    let out = tw.run(GOD, "@region/create Harbour");
+    let out = tw.run(GOD, "@region/create Harbor");
     assert!(
-        texts(&tw, &out).contains("Created region Harbour"),
+        texts(&tw, &out).contains("Created region Harbor"),
         "{}",
         texts(&tw, &out)
     );
@@ -89,11 +89,11 @@ fn a_control_region_on_an_atlas_place_renders_its_footprint_in_territory() {
     // Nowhere yet: +territory names the region and no map.
     let out = tw.run(GOD, "+territory");
     let listing = texts(&tw, &out);
-    assert!(listing.contains("Harbour — unclaimed"), "{listing}");
+    assert!(listing.contains("Harbor — unclaimed"), "{listing}");
     assert!(!listing.contains("[map:"), "{listing}");
 
     // On the map, by name: the footprint shows.
-    let out = tw.run(GOD, "@region/atlas Harbour=Waterfront");
+    let out = tw.run(GOD, "@region/atlas Harbor=Waterfront");
     assert!(
         texts(&tw, &out).contains("now stands on Waterfront (neighborhood.waterfront)"),
         "{}",
@@ -107,13 +107,13 @@ fn a_control_region_on_an_atlas_place_renders_its_footprint_in_territory() {
     );
 
     // A site is too small a thing to stand on; a region by id works; empty clears.
-    let out = tw.run(GOD, "@region/atlas Harbour=Nowhere");
+    let out = tw.run(GOD, "@region/atlas Harbor=Nowhere");
     assert!(
         texts(&tw, &out).contains("No neighborhood, locality or region"),
         "{}",
         texts(&tw, &out)
     );
-    let out = tw.run(GOD, "@region/atlas Harbour=region.city");
+    let out = tw.run(GOD, "@region/atlas Harbor=region.city");
     assert!(
         texts(&tw, &out).contains("The City (region.city)"),
         "{}",
@@ -125,7 +125,7 @@ fn a_control_region_on_an_atlas_place_renders_its_footprint_in_territory() {
         "{}",
         texts(&tw, &out)
     );
-    let out = tw.run(GOD, "@region/atlas Harbour=");
+    let out = tw.run(GOD, "@region/atlas Harbor=");
     assert!(
         texts(&tw, &out).contains("stands on no atlas place"),
         "{}",

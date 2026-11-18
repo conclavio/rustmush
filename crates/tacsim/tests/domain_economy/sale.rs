@@ -462,9 +462,13 @@ fn status(tw: &mut TestWorld) -> String {
     run(tw, GOD, "@tacsim/port status")
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// **Fire and land the port tick until both ports are stocked and listed.**
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -480,7 +484,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 /// Read one typed value through an owner-stamped transaction.
@@ -533,7 +537,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot whose hull is named `name`, standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -1001,7 +1005,7 @@ fn enrolment_of(tw: &TestWorld, pilot: ObjId) -> tacsim::port::Enrolment {
     store(tw)
         .enrolment_of(pilot)
         .cloned()
-        .expect("the pilot's enrolment")
+        .expect("the pilot's enrollment")
 }
 
 /// A contract's name.
@@ -1241,7 +1245,7 @@ fn ic10_selling_metals_at_stickney_pays_the_pilot_and_the_trust_from_journals() 
         "{statement}"
     );
     let ship = run(&mut rig.tw, pilot, "+ship");
-    assert!(ship.contains("Programme: 1 sale;"), "{ship}");
+    assert!(ship.contains("Program: 1 sale;"), "{ship}");
 
     // The settled sale is a trade-tape row (residual F11a, pinned).
     let catalog = mush_economy::CatalogRef {
@@ -1416,7 +1420,7 @@ fn kasei_boards_lane(reference: bool) -> String {
         if !reference {
             doc["entries"]["ceres_port"]["def"]["programme"]["reference"]
                 .as_object_mut()
-                .expect("the programme's reference")
+                .expect("the program's reference")
                 .remove("instrument_boards")
                 .expect("the boards row");
         }
@@ -1742,6 +1746,8 @@ fn ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid() {
     );
     let me = account_of(&rig.tw, &PrincipalId::Object(pilot));
     let my_posted = posted(&rig.tw, me);
+    // Doc 48 cut EX.4: her charter's berth at Kasei is hers, paid across the hour waited.
+    let berth_before = crate::driving_rig::berth_paid(rig.tw.world(), &PrincipalId::Object(pilot));
     let bid = kasei_bid(&rig.tw, "metals");
     let _ = run(&mut rig.tw, pilot, &format!("+market/sell {bid}=20"));
     let _dropped = drain(&mut rig.tw);
@@ -1755,7 +1761,9 @@ fn ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid() {
     ));
     assert_eq!(held(&rig.tw, kasei), 0);
     assert_eq!(posted(&rig.tw, kasei), kasei_posted);
-    assert_eq!(posted(&rig.tw, me), my_posted);
+    let berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &PrincipalId::Object(pilot)) - berth_before;
+    assert_eq!(posted(&rig.tw, me), my_posted - berth);
     assert_eq!(posted(&rig.tw, trust_account(&rig.tw)), trust_posted);
     assert_eq!(pool(&mut rig.tw, hold, "metals"), 20);
     assert_eq!(bid_qty(&rig.tw, bid), Some(4_000));
@@ -2318,7 +2326,7 @@ fn ic14_a_settlement_healed_at_boot_folds_once() {
                 found = true;
             }
         }
-        assert!(found, "the enrolment document");
+        assert!(found, "the enrollment document");
     }
     let mut rig = reboot(rig);
     assert!(

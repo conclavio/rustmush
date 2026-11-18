@@ -35,7 +35,7 @@ fn the_shipped_relief_decodes() {
     assert!(lo < 0 && hi > 0, "relief both ways: {lo}..{hi} cm");
     assert!(
         hi - lo >= 400,
-        "at least four metres of relief: {lo}..{hi} cm"
+        "at least four meters of relief: {lo}..{hi} cm"
     );
     assert!(walls > 0, "the classes carry walls");
 }

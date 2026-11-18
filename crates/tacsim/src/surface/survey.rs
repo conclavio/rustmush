@@ -733,7 +733,7 @@ impl ActionProvider for CancelProvider {
         if row.pilot != invocation.actor() || row.completed.is_some() || row.cancelled.is_some() {
             return Err(port_error(
                 ActionErrorCode::Unauthorized,
-                "that survey cannot be cancelled",
+                "that survey cannot be canceled",
             ));
         }
         let actual = txn

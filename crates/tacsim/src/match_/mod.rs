@@ -2654,7 +2654,7 @@ mod tests {
         // `m5_the_check_out_admits_a_chosen_hull_at_the_class_its_mind_seals_at`).
         assert_eq!(
             pool.to_string(),
-            "RC: This tank would think 18,000 ops a second; its side's half of the centre's pool \
+            "RC: This tank would think 18,000 ops a second; its side's half of the center's pool \
              is 138,000 and 126,000 are spoken for.",
             "the long form is the Display's"
         );

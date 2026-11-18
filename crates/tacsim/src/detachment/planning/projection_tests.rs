@@ -369,7 +369,7 @@ fn dt_preparation_reports_only_the_viewers_permissions_and_keeps_activation_unre
     check!(rendered.contains("current carrier containment"));
     check!(!rendered.contains("last-port departure personnel proof"));
     check!(rendered.contains("NPC contracts"));
-    check!(rendered.contains("mind licences"));
+    check!(rendered.contains("mind licenses"));
     check!(rendered.contains("unit reservations"));
     check!(rendered.contains("This is not launch admission"));
     queried.clear();

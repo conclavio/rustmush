@@ -198,7 +198,7 @@ async fn proving_progress(
             "Proving preparation refused:",
             "Proving run 1 is Failed.",
             "Proving run 1 is Interrupted.",
-            "Proving run 1 is Cancelled.",
+            "Proving run 1 is Canceled.",
         ] {
             assert!(
                 !text.contains(failure),

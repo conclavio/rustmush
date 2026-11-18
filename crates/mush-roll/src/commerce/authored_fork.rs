@@ -275,7 +275,7 @@ impl<S: OwnerReadService<Request = ForkMaterialRequest, Output = ForkMaterial>> 
             presentation: mush_core::ActionPresentation::new(
                 "roll-fork-paid-mind",
                 "Fork an Open mind",
-                "Create an attributed working copy from your current Open parent licence.",
+                "Create an attributed working copy from your current Open parent license.",
             )
             .map_err(|_| bad())?,
             guards: guards.finish().map_err(|_| bad())?,

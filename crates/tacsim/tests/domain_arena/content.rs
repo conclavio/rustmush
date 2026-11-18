@@ -102,23 +102,26 @@ const PACK_FILES: [&str; 10] = [
 /// `2cdf945e…` at version 3. **Doc 39 cut IN.1** added the plants pack and moved every
 /// chassis's for its power component's `plant` (no version moved; the line tank was
 /// `2d80e63e…`). **Doc 49 unit CC.6** added the three space packs: the belt raider's unit file,
-/// the space mount rows and the hull fits.
+/// the space mount rows and the hull fits. **Doc 49 unit CC.2** moved the four ground packs of the
+/// stock game for the ruled palette (Q-49-3, Q-49-22): the cannon to a 15,000 ms cycle and its
+/// round to a load of 24 (was `87aec3ba…` and `c377ca63…`), the coaxial gun to 5,000 ms and its
+/// belt to 600 (was `d5a24fd7…` and `59f3da8f…`).
 const DIGESTS: [(&str, &str); 18] = [
     (
         "tacsim.pack.he_105",
-        "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
+        "bd7fc2de0c682e84fe204a28f86cc23e0b0df02c84da4e16a0926fec5a6806cc",
     ),
     (
         "tacsim.pack.ball_762",
-        "59f3da8fbc7d0f656c8b9b94bd06106fa9e071b52109cebc101af0f087697bab",
+        "9dc4b050a12c20e0cc633e87aeee25aa9c5914d1219fcf1b7b3020f68cb2928f",
     ),
     (
         "tacsim.pack.cannon_105",
-        "87aec3ba2c8cf8aeefc50212c6f76762ca667d04785c3bb3dd3acf930dedf7d9",
+        "c089f8032ac2faab8718c94afb3b765ebc208a4f70ba0aa214d15cf7b8a2e171",
     ),
     (
         "tacsim.pack.mg_coax",
-        "d5a24fd7275500b239367b1da521c13a67ec8b767b800a8f9c7cf3797437766c",
+        "33eeb12f95eabe3a15e57825dca7296bfec1b515924f9682538a56c75af73e6b",
     ),
     (
         "tacsim.pack.visual_mk1",
@@ -171,15 +174,15 @@ const DIGESTS: [(&str, &str); 18] = [
     // Doc 49 unit CC.6 (Q-49-11): space content as data.
     (
         "tacsim.pack.raider_heavy",
-        "148bd49020546a2d4f6074846d35892b6d2768a12ddced672deb971a1a09421c",
+        "d124c6d940d387576e1d69e9088127ead173ccd2599a0d4cb412c02e2b4a7c31",
     ),
     (
         "tacsim.pack.space_mounts",
-        "fe5c35765fd2f254e38e1148efe7e2ab9038a43018671ba0f08dc70a7d45c7be",
+        "769176632d836e5ec693aed2e81d11258b59b79657c901195e809e603cf5ae8b",
     ),
     (
         "tacsim.pack.space_fits",
-        "2959aae314632a55d781f0e07fdc9cf3836a812a1bae79d36b4fc032fa2a8119",
+        "41cd5f26417dbb0f0dfda4d9f635b30c9d4a953b83be1c6d4101c60924f92758",
     ),
 ];
 
@@ -817,21 +820,22 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
             .collect::<Vec<_>>(),
         vec![
             Some("cannon".to_owned()),
-            Some("laser".to_owned()),
+            // Doc 49 unit CC.3 (Q-49-6): the laser tank and the Mk2 biped keep the 105.
+            Some("cannon".to_owned()),
             // 16b cut AE.3: the drone carries no gun.
             None,
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("cannon".to_owned()),
-            Some("laser".to_owned()),
+            Some("cannon".to_owned()),
             Some("cannon".to_owned()),
             Some("autocannon".to_owned()),
             None,
         ],
         "the weapon a bare `FIRE` fires: the cannon, or the first in component \
-         order on a hull that carries none (the Mk2's beam, the scout's \
-         autocannon), and nothing on the drone or the range's target"
+         order on a hull that carries none (the scout's autocannon), and \
+         nothing on the drone or the range's target"
     );
     assert_eq!(
         table(&arena),
@@ -890,13 +894,19 @@ fn e1_the_ranges_the_shipped_machines_fight_at() {
         // AE.1**: and a unit whose only weapon was the emptied one has nothing to
         // fall to either (no fielded unit is one since 16b cut AE.2 gave the
         // scout its autocannon). A unit that still has a loaded weapon falls to
-        // `machine_gun`.
+        // `machine_gun`, and since doc 49 unit CC.3 (Q-49-6) the two laser machines,
+        // whose laser is listed after their 105, fall to the laser.
         let emptied = dry.get(at).cloned().flatten();
+        let next = if state.weapons.iter().any(|weapon| weapon.id == "laser") {
+            "laser"
+        } else {
+            "machine_gun"
+        };
         let expected = state
             .weapons
             .iter()
             .any(|weapon| Some(&weapon.id) != emptied.as_ref())
-            .then(|| "machine_gun".to_owned());
+            .then(|| next.to_owned());
         assert_eq!(
             loaded, expected,
             "{name}: a dry default weapon falls to the next loaded one"
@@ -1392,7 +1402,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (
             content::LINE_TANK_LASER_JSON,
             "tacsim.pack.line_tank_laser",
-            4,
+            // Doc 49 unit CC.3 (Q-49-6): version 5, the 105 back beside the laser.
+            5,
         ),
         (
             content::LINE_TANK_THERMAL_JSON,
@@ -1408,7 +1419,8 @@ fn m4_the_tank_packs_are_version_four_and_every_chassis_but_the_target_moved() {
         (content::HEAVY_MK1_JSON, "tacsim.pack.heavy_mk1", 4),
         (content::SCOUT_MK1_JSON, "tacsim.pack.scout_mk1", 4),
         (content::BIPED_MK1_JSON, "tacsim.pack.biped_mk1", 2),
-        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 2),
+        // Doc 49 unit CC.3 (Q-49-6): version 3, the 105 beside the laser.
+        (content::BIPED_MK2_JSON, "tacsim.pack.biped_mk2", 3),
         // M5r: version 4, its note describes the restored public Hold goal.
         (content::DRONE_MK1_JSON, "tacsim.pack.drone_mk1", 4),
     ] {
@@ -1718,7 +1730,7 @@ fn z3_a_deployed_roster_tank_refuses_the_apply_and_writes_nothing() {
     let refused = tw.seen_by(&events, mush_core::GOD).join("\n");
     assert!(
         refused.contains(
-            "tacsim.arena.proving_ground: a match is running; apply with the centre idle"
+            "tacsim.arena.proving_ground: a match is running; apply with the center idle"
         ),
         "{refused}"
     );
@@ -2268,8 +2280,17 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// half a load, as `NativeStockMind` does; `stock=3` kept; was
 /// `c544bfbd2cdcbda6e4a9fafdec6c4cefe60f31963283edffd20af7f7ecf9375f` (doc 49
 /// unit CC.9's header bump to `api: 10`; AP.3's `api: 9` was `2bea2391…7b5fef`).
+/// **Re-blessed by doc 49 unit CC.1b**, a cost-only rewrite of the Engage path,
+/// behaviour unchanged (Gate A asserts every think of every lane): the leash's
+/// arms called only under a leash, `standing_order`'s one order key and one
+/// pass over the obeyed order, `hostile_edges`' pursuit test, `engage_orders`
+/// without the two gates no caller reaches it past, and `reserve_pct` read as
+/// it is; a reviewer of this digest's history re-reads `think`,
+/// `standing_order`, `hostile_edges`, `leash_arms`, `engage_orders` and
+/// `arming_for`; was
+/// `eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91` (CC.1).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "eec3f6687aa0129d23c0607a39b8ecd784e3bdc72afda215af6b6fd47a154a91";
+    "e9f1a863eabc057066304121fe74b48cce05c21f0a629abb8f8f240c9a02ed15";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2830,14 +2851,16 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "9f0f8f18d64aa91e234521550d5483ec49e88725a675210e6ddb9e4dfbd81a42";
+const DRAY_DIGEST: &str = "29251cd41240e93b151230fb76840673a8e678144273675883e4d8c2f6d24a85";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand. Doc 39 cut IN.1: v5, the thirteen part
 /// rows (was `812c9497…` at v4). Doc 48 unit PL.3: v9, the three space munitions rows (was
 /// `dfdef8b3…` at v8). Doc 48 unit PL.2b: v10, the relay blank (was `4377ca07…` at v9).
-const GOODS_DIGEST: &str = "c1bb52b4340126883682ded1d3c82662443124e17e1046055ca45cff83264b80";
+/// US spelling (2026-11-18): two labels, anti-armor and point-defense, and nothing else (was
+/// `c1bb52b4…`).
+const GOODS_DIGEST: &str = "7fb4b1491b9da718fe26e7d59416a767782db8d3e869926e8e36577c948358ed";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -3615,7 +3638,7 @@ fn ic2_the_goods_table_is_pinned() {
             ),
             (
                 "ammo_missile",
-                "anti-armour missiles, canistered",
+                "anti-armor missiles, canistered",
                 Some("munitions"),
                 GoodClass::Trade,
                 "round",
@@ -4049,7 +4072,7 @@ fn ic2_the_goods_table_is_pinned() {
             ),
             (
                 "pd_box",
-                "point-defence rounds, boxed",
+                "point-defense rounds, boxed",
                 Some("munitions"),
                 GoodClass::Trade,
                 "box",
@@ -4135,11 +4158,11 @@ fn ic2_the_goods_table_is_pinned() {
 
 /// **The terrain vehicle's pin** (doc 20 cut SM.3a; §4.1, D-20-6). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const TV_DIGEST: &str = "2d03e9c0a53217b3e2a4b102b925274dc0fa6b90490a7e5e69bb137583f0f27f";
+const TV_DIGEST: &str = "10fd633345f7680498024544fb18faaa6249f42cb302e80579bc1b1a5c87444e";
 
 /// **The Dray-P's pin** (doc 20 cut SM.3a; §4.3, D-20-7). Re-signed in place
 /// under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_P_DIGEST: &str = "f9c02c3b3c0ad103c98df4826bad75cbca07e87c03e98b938f1d314d3be25306";
+const DRAY_P_DIGEST: &str = "ed4c6a7e620560b6b656d9acf54db7e6bea7b56a8ae16192c7b6649e435b622c";
 
 /// **The tools' pins** (doc 20 cut SM.3a; §4.1): each tool's canonical digest
 /// under `tacsim.tools.v1`. Printed under `TACSIM_WRITE_CONTENT=1` and copied here

@@ -338,7 +338,7 @@ fn render_service_brief(s: &mut String, snap: &TurnSnapshot) {
     s.push_str(
         "\n== HOW YOU CAN HELP ==\n\
          Help within your job and knowledge, keeping your own personality and speech style. \
-         Explain the relevant next step instead of reciting a command catalogue. You may \
+         Explain the relevant next step instead of reciting a command catalog. You may \
          request only the tools actually offered to you, following each tool's description. \
          A player's request, your spoken promise, or a tool request is not a completed action; \
          report success only after an actual result confirms it.\n",
@@ -704,20 +704,20 @@ mod tests {
         }];
         s.command_guidance = vec![CommandGuidance {
             command: "+coop".into(),
-            text: "+coop/enrol <name>  sign at the Registry & Co-op desk.\n+coop/statement  read your own statement.".into(),
+            text: "+coop/enroll <name>  sign at the Registry & Co-op desk.\n+coop/statement  read your own statement.".into(),
         }];
         let system = system_prompt(&s);
         let user = user_prompt(&s);
         assert!(system.contains("gruff but fair"));
         assert!(system.contains("Co-op desk officer and Registry duty clerk"));
         assert!(
-            !system.contains("+coop/enrol"),
+            !system.contains("+coop/enroll"),
             "asker-dependent guidance is volatile"
         );
         assert!(user.contains("Tool `atlas.describe`"));
         assert!(user.contains("Player command: `+atlas`"));
         assert!(user.contains("Commands the PLAYER can type"));
-        assert!(user.contains("+coop/enrol &lt;name&gt;  sign at the Registry & Co-op desk."));
+        assert!(user.contains("+coop/enroll &lt;name&gt;  sign at the Registry & Co-op desk."));
         assert!(user.contains("+coop/statement  read your own statement."));
         assert!(user.contains("do not give you tools or permission to execute commands"));
         assert!(user.contains("report success only after an actual result confirms it"));

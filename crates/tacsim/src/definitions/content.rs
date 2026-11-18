@@ -644,16 +644,17 @@ pub const MISSILE_ROUND_JSON: &str = include_str!("../../content/ammunition/miss
 pub const MISSILE_LR_JSON: &str = include_str!("../../content/weapons/missile_lr.json");
 
 /// **The 30 mm autocannon** (16b cut AE.2; 16c N15): three rounds a pull every
-/// three seconds — the cannon's damage a second in bites of 20, each round its
-/// own draw under `burst:<seq>`. The scout car's first weapon from its version
+/// ten seconds since doc 49 unit CC.2 (three before), in bites of 20, each round
+/// its own draw under `burst:<seq>`. The scout car's first mount from its version
 /// 2, so its bare `FIRE`.
 pub const AUTOCANNON_30: &str = "tacsim.weapon.autocannon_30";
 
-/// **The missile rack** (16b cut AE.2; 16c N15): six rounds, one every ten
-/// seconds, at 250 m/s — a round with a flight time a moving target walks out
-/// from under. Doc 16 §3.5's scheduled impact is the whole of its mechanism: a
-/// longer schedule and a due event, and nothing new on the wire. The heavy's
-/// third weapon from its version 2, named `FIRE missiles`.
+/// **The missile rack** (16b cut AE.2; 16c N15): four rounds, one every thirty
+/// seconds since doc 49 unit CC.2 (six, one every ten, before), at 250 m/s — a
+/// round with a flight time a moving target walks out from under. Doc 16 §3.5's
+/// scheduled impact is the whole of its mechanism: a longer schedule and a due
+/// event, and nothing new on the wire. The heavy's third mount from its version
+/// 2, named `FIRE missiles`.
 pub const MISSILE_LR: &str = "tacsim.weapon.missile_lr";
 
 /// **The two weapons of 16b cut AE.2 and their ammunition, in `requires`
@@ -1086,7 +1087,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), lane v35 ↔ relay v26 (doc 48 unit PL.1), lane v36 ↔ relay v27 (doc 48 unit PL.2), lane v37 ↔ relay v28 (doc 48 unit PL.3), lane v38 ↔ relay v29 (doc 48 unit EX.3), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), lane v35 ↔ relay v26 (doc 48 unit PL.1), lane v36 ↔ relay v27 (doc 48 unit PL.2), lane v37 ↔ relay v28 (doc 48 unit PL.3), lane v38 ↔ relay v29 (doc 48 unit EX.3), lane v39 ↔ relay v30 (doc 48 unit PL.5), lane v40 ↔ relay v31 (doc 48 unit PL.6), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -1097,7 +1098,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 38;
+pub const LANE_VERSION: u32 = 40;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1172,8 +1173,10 @@ pub fn game_seed_sources() -> Vec<PackSource> {
         .collect()
 }
 
-/// **The yard's hull recipes** (doc 39 cut IN.9, §4.7): `tacsim.industry.hulls` v2 (doc 39 cut IN.9b: the nine
+/// **The yard's hull recipes** (doc 39 cut IN.9, §4.7): `tacsim.industry.hulls` v3 (doc 39 cut IN.9b: the nine
 /// templated designs beside v1's five), one recipe a buildable design, each a kit lot from its bill's bulk lines over its days.
+/// Doc 48 unit PL.6: v3, every hull but the six light ones requiring `tacsim.yard.heavy` too
+/// ([`crate::port::works::YARD_HEAVY_CAPABILITY`]), so Ceres's yard builds the light hulls.
 pub const INDUSTRY_HULLS_JSON: &str = include_str!("../../content/industry/hulls-v2.json");
 
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it

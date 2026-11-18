@@ -1216,7 +1216,7 @@ mod tests {
             first: 1,
             last: 200,
         });
-        request.validate().expect("bounded licence request");
+        request.validate().expect("bounded license request");
         let bytes = serde_json::to_vec(&request).expect("wire");
         assert_eq!(
             serde_json::from_slice::<super::InvokeRequest>(&bytes).expect("decode"),

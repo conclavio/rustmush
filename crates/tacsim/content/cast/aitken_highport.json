@@ -394,7 +394,7 @@
           "background": "Export Factor of Crisium Instruments, the forwarder for the chartered Earth-basin fabs; the Warrant signatory of Crisium's instrument boards ask.",
           "does_not_know": [
             "the fabs' charters beyond their names",
-            "what any mind licence says",
+            "what any mind license says",
             "the Habitat Board's business."
           ],
           "fallback": [
@@ -478,7 +478,7 @@
     }
   },
   "manifest": {
-    "digest": "83555c09fc61702701eca32e1c72de3743595bf73d313c99f907baec8355d2b7",
+    "digest": "cc318ebde7406b45165e13b17d863d8888c7733582f404ab14a8b2938e196289",
     "id": "tacsim.cast.aitken_highport",
     "kind": "campaign_seed",
     "requires": [

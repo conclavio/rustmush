@@ -166,7 +166,7 @@ impl ActionProvider for Provider {
             expires: None,
             presentation: mush_core::ActionPresentation::new(
                 "paid-resale-service",
-                "Complete retained paid licence custody",
+                "Complete retained paid license custody",
                 "Process the exact retained transfer intent.",
             )
             .map_err(|_| fail())?,

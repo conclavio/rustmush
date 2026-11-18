@@ -547,7 +547,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     assert!(seen.contains(&contact), "the lock is the contact: {seen}");
     assert!(
         seen.contains("band 1 of 2"),
-        "forty metres is the cannon's inner band: {seen}"
+        "forty meters is the cannon's inner band: {seen}"
     );
 
     // **16b cut F.2**: the percentage is the **arena's** line, said once when the
@@ -627,7 +627,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     );
     assert!(
         !outcome.contains("Blue Tank")
-            && !outcome.contains("armour")
+            && !outcome.contains("armor")
             && !outcome.contains("internals"),
         "and carries nothing about the target's own tank: {outcome}"
     );

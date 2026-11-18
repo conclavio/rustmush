@@ -15,10 +15,10 @@ or refunded resale never satisfies it. A later transfer does not erase the event
 
 Only that transfer's actual seller or buyer can authorize its reference in a
 contract where they are a party. The other explicitly authorized contract
-participants can then observe the result. Owning the licence later does not give
+participants can then observe the result. Owning the license later does not give
 access to somebody else's earlier transaction. Filed references expose only the
 public filing; lapse references require current holder/title authority.
 
-A fact condition does not transfer a licence, extend its term, release an old
+A fact condition does not transfer a license, extend its term, release an old
 claim or grant source access. Missing or unavailable evidence cannot settle a
 contract. Use the normal contract offer/accept flow after choosing terms.

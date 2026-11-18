@@ -56,7 +56,7 @@ fn org(rig: &Rig, name: &str) -> OrgId {
         .state()
         .orgs()
         .find(|o| o.name.as_str() == name)
-        .unwrap_or_else(|| panic!("the organisation {name}"))
+        .unwrap_or_else(|| panic!("the organization {name}"))
         .id
 }
 
@@ -821,8 +821,8 @@ pub(crate) fn file_and_list(
         .find(|row| row.get("commit") == Some(&json!(filing)))
         .expect("the House filing");
     let owner_licence: mush_roll::commerce::LicenceId =
-        serde_json::from_value(birth.get("licence").expect("its owner licence").clone())
-            .expect("an owner licence");
+        serde_json::from_value(birth.get("licence").expect("its owner license").clone())
+            .expect("an owner license");
     let room = world.deployment.venue.room;
     world
         .rig
@@ -961,9 +961,9 @@ pub(crate) fn buy(
             .rows("roll_mind_personal_paid_licence")
             .into_iter()
             .last()
-            .expect("the paid licence"),
+            .expect("the paid license"),
     )
-    .expect("a paid licence");
+    .expect("a paid license");
     paid.id()
 }
 
@@ -1003,7 +1003,7 @@ fn root_scope(rig: &Rig, name: &str) -> OrgScopeId {
         .expect("the Org owner")
         .state()
         .org(org)
-        .expect("the organisation")
+        .expect("the organization")
         .root_scope
 }
 
@@ -1056,7 +1056,7 @@ fn mw22_the_hull_rule_reads_a_real_lease_a_house_title_and_a_personal_title() {
     let occator = title_of(&world, tv).title_owner;
     assert!(
         matches!(occator, PrincipalId::Organization(_)),
-        "a leased rig is titled to its lessor's organisation: {occator:?}"
+        "a leased rig is titled to its lessor's organization: {occator:?}"
     );
     assert!(
         matches!(ask(&world, pilot), Ok(HullAuthority::Lease { ref lessor, .. }) if *lessor == occator),
@@ -1457,7 +1457,7 @@ async fn m8g_story_tier2_held_minds_seal_aboard() {
         tacsim::surface::dispatch::MIND_NO_LICENCE.replace("{licence}", &paid.get().to_string());
     assert!(
         refused.as_deref().is_some_and(|r| r.contains(&gone)),
-        "a resold licence is not the seller's to fly: {refused:?}"
+        "a resold license is not the seller's to fly: {refused:?}"
     );
     assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
     eprintln!("M8G_STORY phase=tier2.resold event=complete");
@@ -1678,7 +1678,7 @@ async fn m8g_story_zero_pc_procurement_buys_the_best_two_under_the_cap() {
                 .as_u64()
                 .or_else(|| row["licence"].as_str()?.parse().ok())
         })
-        .expect("a licence the House bought");
+        .expect("a license the House bought");
     let (pilot, tv) = (world.pilot, world.tvs[0]);
     god(
         &mut world.rig,
@@ -2253,7 +2253,7 @@ pub(crate) fn filed_of(world: &M8World, licence: mush_roll::commerce::LicenceId)
         .rows("roll_mind_initial_filing")
         .into_iter()
         .find(|row| row.get("licence") == Some(&json!(licence)))
-        .expect("the licence's filing");
+        .expect("the license's filing");
     row.get("filed")
         .and_then(|filed| filed.as_str()?.parse().ok())
         .unwrap_or_else(|| panic!("the filing names its filed revision: {row}"))
@@ -2441,7 +2441,7 @@ fn m8g_a_grey_core_reads_grey_to_the_inspection_and_is_seizable() {
             json!({"class":DieClass::I,"vault":stash.0}),
         );
         let lot: mush_inventory::LotId =
-            serde_json::from_value(die["lot"].clone()).expect("the grey die's lot");
+            serde_json::from_value(die["lot"].clone()).expect("the gray die's lot");
         // A certified Class I at Basin, which the grey core displaces.
         let first = world.integrate(pilot, payer, DieClass::I);
         let factory = world.deployment.hardware.factory;
@@ -2486,7 +2486,7 @@ fn m8g_a_grey_core_reads_grey_to_the_inspection_and_is_seizable() {
             params.clone(),
         );
         let grey: ObjId =
-            serde_json::from_value(completed["object"].clone()).expect("the grey core");
+            serde_json::from_value(completed["object"].clone()).expect("the gray core");
         world.perform("industry", "deliver_core_output", pilot, params);
         world.refit(
             (pilot, payer),
@@ -2503,13 +2503,13 @@ fn m8g_a_grey_core_reads_grey_to_the_inspection_and_is_seizable() {
     assert_eq!(record.provenance, Provenance::Grey);
     assert!(title_of(&world, core).encumbrances.is_empty());
     let seized = operator_says(&mut world, &format!("@registry/seize #{n}"));
-    eprintln!("M8G grey seize -> {seized}");
+    eprintln!("M8G gray seize -> {seized}");
     assert!(
         matches!(
             title_of(&world, core).encumbrances.as_slice(),
             [mush_economy::Encumbrance::Disputed { .. }]
         ),
-        "the grey core is seizable: {seized}"
+        "the gray core is seizable: {seized}"
     );
 }
 
@@ -2703,7 +2703,7 @@ pub(crate) fn claimed_launch(
     let admitted = |w: &mush_core::World| {
         tacsim::port_tick::pending_notices(w, pilot)
             .iter()
-            .filter(|notice| notice.starts_with("The Registry admits licence "))
+            .filter(|notice| notice.starts_with("The Registry admits license "))
             .count()
     };
     let queued_before = admitted(world.rig.tw.world());
@@ -3102,7 +3102,7 @@ fn claim_given_up(world: &mut M8World, n: usize, line: &str) -> AuthoritativeSub
         "the pilot is told once: {heard}"
     );
     let record = crate::excursions::record_of(&mut world.rig.tw, tv).expect("the record");
-    assert!(record.queued.is_none(), "the launch is cancelled");
+    assert!(record.queued.is_none(), "the launch is canceled");
     assert!(record.act.is_none() && record.excursion.is_none());
     assert!(crate::excursions::in_bay(&world.rig.tw, tv, &world.row));
     held.expect("the arm submitted the Open")

@@ -255,7 +255,7 @@ fn golden() -> String {
         );
         assert!(
             f_nep.count_colours(257) <= 256,
-            "neptune cockpit must stay within 256-colour Frame budget"
+            "neptune cockpit must stay within 256-color Frame budget"
         );
         cases.push(json!({
             "scene": "cockpit_neptune_triton",
@@ -270,7 +270,7 @@ fn golden() -> String {
         );
         assert!(
             f_rings.count_colours(257) <= 256,
-            "saturn+uranus cockpit must stay within 256-colour Frame budget"
+            "saturn+uranus cockpit must stay within 256-color Frame budget"
         );
         cases.push(json!({
             "scene": "cockpit_saturn_uranus_rings",
@@ -285,7 +285,7 @@ fn golden() -> String {
         );
         assert!(
             f_holo.count_colours(257) <= 256,
-            "holotank must stay within 256-colour Frame budget"
+            "holotank must stay within 256-color Frame budget"
         );
         cases.push(json!({
             "scene": "holotank_kirkwood_bubble",
@@ -300,7 +300,7 @@ fn golden() -> String {
         );
         assert!(
             f_dock.count_colours(257) <= 256,
-            "docking must stay within 256-colour Frame budget"
+            "docking must stay within 256-color Frame budget"
         );
         cases.push(json!({
             "scene": "docking_refinery_approach",

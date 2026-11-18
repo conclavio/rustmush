@@ -37,9 +37,9 @@
 //! authored), over an integer-generated relief with two seeded terraces whose
 //! rims refuse tracked and legged edges. The loop is the task's: the arena is
 //! stepped at `StepOutput::next_due_ms` — the substep lattice in absolute arena
-//! time — for `TACSIM_ARENA_S` arena seconds (default 30) after the warm-up, plus
-//! a seeded stand-in for the timer's overshoot, `TACSIM_WAKE_JITTER_MS` (default
-//! 0). Every wake is also folded into 500 ms windows of arena time, and the lens
+//! time — for `TACSIM_ARENA_S` arena seconds (default 90 since doc 49 unit CC.2,
+//! 30 before) after the warm-up, plus a seeded stand-in for the timer's
+//! overshoot, `TACSIM_WAKE_JITTER_MS` (default 0). Every wake is also folded into 500 ms windows of arena time, and the lens
 //! binds both: 20 ms per wake on both cohorts, and per window 22 ms on the CI
 //! cohort and 32 ms on the authored one — the production VPS's figures since 16c
 //! `T-109` (below); 12, 12 and 20 on ALIEN18 before it (17.5 ms at 16b cut
@@ -466,9 +466,12 @@ impl Knobs {
 /// 16b §5 H1: sixty pulses is a minute of ground cadence at the default period.
 const DEFAULT_PULSES: u32 = 60;
 
-/// The arena lanes' measured window, arena seconds (16b cut U.1): the thirty
-/// the sixty 500 ms pulses they used to step covered.
-const DEFAULT_ARENA_S: u32 = 30;
+/// The arena lanes' measured window, arena seconds (16b cut U.1: the thirty the
+/// sixty 500 ms pulses they used to step covered). **Doc 49 unit CC.2** lengthens
+/// it to ninety: at the ruled cycles (the cannon's 15 s, the rack's 30 s) thirty
+/// seconds held two cannon rounds a hull, and the window should see a fight's
+/// rhythm, so it is six cannon cycles and three of the rack's.
+const DEFAULT_ARENA_S: u32 = 90;
 
 /// **The long-run lane's measured window**, arena seconds (16b cut U.2, 16c
 /// `T-36`): ten minutes, sampled every [`LONG_RUN_SAMPLE_S`].
@@ -2623,7 +2626,7 @@ fn y2_the_orders_counter_counts_orders_and_not_unit_lines() {
                     draws: Vec::new(),
                     hash: 0,
                 };
-                bytes.push_str(&serde_json::to_string(&event).expect("a ledger line serialises"));
+                bytes.push_str(&serde_json::to_string(&event).expect("a ledger line serializes"));
                 bytes.push('\n');
             }
         }
@@ -7130,7 +7133,7 @@ async fn measure_fan_out(knobs: &Knobs) {
     assert_eq!(state, Some(MatchState::Running), "{started}");
     let match_id = match_::centre_of(tw.world())
         .and_then(|centre| centre.match_id)
-        .expect("the centre adopted the match");
+        .expect("the center adopted the match");
     let bound = pilots
         .iter()
         .filter(|pilot| {

@@ -40,7 +40,7 @@ pub const HULL_VERB: &str = "+hull";
 /// The help text.
 pub const HULL_HELP: &str = "+hull/box #<hull> [n]  the last n lines of a hull's black box, oldest first (8 by default, 32 at most).
 Each trip's out and in: when it left and from where, the mind sealed for the trip, its class,
-whether it ran under the governor, the state of its licence and the first eight characters of
+whether it ran under the governor, the state of its license and the first eight characters of
 its seal, as the box recorded them. You can read the box of a hull whose title you hold, or the
 lines since your lease began on a hull you lease; staff read any.";
 
@@ -263,7 +263,7 @@ fn render(line: &BlackBoxLine, hangar: &str, recovered: Option<&str>) -> Option<
             Some(vec![
                 out,
                 format!(
-                    "  {mind} · {} · {} · licence {state} · seal {}",
+                    "  {mind} · {} · {} · license {state} · seal {}",
                     class_word(*class),
                     if *governed { "governed" } else { "ungoverned" },
                     digest.get(..8).unwrap_or(digest)
@@ -393,7 +393,7 @@ mod tests {
         let open = render(&open_line(true), &carrier, None).expect("a sealed open");
         assert_eq!(open.len(), 2, "{open:?}");
         assert!(
-            open[1].starts_with("  ") && open[1].contains(" · licence recalled · seal dddddddd")
+            open[1].starts_with("  ") && open[1].contains(" · license recalled · seal dddddddd")
         );
         assert!(open[1].contains("Class III · ungoverned"), "{open:?}");
         let mut absent: serde_json::Value = serde_json::to_value(open_line(true)).expect("encodes");

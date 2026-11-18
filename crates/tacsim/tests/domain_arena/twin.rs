@@ -1198,28 +1198,35 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// goes red). `floor_held` 0 → 1,039 (a slot held at its odds), `unwarranted` 0 → 12 (a
 /// cited fresh-lock shot refused by its own slot's reserve or floor), `fallback` 0 → 1;
 /// `first_divergence_ms` stands, and nothing is `unlawful`.
+/// **Doc 49 unit CC.2 re-records it** (Q-49-3, Q-49-22): the ruled palette's slower cycles and
+/// smaller loads (the cannon at 15 s and 24 rounds, the coaxial gun at 5 s and 600) lengthen
+/// every match (231,250 → 262,250 ms on seed 2350; the fifteen ends from 167,000–240,500 to
+/// 248,500–412,750), shots fall 1,058/936 → 670/531 and thinks rise 11,256 → 16,502, and the
+/// split moves 13–2 → 10–5. `floor_held` 1,039 → 4,437 (more thinks at the floor between slow
+/// rounds), `unwarranted` 12 → 18, `fallback` 1 → 2; `first_divergence_ms` stands, and nothing
+/// is `unlawful`.
 const M4_5_POOLED_RECORD: [&str; 21] = [
-    "twin_match: seed=2350 end=elimination_red t_ms=231250",
-    "twin_match: seed=2351 end=elimination_red t_ms=197500",
-    "twin_match: seed=2352 end=elimination_red t_ms=167000",
-    "twin_match: seed=2353 end=elimination_red t_ms=215000",
-    "twin_match: seed=2354 end=elimination_red t_ms=227750",
-    "twin_match: seed=2355 end=elimination_red t_ms=240500",
-    "twin_match: seed=2356 end=elimination_red t_ms=193750",
-    "twin_match: seed=2357 end=elimination_red t_ms=197750",
-    "twin_match: seed=2358 end=elimination_red t_ms=192000",
-    "twin_match: seed=2359 end=elimination_blue t_ms=231250",
-    "twin_match: seed=2360 end=elimination_red t_ms=200500",
-    "twin_match: seed=2361 end=elimination_blue t_ms=206000",
-    "twin_match: seed=2362 end=elimination_red t_ms=208750",
-    "twin_match: seed=2363 end=elimination_red t_ms=198750",
-    "twin_match: seed=2364 end=elimination_red t_ms=196500",
-    "twin_pooled: n=15 red_wins=13 blue_wins=2 draws=0",
-    "twin_divergences: tiebreak=83 line=17 reads_dead=0 landing=11256 no_line=19 fan=11 order_end=0 deg_round=0 fallback=1 cond_fire=1899 cond_stale=3 unwarranted=12 unlawful=0 floor_held=1039 slot_parallel=256 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=11256 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
-    "twin_gate_b: side=red shots=1058 shots_per_min=20.449 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=17,withdraw=0,disabled=12] wrecked=12 cond_shots=1003 parallel=129",
-    "twin_gate_b: side=blue shots=936 shots_per_min=18.091 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=7,withdraw=0,disabled=22] wrecked=22 cond_shots=896 parallel=127",
-    "twin_gate_b_pool: path_queries=602 corner_refusals=0",
+    "twin_match: seed=2350 end=elimination_blue t_ms=262250",
+    "twin_match: seed=2351 end=elimination_blue t_ms=321750",
+    "twin_match: seed=2352 end=elimination_red t_ms=250500",
+    "twin_match: seed=2353 end=elimination_blue t_ms=411750",
+    "twin_match: seed=2354 end=elimination_red t_ms=294750",
+    "twin_match: seed=2355 end=elimination_blue t_ms=354500",
+    "twin_match: seed=2356 end=elimination_blue t_ms=353000",
+    "twin_match: seed=2357 end=elimination_red t_ms=251750",
+    "twin_match: seed=2358 end=elimination_red t_ms=293000",
+    "twin_match: seed=2359 end=elimination_red t_ms=248500",
+    "twin_match: seed=2360 end=elimination_red t_ms=263750",
+    "twin_match: seed=2361 end=elimination_red t_ms=338750",
+    "twin_match: seed=2362 end=elimination_red t_ms=412750",
+    "twin_match: seed=2363 end=elimination_red t_ms=325750",
+    "twin_match: seed=2364 end=elimination_red t_ms=294500",
+    "twin_pooled: n=15 red_wins=10 blue_wins=5 draws=0",
+    "twin_divergences: tiebreak=367 line=12 reads_dead=0 landing=16502 no_line=4 fan=11 order_end=0 deg_round=0 fallback=2 cond_fire=1126 cond_stale=3 unwarranted=18 unlawful=0 floor_held=4437 slot_parallel=10 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=16502 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_gate_b: side=red shots=670 shots_per_min=8.595 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=18,withdraw=0,disabled=11] wrecked=11 cond_shots=633 parallel=6",
+    "twin_gate_b: side=blue shots=531 shots_per_min=6.812 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=2,approach=0,engage=11,withdraw=0,disabled=17] wrecked=16 cond_shots=493 parallel=4",
+    "twin_gate_b_pool: path_queries=561 corner_refusals=0",
 ];
 
 /// **The stock pool, pinned to its record** (17b cut M4.5; until then the
@@ -1626,8 +1633,12 @@ fn m1b2_the_probes_law_counters_count_on_a_field_that_presents_nothing() {
 // three lanes
 // ---------------------------------------------------------------------------
 
-/// The mixed lane's cap, arena seconds (17b §1 (iii)).
-const MIXED_CAP_S: u32 = 300;
+/// The mixed lane's cap, arena seconds (17b §1 (iii)): **the match's own 900 since doc 49 unit
+/// CC.2**, 300 before. Under the ruled palette (a cannon round every 15 s, a coaxial burst every
+/// 5 s) no match of the fifteen made a turret kill inside 300 s, so the lane's coverage (a mind
+/// dropped to the ROM, [`Coverage::report`]) was empty; at 900 eight of the fifteen end in an
+/// elimination, from 303,500 to 546,750 ms, and seven reach the cap.
+const MIXED_CAP_S: u32 = 900;
 
 /// The object a journalled line's `key` names (`target` of a `hit`, `unit`
 /// of a `unit_disabled`), or `None`.
@@ -1810,10 +1821,20 @@ impl Coverage {
 /// longer and the counts move — `pooled` 10,015 / 291 → 10,851 / 405, `mixed` 12,884 / 449 →
 /// 12,866 / 345, `lance` 7,260 / 126 → 7,142 / 159, and [`POOLED_MATCHES_WITH_STAND_IN`]
 /// 14 → 12 — with no divergence on any lane (every think compared, native against Rhai).
+///
+/// **Doc 49 unit CC.2's re-bless of all three** (Q-49-3, Q-49-22): the ruled palette's slower
+/// cycles and smaller loads lengthen every fight, and the mixed lane's cap rises to the match's
+/// 900 s ([`MIXED_CAP_S`]) — `pooled` 10,851 / 405 → 16,066 / 436, `mixed` 12,866 / 345 →
+/// 33,734 / 534 (at the new cap), `lance` 7,142 / 159 → 8,433 / 133, and
+/// [`POOLED_MATCHES_WITH_STAND_IN`] 12 → 8 — with no divergence on any lane.
+/// **Doc 49 unit CC.3's re-bless of the lance lane** (Q-49-6, Q-49-27, Q-49-28): its laser
+/// tanks carry the 105 beside the laser, a beam counts a fifth against armour, and heat
+/// refuses a shot that would cross the ceiling, so the lance's fights moved: 8,433 / 133 →
+/// 8,105 / 177, with no divergence. The two-tank lanes field no laser and are unmoved.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
-    ("pooled", (10_851, 405)),
-    ("mixed", (12_866, 345)),
-    ("lance", (7_142, 159)),
+    ("pooled", (16_066, 436)),
+    ("mixed", (33_734, 534)),
+    ("lance", (8_105, 177)),
 ];
 
 /// **The two-tank lanes' bound on a Rhai think's operations plus fees**, the
@@ -1821,14 +1842,17 @@ const COVERAGE: [(&str, (usize, usize)); 3] = [
 /// until doc 49 unit CC.1, the owner's ruling of 2026-11-16, 1,350 (90% of class
 /// I's 1,500). CC.1's discipline (the Line card's floor and reserve, the
 /// withdrawal at the reserve) took their peaks from 1,195 (pooled) and 1,168
-/// (mixed) to 1,302 and 1,275; the follow-up unit CC.1b cuts the Engage path's
-/// cost back toward this bound on every lane.
+/// (mixed) to 1,302 and 1,275, and CC.2's palette to 1,263 on both. Doc 49 unit
+/// CC.1b cut the Engage path's cost, behaviour unchanged: both peak at 1,173. The
+/// bound is the owner's to lower.
 const TWO_TANK_THINK_BOUND: u64 = 1_350;
 
 /// **The lance lane's bound on a Rhai think's operations plus fees** (a max past
 /// it is a STOP): none until doc 49 unit CC.1, the owner's ruling of 2026-11-16
 /// ("Guard at 1,450"). Its twelve-row views are the costliest: main peaked at
-/// 1,308, CC.1 at 1,424, under class I's 1,500 by 76; CC.1b aims it at 1,350.
+/// 1,308, CC.1 at 1,424 and CC.2 at 1,376; doc 49 unit CC.1b cut the Engage
+/// path's cost to 1,269, under the two-tank lanes' 1,350. The bound is the
+/// owner's to lower.
 const LANCE_THINK_BOUND: u64 = 1_450;
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
@@ -1836,7 +1860,8 @@ const LANCE_THINK_BOUND: u64 = 1_450;
 /// Doc 36 cut GC.2: 11 → 12, with the re-bless of [`COVERAGE`]. Doc 40 cut
 /// FR.5: 12 → 14, with the same (§4a): a jammed or damaged core reads a class
 /// down, so more hulls finish a match on the ROM. Doc 49 unit CC.1: 14 → 12, with the same.
-const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
+/// Doc 49 unit CC.2: 12 → 8, with the same (the ruled palette).
+const POOLED_MATCHES_WITH_STAND_IN: usize = 8;
 
 /// **Gate A on unarmed hulls, under fire — and since 17b cut M2.6 on the
 /// armed hulls beside them** (17b cuts M2.5 and M2.6; doc 17 §17 "Gate A",
@@ -1844,8 +1869,9 @@ const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
 /// them*; D-UM-48; 17b §1 (iii)'s mixed lane and §5's adv F9 — Gate A's
 /// second lane): the proving ground at the fifteen seeds, ONE armed
 /// `Muster::mind` and ONE `Muster::mind_unarmed` a side, every mind flown by
-/// `support::TwinRunner` in its ASSERTING mode, to the end or 300 arena
-/// seconds (`support::play`, one substep a pulse, the hashes accumulated).
+/// `support::TwinRunner` in its ASSERTING mode, to the end or [`MIXED_CAP_S`]
+/// arena seconds (`support::play`, one substep a pulse, the hashes
+/// accumulated).
 ///
 /// * **every think of every hull is Gate A**: no Rhai fault and T2's intents
 ///   and memory bytes T1's — the twin panics on the first that is not, with
@@ -1854,7 +1880,9 @@ const POOLED_MATCHES_WITH_STAND_IN: usize = 12;
 ///   allowance for a fire-only divergence on an armed hull — the armed count
 ///   — is retired);
 /// * **the unarmed hulls are under fire**: across the seeds some unarmed hull
-///   takes a hit, some withdraws, and some rallies or is disabled (a
+///   takes a hit, some hull withdraws (an unarmed one until doc 49 unit CC.2;
+///   under its palette an armed one at its reserve), and some unarmed hull
+///   rallies or is disabled (a
 ///   `unit_disabled`/`unit_destroyed` line — a wreck thinks no more, so the
 ///   line is not a compared think) — the counts are asserted nonzero, so the
 ///   lane is not a quiet one;
@@ -1894,6 +1922,8 @@ fn m2_gate_a_on_a_mixed_pool() {
     let mut budget: Vec<u64> = Vec::new();
     let mut ops: Vec<u64> = Vec::new();
     let (mut hits, mut withdrew, mut rallied, mut disabled) = (0_u32, 0_u32, 0_u32, 0_u32);
+    // Doc 49 unit CC.2: the armed hulls' withdrawals (at their reserve, CC.1's edge, or hurt).
+    let mut armed_withdrew = 0_u32;
     // `[unarmed, armed]` thinks at the `Disabled` edge, rallied, dwelling.
     let (mut at_disabled, mut at_rallied, mut at_dwell) = ([0_u32; 2], [0_u32; 2], [0_u32; 2]);
     let mut coverage = Coverage::default();
@@ -1949,6 +1979,13 @@ fn m2_gate_a_on_a_mixed_pool() {
             seed_withdrew += u32::from(mine.iter().any(|thought| thought.state == 4));
             seed_rallied += u32::from(mine.iter().any(|thought| thought.rallied));
         }
+        for unit in &armed_seen {
+            armed_withdrew += u32::from(
+                thoughts
+                    .iter()
+                    .any(|thought| thought.unit == *unit && thought.state == 4),
+            );
+        }
         for event in &played.events {
             let (word, unit) = kind_and_unit(event);
             if word == "hit"
@@ -1985,7 +2022,7 @@ fn m2_gate_a_on_a_mixed_pool() {
         "m2_mixed_pool: thinks={thinks} unarmed_thinks={unarmed_thinks} unarmed_divergences=0 \
          armed_thinks={armed_thinks} armed_divergences=0 (every think asserted) \
          hits_on_unarmed={hits} unarmed_withdrew={withdrew} unarmed_rallied={rallied} \
-         unarmed_disabled={disabled}"
+         unarmed_disabled={disabled} armed_withdrew={armed_withdrew}"
     );
     println!(
         "m2_mixed_ops: ops_plus_fee_p50={p50} p99={p99} max={max} ops_p50={ops_p50} \
@@ -2006,7 +2043,16 @@ fn m2_gate_a_on_a_mixed_pool() {
         "both kinds of hull thought"
     );
     assert!(hits > 0, "no unarmed hull was hit");
-    assert!(withdrew > 0, "no unarmed hull withdrew");
+    // Doc 49 unit CC.2: under the ruled palette (a cannon round every 15 s, a coaxial burst
+    // every 5 s, the Line card's floor) an unarmed hull loses sections to heavier, rarer rounds
+    // and is disabled before it wears down to the withdraw edge: none of the fifteen withdrew at
+    // the 900 s cap. The edge stays Gate A's here through the armed hulls, which withdraw at
+    // their reserve (CC.1) or hurt; the unarmed arm is held by `tacsim::minds::content`'s
+    // `m2_mirror_the_withdraw_dwell_and_the_rally`.
+    assert!(
+        withdrew + armed_withdrew > 0,
+        "no hull withdrew (unarmed {withdrew}, armed {armed_withdrew})"
+    );
     assert!(
         rallied + disabled > 0,
         "no unarmed hull rallied or was disabled"
@@ -3229,4 +3275,290 @@ fn twin_rhai_timing() {
         started.elapsed().as_millis()
     );
     assert!(!pooled.is_empty() && !lance.is_empty() && !plain.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Doc 49 unit CC.2: the ruled palette, measured
+// ---------------------------------------------------------------------------
+
+/// **One side's account of a measured fight**: per mount, the rounds it fired
+/// and the rounds that hit, read off the tape.
+#[derive(Default, Debug, Clone)]
+struct MountTally {
+    fired: u64,
+    hit: u64,
+}
+
+/// One measured fight (doc 49 unit CC.2): how it ended and when, each side's
+/// tallies by mount, and each mind's withdrawal — none, at its reserve (`dry`)
+/// or hurt.
+struct Measured {
+    ended: Option<EndReason>,
+    t_ms: i64,
+    tallies: [std::collections::BTreeMap<String, MountTally>; 2],
+    withdrew: [Option<&'static str>; 2],
+}
+
+/// The loads a hull carries, by mount, read off its arena row.
+fn loads_of(arena: &Arena, unit: ObjId) -> std::collections::BTreeMap<String, u32> {
+    arena
+        .unit(unit)
+        .map(|state| {
+            state
+                .weapons
+                .iter()
+                .map(|weapon| (weapon.id.to_string(), weapon.count_per_load))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **A pilot who fires whenever a mount is ready** (doc 49 unit CC.2's human
+/// side): it starts up, holds its muster, locks the nearest hostile contact and
+/// fires every mount that is ready, loaded and reaches it, at any odds and down
+/// to its last round, as a player pressing `FIRE` on every ready row would. It
+/// reads its own cockpit frame, the last one the arena handed out (a pilot has no
+/// mind view).
+fn trigger_happy(
+    arena: &Arena,
+    unit: ObjId,
+    frame: &tacsim::arena::step::Frame,
+    seq: &mut u64,
+) -> Vec<tacsim::arena::intents::Intent> {
+    use tacsim::arena::state::Power;
+    let mut kinds: Vec<IntentKind> = Vec::new();
+    if frame.power == Power::Off {
+        kinds.push(IntentKind::Startup);
+    } else if frame.power == Power::Online {
+        let target = frame
+            .contacts
+            .iter()
+            .filter(|row| row.relation == tacsim::arena::party::Relation::Hostile)
+            .min_by_key(|row| row.range_cm);
+        if let Some(row) = target {
+            if frame.lock == Some(row.id) {
+                for weapon in &frame.weapons {
+                    let reaches = weapon
+                        .bands_cm
+                        .last()
+                        .is_some_and(|reach| u64::from(*reach) >= row.range_cm);
+                    if weapon.ready && weapon.rounds > 0 && reaches {
+                        kinds.push(IntentKind::Fire {
+                            weapon: weapon.id.clone(),
+                            slot: None,
+                        });
+                    }
+                }
+            } else {
+                kinds.push(IntentKind::Lock { contact: row.id });
+            }
+        }
+    }
+    kinds
+        .into_iter()
+        .map(|kind| {
+            *seq += 1;
+            let channel = kind.channel_required();
+            tacsim::arena::intents::Intent {
+                unit,
+                channel,
+                epoch: arena.epochs.current(unit, channel),
+                kind,
+                seq: *seq,
+            }
+        })
+        .collect()
+}
+
+/// **Fly one measured fight** on the proving ground: red against blue at
+/// `seed`, every mind on a counting twin (so each think's state is read), red
+/// flown by [`trigger_happy`] when `human`, to the end or 900 arena seconds.
+fn measured_fight(world: &mush_testkit::TestWorld, seed: u64, human: bool) -> Measured {
+    let red_muster = if human {
+        Muster::piloted(PartyId::RED, 1)
+    } else {
+        Muster::mind(PartyId::RED, 1)
+    };
+    let mut arena = support::shipped_arena_seeded(
+        world,
+        &[&[red_muster], &[Muster::mind(PartyId::BLUE, 1)]],
+        seed,
+    );
+    let twin = Arc::new(support::TwinRunner::counting(&arena.arena_cfg));
+    arena.mind_runner = twin.clone();
+    let units = [
+        support::tank(world, PartyId::RED, 1),
+        support::tank(world, PartyId::BLUE, 1),
+    ];
+    // The pilot in red's seat, so the arena sends it its cockpit frames.
+    let pilot = ObjId(900_001);
+    if human {
+        let epoch = arena
+            .epochs
+            .current(units[0], tacsim::arena::state::Channel::Helm);
+        arena.seat_pilot(pilot, units[0], epoch);
+    }
+    let loads = [loads_of(&arena, units[0]), loads_of(&arena, units[1])];
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut seq = 0_u64;
+    let mut wall = arena.now_ms;
+    let mut cockpit: Option<tacsim::arena::step::Frame> = None;
+    let ended = loop {
+        let intents = match (&cockpit, human) {
+            (Some(frame), true) => trigger_happy(&arena, units[0], frame, &mut seq),
+            _ => Vec::new(),
+        };
+        let out = arena.step_settled(wall, &[], &intents);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        if let Some((_, frame)) = out.frames.iter().rev().find(|(seat, _)| *seat == pilot) {
+            cockpit = Some(frame.clone());
+        }
+        if out.ended.is_some() {
+            break out.ended;
+        }
+        if arena.now_ms >= 900_000 {
+            break None;
+        }
+        wall = arena.now_ms + arena.substep_len_ms();
+    };
+    let events = support::ledger_events(&mut arena, &mut bytes);
+    let mut weapon_of: std::collections::BTreeMap<(ObjId, u64), String> =
+        std::collections::BTreeMap::new();
+    let mut tallies: [std::collections::BTreeMap<String, MountTally>; 2] = Default::default();
+    // (side, mount, rounds fired before the millisecond) for the withdrawal's reading.
+    let mut fired_at: Vec<(usize, String, i64, u64)> = Vec::new();
+    for event in &events {
+        match &event.kind {
+            tacsim::arena::ledger::EventKind::Fired {
+                unit,
+                weapon,
+                shot_seq,
+                rounds,
+                ..
+            } => {
+                if let Some(side) = units.iter().position(|u| u == unit) {
+                    weapon_of.insert((*unit, *shot_seq), weapon.to_string());
+                    tallies[side].entry(weapon.to_string()).or_default().fired +=
+                        u64::from(*rounds);
+                    fired_at.push((side, weapon.to_string(), event.t_ms, u64::from(*rounds)));
+                }
+            }
+            tacsim::arena::ledger::EventKind::Hit {
+                unit,
+                shot_seq,
+                rounds,
+                ..
+            } => {
+                if let (Some(side), Some(weapon)) = (
+                    units.iter().position(|u| u == unit),
+                    weapon_of.get(&(*unit, *shot_seq)),
+                ) {
+                    tallies[side].entry(weapon.clone()).or_default().hit += u64::from(*rounds);
+                }
+            }
+            _ => {}
+        }
+    }
+    let thoughts = twin.thoughts();
+    let mut withdrew: [Option<&'static str>; 2] = [None, None];
+    for (side, unit) in units.iter().enumerate() {
+        let Some(first) = thoughts.iter().find(|thought| {
+            thought.unit == *unit && thought.state == MachineState::Withdraw.code()
+        }) else {
+            continue;
+        };
+        let dry = loads[side].iter().all(|(mount, load)| {
+            let spent: u64 = fired_at
+                .iter()
+                .filter(|(s, m, t, _)| *s == side && m == mount && *t <= first.t_ms)
+                .map(|(_, _, _, rounds)| *rounds)
+                .sum();
+            let left = u64::from(*load).saturating_sub(spent);
+            left <= u64::from(*load) * u64::from(tacsim::arena::card::LINE_RESERVE_PCT) / 100
+        });
+        withdrew[side] = Some(if dry { "dry" } else { "hurt" });
+    }
+    Measured {
+        ended: ended.map(|end| end.reason),
+        t_ms: arena.now_ms,
+        tallies,
+        withdrew,
+    }
+}
+
+/// **Doc 49 unit CC.2: the ruled palette, measured** (the cut note's figures;
+/// a measurement, never a gate, run by hand). Thirty one-against-one fights of
+/// the stock mind on the shipped line tank on the proving ground, seeds 2,350
+/// to 2,379, and thirty more with red flown by a pilot who fires whenever a
+/// mount is ready ([`trigger_happy`]). Each fight prints a `cc2_fight:` line
+/// (its end, its length against the 900 s cap, each side's rounds fired and
+/// hit by mount, each mind's withdrawal: at its reserve, `dry`, or `hurt`);
+/// the totals print as `cc2_palette:` lines.
+///
+/// `cargo test --release -p tacsim --test domain_arena twin::cc2_the_ruled_palette_measured --
+/// --ignored --exact --nocapture`
+#[test]
+#[ignore = "doc 49 unit CC.2's measured fights: a measurement run by hand, never a gate"]
+fn cc2_the_ruled_palette_measured() {
+    let world = support::booted_world();
+    for (kind, human) in [("mind_mind", false), ("human_mind", true)] {
+        let mut lengths: Vec<i64> = Vec::new();
+        let mut ends: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        let mut totals: [std::collections::BTreeMap<String, MountTally>; 2] = Default::default();
+        let mut withdrawals: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        for seed in 2_350_u64..2_380 {
+            let fight = measured_fight(&world, seed, human);
+            let end = match fight.ended {
+                Some(EndReason::Elimination {
+                    winner: Some(PartyId::RED),
+                }) => "red",
+                Some(EndReason::Elimination {
+                    winner: Some(PartyId::BLUE),
+                }) => "blue",
+                Some(EndReason::Elimination { winner: None }) => "draw",
+                Some(EndReason::Spent) => "spent",
+                Some(_) => "other",
+                None => "cap",
+            };
+            *ends.entry(end.to_owned()).or_default() += 1;
+            lengths.push(fight.t_ms);
+            for (side, tally) in fight.tallies.iter().enumerate() {
+                for (mount, counted) in tally {
+                    let total = totals[side].entry(mount.clone()).or_default();
+                    total.fired += counted.fired;
+                    total.hit += counted.hit;
+                }
+            }
+            for (side, why) in fight.withdrew.iter().enumerate() {
+                if let Some(why) = why {
+                    *withdrawals
+                        .entry(format!("{}_{why}", ["red", "blue"][side]))
+                        .or_default() += 1;
+                }
+            }
+            println!(
+                "cc2_fight: kind={kind} seed={seed} end={end} t_ms={} red={:?} blue={:?} \
+                 withdrew={:?}",
+                fight.t_ms, fight.tallies[0], fight.tallies[1], fight.withdrew
+            );
+        }
+        lengths.sort_unstable();
+        let mean = lengths.iter().sum::<i64>() / i64::try_from(lengths.len()).unwrap_or(1);
+        println!(
+            "cc2_palette: kind={kind} ends={ends:?} length_ms min={} median={} mean={mean} max={} \
+             withdrawals={withdrawals:?}",
+            lengths.first().copied().unwrap_or(0),
+            lengths.get(lengths.len() / 2).copied().unwrap_or(0),
+            lengths.last().copied().unwrap_or(0),
+        );
+        for (side, tally) in totals.iter().enumerate() {
+            println!(
+                "cc2_palette: kind={kind} side={} rounds={tally:?}",
+                ["red", "blue"][side]
+            );
+        }
+    }
 }

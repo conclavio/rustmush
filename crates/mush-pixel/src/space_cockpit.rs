@@ -858,7 +858,7 @@ mod tests {
         let colours = frame.count_colours(256);
         assert!(
             (10..=64).contains(&colours),
-            "expected rich space cockpit within 256-colour limit, got {colours}"
+            "expected rich space cockpit within 256-color limit, got {colours}"
         );
     }
 

@@ -37,7 +37,7 @@ pub const NO_SUCH_VENDOR: &str = "No such vendor.";
 /// The same, for a market maker.
 pub const NO_SUCH_SOURCE: &str = "No such market source.";
 /// The same, for a catalogue entry.
-pub const NO_SUCH_ENTRY: &str = "No such catalogue entry.";
+pub const NO_SUCH_ENTRY: &str = "No such catalog entry.";
 
 /// The longest a listing stands before it lapses, in seconds, and the ceiling on a
 /// caller-supplied window.
@@ -316,7 +316,7 @@ pub fn load_pack(
         .map_or(0, |s| s.entries().count());
     if held.saturating_add(net_new) > crate::record::MAX_CATALOG_ENTRIES {
         return Err(MarketError::bad(format!(
-            "pack '{pack}' would take the catalogue past the {} entries this server holds.",
+            "pack '{pack}' would take the catalog past the {} entries this server holds.",
             crate::record::MAX_CATALOG_ENTRIES
         )));
     }
@@ -422,7 +422,7 @@ pub fn register_vendor(
     }
     if buy_permille > 1_000 {
         return Err(MarketError::bad(
-            "A vendor's buy rate is a permille of the catalogue baseline, 0..=1000.",
+            "A vendor's buy rate is a permille of the catalog baseline, 0..=1000.",
         ));
     }
     if let Some(existing) = ctx
@@ -610,6 +610,11 @@ pub struct ListingSpec {
     pub visibility: MarketVisibility,
     /// How long it stands, in seconds.
     pub ttl_secs: i64,
+    /// **A private listing's one buyer** (doc 48 cut EX.3; Q-48-9): the listing is `Hidden`,
+    /// seen and taken up by that buyer alone (and seen by its seller and staff), and refused to
+    /// anyone else at quote and at accept ([`crate::seller::PRIVATE_TO_OTHER`]). It trades on
+    /// the tape as any other: only who may see and accept it narrows.
+    pub private_to: Option<PrincipalId>,
 }
 
 /// **Publish a listing** (B5).
@@ -652,6 +657,12 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             "That vendor's organization is not trading.",
         ));
     }
+    // Doc 48 cut EX.3: a private listing names one other live person (`post_ask`'s rule).
+    crate::seller::check_private(
+        ctx.w,
+        &PrincipalId::Organization(vendor.org),
+        spec.private_to.as_ref(),
+    )?;
     let Some(entry) = ctx
         .w
         .module_state::<MarketStore>()
@@ -699,7 +710,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         if entry.baseline.is_none_or(|b| b.minor() <= 0) {
             return Err(MarketError::bad(format!(
                 "'{}' carries no reference price, and a market maker prices against one. Give the \
-                 catalogue entry a baseline, or stock it from the vendor's own vault.",
+                 catalog entry a baseline, or stock it from the vendor's own vault.",
                 entry.name
             )));
         }
@@ -919,6 +930,11 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
     let exact_lot = spec.source.exact_lot();
+    let visibility = if spec.private_to.is_some() {
+        MarketVisibility::Hidden
+    } else {
+        spec.visibility
+    };
     put_listing(
         ctx,
         Listing {
@@ -932,7 +948,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             object: spec.object,
             price: spec.price,
             quantity: spec.quantity,
-            visibility: spec.visibility,
+            visibility,
             expires: EconomicDeadline {
                 clock: EconomicClock::RealUtc,
                 at: now.saturating_add(ttl),
@@ -940,7 +956,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             revision: 1,
             draw: Some(draws),
             account: None,
-            private_to: None,
+            private_to: spec.private_to,
             escrow: None,
         },
     );
@@ -1006,9 +1022,7 @@ fn draw_listing_precheck(
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     }
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
-        return Err(MarketError::bad(
-            "That catalogue code is not a commodity id.",
-        ));
+        return Err(MarketError::bad("That catalog code is not a commodity id."));
     };
     if ctx
         .w
@@ -1250,6 +1264,51 @@ pub fn restock_ask(ctx: &mut Ctx<'_>, spec: RestockSpec) -> Result<u64, MarketEr
     Ok(quantity)
 }
 
+/// **Re-price a house's standing listing in place** (doc 48 cut EX.8, Q-48-18): the venue's price
+/// rule moves a vendor's ask or bid by its stock, and this writes the new per-unit price on the
+/// listing, bumping its revision as every listing write does, so an open quote on it goes stale
+/// (D16) and its buyer quotes again at the new price. A sale already accepted keeps the price it
+/// was struck at. A personal listing is the player's own price and is never moved; a lapsed one is
+/// gone.
+/// The rule is the caller's (TacSim's `port::price`); the market checks only what it owns.
+///
+/// # Errors
+///
+/// "No such listing." for a listing that is not a live vendor listing; a price that is not
+/// positive. Nothing is written on a refusal, nor when the price is unchanged.
+pub fn reprice_listing(
+    ctx: &mut Ctx<'_>,
+    listing: ListingId,
+    price: Amount,
+) -> Result<(), MarketError> {
+    let now = ctx.w.now();
+    let Some(row) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(listing).cloned())
+        .filter(|l| {
+            !listing_lapsed(l, now) && !l.is_personal() && l.vendor != crate::record::NO_VENDOR
+        })
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    if price.minor() <= 0 {
+        return Err(MarketError::bad("A price is positive."));
+    }
+    if row.price == price {
+        return Ok(());
+    }
+    put_listing(
+        ctx,
+        Listing {
+            price,
+            revision: row.revision.saturating_add(1),
+            ..row
+        },
+    );
+    Ok(())
+}
+
 /// **Lower a standing drawn ask by units its house takes out of the storefront itself**
 /// (doc 39 cut IN.5: a works' house purchase), [`restock_ask`]'s mirror: the listing comes down
 /// first, so the units the house then moves were never on sale twice. The checks are
@@ -1381,9 +1440,7 @@ pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, Mar
         ));
     }
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
-        return Err(MarketError::bad(
-            "That catalogue code is not a commodity id.",
-        ));
+        return Err(MarketError::bad("That catalog code is not a commodity id."));
     };
     if spec.vault != vendor.vault {
         return Err(MarketError::bad(
@@ -1714,7 +1771,7 @@ pub fn create_source(
     }
     if !(-1_000..=1_000).contains(&spread) {
         return Err(MarketError::bad(
-            "A maker's spread is a permille of the catalogue baseline, -1000..=1000.",
+            "A maker's spread is a permille of the catalog baseline, -1000..=1000.",
         ));
     }
     if volume_budget.minor() < 0 || loss_budget.minor() < 0 {

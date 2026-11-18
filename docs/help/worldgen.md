@@ -2,7 +2,7 @@
 
 LLM-assisted room description. You describe a room in a sentence or two of
 prose and get back a draft `@desc` written in the zone's house style and
-consistent with its neighbours. The draft is yours to review — **nothing is
+consistent with its neighbors. The draft is yours to review — **nothing is
 ever written to the room until you accept it** — and every call is metered and
 audited. `@gen` needs the `BUILDER_LLM` power and the server's LLM layer
 switched on (`[llm].enabled = true`; otherwise `@gen` just says so).
@@ -27,7 +27,7 @@ Fields (list fields take comma-separated values):
 
   name          A label for the theme ("1920s waterfront").
   style_guide   Free prose: era, mood, materials, light and sound.
-  vocabulary    Words/motifs to favour.
+  vocabulary    Words/motifs to favor.
   banned        Words/anachronisms to avoid.
   pov_rules     POV and tense, e.g. "second person, present, no 'you see'".
   desc_length   short | medium | long.
@@ -41,7 +41,7 @@ The game never blocks: you get an immediate "Generating..." line, and the draft
 arrives a moment later (system output — the web client also gets a side-by-side
 preview panel). The prompt carries the resolved theme, the room's real facts
 (name and existing exits — the model never invents topology), and up to four
-neighbouring rooms' *accepted* descriptions, so a run stays consistent with the
+neighboring rooms' *accepted* descriptions, so a run stays consistent with the
 rooms around it. Then review:
 
   @gen/accept [fields]    Write the draft through the normal @desc/@set path.
@@ -72,7 +72,7 @@ It runs in two reviewed stages:
    *palette* and a one-line concept per room. This is a reviewable draft — cheap
    to steer before any room is written.
 2. **Rooms** — accepting the brief drafts one room at a time, each seeded with
-   the brief *and its already-drafted neighbours*, so the rooms cohere. Drafts
+   the brief *and its already-drafted neighbors*, so the rooms cohere. Drafts
    arrive as they complete; nothing is committed automatically.
 
 Review the batch without moving:

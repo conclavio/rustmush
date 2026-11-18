@@ -516,9 +516,13 @@ fn status(tw: &mut TestWorld) -> String {
     run(tw, GOD, "@tacsim/port status")
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// **Fire and land the port tick until both ports are stocked and listed.**
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
@@ -535,7 +539,7 @@ fn stock(rig: &mut Rig) {
         land_all(rig, &queued);
     }
     let out = status(&mut rig.tw);
-    panic!("the ports were not stocked within 40 fires:\n{out}");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires:\n{out}");
 }
 
 /// Read one typed value through an owner-stamped transaction.
@@ -588,7 +592,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// An enrolled pilot whose hull is named `name`, standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -976,6 +980,17 @@ fn price_of(tw: &TestWorld, listing: ListingId) -> i64 {
         .listing(listing)
         .map(|l| l.price.minor())
         .expect("the listing")
+}
+
+/// **What `buyer` paid on `listing`** (doc 48 cut EX.8): the price on their newest quote of it,
+/// or the board's when they have none. A house's price steps with its stock once an IC week, so a
+/// story that reads the board after the buy reads the stepped price, not the one paid.
+fn paid_on(tw: &TestWorld, buyer: ObjId, listing: ListingId) -> i64 {
+    market(tw)
+        .quotes_of_buyer(&PrincipalId::Object(buyer))
+        .filter(|q| q.listing == listing)
+        .max_by_key(|q| q.id)
+        .map_or_else(|| price_of(tw, listing), |q| q.price.minor())
 }
 
 fn newest_quote(tw: &TestWorld, buyer: ObjId) -> mush_market::QuoteId {
@@ -1635,6 +1650,9 @@ fn ic11_the_queue_runs_the_day_unattended() {
     let hold = hold_vault(&rig.tw, &row);
     set_rate(&mut rig.tw, 3_600);
     let start = pilot_available(&rig.tw, pilot);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let start_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot));
     let (metals, ice) = vertex_load();
     let mut ceres = 0;
     ceres += buy_from(
@@ -1757,19 +1775,28 @@ fn ic11_the_queue_runs_the_day_unattended() {
         .sum();
     assert_eq!(
         pilot_available(&rig.tw, pilot),
-        start - ceres + nets - costs,
+        start - ceres + nets
+            - costs
+            - (crate::driving_rig::berth_paid(
+                rig.tw.world(),
+                &mush_org::PrincipalId::Object(pilot)
+            ) - start_berth),
         "the funds path"
     );
-    let fuel = price_of(
+    // Doc 48 cut EX.8: what the pilot paid, read from their quotes (the board steps after).
+    let fuel = paid_on(
         &rig.tw,
+        pilot,
         listing_of(&rig.tw, "stickney_port", "kasei", "propellant"),
     );
-    let food = price_of(
+    let food = paid_on(
         &rig.tw,
+        pilot,
         listing_of(&rig.tw, "stickney_port", "yard_commissary", "provisions"),
     );
-    let parts = price_of(
+    let parts = paid_on(
         &rig.tw,
+        pilot,
         listing_of(
             &rig.tw,
             "stickney_port",
@@ -1777,8 +1804,9 @@ fn ic11_the_queue_runs_the_day_unattended() {
             "industrial_parts",
         ),
     );
-    let alloys = price_of(
+    let alloys = paid_on(
         &rig.tw,
+        pilot,
         listing_of(&rig.tw, "stickney_port", "kasei", "structural_alloys"),
     );
     // 49 t of fuel and 17 t of alloys since doc 19 cut A.2 (the return's fill is 50 t
@@ -2244,6 +2272,9 @@ fn ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick() {
     assert!(out.contains("Order 1 filed"), "{out}");
     disconnect(&mut rig.tw, pilot);
     let a0 = pilot_available(&rig.tw, pilot);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let a0_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot));
     let (_, queued) = fire(&mut rig);
     assert_eq!(queued.len(), 1, "the draw leg");
     let staged = orders(&rig.tw, hull)
@@ -2287,7 +2318,11 @@ fn ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick() {
     assert_eq!(pool(&mut rig.tw, hold, "structural_alloys"), 5);
     assert_eq!(
         pilot_available(&rig.tw, pilot),
-        a0 - 5 * price,
+        a0 - 5 * price
+            - (crate::driving_rig::berth_paid(
+                rig.tw.world(),
+                &mush_org::PrincipalId::Object(pilot)
+            ) - a0_berth),
         "the funds debited once"
     );
     let doc = orders(&rig.tw, hull);

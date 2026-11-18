@@ -3,14 +3,14 @@
     "id": "tacsim.passengers.ceres",
     "version": 1,
     "kind": "campaign_seed",
-    "digest": "8e32dd2b54e360de9e3b49cb2d26ab29b04e8e7092af53f9f5d57b9ae9f26863",
+    "digest": "301e09f0fa594021b296a2ec356d54a64dc117345084e3b1c4d15dc99804aa48",
     "requires": [
       { "id": "neighborhood.ceres_freeport", "version": 4 },
       { "id": "neighborhood.stickney_yards", "version": 4 }
     ]
   },
   "brief": {
-    "prose": "One independent traveller at the Slack Line on Ceres, seeking a passage to Stickney. Nadia is a persistent person with a finite fare fund; no quest is needed to meet or carry her, and completing a passage never respawns her."
+    "prose": "One independent traveler at the Slack Line on Ceres, seeking a passage to Stickney. Nadia is a persistent person with a finite fare fund; no quest is needed to meet or carry her, and completing a passage never respawns her."
   },
   "entries": {
     "npc.nadia_okafor_sato": {

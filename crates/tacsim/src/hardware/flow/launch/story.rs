@@ -265,7 +265,7 @@ fn owner_term(r: &Rig, licence: LicenceId) -> Result<OwnerTerm> {
         .filter(|t| t.licence() == licence);
     match (terms.next(), terms.next()) {
         (Some(term), None) => Ok(term),
-        _ => Err("expected the owner licence's one term".into()),
+        _ => Err("expected the owner license's one term".into()),
     }
 }
 /// A window's (term, Grace) lengths in IC seconds.
@@ -386,7 +386,7 @@ fn resale_privacy(r: &mut Rig, d: &LaunchDeployment, licence: u64) -> Result {
     check_eq!(
         on_the_holding,
         on_nothing,
-        "God's refusal on the buyer's Pin equals a missing licence's"
+        "God's refusal on the buyer's Pin equals a missing license's"
     );
     Ok(())
 }
@@ -449,7 +449,7 @@ async fn other_named_house(
     let owner_licence: LicenceId = serde_json::from_value(
         birth
             .get("licence")
-            .ok_or("actual named owner licence")?
+            .ok_or("actual named owner license")?
             .clone(),
     )?;
     let buyer = r.buyer;
@@ -533,7 +533,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     }))?;
     let birth = one(&r, "roll_mind_initial_filing")?;
     let owner_licence: LicenceId =
-        serde_json::from_value(birth.get("licence").ok_or("actual owner licence")?.clone())?;
+        serde_json::from_value(birth.get("licence").ok_or("actual owner license")?.clone())?;
     // 17g C0 (owner, 2026-10-25): the House owner's free licence runs 365 IC
     // days with the usual 3 of Grace, until House owner attestation exists.
     check_eq!(
@@ -692,7 +692,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         } else {
             check!(
                 crate::test_checks::refused(r.plan("market", "quote_house_mind", buyer, quote))?,
-                "the catalogue sells past the House owner's Grace"
+                "the catalog sells past the House owner's Grace"
             );
         }
     }

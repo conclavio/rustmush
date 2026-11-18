@@ -2351,19 +2351,19 @@
     ],
     "log": [
       {
-        "at_ic": 9170,
+        "at_ic": 9206,
         "text": "Rig 1 is down the stern ramp on Ahuna Flank."
       },
       {
-        "at_ic": 9513,
+        "at_ic": 9549,
         "text": "Rig 1 arrives at G53."
       },
       {
-        "at_ic": 10119,
+        "at_ic": 10155,
         "text": "Rig 1 scanned 9 fields from rock:"
       },
       {
-        "at_ic": 11325,
+        "at_ic": 11361,
         "text": "Rig 1 sounded 16 pockets around G53 quietly; every pocket not named reads barren:"
       }
     ],

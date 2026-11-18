@@ -60,7 +60,7 @@ impl PublishedHardware {
         let Some(PackEntry::HardwareCatalogue(catalogue)) =
             pack.entry(&CanonicalId::new(CATALOGUE).map_err(bad)?)
         else {
-            return Err(bad("shipped catalogue missing"));
+            return Err(bad("shipped catalog missing"));
         };
         catalogue.validate()?;
         let catalogue = catalogue.clone();

@@ -48,7 +48,7 @@ pub const REPL_HELP: &str = "Local controls:\n\
   /knowledge <query>     Search bundled help and supplied documents\n\
   /recall <query|#id>    Retrieve older experiences and their evidence\n\
   /remember <text>       Supply durable prior character knowledge\n\
-  /route <place|#dbref>  Find a previously travelled route from here\n\
+  /route <place|#dbref>  Find a previously traveled route from here\n\
   /character            Inspect the authored character profile\n\
   /attention            Inspect recent speech and attention cues\n\
   /conversation [load|save <json>] Inspect or change conversation policy\n\
@@ -1464,9 +1464,9 @@ impl App {
         self.activity.cancel_unsent();
         if self.pending_playtest.take().is_some() {
             self.log
-                .event("playtest-cancelled", "Review cancelled; usage retained.")?;
+                .event("playtest-cancelled", "Review canceled; usage retained.")?;
         }
-        self.cancel_speech("runner cancelled pending reply")?;
+        self.cancel_speech("runner canceled pending reply")?;
         if let Some(probe) = self.pending_probe.take() {
             self.log.record(
                 "probe-cancelled",
@@ -2366,7 +2366,7 @@ impl App {
             self.cancel_request()?;
             self.next_turn =
                 Instant::now() + Duration::from_millis(self.conversation.settings.debounce_ms);
-            self.log.event("attention", "New speech cancelled a social decision; collecting the exchange before reconsidering.")?;
+            self.log.event("attention", "New speech canceled a social decision; collecting the exchange before reconsidering.")?;
         }
         let revision = self.attention.revision();
         if !self.attention_enabled
@@ -3389,7 +3389,7 @@ impl App {
                 .event("state", &serde_json::to_string_pretty(&self.snapshot()?)?)?,
             "/pause" => {
                 self.pause()?;
-                self.log.event("paused", "Pending model decision cancelled; an already sent game command may still finish.")?;
+                self.log.event("paused", "Pending model decision canceled; an already sent game command may still finish.")?;
             }
             "/resume" | "/step" => {
                 if verb == "/step" && arg == "command" {

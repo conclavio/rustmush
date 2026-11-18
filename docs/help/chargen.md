@@ -11,7 +11,7 @@ identity fields and three ratings.
 
 There is no health track, no money and no experience on the sheet. A tank's
 condition lives on the tank, not on you; money is your credit account, which
-`+credit` reads (one is opened in your name when you enrol with the Co-op —
+`+credit` reads (one is opened in your name when you enroll with the Co-op —
 see "help coop").
 
 ## The three commands

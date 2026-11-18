@@ -533,7 +533,7 @@ async fn addressed_speech_refreshes_unsent_action_with_profile_and_last_complete
     assert_eq!(
         calls.load(Ordering::SeqCst),
         5,
-        "cancelled calls count against the budget"
+        "canceled calls count against the budget"
     );
 }
 
@@ -678,7 +678,7 @@ async fn durable_memory_answers_old_conversations_after_restart_and_accepts_prio
                     assert!(recalled["query"].as_str().unwrap().contains("Marco"));
                     assert!(records.iter().any(|r| r["event"]["data"]["source"] == "observed" && r["event"]["data"]["text"].as_str().unwrap().contains("I paid 7 silver")));
                     assert!(recalled.to_string().contains("You told me twelve earlier"));
-                    "I recall a speaker labelled Marco claiming to have paid 7 silver. Ada challenged the amount. Name knowledge is unestablished."
+                    "I recall a speaker labeled Marco claiming to have paid 7 silver. Ada challenged the amount. Name knowledge is unestablished."
                 }
                 1 => {
                     assert!(records.iter().any(|r| r["event"]["data"]["source"] == "prior_knowledge" && r["event"]["data"]["text"].as_str().unwrap().contains("old friend")));
@@ -722,7 +722,7 @@ async fn durable_memory_answers_old_conversations_after_restart_and_accepts_prio
         .write_all(b"/ask Does the name Marco ring a bell, and what price did he mention?\n")
         .await
         .unwrap();
-    read_until(&mut lines, "[bot/answer] I recall a speaker labelled Marco").await;
+    read_until(&mut lines, "[bot/answer] I recall a speaker labeled Marco").await;
     input.write_all(b"/route Flower Shop\n").await.unwrap();
     let route = read_until(&mut lines, "remembered_route").await;
     assert!(route.contains("goto east"));

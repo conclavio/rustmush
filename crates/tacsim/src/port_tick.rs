@@ -327,6 +327,8 @@ pub(crate) fn register_with_coverage(
     )?);
     // Doc 39 cut IN.3: the order contract's goods moves.
     actions.push(crate::port::works::action_descriptor(&outcome_refs)?);
+    // Doc 48 cut EX.6: the haul's legs.
+    actions.push(crate::services::haul::action_descriptor(&outcome_refs)?);
     // Doc 36 cut GC.4: the tow.
     actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -345,8 +347,13 @@ pub(crate) fn register_with_coverage(
         inspection_descriptors(inspection, 0, &mut actions)?;
     }
     // Doc 47 CO.13: the stored core sale's action, when the fitting shop's buy-back composes.
-    if sale.is_some() {
+    if let Some(terms) = sale {
         actions.push(crate::hardware::sale::action_descriptor()?);
+        // Doc 48 unit EX.2b: the resale's offer and acceptance, beside the buy-back.
+        if terms.resale.is_some() {
+            actions.push(crate::hardware::sale::resale::offer_action_descriptor()?);
+            actions.push(crate::hardware::sale::resale::resale_action_descriptor()?);
+        }
     }
     reg.definition_validator(
         kind("action")?,
@@ -375,6 +382,22 @@ pub(crate) fn register_with_coverage(
             need(&action_refs, crate::hardware::sale::SALE_ACTION)?,
             need(&outcome_refs, crate::hardware::sale::SALE_OUTCOME)?,
         )?;
+        if let Some(resale) = &terms.resale {
+            use crate::hardware::sale::resale as r;
+            r::register(
+                reg,
+                terms,
+                resale,
+                (
+                    need(&action_refs, r::OFFER_ACTION)?,
+                    need(&outcome_refs, r::OFFER_OUTCOME)?,
+                ),
+                (
+                    need(&action_refs, r::RESALE_ACTION)?,
+                    need(&outcome_refs, r::RESALE_OUTCOME)?,
+                ),
+            )?;
+        }
     }
     register_providers(
         reg,
@@ -477,6 +500,8 @@ fn register_providers(
     )?;
     // Doc 39 cut IN.3: the order contract's ledger family and its goods-move provider.
     crate::port::works::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
+    // Doc 48 cut EX.6: the haul's ledger family and its legs' provider.
+    crate::services::haul::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     register_stock(
         reg,
         stock_action.as_ref(),
@@ -724,6 +749,8 @@ fn register_outcomes(
     outcomes.push(crate::port::bay_work::act::outcome_descriptor()?);
     // Doc 39 cut IN.3: the order contract's goods moves.
     outcomes.push(crate::port::works::outcome_descriptor()?);
+    // Doc 48 cut EX.6: the haul's legs.
+    outcomes.push(crate::services::haul::outcome_descriptor()?);
     // Doc 36 cut GC.4: the tow.
     outcomes.push(crate::surface::tow::outcome_descriptor()?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -741,8 +768,11 @@ fn register_outcomes(
     if let Some(inspection) = inspection {
         inspection_descriptors(inspection, 1, &mut outcomes)?;
     }
-    if sale.is_some() {
+    if let Some(terms) = sale {
         outcomes.push(crate::hardware::sale::outcome_descriptor()?);
+        if terms.resale.is_some() {
+            outcomes.extend(crate::hardware::sale::resale::outcome_descriptors()?);
+        }
     }
     reg.definition_validator(
         kind("outcome")?,
@@ -1999,7 +2029,7 @@ fn page_unfunded_houses(w: &World, state: &mut PortTickState) {
     };
     tracing::error!(
         runbook = "doc 18 Q-18-60 (cut P-B): pay the house (@econ/pay #<treasury account>=#<house \
-                   account> <amount>) or let players buy from it; enrolment stays open and the \
+                   account> <amount>) or let players buy from it; enrollment stays open and the \
                    sales against it skip meanwhile",
         port = %entry,
         house = %org,
@@ -2116,10 +2146,16 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // the works arm, so a consumption it settles this fire is laid up on the next.
     crate::port::commission::tick(ctx);
     crate::port::works::tick(ctx);
+    // Doc 48 cut EX.6: the hauls' legs and the escorts' watch.
+    crate::services::tick(ctx);
     // Doc 41 cut RS.5 (Q-41-11): the retrieval clerk (Tycho at a window's end, a lapse).
     crate::surface::retrieval::tick(ctx);
     // Doc 39 cut IN.10: the pools — a house's next order step, or a new order under its floor.
     crate::port::pools::tick(ctx);
+    // Doc 48 cut EX.4: the berth and locker charges, in step with the world.
+    crate::port::berth::tick(ctx);
+    // Doc 48 cut EX.7: each hire's wage, in step with the crew contracts.
+    crate::detachment::crew::wages::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;

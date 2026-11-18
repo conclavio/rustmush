@@ -52,7 +52,7 @@ pub fn registry_of(catalog: &Catalog) -> Result<DefinitionRegistry, String> {
         .values()
         .next()
         .map(|binding| binding.spec.definition.key().owner.clone())
-        .ok_or("the catalogue binds no unit")?;
+        .ok_or("the catalog binds no unit")?;
     let mut builder = DefinitionRegistryBuilder::new();
     for descriptor in &catalog.descriptors {
         let owner = owner.clone();
@@ -222,18 +222,17 @@ mod tests {
     }
 
     /// **The line tank's family, mount by mount** (the owner's ruling): the
-    /// cannon comes out of the turret and the laser goes in under its own id;
-    /// a pod goes on and comes off; and each way back is in the other's family.
+    /// laser goes in under its own id; a pod goes on and comes off; and each way
+    /// back is in the other's family. **Doc 49 unit CC.3** (Q-49-6): the laser
+    /// variant keeps the 105, so the laser goes in beside the cannon and comes off
+    /// alone, where until CC.3 the cannon came out for it.
     #[test]
     fn ud4_the_line_tank_family_is_found_by_mount() {
         let (catalog, registry) = fielded();
         let tank = hull(&catalog, "tacsim.unit.line_tank");
         let options = family(&catalog, &registry, &tank);
         let laser = option(&options, "tacsim.unit.line_tank_laser").expect("the laser variant");
-        assert_eq!(
-            laser.remove.as_ref().map(ComponentId::as_str),
-            Some("cannon")
-        );
+        assert_eq!(laser.remove.as_ref().map(ComponentId::as_str), None);
         assert_eq!(
             laser.install.as_ref().map(ComponentId::as_str),
             Some("laser")
@@ -251,20 +250,26 @@ mod tests {
         let (lasered, journal) =
             refit(&catalog, &registry, &tank, laser, None, 1_000).expect("refitted");
         assert_eq!(lasered.revision(), tank.revision() + 1);
-        assert_eq!(
-            journal.removed.as_ref().map(|(c, _)| c.as_str()),
-            Some("cannon")
-        );
-        assert!(fitted(&lasered, "laser") && !fitted(&lasered, "cannon"));
+        assert_eq!(journal.removed.as_ref().map(|(c, _)| c.as_str()), None);
+        assert!(fitted(&lasered, "laser") && fitted(&lasered, "cannon"));
         assert!(
             has_heat(&lasered),
             "the laser variant's hull carries the heat pair"
         );
         let back = family(&catalog, &registry, &lasered);
         let cannon = option(&back, "tacsim.unit.line_tank").expect("and back");
+        assert_eq!(
+            (
+                cannon.remove.as_ref().map(ComponentId::as_str),
+                cannon.install.as_ref().map(ComponentId::as_str)
+            ),
+            (Some("laser"), None),
+            "the laser comes off alone"
+        );
         let (again, _) =
             refit(&catalog, &registry, &lasered, cannon, None, 2_000).expect("refitted back");
         assert!(!has_heat(&again), "the heat pair goes with the laser");
+        assert!(fitted(&again, "cannon") && !fitted(&again, "laser"));
 
         let (podded, _) = refit(&catalog, &registry, &tank, ecm, None, 3_000).expect("pod on");
         let off = option(

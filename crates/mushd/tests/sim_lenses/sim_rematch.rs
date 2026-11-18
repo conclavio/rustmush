@@ -739,7 +739,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     // after that write.
     let history = poll_whole(&mut ada, "SIM HISTORY", MATCH_ONE_WON).await;
     assert!(
-        history.contains("The centre's last match:"),
+        history.contains("The center's last match:"),
         "one row, one header: {history}"
     );
     let row = history_row(&history, 1);
@@ -844,7 +844,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     // reads their own callsign on both.
     let history = poll_whole(&mut bo, "SIM HISTORY", "#2  aborted  ").await;
     assert!(
-        history.contains("The centre's last 2 matches, newest first:"),
+        history.contains("The center's last 2 matches, newest first:"),
         "{history}"
     );
     assert!(
@@ -1164,7 +1164,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     let (_a3, mut ada) = login(third.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let history = poll_whole(&mut ada, "SIM HISTORY", "#2  aborted  ").await;
     assert!(
-        history.contains("The centre's last 2 matches, newest first:"),
+        history.contains("The center's last 2 matches, newest first:"),
         "{history}"
     );
     assert!(row_at(&history, 2) < row_at(&history, 1), "{history}");

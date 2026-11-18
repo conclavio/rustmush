@@ -1023,7 +1023,7 @@ impl FeatureRec {
         }
         if self.raise_cm.abs() > 100_000 {
             return Err(RecordError::Value(
-                "feature raise_cm is past a kilometre".to_string(),
+                "feature raise_cm is past a kilometer".to_string(),
             ));
         }
         Ok(())

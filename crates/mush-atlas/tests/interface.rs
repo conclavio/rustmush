@@ -262,7 +262,7 @@ fn the_bus_watcher_knows_where_the_bus_is_and_the_askers_own_journey() {
         serde_json::json!({}),
     )
     .expect("an answer");
-    assert_eq!(reply.text, "You are not travelling.");
+    assert_eq!(reply.text, "You are not traveling.");
     let reply = invoke(
         &mut tw,
         "travel",

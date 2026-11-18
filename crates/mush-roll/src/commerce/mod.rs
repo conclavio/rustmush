@@ -157,7 +157,7 @@ identity!(
     NonZeroU64,
     20,
     "licence",
-    "A licence instrument's stable identifier."
+    "A license instrument's stable identifier."
 );
 identity!(
     TermGeneration,
@@ -165,7 +165,7 @@ identity!(
     NonZeroU64,
     20,
     "term",
-    "A licence-local nonzero term generation."
+    "A license-local nonzero term generation."
 );
 
 impl CharterId {

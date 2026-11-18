@@ -710,7 +710,7 @@ mod tests {
         let colours = frame.count_colours(256);
         assert!(
             (6..=32).contains(&colours),
-            "expected rich holo-tank within 256-colour limit, got {colours}"
+            "expected rich holo-tank within 256-color limit, got {colours}"
         );
     }
 

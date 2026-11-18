@@ -2313,8 +2313,9 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
             // Format 16 adds record-only accepted-order attribution (R4).
             // Doc 21 cut G.12a: 17, with `UnitState.weapons_hold` and `Arming::WeaponsFree`.
-            // DT.1b: 18. Doc 32 cut CF.0: 19, with party ids and relation books.
-            assert_eq!(SNAPSHOT_FORMAT, 19);
+            // DT.1b: 18. Doc 32 cut CF.0: 19, with party ids and relation books. Doc 49 unit
+            // CC.2b: 20, with the motor table's window cells.
+            assert_eq!(SNAPSHOT_FORMAT, 20);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -3025,9 +3026,9 @@ fn l2_running_match(
     tw.run(pilots[0], "sim ai 3");
     tw.run(pilots[0], "sim start");
     let match_id = tacsim::match_::centre_of(tw.world())
-        .expect("the centre")
+        .expect("the center")
         .match_id
-        .expect("a boarding centre has a match id");
+        .expect("a boarding center has a match id");
     // Each pilot walks to their side's room and boards, as a player does
     // (`tests/cockpit.rs`' `fly`): the match is checked out at the last
     // `BOARD`, with every claimed tank seated, so the record's rosters carry
@@ -3038,10 +3039,10 @@ fn l2_running_match(
             &PartyId::RED => tacsim::match_::RED_ROOM_ENTRY,
             _ => tacsim::match_::BLUE_ROOM_ENTRY,
         };
-        let room = tacsim::match_::centre_object(tw.world(), entry).expect("a centre room");
+        let room = tacsim::match_::centre_object(tw.world(), entry).expect("a center room");
         tw.world_mut()
             .move_to(*pilot, room)
-            .expect("the centre's rooms take anybody");
+            .expect("the center's rooms take anybody");
         tw.run(*pilot, "board");
         let pod = tacsim::match_::pod_of(tw.world(), *pilot).expect("a claimed slot locks a pod");
         let unit =
@@ -3050,7 +3051,7 @@ fn l2_running_match(
     }
     assert_eq!(
         tacsim::match_::centre_of(tw.world())
-            .expect("the centre")
+            .expect("the center")
             .state,
         tacsim::match_::MatchState::Running,
         "every pilot boarded"
@@ -4862,7 +4863,8 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         .notices
         .push(notice.clone());
     let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
-    assert_eq!(snapshot.document["format"], 19);
+    // Doc 49 unit CC.2b: format 20, the motor table's window cells.
+    assert_eq!(snapshot.document["format"], 20);
     let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
     assert_eq!(
         restored
@@ -4886,7 +4888,7 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         );
         assert!(matches!(
             Snapshot::decode(&old, definition()),
-            Err(SnapshotError::Format { found: actual, expected: 19 }) if actual == found
+            Err(SnapshotError::Format { found: actual, expected: 20 }) if actual == found
         ));
     }
     assert_eq!(Refusal::NoCommander.as_str(), "no_commander");

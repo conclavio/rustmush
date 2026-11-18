@@ -174,12 +174,12 @@ pub fn draw_panel(
     let armour_title = seated
         .and_then(|c| c.get("callsign").and_then(Value::as_str))
         .map_or_else(
-            || "ARMOUR".to_string(),
+            || "ARMOR".to_string(),
             |cs| {
                 let power = seated
                     .and_then(|c| c.get("power").and_then(Value::as_str))
                     .unwrap_or("?");
-                format!("ARMOUR {cs} {power}")
+                format!("ARMOR {cs} {power}")
             },
         );
     column(frame, armour, &armour_title, armour_lines, false);

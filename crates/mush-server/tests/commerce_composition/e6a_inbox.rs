@@ -540,7 +540,7 @@ fn vf_d1_the_obligation_inbox_never_outruns_the_obligation_view_gate() {
     let ev = run(&mut tw, GOD, &format!("@obligation/cancel {id}"));
     assert_eq!(
         inbox_lines(&tw, &ev, r.officer),
-        vec![format!("Obligation #{id} is cancelled.")]
+        vec![format!("Obligation #{id} is canceled.")]
     );
     assert!(
         inbox_lines(&tw, &ev, r.member).is_empty(),

@@ -994,12 +994,219 @@ with in-step, census and distinct tests). `UNDER_SALE` now says the hull is up f
 
 ## EX.2b
 
-Not built.
+Row: §7.1 EX.2b; Q-48-47, Q-48-3's correction, Q-48-52's core leg; doc 48b W-48-1a, G-1(2).
+Built 2026-11-16/17 on `claude/ex2b-core-resale-32f0ba`, cut from main `73d05678b`.
+
+**Survey.**
+
+- **Why CO.13 could not serve.** Its kernel image admits only a Thing or Room destination
+  (`mush-core/src/core_sale.rs`, the `SaleObjects` rule); its economy plan has one
+  composition-time org buyer, two lines and no holds (`registry_filing/core_sale.rs`). A player
+  buyer needed a second closed plan, not a widened first one.
+- **Why a cored hull cannot ride the exchange's E4 sale.** EX.2's hull sale settles in the
+  economy sweep's generic contract settlement, and every generic path meets
+  `require_unmanaged_mutations` on the core's managed title. A settle path with a managed leg is
+  what doc 46 ruled out, and E4 settlement and a coordinator union cannot be made one atomic
+  step. So "both or neither" is honest only if the hull's title rides the core's closed plan.
+- **Where the offer lives.** The kernel policy reads a `&World` only and cannot see typed
+  state, so the offer (an action-state record) is the producer's: read, checked and removed in
+  the acceptance's own transaction. The policy re-reads the world facts and an opaque pin.
+- **The fitted core** sits in the hull (`location == hull`, the unit's core component's asset).
+  Selling the hull does not move it; only titles move.
+- **The economy participant writes only listed key families** (`accepts_write`): `vault:` was not
+  one of them, so the hold's re-home needed a closed-list entry of its own.
+
+**Built** — the family's shape, **(expensive to reverse)**.
+
+- **Two acts, one union.**
+  - *The offer* (`+core/offer <core or ship>=<player> price=<n>`, the seller's own act): tacsim
+    action `offer_core_resale` v1 writes one record in tacsim's `core_resale_offers` family,
+    keyed by the core: seller, the one buyer, price, the core's title revision and, for a ship,
+    hers and the digest of her parts, made and lapse IC seconds. It stands **28 IC days** (the
+    owner's floor), until withdrawn (`=withdraw`), replaced or taken. Nothing moves; nothing is
+    held.
+  - *The acceptance* (`+core/accept <core or ship>=go`, the buyer's act): tacsim action
+    `accept_core_resale` v1. Its provider reads the offer (it must name the actor and not have
+    lapsed) and the seller's holding on the pinned state, then binds in one coordinator union:
+    the economy's closed resale plan, the kernel's closed resale image, the kernel's record, and
+    removes the offer.
+- **"Escrowed at acceptance"** is read as: the buyer's money leaves their account at acceptance
+  and only in the union that delivers title and object, so no buyer is paid-up and undelivered
+  and no hold is left to release. There is no hold op; the union is the escrow.
+- **Kernel** (`mush-core/src/core_sale.rs` and new `core_sale/resale.rs`):
+  - CO.13's image gains a private `Destination` rule: `Shop` (Thing or Room, the buy-back's,
+    unchanged) or `Buyer` (a Player, only the resale's fixed action selects it).
+  - `CoreResales` (fixed action `tacsim/accept_core_resale` v1), `CoreResalePolicy`,
+    `ResaleRequest { core, seller, hull, pin }`, `ResaleFacts`, `ResoldCore`; the tacsim-owned
+    `core_resales` record family (operation, core, seller, buyer, hull) with `audit`.
+  - Two image shapes: a **stored** core leaves the seller's hands for the buyer's (the buy-back's
+    image with the `Buyer` rule; the buyer's carry hooks, as a delivery's); a **fitted** core sold
+    with its hull is a fence only (the core's and the hull's exact pre-images and the policy's
+    read, kept through custody), writing no object.
+  - One variant on the closed `BuiltinObjects` / `BoundBuiltinObjects` list (`Resale`), and
+    `PrepareCtx::resell_core` beside `sell_stored_core`.
+- **Economy** (`registry_filing/core_sale/resale{.rs,/install.rs,/receipt.rs,/tests.rs}`):
+  - `CoreResaleConfig { action, venue, levy, venue_permille, levy_permille }` (the venue is no
+    person; the levy is a system sink; the cuts leave the seller something).
+  - `RegistryCoreResale { core, title_revision, hull: Option<ResaleHull { hull, title_revision,
+    hold }>, seller, seller_account, buyer_account, price }`; the buyer is the actor.
+  - The plan: the buyer's own account pays the price; the seller's account is paid the net, the
+    venue its cut and the sink the levy (a zero cut has no line); `TransferTitle` of the core to
+    the buyer, then of the hull when she goes with it, both in no scope, both revision-fenced.
+  - `ClosedCoreResalePlan`: exact plan, the exact before-titles, the exact core birth, exactly
+    those lines and transfers, no hold or custody op, and the hull no managed title.
+  - The native install (the buy-back's, with up to four lines, up to two titles and the hull's
+    hold vault re-homed to the buyer through `put_vault`, its image in the same union).
+  - `CoreResaleReceiptAudit`: receipts by commit, folded from the journal, finished at boot,
+    checked against the managed-title index (every core a managed birth, no hull one), with
+    checkpoint coverage as the buy-back's.
+  - One variant each on `EconomyRequest`, `EconomyOutput`, `EconomyPatch`, `BoundEconomy` and
+    `PlanGuard` (both arms); `EconomyModule::with_core_resale`; the participant's config and
+    `register_with_house_updates`; `load_boot_with_coverage`'s flag;
+    `EconomyStore::{core_resale_receipt, core_resale_receipts}`; and `accepts_write` admits
+    `vault:<id>` only where the resale composes.
+  - `require_unmanaged_mutations` is not touched.
+- **TacSim** (new `hardware/sale/resale.rs`): both providers, the trusted policy (`holding`: a
+  governed core in the seller's own hands, theirs alone, not impounded, not destroyed; or a ship
+  of theirs with one fitted, through `port/hull_sale.rs`'s `core_leg`), the offers' family, the
+  `ResaleHost` slot, `+core/offer`, `+core/offers`, `+core/accept`, and the boot pass
+  (`boot_audit`, run from the buy-back's) pairing kernel records and economy receipts by
+  operation, core, seller, buyer and hull.
+- **The cored-hull leg** (`port/hull_sale.rs`, in its own functions for PL.9 and EX.4):
+  - `core_leg(w, hull, seller)`: the listed hull's rules read for a cored one (not in a bay,
+    nothing in flight, no leased rig aboard, a readable hold), her fitted core, her hold's vault
+    when the seller owns it, and her digest;
+  - `core_leg_hold_empty(ctx, hull)`: the empty hold, asked at offer and at acceptance;
+  - `HULL_CORED` now routes the seller: "sells only with her governed core, by private offer:
+    +core/offer #<n>=<player> price=<price>"; `admit`'s branch renders it; `state_digest`'s body
+    is `unit_digest`, shared with `core_leg`.
+- **Composition.** The resale composes where the fitting shop's buy-back does
+  (`HardwareDeployment::buy_back_permille`): `HardwareDeployment::resale` and
+  `SaleTerms::resale`, set by the launch from its own venue (the cut) and Registry (the levy).
+  No serialized deployment field is added, so no `launch_deployment` digest moves. The roster
+  policy and `configure_economy` add `with_core_resale`; `port_tick` registers both actions and
+  outcomes; `+core` gains `/offer`, `/offers` and `/accept`.
+- **Sentences**: 30 `pub const`s in `resale.rs`, a `core_resale` family in
+  `mush-bot/src/mine/minds.rs` (in-step, census, distinct), and `HULL_CORED`'s needle updated.
+  `legacy-handlers.toml`'s `+core` note covers the new switches.
+
+**Defaults taken (provisional).**
+
+1. **The rates are Q-48-8's, as constants**, because EX.4's fees have not merged: the venue's
+   cut 30‰ (`VENUE_PERMILLE`), the levy 10‰ (`LEVY_PERMILLE`). The venue's cut goes to the
+   launch's venue recipient and the levy to its Registry. **Cheap to reverse** (constants; EX.4
+   points them at its fees).
+2. **An offer stands 28 IC days**, the owner's player-response floor. **Cheap to reverse.**
+3. **The resale composes with the buy-back.** A world with no fitting shop has no resale.
+   **Cheap to reverse** (one composition line).
+4. **Prices are typed in centicredits** (`price=<n>`), as every market verb takes them.
+
+**Persisted shapes** **(expensive to reverse)**: the economy fold gains `core_resale_receipts`
+(skipped while uninitialized; the boot closes it on every world, so new checkpoints carry
+`{"receipts":{},"complete":true,...}`; `e2b`'s format-3 pin strips it, as the buy-back's); the
+journal namespace `tacsim.core_resale.v1` and its correlation string; tacsim's action-state
+families `core_resales` and `core_resale_offers`; the two action descriptors. No `.snap` moved.
+
+**Tests.**
+
+- `mush-economy` `registry_filing::core_sale::resale::tests` (engine level, six):
+  `ex2b_the_split_pays_seller_venue_and_levy`; `ex2b_the_closed_plan_refuses_every_mismatch`
+  (ten plan changes, stored and with a hull; moved images; a managed hull; wrong births);
+  `ex2b_no_generic_transfer_touches_a_managed_title`;
+  `ex2b_a_resale_posts_replays_and_a_forgery_is_refused` (money, both titles, the receipt, the
+  replay, four forgeries, a repeated commit); `ex2b_a_cored_hull_sells_with_her_core_or_neither_moves`
+  (another's hull, a claimed hull: refused whole, the core and the money unmoved);
+  `ex2b_the_prepare_read_refuses_what_may_not_be_resold`.
+- `mush-core` `core_sale::resale::tests`: the record's shape; only the resale admits a player.
+- `tacsim` `hardware::sale::resale::tests`: the lines under 120 columns; the offer's checks; the pin.
+- **The stories**, `tacsim` `domain_field` `ex2b_core_resale` (the launch world):
+  - `ex2b_a_stored_core_is_resold_to_the_player_its_seller_names`: an offer moves and holds
+    nothing; a third party is refused by the verb and by the action typed straight to the
+    provider; the named buyer's acceptance pays 500,000 split 480,000 / 15,000 / 5,000, the
+    title and the core are the buyer's, one receipt, one record, the offer gone, the buy-back's
+    family untouched; a restart replays and pairs; the seller cannot offer it again, the buyer can.
+  - `ex2b_a_cored_ship_sells_with_her_core_both_or_neither` (after CO.6's route): the exchange
+    routes her; the core alone is refused as fitted; with a lien on her the acceptance is
+    refused whole (no title, no money); released and offered again, the acceptance passes her
+    title, her core's title and her hold to the buyer in one union, the core still in her; a
+    restart reads the same.
+- **CO.13's buy-back is unchanged**: `co13_a_stored_core_is_sold_with_its_title`, CO.4's, CO.6's
+  three, story 4 and EX.2's cored-hull test (its line updated) pass beside them; all 930
+  `mush-economy` tests pass, `e2b` included.
+- **The gates**, on conclav.dev on the final tree: `cargo fmt --all --check`; workspace clippy
+  with `-D warnings`; the M7 memory-size clippy (it first caught the resale image's and output's
+  sizes, now boxed); rustdoc with `-D warnings`, the workspace with private items and the four
+  touched crates without; `mush-contract-tests` (census, panic budget, restriction lints, help,
+  shard names, state slots); the whole of `mush-bot` (the new `core_resale` rows' in-step,
+  census and distinct tests); all of `mush-core`, `mush-industry`, `mush-market` and `mush-roll`
+  with their CT.0 snapshots (**no `.snap` moved**); tacsim's ct0, launch and hardware lib tests;
+  and EX.2's `domain_economy` stories (`ex2_`, `rs6c2`, `ic13_`).
+
+**Mutations** (`ex2b-muts.py`, in this group's notes folder), each run alone on conclav.dev
+against the tests that can see it:
+
+| # | Mutation | Verdict |
+|---|---|---|
+| P1 | the closed check drops plan equality | caught: `ex2b_the_closed_plan_refuses_every_mismatch` |
+| P2 | the resale's `PlanGuard` arm removed (falls to `require_unmanaged_mutations`) | caught: `ex2b_a_resale_posts_replays_and_a_forgery_is_refused` |
+| P3 | the auth admits another holder's title | caught: `ex2b_a_cored_hull_sells_with_her_core_or_neither_moves` |
+| P4 | a managed hull admitted as a hull leg | caught: the mismatch test |
+| P5 | the economy's read lets a seller buy their own | **survives**, masked: the buyer's account must be the actor's, and tacsim refuses first |
+| L1 | the levy has no line | caught: `ex2b_the_split_pays_seller_venue_and_levy` |
+| L2 | the hull's title does not pass | caught: the mismatch test |
+| L3 | the hold is not re-homed | caught: the cored-ship story |
+| A1 | the fold ignores the family | caught: the cored-ship story (the restart's pairing) |
+| A2 | the receipt admits a line beyond the split | caught: the forgery test (a fifth line) |
+| A3 | the boot never closes the resale audit | caught: the stories |
+| A4 | tacsim's boot pairing ignores the buyer | **survives**, unreached: no story forges a record whose buyer differs from its receipt's |
+| K1 | the resale's rule admits a Thing | caught: `ex2b_only_the_resale_admits_a_player_destination` |
+| K2 | the buy-back's rule admits a player | caught: the same |
+| K3 | the resale image takes the shop's rule | caught: the stored-core story |
+| K4 | the kernel drops its buyer check | **survives**, masked: the policy names the acting buyer |
+| R1 | the acceptance admits any buyer | caught: the stored-core story (the third party's action) |
+| R2 | the acceptance drops its pin check | **survives**, masked: the kernel policy re-reads the pin |
+| R3 | the policy drops its pin check | **survives**, masked: the acceptance reads the pin first |
+| R4 | a destroyed core is offered | **survives**, unreached: no story destroys a core it then offers (CO.13's story covers the same `stored_core_destroyed` read for the buy-back) |
+| R5 | a withdrawal takes anyone's offer | **survives**, masked: an offer of a core the actor holds alone is theirs or stale |
+
+21 run, 14 caught, 7 survive. R2 and R3 each guard the other.
+
+**Divergences.**
+
+- **The cored hull is not an exchange listing.** Q-48-52 said a cored hull "is listed only with
+  its core, the core leg settling in Q-48-47's plan", and the brief "lists the hull with its core
+  leg instead of refusing". `+market/post` of a cored hull answers with the route to the private
+  offer, and `+core/offer #<ship>` *is* her listing, with both legs in one closed plan. Making
+  the E4 sale and the closed leg settle together would need a managed leg in the generic settle
+  path. A board notice for a cored hull (quotes answered "ask the seller") needs a small
+  mush-market seam change, left for after EX.4 holds the crate no longer.
+- **No hold.** "Escrowed at acceptance" is the union itself (above).
+- **The offer is the producer's state**, not the kernel's: the kernel policy cannot read typed
+  state, so the producer reads and removes the offer in the same transaction and hands the
+  kernel an opaque pin the policy re-reads.
+- **`accepts_write` admits `vault:`** where the resale composes: the one closed leg that writes a
+  vault image.
+- **Files beyond the owned list** (closed lists and composition): `mush-core` `participant.rs`,
+  `resolution.rs`, `core_output/image.rs`; `mush-economy` `registry_filing.rs`, `prepare.rs`,
+  `engine.rs`, `fold.rs`, `boot.rs`, `module.rs`, `tests/e2b.rs`; `tacsim` `hardware/counter.rs`
+  (the dispatch), `hardware/composition.rs`, `hardware/flow.rs`, `commands.rs`, `port_tick.rs`,
+  `launch.rs`, `launch/deployment.rs`, `tests/domain_field.rs`, `co6_cored_ship.rs` (EX.2's line);
+  `mush-bot/src/mine/minds.rs`; `mush-contract-tests/legacy-handlers.toml`. No mush-market change.
+- **Between acceptance and custody** the hold's emptiness is not re-read (typed state the world
+  read cannot reach), as EX.2's hull sale.
+
+**Not built.**
+
+- A board notice for a cored hull or a stored core (see Divergences).
+- An org seller or buyer (`org=`): persons only.
+- A resale of a core fitted in a rig or a line tank: ship hulls only (`core_leg` uses the ship's
+  hull view).
+- A notice to an offline buyer that an offer stands for them (they read `+core/offers`).
 
 ## EX.3
 
-Row: §7.1 EX.3 (Q-48-9; doc 48a A-3). Built in two halves, each its own PR: EX.3a on main (after
-EX.1b, #637), EX.3b stacked on EX.3a. EX.3a lands first.
+Row: §7.1 EX.3 (Q-48-9; doc 48a A-3). Built in two halves, each its own PR: EX.3a (#644, after
+EX.1b's #637), then EX.3b on main after it, which closes EX.3.
 
 ### EX.3a (2026-11-16): the gate's agents, V6 on the board, the acceptors as data
 
@@ -1138,25 +1345,882 @@ EX.1b, #637), EX.3b stacked on EX.3a. EX.3a lands first.
 
 **Not built in EX.3a.** V7 and V10, and their failed-leg stories: EX.3b.
 
+### EX.3b (2026-11-17): V7 and V10 on the board
+
+**Survey.**
+- **V7, a house order's bill** (`port/pools.rs` `buy`). The helm paid the seller by a direct
+  post, keyed by the escrow's count, after lowering the seller's ask (`shrink_ask`). It then moved
+  the goods into the yard order's escrow with a works act. A part was one store lot at its
+  catalogue price, moved the same way. Nothing reached the tape. The Yards' carbon, stocked and
+  bid for but never asked (the owner's IN.11 ruling, lane v33), was sold at its bid.
+- **V10, the scrap and the bale's buy-back** (`bay_work/scrap.rs`, `strip.rs`). Whole tonnes and
+  part lots minted into the operator's storefront. When the mint landed, the credit posted from the
+  operator to the holder; a post that did not land paged staff to pay by hand.
+- **The market's sale into a bid** (`sell_into_bid`) sells bulk from a pool only, refuses a
+  seller with a submission queued, and takes at most four standing sales from one seller to one
+  bidder (`MAX_OPEN_SELLS_PER_VENDOR`). A personal bid drawn to nothing is deleted; a failed sale
+  refunds the escrow to the bidder's available balance and does not restore the bid.
+
+**Built.**
+- **A private vendor listing** (`mush-market` `ListingSpec.private_to`, new market API surface).
+  `list_goods` takes an optional one buyer, checked by `post_ask`'s rule (a live person who is not
+  the seller). The listing is `Hidden`; its buyer, its seller and staff see it, and anyone else
+  is refused at quote and at accept with `PRIVATE_TO_OTHER`, the sentence the bot table already
+  holds. It trades on the tape like any other; only who may see and take it narrows. Every other
+  constructor passes `None`.
+- **V7 on the board** (`pools.rs` `board`). A bill line in a yard or works order's escrow is bought
+  by the helm as itself, a quote and an acceptance into the escrow from its purse:
+  - **a bulk good** from the seller's standing ask at the yard's port, at most what it lists, and
+    nothing while a draw on that pool is unsettled;
+  - **a good stocked and bid for with no ask** (the Yards' carbon): the port's clerk lists the helm
+    a private draw ask of what the line wants, at the bid, and the helm takes it on a later fire;
+  - **a part**: a lot of the yard operator's stores already standing in its own lot ask is quoted
+    as it stands; otherwise the clerk lists the lowest-grade lot as a private exact-lot ask at its
+    catalogue price, and the helm takes it on a later fire.
+
+  One purchase stands at a time (`helm_on_board`); none starts while the engine's queue is full or
+  the helm has a submission queued. A stores lot standing in a lot ask now counts as held
+  (`stores_hold`), so the part is bought rather than ordered at the works. The seller and the
+  price are the listing's, so the seam serves any buyer (PL.5). The ferry's stores into her hold
+  keep the direct post (outside the row's V7).
+- **V10 on the board** (`bay_work/scrap.rs`, `strip.rs`; the lead's rulings):
+  - **The holder's scrap vault** (`scrap_vault`, `open_scrap_vault`): one a holder a venue,
+    reused by every scrap and return there, the holder's own, uncapped (no capacity plan reads it),
+    backed by a container in LIMBO the holder owns, named `scrap at {venue}`.
+  - **The mint** of a scrap's or a return's whole tonnes and part lots goes into it; what is under
+    a tonne stays in the operator's shop bale as before.
+  - **The sale rows** (`sale_rows`): a part at its used value less its removal; a bulk good at its
+    value over its whole tonnes, rounded up, at least 1 minor a tonne. A part worth nothing after
+    its removal is no part sale: it is not minted as a part, and its mass joins the yield. A good
+    with no whole tonne is no row.
+  - **The sale** (`sell_step`), on the record (`BayHull.sale`) until every row is sold: one row a
+    step, starting in the step the mint lands. The port's buy-back desk posts a private personal
+    bid for the row into the operator's storefront, funded from its purse (the operator tops it up
+    by what it lacks, keyed by the hull, the act and the row), and the holder sells into it from
+    the scrap vault as themself. A bulk row's lot is first dissolved into the vault's pool, as the holder,
+    since the market sells bulk from a pool. A refused sale withdraws its bid at once and spends a
+    try; at eight the row is given up (`SALE_GIVEN_UP`) and its matter stays the holder's. A row
+    waits, spending nothing, while the queue is full, either party has a submission queued, or four
+    of the holder's sales to the desk are unsettled.
+  - **The buy-back desk** (`scrap::desk`; the lead's ruling (A)): a `DARK` Thing per port, owned
+    by the port's clerk, standing in the port's presentation room, with its own purse and a
+    `vault.withdraw` grant on the workshop operator's root scope (lead ruling L25's, as the
+    clerk's) so it may bid into the storefront. Laid up on the first sale at the port and recorded
+    on the port map (`PortMap.desk`, a `DeskRow`; skipped when absent, the schema unchanged): a
+    restart finds it and never makes a second, nor a second purse. The money census counts its
+    purse as an NPC's (`Other`). The bidder is not the clerk itself because of the open defect
+    below.
+  - **The gate** admits a scrap vault's owner at that vault's venue under any presence, offline
+    included (`market.rs` `admit`).
+  - **Nothing is paid off the board.** The hand-pay page is gone. A scrap or a return with nothing
+    whole pays nothing, and the holder hears `NOTHING_WHOLE`. The help page says scrap is paid by
+    the whole tonne.
+- **The bot's sentence table** (`mush-bot` `mine::minds::scrap`): `NOTHING_WHOLE` and
+  `SALE_GIVEN_UP`, each under 120 columns.
+
+**Tests.** (conclav.dev, `CARGO_INCREMENTAL=0`, on main `45b50f303`, then rebased on main
+`c847b5dd2`.)
+- **Stories:**
+  - `ex3_board::ex3_the_house_buys_its_bill_on_the_board_and_a_missed_leg_refunds`: eight
+    charters breach the Trust's floor; its helm puts the first bill line on the board; Kasei's
+    alloys move away before the draw lands; past the deadline the purchase is closed, no trade,
+    the escrow empty, the purse refunded; with the stock back a purchase settles into the escrow
+    and is a trade on the tape.
+  - `in8_mass_scrap::ex3_scrap_sells_on_the_board_past_twenty_tonnes_and_a_missed_leg_refunds`
+    (Ceres, Occator's workshop): a whole Dray's 94 t mint into the captain's uncapped scrap vault
+    and sell into Occator's stock on the board, paid as they settle; then an escort's tonnes are
+    moved off before their sale's leg lands, the captain gone from the port: the bid's escrow comes
+    back to the desk's purse, Occator's stock takes nothing, the tonnes stay the captain's, and
+    the captain is paid exactly the parts' rows. The desk is the clerk's, laid up once (the same
+    Thing and purse at the second scrap), and the money census's total is unchanged by the sale.
+  - `in8_mass_scrap::ex3_a_restart_between_the_landing_and_the_sale_completes_it` (the lead's
+    condition on the step a bulk row waits): a Dray's mint lands and the holder's dissolve of its
+    94 t lot is lost with a crash. In the gap the lot sits in the captain's scrap vault and no bid
+    stands, so nothing is escrowed (the bid is posted and sold into in one later step). After the
+    restart the sale on her record dissolves the lot again and sells it into Occator's stock.
+  - `house_sweep_rs6c`'s two Tycho stories: Tycho's dispatcher, a GOD-owned NPC holder, sells a
+    swept wreck's matter into the desk's bids (its trades on the tape), and the credit reaches
+    Tycho through the float.
+  - A player still cannot sell into their own listing: `mush-market`'s
+    `ex1a_the_personal_verbs_refuse_before_any_write`, unchanged.
+  - `ic8::ex3_a_private_vendor_listing_is_its_one_buyers`: a private vendor listing is `Hidden`,
+    its one buyer quotes it, a stranger finds no such listing, and naming the vendor's own
+    organization lists nothing.
+  - `in10_pools` (the Trust's Dray, carbon by the private ask, the plant by its works order),
+    `in8_mass_scrap`'s escort and return (now sold through the scrap vault: five trades, 1 t into
+    the Yards' stock, the parts' lots in its stores), and `bay_gc8`'s scrap.
+  - `scrap::tests::ex3_the_sale_rows_are_the_whole_tonnes_and_the_parts`.
+- **Broad run** on `45b50f303` (before the desk): tacsim's lib (2,424), `domain_economy` (615),
+  `domain_field` (321), `domain_world` (275), `cost_lane` (12); mush-server's
+  `commerce_composition` and `split_boundary` (318); `mush-market` and `mush-bot` (1,067). With
+  the desk, again: `domain_economy` (615) and `domain_field` (321).
+- **Rebased on `c847b5dd2`** (EX.2b, PL.9, PL.2b and CC.2 merged meanwhile; the one conflict was
+  mush-bot's table, both families kept): tacsim's lib (2,431), `domain_economy` (617),
+  `domain_field` (323), `mush-market` and `mush-bot`, and every gate below.
+- **Gates:** `cargo fmt --check` (tacsim, mush-market, mush-bot); clippy `--all-targets
+  -D warnings` (tacsim, mush-market, mush-bot, mush-server) and the M7 memory-size pass; rustdoc
+  `-D warnings`; `mush-contract-tests` (200), `state-slot-owners.toml` taking a row for the scrap
+  vault's id.
+- **Mutations:** 11, each alone, against the tests named to kill it; 8 killed:
+  - **killed:** the bulk lot's dissolve skipped (M1); the gate's scrap-vault owner dropped (M3, the
+    captain offline); the purse's top-up skipped (M4); `private_to` not written (M5), the listing
+    not `Hidden` (M6), the private-offer check dropped (M11); the no-whole-tonne row kept (M8,
+    a division by zero); the bulk price rounded down (M10).
+  - **M2 survives** (the wait while four sales to the desk are unsettled dropped): one row a step
+    and a step's dissolve between the bulk rows keep the escort's five rows under the market's
+    cap of four before the first settles; no story builds a holder with five rows ready at once.
+  - **M7 survives** (the helm's one-purchase-at-a-time check dropped): no story has the helm
+    reach a second bill line while its first purchase is unsettled, so a second purchase is never
+    attempted.
+  - **M9 survives** (a part worth nothing minted as a part): no story's hull carries a part whose
+    removal takes its used value.
+
+**Divergences.**
+- **Touches EX.4's crate.** `mush-market/src/api.rs` (`ListingSpec.private_to`, its check and
+  visibility in `list_goods`), `seller.rs` (`check_private` made crate-public), and the field on
+  every constructor (`commands.rs`, tests `ic7.rs` and `ic8.rs`). EX.4 also works in mush-market:
+  whichever merges second resolves.
+- **Files outside the row's:** `port/map.rs` (`PortMap.desk`), `port/market.rs` (the gate's
+  scrap-vault owner), `port/stock.rs`
+  (two constructors), `store.rs` (`bay_selling_hulls`), `bay_work/mod.rs` (the tick's sale loop and
+  the landing line, scrap paths only), `bay_work/record.rs` (`BayHull.sale`), `bay_work/strip.rs`,
+  `bay_work/command.rs` (the scrap and return lines, the help), `mush-bot`'s table.
+- **A bulk row sells a step after its mint lands**, not in the same step: the market sells bulk
+  from a pool, and the scrap mints its tonnes as a lot, which the holder dissolves first. Accepted by
+  the lead on two conditions, both held: the matter sits in the holder's vault in the gap (and no
+  bid stands to be funded), and a restart in the gap completes the sale (the story above).
+- **The sale is one row a step**, since a seller with a submission queued is refused.
+- **The bulk price is rounded up** (at most a minor a tonne over the value), and a tonne carrying
+  only the shop bale's earlier remainder sells at 1 minor.
+- **Stories that settle a sale step six seconds a fire** past a Draw's window; `days_on`'s jumps
+  lapse a drawn sale unpaid.
+- **CF.6's raider story re-bounded (test-only, outside the field-path rows).** It went red once in
+  PR CI and once in 5 runs on the PR merge ref on conclav.dev (0 of 5 on the head, 0 of 5 on main):
+  the fight ends at about arena 61 s and the story's 60 s disengagement demotes the field at 121 s,
+  while its final wait gave 120 wall seconds (arena time runs at wall time there). A probe at 600 s
+  passed 4 of 4 at 116 to 121 s. CC.2's 15 s cannon lengthened the fight; EX.3b touches no field
+  code. The wait is now ten of the rigs' slowest gun cycle (`field_host_rig::quiet_s`) plus the
+  disengagement. The guard's zero shots in the failure were the black box's chunk lag.
+
+**Open defect: GOD-owned NPCs act for each other.** `mush_economy::acts_for` holds for an object
+over any object it `controls` (`mush_core::perm::controls`), and two objects with one owner control
+each other. Every NPC Thing is GOD's, so any two NPCs act for each other, and the market refuses a
+personal listing between them as self-trade ("That is your own listing"): Tycho's dispatcher could
+not sell its scrap into the GOD-owned clerk's bid. EX.3b routes the bids through the clerk's own
+Thing and leaves the ownership model alone. **EX.8 and EX.9**, which add NPC flows, must route
+NPC-to-NPC personal listings through a distinctly owned Thing the same way, or raise the defect.
+
+**Owed to the owner (flagged by the lead).** A return or scrap with nothing whole pays nothing
+(provisional default).
+
+**Meeting EX.4 on main (2026-11-17).** EX.3b and EX.4 (#654) merged apart, and main at 9f62136e8
+failed five scrap stories (`in8_mass_scrap`'s two `ex3_` stories and its whole escort, both
+`rs6c_tycho` stories). EX.4's `post_bid` charges the bidder a listing fee in the escrow's own
+post, and the desk's purse is topped up to each row's price only, so the escrow post was refused
+and the leg withdrawn. By doc 48 a house's listings pay no fee, and the desk is the house's buyer,
+a personal bidder only because GOD-owned NPCs act for each other (the open defect above). The fix
+is a seam answer, not a purse top-up. `mush_market::VenueFees::house_lists` defaults to no and
+`fees::listing_fee_accounts` reads it at every listing fee. TacSim's `PortFees` answers yes for
+the port's own desk Thing (`PortMap.desk`). The board story now asserts the desk's purse ends
+empty.
+
 ## EX.4
 
-Not built.
+**Survey.**
+- **Obligations.** A daily obligation a player cannot pay went `Grace` on the first miss and
+  `Delinquent` on the second (the default grace of one period): two real hours at 24:1. Its missed
+  periods were lost, and reinstating re-anchored the schedule, which forgave them
+  (`obligation.rs` `advance`; `api.rs` `reinstate_locked`). Doc 41's one-term debt
+  (`create_debt_due`, Q-41-13) already existed.
+- **Fees.** The exchange charged nothing: a personal listing was free to post, and a personal sale
+  paid the seller the whole price, the one shape EX.1a's `ListingAcceptance` admitted.
+- **The berth fee** existed nowhere. Undocking holds only for the fines quarantine.
+- **The Co-op share** ran only on sales into bids: `CoopProceeds::proceeds` answered no cuts when
+  the buyer was not a port house. EX.1b refused a personal ask from a chartered hold
+  (`may_list`, `CHARTERED_ASK`).
+- **EX.1b's locker** accrued a tally on display (`Locker::accrue`) that nothing collected.
+- **The port's authority.** A port def names one (`authority`, CR.2): `freeport_registry` at
+  Ceres, `stickney_yards` at Stickney, and three more. The port map's treasury is a system account
+  the money census (EX.0) counts as a sink.
+
+**Built.**
+
+*The player-owed obligation class* **(expensive to reverse)** (`mush-economy`, Q-48-54).
+- `Obligation.arrears: Option<Arrears>` (`namespace`, `debt`, `accrued`; serde default, skipped
+  when `None`) marks the class. `create_player_obligation(ctx, spec, namespace)` opens one, its
+  grace raised to at least `PLAYER_OWED_MIN_GRACE` (28) periods.
+- **A missed period accrues** (`sweep.rs`'s miss arm, `api::accrue_arrears`): its amount grows the
+  record's live arrears debt, or opens one. That debt is a one-term debt under the same namespace
+  (`create_debt_due`, Q-41-13's shape), first swept `ARREARS_DUE_IC_SECS` (28 IC days) later, so
+  it stands `Active` and payable until then.
+- **Funding pays it** (`api::collect_arrears`): after a period settles, a debit account that
+  covers the arrears debt pays it whole, in the same fire.
+- **Funding reinstates** (`api::reinstate_funded`, at the head of each settlement pass): a
+  delinquent record of the class whose account covers one period returns to the due pool.
+  Reinstating re-anchors its schedule, as E4's does; what it accrued stands as its debt.
+- `reprice_player_obligation` changes a record's per-period amount, under the namespace and actor
+  locks; `player_obligations_of` reads a debtor's records. The E4 class is unchanged.
+
+*The fees* (`mush-market/src/fees.rs`, Q-48-8, provisional).
+- **The seam** **(expensive to reverse):** `VenueFees::accounts(w, venue) ->
+  Option<VenueFeeAccounts>` (operator, operator name, sink, least listing fee), frozen by
+  `MarketModule::with_venue_fees`. Unwired, or a venue it does not answer for, charges nothing.
+  TacSim's answer is `port::berth::PortFees`: the port's authority operates its venue, the
+  treasury is the sink, and the floor is 10 cr.
+- **The listing fee:** 1% of what is listed (price × quantity, or a hull's price), at least the
+  floor, from the seller's own account to the operator, **once**, at posting, under
+  `market.listing_fee/<listing>`. It is the last fallible step of `post_ask` and `post_asset`
+  (refunded if `post_ask`'s lot hold then cannot be staged), and rides `post_bid`'s escrow post.
+  A refusal is `FEE_SHORT`.
+- **The sale cut and the levy:** 3% to the operator and 1% to the sink, each an exact payout row
+  beside the seller's, who is paid the rest (`fees::sale_payouts`). They are written on every
+  person's ask, lots and hulls: `purchase_spec` now takes its payouts, and `AssetSaleTerms` gains
+  `others`. `ListingAcceptance` requires exactly these rows (`personal_ask_payouts`), so a buyer's
+  hand-made contract cannot drop them. A vendor's listings pay none.
+
+*The Co-op share on a person's ask* (EX.1b's owed item, Q-48-56).
+- `personal_ask_payouts` asks the proceeds policy about a person's lot ask exactly as about a sale
+  into a bid (`fees::ask_policy_cuts`). The builder and `ListingAcceptance` ask the same question,
+  reading the world only.
+- `CoopProceeds::proceeds` now prices the share when the buyer is no port house (a person's ask
+  from an enrolled hold), with the market's own line; the share computation moved to
+  `share_cuts`. EX.1b's `may_list` refusal and `CHARTERED_ASK` are gone.
+
+*The berth and the locker* (`tacsim/src/port/berth.rs`, Q-48-15, -54, -55).
+- **The berth:** each hull docked at a port with an authority owes it 5 cr an IC day, from her
+  title holder's account (her charterer's, for a chartered Co-op hull, so a House's treasury does
+  not drain for its charters; doc 48b G-4(3)), as one player-owed obligation under `tacsim.berth.<port>.<hull>`, its
+  grace the machine's largest (254 periods).
+- **Exempt:** a House's hulls at their home port, meaning a hull titled to one of the port's own
+  organizations, or a registered hull whose `home` is that port.
+- **The port tick keeps it in step** (`berth::tick`): it opens what is wanted, ends a berth when
+  she leaves or changes hands (her arrears stand), and reprices a locker. No new store record;
+  the obligation is the record. **Nothing reads a berth at undocking.**
+- **The lien** (`berth::collect_lien`, from `HullSaleObserver`): on a settled sale of her title,
+  the seller's berth arrears for her at the port she stands in are paid out of the proceeds, in
+  the settlement's own batch.
+- **The locker** (EX.1b's owed item): 1 cr an IC day per started tonne, the same class under
+  `tacsim.locker.<venue>.<player>`, repriced as its tonnes move and ended when it is empty.
+  `+locker` shows the daily charge and the arrears. The record's `owed_minor` tally is kept on
+  the wire and no longer moved.
+
+*Help and sentences.* `help exchange` gains "Fees" and "Berths", and its "Chartered cargo" and
+locker paragraphs are rewritten; `+locker`'s help is rewritten. The bot's `venue` family drops
+`CHARTERED_ASK` and re-needles `LOCKER_SHOW`.
+
+**Tests.**
+- **The done-when, test by test:**
+  - **A week offline costs a hull 840 cr as arrears, not Delinquent, and she still undocks:**
+    `ex4_charges::ex4_a_week_offline_costs_a_hull_840_cr_as_arrears_and_she_still_undocks`.
+    The story runs at 24:1, one fire an IC day. A broke owner's Dray misses 168 periods and
+    stays in grace with 840 cr in one arrears debt. She files her clearance to Stickney with the
+    arrears unpaid and sails, the arrears still standing; once she is under way the berth ends.
+  - **The fees are charged once and land where they should, and the lien collects at her next
+    sale:** `ex4_fees_land_once_and_the_lien_collects_at_her_next_sale`.
+    - At posting, a 60,000 cr hull's 600 cr listing fee goes to Ceres' authority, and the
+      journal holds one fee post after three more days.
+    - At the sale, the authority gets the 3% cut and her berth arrears, and the treasury the 1%
+      levy. The seller is paid the rest, and her arrears are gone.
+  - **The Co-op share applies on a personal chartered sale:**
+    `ex4_the_coop_share_applies_on_a_personal_chartered_sale`. A chartered captain lists 2 t of
+    metals from her hold at 300 cr and pays the listing fee's 10 cr floor. The Trust's own hull
+    at home owes no berth. A second captain buys, and the Trust is paid its share; the seller
+    gets the price less the cut, the levy and the share.
+  - **The locker charge is collected:** EX.1b's
+    `ex1b_venue::ex1b_a_hull_less_player_buys_into_their_locker` now finds 3 t charged 3 cr an
+    IC day, collected, with nothing in arrears.
+  - **The class** (`mush-economy/tests/ex4.rs`, 4 tests):
+    - a week of misses is one debt of 168 periods and still grace;
+    - a funded account pays its arrears in the next fire;
+    - grace is raised to 28, the 29th miss is delinquency, an unfunded record stays delinquent,
+      and funding reinstates it;
+    - an E4 obligation accrues nothing.
+  - **Unit tests:** `fees.rs` (the rates, the floor, the 120-column sentence) and `berth.rs`
+    (the names).
+- **Tests that failed before EX.4, and why:** every test above. Before EX.4 there was no class,
+  fee, berth or charge to find, a chartered ask was refused, and EX.2's sale paid the seller the
+  whole price.
+- **Changed expectations:**
+  - EX.2's `ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her`: the seller is
+    paid 96%.
+  - EX.1b's offline-buy seller is minted the 10 cr fee.
+  - EX.1b's chartered-ask story now lists, as `ex1b_a_chartered_hold_and_a_locker_both_post_a_personal_ask`.
+  - Three stories that check a wallet to the minor unit across IC days now subtract the berth
+    paid over them (`driving_rig::berth_paid`): `sale::ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid`
+    (the pilot's charter berthed at Kasei), and the two `co6_cored_ship` stories (her own Dray at
+    Ceres while the shop works). Six more do the same:
+    `in3_order_contract::in3_a_twenty_day_plant_order_at_stickney_runs_to_collection`,
+    `orders::ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick`,
+    `orders::ic11_the_queue_runs_the_day_unattended`, and in `domain_world`'s `voyage`:
+    `rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her`,
+    `sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_bay_after_salvage_tow`
+    and `sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy`. Each pilot's
+    hull lay at Stickney or Kasei (or at Ceres, her own) across the days the story runs, and paid
+    its berth. Three of mush-server's `commerce_composition` stories do the same, with a local
+    `berth_paid`:
+    - `ic_buyout_dormancy::ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share`
+      (Vex's own hull at Stickney);
+    - `ic_slice_loop::ic12_part_one_a_leg_by_hand` (the pilot's charter);
+    - `ic_slice_loop::ic12_the_sailing_plan_skips_and_holds` (Ben's hull across the hour the
+      escrow waits).
+  - PL.9's `yard_in9::pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` (met on the
+    merge with main): a facility listing is a personal sale, so it pays the fees. The Yards are
+    Stickney's operator, so they keep the cut and lose only the 1% levy.
+- **On conclav.dev** (on the final tree):
+  - fmt, the contract tests, rustdoc (five crates, both modes), workspace clippy and the M7
+    memory-size lint pass;
+  - `mush-market` + `mush-economy`: 1,192 of 1,192;
+  - tacsim's `domain_economy`: 612 of 612; `domain_world`: 275 of 275; `domain_field`: 318 of 318;
+  - mush-server's `commerce_composition`: 91 of 91;
+  - `mush-bot`: 803 of 803;
+  - the two M7 market stories pass.
+- **The mutations:** 21 run, each alone, against the tests that can see them. 16 are killed.
+  The 5 that survive:
+  - **Masked by an earlier check:**
+    - **E6:** `collect_arrears`'s check that the account covers the debt. Without it the
+      payment is refused for want of funds, and nothing is written.
+    - **F6:** `ListingAcceptance`'s payout match. The builder always writes the expected rows;
+      the check guards against a buyer's hand-made contract, as EX.1a's S-series do.
+  - **Not reached by any story:**
+    - **F3:** the listing fee on a personal bid; no story posts a bid at a port.
+    - **F8:** the fee refund when `post_ask`'s lot hold cannot be staged; that happens only on a
+      server with no lot supply composed.
+    - **B5:** repricing a locker as its tonnes change; no story changes a locker's tonnes after
+      its charge opens.
+  - **E7** (reinstating an unfunded record) survived the first run; the class's grace test now
+    asserts an unfunded record stays delinquent, and it is killed.
+  - **B1** (the House-at-home exemption) and **B6** (a chartered hull's berth is her
+    charterer's) were re-run after the charterer rule landed. B1 is killed by the Co-op-share and
+    EX.2 stories. B6 is killed by `sale::ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid`
+    (outside the EX.4 set: the EX.4 story's charter lies at the Trust's home port, where the
+    House would be exempt too).
+
+  The loop is `ex4-mut.py` and `ex4-mut.sh` (scratch, run on conclav.dev).
+
+**Divergences.**
+- **Files beyond the owned list,** approved by the starting session:
+  - `mush-economy/src/sweep.rs` (three calls) and `lib.rs` (exports);
+  - `mush-market/src/lib.rs` and `module.rs` (the seam);
+  - `tacsim/src/port_tick.rs` (one line), `port/mod.rs` (one line),
+    `composition/mod.rs` and `mush-composition/src/lib.rs` (one line each);
+  - `tacsim/src/port/hull_sale.rs` (the lien), and `buyout.rs` and `house_sale.rs` (the builder's
+    new field);
+  - the bot table, `docs/help/exchange.md`, and the tests: `mush-economy/tests/ex4.rs`,
+    `tacsim/tests/domain_economy/ex4_charges.rs`, EX.1b's `ex1b_venue.rs` (its locker and
+    chartered-ask stories now assert EX.4's behaviour), and `hull_resale_ex2.rs` (its helpers
+    made `pub(crate)`).
+- **The fee seam is a new trait** (`VenueFees`), not the approved defaulted
+  `VenueGate::fee_accounts`: TacSim's gate is implemented in `port/market.rs`, which is EX.3's, so
+  a separate trait answered from `port/berth.rs` keeps out of that file.
+- **The berth's grace is 254 periods,** not 28 (accepted by the starting session). The done-when's
+  "a week offline is 840 cr in arrears, not Delinquent" needs at least 168, and 254 is the
+  machine's limit: the missed-period counter is a `u8` that saturates at 255, so
+  `MAX_GRACE_PERIODS` is 254. Past it a record goes Delinquent and stops accruing until funded, so
+  an absence costs at most 1,270 cr (about 10.6 real days at 24:1). Passed to the owner.
+- **The lien collects from the seller's proceeds after the settlement**, in its batch, not as a
+  payout row of the sale contract, so the `AssetSale` seam keeps its two questions.
+- **The berth's catch-up is 8 periods** (`MAX_CATCH_UP_CAP`), so a short stall charges rather
+  than forgives.
+
+**Not built.**
+- **The sale cut and levy on a sale into a person's bid** (the bid's listing fee is charged).
+  The deliver quote's cuts hold one row (`MAX_PROCEEDS_CUTS`); widening it is the next step.
+- **The Co-op's counters on a chartered ask's sale:** the share is paid, and the enrolment's sale
+  counters fold only on sales into bids.
+- **A fee line at posting:** the seller's posted line does not yet name the fee.
+- **House income** (Q-48-55's stipend), sized by EX.9.
 
 ## EX.5
 
-Not built.
+**The service arm and open jobs** (Q-48-3, -11, -12, -13, -58). Stacked on EX.4 (#654).
+
+**Survey.**
+- `accept_retrieval` was the only path where a stranger joins a standing offer. It took no bond, refused player orgs and Houses, and kept the deadline fixed at posting (doc 48b W-48-3d).
+- Since doc 48's defect PR, a retrieval's poster has been held to the trade issuer cap and the party cap. The acceptor has been held to the party cap.
+- Each of the three kinds keeps its own truth:
+  - a retrieval keeps its standing offer and the host's `RetrievalOrder`;
+  - a survey keeps Occator's commission, in typed action state, with its contract written at acceptance;
+  - a passage keeps the traveller NPC, and its booking is negotiated by `+passage/offer`.
+- None of them was on the exchange.
+- Survey commissions are typed action state, which a market verb's context cannot read. The board therefore reads a survey's state from the economy's contracts, not from the commission.
+
+**Built.**
+- **The generalised join** (`mush-economy/src/contract_live.rs`):
+  - `job_shape` recognises a job: a standing offer whose shape is its whole content. It has the fee from the issuer, an optional bond from the acceptor, one fact (after a title held, for a retrieval), a `WorldIc` deadline and `Public` visibility. The expiry is a refund, or with a bond a forfeit to the fee's account. `retrieval_contract_hull` is now `job_shape(c)?.object`.
+  - `join_job(ctx, id, JoinTerms { acceptor, account, bond, term_ic })` is the join for every kind. `accept_retrieval` is a thin wrapper over it.
+    - **The bond** is the acceptor's own consideration, escrowed in one post with the joined contract. A bond the account cannot cover writes no join. On performance the fee and the bond are the acceptor's. At expiry the escrow is forfeit to the poster: the fee back, and the bond with it.
+    - **The term** (Q-48-58) moves the deadline to the join plus N IC seconds, never past the posted deadline.
+    - **Org acceptance** (Q-48-58): an organization is accepted for by a member holding its spending capability (`economy.account.post` on its root scope, `acts_for`), or by the wiring's `PartyCap::Accept`, as before.
+  - `job_bond(fee)` is 20% of a fee above 10,000 cr (Q-48-13, provisional: `JOB_BOND_ABOVE_MINOR`, `JOB_BOND_PERMILLE`).
+  - **Both caps on both paths** (Q-48-44, doc 48b G-5):
+    - Live jobs count against their own budget, `MAX_LIVE_JOBS_PER_PRINCIPAL` (16). The post asks it of the poster and the join of the acceptor. Both also ask §9's party cap of 100.
+    - The trade issuer cap (`@contract/draft`, `offer_contract`) no longer counts a live job, so standing jobs never block trading.
+- **The `Service` record** (`mush-market/src/record.rs`): `ServiceKind` (Retrieval, Passage, Survey), `ServiceSide` (Wanted, Offered), `ServiceTerm` (FromAcceptance, By, OnPerformance) and `Service`. A service carries the kind, the side, the venue, the poster, a subject in the host's words, the pay, a negotiable flag, the bond, the term, the standing offer's contract when there is one, and the verb that takes it.
+- **The board** (`mush-market/src/services.rs`):
+  - `ServiceBoard` is a seam installed by `MarketModule::with_service_board`. A venue's board is the projection of its hosts' open services, answered from their own records each time. The market stores nothing.
+  - `services_at(w, venue, kind)` reads the board.
+  - `+market/jobs [kind] [market=<venue>]` prints two lines a job, within 120 columns.
+- **TacSim's board** (`tacsim/src/port/jobs.rs`, `PortJobs`), composed in both compositions:
+  - **Retrievals** (`surface/retrieval.rs`): each open job, on the board of its destination's venue, with its bond. The term shown is the taker's: the host's performance window from acceptance. The contract keeps its absolute deadline, as Q-48-58 rules for retrieval.
+  - **Survey commissions** (`port/survey.rs`): each offer still open, on the programme port's board, 28 IC days from acceptance. A commission is taken while its contract is live, and done for good once that contract settles on the logged fact. The fact id names the offer.
+  - **Passage** (`port/passenger/board.rs`): each authored, funded traveller standing in their origin port with no passage booked. The fare is the opening figure, and it is paid on arrival.
+- **`+salvage/accept <job> [as=<org>] [go]`**:
+  - The acceptance goes through `join_job`, with the bond a fee above 10,000 cr asks. The preview and the acceptance line state the bond (`BOND_CLAUSE`).
+  - With `as=<org>`, a member who acts for the org takes the job for it. The org is paid into its credit account and escrows its bond from there.
+  - The house's fallback acceptance posts no bond.
+- **Help and bot table:**
+  - `docs/help/exchange.md` gains a "The job board" section.
+  - The bot table gains the `jobs` family, with a census over `services.rs`.
+
+**Tests.**
+- **mush-economy** (`tests/e4c/retrieval.rs`, through a stand-in ruleset's `@rjoin`). Each test is listed with the done-when it covers:
+  - the bond is 20% above 10,000 cr;
+  - a bonded join escrows the bond, and performance pays the fee and the bond back ("a stranger joins a `Wanted` service, escrowing the bond");
+  - the term runs from acceptance and is refused past the posted deadline, and an unperformed bonded job forfeits the bond to the poster ("deadlines run from acceptance");
+  - an unfunded bond writes no join;
+  - an org member with the spending grant accepts for the org, and one without it is refused ("org members with the capability accept for their org");
+  - the job budget binds the post and the join, apart from the trade cap ("checking both contract caps").
+  - RS.5's two cap stories are restated for the split budgets. A poster at the trade cap still posts a job, and the job budget binds instead.
+- **tacsim** (`tests/domain_economy/ex5_jobs.rs`):
+  - the board lists retrieval, passage and survey as typed kinds, with their verbs, within 120 columns, and a kind filter narrows it ("retrieval, passage and survey list on the board as typed kinds");
+  - a stranger takes a bonded retrieval through `+salvage/accept`; one who cannot cover the bond takes nothing, and a funded one has it escrowed;
+  - an org member with the capability takes a job for the org with `as=`, paid into the org's account; an outsider is refused.
+- **Tests that failed before EX.5, and why:** every test above. Before EX.5 there was no join with a bond, term or org, no job budget, no `Service`, no board, and no `as=`.
+- **Changed expectations:** RS.5's `rs5_a_poster_at_the_issuer_cap_posts_no_retrieval` and `rs5_an_acceptor_at_the_party_cap_joins_no_retrieval` become `…_at_the_job_budget_…`. With jobs on their own budget of 16, a job-only principal meets the job budget before the party cap of 100.
+- **On conclav.dev** (on EX.4's head 0c006961 plus this cut):
+  - fmt, clippy (economy, market, tacsim, both compositions and mush-bot), the contract guards, rustdoc (economy, market and tacsim, both modes) and the 64 KiB memory-size lint pass;
+  - `mush-economy` + `mush-market`: 1,204 of 1,204;
+  - tacsim lib (survey, passenger, retrieval, jobs): 32 of 32;
+  - `domain_economy`: the three EX.5 stories, RS.7's port-security retrieval stories and EX.4's charges;
+  - `domain_field`: RS.5's and RS.9's retrieval stories;
+  - `domain_world`: RS.8's space retrieval and the passage stories, 39 of 39;
+  - `mush-bot`'s sentence table: 44 of 44.
+- **The mutations:** 13 run, each alone, against the tests that can see it. 12 are killed: the bond rule, the forfeit, the term, the term past the deadline, the org's capability, the job budget at the post and at the join, the trade cap's exclusion, the board's kind filter, the retrieval's bond, the survey's open test, and `as=`'s check. **The one survivor is T4**, the passage board's filter of a traveller already booked: no story books a passage and reads the board after it.
+
+**Divergences.**
+- **No `Representation::Service` arm.** The record is `Service` in `record.rs`, but it is a projection value, not a catalogue representation. No catalogue entry or listing stock carries a service yet, so an arm nothing produces would be dead code. The arm comes when a service is posted as a listing.
+- **The board is a projection, not stored listings.** Each host keeps the truth, so nothing is copied that could drift. A board read costs one pass over the hosts' records.
+- **The join's bond and term come from the caller.** The economy recognises the shape and checks the bond and the term. The venue's posted terms for the kind are what the caller passes: today, the host's rule for each kind.
+- **Survey and passage do not join through `join_job`.** A survey's contract is written at acceptance, so its deadline already runs from acceptance. A passage is a captain's offer to a traveller, negotiated by `+passage/offer`. Both list on the board and keep their own verbs.
+- **New files:** `mush-market/src/services.rs`, `tacsim/src/port/jobs.rs` and `tacsim/src/port/passenger/board.rs`. There are one-line wirings in `tacsim/src/port/mod.rs`, both compositions, `passenger/mod.rs` and `passenger/movement.rs`.
+- **The rig reuses EX.4's conclav.dev clone and target**, to save about 40 GB of disk.
+
+**Expensive to reverse (flagged).**
+- **The `Service` record's shape** and **`ServiceKind`'s words**. The board prints the words, and a filter names them. A later kind is appended, and a field later kinds need is added with a default.
+- **The job budget of 16 apart from the trade issuer cap** (Q-48-44's provisional figure).
+
+**Not built.**
+- `Offered` services: EX.7's crew self-listing is the first.
+- The House posting jobs (Q-48-12's "NPC houses post jobs too"): EX.6's haul from the consumers of Q-48-19.
+- The party cap at the join has no direct test, since jobs alone no longer reach 100.
 
 ## EX.6
 
-Not built.
+**Haul and escort** (Q-48-11, -42, -46, -57, -58; doc 48a A-4, A-9; doc 48b W-48-3a, -3b, -3c).
+Stacked on EX.5 (#657), built 2026-11-18 on `claude/ex6-haul-escort`, cut from EX.5's head
+`d9601be5`.
+
+**Survey.**
+
+- **No job without an object could be posted.** EX.5's `job_shape` already reads a job whose one
+  condition is its fact, but the only post was `post_retrieval`, which conditions on a hull's
+  title.
+- **No call moved a hold between endpoints.** A pool hold belongs to one endpoint's book
+  (`mush-inventory/src/pool.rs`), and an `ActionTxn` writes a key once. So "consume here, credit
+  and hold there" could not be done as `consume` + `transfer` + `reserve_for`: each writes a pool
+  pair a second time. A lot hold (`lot_hold.rs`) has no TTL but cannot move while held
+  (`relocate_held` lands the lot unheld).
+- **The inventory fact answers only existence** (`facts.rs`), but a derived marker id names
+  from, to, commodity and amount at posting (doc 48b W-48-3b). `transfer_marked` is the market's
+  model.
+- **Inventory moves need a prepare.** A command cannot write inventory, so every leg is an
+  authoritative act. Works (doc 39 cut IN.3) is the model: the record names the leg owed, the
+  command or the port arm submits it as its actor, the offer projects it from the record, and
+  the prepare moves the goods once under a ledger ordinal. The port arm may submit as an actor
+  (`ctx.actor` swapped), as works' arm does.
+- **Hosts cannot stage from their hooks.** `CarrierHooks` write only the outbox, so the escort's
+  watch runs on the `tacsim.port` tick, reading the journey book, the bubble book and the field's
+  marks. There is no per-tick journey hook.
+- **Linkdead grace** is 300 wall seconds in both domains (`space/tick.rs`,
+  `field/absent.rs`).
+
+**Built** — the families' shape, **(expensive to reverse)**.
+
+- **The generic job post** (`mush-economy/src/contract_live.rs`):
+  - `post_job(ctx, JobSpec { name, poster, poster_account, fee, fact, deadline_ic })` posts a
+    standing job whose whole condition is one fact, so `job_shape` reads it and `join_job` takes it.
+  - `post_retrieval` and `post_job` share one private `post_standing` (the caps, the contract, the
+    fee's escrow).
+  - `cancel_job` is `cancel_retrieval` for any job: the ordinary unwind, each escrow back to
+    whoever placed it.
+- **The carriage** (`mush-inventory/src/pool/carriage.rs`): `InventoryFamilies::carry(txn,
+  &Carriage { from, to, commodity, amount, held, keep, marker, actor, now, wall, commit })`.
+  - **The source**: the named hold is consumed, or the amount is debited from what is available.
+    A hold past its deadline is expired and the amount debited in the same write, so goods held
+    past their deadline still move back.
+  - **The destination**: credited and, with `keep`, held under the job's holder until
+    `reservation_deadline_after(now, lead)`.
+  - **The fact**: one `inventory.transferred` marker under the caller's derived id, retained in
+    the source's ring. An existing marker refuses, which is the replay guard.
+  - One write per pool pair. It mints nothing, and the lineage is carried as `transfer` carries it.
+- **The board kinds**: `ServiceKind::Haul` (`haul`) and `ServiceKind::Escort` (`escort`), appended
+  to EX.5's list. `+market/jobs [..|haul|escort]`.
+- **The haul** (`tacsim/src/services/haul.rs`; `+haul`):
+  - **The record**: `tacsim:haul:{contract}`, `HaulJob` (schema 1). It holds the shipper and
+    their account, origin and destination venues, the shipper's locker at each, the good and
+    quantity, the declared value, fee and bond, the posting's times, the delivery marker, then the
+    hauler, the pilot, the hull, her hold, the due time, the leg owed with its tries, and the
+    stage (`posted`, `taken`, `aboard`, `delivered`, `returning`, `closed`).
+  - **The ledger**: the typed family `tacsim.haul_ledger`, `HaulLedger { contract, acts, last }`.
+    The action is `tacsim_haul` v1 with outcome `tacsim_haul_result`.
+  - **The holder**: `haul_holder(contract)`, a `Scoped` principal of tacsim, class `haul`, one per
+    job. Every leg re-derives the hold the load placed (`haul_reservation`).
+  - **The post** (`+haul/post <qty> <good> to=<port> fee=<cr> [value=<cr>] [go]`): it is made at
+    the venue the shipper stands in, from their locker there.
+    - The declared value defaults to, and is capped at, the reference price × quantity
+      (Q-48-57, `good_reference_minor`).
+    - The bond is 25% of it (Q-48-42, `HAUL_BOND_PERMILLE`).
+    - The shipper's locker at the destination opens with the post, so the delivery always has
+      somewhere to land.
+    - The contract's fact is the delivery marker, derived now from the job's contract id
+      (peeked), the drop vault, the good and the quantity.
+    - The job waits 28 IC days for a taker (`ACCEPT_WINDOW_IC_DAYS`); untaken, the arm cancels
+      it and the fee comes back.
+  - **The acceptance** (`+haul/accept <job> [as=<org>] [go]`): the taker's hull must be docked at
+    the origin with room in her hold, and the shipper's goods must still be in the locker.
+    `join_job` escrows the bond, with a term of 28 IC days from acceptance (Q-48-58,
+    `HAUL_TERM_IC_DAYS`). The same command submits the load leg: the goods leave the locker and
+    land in the hold, held for the job, for the term plus 28 IC days (`RETURN_GRACE_IC_DAYS`),
+    on top of the inventory TTL.
+  - **The delivery verb** (`+haul/deliver <job> [go]`): at the destination, before the term ends.
+    The leg consumes the hold and lands the goods free in the shipper's locker, writing the
+    contract's marker. The sweep then pays the fee and returns the bond.
+  - **The deadline**: the contract expires, the fee is refunded and the bond goes to the shipper
+    (the join's `Forfeit { to: fee account }`). The goods stay held aboard. At the hull's next
+    port, the arm opens the shipper's locker there and submits the return leg as the pilot.
+  - **A load that never lands** (eight tries, `MAX_LEG_TRIES`) cancels the job: the fee goes
+    back to the shipper and the bond to the hauler. Nothing was aboard.
+- **The escort** (`tacsim/src/services/escort.rs`; `+escort`):
+  - **The record**: `tacsim:escort:{contract}`, `EscortJob` (schema 1). It holds the poster, the
+    protected hull, the journey (`passage { from, to }` venues, or `field { site }`, a port entry),
+    the board's venue, the fee and bond, the posting's times, then the escort principal, their
+    hull, the acceptance and due times, the host's `Watch { started_ic, last_ic, journey_ic,
+    near_ic }`, why it failed, and the stage (`posted`, `taken`, `watching`, `kept`, `failed`,
+    `closed`).
+  - **The fact**: `tacsim.escort.kept`, keyed by the contract (revision 1), so it is named at
+    posting (doc 48b W-48-3a). `EscortFactProvider` holds it once the host finds the escort kept.
+  - **The post** (`+escort/post <hull> to=<port>|field=<site> fee=<cr> [go]`): by whoever answers
+    for the hull: her title, her helm, a live lease of the rig, or her seat. A passage starts at
+    the port she lies at. The bond is Q-48-13's (20% of a fee over 10,000 cr). One open escort a
+    hull at a time.
+  - **The acceptance** (`+escort/accept <job> with=<hull> [as=<org>] [go]`): with a hull the
+    taker answers for, never the protected one. `join_job`'s term is 28 IC days.
+  - **The host's watch** runs on the `tacsim.port` tick (`services::tick`, after works). It
+    starts when the journey does: she departs after the acceptance, or is in the named field. Each
+    fire adds its IC seconds to the journey and, when the escort is near or inside the linkdead
+    grace, to the near time.
+    - **Near** (provisional) is the same bubble, or the same passage (one route, departed within
+      an IC hour, `TOGETHER_IC`), in space, and the same site in a field.
+    - **The grace** is the space linkdead window not expired, or the field unit away under the
+      300 s grace and not yet handed to its mind.
+    - **It ends** when she arrives or docks anywhere else (a passage), or leaves the field. It is
+      kept at 90% near (`NEAR_PERMILLE`).
+    - **It fails at once** when she is wrecked (a derelict in space, a wreck in a field) or
+      captured (yielded, doc 42b), or when the escort leaves: docked elsewhere while she is under
+      way, or out of the field while she is in it, outside the grace. It also fails when the term
+      runs out first.
+    - **A failed escort** never sees its fact. The term's end expires the contract: the fee goes
+      back and any bond to the poster.
+
+**Defaults taken** (provisional; the economy defaults rule):
+
+- The haul's term, the escort's term, both acceptance windows and the hold's grace past the term
+  are 28 IC days each, the owner's floor for a wait on a player. At 24:1 that is 28 real hours.
+- The haul bond is 25% of the declared value, and there is no haul bond on a zero value. The
+  declared value defaults to the cap.
+- Near means departed within one IC hour (150 real seconds at 24:1); kept means 90%.
+
+**Tests.**
+
+- **Stories** (each a done-when):
+  - `domain_economy/ex6_haul.rs::ex6_a_haul_carries_held_cargo_and_pays_on_the_delivery_marker`:
+    - an over-cap declared value is refused, the fee is escrowed, and the job is on Ceres's board
+      as a haul;
+    - the shipper cannot take their own job, the join escrows the bond, and the load lands six
+      tonnes in the hold held (`(6, 0)`: none free);
+    - a restart keeps the record and the hold;
+    - the delivery is refused away from the destination and to a stranger;
+    - at Stickney the delivery verb lands the goods free in the shipper's locker, and the sweep
+      settles the contract on the marker, paying the fee and the bond back.
+  - `…::ex6_cargo_still_aboard_at_the_deadline_stays_held_and_goes_back`: at the term's end the
+    cargo is still aboard and held; the contract expires, the fee and bond go to the shipper (less
+    their locker's own charges); no delivery after the term; the return leg lands the goods back
+    in the shipper's Ceres locker and the job closes.
+  - `domain_field/ex6_escort.rs::ex6_the_field_host_keeps_one_escort_and_fails_the_one_whose_rig_is_wrecked`,
+    with three parties at Ahuna Flank (the miner's two rigs, the escort's armed hull and the
+    raider's):
+    - one open escort a hull at a time, and no escorting with someone else's hull;
+    - no watch before a field opens;
+    - the raider's fire opens the field and the host starts both watches;
+    - the wrecked rig's escort fails at once;
+    - the other rig's escort is kept when it leaves the field, and the sweep pays the escort on
+      the host's fact.
+- **Unit tests**:
+  - `pool::carriage::tests::ex6_a_held_cargo_moves_only_by_its_legs`: the load holds, the custodian
+    cannot debit, a replayed marker refuses even with the stock there, the delivery frees, and a
+    lapsed hold carries back;
+  - `services::haul::tests::ex6_a_haul_record_keeps_its_own_rules`;
+  - `services::escort::tests::ex6_the_near_share_is_of_the_journey`;
+  - `services::tests::ex6_options_split_words_from_terms`.
+- **Tests that failed before EX.6, and why**: every test above. Before this cut there was no haul,
+  escort, `post_job` or carriage.
+- **On conclav.dev** (EX.5's head plus this cut):
+  - `cargo fmt --all --check`; workspace clippy (`--all-targets -D warnings`); the M7 memory-size
+    clippy; rustdoc `-D warnings` (the workspace with private items, and the four touched crates
+    without).
+  - The contract guards (census, panic budget, restriction lints, help commands, shard names,
+    legacy handlers) and the whole of `mush-bot` (the new `haul` and `escort` families' in-step,
+    census and distinct tests).
+  - All of `mush-inventory`, `mush-economy` and `mush-market`, and tacsim's lib (2,443).
+  - The retrieval and job stories `post_retrieval`'s refactor could move: `domain_economy` `ex5_`,
+    `rs5_`, port security and `ex4_`; `domain_field` `rs5`, `rs9` and `field_host`; `domain_world`
+    `rs8` and the passage stories.
+- **Mutations** (`ex6-muts.py`, in this group's notes folder), each run alone on conclav.dev
+  against the tests that can see it:
+
+| # | Mutation | Verdict |
+|---|---|---|
+| H1 | the declared value is not capped | caught: the haul story |
+| H2 | the join escrows no bond | caught: the haul story |
+| H3 | the load keeps no hold | caught: the haul story's `(6, 0)` |
+| H4 | the prepare drops its term check | **survives**, masked: the delivery verb refuses after the term first |
+| H5 | the return is never set | caught: the deadline story |
+| H6 | the delivery writes a marker the contract does not name | caught: the haul story's settlement |
+| H7 | anyone may deliver | caught: the haul story's stranger |
+| H8 | the delivery names another job's hold | caught: the haul story |
+| C1 | the carriage ignores the hold and debits | caught: the carriage test and the stories |
+| C2 | the carriage drops its replay guard | **survives**, masked: the applied family's `insert` refuses an existing marker, and a kept leg's live duplicate hold refuses too |
+| C3 | a lapsed hold is consumed, not expired | caught: the carriage test |
+| P1 | `post_job` writes a second condition | caught: the haul story (no job shape, no join) |
+| E1 | a wreck does not fail the escort | caught: the escort story |
+| E2 | the field near rule never holds | caught: the escort story |
+| E3 | the share threshold is 100.1% | caught: the escort story |
+| E4 | the fact never holds | caught: the escort story's settlement |
+| E5 | anyone escorts with any hull | caught: the escort story |
+| E6 | the linkdead grace is ignored | **survives**, unreached: no story drops the escort's link |
+| E7 | the passage near rule drops the route | **survives**, unreached: no story runs an escorted passage |
+| E8 | leaving the field does not fail | **survives**, unreached: no story's escort leaves |
+| E9 | capture does not fail the escort | **survives**, unreached: no story captures the protected hull |
+
+21 run, 15 caught, 6 survive. The carriage test's replay was given stock to move, so it reaches
+the guard; it is still refused by the family below it.
+
+**Divergences.**
+
+- **The cargo travels as a held pool hold, not a held lot.** The brief names `reserve_for`, and a
+  lot hold cannot move while held. The hold is the pool reservation `carry` places, under the
+  job's holder.
+- **Return is to the shipper's locker at the hull's port**, opened by the arm, not to the origin:
+  doc 48b W-48-3c's "at the hauler's next port".
+- **The delivery is a verb, not automatic on docking**: the docking hooks cannot stage an act.
+- **The escort's watch is the port tick's**, not a per-pulse journey hook (there is none, and the
+  hooks are world-only). Its resolution is the tick's period in IC seconds.
+- **A failed escort's contract is not ended early.** It expires at the term, which forfeits the
+  bond, because the economy has no "fact failed" path for a job.
+- **Shared files beyond the brief**: `post_job`/`cancel_job` in `mush-economy/src/contract_live.rs`
+  (refactoring `post_retrieval` onto the shared post), `pool/carriage.rs` in mush-inventory, the
+  two `ServiceKind` words in `mush-market/src/record.rs` (with the usage lines), and the wiring:
+  `store.rs`, `commands.rs`, `port_tick.rs`, `port/jobs.rs`, `composition/mod.rs`, `lib.rs`, the
+  mush-bot table, `legacy-handlers.toml` and `docs/help/exchange.md`. No crew file is touched.
+
+**Not built.**
+
+- The House posting hauls (Q-48-12's NPC jobs from Q-48-19's consumers): EX.10's hauler arm.
+- Cargo taken in a fight. Held goods refuse salvage's `relocate` and every other verb but a leg,
+  so a raider who takes the hull holds goods that stay reserved to the job until its grace runs
+  out.
+- Cargo insurance (Q-48-42's later coverage product).
+- No story runs the passage half of the escort: the space near rule is reached only by its code.
 
 ## EX.7
 
-Not built.
+**Crew wages and crew for hire** (Q-48-14, -33, -54). Stacked on EX.5 (#657).
+
+**Survey.**
+- **The crew model** (`tacsim/src/detachment/crew/`, doc 42's custody beside it):
+  - A hire is one typed `CrewContract` per NPC in `tacsim.crew_contracts`. It names the NPC, the employer, the IC stamp and the staff-authored `HireTerms`: the hiring port's venue, the mission scope and one to three duties.
+  - Only a player standing in a port room can accept an offer, so the employer is always a player.
+  - Nothing ended a contract but doc 42's capture exit (`tacsim_crew_captured`, Q-42-26), which removes the contract and the roster reservation together.
+  - `+sortie/crew` said "These offers have no wage charge", and the help said pay was future work.
+- **EX.4's class** (`create_player_obligation`): a daily obligation a player owes, grace raised to at least `PLAYER_OWED_MIN_GRACE` (28) periods, a missed period accruing into a one-term arrears debt under the record's namespace, paid and reinstated on funding. The berth tick (`port::berth::tick`) keeps its records in step with the world each port fire; it reads only its own two prefixes.
+- **EX.5's board:** a venue's board is the projection of its hosts' services; `Offered` was declared for EX.7's self-listing and nothing produced it.
+- **NPCs hold no accounts.** No NPC crew member has a wallet, so a wage cannot be paid to the person.
+
+**Built.**
+
+*The wage* (`detachment/crew/wages.rs`, Q-48-33's figures, provisional).
+- **Every standing contract owes a wage** from the employer's own account to the hiring port's authority (the port def's `authority` org, Ceres' Freeport Registry), as one player-owed obligation under `tacsim.crew.wage.<npc>`:
+  - **10 cr an IC day for a rating** (a contract scoped `subordinate_operator`): 240 cr a real day at 24:1, 1,680 cr a real week;
+  - **20 cr for an officer** (`detachment_commander`): 480 cr a real day, 3,360 cr a real week.
+- **Grace is EX.4's 28 periods**: 28 IC days, 28 real hours. A day the employer cannot pay accrues as arrears, paid as soon as the account is funded. Past 28 the wage is delinquent and stops accruing until funded (EX.4's class).
+- **A missed wage never ends the contract.** Nothing here unseats, unhires or moves the crew member; no player is held for being offline (the owner's 28-IC-day rule holds through the grace).
+- **The port tick keeps it in step** (`wages::tick`, one line in `port_tick.rs` after the berth's): it scans the contracts page by page, opens a wage for each one without, reprices one whose scale changed, and ends a wage whose contract is gone or changed employer. Its arrears stand. No new store record: the obligation is the record.
+- **The surfaces:**
+  - `+sortie/crew` shows each offer's wage and a footer with the two scale wages;
+  - `+sortie/contract #<npc>` shows the wage, its payee and the arrears.
+
+*Crew for hire* (Q-48-14's second half).
+- **`+sortie/available <duty>[,<duty>] [officer]`** lists a player at the port whose station they stand in, as a rating or an officer, for those duties. `+sortie/available` alone shows the listing and `+sortie/unavailable` withdraws it.
+- The listing is the player's own attribute (`crew:listing`, wizard-only, hidden, owned by the player and read only when it is), never a contract.
+- **The board** (`wages::services`, one line in `port/jobs.rs`): each listed player standing in the port's station is an `Offered` `Crew` service, asking the scale wage as an opening figure, paid by the IC day; the take is `page <name>`.
+- **mush-market:** `ServiceKind::Crew` ("crew") and `ServiceTerm::Daily` ("paid by the IC day", `TERM_DAILY`) are appended; `JOBS_USAGE` names `crew`.
+
+*The technician* (doc 38 Q-38-15, Q-48-14's third half).
+- **`CrewDuty::Technician`** is a duty kind: contract terms may carry it (up to four duties now), `+sortie/crew` and the contract print it, and a player may list for it. No sortie activates for it (`+sortie/activate`'s purposes are unchanged) and no bay job consumes it yet.
+
+*Help and sentences.* `help detachments` gains the wage paragraph, the technician and crew-for-hire paragraphs and two command rows; `help exchange`'s job board gains the crew kind. The bot table gains the `crew` family, with a census over `wages.rs`; the DT lane reads the offers' new footer (`crew::OFFERS_WAGES`) where it read "no wage charge"; the `jobs` family gains `TERM_DAILY` and the new usage.
+
+**What this relies on from the crew model.**
+- One contract per NPC, keyed by the NPC, whose employer is a player: the wage's namespace is the NPC's, and its debtor the employer.
+- The contract is ended only by doc 42's capture exit (or by a staff hand). The wage follows it: ended at the next port fire, its arrears standing. Doc 42's invariants are untouched: the wage reads the contract and writes only the economy.
+- The terms' scope is staff-authored and hashed into the contract, so a hire's rank cannot change under it.
+
+**The `acts_for` defect.** No wage is paid to or by a GOD-owned NPC: the payer is always the employing player, and the payee the hiring port's authority, an organization's account. So no GOD-owned NPC pair ever stands on either side of a wage.
+
+**Tests.**
+
+- **The done-when, test by test** (`tests/domain_economy/ex7_wages.rs`, at 24:1, one fire an IC day):
+  - **A hire owes 10 cr (rating) or 20 cr (officer) an IC day, under EX.4's grace; a wage paid:**
+    `ex7_a_hire_is_paid_its_wage_by_the_ic_day`. A captain hires Ilya Mendes (a rating) and Sana
+    Okonkwo (an officer) through `+sortie/crew`, whose offer line and footer show the wages. Each
+    wage opens at 1,000 and 2,000 minor units, from her account to the Freeport Registry, with at
+    least 28 periods of grace. Over three IC days each settles three periods: she pays 90 cr and the
+    Registry receives it, beside her charter's berth (`driving_rig::berth_paid`).
+    `+sortie/contract` shows the wage and no arrears.
+  - **A wage missed under grace:** `ex7_a_missed_wage_accrues_under_grace_and_is_paid_once_funded`.
+    A broke captain's rating misses five IC days: the wage is in `Grace`, 50 cr stands in arrears,
+    the contract stands and shows them. Funded, the next fire pays the arrears and the day's wage.
+  - **A player lists themselves for crew hire; the technician is a kind:**
+    `ex7_a_player_lists_themselves_for_crew_hire_on_the_board`. `+sortie/available technician,mining`
+    lists a player at Ceres; `+market/jobs crew` shows "Crew: rating for hire (mining, technician).
+    Pays 10.00cr to open." with "paid by the IC day" and `page <name>`. An officer's listing asks
+    20 cr, an unknown duty is refused, and `+sortie/unavailable` takes them off the board.
+  - **Unit tests** (`wages.rs`): the namespace, each duty's word read back, and every sentence at its
+    widest fill within 120 columns.
+- **Tests that failed before EX.7, and why:** every test above. Before EX.7 no hire owed anything,
+  there was no listing, no crew kind on the board and no technician duty.
+- **Changed expectations:** the bot's DT lane waited for "These offers have no wage charge"; it now
+  waits for the offers' wage footer.
+- **On conclav.dev** (on EX.5's head d9601be5 plus this cut):
+  - fmt, clippy (tacsim, mush-bot, mush-market, all targets), the 64 KiB memory-size pass, the
+    contract guards (`feature_matrix_inventory`, `panic_budget`, `restriction_lints`), the help lint
+    (`help_commands`) and rustdoc (tacsim and mush-market, both modes) pass;
+  - tacsim lib, crew and jobs: 30 of 30; `mush-market` lib: 148 of 148; `mush-bot` lib: 561 of 561;
+  - `domain_economy`: the three EX.7 stories with EX.4's and EX.5's, 9 of 9;
+  - `domain_field`: the crew-custody, DT and roster stories, 18 of 18.
+- **No mutation loop was run.** The wage ending with its contract is not reached by any story
+  (below).
+
+**Divergences.**
+- **The wage is paid to the hiring port's authority, not to the crew member.** NPCs hold no accounts, and a wallet per NPC would put GOD-owned accounts on the payee side (the open `acts_for` defect). The authority keeps the hiring hall, as it keeps the berth; the wage is one of §5.4's sinks, as the berth is. A port with no authority charges no wage, and the contract says so (`WAGE_NONE`). Every shipped crew offer is at Ceres, which has one.
+- **Files beyond `detachment/crew/`**, each a line or a few:
+  - `port_tick.rs` (the tick), `port/jobs.rs` (the board), `port/passenger/mod.rs` (`station_rooms` re-exported);
+  - `mush-market/src/record.rs` and `services.rs` (`ServiceKind::Crew`, `ServiceTerm::Daily`, `TERM_DAILY`, `JOBS_USAGE`). EX.6 appends its kinds to the same enum, `ALL` and `JOBS_USAGE`; whoever merges second resolves;
+  - the bot's `mine/minds.rs` and `mine/detachment.rs`, `docs/help/detachments.md` and `exchange.md`, and the new story file.
+- **Hiring a listed player is not a new verb.** A player's crew seat is the existing player slot of a detachment; the listing is an offer to talk, and any wage between two players is theirs to draft (`@contract/draft`).
+
+**Expensive to reverse (flagged).**
+- **`ServiceKind::Crew`'s word** ("crew") and **`ServiceTerm::Daily`**, appended to EX.5's flagged record.
+- **`CrewDuty::Technician`'s word** ("technician"): it is in the hashed terms of any contract that carries it.
+
+**Not built.**
+- **A wage between two players:** a listed player's agreement is drafted by hand.
+- **What a technician does:** no bay job or sortie reads the duty.
+- **Ending a hire by choice:** there is still no dismissal verb, so a wage runs until doc 42's capture exit ends the contract. Q-48-33's alternative (stopping the wage while a hire is off duty) is not built.
+- **The wage ending with its contract** is not reached by a story: it needs CR.1's capture exit (the `crew_custody` story), and that story does not read the wage.
 
 ## EX.8
 
-Not built.
+**The NPC price rule and the price history** (Q-48-18, -34, -35, -39). Cut stacked on EX.5 (#657), which has since merged; the PR targets main.
+
+**Survey.**
+- An NPC ask posted the authored price, and a bid the authored price under the reach premium (doc 19 A.4), read at posting. A standing listing was never re-priced in place.
+- The trade tape is a global ring of 1,024 settled rows, 32 a pair (doc 48b G-5), so it cannot hold 24 IC weeks. The history is its own series.
+- Running costs, mothballing and a house's debt (Q-48-21, -38) are not built, so the throttle (Q-48-34, -39) has no "cannot pay" signal of its own.
+- The lane is fenced (PL.5): no new authored field, so each row's stock target must come from fields the lane already has.
+- The stale `claude/ex3b-helm-and-scrap` push (2f696d38d) was never merged into this branch; #656 came in through main.
+
+**Built.**
+- **The price history** (`mush-market/src/history.rs`, new; Q-48-35):
+  - `PriceSeries` per venue and good (`market:history:{venue}:{ruleset}:{code}`). It holds a `PricePeriod` per IC week, each with an optional ask and bid `SidePoint` (the posted price and the rule's factor, permille of the authored price).
+  - At most 24 periods (`HISTORY_PERIODS`) and 1,024 series (`MAX_PRICE_SERIES`), checked on the wire (periods rise, points in the band) and on write.
+  - `record_price`, `price_series`, `latest_point` and `period_of` (`PERIOD_IC_SECS`, an IC week).
+  - The factor is the rule's memory, so a re-posted listing starts from it, never from the authored price.
+  - `+market/history <catalogue>:<code> [market=<venue>]` prints a row an IC week, newest first, within 120 columns.
+- **`reprice_listing`** (`mush-market/src/api.rs`) moves a house listing's price in place. It refuses personal and lapsed listings, writes nothing for an unchanged price, and bumps the revision as every listing write does. So an open quote goes stale (D16) and its buyer quotes again at the new price; a sale already accepted keeps its price.
+- **The rule** (`tacsim/src/port/price.rs`; Q-48-18):
+  - **An ask's target** is its authored stock: the vendor's stock rows of the good. The target factor is `1000 × (2T − pool) / T`: par at the target, 200% empty, 50% at twice the target.
+  - **A bid's target** is what its house holds of the good against its authored intake. The target factor is `1000 − 500 × held / intake`: par while the house holds none, falling to 50% as its stores fill to the intake.
+    - The first two runs used what the bid still wanted against its intake, and then against a refreshed bid's cap. Both moved Kasei's metals bid in IC11 and IC12.
+    - A refreshed bid opens below its cap, and a bid re-posted within its funds wants less when its house is short of money. Either way the bid read as filled and stepped down at the first IC week; the cheaper bid was fundable for more, and EX.3's refresh re-posted it larger under a new id.
+    - What the house holds is the stock signal Q-48-18 names, and funding no longer moves a price.
+  - **The step** is at most 5% of the current factor an IC week (at least 1‰), never past the target, within 500–2000‰.
+  - **The reach premium** is on top: a bid's price is `priced(factored(authored, factor), premium)`.
+  - `weekly_step` runs at the head of the stock clerk's step. Each IC week, for every NPC row whose last recorded period is earlier, it steps the factor, records the point, and re-prices the standing listing when the factor moved.
+    - It writes market documents only and takes no act of the clerk's, so stocking keeps its phase.
+    - A row not yet listed and never stepped is skipped: an empty pool while the clerk is still seeding it is not scarcity. So boot prices, and every lane pin, are unchanged.
+    - A bid not standing is not stepped; its re-post starts from the carried factor.
+  - The re-listed ask (`stock.rs`'s list step) and every bid post (`bid_price_major`) read the carried factor.
+- **The throttle** (Q-48-34, -39):
+  - A house delinquent on any obligation (`price::throttled`) raises its asks 10% of the current factor an IC week, whatever its stock, inside the band.
+  - It steps no bids and posts no new ones: the lapsed-bid re-post and the drip skip it.
+  - Solvent again, the 5% rule resumes from the throttled factor.
+- **Bot table and help:** the `history` family, with a census over `history.rs`, and the exchange help's "House prices" section.
+
+**What a player sees over a real week** (24:1, an IC week every seven real hours):
+- A real day crosses three or four IC weeks, so a price moves at most about 22% a real day.
+- From par, a scarce good reaches the ceiling in about 15 IC weeks (about 4.4 real days), and a glutted one the floor in about 14 (about 4 real days).
+- A trader back after a real week finds the whole week in `+market/history`: 24 rows.
+- A throttled house's asks double in about 7.3 IC weeks, about two real days.
+
+**Tests.**
+- `tacsim` unit tests (`price.rs`): the targets in the band; the 5% step, never past the target, and the throttle's 10%.
+- `mush-market` unit test (`history.rs`): the series wire's bounds.
+- `tacsim/tests/domain_economy/ex8_prices.rs`:
+  - `ex8_a_house_ask_steps_with_its_stock_five_percent_an_ic_week`: 40 of the Co-op's 120 missiles bought.
+    - The ask steps 1,575, 1,653, ... to 1,999 cr. That is no more than 5% a week, never falling, and holding at the target.
+    - The Co-op's bid holds at par.
+    - `+market/history` shows this week and last within 120 columns, and the window holds 24 weeks.
+  - `ex8_a_throttled_house_raises_its_asks_ten_percent_an_ic_week`: the Co-op delinquent on a debt. Its whole-stock ask rises 10% a week, and its bid is not stepped.
+- **Tests that failed before EX.8, and why:** every test above; before EX.8 there was no rule, step, series, throttle or verb.
+- **Changed expectations:** two stories read prices from the board after the run, and a house's price now steps with its stock once an IC week.
+  - `orders::ic11_the_queue_runs_the_day_unattended` and IC12's `stickney_buys` now read what the buyer paid from their own quotes (`paid_on`). The order's own 49 t purchase left the Yards' fittings below their stock, so the ask stepped from 520 to 524 cr after the buy.
+  - IC12's Co-op share check matches each sale's share against the Ceres reference asks the venue's history has posted. The reference is the live Ceres ask at the sale (D-18-24), and it now steps.
+- **On conclav.dev** (main 1d08abd5f plus this cut):
+  - fmt, workspace clippy, the contract guards, rustdoc (market and tacsim, both modes) and the 64 KiB lint pass;
+  - `mush-market` + `mush-economy`: 1,206 of 1,206;
+  - tacsim's lib tests: 78 of 78;
+  - `domain_economy`: 622 of 627. The five failures already fail on main without this cut: EX.3's scrap sale into the board, `in8_mass_scrap`'s three stories and both `house_sweep_rs6c` sweeps. #662 fixes them against main;
+  - `domain_world`: 275 of 275; `domain_field`: 323 of 323;
+  - `commerce_composition`: 93 of 93; `mush-bot`: 823 of 823.
+  - **No lane pin, digest or twin moved.**
+- **The mutations:** 11 run, each alone, against the tests that can see it. 9 are killed: the step's cap, the ask's stock response, the throttle's 10%, the throttle's bid hold, the window's trim, the unstarted-row skip, the bid's stock response, the delinquency signal, and the weekly step itself. **Two survive**:
+  - **P6:** a re-listed ask starting from its carried factor. No story sells an ask out and waits for its re-list.
+  - **P8:** a bid's post reading its factor. No story re-posts a bid after it has stepped.
+
+**Divergences.**
+- **The throttle's signal is a delinquent obligation**, since Q-48-38's running costs are not built. When they are, their delinquency is the same signal.
+- **A bid moves only between par and 50%**: with no consumption yet (Q-48-19, EX.9) a house's stores only fill, so its bids only fall. Consumption that draws the stores down brings them back to par.
+- **One factor a venue, good and side.** Two houses asking the same good at one venue share it, and the later row stepped that week stands.
+- **Part asks and the emergency bids are outside the rule.** Parts are lots at their own prices; the emergency bids (doc 19 A.4b) keep their reference.
+- **The rig reuses EX.4's conclav.dev clone and target**, to save disk; both are deleted when this merges.
+
+**Expensive to reverse (flagged).**
+- **The history's stored shape:** `PriceSeries`, `PricePeriod`, `SidePoint`, the key, the period (an IC week) and the window (24).
+
+**Not built.**
+- **Price movement from consumption and the export faucet** (EX.9).
+- **A last-trade column in the history** (the tape keeps that for its own window).
 
 ## PL.1
 
@@ -1998,11 +3062,355 @@ count:
 
 ## PL.5
 
-Not built.
+Row: §7.1 PL.5 (Q-48-28 as corrected by doc 48b W-48-4). Stacked on EX.3b (#656), the one
+writer before it on `port/pools.rs`.
+
+**Survey** (at `1990a9b11`, EX.3b's head):
+- **V7 on the board** (`port/pools.rs` `board`, EX.3b) bought a house order's bill as the
+  helm, from the listing's seller at the listing's price:
+  - a bulk line from a standing ask;
+  - the Yards' carbon (stocked and bid for, never asked) from a private draw ask the clerk lists
+    to the helm at the bid;
+  - a part from the yard operator's stores lot, a private exact-lot ask at its catalogue price.
+- **Only the Trust's helm used it.** The arm runs `FLOORS`, one row, the Trust's. A House is an
+  organization staff make, on no port map, with a treasury on its root scope and no hold.
+- **A player** booking at the works or yard (`+works/order`) could fill a bill only from a docked
+  hold (`+works/deliver`). Standing on the exchange, they could `+market/accept` a standing ask into
+  their own escrow, but nothing listed them the carbon or a part.
+- **The market keeps one live draw listing a pool**, private or not (`draw_listing_precheck`), and
+  an exhausted one leaves the pool index (`reindex`'s `quantity > 0`). So per-buyer private asks on
+  one pool queue. EX.3b listed the helm's private asks for 90 days.
+- **Stickney asks neither instrument boards nor strategic ore**, so no bill line taking them
+  (a core module, a sensor) could be bought there. Stickney Yards bids strategic ore.
+
+**The choice: a private ask a buyer, not a public ask.** A good stocked and bid for with no ask
+stays bid-only on the board: the clerk lists each buyer a private ask of what their line wants, at
+the bid, and the buyer takes it on a later try. That keeps IN.11's rule that a vendor never both
+asks and bids one good. Since the market holds one draw listing a pool, another buyer of the same
+pool waits (`BUY_HELD`), and a player's private ask lapses after ten real minutes
+(`PLAYER_ASK_TTL_SECS`), so a stale one blocks others for minutes, not days. An agent's keeps the
+long TTL: the arm takes it on the next fire. A part's private exact-lot asks stand side by side
+(distinct lots), so they do not queue.
+
+**Built:**
+1. **The seam serves any buyer** (`board`):
+   - The buyer is a parameter: a house's helm, a House's yard agent, or a player.
+   - The seam answers what it did (`Bought`: accepted, listed, or a wait and why) and gives the
+     market's own refusal typed (`BuyError::Market`), so a player hears the market's sentence.
+   - **A good some vendor at the port asks is bought from its standing ask alone.** While that ask
+     is not listed, the buyer waits. EX.3b's code fell through to a private ask on that vendor's
+     pool, which would then hold the pool against the vendor's own relisting.
+   - A listing is taken only when it is public or private to this buyer (`open_to`): another's
+     private ask holds the pool; a part lot standing in another's private ask is skipped for the
+     next unlisted lot.
+2. **`+works/buy <order>[=<good>]` and `+yard/buy`** (`works.rs` `buy`): the requester buys the
+   bill's next short line (or that good's) at the port's listings straight into the escrow, from
+   their own account, through the seam (`pools::buy_into`, `pools::short_line`). No hold. A house
+   order (supplied from its stores) and an order not the actor's read "You have no such order
+   here."
+3. **A House's own order** (`works.rs` `fund`, `pools.rs` `request`, `house_step`):
+   - `+yard/fund <recipe>=<org>`, at Stickney's yard, by one who acts for the organization
+     (`mush_economy::acts_for`: `economy.account.post` on its root, the economy's own "may spend
+     the org's money").
+   - The House's treasury (`treasury_of`: its Active credit account on its root scope) must cover
+     the price (`order_price_minor`: the bill at the yard's listings and catalogue prices, a missing
+     part's works order, the fees; no ferry stores) beyond what its earlier requested orders have
+     promised. Short, the officer hears what it holds and what the order costs.
+   - The order is recorded as `Phase::Requested` in the House's own record
+     (`tacsim:house_pool:org.{id}`, `HousePool.house`, `HouseOrder.recipe` and `.by`; skipped
+     when absent, so the Trust's record is unchanged).
+   - The pools arm then runs it as V7 runs the Trust's, one step a fire:
+     - the House's yard agent (`"{org} yard agent"`, `DARK`) is made in Stickney's presentation
+       room, and its purse is opened;
+     - the treasury, read again, funds the purse with the price;
+     - the agent books the yard order for the House, orders a part the stores lack at the works
+       (the owner's IN.11 rule), and buys both bills on the board;
+     - it collects the commission.
+   - There is no ferry: she is handed over docked at Stickney, titled to the House, and the
+     agent's unspent purse goes back to the treasury.
+   - The gate admits the agent at Stickney's venue (`helm_buys_at`).
+4. **The lane, v39 / relay v30** (re-signed over EX.3a's v38 / v29):
+   - Kasei: 120 t of strategic ore stock, asked at 850;
+   - Stickney Yards: 120 instrument boards stock, asked at 1,000 (it does not bid boards).
+
+   Both are provisional. The strip chain's new head, `strip_escrow_asks`, rebuilds v38
+   (`pl5_strip_escrow_asks_rebuilds_the_published_v38`); `strip_roles` calls it first.
+5. **The bot's table** (`mush-bot` `mine::works`): the fourteen new sentences, each held to
+   tacsim's and within 120 columns filled; `+works/buy` in the closed vocabulary.
+
+**Sizing** (24:1, provisional):
+- A House's Dray costs 165,582 cr at the yard's listings: the bill, the hauler plant's works order
+  and the fees, no ferry stores. That is about 79 times the 2,100 cr a House holds after its
+  licences, so until Q-48-55's income staff fund the treasury.
+- It is handed over 35 IC days after the order (the plant's twenty and the Dray's twelve, with the
+  purchases between), about 35 real hours at 24:1.
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`; first on EX.3b's head `1990a9b11`, then on main
+`9f62136e8` with EX.3b and EX.4 merged.)
+- **Stories** (`tacsim/tests/domain_economy/pl5_escrow.rs`):
+  - `pl5_a_player_buys_a_works_bill_into_its_escrow_with_no_hold`:
+    - a player with no hull books a fittings batch at Stickney's works and hears the market busy
+      while its draft lands;
+    - Kasei's alloys come from its standing ask, and a second `+works/buy` waits while that
+      purchase is on the board;
+    - the Yards' carbon is listed to them privately at the bid, then taken;
+    - while that ask stands, a second buyer's carbon reads `BUY_HELD`; once it is drawn, the second
+      buyer is listed their own;
+    - the bill is covered, two trades are on the tape, the buyer paid exactly the trades' prices,
+      the order runs, and a stranger is refused.
+  - `pl5_a_house_orders_a_dray_with_no_hold`:
+    - the refusals come first: a treasury short of the price, and a deckhand who does not act for
+      the House;
+    - funded, the officer's `+yard/fund dray=org:Meridiani` stands;
+    - the agent is made, `DARK` and named, admitted at Stickney and refused at Luna;
+    - the treasury pays the agent the price, and the agent books for the House;
+    - the plant is ordered at the works, and at least five bill lines are trades on the tape,
+      the carbon among them;
+    - the handover comes 35 IC days later, docked at Stickney and titled to Meridiani;
+    - the purse is back in the treasury.
+  - `pl5_a_player_buys_a_stores_part_by_a_private_lot_ask`: the stores' one hauler-plant lot is
+    listed privately to the first buyer at its catalogue price, and their second try takes it into
+    the escrow as a trade. The second buyer reads `BUY_HELD` meanwhile.
+- **Lane:** `pl5_strip_escrow_asks_rebuilds_the_published_v38`, and every digest and version pin
+  moved to v39 / relay v30.
+- **Broad run** on `1990a9b11`: tacsim whole (4,824 of 4,832, the eight failures all fixed
+  below), `mush-bot` (818), mush-server `commerce_composition` and `split_boundary`.
+- **On `9f62136e8`:**
+  - `domain_economy` and `domain_world` (894 of 901), `domain_field`'s excursions and `cost_lane`
+    (42), and split_boundary's `dt_preparation_plans`, `relay_registry` and `boot_parity` (146);
+  - `mush-bot`'s works tests;
+  - the fixed tests again (76 of 81).
+
+  Of the 901 run's seven failures, two were this row's stories (fixed: they now ask for the
+  covered bill before the arm starts the order, and wait for each trade to settle). The other five,
+  and the five of the 81, are main's own scrap stories (`in8_mass_scrap` three, `house_sweep_rs6c`
+  two). They fail the same way on a plain `9f62136e8` checkout and passed with PL.5 on
+  `1990a9b11`: EX.3b's buy-back desk meets EX.4's fees there. The fix is #662 (the desk fee-exempt,
+  outside this row), which PL.5 is stacked on.
+- **On #662's head `44ae9637e`** (main `1d08abd5f` with EX.5, and the desk fix), the squashed
+  commit:
+  - `domain_economy` whole (629 of 629: EX.5's jobs, the five scrap stories, PL.5's);
+  - the site-map fixture, as blessed;
+  - fmt, clippy and rustdoc again.
+- **Gates:**
+  - `cargo fmt --check` (tacsim, mush-bot, mush-server);
+  - clippy `--all-targets -D warnings` (tacsim, mush-bot, mush-server), and the M7 memory-size
+    pass;
+  - rustdoc `-D warnings`, with and without `--document-private-items`;
+  - `mush-contract-tests` (200).
+
+**Mutations:** 12, each alone, against the PL.5 stories; 9 killed. M2, M6, M7 and M9 survived the
+first pass and were killed by the checks added for them.
+- **Killed:**
+  - M1, another buyer's private ask taken as one's own;
+  - M2, a good asked here bought off a private ask on the asker's pool: Kasei's ask is withdrawn,
+    and the buyer must wait;
+  - M4, the treasury's funding post skipped;
+  - M5, a House's hull sent down the ferry's path;
+  - M6, the promise of earlier requests ignored: a second order before the first is funded;
+  - M7, a player's private ask kept for the agent's long TTL: the ask's lapse is read;
+  - M9, the ferry's stores billed to a House: its price against the Trust's;
+  - M10, another's order bought into;
+  - M12, a part lot private to another buyer quoted.
+- **Survivors, equivalent:**
+  - **M3** (the treasury not read again at the funding): the funding post itself refuses an
+    overdraft, so the order waits either way.
+  - **M8** (a House agent not named at the yard's venue): the agent stands in Stickney's
+    presentation room, so presence admits it there; the branch keeps `helm_buys_at` truthful.
+  - **M11** (`+yard/fund` refused only off a yard, not off Stickney's): Stickney's is the only yard
+    on the lane.
+
+**Divergences:**
+- **Files outside the row's:**
+  - `tacsim/tests/support/lane_chain.rs` (the strip head);
+  - the lane bump's pins;
+  - `mush-bot`'s table;
+  - the stocking budgets (below);
+  - `web/src/lib/fixtures/site/site_map.json`, re-blessed: four stamps 36 IC s later.
+- **The rigs' stocking budget.** Stickney's clerk lists one ask a fire, and two more rows put it
+  past forty fires. Every `stock()` copy (twenty test files) and `dt_preparation_plans`'
+  fixture now waits a named sixty (`STOCK_FIRES`, `STOCK_PULSES`) and still stops as soon as every
+  port reads ready. `driving_rig::stock` names the status when it gives up.
+- **Pins that count the lane's rows:**
+  - `commerce::ic8_*`'s seeded pools are now 24;
+  - `ports::ic3`'s commerce lines are now 90;
+  - `plumbing::sm5`'s rule that no vendor asks or stocks ore gains Kasei's strategic ore, a works
+    input this row asks for (beside IN.11's Freeport Works).
+- **One House order runs at a time.** A House's second request waits, `Requested`, until the first
+  is handed over; the treasury check counts what the earlier requests promised.
+- **No draft-time hold on a player's purchase.** `+works/buy` buys one line a command; between two
+  lines another buyer may draw the pool.
+- **Spending a House's treasury is `acts_for`**, the economy's own reading of
+  `economy.account.post` on the org's root; staff act for every org.
+
+**Not built:**
+- **A House's income** (Q-48-55): staff fund the treasury until EX.9's stipend.
+- **A House order at the works** (`+works/fund`): the yard only.
+- **No bot lane types `+works/buy` or `+yard/fund`** yet; the sentences are in the table.
 
 ## PL.6
 
-Not built.
+Row: §7.1 PL.6 (Q-48-25). Stacked on PL.5 (#664), which carries #662, the one lane writer before
+it.
+
+**Survey** (at `9b02415ac`, PL.5's head):
+- **One yard.** Only `stickney_port` authors a `yard` block (`tacsim.yard`, two slots, public,
+  Stickney Yards'). `+yard` finds the yard of the port the player stands in (`works.rs` `here`),
+  so a second block opens a second yard with no new front.
+- **What a yard builds is the industry's own test.** A facility offers a recipe whose `requires`
+  is a subset of its capabilities (`FacilityRecord::offers`). The kernel checks it at submit
+  (`provider.rs`), and `+yard`'s menu filters by it (`works.rs` `menu`). All seventeen hull
+  recipes (`tacsim.industry.hulls` v2) required `tacsim.yard` alone.
+- **So Stickney's yard must change.** If Stickney keeps `{tacsim.yard}`, no requires set lets
+  Ceres build the light hulls without the heavy ones too. Stickney has to hold one more
+  capability than Ceres.
+- **But a changed capability set refused the whole lane** on a kept world. `plant::preflight`
+  takes a facility on the room only when it `stands_as_authored` (object, owner, capabilities and
+  slots), and `install_authored_facility` refuses identity drift. Doc 39's review (2.6) met the
+  same wall on a workshop and gave the yard its own room instead.
+- **The menu took the latest version a facility offered**, so once v3 required more, a world
+  that still held v2 of a heavy recipe would list v2 at Ceres.
+- **The commission is port-generic** (`commission.rs` `yard_of`): a ship docks on the yard port's
+  domain, and a rig stands on that port's workshop floor. Ceres has both (its workshop is
+  Occator's, in the Dockmaster's Office).
+- **Ceres's room.** No atlas room is spare and labeled for a yard. The Visiting Berth Gallery
+  already describes cradles holding a Dray beyond its glass, as Stickney's observation gallery
+  describes its drydocks. No other block uses the gallery (the port's `gallery` is not a facility
+  room).
+
+**The choice: a heavy-yard capability, grown on Stickney's yard in place.**
+- Every hull but the six light ones requires `tacsim.yard.heavy` beside `tacsim.yard`.
+- Stickney's yard holds both, and Ceres's holds `tacsim.yard` alone.
+- The kernel's own subset test then keeps a heavy hull off Ceres's slots, through `+yard` or any
+  other door, with no tacsim-side list to drift.
+- A lane bump may **grow** an authored facility's capability set in place:
+  - the preflight admits it (`FacilityRecord::grows_to`);
+  - the install widens the record, with neither revision moving (`with_capabilities_grown`);
+  - growth only offers more recipes, so no pinned order goes stale;
+  - a dropped capability, a changed slot count or another owner is still drift.
+
+  The alternative, a tacsim-side recipe list per yard, would have left the industry's `@wo` path
+  open to a heavy order at Ceres.
+
+**Built:**
+1. **Growth in the industry** (`mush-industry` `facility.rs`, `store.rs`):
+   - `grows_to` and `with_capabilities_grown` (a union, so it cannot drop a capability);
+   - `install_authored_facility` grows first, then applies the bump's re-term as before;
+   - an owner-held facility grows too, since its capabilities are the content's, and keeps its
+     owner, terms and revisions.
+2. **The preflight admits growth** (`port/plant.rs`).
+3. **The hull pack, v3** (`content/industry/hulls-v2.json`, re-signed): the eleven heavy recipes
+   (the bipeds, the heavy tank, the five line tanks, the scout car, the Tycho crawler and lifter)
+   require `tacsim.yard.heavy` too (`works::YARD_HEAVY_CAPABILITY`). `bill.rs`'s pack test pins the
+   partition.
+4. **`+yard`** (`port/works.rs`):
+   - the menu takes each recipe's latest version first, then the facility's test, so an older
+     version never stands in for one the yard may not build;
+   - `+yard/quote` and `+yard/order` of a hull this yard does not build name a port whose yard
+     does (`BUILT_ELSEWHERE`: "The yard here does not build a line_tank; order it at Stickney
+     Yards."). A word no yard builds keeps the plain refusal.
+5. **The works arm submits for one actor a drain** (`port/works.rs` `tick`), a defect found
+   building the story:
+   - The engine queues one authoritative submission an actor; a second in the same drain voids
+     both ("tried to submit more than one authoritative action").
+   - The arm submits as each contract's requester and never asked first, so two orders of one
+     captain finishing together (a Dray and a Dray-P) never delivered: each fire voided both
+     delivers, and the slots never freed. One order at a time, as IN.9's story runs, never met it.
+   - The arm now asks first (`Ctx::authoritative_pending`), as the field and detachment ticks
+     do. A submission for an actor who already has one in flight waits for the next fire:
+     - an industry verb (`submit_as`) or a works move (`submit`) is skipped;
+     - a covered draft takes no slot and places no hold;
+     - an owed move's resubmission spends no try.
+
+     Everything else the arm does for that contract (binding a draft, closing, the booking
+     settlement) runs as before. Pools' `submit_move` shares the guard; before, a collision there
+     voided both submissions.
+6. **The lane, v40 / relay v31** (re-signed over v39 / v30):
+   - Ceres: a `yard` in the Visiting Berth Gallery (`c01_berth_gallery`), run by Freeport Works,
+     `tacsim.yard`, two slots, public. Its cost is provisional: 5,000,000 cr of capital over 30
+     years, 20 ‰ upkeep, eight staff at 150, a 250 ‰ margin.
+   - Stickney's yard: `tacsim.yard.heavy` beside `tacsim.yard`.
+
+   The strip chain's new head, `strip_ceres_yard`, rebuilds v39
+   (`pl6_strip_ceres_yard_rebuilds_the_published_v39`); `strip_escrow_asks` calls it first.
+7. **The bot's table** (`mush-bot` `mine::works`): `BUILT_ELSEWHERE`, held to tacsim's and within
+   120 columns filled.
+8. **Help:** `ports.md` names the Ceres yard and what each yard builds; `field.md`'s wrecker
+   line names either yard.
+
+**Sizing** (provisional, the cost model's own figures):
+- A Dray's yard fee is 14,480 cr at Ceres and 24,459 cr at Stickney; a rig's two days are
+  2,414 cr and 4,077 cr. The booking fee is 966 cr at Ceres and 1,631 cr at Stickney.
+- Ceres's yard is the smaller operation (half the capital, two-thirds the staff), so it charges
+  about 59 % of Stickney's daily rate. The days are the design's at either yard.
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`, on PL.5's head `9b02415ac`.)
+- **The story** (`tacsim/tests/domain_economy/pl6_ceres_yard.rs`),
+  `pl6_ceres_builds_the_light_hulls_and_stickney_the_heavy`:
+  - the world also holds hull v2 (any hull at any yard), rebuilt and signed to its published
+    digest;
+  - at Ceres, `+yard` lists exactly the six light hulls;
+  - the yard's record holds `tacsim.yard` alone and does not offer a heavy hull's
+    capabilities; it is Freeport Works', titled to it;
+  - a line tank's quote and a Tycho lifter's order are refused naming Stickney Yards, with no
+    order booked, and a word no yard builds keeps the plain refusal;
+  - a captain orders all six. The two slots run them in turn, the Drays finishing together. Each
+    is commissioned under a fresh `SYB-` mark and titled to the captain: the Drays docked at Ceres,
+    the rigs on Ceres's workshop floor;
+  - at Stickney, `+yard` lists all seventeen, and a line tank quotes.
+- **The kept world** (`ports.rs`), `pl6_a_lane_update_grows_a_yard_and_refuses_a_shrink`:
+  - a next version that gives Stickney's yard one more capability applies as one updated port,
+    the facility grown in place with both revisions standing;
+  - one that drops `tacsim.yard.heavy` is refused naming the yard, with nothing written.
+- **The industry** (`e7r2.rs`), `pl6_a_lane_bump_grows_a_facility_capabilities_in_place`:
+  - growth with a re-term moves the policy revision once and the capacity revision not at all;
+  - a dropped or swapped capability, a changed slot count and another owner are each refused,
+    with nothing written;
+  - a sold facility grows and keeps its buyer's owner, terms and revisions.
+- **The pins:**
+  - `pl6_strip_ceres_yard_rebuilds_the_published_v39`;
+  - `bill.rs`'s pack test (the partition, seventeen rows);
+  - `mush-bot`'s `pl6_the_built_elsewhere_sentence_is_the_games`.
+- **Suites:**
+  - tacsim whole 4,844 of 4,844, the works arm's guard in;
+  - mush-industry 268;
+  - mush-bot lib 562;
+  - mush-server split_boundary 227;
+  - the contract guards 200;
+  - fmt, clippy `-D warnings`, the M7 pass, and rustdoc in both modes.
+
+**Mutations:** 11, all killed.
+
+| # | Mutation | Killed by |
+|---|---|---|
+| M1 | The preflight refuses growth | the kept world |
+| M2 | The install never grows | the industry |
+| M3 | Growth under another owner | the industry |
+| M4 | Growth with another slot count | the industry |
+| M5 | Growth that is not a superset | the industry |
+| M6 | An equal set read as growth | the industry (stack overflow) |
+| M7 | Growth bumps the policy revision | the kept world |
+| M8 | The menu filters before it takes the latest version | the story (v2's heavy hulls listed at Ceres) |
+| M9 | The yard's refusal names no other yard | the story |
+| M10 | The refusal names a yard that does not build the hull | the story |
+| M11 | The arm submits for an actor already submitting | the story (neither Dray delivers) |
+
+**Divergences:**
+- **A lane bump may now grow a facility's capability set.** Doc 39's IN.5 rule ("a changed slot
+  count or capability set is drift") is narrowed to a set that drops a capability. The workshop
+  and the medical bay keep their own preflights, which still refuse any change.
+- **The built-hull marks are one series.** A hull built at Ceres is `SYB-nn` like one built at
+  Stickney (`commission::next_mark`); the registry's mark names no yard.
+
+**Not built:**
+- **V7's floors still order at Stickney and ferry to Ceres.** Building the Trust's Drays at Ceres
+  would retire the ferry; that is a change to V7's arm, not this row's.
+- **A House's order (`+yard/fund`) is still Stickney's alone** (`FUND_YARD_ONLY`).
+- **Ceres asks no alloys, fittings or instrument boards.** A Ceres bill is delivered from a hold
+  or made at Freeport Works from Ceres's metals and ores; boards still come from Stickney or
+  Aitken.
+- **#663's US-spelling list** names the Ceres and Stickney atlas and cast packs; this row touches
+  neither, so nothing is folded in.
 
 ## PL.7
 
@@ -2282,7 +3690,191 @@ Not built.
 
 ## PL.9
 
-Not built.
+Facilities as titled assets (Q-48-26, Q-48-37, Q-48-45, Q-48-53). Built 2026-11-16 and 2026-11-17
+on `claude/pl9-facilities-assets`, cut from main at `73d05678b`. Main was merged in at
+`45b50f303`, after EX.3a (#644).
+
+**Survey** (at `73d05678b`):
+- **A facility had no title.** The lane opened its refinery, works and yard rooms as
+  `FacilityRecord`s owned by the port's operator org, but issued no economy title, so nothing
+  could list one. `+market/post #<object>` (EX.2) lists a titled object through the market's
+  `AssetSale` seam, which tacsim implements in `port/hull_sale.rs` for hulls only.
+- **The lane reverted any owner.** The port applier's preflight refused the whole entry when a
+  facility's owner differed from the authored operator (`port/plant.rs`), and
+  `install_authored_facility` re-termed a facility back to its authored cost and customers on
+  every bump (`mush-industry/src/store.rs`).
+- **`@facility/terms` was all or nothing.** It set the customers and the whole cost model
+  together, for staff or whoever acts for the owner. Q-48-37 splits it.
+- **The works arm charged the live fee.** Doc 48b's fix cancelled an order at submit on any
+  policy-revision move, so a lowered margin or a customers change also cancelled.
+- **No command listed for an organization.** `post_asset` already let an org sell when the actor
+  acts for it, but `+market/post` always listed as the person typing it.
+- **The market's dispatch cannot read industry's work orders.** Typed reads are owner-scoped
+  (`ModuleActionStateReadError::ForeignOwner`). Inventory's families are delegated to the market;
+  `industry.workorder` is not. A walk of the family from the seam answers an error, which read
+  as busy for every facility.
+
+**Built:**
+1. **A facility is owner-held once sold** (`mush-industry` `facility.rs`).
+   - `FacilityRecord.holding`: `Authored` (the default, written by absence, so an unsold
+     record's bytes and the industry `.snap` files do not move), `Owner`, or `OwnerPublic`.
+   - `sold_to(owner, public)` replaces the owner as `with_owner` does (the policy revision moves)
+     and marks the record held; `public` forces Public customers (a sold yard).
+   - An `OwnerPublic` record refuses owner-only customers on every path, the wire included
+     (`FacilityKeptPublic`).
+   - `stands_as_authored`: for a held record the lane compares the object, capabilities and slots
+     only, not the owner or terms.
+2. **The lane leaves a sold facility alone** (`store.rs`, `port/plant.rs`).
+   - `install_authored_facility` returns early for a held record, after the identity check.
+   - The port applier's preflight uses `stands_as_authored`, so a sold facility no longer refuses
+     the port's entry.
+   - `store::sell_facility(ctx, object, owner, public)` persists the sold record; a replay is a
+     no-op.
+3. **The lane titles its facilities** (`port/plant.rs` `title`). After installing a facility it
+   issues an economy title to the operator org under the port registry, if the room has none.
+   Without an economy it does nothing, and an issue error is logged, not fatal.
+4. **`@facility/terms` is split** (`mush-industry` `commands.rs`, Q-48-37).
+   - `<facility>=public|owner [margin=<permille>]` for staff and whoever acts for the owner.
+   - The six-part cost spec is staff-only (`TERMS_COST_STAFF`).
+   - A margin on an unpriced facility is refused (`TERMS_NO_PRICE`), and a kept-public facility
+     cannot go owner-only (`TERMS_KEPT_PUBLIC`).
+   - Anyone else reads `No such facility.`, as before.
+5. **The facility arm of the asset sale** (`port/facility_sale.rs`, new; `port/hull_sale.rs`).
+   - `hull_sale::admit`, `state_digest` and the settled-sale observer dispatch to the facility
+     functions when the object is a facility. The facility code is in its own functions, so EX.4
+     and EX.2b's edits to `hull_sale.rs` meet it only at those three call sites.
+   - Three catalogue entries, `tacsim.facilities:facility.{refinery,works,yard}`, loaded by the
+     vendor beside the hulls (`port/vendor.rs`).
+   - `admit` refuses, with a sentence naming the room:
+     - the relay foundry, the programme workshops and the medical rooms (`FACILITY_FOUNDRY`,
+       `FACILITY_WORKSHOP`, `FACILITY_MEDICAL`), and any facility that is not a port's refinery,
+       works or yard (`FACILITY_NOT_SOLD`);
+     - work under way: an open works or yard contract, a commission still laying up, or an open
+       work order (`FACILITY_BUSY`);
+     - stores a vendor trades from (`FACILITY_STOREFRONT`);
+     - goods in its stores (`FACILITY_STORES_LADEN`), or stores that cannot be read
+       (`FACILITY_STORES_DARK`).
+   - `state_digest` is the record's hash, so a quote goes stale when the facility changes.
+   - **On settlement** (`on_sold`): the record passes to the buyer (a yard kept public), and the
+     stores vault, if the seller owned it, is re-homed to the buyer (`rehome_vault`). The payee
+     follows the record's owner, which the works arm already pays.
+6. **Industry's open-order index by facility** (`store.rs`). `IndustryStore::open_orders_at`,
+   kept by the work-order observer and rebuilt by `reconcile` beside the per-requester index
+   (WS02-S4). The sale's idle check reads it, since the market's context may not read
+   `industry.workorder`.
+7. **The fee is pinned at booking** (`port/works.rs`, Q-48-53).
+   - `WorksContract.fee_minor` is the facility's fee at booking (absent on older contracts).
+   - At submit the arm cancels only if the live fee has risen past the pinned one
+     (`fee_risen`): the booking fee and the bill come back, as doc 48b's fix did. A fee that held
+     or fell runs. A contract with no pin and a priced facility cancels, as doc 48b's fix did.
+8. **An organization lists through `+market/post … as=<org>`** (`mush-market` `commands.rs`, on
+   the lead's ruling).
+   - The org is named by name, alias or `#id`, with or without `org:`. The actor must act for it
+     (`mush_economy::acts_for`, the check `post_asset` makes), or the command refuses
+     `NOT_FOR_ORG`; an unknown or hidden org reads the same.
+   - `+market/bid` refuses `as=` with its usage.
+   - The sentence is in the bot's sentence table (`mush-bot` `mine/minds.rs`).
+9. **A sold works buys nothing for the house** (`port/supply.rs`). The NPC house purchase runs
+   only for authored facilities.
+10. **Help:** `docs/help/exchange.md` gains "Listing a facility".
+
+**Tests** (each failed before its change, or is named under the mutations):
+- `mush-industry` `e7r2.rs`:
+  - `pl9_the_owner_sets_customers_and_margin_but_not_the_cost_model`;
+  - `pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it`.
+- `mush-industry` `e7c4.rs`: `pl9_open_orders_are_indexed_by_facility`.
+- `tacsim` `port/facility_sale.rs`: two unit tests (the entries, the sentences under the floor).
+- `tacsim` `domain_economy/yard_in9.rs`:
+  - `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it`:
+    - a captain who does not act for Stickney Yards is refused `NOT_FOR_ORG`, and a bid naming
+      `as=` is refused with the bid's usage;
+    - the Yards' officer lists the idle yard with `as=`, and the captain buys it;
+    - the title, record (owner-held, kept public, authored cost model), stores and money move;
+    - the captain sets the margin but cannot close the yard or set its cost model;
+    - a lane bump re-terms the Ceres works and leaves the captain's yard;
+    - a booking, then a margin raise: the order is cancelled, the booking fee is not taken,
+      nothing stays held, and the owner is paid nothing (the bill waits in the escrow for
+      `/collect`, since the customer has no hold docked);
+    - a booking with the margin lowered runs.
+  - `pl9_a_busy_or_unsellable_facility_is_refused_with_its_reason`: the Ceres works (storefront),
+    the yard with an order booked (busy), the Stickney works with goods in its stores (laden), and
+    the Stickney workshop (untitled: `No such asset.`; titled by staff: a workshop). Nothing is
+    listed.
+
+**Runs** (conclav.dev, the branch with main at `45b50f303` merged in):
+- the workspace check;
+- `mush-industry` and `mush-market`: 529 passed;
+- `tacsim` lib (`port::`, `content_studio::`): 283 passed;
+- `domain_economy`: 615 run, 614 passed. The one failure was an assertion since removed (the
+  rig installs submissions below the commit announcement, see M25); both PL.9 stories then pass
+  on their own;
+- `mush-server` `commerce_composition` and `split_boundary`: 318 passed;
+- `mush-bot`: 803 passed;
+- clippy (`-D warnings`) and the CI lint job's 64 KiB stack-frame pass on `mush-industry`,
+  `tacsim` and `mush-market`, rustdoc, and `mush-contract-tests` (200 passed: the census, the
+  panic budget, the restriction lints, the help-page lint and the fiat budget).
+
+- **Mutations**, each applied alone in a clone on conclav.dev, its tests run (the loop is
+  `pl9_muts.py` in the group's notes folder):
+
+  | # | Mutation | Caught by |
+  |---|---|---|
+  | M1 | the lane re-terms a held facility | `pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it` |
+  | M2 | a held record's identity includes its owner and terms | the same |
+  | M3 | a held record's identity drops capabilities and slots | the same |
+  | M4 | a sold yard keeps its customers | the same |
+  | M5 | a sale leaves the record `Authored` | the same |
+  | M6 | an owner may set the cost model | `pl9_the_owner_sets_customers_and_margin_but_not_the_cost_model` |
+  | M7 | anyone may set a facility's terms | the same |
+  | M8 | a kept-public facility may go owner-only | `pl9_a_sold_facility_is_owner_held_and_its_authored_re_term_leaves_it` |
+  | M9 | a risen fee does not cancel | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M10 | a contract with no pin runs at the live fee | **survives.** Only a contract booked before this unit has no pin; none exist before launch. |
+  | M11 | a busy facility lists | `pl9_a_busy_or_unsellable_facility_is_refused_with_its_reason` |
+  | M12 | a storefront's facility lists | the same |
+  | M13 | a laden works lists | the same |
+  | M14 | the workshop room check removed | **survives.** The shipped workshop also holds `bay_refit`, which refuses it first; the room check stands for a workshop without it. |
+  | M15 | the stores are not re-homed | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M16 | the house buys into a sold works | **survives.** No story sells a works: the clerk's purchases keep the Stickney works' stores laden. |
+  | M17 | the lane titles nothing | both stories |
+  | M18 | the facility's state digest is not used | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M19 | `as=` checks nothing | the same (`NOT_FOR_ORG`) |
+  | M20 | a sold yard is not kept public | the same |
+  | M21 | a bid takes `as=` | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` (the bid answers `No such catalogue entry.`, not its usage) |
+  | M22 | a settled sale does not pass the facility | `pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` |
+  | M23 | an open work order does not make a facility busy | **survives.** A yard booking also leaves its contract open, which refuses first; the index itself is M24's. |
+  | M24 | reconcile does not index orders by facility | `pl9_open_orders_are_indexed_by_facility` |
+  | M25 | the commit observer does not index orders by facility | **survives.** The test rigs install submissions without the commit announcement (`install_prepared_action_announcing` is the server's), so no rig reaches the observer; the per-requester index (WS02-S4) has the same gap. |
+
+  Twenty caught, five survive (M10, M14, M16, M23, M25), each with its reason.
+
+**Divergences:**
+- **Touches EX.4's crate: `+market/post as=<org>`.** The `+market/post` arm and its usage line, a
+  `NOT_FOR_ORG` sentence beside it in `seller.rs`, and `+market/bid`'s refusal of `as=`. Nothing
+  else in `mush-market` changed. If EX.4 (#641) touches the same lines, whichever PR merges second
+  resolves.
+- **`hull_sale.rs` is shared with EX.4 and EX.2b.** The facility code is in `facility_sale.rs`;
+  `hull_sale.rs` gains three dispatches and `scope_of` made `pub(crate)`. Whoever merges later
+  resolves.
+- **The fee pin replaces doc 48b's policy-revision cancel** in the works arm. A re-term that does
+  not raise the fee no longer cancels.
+- **The idle check reads an index, not the family**, because the seam runs in the market's
+  context. The index lags a missed announcement until the next sweep's reconcile, as the
+  per-requester index does.
+- **Files outside the unit's list:**
+  - `mush-market` `commands.rs` and `seller.rs` (`as=`), and `mush-bot` `mine/minds.rs` (the
+    sentence), on the lead's ruling;
+  - `port/vendor.rs` (the facility entries' load) and `port/supply.rs` (the house-purchase guard);
+  - `mush-industry` `record.rs` (`FacilityKeptPublic`) and `lib.rs` (exports);
+  - `docs/help/exchange.md`;
+  - the tests above.
+
+**Not built:**
+- **No NPC decides to sell a facility.** An operator org's facility sells when someone who acts
+  for the org lists it.
+- **Running-cost debt** is EX.9's. No facility owes any yet, so nothing is settled from the sale.
+- **`@facility/owner`** (staff) can still set a record's owner apart from its title holder. The
+  sale moves both together.
+- **A sold facility's stores, if the seller did not own them,** stay where they are.
 
 ## EX.9
 

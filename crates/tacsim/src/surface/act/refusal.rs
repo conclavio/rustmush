@@ -449,7 +449,7 @@ pub enum Refusal {
 
 /// **Doc 36 cut GC.8a**: a rig held in its bay for a repair order does not launch: `{n}`.
 pub const LAUNCH_HELD: &str =
-    "Rig {n} is held in the bay for work; it launches when the work is done or cancelled.";
+    "Rig {n} is held in the bay for work; it launches when the work is done or canceled.";
 
 /// The offer-wire words and the start's messages, in one table (the prepare's
 /// `port_error` needs a `&'static str`).
@@ -503,7 +503,7 @@ pub(super) const REFUSAL_CODES: [(&str, &str); 65] = [
         "mine_no_footing",
         "the rig stands where the drill bites nothing",
     ),
-    ("unlicensed", "the operator holds no licence in force"),
+    ("unlicensed", "the operator holds no license in force"),
     ("claimed", "that block is under claim"),
     ("locked", "another rig is working that pocket"),
     ("hopper_full", "the hopper has no room for another cycle"),

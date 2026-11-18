@@ -514,9 +514,13 @@ fn finishes<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q Au
         .collect()
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -535,7 +539,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 fn typed<K, V>(
@@ -571,7 +575,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")

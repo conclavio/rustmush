@@ -685,7 +685,7 @@ fn a_release_needs_the_hold_seam_and_never_plain_money_authority() {
             &k
         ),
         EconomyError::Unauthorized,
-        "money authority is not a licence to free someone else's claim"
+        "money authority is not a license to free someone else's claim"
     );
 }
 
@@ -1102,6 +1102,7 @@ fn obligation() -> Obligation {
         settled_total: 0,
         missed_total: 0,
         service_terms: None,
+        arrears: None,
         forgiven_total: 0,
         suspensions: std::collections::BTreeSet::new(),
         revision: 1,

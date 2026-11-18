@@ -391,7 +391,7 @@ mod tests {
         // notify_one stored a permit, so the writer's wait resolves immediately.
         tokio::time::timeout(std::time::Duration::from_secs(1), teardown.notified())
             .await
-            .expect("teardown must be signalled on to_gw overflow");
+            .expect("teardown must be signaled on to_gw overflow");
         // The high-water reached cap and surfaces via @stats / /metrics.
         assert_eq!(metrics.snapshot().ipc_queue_high_water_to_gw, cap as u64);
         // The overflow is counted in the shared registry (surfaced via @stats /

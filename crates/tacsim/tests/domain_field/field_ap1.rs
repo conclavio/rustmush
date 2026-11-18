@@ -194,7 +194,7 @@ fn after(at: &At, fate: Fate, units: &str) -> String {
 #[allow(clippy::too_many_lines)] // one field, in order
 async fn absent_gate(at: &At) {
     let mut rig = stocked_tuned(|cfg| {
-        // `tune`'s quiet interval (15 s) is longer than a gun's cycle, so the field does not
+        // `tune`'s quiet interval (`quiet_s`) is longer than a gun's cycle, so the field does not
         // settle between Pilot's shots.
         tune(cfg);
         // The black box's chunks close when full: summaries every pulse fill one in a few arena

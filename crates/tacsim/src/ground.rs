@@ -3164,7 +3164,7 @@ pub fn stage_in_world(
 ) -> Result<StagedGround, GroundError> {
     if apply && crate::match_::lobby::centre(ctx.w).is_some_and(|centre| centre.state.is_live()) {
         return Err(GroundError::Stage(
-            "cannot apply a ground draft while a match is running on the simulator centre"
+            "cannot apply a ground draft while a match is running on the simulator center"
                 .to_owned(),
         ));
     }

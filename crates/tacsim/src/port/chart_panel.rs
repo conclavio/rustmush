@@ -756,13 +756,13 @@ mod tests {
         assert_eq!(radial_fraction(0.0, 9.6), 0.0);
         assert_eq!(radial_fraction(100.0, 9.6), 1.0);
         let sun = cell_of(0.0, 0.0, 9.6, 60, 28);
-        assert_eq!(sun, (30, 14), "the Sun at the centre (rounded up)");
+        assert_eq!(sun, (30, 14), "the Sun at the center (rounded up)");
         let east = cell_of(9.6, 0.0, 9.6, 60, 28);
-        assert_eq!(east.1, 14, "longitude 0 on the centre row");
+        assert_eq!(east.1, 14, "longitude 0 on the center row");
         assert!(east.0 > 50, "and near the right edge: {east:?}");
         let north = cell_of(9.6, 90.0, 9.6, 60, 28);
         assert!(north.1 > 25, "longitude 90 near the top row: {north:?}");
-        assert_eq!(north.0, 30, "and on the centre column");
+        assert_eq!(north.0, 30, "and on the center column");
     }
 
     #[test]

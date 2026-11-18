@@ -507,7 +507,7 @@ pub fn capture_part(
             hold: hold.id,
             amount,
         }],
-        description: format!("work order {order} cancelled: the elapsed work's fee forfeit"),
+        description: format!("work order {order} canceled: the elapsed work's fee forfeit"),
         ..EconomyPlan::new(
             wo_settle_key(order, n),
             hold.placed_by.clone(),

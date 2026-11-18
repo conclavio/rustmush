@@ -250,7 +250,7 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
         })
         .collect();
     for (captain, name) in captains.iter().zip(NAMES).take(8) {
-        let out = run(&mut rig.tw, *captain, &format!("+coop/enrol {name}"));
+        let out = run(&mut rig.tw, *captain, &format!("+coop/enroll {name}"));
         assert!(out.contains(&format!("now the {name}")), "{out}");
         settle(&mut rig, 1);
     }
@@ -265,7 +265,7 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
         "the floor is breached but the Trust cannot fund a Dray"
     );
     let ninth = captains[8];
-    let out = run(&mut rig.tw, ninth, &format!("+coop/enrol {}", NAMES[8]));
+    let out = run(&mut rig.tw, ninth, &format!("+coop/enroll {}", NAMES[8]));
     assert!(
         out.contains(tacsim::port::coop::NO_HULL)
             && out.contains(tacsim::port::coop::NO_HULL_UNFUNDED),
@@ -336,7 +336,7 @@ async fn in10_the_trust_restocks_its_pool_from_the_yard_and_ferries_her_home() {
         "booked: {:?}",
         trust_pool(&rig)
     );
-    let out = run(&mut rig.tw, ninth, &format!("+coop/enrol {}", NAMES[8]));
+    let out = run(&mut rig.tw, ninth, &format!("+coop/enroll {}", NAMES[8]));
     assert!(
         out.contains(tacsim::port::coop::NO_HULL)
             && out.contains("The Trust has a Dray on order at Stickney Yards")
@@ -484,9 +484,9 @@ in11 census after {after:?}"
     assert_eq!(
         port_map(&rig.tw, CERES).hulls.len(),
         8,
-        "never a programme row"
+        "never a program row"
     );
-    let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the programme");
+    let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the program");
     assert!(
         tacsim::port::coop::free_hulls(rig.tw.world(), &port)
             .iter()
@@ -504,7 +504,7 @@ in11 census after {after:?}"
     // minted to the Trust), so the
     // Trust's built Dray is the one the ninth captain sails.
     for seat in 0.. {
-        let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the programme");
+        let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the program");
         let free = tacsim::port::coop::free_hulls(rig.tw.world(), &port);
         if free.iter().all(|row| row.hull == hull.0) {
             break;
@@ -514,11 +514,11 @@ in11 census after {after:?}"
         let trust = trust_account(&rig);
         mint(&mut rig, trust, 100_000);
         let filler = pilot(&mut rig, &format!("Filler{seat}"), 20 + seat);
-        let out = run(&mut rig.tw, filler, &format!("+coop/enrol Filler {seat}"));
+        let out = run(&mut rig.tw, filler, &format!("+coop/enroll Filler {seat}"));
         assert!(out.contains("now the Filler"), "{out}");
         settle(&mut rig, 1);
     }
-    let out = run(&mut rig.tw, ninth, &format!("+coop/enrol {}", NAMES[8]));
+    let out = run(&mut rig.tw, ninth, &format!("+coop/enroll {}", NAMES[8]));
     assert!(out.contains(&format!("now the {}", NAMES[8])), "{out}");
     // Doc 38a/b F-06: the built Dray is no programme row, and every charter reader still finds
     // her — the charter, the helm, and the desk's `+coop` line.
@@ -534,7 +534,7 @@ in11 census after {after:?}"
         Some(ninth),
         "the ninth captain holds her helm"
     );
-    let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the programme");
+    let port = tacsim::port::coop::programme_port(rig.tw.world()).expect("the program");
     assert_eq!(
         tacsim::port::coop::check_hull_name(rig.tw.world(), &port, NAMES[8]),
         Err(tacsim::port::coop::NAME_TAKEN),

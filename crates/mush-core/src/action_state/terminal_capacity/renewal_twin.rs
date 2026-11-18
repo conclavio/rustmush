@@ -781,13 +781,13 @@ fn current_licence(view: &View<'_>, pair: &Pair) -> Result<Value, ActionStateErr
     let binding = pair.binding()?;
     for name in ["charter", "line"] {
         if field(&licence, name)? != field(binding, name)? {
-            return Err(refused("renewal immutable licence identity"));
+            return Err(refused("renewal immutable license identity"));
         }
     }
     if field(&licence, "id")? != field(binding, "licence")?
         || field(&licence, "operation")? != field(binding, "birth_operation")?
     {
-        return Err(refused("renewal immutable licence birth"));
+        return Err(refused("renewal immutable license birth"));
     }
     paid_resale::renewal_current_holder(view, &licence, binding, pair.pending())?;
     Ok(licence)
@@ -1202,11 +1202,11 @@ pub(super) fn validate_changes<I: Issuer>(
             // same principal re-stamped with the renewing actor as acting.
             let holder = field(next.binding()?, "holder")?.clone();
             if !owner_index::same_holder(field(&old_licence, "holder")?, &holder)? {
-                return Err(refused("renewal changed the licence holder"));
+                return Err(refused("renewal changed the license holder"));
             }
             let fields = expected_licence
                 .as_object_mut()
-                .ok_or_else(|| refused("renewal licence shape"))?;
+                .ok_or_else(|| refused("renewal license shape"))?;
             fields.insert("term".into(), json!(next.next.to_string()));
             fields.insert("holder".into(), holder);
             keys.extend([
@@ -1216,7 +1216,7 @@ pub(super) fn validate_changes<I: Issuer>(
             ]);
         }
         if current_licence(&after, &next)? != expected_licence {
-            return Err(refused("renewal changed immutable licence data"));
+            return Err(refused("renewal changed immutable license data"));
         }
         exact_mutations(mutations, &after, keys)?;
         verify::<I>(Phase::Terminal, &stored.record, &after)?;
@@ -1312,7 +1312,7 @@ pub(super) fn owns_licence_change<I: Issuer>(
         return Ok(false);
     }
     let Some(id) = &changes.terminal else {
-        return Err(refused("renewal licence update lacks terminal reservation"));
+        return Err(refused("renewal license update lacks terminal reservation"));
     };
     let operation = token(&json!(id.1))?;
     let pair = pair::<I>(view, operation)?;
@@ -1321,7 +1321,7 @@ pub(super) fn owns_licence_change<I: Issuer>(
         || *key != licence_key(LICENCE, pair.licence)?.resolve(view.registry)?
         || token(field(field(pair.state()?, "terminal")?, "commit")?)? != identity.commit
     {
-        return Err(refused("renewal licence update crosses operation"));
+        return Err(refused("renewal license update crosses operation"));
     }
     Ok(true)
 }
@@ -1469,7 +1469,7 @@ fn audit_attempts<I: Issuer>(
                     || pair.predecessor != predecessor
                     || paid_resale::renewal_holder_generation(pair.binding()?)? != holder_generation
                 {
-                    return Err(refused("renewal retry crossed licence term or holder"));
+                    return Err(refused("renewal retry crossed license term or holder"));
                 }
                 if let Some(next) = successors.get(&cursor) {
                     if !closed_attempt(pair) {

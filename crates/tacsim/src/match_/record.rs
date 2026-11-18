@@ -1744,7 +1744,7 @@ pub fn arena_label(w: &mush_core::World, id: &str) -> String {
 }
 
 /// The sentence `SIM HISTORY` answers with when the ring is empty.
-pub const NO_HISTORY: &str = "The centre has no finished match on record.";
+pub const NO_HISTORY: &str = "The center has no finished match on record.";
 
 /// **`SIM HISTORY`'s lines** (16b cut V.2; 16c N2): a header, then one line per
 /// remembered match, newest first as `rows` gives them.
@@ -1769,8 +1769,8 @@ pub fn history_lines<'a>(rows: impl Iterator<Item = &'a HistoryRow>, reader: Obj
     let rows: Vec<&HistoryRow> = rows.collect();
     let header = match rows.len() {
         0 => return vec![NO_HISTORY.to_owned()],
-        1 => "The centre's last match:".to_owned(),
-        n => format!("The centre's last {n} matches, newest first:"),
+        1 => "The center's last match:".to_owned(),
+        n => format!("The center's last {n} matches, newest first:"),
     };
     let mut lines = Vec::with_capacity(rows.len().saturating_add(1));
     lines.push(header);
@@ -2474,7 +2474,7 @@ mod tests {
         assert_eq!(
             history_lines(rows.iter(), ObjId(5)),
             vec![
-                "The centre's last 3 matches, newest first:",
+                "The center's last 3 matches, newest first:",
                 "  #12  blue won (red eliminated)  4 m 32 s  2 v 2  2026-09-24 14:02 UTC  (you flew RA)",
                 "  #11  draw (both sides out of ammunition)  9 m 10 s  1 v 1  2026-09-24 13:40 UTC",
                 "  #10  aborted (the server restarted)  0 s  0 v 0  2026-09-24 13:02 UTC",
@@ -2492,7 +2492,7 @@ mod tests {
         assert_eq!(
             history_lines(std::iter::once(&unnamed), ObjId(5)),
             vec![
-                "The centre's last match:",
+                "The center's last match:",
                 "  #12  blue won (red eliminated)  4 m 32 s  2 v 2  2026-09-24 14:02 UTC",
             ]
         );
@@ -2500,7 +2500,7 @@ mod tests {
             history_lines(std::iter::empty(), ObjId(5)),
             vec![NO_HISTORY]
         );
-        assert_eq!(NO_HISTORY, "The centre has no finished match on record.");
+        assert_eq!(NO_HISTORY, "The center has no finished match on record.");
         // Nothing of the field: never the seed, never an object number.
         let seed = rows[0].seed.to_string();
         for line in history_lines(rows.iter(), ObjId(5)) {
@@ -3027,7 +3027,7 @@ mod tests {
     #[test]
     fn af2_a_live_record_round_trips_and_refuses_by_name() {
         let live = af2_live();
-        let document = live.to_document().expect("a live record serialises");
+        let document = live.to_document().expect("a live record serializes");
         let object = document.as_object().expect("an object");
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
         keys.sort_unstable();

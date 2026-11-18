@@ -300,7 +300,7 @@ mod tests {
             Some(10_000),
             &ground(),
         ))
-        .expect("the picture serialises")
+        .expect("the picture serializes")
         .len();
         println!("a 300-unit arena.observer keyframe is {bytes} bytes");
         assert!(bytes < 16_384, "{bytes} bytes");

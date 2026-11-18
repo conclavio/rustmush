@@ -87,6 +87,12 @@ pub struct PortMap {
     /// authority encodes as before and [`PORT_MAP_SCHEMA`] stays 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_grant: Option<u64>,
+    /// **Doc 48 cut EX.3: the port's buy-back desk**, once laid up: the clerk's own Thing that
+    /// bids for a holder's scrap (`crate::port::bay_work::scrap`), so no GOD-owned NPC holder
+    /// controls the bidder, and its `vault.withdraw` grant on the workshop operator's root scope.
+    /// Skipped when absent, so [`PORT_MAP_SCHEMA`] stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desk: Option<DeskRow>,
     /// Per authored vendor org id, what part e made for it (cut IC8). Doc 18's
     /// `content.stock/<pack>/<entry>/<org>/<good>/<issue>` plan rows are this
     /// map's `vendors[org].stock[i]` (IC3 L3's one-document rule).
@@ -381,6 +387,7 @@ impl PortMap {
             hulls: Vec::new(),
             clerk: None,
             release_grant: None,
+            desk: None,
             vendors: BTreeMap::new(),
             boards: BTreeMap::new(),
             emergencies: BTreeMap::new(),
@@ -395,6 +402,16 @@ impl PortMap {
     pub fn key(&self) -> SmolStr {
         port_map_key(&self.pack, &self.entry)
     }
+}
+
+/// **The port's buy-back desk** (doc 48 cut EX.3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeskRow {
+    /// The desk Thing, `ObjId.0`, owned by the port's clerk.
+    pub thing: u32,
+    /// Its `vault.withdraw` grant on the workshop operator's root scope, `GrantId.0`.
+    pub grant: u64,
 }
 
 /// **One institution's row** (part c): the org and its root scope (created in

@@ -1468,7 +1468,7 @@ mod cc9_tests {
                 "pdc_dorsal",
                 "pdc_ventral"
             ],
-            "Halcyon's full fit: every mount, point defence among them"
+            "Halcyon's full fit: every mount, point defense among them"
         );
         let ship = &bubble.ships["halcyon"];
         let dorsal = mount(&picture, "laser_dorsal");
@@ -1563,7 +1563,7 @@ mod cc9_tests {
         assert_eq!(
             (ventral.mode, ventral.state),
             (Some(LaserMode::Defense), MountState::Ready),
-            "a laser in defence is ready to stop a torpedo"
+            "a laser in defense is ready to stop a torpedo"
         );
         assert!(!ventral.cycled(), "and not to fire at her lock");
         let spinal = mount(&picture, "rail_spinal");
@@ -1602,8 +1602,22 @@ mod cc9_tests {
             "the kernel refuses the same shot"
         );
 
+        // Past the laser's reach and inside the spinal gun's (doc 49 unit CC.8 made the
+        // laser's the shorter): the laser reads past reach, the spinal gun fires.
+        let laser_reach = bubble.ships["halcyon"].lasers[0].max_range_m;
+        let spinal_reach = bubble.ships["halcyon"].railguns[0].max_range_m;
+        assert!(laser_reach < spinal_reach);
+        let between = field([-(laser_reach + 1_000), 0, 0]);
+        if held(&between) {
+            let picture = fire_picture(&between, "halcyon").expect("her picture");
+            assert_eq!(mount(&picture, "laser_dorsal").state, MountState::PastReach);
+            assert_eq!(mount(&picture, "laser_dorsal").at_lock, None);
+            assert_eq!(mount(&picture, "rail_spinal").state, MountState::Ready);
+            assert!(mount(&picture, "rail_spinal").at_lock.is_some());
+        }
+
         // Past a mount's reach: the lock as far off as her sensors still hold her.
-        let reach = bubble.ships["halcyon"].lasers[0].max_range_m;
+        let reach = laser_reach.max(spinal_reach);
         let far = field([-(reach + 1_000), 0, 0]);
         if held(&far) {
             let picture = fire_picture(&far, "halcyon").expect("her picture");
@@ -1655,7 +1669,7 @@ mod cc9_tests {
             u32::from(ship.lasers[0].heat_cost_permille)
         );
         assert!(row("laser_dorsal").ready);
-        assert!(!row("laser_ventral").ready, "in defence");
+        assert!(!row("laser_ventral").ready, "in defense");
         assert_eq!(
             row("laser_ventral").ready_in_ms,
             0,
@@ -1671,7 +1685,7 @@ mod cc9_tests {
         );
         assert!(
             view.weapons.iter().all(|row| !row.id.starts_with("pdc")),
-            "point defence fires on its own"
+            "point defense fires on its own"
         );
 
         let read = |expr: &str| shown(&eval_in(context_on(view.clone()), expr).expect(expr));

@@ -263,6 +263,14 @@ pub fn help_entry(reg: &Registry, w: &World, viewer: ObjId, name: &str) -> Optio
         let switches: Vec<&str> = spec.switches.iter().map(SmolStr::as_str).collect();
         header.push_str(&format!("  [switches: /{}]", switches.join(" /")));
     }
+    if !spec.switch_aliases.is_empty() {
+        let aliases: Vec<String> = spec
+            .switch_aliases
+            .iter()
+            .map(|(alias, canonical)| format!("/{alias} = /{canonical}"))
+            .collect();
+        header.push_str(&format!("  (switch aliases: {})", aliases.join(", ")));
+    }
     Some(HelpEntry {
         header,
         body: spec.help.clone(),

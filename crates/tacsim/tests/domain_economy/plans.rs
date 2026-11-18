@@ -497,9 +497,13 @@ fn finishes<'q>(tw: &TestWorld, queued: &'q [AuthoritativeSubmit]) -> Vec<&'q Au
         .collect()
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -518,7 +522,7 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 fn typed<K, V>(
@@ -554,7 +558,7 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 /// A chartered, licensed pilot whose hull the yard has made a Dray-P.
 fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, &format!("+coop/enrol {name}"));
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {name}"));
     assert!(out.contains(&format!("now the {name}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
@@ -2262,7 +2266,7 @@ fn sm11_the_offline_story_fills_the_hold_parks_and_the_queue_sells() {
     assert_eq!(sale.qty, held, "the queue sold the whole hold: {sale:?}");
     assert_eq!(straight.hold_ore, 0, "the hold sold");
     let programme = match lane().entry(&cid("ceres_port")) {
-        Some(PackEntry::Port(def)) => def.programme.clone().expect("the programme"),
+        Some(PackEntry::Port(def)) => def.programme.clone().expect("the program"),
         other => panic!("ceres_port is a port entry: {other:?}"),
     };
     let reference =
@@ -2694,7 +2698,7 @@ fn sm11_a_lapsed_licence_parks_the_plan_with_its_reason() {
                 ..
             })
         ),
-        "the plan parked for its licence"
+        "the plan parked for its license"
     );
     assert_eq!(
         (
@@ -4715,7 +4719,7 @@ fn sm11_the_author_clears_their_plan_off_the_helm() {
     assert_eq!(
         tacsim::port::live_charter(rig.tw.world(), pilot),
         None,
-        "the charter is cancelled: {out}"
+        "the charter is canceled: {out}"
     );
     assert!(
         rigs_of(&rig.tw, pilot).contains(&tv),
@@ -4797,7 +4801,7 @@ fn bound_off_the_helm(aboard: bool) {
     assert_eq!(
         tacsim::port::live_charter(rig.tw.world(), pilot),
         None,
-        "the charter is cancelled: {out}"
+        "the charter is canceled: {out}"
     );
     assert!(
         rigs_of(&rig.tw, pilot).contains(&tv),

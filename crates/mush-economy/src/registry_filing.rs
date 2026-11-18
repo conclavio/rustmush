@@ -158,6 +158,7 @@ pub struct InitialFilingParticipant {
     charter_transfer: Option<mush_core::DefinitionRef>,
     seizure: Option<seizure::SeizureConfig>,
     core_sale: Option<core_sale::CoreSaleConfig>,
+    core_resale: Option<core_sale::resale::CoreResaleConfig>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     core_refit: Option<crate::core_refit::CoreRefitConfig>,
     bay_refit: Option<crate::bay_refit::BayRefitConfig>,
@@ -178,6 +179,7 @@ impl InitialFilingParticipant {
             charter_transfer: None,
             seizure: None,
             core_sale: None,
+            core_resale: None,
             core_integration: None,
             core_refit: None,
             bay_refit: None,
@@ -214,6 +216,7 @@ pub(crate) fn register_with_house_updates(
     seizure: Option<&seizure::SeizureConfig>,
     bay_refit: Option<&crate::bay_refit::BayRefitConfig>,
     core_sale: Option<&core_sale::CoreSaleConfig>,
+    core_resale: Option<&core_sale::resale::CoreResaleConfig>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -452,6 +455,16 @@ pub(crate) fn register_with_house_updates(
         }
         actions.insert(config.action.clone());
     }
+    if let Some(config) = core_resale {
+        // Doc 48 unit EX.2b: the resale of a managed core, the buy-back's sibling.
+        config.validate().map_err(|e| bad(&e))?;
+        if core_integration.is_none() {
+            return Err(mush_core::ModError::msg(
+                "core resale requires native manufacture history",
+            ));
+        }
+        actions.insert(config.action.clone());
+    }
     if let Some(config) = charter_pending {
         config.validate().map_err(|e| bad(&e))?;
         if config.issuer != policy.issuer
@@ -514,6 +527,7 @@ pub(crate) fn register_with_house_updates(
             charter_transfer: charter_transfer.cloned(),
             seizure: seizure.cloned(),
             core_sale: core_sale.cloned(),
+            core_resale: core_resale.cloned(),
             core_integration: core_integration.cloned(),
             core_refit: core_refit.cloned(),
             bay_refit: bay_refit.cloned(),
@@ -1035,6 +1049,7 @@ pub enum EconomyRequest {
     CharterTransfer(charter_transfer::RegistryCharterTransfer),
     CoreSeizure(seizure::RegistryCoreSeizure),
     CoreSale(core_sale::RegistryCoreSale),
+    CoreResale(core_sale::resale::RegistryCoreResale),
     CoreFunding(crate::core_integration::CoreFundingRequest),
     CoreCompletion(crate::core_integration::CoreCompletionRequest),
     CoreCancellation(crate::core_integration::CoreCancellationRequest),
@@ -1122,6 +1137,7 @@ pub enum EconomyOutput {
     CharterTransfer(charter_transfer::CharterTransferOutput),
     CoreSeizure(seizure::CoreSeizureOutput),
     CoreSale(core_sale::CoreSaleOutput),
+    CoreResale(core_sale::resale::CoreResaleOutput),
     CoreFunding(crate::core_integration::CoreFundingOutput),
     CoreTerminal(crate::core_integration::CoreTerminalOutput),
     RefitFunding(crate::core_refit::RefitFundingOutput),
@@ -1199,6 +1215,13 @@ impl EconomyOutput {
     pub fn core_sale(self) -> Result<core_sale::CoreSaleOutput, ParticipantError> {
         match self {
             Self::CoreSale(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    /// Doc 48 unit EX.2b: the resale's output.
+    pub fn core_resale(self) -> Result<core_sale::resale::CoreResaleOutput, ParticipantError> {
+        match self {
+            Self::CoreResale(output) => Ok(output),
             _ => Err(refused()),
         }
     }
@@ -1342,6 +1365,7 @@ pub enum EconomyPatch {
     CharterTransfer(Box<charter_transfer::CharterTransferPatch>),
     CoreSeizure(Box<seizure::CoreSeizurePatch>),
     CoreSale(Box<core_sale::CoreSalePatch>),
+    CoreResale(Box<core_sale::resale::CoreResalePatch>),
     CoreMoney(Box<crate::core_integration::CoreMoneyPatch>),
     RefitMoney(Box<crate::core_refit::RefitMoneyPatch>),
     BayMoney(Box<crate::bay_refit::BayMoneyPatch>),
@@ -1368,6 +1392,7 @@ pub enum BoundEconomy<'a> {
     CharterTransfer(charter_transfer::BoundCharterTransfer<'a>),
     CoreSeizure(seizure::BoundCoreSeizure<'a>),
     CoreSale(core_sale::BoundCoreSale<'a>),
+    CoreResale(core_sale::resale::BoundCoreResale<'a>),
     CoreMoney(crate::core_integration::BoundCoreMoney<'a>),
     RefitMoney(crate::core_refit::BoundRefitMoney<'a>),
     BayMoney(crate::bay_refit::BoundBayMoney<'a>),
@@ -1389,6 +1414,7 @@ impl BoundParticipant for BoundEconomy<'_> {
             Self::CharterTransfer(bound) => bound.apply(),
             Self::CoreSeizure(bound) => bound.apply(),
             Self::CoreSale(bound) => bound.apply(),
+            Self::CoreResale(bound) => bound.apply(),
             Self::CharterPending(bound) => bound.apply(),
             Self::Purchase(bound) => bound.apply(),
             Self::RenewalOffer(bound) => bound.apply(),
@@ -1742,6 +1768,9 @@ impl OwnerParticipant for InitialFilingParticipant {
             EconomyRequest::CoreSale(request) => {
                 self.prepare_core_sale_request(state, context, request)
             }
+            EconomyRequest::CoreResale(request) => {
+                self.prepare_core_resale_request(state, context, request)
+            }
             EconomyRequest::CharterTransfer(request) => {
                 self.prepare_charter_transfer_request(state, context, request)
             }
@@ -1824,6 +1853,13 @@ impl OwnerParticipant for InitialFilingParticipant {
             ),
             EconomyPatch::CoreSale(patch) => core_sale::recheck(
                 self.core_sale.as_ref().ok_or_else(refused)?,
+                &self.policy,
+                state,
+                context,
+                patch,
+            ),
+            EconomyPatch::CoreResale(patch) => core_sale::resale::recheck(
+                self.core_resale.as_ref().ok_or_else(refused)?,
                 &self.policy,
                 state,
                 context,
@@ -1914,6 +1950,9 @@ impl OwnerParticipant for InitialFilingParticipant {
             EconomyPatch::CoreSale(patch) => {
                 core_sale::bind(state, *patch).map(BoundEconomy::CoreSale)
             }
+            EconomyPatch::CoreResale(patch) => {
+                core_sale::resale::bind(state, *patch).map(BoundEconomy::CoreResale)
+            }
             EconomyPatch::CharterTransfer(patch) => {
                 charter_transfer::bind(state, *patch).map(BoundEconomy::CharterTransfer)
             }
@@ -1999,6 +2038,12 @@ impl OwnerParticipant for InitialFilingParticipant {
                 }
                 if let Some(id) = key.as_str().strip_prefix("asset:") {
                     return id.parse::<u32>().is_ok_and(|n| n.to_string() == id);
+                }
+                // Doc 48 unit EX.2b: a cored hull's hold goes with her, its vault re-homed in
+                // the resale's own union. The one closed leg that writes a vault image, and only
+                // where it composes.
+                if let Some(id) = key.as_str().strip_prefix("vault:") {
+                    return self.core_resale.is_some() && canonical_u64(id);
                 }
                 key.as_str()
                     .strip_prefix(crate::keys::IDEM_PREFIX)

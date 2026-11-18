@@ -736,6 +736,24 @@ fn available(tw: &TestWorld, account: mush_economy::AccountId) -> i64 {
         .expect("the account's available funds")
 }
 
+/// **What `who` has paid in berth fees, ever** (doc 48 cut EX.4): every berth period of
+/// theirs that settled, at its fee. A story that checks a wallet to the minor unit across
+/// IC days subtracts the berth it paid over them.
+fn berth_paid(tw: &TestWorld, who: &PrincipalId) -> i64 {
+    economy(tw)
+        .snapshot()
+        .obligations()
+        .filter(|o| {
+            &o.debtor == who
+                && o.arrears.as_ref().is_some_and(|a| {
+                    a.namespace
+                        .starts_with(tacsim::port::berth::BERTH_NS_PREFIX)
+                })
+        })
+        .map(|o| o.amount.minor() * i64::from(o.settled_total))
+        .sum()
+}
+
 /// The money render (`5600.00cr`).
 fn cr(minor: i64) -> String {
     format!("{}.{:02}cr", minor / 100, minor % 100)
@@ -970,7 +988,7 @@ async fn enrol(rig: &mut Rig, pilot: ObjId, name: &str) -> HullRow {
     let c05 = station_room(&rig.tw, "ceres_port", "room.c05_registry");
     walk(rig, pilot, "c", c03).await;
     walk(rig, pilot, "registry", c05).await;
-    let enrolled = run(rig, pilot, &format!("+coop/enrol {name}")).await;
+    let enrolled = run(rig, pilot, &format!("+coop/enroll {name}")).await;
     assert!(enrolled.contains(&format!("now the {name}")), "{enrolled}");
     let row = hull_row(&rig.tw, pilot);
     let hold = hold_of(&rig.tw, &row);
@@ -1092,7 +1110,10 @@ const LENS_AVAILABLE: i64 = 11_000_000;
 
 /// `who`'s enrolment document.
 fn enrolment(tw: &TestWorld, who: ObjId) -> Enrolment {
-    store(tw).enrolment_of(who).cloned().expect("the enrolment")
+    store(tw)
+        .enrolment_of(who)
+        .cloned()
+        .expect("the enrollment")
 }
 
 fn contract_state(tw: &TestWorld, id: u64) -> ContractState {
@@ -1267,7 +1288,7 @@ fn untouched(tw: &TestWorld, who: ObjId) -> Untouched {
 
 fn assert_untouched(tw: &TestWorld, who: ObjId, was: &Untouched, why: &str) {
     assert_eq!(contract_count(tw), was.contracts, "no contract: {why}");
-    assert_eq!(enrolment(tw, who), was.enrolment, "the enrolment: {why}");
+    assert_eq!(enrolment(tw, who), was.enrolment, "the enrollment: {why}");
     assert_eq!(
         contract_state(tw, was.enrolment.lease),
         ContractState::Active,
@@ -1487,8 +1508,8 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
     let c05 = station_room(&rig.tw, "ceres_port", "room.c05_registry");
     walk(&mut rig, alt, "c", c03).await;
     walk(&mut rig, alt, "registry", c05).await;
-    let out = run(&mut rig, alt, "+coop/enrol Second Wind").await;
-    assert!(out.contains(tacsim::port::coop::ENROLLED_ONCE), "{out}");
+    let out = run(&mut rig, alt, "+coop/enroll Second Wind").await;
+    assert!(out.contains(tacsim::port::coop::GRADUATED_ONCE), "{out}");
 
     // 8. More sweeps and a restart leave the title, the one transfer and the document.
     for _ in 0..3 {
@@ -1564,6 +1585,8 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
     );
     let trust_at_sale = posted(&rig.tw, trust_acct);
     let mine_at_sale = posted(&rig.tw, me);
+    // Doc 48 cut EX.4: her own hull's berth at Stickney is paid across the sweeps.
+    let berth_at_sale = berth_paid(&rig.tw, &PrincipalId::Object(vex));
     let counters = (
         graduated.sales,
         graduated.margin_minor,
@@ -1598,7 +1621,7 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
     );
     assert_eq!(
         posted(&rig.tw, me),
-        mine_at_sale + gross,
+        mine_at_sale + gross - (berth_paid(&rig.tw, &PrincipalId::Object(vex)) - berth_at_sale),
         "Vex receives the gross"
     );
     let after = enrolment(&rig.tw, vex);
@@ -1837,10 +1860,12 @@ async fn ic13_a_refunded_buyout_re_leases() {
 // 4. Dormancy
 // ---------------------------------------------------------------------------
 
-/// **The verify lens, item 3** (lead rulings L3, L4, L5, L15): seven idle real days
-/// recall a docked hull with an empty cargo hold — at 7 days less an hour nothing
-/// happens — and the next enrolment charters that very hull, its re-homed hold vault and
-/// the fuel and stores the last captain left in it (owner item O1).
+/// **The verify lens, item 3** (lead rulings L3, L4, L5, L15): seven idle real days (168 IC
+/// days at the live 24:1 clock) recall a docked hull with an empty cargo hold — at 7 days less
+/// an hour (167 IC days) nothing happens — and the next enrolment charters that very hull, its
+/// re-homed hold vault and the fuel and stores the last captain left in it (owner item O1).
+/// **The owner's 2026-11-17 ruling**: the recalled pilot is told the way back and charters the
+/// next free Dray, with no second stake.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn ic13_seven_idle_days_recall_a_docked_empty_hull_and_the_next_enrolment_charters_it() {
@@ -1897,7 +1922,7 @@ async fn ic13_seven_idle_days_recall_a_docked_empty_hull_and_the_next_enrolment_
     assert_eq!(e.laid_up_name, "Slack Water");
     {
         let w = rig.tw.world();
-        let port = tacsim::port::programme_port(w).expect("the programme port");
+        let port = tacsim::port::programme_port(w).expect("the program port");
         assert!(
             tacsim::port::coop::free_hulls(w, &port)
                 .iter()
@@ -1931,6 +1956,8 @@ async fn ic13_seven_idle_days_recall_a_docked_empty_hull_and_the_next_enrolment_
         heard[heading..].contains(&dormant),
         "{heard}\nwanted: {dormant}"
     );
+    let hint = tacsim::port::coop::recharter_hint(rig.tw.world()).expect("the way back");
+    assert!(heard[heading..].contains(&hint), "{heard}\nwanted: {hint}");
 
     // Every gated line Ready again after the jump; the next captain charters that hull.
     stock(&mut rig).await;
@@ -1961,15 +1988,36 @@ async fn ic13_seven_idle_days_recall_a_docked_empty_hull_and_the_next_enrolment_
         assert!(held.contains(&want), "{held}\nwanted: {want}");
     }
 
-    // Vex: refused for ever, and the charter reads ended.
+    // Vex: the charter reads ended with the way back, and Vex charters again (the owner's
+    // 2026-11-17 ruling), the next free Dray and no second stake.
     registry_from_chandlery(&mut rig, vex).await;
-    let out = run(&mut rig, vex, "+coop/enrol Again").await;
-    assert!(out.contains(tacsim::port::coop::ENROLLED_ONCE), "{out}");
     let terms = run(&mut rig, vex, "+coop").await;
     assert!(
-        terms.contains("Your charter of the Salt Moth (FPC-D-0401) has ended."),
+        terms.contains(&format!(
+            "Your charter of the Salt Moth (FPC-D-0401) has ended. {hint}"
+        )),
         "{terms}"
     );
+    let cash = |rig: &Rig| {
+        let w = rig.tw.world();
+        let acct = tacsim::port::credit::own_account(w, vex).expect("Vex's account");
+        w.module_state::<mush_economy::EconomyStore>()
+            .and_then(|s| {
+                s.snapshot()
+                    .account(acct.id)
+                    .map(|a| a.posted_balance.minor())
+            })
+            .expect("the balance")
+    };
+    let before = cash(&rig);
+    let out = run(&mut rig, vex, "+coop/enroll Again").await;
+    assert!(out.contains("now the Again"), "{out}");
+    assert!(!out.contains("staked to you"), "{out}");
+    let again = enrolment(&rig.tw, vex);
+    assert_eq!(again.status, EnrolmentStatus::Active);
+    assert_ne!(again.hull, hull, "Ash holds the first hull");
+    assert_ne!(again.lease, e.lease, "a new lease");
+    assert_eq!(cash(&rig), before, "no second stake");
     assert_no_pages(&rig.tw);
 }
 
@@ -2258,7 +2306,7 @@ async fn ic13_release_and_revoke_recall_through_one_path() {
     assert_eq!(name_of(&rig.tw, bo_hull), bo_e.laid_up_name);
     {
         let w = rig.tw.world();
-        let port = tacsim::port::programme_port(w).expect("the programme port");
+        let port = tacsim::port::programme_port(w).expect("the program port");
         assert!(
             tacsim::port::coop::free_hulls(w, &port)
                 .iter()
@@ -2393,7 +2441,7 @@ async fn ic13_a_queued_order_waits_out_the_buyout_and_runs_on_the_title() {
 /// The Trust's display name, read from the shipped Ceres entry (never typed).
 fn trust_name(_tw: &TestWorld) -> String {
     let def = port_def("ceres_port");
-    let programme = def.programme.as_ref().expect("the programme");
+    let programme = def.programme.as_ref().expect("the program");
     def.orgs
         .iter()
         .find(|o| o.id == programme.org)
@@ -2482,7 +2530,7 @@ async fn ic14_a_revoked_charter_with_a_live_lease_converges() {
         tacsim::NS,
         vec![(
             tacsim::port::coop::enrolment_key(e.account),
-            serde_json::to_value(&revoked).expect("an enrolment document"),
+            serde_json::to_value(&revoked).expect("an enrollment document"),
         )],
     )
     .await;
@@ -2544,7 +2592,7 @@ async fn refunded_with_the_trust_frozen(rig: &mut Rig) -> (ObjId, HullRow, u32, 
     assert_eq!(
         pending.status,
         EnrolmentStatus::BuyoutPending,
-        "the failed re-charter leaves the enrolment buyout-pending"
+        "the failed re-charter leaves the enrollment buyout-pending"
     );
     let relet = tacsim::port::buyout::RELET_PENDING
         .replace("{name}", "Salt Moth")
@@ -2821,7 +2869,7 @@ async fn ic14_the_buyout_residues() {
     assert_eq!(
         contract_state(&rig.tw, offered.0),
         ContractState::Cancelled,
-        "cancelled through its own cancel"
+        "canceled through its own cancel"
     );
     assert_eq!(available(&rig.tw, me), LENS_AVAILABLE, "nothing held");
     let out = run(&mut rig, GOD, &format!("@account/approval {me}=none")).await;
@@ -3026,7 +3074,7 @@ async fn sm2_a_week_of_hops_trips_no_recall() {
     assert_eq!(title_owner(&rig.tw, hull), Some(trust(&rig.tw)));
     {
         let w = rig.tw.world();
-        let port = tacsim::port::programme_port(w).expect("the programme port");
+        let port = tacsim::port::programme_port(w).expect("the program port");
         assert!(
             tacsim::port::coop::free_hulls(w, &port)
                 .iter()

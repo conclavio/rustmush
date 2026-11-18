@@ -42,7 +42,7 @@ The economy's two censuses (staff):
                     or took money in (a sink, such as a levy or a
                     fee), and the holdings at the day's close by
                     category: lane institutions, Houses, other
-                    organisations, players and everything else. Shows
+                    organizations, players and everything else. Shows
                     the last <days> rows (1 to 28, default 7), the day
                     still open, and the window's totals: each faucet's
                     net mint. A row closes at the first economy sweep
@@ -90,7 +90,7 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     the draws; the position summaries are left out. The
                     header carries the outcome, the seed, the tape's
                     digest and chunk count, and every unit with its pilot.
-                    Bare, the newest match the centre remembers; a running
+                    Bare, the newest match the center remembers; a running
                     match, a crashed one and one older than the last
                     twenty are read too. A page shows at most 200 lines
                     ("... and N more of this page." past them), and its
@@ -133,7 +133,7 @@ The simulator's black box (SIM_ADMIN or Royalty):
                     machine's, and how many rounds are in flight - and
                     screen 0 of the TUI and the web draws it live; the
                     line client prints none of it. For a staffer with no
-                    centre slot and no seat ("You are flying, or about
+                    center slot and no seat ("You are flying, or about
                     to; EXIT and leave your slot before you watch." -
                     any character of a flying account, and a pilot who
                     has EXITed and kept the slot, too); at most eight a

@@ -404,7 +404,7 @@ impl ActionProvider for Provider {
             fixed_parameters:json!({}), parameters:mush_core::ProjectedParameterSchema::new(parameters).map_err(|_|fail())?,
             targets:mush_core::ProjectedTargetSchema::None,required_channels:Vec::new(),expires:None,
             presentation:mush_core::ActionPresentation::new("roll-replace-owner-parent","Restore a dependent owner's parent rights",
-                "Select your dependent owner licence and a current Open licence on its original parent line. Existing child dates remain unchanged.").map_err(|_|fail())?,
+                "Select your dependent owner license and a current Open license on its original parent line. Existing child dates remain unchanged.").map_err(|_|fail())?,
             guards:guards.finish().map_err(|_|fail())?,
         }))
     }
@@ -434,7 +434,7 @@ pub(crate) fn register(
             refusal: ActionError::new(
                 ActionErrorCode::ProviderRejected,
                 false,
-                "The dependent owner or qualifying parent licence is unavailable or stale.",
+                "The dependent owner or qualifying parent license is unavailable or stale.",
             )
             .map_err(error)?,
         },

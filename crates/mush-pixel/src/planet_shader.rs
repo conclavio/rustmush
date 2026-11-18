@@ -605,7 +605,7 @@ mod tests {
         let colours = frame.count_colours(256);
         assert!(
             colours <= 32,
-            "expected <= 32 palette colours, got {colours}"
+            "expected <= 32 palette colors, got {colours}"
         );
     }
 

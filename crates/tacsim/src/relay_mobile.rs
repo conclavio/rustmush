@@ -40,7 +40,7 @@ impl Programme {
                 != self.payments.len()
             || self.launch.is_some() && self.progress() != 8
         {
-            return Err("Invalid mobile programme receipt census".into());
+            return Err("Invalid mobile program receipt census".into());
         }
         Ok(())
     }
@@ -172,7 +172,7 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
                     .module_state::<mush_faction::SimState>()
                     .is_some_and(|s| s.fronts.values().any(|f| f.title == "A Half Afloat"));
             if unseeded && receipt_absent && !orphan {
-                tracing::info!("Fleet programme waits for the explicitly upgraded Exchange seed");
+                tracing::info!("Fleet program waits for the explicitly upgraded Exchange seed");
                 return Ok(());
             }
             return Err("Exchange absent beside Fleet or relay authority; repair required".into());
@@ -197,7 +197,7 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 .get(p.postmaster)
                 .is_none_or(|o| o.kind != mush_core::ObjKind::Npc)
         {
-            return Err("Fleet programme identity drift".into());
+            return Err("Fleet program identity drift".into());
         }
         if let Some(order) = p.refit {
             let m = crate::relay_foundry::current(ctx.w)
@@ -222,7 +222,7 @@ pub fn boot(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .module_state::<crate::TacsimStore>()
         .is_some_and(|s| s.relay_mobile_held)
     {
-        return Err("Fleet programme unreadable; refusing reseed".into());
+        return Err("Fleet program unreadable; refusing reseed".into());
     }
     if ctx
         .w
@@ -300,7 +300,7 @@ fn launch(ctx: &mut Ctx<'_>, p: &mut Programme) -> Result<(), String> {
         .and_then(|m| m.installed[1])
         .ok_or("Mobile mount missing")?;
     if !operational(ctx.w, p.hull, node) {
-        return Err("The completed programme's installation is not operational".into());
+        return Err("The completed program's installation is not operational".into());
     }
     let canon=mush_canon::commit(ctx,draft(ctx,"relay.first_mobile_launch","A Half Afloat: the Concord Fleet's Long Vigil launches the first mobile relay, bound for Belt Squadron relief. Six funded months, the Postmaster's consent and the Lunar refit are complete.".into(),vec![p.hull,p.postmaster,node],serde_json::json!({"front":p.front,"order":order,"payments":p.payments}))).ok_or("Launch canon unavailable")?;
     p.launch = Some(canon.0);
@@ -315,7 +315,7 @@ fn finish(ctx: &mut Ctx<'_>, mut p: Programme) -> Result<(), String> {
 }
 fn fund_tick(ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>) {
     if let Err(e) = tick(ctx) {
-        tracing::warn!(error=%e,"Fleet programme waits");
+        tracing::warn!(error=%e,"Fleet program waits");
     }
 }
 fn tick(ctx: &mut Ctx<'_>) -> Result<(), String> {
@@ -396,9 +396,7 @@ fn tick(ctx: &mut Ctx<'_>) -> Result<(), String> {
     finish(ctx, p)
 }
 fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let mut p = current(ctx.w)
-        .cloned()
-        .ok_or("Fleet programme not present")?;
+    let mut p = current(ctx.w).cloned().ok_or("Fleet program not present")?;
     clock_ok(ctx.w, &p)?;
     if ctx.switches.has("fund") {
         if !mush_economy::acts_for(ctx.w, ctx.actor, &PrincipalId::Organization(p.fleet)) {
