@@ -165,15 +165,22 @@ namespace TacSim.Character
             Vector3 pitchAxis = transform.right;
 
             // 1. Ensure an upright standing base pose before layering seated or stride rotations:
-            // If an un-rebuilt Humanoid clip lacks explicit Lower Leg Stretch curves (Mecanim 0.0 => ~80 deg squat),
-            // straighten thigh & shin along -transform.up while preserving flat horizontal boot soles.
+            // Catches both knee-squat (> 20 deg) and forward/backward hip tilt (> 14 deg from -transform.up)
+            // on un-rebuilt clips while leaving subtle mocap idle weight-shifts (~3-6 deg) untouched!
             if (_leftUpperLeg != null && _leftLowerLeg != null && _leftFoot != null &&
                 _rightUpperLeg != null && _rightLowerLeg != null && _rightFoot != null)
             {
+                Vector3 downDir = -transform.up;
                 Vector3 lThigh = _leftLowerLeg.position - _leftUpperLeg.position;
                 Vector3 lShin = _leftFoot.position - _leftLowerLeg.position;
-                if (lThigh.sqrMagnitude > 0.001f && lShin.sqrMagnitude > 0.001f &&
-                    Vector3.Angle(lThigh, lShin) > 22f)
+                Vector3 rThigh = _rightLowerLeg.position - _rightUpperLeg.position;
+                Vector3 rShin = _rightFoot.position - _rightLowerLeg.position;
+
+                bool leftOffVertical = lThigh.sqrMagnitude > 0.001f && lShin.sqrMagnitude > 0.001f &&
+                                       (Vector3.Angle(lThigh, lShin) > 20f || Vector3.Angle(lThigh, downDir) > 14f);
+                bool rightOffVertical = rThigh.sqrMagnitude > 0.001f && rShin.sqrMagnitude > 0.001f &&
+                                        (Vector3.Angle(rThigh, rShin) > 20f || Vector3.Angle(rThigh, downDir) > 14f);
+                if (leftOffVertical || rightOffVertical)
                 {
                     StraightenStandingLeg(_leftUpperLeg, _leftLowerLeg, _leftFoot, pitchAxis);
                     StraightenStandingLeg(_rightUpperLeg, _rightLowerLeg, _rightFoot, pitchAxis);
@@ -258,7 +265,6 @@ namespace TacSim.Character
 
         private void StraightenStandingLeg(Transform upperLeg, Transform lowerLeg, Transform foot, Vector3 pitchAxis)
         {
-            Quaternion savedFootRot = foot.rotation;
             Vector3 downDir = -transform.up;
             Vector3 targetThigh = Quaternion.AngleAxis(-1.6f, pitchAxis) * downDir;
             Vector3 targetShin = Quaternion.AngleAxis(1.6f, pitchAxis) * downDir;
@@ -270,8 +276,6 @@ namespace TacSim.Character
             Vector3 curShin = (foot.position - lowerLeg.position).normalized;
             if (curShin.sqrMagnitude > 0.001f)
                 lowerLeg.rotation = Quaternion.FromToRotation(curShin, targetShin) * lowerLeg.rotation;
-
-            foot.rotation = savedFootRot;
         }
 
         private bool TryGetLowestRenderedY(out float minY)

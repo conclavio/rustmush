@@ -1517,7 +1517,7 @@ namespace TacSim.Tests
                 StringAssert.Contains("attribute: Right Lower Leg Stretch", idleAnimYaml);
                 StringAssert.Contains("value: 0.96", idleAnimYaml);
                 StringAssert.Contains("attribute: Left Upper Leg Front-Back", idleAnimYaml);
-                StringAssert.Contains("value: -0.3", idleAnimYaml);
+                StringAssert.Contains("value: 0.5", idleAnimYaml);
 
                 // 5. Synchronous `.unitypackage` extractor (`<guid>/asset` preceding `<guid>/pathname` + zip-slip guard)
                 byte[] expectedPrefabBytes = System.Text.Encoding.UTF8.GetBytes("%YAML 1.1\nPrefab: Trooper\n");

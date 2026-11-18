@@ -11,10 +11,42 @@ namespace TacSim.Editor
     /// Works identically across all Humanoid character rigs (Stellar Trooper, Cyberpunk Street Fighter,
     /// Techwear Girls, Stellar Girl Astra, Stellar Girl Celeste).
     /// </summary>
+    [InitializeOnLoad]
     public static class HumanoidAnimatorBuilder
     {
         public const string GeneratedFolder = "Assets/_TacSim/Generated";
         public const string ControllerPath = GeneratedFolder + "/TacSimHumanoid.controller";
+
+        static HumanoidAnimatorBuilder()
+        {
+            EditorApplication.delayCall += AutoBindImportedIdleClipIfPresent;
+        }
+
+        private static void AutoBindImportedIdleClipIfPresent()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+                return;
+
+            var importedIdle = FindImportedIdaFaberIdleClip();
+            if (importedIdle == null)
+                return;
+
+            var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(ControllerPath);
+            if (controller == null || controller.layers == null || controller.layers.Length == 0)
+                return;
+
+            var defaultState = controller.layers[0].stateMachine?.defaultState;
+            if (defaultState != null && defaultState.motion != importedIdle)
+            {
+                AssetPackImporter.EnsureIdaFaberHumanoidRigs();
+                importedIdle = FindImportedIdaFaberIdleClip() ?? importedIdle;
+                defaultState.motion = importedIdle;
+                EditorUtility.SetDirty(defaultState);
+                EditorUtility.SetDirty(controller);
+                AssetDatabase.SaveAssets();
+                Debug.Log($"[TacSim] Auto-bound imported Humanoid idle clip '{importedIdle.name}' to {ControllerPath}.");
+            }
+        }
 
         public static RuntimeAnimatorController BuildOrRefreshController()
         {
@@ -139,12 +171,13 @@ namespace TacSim.Editor
             SetHumanoidRootPose(clip, pelvisHeightM: 0.98f, duration: 2.8f);
 
             // Explicit upright Humanoid standing muscles:
-            // In Mecanim muscle space, Lower Leg Stretch = 0.0 is an ~80 deg squat while +1.0 is 0 deg straight leg (+0.96 => ~3.2 deg natural stance),
-            // and Upper Leg Front-Back = -0.30 aligns thighs vertically under the pelvis.
-            SetMuscleConstant(clip, "Left Upper Leg Front-Back", -0.30f, 2.8f);
-            SetMuscleConstant(clip, "Right Upper Leg Front-Back", -0.30f, 2.8f);
-            SetMuscleConstant(clip, "Left Upper Leg In-Out", -0.05f, 2.8f);
-            SetMuscleConstant(clip, "Right Upper Leg In-Out", -0.05f, 2.8f);
+            // In Mecanim muscle space, `all muscles = 0` is a crouched neutral pose (~30 deg forward hip flexion, ~80 deg knee flexion):
+            //   - Upper Leg Front-Back: -1.0 is 90 deg forward kick, 0.0 is ~30 deg forward, +0.50 is 0 deg vertical thigh!
+            //   - Lower Leg Stretch:    -1.0 is 160 deg squat, 0.0 is 80 deg squat, +0.96 is ~3.2 deg natural standing knee!
+            SetMuscleConstant(clip, "Left Upper Leg Front-Back", 0.50f, 2.8f);
+            SetMuscleConstant(clip, "Right Upper Leg Front-Back", 0.50f, 2.8f);
+            SetMuscleConstant(clip, "Left Upper Leg In-Out", -0.04f, 2.8f);
+            SetMuscleConstant(clip, "Right Upper Leg In-Out", -0.04f, 2.8f);
             SetMuscleConstant(clip, "Left Lower Leg Stretch", 0.96f, 2.8f);
             SetMuscleConstant(clip, "Right Lower Leg Stretch", 0.96f, 2.8f);
             SetMuscleConstant(clip, "Left Foot Up-Down", 0f, 2.8f);
@@ -168,13 +201,13 @@ namespace TacSim.Editor
             SetLoopTime(clip, true);
             SetHumanoidRootPose(clip, pelvisHeightM: 0.96f, duration: periodSec);
 
-            float normLeg = Mathf.Clamp(strideAngle / 90f, 0f, 1f);
+            float normLeg = Mathf.Clamp(strideAngle / 60f, 0f, 0.48f);
             float kneeSwingAmp = Mathf.Clamp(swingKneeFlex / 160f, 0.05f, 0.65f);
             float normArm = Mathf.Clamp(armSwing / 90f, 0f, 1f);
 
-            // Oscillate thighs around vertical (-0.30) and keep stance knee extended (+0.92), flexing only during forward swing!
-            SetMuscleSinusoid(clip, "Left Upper Leg Front-Back", normLeg, periodSec, 0f, dcOffset: -0.30f);
-            SetMuscleSinusoid(clip, "Right Upper Leg Front-Back", normLeg, periodSec, Mathf.PI, dcOffset: -0.30f);
+            // Oscillate thighs around vertical (+0.50) and keep stance knee extended (+0.92), flexing only during forward swing!
+            SetMuscleSinusoid(clip, "Left Upper Leg Front-Back", -normLeg, periodSec, 0f, dcOffset: 0.50f);
+            SetMuscleSinusoid(clip, "Right Upper Leg Front-Back", -normLeg, periodSec, Mathf.PI, dcOffset: 0.50f);
             SetMuscleSinusoid(clip, "Left Lower Leg Stretch", -kneeSwingAmp, periodSec, Mathf.PI * 0.5f, dcOffset: 0.92f - kneeSwingAmp);
             SetMuscleSinusoid(clip, "Right Lower Leg Stretch", -kneeSwingAmp, periodSec, Mathf.PI * 1.5f, dcOffset: 0.92f - kneeSwingAmp);
 
@@ -196,8 +229,8 @@ namespace TacSim.Editor
             SetLoopTime(clip, true);
             SetHumanoidRootPose(clip, pelvisHeightM: 0.60f, duration: 1.0f);
 
-            SetMuscleConstant(clip, "Left Upper Leg Front-Back", 0.78f, 1.0f);
-            SetMuscleConstant(clip, "Right Upper Leg Front-Back", 0.78f, 1.0f);
+            SetMuscleConstant(clip, "Left Upper Leg Front-Back", -0.95f, 1.0f);
+            SetMuscleConstant(clip, "Right Upper Leg Front-Back", -0.95f, 1.0f);
             SetMuscleConstant(clip, "Left Lower Leg Stretch", -0.75f, 1.0f);
             SetMuscleConstant(clip, "Right Lower Leg Stretch", -0.75f, 1.0f);
             SetMuscleConstant(clip, "Left Arm Front-Back", 0.45f, 1.0f);

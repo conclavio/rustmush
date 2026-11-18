@@ -1298,6 +1298,7 @@ namespace UnityEditor
     {
         public delegate void CallbackFunction();
         public static CallbackFunction delayCall;
+        public static bool isPlayingOrWillChangePlaymode => false;
     }
 
     public static class EditorPrefs
