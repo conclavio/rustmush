@@ -461,7 +461,7 @@ export function buildNpcTopics(npcName: string): Array<{ label: string; command:
   const low = npcName.toLowerCase();
   if (low.includes("ilse")) {
     return [
-      { label: "How do I enrol a Dray?", command: `say ${npcName}, how do I enrol for a Co-op Dray?` },
+      { label: "How do I enroll a Dray?", command: `say ${npcName}, how do I enroll for a Co-op Dray?` },
       { label: "Explain the lay & buyout", command: `say ${npcName}, how do the lay and buyout work?` },
       { label: "Check my statement", command: `say ${npcName}, can you check where my Co-op statement stands?` },
     ];

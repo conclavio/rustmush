@@ -52,9 +52,9 @@
     npcSayDraft = "";
   }
 
-  function submitCoopEnrol(): void {
+  function submitCoopEnroll(): void {
     const chosen = hullNameDraft.trim() || app.tacsim.coopSuggestedHull;
-    onCmd(`+coop/enrol ${chosen}`);
+    onCmd(`+coop/enroll ${chosen}`);
   }
 
   const simSlots = $derived(
@@ -283,8 +283,8 @@
             bind:value={hullNameDraft}
             placeholder="Hull registry name..."
           />
-          <button type="button" class="buybtn" onclick={submitCoopEnrol}>
-            Enrol Charter Hull
+          <button type="button" class="buybtn" onclick={submitCoopEnroll}>
+            Enroll Charter Hull
           </button>
         </div>
         <div class="act-row">

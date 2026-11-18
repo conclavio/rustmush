@@ -1368,7 +1368,7 @@ export class TacsimStage3D {
     for (const r of pack.rooms.values()) {
       const low = `${r.entryId} ${r.name}`.toLowerCase();
       if (low.includes("registry")) {
-        placeServiceDesk(r.entryId, "ui:open_coop", "Co-op First Captain Desk", "Enrol a charter Dray hull (+coop)");
+        placeServiceDesk(r.entryId, "ui:open_coop", "Co-op First Captain Desk", "Enroll a charter Dray hull (+coop)");
       } else if (low.includes("exchange")) {
         placeServiceDesk(r.entryId, "ui:open_trade", "Commodity Exchange Terminal", "Live asks, standing bids & 1-click trade");
       } else if (low.includes("chandlery")) {
@@ -1396,7 +1396,7 @@ export class TacsimStage3D {
             id: `pod:${r.entryId}:${p + 1}`,
             kind: "sim_pod",
             title: `Board ${isRed ? "Red" : "Blue"} Pod ${p + 1}`,
-            subtitle: "Climb into armoured simulator cockpit (board)",
+            subtitle: "Climb into armored simulator cockpit (board)",
             actionOrKey: "board",
             worldPos: wPos,
             maxDistance: 3.8,

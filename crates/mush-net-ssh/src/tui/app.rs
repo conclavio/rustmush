@@ -47,6 +47,7 @@ use super::panels::{
     PanelStore, QuarryMode, REPLAY_FEED, UNIT_FEED,
 };
 use super::pixel::{KeyUse, PictureKind, PixelView};
+use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED,
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
@@ -436,6 +437,10 @@ pub struct TuiApp {
     /// **The cockpit's sounds** (doc 21 cut G.10): BEL, or w11term's OSC 440
     /// once its `XTVERSION` names it.
     sounds: super::sound::Sounds,
+    /// **Station & Ship Walk + Port Services Drawers** (Track 4 Phase 4B):
+    /// spatial avatar state, BFS doorway sync, `port.trade` 1-click buy, and
+    /// Bridge Helm flight visor handoff.
+    port_walk: PortWalkState,
 }
 
 fn system_clock() -> i64 {
@@ -807,6 +812,7 @@ impl TuiApp {
             order_prefill: false,
             pixel_moved: false,
             sounds: super::sound::Sounds::new(),
+            port_walk: PortWalkState::new(),
         })
     }
 
@@ -833,6 +839,8 @@ impl TuiApp {
         {
             self.room = Some(view.clone());
             self.exit_keys = exit_keys(&view.exits);
+            self.port_walk
+                .observe_room(view, manifest.character.as_deref());
         }
         self.manifest = manifest;
         self.leave_a_screen_this_server_does_not_have();
@@ -955,8 +963,11 @@ impl TuiApp {
         match self.pixel.kind() {
             PictureKind::Chart => self.active == CHART_SCREEN,
             PictureKind::Holotank | PictureKind::SpaceCockpit | PictureKind::Docking => {
-                self.active == CHART_SCREEN || self.active == COCKPIT_SCREEN
+                self.active == CHART_SCREEN
+                    || self.active == COCKPIT_SCREEN
+                    || (self.active == ScreenId(1) && self.port_walk.seated_at_helm())
             }
+            PictureKind::StationWalk => self.active == ScreenId(1),
             PictureKind::Doll => self.active == super::screen::DAMAGE_SCREEN,
             PictureKind::Replay => self.picture_layout(),
             PictureKind::Cockpit => self.active == COCKPIT_SCREEN,
@@ -2172,8 +2183,38 @@ impl TuiApp {
             OutputEvent::Room(view) => {
                 self.room = Some(view.clone());
                 self.exit_keys = exit_keys(&view.exits);
+                self.port_walk
+                    .observe_room(view, self.manifest.character.as_deref());
+                if self.pixel.kind() == PictureKind::StationWalk {
+                    self.pixel.invalidate_last_sent();
+                }
             }
             OutputEvent::Panel { feed, kind, data } => {
+                if feed.as_str() == TACSIM_CONTENT_FEED {
+                    if *kind == PanelFrameKind::Keyframe {
+                        queries.extend(self.port_walk.observe_tacsim_content(data));
+                    }
+                    return queries;
+                }
+                if feed.as_str() == PORT_TRADE_FEED {
+                    if *kind == PanelFrameKind::Keyframe {
+                        let (_, q) = self.port_walk.observe_port_trade(data, Instant::now());
+                        queries.extend(q);
+                        if self.pixel.kind() == PictureKind::StationWalk {
+                            self.pixel.invalidate_last_sent();
+                        }
+                    }
+                    return queries;
+                }
+                if feed.as_str() == mush_pixel::docking::SPACE_DOCKING_FEED
+                    && *kind == PanelFrameKind::Keyframe
+                    && self.active == ScreenId(1)
+                    && self.port_walk.seated_at_helm()
+                    && self.pixel.is_active()
+                    && data.get("session_id").and_then(Value::as_str).is_some()
+                {
+                    self.pixel.switch_kind_live(PictureKind::Docking);
+                }
                 // Doc 31 cut UD.3b (D-31-16): published designs' looks. The
                 // answer installs them for the pictures this gateway draws; a
                 // frame naming a type with no look asks for it once.
@@ -2400,7 +2441,9 @@ impl TuiApp {
                 let sentence = text.0.first().and_then(|span| span.tag.as_deref())
                     == Some(NOTICE_SENTENCE_TAG);
                 if !sentence && !answered {
-                    self.panels.push_cockpit_reply(&text.to_plain_text());
+                    let plain = text.to_plain_text();
+                    self.panels.push_cockpit_reply(&plain);
+                    self.port_walk.observe_sys(&sanitize(&plain));
                 }
             }
             OutputEvent::MailNotice { unread, .. } => {
@@ -2562,6 +2605,17 @@ impl TuiApp {
                 self.requests.clear();
                 self.answering = None;
                 return queries;
+            }
+            OutputEvent::Narrative { kind, actor, text } => {
+                self.port_walk.observe_narrative(
+                    *kind,
+                    actor.as_ref(),
+                    &sanitize(&text.to_plain_text()),
+                    Instant::now(),
+                );
+                if self.pixel.kind() == PictureKind::StationWalk {
+                    self.pixel.invalidate_last_sent();
+                }
             }
             _ => {}
         }
@@ -2928,18 +2982,30 @@ impl TuiApp {
                     PictureKind::Doll
                 } else if self.picture_layout() && self.picture.is_some_and(|p| !p.live) {
                     PictureKind::Replay
+                } else if self.active == ScreenId(1) && self.room.is_some() {
+                    if self.port_walk.seated_at_helm() {
+                        PictureKind::SpaceCockpit
+                    } else {
+                        PictureKind::StationWalk
+                    }
                 } else {
                     r.redraw = false;
                     return;
                 };
-                let opened = self.pixel.toggle_for(kind, Instant::now());
+                let now = Instant::now();
+                let opened = self.pixel.toggle_for(kind, now);
                 if opened && kind == PictureKind::Replay {
                     self.pixel_replay_follow(true);
+                }
+                if opened && kind == PictureKind::StationWalk {
+                    self.port_walk
+                        .ensure_queries(&self.manifest.panels, &mut r.queries, now);
                 }
                 if opened && self.mode == Mode::Input {
                     self.leave_input(true);
                 }
                 r.submit.extend(self.pixel.take_orders());
+                r.submit.extend(self.port_walk.take_orders());
                 self.pixel_chart_ask(&mut r.queries);
                 return;
             }
@@ -2986,9 +3052,32 @@ impl TuiApp {
             r.queries.extend(self.market.take_queries());
             return;
         }
+        if key != Key::Ctrl(']')
+            && self.port_walk.drawer_open()
+            && self.requests.is_empty()
+            && self.answering.is_none()
+            && self.input_mode == InputMode::Normal
+        {
+            let out = self
+                .port_walk
+                .handle_key(key, false, &self.manifest.panels, Instant::now());
+            r.submit.extend(out.commands);
+            r.submit.extend(self.port_walk.take_orders());
+            r.queries.extend(out.queries);
+            return;
+        }
         match key {
             Key::Ctrl(']') => {
                 r.detach = true;
+                return;
+            }
+            Key::Ctrl('t') if self.active == ScreenId(1) => {
+                self.port_walk.toggle_contextual_drawer(
+                    &self.manifest.panels,
+                    &mut r.queries,
+                    Instant::now(),
+                );
+                r.submit.extend(self.port_walk.take_orders());
                 return;
             }
             Key::Ctrl('k') => {
@@ -3098,14 +3187,71 @@ impl TuiApp {
             self.palette = None;
             return true;
         }
+        if self.pixel.kind() == PictureKind::StationWalk && self.port_walk.drawer_open() {
+            let out = self.port_walk.handle_key(
+                key,
+                self.pixel.letters_held(),
+                &self.manifest.panels,
+                Instant::now(),
+            );
+            r.submit.extend(out.commands);
+            r.submit.extend(self.port_walk.take_orders());
+            r.queries.extend(out.queries);
+            self.pixel.invalidate_last_sent();
+            return true;
+        }
         if key == Key::Enter {
+            self.port_walk.stop_motion();
             self.pixel.chat_opened(Instant::now());
             r.submit.extend(self.pixel.take_orders());
+            r.submit.extend(self.port_walk.take_orders());
             self.mode = Mode::Input;
             match self.draft.take() {
                 Some(draft) => self.line.set(&draft),
                 None => self.line.clear(),
             }
+            return true;
+        }
+        if self.pixel.kind() == PictureKind::StationWalk {
+            if key == Key::Ctrl('t') {
+                self.port_walk.toggle_contextual_drawer(
+                    &self.manifest.panels,
+                    &mut r.queries,
+                    Instant::now(),
+                );
+                return true;
+            }
+            let out = self.port_walk.handle_key(
+                key,
+                self.pixel.letters_held(),
+                &self.manifest.panels,
+                Instant::now(),
+            );
+            r.submit.extend(out.commands);
+            r.submit.extend(self.port_walk.take_orders());
+            r.queries.extend(out.queries);
+            if out.enter_helm_cockpit {
+                self.pixel.switch_kind_live(PictureKind::SpaceCockpit);
+                return true;
+            }
+            if out.close_pixel_view {
+                self.pixel.hide();
+                return true;
+            }
+            if out.consumed {
+                self.pixel.invalidate_last_sent();
+                return true;
+            }
+        }
+        if matches!(
+            self.pixel.kind(),
+            PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
+        ) && self.active == ScreenId(1)
+            && self.port_walk.seated_at_helm()
+            && matches!(key, Key::Esc | Key::Char('q'))
+        {
+            self.port_walk.set_seated_at_helm(false);
+            self.pixel.switch_kind_live(PictureKind::StationWalk);
             return true;
         }
         if self.pixel.kind() == PictureKind::Replay && self.pixel_replay_key(key, r) {
@@ -4550,6 +4696,10 @@ impl TuiApp {
         self.draw_body(frame, body_area);
         // 17g cut C3b: an open market or action form, inside the screen.
         self.market.draw(frame, body_area);
+        if self.active == ScreenId(1) {
+            self.port_walk
+                .draw_modal_overlay(frame, body_area, self.caps.utf8);
+        }
         self.draw_input(frame, input_area);
         if self.palette.is_some() {
             self.draw_palette(frame, body_area);
@@ -4588,7 +4738,12 @@ impl TuiApp {
     fn draw_pixel(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let now = Instant::now();
         let cockpit = self.panels.get(COCKPIT_FEED).cloned();
-        let (top, bottom) = self.pixel.hud(cockpit.as_ref(), now);
+        let (top, bottom) = if self.pixel.kind() == PictureKind::StationWalk {
+            let enc = self.pixel.shown().map_or("kitty", |e| e.name());
+            self.port_walk.hud_lines(enc)
+        } else {
+            self.pixel.hud(cockpit.as_ref(), now)
+        };
         let camera_mdeg = self.pixel.camera_mdeg(cockpit.as_ref(), now);
         self.notice_unseen = 0;
         let chatting = self.mode == Mode::Input;
@@ -4603,7 +4758,13 @@ impl TuiApp {
         );
         let ctx = self.render_ctx();
         let held = cockpit.clone().unwrap_or(Value::Null);
-        if self.pixel.kind() == PictureKind::Replay {
+        if self.pixel.kind() == PictureKind::StationWalk {
+            let utf8 = self.caps.utf8;
+            let comms_rows: Vec<Line<'static>> =
+                self.scrollback_rows(usize::from(areas.panel.width.max(20) / 2));
+            self.port_walk
+                .draw_bottom_panel(frame, areas.panel, utf8, &|_| comms_rows.clone());
+        } else if self.pixel.kind() == PictureKind::Replay {
             // Doc 21 cut G.8: the replay's own panes under its picture.
             let pane = |f: fn(&RenderCtx<'_>) -> Option<PaneRows>| {
                 move |w: u16, h: u16| {
@@ -4752,7 +4913,11 @@ impl TuiApp {
 
     /// One frame-clock tick: advance the camera.
     pub fn pixel_tick(&mut self) {
-        self.pixel.tick(Instant::now());
+        let now = Instant::now();
+        self.pixel.tick(now);
+        if self.pixel.kind() == PictureKind::StationWalk && self.port_walk.tick_at(now) {
+            self.pixel.invalidate_last_sent();
+        }
         // Doc 21 cut G.8: a playing replay moves the panes with it.
         self.pixel_replay_follow(false);
     }
@@ -4766,7 +4931,9 @@ impl TuiApp {
     /// The view's helm orders since the last call (doc 21 cut G.4), for the
     /// output pump to send as typed lines.
     pub fn pixel_take_orders(&mut self) -> Vec<String> {
-        self.pixel.take_orders()
+        let mut out = self.pixel.take_orders();
+        out.extend(self.port_walk.take_orders());
+        out
     }
 
     /// Bytes for the terminal ahead of the next text frame (the kitty
@@ -4791,8 +4958,11 @@ impl TuiApp {
     /// back its order, if the stop made one (a turn let go inside the tap's
     /// fifth of a second stands on the degree its press ordered).
     pub fn pixel_leave_orders(&mut self) -> Vec<String> {
+        self.port_walk.stop_motion();
         self.pixel.stop_helm(Instant::now());
-        self.pixel.take_orders()
+        let mut out = self.pixel.take_orders();
+        out.extend(self.port_walk.take_orders());
+        out
     }
 
     /// The encoder of the picture a close since the last call took off
@@ -4844,8 +5014,17 @@ impl TuiApp {
             pixel,
             panels,
             picture,
+            port_walk,
             ..
         } = self;
+        if pixel.kind() == PictureKind::StationWalk {
+            let feeds = super::pixel::WithFeed {
+                base: &*panels,
+                name: mush_pixel::station_walk::STATION_WALK_FEED,
+                value: port_walk.to_feed_value(),
+            };
+            return pixel.paint(&feeds, w, h, Instant::now());
+        }
         // Doc 21 cut G.8: the replay's cursor is the view's, and reaches the
         // picture as a client-local feed beside the held ones.
         if pixel.kind() == PictureKind::Replay {
@@ -10697,5 +10876,147 @@ mod tests {
         let _ = app.pixel_sync();
         assert!(app.pixel.is_active());
         assert_eq!(app.pixel.kind(), PictureKind::Docking);
+    }
+
+    #[test]
+    fn scene_screen_station_walk_kitty_view_trade_drawer_and_bridge_helm_handoff() {
+        let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec![
+                TACSIM_CONTENT_FEED.to_string(),
+                PORT_TRADE_FEED.to_string(),
+                mush_pixel::space_cockpit::SPACE_COCKPIT_FEED.to_string(),
+                mush_pixel::docking::SPACE_DOCKING_FEED.to_string(),
+            ],
+            character: Some("Captain".to_string()),
+            room: None,
+        });
+        app.pixel.probe_sent(Instant::now());
+        app.pixel.graphics_reply(true);
+
+        // Arrive at Exchange Hall on Screen 1
+        let _ = app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#207".into(),
+            name: "Exchange Hall".to_string(),
+            zone: None,
+            desc: "The trading floor.".into(),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([
+                (
+                    "atlas".into(),
+                    serde_json::json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c07_exchange" }),
+                ),
+                (
+                    "tacsim".into(),
+                    serde_json::json!({ "own_hull_name": "Salt Moth" }),
+                ),
+            ]),
+        }));
+
+        // `^G` on Screen 1 opens `PictureKind::StationWalk` and lazily asks `tacsim.content` + `port.trade`
+        let r_open = app.feed_input(b"\x07");
+        assert!(app.pixel.is_active());
+        assert_eq!(app.pixel.kind(), PictureKind::StationWalk);
+        assert!(
+            r_open.queries.iter().any(|(n, _)| n == PORT_TRADE_FEED),
+            "{:?}",
+            r_open.queries
+        );
+
+        let kitty_cutaway = app.pixel_paint();
+        assert!(
+            !kitty_cutaway.is_empty(),
+            "2.5D cutaway must emit Kitty bytes"
+        );
+
+        // `v` toggles into First-Person Corridor Raycaster and emits updated Kitty bytes
+        let _ = app.feed_input(b"v");
+        let kitty_fp = app.pixel_paint();
+        assert!(!kitty_fp.is_empty(), "1P corridor must emit Kitty bytes");
+
+        // Deliver `port.trade` asks, open Trade drawer (`m`), and run 1-click Quote -> Accept
+        let _ = app.apply_event(&OutputEvent::Panel {
+            feed: PORT_TRADE_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "credits_minor": 150_000,
+                "stowage": {
+                    "cargo_kg": 2_000, "max_cargo_kg": 50_000,
+                    "cargo_m3": 6.0, "max_cargo_m3": 180.0,
+                    "reaction_kg": 10_000, "max_reaction_kg": 12_000,
+                    "stores_person_days": 20.0, "crew_count": 1
+                },
+                "asks": [
+                    { "listing_id": 91, "good": "water_ice", "quantity": 40, "unit_price_minor": 950 }
+                ],
+                "bids": []
+            }),
+        });
+        let _ = app.feed_input(b"m");
+        let r_buy = app.feed_input(b"\r");
+        assert_eq!(r_buy.submit, ["+market/quote 91 5"]);
+
+        let _ = app.apply_event(&OutputEvent::Panel {
+            feed: PORT_TRADE_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "own": {
+                    "quotes": [
+                        { "quote_id": "Q91", "listing_id": 91, "unit_price_minor": 950, "expired": false }
+                    ]
+                }
+            }),
+        });
+        assert_eq!(app.pixel_take_orders(), ["+market/accept Q91"]);
+        let _ = app.feed_input(b"\x1b"); // close Trade drawer
+
+        // Board ship & step onto Bridge -> `[E]` takes Bridge Helm and hands off to `SpaceCockpit`!
+        let _ = app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#810".into(),
+            name: "Salt Moth - Bridge".to_string(),
+            zone: None,
+            desc: "Bridge couches and holo-tank.".into(),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "tacsim".into(),
+                serde_json::json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": false
+                }),
+            )]),
+        }));
+        let _ = app.feed_input(b"v"); // back to 2.5D cutaway
+        let _ = app.feed_input(b"www");
+        let r_helm = app.feed_input(b"e");
+        assert_eq!(r_helm.submit, ["+helm/station command"]);
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+        let _ = app.pixel_sync();
+        assert!(
+            app.pixel.is_active(),
+            "SpaceCockpit stays home on Screen 1 while seated at helm"
+        );
+
+        // Starting a 60 Hz docking session automatically switches to `PictureKind::Docking`
+        let _ = app.apply_event(&OutputEvent::Panel {
+            feed: mush_pixel::docking::SPACE_DOCKING_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "session_id": "dock-ceres-1",
+                "port_name": "Ceres Freeport",
+                "x_mm": 0, "y_mm": 0, "z_mm": 15_000,
+                "vx_mmps": 0, "vy_mmps": 0, "vz_mmps": -200
+            }),
+        });
+        assert_eq!(app.pixel.kind(), PictureKind::Docking);
+
+        // `Esc` stands up from the helm visor back into `PictureKind::StationWalk`
+        let _ = app.feed_input(b"\x1b");
+        assert_eq!(app.pixel.kind(), PictureKind::StationWalk);
+        assert!(app.pixel.is_active());
     }
 }

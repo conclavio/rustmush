@@ -1294,7 +1294,7 @@ export function buildFallbackFreeport(): AtlasNeighborhoodPack {
     });
   };
 
-  addRoom("room.c01_berth_gallery", "Visiting Berth Gallery", 1, 110, 110, 210, 125, "Armourglass gallery above the floodlit ship cradles.");
+  addRoom("room.c01_berth_gallery", "Visiting Berth Gallery", 1, 110, 110, 210, 125, "Armorglass gallery above the floodlit ship cradles.");
   addRoom("room.c02_pressure", "Pressure Lobby", 1, 110, 125, 140, 140, "Inner airlock lobby leading from the Berth Gallery.");
   addRoom("room.c03_arrivals", "Port Watch Arrivals", 1, 110, 140, 140, 165, "Customs counter, Council notices, and stair to the freight deck.");
   addRoom("room.c04_concourse", "Freeport Concourse", 1, 140, 140, 175, 165, "Wide public arcade connecting Registry, Chandlery, and Exchange.");
@@ -1344,7 +1344,7 @@ export function buildFallbackFreeport(): AtlasNeighborhoodPack {
 export function buildFallbackOocArea(): AtlasNeighborhoodPack {
   const pack: AtlasNeighborhoodPack = {
     packId: "neighborhood.ooc_area",
-    name: "OOC Simulator Centre",
+    name: "OOC Simulator Center",
     floors: new Map([[1, { index: 1, name: "Main Floor", zOffsetM: 0, heightM: 4.5 }]]),
     rooms: new Map(),
     exits: [],
@@ -1379,8 +1379,8 @@ export function buildFallbackOocArea(): AtlasNeighborhoodPack {
 
   addRoom("room.welcome_hall", "Welcome Hall", 95, 65, 117, 85, "OOC arrival hall with transit gate to Ceres Freeport.");
   addRoom("room.simulator_lobby", "Simulator Lobby", 117, 65, 145, 85, "6v6 tactical arena roster console and team ready room.");
-  addRoom("room.sim_red", "Red Room", 117, 85, 145, 105, "Six Red Team armoured cockpit simulator pods.");
-  addRoom("room.sim_blue", "Blue Room", 117, 45, 145, 65, "Six Blue Team armoured cockpit simulator pods.");
+  addRoom("room.sim_red", "Red Room", 117, 85, 145, 105, "Six Red Team armored cockpit simulator pods.");
+  addRoom("room.sim_blue", "Blue Room", 117, 45, 145, 65, "Six Blue Team armored cockpit simulator pods.");
 
   pack.exits.push(
     {
@@ -1563,7 +1563,7 @@ export function contextualQuickActions(
   const entry = (roomEntryOrComp ?? "").toLowerCase();
   if (entry.includes("registry")) {
     return [
-      { label: "Enrol Charter Hull", action: "ui:open_coop", accent: true },
+      { label: "Enroll Charter Hull", action: "ui:open_coop", accent: true },
       { label: "Co-op Terms", action: "+coop" },
       { label: "Credits", action: "+credit" },
     ];
