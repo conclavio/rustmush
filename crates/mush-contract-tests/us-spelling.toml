@@ -648,12 +648,6 @@ reason = "published pack history: a test rebuilds this pack's published versions
 
 [[allow]]
 file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "ENROLMENT"
-context = "ENROLMENT"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
 word = "colour"
 context = "colour"
 reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
