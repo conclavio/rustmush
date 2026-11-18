@@ -5594,7 +5594,7 @@ mod tests {
         let (mut picture, mut pilot) = armed(keeps, 95);
         picture.apply(
             NOW - 50,
-            &classify("Hit on the hull's front facet: 300 of 400 armour left."),
+            &classify("Hit on the hull's front facet: 300 of 400 armor left."),
         );
         assert_eq!(fires(&picture, &mut pilot), ["cannon"], "answering BA");
         assert_eq!(pilot.fired_on, BTreeSet::from(["BA".to_owned()]));
@@ -5622,7 +5622,7 @@ mod tests {
         hold(&mut picture, contact("BB", Some(Side::Blue), 270, 500));
         picture.apply(
             NOW - 50,
-            &classify("Hit on the hull's left facet: 200 of 250 armour left."),
+            &classify("Hit on the hull's left facet: 200 of 250 armor left."),
         );
         assert!(
             fires(&picture, &mut pilot).is_empty(),

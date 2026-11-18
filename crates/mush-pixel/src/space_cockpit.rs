@@ -896,8 +896,8 @@ mod tests {
             text,
             [
                 FIRE_HEAD,
-                "laser_dorsal   laser     offense         ready       98 a pulse",
-                "laser_ventral  laser     defense         in 0.6 s    98 a pulse",
+                "laser_dorsal   laser     offence         ready       98 a pulse",
+                "laser_ventral  laser     defence         in 0.6 s    98 a pulse",
                 "torp_bow       tubes     16/16           ready",
                 "rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s",
                 "pdc_port       point def 4000 left       ready",

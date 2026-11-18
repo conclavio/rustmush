@@ -2568,7 +2568,7 @@ fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
     // And nothing about what it did. A gunner sees the strike, not the internals.
     for line in &shooter {
         assert!(
-            !line.contains("armour") && !line.contains("facet") && !line.contains("internals"),
+            !line.contains("armor") && !line.contains("facet") && !line.contains("internals"),
             "the shooter reads the target's damage: {line}"
         );
     }
@@ -2580,7 +2580,7 @@ fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
         .cloned()
         .unwrap_or_else(|| panic!("the victim was told nothing: {victim:?}"));
     assert!(
-        struck.contains("facet") && struck.contains("armour"),
+        struck.contains("facet") && struck.contains("armor"),
         "{struck}"
     );
     // Red is due south of blue, so the round arrives at the rear band, whose

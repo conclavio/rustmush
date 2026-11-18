@@ -1115,7 +1115,7 @@ fn ic3_a_cancelled_tranche_reads_missing_not_pending() {
     let kasei = map.orgs.get(&cid("kasei")).expect("kasei's row");
     let obligation = kasei.capital[0].obligation;
     let out = run(&mut tw, GOD, &format!("@obligation/cancel #{obligation}"));
-    assert!(out.contains("cancelled"), "{out}");
+    assert!(out.contains("canceled"), "{out}");
     sweep(&mut tw, 3_600);
     let out = report(&mut tw);
     assert!(

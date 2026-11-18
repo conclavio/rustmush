@@ -579,7 +579,7 @@ pub fn owner_row(raw: &[String], charter: &str) -> Option<(u64, String)> {
 /// <name>  <form>  …`.
 #[must_use]
 pub fn paid_row(raw: &[String], charter: &str) -> Option<(u64, String)> {
-    holding_row(raw, "licence", "paid", charter)
+    holding_row(raw, "license", "paid", charter)
 }
 
 /// **A table row's columns**: the line split on runs of two or more spaces. The market's

@@ -3016,5 +3016,5 @@ fn sm5_the_in_verb_help_names_the_preview_all_and_the_licence() {
         tv.contains("A lease needs a prospecting license in force or in its grace (+license)."),
         "{tv}"
     );
-    assert!(tacsim::port::tv::TV_HELP.contains("(+licence)"));
+    assert!(tacsim::port::tv::TV_HELP.contains("(+license)"));
 }

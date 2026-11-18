@@ -3219,7 +3219,7 @@ mod tests {
         );
         let (top, bottom) = v.hud(None, t0);
         assert!(
-            top.starts_with("ARMOUR") && bottom.contains("Esc/q"),
+            top.starts_with("ARMOR") && bottom.contains("Esc/q"),
             "{top} / {bottom}"
         );
         v.key(Key::Esc, t0);
@@ -3627,7 +3627,7 @@ mod tests {
                     "w/s:speed",
                     "x:stop",
                     "q/e:look",
-                    "c:centre",
+                    "c:center",
                     "spc:steady",
                     "v:view",
                     "g:volley",

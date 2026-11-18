@@ -3359,7 +3359,7 @@ fn cc10_the_reserve_answers_the_unit_that_fired_on_the_tank() {
     // BA's row reads `rel 270°`: the left facet's face.
     run.server.now = run.now;
     run.server
-        .say(0, "Hit on the hull's left facet: 200 of 250 armour left.");
+        .say(0, "Hit on the hull's left facet: 200 of 250 armor left.");
     assert!(
         run.until(u64::from(SIZE + 2) * Server::cycle_ms("cannon"), |run| {
             GUNS.iter().all(|weapon| shots_of(run, weapon) == SIZE)

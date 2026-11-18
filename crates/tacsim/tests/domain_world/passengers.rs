@@ -753,7 +753,7 @@ fn passenger_expired_untravelled_booking_refunds_and_releases_the_role() {
     let (status, queued) = command(&mut rig, captain, "+passage Leila");
     assert!(queued.is_empty());
     assert!(
-        status.contains("cancelled")
+        status.contains("canceled")
             && status.contains("Passenger Moth")
             && status.contains("agreed fare"),
         "old captain keeps agreement details: {status}"

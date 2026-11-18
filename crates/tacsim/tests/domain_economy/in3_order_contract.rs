@@ -435,7 +435,7 @@ async fn in3_a_twenty_day_plant_order_at_stickney_runs_to_collection() {
         .expect("a schedule");
     assert!((70..=72).contains(&ran), "three days of work: {ran}");
     let out = typed_in(&mut rig, captain, &format!("+works/cancel {b}"), 3);
-    assert!(out.contains("cancelled"), "{out}");
+    assert!(out.contains("canceled"), "{out}");
     settle(&mut rig, 2);
     swept(&mut rig);
     assert_eq!(*order_of(&mut rig, b).state(), WorkOrderState::Cancelled);

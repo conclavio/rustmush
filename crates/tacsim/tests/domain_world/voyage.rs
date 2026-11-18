@@ -7324,6 +7324,19 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
             "reviving pilot must clear ship.crew_linkdead"
         );
     }
+    // US spelling (owner, 2026-11-17): the dual-mode laser words take both spellings.
+    for (word, said) in [
+        ("offense", "Offense"),
+        ("offence", "Offense"),
+        ("defense", "Defense"),
+        ("defence", "Defense"),
+    ] {
+        let out = run(&mut rig.tw, gunner, &format!("+tac/pdc {word}"));
+        assert!(
+            out.contains(&format!("switched to {said}")),
+            "+tac/pdc {word}: {out}"
+        );
+    }
 }
 
 /// **Doc 35b cut SF.R14 acceptance (`D-35-17`, `35b` §4 #1–#5, §8 `SF.R14`)** — verifies:
