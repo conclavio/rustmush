@@ -1806,7 +1806,86 @@ Not built.
 
 ## EX.8
 
-Not built.
+**The NPC price rule and the price history** (Q-48-18, -34, -35, -39). Cut stacked on EX.5 (#657), which has since merged; the PR targets main.
+
+**Survey.**
+- An NPC ask posted the authored price, and a bid the authored price under the reach premium (doc 19 A.4), read at posting. A standing listing was never re-priced in place.
+- The trade tape is a global ring of 1,024 settled rows, 32 a pair (doc 48b G-5), so it cannot hold 24 IC weeks. The history is its own series.
+- Running costs, mothballing and a house's debt (Q-48-21, -38) are not built, so the throttle (Q-48-34, -39) has no "cannot pay" signal of its own.
+- The lane is fenced (PL.5): no new authored field, so each row's stock target must come from fields the lane already has.
+- The stale `claude/ex3b-helm-and-scrap` push (2f696d38d) was never merged into this branch; #656 came in through main.
+
+**Built.**
+- **The price history** (`mush-market/src/history.rs`, new; Q-48-35):
+  - `PriceSeries` per venue and good (`market:history:{venue}:{ruleset}:{code}`). It holds a `PricePeriod` per IC week, each with an optional ask and bid `SidePoint` (the posted price and the rule's factor, permille of the authored price).
+  - At most 24 periods (`HISTORY_PERIODS`) and 1,024 series (`MAX_PRICE_SERIES`), checked on the wire (periods rise, points in the band) and on write.
+  - `record_price`, `price_series`, `latest_point` and `period_of` (`PERIOD_IC_SECS`, an IC week).
+  - The factor is the rule's memory, so a re-posted listing starts from it, never from the authored price.
+  - `+market/history <catalogue>:<code> [market=<venue>]` prints a row an IC week, newest first, within 120 columns.
+- **`reprice_listing`** (`mush-market/src/api.rs`) moves a house listing's price in place. It refuses personal and lapsed listings, writes nothing for an unchanged price, and bumps the revision as every listing write does. So an open quote goes stale (D16) and its buyer quotes again at the new price; a sale already accepted keeps its price.
+- **The rule** (`tacsim/src/port/price.rs`; Q-48-18):
+  - **An ask's target** is its authored stock: the vendor's stock rows of the good. The target factor is `1000 × (2T − pool) / T`: par at the target, 200% empty, 50% at twice the target.
+  - **A bid's target** is what its house holds of the good against its authored intake. The target factor is `1000 − 500 × held / intake`: par while the house holds none, falling to 50% as its stores fill to the intake.
+    - The first two runs used what the bid still wanted against its intake, and then against a refreshed bid's cap. Both moved Kasei's metals bid in IC11 and IC12.
+    - A refreshed bid opens below its cap, and a bid re-posted within its funds wants less when its house is short of money. Either way the bid read as filled and stepped down at the first IC week; the cheaper bid was fundable for more, and EX.3's refresh re-posted it larger under a new id.
+    - What the house holds is the stock signal Q-48-18 names, and funding no longer moves a price.
+  - **The step** is at most 5% of the current factor an IC week (at least 1‰), never past the target, within 500–2000‰.
+  - **The reach premium** is on top: a bid's price is `priced(factored(authored, factor), premium)`.
+  - `weekly_step` runs at the head of the stock clerk's step. Each IC week, for every NPC row whose last recorded period is earlier, it steps the factor, records the point, and re-prices the standing listing when the factor moved.
+    - It writes market documents only and takes no act of the clerk's, so stocking keeps its phase.
+    - A row not yet listed and never stepped is skipped: an empty pool while the clerk is still seeding it is not scarcity. So boot prices, and every lane pin, are unchanged.
+    - A bid not standing is not stepped; its re-post starts from the carried factor.
+  - The re-listed ask (`stock.rs`'s list step) and every bid post (`bid_price_major`) read the carried factor.
+- **The throttle** (Q-48-34, -39):
+  - A house delinquent on any obligation (`price::throttled`) raises its asks 10% of the current factor an IC week, whatever its stock, inside the band.
+  - It steps no bids and posts no new ones: the lapsed-bid re-post and the drip skip it.
+  - Solvent again, the 5% rule resumes from the throttled factor.
+- **Bot table and help:** the `history` family, with a census over `history.rs`, and the exchange help's "House prices" section.
+
+**What a player sees over a real week** (24:1, an IC week every seven real hours):
+- A real day crosses three or four IC weeks, so a price moves at most about 22% a real day.
+- From par, a scarce good reaches the ceiling in about 15 IC weeks (about 4.4 real days), and a glutted one the floor in about 14 (about 4 real days).
+- A trader back after a real week finds the whole week in `+market/history`: 24 rows.
+- A throttled house's asks double in about 7.3 IC weeks, about two real days.
+
+**Tests.**
+- `tacsim` unit tests (`price.rs`): the targets in the band; the 5% step, never past the target, and the throttle's 10%.
+- `mush-market` unit test (`history.rs`): the series wire's bounds.
+- `tacsim/tests/domain_economy/ex8_prices.rs`:
+  - `ex8_a_house_ask_steps_with_its_stock_five_percent_an_ic_week`: 40 of the Co-op's 120 missiles bought.
+    - The ask steps 1,575, 1,653, ... to 1,999 cr. That is no more than 5% a week, never falling, and holding at the target.
+    - The Co-op's bid holds at par.
+    - `+market/history` shows this week and last within 120 columns, and the window holds 24 weeks.
+  - `ex8_a_throttled_house_raises_its_asks_ten_percent_an_ic_week`: the Co-op delinquent on a debt. Its whole-stock ask rises 10% a week, and its bid is not stepped.
+- **Tests that failed before EX.8, and why:** every test above; before EX.8 there was no rule, step, series, throttle or verb.
+- **Changed expectations:** two stories read prices from the board after the run, and a house's price now steps with its stock once an IC week.
+  - `orders::ic11_the_queue_runs_the_day_unattended` and IC12's `stickney_buys` now read what the buyer paid from their own quotes (`paid_on`). The order's own 49 t purchase left the Yards' fittings below their stock, so the ask stepped from 520 to 524 cr after the buy.
+  - IC12's Co-op share check matches each sale's share against the Ceres reference asks the venue's history has posted. The reference is the live Ceres ask at the sale (D-18-24), and it now steps.
+- **On conclav.dev** (main 1d08abd5f plus this cut):
+  - fmt, workspace clippy, the contract guards, rustdoc (market and tacsim, both modes) and the 64 KiB lint pass;
+  - `mush-market` + `mush-economy`: 1,206 of 1,206;
+  - tacsim's lib tests: 78 of 78;
+  - `domain_economy`: 622 of 627. The five failures already fail on main without this cut: EX.3's scrap sale into the board, `in8_mass_scrap`'s three stories and both `house_sweep_rs6c` sweeps. #662 fixes them against main;
+  - `domain_world`: 275 of 275; `domain_field`: 323 of 323;
+  - `commerce_composition`: 93 of 93; `mush-bot`: 823 of 823.
+  - **No lane pin, digest or twin moved.**
+- **The mutations:** 11 run, each alone, against the tests that can see it. 9 are killed: the step's cap, the ask's stock response, the throttle's 10%, the throttle's bid hold, the window's trim, the unstarted-row skip, the bid's stock response, the delinquency signal, and the weekly step itself. **Two survive**:
+  - **P6:** a re-listed ask starting from its carried factor. No story sells an ask out and waits for its re-list.
+  - **P8:** a bid's post reading its factor. No story re-posts a bid after it has stepped.
+
+**Divergences.**
+- **The throttle's signal is a delinquent obligation**, since Q-48-38's running costs are not built. When they are, their delinquency is the same signal.
+- **A bid moves only between par and 50%**: with no consumption yet (Q-48-19, EX.9) a house's stores only fill, so its bids only fall. Consumption that draws the stores down brings them back to par.
+- **One factor a venue, good and side.** Two houses asking the same good at one venue share it, and the later row stepped that week stands.
+- **Part asks and the emergency bids are outside the rule.** Parts are lots at their own prices; the emergency bids (doc 19 A.4b) keep their reference.
+- **The rig reuses EX.4's conclav.dev clone and target**, to save disk; both are deleted when this merges.
+
+**Expensive to reverse (flagged).**
+- **The history's stored shape:** `PriceSeries`, `PricePeriod`, `SidePoint`, the key, the period (an IC week) and the window (24).
+
+**Not built.**
+- **Price movement from consumption and the export faucet** (EX.9).
+- **A last-trade column in the history** (the tape keeps that for its own window).
 
 ## PL.1
 

@@ -154,3 +154,26 @@ To take a retrieval for your organization, add as=<org>:
 +salvage/accept <job> as=<org> go. You need the right to spend the
 organization's money. The pay goes to its account, and its bond comes from
 there.
+
+## House prices
+
+A house's ask and bid move with its stock, once an IC week (seven real hours).
+An ask whose storefront runs short rises, and one that holds more than its
+usual stock falls. A bid falls as it fills, and rises again when the house
+wants more. Each step is at most 5% of the price, and a price stays between half
+and twice the house's authored price. A bid's reach premium, for a port that is
+far from its suppliers, is added on top.
+
+A house that has gone into debt raises its asks 10% an IC week, whatever its
+stock, and stops posting bids until it is solvent again.
+
+In real time, a price moves at most about 22% in a real day (four steps).
+From the usual price it can reach the ceiling or the floor in about four real
+days.
+
+  +market/history <catalogue>:<code> [market=<venue>]
+
+Shows a house's ask and bid for a good at this venue, an IC week a row, newest
+first, for the last 24 IC weeks (about a real week). A good reads as
+tacsim:<good>, for example +market/history tacsim:metals.
+
