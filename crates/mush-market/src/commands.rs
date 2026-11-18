@@ -60,7 +60,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             .copied()
             .map(SmolStr::new)
             .collect(),
-            help: "+market/jobs [retrieval|passage|survey] [market=<venue>]\n\
+            help: "+market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]\n\
                    \x20                                 the jobs posted on this board: what \
                    each pays, any bond its taker escrows, when it is due, and the command \
                    that takes it.\n\

@@ -1637,7 +1637,231 @@ locker paragraphs are rewritten; `+locker`'s help is rewritten. The bot's `venue
 
 ## EX.6
 
-Not built.
+**Haul and escort** (Q-48-11, -42, -46, -57, -58; doc 48a A-4, A-9; doc 48b W-48-3a, -3b, -3c).
+Stacked on EX.5 (#657), built 2026-11-18 on `claude/ex6-haul-escort`, cut from EX.5's head
+`d9601be5`.
+
+**Survey.**
+
+- **No job without an object could be posted.** EX.5's `job_shape` already reads a job whose one
+  condition is its fact, but the only post was `post_retrieval`, which conditions on a hull's
+  title.
+- **No call moved a hold between endpoints.** A pool hold belongs to one endpoint's book
+  (`mush-inventory/src/pool.rs`), and an `ActionTxn` writes a key once. So "consume here, credit
+  and hold there" could not be done as `consume` + `transfer` + `reserve_for`: each writes a pool
+  pair a second time. A lot hold (`lot_hold.rs`) has no TTL but cannot move while held
+  (`relocate_held` lands the lot unheld).
+- **The inventory fact answers only existence** (`facts.rs`), but a derived marker id names
+  from, to, commodity and amount at posting (doc 48b W-48-3b). `transfer_marked` is the market's
+  model.
+- **Inventory moves need a prepare.** A command cannot write inventory, so every leg is an
+  authoritative act. Works (doc 39 cut IN.3) is the model: the record names the leg owed, the
+  command or the port arm submits it as its actor, the offer projects it from the record, and
+  the prepare moves the goods once under a ledger ordinal. The port arm may submit as an actor
+  (`ctx.actor` swapped), as works' arm does.
+- **Hosts cannot stage from their hooks.** `CarrierHooks` write only the outbox, so the escort's
+  watch runs on the `tacsim.port` tick, reading the journey book, the bubble book and the field's
+  marks. There is no per-tick journey hook.
+- **Linkdead grace** is 300 wall seconds in both domains (`space/tick.rs`,
+  `field/absent.rs`).
+
+**Built** — the families' shape, **(expensive to reverse)**.
+
+- **The generic job post** (`mush-economy/src/contract_live.rs`):
+  - `post_job(ctx, JobSpec { name, poster, poster_account, fee, fact, deadline_ic })` posts a
+    standing job whose whole condition is one fact, so `job_shape` reads it and `join_job` takes it.
+  - `post_retrieval` and `post_job` share one private `post_standing` (the caps, the contract, the
+    fee's escrow).
+  - `cancel_job` is `cancel_retrieval` for any job: the ordinary unwind, each escrow back to
+    whoever placed it.
+- **The carriage** (`mush-inventory/src/pool/carriage.rs`): `InventoryFamilies::carry(txn,
+  &Carriage { from, to, commodity, amount, held, keep, marker, actor, now, wall, commit })`.
+  - **The source**: the named hold is consumed, or the amount is debited from what is available.
+    A hold past its deadline is expired and the amount debited in the same write, so goods held
+    past their deadline still move back.
+  - **The destination**: credited and, with `keep`, held under the job's holder until
+    `reservation_deadline_after(now, lead)`.
+  - **The fact**: one `inventory.transferred` marker under the caller's derived id, retained in
+    the source's ring. An existing marker refuses, which is the replay guard.
+  - One write per pool pair. It mints nothing, and the lineage is carried as `transfer` carries it.
+- **The board kinds**: `ServiceKind::Haul` (`haul`) and `ServiceKind::Escort` (`escort`), appended
+  to EX.5's list. `+market/jobs [..|haul|escort]`.
+- **The haul** (`tacsim/src/services/haul.rs`; `+haul`):
+  - **The record**: `tacsim:haul:{contract}`, `HaulJob` (schema 1). It holds the shipper and
+    their account, origin and destination venues, the shipper's locker at each, the good and
+    quantity, the declared value, fee and bond, the posting's times, the delivery marker, then the
+    hauler, the pilot, the hull, her hold, the due time, the leg owed with its tries, and the
+    stage (`posted`, `taken`, `aboard`, `delivered`, `returning`, `closed`).
+  - **The ledger**: the typed family `tacsim.haul_ledger`, `HaulLedger { contract, acts, last }`.
+    The action is `tacsim_haul` v1 with outcome `tacsim_haul_result`.
+  - **The holder**: `haul_holder(contract)`, a `Scoped` principal of tacsim, class `haul`, one per
+    job. Every leg re-derives the hold the load placed (`haul_reservation`).
+  - **The post** (`+haul/post <qty> <good> to=<port> fee=<cr> [value=<cr>] [go]`): it is made at
+    the venue the shipper stands in, from their locker there.
+    - The declared value defaults to, and is capped at, the reference price × quantity
+      (Q-48-57, `good_reference_minor`).
+    - The bond is 25% of it (Q-48-42, `HAUL_BOND_PERMILLE`).
+    - The shipper's locker at the destination opens with the post, so the delivery always has
+      somewhere to land.
+    - The contract's fact is the delivery marker, derived now from the job's contract id
+      (peeked), the drop vault, the good and the quantity.
+    - The job waits 28 IC days for a taker (`ACCEPT_WINDOW_IC_DAYS`); untaken, the arm cancels
+      it and the fee comes back.
+  - **The acceptance** (`+haul/accept <job> [as=<org>] [go]`): the taker's hull must be docked at
+    the origin with room in her hold, and the shipper's goods must still be in the locker.
+    `join_job` escrows the bond, with a term of 28 IC days from acceptance (Q-48-58,
+    `HAUL_TERM_IC_DAYS`). The same command submits the load leg: the goods leave the locker and
+    land in the hold, held for the job, for the term plus 28 IC days (`RETURN_GRACE_IC_DAYS`),
+    on top of the inventory TTL.
+  - **The delivery verb** (`+haul/deliver <job> [go]`): at the destination, before the term ends.
+    The leg consumes the hold and lands the goods free in the shipper's locker, writing the
+    contract's marker. The sweep then pays the fee and returns the bond.
+  - **The deadline**: the contract expires, the fee is refunded and the bond goes to the shipper
+    (the join's `Forfeit { to: fee account }`). The goods stay held aboard. At the hull's next
+    port, the arm opens the shipper's locker there and submits the return leg as the pilot.
+  - **A load that never lands** (eight tries, `MAX_LEG_TRIES`) cancels the job: the fee goes
+    back to the shipper and the bond to the hauler. Nothing was aboard.
+- **The escort** (`tacsim/src/services/escort.rs`; `+escort`):
+  - **The record**: `tacsim:escort:{contract}`, `EscortJob` (schema 1). It holds the poster, the
+    protected hull, the journey (`passage { from, to }` venues, or `field { site }`, a port entry),
+    the board's venue, the fee and bond, the posting's times, then the escort principal, their
+    hull, the acceptance and due times, the host's `Watch { started_ic, last_ic, journey_ic,
+    near_ic }`, why it failed, and the stage (`posted`, `taken`, `watching`, `kept`, `failed`,
+    `closed`).
+  - **The fact**: `tacsim.escort.kept`, keyed by the contract (revision 1), so it is named at
+    posting (doc 48b W-48-3a). `EscortFactProvider` holds it once the host finds the escort kept.
+  - **The post** (`+escort/post <hull> to=<port>|field=<site> fee=<cr> [go]`): by whoever answers
+    for the hull: her title, her helm, a live lease of the rig, or her seat. A passage starts at
+    the port she lies at. The bond is Q-48-13's (20% of a fee over 10,000 cr). One open escort a
+    hull at a time.
+  - **The acceptance** (`+escort/accept <job> with=<hull> [as=<org>] [go]`): with a hull the
+    taker answers for, never the protected one. `join_job`'s term is 28 IC days.
+  - **The host's watch** runs on the `tacsim.port` tick (`services::tick`, after works). It
+    starts when the journey does: she departs after the acceptance, or is in the named field. Each
+    fire adds its IC seconds to the journey and, when the escort is near or inside the linkdead
+    grace, to the near time.
+    - **Near** (provisional) is the same bubble, or the same passage (one route, departed within
+      an IC hour, `TOGETHER_IC`), in space, and the same site in a field.
+    - **The grace** is the space linkdead window not expired, or the field unit away under the
+      300 s grace and not yet handed to its mind.
+    - **It ends** when she arrives or docks anywhere else (a passage), or leaves the field. It is
+      kept at 90% near (`NEAR_PERMILLE`).
+    - **It fails at once** when she is wrecked (a derelict in space, a wreck in a field) or
+      captured (yielded, doc 42b), or when the escort leaves: docked elsewhere while she is under
+      way, or out of the field while she is in it, outside the grace. It also fails when the term
+      runs out first.
+    - **A failed escort** never sees its fact. The term's end expires the contract: the fee goes
+      back and any bond to the poster.
+
+**Defaults taken** (provisional; the economy defaults rule):
+
+- The haul's term, the escort's term, both acceptance windows and the hold's grace past the term
+  are 28 IC days each, the owner's floor for a wait on a player. At 24:1 that is 28 real hours.
+- The haul bond is 25% of the declared value, and there is no haul bond on a zero value. The
+  declared value defaults to the cap.
+- Near means departed within one IC hour (150 real seconds at 24:1); kept means 90%.
+
+**Tests.**
+
+- **Stories** (each a done-when):
+  - `domain_economy/ex6_haul.rs::ex6_a_haul_carries_held_cargo_and_pays_on_the_delivery_marker`:
+    - an over-cap declared value is refused, the fee is escrowed, and the job is on Ceres's board
+      as a haul;
+    - the shipper cannot take their own job, the join escrows the bond, and the load lands six
+      tonnes in the hold held (`(6, 0)`: none free);
+    - a restart keeps the record and the hold;
+    - the delivery is refused away from the destination and to a stranger;
+    - at Stickney the delivery verb lands the goods free in the shipper's locker, and the sweep
+      settles the contract on the marker, paying the fee and the bond back.
+  - `…::ex6_cargo_still_aboard_at_the_deadline_stays_held_and_goes_back`: at the term's end the
+    cargo is still aboard and held; the contract expires, the fee and bond go to the shipper (less
+    their locker's own charges); no delivery after the term; the return leg lands the goods back
+    in the shipper's Ceres locker and the job closes.
+  - `domain_field/ex6_escort.rs::ex6_the_field_host_keeps_one_escort_and_fails_the_one_whose_rig_is_wrecked`,
+    with three parties at Ahuna Flank (the miner's two rigs, the escort's armed hull and the
+    raider's):
+    - one open escort a hull at a time, and no escorting with someone else's hull;
+    - no watch before a field opens;
+    - the raider's fire opens the field and the host starts both watches;
+    - the wrecked rig's escort fails at once;
+    - the other rig's escort is kept when it leaves the field, and the sweep pays the escort on
+      the host's fact.
+- **Unit tests**:
+  - `pool::carriage::tests::ex6_a_held_cargo_moves_only_by_its_legs`: the load holds, the custodian
+    cannot debit, a replayed marker refuses even with the stock there, the delivery frees, and a
+    lapsed hold carries back;
+  - `services::haul::tests::ex6_a_haul_record_keeps_its_own_rules`;
+  - `services::escort::tests::ex6_the_near_share_is_of_the_journey`;
+  - `services::tests::ex6_options_split_words_from_terms`.
+- **Tests that failed before EX.6, and why**: every test above. Before this cut there was no haul,
+  escort, `post_job` or carriage.
+- **On conclav.dev** (EX.5's head plus this cut):
+  - `cargo fmt --all --check`; workspace clippy (`--all-targets -D warnings`); the M7 memory-size
+    clippy; rustdoc `-D warnings` (the workspace with private items, and the four touched crates
+    without).
+  - The contract guards (census, panic budget, restriction lints, help commands, shard names,
+    legacy handlers) and the whole of `mush-bot` (the new `haul` and `escort` families' in-step,
+    census and distinct tests).
+  - All of `mush-inventory`, `mush-economy` and `mush-market`, and tacsim's lib (2,443).
+  - The retrieval and job stories `post_retrieval`'s refactor could move: `domain_economy` `ex5_`,
+    `rs5_`, port security and `ex4_`; `domain_field` `rs5`, `rs9` and `field_host`; `domain_world`
+    `rs8` and the passage stories.
+- **Mutations** (`ex6-muts.py`, in this group's notes folder), each run alone on conclav.dev
+  against the tests that can see it:
+
+| # | Mutation | Verdict |
+|---|---|---|
+| H1 | the declared value is not capped | caught: the haul story |
+| H2 | the join escrows no bond | caught: the haul story |
+| H3 | the load keeps no hold | caught: the haul story's `(6, 0)` |
+| H4 | the prepare drops its term check | **survives**, masked: the delivery verb refuses after the term first |
+| H5 | the return is never set | caught: the deadline story |
+| H6 | the delivery writes a marker the contract does not name | caught: the haul story's settlement |
+| H7 | anyone may deliver | caught: the haul story's stranger |
+| H8 | the delivery names another job's hold | caught: the haul story |
+| C1 | the carriage ignores the hold and debits | caught: the carriage test and the stories |
+| C2 | the carriage drops its replay guard | **survives**, masked: the applied family's `insert` refuses an existing marker, and a kept leg's live duplicate hold refuses too |
+| C3 | a lapsed hold is consumed, not expired | caught: the carriage test |
+| P1 | `post_job` writes a second condition | caught: the haul story (no job shape, no join) |
+| E1 | a wreck does not fail the escort | caught: the escort story |
+| E2 | the field near rule never holds | caught: the escort story |
+| E3 | the share threshold is 100.1% | caught: the escort story |
+| E4 | the fact never holds | caught: the escort story's settlement |
+| E5 | anyone escorts with any hull | caught: the escort story |
+| E6 | the linkdead grace is ignored | **survives**, unreached: no story drops the escort's link |
+| E7 | the passage near rule drops the route | **survives**, unreached: no story runs an escorted passage |
+| E8 | leaving the field does not fail | **survives**, unreached: no story's escort leaves |
+| E9 | capture does not fail the escort | **survives**, unreached: no story captures the protected hull |
+
+21 run, 15 caught, 6 survive. The carriage test's replay was given stock to move, so it reaches
+the guard; it is still refused by the family below it.
+
+**Divergences.**
+
+- **The cargo travels as a held pool hold, not a held lot.** The brief names `reserve_for`, and a
+  lot hold cannot move while held. The hold is the pool reservation `carry` places, under the
+  job's holder.
+- **Return is to the shipper's locker at the hull's port**, opened by the arm, not to the origin:
+  doc 48b W-48-3c's "at the hauler's next port".
+- **The delivery is a verb, not automatic on docking**: the docking hooks cannot stage an act.
+- **The escort's watch is the port tick's**, not a per-pulse journey hook (there is none, and the
+  hooks are world-only). Its resolution is the tick's period in IC seconds.
+- **A failed escort's contract is not ended early.** It expires at the term, which forfeits the
+  bond, because the economy has no "fact failed" path for a job.
+- **Shared files beyond the brief**: `post_job`/`cancel_job` in `mush-economy/src/contract_live.rs`
+  (refactoring `post_retrieval` onto the shared post), `pool/carriage.rs` in mush-inventory, the
+  two `ServiceKind` words in `mush-market/src/record.rs` (with the usage lines), and the wiring:
+  `store.rs`, `commands.rs`, `port_tick.rs`, `port/jobs.rs`, `composition/mod.rs`, `lib.rs`, the
+  mush-bot table, `legacy-handlers.toml` and `docs/help/exchange.md`. No crew file is touched.
+
+**Not built.**
+
+- The House posting hauls (Q-48-12's NPC jobs from Q-48-19's consumers): EX.10's hauler arm.
+- Cargo taken in a fight. Held goods refuse salvage's `relocate` and every other verb but a leg,
+  so a raider who takes the hull holds goods that stay reserved to the job until its grace runs
+  out.
+- Cargo insurance (Q-48-42's later coverage product).
+- No story runs the passage half of the escort: the space near rule is reached only by its code.
 
 ## EX.7
 

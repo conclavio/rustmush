@@ -257,6 +257,8 @@ fn compose_domain_modules<E>(
                     ));
                     // Doc 41 cut RS.5: the retrieval's delivery fact.
                     facts.push(Arc::new(crate::surface::retrieval::RetrievalFactProvider));
+                    // Doc 48 cut EX.6: the escort's fact, written by the passage and field host.
+                    facts.push(Arc::new(crate::services::escort::EscortFactProvider));
                 }
                 facts
             })
