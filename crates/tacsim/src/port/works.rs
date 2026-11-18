@@ -72,6 +72,11 @@ pub const WORKS_FAMILY: &str = "tacsim.works_ledger";
 pub const WORKS_CAPABILITY: &str = "tacsim.works";
 /// The capability a yard's facility carries.
 pub const YARD_CAPABILITY: &str = "tacsim.yard";
+/// **The heavy yard's capability** (doc 48 unit PL.6, Q-48-25): every hull recipe but the light
+/// ones (the Dray, the Dray-P, the prospector, the escort, the tender and the wrecker) requires it
+/// beside [`YARD_CAPABILITY`]. Stickney's yard holds it and Ceres's does not, so Ceres builds the
+/// light hulls and Stickney all of them.
+pub const YARD_HEAVY_CAPABILITY: &str = "tacsim.yard.heavy";
 /// IC seconds an uncollected delivery waits before storage is charged (§4.12: 28 IC days).
 pub const STORAGE_GRACE_SECS: i64 = 28 * 86_400;
 /// IC seconds a storage day.
@@ -174,6 +179,9 @@ pub const AGENT_BUYS: &str = "Its yard agent buys the bill here; she is handed o
                               titled to {org}, in about {days} IC days.";
 /// `+yard/fund` away from the yard the houses order at.
 pub const FUND_YARD_ONLY: &str = "Only Stickney's yard takes an organization's order.";
+/// **A hull this yard does not build** (doc 48 unit PL.6): `{recipe}` the recipe, `{port}` the
+/// port whose yard builds it.
+pub const BUILT_ELSEWHERE: &str = "The yard here does not build a {recipe}; order it at {port}.";
 
 // ---- the records --------------------------------------------------------------------------
 
@@ -709,9 +717,6 @@ fn menu(
         (mush_industry::RecipeRef, mush_industry::PinnedRecipe),
     > = BTreeMap::new();
     for (recipe, pinned) in recipes().catalog(w) {
-        if !facility.offers(pinned.requires()) {
-            continue;
-        }
         let key = (recipe.pack().clone(), recipe.id().clone());
         if latest
             .get(&key)
@@ -720,7 +725,44 @@ fn menu(
             latest.insert(key, (recipe, pinned));
         }
     }
-    latest.into_values().collect()
+    // Doc 48 unit PL.6: the latest version first, then the facility's test, so a recipe whose
+    // latest version requires more (a heavy hull at v3) never falls back to an older one.
+    latest
+        .into_values()
+        .filter(|(_, pinned)| facility.offers(pinned.requires()))
+        .collect()
+}
+
+/// **What `+works` or `+yard` answers for a recipe word its facility does not make**: at a
+/// yard, the port whose yard builds it (doc 48 unit PL.6, [`BUILT_ELSEWHERE`]), else the plain
+/// refusal.
+fn not_made_here(w: &World, front: Front, word: &str) -> String {
+    let elsewhere = (front == Front::Yard)
+        .then(|| {
+            crate::port::market::ports(w)
+                .into_iter()
+                .find(|(entry, def, _)| {
+                    crate::port::plant::block_room(w, entry, def, front.word())
+                        .ok()
+                        .flatten()
+                        .and_then(|room| {
+                            w.module_state::<mush_industry::IndustryStore>()?
+                                .facility(room)
+                                .cloned()
+                        })
+                        .is_some_and(|yard| find_recipe(w, &yard, word).is_some())
+                })
+                .map(|(_, def, _)| crate::port::coop::port_name(def))
+        })
+        .flatten();
+    elsewhere.map_or_else(
+        || format!("The {} here does not make that.", front.word()),
+        |port| {
+            BUILT_ELSEWHERE
+                .replace("{recipe}", word)
+                .replace("{port}", &port)
+        },
+    )
 }
 
 /// **The parts one order of `pinned` lays** (doc 39 cut IN.7, §4.11): the largest part output
@@ -976,8 +1018,8 @@ fn quote(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     let mut words = raw.split_whitespace();
     let word = words.next().ok_or(WORKS_USAGE)?;
     let quantity = parse_qty_at(front, words.next())?;
-    let (_, pinned) = find_recipe(ctx.w, &facility, word)
-        .ok_or_else(|| format!("The {} here does not make that.", front.word()))?;
+    let (_, pinned) =
+        find_recipe(ctx.w, &facility, word).ok_or_else(|| not_made_here(ctx.w, front, word))?;
     if parts_laid(&pinned, quantity) > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
         return Err(too_many_parts(front));
     }
@@ -1011,8 +1053,8 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
             front.word()
         ));
     }
-    let (recipe, pinned) = find_recipe(ctx.w, &facility, word)
-        .ok_or_else(|| format!("The {} here does not make that.", front.word()))?;
+    let (recipe, pinned) =
+        find_recipe(ctx.w, &facility, word).ok_or_else(|| not_made_here(ctx.w, front, word))?;
     if parts_laid(&pinned, quantity) > crate::port::bay_work::act::MAX_ACT_ROWS as u64 {
         return Err(too_many_parts(front));
     }
@@ -1841,6 +1883,10 @@ pub(crate) fn submit_move(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> 
 }
 
 fn submit(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
+    // Doc 48 unit PL.6: one submission an actor a drain (`submit_as`).
+    if ctx.authoritative_pending(owed.by) {
+        return false;
+    }
     let Some(action) = ctx
         .w
         .module_state::<WorksHandles>()
@@ -1868,7 +1914,16 @@ fn submit(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
 }
 
 /// Submit one industry verb as `who` (the arm's swap).
+///
+/// **One submission an actor a drain** (doc 48 unit PL.6). The engine queues one authoritative
+/// submission an actor, and a second in the same drain voids both. The arm submits as each
+/// contract's requester and never asked, so two orders of one captain finishing together never
+/// delivered: each fire voided both delivers. A submission for an actor who already has one in
+/// flight is skipped, as the field and detachment ticks skip theirs; the arm's next fire makes it.
 fn submit_as(ctx: &mut Ctx<'_>, who: ObjId, verb: IndustryVerb, params: Value, tag: &str) {
+    if ctx.authoritative_pending(who) {
+        return;
+    }
     let saved = ctx.actor;
     ctx.actor = who;
     if let Err(error) = mush_industry::commands::submit(ctx, verb, params, tag) {
@@ -1933,6 +1988,10 @@ fn settle(ctx: &mut Ctx<'_>, c: &mut WorksContract) -> bool {
                 );
             }
         }
+        return true;
+    }
+    // Doc 48 unit PL.6: an actor with a submission in flight waits, and spends no try.
+    if ctx.authoritative_pending(owed.by) {
         return true;
     }
     if owed.tries >= MAX_TRIES {
@@ -2034,6 +2093,11 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
                     json!({ "order": WorkOrderId(id).to_string() }),
                     "works.stale",
                 );
+                return;
+            }
+            // Doc 48 unit PL.6: the submit waits a fire while the requester has one in flight,
+            // before it takes a slot or places the budget hold.
+            if ctx.authoritative_pending(c.requester) {
                 return;
             }
             let slots = free

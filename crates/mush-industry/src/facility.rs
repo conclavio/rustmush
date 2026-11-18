@@ -385,6 +385,45 @@ impl FacilityRecord {
             && self.maximum_slots == authored.maximum_slots
     }
 
+    /// **Whether `authored` only grows this facility's capabilities** (doc 48 unit PL.6,
+    /// Q-48-25): [`Self::stands_as_authored`] but for a capability set that `authored` strictly
+    /// holds. A grown set offers every recipe the old one did, so no order pinned here goes
+    /// stale, and the lane widens it in place ([`Self::with_capabilities_grown`]). Any other
+    /// change, a dropped capability among them, is still drift.
+    #[must_use]
+    pub fn grows_to(&self, authored: &Self) -> bool {
+        let owner = !self.holding.is_authored() || self.owner == authored.owner;
+        owner
+            && self.object == authored.object
+            && self.maximum_slots == authored.maximum_slots
+            && self.capabilities.len() < authored.capabilities.len()
+            && self.capabilities.is_subset(&authored.capabilities)
+    }
+
+    /// **The capabilities grown** (doc 48 unit PL.6): this record with `more` added to its
+    /// capabilities. Neither revision moves: every recipe an order pinned here requires is still
+    /// offered, and nothing about the slots, the owner or the terms changed.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::FacilityCapabilities`] past the cap, and
+    /// [`IndustryRecordError::FacilityChartedAndUngoverning`] for a set the record refuses.
+    pub fn with_capabilities_grown(
+        &self,
+        more: &BTreeSet<CanonicalId>,
+    ) -> Result<Self, IndustryRecordError> {
+        Self::from_parts(
+            self.object,
+            self.owner.clone(),
+            self.capabilities.union(more).cloned().collect(),
+            self.maximum_slots,
+            self.capacity_revision,
+            self.policy_revision,
+            self.cost,
+            self.customers,
+        )?
+        .held_as(self.holding)
+    }
+
     /// **Sold** (doc 48 unit PL.9, Q-48-45, Q-48-53): the owner replaced as
     /// [`Self::with_owner`] replaces it, and the facility owner-held, so the lane leaves its owner
     /// and terms. `public` keeps it open to every customer (a sold yard). The buyer takes the

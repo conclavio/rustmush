@@ -113,6 +113,8 @@ mod pl2_producers;
 mod pl4_works_mills;
 #[path = "domain_economy/pl5_escrow.rs"]
 mod pl5_escrow;
+#[path = "domain_economy/pl6_ceres_yard.rs"]
+mod pl6_ceres_yard;
 #[path = "domain_economy/plans.rs"]
 mod plans;
 #[path = "domain_economy/plumbing.rs"]

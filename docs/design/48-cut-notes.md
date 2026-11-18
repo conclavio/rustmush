@@ -3250,7 +3250,167 @@ first pass and were killed by the checks added for them.
 
 ## PL.6
 
-Not built.
+Row: §7.1 PL.6 (Q-48-25). Stacked on PL.5 (#664), which carries #662, the one lane writer before
+it.
+
+**Survey** (at `9b02415ac`, PL.5's head):
+- **One yard.** Only `stickney_port` authors a `yard` block (`tacsim.yard`, two slots, public,
+  Stickney Yards'). `+yard` finds the yard of the port the player stands in (`works.rs` `here`),
+  so a second block opens a second yard with no new front.
+- **What a yard builds is the industry's own test.** A facility offers a recipe whose `requires`
+  is a subset of its capabilities (`FacilityRecord::offers`). The kernel checks it at submit
+  (`provider.rs`), and `+yard`'s menu filters by it (`works.rs` `menu`). All seventeen hull
+  recipes (`tacsim.industry.hulls` v2) required `tacsim.yard` alone.
+- **So Stickney's yard must change.** If Stickney keeps `{tacsim.yard}`, no requires set lets
+  Ceres build the light hulls without the heavy ones too. Stickney has to hold one more
+  capability than Ceres.
+- **But a changed capability set refused the whole lane** on a kept world. `plant::preflight`
+  takes a facility on the room only when it `stands_as_authored` (object, owner, capabilities and
+  slots), and `install_authored_facility` refuses identity drift. Doc 39's review (2.6) met the
+  same wall on a workshop and gave the yard its own room instead.
+- **The menu took the latest version a facility offered**, so once v3 required more, a world
+  that still held v2 of a heavy recipe would list v2 at Ceres.
+- **The commission is port-generic** (`commission.rs` `yard_of`): a ship docks on the yard port's
+  domain, and a rig stands on that port's workshop floor. Ceres has both (its workshop is
+  Occator's, in the Dockmaster's Office).
+- **Ceres's room.** No atlas room is spare and labeled for a yard. The Visiting Berth Gallery
+  already describes cradles holding a Dray beyond its glass, as Stickney's observation gallery
+  describes its drydocks. No other block uses the gallery (the port's `gallery` is not a facility
+  room).
+
+**The choice: a heavy-yard capability, grown on Stickney's yard in place.**
+- Every hull but the six light ones requires `tacsim.yard.heavy` beside `tacsim.yard`.
+- Stickney's yard holds both, and Ceres's holds `tacsim.yard` alone.
+- The kernel's own subset test then keeps a heavy hull off Ceres's slots, through `+yard` or any
+  other door, with no tacsim-side list to drift.
+- A lane bump may **grow** an authored facility's capability set in place:
+  - the preflight admits it (`FacilityRecord::grows_to`);
+  - the install widens the record, with neither revision moving (`with_capabilities_grown`);
+  - growth only offers more recipes, so no pinned order goes stale;
+  - a dropped capability, a changed slot count or another owner is still drift.
+
+  The alternative, a tacsim-side recipe list per yard, would have left the industry's `@wo` path
+  open to a heavy order at Ceres.
+
+**Built:**
+1. **Growth in the industry** (`mush-industry` `facility.rs`, `store.rs`):
+   - `grows_to` and `with_capabilities_grown` (a union, so it cannot drop a capability);
+   - `install_authored_facility` grows first, then applies the bump's re-term as before;
+   - an owner-held facility grows too, since its capabilities are the content's, and keeps its
+     owner, terms and revisions.
+2. **The preflight admits growth** (`port/plant.rs`).
+3. **The hull pack, v3** (`content/industry/hulls-v2.json`, re-signed): the eleven heavy recipes
+   (the bipeds, the heavy tank, the five line tanks, the scout car, the Tycho crawler and lifter)
+   require `tacsim.yard.heavy` too (`works::YARD_HEAVY_CAPABILITY`). `bill.rs`'s pack test pins the
+   partition.
+4. **`+yard`** (`port/works.rs`):
+   - the menu takes each recipe's latest version first, then the facility's test, so an older
+     version never stands in for one the yard may not build;
+   - `+yard/quote` and `+yard/order` of a hull this yard does not build name a port whose yard
+     does (`BUILT_ELSEWHERE`: "The yard here does not build a line_tank; order it at Stickney
+     Yards."). A word no yard builds keeps the plain refusal.
+5. **The works arm submits for one actor a drain** (`port/works.rs` `tick`), a defect found
+   building the story:
+   - The engine queues one authoritative submission an actor; a second in the same drain voids
+     both ("tried to submit more than one authoritative action").
+   - The arm submits as each contract's requester and never asked first, so two orders of one
+     captain finishing together (a Dray and a Dray-P) never delivered: each fire voided both
+     delivers, and the slots never freed. One order at a time, as IN.9's story runs, never met it.
+   - The arm now asks first (`Ctx::authoritative_pending`), as the field and detachment ticks
+     do. A submission for an actor who already has one in flight waits for the next fire:
+     - an industry verb (`submit_as`) or a works move (`submit`) is skipped;
+     - a covered draft takes no slot and places no hold;
+     - an owed move's resubmission spends no try.
+
+     Everything else the arm does for that contract (binding a draft, closing, the booking
+     settlement) runs as before. Pools' `submit_move` shares the guard; before, a collision there
+     voided both submissions.
+6. **The lane, v40 / relay v31** (re-signed over v39 / v30):
+   - Ceres: a `yard` in the Visiting Berth Gallery (`c01_berth_gallery`), run by Freeport Works,
+     `tacsim.yard`, two slots, public. Its cost is provisional: 5,000,000 cr of capital over 30
+     years, 20 ‰ upkeep, eight staff at 150, a 250 ‰ margin.
+   - Stickney's yard: `tacsim.yard.heavy` beside `tacsim.yard`.
+
+   The strip chain's new head, `strip_ceres_yard`, rebuilds v39
+   (`pl6_strip_ceres_yard_rebuilds_the_published_v39`); `strip_escrow_asks` calls it first.
+7. **The bot's table** (`mush-bot` `mine::works`): `BUILT_ELSEWHERE`, held to tacsim's and within
+   120 columns filled.
+8. **Help:** `ports.md` names the Ceres yard and what each yard builds; `field.md`'s wrecker
+   line names either yard.
+
+**Sizing** (provisional, the cost model's own figures):
+- A Dray's yard fee is 14,480 cr at Ceres and 24,459 cr at Stickney; a rig's two days are
+  2,414 cr and 4,077 cr. The booking fee is 966 cr at Ceres and 1,631 cr at Stickney.
+- Ceres's yard is the smaller operation (half the capital, two-thirds the staff), so it charges
+  about 59 % of Stickney's daily rate. The days are the design's at either yard.
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`, on PL.5's head `9b02415ac`.)
+- **The story** (`tacsim/tests/domain_economy/pl6_ceres_yard.rs`),
+  `pl6_ceres_builds_the_light_hulls_and_stickney_the_heavy`:
+  - the world also holds hull v2 (any hull at any yard), rebuilt and signed to its published
+    digest;
+  - at Ceres, `+yard` lists exactly the six light hulls;
+  - the yard's record holds `tacsim.yard` alone and does not offer a heavy hull's
+    capabilities; it is Freeport Works', titled to it;
+  - a line tank's quote and a Tycho lifter's order are refused naming Stickney Yards, with no
+    order booked, and a word no yard builds keeps the plain refusal;
+  - a captain orders all six. The two slots run them in turn, the Drays finishing together. Each
+    is commissioned under a fresh `SYB-` mark and titled to the captain: the Drays docked at Ceres,
+    the rigs on Ceres's workshop floor;
+  - at Stickney, `+yard` lists all seventeen, and a line tank quotes.
+- **The kept world** (`ports.rs`), `pl6_a_lane_update_grows_a_yard_and_refuses_a_shrink`:
+  - a next version that gives Stickney's yard one more capability applies as one updated port,
+    the facility grown in place with both revisions standing;
+  - one that drops `tacsim.yard.heavy` is refused naming the yard, with nothing written.
+- **The industry** (`e7r2.rs`), `pl6_a_lane_bump_grows_a_facility_capabilities_in_place`:
+  - growth with a re-term moves the policy revision once and the capacity revision not at all;
+  - a dropped or swapped capability, a changed slot count and another owner are each refused,
+    with nothing written;
+  - a sold facility grows and keeps its buyer's owner, terms and revisions.
+- **The pins:**
+  - `pl6_strip_ceres_yard_rebuilds_the_published_v39`;
+  - `bill.rs`'s pack test (the partition, seventeen rows);
+  - `mush-bot`'s `pl6_the_built_elsewhere_sentence_is_the_games`.
+- **Suites:**
+  - tacsim whole 4,844 of 4,844, the works arm's guard in;
+  - mush-industry 268;
+  - mush-bot lib 562;
+  - mush-server split_boundary 227;
+  - the contract guards 200;
+  - fmt, clippy `-D warnings`, the M7 pass, and rustdoc in both modes.
+
+**Mutations:** 11, all killed.
+
+| # | Mutation | Killed by |
+|---|---|---|
+| M1 | The preflight refuses growth | the kept world |
+| M2 | The install never grows | the industry |
+| M3 | Growth under another owner | the industry |
+| M4 | Growth with another slot count | the industry |
+| M5 | Growth that is not a superset | the industry |
+| M6 | An equal set read as growth | the industry (stack overflow) |
+| M7 | Growth bumps the policy revision | the kept world |
+| M8 | The menu filters before it takes the latest version | the story (v2's heavy hulls listed at Ceres) |
+| M9 | The yard's refusal names no other yard | the story |
+| M10 | The refusal names a yard that does not build the hull | the story |
+| M11 | The arm submits for an actor already submitting | the story (neither Dray delivers) |
+
+**Divergences:**
+- **A lane bump may now grow a facility's capability set.** Doc 39's IN.5 rule ("a changed slot
+  count or capability set is drift") is narrowed to a set that drops a capability. The workshop
+  and the medical bay keep their own preflights, which still refuse any change.
+- **The built-hull marks are one series.** A hull built at Ceres is `SYB-nn` like one built at
+  Stickney (`commission::next_mark`); the registry's mark names no yard.
+
+**Not built:**
+- **V7's floors still order at Stickney and ferry to Ceres.** Building the Trust's Drays at Ceres
+  would retire the ferry; that is a change to V7's arm, not this row's.
+- **A House's order (`+yard/fund`) is still Stickney's alone** (`FUND_YARD_ONLY`).
+- **Ceres asks no alloys, fittings or instrument boards.** A Ceres bill is delivered from a hold
+  or made at Freeport Works from Ceres's metals and ores; boards still come from Stickney or
+  Aitken.
+- **#663's US-spelling list** names the Ceres and Stickney atlas and cast packs; this row touches
+  neither, so nothing is folded in.
 
 ## PL.7
 

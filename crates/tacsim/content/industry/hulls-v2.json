@@ -4,7 +4,7 @@
     "id": "tacsim.industry.hulls",
     "kind": "rules_definition",
     "requires": [],
-    "version": 2
+    "version": 3
   },
   "entries": {
     "biped_mk1": {
@@ -28,7 +28,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 72
       },
@@ -55,7 +56,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 72
       },
@@ -136,7 +138,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 72
       },
@@ -163,7 +166,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 48
       },
@@ -190,7 +194,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 48
       },
@@ -217,7 +222,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 48
       },
@@ -244,7 +250,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 48
       },
@@ -271,7 +278,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 48
       },
@@ -298,7 +306,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 48
       },
@@ -433,7 +442,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 168
       },
@@ -460,7 +470,8 @@
           }
         ],
         "requires": [
-          "tacsim.yard"
+          "tacsim.yard",
+          "tacsim.yard.heavy"
         ],
         "work_units": 720
       },

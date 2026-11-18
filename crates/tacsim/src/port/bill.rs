@@ -247,8 +247,30 @@ mod tests {
                 Some(format!("tacsim.hull_kit.{id}").as_str()),
                 "{id}'s kit"
             );
-            assert_eq!(def["requires"][0].as_str(), Some("tacsim.yard"));
+            // Doc 48 unit PL.6 (Q-48-25): the light hulls need a yard; the rest the heavy yard.
+            let requires: Vec<&str> = def["requires"]
+                .as_array()
+                .expect("requires")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            let light = [
+                "dray",
+                "dray_p",
+                "tv_prospector",
+                "tv_escort",
+                "tv_tender",
+                "tv_wrecker",
+            ];
+            let yard = crate::port::works::YARD_CAPABILITY;
+            let heavy = crate::port::works::YARD_HEAVY_CAPABILITY;
+            if light.contains(&id.as_str()) {
+                assert_eq!(requires, [yard], "{id} is built at either yard");
+            } else {
+                assert_eq!(requires, [yard, heavy], "{id} is built at the heavy yard");
+            }
         }
+        assert_eq!(entries.len(), 17, "six light hulls and eleven heavy");
         // Doc 48 unit PL.7: the bill's lines fit an order's, and its lots a commission's.
         for id in entries.keys() {
             let b = bill(&format!("tacsim.unit.{id}"));
