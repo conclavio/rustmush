@@ -17,16 +17,25 @@
 use crate::field_raiders_rig::*;
 use tacsim::field::CrewLocation;
 
+/// The quiet interval CF.6's gate fights under, seconds: a lull while the guard and a raider hull
+/// have lost each other must not demote the field around a standing raider.
+const DISENGAGE_S: u32 = 60;
+
+/// The fight's budget in the rigs' slowest gun cycle (`field_host_rig::quiet_s`, a cycle and five
+/// seconds): the raider's first rounds on the prospector, its turn on the guard, and the guard's
+/// answer to both hulls take about four; ten leave room for misses.
+const FIGHT_CYCLES: u32 = 10;
+
 /// **CF.6's raider gate** (doc 32 §6; Q-CF-23, Q-CF-41, Q-CF-42, Q-CF-44).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed() {
     // The fight runs to the raider's destruction, so a lull while the guard and a raider hull
     // have lost each other must not demote the field around a standing raider (doc 40 FR.5's
-    // cut note): the rig's 10 s disengage is raised for this story alone.
+    // cut note): the rig's 10 s disengage is raised for this story alone ([`DISENGAGE_S`]).
     let mut rig = stocked_tuned(|cfg| {
         tune(cfg);
-        cfg.field.disengage_s = 60;
+        cfg.field.disengage_s = DISENGAGE_S;
     });
     // A prospector works the ground east of the pad; beside it stands an armed hull a hired NPC
     // sits in, no roster and no player behind it.
@@ -124,7 +133,12 @@ async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed(
     );
 
     // The fight runs to the raider's destruction and the field demotes, with nobody connected.
-    let fought = until(&mut rig, &mut rx, &mut lines, 120, |rig, _| {
+    // The wait is bounded in the field's own rounds, not a wall figure: arena time runs at wall
+    // time here, so the fight's length is its guns' cycles. Under doc 49 unit CC.2's palette (a
+    // 15 s cannon) it runs about four of the slowest cycle before the guard ends it, and the
+    // field then holds `DISENGAGE_S` before it demotes; the old flat 120 s sat on that sum.
+    let bound = u64::from(FIGHT_CYCLES * crate::field_host_rig::quiet_s() + DISENGAGE_S);
+    let fought = until(&mut rig, &mut rx, &mut lines, bound, |rig, _| {
         task(rig).is_none() && site_record(rig).is_some_and(|record| record.open_field().is_none())
     })
     .await;

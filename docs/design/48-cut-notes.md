@@ -1494,6 +1494,13 @@ EX.1b's #637), then EX.3b on main after it, which closes EX.3.
   only the shop bale's earlier remainder sells at 1 minor.
 - **Stories that settle a sale step six seconds a fire** past a Draw's window; `days_on`'s jumps
   lapse a drawn sale unpaid.
+- **CF.6's raider story re-bounded (test-only, outside the field-path rows).** It went red once in
+  PR CI and once in 5 runs on the PR merge ref on conclav.dev (0 of 5 on the head, 0 of 5 on main):
+  the fight ends at about arena 61 s and the story's 60 s disengagement demotes the field at 121 s,
+  while its final wait gave 120 wall seconds (arena time runs at wall time there). A probe at 600 s
+  passed 4 of 4 at 116 to 121 s. CC.2's 15 s cannon lengthened the fight; EX.3b touches no field
+  code. The wait is now ten of the rigs' slowest gun cycle (`field_host_rig::quiet_s`) plus the
+  disengagement. The guard's zero shots in the failure were the black box's chunk lag.
 
 **Open defect: GOD-owned NPCs act for each other.** `mush_economy::acts_for` holds for an object
 over any object it `controls` (`mush_core::perm::controls`), and two objects with one owner control
