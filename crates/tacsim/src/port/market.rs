@@ -351,7 +351,16 @@ impl VenueGate for PortVenueGate {
                 .get(actor)
                 .and_then(|o| o.location)
                 .and_then(|room| self.venue_of_room(w, room));
-            if here.as_ref() != Some(venue) && !agent_admitted(w, actor, def) {
+            // Doc 48 cut EX.3 (the lead's ruling): a scrap vault's owner sells from it at its
+            // venue wherever they stand, offline included.
+            let scrap_owner = endpoint.is_some_and(|endpoint| {
+                crate::port::bay_work::scrap::scrap_vault_owner(
+                    w,
+                    endpoint.vault(),
+                    def.venue.as_str(),
+                ) == Some(actor)
+            });
+            if here.as_ref() != Some(venue) && !agent_admitted(w, actor, def) && !scrap_owner {
                 return Err(refusal(NOT_IN_PORT.replace("{port}", &port_name(def))));
             }
         }

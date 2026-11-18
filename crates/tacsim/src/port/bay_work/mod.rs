@@ -2065,10 +2065,13 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                 strip::land_mint(ctx, hull, owed.by, why, lots);
                 // Doc 39 cut IN.8: a workshop scrap's or a return's lots are the operator's,
                 // and its credit and shop bale land with them.
+                // Doc 48 cut EX.3: into the holder's scrap vault, which the workshop buys on the
+                // board as the mint lands.
                 let into = if let Some(settle) = settle {
                     scrap::land(ctx, hull, owed.act, owed.by, settle);
                     format!(
-                        "the workshop's stores, and {} is paid to you",
+                        "your scrap at {}, which the workshop buys for {}",
+                        settle.venue,
                         crate::port::board::money(
                             ctx.w,
                             mush_economy::Amount::from_minor(
@@ -2236,6 +2239,15 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         .unwrap_or_default();
     for hull in owing {
         settle(ctx, hull);
+    }
+    // Doc 48 cut EX.3: a landed scrap's or return's next row, sold on the board.
+    let selling = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(TacsimStore::bay_selling_hulls)
+        .unwrap_or_default();
+    for hull in selling {
+        scrap::sell_step(ctx, hull);
     }
     if ctx.w.world_timeline().freeze().is_some() {
         return;

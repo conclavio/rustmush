@@ -651,6 +651,7 @@ fn ic8_list_goods_refuses_a_wanted_source() {
             object: None,
             visibility: MarketVisibility::Public,
             ttl_secs: 86_400,
+            private_to: None,
         };
         let before = market(&r.tw).live_listings().count();
         let refused = with_probe(&mut r.tw, GOD, move |ctx| {
@@ -1236,4 +1237,48 @@ fn ic14_a_kept_lapsed_hold_is_read_once_per_ten_sweeps() {
         Some(1),
         "a released hold's listing is deleted on the next sweep"
     );
+}
+
+/// **Doc 48 cut EX.3: a vendor's private listing** (`ListingSpec.private_to`), of a counter good:
+/// it is `Hidden`,
+/// its one buyer quotes it, and anyone else finds no such listing. Naming the vendor's own
+/// organization is no private offer and lists nothing.
+#[test]
+fn ex3_a_private_vendor_listing_is_its_one_buyers() {
+    let mut r = rig();
+    let stranger = r.tw.spawn_player("Stranger");
+    let spec = |vendor: VendorId, vault: VaultId, to: PrincipalId| ListingSpec {
+        vendor,
+        catalog: grain(),
+        price: Amount::from_minor(500),
+        quantity: 5,
+        source: Supply::Stock { vault },
+        object: None,
+        visibility: MarketVisibility::Public,
+        ttl_secs: 86_400,
+        private_to: Some(to),
+    };
+    let own = market(&r.tw)
+        .vendor(r.vendor)
+        .map(|v| PrincipalId::Organization(v.org))
+        .expect("the vendor");
+    let named_self = spec(r.vendor, r.shop_vault, own);
+    let refused = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::list_goods(ctx, named_self)
+    });
+    assert!(refused.is_err(), "the seller is no private buyer");
+    assert_eq!(market(&r.tw).live_listings().count(), 0, "nothing listed");
+    let to_pat = spec(r.vendor, r.shop_vault, PrincipalId::Object(r.pat));
+    let id = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::list_goods(ctx, to_pat)
+    })
+    .expect("the private listing");
+    assert_eq!(
+        market(&r.tw).listing(id).map(|l| l.visibility),
+        Some(MarketVisibility::Hidden)
+    );
+    let refused = err(&mut r.tw, stranger, &format!("+market/quote {id}=1"));
+    assert!(refused.contains("No such listing"), "{refused}");
+    let pat = r.pat;
+    ok(&mut r.tw, pat, &format!("+market/quote {id}=1"));
 }

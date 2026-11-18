@@ -1205,8 +1205,8 @@ against the tests that can see it:
 
 ## EX.3
 
-Row: §7.1 EX.3 (Q-48-9; doc 48a A-3). Built in two halves, each its own PR: EX.3a on main (after
-EX.1b, #637), EX.3b stacked on EX.3a. EX.3a lands first.
+Row: §7.1 EX.3 (Q-48-9; doc 48a A-3). Built in two halves, each its own PR: EX.3a (#644, after
+EX.1b's #637), then EX.3b on main after it, which closes EX.3.
 
 ### EX.3a (2026-11-16): the gate's agents, V6 on the board, the acceptors as data
 
@@ -1344,6 +1344,167 @@ EX.1b, #637), EX.3b stacked on EX.3a. EX.3a lands first.
   floor buys at.
 
 **Not built in EX.3a.** V7 and V10, and their failed-leg stories: EX.3b.
+
+### EX.3b (2026-11-17): V7 and V10 on the board
+
+**Survey.**
+- **V7, a house order's bill** (`port/pools.rs` `buy`). The helm paid the seller by a direct
+  post, keyed by the escrow's count, after lowering the seller's ask (`shrink_ask`). It then moved
+  the goods into the yard order's escrow with a works act. A part was one store lot at its
+  catalogue price, moved the same way. Nothing reached the tape. The Yards' carbon, stocked and
+  bid for but never asked (the owner's IN.11 ruling, lane v33), was sold at its bid.
+- **V10, the scrap and the bale's buy-back** (`bay_work/scrap.rs`, `strip.rs`). Whole tonnes and
+  part lots minted into the operator's storefront. When the mint landed, the credit posted from the
+  operator to the holder; a post that did not land paged staff to pay by hand.
+- **The market's sale into a bid** (`sell_into_bid`) sells bulk from a pool only, refuses a
+  seller with a submission queued, and takes at most four standing sales from one seller to one
+  bidder (`MAX_OPEN_SELLS_PER_VENDOR`). A personal bid drawn to nothing is deleted; a failed sale
+  refunds the escrow to the bidder's available balance and does not restore the bid.
+
+**Built.**
+- **A private vendor listing** (`mush-market` `ListingSpec.private_to`, new market API surface).
+  `list_goods` takes an optional one buyer, checked by `post_ask`'s rule (a live person who is not
+  the seller). The listing is `Hidden`; its buyer, its seller and staff see it, and anyone else
+  is refused at quote and at accept with `PRIVATE_TO_OTHER`, the sentence the bot table already
+  holds. It trades on the tape like any other; only who may see and take it narrows. Every other
+  constructor passes `None`.
+- **V7 on the board** (`pools.rs` `board`). A bill line in a yard or works order's escrow is bought
+  by the helm as itself, a quote and an acceptance into the escrow from its purse:
+  - **a bulk good** from the seller's standing ask at the yard's port, at most what it lists, and
+    nothing while a draw on that pool is unsettled;
+  - **a good stocked and bid for with no ask** (the Yards' carbon): the port's clerk lists the helm
+    a private draw ask of what the line wants, at the bid, and the helm takes it on a later fire;
+  - **a part**: a lot of the yard operator's stores already standing in its own lot ask is quoted
+    as it stands; otherwise the clerk lists the lowest-grade lot as a private exact-lot ask at its
+    catalogue price, and the helm takes it on a later fire.
+
+  One purchase stands at a time (`helm_on_board`); none starts while the engine's queue is full or
+  the helm has a submission queued. A stores lot standing in a lot ask now counts as held
+  (`stores_hold`), so the part is bought rather than ordered at the works. The seller and the
+  price are the listing's, so the seam serves any buyer (PL.5). The ferry's stores into her hold
+  keep the direct post (outside the row's V7).
+- **V10 on the board** (`bay_work/scrap.rs`, `strip.rs`; the lead's rulings):
+  - **The holder's scrap vault** (`scrap_vault`, `open_scrap_vault`): one a holder a venue,
+    reused by every scrap and return there, the holder's own, uncapped (no capacity plan reads it),
+    backed by a container in LIMBO the holder owns, named `scrap at {venue}`.
+  - **The mint** of a scrap's or a return's whole tonnes and part lots goes into it; what is under
+    a tonne stays in the operator's shop bale as before.
+  - **The sale rows** (`sale_rows`): a part at its used value less its removal; a bulk good at its
+    value over its whole tonnes, rounded up, at least 1 minor a tonne. A part worth nothing after
+    its removal is no part sale: it is not minted as a part, and its mass joins the yield. A good
+    with no whole tonne is no row.
+  - **The sale** (`sell_step`), on the record (`BayHull.sale`) until every row is sold: one row a
+    step, starting in the step the mint lands. The port's buy-back desk posts a private personal
+    bid for the row into the operator's storefront, funded from its purse (the operator tops it up
+    by what it lacks, keyed by the hull, the act and the row), and the holder sells into it from
+    the scrap vault as themself. A bulk row's lot is first dissolved into the vault's pool, as the holder,
+    since the market sells bulk from a pool. A refused sale withdraws its bid at once and spends a
+    try; at eight the row is given up (`SALE_GIVEN_UP`) and its matter stays the holder's. A row
+    waits, spending nothing, while the queue is full, either party has a submission queued, or four
+    of the holder's sales to the desk are unsettled.
+  - **The buy-back desk** (`scrap::desk`; the lead's ruling (A)): a `DARK` Thing per port, owned
+    by the port's clerk, standing in the port's presentation room, with its own purse and a
+    `vault.withdraw` grant on the workshop operator's root scope (lead ruling L25's, as the
+    clerk's) so it may bid into the storefront. Laid up on the first sale at the port and recorded
+    on the port map (`PortMap.desk`, a `DeskRow`; skipped when absent, the schema unchanged): a
+    restart finds it and never makes a second, nor a second purse. The money census counts its
+    purse as an NPC's (`Other`). The bidder is not the clerk itself because of the open defect
+    below.
+  - **The gate** admits a scrap vault's owner at that vault's venue under any presence, offline
+    included (`market.rs` `admit`).
+  - **Nothing is paid off the board.** The hand-pay page is gone. A scrap or a return with nothing
+    whole pays nothing, and the holder hears `NOTHING_WHOLE`. The help page says scrap is paid by
+    the whole tonne.
+- **The bot's sentence table** (`mush-bot` `mine::minds::scrap`): `NOTHING_WHOLE` and
+  `SALE_GIVEN_UP`, each under 120 columns.
+
+**Tests.** (conclav.dev, `CARGO_INCREMENTAL=0`, on main `45b50f303`, then rebased on main
+`c847b5dd2`.)
+- **Stories:**
+  - `ex3_board::ex3_the_house_buys_its_bill_on_the_board_and_a_missed_leg_refunds`: eight
+    charters breach the Trust's floor; its helm puts the first bill line on the board; Kasei's
+    alloys move away before the draw lands; past the deadline the purchase is closed, no trade,
+    the escrow empty, the purse refunded; with the stock back a purchase settles into the escrow
+    and is a trade on the tape.
+  - `in8_mass_scrap::ex3_scrap_sells_on_the_board_past_twenty_tonnes_and_a_missed_leg_refunds`
+    (Ceres, Occator's workshop): a whole Dray's 94 t mint into the captain's uncapped scrap vault
+    and sell into Occator's stock on the board, paid as they settle; then an escort's tonnes are
+    moved off before their sale's leg lands, the captain gone from the port: the bid's escrow comes
+    back to the desk's purse, Occator's stock takes nothing, the tonnes stay the captain's, and
+    the captain is paid exactly the parts' rows. The desk is the clerk's, laid up once (the same
+    Thing and purse at the second scrap), and the money census's total is unchanged by the sale.
+  - `in8_mass_scrap::ex3_a_restart_between_the_landing_and_the_sale_completes_it` (the lead's
+    condition on the step a bulk row waits): a Dray's mint lands and the holder's dissolve of its
+    94 t lot is lost with a crash. In the gap the lot sits in the captain's scrap vault and no bid
+    stands, so nothing is escrowed (the bid is posted and sold into in one later step). After the
+    restart the sale on her record dissolves the lot again and sells it into Occator's stock.
+  - `house_sweep_rs6c`'s two Tycho stories: Tycho's dispatcher, a GOD-owned NPC holder, sells a
+    swept wreck's matter into the desk's bids (its trades on the tape), and the credit reaches
+    Tycho through the float.
+  - A player still cannot sell into their own listing: `mush-market`'s
+    `ex1a_the_personal_verbs_refuse_before_any_write`, unchanged.
+  - `ic8::ex3_a_private_vendor_listing_is_its_one_buyers`: a private vendor listing is `Hidden`,
+    its one buyer quotes it, a stranger finds no such listing, and naming the vendor's own
+    organization lists nothing.
+  - `in10_pools` (the Trust's Dray, carbon by the private ask, the plant by its works order),
+    `in8_mass_scrap`'s escort and return (now sold through the scrap vault: five trades, 1 t into
+    the Yards' stock, the parts' lots in its stores), and `bay_gc8`'s scrap.
+  - `scrap::tests::ex3_the_sale_rows_are_the_whole_tonnes_and_the_parts`.
+- **Broad run** on `45b50f303` (before the desk): tacsim's lib (2,424), `domain_economy` (615),
+  `domain_field` (321), `domain_world` (275), `cost_lane` (12); mush-server's
+  `commerce_composition` and `split_boundary` (318); `mush-market` and `mush-bot` (1,067). With
+  the desk, again: `domain_economy` (615) and `domain_field` (321).
+- **Rebased on `c847b5dd2`** (EX.2b, PL.9, PL.2b and CC.2 merged meanwhile; the one conflict was
+  mush-bot's table, both families kept): tacsim's lib (2,431), `domain_economy` (617),
+  `domain_field` (323), `mush-market` and `mush-bot`, and every gate below.
+- **Gates:** `cargo fmt --check` (tacsim, mush-market, mush-bot); clippy `--all-targets
+  -D warnings` (tacsim, mush-market, mush-bot, mush-server) and the M7 memory-size pass; rustdoc
+  `-D warnings`; `mush-contract-tests` (200), `state-slot-owners.toml` taking a row for the scrap
+  vault's id.
+- **Mutations:** 11, each alone, against the tests named to kill it; 8 killed:
+  - **killed:** the bulk lot's dissolve skipped (M1); the gate's scrap-vault owner dropped (M3, the
+    captain offline); the purse's top-up skipped (M4); `private_to` not written (M5), the listing
+    not `Hidden` (M6), the private-offer check dropped (M11); the no-whole-tonne row kept (M8,
+    a division by zero); the bulk price rounded down (M10).
+  - **M2 survives** (the wait while four sales to the desk are unsettled dropped): one row a step
+    and a step's dissolve between the bulk rows keep the escort's five rows under the market's
+    cap of four before the first settles; no story builds a holder with five rows ready at once.
+  - **M7 survives** (the helm's one-purchase-at-a-time check dropped): no story has the helm
+    reach a second bill line while its first purchase is unsettled, so a second purchase is never
+    attempted.
+  - **M9 survives** (a part worth nothing minted as a part): no story's hull carries a part whose
+    removal takes its used value.
+
+**Divergences.**
+- **Touches EX.4's crate.** `mush-market/src/api.rs` (`ListingSpec.private_to`, its check and
+  visibility in `list_goods`), `seller.rs` (`check_private` made crate-public), and the field on
+  every constructor (`commands.rs`, tests `ic7.rs` and `ic8.rs`). EX.4 also works in mush-market:
+  whichever merges second resolves.
+- **Files outside the row's:** `port/map.rs` (`PortMap.desk`), `port/market.rs` (the gate's
+  scrap-vault owner), `port/stock.rs`
+  (two constructors), `store.rs` (`bay_selling_hulls`), `bay_work/mod.rs` (the tick's sale loop and
+  the landing line, scrap paths only), `bay_work/record.rs` (`BayHull.sale`), `bay_work/strip.rs`,
+  `bay_work/command.rs` (the scrap and return lines, the help), `mush-bot`'s table.
+- **A bulk row sells a step after its mint lands**, not in the same step: the market sells bulk
+  from a pool, and the scrap mints its tonnes as a lot, which the holder dissolves first. Accepted by
+  the lead on two conditions, both held: the matter sits in the holder's vault in the gap (and no
+  bid stands to be funded), and a restart in the gap completes the sale (the story above).
+- **The sale is one row a step**, since a seller with a submission queued is refused.
+- **The bulk price is rounded up** (at most a minor a tonne over the value), and a tonne carrying
+  only the shop bale's earlier remainder sells at 1 minor.
+- **Stories that settle a sale step six seconds a fire** past a Draw's window; `days_on`'s jumps
+  lapse a drawn sale unpaid.
+
+**Open defect: GOD-owned NPCs act for each other.** `mush_economy::acts_for` holds for an object
+over any object it `controls` (`mush_core::perm::controls`), and two objects with one owner control
+each other. Every NPC Thing is GOD's, so any two NPCs act for each other, and the market refuses a
+personal listing between them as self-trade ("That is your own listing"): Tycho's dispatcher could
+not sell its scrap into the GOD-owned clerk's bid. EX.3b routes the bids through the clerk's own
+Thing and leaves the ownership model alone. **EX.8 and EX.9**, which add NPC flows, must route
+NPC-to-NPC personal listings through a distinctly owned Thing the same way, or raise the defect.
+
+**Owed to the owner (flagged by the lead).** A return or scrap with nothing whole pays nothing
+(provisional default).
 
 ## EX.4
 

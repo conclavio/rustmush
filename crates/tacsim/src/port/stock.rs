@@ -1033,6 +1033,7 @@ pub(crate) fn stock_step(
         object: None,
         visibility: MarketVisibility::Public,
         ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+        private_to: None,
     };
     match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::list_goods(ctx, spec)) {
         Ok(Ok(_)) => {
@@ -1333,6 +1334,7 @@ fn part_ask_step(
         object: None,
         visibility: MarketVisibility::Public,
         ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+        private_to: None,
     };
     Some(
         match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::list_goods(ctx, spec)) {
