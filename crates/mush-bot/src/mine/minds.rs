@@ -695,6 +695,29 @@ pub mod jobs {
     pub const ORG_NO_ACCOUNT: &str = "That organization has no account to be paid into.";
 }
 
+/// **The price history** (doc 48 cut EX.8): `+market/history` (`mush_market::history`). No lane
+/// reads them yet; each is held to the game's own text below.
+pub mod history {
+    /// `mush_market::history::HISTORY_USAGE`.
+    pub const HISTORY_USAGE: &str = "Usage: +market/history <catalogue>:<code>";
+    /// `mush_market::history::HISTORY_NO_VENUE`'s head.
+    pub const HISTORY_NO_VENUE: &str = "Name a market with market=";
+    /// `mush_market::history::HISTORY_NONE`'s head.
+    pub const HISTORY_NONE: &str = "No price history is kept here for ";
+    /// `mush_market::history::HISTORY_HEAD`'s head.
+    pub const HISTORY_HEAD: &str = "House prices of ";
+    /// `mush_market::history::HISTORY_ROW`'s middle. Partial: read the price after it.
+    pub const HISTORY_ROW: &str = ": ask ";
+    /// `mush_market::history::HISTORY_THIS_WEEK`.
+    pub const HISTORY_THIS_WEEK: &str = "this IC week";
+    /// `mush_market::history::HISTORY_WEEKS_AGO`'s tail.
+    pub const HISTORY_WEEKS_AGO: &str = " IC weeks ago";
+    /// `mush_market::history::HISTORY_LAST_WEEK`.
+    pub const HISTORY_LAST_WEEK: &str = "last IC week";
+    /// `mush_market::history::HISTORY_NO_PRICE`. Partial: read it after "ask " or "bid ".
+    pub const HISTORY_NO_PRICE: &str = "none";
+}
+
 /// **A hull listed on the exchange** (doc 48 cut EX.2): what `+market/post #<hull>` refuses in
 /// the game's words, `tacsim::port::hull_sale`. No lane reads them yet; each is held to the
 /// game's own text below.
@@ -990,6 +1013,8 @@ pub const PARTIAL: &[&str] = &[
     "jobs::JOB_TAKE",
     "jobs::TERM_BY",
     "jobs::TERM_TODAY",
+    "history::HISTORY_ROW",
+    "history::HISTORY_NO_PRICE",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -1023,6 +1048,7 @@ mod tests {
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
     const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
     const SERVICES_RS: &str = include_str!("../../../mush-market/src/services.rs");
+    const HISTORY_RS: &str = include_str!("../../../mush-market/src/history.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
     const CORE_RESALE_RS: &str = include_str!("../../../tacsim/src/hardware/sale/resale.rs");
     const HAUL_RS: &str = include_str!("../../../tacsim/src/services/haul.rs");
@@ -1108,6 +1134,22 @@ mod tests {
             )
         });
         rows
+    }
+
+    fn history_rows() -> Vec<Row> {
+        use super::history as bot;
+        use mush_market::history as game;
+        rows!("";
+            HISTORY_USAGE,
+            HISTORY_NO_VENUE,
+            HISTORY_NONE,
+            HISTORY_HEAD,
+            HISTORY_ROW,
+            HISTORY_THIS_WEEK,
+            HISTORY_WEEKS_AGO,
+            HISTORY_LAST_WEEK,
+            HISTORY_NO_PRICE,
+        )
     }
 
     fn exchange_rows() -> Vec<Row> {
@@ -1585,6 +1627,7 @@ mod tests {
             ("practice", practice_rows()),
             ("exchange", exchange_rows()),
             ("jobs", jobs_rows()),
+            ("history", history_rows()),
             ("hull_sale", hull_sale_rows()),
             ("core_resale", core_resale_rows()),
             ("haul", haul_rows()),
@@ -2137,6 +2180,19 @@ mod tests {
     #[test]
     fn exchange_needles_are_distinct() {
         distinct(&qualified("exchange", exchange_rows()), &[]);
+    }
+    // Doc 48 cut EX.8: the price history.
+    #[test]
+    fn history_needles_are_in_step() {
+        in_step("history", &history_rows());
+    }
+    #[test]
+    fn history_census() {
+        census("history.rs", HISTORY_RS, &history_rows(), &[]);
+    }
+    #[test]
+    fn history_needles_are_distinct() {
+        distinct(&qualified("history", history_rows()), &[]);
     }
     // Doc 48 cut EX.5: the job board.
     #[test]

@@ -54,13 +54,16 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "list", "show", "depth", "quote", "accept", "sell", "orders", "vendors", "post",
-                "bid", "withdraw", "mine", "jobs",
+                "bid", "withdraw", "mine", "jobs", "history",
             ]
             .iter()
             .copied()
             .map(SmolStr::new)
             .collect(),
-            help: "+market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]\n\
+            help: "+market/history <catalogue>:<code> [market=<venue>]\n\
+                   \x20                                 the houses' ask and bid for a good at \
+                   this venue, an IC week a row, for the last 24 IC weeks.\n\
+                   +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]\n\
                    \x20                                 the jobs posted on this board: what \
                    each pays, any bond its taker escrows, when it is due, and the command \
                    that takes it.\n\
@@ -195,7 +198,7 @@ fn require_staff(ctx: &Ctx<'_>) -> Result<(), CmdError> {
 
 /// Parse `<ruleset>:<code>` into a [`CatalogRef`] — the same grammar
 /// `@asset/title … catalog=` takes (E6b).
-fn parse_catalog(s: &str) -> Option<CatalogRef> {
+pub(crate) fn parse_catalog(s: &str) -> Option<CatalogRef> {
     let (r, c) = s.trim().split_once(':')?;
     let (r, c) = (r.trim(), c.trim());
     if r.is_empty() || c.is_empty() {
@@ -245,6 +248,8 @@ fn market_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         mine(ctx)
     } else if ctx.switches.has("jobs") {
         crate::services::jobs(ctx)
+    } else if ctx.switches.has("history") {
+        crate::history::history(ctx)
     } else {
         list(ctx)
     }
