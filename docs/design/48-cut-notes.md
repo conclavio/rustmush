@@ -2962,7 +2962,191 @@ count:
 
 ## PL.5
 
-Not built.
+Row: §7.1 PL.5 (Q-48-28 as corrected by doc 48b W-48-4). Stacked on EX.3b (#656), the one
+writer before it on `port/pools.rs`.
+
+**Survey** (at `1990a9b11`, EX.3b's head):
+- **V7 on the board** (`port/pools.rs` `board`, EX.3b) bought a house order's bill as the
+  helm, from the listing's seller at the listing's price:
+  - a bulk line from a standing ask;
+  - the Yards' carbon (stocked and bid for, never asked) from a private draw ask the clerk lists
+    to the helm at the bid;
+  - a part from the yard operator's stores lot, a private exact-lot ask at its catalogue price.
+- **Only the Trust's helm used it.** The arm runs `FLOORS`, one row, the Trust's. A House is an
+  organization staff make, on no port map, with a treasury on its root scope and no hold.
+- **A player** booking at the works or yard (`+works/order`) could fill a bill only from a docked
+  hold (`+works/deliver`). Standing on the exchange, they could `+market/accept` a standing ask into
+  their own escrow, but nothing listed them the carbon or a part.
+- **The market keeps one live draw listing a pool**, private or not (`draw_listing_precheck`), and
+  an exhausted one leaves the pool index (`reindex`'s `quantity > 0`). So per-buyer private asks on
+  one pool queue. EX.3b listed the helm's private asks for 90 days.
+- **Stickney asks neither instrument boards nor strategic ore**, so no bill line taking them
+  (a core module, a sensor) could be bought there. Stickney Yards bids strategic ore.
+
+**The choice: a private ask a buyer, not a public ask.** A good stocked and bid for with no ask
+stays bid-only on the board: the clerk lists each buyer a private ask of what their line wants, at
+the bid, and the buyer takes it on a later try. That keeps IN.11's rule that a vendor never both
+asks and bids one good. Since the market holds one draw listing a pool, another buyer of the same
+pool waits (`BUY_HELD`), and a player's private ask lapses after ten real minutes
+(`PLAYER_ASK_TTL_SECS`), so a stale one blocks others for minutes, not days. An agent's keeps the
+long TTL: the arm takes it on the next fire. A part's private exact-lot asks stand side by side
+(distinct lots), so they do not queue.
+
+**Built:**
+1. **The seam serves any buyer** (`board`):
+   - The buyer is a parameter: a house's helm, a House's yard agent, or a player.
+   - The seam answers what it did (`Bought`: accepted, listed, or a wait and why) and gives the
+     market's own refusal typed (`BuyError::Market`), so a player hears the market's sentence.
+   - **A good some vendor at the port asks is bought from its standing ask alone.** While that ask
+     is not listed, the buyer waits. EX.3b's code fell through to a private ask on that vendor's
+     pool, which would then hold the pool against the vendor's own relisting.
+   - A listing is taken only when it is public or private to this buyer (`open_to`): another's
+     private ask holds the pool; a part lot standing in another's private ask is skipped for the
+     next unlisted lot.
+2. **`+works/buy <order>[=<good>]` and `+yard/buy`** (`works.rs` `buy`): the requester buys the
+   bill's next short line (or that good's) at the port's listings straight into the escrow, from
+   their own account, through the seam (`pools::buy_into`, `pools::short_line`). No hold. A house
+   order (supplied from its stores) and an order not the actor's read "You have no such order
+   here."
+3. **A House's own order** (`works.rs` `fund`, `pools.rs` `request`, `house_step`):
+   - `+yard/fund <recipe>=<org>`, at Stickney's yard, by one who acts for the organization
+     (`mush_economy::acts_for`: `economy.account.post` on its root, the economy's own "may spend
+     the org's money").
+   - The House's treasury (`treasury_of`: its Active credit account on its root scope) must cover
+     the price (`order_price_minor`: the bill at the yard's listings and catalogue prices, a missing
+     part's works order, the fees; no ferry stores) beyond what its earlier requested orders have
+     promised. Short, the officer hears what it holds and what the order costs.
+   - The order is recorded as `Phase::Requested` in the House's own record
+     (`tacsim:house_pool:org.{id}`, `HousePool.house`, `HouseOrder.recipe` and `.by`; skipped
+     when absent, so the Trust's record is unchanged).
+   - The pools arm then runs it as V7 runs the Trust's, one step a fire:
+     - the House's yard agent (`"{org} yard agent"`, `DARK`) is made in Stickney's presentation
+       room, and its purse is opened;
+     - the treasury, read again, funds the purse with the price;
+     - the agent books the yard order for the House, orders a part the stores lack at the works
+       (the owner's IN.11 rule), and buys both bills on the board;
+     - it collects the commission.
+   - There is no ferry: she is handed over docked at Stickney, titled to the House, and the
+     agent's unspent purse goes back to the treasury.
+   - The gate admits the agent at Stickney's venue (`helm_buys_at`).
+4. **The lane, v39 / relay v30** (re-signed over EX.3a's v38 / v29):
+   - Kasei: 120 t of strategic ore stock, asked at 850;
+   - Stickney Yards: 120 instrument boards stock, asked at 1,000 (it does not bid boards).
+
+   Both are provisional. The strip chain's new head, `strip_escrow_asks`, rebuilds v38
+   (`pl5_strip_escrow_asks_rebuilds_the_published_v38`); `strip_roles` calls it first.
+5. **The bot's table** (`mush-bot` `mine::works`): the fourteen new sentences, each held to
+   tacsim's and within 120 columns filled; `+works/buy` in the closed vocabulary.
+
+**Sizing** (24:1, provisional):
+- A House's Dray costs 165,582 cr at the yard's listings: the bill, the hauler plant's works order
+  and the fees, no ferry stores. That is about 79 times the 2,100 cr a House holds after its
+  licences, so until Q-48-55's income staff fund the treasury.
+- It is handed over 35 IC days after the order (the plant's twenty and the Dray's twelve, with the
+  purchases between), about 35 real hours at 24:1.
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`; first on EX.3b's head `1990a9b11`, then on main
+`9f62136e8` with EX.3b and EX.4 merged.)
+- **Stories** (`tacsim/tests/domain_economy/pl5_escrow.rs`):
+  - `pl5_a_player_buys_a_works_bill_into_its_escrow_with_no_hold`:
+    - a player with no hull books a fittings batch at Stickney's works and hears the market busy
+      while its draft lands;
+    - Kasei's alloys come from its standing ask, and a second `+works/buy` waits while that
+      purchase is on the board;
+    - the Yards' carbon is listed to them privately at the bid, then taken;
+    - while that ask stands, a second buyer's carbon reads `BUY_HELD`; once it is drawn, the second
+      buyer is listed their own;
+    - the bill is covered, two trades are on the tape, the buyer paid exactly the trades' prices,
+      the order runs, and a stranger is refused.
+  - `pl5_a_house_orders_a_dray_with_no_hold`:
+    - the refusals come first: a treasury short of the price, and a deckhand who does not act for
+      the House;
+    - funded, the officer's `+yard/fund dray=org:Meridiani` stands;
+    - the agent is made, `DARK` and named, admitted at Stickney and refused at Luna;
+    - the treasury pays the agent the price, and the agent books for the House;
+    - the plant is ordered at the works, and at least five bill lines are trades on the tape,
+      the carbon among them;
+    - the handover comes 35 IC days later, docked at Stickney and titled to Meridiani;
+    - the purse is back in the treasury.
+  - `pl5_a_player_buys_a_stores_part_by_a_private_lot_ask`: the stores' one hauler-plant lot is
+    listed privately to the first buyer at its catalogue price, and their second try takes it into
+    the escrow as a trade. The second buyer reads `BUY_HELD` meanwhile.
+- **Lane:** `pl5_strip_escrow_asks_rebuilds_the_published_v38`, and every digest and version pin
+  moved to v39 / relay v30.
+- **Broad run** on `1990a9b11`: tacsim whole (4,824 of 4,832, the eight failures all fixed
+  below), `mush-bot` (818), mush-server `commerce_composition` and `split_boundary`.
+- **On `9f62136e8`:**
+  - `domain_economy` and `domain_world` (894 of 901), `domain_field`'s excursions and `cost_lane`
+    (42), and split_boundary's `dt_preparation_plans`, `relay_registry` and `boot_parity` (146);
+  - `mush-bot`'s works tests;
+  - the fixed tests again (76 of 81).
+
+  Of the 901 run's seven failures, two were this row's stories (fixed: they now ask for the
+  covered bill before the arm starts the order, and wait for each trade to settle). The other five,
+  and the five of the 81, are main's own scrap stories (`in8_mass_scrap` three, `house_sweep_rs6c`
+  two). They fail the same way on a plain `9f62136e8` checkout and passed with PL.5 on
+  `1990a9b11`: EX.3b's buy-back desk meets EX.4's fees there. The fix is #662 (the desk fee-exempt,
+  outside this row), which PL.5 is stacked on.
+- **On #662's head `44ae9637e`** (main `1d08abd5f` with EX.5, and the desk fix), the squashed
+  commit:
+  - `domain_economy` whole (629 of 629: EX.5's jobs, the five scrap stories, PL.5's);
+  - the site-map fixture, as blessed;
+  - fmt, clippy and rustdoc again.
+- **Gates:**
+  - `cargo fmt --check` (tacsim, mush-bot, mush-server);
+  - clippy `--all-targets -D warnings` (tacsim, mush-bot, mush-server), and the M7 memory-size
+    pass;
+  - rustdoc `-D warnings`, with and without `--document-private-items`;
+  - `mush-contract-tests` (200).
+
+**Mutations:** 12, each alone, against the PL.5 stories; 9 killed. M2, M6, M7 and M9 survived the
+first pass and were killed by the checks added for them.
+- **Killed:**
+  - M1, another buyer's private ask taken as one's own;
+  - M2, a good asked here bought off a private ask on the asker's pool: Kasei's ask is withdrawn,
+    and the buyer must wait;
+  - M4, the treasury's funding post skipped;
+  - M5, a House's hull sent down the ferry's path;
+  - M6, the promise of earlier requests ignored: a second order before the first is funded;
+  - M7, a player's private ask kept for the agent's long TTL: the ask's lapse is read;
+  - M9, the ferry's stores billed to a House: its price against the Trust's;
+  - M10, another's order bought into;
+  - M12, a part lot private to another buyer quoted.
+- **Survivors, equivalent:**
+  - **M3** (the treasury not read again at the funding): the funding post itself refuses an
+    overdraft, so the order waits either way.
+  - **M8** (a House agent not named at the yard's venue): the agent stands in Stickney's
+    presentation room, so presence admits it there; the branch keeps `helm_buys_at` truthful.
+  - **M11** (`+yard/fund` refused only off a yard, not off Stickney's): Stickney's is the only yard
+    on the lane.
+
+**Divergences:**
+- **Files outside the row's:**
+  - `tacsim/tests/support/lane_chain.rs` (the strip head);
+  - the lane bump's pins;
+  - `mush-bot`'s table;
+  - the stocking budgets (below);
+  - `web/src/lib/fixtures/site/site_map.json`, re-blessed: four stamps 36 IC s later.
+- **The rigs' stocking budget.** Stickney's clerk lists one ask a fire, and two more rows put it
+  past forty fires. Every `stock()` copy (twenty test files) and `dt_preparation_plans`'
+  fixture now waits a named sixty (`STOCK_FIRES`, `STOCK_PULSES`) and still stops as soon as every
+  port reads ready. `driving_rig::stock` names the status when it gives up.
+- **Pins that count the lane's rows:**
+  - `commerce::ic8_*`'s seeded pools are now 24;
+  - `ports::ic3`'s commerce lines are now 90;
+  - `plumbing::sm5`'s rule that no vendor asks or stocks ore gains Kasei's strategic ore, a works
+    input this row asks for (beside IN.11's Freeport Works).
+- **One House order runs at a time.** A House's second request waits, `Requested`, until the first
+  is handed over; the treasury check counts what the earlier requests promised.
+- **No draft-time hold on a player's purchase.** `+works/buy` buys one line a command; between two
+  lines another buyer may draw the pool.
+- **Spending a House's treasury is `acts_for`**, the economy's own reading of
+  `economy.account.post` on the org's root; staff act for every org.
+
+**Not built:**
+- **A House's income** (Q-48-55): staff fund the treasury until EX.9's stipend.
+- **A House order at the works** (`+works/fund`): the yard only.
+- **No bot lane types `+works/buy` or `+yard/fund`** yet; the sentences are in the table.
 
 ## PL.6
 
