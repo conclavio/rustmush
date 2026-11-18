@@ -85,6 +85,9 @@ namespace TacSim.World
             _wallMarginM = Mathf.Max(0.4f, wallMarginM);
         }
 
+        public bool IsSpeechActive => SpeechBubbleText != null && SpeechBubbleText.gameObject.activeSelf;
+        public string CurrentSpeechText => SpeechBubbleText != null ? SpeechBubbleText.text : string.Empty;
+
         public void ShowSpeech(string line, float durationSec = 8.5f)
         {
             if (SpeechBubbleText == null) return;

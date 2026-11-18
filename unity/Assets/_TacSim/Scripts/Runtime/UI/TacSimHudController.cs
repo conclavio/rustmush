@@ -21,6 +21,37 @@ namespace TacSim.UI
     {
         private const string PrefLastUrl = "TacSim.LastServerUrl";
         private const string PrefLastAccount = "TacSim.LastAccount";
+        private const string PrefLastCharacter = "TacSim.LastCharacter";
+        private const string PrefLastAvatar = "TacSim.LastAvatarPreset";
+
+        public static string ResolveInitialServerUrl(string[] cliArgs, string envServerUrl, string savedPrefUrl)
+        {
+            if (cliArgs != null)
+            {
+                for (int i = 0; i < cliArgs.Length; i++)
+                {
+                    string arg = cliArgs[i];
+                    if (string.IsNullOrEmpty(arg)) continue;
+                    if ((string.Equals(arg, "--server", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(arg, "-server", StringComparison.OrdinalIgnoreCase)) &&
+                        i + 1 < cliArgs.Length && !string.IsNullOrWhiteSpace(cliArgs[i + 1]))
+                    {
+                        return cliArgs[i + 1].Trim().TrimEnd('/');
+                    }
+                    if (arg.StartsWith("--server=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string val = arg.Substring("--server=".Length).Trim().TrimEnd('/');
+                        if (!string.IsNullOrEmpty(val)) return val;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(envServerUrl))
+                return envServerUrl.Trim().TrimEnd('/');
+            if (!string.IsNullOrWhiteSpace(savedPrefUrl))
+                return savedPrefUrl.Trim().TrimEnd('/');
+            return "https://dev1.conclav.io";
+        }
 
         public event Action<string, string, string, string, bool, PlayerAvatarPreset> OnAuthSubmitted;
         public event Action<MushAuthSession, MushCharacterSlot, PlayerAvatarPreset> OnCharacterSelected;
@@ -572,8 +603,17 @@ namespace TacSim.UI
 
             _credentialsGroup = CreatePanel(card.transform, "CredentialsGroup", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, Color.clear);
 
-            string savedUrl = Application.isPlaying ? PlayerPrefs.GetString(PrefLastUrl, "https://dev1.conclav.io") : "https://dev1.conclav.io";
+            string prefUrl = Application.isPlaying ? PlayerPrefs.GetString(PrefLastUrl, "https://dev1.conclav.io") : "https://dev1.conclav.io";
+            string savedUrl = ResolveInitialServerUrl(
+                Environment.GetCommandLineArgs(),
+                Environment.GetEnvironmentVariable("TACSIM_SERVER_URL"),
+                prefUrl);
             string savedAcct = Application.isPlaying ? PlayerPrefs.GetString(PrefLastAccount, "nick") : "nick";
+            string savedChar = Application.isPlaying ? PlayerPrefs.GetString(PrefLastCharacter, string.Empty) : string.Empty;
+            int savedAvatarInt = Application.isPlaying ? PlayerPrefs.GetInt(PrefLastAvatar, (int)PlayerAvatarPreset.StellarTrooperFemale) : (int)PlayerAvatarPreset.StellarTrooperFemale;
+            PlayerAvatarPreset initialAvatar = (savedAvatarInt >= 0 && savedAvatarInt < 4)
+                ? (PlayerAvatarPreset)savedAvatarInt
+                : PlayerAvatarPreset.StellarTrooperFemale;
 
             _urlInput = CreateInputField(_credentialsGroup.transform, "Server URL (e.g. https://dev1.conclav.io)", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(28f, -98f), new Vector2(-28f, -58f));
             _urlInput.text = savedUrl;
@@ -586,7 +626,7 @@ namespace TacSim.UI
             _passwordInput.text = "";
 
             _charNameInput = CreateInputField(_credentialsGroup.transform, "Character Name (optional for Login; required for Register)", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(28f, -194f), new Vector2(-28f, -154f));
-            _charNameInput.text = "";
+            _charNameInput.text = savedChar;
 
             var avHdr = CreateText(_credentialsGroup.transform, "SELECT 3RD-PERSON PLAYER AVATAR (IDA FABER RIGS)", 14, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
             SetRect(avHdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(28f, -230f), new Vector2(-28f, -204f));
@@ -600,7 +640,7 @@ namespace TacSim.UI
                 SetRect(btn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xMin, -278f), new Vector2(xMin + 154f, -236f));
                 _avatarButtons.Add(btn.GetComponent<Image>());
             }
-            SelectAvatar(PlayerAvatarPreset.StellarTrooperFemale);
+            SelectAvatar(initialAvatar);
 
             var loginBtn = CreateButton(_credentialsGroup.transform, "LOGIN TO MUSHD", new Color(0.14f, 0.52f, 0.40f), () => SubmitAuth(isRegister: false));
             SetRect(loginBtn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0.5f, 1f), new Vector2(28f, -342f), new Vector2(-8f, -294f));
@@ -646,6 +686,9 @@ namespace TacSim.UI
             {
                 PlayerPrefs.SetString(PrefLastUrl, url);
                 PlayerPrefs.SetString(PrefLastAccount, acct);
+                if (!string.IsNullOrEmpty(cname))
+                    PlayerPrefs.SetString(PrefLastCharacter, cname);
+                PlayerPrefs.SetInt(PrefLastAvatar, (int)_selectedAvatar);
                 PlayerPrefs.Save();
             }
 

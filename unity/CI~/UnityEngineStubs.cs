@@ -157,6 +157,15 @@ namespace UnityEngine
             return sqrMag < Mathf.Epsilon ? vector : vector - planeNormal * (Dot(vector, planeNormal) / sqrMag);
         }
         public static Vector3 Lerp(Vector3 a, Vector3 b, float t) => a + (b - a) * Mathf.Clamp01(t);
+        public static Vector3 MoveTowards(Vector3 current, Vector3 target, float maxDistanceDelta)
+        {
+            Vector3 toVec = target - current;
+            float sqDist = toVec.sqrMagnitude;
+            if (sqDist == 0f || (maxDistanceDelta >= 0f && sqDist <= maxDistanceDelta * maxDistanceDelta))
+                return target;
+            float dist = Mathf.Sqrt(sqDist);
+            return current + toVec / dist * maxDistanceDelta;
+        }
         public static Vector3 Min(Vector3 a, Vector3 b) => new Vector3(Mathf.Min(a.x, b.x), Mathf.Min(a.y, b.y), Mathf.Min(a.z, b.z));
         public static Vector3 Max(Vector3 a, Vector3 b) => new Vector3(Mathf.Max(a.x, b.x), Mathf.Max(a.y, b.y), Mathf.Max(a.z, b.z));
         public static Vector3 Scale(Vector3 a, Vector3 b) => new Vector3(a.x * b.x, a.y * b.y, a.z * b.z);
@@ -255,6 +264,10 @@ namespace UnityEngine
     {
         public float x, y, width, height;
         public Rect(float x, float y, float width, float height) { this.x = x; this.y = y; this.width = width; this.height = height; }
+        public float xMin { get => x; set { float xmax = xMax; x = value; width = xmax - x; } }
+        public float yMin { get => y; set { float ymax = yMax; y = value; height = ymax - y; } }
+        public float xMax { get => x + width; set => width = value - x; }
+        public float yMax { get => y + height; set => height = value - y; }
     }
 
     public struct Bounds
@@ -912,7 +925,10 @@ namespace UnityEngine
         public void SetTrigger(string name) { }
         public void SetTrigger(int id) { }
     }
-    public class RuntimeAnimatorController : Object { }
+    public class RuntimeAnimatorController : Object
+    {
+        public AnimationClip[] animationClips { get; set; } = Array.Empty<AnimationClip>();
+    }
     public class Avatar : Object { public bool isValid => true; public bool isHuman => true; }
     public enum AnimatorControllerParameterType { Float = 1, Int = 3, Bool = 4, Trigger = 9 }
     public class Motion : Object { }
@@ -1319,7 +1335,71 @@ namespace UnityEditor
         public static void SetDirty(UnityEngine.Object target) { }
         public static void CopySerialized(UnityEngine.Object source, UnityEngine.Object dest) { }
         public static string OpenFolderPanel(string title, string folder, string defaultName) => string.Empty;
+        public static string SaveFilePanel(string title, string directory, string defaultName, string extension) => string.Empty;
+        public static void RevealInFinder(string path) { }
         public static bool DisplayDialog(string title, string message, string ok, string cancel = "") => true;
+    }
+
+    public enum BuildTarget
+    {
+        StandaloneOSX = 2,
+        StandaloneWindows64 = 19,
+        StandaloneLinux64 = 24
+    }
+
+    [Flags]
+    public enum BuildOptions
+    {
+        None = 0,
+        Development = 1,
+        StrictMode = 512,
+        CompressWithLz4 = 4194304
+    }
+
+    public struct BuildPlayerOptions
+    {
+        public string[] scenes { get; set; }
+        public string locationPathName { get; set; }
+        public BuildTarget target { get; set; }
+        public BuildOptions options { get; set; }
+    }
+
+    public static class BuildPipeline
+    {
+        public static Build.Reporting.BuildReport BuildPlayer(BuildPlayerOptions buildPlayerOptions) => new Build.Reporting.BuildReport();
+    }
+
+    namespace Build
+    {
+        public interface IOrderedCallback
+        {
+            int callbackOrder { get; }
+        }
+
+        public interface IPreprocessBuildWithReport : IOrderedCallback
+        {
+            void OnPreprocessBuild(Reporting.BuildReport report);
+        }
+
+        namespace Reporting
+        {
+            public enum BuildResult { Unknown = 0, Succeeded = 1, Failed = 2, Cancelled = 3 }
+
+            public struct BuildSummary
+            {
+                public BuildResult result;
+                public ulong totalSize;
+                public TimeSpan totalTime;
+                public int totalErrors;
+                public int totalWarnings;
+                public string outputPath;
+            }
+
+            public class BuildReport : UnityEngine.Object
+            {
+                public BuildSummary summary { get; set; }
+            }
+        }
     }
 
     [Flags]
@@ -1436,10 +1516,23 @@ namespace UnityEditor
             public AnimatorStateTransition AddTransition(AnimatorState destinationState) => new AnimatorStateTransition();
         }
 
+        public struct ChildAnimatorState
+        {
+            public AnimatorState state { get; set; }
+            public UnityEngine.Vector3 position { get; set; }
+        }
+
         public class AnimatorStateMachine : UnityEngine.Object
         {
+            private readonly List<ChildAnimatorState> _states = new List<ChildAnimatorState>();
+            public ChildAnimatorState[] states { get => _states.ToArray(); set { _states.Clear(); if (value != null) _states.AddRange(value); } }
             public AnimatorState defaultState { get; set; }
-            public AnimatorState AddState(string name, UnityEngine.Vector3 position) => new AnimatorState { name = name };
+            public AnimatorState AddState(string name, UnityEngine.Vector3 position)
+            {
+                var st = new AnimatorState { name = name };
+                _states.Add(new ChildAnimatorState { state = st, position = position });
+                return st;
+            }
             public AnimatorStateTransition AddAnyStateTransition(AnimatorState destinationState) => new AnimatorStateTransition();
         }
 

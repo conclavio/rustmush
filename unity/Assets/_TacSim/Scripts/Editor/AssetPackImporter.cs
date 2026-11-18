@@ -384,16 +384,27 @@ namespace TacSim.Editor
             foreach (string guid in modelGuids)
             {
                 string path = AssetDatabase.GUIDToAssetPath(guid);
-                if (path.IndexOf("Ida Faber", StringComparison.OrdinalIgnoreCase) < 0 &&
-                    path.IndexOf("IdaFaber", StringComparison.OrdinalIgnoreCase) < 0)
+                string fileName = Path.GetFileNameWithoutExtension(path);
+                bool isIdaFaber = path.IndexOf("Ida Faber", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                  path.IndexOf("IdaFaber", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isAuthoredMocapFile = fileName.StartsWith("A_Idle", StringComparison.OrdinalIgnoreCase) ||
+                                           fileName.StartsWith("A_Walk", StringComparison.OrdinalIgnoreCase) ||
+                                           fileName.StartsWith("A_Run", StringComparison.OrdinalIgnoreCase) ||
+                                           fileName.StartsWith("A_Sit", StringComparison.OrdinalIgnoreCase) ||
+                                           path.IndexOf("/Mocap/", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!isIdaFaber && !isAuthoredMocapFile)
                     continue;
 
                 var importer = AssetImporter.GetAtPath(path) as ModelImporter;
                 if (importer == null)
                     continue;
 
-                string fileName = Path.GetFileNameWithoutExtension(path);
-                bool isIdleClip = fileName.IndexOf("Idle", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isLoopingClip = fileName.IndexOf("Idle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     fileName.IndexOf("Walk", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     fileName.IndexOf("Run", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     fileName.IndexOf("Jog", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     fileName.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     fileName.IndexOf("Sit", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool needsReimport = false;
 
                 if (importer.animationType != ModelImporterAnimationType.Human)
@@ -402,7 +413,7 @@ namespace TacSim.Editor
                     needsReimport = true;
                 }
 
-                if (isIdleClip && !importer.importAnimation)
+                if (isLoopingClip && !importer.importAnimation)
                 {
                     importer.importAnimation = true;
                     needsReimport = true;
@@ -411,7 +422,7 @@ namespace TacSim.Editor
                 if (needsReimport)
                     importer.SaveAndReimport();
 
-                if (isIdleClip)
+                if (isLoopingClip)
                 {
                     var clips = importer.clipAnimations;
                     if (clips == null || clips.Length == 0)

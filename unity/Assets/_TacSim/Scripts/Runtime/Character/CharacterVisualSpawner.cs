@@ -35,6 +35,10 @@ namespace TacSim.Character
         private bool _sampledIdleAnkle;
         private float _idleAnkleHeight = 0.095f;
         private Renderer[] _cachedRenderers;
+        private bool _hasAuthoredLocomotionClips;
+        private bool _hasAuthoredSitClip;
+
+        public bool HasAuthoredLocomotionClips => _hasAuthoredLocomotionClips;
 
         // Locomotion blend state
         private float _planarSpeed;
@@ -116,11 +120,12 @@ namespace TacSim.Character
 
             if (_animator != null && _animator.runtimeAnimatorController != null)
             {
-                // Keep Mecanim in the authored Idle mocap state so pelvis height (RootT.y), breathing,
-                // neck/head posture, and finger poses stay intact while LateUpdate drives grounded stride.
-                _animator.SetFloat(HashSpeed, 0f);
-                _animator.SetBool(HashSprinting, false);
-                _animator.SetBool(HashSeated, false);
+                // When authored Walk/Run/Sit mocap clips are bound into TacSimHumanoid.controller, drive Mecanim
+                // state transitions directly; otherwise keep Mecanim in authored Idle mocap (`A_Idle_F`) so pelvis
+                // height, breathing, neck/head posture, and finger poses stay intact while LateUpdate drives stride!
+                _animator.SetFloat(HashSpeed, (_hasAuthoredLocomotionClips && !isSeated) ? planarSpeedMps : 0f);
+                _animator.SetBool(HashSprinting, _hasAuthoredLocomotionClips && !isSeated && isSprinting);
+                _animator.SetBool(HashSeated, _hasAuthoredSitClip && isSeated);
                 return;
             }
 
@@ -166,8 +171,11 @@ namespace TacSim.Character
 
             // 1. Ensure an upright standing base pose before layering seated or stride rotations:
             // Catches both knee-squat (> 20 deg) and forward/backward hip tilt (> 14 deg from -transform.up)
-            // on un-rebuilt clips while leaving subtle mocap idle weight-shifts (~3-6 deg) untouched!
-            if (_leftUpperLeg != null && _leftLowerLeg != null && _leftFoot != null &&
+            // on un-rebuilt clips while leaving subtle mocap idle weight-shifts (~3-6 deg) and authored mocap clips untouched!
+            bool allowStandingGuard = (!_hasAuthoredLocomotionClips || _locoBlend < 0.05f) &&
+                                      (!_hasAuthoredSitClip || _seatBlend < 0.05f);
+            if (allowStandingGuard &&
+                _leftUpperLeg != null && _leftLowerLeg != null && _leftFoot != null &&
                 _rightUpperLeg != null && _rightLowerLeg != null && _rightFoot != null)
             {
                 Vector3 downDir = -transform.up;
@@ -203,21 +211,24 @@ namespace TacSim.Character
             // 2. Bridge Helm Seated Pose
             if (_seatBlend > 0.001f)
             {
-                float b = _seatBlend;
-                if (_leftUpperLeg != null) _leftUpperLeg.Rotate(pitchAxis, -75f * b, UnityEngine.Space.World);
-                if (_rightUpperLeg != null) _rightUpperLeg.Rotate(pitchAxis, -75f * b, UnityEngine.Space.World);
-                if (_leftLowerLeg != null) _leftLowerLeg.Rotate(pitchAxis, 75f * b, UnityEngine.Space.World);
-                if (_rightLowerLeg != null) _rightLowerLeg.Rotate(pitchAxis, 75f * b, UnityEngine.Space.World);
-                if (_leftUpperArm != null) _leftUpperArm.Rotate(pitchAxis, -32f * b, UnityEngine.Space.World);
-                if (_rightUpperArm != null) _rightUpperArm.Rotate(pitchAxis, -32f * b, UnityEngine.Space.World);
-                if (_leftLowerArm != null) _leftLowerArm.Rotate(pitchAxis, -36f * b, UnityEngine.Space.World);
-                if (_rightLowerArm != null) _rightLowerArm.Rotate(pitchAxis, -36f * b, UnityEngine.Space.World);
-                if (_hips != null) _hips.position += Vector3.down * (0.34f * b);
+                if (!_hasAuthoredSitClip)
+                {
+                    float b = _seatBlend;
+                    if (_leftUpperLeg != null) _leftUpperLeg.Rotate(pitchAxis, -75f * b, UnityEngine.Space.World);
+                    if (_rightUpperLeg != null) _rightUpperLeg.Rotate(pitchAxis, -75f * b, UnityEngine.Space.World);
+                    if (_leftLowerLeg != null) _leftLowerLeg.Rotate(pitchAxis, 75f * b, UnityEngine.Space.World);
+                    if (_rightLowerLeg != null) _rightLowerLeg.Rotate(pitchAxis, 75f * b, UnityEngine.Space.World);
+                    if (_leftUpperArm != null) _leftUpperArm.Rotate(pitchAxis, -32f * b, UnityEngine.Space.World);
+                    if (_rightUpperArm != null) _rightUpperArm.Rotate(pitchAxis, -32f * b, UnityEngine.Space.World);
+                    if (_leftLowerArm != null) _leftLowerArm.Rotate(pitchAxis, -36f * b, UnityEngine.Space.World);
+                    if (_rightLowerArm != null) _rightLowerArm.Rotate(pitchAxis, -36f * b, UnityEngine.Space.World);
+                    if (_hips != null) _hips.position += Vector3.down * (0.34f * b);
+                }
                 return;
             }
 
-            // 3. Grounded Idle & Walking / Sprinting Stride
-            if (_locoBlend > 0.001f)
+            // 3. Grounded Idle & Walking / Sprinting Stride (procedural when only Idle mocap is present)
+            if (!_hasAuthoredLocomotionClips && _locoBlend > 0.001f)
             {
                 float s = Mathf.Sin(_walkCyclePhase);
                 float c = Mathf.Cos(_walkCyclePhase);
@@ -301,6 +312,8 @@ namespace TacSim.Character
         {
             _animator = null;
             _hasHumanoidBones = false;
+            _hasAuthoredLocomotionClips = false;
+            _hasAuthoredSitClip = false;
             _sampledIdleAnkle = false;
             _cachedRenderers = null;
             _hips = _spine = _chest = null;
@@ -352,7 +365,10 @@ namespace TacSim.Character
                     _animator = _activeModel.AddComponent<Animator>();
 
                 if (controller != null)
+                {
                     _animator.runtimeAnimatorController = controller;
+                    DetectAuthoredMocapClips(controller);
+                }
                 _animator.applyRootMotion = false;
                 _animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
 
@@ -377,6 +393,31 @@ namespace TacSim.Character
             _rightLegFallback = CreateLimbPivot(_activeModel.transform, "RightLeg", new Vector3(0.11f, 0.82f, 0f), new Vector3(0f, -0.40f, 0f), new Vector3(0.14f, 0.40f, 0.14f), darkMat);
             _leftArmFallback = CreateLimbPivot(_activeModel.transform, "LeftArm", new Vector3(-0.26f, 1.36f, 0f), new Vector3(0f, -0.28f, 0f), new Vector3(0.11f, 0.28f, 0.11f), suitMat);
             _rightArmFallback = CreateLimbPivot(_activeModel.transform, "RightArm", new Vector3(0.26f, 1.36f, 0f), new Vector3(0f, -0.28f, 0f), new Vector3(0.11f, 0.28f, 0.11f), suitMat);
+        }
+
+        private void DetectAuthoredMocapClips(RuntimeAnimatorController controller)
+        {
+            _hasAuthoredLocomotionClips = false;
+            _hasAuthoredSitClip = false;
+            if (controller == null) return;
+
+            AnimationClip[] clips = controller.animationClips;
+            if (clips == null) return;
+
+            for (int i = 0; i < clips.Length; i++)
+            {
+                var c = clips[i];
+                if (c == null || string.IsNullOrEmpty(c.name))
+                    continue;
+                if (c.name.StartsWith("TacSim_", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (c.name.IndexOf("Walk", StringComparison.OrdinalIgnoreCase) >= 0)
+                    _hasAuthoredLocomotionClips = true;
+                if (c.name.IndexOf("Sit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    c.name.IndexOf("Seat", StringComparison.OrdinalIgnoreCase) >= 0)
+                    _hasAuthoredSitClip = true;
+            }
         }
 
         private void CacheHumanoidBones()
