@@ -295,8 +295,9 @@ pub use contract_live::{
 // Doc 41 cut RS.5 (Q-41-8): the retrieval contract, posted by a hull's title holder and
 // accepted by whoever takes the job.
 pub use contract_live::{
-    RetrievalSpec, accept_retrieval, cancel_retrieval, post_retrieval, retrieval_acceptor,
-    retrieval_contract_hull,
+    JOB_BOND_ABOVE_MINOR, JOB_BOND_PERMILLE, JobShape, JoinTerms, MAX_LIVE_JOBS_PER_PRINCIPAL,
+    RetrievalSpec, accept_retrieval, cancel_retrieval, job_acceptor, job_bond, job_shape, join_job,
+    post_retrieval, retrieval_acceptor, retrieval_contract_hull,
 };
 
 // E4c — facts, events, evidence.

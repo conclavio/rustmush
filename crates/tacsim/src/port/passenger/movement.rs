@@ -16,7 +16,7 @@ pub(crate) fn docked_at(w: &World, hull: ObjId, port: &str) -> bool {
     matches!(crate::port::ship::berth_of(w,hull), crate::port::ship::Berth::Docked { def, .. } if def.venue.as_str() == port)
 }
 
-fn station_rooms(w: &World, port: &str) -> BTreeSet<ObjId> {
+pub(crate) fn station_rooms(w: &World, port: &str) -> BTreeSet<ObjId> {
     let Some((_, def, _)) = crate::port::market::ports(w)
         .into_iter()
         .find(|(_, def, _)| def.venue.as_str() == port)

@@ -171,6 +171,7 @@ pub mod house_sweep;
 pub mod hull;
 pub mod hull_sale;
 pub mod interface;
+pub mod jobs;
 pub mod licence;
 pub mod locker;
 pub mod map;

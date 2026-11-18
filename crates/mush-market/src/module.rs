@@ -443,6 +443,8 @@ struct MarketModuleState {
     asset_sale: Option<Arc<dyn AssetSale>>,
     /// Doc 48 cut EX.4: who a venue's fees are paid to. `None` = no fees.
     venue_fees: Option<Arc<dyn crate::fees::VenueFees>>,
+    /// Doc 48 cut EX.5: the job board's hosts. `None` = no services listed.
+    service_board: Option<Arc<dyn crate::services::ServiceBoard>>,
     catalogs: Vec<Arc<dyn CatalogSource>>,
     availability: Vec<Arc<dyn AvailabilityProvider>>,
     delivery: Vec<Arc<dyn DeliveryProvider>>,
@@ -628,6 +630,17 @@ impl MarketModule {
         self
     }
 
+    /// **Doc 48 cut EX.5**: install the job board (`crate::services`). Frozen at composition;
+    /// unwired is an empty board.
+    #[must_use]
+    pub fn with_service_board(
+        mut self,
+        seam: Arc<dyn crate::services::ServiceBoard>,
+    ) -> MarketModule {
+        self.state.service_board = Some(seam);
+        self
+    }
+
     /// Freeze the **asset-sale seam** (doc 48 cut EX.2, Q-48-52): the game's answer about a
     /// titled object a person lists. **Unwired, no person lists a titled object.** The one
     /// implementor is tacsim's `port::hull_sale::HullSale`.
@@ -680,6 +693,8 @@ pub(crate) struct MarketTables {
     pub(crate) asset_sale: Option<Arc<dyn AssetSale>>,
     /// Doc 48 cut EX.4: the fee seam, when the composition installed one.
     pub(crate) venue_fees: Option<Arc<dyn crate::fees::VenueFees>>,
+    /// Doc 48 cut EX.5: the job board, when the composition installed one.
+    pub(crate) service_board: Option<Arc<dyn crate::services::ServiceBoard>>,
 }
 
 /// The draw-receipt family's handle type (doc 18 cut IC7 item 6).
@@ -744,6 +759,7 @@ impl GameModule for MarketModule {
                 draws: draws.clone(),
                 asset_sale: self.state.asset_sale.clone(),
                 venue_fees: self.state.venue_fees.clone(),
+                service_board: self.state.service_board.clone(),
             },
             ..MarketStore::default()
         });
@@ -1155,6 +1171,15 @@ pub fn venue_gate(w: &mush_core::World) -> Option<Arc<dyn VenueGate>> {
 #[must_use]
 pub fn venue_fees(w: &mush_core::World) -> Option<Arc<dyn crate::fees::VenueFees>> {
     w.module_state::<MarketStore>()?.tables.venue_fees.clone()
+}
+
+/// **The job board, when the composition installed one** (doc 48 cut EX.5).
+#[must_use]
+pub fn service_board(w: &mush_core::World) -> Option<Arc<dyn crate::services::ServiceBoard>> {
+    w.module_state::<MarketStore>()?
+        .tables
+        .service_board
+        .clone()
 }
 
 /// **The asset-sale seam, when the composition installed one** (doc 48 cut EX.2).

@@ -129,3 +129,28 @@ title holder's account. A day you cannot pay is owed as arrears, and paid once
 your account is funded; a long absence stops adding to it after about ten real
 days. Arrears never keep a hull at her berth, but they are paid out of her next
 sale at that port. A house's own hulls at their home port owe nothing.
+
+## The job board
+
+  +market/jobs [retrieval|passage|survey] [market=<venue>]
+
+Lists the jobs posted at the port you stand in, or at the market you name.
+Each job says what it pays, any bond you would escrow, when it is due, and the
+command that takes it:
+
+- **Retrieval:** bring a hull to a port for its title holder. Take it with
+  +salvage/accept. You then have the retrieval window to deliver her.
+- **Passage:** carry a waiting traveller to their destination. The fare shown is
+  their opening offer; +passage/offer opens the haggling. The fare is paid on
+  arrival.
+- **Survey:** Occator's commissions for fresh soundings of one block. Take one
+  with +survey/accept; you have 28 IC days from accepting.
+
+A job paying more than 10,000 cr asks for a bond of a fifth of its pay. The bond
+is escrowed from your account when you take the job. It comes back with the pay
+when the work is done, and goes to the poster if the work is not done in time.
+
+To take a retrieval for your organization, add as=<org>:
++salvage/accept <job> as=<org> go. You need the right to spend the
+organization's money. The pay goes to its account, and its bond comes from
+there.

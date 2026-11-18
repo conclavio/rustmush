@@ -54,13 +54,17 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "list", "show", "depth", "quote", "accept", "sell", "orders", "vendors", "post",
-                "bid", "withdraw", "mine",
+                "bid", "withdraw", "mine", "jobs",
             ]
             .iter()
             .copied()
             .map(SmolStr::new)
             .collect(),
-            help: "+market/list [legal=<class>|tag=<tag>|market=<venue>] [after=<id>]\n\
+            help: "+market/jobs [retrieval|passage|survey] [market=<venue>]\n\
+                   \x20                                 the jobs posted on this board: what \
+                   each pays, any bond its taker escrows, when it is due, and the command \
+                   that takes it.\n\
+                   +market/list [legal=<class>|tag=<tag>|market=<venue>] [after=<id>]\n\
                    \x20                                 what is for sale, newest first, one \
                    bounded page at a time. A filter you may not use simply shows nothing. \
                    With no filter, where you stand in a port, you see that port's board.\n\
@@ -239,6 +243,8 @@ fn market_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         withdraw(ctx)
     } else if ctx.switches.has("mine") {
         mine(ctx)
+    } else if ctx.switches.has("jobs") {
+        crate::services::jobs(ctx)
     } else {
         list(ctx)
     }
@@ -629,7 +635,7 @@ fn default_market(
 
 /// The venue of the room the actor stands in, when a composition's presence gate names
 /// one (doc 18 §4.3 `venue_of_room`, cut IC7) — the `market=` default.
-fn gate_venue(ctx: &Ctx<'_>) -> Option<MarketId> {
+pub(crate) fn gate_venue(ctx: &Ctx<'_>) -> Option<MarketId> {
     let gate = crate::module::venue_gate(ctx.w)?;
     let room = ctx.w.get(ctx.actor).and_then(|o| o.location)?;
     gate.venue_of_room(ctx.w, room)
