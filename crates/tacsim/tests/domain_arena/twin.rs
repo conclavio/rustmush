@@ -1838,14 +1838,17 @@ const COVERAGE: [(&str, (usize, usize)); 3] = [
 /// until doc 49 unit CC.1, the owner's ruling of 2026-11-16, 1,350 (90% of class
 /// I's 1,500). CC.1's discipline (the Line card's floor and reserve, the
 /// withdrawal at the reserve) took their peaks from 1,195 (pooled) and 1,168
-/// (mixed) to 1,302 and 1,275; the follow-up unit CC.1b cuts the Engage path's
-/// cost back toward this bound on every lane.
+/// (mixed) to 1,302 and 1,275, and CC.2's palette to 1,263 on both. Doc 49 unit
+/// CC.1b cut the Engage path's cost, behaviour unchanged: both peak at 1,173. The
+/// bound is the owner's to lower.
 const TWO_TANK_THINK_BOUND: u64 = 1_350;
 
 /// **The lance lane's bound on a Rhai think's operations plus fees** (a max past
 /// it is a STOP): none until doc 49 unit CC.1, the owner's ruling of 2026-11-16
 /// ("Guard at 1,450"). Its twelve-row views are the costliest: main peaked at
-/// 1,308, CC.1 at 1,424, under class I's 1,500 by 76; CC.1b aims it at 1,350.
+/// 1,308, CC.1 at 1,424 and CC.2 at 1,376; doc 49 unit CC.1b cut the Engage
+/// path's cost to 1,269, under the two-tank lanes' 1,350. The bound is the
+/// owner's to lower.
 const LANCE_THINK_BOUND: u64 = 1_450;
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
