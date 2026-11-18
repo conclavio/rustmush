@@ -128,9 +128,16 @@ namespace TacSim.World
                 }
             }
 
+            // Never arm an unbounded auto-accept without a positive displayed price ceiling!
+            if (displayedUnitPriceMinor <= 0)
+            {
+                CancelPendingBuy();
+                return null;
+            }
+
             _pendingBuyListingId = listingId;
             _pendingBuyQuantity = safeQty;
-            _pendingBuyMaxTotalMinor = displayedUnitPriceMinor > 0 ? displayedUnitPriceMinor * safeQty : 0;
+            _pendingBuyMaxTotalMinor = displayedUnitPriceMinor * safeQty;
             _pendingBuyExpiresAt = currentTimeS + 8.0f;
             // `mush-market` reads quantity from the `=` right-hand side (`+market/quote #<id>=<qty>`)
             return $"+market/quote #{listingId}={safeQty}";
@@ -191,11 +198,11 @@ namespace TacSim.World
                     continue;
 
                 CancelPendingBuy();
-                if (maxTotal > 0 && totalMinor > maxTotal)
+                if (maxTotal <= 0 || totalMinor > maxTotal)
                 {
                     string totalTxt = q.Str("total_text", $"{(totalMinor / 100.0):0.00}cr");
                     priceMovedWarning =
-                        $"Quote #{qid} for listing #{lid} ({qty} units) priced at {totalTxt}, above displayed {(maxTotal / 100.0):0.00}cr — auto-accept held. Run `+market/accept #{qid}` to confirm.";
+                        $"Quote #{qid} for listing #{lid} ({qty} units) priced at {totalTxt}, above displayed {(Math.Max(0L, maxTotal) / 100.0):0.00}cr — auto-accept held. Run `+market/accept #{qid}` to confirm.";
                     return true;
                 }
 
@@ -508,8 +515,27 @@ namespace TacSim.World
                 }
             }
 
-            if (Regex.IsMatch(line, @"^\d+[.:]\s*(?:buy|sell|depart|stop|await)\b", RegexOptions.IgnoreCase) ||
-                line.StartsWith("Order ", StringComparison.OrdinalIgnoreCase) && line.IndexOf(" filed:", StringComparison.OrdinalIgnoreCase) > 0)
+            Match struckMatch = Regex.Match(line, @"^Order\s+(\d+)\s+is\s+struck\s+from\s+the\s+sailing\s+plan", RegexOptions.IgnoreCase);
+            if (struckMatch.Success)
+            {
+                string idToken = struckMatch.Groups[1].Value;
+                int removed = SailingOrderLines.RemoveAll(s =>
+                    Regex.IsMatch(s, @"^\s*" + Regex.Escape(idToken) + @"[.:]\s") ||
+                    s.StartsWith($"Order {idToken} ", StringComparison.OrdinalIgnoreCase));
+                if (removed > 0)
+                    mutated = true;
+            }
+            else if ((line.IndexOf("sailing plan (", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                      line.IndexOf("revision ", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                     line.StartsWith("The sailing plan from order ", StringComparison.OrdinalIgnoreCase))
+            {
+                // Fresh `+ship/orders` or `+ship/plan` header resets previous cached order rows
+                SailingOrderLines.Clear();
+                mutated = true;
+            }
+            else if (Regex.IsMatch(line, @"^\s*\d+[.:]\s*(?:buy|sell|depart|stop|await)\b", RegexOptions.IgnoreCase) ||
+                     Regex.IsMatch(line, @"^\s*\d+\.\s+.+\s+—\s+", RegexOptions.IgnoreCase) ||
+                     (line.StartsWith("Order ", StringComparison.OrdinalIgnoreCase) && line.IndexOf(" filed:", StringComparison.OrdinalIgnoreCase) > 0))
             {
                 if (SailingOrderLines.Count >= 16) SailingOrderLines.RemoveAt(0);
                 SailingOrderLines.Add(line);
@@ -517,6 +543,8 @@ namespace TacSim.World
             }
             else if (line.IndexOf("sailing plan is cleared", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      line.IndexOf("Sailing plan cleared", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     line.IndexOf("no sailing plan", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     line.IndexOf("nothing left to do", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      line.IndexOf("holds no orders", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      line.IndexOf("has no orders", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      line.IndexOf("No orders are filed", StringComparison.OrdinalIgnoreCase) >= 0)

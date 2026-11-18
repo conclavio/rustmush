@@ -39,11 +39,15 @@ namespace TacSim.Net
         private readonly Dictionary<string, (ContentPackManifestItem item, float sentAt, int attempts)> _inFlightPacks =
             new Dictionary<string, (ContentPackManifestItem, float, int)>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _attemptCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly HashSet<string> _dirtyCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private int _syncedSinceLastNotify;
         private float _lastDispatchRealtime = -1000f;
         private bool _manifestReceived;
 
         public event Action<string> OnSyncLog;
         public event Action<int> OnPacksUpdated;
+
+        public IReadOnlyCollection<string> LastUpdatedCategories => _dirtyCategories;
 
         public bool IsSyncComplete => _manifestReceived && _pendingPacks.Count == 0 && _inFlightPacks.Count == 0;
         public int PendingPackCount => _pendingPacks.Count + _inFlightPacks.Count;
@@ -139,6 +143,9 @@ namespace TacSim.Net
             _pendingPacks.Clear();
             _inFlightPacks.Clear();
             _attemptCounts.Clear();
+            _dirtyCategories.Clear();
+            _dirtyCategories.Add("all");
+            _syncedSinceLastNotify = 0;
             _lastDispatchRealtime = -1000f;
             // Clear any dynamic packs retained from a previous server connection before hydrating this server's cache.
             TacSimContentLoader.ClearDynamicPacks();
@@ -326,16 +333,34 @@ namespace TacSim.Net
                 {
                     string sha = data.Str("sha256", string.Empty);
                     string json = data.Str("json", string.Empty);
+                    string cat = data.Str("category", string.Empty);
                     if (StoreVerifiedPack(id, sha, json))
                     {
                         _attemptCounts.Remove(id);
                         if (!string.IsNullOrEmpty(reqId))
                             _attemptCounts.Remove(reqId);
+                        if (!string.IsNullOrEmpty(cat))
+                            _dirtyCategories.Add(cat);
+                        else
+                            _dirtyCategories.Add("all");
+                        _syncedSinceLastNotify++;
                         PersistLocalManifest();
-                        OnPacksUpdated?.Invoke(1);
                     }
                 }
                 PumpPackQueue(ws, nowRealtime);
+                FlushCompletedSyncNotification();
+            }
+        }
+
+        private void FlushCompletedSyncNotification()
+        {
+            // Coalesce burst pack downloads so a cold sync of dozens of packs triggers one scene rebuild at completion!
+            if (_syncedSinceLastNotify > 0 && _pendingPacks.Count == 0 && _inFlightPacks.Count == 0)
+            {
+                int count = _syncedSinceLastNotify;
+                _syncedSinceLastNotify = 0;
+                OnPacksUpdated?.Invoke(count);
+                _dirtyCategories.Clear();
             }
         }
 
@@ -373,7 +398,16 @@ namespace TacSim.Net
             PersistLocalManifest();
             TacSimContentLoader.ClearDynamicPacks();
             LoadCachedPacksIntoMemory();
-            OnPacksUpdated?.Invoke(staleKeys.Count);
+            _dirtyCategories.Add("all");
+            if (_pendingPacks.Count == 0 && _inFlightPacks.Count == 0)
+            {
+                OnPacksUpdated?.Invoke(staleKeys.Count);
+                _dirtyCategories.Clear();
+            }
+            else
+            {
+                _syncedSinceLastNotify += staleKeys.Count;
+            }
         }
 
         /// <summary>
@@ -405,6 +439,7 @@ namespace TacSim.Net
                         if (entry.attempts < MaxPackAttempts)
                             _pendingPacks.Enqueue(entry.item);
                     }
+                    FlushCompletedSyncNotification();
                 }
             }
 

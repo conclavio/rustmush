@@ -104,13 +104,12 @@ namespace TacSim.Surface
             _padRoot = null;
 
             transform.position = SurfaceStageOrigin;
-
-            TerrainGrid = TacSimTerrainDecoder.BuildPlanetarySiteGrid(ActiveSiteSlug, side: 64);
-            ActiveSiteTitle = TerrainGrid.DisplayName;
+            // Do not invent a 64x64 procedural grid at startup — wait for authoritative `site.map` keyframes!
+            TerrainGrid = null;
+            ActiveSiteTitle = ActiveSiteSlug;
 
             _terrainRoot = new GameObject("PlanetaryTerrainMesh").transform;
             _terrainRoot.SetParent(transform, false);
-            TacSimTerrainDecoder.BuildChunkedTerrainMeshes(TerrainGrid, _terrainRoot, chunkCells: 32);
 
             _markersRoot = new GameObject("OrePocketBeacons").transform;
             _markersRoot.SetParent(transform, false);
@@ -121,6 +120,21 @@ namespace TacSim.Surface
             BuildLandedDrayCarrierOnPad();
             SpawnPlayerProspectorRover();
             BuildScanAndDrillVfx();
+        }
+
+        private void SyncPadPlacementFromGrid()
+        {
+            if (_padRoot == null || TerrainGrid == null) return;
+            // Place carrier pad strictly from authoritative `site.marks.hull` (`[fx, fy]`) rather than glyph search!
+            if (TerrainGrid.HasAuthoritativeHullCell)
+            {
+                _padRoot.gameObject.SetActive(true);
+                _padRoot.position = SurfaceStageOrigin + TerrainGrid.CellToLocalPos(TerrainGrid.HullFrameX, TerrainGrid.HullFrameY, 0f);
+            }
+            else
+            {
+                _padRoot.gameObject.SetActive(false);
+            }
         }
 
         private void RebuildLiveTerrainMesh(DecodedTerrainGrid liveGrid)
@@ -145,34 +159,17 @@ namespace TacSim.Surface
             }
 
             TacSimTerrainDecoder.BuildChunkedTerrainMeshes(TerrainGrid, _terrainRoot, chunkCells: 32);
-
-            if (_padRoot != null && TerrainGrid.RawGlyphs != null)
-            {
-                // Reposition pad carrier to 'H' / '+' landing apron cell if visible in this window
-                for (int i = 0; i < TerrainGrid.RawGlyphs.Length; i++)
-                {
-                    char g = TerrainGrid.RawGlyphs[i];
-                    if (g == 'H' || g == '+')
-                    {
-                        int lx = i % TerrainGrid.Width;
-                        int ly = i / TerrainGrid.Width;
-                        _padRoot.position = SurfaceStageOrigin + TerrainGrid.CellToLocalPos(lx, ly, 0f);
-                        break;
-                    }
-                }
-            }
+            SyncPadPlacementFromGrid();
         }
 
         private void BuildLandedDrayCarrierOnPad()
         {
-            int padCx = TerrainGrid.Width / 2;
-            int padCy = TerrainGrid.Height / 2;
-            Vector3 padLocal = TerrainGrid.CellToLocalPos(padCx, padCy, 0f);
-            Vector3 padWorld = SurfaceStageOrigin + padLocal;
+            Vector3 padWorld = SurfaceStageOrigin + new Vector3(140f, 0f, 140f);
 
             _padRoot = new GameObject("LandedCarrierPad").transform;
             _padRoot.SetParent(transform, false);
             _padRoot.position = padWorld;
+            _padRoot.gameObject.SetActive(false);
 
             Material apronMat = UrpMaterialFactory.GetOpaque("PadApron", new Color(0.24f, 0.27f, 0.31f), 0.38f, 0.55f);
             Material rampMat = UrpMaterialFactory.GetEmissive("SternRamp", new Color(0.45f, 0.36f, 0.14f), new Color(0.85f, 0.58f, 0.12f) * 0.65f);
@@ -219,11 +216,9 @@ namespace TacSim.Surface
 
         private void SpawnPlayerProspectorRover()
         {
-            int cx = TerrainGrid.Width / 2;
-            int cy = Mathf.Max(0, TerrainGrid.Height / 2 - 2);
-            AuthoritativeSiteCellX = TerrainGrid.LocalToSiteCellX(cx);
-            AuthoritativeSiteCellY = TerrainGrid.LocalToSiteCellY(cy);
-            _roverTargetLocalPos = TerrainGrid.CellToLocalPos(cx, cy, 0f);
+            AuthoritativeSiteCellX = 128;
+            AuthoritativeSiteCellY = 124;
+            _roverTargetLocalPos = new Vector3(140f, 0f, 120f);
             Vector3 worldPos = SurfaceStageOrigin + _roverTargetLocalPos;
             ActiveRoverRig = TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, transform, "RIG 1 [@]", worldPos, 180f, isEscort: false);
             _roverHeadingDeg = 180f;
@@ -492,6 +487,7 @@ namespace TacSim.Surface
                 else
                 {
                     TerrainGrid = decoded;
+                    SyncPadPlacementFromGrid();
                 }
             }
 
@@ -660,6 +656,8 @@ namespace TacSim.Surface
                 if (cell == null || cell.Count < 2) continue;
                 int siteCx = cell[0].AsInt(AuthoritativeSiteCellX);
                 int siteCy = cell[1].AsInt(AuthoritativeSiteCellY);
+                if (!TerrainGrid.IsSiteCellInWindow(siteCx, siteCy))
+                    continue;
                 string txt = r.Str("text", "Ore Reading");
                 bool isRich = txt.IndexOf("rich", StringComparison.OrdinalIgnoreCase) >= 0;
                 SpawnBeaconPillarAtSiteCell(siteCx, siteCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
@@ -684,6 +682,9 @@ namespace TacSim.Surface
                 if (c == null || c.Count < 2) continue;
                 int siteCx = c[0].AsInt(AuthoritativeSiteCellX);
                 int siteCy = c[1].AsInt(AuthoritativeSiteCellY);
+                // Omit rigs outside the current drive/site window instead of clamping them to its border!
+                if (!TerrainGrid.IsSiteCellInWindow(siteCx, siteCy))
+                    continue;
                 Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 0f);
                 string tag = o.Bool("sounding", false) ? "OTHER RIG [SOUNDING!]" : "OTHER RIG [o]";
                 TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, _otherRigsRoot, tag, wp, 90f, isEscort: true);

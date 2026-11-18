@@ -954,6 +954,13 @@ namespace TacSim.UI
                     AddQuickBtn("Sailing & Route Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"));
                     AddQuickBtn("Dry-Run +ship/plan", () => OnCommandSubmitted?.Invoke("+ship/plan"));
                     break;
+                case "interior:passage":
+                case "interior:crew":
+                case "interior:engineering":
+                    AddQuickBtn("Look Around", () => OnCommandSubmitted?.Invoke("look"));
+                    AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
+                    AddQuickBtn("Ship Hold", () => OnCommandSubmitted?.Invoke("+ship/hold"));
+                    break;
                 default:
                     AddQuickBtn("Look Around", () => OnCommandSubmitted?.Invoke("look"));
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
@@ -1104,8 +1111,9 @@ namespace TacSim.UI
             {
                 var emptyRow = CreatePanel(_listingsContentRoot, "EmptyNotice", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.06f, 0.11f, 0.17f, 0.9f));
                 emptyRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 58f);
-                string emptyMsg = !string.IsNullOrEmpty(_boundTradeState.AboardDockedPortHint)
-                    ? $"You are aboard your hull at <b>{_boundTradeState.AboardDockedPortHint}</b> — step ashore (<b>+ship/leave</b>) to trade on the port exchange."
+                string safePortHint = MushProtocol.EscapeUnityRichText(_boundTradeState.AboardDockedPortHint);
+                string emptyMsg = !string.IsNullOrEmpty(safePortHint)
+                    ? $"You are aboard your hull at <b>{safePortHint}</b> — step ashore (<b>+ship/leave</b>) to trade on the port exchange."
                     : "No cached listings yet — visit a port exchange/chandlery or click <b>REFRESH BOARD</b>.";
                 var msg = CreateText(emptyRow.transform, emptyMsg, 14, FontStyle.Italic, TextAnchor.MiddleCenter, new Color(0.75f, 0.88f, 0.98f));
                 msg.supportRichText = true;
@@ -1131,8 +1139,11 @@ namespace TacSim.UI
                 else if (good != null && good.Stowage == "stow.provisions")
                     measureInfo = " <color=#B599EE>(stores)</color>";
 
-                string vendorClause = string.IsNullOrEmpty(row.VendorName) ? row.Venue : row.VendorName;
-                string desc = $"{badge}  <b>{row.ItemName.ToUpperInvariant()}</b>{measureInfo}   —   <b>{row.Quantity}</b> × <color=#77FFBB>{row.UnitPriceText}</color>   <color=#99B8CC>[{vendorClause}]</color>";
+                string rawVendor = string.IsNullOrEmpty(row.VendorName) ? row.Venue : row.VendorName;
+                string vendorClause = MushProtocol.EscapeUnityRichText(rawVendor);
+                string safeItem = MushProtocol.EscapeUnityRichText((row.ItemName ?? string.Empty).ToUpperInvariant());
+                string safePrice = MushProtocol.EscapeUnityRichText(row.UnitPriceText);
+                string desc = $"{badge}  <b>{safeItem}</b>{measureInfo}   —   <b>{row.Quantity}</b> × <color=#77FFBB>{safePrice}</color>   <color=#99B8CC>[{vendorClause}]</color>";
                 var txt = CreateText(card.transform, desc, 13, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white);
                 txt.supportRichText = true;
                 SetRect(txt.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 2f), new Vector2(-190f, -2f));
@@ -1188,7 +1199,7 @@ namespace TacSim.UI
             {
                 sb.AppendLine("<color=#88EEAA><b>QUEUED STANDING ORDERS:</b></color>");
                 for (int i = 0; i < _boundTradeState.SailingOrderLines.Count; i++)
-                    sb.AppendLine("  " + _boundTradeState.SailingOrderLines[i]);
+                    sb.AppendLine("  " + MushProtocol.EscapeUnityRichText(_boundTradeState.SailingOrderLines[i]));
             }
             if (_sailingEchoLines.Count > 0)
             {

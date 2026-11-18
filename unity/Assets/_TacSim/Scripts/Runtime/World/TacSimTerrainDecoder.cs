@@ -71,9 +71,21 @@ namespace TacSim.World
         public int OriginCellY;
         public int SpanCells = 1;
         public bool IsFromLiveServerFeed;
+        public bool HasAuthoritativeHullCell;
+        public int HullFrameX;
+        public int HullFrameY;
         public TerrainCellClass[] Classes; // length = Width * Height (row-major, y=0 south -> north)
         public char[] RawGlyphs;           // optional overlay glyphs from site.map / arena.map
         public float[] ElevMeters;         // length = Width * Height
+
+        public bool IsSiteCellInWindow(int siteX, int siteY)
+        {
+            int span = Math.Max(1, SpanCells);
+            return Width > 0 && Height > 0 &&
+                   siteX >= OriginCellX && siteY >= OriginCellY &&
+                   siteX < OriginCellX + Width * span &&
+                   siteY < OriginCellY + Height * span;
+        }
 
         public int LocalToSiteCellX(int localCx) => OriginCellX + Mathf.Clamp(localCx, 0, Math.Max(0, Width - 1)) * Math.Max(1, SpanCells);
         public int LocalToSiteCellY(int localCy) => OriginCellY + Mathf.Clamp(localCy, 0, Math.Max(0, Height - 1)) * Math.Max(1, SpanCells);
@@ -127,14 +139,6 @@ namespace TacSim.World
             float lz = (localCy + 0.5f) * CellSizeM;
             float ly = SampleElevationMeters(lx, lz) + yOffset;
             return new Vector3(lx, ly, lz);
-        }
-
-        public bool IsSiteCellInWindow(int siteX, int siteY)
-        {
-            int span = Math.Max(1, SpanCells);
-            return siteX >= OriginCellX && siteY >= OriginCellY &&
-                   siteX < OriginCellX + Width * span &&
-                   siteY < OriginCellY + Height * span;
         }
 
         /// <summary>
@@ -383,11 +387,18 @@ namespace TacSim.World
         /// </summary>
         public static DecodedTerrainGrid DecodeSiteMapFrame(JsonNode siteMapFrame)
         {
-            if (siteMapFrame == null || !siteMapFrame.IsObject || !siteMapFrame["rows"].IsArray)
+            if (siteMapFrame == null || !siteMapFrame.IsObject || siteMapFrame.Bool("refused", false))
                 return null;
 
-            int w = Mathf.Clamp(siteMapFrame.Int("width", 64), 4, 512);
-            int h = Mathf.Clamp(siteMapFrame.Int("height", w), 4, 512);
+            int rawW = siteMapFrame.Int("width", 0);
+            int rawH = siteMapFrame.Int("height", 0);
+            var rowsArr = siteMapFrame["rows"].AsArray();
+            // Reject refusal / reason frames (`width: 0, height: 0, rows: []`) instead of inventing a 4x4 terrain patch!
+            if (rawW <= 0 || rawH <= 0 || rowsArr == null || rowsArr.Count == 0)
+                return null;
+
+            int w = Mathf.Clamp(rawW, 1, 512);
+            int h = Mathf.Clamp(rawH, 1, 512);
 
             int ox = 0;
             int oy = 0;
@@ -400,6 +411,9 @@ namespace TacSim.World
 
             int span = 1;
             int baseCellCm = siteMapFrame.Int("cell_cm", 1000);
+            bool hasHullCell = false;
+            int hullFx = 0;
+            int hullFy = 0;
             var siteObj = siteMapFrame["site"];
             string siteTitle = siteMapFrame.Str("title", "Planetary Site");
             if (siteObj.IsObject)
@@ -411,7 +425,25 @@ namespace TacSim.World
                     ox = gridObj.Int("x0", ox);
                     oy = gridObj.Int("y0", oy);
                     span = Mathf.Max(1, gridObj.Int("span", 1));
-                    baseCellCm = gridObj.Int("cell_cm", baseCellCm);
+                    // `site.grid.cell_cm` is a single site cell's edge (1000 cm); multiply by `span` below!
+                    baseCellCm = gridObj.Int("cell_cm", 1000);
+                }
+                else if (span > 1)
+                {
+                    baseCellCm = Mathf.Max(100, baseCellCm / span);
+                }
+
+                var hullArr = siteObj["marks"]?["hull"].AsArray();
+                if (hullArr != null && hullArr.Count >= 2)
+                {
+                    int candidateFx = hullArr[0].AsInt(-1);
+                    int candidateFy = hullArr[1].AsInt(-1);
+                    if (candidateFx >= 0 && candidateFx < w && candidateFy >= 0 && candidateFy < h)
+                    {
+                        hasHullCell = true;
+                        hullFx = candidateFx;
+                        hullFy = candidateFy;
+                    }
                 }
             }
 
@@ -427,10 +459,10 @@ namespace TacSim.World
                     int i = y * w + x;
                     char g = glyphs[i];
                     TerrainCellClass cls = ClassFromGlyph(g);
-                    if (g == ',' || g == '.' || g == ' ')
-                        cls = TerrainCellClass.Regolith;
-                    else if (g == 'H' || g == '+')
+                    if (hasHullCell && x == hullFx && y == hullFy)
                         cls = TerrainCellClass.Platform;
+                    else if (g == ',' || g == '.' || g == ' ' || g == '+')
+                        cls = TerrainCellClass.Regolith;
                     classes[i] = cls;
 
                     int gx = ox + x * span;
@@ -461,6 +493,9 @@ namespace TacSim.World
                 OriginCellY = oy,
                 SpanCells = span,
                 IsFromLiveServerFeed = true,
+                HasAuthoritativeHullCell = hasHullCell,
+                HullFrameX = hullFx,
+                HullFrameY = hullFy,
                 Classes = classes,
                 RawGlyphs = glyphs,
                 ElevMeters = elevM

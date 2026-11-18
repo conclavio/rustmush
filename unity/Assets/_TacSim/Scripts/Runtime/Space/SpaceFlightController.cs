@@ -69,6 +69,8 @@ namespace TacSim.Space
         private bool _pendingDampenerToggle;
         private bool _pendingAbort;
         private bool _tapeSubmittedAwaitingServer;
+        private float _tapeSubmittedAtUnscaledTime;
+        private const float DockingSubmitTimeoutSec = 10.0f;
 
         public bool HasTargetableRock(string rockId) => !string.IsNullOrEmpty(rockId) && _knownRockIds.Contains(rockId.Trim().ToUpperInvariant());
         public bool HasPerceivedContact(string designator)
@@ -338,8 +340,8 @@ namespace TacSim.Space
                         double burnMag = Math.Abs(c.Double("ax_mps2", 0.0)) +
                                          Math.Abs(c.Double("ay_mps2", 0.0)) +
                                          Math.Abs(c.Double("az_mps2", 0.0));
-                        if (burnMag > 0.01)
-                            ThrottlePermille = Mathf.Max(ThrottlePermille, 350f);
+                        ThrottlePermille = burnMag > 0.01 ? 350f : 0f;
+                        UpdateDrivePlume();
                         break;
                     }
                 }
@@ -556,9 +558,7 @@ namespace TacSim.Space
             if (string.IsNullOrWhiteSpace(rockId)) return;
             string r = rockId.Trim().ToUpperInvariant();
             SelectedRockId = r;
-            HasClusterMiningTelemetry = true;
-            AuthoritativeApproachingRockId = r;
-            // `+helm/approach` clears `session.matched_rock = None` on the server until `+helm/match` succeeds.
+            // `+helm/approach` clears `session.matched_rock = None`; wait for `space.cockpit` to report authoritative approach.
             AuthoritativeMatchedRockId = string.Empty;
         }
 
@@ -786,7 +786,10 @@ namespace TacSim.Space
             ShipYawDeg = cockpit.Float("yaw_deg", ShipYawDeg);
             ShipPitchDeg = cockpit.Float("pitch_deg", ShipPitchDeg);
             ShipRollDeg = cockpit.Float("roll_deg", ShipRollDeg);
-            ThrottlePermille = cockpit.Float("thrust_permille", cockpit.Float("throttle_permille", ThrottlePermille));
+            if (cockpit.ContainsKey("thrust_permille") || cockpit.ContainsKey("throttle_permille"))
+            {
+                ThrottlePermille = cockpit.Float("thrust_permille", cockpit.Float("throttle_permille", 0f));
+            }
             EmconPosture = cockpit.Str("emcon", EmconPosture);
 
             if (ExtractLockedContactIdFromFireNode(cockpit["fire"], out string serverLock, out bool clearLock))
@@ -809,23 +812,33 @@ namespace TacSim.Space
             AuthoritativeMatchedRockId = matchedRock;
             AuthoritativeApproachingRockId = approachingRock;
 
-            if (!string.IsNullOrEmpty(matchedRock))
-                SelectedRockId = matchedRock;
-            else if (!string.IsNullOrEmpty(approachingRock))
-                SelectedRockId = approachingRock;
-
-            if (activeDrones >= 0)
-                ToggleDroneSortie(activeDrones > 0);
-
-            if (!string.IsNullOrEmpty(activeLaserRock))
+            if (!hasMining)
             {
-                IsAuthoritativeMiningLaserActive = true;
-                SelectedRockId = activeLaserRock;
-                TriggerMiningLaser(activeLaserRock, durationSec: 8.0f);
-            }
-            else if (hasMining && IsAuthoritativeMiningLaserActive)
-            {
+                // Left asteroid cluster: clear stale drone sortie & mining laser state!
+                SelectedRockId = string.Empty;
+                ToggleDroneSortie(false);
                 StopMiningLaser();
+            }
+            else
+            {
+                if (!string.IsNullOrEmpty(matchedRock))
+                    SelectedRockId = matchedRock;
+                else if (!string.IsNullOrEmpty(approachingRock))
+                    SelectedRockId = approachingRock;
+
+                if (activeDrones >= 0)
+                    ToggleDroneSortie(activeDrones > 0);
+
+                if (!string.IsNullOrEmpty(activeLaserRock))
+                {
+                    IsAuthoritativeMiningLaserActive = true;
+                    SelectedRockId = activeLaserRock;
+                    TriggerMiningLaser(activeLaserRock, durationSec: 8.0f);
+                }
+                else if (IsAuthoritativeMiningLaserActive)
+                {
+                    StopMiningLaser();
+                }
             }
 
             if (PlayerShipTransform != null)
@@ -904,7 +917,18 @@ namespace TacSim.Space
 
             UpdateOrbitalMiningAndWeaponAnimations();
 
-            if (ActiveDockingSession == null || _tapeSubmittedAwaitingServer)
+            if (_tapeSubmittedAwaitingServer)
+            {
+                if (Time.unscaledTime - _tapeSubmittedAtUnscaledTime > DockingSubmitTimeoutSec)
+                {
+                    ActiveDockingSession = null;
+                    _tapeSubmittedAwaitingServer = false;
+                    OnSpaceAlert?.Invoke("Docking verification timed out waiting for server response.");
+                    OnDockingEndedByServer?.Invoke("timeout");
+                }
+                return;
+            }
+            if (ActiveDockingSession == null)
                 return;
 
             if (Input.GetKeyDown(KeyCode.X))
@@ -952,6 +976,7 @@ namespace TacSim.Space
                         return;
                     }
                     _tapeSubmittedAwaitingServer = true;
+                    _tapeSubmittedAtUnscaledTime = Time.unscaledTime;
                     SyncBowDockingCameraPose();
                     OnDockingTapeReadyToSubmit?.Invoke(tapeCmd, true);
                     return;
@@ -967,6 +992,7 @@ namespace TacSim.Space
                         return;
                     }
                     _tapeSubmittedAwaitingServer = true;
+                    _tapeSubmittedAtUnscaledTime = Time.unscaledTime;
                     SyncBowDockingCameraPose();
                     OnSpaceAlert?.Invoke($"Collar contact out of gate at {ActiveDockingSession.VzMmps} mm/s — awaiting server bounce check...");
                     OnDockingTapeReadyToSubmit?.Invoke(tapeCmd, false);

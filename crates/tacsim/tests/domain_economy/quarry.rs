@@ -2625,3 +2625,50 @@ fn s1_a_rig_works_the_512_site() {
     assert!(record.excursion.is_none(), "recovered: {record:?}");
     no_refused_writes(&rig.tw);
 }
+
+#[test]
+fn unity_site_map_512_and_refused_fixtures_stay_in_sync() {
+    let mut rig = stocked();
+    let unsettled = rig.tw.spawn_player("UnsettledPilot");
+    let refused_frame = map_frame(&mut rig, unsettled, json!({ "view": "drive", "rig": 1 }));
+    assert_eq!(refused_frame["width"], json!(0));
+    assert_eq!(refused_frame["height"], json!(0));
+
+    let (a, _, tvs) = on_pad_at(
+        &mut rig,
+        ("FixturePilot", 1, "Salt Moth"),
+        ("urvara", URVARA),
+        1,
+    );
+    let tv = tvs[0];
+    let _ = act_go(&mut rig, a, "+tv/1 launch go");
+    let _ = finish(&mut rig, tv, a);
+
+    let drive_512 = map_frame(&mut rig, a, json!({ "view": "drive", "rig": 1 }));
+    assert_eq!(drive_512["width"], json!(28));
+    assert_eq!(drive_512["extent"], json!([512, 512]));
+    assert_eq!(drive_512["site"]["grid"]["span"], json!(1));
+    assert!(drive_512["site"]["marks"]["hull"].is_array());
+
+    let site_512 = map_frame(&mut rig, a, json!({ "view": "site", "family": "metals" }));
+    assert_eq!(site_512["width"], json!(32));
+    assert_eq!(site_512["site"]["grid"]["span"], json!(16));
+    assert_eq!(site_512["cell_cm"], json!(16_000));
+    assert!(site_512["site"]["marks"]["hull"].is_array());
+
+    let fixtures_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../unity/Assets/_TacSim/Scripts/Tests/Fixtures~");
+    for (fname, expected) in [
+        ("site_map_refused.json", &refused_frame),
+        ("site_map_512_drive.json", &drive_512),
+        ("site_map_512_site.json", &site_512),
+    ] {
+        let p = fixtures_dir.join(fname);
+        let disk_raw = std::fs::read_to_string(&p).expect("read checked-in unity fixture");
+        let disk_val: Value = serde_json::from_str(&disk_raw).expect("parse unity fixture");
+        assert_eq!(
+            &disk_val, expected,
+            "Unity fixture `{fname}` drifted from server `site_map_frame`"
+        );
+    }
+}

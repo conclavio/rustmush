@@ -755,12 +755,14 @@ namespace TacSim.Tests
                     Assert.AreEqual(4, ws.OutboundQueueCount, "Initial batch at t=10.0f must emit at most 4 pack requests");
 
                     // Immediately complete all 4 in-flight packs at the exact same timestamp t=10.0f:
+                    int updatesBeforeBatch = updateEvents;
                     for (int i = 0; i < 4; i++)
                     {
                         var (pid, psha, pjson) = packPayloads[i];
-                        var reply = JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""{pid}"",""sha256"":""{psha}"",""json"":{JsonNode.FromString(pjson).ToJson()}}}");
+                        var reply = JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""{pid}"",""category"":""unit"",""sha256"":""{psha}"",""json"":{JsonNode.FromString(pjson).ToJson()}}}");
                         sync.HandleWebSocketContentPanel(ws, reply, nowRealtime: 10.0f);
                     }
+                    Assert.AreEqual(updatesBeforeBatch, updateEvents, "Partial cold-sync batch must coalesce and NOT rebuild scenes mid-sync");
                     // Completing a batch at t=10.0f MUST NOT emit another batch before MinBatchIntervalSec (0.45s)!
                     sync.PumpPackQueue(ws, nowRealtime: 10.10f);
                     Assert.AreEqual(4, ws.OutboundQueueCount, "Pacing must hold between batches before 0.45s has elapsed");
@@ -768,6 +770,23 @@ namespace TacSim.Tests
                     // Advancing past 0.45s dispatches exactly the next batch of 4 (total 8):
                     sync.PumpPackQueue(ws, nowRealtime: 10.50f);
                     Assert.AreEqual(8, ws.OutboundQueueCount, "Next batch of 4 dispatches once 0.45s interval elapses");
+
+                    // Drain the rest of the 37-pack cold sync and verify OnPacksUpdated fires ONCE at completion!
+                    float simTime = 10.50f;
+                    int nextCompleteIdx = 4;
+                    while (!sync.IsSyncComplete && simTime < 60f)
+                    {
+                        while (nextCompleteIdx < ws.OutboundQueueCount && nextCompleteIdx < packPayloads.Count)
+                        {
+                            var (pid, psha, pjson) = packPayloads[nextCompleteIdx++];
+                            var reply = JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""{pid}"",""category"":""unit"",""sha256"":""{psha}"",""json"":{JsonNode.FromString(pjson).ToJson()}}}");
+                            sync.HandleWebSocketContentPanel(ws, reply, nowRealtime: simTime);
+                        }
+                        simTime += 0.50f;
+                        sync.PumpPackQueue(ws, nowRealtime: simTime);
+                    }
+                    Assert.IsTrue(sync.IsSyncComplete);
+                    Assert.AreEqual(updatesBeforeBatch + 1, updateEvents, "37-pack cold sync must trigger exactly ONE coalesced OnPacksUpdated rebuild at completion");
                 }
 
                 // Finite retry check: a pack that repeatedly times out MUST stop after MaxPackAttempts (3), never looping forever!
@@ -874,33 +893,40 @@ namespace TacSim.Tests
             Assert.AreEqual(0f, h20, 0.5f, "Northward segment should face 0 deg");
             Assert.IsTrue(mov20);
 
-            // 4. Decode 512-site `site.map` window centered around [256, 256] (`x0=224, y0=224, span=2`)
-            var siteFrame = JsonNode.Parse(@"{
-                ""width"": 32,
-                ""height"": 32,
-                ""cell_cm"": 1000,
-                ""rows"": [[["","", 32]]],
-                ""you"": [16, 16],
-                ""origin_cell"": [224, 224],
-                ""site"": {
-                    ""site"": ""Urvara Reach"",
-                    ""addressed"": 1,
-                    ""grid"": { ""x0"": 224, ""y0"": 224, ""span"": 2, ""cell_cm"": 1000 },
-                    ""rigs"": [
-                        { ""slot"": 1, ""cell"": [256, 256], ""charge_pct"": 17, ""hopper"": ""3 of 6 t"" }
-                    ]
-                }
-            }");
-            var grid = TacSimTerrainDecoder.DecodeSiteMapFrame(siteFrame);
+            // 4. Genuine Rust-emitted `site.map` fixtures (`site_map_refused.json`, `site_map_512_site.json`, `site_map_512_drive.json`)
+            var refusedNode = JsonNode.Parse(ReadRustFixtureJson("site_map_refused.json"));
+            Assert.IsNull(TacSimTerrainDecoder.DecodeSiteMapFrame(refusedNode), "Refused/empty site.map frame must return null, never inventing a 4x4 terrain patch");
+
+            var site512Node = JsonNode.Parse(ReadRustFixtureJson("site_map_512_site.json"));
+            var site512Grid = TacSimTerrainDecoder.DecodeSiteMapFrame(site512Node);
+            Assert.IsNotNull(site512Grid);
+            Assert.IsTrue(site512Grid.IsFromLiveServerFeed);
+            Assert.AreEqual(32, site512Grid.Width);
+            Assert.AreEqual(32, site512Grid.Height);
+            Assert.AreEqual(16, site512Grid.SpanCells);
+            Assert.AreEqual(160f, site512Grid.CellSizeM, 0.01f);
+            Assert.IsTrue(site512Grid.HasAuthoritativeHullCell);
+            Assert.AreEqual(16, site512Grid.HullFrameX);
+            Assert.AreEqual(16, site512Grid.HullFrameY);
+
+            var drive512Node = JsonNode.Parse(ReadRustFixtureJson("site_map_512_drive.json"));
+            var grid = TacSimTerrainDecoder.DecodeSiteMapFrame(drive512Node);
             Assert.IsNotNull(grid);
             Assert.IsTrue(grid.IsFromLiveServerFeed);
-            Assert.AreEqual(224, grid.OriginCellX);
-            Assert.AreEqual(224, grid.OriginCellY);
-            Assert.AreEqual(2, grid.SpanCells);
-            Assert.AreEqual(16, grid.SiteToLocalCellX(256));
-            Assert.AreEqual(16, grid.SiteToLocalCellY(256));
-            Assert.AreEqual(256, grid.LocalToSiteCellX(16));
-            Assert.AreEqual(258, grid.LocalToSiteCellX(17), "Nearby click at local cell 17 on span=2 window maps to site cell 258, never clamped near 157");
+            Assert.AreEqual(28, grid.Width);
+            Assert.AreEqual(1, grid.SpanCells);
+            Assert.AreEqual(242, grid.OriginCellX);
+            Assert.AreEqual(238, grid.OriginCellY);
+            Assert.IsTrue(grid.HasAuthoritativeHullCell, "Pad placement reads authoritative site.marks.hull");
+            Assert.AreEqual(14, grid.HullFrameX);
+            Assert.AreEqual(18, grid.HullFrameY);
+            Assert.AreEqual(14, grid.SiteToLocalCellX(256));
+            Assert.AreEqual(18, grid.SiteToLocalCellY(256));
+            Assert.AreEqual(256, grid.LocalToSiteCellX(14));
+            Assert.AreEqual(257, grid.LocalToSiteCellX(15));
+            Assert.IsTrue(grid.IsSiteCellInWindow(256, 252));
+            Assert.IsFalse(grid.IsSiteCellInWindow(100, 100), "Out-of-window other rigs must be skipped rather than pinned to window edge");
+            Assert.IsFalse(grid.IsSiteCellInWindow(300, 300));
 
             // 5. Canonical `space.holotank` (`x_km`/`y_km`/`z_km`, `you: true`) & `space.cockpit` (`fire.lock` object, `mining`)
             var ownShipNode = JsonNode.Parse(@"{""id"":""ship.7"",""you"":true,""x_km"":3.8,""y_km"":0.0,""z_km"":0.0}");
@@ -957,45 +983,11 @@ namespace TacSim.Tests
             Assert.AreEqual(165f, curRoverLocal.x, 0.01f, "Rover must hold completed endpoint, never reversing toward old target");
             Assert.AreEqual(185f, curRoverLocal.z, 0.01f);
 
-            // 8. Cross-language Rust live-reconciled neighborhood schema (`footprint.rect` + `surface.floor`) & synthesized room
+            // 8. Genuine Rust-emitted live-reconciled neighborhood fixture (`reconciled_neighborhood.json`)
             try
             {
-                const string ReconciledStationJson = @"{
-                    ""manifest"": { ""id"": ""neighborhood.test_station"", ""version"": 1, ""kind"": ""neighborhood"", ""projected"": true },
-                    ""entries"": {
-                        ""structure.hub"": {
-                            ""kind"": ""structure"",
-                            ""def"": {
-                                ""floors"": [
-                                    { ""index"": 1, ""name"": ""Deck 1"", ""z_offset_m"": 0.0, ""height_m"": 4.5 },
-                                    { ""index"": 2, ""name"": ""Deck 2"", ""z_offset_m"": 5.0, ""height_m"": 4.5 },
-                                    { ""index"": 3, ""name"": ""Deck 3"", ""z_offset_m"": 10.0, ""height_m"": 4.5 }
-                                ]
-                            }
-                        },
-                        ""room.existing"": {
-                            ""kind"": ""room"",
-                            ""def"": {
-                                ""name"": ""Live Moved Room"",
-                                ""kind"": ""indoor"",
-                                ""footprint"": { ""rect"": [[100.0, 200.0], [120.0, 220.0]] },
-                                ""surface"": { ""floor"": [""structure.hub"", 3] },
-                                ""access"": ""public""
-                            }
-                        },
-                        ""room.synth"": {
-                            ""kind"": ""room"",
-                            ""def"": {
-                                ""name"": ""Synthesized Room"",
-                                ""kind"": ""circulation"",
-                                ""footprint"": { ""rect"": [[40.0, 50.0], [65.0, 80.0]] },
-                                ""surface"": { ""floor"": [""structure.hub"", 2] },
-                                ""access"": ""public""
-                            }
-                        }
-                    }
-                }";
-                TacSimContentLoader.RegisterDynamicPack("neighborhood.test_station", ReconciledStationJson);
+                string reconciledJson = ReadRustFixtureJson("reconciled_neighborhood.json");
+                TacSimContentLoader.RegisterDynamicPack("neighborhood.test_station", reconciledJson);
                 var reconciledPack = TacSimContentLoader.LoadNeighborhoodPackById("neighborhood.test_station");
                 Assert.IsNotNull(reconciledPack);
                 Assert.IsTrue(reconciledPack.Rooms.ContainsKey("room.existing"));
@@ -1040,6 +1032,48 @@ namespace TacSim.Tests
 
             Assert.AreEqual("+mine/laser A", TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:mine_laser", "A", hasMining, authMatched, out _));
             Assert.AreEqual("+mine/drones A 1", TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:mine_drones", "A", hasMining, authMatched, out _));
+
+            // Leaving cluster (`mining` absent) clears `hasMiningBlock`
+            var outsideClusterCockpit = JsonNode.Parse(@"{""yaw_deg"":15,""emcon"":""STD""}");
+            TacSim.Space.SpaceFlightController.ParseClusterMiningState(
+                outsideClusterCockpit, out bool outsideHasMining, out string outsideMatched, out _, out _, out _);
+            Assert.IsFalse(outsideHasMining);
+            Assert.AreEqual(string.Empty, outsideMatched);
+
+            // 10. Zero/unknown buy price refuses to arm auto-accept; sailing-plan header reset, `struck`, & `No sailing plan`
+            var ts = new TacSimTradeAndShipState();
+            Assert.IsNull(ts.BeginOneClickBuy(99UL, 5, 1.0f, displayedUnitPriceMinor: 0), "Zero displayed price must never arm an unbounded auto-accept");
+            Assert.IsTrue(ts.IngestServerLine("The Salt Moth's sailing plan (FPC-D-0401), revision 3: running.", 1f, out _));
+            Assert.IsTrue(ts.IngestServerLine("  1. buy 20 t water ice — next", 1f, out _));
+            Assert.IsTrue(ts.IngestServerLine("  2. depart Stickney Yards — pending", 1f, out _));
+            Assert.AreEqual(2, ts.SailingOrderLines.Count);
+            // New listing header resets previous rows instead of duplicating
+            Assert.IsTrue(ts.IngestServerLine("The Salt Moth's sailing plan (FPC-D-0401), revision 4: running.", 2f, out _));
+            Assert.AreEqual(0, ts.SailingOrderLines.Count);
+            Assert.IsTrue(ts.IngestServerLine("  1. buy 20 t water ice — next", 2f, out _));
+            Assert.IsTrue(ts.IngestServerLine("  2. depart Stickney Yards — pending", 2f, out _));
+            // Striking order 2 removes only order 2
+            Assert.IsTrue(ts.IngestServerLine("Order 2 is struck from the sailing plan.", 3f, out _));
+            Assert.AreEqual(1, ts.SailingOrderLines.Count);
+            // "No sailing plan" clears remaining rows
+            Assert.IsTrue(ts.IngestServerLine("No sailing plan is filed for the Salt Moth.", 4f, out _));
+            Assert.AreEqual(0, ts.SailingOrderLines.Count);
+        }
+
+        private static string ReadRustFixtureJson(string fileName)
+        {
+            string dir = System.IO.Directory.GetCurrentDirectory();
+            for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
+            {
+                string candidateA = System.IO.Path.Combine(dir, "unity", "Assets", "_TacSim", "Scripts", "Tests", "Fixtures~", fileName);
+                if (System.IO.File.Exists(candidateA))
+                    return System.IO.File.ReadAllText(candidateA);
+                string candidateB = System.IO.Path.Combine(dir, "Assets", "_TacSim", "Scripts", "Tests", "Fixtures~", fileName);
+                if (System.IO.File.Exists(candidateB))
+                    return System.IO.File.ReadAllText(candidateB);
+                dir = System.IO.Directory.GetParent(dir)?.FullName;
+            }
+            throw new System.IO.FileNotFoundException($"Missing Rust-pinned cross-language fixture '{fileName}'.");
         }
     }
 }

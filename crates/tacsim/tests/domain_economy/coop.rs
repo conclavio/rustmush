@@ -2744,9 +2744,11 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
     );
     assert_eq!(matching_quote["total_minor"].as_i64(), Some(ask_price * 10));
 
-    // Verify live-world `tacsim.content` omits staff_lobby for regular players and serves
-    // applied Ceres Freeport, standalone `goods` table, all 3 `arena.*` definitions, units, & lane.
+    // Verify live-world `tacsim.content` omits non-OOC Limbo neighborhoods for regular players,
+    // includes them for staff, and passes full secret/lore/vendor/reserve stripping on the live path!
     let live_bundle = tacsim::client_sync::world_content_bundle(rig.tw.world(), who);
+    tacsim::client_sync::validate_projected_bundle_cleanliness(&live_bundle)
+        .expect("live world bundle strips secrets, lore, hidden exits, and lane vendor stock");
     for required_id in [
         "neighborhood.ceres_freeport",
         "goods",
@@ -2768,7 +2770,12 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
     }
     assert!(
         live_bundle.find("neighborhood.staff_lobby").is_none(),
-        "live world bundle omits staff_lobby for non-staff players"
+        "live world bundle structurally omits non-OOC Limbo neighborhoods for non-staff players"
+    );
+    let staff_bundle = tacsim::client_sync::world_content_bundle(rig.tw.world(), mush_core::GOD);
+    assert!(
+        staff_bundle.find("neighborhood.staff_lobby").is_some(),
+        "staff bundle retains staff_lobby"
     );
 
     // Boarding the docked hull must clear `venue` so hull-room trades refused by

@@ -1669,6 +1669,16 @@ jobs:
       - name: Build
         run: npm run build
 
+  unity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Compile C# scripts and run NUnit tests
+        run: dotnet test unity/CI~/TacSim.CI.csproj --configuration Release --verbosity normal
+
   # Doc 43 TS.2's failure channel (D-43-3) is GitHub's own email for a failed
   # scheduled run; this job makes that run name its cause. On the schedule and
   # on a dispatch it waits for every other job, whatever their results, and
@@ -1681,7 +1691,7 @@ jobs:
   nightly-report:
     name: Nightly report
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, bot-minds-lane, tacsim-harness, web]
+    needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, bot-minds-lane, tacsim-harness, web, unity]
     runs-on: ubuntu-latest
     steps:
       - name: Name what failed

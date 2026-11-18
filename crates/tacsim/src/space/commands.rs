@@ -5514,7 +5514,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let spent_kg = session
             .live_stepper
             .rcs_spent_kg(&session.challenge.rcs_authority);
-        debit_hull_propellant_kg(ctx, hull, spent_kg)?;
+        if let Err(e) = debit_hull_propellant_kg(ctx, hull, spent_kg) {
+            ctx.out.error(ctx.actor, e.to_string());
+        }
         unpause_hull_after_docking(ctx, hull, &now);
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -5543,7 +5545,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let spent_kg = session
                 .live_stepper
                 .rcs_spent_kg(&session.challenge.rcs_authority);
-            debit_hull_propellant_kg(ctx, hull, spent_kg)?;
+            if let Err(e) = debit_hull_propellant_kg(ctx, hull, spent_kg) {
+                ctx.out.error(ctx.actor, e.to_string());
+            }
             unpause_hull_after_docking(ctx, hull, &now);
             ctx.out.sys_to_actor(
                 ctx.actor,
@@ -5623,7 +5627,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg.max(1))?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg.max(1)) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
                 unpause_hull_after_docking(ctx, hull, &now);
                 ctx.out.error(
                     ctx.actor,
@@ -5651,7 +5657,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
                 unpause_hull_after_docking(ctx, hull, &now);
                 ctx.out.sys_to_actor(
                     ctx.actor,
@@ -5672,7 +5680,9 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
                 apply_collar_scrape_damage(ctx, hull, front_armor_damage, now.at);
                 unpause_hull_after_docking(ctx, hull, &now);
                 let line = format!(
@@ -5692,19 +5702,48 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                     book.docking_sessions.remove(&hull);
                 }
-                debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg)?;
+                if let Err(e) = debit_hull_propellant_kg(ctx, hull, report.rcs_spent_kg) {
+                    ctx.out.error(ctx.actor, e.to_string());
+                }
 
                 match session.target {
                     super::docking::DockingTargetKind::PortBerth {
                         ref port_id,
                         ref port_name,
                     } => {
-                        let (dest_parent, _) =
-                            resolve_port_destination_parent(ctx.w, hull, port_id)?;
+                        let dest_parent =
+                            match resolve_port_destination_parent(ctx.w, hull, port_id) {
+                                Ok((parent, _)) => parent,
+                                Err(e) => {
+                                    unpause_hull_after_docking(ctx, hull, &now);
+                                    ctx.out.error(ctx.actor, e.to_string());
+                                    push_docking_closed_panel(
+                                        ctx,
+                                        hull,
+                                        &session.challenge.session_id,
+                                        "refused",
+                                    );
+                                    push_space_panels(ctx, hull);
+                                    return Ok(());
+                                }
+                            };
                         // `SF.R25` (doc 35d §6.1): the dock is taken before anything is torn
-                        // down, so a refused dock leaves the hull where she was.
-                        mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
-                            .map_err(CmdError::msg)?;
+                        // down, so a refused dock leaves the hull where she was while cleanly
+                        // closing the session and unpausing the hull.
+                        if let Err(e) =
+                            mush_sim::dock_carrier_at_destination(ctx, hull, dest_parent, &now)
+                        {
+                            unpause_hull_after_docking(ctx, hull, &now);
+                            ctx.out.error(ctx.actor, e);
+                            push_docking_closed_panel(
+                                ctx,
+                                hull,
+                                &session.challenge.session_id,
+                                "refused",
+                            );
+                            push_space_panels(ctx, hull);
+                            return Ok(());
+                        }
                         let (removed_bubble, was_last) =
                             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                                 book.free_flights.remove(&hull);
@@ -5815,10 +5854,22 @@ fn helm_dock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                     tug != hull && t.derelict_hull == derelict_hull
                                 })
                         }) {
-                            return Err(CmdError::msg(format!(
-                                "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
-                                derelict_hull.0
-                            )));
+                            unpause_hull_after_docking(ctx, hull, &now);
+                            ctx.out.error(
+                                ctx.actor,
+                                format!(
+                                    "Derelict `{derelict_name}` (#{}) is already clamped or under tow by another ship.",
+                                    derelict_hull.0
+                                ),
+                            );
+                            push_docking_closed_panel(
+                                ctx,
+                                hull,
+                                &session.challenge.session_id,
+                                "refused",
+                            );
+                            push_space_panels(ctx, hull);
+                            return Ok(());
                         }
                         // Doc 41 cut RS.8 (Q-36-46): the pin names the derelict's real title
                         // and the bubble's witnesses.

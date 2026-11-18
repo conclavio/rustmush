@@ -132,8 +132,37 @@ fn public_role_clause(raw: &str) -> String {
     }
 }
 
+fn is_allowed_client_entry_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "neighborhood"
+            | "locality"
+            | "site"
+            | "structure"
+            | "room"
+            | "exit"
+            | "feature"
+            | "item"
+            | "region"
+            | "heightfield"
+            | "connection"
+            | "checkpoint"
+            | "npc"
+            | "person"
+            | "unit"
+            | "weapon"
+            | "arena"
+            | "body"
+            | "location"
+            | "route"
+            | "port"
+    )
+}
+
 fn entry_is_staff_or_hidden(kind: &str, def: Option<&Map<String, Value>>) -> bool {
-    if matches!(kind, "secret" | "lore" | "quest") {
+    // Default-deny: drop secrets, lore, quests, hooks, deposits, facilities, crew_offers,
+    // passengers, relay_networks, recipes, and any non-allowlisted entry kind.
+    if !is_allowed_client_entry_kind(kind) {
         return true;
     }
     let Some(def) = def else {
@@ -197,8 +226,82 @@ fn sanitize_entry_in_place(kind: &str, def: &mut Map<String, Value>) {
                 }
             }
         }
+        "port" => {
+            // Strip vendor stock, ask/bid prices, intake caps, refresh rates, treasuries,
+            // org controls, and programme internals — retain public chart references only.
+            const ALLOWED_PORT_KEYS: &[&str] =
+                &["location", "venue", "site", "area", "gallery", "routes"];
+            def.retain(|k, _| ALLOWED_PORT_KEYS.contains(&k.as_str()));
+        }
+        "location" => {
+            // Strip `kirkwood_picket` and rock `gross_t` reserves; retain public chart fields.
+            const ALLOWED_LOCATION_KEYS: &[&str] = &[
+                "label", "name", "body", "role", "lat_mdeg", "lon_mdeg", "clusters",
+            ];
+            def.retain(|k, _| ALLOWED_LOCATION_KEYS.contains(&k.as_str()));
+            if let Some(clusters) = def.get_mut("clusters").and_then(Value::as_array_mut) {
+                for cluster in clusters {
+                    if let Some(cobj) = cluster.as_object_mut() {
+                        cobj.retain(|k, _| matches!(k.as_str(), "id" | "label" | "rocks"));
+                        if let Some(rocks) = cobj.get_mut("rocks").and_then(Value::as_array_mut) {
+                            for rock in rocks {
+                                if let Some(robj) = rock.as_object_mut() {
+                                    robj.retain(|k, _| {
+                                        matches!(k.as_str(), "id" | "family" | "spectral_class")
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "route" => {
+            const ALLOWED_ROUTE_KEYS: &[&str] =
+                &["from", "to", "drive_class", "propellant", "legs"];
+            def.retain(|k, _| ALLOWED_ROUTE_KEYS.contains(&k.as_str()));
+        }
+        "body" => {
+            const ALLOWED_BODY_KEYS: &[&str] = &[
+                "parent",
+                "orbit_au",
+                "period_days",
+                "phase_deg_at_epoch",
+                "epoch_ic",
+                "radius_km",
+                "surface_mg",
+            ];
+            def.retain(|k, _| ALLOWED_BODY_KEYS.contains(&k.as_str()));
+        }
         _ => {}
     }
+}
+
+/// Structural check for whether a neighborhood pack represents a player-accessible
+/// 3D area: requires at least one public room and excludes non-OOC Limbo neighborhoods
+/// (such as studio/staff backlots in `region.limbo` whose `setting != "ooc"`).
+fn neighborhood_is_player_accessible(doc: &Value) -> bool {
+    let Some(entries) = doc.get("entries").and_then(Value::as_object) else {
+        return false;
+    };
+    let mut has_public_room = false;
+    let mut is_non_ooc_limbo = false;
+    for entry in entries.values() {
+        let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
+        let Some(def) = entry.get("def").and_then(Value::as_object) else {
+            continue;
+        };
+        if kind == "room" && def.get("access").and_then(Value::as_str) != Some("restricted") {
+            has_public_room = true;
+        } else if kind == "neighborhood" {
+            let region = def.get("region").and_then(Value::as_str).unwrap_or("");
+            let setting = def.get("setting").and_then(Value::as_str).unwrap_or("");
+            if region == "region.limbo" && setting != "ooc" {
+                is_non_ooc_limbo = true;
+            }
+        }
+    }
+    has_public_room && !is_non_ooc_limbo
 }
 
 fn project_pack_value_for_client(mut doc: Value) -> Option<String> {
@@ -336,17 +439,21 @@ impl PackCollector {
         let Ok(doc) = serde_json::from_str::<Value>(raw_json) else {
             return;
         };
-        let Some(manifest) = doc.get("manifest").and_then(Value::as_object) else {
-            return;
-        };
-        if manifest.get("kind").and_then(Value::as_str) != Some("neighborhood") {
+        if !neighborhood_is_player_accessible(&doc) {
             return;
         }
-        let Some(id) = manifest.get("id").and_then(Value::as_str) else {
+        let Some(id) = doc
+            .get("manifest")
+            .and_then(Value::as_object)
+            .filter(|m| m.get("kind").and_then(Value::as_str) == Some("neighborhood"))
+            .and_then(|m| m.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
             return;
         };
         let short = id.strip_prefix("neighborhood.").unwrap_or("");
-        self.push_projected(id, "neighborhood", raw_json, &[short]);
+        self.push_projected_value(&id, "neighborhood", doc, &[short]);
     }
 
     fn push_fielded_value_if_client_relevant(&mut self, doc: Value) {
@@ -520,7 +627,7 @@ fn reconcile_neighborhood_with_live_records(
         }
     }
 
-    // Overlay live NeighborhoodRec display name when present.
+    // Overlay live NeighborhoodRec display name, region, and setting when present.
     for (nkey, nb) in &records.neighborhoods {
         if &nkey.pack != pack_id {
             continue;
@@ -530,6 +637,11 @@ fn reconcile_neighborhood_with_live_records(
             .or_insert_with(|| json!({ "kind": "neighborhood", "def": {} }));
         if let Some(def) = row.get_mut("def").and_then(Value::as_object_mut) {
             def.insert("name".to_owned(), Value::String(nb.name.clone()));
+            def.insert(
+                "region".to_owned(),
+                Value::String(nb.region.pack.as_str().to_owned()),
+            );
+            def.insert("setting".to_owned(), Value::String(nb.setting.clone()));
         }
     }
 
@@ -551,8 +663,8 @@ fn reconcile_neighborhood_with_live_records(
 
 /// Build the player-safe client content bundle for the live `w` world and `actor`,
 /// honoring `ContentState` applied/retired latches, `AtlasState` operator packs
-/// and live `Records` geometry, `TacsimStore` applied revisions, and staff-only
-/// neighborhood visibility. Falls back to [`client_content_bundle`] only on a
+/// and live `Records` geometry, `TacsimStore` applied revisions, and structural
+/// neighborhood accessibility. Falls back to [`client_content_bundle`] only on a
 /// bare detached `World` with neither `AtlasState` nor `TacsimStore` composed.
 #[must_use]
 pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
@@ -582,9 +694,6 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                     continue;
                 }
             }
-            if !is_staff_viewer && id.as_str() == "neighborhood.staff_lobby" {
-                continue;
-            }
             if let Some(arena_slug) = id
                 .as_str()
                 .strip_prefix("tacsim.")
@@ -599,6 +708,9 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
             if pack.manifest().kind() == mush_content::PackKind::Neighborhood {
                 if let Ok(mut doc) = serde_json::to_value(pack) {
                     reconcile_neighborhood_with_live_records(w, &atlas.records, id, &mut doc);
+                    if !is_staff_viewer && !neighborhood_is_player_accessible(&doc) {
+                        continue;
+                    }
                     let short = id.as_str().strip_prefix("neighborhood.").unwrap_or("");
                     col.push_projected_value(id.as_str(), "neighborhood", doc, &[short]);
                 }
@@ -618,9 +730,6 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
         }
         for pack_id in record_packs {
             if col.by_id.contains_key(pack_id.as_str()) {
-                continue;
-            }
-            if !is_staff_viewer && pack_id.as_str() == "neighborhood.staff_lobby" {
                 continue;
             }
             if content.is_some_and(|c| {
@@ -643,6 +752,9 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                 "entries": {},
             });
             reconcile_neighborhood_with_live_records(w, &atlas.records, &pack_id, &mut doc);
+            if !is_staff_viewer && !neighborhood_is_player_accessible(&doc) {
+                continue;
+            }
             let short = pack_id.as_str().strip_prefix("neighborhood.").unwrap_or("");
             col.push_projected_value(pack_id.as_str(), "neighborhood", doc, &[short]);
         }
@@ -950,26 +1062,34 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 }
 
 struct ClientContentQuery {
-    cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
+    player_cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
+    staff_cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
 }
 
 impl ClientContentQuery {
     fn new() -> Self {
         Self {
-            cache: Mutex::new(None),
+            player_cache: Mutex::new(None),
+            staff_cache: Mutex::new(None),
         }
     }
 
     fn bundle_for(&self, w: &World, actor: ObjId) -> Arc<ClientContentBundle> {
+        let is_staff = mush_atlas::is_staff(w, actor);
+        let slot = if is_staff {
+            &self.staff_cache
+        } else {
+            &self.player_cache
+        };
         let fp = world_content_fingerprint(w, actor);
-        if let Ok(guard) = self.cache.lock()
+        if let Ok(guard) = slot.lock()
             && let Some((cached_fp, cached_bundle)) = guard.as_ref()
             && *cached_fp == fp
         {
             return Arc::clone(cached_bundle);
         }
         let built = Arc::new(world_content_bundle(w, actor));
-        if let Ok(mut guard) = self.cache.lock() {
+        if let Ok(mut guard) = slot.lock() {
             *guard = Some((fp, Arc::clone(&built)));
         }
         built
@@ -1250,6 +1370,134 @@ impl QueryHandler for PortTradeQuery {
     }
 }
 
+/// Verify that every projected pack in `bundle` strips secrets, lore, quests, hooks,
+/// hidden exits, restricted-room prose, private NPC prompts, and lane vendor/reserve data.
+///
+/// # Errors
+///
+/// Returns a descriptive failure string if any non-public entry kind or field remains.
+pub fn validate_projected_bundle_cleanliness(bundle: &ClientContentBundle) -> Result<(), String> {
+    if bundle.entries.is_empty() {
+        return Err("bundle has no entries".to_owned());
+    }
+    for entry in &bundle.entries {
+        if entry.sha256.len() != 64 {
+            return Err(format!("invalid sha256 on `{}`", entry.id));
+        }
+        let parsed: Value = serde_json::from_str(&entry.json)
+            .map_err(|e| format!("invalid json on `{}`: {e}", entry.id))?;
+        if parsed.get("brief").is_some() {
+            return Err(format!("`brief` leaked on `{}`", entry.id));
+        }
+        if let Some(entries) = parsed.get("entries").and_then(Value::as_object) {
+            for (row_id, row) in entries {
+                let kind = row.get("kind").and_then(Value::as_str).unwrap_or("");
+                if !is_allowed_client_entry_kind(kind) {
+                    return Err(format!(
+                        "disallowed entry kind `{kind}` (`{row_id}`) leaked on `{}`",
+                        entry.id
+                    ));
+                }
+                if let Some(def) = row.get("def").and_then(Value::as_object) {
+                    if def.get("reveal").and_then(Value::as_str) == Some("staff") {
+                        return Err(format!("staff reveal leaked on `{}:{row_id}`", entry.id));
+                    }
+                    if def.get("visibility").and_then(Value::as_str) == Some("hidden") {
+                        return Err(format!("hidden entry leaked on `{}:{row_id}`", entry.id));
+                    }
+                    let portal_vis = def
+                        .get("portal")
+                        .and_then(Value::as_object)
+                        .and_then(|p| p.get("visibility"))
+                        .and_then(Value::as_str);
+                    if portal_vis == Some("hidden") {
+                        return Err(format!("hidden portal leaked on `{}:{row_id}`", entry.id));
+                    }
+                    for forbidden in [
+                        "lore",
+                        "lore_tags",
+                        "knowledge",
+                        "vendors",
+                        "treasury",
+                        "orgs",
+                        "programme",
+                        "kirkwood_picket",
+                    ] {
+                        if def.contains_key(forbidden) {
+                            return Err(format!(
+                                "forbidden key `{forbidden}` leaked on `{}:{row_id}`",
+                                entry.id
+                            ));
+                        }
+                    }
+                    if kind == "room"
+                        && def.get("access").and_then(Value::as_str) == Some("restricted")
+                        && (def.contains_key("desc") || def.contains_key("details"))
+                    {
+                        return Err(format!(
+                            "restricted room prose leaked on `{}:{row_id}`",
+                            entry.id
+                        ));
+                    }
+                    if let Some(prof) = def.get("profile").and_then(Value::as_object) {
+                        for forbidden_prof in ["persona", "knows", "does_not_know", "fallback"] {
+                            if prof.contains_key(forbidden_prof) {
+                                return Err(format!(
+                                    "private profile `{forbidden_prof}` leaked on `{}:{row_id}`",
+                                    entry.id
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for raw_forbidden in [
+            "\"secrecy\":\"guarded\"",
+            "\"secrecy\":\"secret\"",
+            "\"gross_t\":",
+            "\"ask_minor\":",
+            "\"bid_minor\":",
+            "\"intake_cap\":",
+        ] {
+            if entry.json.contains(raw_forbidden) {
+                return Err(format!(
+                    "raw forbidden substring `{raw_forbidden}` leaked on `{}`",
+                    entry.id
+                ));
+            }
+        }
+    }
+
+    let Some(ceres) = bundle.find("neighborhood.ceres_freeport") else {
+        return Err("missing ceres_freeport pack".to_owned());
+    };
+    for hidden in ["secret.slowdown", "exit.c14_c15", "exit.c05_c16"] {
+        if ceres.json.contains(hidden) {
+            return Err(format!("hidden entry `{hidden}` leaked in ceres_freeport"));
+        }
+    }
+    let Some(lane) = bundle.find("ceres_phobos") else {
+        return Err("missing ceres_phobos lane pack".to_owned());
+    };
+    for lane_secret in [
+        "\"vendors\"",
+        "\"deposit\"",
+        "\"crew_offer\"",
+        "\"passenger\"",
+        "\"facility\"",
+        "\"kirkwood_picket\"",
+        "\"gross_t\"",
+    ] {
+        if lane.json.contains(lane_secret) {
+            return Err(format!(
+                "lane secret `{lane_secret}` leaked in ceres_phobos"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1259,55 +1507,11 @@ mod tests {
     #[test]
     fn client_content_bundle_strips_secrets_hidden_exits_and_prompt_internals() -> TestResult {
         let bundle = client_content_bundle();
-        check!(!bundle.entries.is_empty());
-
-        for entry in &bundle.entries {
-            check_eq!(entry.sha256.len(), 64);
-            check!(!entry.json.is_empty());
-            let parsed: Value = serde_json::from_str(&entry.json)?;
-            check!(parsed.is_object());
-            check!(parsed.get("brief").is_none());
-            if let Some(entries) = parsed.get("entries").and_then(Value::as_object) {
-                for (_id, row) in entries {
-                    let kind = row.get("kind").and_then(Value::as_str).unwrap_or("");
-                    check_ne!(kind, "secret");
-                    check_ne!(kind, "lore");
-                    check_ne!(kind, "quest");
-                    if let Some(def) = row.get("def").and_then(Value::as_object) {
-                        check_ne!(def.get("reveal").and_then(Value::as_str), Some("staff"));
-                        check_ne!(
-                            def.get("visibility").and_then(Value::as_str),
-                            Some("hidden")
-                        );
-                        let portal_vis = def
-                            .get("portal")
-                            .and_then(Value::as_object)
-                            .and_then(|p| p.get("visibility"))
-                            .and_then(Value::as_str);
-                        check_ne!(portal_vis, Some("hidden"));
-                        // Nested `def.lore` (guarded/secret NPC knowledge) must never appear
-                        check!(def.get("lore").is_none());
-                        check!(def.get("lore_tags").is_none());
-                        check!(def.get("knowledge").is_none());
-                        if let Some(prof) = def.get("profile").and_then(Value::as_object) {
-                            check!(prof.get("persona").is_none());
-                            check!(prof.get("knows").is_none());
-                            check!(prof.get("does_not_know").is_none());
-                            check!(prof.get("fallback").is_none());
-                        }
-                    }
-                }
-            }
-            check!(!entry.json.contains("\"secrecy\":\"guarded\""));
-            check!(!entry.json.contains("\"secrecy\":\"secret\""));
+        if let Err(reason) = validate_projected_bundle_cleanliness(bundle) {
+            return crate::test_checks::failed(&reason);
         }
-
-        let Some(ceres) = bundle.find("neighborhood.ceres_freeport") else {
-            return crate::test_checks::failed("missing ceres_freeport pack");
-        };
-        check!(!ceres.json.contains("secret.slowdown"));
-        check!(!ceres.json.contains("exit.c14_c15"));
-        check!(!ceres.json.contains("exit.c05_c16"));
+        check!(bundle.find("neighborhood.staff_lobby").is_none());
+        check!(bundle.find("neighborhood.ooc_area").is_some());
         Ok(())
     }
 
@@ -1346,10 +1550,20 @@ mod tests {
     }
 
     #[test]
-    fn client_content_query_answers_manifest_and_aliases() -> TestResult {
-        let tw = mush_testkit::TestWorld::new();
+    fn client_content_query_answers_manifest_aliases_and_isolates_staff_player_caches() -> TestResult
+    {
+        let mut tw = mush_testkit::TestWorld::new();
+        let player = tw.spawn_player("PlayerViewer");
         let w = &tw.engine().world;
         let q = ClientContentQuery::new();
+
+        let staff_b1 = q.bundle_for(w, mush_core::GOD);
+        let player_b1 = q.bundle_for(w, player);
+        let staff_b2 = q.bundle_for(w, mush_core::GOD);
+        let player_b2 = q.bundle_for(w, player);
+        check!(Arc::ptr_eq(&staff_b1, &staff_b2));
+        check!(Arc::ptr_eq(&player_b1, &player_b2));
+
         let Ok(ev) = q.query(w, ObjId(1), &json!({"op": "manifest"})) else {
             return crate::test_checks::failed("manifest query failed");
         };
@@ -1376,7 +1590,8 @@ mod tests {
     #[test]
     fn reconcile_neighborhood_emits_client_footprint_and_surface_schema() -> TestResult {
         use mush_atlas::{
-            Access, Footprint, Point2, RecordKey, Records, Rect2, RoomGeo, RoomKind, SurfaceRef,
+            Access, Footprint, Point2, RecordKey, Records, Rect2, RoomGeo, RoomKind, StructureRec,
+            SurfaceRef,
         };
         use mush_core::CanonicalId;
 
@@ -1393,6 +1608,43 @@ mod tests {
         let st_key = RecordKey::new(pack_id.clone(), CanonicalId::new("structure.hub")?);
 
         let mut records = Records::default();
+        records.structures.insert(
+            st_key.clone(),
+            StructureRec {
+                key: st_key.clone(),
+                site: RecordKey::new(pack_id.clone(), CanonicalId::new("site.hub")?),
+                footprint: mush_atlas::Polygon2(vec![
+                    Point2(0.0, 0.0),
+                    Point2(200.0, 0.0),
+                    Point2(200.0, 250.0),
+                    Point2(0.0, 250.0),
+                ]),
+                floors: vec![
+                    mush_atlas::record::Floor {
+                        index: 1,
+                        name: Some("Deck 1".to_owned()),
+                        z_offset_m: 0.0,
+                        height_m: 4.5,
+                        tile: None,
+                    },
+                    mush_atlas::record::Floor {
+                        index: 2,
+                        name: Some("Deck 2".to_owned()),
+                        z_offset_m: 5.0,
+                        height_m: 4.5,
+                        tile: None,
+                    },
+                    mush_atlas::record::Floor {
+                        index: 3,
+                        name: Some("Deck 3".to_owned()),
+                        z_offset_m: 10.0,
+                        height_m: 4.5,
+                        tile: None,
+                    },
+                ],
+                revision: 1,
+            },
+        );
         records.roomgeo.insert(
             r1,
             RoomGeo {
@@ -1468,6 +1720,17 @@ mod tests {
             json!([[40.0, 50.0], [65.0, 80.0]])
         );
         check_eq!(syn_def["surface"]["floor"], json!(["structure.hub", 2]));
+
+        // Pin exact cross-language fixture consumed by Unity NUnit (`TacSimEditModeTests.cs`)
+        let Some(projected_str) = project_pack_value_for_client(doc) else {
+            return crate::test_checks::failed("projection failed");
+        };
+        let projected_val: Value = serde_json::from_str(&projected_str)?;
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../unity/Assets/_TacSim/Scripts/Tests/Fixtures~/reconciled_neighborhood.json",
+        );
+        let disk_val: Value = serde_json::from_str(&std::fs::read_to_string(&fixture_path)?)?;
+        check_eq!(disk_val, projected_val);
         Ok(())
     }
 }

@@ -237,18 +237,18 @@ namespace TacSim.Core
             SpaceStage.OnSpaceAlert += msg => Hud.AppendLogLine($"<color=#FFAA44>[HELM]</color> {msg}");
             SpaceStage.OnOrbitalTargetClicked += (id, isRock) =>
             {
+                string safeId = MushProtocol.EscapeUnityRichText(id);
                 if (isRock)
                 {
                     SpaceStage.NotifyApproachOrdered(id);
                     RefreshOrbitalReadout();
-                    Hud.AppendLogLine($"<color=#66FFCC>[MINING]</color> Approaching Asteroid Pocket <b>{id}</b> — click <b>MATCH VEL</b> (`+helm/match {id}`) once inside 2,000 m &amp; &lt; 5 m/s.");
+                    Hud.AppendLogLine($"<color=#66FFCC>[MINING]</color> Ordering approach toward Asteroid Pocket <b>{safeId}</b> — click <b>MATCH VEL</b> (`+helm/match {safeId}`) once inside 2,000 m &amp; &lt; 5 m/s.");
                     if (_ws != null && _ws.IsConnected)
                         _ws.SendLine($"+helm/approach {id}");
                 }
                 else
                 {
-                    RefreshOrbitalReadout();
-                    Hud.AppendLogLine($"<color=#FFBB55>[TAC]</color> Locked Naval Contact <b>{id}</b>.");
+                    Hud.AppendLogLine($"<color=#FFBB55>[TAC]</color> Requesting target lock on <b>{safeId}</b>...");
                     if (_ws != null && _ws.IsConnected)
                         _ws.SendLine($"+tac/lock {id}");
                 }
@@ -397,15 +397,38 @@ namespace TacSim.Core
 
         private void RefreshLoadedContentAfterSync()
         {
-            TradeState?.ReloadGoodsCatalog();
-            if (StationWorld != null && !string.IsNullOrEmpty(StationWorld.LoadedPackId))
+            var cats = _contentSync?.LastUpdatedCategories;
+            bool rebuildAll = cats == null || cats.Count == 0;
+            bool dirtyMarket = rebuildAll;
+            bool dirtyStation = rebuildAll;
+            bool dirtyUnit = rebuildAll;
+            if (!rebuildAll)
+            {
+                foreach (string c in cats)
+                {
+                    if (string.Equals(c, "all", StringComparison.OrdinalIgnoreCase))
+                    {
+                        dirtyMarket = dirtyStation = dirtyUnit = true;
+                        break;
+                    }
+                    if (string.Equals(c, "market", StringComparison.OrdinalIgnoreCase)) dirtyMarket = true;
+                    if (string.Equals(c, "neighborhood", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(c, "cast", StringComparison.OrdinalIgnoreCase)) dirtyStation = true;
+                    if (string.Equals(c, "unit", StringComparison.OrdinalIgnoreCase)) dirtyUnit = true;
+                }
+            }
+
+            if (dirtyMarket)
+                TradeState?.ReloadGoodsCatalog();
+
+            if (dirtyStation && StationWorld != null && !string.IsNullOrEmpty(StationWorld.LoadedPackId))
             {
                 string prevRoom = _serverStationRoomEntry ?? StationWorld.ActiveRoomEntryId;
                 StationWorld.BuildStation(AssetCatalog, StationWorld.LoadedPackId);
                 if (!string.IsNullOrEmpty(prevRoom))
                     StationWorld.HighlightActiveRoom(prevRoom);
             }
-            if (ShipInterior != null && !string.IsNullOrEmpty(ShipInterior.LoadedUnitId))
+            if (dirtyUnit && ShipInterior != null && !string.IsNullOrEmpty(ShipInterior.LoadedUnitId))
             {
                 ShipInterior.BuildInterior(AssetCatalog, ShipInterior.LoadedUnitId);
             }
@@ -475,20 +498,23 @@ namespace TacSim.Core
                 _pendingMoveTarget = null;
                 _nextMoveStepAllowedAt = 0f;
 
-                Hud.SetLoginStatus($"Loading server pack cache for <b>{session.BaseHttpUrl}</b>...");
+                string safeUrl = MushProtocol.EscapeUnityRichText(session.BaseHttpUrl);
+                string safeChar = MushProtocol.EscapeUnityRichText(chosen.Name);
+                string safeAcct = MushProtocol.EscapeUnityRichText(session.Account);
+                Hud.SetLoginStatus($"Loading server pack cache for <b>{safeUrl}</b>...");
                 _contentSync.InitializeDiskCacheForServer(session.BaseHttpUrl);
 
-                Hud.SetLoginStatus($"Attaching WebSocket to <b>{chosen.Name}</b>...");
+                Hud.SetLoginStatus($"Attaching WebSocket to <b>{safeChar}</b>...");
                 Player.VisualSpawner.BuildPlayerVisual(AssetCatalog, avatar);
                 await _ws.ConnectAsync(session, chosen.Key, resetResume: true);
                 Hud.SetConnectionBadge(_ws.State);
                 Hud.ShowLoginOverlay(false);
-                Hud.AppendLogLine($"<color=#66FFAA>[CONNECTED]</color> Attached as <b>{chosen.Name}</b> ({session.Account}) on {session.BaseHttpUrl}.");
+                Hud.AppendLogLine($"<color=#66FFAA>[CONNECTED]</color> Attached as <b>{safeChar}</b> ({safeAcct}) on {safeUrl}.");
             }
             catch (Exception ex)
             {
                 Debug.LogWarning($"[TacSim WS] {ex}");
-                Hud.SetLoginStatus($"<color=#FF8877>WebSocket connect failed: {ex.Message}</color>");
+                Hud.SetLoginStatus($"<color=#FF8877>WebSocket connect failed: {MushProtocol.EscapeUnityRichText(ex.Message)}</color>");
             }
         }
 
@@ -845,6 +871,11 @@ namespace TacSim.Core
             Audio?.PlayUiClick();
             long unitMinor = row.UnitPriceMinor > 0 ? row.UnitPriceMinor : (long)Math.Round(row.UnitPriceMajor * 100m);
             string quoteCmd = TradeState.BeginOneClickBuy(row.ListingId, quantity, Time.time, unitMinor);
+            if (string.IsNullOrEmpty(quoteCmd))
+            {
+                Hud.AppendLogLine("<color=#FFAA55>[MARKET]</color> Cannot place 1-click buy without a known positive listing price; refresh the trade board first.");
+                return;
+            }
             ExecutePlayerCommand(quoteCmd);
             if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("port.trade"))
             {
@@ -858,12 +889,27 @@ namespace TacSim.Core
             if (row == null) return;
             Audio?.PlayUiClick();
             string sellCmd = TacSimTradeAndShipState.FormatOneClickSellCommand(row.ListingId, quantity, sellAll);
-            ExecutePlayerCommand(sellCmd);
-            if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("port.trade"))
-            {
-                _awaitingAppendedTradePage = false;
-                _ws.SendPanelSubscribe("port.trade");
-            }
+            string safeItem = MushProtocol.EscapeUnityRichText(row.ItemName);
+            string safeBuyer = MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(row.VendorName) ? row.Venue : row.VendorName);
+            string safePrice = MushProtocol.EscapeUnityRichText(row.UnitPriceText);
+            string qtyWord = sellAll ? "ALL available hold stock" : $"{Mathf.Max(1, quantity)} unit(s)";
+
+            Hud.ShowDetailModal(
+                "CONFIRM MARKET SALE",
+                $"Sell <b>{qtyWord}</b> of <b>{safeItem}</b> into Bid <b>#{row.ListingId}</b> ({safeBuyer}) at <b>{safePrice}</b> per unit?\n\nCommand: <b>{MushProtocol.EscapeUnityRichText(sellCmd)}</b>",
+                new List<(string, Action)>
+                {
+                    ("CONFIRM SALE", () =>
+                    {
+                        ExecutePlayerCommand(sellCmd);
+                        if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("port.trade"))
+                        {
+                            _awaitingAppendedTradePage = false;
+                            _ws.SendPanelSubscribe("port.trade");
+                        }
+                    }),
+                    ("BACK TO EXCHANGE", () => OpenVisualTradeTerminal("PORT EXCHANGE & HOLD LOGISTICS", openSailingTab: false))
+                });
         }
 
         public void ExecutePlayerCommand(string cmd)
@@ -974,10 +1020,8 @@ namespace TacSim.Core
             if (cmd.StartsWith("space:lock:", StringComparison.OrdinalIgnoreCase))
             {
                 string tgt = cmd.Substring("space:lock:".Length).Trim();
-                SpaceStage.SetLockedContact(tgt);
-                RefreshOrbitalReadout();
-                if (_ws != null && _ws.IsConnected && !string.IsNullOrEmpty(SpaceStage.LockedContactId))
-                    _ws.SendLine($"+tac/lock {SpaceStage.LockedContactId}");
+                if (_ws != null && _ws.IsConnected && !string.IsNullOrEmpty(tgt))
+                    _ws.SendLine($"+tac/lock {tgt}");
                 return;
             }
             if (cmd == "space:tac_beam" || cmd == "space:tac_railgun" || cmd == "space:tac_torp")
@@ -985,11 +1029,7 @@ namespace TacSim.Core
                 CameraRig.SetMode(CameraRigMode.OrbitalExterior);
                 string kind = cmd == "space:tac_railgun" ? "railgun" : (cmd == "space:tac_torp" ? "torp" : "beam");
                 if (_ws != null && _ws.IsConnected)
-                {
                     _ws.SendLine($"+tac/{kind}");
-                    if (SpaceStage.HasPerceivedContact(SpaceStage.LockedContactId))
-                        SpaceStage.TriggerNavalWeaponVfx(kind);
-                }
                 return;
             }
             if (cmd.StartsWith("helm:thrust:", StringComparison.OrdinalIgnoreCase))
@@ -1024,27 +1064,13 @@ namespace TacSim.Core
                 return;
             }
 
-            if (cmd.Equals("+ship/board", StringComparison.OrdinalIgnoreCase) || cmd.Equals("+ship/leave", StringComparison.OrdinalIgnoreCase))
-            {
-                Audio?.PlayAirlockCycle();
-            }
-
-            if (cmd.StartsWith("+tv/", StringComparison.OrdinalIgnoreCase) && SurfaceStage != null)
-            {
-                if (cmd.IndexOf("scan", StringComparison.OrdinalIgnoreCase) >= 0)
-                    SurfaceStage.TriggerScanPulseVfx(seismicSounding: false);
-                else if (cmd.IndexOf("sound", StringComparison.OrdinalIgnoreCase) >= 0)
-                    SurfaceStage.TriggerScanPulseVfx(seismicSounding: true);
-                else if (cmd.IndexOf("mine", StringComparison.OrdinalIgnoreCase) >= 0)
-                    SurfaceStage.TriggerDrillVfx(3.0f);
-            }
-
             if (cmd.StartsWith("+market/list", StringComparison.OrdinalIgnoreCase))
                 TradeState.NotifyMarketRefreshRequested();
 
-            Hud.AppendLogLine($"<color=#66CCFF>> {cmd}</color>");
+            string safeCmd = MushProtocol.EscapeUnityRichText(cmd);
+            Hud.AppendLogLine($"<color=#66CCFF>&gt; {safeCmd}</color>");
             if (Hud.IsModalOpen)
-                Hud.AppendModalResponseLine($"<color=#66CCFF>> {cmd}</color>", resetPreviousResponses: true);
+                Hud.AppendModalResponseLine($"<color=#66CCFF>&gt; {safeCmd}</color>", resetPreviousResponses: true);
 
             if (_ws != null && _ws.IsConnected)
             {
@@ -1053,7 +1079,7 @@ namespace TacSim.Core
             }
             else
             {
-                const string msg = "<color=#FF7766>[NET] Reconnecting or disconnected from mushd — command held.</color>";
+                const string msg = "<color=#FF7766>[NET] Disconnected from mushd — command not sent.</color>";
                 Hud.AppendLogLine(msg);
                 if (Hud.IsModalOpen)
                     Hud.AppendModalResponseLine(msg);
@@ -1161,6 +1187,8 @@ namespace TacSim.Core
                 _awaitingInitialRoomSync = false;
 
                 _isAboardShip = true;
+                if (!firstSync && !wasAboard)
+                    Audio?.PlayAirlockCycle();
                 _serverShipCompartment = resolvedComp;
                 _serverStationRoomEntry = null;
                 ShipInterior.ApplyRoomView(rv);
@@ -1199,6 +1227,8 @@ namespace TacSim.Core
                 _awaitingInitialRoomSync = false;
 
                 _isAboardShip = false;
+                if (!firstSync && wasAboard)
+                    Audio?.PlayAirlockCycle();
                 Player.IsSeatedAtHelm = false;
                 _serverStationRoomEntry = matchedStationEntry;
                 _serverShipCompartment = null;
@@ -1229,7 +1259,9 @@ namespace TacSim.Core
                 if (_ws != null && _ws.IsConnected && !_limboAutoEnterAttempted && !string.IsNullOrEmpty(ceresExitAlias))
                 {
                     _limboAutoEnterAttempted = true;
-                    Hud.AppendLogLine($"<color=#88DDFF>[TRANSIT]</color> Stepping from <b>{rv.Name}</b> into Ceres Freeport ({ceresExitAlias})...");
+                    string safeRoom = MushProtocol.EscapeUnityRichText(rv.Name);
+                    string safeAlias = MushProtocol.EscapeUnityRichText(ceresExitAlias);
+                    Hud.AppendLogLine($"<color=#88DDFF>[TRANSIT]</color> Stepping from <b>{safeRoom}</b> into Ceres Freeport ({safeAlias})...");
                     _ws.SendLine(ceresExitAlias);
                     return;
                 }
@@ -1241,8 +1273,9 @@ namespace TacSim.Core
 
             if (!string.IsNullOrWhiteSpace(rv.Name))
             {
-                string descMarkup = !string.IsNullOrWhiteSpace(rv.RichDesc) ? rv.RichDesc : rv.Desc;
-                Hud.AppendLogLine($"<color=#88DDFF>[{rv.Name}]</color> {descMarkup}");
+                string safeRoomName = MushProtocol.EscapeUnityRichText(rv.Name);
+                string descMarkup = !string.IsNullOrWhiteSpace(rv.RichDesc) ? rv.RichDesc : MushProtocol.EscapeUnityRichText(rv.Desc);
+                Hud.AppendLogLine($"<color=#88DDFF>[{safeRoomName}]</color> {descMarkup}");
             }
         }
 
@@ -1267,12 +1300,13 @@ namespace TacSim.Core
                     if (i > 0) sb.Append("  |  ");
                     string col = string.Equals(s.Team, "red", StringComparison.OrdinalIgnoreCase) ? "#FF7766" : "#66BBFF";
                     string tag = s.Seated ? " [IN POD]" : string.Empty;
-                    string shortUnit = (s.Unit ?? string.Empty).Replace("tacsim.unit.", string.Empty);
+                    string shortUnit = MushProtocol.EscapeUnityRichText((s.Unit ?? string.Empty).Replace("tacsim.unit.", string.Empty));
+                    string safePilot = MushProtocol.EscapeUnityRichText(s.PilotName);
                     sb.AppendFormat("<color={0}>{1}{2}</color> {3} ({4}){5}",
                         col,
                         string.Equals(s.Team, "red", StringComparison.OrdinalIgnoreCase) ? "R" : "B",
                         s.Index + 1,
-                        s.PilotName,
+                        safePilot,
                         shortUnit,
                         tag);
                 }
@@ -1355,8 +1389,8 @@ namespace TacSim.Core
 
         private void HandleServerNarrative(MushNarrativeEvent nar)
         {
-            string speaker = nar.Actor != null ? nar.Actor.Name : "";
-            string body = !string.IsNullOrEmpty(nar.RichMarkup) ? nar.RichMarkup : nar.Text;
+            string speaker = nar.Actor != null ? MushProtocol.EscapeUnityRichText(nar.Actor.Name) : "";
+            string body = !string.IsNullOrEmpty(nar.RichMarkup) ? nar.RichMarkup : MushProtocol.EscapeUnityRichText(nar.Text);
             string formatted = nar.Kind == "say" && !string.IsNullOrEmpty(speaker)
                 ? $"<b>{speaker}</b> says, \"{body}\""
                 : (!string.IsNullOrEmpty(speaker) ? $"<b>{speaker}</b> {body}" : body);
@@ -1370,8 +1404,10 @@ namespace TacSim.Core
 
         private void HandleServerChannel(MushChannelEvent ch)
         {
-            string body = !string.IsNullOrEmpty(ch.RichMarkup) ? ch.RichMarkup : ch.Text;
-            Hud.AppendLogLine($"<color=#77DDAA>[{ch.Channel}]</color> {ch.Actor?.Name}: {body}");
+            string safeChan = MushProtocol.EscapeUnityRichText(ch.Channel);
+            string safeSpeaker = MushProtocol.EscapeUnityRichText(ch.Actor?.Name ?? string.Empty);
+            string body = !string.IsNullOrEmpty(ch.RichMarkup) ? ch.RichMarkup : MushProtocol.EscapeUnityRichText(ch.Text);
+            Hud.AppendLogLine($"<color=#77DDAA>[{safeChan}]</color> {safeSpeaker}: {body}");
         }
 
         private void HandleServerComposing(MushComposingEvent comp)
@@ -1385,10 +1421,39 @@ namespace TacSim.Core
         {
             string display = !string.IsNullOrEmpty(richMarkup)
                 ? $"<color=#BBD8EE>{richMarkup}</color>"
-                : $"<color=#BBD8EE>{plainLine}</color>";
+                : $"<color=#BBD8EE>{MushProtocol.EscapeUnityRichText(plainLine)}</color>";
             Hud.AppendLogLine(display);
             if (Hud.IsModalOpen)
                 Hud.AppendModalResponseLine(display);
+
+            // Trigger surface/orbital action VFX only upon authoritative server outcome lines!
+            if (!string.IsNullOrEmpty(plainLine))
+            {
+                if (SurfaceStage != null && SurfaceStage.IsExcursionActive)
+                {
+                    if (plainLine.IndexOf("sounding", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        plainLine.IndexOf("refused", StringComparison.OrdinalIgnoreCase) < 0)
+                        SurfaceStage.TriggerScanPulseVfx(seismicSounding: true);
+                    else if (plainLine.IndexOf("scan", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                             plainLine.IndexOf("field", StringComparison.OrdinalIgnoreCase) >= 0)
+                        SurfaceStage.TriggerScanPulseVfx(seismicSounding: false);
+                    else if (plainLine.IndexOf("mining cycle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             plainLine.IndexOf("hopper", StringComparison.OrdinalIgnoreCase) >= 0)
+                        SurfaceStage.TriggerDrillVfx(3.0f);
+                }
+
+                if (SpaceStage != null && SpaceStage.HasPerceivedContact(SpaceStage.LockedContactId))
+                {
+                    if (plainLine.IndexOf("torpedo launched", StringComparison.OrdinalIgnoreCase) >= 0)
+                        SpaceStage.TriggerNavalWeaponVfx("torp");
+                    else if (plainLine.IndexOf("railgun", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                             plainLine.IndexOf("fires", StringComparison.OrdinalIgnoreCase) >= 0)
+                        SpaceStage.TriggerNavalWeaponVfx("railgun");
+                    else if (plainLine.IndexOf("beam", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                             plainLine.IndexOf("fires", StringComparison.OrdinalIgnoreCase) >= 0)
+                        SpaceStage.TriggerNavalWeaponVfx("beam");
+                }
+            }
 
             if (_isAboardShip) ShipInterior.UpdateGaugeText(plainLine);
             else StationWorld.AppendBoardLine(plainLine);

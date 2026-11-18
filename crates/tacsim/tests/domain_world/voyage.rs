@@ -15981,3 +15981,101 @@ fn cc7_a_hulls_magazines_survive_check_in_a_restart_and_check_out() {
     fold_module_ops_into(&mut rig.store, ops);
     no_refused_writes(&rig.tw);
 }
+
+#[test]
+fn helm_dock_refused_clamp_unpauses_hull_and_emits_closed_panel() {
+    let SalvageScene {
+        mut rig,
+        pilot_a,
+        pilot_b,
+        hull_a,
+        ..
+    } = salvage_scene();
+
+    // 1. pilot_a is already in the collar envelope; open pilot_a's docking session first!
+    let open_a = run(&mut rig.tw, pilot_a, "+helm/dock derelict");
+    assert!(
+        open_a.contains("[DOCKING] Initiated 60 fps 6-DOF docking session"),
+        "pilot_a opens docking session: {open_a}"
+    );
+    let (session_a, challenge_a, hull_b) = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("space book");
+        let sa = book.docking_sessions.get(&hull_a).expect("pilot_a session");
+        let hb = *book
+            .active_for_hull(hull_a)
+            .expect("bubble")
+            .carriers
+            .keys()
+            .find(|&&h| h != hull_a)
+            .expect("hull_b");
+        (sa.challenge.session_id.clone(), sa.challenge.clone(), hb)
+    };
+
+    // 2. While pilot_a is paused in docking, pilot_b closes range and clamps the derelict first.
+    let app_b = run(&mut rig.tw, pilot_b, "+helm/approach derelict");
+    assert!(app_b.contains("Braking approach"), "{app_b}");
+    let app_draws = drain(&mut rig.tw);
+    land_quietly(&mut rig, &app_draws);
+    for _ in 0..48 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        let ready = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull_b))
+            .is_some_and(|a| {
+                !a.carriers
+                    .get(&hull_b)
+                    .is_some_and(|c| c.approaching_derelict)
+            });
+        if ready {
+            break;
+        }
+    }
+    let clamp_b = clamp_derelict(&mut rig, pilot_b, hull_b, "derelict");
+    assert!(
+        clamp_b.contains("Hard dock and magnetic collar seal confirmed"),
+        "{clamp_b}"
+    );
+
+    // 3. pilot_a submits a solved tape: the clamp is refused, hull_a is unpaused, and
+    //    `space.docking` emits a terminal `{ closed: true, outcome: "refused" }` frame!
+    let rle_a = client_solve_docking_rle(&challenge_a);
+    let events_a = rig
+        .tw
+        .run(pilot_a, &format!("+helm/dock tape {session_a} {rle_a}"));
+    let draws_a = drain(&mut rig.tw);
+    land_quietly(&mut rig, &draws_a);
+
+    let has_refusal_err = events_a.iter().any(|(_, ev)| {
+        mush_testkit::text_of(ev).contains("already clamped or under tow by another ship")
+    });
+    assert!(has_refusal_err, "expected refusal error in {events_a:?}");
+
+    let still_paused = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .is_some_and(|b| b.docking_sessions.contains_key(&hull_a));
+    assert!(
+        !still_paused,
+        "refused clamp must remove docking session and unpause hull_a"
+    );
+
+    let closed_panel = events_a.iter().find_map(|(_, ev)| match ev {
+        mush_proto::OutputEvent::Panel { feed, data, .. } if feed.as_str() == "space.docking" => {
+            Some(data)
+        }
+        _ => None,
+    });
+    let closed_data = closed_panel.expect("refused clamp must emit terminal space.docking panel");
+    assert_eq!(closed_data["closed"], serde_json::json!(true));
+    assert_eq!(closed_data["outcome"], serde_json::json!("refused"));
+    assert_eq!(closed_data["session_id"], serde_json::json!(session_a));
+}

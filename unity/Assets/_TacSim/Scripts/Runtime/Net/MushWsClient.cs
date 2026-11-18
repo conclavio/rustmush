@@ -481,17 +481,18 @@ namespace TacSim.Net
             string kind = d.Str("kind", "keyframe");
             var payload = d["data"];
 
-            if (kind == "delta" && _panelFeeds.TryGetValue(feed, out JsonNode existing) && existing.IsObject && payload.IsObject)
+            if (kind == "delta")
             {
-                existing.MergeObjectDelta(payload);
-                OnPanelUpdated?.Invoke(feed, existing);
+                // Pulled TacSim panels emit full keyframes; if a feed signals a delta invalidation,
+                // request a fresh keyframe rather than applying an invented shallow object merge.
+                if (_advertisedPanels.Contains(feed))
+                    SendPanelSubscribe(feed);
+                return;
             }
-            else
-            {
-                var copy = payload != null ? payload.Clone() : JsonNode.NewObject();
-                _panelFeeds[feed] = copy;
-                OnPanelUpdated?.Invoke(feed, copy);
-            }
+
+            var copy = payload != null ? payload.Clone() : JsonNode.NewObject();
+            _panelFeeds[feed] = copy;
+            OnPanelUpdated?.Invoke(feed, copy);
         }
 
         private void ApplyViewEnvelope(JsonNode d)

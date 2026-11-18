@@ -1,0 +1,90 @@
+{
+  "entries": {
+    "room.existing": {
+      "def": {
+        "access": "public",
+        "footprint": {
+          "rect": [
+            [
+              100.0,
+              200.0
+            ],
+            [
+              120.0,
+              220.0
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Live Moved Room",
+        "surface": {
+          "floor": [
+            "structure.hub",
+            3
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "room.synth": {
+      "def": {
+        "access": "public",
+        "footprint": {
+          "rect": [
+            [
+              40.0,
+              50.0
+            ],
+            [
+              65.0,
+              80.0
+            ]
+          ]
+        },
+        "kind": "circulation",
+        "name": "Synthesized Room",
+        "surface": {
+          "floor": [
+            "structure.hub",
+            2
+          ]
+        }
+      },
+      "kind": "room"
+    },
+    "structure.hub": {
+      "def": {
+        "floors": [
+          {
+            "height_m": 4.5,
+            "index": 1,
+            "name": "Deck 1",
+            "tile": null,
+            "z_offset_m": 0.0
+          },
+          {
+            "height_m": 4.5,
+            "index": 2,
+            "name": "Deck 2",
+            "tile": null,
+            "z_offset_m": 5.0
+          },
+          {
+            "height_m": 4.5,
+            "index": 3,
+            "name": "Deck 3",
+            "tile": null,
+            "z_offset_m": 10.0
+          }
+        ]
+      },
+      "kind": "structure"
+    }
+  },
+  "manifest": {
+    "id": "neighborhood.test_station",
+    "kind": "neighborhood",
+    "projected": true,
+    "version": 1
+  }
+}

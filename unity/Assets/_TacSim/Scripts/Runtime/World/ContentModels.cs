@@ -364,20 +364,6 @@ namespace TacSim.World
                     return true;
                 }
             }
-
-            try
-            {
-                var ta = Resources.Load<TextAsset>($"TacSimFallbackPacks/{key}");
-                if (ta != null && !string.IsNullOrEmpty(ta.text))
-                {
-                    json = ta.text;
-                    return true;
-                }
-            }
-            catch
-            {
-                // Standalone managed test runner without Unity native runtime
-            }
             return false;
         }
 
@@ -399,12 +385,16 @@ namespace TacSim.World
                 // Standalone managed test runner without Unity native runtime
             }
 
-            string cwdCandidate = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "crates", "tacsim", "content", relativeUnderTacsimContent));
-            if (File.Exists(cwdCandidate))
-                return cwdCandidate;
+            string dir = Directory.GetCurrentDirectory();
+            for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
+            {
+                string candidate = Path.Combine(dir, "crates", "tacsim", "content", relativeUnderTacsimContent);
+                if (File.Exists(candidate))
+                    return Path.GetFullPath(candidate);
+                dir = Directory.GetParent(dir)?.FullName;
+            }
 
-            string directCandidate = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "crates", "tacsim", "content", relativeUnderTacsimContent));
-            return directCandidate;
+            return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "crates", "tacsim", "content", relativeUnderTacsimContent));
         }
 
         public static string ResolveMushAtlasContentPath(string relativeUnderMushAtlasContent)
@@ -424,9 +414,14 @@ namespace TacSim.World
                 // Standalone managed test runner without Unity native runtime
             }
 
-            string cwdCandidate = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "crates", "mush-atlas", "content", relativeUnderMushAtlasContent));
-            if (File.Exists(cwdCandidate))
-                return cwdCandidate;
+            string dir = Directory.GetCurrentDirectory();
+            for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
+            {
+                string candidate = Path.Combine(dir, "crates", "mush-atlas", "content", relativeUnderMushAtlasContent);
+                if (File.Exists(candidate))
+                    return Path.GetFullPath(candidate);
+                dir = Directory.GetParent(dir)?.FullName;
+            }
 
             return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "crates", "mush-atlas", "content", relativeUnderMushAtlasContent));
         }

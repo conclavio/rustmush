@@ -4655,7 +4655,7 @@ mod tests {
             .expect("create concealed thing");
         assert_eq!(hidden_thing, concealed_id);
 
-        let lens = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+        let lens = mush_core::TypedStateLens::Live(tw.engine().action_state());
         let view = mush_core::output::room_view(tw.registry(), tw.world(), looker, room, lens)
             .expect("room renders");
 
