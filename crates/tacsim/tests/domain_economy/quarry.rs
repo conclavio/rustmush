@@ -2656,19 +2656,35 @@ fn unity_site_map_512_and_refused_fixtures_stay_in_sync() {
     assert_eq!(site_512["cell_cm"], json!(16_000));
     assert!(site_512["site"]["marks"]["hull"].is_array());
 
+    let _ = act_go(&mut rig, a, "+tv/1 recover go");
+    let _ = finish(&mut rig, tv, a);
+    let recovered_512 = map_frame(&mut rig, a, json!({ "view": "drive", "rig": 1 }));
+    assert!(recovered_512["you"].is_null());
+    assert!(recovered_512["site"]["rigs"][0]["cell"].is_null());
+
     let fixtures_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../unity/Assets/_TacSim/Scripts/Tests/Fixtures~");
     for (fname, expected) in [
         ("site_map_refused.json", &refused_frame),
         ("site_map_512_drive.json", &drive_512),
         ("site_map_512_site.json", &site_512),
+        ("site_map_512_recovered.json", &recovered_512),
     ] {
         let p = fixtures_dir.join(fname);
-        let disk_raw = std::fs::read_to_string(&p).expect("read checked-in unity fixture");
-        let disk_val: Value = serde_json::from_str(&disk_raw).expect("parse unity fixture");
-        assert_eq!(
-            &disk_val, expected,
-            "Unity fixture `{fname}` drifted from server `site_map_frame`"
-        );
+        let mut text = serde_json::to_string_pretty(expected).expect("serialize unity fixture");
+        text.push('\n');
+        if std::env::var_os("TACSIM_BLESS").is_some() {
+            std::fs::create_dir_all(&fixtures_dir).expect("unity fixture dir");
+            std::fs::write(&p, &text).expect("write blessed unity fixture");
+        } else {
+            let disk_raw = std::fs::read_to_string(&p).unwrap_or_default();
+            let disk_val: Value = serde_json::from_str(&disk_raw).unwrap_or(Value::Null);
+            assert_eq!(
+                &disk_val, expected,
+                "unity/Assets/_TacSim/Scripts/Tests/Fixtures~/{fname} is out of date; \
+                 re-bless with TACSIM_BLESS=1 cargo test -p tacsim --test domain_economy \
+                 quarry::unity_site_map_512_and_refused_fixtures_stay_in_sync"
+            );
+        }
     }
 }

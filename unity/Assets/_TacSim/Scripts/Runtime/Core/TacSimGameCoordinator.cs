@@ -32,15 +32,20 @@ namespace TacSim.Core
         public TacSimAudioSynthesizer Audio;
 
         public TacSimTradeAndShipState TradeState { get; private set; }
+        public TacSimActiveStage ActiveStage => _stageDirector != null ? _stageDirector.CurrentStage : TacSimActiveStage.StationWalk;
+
+        public event Action<string> OnCommandDispatched;
 
         private MushWsClient _ws;
         private TacSimContentSync _contentSync;
         private TacSimStageDirector _stageDirector;
 
+        private bool _eventsBound;
         private bool _isAboardShip;
         private bool _hullIsDocked = true;
         private bool _awaitingInitialRoomSync;
         private bool _limboAutoEnterAttempted;
+        private MushRoomView _lastRoomView;
         private string _serverStationRoomEntry;
         private string _serverShipCompartment;
         private string _pendingMoveTarget;
@@ -219,10 +224,14 @@ namespace TacSim.Core
                 CameraRig,
                 Player,
                 Audio);
+
+            BindEvents();
         }
 
         private void BindEvents()
         {
+            if (_eventsBound) return;
+            _eventsBound = true;
             Player.OnFocusedInteractableChanged += wi => Hud.SetFocusedInteractable(wi);
 
             StationWorld.OnInteractableTriggered += HandleWorldInteractable;
@@ -421,16 +430,47 @@ namespace TacSim.Core
             if (dirtyMarket)
                 TradeState?.ReloadGoodsCatalog();
 
-            if (dirtyStation && StationWorld != null && !string.IsNullOrEmpty(StationWorld.LoadedPackId))
+            if (dirtyStation && StationWorld != null)
             {
-                string prevRoom = _serverStationRoomEntry ?? StationWorld.ActiveRoomEntryId;
-                StationWorld.BuildStation(AssetCatalog, StationWorld.LoadedPackId);
-                if (!string.IsNullOrEmpty(prevRoom))
-                    StationWorld.HighlightActiveRoom(prevRoom);
+                if (!_isAboardShip && _lastRoomView != null)
+                {
+                    string desiredPack = _lastRoomView.Atlas != null && !string.IsNullOrEmpty(_lastRoomView.Atlas.Pack)
+                        ? _lastRoomView.Atlas.Pack
+                        : (_lastRoomView.Atlas != null ? _lastRoomView.Atlas.NeighborhoodPack : null);
+                    string rebuildPackId = !string.IsNullOrEmpty(desiredPack) ? desiredPack : StationWorld.LoadedPackId;
+                    if (!string.IsNullOrEmpty(rebuildPackId))
+                        StationWorld.BuildStation(AssetCatalog, rebuildPackId);
+
+                    if (StationWorld.TryMatchStationRoom(_lastRoomView, out string syncedEntry))
+                    {
+                        _serverStationRoomEntry = syncedEntry;
+                        StationWorld.ApplyRoomView(_lastRoomView, _ws != null && _ws.ActiveCharacter != null ? _ws.ActiveCharacter.Id : null);
+                        if (Player != null &&
+                            StationWorld.FindContainingRoomEntry(Player.transform.position) != syncedEntry &&
+                            Vector3.Distance(Player.transform.position, StationWorld.GetRoomSpawnPosition(syncedEntry)) > 32f)
+                        {
+                            Player.TeleportTo(StationWorld.GetRoomSpawnPosition(syncedEntry), 0f);
+                        }
+                        string surface = _lastRoomView.Atlas != null && !string.IsNullOrEmpty(_lastRoomView.Atlas.Surface)
+                            ? _lastRoomView.Atlas.Surface.ToUpperInvariant()
+                            : "STATION";
+                        Hud?.UpdateTopBar($"{_lastRoomView.Name.ToUpperInvariant()} [{surface}]", $"{_currentClockStr} | {_currentHullBadge}");
+                        Hud?.RefreshContextualQuickActions(syncedEntry, false);
+                    }
+                }
+                else if (!string.IsNullOrEmpty(StationWorld.LoadedPackId))
+                {
+                    string prevRoom = _serverStationRoomEntry ?? StationWorld.ActiveRoomEntryId;
+                    StationWorld.BuildStation(AssetCatalog, StationWorld.LoadedPackId);
+                    if (!string.IsNullOrEmpty(prevRoom))
+                        StationWorld.HighlightActiveRoom(prevRoom);
+                }
             }
             if (dirtyUnit && ShipInterior != null && !string.IsNullOrEmpty(ShipInterior.LoadedUnitId))
             {
                 ShipInterior.BuildInterior(AssetCatalog, ShipInterior.LoadedUnitId);
+                if (_isAboardShip && _lastRoomView != null)
+                    ShipInterior.ApplyRoomView(_lastRoomView);
             }
         }
 
@@ -1072,6 +1112,8 @@ namespace TacSim.Core
             if (Hud.IsModalOpen)
                 Hud.AppendModalResponseLine($"<color=#66CCFF>&gt; {safeCmd}</color>", resetPreviousResponses: true);
 
+            OnCommandDispatched?.Invoke(cmd);
+
             if (_ws != null && _ws.IsConnected)
             {
                 FlushPendingRoomMovesBeforeAction();
@@ -1089,6 +1131,7 @@ namespace TacSim.Core
         private void SitAtBridgeHelm()
         {
             Player.IsSeatedAtHelm = true;
+            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
             if (ShipInterior.HelmSeatStandSpot != null)
                 Player.TeleportTo(ShipInterior.HelmSeatStandSpot.position, 0f);
 
@@ -1106,6 +1149,7 @@ namespace TacSim.Core
         {
             SpaceStage.StopDockingSession();
             Player.IsSeatedAtHelm = false;
+            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
             CameraRig.SetMode(CameraRigMode.ThirdPersonWalk);
             _stageDirector?.ApplySoundscapeForCamera(CameraRigMode.ThirdPersonWalk, isAboardShip: true);
             Hud.RefreshContextualQuickActions("interior:bridge", isSeatedAtHelm: false);
@@ -1153,6 +1197,7 @@ namespace TacSim.Core
 
         private void HandleServerRoomView(MushRoomView rv)
         {
+            _lastRoomView = rv;
             _pendingMoveTarget = null;
             _nextMoveStepAllowedAt = 0f;
 
@@ -1179,8 +1224,8 @@ namespace TacSim.Core
             {
                 if (ArenaStage != null && ArenaStage.IsArenaActive)
                     ArenaStage.ExitArena();
-                if (SurfaceStage != null && SurfaceStage.IsExcursionActive && resolvedComp != "bay")
-                    SurfaceStage.ExitSurfaceMode();
+                if (SurfaceStage != null && SurfaceStage.IsExcursionActive && (resolvedComp != "bay" || !SurfaceStage.RigOnGround))
+                    ReconcileSurfaceExcursionEnded();
 
                 bool wasAboard = _isAboardShip;
                 bool firstSync = _awaitingInitialRoomSync;
@@ -1220,7 +1265,7 @@ namespace TacSim.Core
                 if (ArenaStage != null && ArenaStage.IsArenaActive && (rv.TacSim == null || !rv.TacSim.SimInPod))
                     ArenaStage.ExitArena();
                 if (SurfaceStage != null && SurfaceStage.IsExcursionActive)
-                    SurfaceStage.ExitSurfaceMode();
+                    ReconcileSurfaceExcursionEnded();
 
                 bool wasAboard = _isAboardShip;
                 bool firstSync = _awaitingInitialRoomSync;
@@ -1270,6 +1315,8 @@ namespace TacSim.Core
                 Hud.UpdateTopBar($"{rv.Name.ToUpperInvariant()} [OUTSIDE PORT]", $"{_currentClockStr} | {_currentHullBadge}");
                 Hud.RefreshContextualQuickActions(string.Empty, false);
             }
+
+            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
 
             if (!string.IsNullOrWhiteSpace(rv.Name))
             {
@@ -1444,13 +1491,12 @@ namespace TacSim.Core
 
                 if (SpaceStage != null && SpaceStage.HasPerceivedContact(SpaceStage.LockedContactId))
                 {
-                    if (plainLine.IndexOf("torpedo launched", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (plainLine.IndexOf("Launched torpedo salvo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        plainLine.IndexOf("torpedo launched", StringComparison.OrdinalIgnoreCase) >= 0)
                         SpaceStage.TriggerNavalWeaponVfx("torp");
-                    else if (plainLine.IndexOf("railgun", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                             plainLine.IndexOf("fires", StringComparison.OrdinalIgnoreCase) >= 0)
+                    else if (plainLine.IndexOf("Railgun salvo fired", StringComparison.OrdinalIgnoreCase) >= 0)
                         SpaceStage.TriggerNavalWeaponVfx("railgun");
-                    else if (plainLine.IndexOf("beam", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                             plainLine.IndexOf("fires", StringComparison.OrdinalIgnoreCase) >= 0)
+                    else if (plainLine.IndexOf("Laser battery fired", StringComparison.OrdinalIgnoreCase) >= 0)
                         SpaceStage.TriggerNavalWeaponVfx("beam");
                 }
             }
@@ -1526,7 +1572,11 @@ namespace TacSim.Core
                     break;
                 case "tv.status":
                     if (SurfaceStage != null)
+                    {
                         SurfaceStage.ApplyTvStatusFrame(data);
+                        if (SurfaceStage.IsExcursionActive && !SurfaceStage.RigOnGround)
+                            ReconcileSurfaceExcursionEnded();
+                    }
                     if (_ws != null && _ws.IsConnected && data != null && data.IsObject && data.Bool("seated", true) && !data.Bool("cleared", false))
                         SendSiteMapPull(SurfaceStage != null ? SurfaceStage.ActiveOreFamily : "volatiles");
                     break;
@@ -1535,8 +1585,10 @@ namespace TacSim.Core
                     {
                         SurfaceStage.ApplySiteMapFrame(data);
                         var youArr = data["you"].AsArray();
-                        if (!SurfaceStage.IsExcursionActive && youArr != null && youArr.Count >= 2)
+                        if (!SurfaceStage.IsExcursionActive && SurfaceStage.RigOnGround && youArr != null && youArr.Count >= 2)
                             EnterPlanetarySurfaceStage();
+                        else if (SurfaceStage.IsExcursionActive && (!SurfaceStage.RigOnGround || youArr == null || youArr.Count < 2))
+                            ReconcileSurfaceExcursionEnded();
                     }
                     break;
                 case "arena.map":
@@ -1587,6 +1639,7 @@ namespace TacSim.Core
                 ArenaStage.ExitArena();
 
             SurfaceStage.EnterSurfaceMode();
+            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
             CameraRig.GroundVehicleTarget = SurfaceStage.RoverTransform;
             CameraRig.GroundCupolaAnchor = SurfaceStage.RoverCupolaAnchor;
             CameraRig.SetMode(CameraRigMode.GroundVehicleChase);
@@ -1594,19 +1647,42 @@ namespace TacSim.Core
             Hud.UpdateTopBar(
                 $"{SurfaceStage.ActiveSiteTitle.ToUpperInvariant()} — SURFACE ROVER RIG {SurfaceStage.AddressedRigSlot}",
                 "WASD / LMB Terrain: Drive | RMB + Scroll: Camera | Scan -> Sound -> Core Drill");
-
-            if (_ws != null && _ws.IsConnected)
-                SendSiteMapPull(SurfaceStage.ActiveOreFamily);
         }
 
         private void ExitPlanetarySurfaceStage()
         {
-            SurfaceStage?.ExitSurfaceMode();
-            if (_ws != null && _ws.IsConnected)
-                _ws.SendLine($"+tv/{(SurfaceStage != null ? SurfaceStage.AddressedRigSlot : 1)} recover go");
-            CameraRig.SetMode(Player.IsSeatedAtHelm ? CameraRigMode.ShipBridgeHolo : CameraRigMode.ThirdPersonWalk);
-            Hud.Overlays?.SetHelmSeatedVisible(Player.IsSeatedAtHelm);
-            Hud.UpdateTopBar("RETURNED FROM SURFACE EXCURSION", $"{_currentClockStr} | {_currentHullBadge}");
+            if (SurfaceStage == null) return;
+            if (!SurfaceStage.RigOnGround)
+            {
+                ReconcileSurfaceExcursionEnded();
+                return;
+            }
+            ExecutePlayerCommand($"+tv/{SurfaceStage.AddressedRigSlot} recover go");
+        }
+
+        private void ReconcileSurfaceExcursionEnded()
+        {
+            if (SurfaceStage == null) return;
+            SurfaceStage.ExitSurfaceMode();
+            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+
+            bool seatedAtHelm = Player != null && Player.IsSeatedAtHelm;
+            CameraRigMode restoredMode = seatedAtHelm
+                ? (_hullIsDocked ? CameraRigMode.ShipBridgeHolo : CameraRigMode.OrbitalExterior)
+                : CameraRigMode.ThirdPersonWalk;
+            if (CameraRig != null)
+                CameraRig.SetMode(restoredMode);
+            _stageDirector?.ApplySoundscapeForCamera(restoredMode, _isAboardShip);
+
+            if (Hud != null)
+            {
+                Hud.Overlays?.SetHelmSeatedVisible(seatedAtHelm);
+                Hud.UpdateTopBar("RETURNED FROM SURFACE EXCURSION", $"{_currentClockStr} | {_currentHullBadge}");
+                if (_isAboardShip && !string.IsNullOrEmpty(_serverShipCompartment))
+                    Hud.RefreshContextualQuickActions($"interior:{_serverShipCompartment}", seatedAtHelm);
+                else if (!string.IsNullOrEmpty(_serverStationRoomEntry))
+                    Hud.RefreshContextualQuickActions(_serverStationRoomEntry, false);
+            }
         }
 
         private void HandleArenaCockpitVerb(string verb)

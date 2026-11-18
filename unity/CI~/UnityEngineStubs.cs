@@ -471,10 +471,10 @@ namespace UnityEngine
         public GameObject gameObject { get; internal set; }
         public Transform transform => gameObject?.transform;
         public T GetComponent<T>() => gameObject != null ? gameObject.GetComponent<T>() : default;
-        public T GetComponentInChildren<T>(bool includeInactive = false) => GetComponent<T>();
+        public T GetComponentInChildren<T>(bool includeInactive = false) => gameObject != null ? gameObject.GetComponentInChildren<T>(includeInactive) : default;
         public T GetComponentInParent<T>() => GetComponent<T>();
-        public T[] GetComponentsInChildren<T>(bool includeInactive = false) => Array.Empty<T>();
-        public T[] GetComponents<T>() => Array.Empty<T>();
+        public T[] GetComponentsInChildren<T>(bool includeInactive = false) => gameObject != null ? gameObject.GetComponentsInChildren<T>(includeInactive) : Array.Empty<T>();
+        public T[] GetComponents<T>() => gameObject != null ? gameObject.GetComponents<T>() : Array.Empty<T>();
     }
 
     public class Behaviour : Component
@@ -600,8 +600,39 @@ namespace UnityEngine
             }
             return default;
         }
-        public T GetComponentInChildren<T>(bool includeInactive = false) => GetComponent<T>();
-        public T[] GetComponentsInChildren<T>(bool includeInactive = false) => Array.Empty<T>();
+        public T[] GetComponents<T>()
+        {
+            var res = new List<T>();
+            for (int i = 0; i < _components.Count; i++)
+            {
+                if (_components[i] is T match) res.Add(match);
+            }
+            return res.ToArray();
+        }
+        public T GetComponentInChildren<T>(bool includeInactive = false)
+        {
+            var all = GetComponentsInChildren<T>(includeInactive);
+            return all.Length > 0 ? all[0] : default;
+        }
+        public T[] GetComponentsInChildren<T>(bool includeInactive = false)
+        {
+            var res = new List<T>();
+            CollectComponentsRecursive(this, includeInactive, res);
+            return res.ToArray();
+        }
+        private static void CollectComponentsRecursive<T>(GameObject go, bool includeInactive, List<T> acc)
+        {
+            if (go == null || (!includeInactive && !go.activeSelf)) return;
+            for (int i = 0; i < go._components.Count; i++)
+            {
+                if (go._components[i] is T match) acc.Add(match);
+            }
+            if (go.transform == null) return;
+            for (int c = 0; c < go.transform.childCount; c++)
+            {
+                CollectComponentsRecursive(go.transform.GetChild(c)?.gameObject, includeInactive, acc);
+            }
+        }
 
         public static GameObject CreatePrimitive(PrimitiveType type)
         {

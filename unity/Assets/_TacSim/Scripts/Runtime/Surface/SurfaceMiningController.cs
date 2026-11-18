@@ -222,7 +222,7 @@ namespace TacSim.Surface
             Vector3 worldPos = SurfaceStageOrigin + _roverTargetLocalPos;
             ActiveRoverRig = TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, transform, "RIG 1 [@]", worldPos, 180f, isEscort: false);
             _roverHeadingDeg = 180f;
-            RigOnGround = true;
+            RigOnGround = IsExcursionActive;
         }
 
         private void BuildScanAndDrillVfx()
@@ -260,6 +260,8 @@ namespace TacSim.Surface
         public void ExitSurfaceMode()
         {
             IsExcursionActive = false;
+            _activeLegWaypoints.Clear();
+            _hasDriveWaypoint = false;
             OnSurfaceTelemetryChanged?.Invoke();
         }
 
@@ -453,15 +455,41 @@ namespace TacSim.Surface
             {
                 AuthoritativeSiteCellX = cellArr[0].AsInt(AuthoritativeSiteCellX);
                 AuthoritativeSiteCellY = cellArr[1].AsInt(AuthoritativeSiteCellY);
+                RigOnGround = true;
+            }
+            else if (rig.ContainsKey("cell") && rig["cell"].IsNull)
+            {
+                _activeLegWaypoints.Clear();
+                _hasDriveWaypoint = false;
+                RigOnGround = false;
             }
         }
 
         public void ApplyTvStatusFrame(JsonNode frame)
         {
             if (frame == null || !frame.IsObject) return;
-            if (frame.ContainsKey("slot"))
-                AddressedRigSlot = Mathf.Max(1, frame.Int("slot", AddressedRigSlot));
-            ApplyRigRowNode(frame["rig"].IsObject ? frame["rig"] : frame);
+            var rigNode = frame["rig"].IsObject ? frame["rig"] : frame;
+            int reportedSlot = rigNode.ContainsKey("slot") ? rigNode.Int("slot", 0) : frame.Int("slot", 0);
+            if (!IsExcursionActive && reportedSlot > 0)
+                AddressedRigSlot = reportedSlot;
+
+            bool appliesToAddressed = reportedSlot <= 0 || reportedSlot == AddressedRigSlot || !IsExcursionActive;
+            if (appliesToAddressed)
+            {
+                ApplyRigRowNode(rigNode);
+                string state = rigNode.Str("state", string.Empty);
+                if (frame.Bool("cleared", false) || string.Equals(state, "bay", StringComparison.OrdinalIgnoreCase))
+                {
+                    _activeLegWaypoints.Clear();
+                    _hasDriveWaypoint = false;
+                    RigOnGround = false;
+                }
+                else if (string.Equals(state, "out", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(state, "parked", StringComparison.OrdinalIgnoreCase))
+                {
+                    RigOnGround = true;
+                }
+            }
             OnSurfaceTelemetryChanged?.Invoke();
         }
 
@@ -489,6 +517,12 @@ namespace TacSim.Surface
                     TerrainGrid = decoded;
                     SyncPadPlacementFromGrid();
                 }
+            }
+            else if (!frame.ContainsKey("you") || frame["you"].IsNull)
+            {
+                _activeLegWaypoints.Clear();
+                _hasDriveWaypoint = false;
+                RigOnGround = false;
             }
 
             var siteBlock = frame["site"];
@@ -577,16 +611,22 @@ namespace TacSim.Surface
                 RebuildOtherRigsVisuals(siteBlock["others"].AsArray());
             }
 
-            if (!positionedFromRigRow && TerrainGrid != null)
+            if (!positionedFromRigRow)
             {
                 var youArr = frame["you"].AsArray();
-                if (youArr != null && youArr.Count >= 2)
+                if (TerrainGrid != null && youArr != null && youArr.Count >= 2)
                 {
                     int localFx = youArr[0].AsInt(0);
                     int localFy = youArr[1].AsInt(0);
                     AuthoritativeSiteCellX = TerrainGrid.LocalToSiteCellX(localFx);
                     AuthoritativeSiteCellY = TerrainGrid.LocalToSiteCellY(localFy);
                     UpdateRoverTargetFromSiteCell(AuthoritativeSiteCellX, AuthoritativeSiteCellY, JsonNode.Null);
+                }
+                else if (frame.ContainsKey("you") && frame["you"].IsNull)
+                {
+                    _activeLegWaypoints.Clear();
+                    _hasDriveWaypoint = false;
+                    RigOnGround = false;
                 }
             }
 

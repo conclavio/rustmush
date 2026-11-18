@@ -1060,6 +1060,148 @@ namespace TacSim.Tests
             Assert.AreEqual(0, ts.SailingOrderLines.Count);
         }
 
+        [Test]
+        public void P0_Coordinator_SurfaceRoverRecovery_ExitsSurfaceMode_AndReturnToBaySendsOnce()
+        {
+            var rootGo = new UnityEngine.GameObject("TestCoordinatorRoot");
+            TacSimGameCoordinator coord = null;
+            try
+            {
+                coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                coord.EnsureSubsystems();
+
+                var dispatched = new List<string>();
+                coord.OnCommandDispatched += dispatched.Add;
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onPanel = typeof(TacSimGameCoordinator).GetMethod("HandleServerPanelUpdated", flags);
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                var onRefreshSync = typeof(TacSimGameCoordinator).GetMethod("RefreshLoadedContentAfterSync", flags);
+                Assert.IsNotNull(onPanel);
+                Assert.IsNotNull(onRoom);
+                Assert.IsNotNull(onRefreshSync);
+
+                // 1. Cold-cache standalone check: player enters an unsynced neighborhood (`neighborhood.test_station`),
+                // initially falling back to Ceres Freeport; once sync completes, RefreshLoadedContentAfterSync switches immediately.
+                var coldStationView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#500"",
+                    ""name"": ""Live Moved Room"",
+                    ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.test_station"", ""entry"": ""room.existing"", ""surface"": ""station"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { coldStationView });
+                Assert.AreEqual("neighborhood.ceres_freeport", coord.StationWorld.LoadedPackId);
+
+                TacSimContentLoader.RegisterDynamicPack("neighborhood.test_station", ReadRustFixtureJson("reconciled_neighborhood.json"));
+                onRefreshSync.Invoke(coord, null);
+                Assert.AreEqual("neighborhood.test_station", coord.StationWorld.LoadedPackId, "Post-sync refresh must rebuild into the player's actual room pack rather than keeping the fallback");
+                Assert.AreEqual("room.existing", coord.StationWorld.ActiveRoomEntryId);
+
+                // 2. Board settled hull's Vehicle Bay (`bay`)
+                var bayRoomView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#810"",
+                    ""name"": ""Salt Moth - Vehicle Bay"",
+                    ""ambient"": {
+                        ""tacsim"": {
+                            ""mode"": ""interior"",
+                            ""unit"": ""dray_p"",
+                            ""room"": ""bay"",
+                            ""hull_name"": ""Salt Moth"",
+                            ""mark"": ""FPC-D-0401"",
+                            ""class"": ""Dray-P"",
+                            ""settled_pad"": true
+                        }
+                    }
+                }"));
+                onRoom.Invoke(coord, new object[] { bayRoomView });
+                Assert.AreEqual(TacSimActiveStage.ShipInteriorWalk, coord.ActiveStage);
+                Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode);
+                Assert.IsFalse(coord.SurfaceStage.IsExcursionActive);
+                Assert.IsFalse(coord.SurfaceStage.RigOnGround);
+
+                // 3. Server emits live `site.map` with Rig 1 on the ground (`you: [14, 14]`, `rigs[0].cell: [256, 256]`)
+                var driveFrame = JsonNode.Parse(ReadRustFixtureJson("site_map_512_drive.json"));
+                onPanel.Invoke(coord, new object[] { "site.map", driveFrame });
+                Assert.IsTrue(coord.SurfaceStage.RigOnGround);
+                Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
+                Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
+                Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleChase, coord.CameraRig.Mode);
+
+                // 4. Click `RETURN TO BAY` button: must send `+tv/1 recover go` ONCE and NOT exit optimistically!
+                UnityEngine.UI.Button returnToBayBtn = null;
+                UnityEngine.UI.Button recoverRampBtn = null;
+                var buttons = coord.Hud.gameObject.GetComponentsInChildren<UnityEngine.UI.Button>(true);
+                for (int i = 0; i < buttons.Length; i++)
+                {
+                    if (buttons[i].gameObject.name == "Btn_RETURN TO BAY") returnToBayBtn = buttons[i];
+                    if (buttons[i].gameObject.name == "Btn_RECOVER RAMP") recoverRampBtn = buttons[i];
+                }
+                Assert.IsNotNull(returnToBayBtn, "Expected RETURN TO BAY button on surface HUD");
+                Assert.IsNotNull(recoverRampBtn, "Expected RECOVER RAMP button on surface HUD");
+
+                dispatched.Clear();
+                returnToBayBtn.onClick.Invoke();
+                Assert.AreEqual(1, dispatched.Count, "RETURN TO BAY must send recovery once, not twice");
+                Assert.AreEqual("+tv/1 recover go", dispatched[0]);
+                Assert.IsTrue(coord.SurfaceStage.IsExcursionActive, "RETURN TO BAY must wait for server confirmation instead of exiting optimistically");
+                Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
+
+                // Intervening `site.map` while rover is still driving home keeps surface mode cleanly active
+                onPanel.Invoke(coord, new object[] { "site.map", driveFrame });
+                Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
+                Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
+
+                // 5. Server emits post-recovery `site.map` (`you: null`, `rigs[0].cell: null`, no room change):
+                // coordinator MUST exit surface mode, reconcile ActiveStage, and restore walk camera!
+                var recoveredFrame = JsonNode.Parse(ReadRustFixtureJson("site_map_512_recovered.json"));
+                onPanel.Invoke(coord, new object[] { "site.map", recoveredFrame });
+                Assert.IsFalse(coord.SurfaceStage.RigOnGround, "Recovered rig must clear RigOnGround");
+                Assert.IsFalse(coord.SurfaceStage.IsExcursionActive, "Recovered rig must exit surface excursion");
+                Assert.AreEqual(TacSimActiveStage.ShipInteriorWalk, coord.ActiveStage, "Recovered rig must leave PlanetarySurface stage");
+                Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode, "Recovered rig must restore walk camera");
+
+                // 6. Re-launch, click `RECOVER RAMP`, and verify `tv.status` (`state: "bay"`) AND `site_map_refused.json` also reconcile cleanly!
+                onPanel.Invoke(coord, new object[] { "site.map", driveFrame });
+                Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
+                Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
+
+                dispatched.Clear();
+                recoverRampBtn.onClick.Invoke();
+                Assert.AreEqual(1, dispatched.Count);
+                Assert.AreEqual("+tv/1 recover go", dispatched[0]);
+
+                var bayStatus = JsonNode.Parse(@"{""schema"":{""id"":""tv.status"",""shape"":""status"",""version"":1},""rig"":{""slot"":1,""state"":""bay""}}");
+                onPanel.Invoke(coord, new object[] { "tv.status", bayStatus });
+                Assert.IsFalse(coord.SurfaceStage.RigOnGround);
+                Assert.IsFalse(coord.SurfaceStage.IsExcursionActive);
+                Assert.AreEqual(TacSimActiveStage.ShipInteriorWalk, coord.ActiveStage);
+                Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode);
+
+                onPanel.Invoke(coord, new object[] { "site.map", driveFrame });
+                Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
+                var refusedFrame = JsonNode.Parse(ReadRustFixtureJson("site_map_refused.json"));
+                onPanel.Invoke(coord, new object[] { "site.map", refusedFrame });
+                Assert.IsFalse(coord.SurfaceStage.RigOnGround);
+                Assert.IsFalse(coord.SurfaceStage.IsExcursionActive);
+                Assert.AreEqual(TacSimActiveStage.ShipInteriorWalk, coord.ActiveStage);
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+                if (coord != null)
+                {
+                    if (coord.StationWorld != null) UnityEngine.Object.DestroyImmediate(coord.StationWorld.gameObject);
+                    if (coord.ShipInterior != null) UnityEngine.Object.DestroyImmediate(coord.ShipInterior.gameObject);
+                    if (coord.SpaceStage != null) UnityEngine.Object.DestroyImmediate(coord.SpaceStage.gameObject);
+                    if (coord.SurfaceStage != null) UnityEngine.Object.DestroyImmediate(coord.SurfaceStage.gameObject);
+                    if (coord.ArenaStage != null) UnityEngine.Object.DestroyImmediate(coord.ArenaStage.gameObject);
+                    if (coord.CameraRig != null) UnityEngine.Object.DestroyImmediate(coord.CameraRig.gameObject);
+                    if (coord.Player != null) UnityEngine.Object.DestroyImmediate(coord.Player.gameObject);
+                    if (coord.Hud != null) UnityEngine.Object.DestroyImmediate(coord.Hud.gameObject);
+                }
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
         private static string ReadRustFixtureJson(string fileName)
         {
             string dir = System.IO.Directory.GetCurrentDirectory();

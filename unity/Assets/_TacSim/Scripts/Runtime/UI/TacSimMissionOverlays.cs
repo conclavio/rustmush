@@ -229,7 +229,6 @@ namespace TacSim.UI
             CreateBtn(actionBar.transform, "CAB / CHASE CAM", new Color(0.24f, 0.32f, 0.42f), () => OnToggleVehicleCameraViewRequested?.Invoke());
             CreateBtn(actionBar.transform, "RETURN TO BAY", new Color(0.48f, 0.18f, 0.20f), () =>
             {
-                OnCommandRequested?.Invoke("surface:recover");
                 OnExitSurfaceExcursionRequested?.Invoke();
             });
 

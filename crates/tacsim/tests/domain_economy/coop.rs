@@ -2749,6 +2749,15 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
     let live_bundle = tacsim::client_sync::world_content_bundle(rig.tw.world(), who);
     tacsim::client_sync::validate_projected_bundle_cleanliness(&live_bundle)
         .expect("live world bundle strips secrets, lore, hidden exits, and lane vendor stock");
+    let ceres_live = live_bundle
+        .find("neighborhood.ceres_freeport")
+        .expect("ceres_freeport present on live path");
+    for hidden in ["secret.slowdown", "exit.c14_c15", "exit.c05_c16"] {
+        assert!(
+            !ceres_live.json.contains(hidden),
+            "hidden entry `{hidden}` leaked in live ceres_freeport"
+        );
+    }
     for required_id in [
         "neighborhood.ceres_freeport",
         "goods",

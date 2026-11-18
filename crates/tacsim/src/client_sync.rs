@@ -1372,10 +1372,13 @@ impl QueryHandler for PortTradeQuery {
 
 /// Verify that every projected pack in `bundle` strips secrets, lore, quests, hooks,
 /// hidden exits, restricted-room prose, private NPC prompts, and lane vendor/reserve data.
+/// Validates structurally that a projected [`ClientContentBundle`] contains only client-safe
+/// entry kinds and fields across every included pack, without hardcoding campaign-specific pack IDs.
 ///
 /// # Errors
 ///
 /// Returns a descriptive failure string if any non-public entry kind or field remains.
+#[doc(hidden)]
 pub fn validate_projected_bundle_cleanliness(bundle: &ClientContentBundle) -> Result<(), String> {
     if bundle.entries.is_empty() {
         return Err("bundle has no entries".to_owned());
@@ -1459,6 +1462,8 @@ pub fn validate_projected_bundle_cleanliness(bundle: &ClientContentBundle) -> Re
             "\"ask_minor\":",
             "\"bid_minor\":",
             "\"intake_cap\":",
+            "\"vendors\":",
+            "\"kirkwood_picket\":",
         ] {
             if entry.json.contains(raw_forbidden) {
                 return Err(format!(
@@ -1466,33 +1471,6 @@ pub fn validate_projected_bundle_cleanliness(bundle: &ClientContentBundle) -> Re
                     entry.id
                 ));
             }
-        }
-    }
-
-    let Some(ceres) = bundle.find("neighborhood.ceres_freeport") else {
-        return Err("missing ceres_freeport pack".to_owned());
-    };
-    for hidden in ["secret.slowdown", "exit.c14_c15", "exit.c05_c16"] {
-        if ceres.json.contains(hidden) {
-            return Err(format!("hidden entry `{hidden}` leaked in ceres_freeport"));
-        }
-    }
-    let Some(lane) = bundle.find("ceres_phobos") else {
-        return Err("missing ceres_phobos lane pack".to_owned());
-    };
-    for lane_secret in [
-        "\"vendors\"",
-        "\"deposit\"",
-        "\"crew_offer\"",
-        "\"passenger\"",
-        "\"facility\"",
-        "\"kirkwood_picket\"",
-        "\"gross_t\"",
-    ] {
-        if lane.json.contains(lane_secret) {
-            return Err(format!(
-                "lane secret `{lane_secret}` leaked in ceres_phobos"
-            ));
         }
     }
     Ok(())
@@ -1512,6 +1490,26 @@ mod tests {
         }
         check!(bundle.find("neighborhood.staff_lobby").is_none());
         check!(bundle.find("neighborhood.ooc_area").is_some());
+        let Some(ceres) = bundle.find("neighborhood.ceres_freeport") else {
+            return crate::test_checks::failed("missing ceres_freeport pack");
+        };
+        for hidden in ["secret.slowdown", "exit.c14_c15", "exit.c05_c16"] {
+            check!(!ceres.json.contains(hidden));
+        }
+        let Some(lane) = bundle.find("ceres_phobos") else {
+            return crate::test_checks::failed("missing ceres_phobos lane pack");
+        };
+        for lane_secret in [
+            "\"vendors\"",
+            "\"deposit\"",
+            "\"crew_offer\"",
+            "\"passenger\"",
+            "\"facility\"",
+            "\"kirkwood_picket\"",
+            "\"gross_t\"",
+        ] {
+            check!(!lane.json.contains(lane_secret));
+        }
         Ok(())
     }
 
@@ -1729,6 +1727,11 @@ mod tests {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
             "../../unity/Assets/_TacSim/Scripts/Tests/Fixtures~/reconciled_neighborhood.json",
         );
+        if std::env::var_os("TACSIM_BLESS").is_some() {
+            let mut text = serde_json::to_string_pretty(&projected_val)?;
+            text.push('\n');
+            std::fs::write(&fixture_path, text)?;
+        }
         let disk_val: Value = serde_json::from_str(&std::fs::read_to_string(&fixture_path)?)?;
         check_eq!(disk_val, projected_val);
         Ok(())
