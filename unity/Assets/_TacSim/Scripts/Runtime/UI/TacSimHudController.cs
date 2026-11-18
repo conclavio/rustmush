@@ -152,6 +152,8 @@ namespace TacSim.UI
             _avatarButtons.Clear();
             _qtyPresetImages.Clear();
             _destPortImages.Clear();
+            _lastQuickActionKey = null;
+            _lastQuickActionSeated = null;
 
             var canvasGo = new GameObject("TacSimCanvas");
             canvasGo.transform.SetParent(transform, false);
@@ -655,7 +657,7 @@ namespace TacSim.UI
             _charSelectGroup.SetActive(true);
 
             for (int i = _charSelectListRoot.childCount - 1; i >= 0; i--)
-                Destroy(_charSelectListRoot.GetChild(i).gameObject);
+                DestroySafe(_charSelectListRoot.GetChild(i).gameObject);
 
             foreach (var slot in session.Characters)
             {
@@ -856,11 +858,32 @@ namespace TacSim.UI
             }
         }
 
+        private string _lastQuickActionKey;
+        private bool? _lastQuickActionSeated;
+
+        private static void DestroySafe(UnityEngine.Object obj)
+        {
+            if (obj == null) return;
+            if (Application.isPlaying) Destroy(obj);
+            else DestroyImmediate(obj);
+        }
+
         public void RefreshContextualQuickActions(string roomOrModeKey, bool isSeatedAtHelm)
         {
             if (_quickActionsContainer == null) return;
+            string normalizedKey = roomOrModeKey ?? string.Empty;
+            if (_lastQuickActionKey == normalizedKey && _lastQuickActionSeated == isSeatedAtHelm)
+            {
+                if (_helmFlightBar != null)
+                    _helmFlightBar.SetActive(isSeatedAtHelm);
+                Overlays?.SetHelmSeatedVisible(isSeatedAtHelm);
+                return;
+            }
+            _lastQuickActionKey = normalizedKey;
+            _lastQuickActionSeated = isSeatedAtHelm;
+
             for (int i = _quickActionsContainer.childCount - 1; i >= 0; i--)
-                Destroy(_quickActionsContainer.GetChild(i).gameObject);
+                DestroySafe(_quickActionsContainer.GetChild(i).gameObject);
 
             if (_helmFlightBar != null)
                 _helmFlightBar.SetActive(isSeatedAtHelm);
@@ -1105,7 +1128,7 @@ namespace TacSim.UI
         {
             if (_listingsContentRoot == null || _boundTradeState == null) return;
             for (int i = _listingsContentRoot.childCount - 1; i >= 0; i--)
-                Destroy(_listingsContentRoot.GetChild(i).gameObject);
+                DestroySafe(_listingsContentRoot.GetChild(i).gameObject);
 
             if (_boundTradeState.Listings.Count == 0)
             {
@@ -1242,7 +1265,7 @@ namespace TacSim.UI
                 _npcSayInput.text = defaultInputValue ?? string.Empty;
 
             for (int i = _modalButtonsRoot.childCount - 1; i >= 0; i--)
-                Destroy(_modalButtonsRoot.GetChild(i).gameObject);
+                DestroySafe(_modalButtonsRoot.GetChild(i).gameObject);
 
             if (actions != null)
             {

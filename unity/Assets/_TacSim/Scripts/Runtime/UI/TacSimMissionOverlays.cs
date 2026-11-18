@@ -571,7 +571,11 @@ namespace TacSim.UI
             _lastKeySpotsSignature = sig;
 
             for (int i = _arenaKeySpotsRowRoot.childCount - 1; i >= 0; i--)
-                Destroy(_arenaKeySpotsRowRoot.GetChild(i).gameObject);
+            {
+                var ch = _arenaKeySpotsRowRoot.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(ch);
+                else DestroyImmediate(ch);
+            }
 
             for (int i = 0; i < Mathf.Min(4, spots.Count); i++)
             {

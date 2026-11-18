@@ -22,7 +22,10 @@ namespace TacSim.Character
         public Transform CameraTransform { get; set; }
         public CharacterVisualSpawner VisualSpawner { get; set; }
         public bool InputSuspended { get; set; }
+        public bool PhysicsSuspended { get; private set; }
         public bool IsSeatedAtHelm { get; set; }
+        public float VerticalVelocity => _verticalVelocity;
+        public float CurrentPlanarSpeed => _currentPlanarSpeed;
 
         public WorldInteractable FocusedInteractable { get; private set; }
         public event Action<WorldInteractable> OnFocusedInteractableChanged;
@@ -30,6 +33,9 @@ namespace TacSim.Character
         private CharacterController _cc;
         private float _verticalVelocity;
         private float _currentPlanarSpeed;
+        private Vector3 _savedWalkPosition;
+        private Quaternion _savedWalkRotation = Quaternion.identity;
+        private bool _hasSavedWalkPose;
         private readonly Collider[] _overlapBuffer = new Collider[24];
 
         private void Awake()
@@ -45,17 +51,65 @@ namespace TacSim.Character
         public void TeleportTo(Vector3 worldPos, float yawDeg = 0f)
         {
             if (_cc == null) _cc = GetComponent<CharacterController>();
-            bool wasEnabled = _cc.enabled;
-            _cc.enabled = false;
-            transform.SetPositionAndRotation(worldPos, Quaternion.Euler(0f, yawDeg, 0f));
+            Quaternion rot = Quaternion.Euler(0f, yawDeg, 0f);
+            bool wasEnabled = _cc != null && _cc.enabled;
+            if (_cc != null) _cc.enabled = false;
+            transform.SetPositionAndRotation(worldPos, rot);
+            _savedWalkPosition = worldPos;
+            _savedWalkRotation = rot;
+            _hasSavedWalkPose = true;
             _verticalVelocity = 0f;
             _currentPlanarSpeed = 0f;
-            _cc.enabled = wasEnabled;
+            if (_cc != null) _cc.enabled = wasEnabled && !PhysicsSuspended;
+        }
+
+        /// <summary>
+        /// Suspends character physics &amp; gravity while the walking stage is inactive (e.g. Surface Rover or Simulator Arena)
+        /// and restores the exact saved deck/station pose and zeroed velocity when returning.
+        /// </summary>
+        public void SetStagePhysicsSuspended(bool suspended)
+        {
+            if (PhysicsSuspended == suspended)
+                return;
+
+            if (_cc == null) _cc = GetComponent<CharacterController>();
+
+            if (suspended)
+            {
+                _savedWalkPosition = transform.position;
+                _savedWalkRotation = transform.rotation;
+                _hasSavedWalkPose = true;
+                _verticalVelocity = 0f;
+                _currentPlanarSpeed = 0f;
+                PhysicsSuspended = true;
+                if (_cc != null) _cc.enabled = false;
+                if (FocusedInteractable != null)
+                {
+                    FocusedInteractable = null;
+                    OnFocusedInteractableChanged?.Invoke(null);
+                }
+            }
+            else
+            {
+                if (_cc != null) _cc.enabled = false;
+                if (_hasSavedWalkPose)
+                    transform.SetPositionAndRotation(_savedWalkPosition, _savedWalkRotation);
+                _verticalVelocity = 0f;
+                _currentPlanarSpeed = 0f;
+                PhysicsSuspended = false;
+                if (_cc != null) _cc.enabled = true;
+            }
         }
 
         private void Update()
         {
-            float dt = Time.deltaTime;
+            SimulateStep(Time.deltaTime);
+        }
+
+        public void SimulateStep(float dt)
+        {
+            if (PhysicsSuspended)
+                return;
             if (IsSeatedAtHelm)
             {
                 if (VisualSpawner != null)

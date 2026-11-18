@@ -1063,11 +1063,50 @@ namespace TacSim.Tests
         [Test]
         public void P0_Coordinator_SurfaceRoverRecovery_ExitsSurfaceMode_AndReturnToBaySendsOnce()
         {
+            bool hadPreExistingEventSystem = UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>() != null;
             var rootGo = new UnityEngine.GameObject("TestCoordinatorRoot");
             TacSimGameCoordinator coord = null;
             try
             {
+                // Pre-attach isolated child subsystem GameObjects under `rootGo` so running in an open game scene
+                // never mutates or destroys pre-existing scene objects (`StationWorld`, `Main Camera`, `TacSimHud`, etc.).
                 coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                coord.Audio = rootGo.AddComponent<TacSimAudioSynthesizer>();
+
+                var stationGo = new UnityEngine.GameObject("TestStationWorld");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                coord.StationWorld = stationGo.AddComponent<StationWorldController>();
+
+                var shipGo = new UnityEngine.GameObject("TestShipInterior");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                coord.ShipInterior = shipGo.AddComponent<ShipInteriorController>();
+
+                var spaceGo = new UnityEngine.GameObject("TestSpaceStage");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SpaceStage = spaceGo.AddComponent<SpaceFlightController>();
+
+                var surfGo = new UnityEngine.GameObject("TestSurfaceStage");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                coord.SurfaceStage = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+
+                var arenaGo = new UnityEngine.GameObject("TestArenaStage");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                coord.ArenaStage = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+
+                var camGo = new UnityEngine.GameObject("TestCameraRig", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                coord.CameraRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                coord.CameraRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+
+                var playerGo = new UnityEngine.GameObject("TestPlayer", typeof(UnityEngine.CharacterController));
+                playerGo.transform.SetParent(rootGo.transform, false);
+                coord.Player = playerGo.AddComponent<TacSim.Character.ThirdPersonPlayerController>();
+                coord.Player.VisualSpawner = playerGo.AddComponent<TacSim.Character.CharacterVisualSpawner>();
+
+                var hudGo = new UnityEngine.GameObject("TestHud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+
                 coord.EnsureSubsystems();
 
                 var dispatched = new List<string>();
@@ -1077,11 +1116,49 @@ namespace TacSim.Tests
                 var onPanel = typeof(TacSimGameCoordinator).GetMethod("HandleServerPanelUpdated", flags);
                 var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
                 var onRefreshSync = typeof(TacSimGameCoordinator).GetMethod("RefreshLoadedContentAfterSync", flags);
+                var awaitingInitField = typeof(TacSimGameCoordinator).GetField("_awaitingInitialRoomSync", flags);
                 Assert.IsNotNull(onPanel);
                 Assert.IsNotNull(onRoom);
                 Assert.IsNotNull(onRefreshSync);
+                Assert.IsNotNull(awaitingInitField);
 
-                // 1. Cold-cache standalone check: player enters an unsynced neighborhood (`neighborhood.test_station`),
+                // 1. Ceres Freeport multi-room walk check: walking ahead through Pressure Lobby into the 100m-wide Berth Gallery
+                // (36m from room center) must NOT bounce the player backwards or flicker ActiveRoomEntryId back to Pressure Lobby!
+                awaitingInitField.SetValue(coord, true);
+                var arrivalsView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#103"",
+                    ""name"": ""Port Watch Arrivals"",
+                    ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c03_arrivals"", ""surface"": ""station"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { arrivalsView });
+                Assert.AreEqual("room.c03_arrivals", coord.StationWorld.ActiveRoomEntryId);
+
+                // Player walks south through Pressure Lobby into Berth Gallery doorway at atlas (125, 122) — 35.3m from Berth Gallery center (160, 117.5)
+                float pubElev = coord.StationWorld.Pack.GetFloorElevationY(1);
+                UnityEngine.Vector3 galleryDoorwayPos = coord.StationWorld.AtlasToUnity(125f, pubElev + 0.15f, 122f);
+                coord.Player.TeleportTo(galleryDoorwayPos, 180f);
+                coord.StationWorld.HighlightActiveRoom("room.c01_berth_gallery");
+
+                // Intermediate `RoomView` for `room.c02_pressure` arrives while player is already in `room.c01_berth_gallery`:
+                var pressureView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#102"",
+                    ""name"": ""Pressure Lobby"",
+                    ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c02_pressure"", ""surface"": ""station"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { pressureView });
+                Assert.AreEqual("room.c01_berth_gallery", coord.StationWorld.ActiveRoomEntryId, "Lagging intermediate RoomView must not flicker ActiveRoomEntryId back to old room");
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, galleryDoorwayPos), 0.01f, "Lagging intermediate RoomView must not bounce walking avatar back");
+
+                // Final `RoomView` for 100m-wide `room.c01_berth_gallery` arrives while player is >32m from center:
+                var galleryView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#101"",
+                    ""name"": ""Visiting Berth Gallery"",
+                    ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c01_berth_gallery"", ""surface"": ""station"" } }
+                }"));
+                onRoom.Invoke(coord, new object[] { galleryView });
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, galleryDoorwayPos), 0.01f, "Wide room >32m from center must not rubber-band avatar to center");
+
+                // 2. Cold-cache standalone check: player enters an unsynced neighborhood (`neighborhood.test_station`),
                 // initially falling back to Ceres Freeport; once sync completes, RefreshLoadedContentAfterSync switches immediately.
                 var coldStationView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
                     ""id"": ""#500"",
@@ -1096,7 +1173,7 @@ namespace TacSim.Tests
                 Assert.AreEqual("neighborhood.test_station", coord.StationWorld.LoadedPackId, "Post-sync refresh must rebuild into the player's actual room pack rather than keeping the fallback");
                 Assert.AreEqual("room.existing", coord.StationWorld.ActiveRoomEntryId);
 
-                // 2. Board settled hull's Vehicle Bay (`bay`)
+                // 3. Board settled hull's Vehicle Bay (`bay`)
                 var bayRoomView = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
                     ""id"": ""#810"",
                     ""name"": ""Salt Moth - Vehicle Bay"",
@@ -1117,16 +1194,31 @@ namespace TacSim.Tests
                 Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode);
                 Assert.IsFalse(coord.SurfaceStage.IsExcursionActive);
                 Assert.IsFalse(coord.SurfaceStage.RigOnGround);
+                Assert.IsFalse(coord.Player.PhysicsSuspended);
 
-                // 3. Server emits live `site.map` with Rig 1 on the ground (`you: [14, 14]`, `rigs[0].cell: [256, 256]`)
+                UnityEngine.Vector3 bayDeckPos = coord.Player.transform.position;
+                UnityEngine.Quaternion bayDeckRot = coord.Player.transform.rotation;
+
+                // 4. Server emits live `site.map` with Rig 1 on the ground (`you: [14, 14]`, `rigs[0].cell: [256, 256]`)
                 var driveFrame = JsonNode.Parse(ReadRustFixtureJson("site_map_512_drive.json"));
                 onPanel.Invoke(coord, new object[] { "site.map", driveFrame });
                 Assert.IsTrue(coord.SurfaceStage.RigOnGround);
                 Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
                 Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
                 Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleChase, coord.CameraRig.Mode);
+                Assert.IsTrue(coord.Player.PhysicsSuspended, "Inactive walking avatar physics must be suspended while ship floor is disabled");
 
-                // 4. Click `RETURN TO BAY` button: must send `+tv/1 recover go` ONCE and NOT exit optimistically!
+                // Simulate 80 seconds (1,600 frames) of `Player.SimulateStep(0.05f)` while ship floor is disabled:
+                // avatar must NOT fall 50 km below the ship!
+                for (int step = 0; step < 1600; step++)
+                    coord.Player.SimulateStep(0.05f);
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, bayDeckPos), 0.001f, "Suspended avatar must not fall while ship floor is inactive");
+                Assert.AreEqual(0f, coord.Player.VerticalVelocity, 0.001f);
+
+                // Even if transform were externally displaced while suspended, recovery must restore the saved deck pose and zero velocity:
+                coord.Player.transform.position = bayDeckPos + new UnityEngine.Vector3(0f, -50000f, 0f);
+
+                // 5. Click `RETURN TO BAY` button: must send `+tv/1 recover go` ONCE and NOT exit optimistically!
                 UnityEngine.UI.Button returnToBayBtn = null;
                 UnityEngine.UI.Button recoverRampBtn = null;
                 var buttons = coord.Hud.gameObject.GetComponentsInChildren<UnityEngine.UI.Button>(true);
@@ -1150,16 +1242,20 @@ namespace TacSim.Tests
                 Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
                 Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
 
-                // 5. Server emits post-recovery `site.map` (`you: null`, `rigs[0].cell: null`, no room change):
-                // coordinator MUST exit surface mode, reconcile ActiveStage, and restore walk camera!
+                // 6. Server emits post-recovery `site.map` (`you: null`, `rigs[0].cell: null`, no room change):
+                // coordinator MUST exit surface mode, reconcile ActiveStage, restore walk camera, and restore avatar deck pose + zero velocity!
                 var recoveredFrame = JsonNode.Parse(ReadRustFixtureJson("site_map_512_recovered.json"));
                 onPanel.Invoke(coord, new object[] { "site.map", recoveredFrame });
                 Assert.IsFalse(coord.SurfaceStage.RigOnGround, "Recovered rig must clear RigOnGround");
                 Assert.IsFalse(coord.SurfaceStage.IsExcursionActive, "Recovered rig must exit surface excursion");
                 Assert.AreEqual(TacSimActiveStage.ShipInteriorWalk, coord.ActiveStage, "Recovered rig must leave PlanetarySurface stage");
                 Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode, "Recovered rig must restore walk camera");
+                Assert.IsFalse(coord.Player.PhysicsSuspended);
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, bayDeckPos), 0.001f, "Recovery must restore exact saved bay deck pose");
+                Assert.Less(UnityEngine.Quaternion.Angle(coord.Player.transform.rotation, bayDeckRot), 0.1f);
+                Assert.AreEqual(0f, coord.Player.VerticalVelocity, 0.001f);
 
-                // 6. Re-launch, click `RECOVER RAMP`, and verify `tv.status` (`state: "bay"`) AND `site_map_refused.json` also reconcile cleanly!
+                // 7. Re-launch, click `RECOVER RAMP`, and verify `tv.status` (`state: "bay"`) AND `site_map_refused.json` also reconcile cleanly!
                 onPanel.Invoke(coord, new object[] { "site.map", driveFrame });
                 Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
                 Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
@@ -1175,6 +1271,7 @@ namespace TacSim.Tests
                 Assert.IsFalse(coord.SurfaceStage.IsExcursionActive);
                 Assert.AreEqual(TacSimActiveStage.ShipInteriorWalk, coord.ActiveStage);
                 Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode);
+                Assert.Less(UnityEngine.Vector3.Distance(coord.Player.transform.position, bayDeckPos), 0.001f);
 
                 onPanel.Invoke(coord, new object[] { "site.map", driveFrame });
                 Assert.IsTrue(coord.SurfaceStage.IsExcursionActive);
@@ -1187,18 +1284,14 @@ namespace TacSim.Tests
             finally
             {
                 TacSimContentLoader.ClearDynamicPacks();
-                if (coord != null)
+                if (!hadPreExistingEventSystem)
                 {
-                    if (coord.StationWorld != null) UnityEngine.Object.DestroyImmediate(coord.StationWorld.gameObject);
-                    if (coord.ShipInterior != null) UnityEngine.Object.DestroyImmediate(coord.ShipInterior.gameObject);
-                    if (coord.SpaceStage != null) UnityEngine.Object.DestroyImmediate(coord.SpaceStage.gameObject);
-                    if (coord.SurfaceStage != null) UnityEngine.Object.DestroyImmediate(coord.SurfaceStage.gameObject);
-                    if (coord.ArenaStage != null) UnityEngine.Object.DestroyImmediate(coord.ArenaStage.gameObject);
-                    if (coord.CameraRig != null) UnityEngine.Object.DestroyImmediate(coord.CameraRig.gameObject);
-                    if (coord.Player != null) UnityEngine.Object.DestroyImmediate(coord.Player.gameObject);
-                    if (coord.Hud != null) UnityEngine.Object.DestroyImmediate(coord.Hud.gameObject);
+                    var createdEs = UnityEngine.Object.FindAnyObjectByType<UnityEngine.EventSystems.EventSystem>();
+                    if (createdEs != null)
+                        UnityEngine.Object.DestroyImmediate(createdEs.gameObject);
                 }
-                UnityEngine.Object.DestroyImmediate(rootGo);
+                if (rootGo != null)
+                    UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
 

@@ -180,8 +180,24 @@ namespace UnityEngine
         public Quaternion(float x, float y, float z, float w) { this.x = x; this.y = y; this.z = z; this.w = w; }
         public static Quaternion identity => new Quaternion(0f, 0f, 0f, 1f);
         public Vector3 eulerAngles { get => Vector3.zero; set { } }
-        public static Quaternion Euler(float x, float y, float z) => identity;
-        public static Quaternion Euler(Vector3 euler) => identity;
+        public static Quaternion Euler(float x, float y, float z)
+        {
+            float cx = MathF.Cos(x * 0.5f * Mathf.Deg2Rad), sx = MathF.Sin(x * 0.5f * Mathf.Deg2Rad);
+            float cy = MathF.Cos(y * 0.5f * Mathf.Deg2Rad), sy = MathF.Sin(y * 0.5f * Mathf.Deg2Rad);
+            float cz = MathF.Cos(z * 0.5f * Mathf.Deg2Rad), sz = MathF.Sin(z * 0.5f * Mathf.Deg2Rad);
+            return new Quaternion(
+                sx * cy * cz + cx * sy * sz,
+                cx * sy * cz - sx * cy * sz,
+                cx * cy * sz - sx * sy * cz,
+                cx * cy * cz + sx * sy * sz);
+        }
+        public static Quaternion Euler(Vector3 euler) => Euler(euler.x, euler.y, euler.z);
+        public static float Dot(Quaternion a, Quaternion b) => a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+        public static float Angle(Quaternion a, Quaternion b)
+        {
+            float dot = MathF.Min(MathF.Abs(Dot(a, b)), 1f);
+            return dot > 0.999999f ? 0f : MathF.Acos(dot) * 2f * Mathf.Rad2Deg;
+        }
         public static Quaternion LookRotation(Vector3 forward) => identity;
         public static Quaternion LookRotation(Vector3 forward, Vector3 upwards) => identity;
         public static Quaternion Slerp(Quaternion a, Quaternion b, float t) => b;
@@ -404,8 +420,18 @@ namespace UnityEngine
     {
         public string name { get; set; } = string.Empty;
         public HideFlags hideFlags { get; set; }
-        public static void Destroy(Object obj, float t = 0f) { }
-        public static void DestroyImmediate(Object obj, bool allowDestroyingAssets = false) { }
+        public static void Destroy(Object obj, float t = 0f)
+        {
+            if (!Application.isPlaying && obj != null)
+                throw new InvalidOperationException("Destroy may not be called from edit mode! Use DestroyImmediate instead.");
+        }
+        public static void DestroyImmediate(Object obj, bool allowDestroyingAssets = false)
+        {
+            if (obj is GameObject go && go.transform != null)
+                go.transform.SetParent(null);
+            else if (obj is Component comp && comp.gameObject != null)
+                comp.gameObject.RemoveComponentInternal(comp);
+        }
         public static void DontDestroyOnLoad(Object target) { }
         public static T Instantiate<T>(T original) where T : Object => original;
         public static T Instantiate<T>(T original, Transform parent, bool instantiateInWorldSpace = false) where T : Object => original;
@@ -470,6 +496,7 @@ namespace UnityEngine
     {
         public GameObject gameObject { get; internal set; }
         public Transform transform => gameObject?.transform;
+
         public T GetComponent<T>() => gameObject != null ? gameObject.GetComponent<T>() : default;
         public T GetComponentInChildren<T>(bool includeInactive = false) => gameObject != null ? gameObject.GetComponentInChildren<T>(includeInactive) : default;
         public T GetComponentInParent<T>() => GetComponent<T>();
@@ -591,6 +618,12 @@ namespace UnityEngine
         }
 
         public T AddComponent<T>() where T : Component, new() => (T)AddComponent(typeof(T));
+
+        internal void RemoveComponentInternal(Component comp)
+        {
+            if (comp != null && comp != transform)
+                _components.Remove(comp);
+        }
 
         public T GetComponent<T>()
         {

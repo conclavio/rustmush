@@ -36,6 +36,7 @@ namespace TacSim.World
         private readonly List<TextMeshPro> _cradleHullSigns = new List<TextMeshPro>();
         private readonly List<GameObject> _cradleHullObjects = new List<GameObject>();
         private WorldInteractable _airlockBoardInteractable;
+        private string _builtGeometrySignature;
 
         // Shift atlas coordinates near Unity origin (0, y, 0) for crisp float precision across any port pack
         private float _originOffsetX = -160f;
@@ -66,20 +67,21 @@ namespace TacSim.World
             return TryFindContainingRoomWithHysteresis(worldPos, ActiveRoomEntryId, 0f);
         }
 
-        public string TryFindContainingRoomWithHysteresis(Vector3 worldPos, string currentRoomEntryId, float hysteresisM = 0.45f)
+        public string TryFindContainingRoomWithHysteresis(Vector3 worldPos, string currentRoomEntryId, float hysteresisM = 0.85f)
         {
             if (Pack == null) return ActiveRoomEntryId;
             float ax = worldPos.x - _originOffsetX;
             float ay = worldPos.z - _originOffsetZ;
 
-            // Keep current room within a small threshold band across shared doorways to prevent boundary jitter
+            // Keep current room within a generous doorway & stair threshold band (1.70 m doorway deadband, 1.0 m stair deadband)
+            // so crossing a threshold or stepping up/down inter-floor stairs never oscillates between rooms.
             if (!string.IsNullOrEmpty(currentRoomEntryId) && hysteresisM > 0f &&
                 Pack.Rooms.TryGetValue(currentRoomEntryId, out var cur))
             {
                 float curElev = Pack.GetFloorElevationY(cur.FloorIndex);
                 if (ax >= cur.MinX - hysteresisM && ax <= cur.MaxX + hysteresisM &&
                     ay >= cur.MinY - hysteresisM && ay <= cur.MaxY + hysteresisM &&
-                    Mathf.Abs(worldPos.y - curElev) < 2.8f)
+                    Mathf.Abs(worldPos.y - curElev) < 3.6f)
                 {
                     return currentRoomEntryId;
                 }
@@ -87,6 +89,7 @@ namespace TacSim.World
 
             string best = null;
             float bestVert = float.MaxValue;
+            float vertCaptureLimit = (!string.IsNullOrEmpty(currentRoomEntryId) && hysteresisM > 0f) ? 2.6f : 3.4f;
             foreach (var kv in Pack.Rooms)
             {
                 var r = kv.Value;
@@ -94,7 +97,7 @@ namespace TacSim.World
                 {
                     float elev = Pack.GetFloorElevationY(r.FloorIndex);
                     float dy = Mathf.Abs(worldPos.y - elev);
-                    if (dy < 3.2f && dy < bestVert)
+                    if (dy < vertCaptureLimit && dy < bestVert)
                     {
                         bestVert = dy;
                         best = r.EntryId;
@@ -110,11 +113,41 @@ namespace TacSim.World
             return Pack.FindExitPath(fromRoomEntry, toRoomEntry);
         }
 
+        public bool AreRoomsConnectedWithinHops(string roomA, string roomB, int maxHops = 3)
+        {
+            if (string.IsNullOrEmpty(roomA) || string.IsNullOrEmpty(roomB)) return false;
+            if (string.Equals(roomA, roomB, StringComparison.Ordinal)) return true;
+            var path = FindExitPath(roomA, roomB);
+            return path.Count > 0 && path.Count <= maxHops;
+        }
+
+        public bool RebuildStationIfContentChanged(TacSimAssetCatalog catalog, string packId)
+        {
+            var candidate = TacSimContentLoader.LoadNeighborhoodPackById(packId);
+            string newSig = candidate.ComputeGeometrySignature();
+            if (Pack != null && string.Equals(_builtGeometrySignature, newSig, StringComparison.Ordinal))
+            {
+                // Geometry & exits are identical (e.g. post-login sync confirming local pack); refresh metadata/cast in-place without tearing down 3D colliders or lights!
+                Pack = candidate;
+                LoadedPackId = candidate.PackId;
+                return false;
+            }
+            BuildLoadedStationPack(catalog, candidate, newSig);
+            return true;
+        }
+
         public void BuildStation(TacSimAssetCatalog catalog, string packId = "neighborhood.ceres_freeport")
         {
+            var loaded = TacSimContentLoader.LoadNeighborhoodPackById(packId);
+            BuildLoadedStationPack(catalog, loaded, loaded.ComputeGeometrySignature());
+        }
+
+        private void BuildLoadedStationPack(TacSimAssetCatalog catalog, AtlasNeighborhoodPack loadedPack, string geometrySignature)
+        {
             Catalog = catalog;
-            Pack = TacSimContentLoader.LoadNeighborhoodPackById(packId);
+            Pack = loadedPack;
             LoadedPackId = Pack.PackId;
+            _builtGeometrySignature = geometrySignature;
 
             Vector2 center = Pack.GetBoundsCenter2D();
             _originOffsetX = -center.x;
@@ -1206,10 +1239,11 @@ namespace TacSim.World
             }
         }
 
-        public void ApplyRoomView(MushRoomView rv, string selfActorId = null)
+        public void ApplyRoomView(MushRoomView rv, string selfActorId = null, bool updateHighlight = true)
         {
             if (rv == null) return;
-            if (TryMatchStationRoom(rv, out string resolvedEntry))
+            bool matched = TryMatchStationRoom(rv, out string resolvedEntry);
+            if (matched && updateHighlight)
                 HighlightActiveRoom(resolvedEntry);
 
             // Update Berth Gallery airlock prompt with player's live chartered hull name!
@@ -1228,8 +1262,8 @@ namespace TacSim.World
                     _dockedShipVisual.gameObject.SetActive(rv.TacSim.DockedCount > 0 || rv.TacSim.OwnHullDockedHere);
             }
 
-            // Sync visible NPCs & remote players in the active room (filtering out disabled/dormant placeholders)
-            SyncRoomOccupants(rv, selfActorId);
+            // Sync visible NPCs & remote players in the room `rv` actually describes (filtering out disabled/dormant placeholders)
+            SyncRoomOccupants(rv, selfActorId, matched ? resolvedEntry : ActiveRoomEntryId);
         }
 
         public void AppendBoardLine(string line)
@@ -1290,22 +1324,27 @@ namespace TacSim.World
             }
         }
 
-        private void SyncRoomOccupants(MushRoomView rv, string selfActorId)
+        private void SyncRoomOccupants(MushRoomView rv, string selfActorId, string targetRoomEntry)
         {
             foreach (var kv in _spawnedActors)
             {
-                if (kv.Value != null) Destroy(kv.Value);
+                if (kv.Value != null)
+                {
+                    if (Application.isPlaying) Destroy(kv.Value);
+                    else DestroyImmediate(kv.Value);
+                }
             }
             _spawnedActors.Clear();
             _actorBillboards.Clear();
 
-            if (!Pack.Rooms.TryGetValue(ActiveRoomEntryId, out var room))
+            string lookupEntry = !string.IsNullOrEmpty(targetRoomEntry) ? targetRoomEntry : ActiveRoomEntryId;
+            if (!Pack.Rooms.TryGetValue(lookupEntry, out var room))
             {
                 Pack.Rooms.TryGetValue("room.c03_arrivals", out room);
                 if (room == null) return;
             }
 
-            bool isBerthGallery = ActiveRoomEntryId.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            bool isBerthGallery = lookupEntry.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                   (rv.TacSim != null && rv.TacSim.Mode == "berth_gallery");
 
             var dockedHullIds = new HashSet<string>(StringComparer.Ordinal);

@@ -131,6 +131,32 @@ namespace TacSim.World
             return new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
         }
 
+        public string ComputeGeometrySignature()
+        {
+            var sb = new System.Text.StringBuilder(512);
+            sb.Append(PackId).Append('|');
+            foreach (var fl in Floors)
+                sb.Append(fl.Key).Append(':').Append(fl.Value.ZOffsetM.ToString("F2")).Append(':').Append(fl.Value.HeightM.ToString("F2")).Append(';');
+            var roomKeys = new List<string>(Rooms.Keys);
+            roomKeys.Sort(StringComparer.Ordinal);
+            for (int i = 0; i < roomKeys.Count; i++)
+            {
+                var r = Rooms[roomKeys[i]];
+                sb.Append(r.EntryId).Append(':').Append(r.FloorIndex).Append(':')
+                  .Append(r.MinX.ToString("F2")).Append(',').Append(r.MinY.ToString("F2")).Append(',')
+                  .Append(r.MaxX.ToString("F2")).Append(',').Append(r.MaxY.ToString("F2")).Append(':')
+                  .Append(r.Restricted ? 'R' : 'P').Append(';');
+            }
+            for (int i = 0; i < Exits.Count; i++)
+            {
+                var ex = Exits[i];
+                if (ex.Hidden) continue;
+                sb.Append(ex.EntryId).Append(':').Append(ex.FromRoom).Append('>').Append(ex.ToRoom)
+                  .Append(':').Append(ex.Locked ? 'L' : 'O').Append(';');
+            }
+            return sb.ToString();
+        }
+
         public string GetDefaultSpawnRoomEntry()
         {
             if (Rooms.ContainsKey("room.c03_arrivals")) return "room.c03_arrivals";
@@ -443,7 +469,7 @@ namespace TacSim.World
             AtlasNeighborhoodPack pack;
             if (TryGetSyncedOrResourceJson(normalized, out string syncedNeighborhoodJson))
             {
-                pack = ParseNeighborhoodJson(syncedNeighborhoodJson);
+                pack = ParseNeighborhoodJson(syncedNeighborhoodJson, normalized);
             }
             else
             {
@@ -459,7 +485,7 @@ namespace TacSim.World
 
                 if (File.Exists(path))
                 {
-                    pack = ParseNeighborhoodJson(File.ReadAllText(path));
+                    pack = ParseNeighborhoodJson(File.ReadAllText(path), normalized);
                 }
                 else
                 {
@@ -530,12 +556,12 @@ namespace TacSim.World
             }
         }
 
-        public static AtlasNeighborhoodPack ParseNeighborhoodJson(string json)
+        public static AtlasNeighborhoodPack ParseNeighborhoodJson(string json, string defaultPackId = "neighborhood.ceres_freeport")
         {
             var root = JsonNode.Parse(json);
             var pack = new AtlasNeighborhoodPack
             {
-                PackId = root["manifest"].Str("id", "neighborhood.ceres_freeport"),
+                PackId = root["manifest"].Str("id", string.IsNullOrEmpty(defaultPackId) ? "neighborhood.ceres_freeport" : defaultPackId),
                 Name = "Ceres Freeport"
             };
 

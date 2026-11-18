@@ -90,7 +90,10 @@ namespace TacSim.Core
             bool dockingActive = _spaceStage != null && _spaceStage.IsDockingActive;
             bool inVehicleStage = inArena || inSurface;
             if (_player != null)
+            {
+                _player.SetStagePhysicsSuspended(inVehicleStage);
                 _player.InputSuspended = isTextInputFocused || dockingActive || inVehicleStage;
+            }
             if (_cameraRig != null)
                 _cameraRig.OrbitInputEnabled = !isTextInputFocused && !dockingActive;
             if (_surfaceStage != null)

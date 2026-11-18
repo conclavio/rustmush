@@ -399,7 +399,11 @@ namespace TacSim.Arena
             {
                 if (!activeDesignators.Contains(kv.Key))
                 {
-                    if (kv.Value?.Root != null) Destroy(kv.Value.Root);
+                    if (kv.Value?.Root != null)
+                    {
+                        if (Application.isPlaying) Destroy(kv.Value.Root);
+                        else DestroyImmediate(kv.Value.Root);
+                    }
                     stale.Add(kv.Key);
                 }
             }
@@ -491,7 +495,10 @@ namespace TacSim.Arena
         {
             if (_unitsRoot == null) return;
             if (PlayerRig?.Root != null)
-                Destroy(PlayerRig.Root);
+            {
+                if (Application.isPlaying) Destroy(PlayerRig.Root);
+                else DestroyImmediate(PlayerRig.Root);
+            }
 
             float groundY = TerrainGrid != null ? TerrainGrid.SampleElevationMeters(State.Xm, State.Zm) : 0f;
             Vector3 wp = ArenaStageOrigin + new Vector3(State.Xm, groundY, State.Zm);
@@ -731,7 +738,11 @@ namespace TacSim.Arena
             flash.transform.position = endWorld;
             flash.transform.localScale = Vector3.one * 2.4f;
             var fc = flash.GetComponent<Collider>();
-            if (fc != null) Destroy(fc);
+            if (fc != null)
+            {
+                if (Application.isPlaying) Destroy(fc);
+                else DestroyImmediate(fc);
+            }
             flash.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("HitFlash", col, col * 2.5f);
 
             _activeTracers.Add(new ActiveShotTracer
@@ -761,8 +772,16 @@ namespace TacSim.Arena
             {
                 if (Time.time >= _activeTracers[i].ExpireTime)
                 {
-                    if (_activeTracers[i].Line != null) Destroy(_activeTracers[i].Line.gameObject);
-                    if (_activeTracers[i].ImpactFlash != null) Destroy(_activeTracers[i].ImpactFlash.gameObject);
+                    if (_activeTracers[i].Line != null)
+                    {
+                        if (Application.isPlaying) Destroy(_activeTracers[i].Line.gameObject);
+                        else DestroyImmediate(_activeTracers[i].Line.gameObject);
+                    }
+                    if (_activeTracers[i].ImpactFlash != null)
+                    {
+                        if (Application.isPlaying) Destroy(_activeTracers[i].ImpactFlash.gameObject);
+                        else DestroyImmediate(_activeTracers[i].ImpactFlash.gameObject);
+                    }
                     _activeTracers.RemoveAt(i);
                 }
             }
