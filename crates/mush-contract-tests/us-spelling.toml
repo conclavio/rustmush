@@ -499,3 +499,365 @@ us = "paralyzed"
 british = "whilst"
 us = "while"
 
+
+# ---- allow rows (2026-11-18, the lead's ruling: narrow scope) ----
+
+[[allow]]
+file = "crates/mush-atlas/content/neighborhood.ooc_area.json"
+word = "centre"
+context = "the simulator centre"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/mush-atlas/content/neighborhood.ooc_area.json"
+word = "centre"
+context = "centre"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/mush-core/src/action_state/terminal_capacity/paid_resale/renewal_holder.rs"
+word = "licence"
+context = "holder birth licence differs"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-economy/src/managed_paid_resale.rs"
+word = "licence"
+context = "The paid licence resale is"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_entitlement/actions.rs"
+word = "licence"
+context = "{product} licence: {transition}"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_house/actions.rs"
+word = "licence"
+context = "{label_capacity} house licence"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_paid_resale/actions.rs"
+word = "licence"
+context = "a paid licence for resale"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_paid_resale/actions.rs"
+word = "licence"
+context = "unoccupied paid licence"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_paid_resale/actions.rs"
+word = "licence"
+context = "pending paid licence resale"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_paid_resale/actions.rs"
+word = "licence"
+context = "preserves the licence's existing term"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/player.rs"
+word = "Licence"
+context = "Licence {licence} is"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/player.rs"
+word = "licence"
+context = "offer on licence {licence}. +minds/renew"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/player.rs"
+word = "Licence"
+context = "Licence {licence} renews"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/player.rs"
+word = "licence"
+context = "payment for licence {licence} is"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/player.rs"
+word = "licence"
+context = "renewal of licence {licence} into"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/player.rs"
+word = "licence"
+context = "offer on licence {licence}."
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_renewal/player.rs"
+word = "licence"
+context = "This licence cannot be"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-market/src/mind_trade/provider.rs"
+word = "licence"
+context = "payment or licence is created."
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-roll/src/commerce/registry_recall/notice.rs"
+word = "licence"
+context = "your mind licence {} selects"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/mush-roll/src/commerce/registry_revocation/notice.rs"
+word = "licence"
+context = "your mind licence {} term"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "colour"
+context = "and air, colour-banded; the hoses"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "metres"
+context = "every few metres: PAST T"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "ENROL"
+context = "FIRST CAPTAINS: ENROL AT THE"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "programme"
+context = "programme"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "ENROLMENT"
+context = "ENROLMENT"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "colour"
+context = "colour"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "grey"
+context = "the deck, grey and polished"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "grey"
+context = "stacked with grey cases stencilled"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "metre"
+context = "metre"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "grey"
+context = "in Luna grey with the"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "harbourmaster"
+context = "harbourmaster"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
+word = "colour"
+context = "air in colour-banded runs along"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "harbourmaster"
+context = "harbourmaster"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "Harbourmaster"
+context = "Harbourmaster <HM>;hm;harbourmaster;harbour"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "metres"
+context = "every two metres. The convention"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "Harbour"
+context = "Orbital Guard Harbour Safety, a"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "metres"
+context = "every five metres. Newcomers hold"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "grey"
+context = "grey"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "colour"
+context = "colour"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "Harbourmaster"
+context = "Harbourmaster's Office"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "metres"
+context = "well, seven metres down to"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
+word = "metres"
+context = "metres"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "metres"
+context = "metres"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "honours"
+context = "honours"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "enrol"
+context = "when you enrol, not bef"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "enrolment"
+context = "the Co-op's enrolment and the"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "enrolment"
+context = "first-captains' lay, enrolment and buyout,"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "licence"
+context = "licence"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "licence"
+context = "unseen live licence, claim or"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "programme"
+context = "the whole programme."
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "licence"
+context = "title, charter, licence and claim"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "enrolment"
+context = "enrolment"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/ceres_freeport.json"
+word = "licences"
+context = "handles prospecting licences and block"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/stickney_yards.json"
+word = "fuelled"
+context = "fuelled"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/stickney_yards.json"
+word = "recognised"
+context = "recognised"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/stickney_yards.json"
+word = "Harbourmaster"
+context = "Harbourmaster's clerk: berth"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/stickney_yards.json"
+word = "harbourmaster"
+context = "the harbourmaster's clerk, which"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/stickney_yards.json"
+word = "harbourmaster"
+context = "is the harbourmaster's; +ship tells"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/content/cast/stickney_yards.json"
+word = "harbourmaster"
+context = "reach the harbourmaster and file"
+reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
+
+[[allow]]
+file = "crates/tacsim/src/minds/market_commands/market.rs"
+word = "licence"
+context = "licence"
+reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"

@@ -405,6 +405,15 @@ fn source_hits(deny: &Denylist) -> Vec<Hit> {
     for dir in scan::crate_dirs(&root) {
         for file in scan::files(&dir.join("src"), &["rs"], &["tests", "target"]) {
             let rel = scan::relative(&root, &file);
+            // A `tests.rs` (or `*_tests.rs`) beside its module is that module's
+            // `#[cfg(test)] mod tests;`, test code like a `tests/` directory.
+            let name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if name == "tests.rs" || name.ends_with("_tests.rs") {
+                continue;
+            }
             let src = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{rel}: {e}"));
             hits.extend(source_file_hits(deny, &rel, &src));
             read += 1;
@@ -456,11 +465,14 @@ fn player_facing_text_is_in_us_spelling() {
     let mut used: BTreeSet<usize> = BTreeSet::new();
     let mut failures: Vec<String> = Vec::new();
     for hit in &hits {
-        let allowed = lists.allow.iter().position(|row| {
+        let matches = |row: &Allow| {
             row.file == hit.file && row.word == hit.word && hit.text.contains(&row.context)
-        });
-        if let Some(row) = allowed {
-            used.insert(row);
+        };
+        let rows: Vec<usize> = (0..lists.allow.len())
+            .filter(|&i| matches(&lists.allow[i]))
+            .collect();
+        if !rows.is_empty() {
+            used.extend(rows);
             continue;
         }
         failures.push(format!(
