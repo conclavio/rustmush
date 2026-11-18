@@ -747,7 +747,7 @@ pub mod venue {
     /// `tacsim::port::locker::LOCKER_NO_VENUE`.
     pub const LOCKER_NO_VENUE: &str = "There is no market here to keep a locker at.";
     /// `tacsim::port::locker::LOCKER_SHOW`'s tail: what a locker holds and owes.
-    pub const LOCKER_SHOW: &str = " owed (collection starts later).";
+    pub const LOCKER_SHOW: &str = " t held, charged ";
     /// `tacsim::port::locker::LOCKER_NONE`'s tail.
     pub const LOCKER_NONE: &str = "+locker/open opens one.";
     /// `tacsim::port::market::NOT_AT_VENUE`'s tail: a non-port venue, away from it.
@@ -756,8 +756,6 @@ pub mod venue {
     pub const VENUE_UNPLACED: &str = " market has no place to trade in, so it cannot trade.";
     /// `tacsim::port::market::LOCKER_ELSEWHERE`'s head: another venue's or player's locker.
     pub const LOCKER_ELSEWHERE: &str = "That locker is not yours at ";
-    /// `tacsim::port::proceeds::CHARTERED_ASK`'s head: no personal ask from a chartered hold.
-    pub const CHARTERED_ASK: &str = "Chartered cargo cannot go on a personal ask yet.";
 }
 
 /// **The partial needles**: rows (`family::NAME`) whose needle alone does not identify the
@@ -825,12 +823,6 @@ mod tests {
                 NOT_AT_VENUE,
                 VENUE_UNPLACED,
                 LOCKER_ELSEWHERE,
-            )
-        });
-        rows.extend({
-            use tacsim::port::proceeds as game;
-            rows!("";
-                CHARTERED_ASK,
             )
         });
         rows

@@ -1347,7 +1347,209 @@ EX.1b, #637), EX.3b stacked on EX.3a. EX.3a lands first.
 
 ## EX.4
 
-Not built.
+**Survey.**
+- **Obligations.** A daily obligation a player cannot pay went `Grace` on the first miss and
+  `Delinquent` on the second (the default grace of one period): two real hours at 24:1. Its missed
+  periods were lost, and reinstating re-anchored the schedule, which forgave them
+  (`obligation.rs` `advance`; `api.rs` `reinstate_locked`). Doc 41's one-term debt
+  (`create_debt_due`, Q-41-13) already existed.
+- **Fees.** The exchange charged nothing: a personal listing was free to post, and a personal sale
+  paid the seller the whole price, the one shape EX.1a's `ListingAcceptance` admitted.
+- **The berth fee** existed nowhere. Undocking holds only for the fines quarantine.
+- **The Co-op share** ran only on sales into bids: `CoopProceeds::proceeds` answered no cuts when
+  the buyer was not a port house. EX.1b refused a personal ask from a chartered hold
+  (`may_list`, `CHARTERED_ASK`).
+- **EX.1b's locker** accrued a tally on display (`Locker::accrue`) that nothing collected.
+- **The port's authority.** A port def names one (`authority`, CR.2): `freeport_registry` at
+  Ceres, `stickney_yards` at Stickney, and three more. The port map's treasury is a system account
+  the money census (EX.0) counts as a sink.
+
+**Built.**
+
+*The player-owed obligation class* **(expensive to reverse)** (`mush-economy`, Q-48-54).
+- `Obligation.arrears: Option<Arrears>` (`namespace`, `debt`, `accrued`; serde default, skipped
+  when `None`) marks the class. `create_player_obligation(ctx, spec, namespace)` opens one, its
+  grace raised to at least `PLAYER_OWED_MIN_GRACE` (28) periods.
+- **A missed period accrues** (`sweep.rs`'s miss arm, `api::accrue_arrears`): its amount grows the
+  record's live arrears debt, or opens one. That debt is a one-term debt under the same namespace
+  (`create_debt_due`, Q-41-13's shape), first swept `ARREARS_DUE_IC_SECS` (28 IC days) later, so
+  it stands `Active` and payable until then.
+- **Funding pays it** (`api::collect_arrears`): after a period settles, a debit account that
+  covers the arrears debt pays it whole, in the same fire.
+- **Funding reinstates** (`api::reinstate_funded`, at the head of each settlement pass): a
+  delinquent record of the class whose account covers one period returns to the due pool.
+  Reinstating re-anchors its schedule, as E4's does; what it accrued stands as its debt.
+- `reprice_player_obligation` changes a record's per-period amount, under the namespace and actor
+  locks; `player_obligations_of` reads a debtor's records. The E4 class is unchanged.
+
+*The fees* (`mush-market/src/fees.rs`, Q-48-8, provisional).
+- **The seam** **(expensive to reverse):** `VenueFees::accounts(w, venue) ->
+  Option<VenueFeeAccounts>` (operator, operator name, sink, least listing fee), frozen by
+  `MarketModule::with_venue_fees`. Unwired, or a venue it does not answer for, charges nothing.
+  TacSim's answer is `port::berth::PortFees`: the port's authority operates its venue, the
+  treasury is the sink, and the floor is 10 cr.
+- **The listing fee:** 1% of what is listed (price × quantity, or a hull's price), at least the
+  floor, from the seller's own account to the operator, **once**, at posting, under
+  `market.listing_fee/<listing>`. It is the last fallible step of `post_ask` and `post_asset`
+  (refunded if `post_ask`'s lot hold then cannot be staged), and rides `post_bid`'s escrow post.
+  A refusal is `FEE_SHORT`.
+- **The sale cut and the levy:** 3% to the operator and 1% to the sink, each an exact payout row
+  beside the seller's, who is paid the rest (`fees::sale_payouts`). They are written on every
+  person's ask, lots and hulls: `purchase_spec` now takes its payouts, and `AssetSaleTerms` gains
+  `others`. `ListingAcceptance` requires exactly these rows (`personal_ask_payouts`), so a buyer's
+  hand-made contract cannot drop them. A vendor's listings pay none.
+
+*The Co-op share on a person's ask* (EX.1b's owed item, Q-48-56).
+- `personal_ask_payouts` asks the proceeds policy about a person's lot ask exactly as about a sale
+  into a bid (`fees::ask_policy_cuts`). The builder and `ListingAcceptance` ask the same question,
+  reading the world only.
+- `CoopProceeds::proceeds` now prices the share when the buyer is no port house (a person's ask
+  from an enrolled hold), with the market's own line; the share computation moved to
+  `share_cuts`. EX.1b's `may_list` refusal and `CHARTERED_ASK` are gone.
+
+*The berth and the locker* (`tacsim/src/port/berth.rs`, Q-48-15, -54, -55).
+- **The berth:** each hull docked at a port with an authority owes it 5 cr an IC day, from her
+  title holder's account (her charterer's, for a chartered Co-op hull, so a House's treasury does
+  not drain for its charters; doc 48b G-4(3)), as one player-owed obligation under `tacsim.berth.<port>.<hull>`, its
+  grace the machine's largest (254 periods).
+- **Exempt:** a House's hulls at their home port, meaning a hull titled to one of the port's own
+  organizations, or a registered hull whose `home` is that port.
+- **The port tick keeps it in step** (`berth::tick`): it opens what is wanted, ends a berth when
+  she leaves or changes hands (her arrears stand), and reprices a locker. No new store record;
+  the obligation is the record. **Nothing reads a berth at undocking.**
+- **The lien** (`berth::collect_lien`, from `HullSaleObserver`): on a settled sale of her title,
+  the seller's berth arrears for her at the port she stands in are paid out of the proceeds, in
+  the settlement's own batch.
+- **The locker** (EX.1b's owed item): 1 cr an IC day per started tonne, the same class under
+  `tacsim.locker.<venue>.<player>`, repriced as its tonnes move and ended when it is empty.
+  `+locker` shows the daily charge and the arrears. The record's `owed_minor` tally is kept on
+  the wire and no longer moved.
+
+*Help and sentences.* `help exchange` gains "Fees" and "Berths", and its "Chartered cargo" and
+locker paragraphs are rewritten; `+locker`'s help is rewritten. The bot's `venue` family drops
+`CHARTERED_ASK` and re-needles `LOCKER_SHOW`.
+
+**Tests.**
+- **The done-when, test by test:**
+  - **A week offline costs a hull 840 cr as arrears, not Delinquent, and she still undocks:**
+    `ex4_charges::ex4_a_week_offline_costs_a_hull_840_cr_as_arrears_and_she_still_undocks`.
+    The story runs at 24:1, one fire an IC day. A broke owner's Dray misses 168 periods and
+    stays in grace with 840 cr in one arrears debt. She files her clearance to Stickney with the
+    arrears unpaid and sails, the arrears still standing; once she is under way the berth ends.
+  - **The fees are charged once and land where they should, and the lien collects at her next
+    sale:** `ex4_fees_land_once_and_the_lien_collects_at_her_next_sale`.
+    - At posting, a 60,000 cr hull's 600 cr listing fee goes to Ceres' authority, and the
+      journal holds one fee post after three more days.
+    - At the sale, the authority gets the 3% cut and her berth arrears, and the treasury the 1%
+      levy. The seller is paid the rest, and her arrears are gone.
+  - **The Co-op share applies on a personal chartered sale:**
+    `ex4_the_coop_share_applies_on_a_personal_chartered_sale`. A chartered captain lists 2 t of
+    metals from her hold at 300 cr and pays the listing fee's 10 cr floor. The Trust's own hull
+    at home owes no berth. A second captain buys, and the Trust is paid its share; the seller
+    gets the price less the cut, the levy and the share.
+  - **The locker charge is collected:** EX.1b's
+    `ex1b_venue::ex1b_a_hull_less_player_buys_into_their_locker` now finds 3 t charged 3 cr an
+    IC day, collected, with nothing in arrears.
+  - **The class** (`mush-economy/tests/ex4.rs`, 4 tests):
+    - a week of misses is one debt of 168 periods and still grace;
+    - a funded account pays its arrears in the next fire;
+    - grace is raised to 28, the 29th miss is delinquency, an unfunded record stays delinquent,
+      and funding reinstates it;
+    - an E4 obligation accrues nothing.
+  - **Unit tests:** `fees.rs` (the rates, the floor, the 120-column sentence) and `berth.rs`
+    (the names).
+- **Tests that failed before EX.4, and why:** every test above. Before EX.4 there was no class,
+  fee, berth or charge to find, a chartered ask was refused, and EX.2's sale paid the seller the
+  whole price.
+- **Changed expectations:**
+  - EX.2's `ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her`: the seller is
+    paid 96%.
+  - EX.1b's offline-buy seller is minted the 10 cr fee.
+  - EX.1b's chartered-ask story now lists, as `ex1b_a_chartered_hold_and_a_locker_both_post_a_personal_ask`.
+  - Three stories that check a wallet to the minor unit across IC days now subtract the berth
+    paid over them (`driving_rig::berth_paid`): `sale::ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid`
+    (the pilot's charter berthed at Kasei), and the two `co6_cored_ship` stories (her own Dray at
+    Ceres while the shop works). Six more do the same:
+    `in3_order_contract::in3_a_twenty_day_plant_order_at_stickney_runs_to_collection`,
+    `orders::ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick`,
+    `orders::ic11_the_queue_runs_the_day_unattended`, and in `domain_world`'s `voyage`:
+    `rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her`,
+    `sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_bay_after_salvage_tow`
+    and `sfr19_one_salvage_path_unifies_space_derelict_claims_with_gc6_and_economy`. Each pilot's
+    hull lay at Stickney or Kasei (or at Ceres, her own) across the days the story runs, and paid
+    its berth. Three of mush-server's `commerce_composition` stories do the same, with a local
+    `berth_paid`:
+    - `ic_buyout_dormancy::ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share`
+      (Vex's own hull at Stickney);
+    - `ic_slice_loop::ic12_part_one_a_leg_by_hand` (the pilot's charter);
+    - `ic_slice_loop::ic12_the_sailing_plan_skips_and_holds` (Ben's hull across the hour the
+      escrow waits).
+  - PL.9's `yard_in9::pl9_a_captain_buys_the_stickney_yard_prices_it_and_keeps_it` (met on the
+    merge with main): a facility listing is a personal sale, so it pays the fees. The Yards are
+    Stickney's operator, so they keep the cut and lose only the 1% levy.
+- **On conclav.dev** (on the final tree):
+  - fmt, the contract tests, rustdoc (five crates, both modes), workspace clippy and the M7
+    memory-size lint pass;
+  - `mush-market` + `mush-economy`: 1,192 of 1,192;
+  - tacsim's `domain_economy`: 612 of 612; `domain_world`: 275 of 275; `domain_field`: 318 of 318;
+  - mush-server's `commerce_composition`: 91 of 91;
+  - `mush-bot`: 803 of 803;
+  - the two M7 market stories pass.
+- **The mutations:** 21 run, each alone, against the tests that can see them. 16 are killed.
+  The 5 that survive:
+  - **Masked by an earlier check:**
+    - **E6:** `collect_arrears`'s check that the account covers the debt. Without it the
+      payment is refused for want of funds, and nothing is written.
+    - **F6:** `ListingAcceptance`'s payout match. The builder always writes the expected rows;
+      the check guards against a buyer's hand-made contract, as EX.1a's S-series do.
+  - **Not reached by any story:**
+    - **F3:** the listing fee on a personal bid; no story posts a bid at a port.
+    - **F8:** the fee refund when `post_ask`'s lot hold cannot be staged; that happens only on a
+      server with no lot supply composed.
+    - **B5:** repricing a locker as its tonnes change; no story changes a locker's tonnes after
+      its charge opens.
+  - **E7** (reinstating an unfunded record) survived the first run; the class's grace test now
+    asserts an unfunded record stays delinquent, and it is killed.
+  - **B1** (the House-at-home exemption) and **B6** (a chartered hull's berth is her
+    charterer's) were re-run after the charterer rule landed. B1 is killed by the Co-op-share and
+    EX.2 stories. B6 is killed by `sale::ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid`
+    (outside the EX.4 set: the EX.4 story's charter lies at the Trust's home port, where the
+    House would be exempt too).
+
+  The loop is `ex4-mut.py` and `ex4-mut.sh` (scratch, run on conclav.dev).
+
+**Divergences.**
+- **Files beyond the owned list,** approved by the starting session:
+  - `mush-economy/src/sweep.rs` (three calls) and `lib.rs` (exports);
+  - `mush-market/src/lib.rs` and `module.rs` (the seam);
+  - `tacsim/src/port_tick.rs` (one line), `port/mod.rs` (one line),
+    `composition/mod.rs` and `mush-composition/src/lib.rs` (one line each);
+  - `tacsim/src/port/hull_sale.rs` (the lien), and `buyout.rs` and `house_sale.rs` (the builder's
+    new field);
+  - the bot table, `docs/help/exchange.md`, and the tests: `mush-economy/tests/ex4.rs`,
+    `tacsim/tests/domain_economy/ex4_charges.rs`, EX.1b's `ex1b_venue.rs` (its locker and
+    chartered-ask stories now assert EX.4's behaviour), and `hull_resale_ex2.rs` (its helpers
+    made `pub(crate)`).
+- **The fee seam is a new trait** (`VenueFees`), not the approved defaulted
+  `VenueGate::fee_accounts`: TacSim's gate is implemented in `port/market.rs`, which is EX.3's, so
+  a separate trait answered from `port/berth.rs` keeps out of that file.
+- **The berth's grace is 254 periods,** not 28 (accepted by the starting session). The done-when's
+  "a week offline is 840 cr in arrears, not Delinquent" needs at least 168, and 254 is the
+  machine's limit: the missed-period counter is a `u8` that saturates at 255, so
+  `MAX_GRACE_PERIODS` is 254. Past it a record goes Delinquent and stops accruing until funded, so
+  an absence costs at most 1,270 cr (about 10.6 real days at 24:1). Passed to the owner.
+- **The lien collects from the seller's proceeds after the settlement**, in its batch, not as a
+  payout row of the sale contract, so the `AssetSale` seam keeps its two questions.
+- **The berth's catch-up is 8 periods** (`MAX_CATCH_UP_CAP`), so a short stall charges rather
+  than forgives.
+
+**Not built.**
+- **The sale cut and levy on a sale into a person's bid** (the bid's listing fee is charged).
+  The deliver quote's cuts hold one row (`MAX_PROCEEDS_CUTS`); widening it is the next step.
+- **The Co-op's counters on a chartered ask's sale:** the share is paid, and the enrolment's sale
+  counters fold only on sales into bids.
+- **A fee line at posting:** the seller's posted line does not yet name the fee.
+- **House income** (Q-48-55's stipend), sized by EX.9.
 
 ## EX.5
 

@@ -103,13 +103,29 @@ there. It need not be your first hull, only one whose hold you may trade from.
 
 With no hull of yours docked there, it goes into your locker at that market.
 `+locker/open` opens one where you stand, and `+locker` shows what it holds and
-owes. A locker holds 20 t and 40 m3, and owes 1 cr an IC day for each tonne
-it holds. Nothing collects that yet.
+owes. A locker holds 20 t and 40 m3, and costs 1 cr an IC day for each tonne
+it holds, taken from your own account. A day you cannot pay is owed as arrears,
+and paid once your account is funded.
 
 A market that belongs to no port, such as a counter, trades only with people
 standing at it.
 
 ## Chartered cargo
 
-Goods in a Co-op chartered hold cannot go on a personal ask yet. Sell them
-into a house's bid instead, which pays the Co-op its share.
+Goods in a Co-op chartered hold may go on a personal ask. When they sell, the
+Co-op takes its share of the margin over its reference price, as it does on a
+sale into a house's bid, and you are paid the rest.
+
+## Fees
+
+At a port, the port's authority takes a listing fee of 1% of what you list (at
+least 10 cr), once, when you post it, and 3% of each sale. A further 1% of each
+sale is a levy to the port's treasury. A house's own listings pay none of these.
+
+## Berths
+
+A hull docked at a port with an authority owes it 5 cr an IC day, from her
+title holder's account. A day you cannot pay is owed as arrears, and paid once
+your account is funded; a long absence stops adding to it after about ten real
+days. Arrears never keep a hull at her berth, but they are paid out of her next
+sale at that port. A house's own hulls at their home port owe nothing.

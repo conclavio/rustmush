@@ -504,6 +504,8 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
                 .with_proceeds_policy(Arc::new(tacsim::port::proceeds::CoopProceeds))
                 // Doc 48 cut EX.2: a person lists a hull through the market.
                 .with_asset_sale(Arc::new(tacsim::port::hull_sale::HullSale))
+                // Doc 48 cut EX.4: a port's authority operates its venue's fees.
+                .with_venue_fees(Arc::new(tacsim::port::berth::PortFees))
         } else {
             self
         }

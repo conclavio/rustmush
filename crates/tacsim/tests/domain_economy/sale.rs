@@ -1742,6 +1742,8 @@ fn ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid() {
     );
     let me = account_of(&rig.tw, &PrincipalId::Object(pilot));
     let my_posted = posted(&rig.tw, me);
+    // Doc 48 cut EX.4: her charter's berth at Kasei is hers, paid across the hour waited.
+    let berth_before = crate::driving_rig::berth_paid(rig.tw.world(), &PrincipalId::Object(pilot));
     let bid = kasei_bid(&rig.tw, "metals");
     let _ = run(&mut rig.tw, pilot, &format!("+market/sell {bid}=20"));
     let _dropped = drain(&mut rig.tw);
@@ -1755,7 +1757,9 @@ fn ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid() {
     ));
     assert_eq!(held(&rig.tw, kasei), 0);
     assert_eq!(posted(&rig.tw, kasei), kasei_posted);
-    assert_eq!(posted(&rig.tw, me), my_posted);
+    let berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &PrincipalId::Object(pilot)) - berth_before;
+    assert_eq!(posted(&rig.tw, me), my_posted - berth);
     assert_eq!(posted(&rig.tw, trust_account(&rig.tw)), trust_posted);
     assert_eq!(pool(&mut rig.tw, hold, "metals"), 20);
     assert_eq!(bid_qty(&rig.tw, bid), Some(4_000));

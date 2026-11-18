@@ -769,6 +769,24 @@ fn available(tw: &TestWorld, account: mush_economy::AccountId) -> i64 {
         .expect("the account's available funds")
 }
 
+/// **What `who` has paid in berth fees, ever** (doc 48 cut EX.4): every berth period of
+/// theirs that settled, at its fee. A story that checks a wallet to the minor unit across
+/// IC days subtracts the berth it paid over them.
+fn berth_paid(tw: &TestWorld, who: &PrincipalId) -> i64 {
+    economy(tw)
+        .snapshot()
+        .obligations()
+        .filter(|o| {
+            &o.debtor == who
+                && o.arrears.as_ref().is_some_and(|a| {
+                    a.namespace
+                        .starts_with(tacsim::port::berth::BERTH_NS_PREFIX)
+                })
+        })
+        .map(|o| o.amount.minor() * i64::from(o.settled_total))
+        .sum()
+}
+
 /// The money render (`5600.00cr`).
 fn cr(minor: i64) -> String {
     format!("{}.{:02}cr", minor / 100, minor % 100)
@@ -1738,7 +1756,10 @@ async fn ic12_part_one_a_leg_by_hand() {
     }
     let credit = run(&mut rig, pilot, "+credit").await;
     assert!(
-        credit.contains(&format!("{} available", cr(stake - costs + nets))),
+        credit.contains(&format!(
+            "{} available",
+            cr(stake - costs + nets - berth_paid(&rig.tw, &PrincipalId::Object(pilot)))
+        )),
         "{credit}"
     );
     assert_eq!(
@@ -4596,6 +4617,8 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
     // it back. Both are read before the order is filed (order 2's sale has settled).
     let me = credit_account(&rig.tw, &PrincipalId::Object(ben));
     let (balance, free) = (posted(&rig.tw, me), available(&rig.tw, me));
+    // Doc 48 cut EX.4: the berth his hull owes while the story waits is paid from this wallet.
+    let berth_before = berth_paid(&rig.tw, &PrincipalId::Object(ben));
     let cutoff = mush_market::DRAW_WINDOW_SECS - mush_market::DRAW_SETTLE_MARGIN_SECS;
     let alloys = listing_of(&rig.tw, P, "kasei", "structural_alloys");
     let escrow = price_of(&rig.tw, alloys) * 5;
@@ -4658,9 +4681,10 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
         ),
         "the Draw's contract expired (its refund)"
     );
+    let berth = berth_paid(&rig.tw, &PrincipalId::Object(ben)) - berth_before;
     assert_eq!(
         (posted(&rig.tw, me), available(&rig.tw, me)),
-        (balance, free),
+        (balance - berth, free - berth),
         "the escrow is released exactly: nothing paid, nothing held"
     );
     assert_no_pages(&rig.tw);
