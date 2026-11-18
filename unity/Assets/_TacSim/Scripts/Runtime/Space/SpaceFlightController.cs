@@ -79,6 +79,14 @@ namespace TacSim.Space
 
         public bool IsDroneSortieActive => _droneSortieActive;
         public string OwnShipHolotankId { get; private set; } = string.Empty;
+        public bool HasClusterMiningTelemetry { get; private set; }
+        public string AuthoritativeMatchedRockId { get; private set; } = string.Empty;
+        public string AuthoritativeApproachingRockId { get; private set; } = string.Empty;
+        public bool IsAuthoritativeMiningLaserActive { get; private set; }
+
+        public bool IsVelocityMatchedToRock(string rockId) =>
+            !string.IsNullOrWhiteSpace(rockId) &&
+            string.Equals(AuthoritativeMatchedRockId, rockId.Trim(), StringComparison.OrdinalIgnoreCase);
 
         public bool TryGetTargetPosition(string id, out Vector3 worldPos)
         {
@@ -127,6 +135,10 @@ namespace TacSim.Space
             _collectorDrones.Clear();
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
+            HasClusterMiningTelemetry = false;
+            AuthoritativeMatchedRockId = string.Empty;
+            AuthoritativeApproachingRockId = string.Empty;
+            IsAuthoritativeMiningLaserActive = false;
             _droneSortieActive = false;
 
             transform.position = OrbitalStageOrigin;
@@ -539,6 +551,17 @@ namespace TacSim.Space
                 SelectedRockId = rockId.Trim().ToUpperInvariant();
         }
 
+        public void NotifyApproachOrdered(string rockId)
+        {
+            if (string.IsNullOrWhiteSpace(rockId)) return;
+            string r = rockId.Trim().ToUpperInvariant();
+            SelectedRockId = r;
+            HasClusterMiningTelemetry = true;
+            AuthoritativeApproachingRockId = r;
+            // `+helm/approach` clears `session.matched_rock = None` on the server until `+helm/match` succeeds.
+            AuthoritativeMatchedRockId = string.Empty;
+        }
+
         public void SetLockedContact(string designator)
         {
             if (!string.IsNullOrWhiteSpace(designator))
@@ -568,6 +591,16 @@ namespace TacSim.Space
                 _activeBeamEndGlow.gameObject.SetActive(true);
             }
             _beamExpireTime = Time.time + durationSec;
+        }
+
+        public void StopMiningLaser()
+        {
+            IsAuthoritativeMiningLaserActive = false;
+            _beamExpireTime = 0f;
+            if (_activeBeamRenderer != null)
+                _activeBeamRenderer.enabled = false;
+            if (_activeBeamEndGlow != null)
+                _activeBeamEndGlow.gameObject.SetActive(false);
         }
 
         public void ToggleDroneSortie(bool active)
@@ -712,6 +745,41 @@ namespace TacSim.Space
             return false;
         }
 
+        public static void ParseClusterMiningState(
+            JsonNode cockpit,
+            out bool hasMiningBlock,
+            out string matchedRock,
+            out string approachingRock,
+            out int activeDrones,
+            out string activeLaserRock)
+        {
+            hasMiningBlock = false;
+            matchedRock = string.Empty;
+            approachingRock = string.Empty;
+            activeDrones = -1;
+            activeLaserRock = string.Empty;
+            if (cockpit == null || !cockpit.IsObject)
+                return;
+
+            var miningObj = cockpit["mining"];
+            if (miningObj.IsObject)
+            {
+                hasMiningBlock = true;
+                if (miningObj.ContainsKey("matched_rock") && !miningObj["matched_rock"].IsNull)
+                    matchedRock = miningObj.Str("matched_rock", string.Empty).Trim().ToUpperInvariant();
+                if (miningObj.ContainsKey("approaching_rock") && !miningObj["approaching_rock"].IsNull)
+                    approachingRock = miningObj.Str("approaching_rock", string.Empty).Trim().ToUpperInvariant();
+                activeDrones = miningObj.Int("active_drones", 0);
+                if (miningObj["laser"].IsObject)
+                    activeLaserRock = miningObj["laser"].Str("rock", matchedRock).Trim().ToUpperInvariant();
+                return;
+            }
+
+            if (cockpit.ContainsKey("matched_rock") && !cockpit["matched_rock"].IsNull)
+                matchedRock = cockpit.Str("matched_rock", string.Empty).Trim().ToUpperInvariant();
+            activeDrones = cockpit.Int("active_drones", -1);
+        }
+
         public void ApplyCockpitFeed(JsonNode cockpit)
         {
             if (cockpit == null || !cockpit.IsObject) return;
@@ -729,24 +797,35 @@ namespace TacSim.Space
                     LockedContactId = string.Empty;
             }
 
-            var miningObj = cockpit["mining"];
-            string matchedRock = miningObj.IsObject
-                ? miningObj.Str("matched_rock", miningObj.Str("approaching_rock", cockpit.Str("matched_rock", string.Empty)))
-                : cockpit.Str("matched_rock", string.Empty);
-            if (!string.IsNullOrEmpty(matchedRock))
-                SelectedRockId = matchedRock.Trim().ToUpperInvariant();
+            ParseClusterMiningState(
+                cockpit,
+                out bool hasMining,
+                out string matchedRock,
+                out string approachingRock,
+                out int activeDrones,
+                out string activeLaserRock);
 
-            int activeDrones = miningObj.IsObject
-                ? miningObj.Int("active_drones", cockpit.Int("active_drones", -1))
-                : cockpit.Int("active_drones", -1);
+            HasClusterMiningTelemetry = hasMining;
+            AuthoritativeMatchedRockId = matchedRock;
+            AuthoritativeApproachingRockId = approachingRock;
+
+            if (!string.IsNullOrEmpty(matchedRock))
+                SelectedRockId = matchedRock;
+            else if (!string.IsNullOrEmpty(approachingRock))
+                SelectedRockId = approachingRock;
+
             if (activeDrones >= 0)
                 ToggleDroneSortie(activeDrones > 0);
 
-            if (miningObj.IsObject && miningObj["laser"].IsObject)
+            if (!string.IsNullOrEmpty(activeLaserRock))
             {
-                string laserRock = miningObj["laser"].Str("rock", SelectedRockId);
-                if (!string.IsNullOrEmpty(laserRock))
-                    SelectedRockId = laserRock.Trim().ToUpperInvariant();
+                IsAuthoritativeMiningLaserActive = true;
+                SelectedRockId = activeLaserRock;
+                TriggerMiningLaser(activeLaserRock, durationSec: 8.0f);
+            }
+            else if (hasMining && IsAuthoritativeMiningLaserActive)
+            {
+                StopMiningLaser();
             }
 
             if (PlayerShipTransform != null)

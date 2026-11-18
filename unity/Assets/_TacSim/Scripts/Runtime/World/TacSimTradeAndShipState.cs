@@ -106,6 +106,7 @@ namespace TacSim.World
         public void ReloadGoodsCatalog()
         {
             GoodsCatalog = TacSimContentLoader.LoadGoodsTable();
+            OnStateChanged?.Invoke();
         }
 
         public void NotifyMarketRefreshRequested()

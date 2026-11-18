@@ -118,13 +118,27 @@ namespace TacSim.UI
                 _orbitalOpsBar.SetActive(seatedAtHelm && (_surface == null || !_surface.IsExcursionActive) && (_arena == null || !_arena.IsArenaActive));
         }
 
-        public void UpdateOrbitalTargetReadout(string rockId, string contactId)
+        public void UpdateOrbitalTargetReadout(
+            string rockId,
+            string contactId,
+            string matchedRockId = null,
+            string approachingRockId = null)
         {
             if (_orbitalTargetLabel != null)
             {
                 string r = string.IsNullOrEmpty(rockId) ? "NONE" : rockId;
+                string rState = string.Empty;
+                if (!string.IsNullOrEmpty(rockId))
+                {
+                    if (string.Equals(rockId, matchedRockId, StringComparison.OrdinalIgnoreCase))
+                        rState = " <color=#55FF99>[MATCHED]</color>";
+                    else if (string.Equals(rockId, approachingRockId, StringComparison.OrdinalIgnoreCase))
+                        rState = " <color=#FFCC55>[APPROACH]</color>";
+                    else if (matchedRockId != null || approachingRockId != null)
+                        rState = " <color=#FF8866>[UNMATCHED]</color>";
+                }
                 string c = string.IsNullOrEmpty(contactId) ? "NONE" : contactId;
-                _orbitalTargetLabel.text = $"ROCK: <b>{r}</b> | LOCK: <b>{c}</b>";
+                _orbitalTargetLabel.text = $"ROCK: <b>{r}</b>{rState} | LOCK: <b>{c}</b>";
             }
         }
 
@@ -132,7 +146,7 @@ namespace TacSim.UI
 
         private void BuildSlice2OrbitalOpsBar(Transform parent)
         {
-            _orbitalOpsBar = CreatePanel(parent, "OrbitalMiningAndTacBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-460f, 126f), new Vector2(460f, 206f), new Color(0.03f, 0.08f, 0.14f, 0.92f));
+            _orbitalOpsBar = CreatePanel(parent, "OrbitalMiningAndTacBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-490f, 126f), new Vector2(490f, 206f), new Color(0.03f, 0.08f, 0.14f, 0.92f));
 
             var rowMine = CreatePanel(_orbitalOpsBar.transform, "ZeroGMiningRow", new Vector2(0f, 0.5f), new Vector2(1f, 1f), new Vector2(8f, 2f), new Vector2(-8f, -4f), Color.clear);
             var mHlg = rowMine.AddComponent<HorizontalLayoutGroup>();
@@ -145,6 +159,7 @@ namespace TacSim.UI
             CreateBtn(rowMine.transform, "ROCK A", new Color(0.16f, 0.34f, 0.30f), () => OnCommandRequested?.Invoke("space:rock:A"));
             CreateBtn(rowMine.transform, "ROCK B", new Color(0.16f, 0.34f, 0.30f), () => OnCommandRequested?.Invoke("space:rock:B"));
             CreateBtn(rowMine.transform, "ROCK C", new Color(0.16f, 0.34f, 0.30f), () => OnCommandRequested?.Invoke("space:rock:C"));
+            CreateBtn(rowMine.transform, "MATCH VEL", new Color(0.18f, 0.46f, 0.56f), () => OnCommandRequested?.Invoke("space:helm_match"));
             CreateBtn(rowMine.transform, "MINING LASER", new Color(0.12f, 0.50f, 0.44f), () => OnCommandRequested?.Invoke("space:mine_laser"));
             CreateBtn(rowMine.transform, "DRONE SORTIE", new Color(0.46f, 0.36f, 0.12f), () => OnCommandRequested?.Invoke("space:mine_drones"));
             CreateBtn(rowMine.transform, "STAKE CLAIM", new Color(0.24f, 0.42f, 0.26f), () => OnCommandRequested?.Invoke("space:mine_stake"));

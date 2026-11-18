@@ -440,7 +440,9 @@ fn reconcile_neighborhood_with_live_records(
         entries.remove(&k);
     }
 
-    // Overlay live RoomGeo footprint, floor, access, and live room object name.
+    // Overlay live RoomGeo footprint (`def.footprint.rect`), surface (`def.surface.floor`),
+    // room kind, access, and live room object name using the exact `mush-atlas` pack wire schema
+    // consumed by Unity's `TacSimContentLoader.ParseNeighborhoodJson`.
     for (entry_key, geo) in &live_rooms {
         let row = entries
             .entry(entry_key.clone())
@@ -449,12 +451,26 @@ fn reconcile_neighborhood_with_live_records(
             if let Some(obj) = w.get(geo.room) {
                 def.insert("name".to_owned(), Value::String(obj.name.to_string()));
             }
+            def.insert(
+                "kind".to_owned(),
+                json!(match geo.kind {
+                    mush_atlas::RoomKind::Outdoor => "outdoor",
+                    mush_atlas::RoomKind::Indoor => "indoor",
+                    mush_atlas::RoomKind::Circulation => "circulation",
+                }),
+            );
+            if let Some(site_key) = &geo.site {
+                def.insert("site".to_owned(), json!(site_key.entry.as_str()));
+            }
             match &geo.footprint {
                 mush_atlas::Footprint::Rect(mush_atlas::Rect2(
                     mush_atlas::Point2(x0, y0),
                     mush_atlas::Point2(x1, y1),
                 )) => {
-                    def.insert("bounds".to_owned(), json!([[*x0, *y0], [*x1, *y1]]));
+                    def.insert(
+                        "footprint".to_owned(),
+                        json!({ "rect": [[*x0, *y0], [*x1, *y1]] }),
+                    );
                 }
                 mush_atlas::Footprint::Polygon(mush_atlas::Polygon2(pts)) if !pts.is_empty() => {
                     let mut min_x = f64::INFINITY;
@@ -467,23 +483,32 @@ fn reconcile_neighborhood_with_live_records(
                         max_x = max_x.max(*px);
                         max_y = max_y.max(*py);
                     }
-                    def.insert("bounds".to_owned(), json!([[min_x, min_y], [max_x, max_y]]));
+                    def.insert(
+                        "footprint".to_owned(),
+                        json!({ "rect": [[min_x, min_y], [max_x, max_y]] }),
+                    );
                 }
                 mush_atlas::Footprint::Anchor { point, radius_m } => {
                     let r = radius_m.max(2.0);
                     def.insert(
-                        "bounds".to_owned(),
-                        json!([[point.0 - r, point.1 - r], [point.0 + r, point.1 + r]]),
+                        "footprint".to_owned(),
+                        json!({ "rect": [[point.0 - r, point.1 - r], [point.0 + r, point.1 + r]] }),
                     );
                 }
                 mush_atlas::Footprint::Polygon(_) => {}
             }
-            if let mush_atlas::SurfaceRef::Floor {
-                structure, index, ..
-            } = &geo.surface
-            {
-                def.insert("structure".to_owned(), json!(structure.entry.as_str()));
-                def.insert("floor".to_owned(), json!(*index));
+            match &geo.surface {
+                mush_atlas::SurfaceRef::Ground => {
+                    def.insert("surface".to_owned(), json!("ground"));
+                }
+                mush_atlas::SurfaceRef::Floor {
+                    structure, index, ..
+                } => {
+                    def.insert(
+                        "surface".to_owned(),
+                        json!({ "floor": [structure.entry.as_str(), *index] }),
+                    );
+                }
             }
             def.insert(
                 "access".to_owned(),
@@ -492,6 +517,19 @@ fn reconcile_neighborhood_with_live_records(
                     mush_atlas::Access::Restricted => "restricted",
                 }),
             );
+        }
+    }
+
+    // Overlay live NeighborhoodRec display name when present.
+    for (nkey, nb) in &records.neighborhoods {
+        if &nkey.pack != pack_id {
+            continue;
+        }
+        let row = entries
+            .entry(nkey.entry.as_str().to_owned())
+            .or_insert_with(|| json!({ "kind": "neighborhood", "def": {} }));
+        if let Some(def) = row.get_mut("def").and_then(Value::as_object_mut) {
+            def.insert("name".to_owned(), Value::String(nb.name.clone()));
         }
     }
 
@@ -634,7 +672,16 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
         col.push_projected(&client_id, "cast", json_src, &[pack_id]);
     }
 
-    // 3. Live `TacsimStore` rules & campaign-seed packs at their world-applied versions
+    // 3. Authoritative `GoodsTable` (standalone typed document outside `TacsimStore::packs()`)
+    if let Ok(table) = crate::definitions::goods::goods_table()
+        && let Ok(goods_doc) = serde_json::to_value(table)
+    {
+        col.push_projected_value("goods", "market", goods_doc, &["tacsim.goods"]);
+    } else {
+        col.push_projected("goods", "market", GOODS_JSON, &["tacsim.goods"]);
+    }
+
+    // 4. Live `TacsimStore` rules, arena definitions, & campaign-seed packs at world-applied versions
     if let Some(store) = store {
         let mut unique_ids = std::collections::BTreeSet::new();
         for loaded in store.packs() {
@@ -652,6 +699,11 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                 store.newest_loaded(&id).filter(|&v| {
                     store.pack(&id, v).is_some_and(|lp| {
                         lp.pack.manifest().kind() != mush_content::PackKind::CampaignSeed
+                            || lp
+                                .pack
+                                .entries()
+                                .values()
+                                .any(|e| matches!(e, crate::pack::PackEntry::Arena(_)))
                     })
                 })
             });
@@ -664,8 +716,19 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
             let Ok(doc) = loaded.pack.canonical_value() else {
                 continue;
             };
-            if id.as_str() == "tacsim.goods" {
-                col.push_projected_value("goods", "market", doc, &["tacsim.goods"]);
+            let has_fielded_def = doc
+                .get("entries")
+                .and_then(Value::as_object)
+                .is_some_and(|e| {
+                    e.values().any(|row| {
+                        matches!(
+                            row.get("kind").and_then(Value::as_str),
+                            Some("unit" | "weapon" | "arena")
+                        )
+                    })
+                });
+            if has_fielded_def {
+                col.push_fielded_value_if_client_relevant(doc);
             } else if loaded.pack.manifest().kind() == mush_content::PackKind::CampaignSeed {
                 let has_location = doc
                     .get("entries")
@@ -681,9 +744,40 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                         .unwrap_or(id.as_str());
                     col.push_projected_value(slug, "lane", doc, &[id.as_str()]);
                 }
-            } else {
-                col.push_fielded_value_if_client_relevant(doc);
             }
+        }
+
+        // Fill in stock `Catalog` unit/weapon/arena definitions (`fielded_sources` + conduct carrier)
+        // that were compiled into `store.definitions()` rather than repeated in `TacsimConfig.packs`,
+        // skipping any pack overridden above or retired in `ContentState`.
+        for raw_src in fielded_sources()
+            .into_iter()
+            .map(|s| s.bytes)
+            .chain(std::iter::once(CONDUCT_CARRIER_JSON.to_owned()))
+        {
+            let Ok(doc) = serde_json::from_str::<Value>(&raw_src) else {
+                continue;
+            };
+            let manifest_id = doc
+                .get("manifest")
+                .and_then(|m| m.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !manifest_id.is_empty() {
+                if col.by_id.contains_key(manifest_id) {
+                    continue;
+                }
+                if let Ok(cid) = mush_core::CanonicalId::new(manifest_id)
+                    && content.is_some_and(|c| {
+                        c.latches
+                            .applied(&cid)
+                            .is_some_and(mush_content::Applied::is_retired)
+                    })
+                {
+                    continue;
+                }
+            }
+            col.push_fielded_value_if_client_relevant(doc);
         }
 
         // Companion ground heightfield atlases for active simulator arenas
@@ -1276,6 +1370,104 @@ mod tests {
             check_eq!(pdata["found"], json!(true));
             check_eq!(pdata["id"], json!("dray"));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_neighborhood_emits_client_footprint_and_surface_schema() -> TestResult {
+        use mush_atlas::{
+            Access, Footprint, Point2, RecordKey, Records, Rect2, RoomGeo, RoomKind, SurfaceRef,
+        };
+        use mush_core::CanonicalId;
+
+        let mut tw = mush_testkit::TestWorld::new();
+        let r1 =
+            tw.world_mut()
+                .create(mush_core::ObjKind::Room, "Live Moved Room", ObjId(1), None)?;
+        let r2 =
+            tw.world_mut()
+                .create(mush_core::ObjKind::Room, "Synthesized Room", ObjId(1), None)?;
+
+        let pack_id = CanonicalId::new("neighborhood.test_station")?;
+        let nb_key = RecordKey::new(pack_id.clone(), CanonicalId::new("neighborhood.main")?);
+        let st_key = RecordKey::new(pack_id.clone(), CanonicalId::new("structure.hub")?);
+
+        let mut records = Records::default();
+        records.roomgeo.insert(
+            r1,
+            RoomGeo {
+                room: r1,
+                key: RecordKey::new(pack_id.clone(), CanonicalId::new("room.existing")?),
+                neighborhood: nb_key.clone(),
+                site: None,
+                surface: SurfaceRef::Floor {
+                    structure: st_key.clone(),
+                    index: 3,
+                },
+                footprint: Footprint::Rect(Rect2(Point2(100.0, 200.0), Point2(120.0, 220.0))),
+                kind: RoomKind::Indoor,
+                access: Access::Public,
+                revision: 2,
+            },
+        );
+        records.roomgeo.insert(
+            r2,
+            RoomGeo {
+                room: r2,
+                key: RecordKey::new(pack_id.clone(), CanonicalId::new("room.synth")?),
+                neighborhood: nb_key,
+                site: None,
+                surface: SurfaceRef::Floor {
+                    structure: st_key,
+                    index: 2,
+                },
+                footprint: Footprint::Rect(Rect2(Point2(40.0, 50.0), Point2(65.0, 80.0))),
+                kind: RoomKind::Circulation,
+                access: Access::Public,
+                revision: 1,
+            },
+        );
+
+        let mut doc = json!({
+            "manifest": { "id": "neighborhood.test_station", "version": 1, "kind": "neighborhood" },
+            "entries": {
+                "room.existing": {
+                    "kind": "room",
+                    "def": {
+                        "name": "Stale Shelf Room",
+                        "footprint": { "rect": [[0.0, 0.0], [10.0, 10.0]] },
+                        "surface": { "floor": ["structure.hub", 1] },
+                    }
+                },
+                "room.unapplied_v2": {
+                    "kind": "room",
+                    "def": {
+                        "name": "Future V2 Room",
+                        "footprint": { "rect": [[300.0, 300.0], [320.0, 320.0]] },
+                    }
+                }
+            }
+        });
+
+        reconcile_neighborhood_with_live_records(&tw.engine().world, &records, &pack_id, &mut doc);
+
+        check!(doc["entries"].get("room.unapplied_v2").is_none());
+        let ex_def = &doc["entries"]["room.existing"]["def"];
+        check_eq!(ex_def["name"], json!("Live Moved Room"));
+        check_eq!(
+            ex_def["footprint"]["rect"],
+            json!([[100.0, 200.0], [120.0, 220.0]])
+        );
+        check_eq!(ex_def["surface"]["floor"], json!(["structure.hub", 3]));
+
+        let syn_def = &doc["entries"]["room.synth"]["def"];
+        check_eq!(syn_def["name"], json!("Synthesized Room"));
+        check_eq!(syn_def["kind"], json!("circulation"));
+        check_eq!(
+            syn_def["footprint"]["rect"],
+            json!([[40.0, 50.0], [65.0, 80.0]])
+        );
+        check_eq!(syn_def["surface"]["floor"], json!(["structure.hub", 2]));
         Ok(())
     }
 }

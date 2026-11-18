@@ -2744,12 +2744,28 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
     );
     assert_eq!(matching_quote["total_minor"].as_i64(), Some(ask_price * 10));
 
-    // Verify live-world `tacsim.content` omits staff_lobby for regular players and serves applied Ceres Freeport.
+    // Verify live-world `tacsim.content` omits staff_lobby for regular players and serves
+    // applied Ceres Freeport, standalone `goods` table, all 3 `arena.*` definitions, units, & lane.
     let live_bundle = tacsim::client_sync::world_content_bundle(rig.tw.world(), who);
-    assert!(
-        live_bundle.find("neighborhood.ceres_freeport").is_some(),
-        "live world bundle includes applied Ceres Freeport"
-    );
+    for required_id in [
+        "neighborhood.ceres_freeport",
+        "goods",
+        "tacsim.goods",
+        "ceres_phobos",
+        "dray",
+        "dray_p",
+        "arena.proving_ground",
+        "arena.mars_canyon",
+        "arena.winter_valley",
+        "arena_atlas.proving_ground",
+        "arena_atlas.mars_canyon",
+        "arena_atlas.winter_valley",
+    ] {
+        assert!(
+            live_bundle.find(required_id).is_some(),
+            "live world bundle must serve `{required_id}`"
+        );
+    }
     assert!(
         live_bundle.find("neighborhood.staff_lobby").is_none(),
         "live world bundle omits staff_lobby for non-staff players"

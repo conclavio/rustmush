@@ -148,6 +148,7 @@ namespace TacSim.Net
             if (!string.IsNullOrWhiteSpace(normalized) && Uri.TryCreate(normalized, UriKind.Absolute, out Uri u))
                 hostSlug = SanitizeFileSlug($"{u.Host}_{u.Port}");
 
+            int warmLoaded = 0;
             try
             {
                 if (!string.IsNullOrEmpty(explicitCacheDir))
@@ -165,17 +166,19 @@ namespace TacSim.Net
                 if (!string.IsNullOrEmpty(_cacheRootDir))
                 {
                     Directory.CreateDirectory(Path.Combine(_cacheRootDir, "packs"));
-                    int warmLoaded = LoadCachedPacksIntoMemory();
+                    warmLoaded = LoadCachedPacksIntoMemory();
                     if (warmLoaded > 0)
-                    {
                         OnSyncLog?.Invoke($"[ContentSync] Hydrated {warmLoaded} verified pack(s) from local server cache.");
-                        OnPacksUpdated?.Invoke(warmLoaded);
-                    }
                 }
             }
             catch
             {
                 _cacheRootDir = null;
+            }
+            finally
+            {
+                // Always notify subscribers so previously loaded server models invalidate even when the new server cache is empty!
+                OnPacksUpdated?.Invoke(warmLoaded);
             }
         }
 

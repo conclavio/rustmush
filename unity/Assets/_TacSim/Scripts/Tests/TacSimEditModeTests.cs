@@ -686,8 +686,13 @@ namespace TacSim.Tests
                 string shaA = TacSimContentSync.ComputeSha256Hex(serverAGoods);
 
                 var sync = new TacSimContentSync();
+                var tradeState = new TacSimTradeAndShipState();
                 int updateEvents = 0;
-                sync.OnPacksUpdated += count => updateEvents += count;
+                sync.OnPacksUpdated += count =>
+                {
+                    updateEvents += 1;
+                    tradeState.ReloadGoodsCatalog();
+                };
 
                 sync.InitializeDiskCacheForServer("https://server-a.example.com", tempDir);
                 Assert.IsTrue(sync.StoreVerifiedPack("goods", shaA, serverAGoods));
@@ -697,10 +702,14 @@ namespace TacSim.Tests
                     sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""goods"",""sha256"":""{shaA}"",""json"":{JsonNode.FromString(serverAGoods).ToJson()}}}"), 1f);
                 }
                 Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _));
+                Assert.IsTrue(tradeState.GoodsCatalog.Exists(g => g.Label == "Server A Metal"));
 
-                // Switching to Server B MUST clear Server A's dynamic packs!
+                // Switching to a COLD Server B (empty cache) MUST clear Server A's dynamic packs AND fire OnPacksUpdated to invalidate loaded models!
+                int beforeColdSwitch = updateEvents;
                 sync.InitializeDiskCacheForServer("https://server-b.example.com", tempDir);
                 Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Switching servers must clear previous server's dynamic packs");
+                Assert.Greater(updateEvents, beforeColdSwitch, "Cold-server switch must still fire OnPacksUpdated so loaded models invalidate");
+                Assert.IsFalse(tradeState.GoodsCatalog.Exists(g => g.Label == "Server A Metal"), "Cold-server switch must evict Server A models from loaded catalog");
 
                 // Switching back to Server A with warm disk cache MUST hydrate packs AND fire OnPacksUpdated!
                 int beforeWarm = updateEvents;
@@ -924,6 +933,113 @@ namespace TacSim.Tests
             }
             Assert.IsTrue(stress.IsTapeBudgetExhausted);
             Assert.LessOrEqual(stress.FormatTapeCommand().Length, 8192);
+
+            // 7. Completed rover leg holds endpoint without drifting backward toward leg start!
+            var legRun = new System.Collections.Generic.List<TacSim.Surface.RoverLegWaypoint>(wps);
+            UnityEngine.Vector3 curRoverLocal = new UnityEngine.Vector3(145f, 0f, 145f);
+            UnityEngine.Vector3 fallbackTarget = new UnityEngine.Vector3(145f, 0f, 145f); // stale start target before completion
+            bool hasDriveWp = true;
+            float heading = 90f;
+            float spd = 0f;
+            int scx = 128, scy = 128;
+            // Frame at leg completion (elapsed = 30.0s -> endpoint x_cm=130500, y_cm=132500 -> local (165m, 185m))
+            TacSim.Surface.SurfaceMiningController.AdvanceRoverKinematicsStep(
+                driveGrid, legRun, 30.0, 1.0, 0.05f,
+                ref curRoverLocal, ref fallbackTarget, ref hasDriveWp, ref heading, ref spd, ref scx, ref scy);
+            Assert.AreEqual(0, legRun.Count, "Completed leg clears waypoint list");
+            Assert.IsFalse(hasDriveWp, "Completed leg clears fallback _hasDriveWaypoint");
+            Assert.AreEqual(165f, curRoverLocal.x, 0.05f);
+            Assert.AreEqual(185f, curRoverLocal.z, 0.05f);
+            // Subsequent Update frame while awaiting server completion frame MUST hold (165m, 185m), never reversing toward 145m!
+            TacSim.Surface.SurfaceMiningController.AdvanceRoverKinematicsStep(
+                driveGrid, legRun, 31.0, 1.0, 0.1f,
+                ref curRoverLocal, ref fallbackTarget, ref hasDriveWp, ref heading, ref spd, ref scx, ref scy);
+            Assert.AreEqual(165f, curRoverLocal.x, 0.01f, "Rover must hold completed endpoint, never reversing toward old target");
+            Assert.AreEqual(185f, curRoverLocal.z, 0.01f);
+
+            // 8. Cross-language Rust live-reconciled neighborhood schema (`footprint.rect` + `surface.floor`) & synthesized room
+            try
+            {
+                const string ReconciledStationJson = @"{
+                    ""manifest"": { ""id"": ""neighborhood.test_station"", ""version"": 1, ""kind"": ""neighborhood"", ""projected"": true },
+                    ""entries"": {
+                        ""structure.hub"": {
+                            ""kind"": ""structure"",
+                            ""def"": {
+                                ""floors"": [
+                                    { ""index"": 1, ""name"": ""Deck 1"", ""z_offset_m"": 0.0, ""height_m"": 4.5 },
+                                    { ""index"": 2, ""name"": ""Deck 2"", ""z_offset_m"": 5.0, ""height_m"": 4.5 },
+                                    { ""index"": 3, ""name"": ""Deck 3"", ""z_offset_m"": 10.0, ""height_m"": 4.5 }
+                                ]
+                            }
+                        },
+                        ""room.existing"": {
+                            ""kind"": ""room"",
+                            ""def"": {
+                                ""name"": ""Live Moved Room"",
+                                ""kind"": ""indoor"",
+                                ""footprint"": { ""rect"": [[100.0, 200.0], [120.0, 220.0]] },
+                                ""surface"": { ""floor"": [""structure.hub"", 3] },
+                                ""access"": ""public""
+                            }
+                        },
+                        ""room.synth"": {
+                            ""kind"": ""room"",
+                            ""def"": {
+                                ""name"": ""Synthesized Room"",
+                                ""kind"": ""circulation"",
+                                ""footprint"": { ""rect"": [[40.0, 50.0], [65.0, 80.0]] },
+                                ""surface"": { ""floor"": [""structure.hub"", 2] },
+                                ""access"": ""public""
+                            }
+                        }
+                    }
+                }";
+                TacSimContentLoader.RegisterDynamicPack("neighborhood.test_station", ReconciledStationJson);
+                var reconciledPack = TacSimContentLoader.LoadNeighborhoodPackById("neighborhood.test_station");
+                Assert.IsNotNull(reconciledPack);
+                Assert.IsTrue(reconciledPack.Rooms.ContainsKey("room.existing"));
+                var movedRoom = reconciledPack.Rooms["room.existing"];
+                Assert.AreEqual(100f, movedRoom.MinX, 0.01f);
+                Assert.AreEqual(200f, movedRoom.MinY, 0.01f);
+                Assert.AreEqual(120f, movedRoom.MaxX, 0.01f);
+                Assert.AreEqual(220f, movedRoom.MaxY, 0.01f);
+                Assert.AreEqual(3, movedRoom.FloorIndex);
+
+                Assert.IsTrue(reconciledPack.Rooms.ContainsKey("room.synth"), "Synthesized room with footprint.rect must not be discarded");
+                var synthRoom = reconciledPack.Rooms["room.synth"];
+                Assert.AreEqual(40f, synthRoom.MinX, 0.01f);
+                Assert.AreEqual(80f, synthRoom.MaxY, 0.01f);
+                Assert.AreEqual(2, synthRoom.FloorIndex);
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+            }
+
+            // 9. Orbital velocity-match workflow (`space:helm_match` -> `+helm/match A`, gating laser & drones on matched_rock)
+            string matchCmd = TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:helm_match", "A", true, "", out string matchRefusal);
+            Assert.AreEqual("+helm/match A", matchCmd);
+            Assert.IsNull(matchRefusal);
+
+            // Unmatched laser & drones MUST refuse without emitting a command
+            Assert.IsNull(TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:mine_laser", "A", true, "", out string laserRefusal));
+            Assert.IsNotNull(laserRefusal);
+            Assert.IsNull(TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:mine_drones", "A", true, "B", out string droneRefusal));
+            Assert.IsNotNull(droneRefusal);
+
+            // Authoritative `cockpit.mining` confirms velocity match on Rock A -> laser & drones permitted
+            var matchedCockpit = JsonNode.Parse(@"{""mining"":{""cluster"":""ceres_halo"",""matched_rock"":""A"",""approaching_rock"":null,""active_drones"":1,""laser"":{""rock"":""A"",""yield_t"":4}}}");
+            TacSim.Space.SpaceFlightController.ParseClusterMiningState(
+                matchedCockpit, out bool hasMining, out string authMatched, out string authApproaching, out int authDrones, out string authLaserRock);
+            Assert.IsTrue(hasMining);
+            Assert.AreEqual("A", authMatched);
+            Assert.AreEqual(string.Empty, authApproaching);
+            Assert.AreEqual(1, authDrones);
+            Assert.AreEqual("A", authLaserRock);
+
+            Assert.AreEqual("+mine/laser A", TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:mine_laser", "A", hasMining, authMatched, out _));
+            Assert.AreEqual("+mine/drones A 1", TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:mine_drones", "A", hasMining, authMatched, out _));
         }
     }
 }

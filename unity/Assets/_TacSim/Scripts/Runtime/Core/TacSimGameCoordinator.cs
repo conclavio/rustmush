@@ -237,10 +237,21 @@ namespace TacSim.Core
             SpaceStage.OnSpaceAlert += msg => Hud.AppendLogLine($"<color=#FFAA44>[HELM]</color> {msg}");
             SpaceStage.OnOrbitalTargetClicked += (id, isRock) =>
             {
-                Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
-                Hud.AppendLogLine(isRock
-                    ? $"<color=#66FFCC>[MINING]</color> Selected Asteroid Pocket <b>{id}</b>."
-                    : $"<color=#FFBB55>[TAC]</color> Locked Naval Contact <b>{id}</b>.");
+                if (isRock)
+                {
+                    SpaceStage.NotifyApproachOrdered(id);
+                    RefreshOrbitalReadout();
+                    Hud.AppendLogLine($"<color=#66FFCC>[MINING]</color> Approaching Asteroid Pocket <b>{id}</b> — click <b>MATCH VEL</b> (`+helm/match {id}`) once inside 2,000 m &amp; &lt; 5 m/s.");
+                    if (_ws != null && _ws.IsConnected)
+                        _ws.SendLine($"+helm/approach {id}");
+                }
+                else
+                {
+                    RefreshOrbitalReadout();
+                    Hud.AppendLogLine($"<color=#FFBB55>[TAC]</color> Locked Naval Contact <b>{id}</b>.");
+                    if (_ws != null && _ws.IsConnected)
+                        _ws.SendLine($"+tac/lock {id}");
+                }
             };
 
             SurfaceStage.OnTerrainCellDriveClicked += (sx, sy) =>
@@ -334,6 +345,54 @@ namespace TacSim.Core
         private void OnDestroy()
         {
             _ws?.Dispose();
+        }
+
+        private void RefreshOrbitalReadout()
+        {
+            if (Hud?.Overlays == null || SpaceStage == null) return;
+            Hud.Overlays.UpdateOrbitalTargetReadout(
+                SpaceStage.SelectedRockId,
+                SpaceStage.LockedContactId,
+                SpaceStage.HasClusterMiningTelemetry ? SpaceStage.AuthoritativeMatchedRockId : null,
+                SpaceStage.HasClusterMiningTelemetry ? SpaceStage.AuthoritativeApproachingRockId : null);
+        }
+
+        /// <summary>
+        /// Resolves orbital mining UI actions (<c>space:helm_match</c>, <c>space:mine_laser</c>, <c>space:mine_drones</c>)
+        /// into canonical <c>mushd</c> commands, gating extraction on authoritative RCS velocity match (<c>+helm/match &lt;rock&gt;</c>).
+        /// </summary>
+        public static string ResolveOrbitalMiningCommand(
+            string uiAction,
+            string selectedRockId,
+            bool hasClusterTelemetry,
+            string authoritativeMatchedRockId,
+            out string refusalNotice)
+        {
+            refusalNotice = null;
+            string rock = string.IsNullOrWhiteSpace(selectedRockId) ? string.Empty : selectedRockId.Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(rock))
+            {
+                refusalNotice = "Select an orbital rock (`A`, `B`, or `C`) first.";
+                return null;
+            }
+
+            if (string.Equals(uiAction, "space:helm_match", StringComparison.OrdinalIgnoreCase))
+                return $"+helm/match {rock}";
+
+            // Both `+mine/laser` and `+mine/drones` unconditionally require `session.matched_rock == Some(rock)` on `mushd`.
+            if (!string.Equals(authoritativeMatchedRockId, rock, StringComparison.OrdinalIgnoreCase))
+            {
+                refusalNotice = $"Lock RCS velocity match on Rock {rock} first (click <b>MATCH VEL</b> / `+helm/match {rock}` inside 2,000 m &amp; &lt; 5 m/s).";
+                return null;
+            }
+
+            if (string.Equals(uiAction, "space:mine_laser", StringComparison.OrdinalIgnoreCase))
+                return $"+mine/laser {rock}";
+            if (string.Equals(uiAction, "space:mine_drones", StringComparison.OrdinalIgnoreCase))
+                return $"+mine/drones {rock} 1";
+
+            refusalNotice = $"Unknown orbital mining action `{uiAction}`.";
+            return null;
         }
 
         private void RefreshLoadedContentAfterSync()
@@ -877,38 +936,28 @@ namespace TacSim.Core
             if (cmd.StartsWith("space:rock:", StringComparison.OrdinalIgnoreCase))
             {
                 string rId = cmd.Substring("space:rock:".Length).Trim().ToUpperInvariant();
-                SpaceStage.SelectRock(rId);
-                Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
+                SpaceStage.NotifyApproachOrdered(rId);
+                RefreshOrbitalReadout();
                 if (_ws != null && _ws.IsConnected)
                     _ws.SendLine($"+helm/approach {rId}");
                 return;
             }
-            if (cmd == "space:mine_laser")
+            if (cmd == "space:helm_match" || cmd == "space:mine_laser" || cmd == "space:mine_drones")
             {
-                if (string.IsNullOrEmpty(SpaceStage.SelectedRockId))
+                string wireCmd = ResolveOrbitalMiningCommand(
+                    cmd,
+                    SpaceStage.SelectedRockId,
+                    SpaceStage.HasClusterMiningTelemetry,
+                    SpaceStage.AuthoritativeMatchedRockId,
+                    out string refusal);
+                if (string.IsNullOrEmpty(wireCmd))
                 {
-                    Hud.AppendLogLine("<color=#FFAA55>[MINING]</color> Select an orbital rock (`A`, `B`, or `C`) first.");
+                    Hud.AppendLogLine($"<color=#FFAA55>[MINING]</color> {refusal}");
                     return;
                 }
                 CameraRig.SetMode(CameraRigMode.OrbitalExterior);
                 if (_ws != null && _ws.IsConnected)
-                {
-                    _ws.SendLine($"+mine/laser {SpaceStage.SelectedRockId}");
-                    if (SpaceStage.HasTargetableRock(SpaceStage.SelectedRockId))
-                        SpaceStage.TriggerMiningLaser();
-                }
-                return;
-            }
-            if (cmd == "space:mine_drones")
-            {
-                if (string.IsNullOrEmpty(SpaceStage.SelectedRockId))
-                {
-                    Hud.AppendLogLine("<color=#FFAA55>[MINING]</color> Select an orbital rock (`A`, `B`, or `C`) before launching collector drones.");
-                    return;
-                }
-                CameraRig.SetMode(CameraRigMode.OrbitalExterior);
-                if (_ws != null && _ws.IsConnected)
-                    _ws.SendLine($"+mine/drones {SpaceStage.SelectedRockId} 1");
+                    _ws.SendLine(wireCmd);
                 return;
             }
             if (cmd == "space:mine_stake")
@@ -926,7 +975,7 @@ namespace TacSim.Core
             {
                 string tgt = cmd.Substring("space:lock:".Length).Trim();
                 SpaceStage.SetLockedContact(tgt);
-                Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
+                RefreshOrbitalReadout();
                 if (_ws != null && _ws.IsConnected && !string.IsNullOrEmpty(SpaceStage.LockedContactId))
                     _ws.SendLine($"+tac/lock {SpaceStage.LockedContactId}");
                 return;
@@ -1395,12 +1444,12 @@ namespace TacSim.Core
                 case "space.holotank":
                     ShipInterior.PopulateHoloBlips(data);
                     SpaceStage.ApplyHolotankFeed(data);
-                    Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
+                    RefreshOrbitalReadout();
                     break;
                 case "space.cockpit":
                     SpaceStage.ApplyCockpitFeed(data);
                     Hud.UpdateHelmStatus(SpaceStage.ThrottlePermille, SpaceStage.EmconPosture);
-                    Hud.Overlays?.UpdateOrbitalTargetReadout(SpaceStage.SelectedRockId, SpaceStage.LockedContactId);
+                    RefreshOrbitalReadout();
                     break;
                 case "space.docking":
                     SpaceStage.StartDockingFromFeed(data);

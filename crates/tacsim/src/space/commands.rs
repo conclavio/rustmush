@@ -6916,6 +6916,7 @@ fn mine_laser(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             super::mining::ore_specific_volume_l_per_t(family),
         ),
     );
+    push_space_panels(ctx, hull);
     Ok(())
 }
 
@@ -7211,6 +7212,7 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             super::sortie::DRONE_HOLD_T
         ),
     );
+    push_space_panels(ctx, hull);
     Ok(())
 }
 

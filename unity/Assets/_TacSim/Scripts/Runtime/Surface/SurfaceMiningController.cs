@@ -410,8 +410,8 @@ namespace TacSim.Surface
                     double t = (elapsedIcSec - a.AtSec) / span;
                     xCm = a.XCm + dx * t;
                     yCm = a.YCm + dy * t;
-                    segmentSpeedMps = (Math.Sqrt(dx * dx + dy * dy) * 0.01) / span;
-                    stillMoving = true;
+                    stillMoving = (i + 1 < waypoints.Count - 1) || (elapsedIcSec < b.AtSec);
+                    segmentSpeedMps = stillMoving ? (Math.Sqrt(dx * dx + dy * dy) * 0.01) / span : 0.0;
                     return true;
                 }
             }
@@ -805,61 +805,108 @@ namespace TacSim.Surface
             // Follow authoritative `{x_cm, y_cm, at_s}` leg waypoints on the IC clock when present,
             // or hold at the authoritative server cell otherwise.
             Vector3 localPos = ActiveRoverRig.Root.transform.position - SurfaceStageOrigin;
-            if (_activeLegWaypoints.Count > 0)
+            StepRoverKinematics(ref localPos, dt, MonotonicSeconds());
+
+            ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + localPos;
+            ActiveRoverRig.Root.transform.rotation = Quaternion.Euler(0f, _roverHeadingDeg, 0f);
+            ActiveRoverRig.UpdateArticulation(dt, _roverSpeedKph, null);
+        }
+
+        public void StepRoverKinematics(ref Vector3 localPos, float dt, double nowMonotonicSec)
+        {
+            if (TerrainGrid == null) return;
+            double nowIc = _clockBaseIcSec + Math.Max(0.0, nowMonotonicSec - _clockBaseMonotonicSec) * _clockRateIcPerRealSec;
+            double elapsedIc = nowIc - _activeLegStartedIc;
+            int cellX = AuthoritativeSiteCellX;
+            int cellY = AuthoritativeSiteCellY;
+            AdvanceRoverKinematicsStep(
+                TerrainGrid,
+                _activeLegWaypoints,
+                elapsedIc,
+                _clockRateIcPerRealSec,
+                dt,
+                ref localPos,
+                ref _roverTargetLocalPos,
+                ref _hasDriveWaypoint,
+                ref _roverHeadingDeg,
+                ref _roverSpeedKph,
+                ref cellX,
+                ref cellY);
+            AuthoritativeSiteCellX = cellX;
+            AuthoritativeSiteCellY = cellY;
+        }
+
+        public static void AdvanceRoverKinematicsStep(
+            DecodedTerrainGrid grid,
+            List<RoverLegWaypoint> activeLegWaypoints,
+            double elapsedIcSec,
+            double clockRateIcPerRealSec,
+            float dt,
+            ref Vector3 localPos,
+            ref Vector3 roverTargetLocalPos,
+            ref bool hasDriveWaypoint,
+            ref float roverHeadingDeg,
+            ref float roverSpeedKph,
+            ref int authoritativeSiteCellX,
+            ref int authoritativeSiteCellY)
+        {
+            if (grid == null) return;
+
+            if (activeLegWaypoints != null && activeLegWaypoints.Count > 0)
             {
-                double nowIc = _clockBaseIcSec + Math.Max(0.0, MonotonicSeconds() - _clockBaseMonotonicSec) * _clockRateIcPerRealSec;
-                double elapsedIc = nowIc - _activeLegStartedIc;
                 if (EvaluateLegPositionCm(
-                        _activeLegWaypoints,
-                        elapsedIc,
+                        activeLegWaypoints,
+                        elapsedIcSec,
                         out double xCm,
                         out double yCm,
                         out float legHeading,
                         out double segMps,
                         out bool moving))
                 {
-                    AuthoritativeSiteCellX = (int)Math.Floor(xCm / 1000.0);
-                    AuthoritativeSiteCellY = (int)Math.Floor(yCm / 1000.0);
-                    localPos = TerrainGrid.SiteCmToLocalPos(xCm, yCm, 0f);
-                    _roverHeadingDeg = Mathf.MoveTowardsAngle(_roverHeadingDeg, legHeading, 180f * dt);
-                    _roverSpeedKph = moving ? (float)(segMps * Math.Max(0.25, _clockRateIcPerRealSec) * 3.6) : 0f;
+                    authoritativeSiteCellX = (int)Math.Floor(xCm / 1000.0);
+                    authoritativeSiteCellY = (int)Math.Floor(yCm / 1000.0);
+                    localPos = grid.SiteCmToLocalPos(xCm, yCm, 0f);
+                    roverHeadingDeg = Mathf.MoveTowardsAngle(roverHeadingDeg, legHeading, 180f * dt);
+                    roverSpeedKph = moving ? (float)(segMps * Math.Max(0.25, clockRateIcPerRealSec) * 3.6) : 0f;
                     if (!moving)
-                        _activeLegWaypoints.Clear();
+                    {
+                        // Anchor fallback destination at the finished endpoint and clear hasDriveWaypoint
+                        // so subsequent frames hold position instead of reversing toward the leg's origin!
+                        roverTargetLocalPos = localPos;
+                        hasDriveWaypoint = false;
+                        activeLegWaypoints.Clear();
+                    }
                 }
             }
-            else if (_hasDriveWaypoint)
+            else if (hasDriveWaypoint)
             {
-                Vector3 toTarget = _roverTargetLocalPos - localPos;
+                Vector3 toTarget = roverTargetLocalPos - localPos;
                 toTarget.y = 0f;
                 if (toTarget.magnitude > 0.35f)
                 {
                     float desiredYaw = Mathf.Atan2(toTarget.x, toTarget.z) * Mathf.Rad2Deg;
-                    _roverHeadingDeg = Mathf.MoveTowardsAngle(_roverHeadingDeg, desiredYaw, 150f * dt);
+                    roverHeadingDeg = Mathf.MoveTowardsAngle(roverHeadingDeg, desiredYaw, 150f * dt);
                     Vector3 step = toTarget.normalized * Mathf.Min(toTarget.magnitude, 14f * dt);
                     localPos += step;
-                    _roverSpeedKph = 24f;
+                    roverSpeedKph = 24f;
                 }
                 else
                 {
-                    localPos = _roverTargetLocalPos;
-                    _hasDriveWaypoint = false;
-                    _roverSpeedKph = 0f;
+                    localPos = roverTargetLocalPos;
+                    hasDriveWaypoint = false;
+                    roverSpeedKph = 0f;
                 }
             }
             else
             {
-                _roverSpeedKph = Mathf.MoveTowards(_roverSpeedKph, 0f, 40f * dt);
+                roverSpeedKph = Mathf.MoveTowards(roverSpeedKph, 0f, 40f * dt);
             }
 
-            float maxCoordX = Mathf.Max(TerrainGrid.CellSizeM, TerrainGrid.Width * TerrainGrid.CellSizeM);
-            float maxCoordZ = Mathf.Max(TerrainGrid.CellSizeM, TerrainGrid.Height * TerrainGrid.CellSizeM);
+            float maxCoordX = Mathf.Max(grid.CellSizeM, grid.Width * grid.CellSizeM);
+            float maxCoordZ = Mathf.Max(grid.CellSizeM, grid.Height * grid.CellSizeM);
             localPos.x = Mathf.Clamp(localPos.x, 0f, maxCoordX);
             localPos.z = Mathf.Clamp(localPos.z, 0f, maxCoordZ);
-            localPos.y = TerrainGrid.SampleElevationMeters(localPos.x, localPos.z);
-
-            ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + localPos;
-            ActiveRoverRig.Root.transform.rotation = Quaternion.Euler(0f, _roverHeadingDeg, 0f);
-            ActiveRoverRig.UpdateArticulation(dt, _roverSpeedKph, null);
+            localPos.y = grid.SampleElevationMeters(localPos.x, localPos.z);
         }
     }
 }
