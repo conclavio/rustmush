@@ -498,7 +498,7 @@ fn cancel(
     )?;
     rig.accept(
         snap,
-        &format!("{title}: canceled"),
+        &format!("{title}: cancelled"),
         writes,
         terminal_changes(o)?,
         &identity(d, 3, o.terminal()),
@@ -675,12 +675,12 @@ fn ct0_refit_core_walk() -> TestResult {
     )?;
 
     let mut w = rig(&d)?;
-    let title = "canceled at once";
+    let title = "cancelled at once";
     let r = accept(&mut snap, &mut w, &d, title, &first)?;
     cancel(&mut snap, &mut w, &d, title, &first, &r)?;
 
     let mut w = rig(&d)?;
-    let title = "fitted, then a replacement canceled after progress";
+    let title = "fitted, then a replacement cancelled after progress";
     let r = accept(&mut snap, &mut w, &d, &format!("{title}: order 1"), &first)?;
     let n = advance(
         &mut snap,

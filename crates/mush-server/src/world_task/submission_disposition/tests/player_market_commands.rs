@@ -1742,7 +1742,7 @@ const REGISTRY_OFF: &str = "Registry recall and revocation are not configured he
 
 /// `+minds`'s help, its reply to any other switch set (17g C2d: its last
 /// three lines, the renewal and trade forms).
-const MINDS_HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>] [org=<org>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code> (each [org=<org>])\n+minds/renew <license> [org=<org>] (then /pay or /decline with the same license)\n+minds/resell <license>=<player> price=<credits>; +minds/resell/accept <license> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
+const MINDS_HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>] [org=<org>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code> (each [org=<org>])\n+minds/renew <licence> [org=<org>] (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
 
 /// The comparison rule's own cases.
 #[test]

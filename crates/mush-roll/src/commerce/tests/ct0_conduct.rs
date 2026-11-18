@@ -192,7 +192,7 @@ fn ct0_conduct_wire() -> TestResult {
     // Doc 46 unit CT.0b (CT.1's finding): a cancelled result says `null` for both, and a
     // document that leaves either key out is refused.
     for key in ["artifact", "measurement"] {
-        mush_testkit::snapshot::refuses_left_out("ConductResult (canceled)", &withdrawn, key)?;
+        mush_testkit::snapshot::refuses_left_out("ConductResult (cancelled)", &withdrawn, key)?;
     }
     for (label, row) in [("passed", &passed), ("cancelled", &withdrawn)] {
         rig::document_keyed(&mut s, &format!("{label} result"), &f.conduct_results, row)?;
@@ -220,7 +220,7 @@ fn ct0_conduct_wire() -> TestResult {
     s.codec("ConductResult (complete)", &passed, |j| {
         j["measurement"] = serde_json::Value::Null
     })?;
-    s.codec("ConductResult (canceled)", &withdrawn, |j| {
+    s.codec("ConductResult (cancelled)", &withdrawn, |j| {
         j["format"] = 2.into()
     })?;
     s.check(env!("CARGO_MANIFEST_DIR"), "tests/ct0/wire_conduct.snap")?;

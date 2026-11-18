@@ -1236,7 +1236,7 @@ async fn typed_market_story_quote_pay_complete_panels_resale_and_restart() -> Te
         // The typed renewal: handed to the service, which answers alone.
         let not_due = |l: &str| {
             l.starts_with(&format!(
-                "License {licence} is not due for renewal; its term has "
+                "Licence {licence} is not due for renewal; its term has "
             )) && l.ends_with(" IC days left.")
         };
         match typed(&w.server, buyer, MarketAction::Renew { licence }).await? {

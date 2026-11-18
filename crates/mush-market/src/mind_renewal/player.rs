@@ -283,29 +283,29 @@ pub(crate) fn outcome_line(
 
 /// The licence's current term has not ended (the service's due rule).
 pub const RENEW_NOT_DUE: &str =
-    "License {licence} is not due for renewal; its term has {days} IC days left.";
+    "Licence {licence} is not due for renewal; its term has {days} IC days left.";
 /// A renewal offer was asked for (the step submitted the Draft).
-pub const RENEWING: &str = "Asking for a renewal offer on license {licence}. +minds/renew {licence} shows it once it is confirmed.";
+pub const RENEWING: &str = "Asking for a renewal offer on licence {licence}. +minds/renew {licence} shows it once it is confirmed.";
 /// A drafted offer's terms.
-pub const RENEW_OFFER: &str = "License {licence} renews for {price} ({term}+{grace} IC days); the offer is open {hours} more IC hours.";
+pub const RENEW_OFFER: &str = "Licence {licence} renews for {price} ({term}+{grace} IC days); the offer is open {hours} more IC hours.";
 /// How to answer a drafted offer.
 pub const RENEW_HOW: &str =
     "Pay it with +minds/renew/pay {licence}, or turn it down with +minds/renew/decline {licence}.";
 /// The holder's payment is held; the service completes the renewal.
 pub const RENEW_FUNDED: &str =
-    "Your renewal payment for license {licence} is held; the renewal completes on its own.";
+    "Your renewal payment for licence {licence} is held; the renewal completes on its own.";
 /// The holder paid the drafted offer (the step submitted the Fund).
 pub const RENEW_PAYING: &str =
-    "Paying {price} for the renewal of license {licence} into escrow; it completes on its own.";
+    "Paying {price} for the renewal of licence {licence} into escrow; it completes on its own.";
 /// The holder turned the drafted offer down (the step submitted the Close).
-pub const RENEW_DECLINING: &str = "Turning down the renewal offer on license {licence}.";
+pub const RENEW_DECLINING: &str = "Turning down the renewal offer on licence {licence}.";
 
 /// Doc 44 MW.2 (Q-44-14, the owner's wording, ruled 2026-11-11): the licence
 /// can never be renewed as the Registry's records stand. `{reason}` is the
 /// Registry's reason (`stop_reason`). Nothing was submitted and the renewal
 /// service will not try either.
 pub const RENEW_STOPPED: &str =
-    "This license cannot be renewed: {reason}. Nothing further will be tried.";
+    "This licence cannot be renewed: {reason}. Nothing further will be tried.";
 
 /// The Registry's reason for a lasting refusal, as `RENEW_STOPPED` words it.
 #[must_use]

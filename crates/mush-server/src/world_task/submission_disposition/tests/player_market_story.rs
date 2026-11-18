@@ -1449,7 +1449,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     check_eq!(holds(w, cy, 1).await?, vec![sealed.parse::<u64>()?]);
     // The lasting refusal: the holder is told why, once, and nothing is
     // submitted (the renewal operations are the ones the renewal above left).
-    let stopped = "This license cannot be renewed: its author withdrew this mind. Nothing further will be tried.";
+    let stopped = "This licence cannot be renewed: its author withdrew this mind. Nothing further will be tried.";
     let renewals_before = renewals(w, sealed).await?;
     settle(w, cy).await?;
     let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == stopped).await?;
@@ -1638,7 +1638,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // act is told before the author's. The verdict is the Roll's own rows',
     // so it is the same after the restart: the renewal service opened nothing
     // across it, and the holder is told why, with nothing submitted.
-    let recalled = "This license cannot be renewed: the Registry recalled this mind. Nothing further will be tried.";
+    let recalled = "This licence cannot be renewed: the Registry recalled this mind. Nothing further will be tried.";
     settle(w, cy).await?;
     let refused = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == recalled).await?;
     check_eq!(refused, vec![recalled.to_owned()], "{refused:?}");

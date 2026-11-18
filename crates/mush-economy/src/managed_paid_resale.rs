@@ -55,7 +55,7 @@ pub(crate) const SETTLE: &str = "settle_paid_mind_resale";
 pub(crate) const REFUND: &str = "refund_paid_mind_resale";
 
 fn refused() -> ParticipantError {
-    ParticipantError::refused("The paid license resale is unavailable or has changed.")
+    ParticipantError::refused("The paid licence resale is unavailable or has changed.")
 }
 fn action_matches(action: &DefinitionRef, id: &str) -> bool {
     action.key().owner.as_str() == "market"

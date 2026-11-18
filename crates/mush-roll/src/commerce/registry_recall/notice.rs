@@ -36,7 +36,7 @@ struct Notice {
 impl Notice {
     fn text(self) -> String {
         format!(
-            "Registry recall: your mind license {} selects filed revision {}, recalled by operation {}. New use of that revision is unavailable; running sorties retain their captured mind.",
+            "Registry recall: your mind licence {} selects filed revision {}, recalled by operation {}. New use of that revision is unavailable; running sorties retain their captured mind.",
             self.licence.get(),
             self.filed.get(),
             self.operation

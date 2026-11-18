@@ -97,7 +97,7 @@ pub(crate) const SWITCHES: [&str; 11] = [
 ];
 /// `+minds`'s `CommandSpec.help`, and the reply to any other switch set.
 /// 17g C2d adds its last three lines.
-pub(crate) const HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>] [org=<org>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code> (each [org=<org>])\n+minds/renew <license> [org=<org>] (then /pay or /decline with the same license)\n+minds/resell <license>=<player> price=<credits>; +minds/resell/accept <license> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
+pub(crate) const HELP: &str = "+minds [<code>]; +minds/next <code>; +minds/holdings [owner|paid <cursor>] [org=<org>]\n+minds/buy <code>; +minds/buy/pay <code>; +minds/buy/complete <code>; +minds/buy/refund <code> (each [org=<org>])\n+minds/renew <licence> [org=<org>] (then /pay or /decline with the same licence)\n+minds/resell <licence>=<player> price=<credits>; +minds/resell/accept <licence> [price=<credits>]\n+minds/charter <filed>=<player> price=<credits>; +minds/charter/accept <filed> [price=<credits>]";
 /// `@mind/publish`'s usage: exactly its `@mind` `HELP` line.
 pub(crate) const USAGE_PUBLISH: &str = "@mind/publish <filed> form=sealed|open|open-resale [royalty=<per mille>] [transfer=no] (at a counter)";
 

@@ -33,7 +33,7 @@ struct Notice {
 impl Notice {
     fn text(self) -> String {
         format!(
-            "Registry revocation: your mind license {} term {} is revoked through its original grace end {} (operation {}). Running sorties retain their captured warrant. A later term requires normal fresh admission.",
+            "Registry revocation: your mind licence {} term {} is revoked through its original grace end {} (operation {}). Running sorties retain their captured warrant. A later term requires normal fresh admission.",
             self.licence.get(),
             self.generation.get(),
             self.grace_end.get(),

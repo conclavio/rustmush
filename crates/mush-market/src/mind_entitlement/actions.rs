@@ -113,7 +113,7 @@ fn presentation(action: &DefinitionRef) -> Result<mush_core::ActionPresentation,
     };
     mush_core::ActionPresentation::new(
         format!("{product}-{transition}-v{version}"),
-        format!("{product} license: {transition}"),
+        format!("{product} licence: {transition}"),
         "Use the exact current listing, quote or funded operation returned by the service.",
     )
     .map_err(|e| e.to_string())

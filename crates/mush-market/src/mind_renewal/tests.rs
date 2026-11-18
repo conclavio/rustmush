@@ -853,7 +853,7 @@ fn the_front_prints_the_minds_words_for_every_state_and_binds_the_operation() ->
             }
             super::player::RenewalState::Funded => {
                 let funded = FrontAnswer::Say(vec![
-                    "Your renewal payment for license 7 is held; the renewal completes on its own."
+                    "Your renewal payment for licence 7 is held; the renewal completes on its own."
                         .to_owned(),
                 ]);
                 check_eq!(before, funded.clone());
@@ -869,15 +869,15 @@ fn the_front_prints_the_minds_words_for_every_state_and_binds_the_operation() ->
     let operation = drafted.operation();
     check_eq!(
         front_line(&shown, FrontStep::Request, 0),
-        "Asking for a renewal offer on license 7. +minds/renew 7 shows it once it is confirmed."
+        "Asking for a renewal offer on licence 7. +minds/renew 7 shows it once it is confirmed."
     );
     check_eq!(
         front_line(&shown, FrontStep::Accept(operation), price),
-        "Paying 5cr for the renewal of license 7 into escrow; it completes on its own."
+        "Paying 5cr for the renewal of licence 7 into escrow; it completes on its own."
     );
     check_eq!(
         front_line(&shown, FrontStep::Decline(operation), price),
-        "Turning down the renewal offer on license 7."
+        "Turning down the renewal offer on licence 7."
     );
     // The operation binds the step to the offer the holder saw.
     let other = token(99);
@@ -985,7 +985,7 @@ fn house_front_words(term_end: i64) -> TestResult {
             RenewalState::Funded => check_eq!(
                 before,
                 FrontAnswer::Say(vec![
-                    "Your renewal payment for license 7 is held; the renewal completes on its own."
+                    "Your renewal payment for licence 7 is held; the renewal completes on its own."
                         .to_owned()
                 ])
             ),
@@ -1007,7 +1007,7 @@ fn house_front_words(term_end: i64) -> TestResult {
             FrontStep::Accept(drafted.operation()),
             drafted.offer().terms.price.minor()
         ),
-        "Paying 5cr for the renewal of license 7 into escrow; it completes on its own."
+        "Paying 5cr for the renewal of licence 7 into escrow; it completes on its own."
     );
     check_eq!(
         house_line(super::player::sent_outcome(
@@ -1032,7 +1032,7 @@ fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
     use mush_roll::commerce::renewal::reader::RenewalStop;
     check_eq!(
         RENEW_STOPPED,
-        "This license cannot be renewed: {reason}. Nothing further will be tried."
+        "This licence cannot be renewed: {reason}. Nothing further will be tried."
     );
     for (stop, reason) in [
         (RenewalStop::Recalled, "the Registry recalled this mind"),
@@ -1042,7 +1042,7 @@ fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
         check_eq!(stop_reason(stop), reason);
         check_eq!(
             renew_stopped(stop),
-            format!("This license cannot be renewed: {reason}. Nothing further will be tried.")
+            format!("This licence cannot be renewed: {reason}. Nothing further will be tried.")
         );
         // The match below is exhaustive: a new lasting cause needs its words.
         match stop {
@@ -1052,7 +1052,7 @@ fn a_lasting_refusal_is_answered_in_the_ruled_words() -> TestResult {
     let house: mush_roll::commerce::house_renewal::reader::RenewalStop = RenewalStop::Withdrawn;
     check_eq!(
         renew_stopped(house),
-        "This license cannot be renewed: its author withdrew this mind. Nothing further will be tried."
+        "This licence cannot be renewed: its author withdrew this mind. Nothing further will be tried."
     );
     Ok(())
 }

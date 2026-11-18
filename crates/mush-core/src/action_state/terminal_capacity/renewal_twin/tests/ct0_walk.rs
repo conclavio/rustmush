@@ -17,7 +17,7 @@ fn ct0_state<I: Rig>(snap: &mut Snapshot, f: &Fixture<I>, operation: CommitToken
     let p = pair::<I>(&view(f), operation)?;
     snap.line("phase", &p.phase);
     snap.line(
-        "license predecessor next",
+        "licence predecessor next",
         &format!("{} {} {}", p.licence, p.predecessor, p.next),
     );
     let binding = p.binding()?;

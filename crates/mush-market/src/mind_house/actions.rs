@@ -134,7 +134,7 @@ fn presentation(action: &DefinitionRef) -> Result<mush_core::ActionPresentation,
     };
     mush_core::ActionPresentation::new(
         format!("house-{transition}-{capacity}-seat"),
-        format!("{label} a {label_capacity} house license"),
+        format!("{label} a {label_capacity} house licence"),
         help,
     )
     .map_err(|e| e.to_string())

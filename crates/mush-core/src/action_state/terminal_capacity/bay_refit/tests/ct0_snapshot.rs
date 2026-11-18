@@ -309,7 +309,7 @@ fn cancel(snap: &mut Snapshot, w: &mut Walk, title: &str, r: &Row) -> TestResult
     )?;
     w.rig.accept(
         snap,
-        &format!("{title}: canceled"),
+        &format!("{title}: cancelled"),
         writes,
         changes()?,
         &identity(&w.d, 3, op(4)),
@@ -492,11 +492,11 @@ fn ct0_refit_bay_walk() -> TestResult {
     let n = advance(&mut snap, &mut w, title, &r)?;
     install(&mut snap, &mut w, title, &n)?;
 
-    let title = "part in and out, canceled at once";
+    let title = "part in and out, cancelled at once";
     let (mut w, r) = accepted(&mut snap, title, (true, true))?;
     cancel(&mut snap, &mut w, title, &r)?;
 
-    let title = "part in and out, canceled after progress";
+    let title = "part in and out, cancelled after progress";
     let (mut w, r) = accepted(&mut snap, title, (true, true))?;
     let n = advance(&mut snap, &mut w, title, &r)?;
     cancel(&mut snap, &mut w, title, &n)?;
