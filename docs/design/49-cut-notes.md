@@ -1782,4 +1782,202 @@ All runs were on conclav.dev, in a throwaway clone, with the unit's patch applie
 
 ## CC.10
 
-Not built.
+The bot (Q-49-17). Built 2026-11-17 on CC.2's tip (`929ca6790`, PR #649). Once #649 and CC.2b
+(#651) had landed, it was rebased onto main `c847b5dd2`; the runs below are at `929ca6790`. It
+changes only `crates/mush-bot/` and the bot's guide (`docs/bot/guide.md`). No game crate, content
+or pin moves.
+
+**Survey.**
+- **The fire gate** (`pilot.rs`, `fireable`) fired every gun that was ready, had rounds left and
+  did not read 0%. So it fired at any chance over nothing, down to the last round: the full-rate
+  client Q-49-17 names.
+- **The bot cannot read content.** It is an outside client (`crates/mush-bot/AGENTS.md`: game
+  crates only in its tests). So "from content" means two things:
+  - what its own screens tell it: each gun's cycle, learned from the `cycling (N s)` row read
+    just after its own `FIRE`, and each gun's magazine, from its `WEAPONSTATUS` row;
+  - what the help says: `help minds` gives the Line card's discipline in words ("fires at 35% or
+    better on any face, 50% once a gun is under half its magazine. It keeps a quarter of each
+    gun's rounds back, and spends them only to answer a unit that has fired on it, or to cover
+    its way home").
+- **The windows.** Cut AN.2's exchange (`EXCHANGE_WINDOW_MS`, 20 s) and the halt's longest
+  (`HALT_MAX_MS`, 60 s) were literals tuned on the 6 s cannon and the 1 s coaxial gun.
+  - Under CC.2's palette, 20 s holds about one cannon round and four of the coaxial gun's.
+    `EXCHANGE_MIN_TAKEN`'s eight hits could not be reached.
+  - `HALT_STILL_MS` reads the scope's 50 m rounding against a machine's speed. No gun moves it.
+- **The lane's poll reservation** (`lane.rs`, `reserve_ok`) kept a line free for every gun "due",
+  using the old gate's test. A gun the new gate holds is due at every tick, so it would have held
+  back every poll that can wait.
+- **The commander's system prompt** told the model that the pilot fires every ready gun on its
+  cycle.
+
+**Built.**
+- **The discipline** (`pilot.rs`, `disciplined`; Q-49-17 with CC.1's card):
+  - `FLOOR_PERCENT` (35), and `LOW_MAGAZINE_FLOOR_PERCENT` (50) once a gun holds under half its
+    magazine (`floor_percent`).
+  - `RESERVE_PERCENT` (25), rounded down as the card's `keeps` rounds (`reserve_rounds`).
+  - A gun fires only at its floor or better, and only over its reserve. Below the reserve it
+    fires only when the lock is a unit the pilot blames for a hit taken this match, or while its
+    own fall back or a `withdraw` flies. Then any round left goes, still at the floor.
+  - **The chance must be read under the lock it holds**: the gun's own row since the last lock
+    line, or for the main gun the lock line's own figure (the game's lock line prints the chance
+    of the gun a bare `FIRE` fires). With no chance read, the gun waits. The old gate fired on a
+    chance it had not read.
+- **Answering fire** (`Pilot::fired_on`, `take_fired_on`, `blamed`). The hit line says nothing of
+  who fired, so the blame uses the threat turn's reading:
+  - the nearest live hostile, held young, whose row's relative bearing lies in the struck facet's
+    45-degree face (front included);
+  - else the lock.
+
+  The blame follows a rename (`was`). It is kept for the match, as the game's `fired_on_by` is.
+- **Covering** (`Pilot::covering`): the pilot's own fall back (`withdraw_until_ms`) or a doctrine
+  `withdraw`, read at each decision.
+- **The windows, counted in the main gun's learned cycle** (`Pilot::main_cycle_ms`: the cannon's,
+  else the first gun's):
+  - `EXCHANGE_WINDOW_CYCLES` (4) replaces `EXCHANGE_WINDOW_MS`. It is 60 s on the ruled 15 s
+    cannon and 24 s on the old 6 s one. It is tunable 2..=5, which spans the old 10 to 30 s.
+  - `HALT_MAX_CYCLES` (10) replaces `HALT_MAX_MS`. It is exactly the old 60 s on the 6 s cannon,
+    and 150 s now.
+  - Until the main gun's cycle is learned, the exchange reads `(0, 0)` and is not judged, and the
+    halt has no cap of its own. The halt still ends on its other three ends (a hit, the band, its
+    hostile stopped coming on), each of which comes.
+  - `EXCHANGE_MIN_TAKEN` and `EXCHANGE_MARGIN` stay; see **Not built**.
+- **The lane's reservation** keeps a line only for a gun `Pilot::may_fire`, the same predicate
+  the pilot fires on.
+- **Text.**
+  - The pilot's module head gives the discipline among the help sentences it flies on.
+  - The commander's prompt (`COMMANDER_POLICY`) states the floor and the reserve where it said
+    "fires every ready" gun.
+  - The bot's guide gives the discipline, the halt's cap and the exchange's window in cycles.
+    Its example note now reads `… in 60 s`.
+
+**Tests.**
+- **New, in `pilot.rs`:** `cc10_a_gun_fires_only_at_its_floor_and_keeps_its_reserve`. It checks,
+  through the names:
+  - the floor and its rise;
+  - the reserve, and one round over it;
+  - answering a hit on the front face, and following a rename;
+  - a hit from the other arc, which blames the hostile there and not the lock;
+  - covering under a `withdraw` and under the fall back;
+  - the chance read under the lock, the lock line standing in for the main gun only;
+  - `may_fire`.
+- **Changed, in `pilot.rs`:**
+  - The halt test now also checks that the halt still runs one millisecond before ten cycles, and
+    that with no cycle learned it has no cap of its own.
+  - The exchange and halt tests count in a learned 15 s cannon (`learn_main`).
+  - The test fixture `weapon()` is a gun clear of the discipline (30 of 40, 62% read). It was 10
+    of 40 with no chance read.
+- **New, in `tests/arena_lane.rs`**, on the scripted server with a new `chance` knob (62% unless
+  set):
+  - `cc10_a_gun_under_its_floor_never_fires_and_one_at_it_does`: at 34% for two cannon cycles,
+    no `FIRE` and no round spent; at 35%, both guns fire;
+  - `cc10_a_magazine_is_fired_to_its_floor_and_its_reserve_and_no_further`: eight rounds a gun.
+    At 35% each gun stops at half its magazine. At 50% it fires on to its reserve and keeps it for
+    four cycles more. Nothing is ever refused as empty.
+  - `cc10_the_reserve_answers_the_unit_that_fired_on_the_tank`: fired down to its reserve, the
+    tank holds for two cycles. Then a hit on its left face, where BA's row stands, and both guns
+    fire their reserve to the last round.
+- **Changed, in `tests/arena_lane.rs`:**
+  - The two re-approach stories read the window from the lane's own pilot (`exchange_window`).
+    The helper asserts that window is the shipped cannon's cycle times `EXCHANGE_WINDOW_CYCLES`.
+  - The crowded minute's own copy of the reservation rule calls `Pilot::may_fire`.
+  - `full_rate`'s doc says what it measures now: the clock, with both guns kept clear of the
+    discipline.
+  - **Three scenes counted in the cannon's cycles**, which failed on the first run. The coaxial
+    gun's first shot now waits for a chance read under the lock, so both cycles are learned at
+    12 s, not 26 s, and every later coincidence moves. Under CC.2's palette a gun is due inside a
+    given second about a fifth as often as with the 1 s coaxial gun these scenes were tuned on.
+    Each span was measured on conclav.dev before it was set:
+    - **The crowded minute** (`a_due_gun_keeps_its_slot_from_a_poll`) asserts that a `STATUS`
+      was held back for a due gun.
+      - Over 60 s, no notice phase from 0 to 990 ms held one back, and no start delay from 0 to
+        30 s did either.
+      - Over 120 s, one delay of twelve did. Over 180 s, every delay did.
+      - The scene now runs `DUE_SCENE_CYCLES` (12) of the cannon's cycles, 180 s. That is 72 s
+        on the 6 s cannon the minute was tuned on.
+      - The machine gun's floor scales with the span. The reservation's own bound keeps its
+        tuned figure, at least one held tick per 250 of a minute (5).
+    - **The doubt's search** (`the_doubts_weaponstatus_skips_the_poll_gap`) found its moment at
+      180 s and 240 s, and not at 60, 90 or 120 s. It now searches the same twelve cycles.
+    - **The lattice rigs** (`the_lattice_at_the_live_edge`) run `LATTICE_SPAN_CYCLES` (20) of
+      the cannon's cycles: 120 s on the 6 s cannon, 300 s now. At 120 s the ruled cannon fired
+      eight lines, so one refusal broke the one-in-ten bound: on read 1 of 8 where off read 2
+      of 9. At 300 s, on reads 1 of 20 against off's 3 of 22, and the machine gun 2 of 56
+      against 9 of 63.
+
+      The same test at CC.2's base read 0 of 7. So the bound held there by a margin of one
+      line.
+- **New, in `tests/arena_contract.rs`:** `the_pilots_floor_and_reserve_are_the_line_cards`. It
+  holds the bot's figures to `tacsim::arena::card`'s Line card: `LINE_MIN_ODDS_PERMILLE`,
+  `low_magazine_floor`, `LINE_RESERVE_PCT`. It also checks `floor_for` and `keeps` against the
+  bot's `floor_percent` and `reserve_rounds` for every magazine to 600 and every round in it.
+- **New, in `commander.rs`:** `the_policy_names_the_floor_and_the_reserve`.
+- **Mutations** (on conclav.dev). Each ruling's production line was put back the old way, one
+  at a time, and the new and changed tests were run against it. All passed unmutated, and every
+  mutation failed at least one:
+
+  | Mutation (the line put back) | Failed |
+  |---|---|
+  | No floor (any chance over nothing) | the pilot test; the lane's floor test and magazine test |
+  | No rise under half a magazine | the pilot test; the contract test; the lane's magazine test |
+  | No reserve | the pilot test; the lane's magazine test and answering test |
+  | The reserve never answers fire | the pilot test; the lane's answering test |
+  | The reserve never covers a withdrawal | the pilot test |
+  | A chance read before the lock line counts | the pilot test |
+  | The halt's longest a literal 60 s | the halt test |
+  | The exchange's window a literal 20 s | the exchange-count test; both lane re-approach stories |
+- **Runs**, on conclav.dev, each in a throwaway clone of `929ca6790` with the unit's patch:
+  - **The first round** found the three scenes above failing (799 of 802 in the bot job). It also
+    ran the guards and the mutation pass.
+  - **The final patch:**
+    - the bot job (`mush-bot` without `mining_cohort` and `arena_mind_isolation`, as CI's bot
+      shard runs it): 802 of 802;
+    - `arena_mind_isolation` (CI's bot-stories shard): passed in the first round;
+    - the doc tests: passed;
+    - `mush-contract-tests` whole: 200, with the census, the panic budget, the restriction lints
+      and the help-page lint among them;
+    - `cargo fmt -p mush-bot --check`, `cargo clippy -p mush-bot --all-targets -- -D warnings`,
+      and `cargo doc -p mush-bot --no-deps --document-private-items` with `-D warnings`: clean;
+    - the CI lint job's M7 memory-size pass: clean. It covers six game crates and no file this
+      unit changed.
+  - **MW.19's minds lane** (`scripts/bot-minds-lane.sh`, the nightly `bot-minds-lane` job):
+    passed in 3,763 s on the final patch. The rating took 2,875 s on a box other sessions were
+    loading (MW.19 measured about 25 minutes), and sent the author no line it had not asked for.
+    It drives `src/mine/`, which this unit does not touch; it shares only `arena::lines`, which
+    this unit leaves unchanged.
+  - `mining_cohort` was not run. It flies the mine module only, and CI's bot-stories shard runs
+    it.
+
+**Divergences.**
+- **The windows count in the main gun's cycle, not the fastest gun's.**
+  - Twenty of the fastest gun's cycles would also have given back the old 20 s exactly.
+  - But the pilot learns a gun's cycle only by firing it, and the floor keeps the coaxial gun
+    quiet at range (CC.2's mind fired 1.3 coaxial rounds a fight at 35%).
+  - Keyed to the fastest gun it had learned, the window would have been 300 s of the cannon most
+    of the time.
+- **The blame is a reading, not the game's record.** The game's `fired_on_by` counts every unit
+  whose round reached the hull. The bot reads one hostile per decision off the newest hit's face.
+  Two shooters in one face between two decisions blame the nearer one.
+- **Covering is the bot's two withdrawals.** The re-approach's and the return's back-offs are
+  tactics, not the way home, and keep the reserve.
+- **No dry withdrawal.** Q-49-23's "at its reserve on every mount counts as dry for withdrawal" is
+  the stock mind's edge. The bot's own withdrawal rule (a failing hull) is unchanged. A bot at its
+  reserve holds it until it is fired on.
+
+**Not built.**
+- **The exchange's counts** (`EXCHANGE_MIN_TAKEN` 8, `EXCHANGE_MARGIN` 4) were tuned on the 1 s
+  coaxial gun.
+  - In 60 s a single disciplined machine lands about three cannon rounds, so a re-approach now
+    needs two machines' fire.
+  - The re-approach ships off (cut AO.3), so the default bot is unaffected.
+  - Sizing the counts to the palette is a measured round's work, one constant at a time.
+- **CC.2's channel-line finding is a rig artifact, not a lane defect.**
+  - In the game, `Firing {w}.` is the cockpit's own reply, said as `FIRE` returns
+    (`weapons_fire.rs`, after `forward_intent`). So one session's answers come back in the order
+    it typed them.
+  - The rig's `fire_answer_ms = 20` delays the `FIRE`'s answer alone, which lets a `RANGE` typed
+    in the same tick be answered first. The ledger then pops the `FIRE` with it, as answers in
+    order would. That is the only way the ack loses its place.
+  - AM.1's test keeps skipping shared ticks, and the lane is unchanged.
+- **The win-rate lanes** (`arena_win_rate`, `arena_muster_rate`; weekly and on dispatch,
+  report-only) were not run. They fly this bot against the stock mind and would measure the
+  discipline in fights.
