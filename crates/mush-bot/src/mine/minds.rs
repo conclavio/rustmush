@@ -658,7 +658,7 @@ pub mod exchange {
 /// held to the game's own text below.
 pub mod jobs {
     /// `mush_market::services::JOBS_USAGE`.
-    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey]";
+    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|haul|escort]";
     /// `mush_market::services::JOBS_NO_VENUE`.
     pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=";
     /// `mush_market::services::JOBS_NONE`.
@@ -738,6 +738,142 @@ pub mod hull_sale {
 /// **A governed core resold to a player** (doc 48 unit EX.2b): `+core/offer`, `+core/offers` and
 /// `+core/accept`, in the game's words, `tacsim::hardware::sale::resale`. No lane reads them
 /// yet; each is held to the game's own text below.
+/// **Doc 48 cut EX.6**: the haul's sentences (`tacsim::services::haul`).
+pub mod haul {
+    /// `tacsim::services::haul::HAUL_USAGE`.
+    pub const HAUL_USAGE: &str = "Usage: +haul  |  +haul/post <qty> <good> to=<port> fee=<cr>";
+    /// `tacsim::services::haul::POST_PREVIEW`.
+    pub const POST_PREVIEW: &str = "). +haul/post ... go posts it.";
+    /// `tacsim::services::haul::POSTED`.
+    pub const POSTED: &str = "escrowed and paid on delivery.";
+    /// `tacsim::services::haul::NO_VENUE`.
+    pub const NO_VENUE: &str = "There is no market here to ship from.";
+    /// `tacsim::services::haul::NO_LOCKER`.
+    pub const NO_LOCKER: &str = "A haul ships from your locker, and you have none here yet (+";
+    /// `tacsim::services::haul::SHORT`.
+    pub const SHORT: &str = "Your locker here holds too little";
+    /// `tacsim::services::haul::NO_GOOD`.
+    pub const NO_GOOD: &str = "No good answers to";
+    /// `tacsim::services::haul::NO_PORT`.
+    pub const NO_PORT: &str = "; name a port of the lane.";
+    /// `tacsim::services::haul::SAME_PORT`.
+    pub const SAME_PORT: &str = "A haul goes to another port.";
+    /// `tacsim::services::haul::OVER_CAP`.
+    pub const OVER_CAP: &str = "A declared value is at most the reference price of the goods";
+    /// `tacsim::services::haul::NO_REFERENCE`.
+    pub const NO_REFERENCE: &str = "That good has no reference price, so its value cannot be dec";
+    /// `tacsim::services::haul::POST_FAILED`.
+    pub const POST_FAILED: &str = "The haul could not be posted:";
+    /// `tacsim::services::haul::NO_SUCH_JOB`.
+    pub const NO_SUCH_JOB: &str = "; +market/jobs haul lists them.";
+    /// `tacsim::services::haul::OWN_JOB`.
+    pub const OWN_JOB: &str = "That haul is your own.";
+    /// `tacsim::services::haul::NOT_DOCKED`.
+    pub const NOT_DOCKED: &str = ", and your hull is not docked there.";
+    /// `tacsim::services::haul::NO_ROOM`.
+    pub const NO_ROOM: &str = "Your hold has no room for those goods.";
+    /// `tacsim::services::haul::GOODS_GONE`.
+    pub const GOODS_GONE: &str = "The shipper's goods are no longer there to load.";
+    /// `tacsim::services::haul::ACCEPT_PREVIEW`.
+    pub const ACCEPT_PREVIEW: &str = ". The goods are declared at";
+    /// `tacsim::services::haul::ACCEPTED`.
+    pub const ACCEPTED: &str = ". The goods load into your hold, held for the job; deliver t";
+    /// `tacsim::services::haul::ACCEPT_FAILED`.
+    pub const ACCEPT_FAILED: &str = "The haul could not be taken:";
+    /// `tacsim::services::haul::TOLD_TAKEN`.
+    pub const TOLD_TAKEN: &str = "has taken haul";
+    /// `tacsim::services::haul::NOT_THERE`.
+    pub const NOT_THERE: &str = "Your hull is not docked at";
+    /// `tacsim::services::haul::TOO_LATE`.
+    pub const TOO_LATE: &str = "The haul's term has ended; the goods go back to the shipper.";
+    /// `tacsim::services::haul::NOT_ABOARD`.
+    pub const NOT_ABOARD: &str = "You carry no goods for haul";
+    /// `tacsim::services::haul::DELIVER_PREVIEW`.
+    pub const DELIVER_PREVIEW: &str = ". +haul/deliver <job> go hands them over.";
+    /// `tacsim::services::haul::DELIVERING`.
+    pub const DELIVERING: &str = "are handed over; the fee and your bond follow.";
+    /// `tacsim::services::haul::TOLD_DELIVERED`.
+    pub const TOLD_DELIVERED: &str = "is delivered to your locker at";
+    /// `tacsim::services::haul::TOLD_RETURNED`.
+    pub const TOLD_RETURNED: &str = "was not delivered in time; its goods are back in your locker";
+    /// `tacsim::services::haul::NOT_WITHDRAWABLE`.
+    pub const NOT_WITHDRAWABLE: &str =
+        "Only the shipper withdraws a haul, and only before it is tak";
+    /// `tacsim::services::haul::WITHDRAWN`.
+    pub const WITHDRAWN: &str = "is withdrawn; the fee comes back.";
+    /// `tacsim::services::haul::NONE`.
+    pub const NONE: &str = "You have no hauls.";
+    /// `tacsim::services::haul::HEAD`.
+    pub const HEAD: &str = "Your hauls, posted and taken:";
+    /// `tacsim::services::haul::ROW`.
+    pub const ROW: &str = "on hire from";
+}
+
+/// **Doc 48 cut EX.6**: the escort's sentences (`tacsim::services::escort`).
+pub mod escort {
+    /// `tacsim::services::escort::ESCORT_USAGE`.
+    pub const ESCORT_USAGE: &str = "Usage: +escort  |  +escort/post <hull> to=<port>|field=<site";
+    /// `tacsim::services::escort::POST_PREVIEW`.
+    pub const POST_PREVIEW: &str = "IC days. +escort/post ... go posts it.";
+    /// `tacsim::services::escort::POSTED`.
+    pub const POSTED: &str = "escrowed and paid when she is seen through.";
+    /// `tacsim::services::escort::NOT_YOURS`.
+    pub const NOT_YOURS: &str = "You hold no title to that hull and do not fly her.";
+    /// `tacsim::services::escort::NOT_DOCKED`.
+    pub const NOT_DOCKED: &str = "She is not docked at a port, so there is no passage to escor";
+    /// `tacsim::services::escort::NO_PORT`.
+    pub const NO_PORT: &str = "; she has no passage there.";
+    /// `tacsim::services::escort::SAME_PORT`.
+    pub const SAME_PORT: &str = "Her passage goes to another port.";
+    /// `tacsim::services::escort::NO_VENUE`.
+    pub const NO_VENUE: &str = "There is no market here to post at.";
+    /// `tacsim::services::escort::ALREADY`.
+    pub const ALREADY: &str = "An escort of her is open already (";
+    /// `tacsim::services::escort::POST_FAILED`.
+    pub const POST_FAILED: &str = "The escort could not be posted:";
+    /// `tacsim::services::escort::NO_SUCH_JOB`.
+    pub const NO_SUCH_JOB: &str = "; +market/jobs escort lists them.";
+    /// `tacsim::services::escort::OWN_JOB`.
+    pub const OWN_JOB: &str = "That escort is your own.";
+    /// `tacsim::services::escort::SAME_HULL`.
+    pub const SAME_HULL: &str = "She cannot escort herself.";
+    /// `tacsim::services::escort::ACCEPT_PREVIEW`.
+    pub const ACCEPT_PREVIEW: &str = "Take the escort: stay near";
+    /// `tacsim::services::escort::BOND_CLAUSE`.
+    pub const BOND_CLAUSE: &str = "is escrowed: it comes back with the fee if she is seen throu";
+    /// `tacsim::services::escort::ACCEPTED`.
+    pub const ACCEPTED: &str = "for the whole journey.";
+    /// `tacsim::services::escort::ACCEPT_FAILED`.
+    pub const ACCEPT_FAILED: &str = "The escort could not be taken:";
+    /// `tacsim::services::escort::TOLD_TAKEN`.
+    pub const TOLD_TAKEN: &str = "has taken escort";
+    /// `tacsim::services::escort::TOLD_STARTED`.
+    pub const TOLD_STARTED: &str = ": the journey has begun.";
+    /// `tacsim::services::escort::TOLD_KEPT`.
+    pub const TOLD_KEPT: &str = "of the journey. The fee follows.";
+    /// `tacsim::services::escort::TOLD_FAILED`.
+    pub const TOLD_FAILED: &str = "has failed, and its fee is not paid:";
+    /// `tacsim::services::escort::WHY_WRECKED`.
+    pub const WHY_WRECKED: &str = "she was wrecked";
+    /// `tacsim::services::escort::WHY_CAPTURED`.
+    pub const WHY_CAPTURED: &str = "she was captured";
+    /// `tacsim::services::escort::WHY_LEFT`.
+    pub const WHY_LEFT: &str = "the escort left the journey";
+    /// `tacsim::services::escort::WHY_FAR`.
+    pub const WHY_FAR: &str = "the escort was near her for only";
+    /// `tacsim::services::escort::NOT_WITHDRAWABLE`.
+    pub const NOT_WITHDRAWABLE: &str =
+        "Only the poster withdraws an escort, and only before it is t";
+    /// `tacsim::services::escort::WITHDRAWN`.
+    pub const WITHDRAWN: &str = "is withdrawn; your fee is back in your account.";
+    /// `tacsim::services::escort::NONE`.
+    pub const NONE: &str = "You have no escorts.";
+    /// `tacsim::services::escort::HEAD`.
+    pub const HEAD: &str = "Your escorts:";
+    /// `tacsim::services::escort::ROW`.
+    pub const ROW: &str = ", escorted on";
+}
+
 pub mod core_resale {
     /// `tacsim::hardware::sale::resale::RESALE_OFFER_USAGE`.
     pub const RESALE_OFFER_USAGE: &str = "Usage: +core/offer <core or ship>=<player> price=<n>";
@@ -915,6 +1051,8 @@ mod tests {
     const HISTORY_RS: &str = include_str!("../../../mush-market/src/history.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
     const CORE_RESALE_RS: &str = include_str!("../../../tacsim/src/hardware/sale/resale.rs");
+    const HAUL_RS: &str = include_str!("../../../tacsim/src/services/haul.rs");
+    const ESCORT_RS: &str = include_str!("../../../tacsim/src/services/escort.rs");
 
     fn venue_rows() -> Vec<Row> {
         use super::venue as bot;
@@ -1080,6 +1218,106 @@ mod tests {
             HULL_RIG_ABOARD,
         )
     }
+
+    fn haul_rows() -> Vec<Row> {
+        use super::haul as bot;
+        use tacsim::services::haul as game;
+        rows!("";
+            HAUL_USAGE,
+            POST_PREVIEW,
+            POSTED,
+            NO_VENUE,
+            NO_LOCKER,
+            SHORT,
+            NO_GOOD,
+            NO_PORT,
+            SAME_PORT,
+            OVER_CAP,
+            NO_REFERENCE,
+            POST_FAILED,
+            NO_SUCH_JOB,
+            OWN_JOB,
+            NOT_DOCKED,
+            NO_ROOM,
+            GOODS_GONE,
+            ACCEPT_PREVIEW,
+            ACCEPTED,
+            ACCEPT_FAILED,
+            TOLD_TAKEN,
+            NOT_THERE,
+            TOO_LATE,
+            NOT_ABOARD,
+            DELIVER_PREVIEW,
+            DELIVERING,
+            TOLD_DELIVERED,
+            TOLD_RETURNED,
+            NOT_WITHDRAWABLE,
+            WITHDRAWN,
+            NONE,
+            HEAD,
+            ROW,
+        )
+    }
+    const HAUL_EXCLUDED: &[(&str, &str)] = &[
+        ("HAUL_VERB", "the verb's name"),
+        ("HAUL_PREFIX", "the record's key prefix, never printed"),
+        ("HAUL_ACTION", "the legs' action id, never printed"),
+        ("HAUL_OUTCOME", "the legs' outcome id, never printed"),
+        ("HAUL_FAMILY", "the ledger's family name, never printed"),
+        (
+            "HAUL_HELP",
+            "the verb's help, read through help, not answered",
+        ),
+        ("CHANNEL", "the channel lines go out on, never printed"),
+    ];
+
+    fn escort_rows() -> Vec<Row> {
+        use super::escort as bot;
+        use tacsim::services::escort as game;
+        rows!("";
+            ESCORT_USAGE,
+            POST_PREVIEW,
+            POSTED,
+            NOT_YOURS,
+            NOT_DOCKED,
+            NO_PORT,
+            SAME_PORT,
+            NO_VENUE,
+            ALREADY,
+            POST_FAILED,
+            NO_SUCH_JOB,
+            OWN_JOB,
+            SAME_HULL,
+            ACCEPT_PREVIEW,
+            BOND_CLAUSE,
+            ACCEPTED,
+            ACCEPT_FAILED,
+            TOLD_TAKEN,
+            TOLD_STARTED,
+            TOLD_KEPT,
+            TOLD_FAILED,
+            WHY_WRECKED,
+            WHY_CAPTURED,
+            WHY_LEFT,
+            WHY_FAR,
+            NOT_WITHDRAWABLE,
+            WITHDRAWN,
+            NONE,
+            HEAD,
+            ROW,
+        )
+    }
+    const ESCORT_EXCLUDED: &[(&str, &str)] = &[
+        ("ESCORT_VERB", "the verb's name"),
+        ("ESCORT_PREFIX", "the record's key prefix, never printed"),
+        ("PROVIDER", "the fact's namespace, never printed"),
+        ("FACT_KEPT", "the fact's kind, never printed"),
+        (
+            "ESCORT_HELP",
+            "the verb's help, read through help, not answered",
+        ),
+        ("CHANNEL", "the channel lines go out on, never printed"),
+    ];
 
     fn core_resale_rows() -> Vec<Row> {
         use super::core_resale as bot;
@@ -1378,7 +1616,7 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 16] = [
+        let families: [(&str, Vec<Row>); 17] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1392,6 +1630,8 @@ mod tests {
             ("history", history_rows()),
             ("hull_sale", hull_sale_rows()),
             ("core_resale", core_resale_rows()),
+            ("haul", haul_rows()),
+            ("escort", escort_rows()),
             ("venue", venue_rows()),
             ("scrap", scrap_rows()),
             ("coop", coop_rows()),
@@ -1984,6 +2224,37 @@ mod tests {
     #[test]
     fn hull_sale_needles_are_distinct() {
         distinct(&qualified("hull_sale", hull_sale_rows()), &[]);
+    }
+    // Doc 48 cut EX.6: the haul.
+    #[test]
+    fn haul_needles_are_in_step() {
+        in_step("haul", &haul_rows());
+    }
+    #[test]
+    fn haul_census() {
+        census("services/haul.rs", HAUL_RS, &haul_rows(), HAUL_EXCLUDED);
+    }
+    #[test]
+    fn haul_needles_are_distinct() {
+        distinct(&qualified("haul", haul_rows()), &[]);
+    }
+    // Doc 48 cut EX.6: the escort.
+    #[test]
+    fn escort_needles_are_in_step() {
+        in_step("escort", &escort_rows());
+    }
+    #[test]
+    fn escort_census() {
+        census(
+            "services/escort.rs",
+            ESCORT_RS,
+            &escort_rows(),
+            ESCORT_EXCLUDED,
+        );
+    }
+    #[test]
+    fn escort_needles_are_distinct() {
+        distinct(&qualified("escort", escort_rows()), &[]);
     }
     // Doc 48 unit EX.2b: a governed core resold to a player.
     #[test]

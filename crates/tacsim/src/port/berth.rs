@@ -78,6 +78,18 @@ impl mush_market::VenueFees for PortFees {
             listing_floor: Amount::from_minor(floor),
         })
     }
+
+    /// **The port's buy-back desk lists as its house** (doc 48 cut EX.3b): the clerk's Thing bids
+    /// for a scrap's tonnes and parts on the house's behalf, through a personal bid only because
+    /// the market refuses one GOD-owned NPC's listing to another, so its bids pay no listing fee.
+    fn house_lists(&self, w: &World, venue: &MarketId, payer: &PrincipalId) -> bool {
+        let Some((_, Some(map))) = crate::port::market::port_of_venue(w, venue) else {
+            return false;
+        };
+        map.desk
+            .as_ref()
+            .is_some_and(|desk| *payer == PrincipalId::Object(ObjId(desk.thing)))
+    }
 }
 
 /// One obligation the world wants: who pays whom how much, under which name.

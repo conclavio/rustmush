@@ -3490,6 +3490,10 @@ fn m1a5_the_production_hash_does_not_move() {
     // and loads, folded with every mount, so the shipped duel's hash moved (was
     // `0xcaae_5fcf_0dab_6143`); the field's two hold, since its mounts are the rig's own, and
     // the duel's 34 lines differ from CC.1's only in `hash`.
+    // Doc 49 unit CC.1b: the Standard source moved (the Engage path's cost, behaviour
+    // unchanged), folded in every seal: all three moved (were `0x18aa_60d9_5785_a83f`,
+    // `0x9e8b_b51a_5d8b_a7bf` and `0xdeb8_4918_e033_5f67`), and the field's 50 lines and the
+    // duel's 34 differ from CC.2's only in `hash`.
     let actual = [
         first_hash,
         last_hash,
@@ -3498,9 +3502,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x18aa_60d9_5785_a83f),
-            Some(0x9e8b_b51a_5d8b_a7bf),
-            Some(0xdeb8_4918_e033_5f67)
+            Some(0x53d2_1504_a61a_ee67),
+            Some(0x93f9_3932_663c_b6b2),
+            Some(0x11ac_bd3f_fa27_1bfc)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6916,15 +6920,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"e9f1a863eabc0570\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"e9f1a863eabc0570\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"eec3f6687aa0129d\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"e9f1a863eabc0570\",\"card_digest\":\"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\",\"licence_state\":\"doctrine\"}",
     ),
     (
         4,
