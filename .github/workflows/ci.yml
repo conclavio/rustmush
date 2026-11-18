@@ -479,6 +479,14 @@ jobs:
     # reshard (five layout changes in the eight days before). A new test is a
     # `mod` line in its domain root. The M8 jobs and the tacsim-minds steps
     # name their domain binary (domain_field, domain_arena).
+    #
+    # 2026-11-18: THE SHARE IS PLANNED BY MEASURED TIME, not hashed. The hash
+    # put the slow 512-site field stories in one cell: over five green main
+    # runs cell 6 summed 73-96 test-minutes against a mean of 57 and was the
+    # wall at 18-29 min. scripts/tacsim-cells.py lists the tests and places
+    # them longest first onto the least-loaded cell, by the `weight:` lines of
+    # .github/tacsim-integration-shards.txt (its header says how to refresh
+    # them); every cell computes the same plan, and its log prints it.
     strategy:
       fail-fast: false
       matrix:
@@ -489,9 +497,10 @@ jobs:
           - tacsim-lib
           # (b) tacsim's integration tests: cell N runs the whole targets
           # line N of .github/tacsim-integration-shards.txt names, then its
-          # hash share (`--partition hash:N/10`) of the four domain binaries
-          # (since 2026-11-04, D-43-5; ten hand-balanced shard binaries
-          # 2026-11-03 to 04, six from 2026-10-27, four from 2026-10-26).
+          # planned share of the four domain binaries (by measured time since
+          # 2026-11-18; `--partition hash:N/10` from 2026-11-04, D-43-5; ten
+          # hand-balanced shard binaries 2026-11-03 to 04, six from
+          # 2026-10-27, four from 2026-10-26).
           - tacsim-integration-1
           - tacsim-integration-2
           - tacsim-integration-3

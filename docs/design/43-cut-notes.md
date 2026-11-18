@@ -874,3 +874,33 @@ a real clock, 2 or more is CPU).
 
 `drones::sm12b_the_restart_changes_nothing` (113.5 s hosted) steps the same way as its sibling: about 1,600
 six-second fires over two arms.
+
+## The tacsim cells planned by time (2026-11-18)
+
+TS.12's hash partition drifted out of balance as the 512-site field stories grew (CC.2 slowed the ground
+cycles). Over main's green runs 44171357746, 44195103450, 44207692403, 44223456939 and 44362324881, the
+summed test-minutes per cell (the partition share, from the `nextest-junit-tacsim-integration-N` artifacts):
+
+| run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 44171357746 | 43.4 | 52.9 | 44.8 | 54.1 | 53.7 | 78.9 | 68.3 | 48.0 | 69.6 | 59.4 |
+| 44195103450 | 60.0 | 35.2 | 40.5 | 74.6 | 54.6 | 73.4 | 49.0 | 43.0 | 39.0 | 60.8 |
+| 44207692403 | 49.0 | 34.0 | 40.7 | 74.4 | 70.5 | 91.2 | 71.6 | 37.5 | 52.8 | 48.6 |
+| 44223456939 | 39.2 | 46.6 | 65.2 | 60.0 | 43.1 | 57.5 | 58.1 | 65.7 | 72.5 | 33.1 |
+| 44362324881 | 38.8 | 48.1 | 66.5 | 50.7 | 56.6 | 96.5 | 61.4 | 68.2 | 58.1 | 48.8 |
+
+Cell 6 was the heaviest in four of five: `s2_the_field_story_at_512`, `su3_a_restart_redraws_nothing_at_512`,
+`su5_an_unloaded_yield_lapses_after_28_ic_days`, `ap4a_a_leader_orders…`, `mw14a…_at_512` and `ap8…` hash
+there, about 22 of its minutes. The rest is spread: any cell swings 15-30 minutes between runs as tests land.
+
+The fix replaces `--partition hash:N/10` with a plan: `scripts/tacsim-cells.py plan` reads `cargo nextest
+list` and places every test longest first (LPT) onto the least-loaded cell, by the manifest's `weight:` lines
+(the 113 tests whose mean is at least 60 s) and `default-weight:` (9.8 s, the mean of the rest), with cell 1's
+harness and cell 2's cost_lane preloaded. Each cell runs its share as one nextest filterset. Replayed on
+the five runs (weights from four, times from the held-out fifth), the heaviest cell was 1.04-1.10× the
+median at the 60 s threshold, against 1.23-1.87× under the hash. The threshold barely matters (20 s:
+1.03-1.13×; 30 s: 1.04-1.09×), so the manifest keeps the short list.
+
+Weights go stale as tests change; `scripts/tacsim-cells.py weights <junit dirs>` regenerates them, and
+`ci_tacsim_shards` fails on a weight for a test that no longer exists.
+

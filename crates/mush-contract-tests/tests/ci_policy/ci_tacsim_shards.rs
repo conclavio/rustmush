@@ -9,9 +9,13 @@
 //! `scripts/ci-tacsim-shard.sh N`, as `.github/tacsim-integration-shards.txt`
 //! describes:
 //! - the `partition:` line names the domain binaries every cell builds, each cell
-//!   running its `--partition hash:N/<cells>` share of them;
+//!   running its share of them as `scripts/tacsim-cells.py plan` places their
+//!   tests by measured time (2026-11-18; a `--partition hash:N/<cells>` until
+//!   then);
 //! - the numbered line `N:` names the whole targets cell N runs first (harness on
-//!   1, cost_lane on 2).
+//!   1, cost_lane on 2);
+//! - `weight:` lines give the slow tests' measured seconds and
+//!   `default-weight:` everything else's.
 //!
 //! An explicit list is a list someone must keep: a new `crates/tacsim/tests/*.rs`
 //! left off it would build in no cell and report green forever. This gate fails
@@ -24,7 +28,9 @@
 //! - any other directory under `tests/`, such as a `shard_N/` left by a branch
 //!   cut before the adoption;
 //! - a module name in a binary that ends with another's (cargo's substring filter
-//!   would run both).
+//!   would run both);
+//! - a `weight:` line for a test its module file no longer has, or for a whole
+//!   target no cell runs (a stale weight would plan time that never runs).
 //!
 //! A new test MODULE is a `mod` line in its domain root, never a name here.
 
@@ -34,15 +40,20 @@ use std::path::{Path, PathBuf};
 
 use mush_contract_tests::scan;
 
-/// The manifest: the partitioned binaries, and cell number -> the whole targets it runs first.
+/// The manifest: the partitioned binaries, cell number -> the whole targets it
+/// runs first, and the `weight:` lines' names (`<binary>::<test>` or a whole
+/// target).
 struct Manifest {
     partition: Vec<String>,
     cells: BTreeMap<u32, Vec<String>>,
+    weights: Vec<String>,
 }
 
 fn manifest(text: &str) -> Manifest {
     let mut partition = None;
     let mut cells = BTreeMap::new();
+    let mut weights = Vec::new();
+    let mut default_weight = false;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -60,6 +71,26 @@ fn manifest(text: &str) -> Manifest {
             );
             continue;
         }
+        if key.trim() == "weight" {
+            let [seconds, name] = targets.as_slice() else {
+                panic!("manifest line `{line}` is not `weight: <seconds> <name>`");
+            };
+            assert!(
+                seconds.parse::<f64>().is_ok_and(|s| s >= 0.0),
+                "manifest line `{line}`: the weight is not a number of seconds"
+            );
+            weights.push(name.clone());
+            continue;
+        }
+        if key.trim() == "default-weight" {
+            assert!(
+                targets.len() == 1 && targets[0].parse::<f64>().is_ok_and(|s| s > 0.0),
+                "manifest line `{line}` is not `default-weight: <seconds>`"
+            );
+            assert!(!default_weight, "the default-weight: line is listed twice");
+            default_weight = true;
+            continue;
+        }
         let number: u32 = key
             .trim()
             .parse()
@@ -69,9 +100,11 @@ fn manifest(text: &str) -> Manifest {
             "cell {number} is listed twice"
         );
     }
+    assert!(default_weight, "the manifest has no default-weight: line");
     Manifest {
         partition: partition.expect("the manifest has a partition: line"),
         cells,
+        weights,
     }
 }
 
@@ -166,8 +199,9 @@ fn the_workflow_runs_every_listed_cell_and_no_other() {
     let script = fs::read_to_string(&script_path)
         .unwrap_or_else(|err| panic!("{}: {err}", script_path.display()));
     assert!(
-        script.contains("--partition \"hash:"),
-        "{} no longer runs a hash partition of the domain binaries",
+        script.contains("scripts/tacsim-cells.py\" plan"),
+        "{} no longer runs the planned share (scripts/tacsim-cells.py plan) of the domain \
+         binaries",
         script_path.display()
     );
 }
@@ -372,4 +406,50 @@ fn no_module_name_in_a_domain_ends_with_another_in_the_same_domain() {
             }
         }
     }
+}
+
+/// A `weight:` line names a test of a domain binary as `<binary>::<module>::<test>`
+/// (the module's file is `tests/<binary>/<module>.rs`) or a whole target a
+/// numbered line runs. One whose test is gone would plan minutes that never run,
+/// and a duplicate would leave the plan reading only the last; refresh the lines
+/// with `scripts/tacsim-cells.py weights` (the manifest's header).
+#[test]
+fn every_weight_names_a_test_that_exists() {
+    let root = scan::repo_root();
+    let (path, manifest) = read_manifest(&root);
+    let tests = root.join("crates/tacsim/tests");
+    let whole: BTreeSet<&String> = manifest.cells.values().flatten().collect();
+    let mut seen = BTreeSet::new();
+    let mut stale = Vec::new();
+    for name in &manifest.weights {
+        assert!(
+            seen.insert(name),
+            "{}: `weight: {name}` is listed twice",
+            path.display()
+        );
+        if whole.contains(name) {
+            continue;
+        }
+        let mut parts = name.split("::");
+        let (Some(binary), Some(module), Some(test), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            stale.push(name.clone());
+            continue;
+        };
+        let file = tests.join(binary).join(format!("{module}.rs"));
+        let present = manifest.partition.iter().any(|b| b == binary)
+            && fs::read_to_string(&file)
+                .is_ok_and(|source| source.contains(&format!("fn {test}(")));
+        if !present {
+            stale.push(name.clone());
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "{} weighs tests that no longer exist (or not as `<domain>::<module>::<test>` with \
+         the module at tests/<domain>/<module>.rs); refresh the weight: lines with \
+         scripts/tacsim-cells.py weights: {stale:?}",
+        path.display()
+    );
 }
