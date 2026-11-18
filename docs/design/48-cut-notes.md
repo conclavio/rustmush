@@ -1714,7 +1714,87 @@ locker paragraphs are rewritten; `+locker`'s help is rewritten. The bot's `venue
 
 ## EX.5
 
-Not built.
+**The service arm and open jobs** (Q-48-3, -11, -12, -13, -58). Stacked on EX.4 (#654).
+
+**Survey.**
+- `accept_retrieval` was the only path where a stranger joins a standing offer. It took no bond, refused player orgs and Houses, and kept the deadline fixed at posting (doc 48b W-48-3d).
+- Since doc 48's defect PR, a retrieval's poster has been held to the trade issuer cap and the party cap. The acceptor has been held to the party cap.
+- Each of the three kinds keeps its own truth:
+  - a retrieval keeps its standing offer and the host's `RetrievalOrder`;
+  - a survey keeps Occator's commission, in typed action state, with its contract written at acceptance;
+  - a passage keeps the traveller NPC, and its booking is negotiated by `+passage/offer`.
+- None of them was on the exchange.
+- Survey commissions are typed action state, which a market verb's context cannot read. The board therefore reads a survey's state from the economy's contracts, not from the commission.
+
+**Built.**
+- **The generalised join** (`mush-economy/src/contract_live.rs`):
+  - `job_shape` recognises a job: a standing offer whose shape is its whole content. It has the fee from the issuer, an optional bond from the acceptor, one fact (after a title held, for a retrieval), a `WorldIc` deadline and `Public` visibility. The expiry is a refund, or with a bond a forfeit to the fee's account. `retrieval_contract_hull` is now `job_shape(c)?.object`.
+  - `join_job(ctx, id, JoinTerms { acceptor, account, bond, term_ic })` is the join for every kind. `accept_retrieval` is a thin wrapper over it.
+    - **The bond** is the acceptor's own consideration, escrowed in one post with the joined contract. A bond the account cannot cover writes no join. On performance the fee and the bond are the acceptor's. At expiry the escrow is forfeit to the poster: the fee back, and the bond with it.
+    - **The term** (Q-48-58) moves the deadline to the join plus N IC seconds, never past the posted deadline.
+    - **Org acceptance** (Q-48-58): an organization is accepted for by a member holding its spending capability (`economy.account.post` on its root scope, `acts_for`), or by the wiring's `PartyCap::Accept`, as before.
+  - `job_bond(fee)` is 20% of a fee above 10,000 cr (Q-48-13, provisional: `JOB_BOND_ABOVE_MINOR`, `JOB_BOND_PERMILLE`).
+  - **Both caps on both paths** (Q-48-44, doc 48b G-5):
+    - Live jobs count against their own budget, `MAX_LIVE_JOBS_PER_PRINCIPAL` (16). The post asks it of the poster and the join of the acceptor. Both also ask §9's party cap of 100.
+    - The trade issuer cap (`@contract/draft`, `offer_contract`) no longer counts a live job, so standing jobs never block trading.
+- **The `Service` record** (`mush-market/src/record.rs`): `ServiceKind` (Retrieval, Passage, Survey), `ServiceSide` (Wanted, Offered), `ServiceTerm` (FromAcceptance, By, OnPerformance) and `Service`. A service carries the kind, the side, the venue, the poster, a subject in the host's words, the pay, a negotiable flag, the bond, the term, the standing offer's contract when there is one, and the verb that takes it.
+- **The board** (`mush-market/src/services.rs`):
+  - `ServiceBoard` is a seam installed by `MarketModule::with_service_board`. A venue's board is the projection of its hosts' open services, answered from their own records each time. The market stores nothing.
+  - `services_at(w, venue, kind)` reads the board.
+  - `+market/jobs [kind] [market=<venue>]` prints two lines a job, within 120 columns.
+- **TacSim's board** (`tacsim/src/port/jobs.rs`, `PortJobs`), composed in both compositions:
+  - **Retrievals** (`surface/retrieval.rs`): each open job, on the board of its destination's venue, with its bond. The term shown is the taker's: the host's performance window from acceptance. The contract keeps its absolute deadline, as Q-48-58 rules for retrieval.
+  - **Survey commissions** (`port/survey.rs`): each offer still open, on the programme port's board, 28 IC days from acceptance. A commission is taken while its contract is live, and done for good once that contract settles on the logged fact. The fact id names the offer.
+  - **Passage** (`port/passenger/board.rs`): each authored, funded traveller standing in their origin port with no passage booked. The fare is the opening figure, and it is paid on arrival.
+- **`+salvage/accept <job> [as=<org>] [go]`**:
+  - The acceptance goes through `join_job`, with the bond a fee above 10,000 cr asks. The preview and the acceptance line state the bond (`BOND_CLAUSE`).
+  - With `as=<org>`, a member who acts for the org takes the job for it. The org is paid into its credit account and escrows its bond from there.
+  - The house's fallback acceptance posts no bond.
+- **Help and bot table:**
+  - `docs/help/exchange.md` gains a "The job board" section.
+  - The bot table gains the `jobs` family, with a census over `services.rs`.
+
+**Tests.**
+- **mush-economy** (`tests/e4c/retrieval.rs`, through a stand-in ruleset's `@rjoin`). Each test is listed with the done-when it covers:
+  - the bond is 20% above 10,000 cr;
+  - a bonded join escrows the bond, and performance pays the fee and the bond back ("a stranger joins a `Wanted` service, escrowing the bond");
+  - the term runs from acceptance and is refused past the posted deadline, and an unperformed bonded job forfeits the bond to the poster ("deadlines run from acceptance");
+  - an unfunded bond writes no join;
+  - an org member with the spending grant accepts for the org, and one without it is refused ("org members with the capability accept for their org");
+  - the job budget binds the post and the join, apart from the trade cap ("checking both contract caps").
+  - RS.5's two cap stories are restated for the split budgets. A poster at the trade cap still posts a job, and the job budget binds instead.
+- **tacsim** (`tests/domain_economy/ex5_jobs.rs`):
+  - the board lists retrieval, passage and survey as typed kinds, with their verbs, within 120 columns, and a kind filter narrows it ("retrieval, passage and survey list on the board as typed kinds");
+  - a stranger takes a bonded retrieval through `+salvage/accept`; one who cannot cover the bond takes nothing, and a funded one has it escrowed;
+  - an org member with the capability takes a job for the org with `as=`, paid into the org's account; an outsider is refused.
+- **Tests that failed before EX.5, and why:** every test above. Before EX.5 there was no join with a bond, term or org, no job budget, no `Service`, no board, and no `as=`.
+- **Changed expectations:** RS.5's `rs5_a_poster_at_the_issuer_cap_posts_no_retrieval` and `rs5_an_acceptor_at_the_party_cap_joins_no_retrieval` become `…_at_the_job_budget_…`. With jobs on their own budget of 16, a job-only principal meets the job budget before the party cap of 100.
+- **On conclav.dev** (on EX.4's head 0c006961 plus this cut):
+  - fmt, clippy (economy, market, tacsim, both compositions and mush-bot), the contract guards, rustdoc (economy, market and tacsim, both modes) and the 64 KiB memory-size lint pass;
+  - `mush-economy` + `mush-market`: 1,204 of 1,204;
+  - tacsim lib (survey, passenger, retrieval, jobs): 32 of 32;
+  - `domain_economy`: the three EX.5 stories, RS.7's port-security retrieval stories and EX.4's charges;
+  - `domain_field`: RS.5's and RS.9's retrieval stories;
+  - `domain_world`: RS.8's space retrieval and the passage stories, 39 of 39;
+  - `mush-bot`'s sentence table: 44 of 44.
+- **The mutations:** 13 run, each alone, against the tests that can see it. 12 are killed: the bond rule, the forfeit, the term, the term past the deadline, the org's capability, the job budget at the post and at the join, the trade cap's exclusion, the board's kind filter, the retrieval's bond, the survey's open test, and `as=`'s check. **The one survivor is T4**, the passage board's filter of a traveller already booked: no story books a passage and reads the board after it.
+
+**Divergences.**
+- **No `Representation::Service` arm.** The record is `Service` in `record.rs`, but it is a projection value, not a catalogue representation. No catalogue entry or listing stock carries a service yet, so an arm nothing produces would be dead code. The arm comes when a service is posted as a listing.
+- **The board is a projection, not stored listings.** Each host keeps the truth, so nothing is copied that could drift. A board read costs one pass over the hosts' records.
+- **The join's bond and term come from the caller.** The economy recognises the shape and checks the bond and the term. The venue's posted terms for the kind are what the caller passes: today, the host's rule for each kind.
+- **Survey and passage do not join through `join_job`.** A survey's contract is written at acceptance, so its deadline already runs from acceptance. A passage is a captain's offer to a traveller, negotiated by `+passage/offer`. Both list on the board and keep their own verbs.
+- **New files:** `mush-market/src/services.rs`, `tacsim/src/port/jobs.rs` and `tacsim/src/port/passenger/board.rs`. There are one-line wirings in `tacsim/src/port/mod.rs`, both compositions, `passenger/mod.rs` and `passenger/movement.rs`.
+- **The rig reuses EX.4's conclav.dev clone and target**, to save about 40 GB of disk.
+
+**Expensive to reverse (flagged).**
+- **The `Service` record's shape** and **`ServiceKind`'s words**. The board prints the words, and a filter names them. A later kind is appended, and a field later kinds need is added with a default.
+- **The job budget of 16 apart from the trade issuer cap** (Q-48-44's provisional figure).
+
+**Not built.**
+- `Offered` services: EX.7's crew self-listing is the first.
+- The House posting jobs (Q-48-12's "NPC houses post jobs too"): EX.6's haul from the consumers of Q-48-19.
+- The party cap at the join has no direct test, since jobs alone no longer reach 100.
 
 ## EX.6
 

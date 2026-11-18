@@ -2023,3 +2023,133 @@ mod tests {
         )));
     }
 }
+
+// ---- Doc 48 cut EX.5: services on the exchange (Q-48-3, -11, -12) ----------------------------
+
+/// **The closed list of service kinds** (doc 48 cut EX.5, Q-48-11). A kind is added in code, with
+/// typed terms and a performance fact the host answers; free text is never a kind. EX.6 adds haul
+/// and escort, EX.7 crew hire.
+///
+/// **Expensive to reverse** (flagged in the cut note): the words are what the board prints and
+/// what a filter names, and a later kind is appended, never renumbered.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceKind {
+    /// Bring a titled hull to a port (doc 41's retrieval job): the fact is the host's delivery.
+    Retrieval,
+    /// Carry a traveller from here to there (doc 27's passage): the fact is the arrival.
+    Passage,
+    /// Sound one block of a site afresh (Occator's survey commission): the fact is the log.
+    Survey,
+}
+
+impl ServiceKind {
+    /// Every kind, in board order.
+    pub const ALL: [ServiceKind; 3] = [
+        ServiceKind::Retrieval,
+        ServiceKind::Passage,
+        ServiceKind::Survey,
+    ];
+
+    /// The word a filter names and the board prints.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            ServiceKind::Retrieval => "retrieval",
+            ServiceKind::Passage => "passage",
+            ServiceKind::Survey => "survey",
+        }
+    }
+
+    /// The board's label for the kind.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            ServiceKind::Retrieval => "Retrieval",
+            ServiceKind::Passage => "Passage",
+            ServiceKind::Survey => "Survey",
+        }
+    }
+
+    /// The kind a filter word names.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<ServiceKind> {
+        Self::ALL.into_iter().find(|k| k.word() == word)
+    }
+}
+
+/// **Which side posted a service** (Q-48-12): a `Wanted` service is a job, posted by whoever
+/// pays and taken by any qualified principal; an `Offered` one is a provider selling their work.
+/// EX.5's kinds are all jobs; EX.7's crew self-listing is the first offer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceSide {
+    /// A job: the poster pays whoever performs it.
+    Wanted,
+    /// An offer of work: the poster is the provider.
+    Offered,
+}
+
+/// **When a service must be performed by** (Q-48-58): per kind.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceTerm {
+    /// This many IC seconds from the acceptance (a survey; EX.6's haul and escort).
+    FromAcceptance {
+        /// The term, IC seconds.
+        ic_secs: i64,
+    },
+    /// By this World IC time, whenever it is taken (a retrieval, as today).
+    By {
+        /// The deadline, World IC seconds.
+        ic_at: i64,
+    },
+    /// No deadline of its own: the kind's host settles it on performance (a passage, which
+    /// refunds after one IC year).
+    OnPerformance,
+}
+
+/// **One open service on a venue's board** (doc 48 cut EX.5, Q-48-3, -12): a value the host
+/// reads from its own record each time the board is shown, never stored by the market. The
+/// board is the projection of the venue's open services; each kind's host keeps the truth (the
+/// standing offer, the commission, the traveller), so there is no second copy to drift.
+///
+/// **Expensive to reverse** (flagged in the cut note): the fields are the typed terms every
+/// kind answers. A field later kinds need is added with a default; one removed breaks every
+/// host.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Service {
+    /// What kind of work.
+    pub kind: ServiceKind,
+    /// Which side posted it.
+    pub side: ServiceSide,
+    /// The venue whose board shows it.
+    pub venue: MarketId,
+    /// Who posted it: who pays for a job.
+    pub poster: PrincipalId,
+    /// The poster as the board names them.
+    pub poster_name: SmolStr,
+    /// The work, in the host's words: what, from where, to where (a short clause).
+    pub subject: SmolStr,
+    /// What it pays: a job's fee or reward, a passage's opening fare.
+    pub pay: Amount,
+    /// The instrument `pay` and `bond` are in, for the money render.
+    pub instrument: Option<mush_economy::InstrumentId>,
+    /// Whether `pay` is an opening figure the parties may negotiate (a passage's fare).
+    #[serde(default)]
+    pub negotiable: bool,
+    /// The provider's bond, when the kind asks one (Q-48-13: above 10,000 cr).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bond: Option<Amount>,
+    /// When it must be done by.
+    pub term: ServiceTerm,
+    /// The standing offer behind it, when the job is one a stranger joins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<mush_economy::ContractId>,
+    /// The command that takes it (the kind's own verb).
+    pub take: SmolStr,
+}
+
+/// The most services one venue's board shows (doc 48 cut EX.5): a page, and the bound on a
+/// host's answer.
+pub const MAX_SERVICES_SHOWN: usize = 32;

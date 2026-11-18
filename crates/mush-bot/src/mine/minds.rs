@@ -653,6 +653,48 @@ pub mod exchange {
     pub const ALREADY_FOR_SALE: &str = "That is already up for sale";
 }
 
+/// **The job board** (doc 48 cut EX.5): `+market/jobs` (`mush_market::services`) and the
+/// retrieval join's new sentences (`tacsim::surface::retrieval`). No lane reads them yet; each is
+/// held to the game's own text below.
+pub mod jobs {
+    /// `mush_market::services::JOBS_USAGE`.
+    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey]";
+    /// `mush_market::services::JOBS_NO_VENUE`.
+    pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=";
+    /// `mush_market::services::JOBS_NONE`.
+    pub const JOBS_NONE: &str = "No jobs are posted on this board.";
+    /// `mush_market::services::JOBS_HEAD`'s head.
+    pub const JOBS_HEAD: &str = "Jobs on this board (";
+    /// `mush_market::services::JOB_LINE`'s middle: a job's pay. Partial: read the amount after it.
+    pub const JOB_LINE: &str = ". Pays ";
+    /// `mush_market::services::JOB_NEGOTIABLE`: a pay that is an opening figure. Partial: read
+    /// it after the amount on a job's line.
+    pub const JOB_NEGOTIABLE: &str = " to open";
+    /// `mush_market::services::JOB_BOND`'s head. Partial: read it on a job's line.
+    pub const JOB_BOND: &str = ", bond ";
+    /// `mush_market::services::JOB_TAKE`'s tail: the verb that takes the job. Partial: read the
+    /// command after it.
+    pub const JOB_TAKE: &str = ". Take it: ";
+    /// `mush_market::services::TERM_FROM_ACCEPTANCE`'s tail.
+    pub const TERM_FROM_ACCEPTANCE: &str = " IC days from acceptance";
+    /// `mush_market::services::TERM_BY`'s head. Partial: read the days after it.
+    pub const TERM_BY: &str = "due within ";
+    /// `mush_market::services::TERM_TODAY`. Partial: read it on a job's line.
+    pub const TERM_TODAY: &str = "due today";
+    /// `mush_market::services::TERM_ON_PERFORMANCE`.
+    pub const TERM_ON_PERFORMANCE: &str = "paid on arrival";
+    /// `mush_market::services::JOBS_MORE`.
+    pub const JOBS_MORE: &str = "(More are posted than one board shows.)";
+    /// `tacsim::surface::retrieval::ACCEPT_USAGE`'s head.
+    pub const ACCEPT_USAGE: &str = "Usage: +salvage/accept <job> [as=<org>] [go]";
+    /// `tacsim::surface::retrieval::BOND_CLAUSE`'s head: the bond a job's taker escrows.
+    pub const BOND_CLAUSE: &str = " You escrow a bond of ";
+    /// `tacsim::surface::retrieval::NOT_FOR_ORG`.
+    pub const NOT_FOR_ORG: &str = "You do not act for that organization, so nothing was accepted.";
+    /// `tacsim::surface::retrieval::ORG_NO_ACCOUNT`.
+    pub const ORG_NO_ACCOUNT: &str = "That organization has no account to be paid into.";
+}
+
 /// **A hull listed on the exchange** (doc 48 cut EX.2): what `+market/post #<hull>` refuses in
 /// the game's words, `tacsim::port::hull_sale`. No lane reads them yet; each is held to the
 /// game's own text below.
@@ -806,6 +848,12 @@ pub const PARTIAL: &[&str] = &[
     "market::HOLD_PAID",
     "market::REVOKING_PRINCIPAL",
     "market::CLAIM_LINE",
+    "jobs::JOB_LINE",
+    "jobs::JOB_NEGOTIABLE",
+    "jobs::JOB_BOND",
+    "jobs::JOB_TAKE",
+    "jobs::TERM_BY",
+    "jobs::TERM_TODAY",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -838,6 +886,7 @@ mod tests {
     const WORDS_RS: &str = include_str!("../../../tacsim/src/minds/market_commands/words.rs");
     const SHIP_MIND_RS: &str = include_str!("../../../tacsim/src/port/ship_mind.rs");
     const SELLER_RS: &str = include_str!("../../../mush-market/src/seller.rs");
+    const SERVICES_RS: &str = include_str!("../../../mush-market/src/services.rs");
     const HULL_SALE_RS: &str = include_str!("../../../tacsim/src/port/hull_sale.rs");
     const CORE_RESALE_RS: &str = include_str!("../../../tacsim/src/hardware/sale/resale.rs");
 
@@ -859,6 +908,41 @@ mod tests {
                 NOT_AT_VENUE,
                 VENUE_UNPLACED,
                 LOCKER_ELSEWHERE,
+            )
+        });
+        rows
+    }
+
+    fn job_board_rows() -> Vec<Row> {
+        use super::jobs as bot;
+        use mush_market::services as game;
+        rows!("";
+            JOBS_USAGE,
+            JOBS_NO_VENUE,
+            JOBS_NONE,
+            JOBS_HEAD,
+            JOB_LINE,
+            JOB_NEGOTIABLE,
+            JOB_BOND,
+            JOB_TAKE,
+            TERM_FROM_ACCEPTANCE,
+            TERM_BY,
+            TERM_TODAY,
+            TERM_ON_PERFORMANCE,
+            JOBS_MORE,
+        )
+    }
+
+    fn jobs_rows() -> Vec<Row> {
+        use super::jobs as bot;
+        let mut rows = job_board_rows();
+        rows.extend({
+            use tacsim::surface::retrieval as game;
+            rows!("";
+                ACCEPT_USAGE,
+                BOND_CLAUSE,
+                NOT_FOR_ORG,
+                ORG_NO_ACCOUNT,
             )
         });
         rows
@@ -1262,6 +1346,7 @@ mod tests {
             ("ship_mind", ship_mind_rows()),
             ("practice", practice_rows()),
             ("exchange", exchange_rows()),
+            ("jobs", jobs_rows()),
             ("hull_sale", hull_sale_rows()),
             ("core_resale", core_resale_rows()),
             ("venue", venue_rows()),
@@ -1812,6 +1897,19 @@ mod tests {
     #[test]
     fn exchange_needles_are_distinct() {
         distinct(&qualified("exchange", exchange_rows()), &[]);
+    }
+    // Doc 48 cut EX.5: the job board.
+    #[test]
+    fn jobs_needles_are_in_step() {
+        in_step("jobs", &jobs_rows());
+    }
+    #[test]
+    fn jobs_census() {
+        census("services.rs", SERVICES_RS, &job_board_rows(), &[]);
+    }
+    #[test]
+    fn jobs_needles_are_distinct() {
+        distinct(&qualified("jobs", jobs_rows()), &[]);
     }
     // Doc 48 cut EX.2: a hull listed on the exchange.
     #[test]

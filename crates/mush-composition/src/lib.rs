@@ -506,6 +506,7 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
                 .with_asset_sale(Arc::new(tacsim::port::hull_sale::HullSale))
                 // Doc 48 cut EX.4: a port's authority operates its venue's fees.
                 .with_venue_fees(Arc::new(tacsim::port::berth::PortFees))
+                .with_service_board(Arc::new(tacsim::port::jobs::PortJobs))
         } else {
             self
         }

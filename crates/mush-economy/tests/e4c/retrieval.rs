@@ -119,6 +119,39 @@ impl GameModule for RetrievalRuleset {
                     .map_err(|e| CmdError::msg(e.to_string()))
             }),
         )?;
+        // `@rjoin <contract>=<account> <bond> <term> [org]` (doc 48 cut EX.5): the actor joins
+        // for themselves, or for the org named; a zero bond or term is none.
+        reg.command(
+            CommandSpec {
+                name: "@rjoin".into(),
+                shape: ArgShape::EqPair,
+                help: "test".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let id = ContractId(num(Some(ctx.args.lhs()))?);
+                let rhs = ctx.args.rhs().unwrap_or_default().to_owned();
+                let mut words = rhs.split_whitespace();
+                let account = AccountId(num(words.next())?);
+                let bond = i64::try_from(num(words.next())?).unwrap_or(i64::MAX);
+                let term = i64::try_from(num(words.next())?).unwrap_or(i64::MAX);
+                let acceptor = match words.next() {
+                    Some(org) => PrincipalId::Organization(mush_org::OrgId(num(Some(org))?)),
+                    None => PrincipalId::Object(ctx.actor),
+                };
+                mush_economy::join_job(
+                    ctx,
+                    id,
+                    mush_economy::JoinTerms {
+                        acceptor,
+                        account,
+                        bond: (bond > 0).then(|| mush_economy::Amount::from_minor(bond)),
+                        term_ic: (term > 0).then_some(term),
+                    },
+                )
+                .map_err(|e| CmdError::msg(e.to_string()))
+            }),
+        )?;
         // `@rcancel <contract>`.
         reg.command(
             CommandSpec {
@@ -443,14 +476,19 @@ fn posted(tw: &mut TestWorld, who: ObjId, account: AccountId, n: usize) -> Contr
     )))
 }
 
-/// **Doc 48 §4.3** (the second review, doc 48b): a poster already holding §9's sixteen open
-/// contracts posts no seventeenth retrieval, and nothing is written or held.
+/// **Doc 48 §4.3** (the second review, doc 48b), as doc 48 cut EX.5 splits the caps (Q-48-44): a
+/// poster holding the sixteen open trade contracts §9 allows still posts a retrieval, because a
+/// job counts against its own budget; a poster at the job budget posts no seventeenth job, and
+/// nothing is written or held.
 #[test]
-fn rs5_a_poster_at_the_issuer_cap_posts_no_retrieval() {
+fn rs5_a_poster_at_the_job_budget_posts_no_retrieval() {
     DELIVERED.store(false, Ordering::SeqCst);
     let mut tw = boot();
     let r = run_rig(&mut tw, 10_000);
     for n in 0..mush_economy::MAX_OPEN_CONTRACTS_PER_ISSUER {
+        ok(&mut tw, r.johnson, &format!("@contract/draft Draft {n}"));
+    }
+    for n in 0..mush_economy::MAX_LIVE_JOBS_PER_PRINCIPAL {
         posted(&mut tw, r.johnson, r.j_acct, n);
     }
     let contracts = snap(&tw).contracts().count();
@@ -471,7 +509,7 @@ fn rs5_a_poster_at_the_issuer_cap_posts_no_retrieval() {
         &format!("@rpost #{}={} 1", hull.0, r.j_acct.0),
     );
     assert!(
-        refused.contains("that issuer already has the most open contracts allowed"),
+        refused.contains("that principal is already on the most live jobs allowed"),
         "{refused}"
     );
     assert_eq!(snap(&tw).contracts().count(), contracts, "nothing posted");
@@ -486,23 +524,23 @@ fn rs5_a_poster_at_the_issuer_cap_posts_no_retrieval() {
     );
 }
 
-/// **Doc 48 §4.3** (the second review, doc 48b): an acceptor already on §9's hundred live
-/// contracts joins no hundred-and-first retrieval, and the job stays open for anyone else.
+/// **Doc 48 §4.3** (the second review, doc 48b), as doc 48 cut EX.5 splits the caps (Q-48-44): an
+/// acceptor already on the sixteen live jobs the budget allows joins no seventeenth, and the job
+/// stays open for anyone else. (§9's party cap of a hundred is still asked at the join; jobs
+/// alone no longer reach it.)
 #[test]
-fn rs5_an_acceptor_at_the_party_cap_joins_no_retrieval() {
+fn rs5_an_acceptor_at_the_job_budget_joins_no_retrieval() {
     DELIVERED.store(false, Ordering::SeqCst);
     let mut tw = boot();
     let r = run_rig(&mut tw, 0);
-    // Seven posters, fifteen jobs each (under their own issuer cap): 105 open jobs.
-    let per = mush_economy::MAX_OPEN_CONTRACTS_PER_ISSUER - 1;
+    let cap = mush_economy::MAX_LIVE_JOBS_PER_PRINCIPAL;
     let mut jobs = Vec::new();
-    for p in 0..7 {
+    for p in 0..2 {
         let (who, account) = poster(&mut tw, &format!("Poster{p}"), 1_000);
-        for n in 0..per {
-            jobs.push(posted(&mut tw, who, account, p * per + n));
+        for n in 0..cap / 2 + 1 {
+            jobs.push(posted(&mut tw, who, account, p * cap + n));
         }
     }
-    let cap = mush_economy::MAX_LIVE_CONTRACTS_PER_PARTY;
     for id in &jobs[..cap] {
         ok(
             &mut tw,
@@ -517,7 +555,7 @@ fn rs5_an_acceptor_at_the_party_cap_joins_no_retrieval() {
         &format!("@raccept {}={}", next.0, r.r_acct.0),
     );
     assert!(
-        refused.contains("a party is already on the most live contracts allowed"),
+        refused.contains("that principal is already on the most live jobs allowed"),
         "{refused}"
     );
     let c = snap(&tw).contract(next).expect("the job").clone();
@@ -532,4 +570,279 @@ fn rs5_an_acceptor_at_the_party_cap_joins_no_retrieval() {
         r.watcher,
         &format!("@raccept {}={}", next.0, watcher_acct.0),
     );
+}
+
+// ---- Doc 48 cut EX.5: the generalised join ----------------------------------------------------
+
+/// The faucet's account, to fund an acceptor.
+fn faucet(tw: &TestWorld) -> AccountId {
+    snap(tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id
+}
+
+/// A titled hull, Johnson's, and a retrieval on it for `fee`.
+fn job(tw: &mut TestWorld, r: &Run, name: &str, fee: i64) -> ContractId {
+    let hull = thing(tw, name);
+    ok(
+        tw,
+        GOD,
+        &format!("@titleissue #{}=wod.housing #{}", hull.0, r.johnson.0),
+    );
+    ContractId(tail_number(&ok(
+        tw,
+        r.johnson,
+        &format!("@rpost #{}={} {fee}", hull.0, r.j_acct.0),
+    )))
+}
+
+fn held(tw: &TestWorld, account: AccountId) -> i64 {
+    snap(tw).account(account).expect("acct").held_amount.minor()
+}
+
+/// **The bond follows Q-48-13**: 20% of a fee above 10,000 cr, and none at or under it.
+#[test]
+fn ex5_a_job_asks_a_bond_of_a_fifth_above_ten_thousand_credits() {
+    let bond = |minor| mush_economy::job_bond(mush_economy::Amount::from_minor(minor));
+    assert_eq!(bond(1_000_000), None, "at 10,000 cr, no bond");
+    assert_eq!(bond(1_000_001).map(|b| b.minor()), Some(200_000));
+    assert_eq!(bond(2_000_000).map(|b| b.minor()), Some(400_000));
+}
+
+/// **A stranger joins a job, the join escrowing the bond; performance pays the fee and the
+/// bond back.**
+#[test]
+fn ex5_a_bonded_join_escrows_the_bond_and_performance_pays_fee_and_bond() {
+    DELIVERED.store(false, Ordering::SeqCst);
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000_000);
+    let id = job(&mut tw, &r, "Prospector", 2_000_000);
+    let tap = faucet(&tw);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {tap}={} 500000", r.r_acct),
+    );
+    ok(
+        &mut tw,
+        r.runner,
+        &format!("@rjoin {}={} 400000 0", id.0, r.r_acct.0),
+    );
+    assert_eq!(held(&tw, r.r_acct), 400_000, "the bond is escrowed");
+    let c = snap(&tw).contract(id).expect("joined").clone();
+    let shape = mush_economy::job_shape(&c).expect("still a job");
+    assert_eq!(shape.bond.map(|b| b.minor()), Some(400_000));
+    assert_eq!(
+        mush_economy::job_acceptor(&c),
+        Some(&PrincipalId::Object(r.runner))
+    );
+    assert!(c.fully_accepted(), "both bound to the joined consent");
+    assert_eq!(c.escrow.len(), 2, "the fee's hold and the bond's");
+    DELIVERED.store(true, Ordering::SeqCst);
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 240);
+    assert!(
+        matches!(state(&tw, id), ContractState::Settled { .. }),
+        "{:?}",
+        state(&tw, id)
+    );
+    assert_eq!(held(&tw, r.r_acct), 0);
+    assert_eq!(
+        bal(&tw, r.r_acct),
+        500_000 + 2_000_000,
+        "the fee, and the bond back"
+    );
+    assert_eq!(bal(&tw, r.j_acct), 3_000_000 - 2_000_000);
+    DELIVERED.store(false, Ordering::SeqCst);
+}
+
+/// **A job's term runs from acceptance, and a bonded job that is never performed forfeits the
+/// bond to the poster.**
+#[test]
+fn ex5_a_term_runs_from_acceptance_and_an_unperformed_bond_is_forfeit() {
+    DELIVERED.store(false, Ordering::SeqCst);
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000_000);
+    let id = job(&mut tw, &r, "Prospector", 2_000_000);
+    let tap = faucet(&tw);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {tap}={} 500000", r.r_acct),
+    );
+    // A term past the posted deadline (56 IC days) is refused, and writes nothing.
+    err(
+        &mut tw,
+        r.runner,
+        &format!("@rjoin {}={} 400000 {}", id.0, r.r_acct.0, 57 * 86_400),
+    );
+    assert!(mush_economy::job_acceptor(snap(&tw).contract(id).expect("c")).is_none());
+    assert_eq!(held(&tw, r.r_acct), 0);
+    let joined_at = tw.world().world_ic_now().at;
+    ok(
+        &mut tw,
+        r.runner,
+        &format!("@rjoin {}={} 400000 {}", id.0, r.r_acct.0, 28 * 86_400),
+    );
+    let deadline = snap(&tw)
+        .contract(id)
+        .and_then(|c| c.consent.deadline)
+        .expect("a deadline");
+    assert_eq!(
+        deadline.at,
+        joined_at + 28 * 86_400,
+        "28 IC days from the acceptance, not from the posting"
+    );
+    // Past it, unperformed: the fee comes back and the bond goes with it.
+    let now = tw.world().now();
+    sweep_at(&mut tw, now + 29 * 86_400);
+    assert!(
+        state(&tw, id).is_terminal(),
+        "expired: {:?}",
+        state(&tw, id)
+    );
+    assert_eq!(
+        bal(&tw, r.j_acct),
+        3_000_000 + 400_000,
+        "the fee back, and the bond"
+    );
+    assert_eq!(bal(&tw, r.r_acct), 500_000 - 400_000, "the bond is forfeit");
+}
+
+/// **A bond the acceptor cannot cover writes no join**: the job stays open for another.
+#[test]
+fn ex5_an_unfunded_bond_writes_no_join() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000_000);
+    let id = job(&mut tw, &r, "Prospector", 2_000_000);
+    err(
+        &mut tw,
+        r.runner,
+        &format!("@rjoin {}={} 400000 0", id.0, r.r_acct.0),
+    );
+    let c = snap(&tw).contract(id).expect("c").clone();
+    assert!(mush_economy::job_acceptor(&c).is_none(), "nobody joined");
+    assert_eq!(c.escrow.len(), 1, "the fee's hold alone");
+    let watcher = account_of(&tw, r.watcher);
+    let tap = faucet(&tw);
+    ok(&mut tw, GOD, &format!("@econ/mint {tap}={watcher} 400000"));
+    ok(
+        &mut tw,
+        r.watcher,
+        &format!("@rjoin {}={} 400000 0", id.0, watcher.0),
+    );
+}
+
+/// **Org members with the spending capability accept for their org** (Q-48-58); a member
+/// without it, or a stranger, is refused.
+#[test]
+fn ex5_an_org_member_with_the_spending_grant_accepts_for_the_org() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 30_000);
+    let id = job(&mut tw, &r, "Prospector", 20_000);
+    ok(&mut tw, GOD, "@org/create Ironhold");
+    let org = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("orgs")
+        .state()
+        .orgs()
+        .next()
+        .expect("the org")
+        .id;
+    ok(&mut tw, GOD, "@account/open org:Ironhold=nuyen");
+    let org_acct = snap(&tw)
+        .accounts()
+        .find(|a| a.owner == PrincipalId::Organization(org))
+        .expect("the org's account")
+        .id;
+    // No grant: refused.
+    err(
+        &mut tw,
+        r.runner,
+        &format!("@rjoin {}={} 0 0 {}", id.0, org_acct.0, org.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/grant #{}=Ironhold economy.account.post", r.runner.0),
+    );
+    // The watcher still holds nothing.
+    err(
+        &mut tw,
+        r.watcher,
+        &format!("@rjoin {}={} 0 0 {}", id.0, org_acct.0, org.0),
+    );
+    ok(
+        &mut tw,
+        r.runner,
+        &format!("@rjoin {}={} 0 0 {}", id.0, org_acct.0, org.0),
+    );
+    let c = snap(&tw).contract(id).expect("c").clone();
+    assert_eq!(
+        mush_economy::job_acceptor(&c),
+        Some(&PrincipalId::Organization(org)),
+        "the org is the acceptor"
+    );
+    assert_eq!(
+        c.consent.terms.remainder_to, org_acct,
+        "paid to its own account"
+    );
+}
+
+/// **Both caps on both paths** (Q-48-44, doc 48b G-5): a poster's live jobs count against the
+/// job budget, apart from the trade issuer cap, and an acceptor's joins count against it too.
+#[test]
+fn ex5_the_job_budget_binds_post_and_join_apart_from_the_trade_cap() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 10_000_000);
+    let max = mush_economy::MAX_LIVE_JOBS_PER_PRINCIPAL;
+    let ids: Vec<ContractId> = (0..max)
+        .map(|i| job(&mut tw, &r, &format!("Hull {i}"), 1_000))
+        .collect();
+    // The seventeenth post is refused by the job budget.
+    let hull = thing(&mut tw, "One too many");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue #{}=wod.housing #{}", hull.0, r.johnson.0),
+    );
+    let refused = err(
+        &mut tw,
+        r.johnson,
+        &format!("@rpost #{}={} 1000", hull.0, r.j_acct.0),
+    );
+    assert!(refused.contains("most live jobs"), "{refused}");
+    // Sixteen standing jobs leave the trade cap untouched: Johnson still drafts a contract.
+    ok(&mut tw, r.johnson, "@contract/draft Extraction");
+    // The runner joins all sixteen; the watcher's job would be the runner's seventeenth.
+    for id in &ids {
+        ok(
+            &mut tw,
+            r.runner,
+            &format!("@rjoin {}={} 0 0", id.0, r.r_acct.0),
+        );
+    }
+    let w_acct = account_of(&tw, r.watcher);
+    let tap = faucet(&tw);
+    ok(&mut tw, GOD, &format!("@econ/mint {tap}={w_acct} 10000"));
+    let other = thing(&mut tw, "The watcher's");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@titleissue #{}=wod.housing #{}", other.0, r.watcher.0),
+    );
+    let theirs = ContractId(tail_number(&ok(
+        &mut tw,
+        r.watcher,
+        &format!("@rpost #{}={} 1000", other.0, w_acct.0),
+    )));
+    let refused = err(
+        &mut tw,
+        r.runner,
+        &format!("@rjoin {}={} 0 0", theirs.0, r.r_acct.0),
+    );
+    assert!(refused.contains("most live jobs"), "{refused}");
 }
