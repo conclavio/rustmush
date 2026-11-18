@@ -575,7 +575,7 @@ pub const SAID: &str = "Your licence \
 pub const KEY: &str = "tacsim:licence:";
 pub const WORD: &str = "licence";
 // "a comment about the licence centre"
-const RAW: &str = r#"the "grey" cargo"#;
+const RAW: &str = r#"the grey "fine" cargo"#;
 
 #[cfg(test)]
 mod tests {
