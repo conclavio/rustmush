@@ -1234,6 +1234,14 @@ namespace TacSim.Tests
                 returnToBayBtn.onClick.Invoke();
                 Assert.AreEqual(1, dispatched.Count, "RETURN TO BAY must send recovery once, not twice");
                 Assert.AreEqual("+tv/1 recover go", dispatched[0]);
+
+                // Verify command echo uses literal `>` in Unity uGUI Text, never HTML entity `&gt;`:
+                coord.ExecutePlayerCommand("look");
+                var commsField = typeof(TacSim.UI.TacSimHudController).GetField("_commsLogText", flags);
+                var commsText = commsField?.GetValue(coord.Hud) as UnityEngine.UI.Text;
+                Assert.IsNotNull(commsText);
+                StringAssert.Contains("> look", commsText.text);
+                StringAssert.DoesNotContain("&gt;", commsText.text);
                 Assert.IsTrue(coord.SurfaceStage.IsExcursionActive, "RETURN TO BAY must wait for server confirmation instead of exiting optimistically");
                 Assert.AreEqual(TacSimActiveStage.PlanetarySurface, coord.ActiveStage);
 

@@ -252,7 +252,7 @@ namespace TacSim.Core
                 {
                     SpaceStage.NotifyApproachOrdered(id);
                     RefreshOrbitalReadout();
-                    Hud.AppendLogLine($"<color=#66FFCC>[MINING]</color> Ordering approach toward Asteroid Pocket <b>{safeId}</b> — click <b>MATCH VEL</b> (`+helm/match {safeId}`) once inside 2,000 m &amp; &lt; 5 m/s.");
+                    Hud.AppendLogLine($"<color=#66FFCC>[MINING]</color> Ordering approach toward Asteroid Pocket <b>{safeId}</b> — click <b>MATCH VEL</b> (`+helm/match {safeId}`) once inside 2,000 m & ‹ 5 m/s.");
                     if (_ws != null && _ws.IsConnected)
                         _ws.SendLine($"+helm/approach {id}");
                 }
@@ -392,7 +392,7 @@ namespace TacSim.Core
             // Both `+mine/laser` and `+mine/drones` unconditionally require `session.matched_rock == Some(rock)` on `mushd`.
             if (!string.Equals(authoritativeMatchedRockId, rock, StringComparison.OrdinalIgnoreCase))
             {
-                refusalNotice = $"Lock RCS velocity match on Rock {rock} first (click <b>MATCH VEL</b> / `+helm/match {rock}` inside 2,000 m &amp; &lt; 5 m/s).";
+                refusalNotice = $"Lock RCS velocity match on Rock {rock} first (click <b>MATCH VEL</b> / `+helm/match {rock}` inside 2,000 m & ‹ 5 m/s).";
                 return null;
             }
 
@@ -1130,9 +1130,9 @@ namespace TacSim.Core
                 TradeState.NotifyMarketRefreshRequested();
 
             string safeCmd = MushProtocol.EscapeUnityRichText(cmd);
-            Hud.AppendLogLine($"<color=#66CCFF>&gt; {safeCmd}</color>");
+            Hud.AppendLogLine($"<color=#66CCFF>> {safeCmd}</color>");
             if (Hud.IsModalOpen)
-                Hud.AppendModalResponseLine($"<color=#66CCFF>&gt; {safeCmd}</color>", resetPreviousResponses: true);
+                Hud.AppendModalResponseLine($"<color=#66CCFF>> {safeCmd}</color>", resetPreviousResponses: true);
 
             OnCommandDispatched?.Invoke(cmd);
 
