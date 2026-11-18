@@ -4699,12 +4699,13 @@ fn m1b2_t1_arms_its_first_two_weapons_whatever_the_heat_and_numbers_them_as_the_
         probed.set(true);
         // Doc 49 unit CC.3 (Q-49-28): a shot that would cross the ceiling is refused, so
         // the laser fires again only once the platform is back at 40. The sink comes back
-        // at four times the authored rate, so each 2 s cycle cools a pulse's 20 and more,
-        // and the laser is under 40 again before every ready: its slot fires at each one,
-        // and the fresh lock after `UNLOCKS_AT` cites it. At the authored rate it would
-        // not be cool again until about 23 s.
+        // at ten times the authored rate, so the platform is under 40 by the laser's first
+        // ready after it (10,732) and at every ready after that: its slot fires on the
+        // lattice it fired on before CC.3, and is ready at the landing of the fresh lock's
+        // think after `UNLOCKS_AT`, which cites it. At the authored rate the laser would not
+        // be cool again until about 17 s, and its slot would fire off that lattice.
         if let Some(heat) = arena.unit_mut(RED).and_then(|state| state.heat.as_mut()) {
-            heat.per_s = sink.saturating_mul(4);
+            heat.per_s = sink.saturating_mul(10);
         }
     };
     let make = || laser_field().0;
