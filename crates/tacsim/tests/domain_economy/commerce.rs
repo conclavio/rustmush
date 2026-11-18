@@ -490,9 +490,13 @@ fn stock_ready(tw: &mut TestWorld) -> (bool, String) {
     (ready, out)
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// **Fire and land the port tick until both ports are stocked and listed.** Bounded.
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         if stock_ready(&mut rig.tw).0 {
             return;
         }
@@ -500,7 +504,7 @@ fn stock(rig: &mut Rig) {
         land_all(rig, &queued);
     }
     let (_, out) = stock_ready(&mut rig.tw);
-    panic!("the ports were not stocked within 40 fires:\n{out}");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires:\n{out}");
 }
 
 /// Read one typed value through an owner-stamped transaction.
@@ -877,7 +881,8 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     // carbon row; doc 39 cut IN.7: the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
     // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
-    assert_eq!(all.len(), 22, "Ceres 10 and Stickney 12");
+    // Doc 48 unit PL.5 (lane v39): twenty-four, Kasei's strategic ore and the Yards' boards.
+    assert_eq!(all.len(), 24, "Ceres 10 and Stickney 14");
     for (id, receipt) in all
         .iter()
         .filter(|(_, r)| !r.good.as_str().starts_with("tacsim.part."))
@@ -931,7 +936,8 @@ fn ic8_a_reboot_mid_seed_re_mints_nothing() {
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
     // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
-    assert_eq!(all.len(), 22);
+    // Doc 48 unit PL.5 (lane v39): twenty-four, Kasei's strategic ore and the Yards' boards.
+    assert_eq!(all.len(), 24);
     let mut sums: BTreeMap<(VaultId, String), u64> = BTreeMap::new();
     // Doc 39 cut IN.6: a part row is identified lots in the stores, never a pool.
     for (_, receipt) in all
@@ -2588,7 +2594,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     // cut IN.7: seventeen, the part rows retired.
     // Doc 39 cut IN.11: eighteen, Freeport Works' strategic-ore row. Lane v33: nineteen, the
     // Yards' carbon row. Doc 48 unit PL.3 (lane v37): twenty-two, the Yards' three space rows.
-    assert_eq!(receipts(&mut rig.tw).len(), 22);
+    // Doc 48 unit PL.5 (lane v39): twenty-four, Kasei's strategic ore and the Yards' boards.
+    assert_eq!(receipts(&mut rig.tw).len(), 24);
     no_refused_writes(&rig.tw);
 }
 

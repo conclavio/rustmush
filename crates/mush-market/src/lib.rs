@@ -121,6 +121,7 @@ mod commands;
 pub use commands::ACCEPT_SIGNS;
 mod facts;
 pub mod fees;
+pub mod history;
 mod ids;
 pub mod interface;
 mod lot;
@@ -193,6 +194,12 @@ pub use module::venue_fees;
 pub use module::service_board;
 pub use record::{MAX_SERVICES_SHOWN, Service, ServiceKind, ServiceSide, ServiceTerm};
 pub use services::{ServiceBoard, service_lines, services_at};
+// Doc 48 cut EX.8: the price history and the in-place reprice.
+pub use api::reprice_listing;
+pub use history::{
+    FACTOR_CEILING, FACTOR_FLOOR, HISTORY_PERIODS, MAX_PRICE_SERIES, PERIOD_IC_SECS, PricePeriod,
+    PriceSeries, PriceSide, SidePoint, latest_point, period_of, price_series, record_price,
+};
 // Doc 48 cut EX.2: the asset-state fact and a personal object listing's no-vault mark.
 pub use record::{FACT_ASSET_STATE, NO_VAULT};
 // Doc 48 cut EX.1a: the personal seller's API and its standing acceptance.

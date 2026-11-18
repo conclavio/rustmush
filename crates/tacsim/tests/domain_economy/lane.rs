@@ -80,7 +80,9 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 48 unit PL.2: v36, the farms, the fab and Titan's carbon mill (was `4db678a2…` at v35).
 /// Doc 48 unit PL.3: v37, Stickney Yards' munitions processes (was `a38bdfa0…` at v36).
 /// Doc 48 unit EX.3: v38, the port orgs' market roles (was `f668f711…` at v37).
-const LANE_DIGEST: &str = "3e569568d289eb5ccf2523d418a7d545d5b7ff5ac5aec2978f56e83e8a308ff8";
+/// Doc 48 unit PL.5: v39, Stickney's strategic-ore and instrument-board asks (was `3e569568…` at
+/// v38).
+const LANE_DIGEST: &str = "622abacb89a45844f1c5b0ceef26dbc58edd361e38e817544fac8682fb3dd145";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -360,8 +362,29 @@ fn floor_strip_licence_grace_rebuilds_the_published_v29() {
     );
 }
 
-/// **Doc 48 unit EX.3: `strip_roles` rebuilds the published v37** — the shipped v38 less the
-/// port orgs' market roles, re-signed at 37, is PL.3's lane digest.
+/// **Doc 48 unit PL.5: `strip_escrow_asks` rebuilds the published v38** — the shipped v39 less
+/// Kasei's strategic-ore and Stickney Yards' instrument-board stock rows and asks, re-signed at
+/// 38, is EX.3's lane digest.
+#[test]
+fn pl5_strip_escrow_asks_rebuilds_the_published_v38() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 38.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_escrow_asks(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_escrow_asks(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v38 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "3e569568d289eb5ccf2523d418a7d545d5b7ff5ac5aec2978f56e83e8a308ff8"
+    );
+}
+
+/// **Doc 48 unit EX.3: `strip_roles` rebuilds the published v37** — the shipped lane less
+/// Stickney's escrow asks (v39) and the port orgs' market roles, re-signed at 37, is PL.3's lane
+/// digest.
 #[test]
 fn ex3_strip_roles_rebuilds_the_published_v37() {
     let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
@@ -526,8 +549,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        38,
-        "lane v38 since doc 48 unit EX.3 (v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        39,
+        "lane v39 since doc 48 unit PL.5 (v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

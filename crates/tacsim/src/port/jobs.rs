@@ -17,6 +17,9 @@ impl ServiceBoard for PortJobs {
         out.extend(crate::port::survey::services(w, venue));
         // Doc 48 cut EX.7: players listed for crew hire, standing in the port.
         out.extend(crate::detachment::crew::wages::services(w, venue));
+        // Doc 48 cut EX.6: the hauls and the escorts.
+        out.extend(crate::services::haul::services(w, venue));
+        out.extend(crate::services::escort::services(w, venue));
         out.truncate(MAX_SERVICES_SHOWN + 1);
         out
     }

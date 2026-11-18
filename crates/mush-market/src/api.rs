@@ -610,6 +610,11 @@ pub struct ListingSpec {
     pub visibility: MarketVisibility,
     /// How long it stands, in seconds.
     pub ttl_secs: i64,
+    /// **A private listing's one buyer** (doc 48 cut EX.3; Q-48-9): the listing is `Hidden`,
+    /// seen and taken up by that buyer alone (and seen by its seller and staff), and refused to
+    /// anyone else at quote and at accept ([`crate::seller::PRIVATE_TO_OTHER`]). It trades on
+    /// the tape as any other: only who may see and accept it narrows.
+    pub private_to: Option<PrincipalId>,
 }
 
 /// **Publish a listing** (B5).
@@ -652,6 +657,12 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             "That vendor's organization is not trading.",
         ));
     }
+    // Doc 48 cut EX.3: a private listing names one other live person (`post_ask`'s rule).
+    crate::seller::check_private(
+        ctx.w,
+        &PrincipalId::Organization(vendor.org),
+        spec.private_to.as_ref(),
+    )?;
     let Some(entry) = ctx
         .w
         .module_state::<MarketStore>()
@@ -919,6 +930,11 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
     let exact_lot = spec.source.exact_lot();
+    let visibility = if spec.private_to.is_some() {
+        MarketVisibility::Hidden
+    } else {
+        spec.visibility
+    };
     put_listing(
         ctx,
         Listing {
@@ -932,7 +948,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             object: spec.object,
             price: spec.price,
             quantity: spec.quantity,
-            visibility: spec.visibility,
+            visibility,
             expires: EconomicDeadline {
                 clock: EconomicClock::RealUtc,
                 at: now.saturating_add(ttl),
@@ -940,7 +956,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             revision: 1,
             draw: Some(draws),
             account: None,
-            private_to: None,
+            private_to: spec.private_to,
             escrow: None,
         },
     );
@@ -1248,6 +1264,51 @@ pub fn restock_ask(ctx: &mut Ctx<'_>, spec: RestockSpec) -> Result<u64, MarketEr
         },
     );
     Ok(quantity)
+}
+
+/// **Re-price a house's standing listing in place** (doc 48 cut EX.8, Q-48-18): the venue's price
+/// rule moves a vendor's ask or bid by its stock, and this writes the new per-unit price on the
+/// listing, bumping its revision as every listing write does, so an open quote on it goes stale
+/// (D16) and its buyer quotes again at the new price. A sale already accepted keeps the price it
+/// was struck at. A personal listing is the player's own price and is never moved; a lapsed one is
+/// gone.
+/// The rule is the caller's (TacSim's `port::price`); the market checks only what it owns.
+///
+/// # Errors
+///
+/// "No such listing." for a listing that is not a live vendor listing; a price that is not
+/// positive. Nothing is written on a refusal, nor when the price is unchanged.
+pub fn reprice_listing(
+    ctx: &mut Ctx<'_>,
+    listing: ListingId,
+    price: Amount,
+) -> Result<(), MarketError> {
+    let now = ctx.w.now();
+    let Some(row) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(listing).cloned())
+        .filter(|l| {
+            !listing_lapsed(l, now) && !l.is_personal() && l.vendor != crate::record::NO_VENDOR
+        })
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    if price.minor() <= 0 {
+        return Err(MarketError::bad("A price is positive."));
+    }
+    if row.price == price {
+        return Ok(());
+    }
+    put_listing(
+        ctx,
+        Listing {
+            price,
+            revision: row.revision.saturating_add(1),
+            ..row
+        },
+    );
+    Ok(())
 }
 
 /// **Lower a standing drawn ask by units its house takes out of the storefront itself**

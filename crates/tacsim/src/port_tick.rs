@@ -327,6 +327,8 @@ pub(crate) fn register_with_coverage(
     )?);
     // Doc 39 cut IN.3: the order contract's goods moves.
     actions.push(crate::port::works::action_descriptor(&outcome_refs)?);
+    // Doc 48 cut EX.6: the haul's legs.
+    actions.push(crate::services::haul::action_descriptor(&outcome_refs)?);
     // Doc 36 cut GC.4: the tow.
     actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -498,6 +500,8 @@ fn register_providers(
     )?;
     // Doc 39 cut IN.3: the order contract's ledger family and its goods-move provider.
     crate::port::works::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
+    // Doc 48 cut EX.6: the haul's ledger family and its legs' provider.
+    crate::services::haul::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     register_stock(
         reg,
         stock_action.as_ref(),
@@ -745,6 +749,8 @@ fn register_outcomes(
     outcomes.push(crate::port::bay_work::act::outcome_descriptor()?);
     // Doc 39 cut IN.3: the order contract's goods moves.
     outcomes.push(crate::port::works::outcome_descriptor()?);
+    // Doc 48 cut EX.6: the haul's legs.
+    outcomes.push(crate::services::haul::outcome_descriptor()?);
     // Doc 36 cut GC.4: the tow.
     outcomes.push(crate::surface::tow::outcome_descriptor()?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -2140,6 +2146,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // the works arm, so a consumption it settles this fire is laid up on the next.
     crate::port::commission::tick(ctx);
     crate::port::works::tick(ctx);
+    // Doc 48 cut EX.6: the hauls' legs and the escorts' watch.
+    crate::services::tick(ctx);
     // Doc 41 cut RS.5 (Q-41-11): the retrieval clerk (Tycho at a window's end, a lapse).
     crate::surface::retrieval::tick(ctx);
     // Doc 39 cut IN.10: the pools — a house's next order step, or a new order under its floor.

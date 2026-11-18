@@ -401,7 +401,7 @@ fn latches(tw: &TestWorld) -> BTreeMap<String, (u32, String)> {
 /// **The loaded lane is the roster's** (S3): `LANE_PACK`'s latch at `(LANE_VERSION, the roster's
 /// digest)`, and `LANE_VERSION` 15.
 fn assert_lane(rig: &Rig) {
-    assert_eq!(LANE_VERSION, 38, "the cost lane moves no lane version");
+    assert_eq!(LANE_VERSION, 39, "the cost lane moves no lane version");
     let latched = latches(&rig.tw).get(LANE_PACK).cloned();
     assert_eq!(
         latched,
@@ -1000,9 +1000,13 @@ fn second(rig: &mut Rig) -> Fired {
     fired
 }
 
+/// Fires a rig waits for every port to read ready (doc 48 unit PL.5: lane v39's two Stickney
+/// stock rows and asks put the yard past forty).
+const STOCK_FIRES: usize = 60;
+
 /// Fire and land the port tick until every port is stocked and listed (`drones.rs`'s).
 fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..STOCK_FIRES {
         let out = run(&mut rig.tw, GOD, "@tacsim/port status");
         let gated: Vec<&str> = out
             .lines()
@@ -1020,7 +1024,7 @@ fn stock(rig: &mut Rig) {
         }
         let _ = fire(rig);
     }
-    panic!("the ports were not stocked within 40 fires");
+    panic!("the ports were not stocked within {STOCK_FIRES} fires");
 }
 
 fn typed<K, V>(
@@ -4040,7 +4044,7 @@ fn cohort_lane(hulls: u32, rigs: u32, levers: &Levers) -> String {
 
 /// The shipped lane's digest (`tests/lane.rs`' `LANE_DIGEST`, lane v15 since doc 20 cut SM.12b).
 const SHIPPED_LANE_DIGEST: &str =
-    "3e569568d289eb5ccf2523d418a7d545d5b7ff5ac5aec2978f56e83e8a308ff8";
+    "622abacb89a45844f1c5b0ceef26dbc58edd361e38e817544fac8682fb3dd145";
 
 /// **C7 — the cohort lane is the shipped lane but its levers** (O-21; the brief's L9.2): the
 /// 32-hull, 64-rig variant parses and verifies, carries `manifest.version == LANE_VERSION`, and
@@ -4051,7 +4055,7 @@ const SHIPPED_LANE_DIGEST: &str =
 #[test]
 fn sm12c_the_cohort_lane_is_the_shipped_lane_but_its_levers() {
     let _lock = shared();
-    assert_eq!(LANE_VERSION, 38);
+    assert_eq!(LANE_VERSION, 39);
     assert_eq!(
         load_pack(LANE_JSON)
             .expect("the lane")

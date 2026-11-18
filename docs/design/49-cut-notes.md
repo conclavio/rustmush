@@ -467,6 +467,160 @@ applied.
 - **The bot** (CC.10) still fires every gun at full rate. Its lanes passed unchanged in the
   probe.
 
+## CC.1b
+
+The Engage path's think cost (the owner's "Guard at 1,450" follow-up to CC.1). Built 2026-11-17
+on main `8519e21c9` (CC.2, #649, and CC.2b, #651, merged). It changes the Standard Doctrine's
+script and no behaviour: Gate A held every think of every lane equal to T1. No bound changed.
+It also folds in the stale `config.rs` doc for `harness.max_path_cells_per_pulse` (CC.2b's).
+
+**Survey.**
+- **Where the cost was.** I profiled the twin lanes in a throwaway clone on conclav.dev.
+  - **The probe.** A clone-only sandbox function, `cc1b_mark(label)`, recorded the operations and
+    fees spent so far. A copy of the script carried 36 marks, one at the end of each section of the
+    think.
+  - **Running beside T2.** The twin ran each variant script beside T2 on every think. A variant
+    sees the same views, since the twin flies T1's answer, so its costs compare think for think.
+  - **The unit of cost.** A Rhai operation is one AST node evaluated: a variable, an operator, a
+    call, a statement. An integer constant is free. A property read such as `view.wreck` costs
+    three, and so does an index; a mark costs three.
+- **The costliest thinks** (operations plus fees, CC.2's tree):
+
+  | Lane | p50 | p99 | max | The costliest think |
+  |---|---|---|---|---|
+  | mixed | 808 | 1,097 | 1,263 | Engage, two rows, a fresh lock, citing the coaxial gun |
+  | pooled | 868 | 1,110 | 1,263 | the same, via Approach's edge into Engage |
+  | lance | 1,097 | 1,288 | 1,376 | Engage under an Engage order, eleven rows, citing the coaxial gun |
+
+- **What each section cost**, on lance's costliest think (the mark's three taken out):
+  - **The arming** (`arming_for`): about 70 to set up, and about 90 for each of the two mounts.
+    Each mount computes four terms and compares the seven of the slot's view row.
+  - **The plot stamps** (`stamps`): about 80.
+  - **The edges**: about 70.
+  - **The hostile edges**: about 75 before `best_hostile`, and about 80 in it with its fee.
+  - **The standing order**: about 140 over its four parts.
+  - **The notices**: 35 to 130, by the misses read.
+  - **Engage's arm and `engage_orders`**: about 270.
+  - **The emission's helm, lock and citation**: about 65.
+- **What was waste.** Work the think did and threw away, or did twice:
+  - the leash's arms called only to return at once;
+  - the obeyed order's key formed twice (`standing_order`, then `obeyed`);
+  - the objective read twice and an `ends` flag tested on every think;
+  - `state == 1 || state == 2 || state == 3` written out;
+  - three string compares for `may_pursue`, each with its own `&&`;
+  - two gates in `engage_orders` no caller can reach it past;
+  - a `min(.., 100)` that never changes a value;
+  - a reserve flag (`loaded`) the loop can fold into one.
+
+**Built** (`content/minds/standard.rhai`; still 31 functions, `api: 10`, `stock: 3`). Six cuts. Each
+was measured as its own variant, on top of the ones before, on the same views:
+
+| Cut | Saving at the lanes' max (mixed / pooled / lance) |
+|---|---|
+| 1. The leash's arms are called only under a leash; the station is read only there | 18 / 18 / 18 |
+| 2. `standing_order` reads T1's `obeyed` off the one key it already formed, and reads the obeyed order's objective and early ends in one pass | 30 / 30 / 41 |
+| 3. `hostile_edges` tests pursuit by ranges (`state < 1 \|\| state > 3`) and one `switch` on the three objectives that hold it | 13 / 13 / 19 |
+| 4. The reserve reading folds `loaded` into `low` and reads `reserve_pct` as it is | 6 / 6 / 6 |
+| 5. `engage_orders` drops its power and dry gates (see **Divergences**) | 9 / 9 / 9 |
+| 6. `arming_for` drops its own test for no rows, reads `reserve_pct` as it is, and holds the ceiling to the mount's reach in one statement | 14 / 14 / 14 |
+
+- **The result**, operations plus fees:
+
+  | Lane | p50 | p99 | max | Bound | Every think, summed |
+  |---|---|---|---|---|---|
+  | mixed | 808 → 741 | 1,097 → 1,000 | 1,263 → **1,173** | 1,350 | −8.8% |
+  | pooled | 868 → 795 | 1,110 → 1,014 | 1,263 → **1,173** | 1,350 | −9.0% |
+  | lance | 1,097 → 1,001 | 1,288 → 1,185 | 1,376 → **1,269** | 1,450 | −9.3% |
+
+  Over the 50 costliest thinks of each lane the six cuts save 94 (mixed), 92 (pooled) and 102
+  (lance) on average.
+- **Tried and dropped.** Reading a miss notice's launch cell before its reason saved nothing,
+  because an engaged hull stands still, so its misses launch from its own cell. It cost lance's
+  peak one operation.
+- **Could the bounds come back down?** Yes. The owner rules on it; this unit changes no bound.
+  - **Lance's bound could come down to 1,350**, the lead's first target and the two-tank lanes'
+    bound. Its peak, 1,269, is 81 under that.
+  - **The two-tank lanes' bound could come back to M2.5's 1,200**, with their peaks 27 under it.
+    That margin is thin, and CC.3's ground laser (Q-49-6) will change the lanes' fights.
+  - **My recommendation:** lance to 1,350 now. Leave the two-tank lanes at 1,350 until CC.3's
+    fights are measured.
+- **The `config.rs` doc** for `harness.max_path_cells_per_pulse` no longer says the bound is
+  "never a throttle the arena applies". It says the motor holds the field to the same figure per
+  `decide_ms` window, and names the test that holds the two figures equal.
+
+**Tests.**
+- **New:** `minds::content`'s `cc1b_mirror_a_dry_engaged_hull_and_an_ended_advance`, through both
+  runners on every think:
+  - a hull engaged under an Engage order whose every mount runs dry withdraws and says nothing of
+    fire. This is the dry gate `engage_orders` no longer tests.
+  - an immobile hull's Advance ends; its key holds over the next think on the same order; and a
+    Hold under another key spends it and is obeyed. This is the one-key `obeyed`.
+- **Gate A on every lane:** all 58,233 thinks of the mixed, pooled and lance lanes equal T1's,
+  intent for intent and byte for byte, with no fault. The existing mirrors of the reshaped arms
+  pass: the ignored or ended order, the supporter's leash, the screen, the reserve and the
+  arming.
+- **Mutations**, each caught on the mirrors and Gate A's lanes:
+  - the one key read the wrong way round (`ignored` inverted): eleven tests, the new mirror,
+    the order, leash and screen mirrors and the lance lane among them;
+  - an early end that writes no key: the new mirror and the ignored-or-ended order's;
+  - a Screen that pursues: the screen mirror and CF.6b's line fallback;
+  - the reserve's `low` started at `true`: the unarmed hull's mirror and the mixed lane;
+  - the arming held to a mount's first band, not its last: the arming mirror and the pooled
+    lane.
+- **Re-pinned by record**, read on Linux (conclav.dev). The source moved, a seal's digest covers
+  its source, and the arena folds every seal into its state hash, so every pin that holds a state
+  hash moved. Nothing else moved: no think, fight, count or time.
+
+  | Pin | What moved |
+  |---|---|
+  | `minds/content.rs` `STANDARD_SHA256`, `domain_arena/content.rs` `STANDARD_DOCTRINE_SHA256`, `match_/seal.rs`, `support/api4_identity.rs` | the source digest, `eec3f668…154a91` → `e9f1a863…02ed15` |
+  | `match_/seal.rs` `m5rules_default_seal_identities_are_pinned` | the nine default seal identities; the API 4 projection still holds, so no custody moved |
+  | `domain_arena/minds.rs` `m1a5_the_production_hash_does_not_move` | three state hashes |
+  | `domain_arena/motor.rs` `DUEL_HASH_API6_OBSERVED`, `M1B0_DUEL_LINES` | the duel's hash; its 34 ledger lines, each in `hash` alone (the script checks it line by line) |
+  | `domain_arena/reflex.rs` `m1a1_…`, `M1B0_J_LINES` | two substep hashes; the 50 ledger lines, each in `hash` alone |
+  | `domain_arena/minds.rs` `M1B5_TWO_T1_EVENTS`, `domain_arena/weapons.rs` `M1B0_SEAT_LINES` | the `mind_sealed` lines' `source` prefix |
+  | `minds/registry/trials/physical_tests.rs` `C4_TRIAL_PINS` | each row's state, ledger and result digests; every case still ends in the same elimination, filed `Loss` at 241,500 ms |
+  | `domain_arena/minds_rhai.rs` `M2_CROSS_PLATFORM_PINS` (`#[ignore]`d, run by name) | the four rows' hashes; the stopping times (262,250, 321,750, 250,500 and 900,000), the probe's 3,600 thinks and the 369098751 bitmask as they were |
+  | `tests/harness_baseline/arena.linux.json` (`#[ignore]`d, run by name) | the record `cc1b_deterministic_update`, nine leaves: the ledger stream's bytes (2,692,001 to 2,692,554, the hash digits) and chunks (168 to 169, one boundary crossed), the minds lane's four `final_substep_hash` leaves, and three leaves no path compares (`frame_execution`'s state hash, the snapshot's two sizes) |
+
+  The harness delta moved six compared fields and no other field of its deterministic block.
+  Its timings read p50 −9.0%, p99 −8.3% and window p99 −7.7% against TS.21's. On the re-blessed
+  file, after a fresh run of the lanes, the delta reads its deterministic block equal (106
+  fields) and the four minds blocks equal, with p50 −5.3%, p99 −8.7% and window p99 −5.1%.
+- **Sweep:** `tacsim`'s whole suite on the first tree, 4,831 tests. All passed but the 8 hash pins
+  above, which were then re-pinned. On the re-pinned tree those 8 pass, and so do the `#[ignore]`d
+  corpus pins and Gate A on whole-match hashes, by name. The contract tests passed: 200.
+- **Windows:** the C4 trial by hand (`cargo test -p tacsim --lib c4_a_registry_trial -j 2`)
+  reads the same four rows as Linux. The cross-platform corpus's Windows run is ci.yml's step.
+- **Guards**, on the final tree:
+  - `cargo fmt -p tacsim --check`;
+  - `cargo clippy -p tacsim --all-targets -- -D warnings`;
+  - the M7 memory-size pass;
+  - `cargo doc -p tacsim --no-deps --document-private-items` with `-D warnings`;
+  - the bot job, `mush-bot`'s whole suite (815 tests, its two long stories among them);
+  - the harness binary's own tests;
+  - the contract tests, in the sweep.
+
+**Divergences.**
+- **Two of T1's gates are not ported** (cut 5). `engage_orders` no longer tests the power and
+  dryness that T1's tests, because no caller reaches it past them:
+  - the think returns from its power arms on `off` and `starting`, the view's only words but
+    `online`;
+  - a dry hull is in Withdraw from the edges, and its withdraw stand refuses it.
+
+  `hold_fire` stays. A future caller of `engage_orders` before the power switch, or with a dry
+  hull, would need the gates back. The comment at the gate says so.
+- **`arming_for` has no test of its own for a hull with no rows** (cut 6). The disarm scan reads
+  no row, and only `engage_orders` records a ceiling, past its own return on no rows. D-UM-48 still
+  holds: such a hull says nothing.
+
+**Not built.**
+- **A deeper cut needs a kernel**, which is a mind ABI bump: the arming's seven compares per mount
+  are D-UM-4's on-change parity, and the plot stamps' write and Approach's `line_to` (fee 20) are
+  T1's. A kernel that answered "this mount's view row holds these terms" would take about 60
+  operations off the Engage path. It is not in this unit's scope.
+- **The bounds** are the owner's (above).
+
 ## CC.2
 
 The ground palette and the floor (Q-49-2, Q-49-3, Q-49-19, Q-49-22). Built 2026-11-16 and

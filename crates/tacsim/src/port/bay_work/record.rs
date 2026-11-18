@@ -211,6 +211,10 @@ pub struct BayHull {
     /// `@industry/census` sums rearms as a sink (`loaded`). Omitted at 0.
     #[serde(default, skip_serializing_if = "is_zero_kg")]
     pub loaded_kg: u64,
+    /// **What a landed scrap or return still sells the operator** (doc 48 cut EX.3; Q-48-9):
+    /// its rows sold one a step, as the holder, until none is left. Omitted while `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sale: Option<Box<super::scrap::Sale>>,
 }
 
 /// Serde's skip for a zero kilogram count.
@@ -370,6 +374,7 @@ impl BayHull {
             repaired_kg: 0,
             scrapped_kg: 0,
             loaded_kg: 0,
+            sale: None,
         }
     }
 

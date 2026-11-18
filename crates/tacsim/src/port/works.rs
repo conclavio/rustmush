@@ -94,7 +94,8 @@ const LOT_PAGE: usize = 256;
 /// The usage line.
 pub const WORKS_USAGE: &str = "Usage: +works · +works/quote <recipe> [qty] · \
                                +works/order <recipe> [qty][=<org>] · \
-                               +works/deliver <order>=<good> <qty> · +works/collect <order> · \
+                               +works/deliver <order>=<good> <qty> · +works/buy <order>[=<good>] · \
+                               +yard/fund <recipe>=<org> · +works/collect <order> · \
                                +works/cancel <order>";
 /// The help text (`+yard` reads the same with its own word).
 pub const WORKS_HELP: &str = "+works                          the works here: what it makes, its \
@@ -106,6 +107,14 @@ pub const WORKS_HELP: &str = "+works                          the works here: wh
                               +works/deliver <order>=<good> <qty>  move bill goods from your docked \
                               hold into the escrow (a part as its lots); the order starts when the \
                               bill is covered.\n\
+                              +works/buy <order>[=<good>]     buy the bill's next short line (or \
+                              that good's) at this port's asks straight into the escrow, from your \
+                              own account, with no hold: a good stocked with no ask, or a yard \
+                              part, is listed to you first, and you buy again to take it.\n\
+                              +yard/fund <recipe>=<org>       an officer who may spend the \
+                              organization's treasury orders a hull for it: its yard agent is \
+                              funded with the price, buys the bill here, and she is handed over \
+                              docked here, titled to the organization.\n\
                               +works/collect <order>          the output (or a cancelled bill) into \
                               your docked hold; at a yard, the hull's commission: she is handed \
                               over docked here (a ship) or on the workshop floor (a rig), titled to \
@@ -113,7 +122,9 @@ pub const WORKS_HELP: &str = "+works                          the works here: wh
                               +works/cancel <order>           before half the work is done: the \
                               bill back, the booking fee and the work done so far forfeit.";
 /// The switches.
-pub const WORKS_SWITCHES: &[&str] = &["quote", "order", "deliver", "collect", "cancel"];
+pub const WORKS_SWITCHES: &[&str] = &[
+    "quote", "order", "deliver", "buy", "fund", "collect", "cancel",
+];
 
 const NO_ORDER: &str = "You have no such order here.";
 
@@ -134,6 +145,35 @@ pub const SETTLING: &str = "That order is still settling.";
 /// **Doc 39 cut IN.11**: `+yard/collect`'s commission, "Order {n}: the yard commissions her as
 /// {mark}; …" (the bot's reader holds to it).
 pub const COMMISSIONS_AS: &str = ": the yard commissions her as ";
+
+// ---- doc 48 unit PL.5 (Q-48-28): buying straight into an escrow ------------------------------
+
+/// `+works/buy`'s purchase on the board: `{qty}`, `{good}`, `{seller}`, `{price}` a unit, `{n}`.
+pub const BOUGHT_INTO: &str =
+    "You buy {qty} {good} from {seller} at {price} each for order {n}; it lands as it settles.";
+/// `+works/buy` when the port's clerk lists the buyer a private ask first.
+pub const LISTED_TO_YOU: &str =
+    "{seller} lists you {qty} {good} at {price} each for order {n}; buy again to take it.";
+/// `+works/buy` while the buyer's last purchase is on the board.
+pub const BUY_ON_BOARD: &str = "Your last purchase is still settling; buy again in a moment.";
+/// `+works/buy` while the market or the port's clerk is busy.
+pub const BUY_BUSY: &str = "The market here is busy; buy again in a moment.";
+/// `+works/buy` while a good's ask is not listed or its pool is being drawn, `{good}`.
+pub const BUY_POOL: &str = "No {good} is free to buy here just now; buy again in a moment.";
+/// `+works/buy` while another buyer's private ask holds the pool, `{good}`.
+pub const BUY_HELD: &str = "The {good} here is held for another buyer; buy again in a few minutes.";
+/// `+works/buy` on a covered bill, `{n}`.
+pub const BILL_COVERED: &str = "Order {n}'s bill is covered.";
+/// `+works/buy` for a good nobody at the port sells, or a part the yard's stores lack, `{good}`.
+pub const NO_SELLER: &str = "No one at this port sells you {good} for that order.";
+/// `+yard/fund`'s first line: `{org}`, `{recipe}`, `{price}`.
+pub const FUNDS_A: &str =
+    "{org} orders a {recipe} at the yard for {price}, paid from its treasury.";
+/// `+yard/fund`'s second line: `{org}`, `{days}`.
+pub const AGENT_BUYS: &str = "Its yard agent buys the bill here; she is handed over docked here, \
+                              titled to {org}, in about {days} IC days.";
+/// `+yard/fund` away from the yard the houses order at.
+pub const FUND_YARD_ONLY: &str = "Only Stickney's yard takes an organization's order.";
 
 // ---- the records --------------------------------------------------------------------------
 
@@ -814,6 +854,12 @@ fn front_cmd(ctx: &mut Ctx<'_>, front: Front) -> Result<(), CmdError> {
         if ctx.switches.has("deliver") {
             return deliver(ctx, front, &raw);
         }
+        if ctx.switches.has("buy") {
+            return buy(ctx, front, &raw);
+        }
+        if ctx.switches.has("fund") {
+            return fund(ctx, front, &raw);
+        }
         if ctx.switches.has("collect") {
             return collect(ctx, front, &raw);
         }
@@ -1265,6 +1311,131 @@ fn deliver(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
             good.as_str(),
             c.id
         ),
+    );
+    Ok(())
+}
+
+/// **`+works/buy <order>[=<good>]`** (doc 48 unit PL.5; Q-48-28): the bill's next short line, or
+/// `good`'s, bought at this port's asks straight into the order's escrow, as the requester from
+/// their own account: V7's seller and price ([`crate::port::pools::buy_into`]), with no hold.
+fn buy(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
+    let (left, only) = match raw.split_once('=') {
+        Some((left, good)) => (
+            left,
+            Some(CanonicalId::new(good.trim()).map_err(|_| WORKS_USAGE)?),
+        ),
+        None => (raw, None),
+    };
+    let (_, c) = mine(ctx, front, left)?;
+    if c.requester != ctx.actor || c.house {
+        return Err(NO_ORDER.to_owned());
+    }
+    if only
+        .as_ref()
+        .is_some_and(|good| !c.bill.iter().any(|line| line.good == *good))
+    {
+        return Err("That good is not on the order's bill.".to_owned());
+    }
+    if c.order
+        .and_then(|o| work_order(ctx, o))
+        .is_some_and(|o| *o.state() != WorkOrderState::Draft)
+    {
+        return Err("That order is no longer taking goods.".to_owned());
+    }
+    if c.owed.is_some() {
+        return Err("That order's last delivery is still settling.".to_owned());
+    }
+    let Some((good, want)) = crate::port::pools::short_line(ctx, &c, only.as_ref()) else {
+        say(ctx, BILL_COVERED.replace("{n}", &c.id.to_string()));
+        return Ok(());
+    };
+    let entry = here(ctx, front)?.0;
+    let line = match crate::port::pools::buy_into(ctx, ctx.actor, &entry, c.id, (&good, want)) {
+        Ok(crate::port::pools::Bought::Accepted {
+            seller,
+            quantity,
+            price,
+        }) => fill(BOUGHT_INTO, ctx, (&seller, quantity, &good, price), c.id),
+        Ok(crate::port::pools::Bought::Listed {
+            seller,
+            quantity,
+            price,
+        }) => fill(LISTED_TO_YOU, ctx, (&seller, quantity, &good, price), c.id),
+        Ok(crate::port::pools::Bought::Wait(wait)) => match wait {
+            crate::port::pools::Wait::OnBoard => BUY_ON_BOARD.to_owned(),
+            crate::port::pools::Wait::Busy => BUY_BUSY.to_owned(),
+            crate::port::pools::Wait::Pool => BUY_POOL.replace("{good}", good.as_str()),
+            crate::port::pools::Wait::Held => BUY_HELD.replace("{good}", good.as_str()),
+        },
+        Err(crate::port::pools::BuyError::Market(error)) => {
+            return Err(mush_market::refuse_market(ctx, &error).to_string());
+        }
+        Err(crate::port::pools::BuyError::Plain(why)) => {
+            tracing::debug!(order = c.id, %why, "tacsim: a player's escrow purchase found no seller");
+            return Err(NO_SELLER.replace("{good}", good.as_str()));
+        }
+    };
+    say(ctx, line);
+    Ok(())
+}
+
+/// One of `+works/buy`'s two purchase lines, filled.
+fn fill(
+    template: &str,
+    ctx: &Ctx<'_>,
+    (seller, quantity, good, price): (&str, u64, &CanonicalId, u64),
+    order: u64,
+) -> String {
+    template
+        .replace("{seller}", seller)
+        .replace("{qty}", &quantity.to_string())
+        .replace("{good}", good.as_str())
+        .replace("{price}", &cr(ctx, price))
+        .replace("{n}", &order.to_string())
+}
+
+/// **`+yard/fund <recipe>=<org>`** (doc 48 unit PL.5; Q-48-28): an officer who acts for the
+/// organization (`mush_economy::acts_for`: `economy.account.post` on its root, the economy's own
+/// "may spend the org's money") orders a hull for it at the yard; the House pays
+/// ([`crate::port::pools::request`]).
+fn fund(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
+    let usage = "Usage: +yard/fund <recipe>=<org>";
+    let (entry, _) = here(ctx, front)?;
+    if front != Front::Yard || entry.as_str() != crate::port::pools::YARD_PORT {
+        return Err(FUND_YARD_ONLY.to_owned());
+    }
+    let (recipe, org) = raw.split_once('=').ok_or(usage)?;
+    let (recipe, org) = (recipe.trim(), org.trim());
+    if recipe.is_empty() || recipe.contains(char::is_whitespace) || org.is_empty() {
+        return Err(usage.to_owned());
+    }
+    let named = mush_economy::parse_principal(ctx, org)
+        .filter(|p| matches!(p, PrincipalId::Organization(_)))
+        .ok_or("No such organization.")?;
+    let PrincipalId::Organization(id) = named else {
+        return Err("No such organization.".to_owned());
+    };
+    if !mush_economy::acts_for(ctx.w, ctx.actor, &named) {
+        return Err("You do not act for that organization.".to_owned());
+    }
+    let requested = crate::port::pools::request(ctx, id, recipe, ctx.actor)?;
+    let name = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|store| store.state().org(id).map(|o| o.name.to_string()))
+        .unwrap_or_else(|| org.to_owned());
+    say(
+        ctx,
+        FUNDS_A
+            .replace("{org}", &name)
+            .replace("{recipe}", recipe)
+            .replace("{price}", &cr(ctx, requested.price_minor)),
+    );
+    say(
+        ctx,
+        AGENT_BUYS
+            .replace("{org}", &name)
+            .replace("{days}", &requested.days.to_string()),
     );
     Ok(())
 }

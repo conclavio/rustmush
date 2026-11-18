@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v38 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v39 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,39 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit PL.5 (lane v39): Stickney's escrow asks taken out** — Kasei's strategic-ore
+/// stock row and ask and Stickney Yards' instrument-board stock row and ask, the asks a bill
+/// is bought at with no hold (Q-48-28), so a strip chain rebuilds a lane before v39
+/// (idempotent). The chain's head.
+pub fn strip_escrow_asks(doc: &mut Value) {
+    for (org, good) in [
+        ("kasei", "strategic_ore"),
+        ("stickney_yards", "instrument_boards"),
+    ] {
+        let Some(vendor) = doc
+            .get_mut("entries")
+            .and_then(|entries| entries.get_mut("stickney_port"))
+            .and_then(|entry| entry.get_mut("def"))
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+            .and_then(|vendors| vendors.iter_mut().find(|vendor| vendor["org"] == org))
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        for rows in ["stock", "asks"] {
+            if let Some(rows) = vendor.get_mut(rows).and_then(Value::as_array_mut) {
+                rows.retain(|row| row["good"] != good);
+            }
+        }
+    }
+}
+
 /// **Doc 48 unit EX.3 (lane v38): the orgs' market roles taken out** — every port org's
 /// `roles` row (the acceptors, Q-48-9), so a strip chain rebuilds a lane before v38
-/// (idempotent). The chain's head.
+/// (idempotent); lane v39's [`strip_escrow_asks`] first.
 pub fn strip_roles(doc: &mut Value) {
+    strip_escrow_asks(doc);
     for org in doc
         .get_mut("entries")
         .and_then(Value::as_object_mut)

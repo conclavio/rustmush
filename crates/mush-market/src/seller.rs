@@ -207,7 +207,7 @@ fn lot_entry(store: &MarketStore, commodity: &mush_core::CanonicalId) -> Option<
 }
 
 /// The private-offer rule at posting: a live person who is not the seller.
-fn check_private(
+pub(crate) fn check_private(
     w: &World,
     seller: &PrincipalId,
     to: Option<&PrincipalId>,
@@ -737,7 +737,7 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
         return Err(MarketError::bad("The listing-id allocator is exhausted."));
     };
     persist_meta(ctx);
-    let fee = crate::fees::venue_accounts(ctx.w, &spec.market).map(|venue| {
+    let fee = crate::fees::listing_fee_accounts(ctx.w, &spec.market, &spec.bidder).map(|venue| {
         (
             crate::fees::listing_fee(total, venue.listing_floor),
             venue.operator,

@@ -1701,3 +1701,14 @@ Doc 48 cut EX.1b, for the `port/coop.rs` row's reason: a player's venue locker t
 vault id from `economy`'s allocator before `mush_economy::create_vault` writes it through
 the economy module's own path. The site refuses when the slot is absent.
 """
+
+[[site]]
+path = "crates/tacsim/src/port/bay_work/scrap.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 48 cut EX.3, for the `port/locker.rs` row's reason: a holder's scrap vault at a workshop
+takes its vault id from `economy`'s allocator before `mush_economy::create_vault` writes it
+through the economy module's own path. The site refuses when the slot is absent.
+"""

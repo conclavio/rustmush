@@ -73,6 +73,8 @@ mod escort_lease;
 mod ex0_matter_sinks;
 #[path = "domain_field/ex2b_core_resale.rs"]
 mod ex2b_core_resale;
+#[path = "domain_field/ex6_escort.rs"]
+mod ex6_escort;
 #[path = "domain_field/excursions.rs"]
 mod excursions;
 #[path = "domain_field/field_ap1.rs"]

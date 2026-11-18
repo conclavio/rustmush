@@ -413,6 +413,10 @@ pub struct TacsimStore {
     /// `tacsim:owned_hull:{hull}`, `tacsim:hull_provenance:{order}` and
     /// `tacsim:commission:{order}`, each loaded by [`crate::port::owned::load`].
     pub(crate) yard: crate::port::owned::YardBook,
+    /// **Doc 48 cut EX.6** — the hired work's records ([`crate::services::ServicesBook`]):
+    /// `tacsim:haul:{contract}` and `tacsim:escort:{contract}`, each loaded by
+    /// [`crate::services::load`].
+    pub(crate) services: crate::services::ServicesBook,
     /// **Doc 41 cut RS.5** — `tacsim:retrieval:{hull}`: each hull's retrieval job
     /// ([`crate::surface::retrieval::RetrievalOrder`]): its contract and its two windows.
     /// Persisted through [`put_retrieval`]; an unreadable one holds its hull's job.
@@ -824,6 +828,20 @@ impl TacsimStore {
             .iter()
             .filter_map(|(hull, state)| match state {
                 crate::port::bay_work::BayHullState::Present(row) if row.owed.is_some() => {
+                    Some(*hull)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **Every hull whose record still sells a scrap's matter** (doc 48 cut EX.3), in hull order.
+    #[must_use]
+    pub fn bay_selling_hulls(&self) -> Vec<ObjId> {
+        self.bay_hulls
+            .iter()
+            .filter_map(|(hull, state)| match state {
+                crate::port::bay_work::BayHullState::Present(row) if row.sale.is_some() => {
                     Some(*hull)
                 }
                 _ => None,
@@ -2927,6 +2945,8 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             load_licence(&mut store, key, value);
         } else if crate::port::pools::load(&mut store, key, value) {
             // Doc 39 cut IN.10: a house's pool (an unreadable one orders nothing).
+        } else if crate::services::load(&mut store, key, value) {
+            // Doc 48 cut EX.6: the hauls and the escorts (an unreadable one is held).
         } else if crate::port::owned::load(&mut store, key, value) {
             // Doc 39 cut IN.9: the register, the provenance and the commissions (an unreadable
             // one is held until staff repair the document).

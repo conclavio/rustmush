@@ -26,7 +26,8 @@ pub trait ServiceBoard: Send + Sync {
 }
 
 /// `+market/jobs` usage.
-pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|crew] [market=<venue>]";
+pub const JOBS_USAGE: &str =
+    "Usage: +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]";
 /// No venue here and none named.
 pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=<venue>.";
 /// An empty board.
