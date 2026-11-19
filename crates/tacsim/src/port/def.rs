@@ -246,6 +246,95 @@ pub struct PortDef {
     /// brings its own bill). Absent everywhere but Stickney Yards. Boxed, as `works` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yard: Option<Box<WorksDef>>,
+    /// **Doc 48 unit EX.10 (Q-48-20)** — the port's NPC hauling house: an org of this entry whose
+    /// hulls, seeded at this port, carry goods between the lane's ports when a price gap pays
+    /// for the trip (`crate::port::hauler`). Absent everywhere but Ceres. Boxed, as `yard` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hauler: Option<Box<HaulerDef>>,
+}
+
+/// The most hulls one hauling house runs (doc 48 unit EX.10).
+pub const MAX_HAULER_HULLS: usize = 8;
+/// The most goods one hauling house carries.
+pub const MAX_HAULER_GOODS: usize = 8;
+
+/// **An NPC hauling house** (doc 48 unit EX.10; Q-48-20, Q-48-41): `marks` hulls of `design`
+/// seeded at the port for `org`, each carrying one of `goods` from a lane port's house ask to
+/// another's house bid, at most `lot` units a trip, whenever the gap pays for the trip's fuel and
+/// stores by `margin_permille` of what the trip lays out. Provisional figures.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HaulerDef {
+    /// The house: one of this entry's orgs.
+    pub org: CanonicalId,
+    /// The design its hulls are seeded as (a ship).
+    pub design: CanonicalId,
+    /// Its hulls, 1..=[`MAX_HAULER_HULLS`] of them, each with a distinct registry mark and the
+    /// lane port it is seeded and based at.
+    pub hulls: Vec<HaulerHullDef>,
+    /// The goods it carries, 1..=[`MAX_HAULER_GOODS`] of them, distinct.
+    pub goods: Vec<CanonicalId>,
+    /// The most units one trip carries, `1..=mush_market::MAX_QUANTITY`.
+    pub lot: u64,
+    /// The least profit a trip must clear, per mille of what it lays out, `0..=5000`.
+    pub margin_permille: u32,
+    /// What each hull's helm keeps in hand between trips, whole credits; the rest goes home.
+    pub float_major: u64,
+}
+
+/// **One hauler hull** (doc 48 unit EX.10): its mark and the port entry it is seeded at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HaulerHullDef {
+    /// Its registry mark: 1 to 16 of A-Z, 0-9 and -.
+    pub mark: String,
+    /// The lane port entry it is seeded and based at.
+    pub home: CanonicalId,
+}
+
+impl HaulerDef {
+    /// The block's own bounds.
+    ///
+    /// # Errors
+    ///
+    /// The first rule broken, as a sentence.
+    pub fn check(&self) -> Result<(), String> {
+        if self.hulls.is_empty() || self.hulls.len() > MAX_HAULER_HULLS {
+            return Err(format!("hauler: 1..={MAX_HAULER_HULLS} hulls"));
+        }
+        let mut seen = BTreeSet::new();
+        for mark in self.hulls.iter().map(|hull| &hull.mark) {
+            let ok = !mark.is_empty()
+                && mark.len() <= 16
+                && mark
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-');
+            if !ok || !seen.insert(mark.as_str()) {
+                return Err(format!(
+                    "hauler: mark `{mark}` must be 1 to 16 of A-Z, 0-9 and -, and named once"
+                ));
+            }
+        }
+        let goods: BTreeSet<&CanonicalId> = self.goods.iter().collect();
+        if self.goods.is_empty()
+            || self.goods.len() > MAX_HAULER_GOODS
+            || goods.len() != self.goods.len()
+        {
+            return Err(format!(
+                "hauler: 1..={MAX_HAULER_GOODS} goods, each named once"
+            ));
+        }
+        if !(1..=mush_market::MAX_QUANTITY).contains(&self.lot) {
+            return Err(format!(
+                "hauler: lot must be 1..={}",
+                mush_market::MAX_QUANTITY
+            ));
+        }
+        if self.margin_permille > 5_000 {
+            return Err("hauler: margin_permille must be 0..=5000".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// "the workshop's", "the works'": a facility block's possessive, for the shared-room sentence.
@@ -1605,6 +1694,16 @@ impl PortDef {
     ///
     /// The first rule broken, as its detail.
     pub fn check(&self) -> Result<(), String> {
+        // Doc 48 unit EX.10: the hauling house's bounds, and its org one of the entry's.
+        if let Some(hauler) = &self.hauler {
+            hauler.check()?;
+            if !self.orgs.iter().any(|org| org.id == hauler.org) {
+                return Err(format!(
+                    "hauler: org {} is not one of this port's orgs",
+                    hauler.org
+                ));
+            }
+        }
         // Doc 19 cut A.4: the premium's bounds.
         if let Some(premium) = &self.premium
             && (premium.k_permille > MAX_PREMIUM_PERMILLE
@@ -3362,6 +3461,7 @@ mod tests {
             authority: None,
             release_fee_cr: None,
             yard: None,
+            hauler: None,
         }
     }
 
@@ -3706,6 +3806,7 @@ mod tests {
             authority: None,
             release_fee_cr: None,
             yard: None,
+            hauler: None,
         }
     }
 

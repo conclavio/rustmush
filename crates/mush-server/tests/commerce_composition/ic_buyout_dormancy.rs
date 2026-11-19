@@ -207,6 +207,10 @@ async fn boot(tag: &str) -> Rig {
         holds: BTreeSet::new(),
     };
     flush(&mut rig).await;
+    // Doc 48 unit EX.10: staff lay the Vesta Carrying Company up before the first fire, so it
+    // seeds no hull and these stories' money sums, legs and burns are the players' alone.
+    let out = run(&mut rig, GOD, "@tacsim/port haulers ceres_port off").await;
+    assert!(out.contains("ceres_port hauling house: laid up"), "{out}");
     rig
 }
 

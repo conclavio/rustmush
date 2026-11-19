@@ -442,6 +442,10 @@ pub fn may_take_out(w: &World, hull: ObjId, pilot: ObjId) -> bool {
 /// helm check decides).
 #[must_use]
 pub fn may_trade_hold(w: &World, hull: ObjId, actor: ObjId) -> bool {
+    // Doc 48 unit EX.10: a hauling house's helm is the house's hand on the hull it sails.
+    if crate::port::hauler::hauler_hull(w, actor) == Some(hull) {
+        return true;
+    }
     let organization = ship_row(w, hull).is_some()
         && w.module_state::<EconomyStore>()
             .and_then(|economy| economy.snapshot().asset(hull))

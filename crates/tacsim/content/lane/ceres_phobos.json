@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 42,
+    "version": 43,
     "kind": "campaign_seed",
-    "digest": "7c9b96141cb0557f36182630c5be161ca9a132778441e36ab9278ee33b2a91aa",
+    "digest": "8a4361c420f12d99bfe8368043ba2e0ec5d03337ea3d87cc87d7a38cf14b77b9",
     "requires": []
   },
   "entries": {
@@ -2749,7 +2749,8 @@
           { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord", "raises": [ 450000 ], "roles": [ "acceptor" ] },
           { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport", "roles": [ "acceptor" ] },
           { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" },
-          { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport", "roles": [ "acceptor" ] }
+          { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport", "roles": [ "acceptor" ] },
+          { "id": "vesta_carriers", "name": "Vesta Carrying Company", "capital_major": 400000, "faction": "freeport" }
         ],
         "programme": {
           "id": "coop.first_captain",
@@ -2874,7 +2875,11 @@
         "yard": { "room": "neighborhood.ceres_freeport.room.c01_berth_gallery", "operator": "freeport_works",
                   "capabilities": ["tacsim.yard"], "slots": 2, "customers": "public",
                   "cost": { "capital_major": 5000000, "lifetime_years": 30, "upkeep_permille": 20,
-                            "staff": 8, "wage_major": 150, "margin_permille": 250 } }
+                            "staff": 8, "wage_major": 150, "margin_permille": 250 } },
+        "hauler": { "org": "vesta_carriers", "design": "tacsim.unit.dray",
+                    "hulls": [ { "mark": "VCC-01", "home": "ceres_port" }, { "mark": "VCC-02", "home": "luna_port" } ],
+                    "goods": ["volatiles", "carbon_feedstock", "structural_alloys", "instrument_boards"],
+                    "lot": 40, "margin_permille": 100, "float_major": 2000 }
       }
     },
     "stickney_port": {
@@ -3079,7 +3084,9 @@
             "asks":  [ { "good": "propellant", "price_major": 60, "boards": ["commissary", "harbourmaster"] },
                        { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ],
             "bids":  [ { "good": "volatiles", "price_major": 190, "intake": 900, "boards": ["receiving"] },
-                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving"] } ] },
+                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving"] } ],
+            "consume": [ { "good": "volatiles", "per_ic_day": 15, "export_major_per_ic_day": 2850 },
+                         { "good": "carbon_feedstock", "per_ic_day": 5, "export_major_per_ic_day": 1900 } ] },
           { "org": "syrtis_bonded", "storefront": "neighborhood.voltaire_anchorage.item.syrtis_cage",
             "agent": "deimos_port.clerk", "signatory": "neighborhood.voltaire_anchorage.npc.strand_villanueva",
             "bids":  [ { "good": "structural_alloys", "price_major": 460, "intake": 2400, "boards": ["receiving", "exchange"] },

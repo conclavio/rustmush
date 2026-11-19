@@ -419,7 +419,14 @@ pub(crate) fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
 }
 
 pub(crate) fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+    // Doc 48 unit EX.10: a hauling house's helm files the market legs a player's plan would,
+    // and as a player's they may be refused (a paid draw landed past its deadline).
+    let helms = tacsim::port::hauler::helms(rig.tw.world());
     for submit in queued {
+        if helms.contains(&submit.actor) {
+            let _ = land(rig, submit);
+            continue;
+        }
         land(rig, submit).unwrap_or_else(|error| {
             panic!(
                 "{} by #{} did not land: {error}",

@@ -1312,6 +1312,32 @@ pub(crate) fn passage_needs(
     Ok((plan.burn_t, plan.crew_days))
 }
 
+/// **[`passage_needs`] with `extra_kg` more payload aboard** (doc 48 unit EX.10): a hauling
+/// house's dry run of a lot it has not bought yet.
+///
+/// # Errors
+///
+/// As [`passage_needs`].
+pub(crate) fn passage_needs_laden(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    word: &str,
+    souls: u32,
+    extra_kg: u64,
+) -> Result<(u64, u32), String> {
+    let w: &World = ctx.w;
+    let view = hull_view(w, hull).ok_or("the hull has no view")?;
+    let Berth::Docked { def, .. } = berth_of(w, hull) else {
+        return Err("the hull is not docked".to_owned());
+    };
+    let dests = destinations(w, def);
+    let dest = match_destination(&dests, word).ok_or("the port does not clear for there")?;
+    let mut basis = basis(ctx, &view, souls)?;
+    basis.payload = basis.payload.saturating_add(extra_kg);
+    let plan = plan_on(w, &basis, &dest.routes).map_err(|e| e.to_string())?;
+    Ok((plan.burn_t, plan.crew_days))
+}
+
 /// **The destination a queued depart names, exactly** (doc 18 cut IC14 row 25): the
 /// routes key equal to the stored canonical venue word, case-sensitively — never the
 /// live verb's prefix fallback, so a stored word that is only a prefix of a port's name
@@ -1389,6 +1415,10 @@ pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
     // Doc 39 cut IN.10 (Q-39-34): a house's DARK helm is aboard the hull its ferry sails,
     // wherever it stands (the dispatcher's precedent).
     if crate::port::pools::ferry_hull(w, person) == Some(hull) {
+        return true;
+    }
+    // Doc 48 unit EX.10: and a hauling house's helm, aboard the hull it sails.
+    if crate::port::hauler::hauler_hull(w, person) == Some(hull) {
         return true;
     }
     if hull_view(w, hull).and_then(|view| view.airlock()).is_none() {
@@ -3540,7 +3570,9 @@ pub(crate) fn prepare_departure(
     // hull under its dispatcher.
     let souls = occupants(w, airlock).max(u32::from(
         crate::port::pools::ferry_hull(w, pilot) == Some(hull)
-            || crate::port::house::is_dispatcher_of(w, hull, pilot),
+            || crate::port::house::is_dispatcher_of(w, hull, pilot)
+            // Doc 48 unit EX.10: a hauling house's hull under its helm.
+            || crate::port::hauler::hauler_hull(w, pilot) == Some(hull),
     ));
     let basis = basis(ctx, &view, souls).map_err(|error| {
         tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");

@@ -4295,4 +4295,195 @@ a post must wait, so the line that advanced the day after it never ran.
 
 ## EX.10
 
-Not built.
+Row: §7.1 EX.10 (Q-48-20, Q-48-41). Stacked on EX.9 (#675), which it needs for consumption.
+
+**Survey:**
+- **NPC-flown hulls.** The pools' ferry helm buys stores straight into a hold and files
+  `+ship/undock` as itself. The recovery house's dispatcher files its plans through `+ship/order`'s
+  body and routes Ceres to Stickney by way of Luna and Deimos, because the Kirkwood picket's bubble
+  is one "an NPC house never answers".
+- **The IC11 executor** flies any sailing plan as its author, while `coop::helm_of` names the hull
+  for that author: the market legs within the clamps, `fill` for the passage's stores, the
+  departure, the re-stage and the restart rules.
+- **Interception.** Only an interdicted corridor leg intercepts a hull in passage, and the lane has
+  one: Ceres to Stickney, at Kirkwood. Its boundary opens the picket's bubble on a hull whose bridge
+  holds a connected crew, or whose link-loss record has the backup mind at her helm. A crewless
+  hull sails through untouched (`a_ship_whose_crew_is_away_meets_the_picket`'s last case).
+- **What a Dray can fly.** Every lane hull carries an 80 t tank. Luna to Titan needs 93 to 102 t,
+  and Titan to Deimos about 90 t with the fuel's own mass counted, so at this sky neither leg can be
+  flown by any lane hull.
+- **Prices.** Ceres sells water at 100 cr; Kasei bids 200 and the Habitat Board 195. Luna's boards
+  (900) and alloys (400) are bid at Deimos (1,100 and 460) and at Titan (1,500 and 760).
+
+**Built:**
+1. **The house** (lane v43 / relay v34, re-signed over v42 / v33):
+   - **The org:** the Vesta Carrying Company, a Ceres institution with 400,000 cr of capital.
+   - **The `hauler` block** (`PortDef.hauler`, `HaulerDef`):
+     - its hulls: `VCC-01` based at Ceres and `VCC-02` at Luna, Drays;
+     - the goods it carries: water, carbon feedstock, structural alloys and instrument boards;
+     - a lot of at most 40 units;
+     - a trip must clear 10% of what it lays out;
+     - each helm keeps 2,000 cr in hand between trips.
+   - **Its bounds:** 1 to 8 hulls with distinct marks, 1 to 8 distinct goods, its org one of the
+     entry's.
+2. **The arm** (`tacsim/src/port/hauler.rs`, on the port tick after the running costs). For each
+   hull, one step a fire:
+   - **Seeding:** she is seeded at her home (`commission::seed`, the staff seed's path), laid up,
+     docked and titled to the house, then found by her mark.
+   - **The helm:** a `DARK` Thing with the house's `economy.account.post` and `vault.withdraw`
+     grants on its root scope (the recovery dispatcher's), and its own purse.
+     - `coop::helm_of`, `coop::trade_hulls` and `owned::may_trade_hold` read the hull it sails
+       (`hauler_hull`).
+     - The voyage counts the helm aboard as one soul (`voyage::aboard`, `prepare_departure`).
+   - **Opening:** the house trades from the IC day after the tick first sees it
+     (`HaulerHouse.opens_day`).
+3. **The trip** (`choose`). Docked with no plan running:
+   - **Candidates:** every carried good this port's houses ask, against every port one route away
+     whose houses bid for it.
+   - **The lot:** at most 40, the ask's stock, the bid's intake, what the bidder can pay, and what
+     her hold takes. It is halved until her tank carries the passage with the lot aboard
+     (`voyage::passage_needs_laden`, a fixed point over the fuel's own mass).
+   - **Profit:** the lot at the bid, less the lot at the ask, less the fuel (25% over the burn,
+     within her tank) and the stores at this port's asks. It must clear the margin of the outlay.
+   - **Ranking:** profit an IC day of passage, with one look ahead: the best trip from where she
+     lands.
+   - **No duplicates:** a sister hull's trip in hand (good, from, to) is not taken twice.
+   - **Carried cargo first:** a lot already aboard that no house here takes is carried to the best
+     bid one route on, its cost the stores alone.
+   - **An empty hop** when nothing pays: to the neighbor whose best onward trip pays for the hop.
+   - **Otherwise** she waits for the next IC day. A look that cannot price any passage (a port
+     still stocking) is tried again.
+4. **The plan.** The helm's purse is topped up from the house to the trip's outlay plus a fifth,
+   and a sailing plan is written for the hull (`Orders`, the author the helm). It buys the lot
+   within the ask, fills the tank and the locker, departs, and sells everything at no less than
+   the ask (a carried lot at any price). The executor flies it.
+   - **Done:** once it is done and she is docked, what the purse holds past the float goes home.
+   - **Held:** a held plan is dropped and the house looks again the next IC day. Its hold is kept
+     as the row's note.
+   - **Unsold cargo:** what is aboard is offered to this port's bids once an IC day first.
+5. **Intercepted like a crewed hull.** Under way, the house's mind holds her helm
+   (`space::tick::cover_house_hull`): her link-loss record opens with the grace spent and the backup
+   mind at the helm. The Kirkwood boundary opens the picket's bubble on her. She heaves to under the
+   hail and is inspected, as `B-1`'s seat does for a crew that lost its link. The record ends when
+   she docks.
+6. **Records:** `tacsim:hauler:{entry}` (`HaulerHouse`, `HaulerRow`). Each row keeps its hull, helm,
+   grant, purse, trip, trips, idle day and a note for staff saying why it waits.
+7. **Switched on at Deimos** (Q-48-41): the Deimos reserve, at a port that produces nothing, uses
+   up 15 t of water and 5 t of carbon feedstock an IC day of what reaches it, and the faucet pays
+   it back 2,850 and 1,900 cr a day at most.
+8. **Laying a house up** (`@tacsim/port haulers <port> [on|off]`, staff). With no word it lists
+   the house's hulls, their trips and their notes. `off` lays the house up: what is under way
+   finishes and docks, no trip is planned, and a hull not yet seeded stays unseeded. `on` opens it
+   again (`HaulerHouse.laid_up`).
+   - **The stock rigs lay it up:** `driving_rig` before its first fire, and the mill, drones and
+     orders rigs before they stock. Their stories pin exact stocks, legs, burns and object ids.
+   - **The EX.10 stories open it again.**
+9. **Help:** exchange's "Haulers".
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`, on EX.9's head `bca28628f` plus this unit.)
+- **Unit tests** (`port/hauler.rs`): `ex10_a_trip_pays_only_past_its_margin` (profit must be positive
+  and clear the margin of the outlay, the lot at the ask and the stores);
+  `ex10_the_hauler_record_round_trips` (the `tacsim:hauler:` document's wire).
+- **`domain_economy::ex10_haulers`** (each opens the house with `@tacsim/port haulers ceres_port
+  on` first):
+  - `ex10_a_laid_up_house_plans_no_trip`: on its boot day the house fits both hulls out (hull,
+    helm, grants, purse) and sets nothing out. Laid up, past its opening day, neither hull sets
+    out. A port with no house answers so. Opened again, each sets out on its first trip.
+  - `ex10_the_house_seeds_its_hulls_and_trades_where_a_gap_pays`:
+    - Boot day: nothing sets out.
+    - Seeding: both Drays are titled to the house; each helm holds the house's grants and a purse.
+    - First trips: each leaves from its home, at a bid over its ask, the plan's author the helm.
+      `VCC-01`'s is 40 t of Ceres water at 100 cr into the Habitat Board's 195 cr bid, planned
+      to clear 1,130 cr.
+    - Laid up mid-trip, the house still flies the plan in hand. The trip ends within 30 IC days:
+      docked at Luna, the Board's pool up, her hold empty, her purse down to its 2,000 cr float,
+      and no next trip.
+  - `ex10_a_hauler_meets_the_kirkwood_picket`: the Habitat Board drained, Ceres water's best bid
+    is Kasei's at Stickney. `VCC-01`'s trip goes there, and at Kirkwood the picket's bubble
+    promotes with her in it, the backup mind at her helm, three ships.
+  - `ex10_consumption_switches_on_at_a_port_with_no_producer`: the Deimos reserve, given water
+    and carbon, uses up 15 t and 5 t in its first day. The faucet pays it (15 × 190 + 5 × 380) cr.
+  - `ex10_a_hauler_supplies_deimos_from_luna`: `VCC-02` carries boards or alloys from Luna to
+    Deimos, and Syrtis Bonded's consumption ledger grows by what it used of them.
+- **The pins:** the lane and relay at v43 / v34 and their digests. A new strip-chain head,
+  `strip_hauling`, rebuilds the published v42 (`ex10_strip_hauling_rebuilds_the_published_v42`).
+
+**Changed expectations:** the stock rigs lay the house up, and the stories that read
+everyone's submissions pass over the helms'.
+- **Laid up before the first fire:** `driving_rig` (every field story, `pl2_producers`,
+  `field_director`), mill, drones, orders, and mush-server's `ic_slice_loop`,
+  `ic_buyout_dormancy` and `sm_story` (the composition's money sums).
+  - With the house trading, these stories saw a hauler's 40 t of Ceres water leave Occator's
+    stock, its burns among one plan's burns, and its legs in their counts.
+  - `gc11`'s raid went the other way with two more hulls and their helms shifting object ids.
+- **Landers that panic on any refusal** (`excursions`, `knowing`, `voyage`): a helm's refused
+  leg is passed over. These rigs jump the clock past a paid draw's deadline, and the market
+  refuses that draw for anyone.
+- **`commerce::ic8_*`:** the lapsed-listing release count passes over the helms' legs, as it
+  passes over the clerks'.
+- **Ten orgs, not nine:**
+  - `ports::ic3_*` (the treasury −17,101,000 cr; 13 lane orgs);
+  - `plumbing::sm5_*` (nine new obligations at v10 → v43, Vesta's 400,000 cr base among them);
+  - `sites::sm2_the_lane_carries_six_sites` (Vesta last);
+  - mush-server `split_boundary::boot_parity` (26 institutions).
+
+**Suites** (conclav.dev, `CARGO_INCREMENTAL=0`):
+- tacsim whole: 4,897 of 4,897;
+- mush-server `commerce_composition` and `split_boundary`: 319 of 320, then the one boot pin
+  fixed and `boot_parity` rerun, 24 of 24;
+- the contract guards (`ci_policy` 81, `engine_contracts` 90);
+- fmt, clippy `-D warnings` (tacsim, mush-server tests), the M7 memory-size pass, and rustdoc in
+  both modes.
+
+**Mutations** (conclav.dev, each one alone against the EX.10 tests; 14 run, 8 caught):
+
+| # | Mutation | Caught by |
+|---|---|---|
+| H1 | a trip pays on any profit, not past its margin | `ex10_a_trip_pays_only_past_its_margin` |
+| H2 | every trip pays | the same |
+| H3 | no check that the tank carries the passage | the Deimos story |
+| H5 | a house that is not open still plans trips | the laid-up and trading stories (added after the first run) |
+| H7 | the purse's surplus over its float not sent home | the trading story (added after the first run) |
+| H8 | the house's mind never covers a hauler under way | the Kirkwood picket story |
+| H13 | the open gate not reading `laid_up` | the laid-up and trading stories (added after the first run) |
+| H14 | the staff command never laying the house up | every EX.10 story (each opens the house) |
+
+**Six survive:**
+- **H4** (a sister hull's lot not skipped): lane v43's two hulls trade from different homes, so no
+  story has both pricing the same leg.
+- **H6** (the once-a-day idle not honoured): a hull that found nothing paying looks again on the
+  next fire and finds the same. It costs time, not trades.
+- **H9**, **H10** and **H11** (the helm's hooks in `helm_of`, `trade_hulls` and `may_trade_hold`):
+  each removed alone, another path in the same function still answers for the helm, and the
+  stories pass. They are kept as the named path.
+- **H12** (the sale of what is aboard not limited to once an IC day): a lot left aboard that no bid
+  takes would plan a sale on every fire. No story leaves one aboard.
+
+**Divergences:**
+- **"In reach" reads a Dray's tank.** Titan's water and carbon cannot reach Deimos by any lane hull
+  at this sky, so the reserve's rows are switched on and wait on whoever brings them. The hauler that
+  supplies Deimos carries Luna's boards and alloys into Syrtis Bonded's bids.
+- **One hauling house, at Ceres, with a hull at Luna.** `VCC-02`'s home is Luna so that Deimos is
+  one route away; a Ceres-based Dray reaches Luna in 17.6 IC days and never leaves it for Titan.
+- **The house's lookahead prices the onward leg with this leg's stores**: the hull is not there to
+  plan from.
+- **A hauler's legs are a player's.** A restart that outlasts a paid draw's deadline raises the
+  same boot-reconciliation page for a hauler's quote as for a player's. The composition stories saw
+  it at their reboots; they lay the house up.
+- **A trip's sale floor is the ask.** A bid that has fallen below what the lot cost leaves the lot
+  aboard, to be carried on.
+
+**Expensive to reverse** (flagged under the owner's economy rule; the numbers are not):
+- **The Vesta Carrying Company is a lane org** with a capital tranche, an account and a root
+  scope; taking it out later means a lane version that retires an org.
+- **The `tacsim:hauler:{entry}` document** (`HaulerHouse`, `HaulerRow`, `Trip`) and the lane's
+  `hauler` block are new persisted shapes.
+- **The hauler hulls are real titled ships** with real helm Things, and they are seeded on first
+  boot unless staff lay the house up first.
+
+**Not built:**
+- **A larger hauler.** The lane's designs share one tank, so Titan stays out of a hauler's reach.
+- **Haulers that answer a raider.** In the picket's bubble she is the backup mind's: heave to, be
+  inspected, and answer only a ship whose fire has reached her (doc 47 unit CO.2's rule). Whether
+  the Belt Raider takes her is the bubble's dice.
+- **A staff verb that tunes a house** (its lot, margin or float): those are the lane's.

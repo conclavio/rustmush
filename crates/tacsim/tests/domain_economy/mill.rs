@@ -248,6 +248,7 @@ fn stocked() -> Rig {
 
 fn stocked_with(roster: Roster) -> Rig {
     let mut rig = boot(roster);
+    support::lay_up_haulers(&mut rig.tw);
     stock(&mut rig);
     set_rate(&mut rig.tw, 1);
     rig
@@ -1151,7 +1152,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 42, "lane v42 since doc 48 unit EX.9");
+    assert_eq!(LANE_VERSION, 43, "lane v43 since doc 48 unit EX.10");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();

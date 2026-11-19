@@ -165,6 +165,7 @@ pub mod gauges;
 /// Doc 20 cut SM.9: the `body.ground` panel and `+chart/ground` — the Registry's survey of a
 /// body as a list and a flat map (doc 20 §3.1, §10).
 pub mod ground_chart;
+pub mod hauler;
 pub mod house;
 pub mod house_arm;
 pub mod house_sale;

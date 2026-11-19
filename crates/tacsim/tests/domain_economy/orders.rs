@@ -205,6 +205,7 @@ fn stocked_with(roster: Roster) -> Rig {
         keys: std::collections::BTreeSet::new(),
     };
     sweep(&mut rig.tw, 120);
+    support::lay_up_haulers(&mut rig.tw);
     stock(&mut rig);
     rig
 }

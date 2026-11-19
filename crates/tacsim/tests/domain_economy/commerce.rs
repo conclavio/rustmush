@@ -1620,7 +1620,9 @@ fn ic8_a_lapsed_player_listing_is_released_by_the_tick() {
     );
     let queued = drain(&mut rig.tw);
     // Doc 48 cut EX.3: a works' house purchase on the board is a market lot action too.
-    let buyers = tacsim::port::supply::buyers(rig.tw.world());
+    // Doc 48 unit EX.10: so are a hauling house's helms' buys and sales.
+    let mut buyers = tacsim::port::supply::buyers(rig.tw.world());
+    buyers.extend(tacsim::port::hauler::helms(rig.tw.world()));
     let releases: Vec<&AuthoritativeSubmit> = queued
         .iter()
         .filter(|s| s.action.key().owner.as_str() == "market" && !buyers.contains(&s.actor))
@@ -1771,7 +1773,9 @@ fn ic8_an_unreleasable_lapsed_listing_never_blocks_a_later_one() {
     rig.tw.set_now(expires + 1);
     let _ = rig.tw.fire_due((expires + 1) * 1000);
     // Doc 48 cut EX.3: a works' house purchase on the board is a market lot action too.
-    let buyers = tacsim::port::supply::buyers(rig.tw.world());
+    // Doc 48 unit EX.10: so are a hauling house's helms' buys and sales.
+    let mut buyers = tacsim::port::supply::buyers(rig.tw.world());
+    buyers.extend(tacsim::port::hauler::helms(rig.tw.world()));
     let release = |s: &AuthoritativeSubmit| {
         s.action.key().owner.as_str() == "market" && !buyers.contains(&s.actor)
     };

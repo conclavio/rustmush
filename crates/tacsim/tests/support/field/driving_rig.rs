@@ -268,6 +268,9 @@ pub(crate) fn stocked_under(keyed: bool, cfg: TacsimConfig) -> Rig {
         typed: BTreeMap::new(),
         commerce: None,
     };
+    // Laid up before the first fire, so the house seeds no hull and every object id is the one
+    // these stories were written against.
+    support::lay_up_haulers(&mut rig.tw);
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
     set_rate(&mut rig.tw, 1);

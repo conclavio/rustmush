@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v42 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v43 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,45 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit EX.10 (lane v43): the hauling house taken out** — Ceres's Vesta Carrying
+/// Company (its org row and the entry's `hauler` block) and the Deimos reserve's `consume` rows,
+/// so a strip chain rebuilds a lane before v43 (idempotent). The chain's head.
+pub fn strip_hauling(doc: &mut Value) {
+    let Some(entries) = doc.get_mut("entries") else {
+        return;
+    };
+    if let Some(def) = entries
+        .get_mut("ceres_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        def.remove("hauler");
+        if let Some(orgs) = def.get_mut("orgs").and_then(Value::as_array_mut) {
+            orgs.retain(|org| org["id"] != "vesta_carriers");
+        }
+    }
+    if let Some(vendors) = entries
+        .get_mut("deimos_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("vendors"))
+        .and_then(Value::as_array_mut)
+    {
+        for vendor in vendors
+            .iter_mut()
+            .filter(|v| v["org"] == "strategic_reserve")
+        {
+            if let Some(vendor) = vendor.as_object_mut() {
+                vendor.remove("consume");
+            }
+        }
+    }
+}
+
 /// **Doc 48 unit EX.9 (lane v42): the consumers' rows taken out** — every vendor's `consume`
 /// rows (the Habitat Board, Syrtis Bonded and the Selk Townships Board), so a strip chain
-/// rebuilds a lane before v42 (idempotent). The chain's head.
+/// rebuilds a lane before v42 (idempotent); lane v43's [`strip_hauling`] first.
 pub fn strip_consumption(doc: &mut Value) {
+    strip_hauling(doc);
     let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) else {
         return;
     };

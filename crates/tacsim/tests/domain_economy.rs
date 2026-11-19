@@ -57,6 +57,8 @@ mod e7r1;
 mod e7r2;
 #[path = "domain_economy/economy.rs"]
 mod economy;
+#[path = "domain_economy/ex10_haulers.rs"]
+mod ex10_haulers;
 #[path = "domain_economy/ex1b_venue.rs"]
 mod ex1b_venue;
 #[path = "domain_economy/ex3_board.rs"]
