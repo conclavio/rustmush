@@ -2,6 +2,7 @@
 mod boarding;
 mod commands;
 pub mod content;
+pub mod discharge;
 pub(crate) mod personnel;
 mod runtime;
 pub mod wages;

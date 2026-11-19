@@ -35,6 +35,16 @@ as it is funded. After 28 unpaid IC days the wage is delinquent. A missed wage
 never ends the contract or takes the crew member off your ship.
 `+sortie/contract #<NPC>` shows the wage and any arrears.
 
+To end a hire, stand in any port's station and use `+sortie/discharge #<NPC>`.
+Only the employer can. The hall settles the final wage at once: the IC day in
+progress is charged whole, beside any arrears, and paid to the hiring port. If
+your account cannot cover it, the discharge still goes through and the amount
+stands as your debt, collected as soon as your account covers it. No further
+day is charged. The crew member leaves any seat in a unit standing in your
+carrier's bay, leaves your ship, and is back at their hiring port's hall, on
+offer there again. A crew member who is out on a sortie, in an open field, or
+in custody cannot be discharged until that is over.
+
 Duties are mining, combat, recovery and technician. A technician is hired and
 paid like any crew member; no sortie activates for that duty yet.
 
@@ -71,6 +81,7 @@ Several plans may refer to the same unit without reserving it.
 | `+sortie/hire #<NPC>=<printed terms>` | Accept the displayed employment terms |
 | `+sortie/contract #<NPC>` | Inspect your recorded crew agreement |
 | `+sortie/board <npc>` | Arrange boarding for an NPC you hired, using the ship's real berth |
+| `+sortie/discharge #<NPC>` | End a hire of yours from a port's station and settle its final wage |
 | `+sortie/available <duties> [officer]` | List yourself for crew hire at this port |
 | `+sortie/unavailable` | Withdraw your crew-hire listing |
 | `+sortie/preset <name>=<plan JSON>` | Create a private preset |

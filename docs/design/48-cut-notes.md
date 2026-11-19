@@ -2136,8 +2136,114 @@ the guard; it is still refused by the family below it.
 **Not built.**
 - **A wage between two players:** a listed player's agreement is drafted by hand.
 - **What a technician does:** no bay job or sortie reads the duty.
-- **Ending a hire by choice:** there is still no dismissal verb, so a wage runs until doc 42's capture exit ends the contract. Q-48-33's alternative (stopping the wage while a hire is off duty) is not built.
-- **The wage ending with its contract** is not reached by a story: it needs CR.1's capture exit (the `crew_custody` story), and that story does not read the wage.
+- **Ending a hire by choice:** built as EX.7b (`+sortie/discharge`), below. Q-48-33's alternative (stopping the wage while a hire is off duty) is not built.
+- **The wage ending with its contract** is not reached by a story: it needs CR.1's capture exit (the `crew_custody` story), and that story does not read the wage. EX.7b's stories now reach it through a discharge.
+
+## EX.7b
+
+**A player discharges hired crew at a port** (the owner's ask of 2026-11-18; EX.7's "Not built", "Ending a hire by choice"). A unit of its own against main, after EX.7 (#659).
+
+**Survey.**
+- **What ended a hire:** only doc 42's capture exit (Q-42-26), in two halves.
+  - *The world half*, at the load (`field::crew::npc_exit_loaded`): the NPC's seat is vacated, the NPC goes back to their hire port's pool room (their `home`, else the port's arrival room), the organizer is told, and an exit is owed (`NpcExit`, the document `tacsim:crew_exit:<npc>`).
+  - *The roster's half*: the typed action `tacsim_crew_captured` removes the contract and the roster reservation in one bundle. The tow tick submits it as the organizer until the ledger shows both gone, then forgets the owed exit.
+- **The wage** (EX.7): `wages::tick` ended a wage whose contract was gone, at the next port fire, and let its arrears stand. Nothing collected those arrears afterwards: the economy pays a wage's arrears only after one of that wage's own periods settles, and `+debts` does not read the wage's names. The debt was swept once, 28 IC days after it opened.
+- **Offers** (`crew::offers`): an NPC is on offer to a player standing in the same port room when the NPC carries a staff-authored `crew:offer`, the room is in that offer's port, and no contract names the NPC. So an NPC whose contract ends is on offer again as soon as they stand in their pool room. There is no offer record to restore.
+- **The engine:** a command that submits a typed action may also write (`+works/order` is the precedent), but makes exactly one submission, and a typed action reachable from the generic action door must not be landable without its world half.
+
+**Built.**
+
+*The verb* (`detachment/crew/discharge.rs`): **`+sortie/discharge #<npc>`**, for the hire's employer, standing in any port's station. It is the capture exit taken by choice, in the same two halves, so **no new kernel family, no new action and no new document kind** were needed, and doc 42's custody invariants are untouched.
+- **The world half, at once, in the command:**
+  - the final wage is settled (below);
+  - the crew member leaves every station they hold in the ship or the unit they are in (`mush_sim::vacate_station`), so a seated crew member is unseated;
+  - they are back in their hire port's pool room (`field::crew::pool_room`, the capture exit's rule), and are told so;
+  - the exit is owed (`field::crew::owe_npc_exit`, `recovered_ic` the instant of the discharge).
+- **The roster's half:** one submission of `tacsim_crew_captured` as the employer, from the command (`runtime::submit_discharged`, key `tacsim.crew/<npc>/discharged/<ic>`). The contract and the roster reservation end together when it lands, in the step after the command. The tow tick's pass (`field::crew::npc_exits`) retries it until it lands and then forgets the owed exit, as for a capture. An active roster that named the NPC stands down as CR.1 built it (`+sortie/deactivate` tolerates the cleared reservation).
+- **While the exit is owed** the hire reads as ended: `+sortie/contract` no longer shows it, a second discharge is refused, and `wages::tick` opens no wage for it (one guard in `wanted`, which a capture's exit gets too).
+
+*The settlement* (`wages::settle_final`).
+- **The IC day in progress is charged whole**: one one-term debt under the wage's own name (`tacsim.crew.wage.<npc>`), from the employer's account to the wage's payee, the hiring port's authority. A hire discharged before a port fire has opened its wage owes the day all the same.
+- **The wage's obligation is ended in the same step**, so no further period accrues, whether or not a port fire follows.
+- **Every debt under the name is then paid whole if the account covers it**, oldest first: the arrears debt EX.7 left, then the day. An employer who covers both pays both at once (two posts: the arrears, the day).
+- **Never refused for want of money.** A debt the account cannot cover stands, first swept 28 IC days on (`ARREARS_DUE_IC_SECS`, EX.4's figure).
+- **An ended wage's debts are collected once funded** (`wages::collect_ended`, on the port tick): each one-term debt under a wage's name that no standing wage keeps as its arrears is paid whole at the first port fire that finds the employer's account covering it. At most 16 a fire.
+
+*The surfaces.*
+- `+sortie/contract #<npc>` for an ended hire whose wage still stands as the asker's debt says so, with the amount (`STANDING_DEBT`); with no debt it is "unavailable", as before. A standing contract gains the line `End the hire at a port: +sortie/discharge #<npc>`.
+- `+sortie/crew` shows the discharged NPC on offer again in their pool room once the roster's half has landed.
+- `help detachments` gains the paragraph and a command row; `+sortie`'s one-line help gains a sentence.
+- The bot's table gains the `discharge` family (14 sentences) with its census over `discharge.rs`.
+- **The sentences**, each within 120 columns at a 24-column name, a 26-column payee and a 31-column room:
+  - `DISCHARGED_PAID`: "Ilya Mendes is discharged: 10.00cr paid to Freeport Registry as the final wage."
+  - `DISCHARGED_OWING`: "Ilya Mendes is discharged: the final wage, 60.00cr, stands as your debt to Freeport Registry."
+  - `DISCHARGED_PART`: "Ilya Mendes is discharged: 10.00cr of the final wage is paid and 50.00cr stands as your debt."
+  - `DISCHARGED_FREE` (a port with no authority): "... no wage was charged, so nothing is owed."
+  - `RETURNED`: "The contract is ended. Ilya Mendes is back at The Slack Line, on offer there again."
+
+**Refused**, each with its own sentence, before anything is written:
+- **not the employer**, no such contract, or a hire whose exit is already owed: `NOT_YOURS` (one sentence for all three, so a stranger learns nothing about another's contract);
+- **not at a port**: `AT_PORT`;
+- **out on a sortie**: the crew member is inside a unit that is not standing in a carrier's bay, or whose DT flight is open (`ON_SORTIE`);
+- **in an open field**: the unit they are in, or the ship they are aboard, is under a field's mark (`IN_FIELD`);
+- **a captive**: their crew record holds them (captured, in processing, or awaiting a forced pickup) (`CAPTIVE`);
+- and three more: a malformed name (`DISCHARGE_USAGE`), a request of the employer's own still in flight (`BUSY`), and an economy that refuses the settlement, which is a frozen one (`NOT_NOW`).
+
+**The defaults, flagged for the owner.** Each is built as stated.
+1. **Any port's station, not only the hiring port.** The crew model does not make this wrong, because the capture exit already answers where the crew member goes: back to the hire port's pool room, at once, from wherever they are. A hire discharged at Stickney is therefore back at Ceres' Slack Line in the same step, with no passage flown. **Also flagged:** only the employer has to be at a port. The crew member may be anywhere the refusals allow, including aboard a ship under way under someone else's helm, and still goes straight back to the pool. Taking the hiring port only, or requiring the crew member at the same port, is a few lines in `discharge`.
+2. **The day in progress is charged whole**, never pro-rated. A hire and an immediate discharge cost one day's wage.
+3. **Never refused for want of money.** What cannot be paid stands as debt. **Also flagged:** payment is a whole debt at a time (the arrears, the day), so a part-funded employer pays the day and owes the arrears (`DISCHARGED_PART`).
+4. **The refusals** are as listed above. "On an active sortie" is read from where the crew member physically is (in a unit out of the bay, or one whose flight is open). A hire who is only reserved in an activated roster, standing in the bay or the ship, **is** discharged, and the reservation is released with the contract.
+5. **The discharged NPC is hireable again by the model as it stood**: no offer system was added. They are on offer in their pool room, on the same staff-authored terms, to anyone, as soon as the roster's half lands (the step after the command).
+
+**Divergences.**
+- **A discharge is journaled as `tacsim_crew_captured`.** It is doc 42's one action over both families a hire holds; its outcome carries the NPC, the employer and the instant, and no cause. An action of its own (`tacsim_crew_discharged`) would be a new kernel definition and a second door onto the same two families. Say if the journal should tell the two apart.
+- **The world half is not undone if the roster's half never lands.** It cannot be refused by the provider once the exit is owed, and the tick retries it, so this is the capture exit's own guarantee and no weaker.
+- **An ended wage's arrears are now collected** at a port fire once the employer is funded. This applies to a capture's exit too, where EX.7 left them standing until their one sweep 28 IC days on. A standing wage's arrears are untouched: the economy still pays them after that wage's next period.
+- **Files beyond `detachment/crew/`:**
+  - `field/crew.rs`: `pool_room` and `owe_npc_exit` are `pub(crate)`, and two doc comments;
+  - `detachment/commands.rs`: the help sentence (the routing needed no line: the switch is the crew module's);
+  - `mush-contract-tests/legacy-handlers.toml`: `+sortie`'s note says what `/discharge` writes;
+  - the bot's `mine/minds.rs`, `docs/help/detachments.md`, the story file and `ex7_wages.rs` (its helpers made `pub(crate)`).
+- **Nothing in `port_tick.rs` or `mush-economy/`.**
+
+**Expensive to reverse (flagged).**
+- Nothing new is persisted in a new shape. A discharge writes records EX.4, EX.7 and CR.1 already defined: one-term debts under `tacsim.crew.wage.<npc>`, a cancelled obligation, and `tacsim:crew_exit:<npc>`.
+- **The idempotency key's word** (`.../discharged/<ic>`) is in the journal of every discharge.
+
+**Tests.**
+
+- **The done-when, test by test** (`tests/domain_economy/ex7b_discharge.rs`, production command paths at 24:1, one fire an IC day):
+  - **A hire runs some IC days, is discharged at port, the final amount moves once, the obligation is ended, the seat is taken by another hire, and further fires charge nothing:** `ex7b_a_hire_is_discharged_at_port_and_its_final_wage_moves_once`. A captain's rating is paid three days and discharged: 10 cr more moves to the Registry, the wage is gone, and the two sentences are said. With the exit still owed, `+sortie/contract` reads ended, a second discharge is refused, and a day's fires open no wage and charge nothing. The roster's half lands, the exit is forgotten, the rating is on offer in the Slack Line, a second captain hires them and pays, and the first pays nothing more over two days.
+  - **A broke employer's discharge leaves the right arrears and pays them once funded:** `ex7b_a_broke_employers_discharge_leaves_its_arrears_paid_once_funded`. Five missed days and the day stand as 60 cr; three days of fires add nothing; `+sortie/contract` names the debt. Funded with exactly 60 cr, the next port fire pays it to the last credit, and two more days charge no wage.
+  - `ex7b_a_funded_employers_arrears_are_paid_with_the_final_day`: a port fire leaves a standing wage's arrears alone (EX.7's behavior, pinned); the discharge pays 60 cr at once.
+  - `ex7b_a_part_funded_employer_pays_the_day_and_owes_the_arrears`: with 15 cr she pays the day and owes 50 cr.
+  - **Each refusal:** `ex7b_a_discharge_is_refused_with_its_own_sentence` (a malformed name, a stranger, an unhired NPC, away from port aboard her own ship, a hire of hers in flight, a hire in custody; then nothing changed and no debt written), and `ex7b_a_hire_out_with_a_unit_is_not_discharged` (seated in a rig launched out of the bay onto Ahuna Flank).
+  - **A seated crew member is unseated:** `ex7b_a_boarded_hire_leaves_the_ship_and_a_seated_hire_its_seat`. A rating boarded by `+sortie/board` leaves the ship, and one seated in a leased rig in the carrier's bay leaves the seat; each is back in the Slack Line. Neither is discharged while the ship or the rig is under a field's mark. The first discharge comes before any port fire, and still charges the day.
+  - **Unit tests** (`discharge.rs`): the name parse, and every sentence at its widest fill within 120 columns.
+- **EX.7's untested "wage ends with its contract" path** is now reached: every story above ends a wage with its contract, and the broke one collects what it left.
+- **Fixtures, named in the file:** the captains' money; the seat (a staff hand, CR.1's precedent); the custody record (`hold_for_tests`); a field's mark (`mush_sim::deployed::mark` by a staff hand); the captain set down at Ceres while her rig is out.
+- **Tests that failed before EX.7b:** every test above (there was no verb).
+- **Changed expectations:** none. EX.7's three stories pass unchanged; its helpers are shared.
+- **On conclav.dev** (main 1e9b4117 plus this cut):
+  - fmt, clippy (tacsim, mush-bot, mush-contract-tests, all targets, `-D warnings`), the 64 KiB memory-size pass, and rustdoc for tacsim and mush-bot in both modes pass;
+  - the contract guards pass: `ci_policy` (`feature_matrix_inventory`, `panic_budget`, `restriction_lints`, `legacy_handler_allowlist`, `ci_tacsim_shards`, `fiat_budget`, `clippy_test_allowances`), 41 of 41, and `engine_contracts` (`help_commands`, `us_spelling`), 9 of 9;
+  - `domain_economy`: the seven EX.7b stories with EX.7's three, 10 of 10; with EX.4's and EX.5's, 16 of 16;
+  - `domain_field`: the crew-custody, DT and roster stories, 18 of 18;
+  - tacsim lib (crew, detachment, jobs), 84 of 84; `mush-bot` lib, 578 of 578.
+- **The mutation loop** (27 mutants over `discharge.rs`, the new parts of `wages.rs` and the `+sortie/contract` guard, each run against the EX.7 and EX.7b stories): **24 killed, 3 survivors.**
+  - `m07`, the cover check before each payment at the discharge removed: **equivalent**. `pay_debt` refuses an account that cannot cover the debt and writes nothing; the check only spares a logged refusal.
+  - `m16`, the open-flight clause of "out on a sortie" removed: **not reached**. No story has a unit standing in the bay with its DT flight still open.
+  - `m26`, "any interior is a carrier's bay": **not reached**. No story has a unit inside an interior that is not a ship's room.
+  - `m04` (a strict cover) survived the first pass and is killed now that the part-funded story funds exactly one day.
+
+**Not built.**
+- **The roster reservation's release is not reached by a story.** The action that releases it is CR.1's, unchanged, and it is the same call the capture exit makes; but no story here activates a DT roster with a hired NPC, so the reservation half is exercised by neither cut's stories (CR.1 seats its NPC by a staff hand too). It needs the DT roster rig.
+- **A real field and an open DT flight:** the field refusals are reached through a staff-set mark, not a running field; the open-flight clause and a unit in a non-ship interior are reached by no story (survivors `m16`, `m26`).
+- **`+debts` does not list a wage's debts.** A discharged employer sees the standing amount at the discharge and on `+sortie/contract #<npc>`, and nowhere else; it is collected without a verb.
+- **No notice or fee for a discharge**, no severance, and no refusal by the NPC: the day in progress is the whole cost.
+- **Passage home** for a hire discharged away from the hiring port is not flown or charged.
+- **A wage between two players** and **what a technician does** stay as EX.7 left them.
 
 ## EX.8
 

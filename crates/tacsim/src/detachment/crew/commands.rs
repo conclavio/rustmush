@@ -11,6 +11,7 @@ pub(crate) const SWITCHES: &[&str] = &[
     "unseat",
     "available",
     "unavailable",
+    "discharge",
 ];
 pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
     SWITCHES.iter().any(|s| ctx.switches.has(s))
@@ -61,6 +62,14 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let said = super::wages::available(ctx, &raw, ctx.switches.has("unavailable"))
             .map_err(CmdError::msg)?;
         line(ctx, said);
+        return Ok(());
+    }
+    // Doc 48 cut EX.7b: the employer ends a hire at a port and settles its final wage.
+    if ctx.switches.has("discharge") {
+        let said = super::discharge::discharge(ctx, &raw, &handles).map_err(CmdError::msg)?;
+        for text in said {
+            line(ctx, text);
+        }
         return Ok(());
     }
     if ctx.switches.has("board") || ctx.switches.has("unseat") {
@@ -124,12 +133,21 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("contract") {
         let npc = npc(&raw)?;
+        // Doc 48 cut EX.7b: a hire whose exit is owed (a discharge's, or a capture's) has ended,
+        // though the roster's half may still be landing; what of its wage still stands as the
+        // asker's own debt is said instead.
         let contract = ctx
             .action_state(&handles.contracts, &npc)
             .map_err(|_| unavailable())?
             .filter(|c| c.employer == ctx.actor || c.npc == ctx.actor)
-            .cloned()
-            .ok_or_else(unavailable)?;
+            .filter(|_| crate::field::npc_exit_of(ctx.w, npc).is_none())
+            .cloned();
+        let Some(contract) = contract else {
+            let debt =
+                super::discharge::standing_debt(ctx.w, ctx.actor, npc).ok_or_else(unavailable)?;
+            line(ctx, debt);
+            return Ok(());
+        };
         check_contract(npc, Some(&contract)).map_err(|_| unavailable())?;
         line(
             ctx,
@@ -151,6 +169,10 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             line(
                 ctx,
                 format!("Leave a returned unit: +sortie/unseat #{}", npc.0),
+            );
+            line(
+                ctx,
+                format!("End the hire at a port: +sortie/discharge #{}", npc.0),
             );
         }
         return Ok(());
