@@ -364,6 +364,10 @@ pub const GOODS_COMING: &str =
 pub const GOODS_LEAVING: &str = "Quote #{quote}'s goods have not left the hold yet; the {name} waits for the hand-over (+market/accept {quote} asks for it again).";
 /// A listing holds goods in the hold: `{listing}`, `{name}`.
 pub const LISTING_HOLDS: &str = "Your listing #{listing} holds goods in the {name}'s hold; withdraw it, or let it lapse and be released, before you undock.";
+/// **Doc 48e (48d H-09)**: a hull listed for sale, or under a live sale of her title, stays at the
+/// berth she is sold from: `{name}`.
+pub const HULL_ON_SALE: &str =
+    "The {name} is for sale here; withdraw her listing before she undocks.";
 /// Over the rail: `{name}`, `{payload}`, `{ceiling}`.
 pub const OVERLOADED: &str = "The {name} carries {payload} t against a rated {ceiling} t; lighten the hold before you undock. Nothing was burned.";
 /// The tank below the burn: `{port}`, `{burn}`, `{tank}`.
@@ -3568,6 +3572,13 @@ pub(crate) fn prepare_departure(
             }
             None => {}
         }
+    }
+    // Doc 48e (48d H-09): a hull on sale is sold where she lies (Q-48-6), so she does not leave.
+    if mush_market::asset_on_sale(w, hull) {
+        return Err(refusal(
+            K::ListingHolds,
+            HULL_ON_SALE.replace("{name}", &name),
+        ));
     }
     // Doc 39 cut IN.10 (Q-39-34): a house ferry sails with the house's hands, one soul, under its
     // DARK helm (a Thing, never counted aboard); doc 41 cut RS.6b: as does a recovery house's

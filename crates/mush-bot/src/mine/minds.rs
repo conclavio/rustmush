@@ -809,6 +809,8 @@ pub mod hull_sale {
     pub const HULL_HOLD_LADEN: &str = "hold must be empty before she is listed";
     /// `tacsim::port::hull_sale::HULL_HOLD_DARK`'s tail.
     pub const HULL_HOLD_DARK: &str = "hold cannot be read just now; nothing was listed.";
+    /// `tacsim::port::hull_sale::HULL_ELSEWHERE`'s tail.
+    pub const HULL_ELSEWHERE: &str = "she is listed and sold only where she lies.";
     /// `tacsim::port::hull_sale::HULL_IN_BAY`'s tail.
     pub const HULL_IN_BAY: &str = "stow her before she is listed.";
     /// `tacsim::port::hull_sale::HULL_RIG_ABOARD`'s tail.
@@ -993,6 +995,8 @@ pub mod core_resale {
     pub const RESALE_NO_OFFER: &str = "No offer of that stands for you.";
     /// `tacsim::hardware::sale::resale::RESALE_LAPSED`.
     pub const RESALE_LAPSED: &str = "That offer has lapsed; ask the seller to offer it again.";
+    /// `tacsim::hardware::sale::resale::RESALE_APART`'s tail.
+    pub const RESALE_APART: &str = "where you and its seller both stand; meet them, then accept.";
     /// `tacsim::hardware::sale::resale::RESALE_CHANGED`'s tail.
     pub const RESALE_CHANGED: &str = "what it sells has changed since it was made";
     /// `tacsim::hardware::sale::resale::RESALE_QUOTE`'s middle.
@@ -1376,6 +1380,7 @@ mod tests {
             HULL_CORED,
             HULL_HOLD_LADEN,
             HULL_HOLD_DARK,
+            HULL_ELSEWHERE,
             HULL_IN_BAY,
             HULL_RIG_ABOARD,
         )
@@ -1504,6 +1509,7 @@ mod tests {
             RESALE_NO_OWN_OFFER,
             RESALE_NO_OFFER,
             RESALE_LAPSED,
+            RESALE_APART,
             RESALE_CHANGED,
             RESALE_QUOTE,
             RESALE_QUOTE_HULL,
