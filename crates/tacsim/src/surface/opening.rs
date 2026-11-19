@@ -1145,6 +1145,12 @@ mod tests {
             Some(at)
         );
         assert_eq!(marked_cursor(&marked, 1, at), None, "marked once");
+        // Doc 48e, production G33: 0 means never. A deposit stamped worked out (a site's dig
+        // stamps it whatever the period) re-rolls nothing while re-rolls are off, however long.
+        assert_eq!(
+            reroll_next(Some(&marked), 0, 30, at + 365 * DAY, 0),
+            RerollNext::Idle
+        );
         assert_eq!(marked_cursor(&cursor, 2, at), None, "the next number only");
         let due = at + PERIOD;
         assert_eq!(
