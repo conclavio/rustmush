@@ -830,7 +830,13 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
             fee_lines,
         )
     };
-    let rendered = crate::commands::money(ctx.w, Some(&spec.instrument), total);
+    // Doc 48e (exchange G28; 48d Low): the total the account must cover is the escrow and
+    // the listing fee posted with it.
+    let covered = match fee {
+        Some((fee, _)) => Amount::from_minor(total.minor().saturating_add(fee.minor().max(0))),
+        None => total,
+    };
+    let rendered = crate::commands::money(ctx.w, Some(&spec.instrument), covered);
     match mush_economy::post(ctx, &plan) {
         Ok(mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_)) => {}
         Ok(mush_economy::PostOutcome::NeedsApproval(_)) => {

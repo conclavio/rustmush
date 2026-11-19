@@ -702,3 +702,31 @@ async fn g18_a_listing_whose_hold_never_lands_refunds_its_fee() {
     );
     assert!(refunded(&rig), "its fee is refunded");
 }
+
+/// **Doc 48e, exchange G28 (48d Low): a bid the account cannot cover names the whole sum.** A
+/// player with nothing in her account bids 10 cr for a tonne of metals: refused, and the line
+/// names 20 cr, the escrow and the 10 cr listing fee posted with it. Before the fix it named
+/// 10 cr, which she could have held and still been refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g28_a_bid_it_cannot_cover_names_the_fee_too() {
+    let mut rig = crate::driving_rig::stocked();
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    let buyer = with_account(&mut rig, "Shortfall", 55);
+    teleport(&mut rig.tw, buyer, exchange);
+    let _ = run(&mut rig.tw, buyer, "+locker/open");
+    let locker = locker_vault(&rig, buyer).expect("the locker");
+    let said = run(
+        &mut rig.tw,
+        buyer,
+        &format!(
+            "+market/bid tacsim:metals qty=1 price=1000 into={}",
+            locker.0
+        ),
+    );
+    let named = said
+        .split("does not have ")
+        .nth(1)
+        .and_then(|r| r.split(" available").next())
+        .unwrap_or_else(|| panic!("{said}"));
+    assert!(named.starts_with("20"), "the escrow and the fee: {said}");
+}

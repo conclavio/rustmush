@@ -1979,7 +1979,9 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // Doc 18 cut IC0: a lot listing stands no longer than the hold behind it
             // (`RESERVATION_TTL_IC_DAYS`); `api::list_goods` cuts the real-time window
             // to the hold's at the world's rate, and this is the day count's own cap.
-            let days = if matches!(source, Supply::Lot { .. }) {
+            // Doc 48e (exchange G28; 48d Low): an exact lot's hold has no clock, so it is not
+            // cut (`api::list_goods`' own rule, Q-48-54).
+            let days = if matches!(source, Supply::Lot { .. }) && source.exact_lot().is_none() {
                 days.min(mush_inventory::RESERVATION_TTL_IC_DAYS)
             } else {
                 days
