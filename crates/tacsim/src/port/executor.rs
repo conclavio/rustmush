@@ -1747,7 +1747,8 @@ fn inline_reason(sentence: &str) -> String {
 }
 
 /// The net a sale would pay the pilot through the market's proceeds policy (gross −
-/// Σ cuts); `None` when the policy refuses or cannot be asked.
+/// Σ cuts, less the venue's cut and levy on a person's bid); `None` when the policy refuses
+/// or cannot be asked.
 fn sale_net(
     w: &World,
     ctx: &Ctx<'_>,
@@ -1782,7 +1783,16 @@ fn sale_net(
         )
         .ok()?;
     let cuts: i64 = proceeds.cuts.iter().map(|cut| cut.amount.minor()).sum();
-    gross.checked_sub(cuts)
+    // Doc 48e (exchange G4): a person's bid also pays the venue's cut and levy.
+    let fees: i64 = if listing.is_personal() {
+        mush_market::fees::sale_fee_rows(w, &venue, Amount::from_minor(gross))
+            .iter()
+            .map(|(_, a)| a.minor())
+            .sum()
+    } else {
+        0
+    };
+    gross.checked_sub(cuts)?.checked_sub(fees)
 }
 
 /// The sentence a fill that cannot be met holds with.

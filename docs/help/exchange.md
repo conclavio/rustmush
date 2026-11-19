@@ -130,7 +130,9 @@ themself, never `as=<org>`.
 
 At a port, the port's authority takes a listing fee of 1% of what you list (at
 least 10 cr), once, when you post it, and 3% of each sale. A further 1% of each
-sale is a levy to the port's treasury. A house's own listings pay none of these.
+sale is a levy to the port's treasury. A sale into a player's bid pays the same
+3% and 1%, out of what the seller receives. A house's own listings pay none of
+these.
 
 ## Berths
 

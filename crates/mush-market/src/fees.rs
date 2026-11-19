@@ -231,6 +231,41 @@ pub fn sale_payouts(
     Some(out)
 }
 
+/// **The payouts of a sale into a bid** (doc 48e, exchange G4 and G26): the seller's account
+/// `gross` less every other row (when that is more than nothing), then `fees` (the venue's cut
+/// and levy, on a person's bid only) and the proceeds policy's `cuts`, each an exact payout.
+/// `None` when the rows come to more than `gross`. The sale's builder writes these, and a
+/// personal bidder's standing acceptance requires exactly these.
+#[must_use]
+pub fn bid_sale_payouts(
+    seller: AccountId,
+    gross: Amount,
+    fees: &[(AccountId, Amount)],
+    cuts: &[crate::record::ProceedsCut],
+) -> Option<Vec<PayoutShare>> {
+    let rows: Vec<(AccountId, Amount)> = fees
+        .iter()
+        .copied()
+        .chain(cuts.iter().map(|c| (c.to, c.amount)))
+        .collect();
+    let taken = rows
+        .iter()
+        .try_fold(0_i64, |sum, (_, a)| sum.checked_add(a.minor()))?;
+    let net = gross.minor().checked_sub(taken).filter(|n| *n >= 0)?;
+    let mut out = Vec::with_capacity(rows.len().saturating_add(1));
+    if net > 0 {
+        out.push(PayoutShare {
+            to: seller,
+            share: Share::Exact(Amount::from_minor(net)),
+        });
+    }
+    out.extend(rows.into_iter().map(|(to, amount)| PayoutShare {
+        to,
+        share: Share::Exact(amount),
+    }));
+    Some(out)
+}
+
 /// **A proceeds policy's cuts on a person's lot ask** (doc 48 cut EX.4; Q-48-56, doc 48b G-7):
 /// the policy (TacSim's Co-op share) is asked about an ask from a person's lot exactly as about
 /// a sale into a bid, reading `w` only, so the builder and the standing acceptance ask the same

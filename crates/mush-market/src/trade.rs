@@ -2100,7 +2100,8 @@ pub struct BidSale {
     pub gross: Amount,
     /// The proceeds policy's cuts, frozen on the quote.
     pub cuts: Vec<crate::record::ProceedsCut>,
-    /// What the seller receives: `gross − Σ cuts`.
+    /// What the seller receives: `gross − Σ cuts`, less the venue's cut and levy on a
+    /// person's bid (doc 48e, exchange G4).
     pub net: Amount,
     /// The line the seller reads (the policy's, else [`SOLD_GENERIC`] filled in).
     pub line: String,
@@ -2789,10 +2790,24 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             p
         }
     };
+    // Doc 48e (exchange G4; Q-48-8): a sale into a person's bid pays the venue's cut and levy,
+    // as a sale off a person's ask does; a house's bid pays neither.
+    let fee_rows = match bidder {
+        BidBuyer::Personal => crate::fees::sale_fee_rows(ctx.w, &listing.market, gross),
+        BidBuyer::House(_) => Vec::new(),
+    };
+    let Some(payouts) =
+        crate::fees::bid_sale_payouts(seller_account, gross, &fee_rows, &proceeds.cuts)
+    else {
+        return Err(MarketError::bad(UNSETTLEABLE));
+    };
+    let fee_total = fee_rows
+        .iter()
+        .fold(0_i64, |sum, (_, a)| sum.saturating_add(a.minor()));
     let cut_total = proceeds
         .cuts
         .iter()
-        .fold(0_i64, |sum, c| sum.saturating_add(c.amount.minor()));
+        .fold(fee_total, |sum, c| sum.saturating_add(c.amount.minor()));
     let net = Amount::from_minor(gross.minor().saturating_sub(cut_total));
     // 15. The quote id, the window and cutoff, and the marker id.
     let Some(quote) = ctx
@@ -2838,10 +2853,8 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             buyer: &house,
             buyer_account: payer,
             seller: actor,
-            seller_account,
             gross,
-            net,
-            cuts: &proceeds.cuts,
+            payouts,
             deadline,
             marker: &marker,
         },
@@ -3003,6 +3016,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             quantity,
             gross,
             net,
+            Amount::from_minor(fee_total),
             &proceeds.cuts,
         )
     });
@@ -3062,10 +3076,10 @@ struct SaleShape<'a> {
     /// What it pays from: the vendor's account, or the personal bid's own.
     buyer_account: mush_economy::AccountId,
     seller: ObjId,
-    seller_account: mush_economy::AccountId,
     gross: Amount,
-    net: Amount,
-    cuts: &'a [crate::record::ProceedsCut],
+    /// The seller's net, then every other payee (doc 48e, exchange G4:
+    /// [`crate::fees::bid_sale_payouts`]).
+    payouts: Vec<PayoutShare>,
     deadline: i64,
     marker: &'a SmolStr,
 }
@@ -3076,19 +3090,7 @@ struct SaleShape<'a> {
 /// `Fact{inventory, inventory.transferred, <marker>}` — so the house's money is paid out
 /// only once the goods are in its stores. Deterministic, refunded at the deadline.
 fn sale_spec(s: &SaleShape<'_>, memo: Option<&SmolStr>) -> ContractSpec {
-    let mut payouts = Vec::new();
-    if s.net.minor() > 0 {
-        payouts.push(PayoutShare {
-            to: s.seller_account,
-            share: Share::Exact(s.net),
-        });
-    }
-    for cut in s.cuts {
-        payouts.push(PayoutShare {
-            to: cut.to,
-            share: Share::Exact(cut.amount),
-        });
-    }
+    let payouts = s.payouts.clone();
     let deadline = EconomicDeadline {
         clock: EconomicClock::RealUtc,
         at: s.deadline,
@@ -3145,6 +3147,7 @@ fn sold_generic(
     quantity: u64,
     gross: Amount,
     net: Amount,
+    fees: Amount,
     cuts: &[crate::record::ProceedsCut],
 ) -> String {
     let name = ctx
@@ -3153,9 +3156,17 @@ fn sold_generic(
         .and_then(|s| s.entry_of(&listing.catalog).map(|e| e.name.to_string()))
         .unwrap_or_else(|| listing.catalog.code.to_string());
     let money = |a: Amount| crate::commands::money(ctx.w, Some(instrument), a);
-    let cut_text: String = cuts
-        .iter()
-        .map(|c| format!("; {} {}", c.label, money(c.amount)))
+    // Doc 48e (exchange G4): a person's bid pays the venue's cut and levy first.
+    let fee_text = if fees.minor() > 0 {
+        format!("; venue fees {}", money(fees))
+    } else {
+        String::new()
+    };
+    let cut_text: String = std::iter::once(fee_text)
+        .chain(
+            cuts.iter()
+                .map(|c| format!("; {} {}", c.label, money(c.amount))),
+        )
         .collect();
     SOLD_GENERIC
         .replace("{qty}", &quantity.to_string())

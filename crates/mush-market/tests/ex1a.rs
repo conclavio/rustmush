@@ -1149,6 +1149,26 @@ fn ex1a_the_standing_acceptance_holds_a_bid_to_its_terms() {
         }),
         "a consideration that is not the quote's"
     );
+    // Doc 48e (exchange G26; 48d M-07): the payouts are the ones the market builds.
+    assert!(
+        !stands_for(&r.tw, contract, bea.who, escrow, |c| {
+            c.consent.terms.outcomes[0].payouts[0].share =
+                mush_economy::Share::Exact(mush_economy::Amount::from_minor(1_999));
+        }),
+        "an outcome that pays the seller other than the market built"
+    );
+    assert!(
+        !stands_for(&r.tw, contract, bea.who, escrow, |c| {
+            let to = c.consent.terms.outcomes[0].payouts[0].to;
+            c.consent.terms.outcomes[0]
+                .payouts
+                .push(mush_economy::PayoutShare {
+                    to,
+                    share: mush_economy::Share::Exact(mush_economy::Amount::from_minor(1)),
+                });
+        }),
+        "an outcome with a payee the market did not build"
+    );
     docs.edit(&mut r.tw, &listing_key, "price", json!(501));
     assert!(
         !stands(&r.tw, bea.who, escrow),

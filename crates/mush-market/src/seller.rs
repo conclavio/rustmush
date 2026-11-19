@@ -1008,9 +1008,22 @@ impl mush_economy::StandingAcceptance for ListingAcceptance {
                 mush_economy::ContractState::Draft => against.is_none(),
                 _ => against.is_some() && against == listing.escrow,
             };
+            // Doc 48e (exchange G26; 48d M-07): every outcome pays exactly what the market
+            // builds for a sale into a person's bid: the seller the rest, then the venue's cut
+            // and levy and the quote's frozen proceeds cuts.
+            let fee_rows = crate::fees::sale_fee_rows(w, &listing.market, total);
+            let outcomes = &contract.consent.terms.outcomes;
+            let pays_as_built = !outcomes.is_empty()
+                && outcomes.iter().all(|o| {
+                    o.payouts.first().is_some_and(|first| {
+                        crate::fees::bid_sale_payouts(first.to, total, &fee_rows, &quote.cuts)
+                            .is_some_and(|expected| o.payouts == expected)
+                    })
+                });
             quote.buyer == *party
                 && private_ok
                 && backing_ok
+                && pays_as_built
                 && listing
                     .account
                     .is_some_and(|account| owed(party) == vec![(account, total)])

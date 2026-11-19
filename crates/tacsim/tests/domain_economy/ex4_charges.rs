@@ -27,7 +27,7 @@ use crate::hull_resale_ex2::{
 const IC_DAY_REAL: i64 = 3_600;
 
 /// The port authority's account at Ceres (the venue's operator).
-fn authority(rig: &Rig) -> AccountId {
+pub(crate) fn authority(rig: &Rig) -> AccountId {
     let map = port_map(&rig.tw, "ceres_port");
     let row = map
         .orgs
@@ -39,7 +39,7 @@ fn authority(rig: &Rig) -> AccountId {
 }
 
 /// Ceres' treasury (the levy's sink).
-fn treasury(rig: &Rig) -> AccountId {
+pub(crate) fn treasury(rig: &Rig) -> AccountId {
     AccountId(
         port_map(&rig.tw, "ceres_port")
             .treasury

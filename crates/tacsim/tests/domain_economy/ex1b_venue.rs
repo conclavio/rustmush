@@ -489,3 +489,98 @@ async fn g12_two_fills_into_one_locker_are_each_asked_for_room() {
         "the locker takes one fill; the second has no room"
     );
 }
+
+/// **Doc 48e, exchange G4 (48c #2, 48d H-04; Q-48-8): a sale into a person's bid pays the
+/// venue's cut and levy.** A buyer bids 10 cr a tonne for 10 t of metals into her locker; a
+/// seller sells 10 t into it from his. Once the goods are in, the port authority has the 3%
+/// cut, the treasury the 1% levy, and the seller the other 96%. Before the fix the seller was
+/// paid the whole 100 cr and the venue nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g4_a_sale_into_a_persons_bid_pays_the_venue_cut_and_levy() {
+    let mut rig = crate::driving_rig::stocked();
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    let buyer = with_account(&mut rig, "Buyer", 51);
+    mint(&mut rig, buyer);
+    teleport(&mut rig.tw, buyer, exchange);
+    let _ = run(&mut rig.tw, buyer, "+locker/open");
+    let locker = locker_vault(&rig, buyer).expect("the locker");
+    let said = run(
+        &mut rig.tw,
+        buyer,
+        &format!(
+            "+market/bid tacsim:metals qty=10 price=1000 into={}",
+            locker.0
+        ),
+    );
+    assert!(said.contains(" is held from your account."), "{said}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let bid = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| {
+            m.personal_listings_of(&mush_org::PrincipalId::Object(buyer))
+                .find(|l| l.source.is_wanted())
+                .map(|l| l.id)
+        })
+        .expect("the bid");
+    let seller = with_account(&mut rig, "Seller", 52);
+    teleport(&mut rig.tw, seller, exchange);
+    let _ = run(&mut rig.tw, seller, "+locker/open");
+    let theirs = locker_vault(&rig, seller).expect("a locker");
+    crate::driving_rig::seed_pool(&mut rig, theirs, "metals", 10, LotId(0xe1d0));
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let (operator, sink) = (
+        crate::ex4_charges::authority(&rig),
+        crate::ex4_charges::treasury(&rig),
+    );
+    let paid = crate::hull_resale_ex2::account_of(&rig, seller);
+    let out = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/sell {}=10 from={}", bid.0, theirs.0),
+    );
+    assert!(out.contains("Sold "), "{out}");
+    assert!(
+        out.contains("venue fees "),
+        "the line names the fees: {out}"
+    );
+    let queued = drain(&mut rig.tw);
+    crate::driving_rig::land_quietly(&mut rig, &queued);
+    for _ in 0..20 {
+        let (_, more) = fire(&mut rig);
+        crate::driving_rig::land_quietly(&mut rig, &more);
+    }
+    assert_eq!(hold_pool(&mut rig.tw, locker, "metals"), 10, "delivered");
+    // The sale contract's payouts (read from the contract, not the balances, which the
+    // lockers' rent also moves).
+    let world = rig.tw.world();
+    let contract = world
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| {
+            m.quotes_of_seller(&mush_org::PrincipalId::Object(seller))
+                .last()
+                .and_then(|q| q.contract)
+        })
+        .expect("the sale's contract");
+    let economy = world
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("economy");
+    let c = economy.snapshot().contract(contract).expect("the contract");
+    assert!(
+        matches!(c.state, mush_economy::ContractState::Settled { .. }),
+        "settled: {:?}",
+        c.state
+    );
+    let exact = |to, minor| mush_economy::PayoutShare {
+        to,
+        share: mush_economy::Share::Exact(mush_economy::Amount::from_minor(minor)),
+    };
+    assert_eq!(
+        c.consent.terms.outcomes[0].payouts,
+        vec![exact(paid, 9_600), exact(operator, 300), exact(sink, 100)],
+        "the seller 96%, the port authority the 3% cut, the treasury the 1% levy"
+    );
+}
