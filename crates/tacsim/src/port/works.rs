@@ -102,30 +102,43 @@ pub const WORKS_USAGE: &str = "Usage: +works · +works/quote <recipe> [qty] · \
                                +works/deliver <order>=<good> <qty> · +works/buy <order>[=<good>] · \
                                +yard/fund <recipe>=<org> · +works/collect <order> · \
                                +works/cancel <order>";
-/// The help text (`+yard` reads the same with its own word).
-pub const WORKS_HELP: &str = "+works                          the works here: what it makes, its \
-                              slots, your orders.\n\
-                              +works/quote <recipe> [qty]     the bill, the days, the fee and the \
-                              booking fee.\n\
-                              +works/order <recipe> [qty][=<org>]  book it: an escrow and the \
-                              booking fee (one slot-day, forfeit on a cancel).\n\
-                              +works/deliver <order>=<good> <qty>  move bill goods from your docked \
-                              hold into the escrow (a part as its lots); the order starts when the \
-                              bill is covered.\n\
-                              +works/buy <order>[=<good>]     buy the bill's next short line (or \
-                              that good's) at this port's asks straight into the escrow, from your \
-                              own account, with no hold: a good stocked with no ask, or a yard \
-                              part, is listed to you first, and you buy again to take it.\n\
-                              +yard/fund <recipe>=<org>       an officer who may spend the \
-                              organization's treasury orders a hull for it: its yard agent is \
-                              funded with the price, buys the bill here, and she is handed over \
-                              docked here, titled to the organization.\n\
-                              +works/collect <order>          the output (or a canceled bill) into \
-                              your docked hold; at a yard, the hull's commission: she is handed \
-                              over docked here (a ship) or on the workshop floor (a rig), titled to \
-                              you, her magazines empty.\n\
-                              +works/cancel <order>           before half the work is done: the \
-                              bill back, the booking fee and the work done so far forfeit.";
+/// `+works`'s help: a works's fittings and parts. Every line holds the 120-column floor.
+pub const WORKS_HELP: &str = concat!(
+    "+works                               the works here: what it makes, its slots, your orders.\n",
+    "+works/quote <recipe> [qty]          the bill, the days, the fee and the booking fee; nothing is held.\n",
+    "+works/order <recipe> [qty][=<org>]  book it: an escrow and the booking fee (one slot-day, forfeit on a cancel).\n",
+    "                                     =<org> books it for an organization you act for.\n",
+    "+works/deliver <order>=<good> <qty>  move bill goods from your docked hold into the escrow (a part as its lots);\n",
+    "                                     the order starts when the bill is covered.\n",
+    "+works/buy <order>[=<good>]          buy the bill's next short line (or that good's) at this port's asks, straight\n",
+    "                                     into the escrow from your own account, with no hold. A good stocked with no\n",
+    "                                     ask is listed to you first, and you buy again to take it.\n",
+    "+works/collect <order>               the output (or a canceled bill) into your docked hold.\n",
+    "+works/cancel <order>                before half the work is done: the bill back; the booking fee and the work\n",
+    "                                     done so far forfeit.\n",
+    "Hulls are ordered at a yard with +yard (help +yard, help works)."
+);
+/// `+yard`'s help: a yard's hulls, one an order. Every line holds the 120-column floor.
+pub const YARD_HELP: &str = concat!(
+    "+yard                               the yard here: the hulls it builds, its slots, your orders.\n",
+    "+yard/quote <recipe>                the bill (the hull's parts included), the days, the fee and the booking fee.\n",
+    "+yard/order <recipe>[=<org>]        book one hull: an escrow and the booking fee (one slot-day, forfeit on a\n",
+    "                                    cancel). =<org> books her for an organization you act for.\n",
+    "+yard/deliver <order>=<good> <qty>  move bill goods from your docked hold into the escrow (a part as its lots);\n",
+    "                                    the work starts when the bill is covered.\n",
+    "+yard/buy <order>[=<good>]          buy the bill's next short line (or that good's) at this port's asks, straight\n",
+    "                                    into the escrow from your own account. A yard part is listed to you first,\n",
+    "                                    and you buy again to take it.\n",
+    "+yard/collect <order>               the hull's commission: she is handed over docked here (a ship) or on the\n",
+    "                                    workshop floor (a rig), titled to you or your organization, her magazines\n",
+    "                                    empty. A canceled order's bill comes back into your docked hold.\n",
+    "+yard/cancel <order>                before half the work is done: the bill back; the booking fee and the work\n",
+    "                                    done so far forfeit.\n",
+    "+yard/fund <recipe>=<org>           at Stickney's yard only: an officer who may spend the organization's treasury\n",
+    "                                    orders a hull for it. Its yard agent is funded with the price and buys the\n",
+    "                                    bill here; she is handed over docked here, titled to the organization.\n",
+    "A yard builds one hull an order. Asked for a hull it does not build, it names the port whose yard does."
+);
 /// The switches.
 pub const WORKS_SWITCHES: &[&str] = &[
     "quote", "order", "deliver", "buy", "fund", "collect", "cancel",
@@ -1108,13 +1121,17 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// **What one booking names** (`book`'s terms): the front and its facility, the recipe, the
-/// quantity, and the triple's payer and beneficiary with the payer's own account.
 /// **Doc 48 unit EX.9**: the refusal of a house's own order at a facility mothballed for its
 /// running costs.
-pub const MOTHBALLED: &str = "That facility is mothballed for its running costs: its house \
-                                  places no order of its own there until they are paid.";
+pub const MOTHBALLED: &str = "That facility is mothballed for its running costs: its house places \
+                              no order of its own there until they are paid.";
 
+/// **Doc 48e (production G2)**: the refusal of an order at a facility listed for sale.
+pub const ON_SALE: &str =
+    "That facility is up for sale and takes no new order until the sale closes or is withdrawn.";
+
+/// **What one booking names** (`book`'s terms): the front and its facility, the recipe, the
+/// quantity, and the triple's payer and beneficiary with the payer's own account.
 pub(crate) struct Booking<'a> {
     /// The front.
     pub front: Front,
@@ -1155,11 +1172,17 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
     if front == Front::Yard && quantity != 1 {
         return Err(YARD_ONE_HULL.to_owned());
     }
-    let house = &beneficiary == facility.owner();
+    // A house order is an authored facility's operator's own. A bought facility's owner books
+    // as any customer and collects through `+yard/collect` (doc 48e, production G4).
+    let house = &beneficiary == facility.owner() && facility.holding().is_authored();
     // Doc 48 unit EX.9 (Q-48-38, -59): a mothballed facility's house places no order of its own
     // there; a customer's, whose escrow covers its worked cost, still books.
     if house && crate::port::upkeep::mothballed(ctx.w, facility.object()) {
         return Err(MOTHBALLED.to_owned());
+    }
+    // A facility on sale takes no new order: its buyer bought it idle (doc 48e, production G2).
+    if mush_market::asset_on_sale(ctx.w, facility.object()) {
+        return Err(ON_SALE.to_owned());
     }
     let units = pinned.work_units().saturating_mul(u64::from(quantity));
     let booking = if house {
@@ -2470,9 +2493,14 @@ fn charge_storage(
     payee: Option<AccountId>,
     now: i64,
 ) {
-    let (Some(delivered), Some(payee), Some(day_fee)) =
-        (c.delivered_ic, payee, facility.booking_fee_minor())
-    else {
+    // A slot-day is the booking fee, pinned at booking (doc 48e, production G24); a house order
+    // books none, and pays the live one.
+    let pinned = (c.booking_minor > 0).then_some(c.booking_minor);
+    let (Some(delivered), Some(payee), Some(day_fee)) = (
+        c.delivered_ic,
+        payee,
+        pinned.or_else(|| facility.booking_fee_minor()),
+    ) else {
         return;
     };
     let due = now
@@ -3100,5 +3128,30 @@ mod tests {
         assert_eq!(STORAGE_GRACE_SECS, 28 * DAY_SECS);
         assert_eq!(days_of(480), 20);
         assert_eq!(days_of(6), 1);
+    }
+
+    /// Each front's help names only its own verb, and every line holds the 120-column floor.
+    #[test]
+    fn works_and_yard_help_name_their_own_verb_and_hold_the_floor() {
+        for (help, own, other) in [
+            (WORKS_HELP, "+works", "+yard/"),
+            (YARD_HELP, "+yard", "+works/"),
+        ] {
+            assert!(help.starts_with(own), "{help}");
+            assert!(!help.contains(other), "{help}");
+            for switch in WORKS_SWITCHES
+                .iter()
+                .filter(|s| own == "+yard" || **s != "fund")
+            {
+                assert!(help.contains(&format!("{own}/{switch}")), "{own}/{switch}");
+            }
+            for line in help.lines() {
+                assert!(
+                    line.chars().count() <= 120,
+                    "{} columns: {line}",
+                    line.chars().count()
+                );
+            }
+        }
     }
 }

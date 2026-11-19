@@ -770,8 +770,9 @@ fn seal_and_give_up(world: &mut M8World, seal_line: &str) -> mush_core::Authorit
 /// A. *Her fit cannot change under a sealed mind.* With the claim open the Co-op's yard
 ///    refuses to re-dress her, by a sentence that says to unseal first, and the unit's owner
 ///    refuses staff's rebind; her core and her seal are as they were. `+ship/mind off go`
-///    unseals her and the claim closes. Then the yard re-dresses her as a Dray-P, which
-///    carries no core, and nothing of the old seal is left to seal again: a new `+ship/mind`
+///    unseals her and the claim closes. The yard's refusal is then her core's (doc 47 CO.6),
+///    so staff strip the core; the yard re-dresses her as a Dray-P, which carries no core,
+///    and nothing of the old seal is left to seal again: a new `+ship/mind`
 ///    is resolved against the hull as she now is, and is refused for want of a core.
 /// C. *A claim given up.* She asks a seal again and every Open the arm submits is lost. The
 ///    arm tries its five times, gives the claim up and tells her, and withdraws the Open from
@@ -865,7 +866,16 @@ async fn mw13_a_seal_does_not_outlive_its_core_or_its_holder() {
         run(&mut world.rig.tw, pilot, "+ship/mind"),
         ship_mind::MIND_NONE.replace("{name}", "Salt Moth")
     );
-    // Now the yard re-dresses her, and nothing of the old seal seals again.
+    // The seal no longer holds her: the yard's answer is now her core's (doc 47 CO.6,
+    // `REFIT_CORED`), which no player route strips. Staff strip it, binding her to the shipped
+    // coreless Dray, and the yard re-dresses her; nothing of the old seal seals again.
+    assert_eq!(
+        run(&mut world.rig.tw, pilot, "+coop/refit prospector"),
+        tacsim::port::refit::REFIT_CORED.replace("{name}", "Salt Moth"),
+        "the seal is gone; the core still holds her fit"
+    );
+    crate::ic_sortie_surface::fit(&mut world.rig, hull, tacsim::definitions::content::DRAY);
+    assert_eq!(core_of(&world), None, "the shipped Dray carries no core");
     let refit = run(&mut world.rig.tw, pilot, "+coop/refit prospector");
     assert!(refit.contains("as a Dray-P"), "{refit}");
     assert_eq!(core_of(&world), None, "the Dray-P carries no core");

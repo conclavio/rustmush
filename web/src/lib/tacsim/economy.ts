@@ -53,54 +53,179 @@ export const JOB_BOARD_FILTERS: readonly { id: string; label: string; cmd: strin
   { id: "passage", label: "Passenger", cmd: "+market/jobs passage" },
 ];
 
+/**
+ * Every works recipe in `crates/tacsim/content/industry/recipes-v2.json`, id for id, with
+ * its label and its inputs and outputs (48e L8, clients:G11). `economy.test.ts` holds this
+ * list to the file, so a recipe the content adds or renames fails there.
+ */
 export const WORKS_RECIPES: readonly IndustryRecipeOption[] = [
   {
-    id: "metals",
-    label: "Metal Ore Milling",
-    inputsSummary: "10 metal_ore",
-    outputSummary: "4 metals",
+    id: "ap_30",
+    label: "30 mm AP rounds",
+    inputsSummary: "1 structural_alloys + 1 carbon_ore + 1 volatiles",
+    outputSummary: "500 ammo_ap_30",
+  },
+  {
+    id: "ball_762",
+    label: "7.62 mm ball, boxed",
+    inputsSummary: "1 structural_alloys + 1 carbon_ore + 1 volatiles",
+    outputSummary: "240 ammo_ball_762",
   },
   {
     id: "carbon_feedstock",
-    label: "Carbon Feedstock Pressing",
+    label: "Carbon feedstock pressing",
     inputsSummary: "5 carbon_ore",
     outputSummary: "4 carbon_feedstock",
   },
   {
     id: "fittings",
-    label: "Fittings Batch",
+    label: "Fittings batch",
     inputsSummary: "5 structural_alloys + 1 carbon_ore",
     outputSummary: "5 industrial_parts",
   },
   {
-    id: "ap_30",
-    label: "30 mm Armor-Piercing Rounds",
-    inputsSummary: "1 alloys + 1 carbon_ore + 1 volatiles",
-    outputSummary: "500 ammo_ap_30",
-  },
-  {
     id: "he_105",
-    label: "105 mm High-Explosive Rounds",
-    inputsSummary: "1 alloys + 1 carbon_ore + 1 volatiles",
+    label: "105 mm HE rounds",
+    inputsSummary: "1 structural_alloys + 1 carbon_ore + 1 volatiles",
     outputSummary: "40 ammo_he_105",
   },
   {
+    id: "metals",
+    label: "Metal ore milling",
+    inputsSummary: "10 metal_ore",
+    outputSummary: "4 metals",
+  },
+  {
     id: "missile",
-    label: "Anti-Armor Missiles",
-    inputsSummary: "1 alloys + 1 carbon_ore + 1 volatiles",
+    label: "Anti-armor missiles",
+    inputsSummary: "1 structural_alloys + 1 carbon_ore + 1 volatiles",
     outputSummary: "4 ammo_missile",
   },
   {
-    id: "module_doctrine",
-    label: "Doctrine Core Module",
-    inputsSummary: "1 instrument_boards + 1 strategic_ore",
-    outputSummary: "1 tacsim.part.core.doctrine",
+    id: "module_command",
+    label: "Command core module",
+    inputsSummary: "4 instrument_boards + 2 strategic_ore",
+    outputSummary: "1 \u00d7 Command core module",
   },
   {
-    id: "module_command",
-    label: "Command Core Module",
-    inputsSummary: "4 instrument_boards + 2 strategic_ore",
-    outputSummary: "1 tacsim.part.core.command",
+    id: "module_doctrine",
+    label: "Doctrine core module",
+    inputsSummary: "1 instrument_boards + 1 strategic_ore",
+    outputSummary: "1 \u00d7 Doctrine core module",
+  },
+  {
+    id: "module_line",
+    label: "Line core module",
+    inputsSummary: "2 instrument_boards + 1 strategic_ore",
+    outputSummary: "1 \u00d7 Line core module",
+  },
+  {
+    id: "mount_105",
+    label: "Main-gun mount",
+    inputsSummary: "3 structural_alloys + 1 industrial_parts",
+    outputSummary: "1 \u00d7 Main-gun mount",
+  },
+  {
+    id: "mount_30",
+    label: "Autocannon mount",
+    inputsSummary: "1 structural_alloys + 1 industrial_parts",
+    outputSummary: "1 \u00d7 Autocannon mount",
+  },
+  {
+    id: "mount_laser",
+    label: "Laser mount",
+    inputsSummary: "2 structural_alloys + 2 industrial_parts + 1 instrument_boards",
+    outputSummary: "1 \u00d7 Laser mount",
+  },
+  {
+    id: "mount_mg",
+    label: "Coaxial mounts",
+    inputsSummary: "1 industrial_parts",
+    outputSummary: "10 \u00d7 Coaxial mounts",
+  },
+  {
+    id: "pd_box",
+    label: "Point-defense rounds, boxed",
+    inputsSummary: "1 structural_alloys + 1 carbon_ore + 1 volatiles",
+    outputSummary: "24 pd_box",
+  },
+  {
+    id: "plant_hauler",
+    label: "Hauler plant",
+    inputsSummary: "25 structural_alloys + 8 industrial_parts + 2 carbon_ore",
+    outputSummary: "1 \u00d7 Hauler plant",
+  },
+  {
+    id: "plant_light",
+    label: "Light plants",
+    inputsSummary: "1 industrial_parts + 1 carbon_ore",
+    outputSummary: "5 \u00d7 Light plants",
+  },
+  {
+    id: "plant_vehicle",
+    label: "Vehicle plant",
+    inputsSummary: "2 structural_alloys + 1 industrial_parts + 1 carbon_ore",
+    outputSummary: "1 \u00d7 Vehicle plant",
+  },
+  {
+    id: "plant_walker",
+    label: "Walker plant",
+    inputsSummary: "3 structural_alloys + 1 industrial_parts + 1 carbon_ore",
+    outputSummary: "1 \u00d7 Walker plant",
+  },
+  {
+    id: "pod_eccm",
+    label: "ECCM pods",
+    inputsSummary: "3 strategic_ore + 2 instrument_boards + 2 industrial_parts",
+    outputSummary: "10 \u00d7 ECCM pods",
+  },
+  {
+    id: "pod_ecm",
+    label: "ECM pods",
+    inputsSummary: "3 strategic_ore + 2 instrument_boards + 2 industrial_parts",
+    outputSummary: "10 \u00d7 ECM pods",
+  },
+  {
+    id: "rack_lr",
+    label: "Long-range rack",
+    inputsSummary: "1 structural_alloys + 1 industrial_parts",
+    outputSummary: "1 \u00d7 Long-range rack",
+  },
+  {
+    id: "sight_thermal",
+    label: "Thermal sights",
+    inputsSummary: "3 strategic_ore + 2 instrument_boards + 3 industrial_parts",
+    outputSummary: "10 \u00d7 Thermal sights",
+  },
+  {
+    id: "sight_visual",
+    label: "Visual sights",
+    inputsSummary: "2 strategic_ore + 1 instrument_boards + 3 industrial_parts",
+    outputSummary: "10 \u00d7 Visual sights",
+  },
+  {
+    id: "spinal_round",
+    label: "Spinal gun rounds",
+    inputsSummary: "1 structural_alloys + 1 carbon_ore + 1 volatiles",
+    outputSummary: "10 spinal_round",
+  },
+  {
+    id: "structural_alloys",
+    label: "Alloy refining",
+    inputsSummary: "5 metals",
+    outputSummary: "4 structural_alloys",
+  },
+  {
+    id: "torpedo",
+    label: "Space torpedoes",
+    inputsSummary: "1 structural_alloys + 1 carbon_ore + 1 volatiles",
+    outputSummary: "2 torpedo",
+  },
+  {
+    id: "volatiles",
+    label: "Ice ore milling",
+    inputsSummary: "20 ice_ore",
+    outputSummary: "8 volatiles",
   },
 ];
 
@@ -190,23 +315,39 @@ export function buildSparkline(valuesOldestFirst: readonly (number | null)[]): s
  *   `  this IC week: ask 108.00 cr, bid 90.00 cr`
  *   `  last IC week: ask 102.00 cr, bid 86.00 cr`
  */
+const HISTORY_HEAD_RE = /House prices of (.+?) here, by IC week, newest first \((\d+)\):/i;
+const HISTORY_ROW_RE =
+  /^\s*(this IC week|last IC week|\d+\s+IC weeks ago):\s*ask\s+([^,]+),\s*bid\s+(.+)$/i;
+
+/**
+ * Folds one server line into the `+market/history` reply accumulator (48e L8,
+ * clients:G5). A heading starts a fresh reply; a week row joins the reply under
+ * way until the heading's count is reached. Any other line leaves it alone, so
+ * the reply is whole however long the series and whatever else the log shows.
+ * Returns the new accumulator, or `null` when the line is not part of a reply.
+ */
+export function foldMarketHistoryLine(acc: readonly string[], line: string): string[] | null {
+  if (HISTORY_HEAD_RE.test(line)) return [line];
+  if (acc.length === 0 || !HISTORY_ROW_RE.test(line)) return null;
+  const head = acc[0]!.match(HISTORY_HEAD_RE);
+  const want = head ? Number(head[2]) : 0;
+  if (acc.length - 1 >= want) return null;
+  return [...acc, line];
+}
+
 export function parseMarketHistoryLines(lines: readonly string[]): ParsedPriceHistory {
   let goodLabel: string | null = null;
   const rows: PriceHistoryRow[] = [];
 
   for (const raw of lines) {
-    const headMatch = raw.match(
-      /House prices of (.+?) here, by IC week, newest first \(\d+\):/i,
-    );
+    const headMatch = raw.match(HISTORY_HEAD_RE);
     if (headMatch) {
       goodLabel = headMatch[1]!.trim();
       rows.length = 0;
       continue;
     }
 
-    const rowMatch = raw.match(
-      /^\s*(this IC week|last IC week|\d+\s+IC weeks ago):\s*ask\s+([^,]+),\s*bid\s+(.+)$/i,
-    );
+    const rowMatch = raw.match(HISTORY_ROW_RE);
     if (rowMatch) {
       const when = rowMatch[1]!.trim();
       const askText = rowMatch[2]!.trim();
@@ -246,6 +387,32 @@ export function parseMarketHistoryLines(lines: readonly string[]): ParsedPriceHi
   };
 }
 
+/**
+ * The chassis the simulator lobby's `SIM UNIT` takes (48e L8, clients:G8): unit
+ * type ids under `crates/tacsim/content/units/`, the same list Unity offers
+ * (`TacSimMissionOverlays.cs`). `scout`, `missile_carrier` and `heavy_mech`
+ * name no unit and the lobby refused them.
+ */
+export const SIM_UNIT_CHASSIS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "line_tank", label: "Line Tank" },
+  { id: "line_tank_laser", label: "Laser Tank" },
+  { id: "heavy_mk1", label: "Heavy Mk1" },
+  { id: "biped_mk1", label: "Biped Mk1" },
+  { id: "biped_mk2", label: "Biped Mk2" },
+  { id: "scout_mk1", label: "Scout Mk1" },
+];
+
+/**
+ * A job line on the id the player typed (48e L8, clients:G6): `verb id` or
+ * `verb id go`. With no id there is no line: the old placeholder `1` named no
+ * job, so the server only answered with its usage line.
+ */
+export function formatJobCommand(verb: string, jobId: string, go: boolean): string | null {
+  const id = jobId.trim();
+  if (!/^\S+$/.test(id)) return null;
+  return go ? `${verb} ${id} go` : `${verb} ${id}`;
+}
+
 export function formatMarketHistoryCommand(goodCode: string): string {
   const clean = goodCode.trim().replace(/^tacsim:/i, "") || "volatiles";
   return `+market/history tacsim:${clean}`;
@@ -272,13 +439,20 @@ export function formatHaulPostCommand(
     : `+haul/post ${q} ${g} to=${p} fee=${f}`;
 }
 
+/**
+ * `+escort/post` takes the hull as one word, its dbref (`#123`): never a name
+ * or `ship` (48e L8, clients:G4; `tacsim::services::escort::hull_word`).
+ * Returns `null` when `hullDbref` is not a dbref, so the caller disables the
+ * button rather than send a line the server can only refuse.
+ */
 export function formatEscortPostCommand(
-  hullRef: string,
+  hullDbref: string | null,
   destPort: string,
   feeCredits: number,
   commit = true,
-): string {
-  const h = hullRef.trim() || "ship";
+): string | null {
+  const h = (hullDbref ?? "").trim();
+  if (!/^#\d+$/.test(h)) return null;
   const p = destPort.trim() || "stickney";
   const f = Math.max(1, Math.trunc(feeCredits));
   return commit

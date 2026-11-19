@@ -224,6 +224,15 @@ fn whole(v: &Value, key: &str) -> Option<u64> {
     v.get(key).and_then(Value::as_u64)
 }
 
+/// A laser mode as the player reads it: the US words `+tac/pdc` takes.
+fn mode_word(mode: &str) -> &str {
+    match mode {
+        "offence" => "offense",
+        "defence" => "defense",
+        other => other,
+    }
+}
+
 /// One mount's row: its id, its kind, its rounds (or a laser's mode), when it is ready, and
 /// what it does to the lock.
 fn mount_row(mount: &Value) -> FireRow {
@@ -237,7 +246,9 @@ fn mount_row(mount: &Value) -> FireRow {
         whole(mount, "rounds"),
         whole(mount, "rounds_max"),
     ) {
-        (Some(mode), _, _) => mode.to_owned(),
+        // The feed keeps the mind-facing `offence` / `defence`; the row prints the words
+        // the help and `+tac/pdc` use (48e L8, clients:G16).
+        (Some(mode), _, _) => mode_word(mode).to_owned(),
         (None, Some(left), Some(max)) => format!("{left}/{max}"),
         (None, Some(left), None) => format!("{left} left"),
         (None, None, _) => "-".to_owned(),
@@ -896,8 +907,8 @@ mod tests {
             text,
             [
                 FIRE_HEAD,
-                "laser_dorsal   laser     offence         ready       98 a pulse",
-                "laser_ventral  laser     defence         in 0.6 s    98 a pulse",
+                "laser_dorsal   laser     offense         ready       98 a pulse",
+                "laser_ventral  laser     defense         in 0.6 s    98 a pulse",
                 "torp_bow       tubes     16/16           ready",
                 "rail_spinal    spinal    31/32           in 2.4 s    flies 2.2 s",
                 "pdc_port       point def 4000 left       ready",

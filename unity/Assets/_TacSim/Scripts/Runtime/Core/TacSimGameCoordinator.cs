@@ -830,11 +830,11 @@ namespace TacSim.Core
                         string chosenName = Hud.GetModalInputValue();
                         if (string.IsNullOrWhiteSpace(chosenName))
                             chosenName = suggested;
-                        ExecutePlayerCommand($"+coop/enrol {chosenName}");
+                        ExecutePlayerCommand($"+coop/enroll {chosenName}");
                     }),
                     ("Account Statement", () => ExecutePlayerCommand("+coop/statement"))
                 },
-                commandPrefix: "+coop/enrol",
+                commandPrefix: "+coop/enroll",
                 defaultInputValue: suggested);
         }
 
@@ -1129,8 +1129,14 @@ namespace TacSim.Core
             {
                 if (_ws != null && _ws.IsConnected)
                 {
-                    Hud.AppendLogLine("<color=#66CCFF>> +helm/dock ceres</color>");
-                    _ws.SendLine("+helm/dock ceres");
+                    // Dock at the selected corridor destination: `+helm/dock` refuses any port the
+                    // hull is not on final approach to, so a hard-coded `ceres` failed everywhere else.
+                    string dockPort = TradeState != null && !string.IsNullOrEmpty(TradeState.SelectedDestinationPort)
+                        ? TradeState.SelectedDestinationPort
+                        : "ceres";
+                    string dockCmd = $"+helm/dock {dockPort}";
+                    Hud.AppendLogLine($"<color=#66CCFF>> {MushProtocol.EscapeUnityRichText(dockCmd)}</color>");
+                    _ws.SendLine(dockCmd);
                 }
                 return;
             }

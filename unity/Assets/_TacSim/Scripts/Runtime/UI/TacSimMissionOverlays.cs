@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using TacSim.Arena;
+using TacSim.Net;
 using TacSim.Space;
 using TacSim.Surface;
 using UnityEngine;
@@ -341,8 +342,10 @@ namespace TacSim.UI
                     var lk = _space.ActiveLock;
                     string rangeTxt = lk.RangeM >= 1000 ? $"{lk.RangeM / 1000f:0.0} km" : $"{lk.RangeM} m";
                     string lbl = string.IsNullOrEmpty(lk.Label) ? lk.ShipId : lk.Label;
+                    string safeLbl = MushProtocol.EscapeUnityRichText((lbl ?? string.Empty).ToUpperInvariant());
+                    string safeShipId = MushProtocol.EscapeUnityRichText(lk.ShipId);
                     _spaceLockSummaryText.text =
-                        $"LOCK: <b>{lbl.ToUpperInvariant()}</b> ({lk.ShipId})  |  <b>{rangeTxt}</b>  |  BAND: <color=#FFBB55><b>[{lk.Facet.ToUpperInvariant()}]</b></color>";
+                        $"LOCK: <b>{safeLbl}</b> ({safeShipId})  |  <b>{rangeTxt}</b>  |  BAND: <color=#FFBB55><b>[{lk.Facet.ToUpperInvariant()}]</b></color>";
                 }
                 else if (!string.IsNullOrEmpty(_space.LockedContactId))
                 {
@@ -445,7 +448,7 @@ namespace TacSim.UI
             sb.AppendLine($"<color=#FFEE77>{_surface.StatusSummaryLine}</color>");
             var lines = _surface.RecentSiteLines;
             for (int i = Mathf.Max(0, lines.Count - 4); i < lines.Count; i++)
-                sb.AppendLine("• " + lines[i]);
+                sb.AppendLine("• " + MushProtocol.EscapeUnityRichText(lines[i]));
             sb.Append("<color=#88CCFF>[WASD / LMB Terrain] Drive   [RMB + Scroll] Orbit Camera</color>");
             _surfaceReadingsText.text = sb.ToString();
         }

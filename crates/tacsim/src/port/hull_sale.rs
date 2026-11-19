@@ -57,6 +57,9 @@ pub const HULL_HOLD_LADEN: &str =
     "The {name}'s hold must be empty before she is listed; her hold goes to the buyer with her.";
 /// A hold that does not read: `{name}`.
 pub const HULL_HOLD_DARK: &str = "The {name}'s hold cannot be read just now; nothing was listed.";
+/// **Doc 48e (48d H-09)**: not docked where the asker stands: `{name}`.
+pub const HULL_ELSEWHERE: &str =
+    "The {name} is not docked at this market; she is listed and sold only where she lies.";
 /// In a workshop's bay: `{name}`.
 pub const HULL_IN_BAY: &str = "The {name} is in a workshop's bay; stow her before she is listed.";
 /// A leased rig in her bay: `{n}`, `{name}`.
@@ -147,6 +150,12 @@ impl mush_market::AssetSale for HullSale {
         if crate::port::bay_work::held(w, object) {
             return Some(Err(line(HULL_IN_BAY)));
         }
+        // Doc 48e (48d H-09): she is listed and sold where she lies docked (Q-48-6's local
+        // delivery): at the venue the asker stands in, the seller at the post, the buyer at the
+        // quote and the purchase.
+        if !docked_where_asked(ctx, object) {
+            return Some(Err(line(HULL_ELSEWHERE)));
+        }
         let Some(hold) = crate::port::ship::hold_vault(w, &view) else {
             return Some(Err(line(HULL_HOLD_DARK)));
         };
@@ -186,6 +195,21 @@ impl mush_market::AssetSale for HullSale {
         crate::definitions::mass::hull_budget(w, object)?;
         unit_digest(w, object)
     }
+}
+
+/// **Whether `hull` lies docked where `ctx.actor` asks from**: docked at the venue the asker
+/// stands in, or, for an asker in no venue (a clerk on a tick), docked at all.
+fn docked_where_asked(ctx: &Ctx<'_>, hull: ObjId) -> bool {
+    let crate::port::ship::Berth::Docked { def, .. } = crate::port::ship::berth_of(ctx.w, hull)
+    else {
+        return false;
+    };
+    let here = ctx
+        .w
+        .get(ctx.actor)
+        .and_then(|o| o.location)
+        .and_then(|room| mush_market::venue_gate(ctx.w)?.venue_of_room(ctx.w, room));
+    here.is_none_or(|venue| venue.as_str() == def.venue.as_str())
 }
 
 /// FNV of a hull's schema, sections and installed components, never her volatile cells: what a

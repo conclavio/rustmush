@@ -54,6 +54,8 @@ export interface PortTradeSnapshot {
   quotes: OpenBuyerQuote[];
   stowage: StowageSnapshot;
   hullName: string | null;
+  /** The helm hull's dbref as the server writes it (`#123`); `null` with no hull. */
+  hullId: string | null;
   hullDocked: boolean;
   simulator: {
     matchState: string;
@@ -71,12 +73,25 @@ export interface PendingQuoteLatch {
   requestedAtMs: number;
 }
 
+/**
+ * The lane's venue words (48e L8, clients:G7): every `port` entry's `venue` in
+ * `crates/tacsim/content/lane/ceres_phobos.json`, with its location's label.
+ * `+ship/undock`, `+haul/post to=` and `+escort/post to=` take exactly these;
+ * `kirkwood`, `vesta` and `aitken` name no venue and were refused.
+ */
 export const CORRIDOR_DESTINATIONS: ReadonlyArray<{ id: string; label: string; body: string }> = [
-  { id: "ceres", label: "Ceres Freeport", body: "1 Ceres (Main Belt Hub)" },
-  { id: "stickney", label: "Stickney Yards", body: "Phobos / Mars Orbit" },
-  { id: "kirkwood", label: "Kirkwood Depot", body: "2.5 AU Resonance Relay" },
-  { id: "vesta", label: "Rheasilvia Works", body: "4 Vesta Foundry" },
-  { id: "aitken", label: "Aitken Highport", body: "Lunar South Pole" },
+  { id: "ceres", label: "Ceres Freeport", body: "Ceres · port" },
+  { id: "stickney", label: "Stickney Yards", body: "Phobos · port" },
+  { id: "luna", label: "Aitken Highport", body: "Luna · port" },
+  { id: "deimos", label: "Voltaire Anchorage", body: "Deimos · port" },
+  { id: "titan", label: "Ligeia Terminal", body: "Titan · port" },
+  { id: "commons", label: "Freeport Commons", body: "Ceres · extraction" },
+  { id: "kerwan", label: "Kerwan Floor", body: "Ceres · extraction" },
+  { id: "ahuna", label: "Ahuna Flank", body: "Ceres · extraction" },
+  { id: "juling", label: "Juling Shadow", body: "Ceres · extraction" },
+  { id: "occator", label: "Occator Rim", body: "Ceres · extraction" },
+  { id: "rheasilvia", label: "Rheasilvia Commons", body: "Vesta · extraction" },
+  { id: "urvara", label: "Urvara Reach", body: "Ceres · extraction" },
 ];
 
 function asObj(v: unknown): Record<string, unknown> | null {
@@ -175,6 +190,7 @@ export function emptyPortTradeSnapshot(): PortTradeSnapshot {
     quotes: [],
     stowage: emptyStowageSnapshot(),
     hullName: null,
+    hullId: null,
     hullDocked: true,
     simulator: null,
   };
@@ -187,49 +203,46 @@ export function formatMinorCredits(minor: number): string {
 
 function parseListingRow(
   rowVal: unknown,
-  defaultSide: "ask" | "bid",
   goodsById: ReadonlyMap<string, GoodItemDef>,
   fallbackVenue: string,
 ): PortListingRow | null {
   const r = asObj(rowVal);
   if (!r) return null;
-  const listingId = Math.trunc(asNum(r["id"], asNum(r["listing_id"], 0)));
+  const listingId = Math.trunc(asNum(r["id"], 0));
   if (listingId <= 0) return null;
 
-  const sideRaw = asStr(r["side"], defaultSide).toLowerCase();
-  const side: "ask" | "bid" = sideRaw === "bid" ? "bid" : "ask";
-  const goodId = asStr(r["good"], asStr(r["item_id"], asStr(r["sku"])));
+  const side: "ask" | "bid" = asStr(r["side"]).toLowerCase() === "bid" ? "bid" : "ask";
+  const goodId = asStr(r["good"]);
   const goodDef = goodsById.get(goodId);
-  const itemName = asStr(
-    r["label"],
-    asStr(r["item_name"], goodDef ? goodDef.label : goodId || `Lot #${listingId}`),
-  );
-  const unitPriceMinor = Math.round(
-    asNum(
-      r["execution_price_minor"],
-      asNum(r["unit_price_minor"], asNum(r["price_minor"], 0)),
-    ),
-  );
-  const unitPriceText =
-    asStr(r["execution_price_text"]) ||
-    asStr(r["price_text"]) ||
-    formatMinorCredits(unitPriceMinor);
+  const itemName =
+    asStr(r["good_label"]) || (goodDef ? goodDef.label : goodId || `Lot #${listingId}`);
+  const unitPriceMinor = Math.round(asNum(r["unit_price_minor"], 0));
+  const unitPriceText = asStr(r["price_text"]) || formatMinorCredits(unitPriceMinor);
 
   return {
     listingId,
     side,
     goodId,
     itemName,
-    vendorName: asStr(r["vendor"], asStr(r["party"], fallbackVenue)),
-    venue: asStr(r["venue"], fallbackVenue),
-    quantity: Math.max(0, Math.trunc(asNum(r["qty"], asNum(r["quantity"], 0)))),
-    unit: asStr(r["unit"], goodDef ? goodDef.ledgerUnit : "t"),
+    vendorName: asStr(r["vendor_name"]) || fallbackVenue,
+    venue: fallbackVenue,
+    quantity: Math.max(0, Math.trunc(asNum(r["available_qty"], 0))),
+    unit: goodDef ? goodDef.ledgerUnit : "t",
     unitPriceMinor,
     unitPriceText,
     funded: asBool(r["funded"], true),
   };
 }
 
+/**
+ * Decodes a `port.trade` keyframe as the server builds it
+ * (`tacsim::client_sync::build_port_trade_frame`; the shared fixture
+ * `fixtures/port/port_trade.json` is a real frame, held to the live shape by
+ * tacsim's `port_trade_frame_matches_the_clients_shared_fixture`). 48e L8
+ * (clients:G2): the keys are the server's — `balance_minor`, `port_name`,
+ * `listings[].available_qty`, `next_after`, `open_quotes`, `ship.hull_name`,
+ * `ship.hull_id` and `ship.stowage` — never invented aliases.
+ */
 export function decodePortTradeFeed(
   data: unknown,
   goodsById: ReadonlyMap<string, GoodItemDef>,
@@ -239,80 +252,55 @@ export function decodePortTradeFeed(
   const root = asObj(data);
   if (!root) return previous;
 
-  const venueObj = asObj(root["venue"]);
-  const venueId = venueObj ? asStr(venueObj["id"], asStr(root["venue_id"])) : asStr(root["venue"], previous.venueId);
-  const venueLabel = venueObj
-    ? asStr(venueObj["label"], asStr(venueObj["name"], venueId || previous.venueLabel))
-    : asStr(root["venue_label"], venueId || previous.venueLabel);
-  const portName = asStr(root["port"], venueObj ? asStr(venueObj["port"]) : previous.portName);
+  const venueId = asStr(root["venue"]);
+  const portName = asStr(root["port_name"]) || asStr(root["aboard_docked_port"]);
+  const venueLabel = portName || venueId || previous.venueLabel;
 
-  const creditObj = asObj(root["credit"]) ?? asObj(root["account"]);
-  const creditsMinor = creditObj
-    ? Math.round(asNum(creditObj["minor"], asNum(creditObj["balance_minor"], previous.creditsMinor)))
-    : Math.round(asNum(root["credits_minor"], previous.creditsMinor));
-  const creditsText =
-    (creditObj ? asStr(creditObj["text"]) : "") ||
-    asStr(root["credits_text"]) ||
-    formatMinorCredits(creditsMinor);
+  const creditsMinor = Math.round(asNum(root["balance_minor"], previous.creditsMinor));
+  const creditsText = asStr(root["balance_text"]) || formatMinorCredits(creditsMinor);
 
   const asks: PortListingRow[] = appendPage ? [...previous.asks] : [];
   const bids: PortListingRow[] = appendPage ? [...previous.bids] : [];
   const seenIds = new Set<number>([...asks.map((a) => a.listingId), ...bids.map((b) => b.listingId)]);
 
-  const listingsArr = asArr(root["listings"]);
-  if (listingsArr) {
-    for (const item of listingsArr) {
-      const parsed = parseListingRow(item, "ask", goodsById, venueLabel);
-      if (!parsed || seenIds.has(parsed.listingId)) continue;
-      seenIds.add(parsed.listingId);
-      if (parsed.side === "bid") bids.push(parsed);
-      else asks.push(parsed);
-    }
-  }
-  const asksArr = asArr(root["asks"]);
-  if (asksArr) {
-    for (const item of asksArr) {
-      const parsed = parseListingRow(item, "ask", goodsById, venueLabel);
-      if (parsed && !seenIds.has(parsed.listingId)) {
-        seenIds.add(parsed.listingId);
-        asks.push(parsed);
-      }
-    }
-  }
-  const bidsArr = asArr(root["bids"]);
-  if (bidsArr) {
-    for (const item of bidsArr) {
-      const parsed = parseListingRow(item, "bid", goodsById, venueLabel);
-      if (parsed && !seenIds.has(parsed.listingId)) {
-        seenIds.add(parsed.listingId);
-        bids.push(parsed);
-      }
-    }
+  for (const item of asArr(root["listings"]) ?? []) {
+    const parsed = parseListingRow(item, goodsById, venueLabel);
+    if (!parsed || seenIds.has(parsed.listingId)) continue;
+    seenIds.add(parsed.listingId);
+    if (parsed.side === "bid") bids.push(parsed);
+    else asks.push(parsed);
   }
 
   const quotes: OpenBuyerQuote[] = [];
-  const quotesArr = asArr(root["quotes"]);
-  if (quotesArr) {
-    for (const qVal of quotesArr) {
-      const q = asObj(qVal);
-      if (!q) continue;
-      const quoteId = Math.trunc(asNum(q["id"], asNum(q["quote_id"], 0)));
-      const listingId = Math.trunc(asNum(q["listing_id"], asNum(q["listing"], 0)));
-      if (quoteId <= 0) continue;
-      const quantity = Math.max(1, Math.trunc(asNum(q["qty"], asNum(q["quantity"], 1))));
-      const unitPriceMinor = Math.round(
-        asNum(q["unit_price_minor"], asNum(q["execution_price_minor"], 0)),
-      );
-      const totalMinor = Math.round(asNum(q["total_minor"], unitPriceMinor * quantity));
-      quotes.push({ quoteId, listingId, quantity, unitPriceMinor, totalMinor });
-    }
+  for (const qVal of asArr(root["open_quotes"]) ?? []) {
+    const q = asObj(qVal);
+    if (!q) continue;
+    const quoteId = Math.trunc(asNum(q["quote_id"], 0));
+    if (quoteId <= 0) continue;
+    const quantity = Math.max(1, Math.trunc(asNum(q["quantity"], 1)));
+    const unitPriceMinor = Math.round(asNum(q["unit_price_minor"], 0));
+    quotes.push({
+      quoteId,
+      listingId: Math.trunc(asNum(q["listing_id"], 0)),
+      quantity,
+      unitPriceMinor,
+      totalMinor: Math.round(asNum(q["total_minor"], unitPriceMinor * quantity)),
+    });
   }
 
-  const hullObj = asObj(root["hull"]) ?? asObj(root["ship"]);
-  const stowage =
-    parseStowageNode(root["stowage"]) ??
-    (hullObj ? parseStowageNode(hullObj["stowage"]) : null) ??
-    previous.stowage;
+  const ship = asObj(root["ship"]);
+  const parsedStowage = ship ? parseStowageNode(ship["stowage"]) : null;
+  const stowage = parsedStowage
+    ? {
+        ...parsedStowage,
+        cargoLines: parsedStowage.cargoLines.map((ln) => {
+          const def = goodsById.get(ln.good);
+          return def
+            ? { ...ln, label: def.label, unit: def.ledgerUnit, massKg: def.massKgPerUnit * ln.qty }
+            : ln;
+        }),
+      }
+    : previous.stowage;
 
   let simulator: PortTradeSnapshot["simulator"] = previous.simulator;
   const simObj = asObj(root["simulator"]);
@@ -341,8 +329,11 @@ export function decodePortTradeFeed(
     };
   }
 
-  const allLoaded = [...asks, ...bids];
-  const maxId = allLoaded.reduce((acc, r) => (r.listingId > acc ? r.listingId : acc), 0);
+  const nextAfter = root["next_after"];
+  const nextAfterId =
+    typeof nextAfter === "number" && Number.isFinite(nextAfter) && nextAfter > 0
+      ? Math.trunc(nextAfter)
+      : null;
 
   return {
     venueId,
@@ -352,12 +343,13 @@ export function decodePortTradeFeed(
     creditsText,
     asks,
     bids,
-    hasMore: asBool(root["has_more"], false),
-    nextAfterId: maxId > 0 ? maxId : null,
+    hasMore: nextAfterId !== null,
+    nextAfterId,
     quotes,
     stowage,
-    hullName: hullObj ? asStr(hullObj["name"]) || previous.hullName : previous.hullName,
-    hullDocked: hullObj ? asBool(hullObj["docked"], previous.hullDocked) : previous.hullDocked,
+    hullName: ship ? asStr(ship["hull_name"]) || null : null,
+    hullId: ship ? asStr(ship["hull_id"]) || null : null,
+    hullDocked: ship ? asBool(ship["docked"], previous.hullDocked) : previous.hullDocked,
     simulator,
   };
 }

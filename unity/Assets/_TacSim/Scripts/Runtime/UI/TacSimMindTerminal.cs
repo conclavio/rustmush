@@ -84,7 +84,25 @@ namespace TacSim.UI
     /// </summary>
     public sealed class TacSimMindTerminal : MonoBehaviour
     {
-        private const int MaxPooledRows = 8;
+        /// <summary>Rows pooled up front: one full server page (`LISTINGS_PER_PAGE` = 20). A longer page grows the pool.</summary>
+        private const int MaxPooledRows = 20;
+
+        /// <summary>Every live terminal, so the HUD can ask whether any of them holds keyboard focus.</summary>
+        private static readonly List<TacSimMindTerminal> LiveTerminals = new List<TacSimMindTerminal>();
+
+        /// <summary>True when an input field of any live mind terminal is focused (gates the avatar's walk keys).</summary>
+        public static bool IsAnyInputFocused
+        {
+            get
+            {
+                for (int i = 0; i < LiveTerminals.Count; i++)
+                {
+                    var t = LiveTerminals[i];
+                    if (t != null && t.HasFocusedInput) return true;
+                }
+                return false;
+            }
+        }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void EnsureRuntimeInstance()
@@ -100,6 +118,15 @@ namespace TacSim.UI
         }
 
         public bool IsTerminalOpen => _windowRoot != null && _windowRoot.activeSelf;
+
+        /// <summary>True when one of this terminal's own input fields is focused.</summary>
+        public bool HasFocusedInput =>
+            (_sealLicenseInput != null && _sealLicenseInput.isFocused) ||
+            (_newMindNameInput != null && _newMindNameInput.isFocused) ||
+            (_rhaiSourceInput != null && _rhaiSourceInput.isFocused) ||
+            (_saveNotesInput != null && _saveNotesInput.isFocused) ||
+            (_traceUnitInput != null && _traceUnitInput.isFocused);
+
         public MindTerminalTab ActiveTab { get; private set; } = MindTerminalTab.Market;
 
         public MindMarketPageView MarketPage { get; private set; }
@@ -162,14 +189,19 @@ namespace TacSim.UI
 
         private readonly List<PooledActionRow> _marketRows = new List<PooledActionRow>(MaxPooledRows);
         private readonly List<PooledActionRow> _holdingRows = new List<PooledActionRow>(MaxPooledRows);
+        private Transform _marketRowsContent;
+        private Transform _holdingRowsContent;
 
         private void Awake()
         {
             MushWsClient.OnInstanceCreated += HandleClientInstanceCreated;
+            if (!LiveTerminals.Contains(this))
+                LiveTerminals.Add(this);
         }
 
         private void OnDestroy()
         {
+            LiveTerminals.Remove(this);
             MushWsClient.OnInstanceCreated -= HandleClientInstanceCreated;
             UnbindClient();
         }
@@ -786,6 +818,8 @@ namespace TacSim.UI
             _tabBtnImages.Clear();
             _marketRows.Clear();
             _holdingRows.Clear();
+            _marketRowsContent = null;
+            _holdingRowsContent = null;
             _libraryButtons.Clear();
 
             var canvasGo = new GameObject("MindTerminalCanvas");
@@ -909,13 +943,9 @@ namespace TacSim.UI
             _marketSummaryText = CreateTxt(_marketPane.transform, "Querying mind.market listings...", 12, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.82f, 0.92f, 1f));
             SetRect(_marketSummaryText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(4f, -64f), new Vector2(-4f, -40f));
 
-            var listArea = CreatePanel(_marketPane.transform, "MarketRowsArea", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 0f), new Vector2(0f, -68f), new Color(0.02f, 0.05f, 0.09f, 0.88f));
-            var vlg = listArea.AddComponent<VerticalLayoutGroup>();
-            vlg.spacing = 4f; vlg.padding = new RectOffset(6, 6, 6, 6);
-            vlg.childControlWidth = true; vlg.childControlHeight = false; vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
-
+            _marketRowsContent = CreateScrollingRowList(_marketPane.transform, "MarketRowsArea", -68f);
             for (int i = 0; i < MaxPooledRows; i++)
-                _marketRows.Add(CreatePooledActionRow(listArea.transform, $"MktRow_{i}"));
+                _marketRows.Add(CreatePooledActionRow(_marketRowsContent, $"MktRow_{i}"));
         }
 
         private void BuildHoldingsAndSealingPane(Transform parent)
@@ -951,13 +981,9 @@ namespace TacSim.UI
             _holdingsSummaryText = CreateTxt(_holdingsPane.transform, "Select Paid Licenses or Filed Originals above, or seal a license directly onto your berthed ship's core.", 12, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.82f, 0.92f, 1f));
             SetRect(_holdingsSummaryText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(4f, -104f), new Vector2(-4f, -82f));
 
-            var listArea = CreatePanel(_holdingsPane.transform, "HoldingsRowsArea", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 0f), new Vector2(0f, -108f), new Color(0.02f, 0.05f, 0.09f, 0.88f));
-            var vlg = listArea.AddComponent<VerticalLayoutGroup>();
-            vlg.spacing = 4f; vlg.padding = new RectOffset(6, 6, 6, 6);
-            vlg.childControlWidth = true; vlg.childControlHeight = false; vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
-
+            _holdingRowsContent = CreateScrollingRowList(_holdingsPane.transform, "HoldingsRowsArea", -108f);
             for (int i = 0; i < MaxPooledRows; i++)
-                _holdingRows.Add(CreatePooledActionRow(listArea.transform, $"HoldRow_{i}"));
+                _holdingRows.Add(CreatePooledActionRow(_holdingRowsContent, $"HoldRow_{i}"));
         }
 
         private void BuildWorkshopPane(Transform parent)
@@ -1062,6 +1088,7 @@ namespace TacSim.UI
                 ? MarketPage.Notice
                 : $"Showing {MarketPage.Rows.Count} listing(s) · Active Quotes: {MarketPage.OwnQuotes.Count} · Waiting Escrow: {MarketPage.WaitingCodes.Count}";
 
+            EnsurePooledRows(_marketRows, _marketRowsContent, MarketPage.Rows.Count, "MktRow_");
             int shown = Math.Min(MarketPage.Rows.Count, _marketRows.Count);
             for (int i = 0; i < shown; i++)
             {
@@ -1092,6 +1119,7 @@ namespace TacSim.UI
                 ? HoldingsPage.Notice
                 : $"Section: {HoldingsPage.Section.ToUpperInvariant()} · {HoldingsPage.Rows.Count} holding(s)";
 
+            EnsurePooledRows(_holdingRows, _holdingRowsContent, HoldingsPage.Rows.Count, "HoldRow_");
             int shown = Math.Min(HoldingsPage.Rows.Count, _holdingRows.Count);
             for (int i = 0; i < shown; i++)
             {
@@ -1107,15 +1135,16 @@ namespace TacSim.UI
                     SealMindToShipBerth(num);
                 }, out slot.ActA);
 
+                // Server actions: a button shows only when its word is in the row's `actions`.
                 if (r.Kind == "paid")
                 {
-                    BindRowButton(slot.BtnB, slot.BtnBLabel, "Renew", () => SendMarketAction("renew", licence: num), out slot.ActB);
-                    BindRowButton(slot.BtnC, slot.BtnCLabel, "Pay Renew", () => SendMarketAction("renew_pay", licence: num), out slot.ActC);
+                    BindRowButton(slot.BtnB, slot.BtnBLabel, "Renew", IfRowOffers(r, "renew", () => SendMarketAction("renew", licence: num)), out slot.ActB);
+                    BindRowButton(slot.BtnC, slot.BtnCLabel, "Pay Renew", IfRowOffers(r, "renew_pay", () => SendMarketAction("renew_pay", licence: num)), out slot.ActC);
                 }
                 else
                 {
-                    BindRowButton(slot.BtnB, slot.BtnBLabel, "Publish", () => SendMarketAction("publish", filed: num, form: "sealed"), out slot.ActB);
-                    BindRowButton(slot.BtnC, slot.BtnCLabel, "Withdraw", () => SendMarketAction("withdraw", filed: num), out slot.ActC);
+                    BindRowButton(slot.BtnB, slot.BtnBLabel, "Publish", IfRowOffers(r, "publish", () => SendMarketAction("publish", filed: num, form: "sealed")), out slot.ActB);
+                    BindRowButton(slot.BtnC, slot.BtnCLabel, "Withdraw", IfRowOffers(r, "withdraw", () => SendMarketAction("withdraw", filed: num)), out slot.ActC);
                 }
 
                 slot.Root.SetActive(true);
@@ -1191,6 +1220,52 @@ namespace TacSim.UI
 
             root.SetActive(false);
             return row;
+        }
+
+        /// <summary>The callback when the row's server `actions` list carries `word`, else null (the button hides).</summary>
+        public static Action IfRowOffers(MindHoldingRowView row, string word, Action callback)
+        {
+            if (row == null || callback == null) return null;
+            return row.Actions.Contains(word) ? callback : null;
+        }
+
+        /// <summary>A masked, vertically scrolling list below the pane's header; returns the content the rows go in.</summary>
+        private Transform CreateScrollingRowList(Transform parent, string name, float topOffset)
+        {
+            var viewport = CreatePanel(parent, name, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 0f), new Vector2(0f, topOffset), new Color(0.02f, 0.05f, 0.09f, 0.88f));
+            viewport.AddComponent<RectMask2D>();
+            var sr = viewport.AddComponent<ScrollRect>();
+
+            var content = new GameObject(name + "Content", typeof(RectTransform));
+            content.transform.SetParent(viewport.transform, false);
+            var contentRt = content.GetComponent<RectTransform>();
+            contentRt.anchorMin = new Vector2(0f, 1f);
+            contentRt.anchorMax = new Vector2(1f, 1f);
+            contentRt.pivot = new Vector2(0.5f, 1f);
+            contentRt.offsetMin = Vector2.zero;
+            contentRt.offsetMax = Vector2.zero;
+
+            var vlg = content.AddComponent<VerticalLayoutGroup>();
+            vlg.spacing = 4f; vlg.padding = new RectOffset(6, 6, 6, 6);
+            vlg.childControlWidth = true; vlg.childControlHeight = false; vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
+            var csf = content.AddComponent<ContentSizeFitter>();
+            csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+            csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            sr.viewport = viewport.GetComponent<RectTransform>();
+            sr.content = contentRt;
+            sr.horizontal = false;
+            sr.vertical = true;
+            sr.movementType = ScrollRect.MovementType.Clamped;
+            return content.transform;
+        }
+
+        /// <summary>Grows a row pool so every row of a server page has a slot.</summary>
+        private void EnsurePooledRows(List<PooledActionRow> pool, Transform content, int needed, string namePrefix)
+        {
+            if (content == null) return;
+            while (pool.Count < needed)
+                pool.Add(CreatePooledActionRow(content, $"{namePrefix}{pool.Count}"));
         }
 
         private static void BindRowButton(Button btn, Text lbl, string text, Action callback, out Action slotAction)
