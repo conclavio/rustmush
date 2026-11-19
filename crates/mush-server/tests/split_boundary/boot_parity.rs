@@ -934,7 +934,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // Doc 47 unit CO.10: relay v25, lane v34; doc 48 unit PL.1: relay v26, lane v35.
     // Doc 48 unit PL.2: relay v27, lane v36; doc 48 unit PL.3: relay v28, lane v37.
     // Doc 48 unit EX.3: relay v29, lane v38.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(32));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(33));
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
@@ -1481,6 +1481,7 @@ fn format_two_launch() -> tacsim::launch::LaunchDeployment {
         publisher: ObjId(1),
         source_name: name.into(),
         attestation_agent: None,
+        stipend_minor_per_ic_day: None,
     };
     LaunchDeployment {
         format: 2,

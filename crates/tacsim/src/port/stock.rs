@@ -971,6 +971,14 @@ pub(crate) fn stock_step(
                 reading.listing.map(|(_, listed)| listed),
                 reading.undrawn,
             ));
+            // Doc 48 unit EX.9: and a consumption by the day's units it has drawn and not used.
+            let net = net.saturating_sub(crate::port::consume::drawn(
+                vendor,
+                &ask.good,
+                net,
+                reading.listing.map(|(_, listed)| listed),
+                reading.undrawn,
+            ));
             if drifts(net, &reading) && state.paged.insert((row.vault, ask.good.clone())) {
                 tracing::error!(
                     vault = row.vault,
@@ -1015,6 +1023,11 @@ pub(crate) fn stock_step(
         // Doc 20 cut SM.12a (D4): the mill — a restock, then a batch — before the
         // lapsed-bid re-post.
         if let Some(step) = crate::port::mill::mill_step(ctx, state, fire, clerk, &map, &def) {
+            return step;
+        }
+        // Doc 48 unit EX.9: a house's day of consumption, after the mill.
+        if let Some(step) = crate::port::consume::consume_step(ctx, state, fire, clerk, &map, &def)
+        {
             return step;
         }
         // Doc 39 cut IN.2: a seeded part not yet listed is listed as its own lot ask. Doc 39

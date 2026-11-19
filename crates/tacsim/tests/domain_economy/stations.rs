@@ -598,7 +598,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     // Doc 48 unit PL.2: relay v27, v36; doc 48 unit PL.3: relay v28, v37.
                     // Doc 48 unit EX.3: relay v29, v38; doc 48 unit PL.5: relay v30, v39.
                     // Doc 48 unit PL.6: relay v31, v40; doc 48 unit PL.8: relay v32, v41.
-                    (LANE_PACK.into(), 41)
+                    // Doc 48 unit EX.9: relay v33, v42.
+                    (LANE_PACK.into(), 42)
                 ]
             ),
             "region.kirkwood_depot" | "region.mercury_relay" => assert!(requires.is_empty()),
@@ -1464,7 +1465,7 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(32));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(33));
     assert_eq!(
         after.get("tacsim.passengers.stickney").map(|l| l.0),
         Some(2)
@@ -2270,7 +2271,7 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     // Doc 20 cut SM.12a: the shipped relay seed is v3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(32));
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(33));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()

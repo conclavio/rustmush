@@ -299,6 +299,7 @@ fn deployment(rig: &mut Rig, hardware: HardwareCoordinates) -> (LaunchDeployment
             // Doc 17h §3 M8h: no House attests its filings unasked (the procuring House's
             // policy agent does, in the zero-PC world); the stories attest by hand.
             attestation_agent: None,
+            stipend_minor_per_ic_day: None,
         });
     }
     let [meridiani, coprates, tycho]: [HouseDeployment; 3] =
@@ -579,6 +580,23 @@ pub(crate) fn m8_world_manned(
     procurement: Option<(&str, i64, usize)>,
     manned: impl FnOnce(&mut Rig) -> (ObjId, tacsim::port::HullRow, Vec<ObjId>),
 ) -> M8World {
+    m8_world_manned_paying(procurement, None, manned)
+}
+
+/// **Doc 48 unit EX.9: the M8 world whose launch gives each named House a stipend**, `stipend`
+/// minor credits an IC day ([`m8_world`] otherwise).
+pub(crate) fn m8_world_stipended(stipend: i64) -> M8World {
+    m8_world_manned_paying(None, Some(stipend), |rig| {
+        crate::excursions::on_pad_as_at(rig, ("Pilot", 1, "Salt Moth"), ("ahuna", "ahuna_port"), 1)
+    })
+}
+
+/// [`m8_world_manned`], with each named House's stipend when `stipend` names one.
+fn m8_world_manned_paying(
+    procurement: Option<(&str, i64, usize)>,
+    stipend: Option<i64>,
+    manned: impl FnOnce(&mut Rig) -> (ObjId, tacsim::port::HullRow, Vec<ObjId>),
+) -> M8World {
     let mut rig = stocked();
     let (pilot, row, tvs) = manned(&mut rig);
     crate::excursions::enable_account_captures(&rig);
@@ -587,6 +605,16 @@ pub(crate) fn m8_world_manned(
     let hulls = procurement.map_or_else(Vec::new, |(_, _, n)| charter_hulls(&mut rig, n));
     let coordinates = hardware(&mut rig);
     let (mut deployment, operator) = deployment(&mut rig, coordinates);
+    if let Some(stipend) = stipend {
+        let houses = &mut deployment.houses;
+        for house in [
+            &mut houses.meridiani,
+            &mut houses.coprates,
+            &mut houses.tycho,
+        ] {
+            house.stipend_minor_per_ic_day = Some(stipend);
+        }
+    }
     if let Some((house, budget, _)) = procurement {
         title_hulls_to(&mut rig, house, &hulls);
         let policy = procuring_house(&mut rig, &deployment, house, budget);

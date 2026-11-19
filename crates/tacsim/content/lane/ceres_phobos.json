@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 41,
+    "version": 42,
     "kind": "campaign_seed",
-    "digest": "3ba2ea9d1fb4c83daf19a0ef1d9044a9bc95edcf7cdee9cf0d726b8b1c20036a",
+    "digest": "7c9b96141cb0557f36182630c5be161ca9a132778441e36ab9278ee33b2a91aa",
     "requires": []
   },
   "entries": {
@@ -3027,7 +3027,8 @@
             "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["chandlery"] } ],
             "bids":  [ { "good": "volatiles", "price_major": 195, "intake": 4100, "boards": ["receiving", "exchange"] },
                        { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving", "exchange"] } ],
-            "mill":  [ { "kind": "process", "ore": "volatiles", "into": "provisions", "ratio": { "ore": 5, "product": 1000 }, "with": { "good": "carbon_feedstock", "per_ratio": 1 }, "batch_t": 5, "per_ic_day_t": 5, "floor_t": 1000 } ] },
+            "mill":  [ { "kind": "process", "ore": "volatiles", "into": "provisions", "ratio": { "ore": 5, "product": 1000 }, "with": { "good": "carbon_feedstock", "per_ratio": 1 }, "batch_t": 5, "per_ic_day_t": 5, "floor_t": 1000 } ],
+            "consume": [ { "good": "provisions", "per_ic_day": 16, "export_major_per_ic_day": 160 } ] },
           { "org": "crisium_instruments", "storefront": "neighborhood.aitken_highport.item.crisium_cage",
             "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.okafor_thistlewood",
             "stock": [ { "good": "instrument_boards", "qty": 2080, "grade": 50, "issue": 1 } ],
@@ -3082,7 +3083,9 @@
           { "org": "syrtis_bonded", "storefront": "neighborhood.voltaire_anchorage.item.syrtis_cage",
             "agent": "deimos_port.clerk", "signatory": "neighborhood.voltaire_anchorage.npc.strand_villanueva",
             "bids":  [ { "good": "structural_alloys", "price_major": 460, "intake": 2400, "boards": ["receiving", "exchange"] },
-                       { "good": "instrument_boards", "price_major": 1100, "intake": 1600, "boards": ["receiving", "exchange"] } ] }
+                       { "good": "instrument_boards", "price_major": 1100, "intake": 1600, "boards": ["receiving", "exchange"] } ],
+            "consume": [ { "good": "structural_alloys", "per_ic_day": 40, "export_major_per_ic_day": 18400 },
+                         { "good": "instrument_boards", "per_ic_day": 26, "export_major_per_ic_day": 28600 } ] }
         ],
         "routes": { "stickney": [ "voltaire_stickney" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
@@ -3134,7 +3137,9 @@
           { "org": "selk_townships", "storefront": "neighborhood.ligeia_terminal.item.townships_cage",
             "agent": "titan_port.clerk", "signatory": "neighborhood.ligeia_terminal.npc.tupou_lindahl",
             "bids":  [ { "good": "structural_alloys", "price_major": 760, "intake": 720, "boards": ["receiving", "exchange"] },
-                       { "good": "instrument_boards", "price_major": 1500, "intake": 480, "boards": ["receiving", "exchange"] } ] }
+                       { "good": "instrument_boards", "price_major": 1500, "intake": 480, "boards": ["receiving", "exchange"] } ],
+            "consume": [ { "good": "structural_alloys", "per_ic_day": 12, "export_major_per_ic_day": 9120 },
+                         { "good": "instrument_boards", "per_ic_day": 8, "export_major_per_ic_day": 12000 } ] }
         ],
         "routes": { "deimos": [ "ligeia_voltaire" ], "luna": [ "ligeia_aitken" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },

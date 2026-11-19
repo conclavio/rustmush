@@ -1110,6 +1110,10 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
 
 /// **What one booking names** (`book`'s terms): the front and its facility, the recipe, the
 /// quantity, and the triple's payer and beneficiary with the payer's own account.
+/// **Doc 48 unit EX.9**: the refusal of a house's own order at a facility mothballed for its
+/// running costs.
+pub const MOTHBALLED: &str = "That facility is mothballed for its running costs: its house places      no order of its own there until they are paid.";
+
 pub(crate) struct Booking<'a> {
     /// The front.
     pub front: Front,
@@ -1151,6 +1155,11 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
         return Err(YARD_ONE_HULL.to_owned());
     }
     let house = &beneficiary == facility.owner();
+    // Doc 48 unit EX.9 (Q-48-38, -59): a mothballed facility's house places no order of its own
+    // there; a customer's, whose escrow covers its worked cost, still books.
+    if house && crate::port::upkeep::mothballed(ctx.w, facility.object()) {
+        return Err(MOTHBALLED.to_owned());
+    }
     let units = pinned.work_units().saturating_mul(u64::from(quantity));
     let booking = if house {
         0

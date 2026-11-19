@@ -51,7 +51,7 @@ const DAY: i64 = 86_400;
 
 /// The test pack: a 20-day hauler plant (480 work units) and a one-day fittings batch, both at
 /// a works. Signed at load (the content layer's digest over the authored bytes).
-fn recipes() -> String {
+pub(crate) fn recipes() -> String {
     let body = r#"{
   "manifest": { "id": "tacsim.test.works", "version": 1, "kind": "rules_definition",
                 "digest": "DIGEST", "requires": [] },
@@ -75,7 +75,7 @@ fn recipes() -> String {
     body.replace("DIGEST", &digest)
 }
 
-fn mint(rig: &mut Rig, pilot: ObjId) -> AccountId {
+pub(crate) fn mint(rig: &mut Rig, pilot: ObjId) -> AccountId {
     let treasury = port_map(&rig.tw, "ceres_port")
         .treasury
         .expect("a treasury");
@@ -91,7 +91,7 @@ fn mint(rig: &mut Rig, pilot: ObjId) -> AccountId {
 }
 
 /// An account's posted balance and held amount, minor units.
-fn money(rig: &Rig, account: AccountId) -> (i64, i64) {
+pub(crate) fn money(rig: &Rig, account: AccountId) -> (i64, i64) {
     let a = rig
         .tw
         .world()
@@ -101,18 +101,18 @@ fn money(rig: &Rig, account: AccountId) -> (i64, i64) {
     (a.posted_balance.minor(), a.held_amount.minor())
 }
 
-fn contracts(rig: &Rig) -> Vec<WorksContract> {
+pub(crate) fn contracts(rig: &Rig) -> Vec<WorksContract> {
     store(&rig.tw).works_contracts()
 }
 
-fn contract(rig: &Rig, id: u64) -> WorksContract {
+pub(crate) fn contract(rig: &Rig, id: u64) -> WorksContract {
     match store(&rig.tw).works_contract(id) {
         Some(WorksState::Present(c)) => (**c).clone(),
         other => panic!("contract {id}: {other:?}"),
     }
 }
 
-fn order_of(rig: &mut Rig, id: u64) -> WorkOrder {
+pub(crate) fn order_of(rig: &mut Rig, id: u64) -> WorkOrder {
     let order = contract(rig, id).order.expect("bound to its work order");
     let families = rig
         .tw
@@ -125,7 +125,7 @@ fn order_of(rig: &mut Rig, id: u64) -> WorkOrder {
 }
 
 /// A command, its submissions landed, then `n` port fires landed.
-fn typed_in(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
+pub(crate) fn typed_in(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
     let out = run(&mut rig.tw, who, line);
     let refused = pump(rig);
     assert!(
@@ -139,7 +139,7 @@ fn typed_in(rig: &mut Rig, who: ObjId, line: &str, fires: usize) -> String {
 
 /// Every submission staged, the industry's included (the rig's `drain` keeps tacsim's,
 /// inventory's and the market's only), landed in order; refusals are the story's to read.
-fn pump(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn pump(rig: &mut Rig) -> Vec<String> {
     let mut queued = Vec::new();
     while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
         queued.push(*submit);
@@ -156,7 +156,7 @@ fn pump(rig: &mut Rig) -> Vec<String> {
 
 /// **Every due production occurrence**, landed as the server's schedule driver lands it (the
 /// test world drives no schedule source of its own; `m8_world`'s and `ic_slice_loop`'s idiom).
-fn produce(rig: &mut Rig) {
+pub(crate) fn produce(rig: &mut Rig) {
     for _ in 0..4_096 {
         let page = rig
             .tw
@@ -200,7 +200,7 @@ fn produce(rig: &mut Rig) {
 }
 
 /// One port fire (6 s on), everything it staged landed.
-fn fire_all(rig: &mut Rig) -> Vec<String> {
+pub(crate) fn fire_all(rig: &mut Rig) -> Vec<String> {
     let t = rig.tw.world().now().saturating_add(6);
     rig.tw.set_now(t);
     let _ = rig.tw.fire_due(t.saturating_mul(1_000));
@@ -209,7 +209,7 @@ fn fire_all(rig: &mut Rig) -> Vec<String> {
 }
 
 /// The IC clock to `target`, everything staged on the way landed.
-fn ic_to(rig: &mut Rig, target: i64) {
+pub(crate) fn ic_to(rig: &mut Rig, target: i64) {
     let rate = i64::from(crate::driving_rig::world_rate(&rig.tw).max(1));
     let ahead = target.saturating_sub(ic_now(&rig.tw)).max(0);
     let real = ((ahead + rate - 1) / rate).max(1);
@@ -231,7 +231,7 @@ fn swept(rig: &mut Rig) {
     }
 }
 
-fn settle(rig: &mut Rig, fires: usize) {
+pub(crate) fn settle(rig: &mut Rig, fires: usize) {
     for _ in 0..fires {
         let _ = fire_all(rig);
     }
@@ -256,7 +256,7 @@ fn new_id(rig: &Rig, before: &[u64]) -> u64 {
         .expect("a new order")
 }
 
-fn booked(rig: &mut Rig, who: ObjId, line: &str) -> u64 {
+pub(crate) fn booked(rig: &mut Rig, who: ObjId, line: &str) -> u64 {
     let before: Vec<u64> = contracts(rig).into_iter().map(|c| c.id).collect();
     let out = typed_in(rig, who, line, 1);
     assert!(out.contains("booked at the works"), "{out}");
@@ -268,7 +268,7 @@ fn booked(rig: &mut Rig, who: ObjId, line: &str) -> u64 {
     id
 }
 
-fn sail_to_stickney(rig: &mut Rig, crews: &[(ObjId, &HullRow, u64)]) {
+pub(crate) fn sail_to_stickney(rig: &mut Rig, crews: &[(ObjId, &HullRow, u64)]) {
     let mut arrive = 0;
     for (pilot, row, seed) in crews {
         load(rig, row, 60, 40, *seed);

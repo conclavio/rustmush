@@ -897,6 +897,21 @@ fn account_of(tw: &TestWorld, who: ObjId) -> mush_economy::AccountId {
 }
 
 /// `(posted, held)` of an account, minor units.
+/// **Doc 48 unit EX.9: what the organisation owning `account` has paid in running costs** in
+/// all, minor units (0 for any other owner).
+fn upkept(tw: &TestWorld, account: mush_economy::AccountId) -> i64 {
+    match economy(tw)
+        .snapshot()
+        .account(account)
+        .map(|a| a.owner.clone())
+    {
+        Some(mush_org::PrincipalId::Organization(org)) => {
+            tacsim::port::upkeep::paid_by(tw.world(), org)
+        }
+        _ => 0,
+    }
+}
+
 fn balances(tw: &TestWorld, account: mush_economy::AccountId) -> (i64, i64) {
     economy(tw)
         .snapshot()
@@ -2213,6 +2228,7 @@ fn sm3a_the_return_arm_repossesses_after_a_staff_cancel() {
     let (posted, held) = balances(&rig.tw, account);
     let occ = occator_account(&rig.tw);
     let (occ_posted, _) = balances(&rig.tw, occ);
+    let upkeep = upkept(&rig.tw, occ);
     let forfeit = REPOSSESSED_FORFEIT
         .replace("{mark}", "OWP-TV-01")
         .replace("{name}", "Salt Moth");
@@ -2229,7 +2245,11 @@ fn sm3a_the_return_arm_repossesses_after_a_staff_cancel() {
     }
     assert!(heard.contains(&forfeit), "{heard}\nwanted: {forfeit}");
     assert!(heard.contains(&notice), "{heard}\nwanted: {notice}");
-    assert_eq!(balances(&rig.tw, occ).0, occ_posted + DEPOSIT_MINOR);
+    // Doc 48 unit EX.9: the fires after the skip also catch up Occator's running costs.
+    assert_eq!(
+        balances(&rig.tw, occ).0 + upkept(&rig.tw, occ) - upkeep,
+        occ_posted + DEPOSIT_MINOR
+    );
     assert_eq!(
         balances(&rig.tw, account),
         (posted - DEPOSIT_MINOR, held - DEPOSIT_MINOR),

@@ -104,6 +104,24 @@ fn ledger(rig: &mut Rig, entry: &str, org: &str, ore: &str) -> Option<MillLedger
     typed(&mut rig.tw, &handle, &id)
 }
 
+/// **Doc 48 unit EX.9**: the crew-days of provisions the Habitat Board has used up.
+fn used(rig: &mut Rig) -> u64 {
+    let handles = rig
+        .tw
+        .world()
+        .module_state::<tacsim::port::consume::ConsumeHandles>()
+        .cloned()
+        .expect("the consumption handles");
+    let id = tacsim::port::consume::ConsumeId::derive(
+        &cid(LANE_PACK),
+        &cid(LUNA),
+        &cid(HABITAT),
+        &cid(PROVISIONS),
+    )
+    .expect("an id");
+    typed(&mut rig.tw, &handles.ledgers, &id).map_or(0, |ledger| ledger.units)
+}
+
 /// `org`'s `mill_listed` counter for its mill keyed by `key` at `entry`.
 fn counter(rig: &Rig, entry: &str, org: &str, ore: &str) -> Option<u64> {
     port_map(&rig.tw, entry).vendors[&cid(org)]
@@ -488,7 +506,8 @@ async fn pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cy
             pooled(&mut rig, LUNA, HABITAT, FEEDSTOCK),
             pooled(&mut rig, LUNA, HABITAT, PROVISIONS),
         ),
-        (0, 0, 1_999)
+        (0, 0, 1_999 - used(&mut rig)),
+        "doc 48 unit EX.9: less the crew-days the Board has used up"
     );
     assert_eq!(
         (
@@ -498,14 +517,20 @@ async fn pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cy
         ),
         (0, 0, 2_083)
     );
-    assert_eq!(listed(&rig, LUNA, HABITAT, PROVISIONS), Some(1_999));
+    // Doc 48 unit EX.9: the ask carries the pool, less a day's draw for the Board's people.
+    let pool = pooled(&mut rig, LUNA, HABITAT, PROVISIONS);
+    let ask = listed(&rig, LUNA, HABITAT, PROVISIONS).expect("the provisions ask stands");
+    assert!(ask <= pool && pool <= ask + 16, "listed {ask}, pool {pool}");
     assert_eq!(listed(&rig, LUNA, CRISIUM, BOARDS), Some(2_083));
     assert!(tacsim::port_tick::drift_pages(rig.tw.world()).is_empty());
 
     // ---- (5) The output bought ----
     buy(&mut rig, captain, LUNA, HABITAT, PROVISIONS, 1);
     buy(&mut rig, captain, LUNA, CRISIUM, BOARDS, 1);
-    assert_eq!(listed(&rig, LUNA, HABITAT, PROVISIONS), Some(1_998));
+    // Doc 48 unit EX.9: less the crew-days the Board has used up, and any day's draw for them.
+    let ask = listed(&rig, LUNA, HABITAT, PROVISIONS).expect("the provisions ask stands");
+    let left = 1_998 - used(&mut rig);
+    assert!(ask <= left && left <= ask + 16, "listed {ask}, {left} left");
     assert_eq!(listed(&rig, LUNA, CRISIUM, BOARDS), Some(2_082));
     assert_eq!(
         hold_pool(&mut rig.tw, hold, BOARDS),

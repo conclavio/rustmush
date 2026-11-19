@@ -335,6 +335,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::space::tick::action_descriptor(&outcome_refs)?);
     // Doc 35 cut SF.R26c: the customs picket's ruling.
     actions.push(crate::space::customs::action_descriptor(&outcome_refs)?);
+    // Doc 48 unit EX.9: a house's day of consumption.
+    actions.push(crate::port::consume::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -690,6 +692,9 @@ fn register_providers(
     // Doc 35 cut SF.R26c: the customs ruling's family and provider; a seizure debits through
     // the delegated inventory families.
     crate::space::customs::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
+    // Doc 48 unit EX.9: the consumption ledgers and their act; the debit rides the delegated
+    // inventory families.
+    crate::port::consume::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
@@ -757,6 +762,8 @@ fn register_outcomes(
     outcomes.push(crate::space::tick::outcome_descriptor()?);
     // Doc 35 cut SF.R26c: the customs picket's ruling.
     outcomes.push(crate::space::customs::outcome_descriptor()?);
+    // Doc 48 unit EX.9: a house's day of consumption.
+    outcomes.push(crate::port::consume::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
     }
@@ -1753,6 +1760,14 @@ pub struct PortTickState {
     pub(crate) supply_day: BTreeMap<(u64, CanonicalId), i64>,
     /// **Doc 39 cut IN.5**: the house purchases warned about this boot, by `(stores, good)`.
     pub(crate) supply_warned: BTreeSet<(u64, CanonicalId)>,
+    /// **Doc 48 unit EX.9**: the consumption rows done or refused today, by
+    /// `(storefront vault, good)`, with the IC day. Bounded by
+    /// `crate::port::stock::MAX_CLERK_ROWS`; stale days are pruned at each insert.
+    pub(crate) consume_refused: BTreeMap<(u64, CanonicalId), i64>,
+    /// **Doc 48 unit EX.9**: the running costs' worked slot-seconds this IC day, by facility
+    /// object, and the IC instant they were last added to (`crate::port::upkeep`). RAM only: a
+    /// restart counts the rest of that day's work as idle.
+    pub(crate) upkeep_worked: BTreeMap<u32, crate::port::upkeep::Worked>,
 }
 
 impl PortTickState {
@@ -2156,6 +2171,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::berth::tick(ctx);
     // Doc 48 cut EX.7: each hire's wage, in step with the crew contracts.
     crate::detachment::crew::wages::tick(ctx);
+    // Doc 48 unit EX.9: running costs, the export faucet's refunds and the House stipends.
+    crate::port::upkeep::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
