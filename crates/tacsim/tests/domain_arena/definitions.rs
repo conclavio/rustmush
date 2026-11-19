@@ -611,10 +611,11 @@ fn a_value_past_a_bound_refuses_naming_the_field() {
 /// **Doc 49 unit CC.2 (Q-49-2, Q-49-10, Q-49-19): the 5 s floor and the
 /// automatic-defence class.** A mount a player or a mind fires is held to
 /// 5,000 ms: the shipped coaxial gun loads at it and is refused a millisecond
-/// under it. A mount authored `automatic_defence` keeps the engine's own
-/// 1,000 ms floor instead (no ground mount ships in the class): the coaxial gun
-/// so marked loads at 1,000 ms and is refused at 999. Until CC.2 the floor was
-/// W14's 1,000 ms for every mount.
+/// under it. A mount authored `automatic_defence` is held to the engine's own
+/// 1,000 ms floor instead (no ground mount ships in the class), and since doc
+/// 48e kernel G13 is refused at load whatever its cycle, until a ground fire
+/// path answers incoming rounds on its own. Until CC.2 the floor was W14's
+/// 1,000 ms for every mount.
 #[test]
 fn cc2_the_floor_is_five_seconds_and_automatic_defence_keeps_the_engines() {
     use tacsim::definitions::weapon::{AUTOMATIC_DEFENCE_FLOOR_MS, CYCLE_FLOOR_MS};
@@ -640,15 +641,16 @@ fn cc2_the_floor_is_five_seconds_and_automatic_defence_keeps_the_engines() {
             &format!("\"cycle_ms\": {cycle}, \"automatic_defence\": true"),
         )
     };
-    assert!(
-        tacsim::pack::load_pack(&automatic(1_000)).is_ok(),
-        "automatic defense keeps the engine's floor"
-    );
     let error = tacsim::pack::load_pack(&automatic(999)).expect_err("under the engine's floor");
     assert!(
         error.to_string().contains("the automatic-defense floor"),
         "{error}"
     );
+    // Doc 48e kernel G13: no ground fire path answers rounds on its own yet, so a mount marked
+    // automatic is refused at load even at the engine's floor, where it would be a 1 s gun.
+    let error = tacsim::pack::load_pack(&automatic(1_000)).expect_err("no automatic ground mount");
+    assert!(error.to_string().contains("automatic_defence"), "{error}");
+    assert!(tacsim::pack::load_pack(&automatic(5_000)).is_err());
 }
 
 /// **Doc 49 unit CC.2 (Q-49-3, Q-49-19, Q-49-22): the ruled ground palette, as

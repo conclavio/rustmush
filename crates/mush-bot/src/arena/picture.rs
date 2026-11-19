@@ -469,9 +469,10 @@ pub struct Own {
     pub emcon: Option<bool>,
     /// **Each mount's `(id, left, full)` off the last `STATUS` rounds row** (the
     /// game's doc 49 cut CC.4), in the tank's own order; empty until one is
-    /// read this match. Read by nothing yet: the rounds the pilot acts on stay
-    /// in [`Picture::weapons`], off `WEAPONSTATUS`, whose rows the stale-ready
-    /// guard reads against the acks.
+    /// read this match. The rounds the pilot acts on stay in
+    /// [`Picture::weapons`], off `WEAPONSTATUS`; this row teaches each gun how
+    /// many rounds one shot spends ([`Weapon::rounds_per_shot`], doc 48e kernel
+    /// G11) and lowers a count the acks left too high.
     pub rounds: Vec<(String, u32, u32)>,
 }
 
@@ -605,6 +606,12 @@ pub struct Weapon {
     /// paired refusal un-counted: the rounds a row must be short of the last
     /// row's figure before it shows every one of them has left.
     pub shots_since_read: u32,
+    /// **The rounds one `Firing` ack spends** (doc 48e kernel G11): learned
+    /// from the first row that reads lower after acks (its fall over the acks,
+    /// rounded up), the most such figure seen; `0` until then, counted as one.
+    /// A machine gun's burst is ten, so counting one a shot fired into the
+    /// reserve.
+    pub rounds_per_shot: u32,
     /// **The last ack set the lattice clock** (cut AN.3; the module head):
     /// set or cleared by every ack.
     pub on_lattice: bool,
@@ -637,7 +644,26 @@ impl Weapon {
     /// row's figure less the acks since it, so a gun is not typed at once its
     /// magazine is spent, whenever the next `WEAPONSTATUS` comes.
     pub fn rounds_left(&self) -> u32 {
-        self.rounds.saturating_sub(self.shots_since_read)
+        self.rounds
+            .saturating_sub(self.shots_since_read.saturating_mul(self.per_shot()))
+    }
+
+    /// The rounds one shot spends, as counted: the learned figure, or one.
+    #[must_use]
+    pub fn per_shot(&self) -> u32 {
+        self.rounds_per_shot.max(1)
+    }
+
+    /// **Learn the rounds a shot spends from a count of `left`** (doc 48e kernel
+    /// G11): read after this gun's last row and its acks since, a lower count is
+    /// those acks' fall, so a shot is that fall over the acks, rounded up. A
+    /// count no lower, or with no ack since, teaches nothing.
+    fn learn_per_shot(&mut self, left: u32) {
+        if self.shots_since_read == 0 || left >= self.rounds {
+            return;
+        }
+        let per = (self.rounds - left).div_ceil(self.shots_since_read);
+        self.rounds_per_shot = self.rounds_per_shot.max(per);
     }
 }
 
@@ -1354,6 +1380,18 @@ impl Picture {
             }
             Line::StatusRounds { mounts } => {
                 journal = false;
+                // Doc 48e kernel G11: each gun learns its rounds a shot from the
+                // row, and a count the acks left above it comes down to it.
+                for (id, left, _) in mounts {
+                    if let Some(weapon) = self.weapons.iter_mut().find(|w| w.named(id)) {
+                        weapon.learn_per_shot(*left);
+                        if *left < weapon.rounds_left() {
+                            weapon.rounds = left.saturating_add(
+                                weapon.shots_since_read.saturating_mul(weapon.per_shot()),
+                            );
+                        }
+                    }
+                }
                 self.own.rounds = mounts.clone();
                 self.status_row(now_ms);
             }
@@ -2730,7 +2768,10 @@ impl Picture {
         // unless its rounds show every acked shot has left since the last
         // row (a machine gun cycles in a second, well inside the guard).
         let shots_left = weapon.read_ms > 0
-            && row.rounds.saturating_add(weapon.shots_since_read) <= weapon.rounds;
+            && row
+                .rounds
+                .saturating_add(weapon.shots_since_read.saturating_mul(weapon.per_shot()))
+                <= weapon.rounds;
         let stale_ready = row.ready
             && !shots_left
             && weapon
@@ -2745,6 +2786,7 @@ impl Picture {
         if stale_ready {
             return;
         }
+        weapon.learn_per_shot(row.rounds);
         weapon.shots_since_read = 0;
         weapon.short = row.short.clone();
         weapon.ready = row.ready;
@@ -4836,6 +4878,60 @@ mod tests {
             &["machine_gun (mg)  ready  200 of 500 round(s)"],
         );
         assert_eq!(weapon(&p, "machine_gun").rounds_left(), 200);
+    }
+
+    /// **Doc 48e kernel G11: a machine gun's burst spends ten rounds.** The
+    /// first row after an ack teaches the gun its rounds a shot, so the next
+    /// acks count ten each and the count reaches the reserve when the magazine
+    /// does; a `STATUS` rounds row teaches it as well, between `WEAPONSTATUS`
+    /// rows.
+    #[test]
+    fn g11_a_burst_counts_the_rounds_it_spends() {
+        let mut p = Picture::default();
+        rows_at(&mut p, 0, &["machine_gun (mg)  ready  160 of 600 round(s)"]);
+        feed(&mut p, &[(1_000, "Firing machine_gun.")]);
+        rows_at(
+            &mut p,
+            6_000,
+            &["machine_gun (mg)  ready  150 of 600 round(s)"],
+        );
+        let mg = weapon(&p, "machine_gun");
+        assert_eq!((mg.rounds_per_shot, mg.rounds_left()), (10, 150));
+        feed(&mut p, &[(7_000, "Firing machine_gun.")]);
+        assert_eq!(
+            weapon(&p, "machine_gun").rounds_left(),
+            140,
+            "one burst is ten rounds, not one"
+        );
+
+        // From `STATUS`'s rounds row, between two `WEAPONSTATUS` rows.
+        let mut p = Picture::default();
+        rows_at(&mut p, 0, &["machine_gun (mg)  ready  160 of 600 round(s)"]);
+        feed(&mut p, &[(1_000, "Firing machine_gun.")]);
+        assert_eq!(
+            weapon(&p, "machine_gun").rounds_left(),
+            159,
+            "not learned yet"
+        );
+        feed(
+            &mut p,
+            &[
+                (2_000, "Callsign RA."),
+                (2_000, "Red Tank 1: power online, 0 kph, heading 000°"),
+                (2_000, "  at 1000 m east, 975 m north; scope clear"),
+                (2_000, "  rounds machine_gun 150/600"),
+            ],
+        );
+        let mg = weapon(&p, "machine_gun");
+        assert_eq!((mg.rounds_per_shot, mg.rounds_left()), (10, 150));
+        feed(&mut p, &[(6_000, "Firing machine_gun.")]);
+        assert_eq!(weapon(&p, "machine_gun").rounds_left(), 140);
+        // A cannon's shot is one round, and stays one.
+        rows_at(&mut p, 10_000, &["cannon  ready  20 of 24 round(s)"]);
+        feed(&mut p, &[(11_000, "Firing cannon.")]);
+        rows_at(&mut p, 26_000, &["cannon  ready  19 of 24 round(s)"]);
+        let cannon = weapon(&p, "cannon");
+        assert_eq!((cannon.per_shot(), cannon.rounds_left()), (1, 19));
     }
 
     /// **Rounds come down by acks between rows** (cut AL.1), and a row sets

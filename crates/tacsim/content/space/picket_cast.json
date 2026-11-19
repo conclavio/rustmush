@@ -17,7 +17,7 @@
     "unit": "tacsim.unit.raider_heavy",
     "overlay": "tacsim.unit.raider_heavy",
     "doctrine": "belt_raider",
-    "doctrine_sha256": "30c626b357dad8e7ce520fb9754cb09b7e88c07738a44f7a42996c56f98261f6",
+    "doctrine_sha256": "47ca72c7efdaabd92c741850138258314966394fa9ee501309ce7140f05ccbe4",
     "pos_m": [120000, 0, 0],
     "vel_mmps": [-20000, 0, 0]
   },
@@ -28,7 +28,7 @@
     "unit": "tacsim.unit.corvette",
     "overlay": "tacsim.unit.corvette_interdictor",
     "doctrine": "interdictor_patrol",
-    "doctrine_sha256": "11ba28b7b608f38b0bc22f2c147a26f00b9cc8ed45c2d188f009a4caa7502909",
+    "doctrine_sha256": "dce6882f4a92a7f69aab1cee83a314e9bcbb458a46e43d94eb0d87d052256eda",
     "pos_m": [18000, 0, 0],
     "vel_mmps": [-20000, 0, 0]
   },

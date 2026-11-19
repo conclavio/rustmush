@@ -99,12 +99,15 @@ Space engagements combine three offensive mount classes with distinct flight pro
 +tac/torp [<contact>[=<count>]]
 +tac/railgun [<contact>]
 +tac/pdc <auto|manual|point|offense>
++tac/pdc <laser>=<point|offense>
 ```
 
 - `+tac/beam [<contact>]` fires your lasers in offense at a detected hostile contact. Its effective reach is `25 km`: inside it a pulse does at least half its close-range damage, and past it less and less. A pulse still lands out to the laser's full reach (`150 km` on a turret, `100 km` on the customs corvette's heavier laser), but there it is a token, a point or two: enough to answer fire, not to hurt a hull. Lasers are for drones and soft targets; the torpedoes and the spinal gun hurt a hull. A laser in offense cycles in `5 s`, and each pulse builds hull heat.
 - `+tac/torp [<contact>[=<count>]]` launches a torpedo salvo (default `1`) at a detected hostile contact (`10–500 km` envelope, accelerating under 3D proportional navigation before ballistic coast).
 - `+tac/railgun [<contact>]` fires spinal or turret railguns at a detected hostile contact along a world-frame lead solution (`10–250 km` envelope; countered by lateral jinking thrust during time-of-flight).
-- `+tac/pdc <auto|manual|point|offense>` configures point-defense autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire.
+- `+tac/pdc <auto|manual|point|offense>` configures point-defense autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire. Each laser says whether it switched: one her fit does not allow in that mode stays as it was.
+- `+tac/pdc <laser>=<point|offense>` switches one laser by its id, so one can stand in point defense while another fires.
+- A salvo or a round the ship refuses (cycling, an empty magazine, too hot, a lock past reach) says so and why; nothing left the mount.
 
 When fire disables a hull's drive or structure, the vessel remains in place as an open-epoch derelict with its flight recorder and cargo intact for salvage and towing.
 
