@@ -20,6 +20,8 @@
 //! - [`logging`] — the tracing subscriber + rotating file appender setup.
 //! - [`signals`] — the one terminate/interrupt future all three binaries wait
 //!   on, including the rule that a supervised child ignores Ctrl-C.
+//! - [`time_source`] — [`TimeSource`], the world's clock provider: the OS clock
+//!   in production, tokio's (pausable) clock in tests (doc 43c, TS.10b).
 //! - [`ipguard`] — the per-IP auth-failure guard + siteban mirror.
 //! - [`accounts`] — transport-agnostic account helpers (validation, argon2id
 //!   hashing/verification, the one-time `accounts.json` import).
@@ -58,6 +60,9 @@ pub mod offer_keys;
 pub mod preflight;
 pub mod resolution_keys;
 pub mod signals;
+pub mod time_source;
+
+pub use time_source::TimeSource;
 
 /// The current wall clock as unix seconds (0 if the system clock is broken).
 #[must_use]
