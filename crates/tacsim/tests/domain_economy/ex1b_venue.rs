@@ -643,3 +643,62 @@ async fn g15_a_scrap_vault_is_no_purchase_destination() {
     );
     assert!(drain(&mut rig.tw).is_empty(), "nothing was queued");
 }
+
+/// **Doc 48e, exchange G18 (48d H-11): a listing whose hold is never placed gives its fee
+/// back.** A player posts a lot from her locker and pays the 10 cr listing fee; the hold's
+/// submission is lost before it lands. The reconcile withdraws the listing and refunds the fee
+/// it paid. Before the fix the listing was withdrawn and the fee kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g18_a_listing_whose_hold_never_lands_refunds_its_fee() {
+    let mut rig = crate::driving_rig::stocked();
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    let seller = with_account(&mut rig, "Lister", 54);
+    mint(&mut rig, seller);
+    teleport(&mut rig.tw, seller, exchange);
+    let _ = run(&mut rig.tw, seller, "+locker/open");
+    let locker = locker_vault(&rig, seller).expect("the locker");
+    seed_lot(&mut rig, locker, SIGHT, 1, LotId(0xe1d8));
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let said = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/post {} price=500", LotId(0xe1d8)),
+    );
+    assert!(said.contains("Listed for sale as #"), "{said}");
+    let listing = said
+        .split("Listed for sale as #")
+        .nth(1)
+        .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse::<u64>().ok())
+        .map(mush_market::ListingId)
+        .expect("a listing id");
+    // The hold's submission is lost: never landed.
+    let lost = drain(&mut rig.tw);
+    assert!(!lost.is_empty(), "the hold was staged");
+    let refunded = |rig: &crate::driving_rig::Rig| {
+        rig.tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .expect("economy")
+            .transactions()
+            .any(|t| t.description == format!("market listing #{} fee refunded", listing.0))
+    };
+    for _ in 0..12 {
+        if refunded(&rig) {
+            break;
+        }
+        crate::driving_rig::sweep(&mut rig.tw, 30);
+        let queued = drain(&mut rig.tw);
+        crate::driving_rig::land_quietly(&mut rig, &queued);
+    }
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<mush_market::MarketStore>()
+            .and_then(|m| m.listing(listing))
+            .is_none(),
+        "the listing is withdrawn"
+    );
+    assert!(refunded(&rig), "its fee is refunded");
+}

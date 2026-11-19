@@ -2030,3 +2030,91 @@ fn g21_the_hold_reconcile_reaches_a_listing_past_the_first_lap() {
         "the healthy listings stand"
     );
 }
+
+/// **Doc 48e, exchange G22 (48d M-02): one live bid for a good at each venue.** Bea bids for
+/// iron at Luna and then at Mars: both stand. A second bid for iron at Luna is still refused.
+/// Before the fix the Mars bid was refused as a second bid.
+#[test]
+fn g22_a_bidder_bids_for_one_good_at_two_venues() {
+    let mut r = rig();
+    let bea = r.bea;
+    let line = |venue: &str| {
+        format!(
+            "+market/bid ex1a:iron qty=2 price=100 into={} market={venue}",
+            bea.vault.vault().0
+        )
+    };
+    // A second venue, Mars, with a vendor of its own, so it trades in credits.
+    ok(&mut r.tw, GOD, "@org/create Hermes");
+    let hermes = OrgId(1);
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!("@account/open org:#{}={CREDIT}", hermes.0),
+    );
+    let strongbox =
+        r.tw.world_mut()
+            .create(ObjKind::Thing, "Hermes strongbox", GOD, None)
+            .expect("a container");
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@vault/create Hermes=container:#{} owner=org:#{}",
+            strongbox.0, hermes.0
+        ),
+    );
+    let vault = economy(&r.tw)
+        .snapshot()
+        .vaults()
+        .find(|v| v.owner == PrincipalId::Organization(hermes))
+        .expect("the Hermes vault")
+        .id;
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor create #{}=#{} name=Hermes market=mars",
+            hermes.0, vault.0
+        ),
+    );
+    let luna = ok(&mut r.tw, bea.who, &line("luna"));
+    assert!(luna.contains("Bid #"), "{luna}");
+    let mars = ok(&mut r.tw, bea.who, &line("mars"));
+    assert!(mars.contains("Bid #"), "a bid at another venue: {mars}");
+    let again = err(&mut r.tw, bea.who, &line("luna"));
+    assert!(
+        again.contains("You already bid for that good here"),
+        "{again}"
+    );
+}
+
+/// **Doc 48e, exchange G18 (48d H-11): a lot ask posted while the last is still landing is
+/// refused before anything is charged.** Sal posts one lot; before its hold lands she posts a
+/// second: refused with [`mush_market::seller::POST_BUSY`], and no second listing stands. Before
+/// the fix the second was listed, its hold's submission voided, and its fee kept.
+#[test]
+fn g18_a_post_while_the_last_is_landing_is_refused() {
+    let mut r = rig();
+    let sal = r.sal;
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 4, LotId(0xd8));
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 4, LotId(0xd9));
+    let first = ok(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/post {} price=100 market=luna", LotId(0xd8)),
+    );
+    assert!(first.contains("Listed for sale as #"), "{first}");
+    let second = err(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/post {} price=100 market=luna", LotId(0xd9)),
+    );
+    assert!(second.contains(mush_market::seller::POST_BUSY), "{second}");
+    assert_eq!(
+        market(&r.tw)
+            .personal_listings_of(&PrincipalId::Object(sal.who))
+            .count(),
+        1
+    );
+}
