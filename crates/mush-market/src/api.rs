@@ -1530,9 +1530,9 @@ pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, Mar
 ///
 /// # Errors
 ///
-/// [`MarketError::NoStanding`] when there is no such bid; [`MarketError::Bad`] for a
-/// non-positive price or an intake over `MAX_QUANTITY` (an intake of 0 is the
-/// exhausted marker, doc 18 cut IC10).
+/// [`MarketError::NoStanding`] when there is no such vendor bid (a person's bid is its
+/// bidder's own); [`MarketError::Bad`] for a non-positive price or an intake over
+/// `MAX_QUANTITY` (an intake of 0 is the exhausted marker, doc 18 cut IC10).
 pub fn revise_wanted(
     ctx: &mut Ctx<'_>,
     id: ListingId,
@@ -1543,7 +1543,9 @@ pub fn revise_wanted(
         .w
         .module_state::<MarketStore>()
         .and_then(|s| s.listing(id).cloned())
-        .filter(|l| l.source.is_wanted())
+        // Doc 48e (exchange G28; 48d Low): a personal bid's escrow is its price × quantity,
+        // so only its bidder's own verbs revise it; a vendor's bid is this seam's.
+        .filter(|l| l.source.is_wanted() && !l.is_personal())
     else {
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     };

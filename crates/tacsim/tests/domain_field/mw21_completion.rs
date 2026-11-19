@@ -1296,6 +1296,7 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
             // Doc 47 unit CO.2 (R-47-2): the house default's answer beside the bought mind.
             let answers = match command {
                 BubbleInputCommand::FireOffensiveLasers { target_id, .. }
+                | BubbleInputCommand::FireMount { target_id, .. }
                 | BubbleInputCommand::FireRailgun { target_id, .. }
                 | BubbleInputCommand::FireTorpedoSalvo { target_id, .. } => {
                     *target_id != now.corvette && was.fired_on_by.contains(target_id)

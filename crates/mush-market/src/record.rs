@@ -1109,20 +1109,23 @@ pub struct Quote {
     /// **Who besides the seller is paid out of a sale into a standing bid** (doc 18
     /// §4.1 "The share", D-18-24; cut IC10): the proceeds policy's cuts, frozen at the
     /// offer, each an `Exact` payout of the contract. At most [`MAX_PROCEEDS_CUTS`], and
-    /// only on a Deliver quote.
+    /// only on a lot quote: a sale into a bid, or (doc 48e, exchange G5) a person's lot ask
+    /// whose policy took a share, frozen at the accept.
     #[serde(default)]
     pub cuts: Vec<ProceedsCut>,
     /// What the proceeds policy measured its cuts on — for the Co-op, the margin over
-    /// reference; `Amount::ZERO` otherwise (cut IC10). Only a Deliver quote carries a
-    /// non-zero basis.
+    /// reference; `Amount::ZERO` otherwise (cut IC10). Only a lot quote carries a non-zero
+    /// basis (a sale into a bid, or a person's lot ask: doc 48e, exchange G5).
     #[serde(default = "zero")]
     pub basis: Amount,
     /// Bumped by every write.
     pub revision: u64,
 }
 
-/// The most payees a sale into a bid pays beyond its two parties (doc 18 §4.1, cut
-/// IC10, lead ruling (b)): one — the Co-op First Captain Trust's share.
+/// The most payees a proceeds policy names on one sale beyond its two parties (doc 18 §4.1,
+/// cut IC10, lead ruling (b)): one — the Co-op First Captain Trust's share. A sale into a
+/// person's bid also pays the venue's cut and levy (doc 48e, exchange G4), which the quote
+/// does not carry: they are the venue's, read again from it.
 pub const MAX_PROCEEDS_CUTS: usize = 1;
 /// The longest label a proceeds cut carries (cut IC10).
 pub const MAX_PROCEEDS_LABEL_BYTES: usize = 32;
@@ -1208,9 +1211,9 @@ pub struct PaidLot {
 }
 
 impl PaidLot {
-    /// The record's invariants: two distinct endpoints, a cutoff on exactly the Draw
-    /// and Deliver kinds, never before the deal itself, and a well-formed marker on
-    /// exactly the Deliver kind (cut IC10).
+    /// The record's invariants: two distinct endpoints, a cutoff on the Draw and Deliver
+    /// kinds (and, since doc 48e's exchange G2, on a hold-backed sale too), never before the deal
+    /// itself, and a well-formed marker on exactly the Deliver kind (cut IC10).
     ///
     /// # Errors
     /// [`RecordError`] naming the broken invariant.
@@ -1221,9 +1224,12 @@ impl PaidLot {
         if self.grade > mush_inventory::MAX_GRADE {
             return Err(RecordError("a paid lot's grade is out of range"));
         }
-        if self.lot.is_some() && self.kind != PaidKind::Hold {
+        // Doc 48e (exchange G3; 48d C-05): a part sold into a bid hands over its exact lot too
+        // (`sell_into_bid` writes `Deliver` with the lot), and a quote that failed this on
+        // reload was skipped, losing its re-stage, its bid restore and its tape row.
+        if self.lot.is_some() && !matches!(self.kind, PaidKind::Hold | PaidKind::Deliver) {
             return Err(RecordError(
-                "only a hold-backed sale hands over an exact lot",
+                "only a hold-backed sale or a sale into a bid hands over an exact lot",
             ));
         }
         match (self.kind, self.draw_by, self.marker.as_deref()) {
@@ -1234,6 +1240,8 @@ impl PaidLot {
                 Ok(())
             }
             (PaidKind::Hold, None, None) => Ok(()),
+            // Doc 48e (exchange G2): a hold-backed sale settles on its receipt by a cutoff.
+            (PaidKind::Hold, Some(by), None) if by >= self.accepted_at => Ok(()),
             (PaidKind::Draw, _, Some(_)) => Err(RecordError("a paid draw carries no marker")),
             (PaidKind::Draw, _, None) => {
                 Err(RecordError("a paid draw carries a cutoff after its deal"))
@@ -1242,7 +1250,7 @@ impl PaidLot {
                 "a paid delivery carries a cutoff after its deal and a marker",
             )),
             (PaidKind::Hold, _, _) => Err(RecordError(
-                "a paid hold sale carries no cutoff and no marker",
+                "a paid hold sale carries no marker, and a cutoff only after its deal",
             )),
         }
     }
@@ -1435,12 +1443,13 @@ impl TryFrom<QuoteWire> for Quote {
 
 /// The proceeds half of a quote's wire check (doc 18 §4.1, cut IC10).
 fn check_proceeds(w: &QuoteWire) -> Result<(), RecordError> {
-    let delivers = w.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Deliver);
+    // Doc 48e (exchange G5): a person's lot ask freezes its policy share too.
+    let delivers = w.lot.is_some();
     if w.cuts.len() > MAX_PROCEEDS_CUTS {
         return Err(RecordError("a quote pays too many proceeds cuts"));
     }
     if (!w.cuts.is_empty() || w.basis.minor() != 0) && !delivers {
-        return Err(RecordError("only a sale into a bid carries proceeds cuts"));
+        return Err(RecordError("only a lot sale carries proceeds cuts"));
     }
     if w.basis.minor() < 0 {
         return Err(RecordError("a quote's proceeds basis is negative"));
@@ -1842,12 +1851,24 @@ mod tests {
         assert!(check(paid("deliver", Some(3_100), None)).is_err());
         assert!(check(paid("deliver", Some(3_100), Some("XYZ"))).is_err());
         assert!(check(paid("deliver", Some(3_100), Some(&"a".repeat(97)))).is_err());
-        // A Draw keeps its rule and carries no marker; a Hold carries neither.
+        // A Draw keeps its rule and carries no marker. Doc 48e (exchange G2): a Hold carries
+        // no marker, and a cutoff (its receipt's) never before its deal.
         assert!(check(paid("draw", Some(3_100), None)).is_ok());
         assert!(check(paid("draw", Some(3_100), Some(MARKER))).is_err());
         assert!(check(paid("hold", None, None)).is_ok());
         assert!(check(paid("hold", None, Some(MARKER))).is_err());
-        assert!(check(paid("hold", Some(3_100), None)).is_err());
+        assert!(check(paid("hold", Some(3_100), None)).is_ok());
+        assert!(check(paid("hold", Some(99), None)).is_err());
+        // Doc 48e (exchange G3; 48d C-05): a part sold into a bid hands over its exact lot, and
+        // its quote reloads; a Draw still carries none.
+        let with_lot = |kind: &str, draw_by: Option<i64>, marker: Option<&str>| {
+            let mut v = paid(kind, draw_by, marker);
+            v["lot"] = serde_json::json!(7);
+            check(v)
+        };
+        assert!(with_lot("deliver", Some(3_100), Some(MARKER)).is_ok());
+        assert!(with_lot("hold", None, None).is_ok());
+        assert!(with_lot("draw", Some(3_100), None).is_err());
     }
 
     fn sale_quote(
@@ -1870,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn ic10_a_quotes_proceeds_split_rides_only_a_sale_into_a_bid() {
+    fn ic10_a_quotes_proceeds_split_rides_only_a_lot_sale() {
         let deliver = paid("deliver", Some(3_100), Some(MARKER));
         let share = serde_json::json!([{ "to": 7, "amount": 40000, "label": "Co-op share" }]);
         let q: Quote = serde_json::from_value(sale_quote(deliver.clone(), share.clone(), 160_000))
@@ -1899,11 +1920,23 @@ mod tests {
         assert!(loads(sale_quote(deliver.clone(), exact, 0)));
         // A negative basis.
         assert!(!loads(sale_quote(deliver, serde_json::json!([]), -1)));
-        // Cuts or a basis on anything but a Deliver quote.
+        // Doc 48e (exchange G5): a person's lot ask freezes its share too, on any lot leg;
+        // a quote with no lot leg carries neither cuts nor a basis.
         let draw = paid("draw", Some(3_100), None);
-        assert!(!loads(sale_quote(draw.clone(), share, 0)));
-        assert!(!loads(sale_quote(draw.clone(), serde_json::json!([]), 5)));
+        assert!(loads(sale_quote(draw.clone(), share.clone(), 0)));
+        assert!(loads(sale_quote(draw.clone(), serde_json::json!([]), 5)));
         assert!(loads(sale_quote(draw, serde_json::json!([]), 0)));
+        assert!(!loads(sale_quote(serde_json::Value::Null, share, 0)));
+        assert!(!loads(sale_quote(
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            5
+        )));
+        assert!(loads(sale_quote(
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            0
+        )));
     }
 
     // ---- doc 48 cut EX.1a: the personal seller's wire rules ----

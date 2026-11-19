@@ -292,3 +292,86 @@ fn ex5_an_org_member_with_the_capability_takes_a_job_for_the_org() {
     // The officer holds the job for Brask: the retrieval custody follows the org.
     assert!(retrieval::held_by(rig.tw.world(), hull, officer).is_some());
 }
+
+fn posted(rig: &Rig, account: AccountId) -> i64 {
+    rig.tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .account(account)
+                .map(|a| a.posted_balance.minor())
+        })
+        .expect("the account")
+}
+
+/// **48e services:G26: a defaulting acceptor's bond is the poster's** (Q-48-13). The acceptor
+/// takes a bonded retrieval and never delivers: when the performance window ends the job lapses,
+/// the bond goes to the poster and not back to the acceptor, and Tycho is offered the job.
+#[test]
+fn ex5_an_acceptor_who_never_delivers_forfeits_the_bond_to_the_poster() {
+    let mut rig = stocked_tuned(tune);
+    let (poster, hull) = posted_job(&mut rig, "Poster", 85, 0);
+    let (taker, _) = crate::driving_rig::prospector(&mut rig, "Laggard", 86, "Laggard Moth");
+    let wallet = account(&rig, &PrincipalId::Object(taker));
+    mint(&mut rig, wallet, 500_000);
+    let poster_wallet = account(&rig, &PrincipalId::Object(poster));
+    let taken = run(
+        &mut rig.tw,
+        taker,
+        &format!("+salvage/accept #{} go", hull.0),
+    );
+    assert!(taken.contains("You accept job"), "{taken}");
+    let queued = crate::driving_rig::drain(&mut rig.tw);
+    crate::driving_rig::land_quietly(&mut rig, &queued);
+    let order = retrieval::order_of(rig.tw.world(), hull).expect("the job");
+    let lapsed_contract = order.contract;
+    let by = order.perform_by_ic.expect("a performance window");
+    // Just before the window ends: what each holds (the charters' own daily charges run all the
+    // while, so the balances are read across the lapse alone).
+    let _ = crate::driving_rig::to_ic(&mut rig, by - 600);
+    let (taker_before, poster_before) = (posted(&rig, wallet), posted(&rig, poster_wallet));
+
+    // The window ends with nothing delivered.
+    let _ = crate::driving_rig::to_ic(&mut rig, by + 60);
+    for _ in 0..4 {
+        let (_, queued) = crate::driving_rig::fire(&mut rig);
+        crate::driving_rig::land_quietly(&mut rig, &queued);
+        crate::driving_rig::sweep(&mut rig.tw, 60);
+        crate::in10_pools::settle(&mut rig, 1);
+    }
+    let state = rig
+        .tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .contract(mush_economy::ContractId(lapsed_contract))
+                .map(|c| c.state)
+        })
+        .expect("the lapsed contract");
+    assert!(
+        matches!(state, mush_economy::ContractState::Expired),
+        "the lapsed job forfeits, it is not cancelled: {state:?}"
+    );
+    let next = retrieval::order_of(rig.tw.world(), hull).expect("the job");
+    assert_ne!(next.contract, lapsed_contract, "posted afresh");
+    assert_ne!(
+        next.acceptor,
+        Some(PrincipalId::Object(taker)),
+        "the laggard holds it no longer"
+    );
+    // A day's charges at most beside the bond: 1,000 cr.
+    let (bond, slack) = (FEE_CR * 100 / 5, 100_000);
+    let lost = taker_before - posted(&rig, wallet);
+    assert!(
+        (bond..bond + slack).contains(&lost),
+        "the bond is not back with the acceptor: {lost}"
+    );
+    assert_eq!(held(&rig, wallet), 0, "nothing of it still held");
+    let gained = posted(&rig, poster_wallet) - poster_before;
+    assert!(
+        (bond - slack..=bond).contains(&gained),
+        "the bond is the poster's: {gained}"
+    );
+}

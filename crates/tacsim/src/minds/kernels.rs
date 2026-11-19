@@ -677,12 +677,14 @@ fn space_map(space: &crate::space::view::SpaceView) -> Dynamic {
 /// **`space_contact(v, id)`** — what a hull in a space bubble reads of the
 /// contact `id` beyond its row, as a map; `()` on the ground and for an id the
 /// view does not hold: `elevation_deg`, `vx_cms`, `vy_cms`, `vz_cms` (its
-/// velocity in the bubble's frame), `stop` (the stop it is under) and `emcon`
-/// (the posture its emissions read as).
+/// velocity in the bubble's frame), `closing_cms` (how fast the range between
+/// them falls, negative while it opens; doc 48e kernel G8), `stop` (the stop it
+/// is under) and `emcon` (the posture its emissions read as).
 fn space_contact_map(row: &crate::space::view::SpaceContactView) -> Dynamic {
     let mut map = mush_mind::rhai::Map::new();
     let [vx, vy, vz] = row.vel_cms;
     map.insert("elevation_deg".into(), int(row.elevation_deg));
+    map.insert("closing_cms".into(), int(row.closing_cms));
     map.insert("vx_cms".into(), int(vx));
     map.insert("vy_cms".into(), int(vy));
     map.insert("vz_cms".into(), int(vz));

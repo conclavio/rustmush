@@ -174,10 +174,16 @@ impl mush_market::AssetSale for HullSale {
                 .replace("{n}", &n)
                 .replace("{name}", &name)));
         }
-        match hold_laden(ctx, hold) {
-            Some(false) => {}
-            Some(true) => return Some(Err(line(HULL_HOLD_LADEN))),
-            None => return Some(Err(line(HULL_HOLD_DARK))),
+        let Some(goods) = w.module_state::<TacsimStore>().and_then(TacsimStore::goods) else {
+            return Some(Err(line(HULL_HOLD_DARK)));
+        };
+        for good in goods.goods.iter().filter(|g| g.consumable.is_none()) {
+            // Doc 48e (48d H-07): a hold holding a divisible good's lot is laden too.
+            match crate::port_tick::read_held(ctx, EndpointRef(hold), &good.id) {
+                Ok(0) => {}
+                Ok(_) => return Some(Err(line(HULL_HOLD_LADEN))),
+                Err(_) => return Some(Err(line(HULL_HOLD_DARK))),
+            }
         }
         Some(Ok(catalog_of(design.as_str())))
     }
@@ -283,44 +289,19 @@ pub(crate) fn core_leg_hold_empty(ctx: &Ctx<'_>, hull: ObjId) -> Result<(), Stri
     let hold = crate::port::ship::hull_view(w, hull)
         .and_then(|view| crate::port::ship::hold_vault(w, &view))
         .ok_or_else(|| line(HULL_HOLD_DARK))?;
-    match hold_laden(ctx, hold) {
-        Some(false) => Ok(()),
-        Some(true) => Err(line(HULL_HOLD_LADEN)),
-        None => Err(line(HULL_HOLD_DARK)),
-    }
-}
-
-/// **Whether a hold carries cargo** (doc 48e, 48c#10 and 48d H-07): any goods-table row that is no
-/// consumable, pooled or held in lots. A divisible lot (an exact-lot purchase, an `@inv/split`
-/// lot) is no pool, and before this the empty-hold checks read the pool alone, so a hold full of
-/// lots sold as empty. Her fuel and stores go with her and are not counted. `None` when the hold
-/// does not read.
-pub(crate) fn hold_laden(ctx: &Ctx<'_>, hold: mush_economy::VaultId) -> Option<bool> {
-    let goods = ctx
-        .w
+    let goods = w
         .module_state::<TacsimStore>()
-        .and_then(TacsimStore::goods)?;
-    let tally = ctx
-        .w
-        .module_state::<mush_inventory::InventoryHandles>()
-        .map(|handles| handles.0.lot_tally.clone());
-    let endpoint = EndpointRef(hold);
+        .and_then(TacsimStore::goods)
+        .ok_or_else(|| line(HULL_HOLD_DARK))?;
     for good in goods.goods.iter().filter(|g| g.consumable.is_none()) {
-        if crate::port_tick::read_pool(ctx, endpoint, &good.id).ok()? > 0 {
-            return Some(true);
-        }
-        let in_lots = match &tally {
-            Some(tally) => {
-                let key = mush_inventory::pool_key(endpoint, &good.id).ok()?;
-                ctx.action_state(tally, &key).ok()?.copied().unwrap_or(0)
-            }
-            None => 0,
-        };
-        if in_lots > 0 {
-            return Some(true);
+        // Doc 48e (48d H-07): a hold holding a divisible good's lot is laden too.
+        match crate::port_tick::read_held(ctx, EndpointRef(hold), &good.id) {
+            Ok(0) => {}
+            Ok(_) => return Err(line(HULL_HOLD_LADEN)),
+            Err(_) => return Err(line(HULL_HOLD_DARK)),
         }
     }
-    Some(false)
+    Ok(())
 }
 
 /// **Whether `hull` has a governed core fitted**: its fitted core is one the economy manages.

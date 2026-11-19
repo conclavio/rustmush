@@ -72,7 +72,7 @@ use crate::port::ship::{
     self, Berth, HullView, SHIP_CLEARED, SHIP_UNDER_WAY, STATUS_CLEARED, STATUS_UNDER_WAY,
     berth_of, hold_vault, hull_view,
 };
-use crate::port_tick::{PortTickState, Step, gone, notify, queue_notice, read_pool};
+use crate::port_tick::{PortTickState, Step, gone, notify, queue_notice};
 use crate::sky::Sky;
 use crate::store::{TacsimStore, put_voyage};
 
@@ -1464,7 +1464,7 @@ pub(crate) struct Basis {
 /// **What the rigs in `view`'s bay weigh** (doc 20 cut SM.3a; §4.3, D-20-7): the
 /// rows [`crate::port::vehicle::carried_rigs`] lists and their weight through
 /// [`crate::port::passage::carried_kg`], each hopper read through
-/// [`read_pool`]. A hull with no bay carries nothing.
+/// [`crate::port_tick::read_held`]. A hull with no bay carries nothing.
 ///
 /// # Errors
 ///
@@ -1474,7 +1474,8 @@ pub(crate) fn carried_of(
     view: &HullView<'_>,
 ) -> Result<(Vec<crate::port::passage::CarriedRig>, u64), String> {
     carried_of_with(ctx.w, view, &|endpoint, good| {
-        read_pool(ctx, endpoint, good)
+        // Doc 48e (48c #6): the planner weighs what the hold holds, lots and all.
+        crate::port_tick::read_held(ctx, endpoint, good)
     })
 }
 
@@ -1513,7 +1514,8 @@ pub(crate) fn carried_of_with(
 /// (`PlanError::Unreadable`; reviewer F6).
 pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
     basis_with(ctx.w, view, occupants, &|endpoint, good| {
-        read_pool(ctx, endpoint, good)
+        // Doc 48e (48c #6): the planner weighs what the hold holds, lots and all.
+        crate::port_tick::read_held(ctx, endpoint, good)
     })
 }
 
@@ -1921,7 +1923,9 @@ fn laden_home_line(
     port: &str,
 ) -> Option<String> {
     let w: &World = ctx.w;
-    let read = |endpoint: EndpointRef, good: &CanonicalId| read_pool(ctx, endpoint, good);
+    let read = |endpoint: EndpointRef, good: &CanonicalId| {
+        crate::port_tick::read_held(ctx, endpoint, good)
+    };
     let read_rig = |tv: ObjId| crate::port::site_map::SurfaceReads::rig(ctx, tv);
     let rigs: Vec<ObjId> = crate::port::tv::live_on_hull(w, view.hull())
         .iter()

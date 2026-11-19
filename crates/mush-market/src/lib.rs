@@ -216,6 +216,7 @@ pub use trade::{
     AssetSaleTerms, asset_on_sale, asset_sale_spec, asset_state, asset_state_fact, live_title_sale,
     sells_title_of,
 };
+// Doc 48e (exchange G1): an exact lot sells whole.
 pub use trade::{
     BID_LAPSED, BUY_NEEDS_APPROVAL, BUY_NOT_AGREED, BidSale, BidSaleRequest, BidTake, CANNOT_COVER,
     CAPACITY_UNREADABLE, DEAL_WINDOW_SECS, DELIVER_LANDED, DELIVER_TOO_LATE, DELIVER_UNCONFIRMED,
@@ -229,6 +230,9 @@ pub use trade::{
     WANTED_IS_A_BID, accept, accept_at, accept_into, artefact_stamp, bid_take, is_current, quote,
     restage_deliver, restage_draw, sell, sell_into_bid,
 };
+pub use trade::{WHOLE_LOT, sells_quantity};
+// Doc 48e (exchange G2): whether a hold-backed listing's sale is in force.
+pub use lot::sale_in_force;
 
 pub mod mind_house;
 pub mod mind_house_renewal;

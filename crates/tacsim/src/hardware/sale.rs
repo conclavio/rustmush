@@ -195,12 +195,27 @@ impl SaleTerms {
 }
 
 /// **The market's core catalogue entries** (doc 47 CO.13): the three governed cores, each at its
-/// finished price (`CoreClass::finished_minor`), an `asset` (one titled object, not a lot). A
-/// reference price, never a charge: the shop's buy-back reads it.
+/// finished price, an `asset` (one titled object, not a lot). A reference price, never a charge:
+/// the shop's buy-back reads it. The price is the shipped hardware catalogue's, the one the
+/// counter charges (doc 48e, production G15), or the v1 table's
+/// (`CoreClass::finished_minor`) where the catalogue does not load.
 ///
 /// # Errors
 /// An entry that does not decode.
 pub fn core_catalog_entries() -> Result<Vec<mush_market::CatalogEntry>, String> {
+    let shipped = crate::hardware::PublishedHardware::shipped_once();
+    catalog_entries_at(|class| {
+        shipped.map_or_else(
+            || class.finished_minor(),
+            |hardware| hardware.catalogue().finished_minor(class),
+        )
+    })
+}
+
+/// [`core_catalog_entries`] at `finished`'s prices.
+fn catalog_entries_at(
+    finished: impl Fn(mush_economy::core_integration::CoreClass) -> i64,
+) -> Result<Vec<mush_market::CatalogEntry>, String> {
     use mush_economy::core_integration::CoreClass;
     [
         (CoreClass::I, "Class I governed core"),
@@ -214,7 +229,7 @@ pub fn core_catalog_entries() -> Result<Vec<mush_market::CatalogEntry>, String> 
             "pack": CORE_PACK,
             "definition_version": 1,
             "name": name,
-            "baseline": class.finished_minor(),
+            "baseline": finished(class),
             "legality": "legal",
             "representation": "asset",
             "stackable": false,
@@ -737,13 +752,37 @@ mod tests {
             mush_economy::core_integration::CoreClass::II,
             mush_economy::core_integration::CoreClass::III,
         ]) {
-            assert_eq!(
-                entry.baseline.map(|b| b.minor()),
-                Some(class.finished_minor())
-            );
+            let shipped = crate::hardware::PublishedHardware::shipped_once()
+                .expect("the shipped hardware")
+                .catalogue()
+                .finished_minor(class);
+            assert_eq!(entry.baseline.map(|b| b.minor()), Some(shipped));
             assert_eq!(entry.pack.as_str(), CORE_PACK);
         }
         assert_eq!(credits(400_000), "4000.00cr");
+    }
+
+    /// **Doc 48e, production G15**: the buy-back's baselines are the prices the entries are
+    /// built at (the shipped catalogue's), not the v1 table's, so a catalogue that reprices a
+    /// class moves its buy-back with it.
+    #[test]
+    fn e48_the_entries_are_built_at_the_catalogue_s_prices() {
+        let entries =
+            catalog_entries_at(|class| 1_000 + i64::try_from(class.catalog_index()).unwrap_or(0))
+                .expect("the entries decode");
+        let baselines: Vec<Option<i64>> = entries
+            .iter()
+            .map(|entry| entry.baseline.map(|b| b.minor()))
+            .collect();
+        assert_eq!(
+            baselines,
+            [
+                mush_economy::core_integration::CoreClass::I,
+                mush_economy::core_integration::CoreClass::II,
+                mush_economy::core_integration::CoreClass::III,
+            ]
+            .map(|class| Some(1_000 + i64::try_from(class.catalog_index()).unwrap_or(0)))
+        );
     }
 
     /// **The launch bring-up and this crate agree** (`deploy/instance/launch-bringup.py`): the
