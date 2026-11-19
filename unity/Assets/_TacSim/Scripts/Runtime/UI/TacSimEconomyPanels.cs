@@ -50,6 +50,26 @@ namespace TacSim.UI
     {
         private static readonly string[] SparkBlocks = { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" };
 
+        private static readonly string[] CanonicalSurveyIds =
+        {
+            "ahuna-a",
+            "kerwan-f",
+            "juling-k",
+            "occator-p"
+        };
+
+        private static readonly (string code, string label)[] HistoryAndHaulGoods =
+        {
+            ("volatiles", "Volatiles"),
+            ("metals", "Metals"),
+            ("structural_alloys", "Alloys"),
+            ("industrial_parts", "Parts"),
+            ("carbon_feedstock", "Carbon"),
+            ("instrument_boards", "Boards"),
+            ("propellant", "Fuel"),
+            ("provisions", "Stores")
+        };
+
         private static readonly Regex RxHistoryHeader = new Regex(
             @"House prices of (.+?) here, by IC week, newest first \(\d+\):",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -60,6 +80,7 @@ namespace TacSim.UI
 
         private static readonly Regex RxTagStrip = new Regex(@"<[^>]+>", RegexOptions.Compiled);
         private static readonly Regex RxDecimal = new Regex(@"(-?\d+(?:\.\d+)?)", RegexOptions.Compiled);
+        private static readonly Regex RxHullDbref = new Regex(@"^#[1-9]\d*$", RegexOptions.Compiled);
 
         private readonly Font _font;
         private readonly Action<string> _emitCommand;
@@ -71,21 +92,120 @@ namespace TacSim.UI
         public GameObject IndustryTabBody { get; private set; }
 
         public string SelectedHistoryGood { get; private set; } = "volatiles";
+        public string SelectedHaulGood { get; private set; } = "volatiles";
+        public string SelectedSurveyId { get; private set; } = "ahuna-a";
         public ParsedPriceHistorySummary LatestHistory { get; private set; } = new ParsedPriceHistorySummary();
+
+        private int _selectedHaulGoodIndex;
+        private int _selectedSurveyIndex;
 
         private Text _historySparkText;
         private Text _historyOutputText;
         private Text _jobsOutputText;
         private Text _industryOutputText;
+        private Text _haulGoodBtnLabel;
         private InputField _jobIdInput;
+        private InputField _surveyIdInput;
+        private InputField _haulQtyInput;
+        private InputField _haulFeeInput;
         private InputField _workOrderIdInput;
+        private InputField _bayHullInput;
         private InputField _debtIdInput;
         private readonly List<Image> _goodBtnImages = new List<Image>();
 
+        // Two-click confirmation state for financial / contract commitments (`U-M15`)
+        private string _armedConfirmKey;
+        private Text _armedConfirmLabel;
+        private string _armedOriginalText;
+        private float _armedAtTime;
+        private const float ConfirmWindowSeconds = 8f;
+
         public bool IsAnyInputFocused =>
             (_jobIdInput != null && _jobIdInput.isFocused) ||
+            (_surveyIdInput != null && _surveyIdInput.isFocused) ||
+            (_haulQtyInput != null && _haulQtyInput.isFocused) ||
+            (_haulFeeInput != null && _haulFeeInput.isFocused) ||
             (_workOrderIdInput != null && _workOrderIdInput.isFocused) ||
+            (_bayHullInput != null && _bayHullInput.isFocused) ||
             (_debtIdInput != null && _debtIdInput.isFocused);
+
+        public static bool IsValidHullDbref(string candidate)
+        {
+            return !string.IsNullOrWhiteSpace(candidate) && RxHullDbref.IsMatch(candidate.Trim());
+        }
+
+        public void SetSelectedHaulGood(string goodCode)
+        {
+            if (string.IsNullOrWhiteSpace(goodCode)) return;
+            string trimmed = goodCode.Trim();
+            SelectedHaulGood = trimmed;
+            for (int i = 0; i < HistoryAndHaulGoods.Length; i++)
+            {
+                if (string.Equals(HistoryAndHaulGoods[i].code, trimmed, StringComparison.OrdinalIgnoreCase))
+                {
+                    _selectedHaulGoodIndex = i;
+                    break;
+                }
+            }
+            if (_haulGoodBtnLabel != null)
+                _haulGoodBtnLabel.text = $"Good: {SelectedHaulGood}";
+        }
+
+        public void SetSelectedSurveyId(string surveyId)
+        {
+            if (string.IsNullOrWhiteSpace(surveyId)) return;
+            string trimmed = surveyId.Trim();
+            SelectedSurveyId = trimmed;
+            for (int i = 0; i < CanonicalSurveyIds.Length; i++)
+            {
+                if (string.Equals(CanonicalSurveyIds[i], trimmed, StringComparison.OrdinalIgnoreCase))
+                {
+                    _selectedSurveyIndex = i;
+                    break;
+                }
+            }
+            if (_surveyIdInput != null)
+                _surveyIdInput.text = trimmed;
+        }
+
+        public void DisarmConfirm()
+        {
+            if (_armedConfirmLabel != null && !string.IsNullOrEmpty(_armedOriginalText))
+                _armedConfirmLabel.text = _armedOriginalText;
+            _armedConfirmKey = null;
+            _armedConfirmLabel = null;
+            _armedOriginalText = null;
+        }
+
+        public void ClearHistorySeries(string statusPrompt = null)
+        {
+            LatestHistory = new ParsedPriceHistorySummary();
+            if (_historySparkText != null)
+            {
+                _historySparkText.text = !string.IsNullOrEmpty(statusPrompt)
+                    ? statusPrompt
+                    : "Select a commodity above to fetch 24 IC-week house ask & bid trends (`+market/history`).";
+            }
+        }
+
+        public void ResetSessionState()
+        {
+            DisarmConfirm();
+            SelectedHistoryGood = "volatiles";
+            SetSelectedHaulGood("volatiles");
+            SetSelectedSurveyId("ahuna-a");
+            ClearHistorySeries();
+            if (_historyOutputText != null) _historyOutputText.text = "Ready.";
+            if (_jobsOutputText != null) _jobsOutputText.text = "Ready.";
+            if (_industryOutputText != null) _industryOutputText.text = "Ready.";
+            if (_jobIdInput != null) _jobIdInput.text = "1";
+            if (_haulQtyInput != null) _haulQtyInput.text = "10";
+            if (_haulFeeInput != null) _haulFeeInput.text = "250";
+            if (_workOrderIdInput != null) _workOrderIdInput.text = "1";
+            if (_bayHullInput != null) _bayHullInput.text = string.Empty;
+            if (_debtIdInput != null) _debtIdInput.text = "1";
+            HighlightGoodButtons(0);
+        }
 
         public TacSimEconomyPanels(
             Font font,
@@ -241,31 +361,139 @@ namespace TacSim.UI
 
         public void IngestEchoLines(IReadOnlyList<string> echoLines)
         {
+            IngestTabEchoLines(TradeTerminalTab.History, echoLines);
+        }
+
+        public void IngestTabEchoLines(TradeTerminalTab tab, IReadOnlyList<string> echoLines)
+        {
             if (echoLines == null) return;
-            var parsed = ParseMarketHistoryLines(echoLines);
-            if (parsed.RowsNewestFirst.Count > 0)
-                LatestHistory = parsed;
-
             string joined = echoLines.Count > 0 ? string.Join("\n", echoLines) : "Ready.";
-            if (_historySparkText != null)
-            {
-                if (LatestHistory.RowsNewestFirst.Count > 0)
-                {
-                    string lbl = string.IsNullOrEmpty(LatestHistory.GoodLabel) ? SelectedHistoryGood : LatestHistory.GoodLabel;
-                    _historySparkText.text =
-                        $"<color=#66DDFF><b>{MushProtocol.EscapeUnityRichText(lbl)} — 24-WEEK HOUSE SERIES</b></color>\n" +
-                        $"ASK TREND: <color=#66EEFF><b>{LatestHistory.AskSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestAsk)}</b>  (Band {LatestHistory.AskRange})\n" +
-                        $"BID TREND: <color=#FFCC66><b>{LatestHistory.BidSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestBid)}</b>  (Band {LatestHistory.BidRange})";
-                }
-                else
-                {
-                    _historySparkText.text = "Select a commodity above to fetch 24 IC-week house ask & bid trends (`+market/history`).";
-                }
-            }
 
-            if (_historyOutputText != null) _historyOutputText.text = joined;
-            if (_jobsOutputText != null) _jobsOutputText.text = joined;
-            if (_industryOutputText != null) _industryOutputText.text = joined;
+            if (tab == TradeTerminalTab.History)
+            {
+                bool noHistoryReported = false;
+                for (int i = 0; i < echoLines.Count; i++)
+                {
+                    string plain = StripRichTags(echoLines[i]);
+                    if (plain.IndexOf("No price history", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        noHistoryReported = true;
+                        break;
+                    }
+                }
+
+                var parsed = ParseMarketHistoryLines(echoLines);
+                if (parsed.RowsNewestFirst.Count > 0)
+                {
+                    LatestHistory = parsed;
+                    if (_historySparkText != null)
+                    {
+                        string lbl = string.IsNullOrEmpty(LatestHistory.GoodLabel) ? SelectedHistoryGood : LatestHistory.GoodLabel;
+                        _historySparkText.text =
+                            $"<color=#66DDFF><b>{MushProtocol.EscapeUnityRichText(lbl)} — 24-WEEK HOUSE SERIES</b></color>\n" +
+                            $"ASK TREND: <color=#66EEFF><b>{LatestHistory.AskSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestAsk)}</b>  (Band {LatestHistory.AskRange})\n" +
+                            $"BID TREND: <color=#FFCC66><b>{LatestHistory.BidSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestBid)}</b>  (Band {LatestHistory.BidRange})";
+                    }
+                }
+                else if (noHistoryReported)
+                {
+                    ClearHistorySeries($"No price history is kept here for <b>{MushProtocol.EscapeUnityRichText(SelectedHistoryGood)}</b>.");
+                }
+
+                if (_historyOutputText != null) _historyOutputText.text = joined;
+            }
+            else if (tab == TradeTerminalTab.Jobs)
+            {
+                // Auto-detect an open canonical survey ID surfaced by `+market/jobs survey` or `+survey`.
+                for (int i = 0; i < echoLines.Count; i++)
+                {
+                    string plain = StripRichTags(echoLines[i]);
+                    for (int s = 0; s < CanonicalSurveyIds.Length; s++)
+                    {
+                        if (plain.IndexOf(CanonicalSurveyIds[s], StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            SelectedSurveyId = CanonicalSurveyIds[s];
+                            _selectedSurveyIndex = s;
+                            if (_surveyIdInput != null && !_surveyIdInput.isFocused &&
+                                (string.IsNullOrWhiteSpace(_surveyIdInput.text) || Array.IndexOf(CanonicalSurveyIds, _surveyIdInput.text.Trim()) >= 0))
+                            {
+                                _surveyIdInput.text = SelectedSurveyId;
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (_jobsOutputText != null) _jobsOutputText.text = joined;
+            }
+            else if (tab == TradeTerminalTab.Industry)
+            {
+                if (_industryOutputText != null) _industryOutputText.text = joined;
+            }
+        }
+
+        private string ResolveEscortHullDbref()
+        {
+            string candidate = _resolveActiveHullRef != null ? _resolveActiveHullRef() : null;
+            return IsValidHullDbref(candidate) ? candidate.Trim() : null;
+        }
+
+        private string ResolveBayTarget()
+        {
+            if (_bayHullInput != null && !string.IsNullOrWhiteSpace(_bayHullInput.text))
+                return _bayHullInput.text.Trim();
+            string active = ResolveEscortHullDbref();
+            return !string.IsNullOrEmpty(active) ? active : "ship";
+        }
+
+        private string ResolveSurveyId()
+        {
+            if (_surveyIdInput != null && !string.IsNullOrWhiteSpace(_surveyIdInput.text))
+                return _surveyIdInput.text.Trim();
+            return !string.IsNullOrEmpty(SelectedSurveyId) ? SelectedSurveyId : CanonicalSurveyIds[0];
+        }
+
+        private int ResolveHaulQuantity()
+        {
+            if (_haulQtyInput != null && int.TryParse(_haulQtyInput.text.Trim(), out int q) && q > 0)
+                return q;
+            return 10;
+        }
+
+        private int ResolveHaulOrEscortFee(int defaultFee)
+        {
+            if (_haulFeeInput != null && int.TryParse(_haulFeeInput.text.Trim(), out int f) && f > 0)
+                return f;
+            return defaultFee;
+        }
+
+        private Button CreateConfirmButton(
+            Transform parent,
+            string confirmKey,
+            string label,
+            string confirmLabel,
+            Color bg,
+            Action onFirstClickPreview,
+            Action onConfirmed)
+        {
+            Text lblRef = null;
+            var btn = CreateButton(parent, label, bg, () =>
+            {
+                if (_armedConfirmKey == confirmKey && (Time.unscaledTime - _armedAtTime) <= ConfirmWindowSeconds)
+                {
+                    DisarmConfirm();
+                    onConfirmed?.Invoke();
+                    return;
+                }
+                DisarmConfirm();
+                _armedConfirmKey = confirmKey;
+                _armedConfirmLabel = lblRef;
+                _armedOriginalText = label;
+                _armedAtTime = Time.unscaledTime;
+                if (lblRef != null) lblRef.text = confirmLabel;
+                onFirstClickPreview?.Invoke();
+            });
+            lblRef = btn.GetComponentInChildren<Text>();
+            return btn;
         }
 
         private void BuildHistoryTab(Transform parent)
@@ -273,26 +501,17 @@ namespace TacSim.UI
             HistoryTabBody = CreatePanel(parent, "HistoryTabBody", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(16f, 14f), new Vector2(-16f, -154f), Color.clear);
 
             var goodRow = CreateRow(HistoryTabBody.transform, "HistoryGoodsRow", -38f, 0f);
-            (string code, string label)[] goods =
-            {
-                ("volatiles", "Volatiles"),
-                ("metals", "Metals"),
-                ("structural_alloys", "Alloys"),
-                ("industrial_parts", "Parts"),
-                ("carbon_feedstock", "Carbon"),
-                ("instrument_boards", "Boards"),
-                ("propellant", "Fuel"),
-                ("provisions", "Stores")
-            };
             _goodBtnImages.Clear();
-            for (int i = 0; i < goods.Length; i++)
+            for (int i = 0; i < HistoryAndHaulGoods.Length; i++)
             {
                 int idx = i;
-                string code = goods[i].code;
-                var b = CreateButton(goodRow, goods[i].label, new Color(0.14f, 0.28f, 0.40f), () =>
+                string code = HistoryAndHaulGoods[i].code;
+                var b = CreateButton(goodRow, HistoryAndHaulGoods[i].label, new Color(0.14f, 0.28f, 0.40f), () =>
                 {
+                    DisarmConfirm();
                     SelectedHistoryGood = code;
                     HighlightGoodButtons(idx);
+                    ClearHistorySeries($"Fetching 24 IC-week house series for <b>{MushProtocol.EscapeUnityRichText(code)}</b>...");
                     _emitCommand?.Invoke($"+market/history tacsim:{code}");
                 });
                 _goodBtnImages.Add(b.GetComponent<Image>());
@@ -300,18 +519,35 @@ namespace TacSim.UI
             HighlightGoodButtons(0);
 
             var actRow = CreateRow(HistoryTabBody.transform, "HistoryActionsRow", -82f, -44f);
-            CreateButton(actRow, "24w Trend", new Color(0.16f, 0.46f, 0.56f), () => _emitCommand?.Invoke($"+market/history tacsim:{SelectedHistoryGood}"));
+            CreateButton(actRow, "24w Trend", new Color(0.16f, 0.46f, 0.56f), () =>
+            {
+                DisarmConfirm();
+                ClearHistorySeries($"Fetching 24 IC-week house series for <b>{MushProtocol.EscapeUnityRichText(SelectedHistoryGood)}</b>...");
+                _emitCommand?.Invoke($"+market/history tacsim:{SelectedHistoryGood}");
+            });
             CreateButton(actRow, "Public Depth", new Color(0.16f, 0.36f, 0.48f), () => _emitCommand?.Invoke($"+market/depth tacsim:{SelectedHistoryGood}"));
             CreateButton(actRow, "My Listings", new Color(0.20f, 0.34f, 0.44f), () => _emitCommand?.Invoke("+market/mine"));
             CreateButton(actRow, "Check Locker", new Color(0.18f, 0.42f, 0.36f), () => _emitCommand?.Invoke("+locker"));
             CreateButton(actRow, "Open Locker", new Color(0.16f, 0.50f, 0.38f), () => _emitCommand?.Invoke("+locker/open"));
             CreateButton(actRow, "Debts", new Color(0.46f, 0.28f, 0.16f), () => _emitCommand?.Invoke("+debts"));
             _debtIdInput = CreateMiniInput(actRow, "Debt #", "1");
-            CreateButton(actRow, "Pay Debt", new Color(0.52f, 0.24f, 0.18f), () =>
-            {
-                string id = _debtIdInput != null && !string.IsNullOrWhiteSpace(_debtIdInput.text) ? _debtIdInput.text.Trim() : "1";
-                _emitCommand?.Invoke($"+debts/pay {id}");
-            });
+            CreateConfirmButton(
+                actRow,
+                "pay_debt",
+                "Pay Debt",
+                "CONFIRM PAY",
+                new Color(0.52f, 0.24f, 0.18f),
+                onFirstClickPreview: () =>
+                {
+                    string id = _debtIdInput != null && !string.IsNullOrWhiteSpace(_debtIdInput.text) ? _debtIdInput.text.Trim() : "1";
+                    if (_historyOutputText != null)
+                        _historyOutputText.text = $"<color=#FFCC66>Confirm payment of Debt #{MushProtocol.EscapeUnityRichText(id)}: click CONFIRM PAY to run +debts/pay {MushProtocol.EscapeUnityRichText(id)}.</color>";
+                },
+                onConfirmed: () =>
+                {
+                    string id = _debtIdInput != null && !string.IsNullOrWhiteSpace(_debtIdInput.text) ? _debtIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+debts/pay {id}");
+                });
 
             var sparkCard = CreatePanel(HistoryTabBody.transform, "SparklineSummaryCard", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -156f), new Vector2(0f, -88f), new Color(0.04f, 0.10f, 0.16f, 0.94f));
             _historySparkText = CreateText(sparkCard.transform, "Select a commodity above to fetch 24 IC-week house ask & bid trends (`+market/history`).", 13, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white);
@@ -335,37 +571,128 @@ namespace TacSim.UI
             CreateButton(filterRow, "Passage", new Color(0.28f, 0.28f, 0.48f), () => _emitCommand?.Invoke("+market/jobs passage"));
             CreateButton(filterRow, "Crew (+sortie/crew)", new Color(0.16f, 0.48f, 0.40f), () => _emitCommand?.Invoke("+sortie/crew"));
 
-            var actRow = CreateRow(JobsTabBody.transform, "JobsActRow", -84f, -44f);
-            _jobIdInput = CreateMiniInput(actRow, "Job #", "1");
-            CreateButton(actRow, "Accept Haul", new Color(0.16f, 0.48f, 0.36f), () =>
+            var paramsRow = CreateRow(JobsTabBody.transform, "JobsParamsRow", -82f, -44f);
+            _jobIdInput = CreateMiniInput(paramsRow, "Job #", "1");
+            _surveyIdInput = CreateMiniInput(paramsRow, "Survey ID", CanonicalSurveyIds[0]);
+            CreateButton(paramsRow, "Next Survey", new Color(0.16f, 0.34f, 0.44f), () =>
             {
-                string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
-                _emitCommand?.Invoke($"+haul/accept {j} go");
+                _selectedSurveyIndex = (_selectedSurveyIndex + 1) % CanonicalSurveyIds.Length;
+                SetSelectedSurveyId(CanonicalSurveyIds[_selectedSurveyIndex]);
             });
-            CreateButton(actRow, "Deliver Haul", new Color(0.48f, 0.34f, 0.14f), () =>
+            var haulGoodBtn = CreateButton(paramsRow, $"Good: {SelectedHaulGood}", new Color(0.16f, 0.34f, 0.42f), () =>
             {
-                string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
-                _emitCommand?.Invoke($"+haul/deliver {j} go");
+                _selectedHaulGoodIndex = (_selectedHaulGoodIndex + 1) % HistoryAndHaulGoods.Length;
+                SetSelectedHaulGood(HistoryAndHaulGoods[_selectedHaulGoodIndex].code);
             });
-            CreateButton(actRow, "Accept Survey", new Color(0.18f, 0.38f, 0.50f), () =>
-            {
-                string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
-                _emitCommand?.Invoke($"+survey/accept {j}");
-            });
-            CreateButton(actRow, "Post 10t Haul", new Color(0.22f, 0.42f, 0.48f), () =>
-            {
-                string dest = _resolveSelectedPort != null ? _resolveSelectedPort() : "stickney";
-                _emitCommand?.Invoke($"+haul/post 10 {SelectedHistoryGood} to={dest} fee=250 go");
-            });
-            CreateButton(actRow, "Post Escort", new Color(0.46f, 0.26f, 0.20f), () =>
-            {
-                string dest = _resolveSelectedPort != null ? _resolveSelectedPort() : "stickney";
-                string hull = _resolveActiveHullRef != null ? _resolveActiveHullRef() : "ship";
-                _emitCommand?.Invoke($"+escort/post {hull} to={dest} fee=300 go");
-            });
+            _haulGoodBtnLabel = haulGoodBtn.GetComponentInChildren<Text>();
+            _haulQtyInput = CreateMiniInput(paramsRow, "Qty t", "10");
+            _haulFeeInput = CreateMiniInput(paramsRow, "Fee cr", "250");
+
+            var actRow = CreateRow(JobsTabBody.transform, "JobsActRow", -126f, -88f);
+            CreateConfirmButton(
+                actRow,
+                "accept_haul",
+                "Accept Haul",
+                "CONFIRM HAUL",
+                new Color(0.16f, 0.48f, 0.36f),
+                onFirstClickPreview: () =>
+                {
+                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+haul/accept {j}");
+                },
+                onConfirmed: () =>
+                {
+                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+haul/accept {j} go");
+                });
+            CreateConfirmButton(
+                actRow,
+                "deliver_haul",
+                "Deliver Haul",
+                "CONFIRM DELIV",
+                new Color(0.48f, 0.34f, 0.14f),
+                onFirstClickPreview: () =>
+                {
+                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+haul/deliver {j}");
+                },
+                onConfirmed: () =>
+                {
+                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+haul/deliver {j} go");
+                });
+            CreateConfirmButton(
+                actRow,
+                "accept_survey",
+                "Accept Survey",
+                "CONFIRM SURV",
+                new Color(0.18f, 0.38f, 0.50f),
+                onFirstClickPreview: () =>
+                {
+                    string sid = ResolveSurveyId();
+                    _emitCommand?.Invoke($"+survey/accept {sid}");
+                },
+                onConfirmed: () =>
+                {
+                    string sid = ResolveSurveyId();
+                    _emitCommand?.Invoke($"+survey/accept {sid} go");
+                });
+            CreateConfirmButton(
+                actRow,
+                "post_haul",
+                "Post Haul",
+                "CONFIRM POST",
+                new Color(0.22f, 0.42f, 0.48f),
+                onFirstClickPreview: () =>
+                {
+                    string dest = _resolveSelectedPort != null ? _resolveSelectedPort() : "stickney";
+                    int qty = ResolveHaulQuantity();
+                    int fee = ResolveHaulOrEscortFee(250);
+                    _emitCommand?.Invoke($"+haul/post {qty} {SelectedHaulGood} to={dest} fee={fee}");
+                },
+                onConfirmed: () =>
+                {
+                    string dest = _resolveSelectedPort != null ? _resolveSelectedPort() : "stickney";
+                    int qty = ResolveHaulQuantity();
+                    int fee = ResolveHaulOrEscortFee(250);
+                    _emitCommand?.Invoke($"+haul/post {qty} {SelectedHaulGood} to={dest} fee={fee} go");
+                });
+            CreateConfirmButton(
+                actRow,
+                "post_escort",
+                "Post Escort",
+                "CONFIRM ESCRT",
+                new Color(0.46f, 0.26f, 0.20f),
+                onFirstClickPreview: () =>
+                {
+                    string hull = ResolveEscortHullDbref();
+                    if (string.IsNullOrEmpty(hull))
+                    {
+                        DisarmConfirm();
+                        if (_jobsOutputText != null)
+                            _jobsOutputText.text = "<color=#FFAA55>Cannot post escort: no active hull #‹dbref› detected. Refresh Exchange/Ship status while docked first.</color>";
+                        return;
+                    }
+                    string dest = _resolveSelectedPort != null ? _resolveSelectedPort() : "stickney";
+                    int fee = ResolveHaulOrEscortFee(300);
+                    _emitCommand?.Invoke($"+escort/post {hull} to={dest} fee={fee}");
+                },
+                onConfirmed: () =>
+                {
+                    string hull = ResolveEscortHullDbref();
+                    if (string.IsNullOrEmpty(hull))
+                    {
+                        if (_jobsOutputText != null)
+                            _jobsOutputText.text = "<color=#FFAA55>Cannot post escort: no active hull #‹dbref› detected.</color>";
+                        return;
+                    }
+                    string dest = _resolveSelectedPort != null ? _resolveSelectedPort() : "stickney";
+                    int fee = ResolveHaulOrEscortFee(300);
+                    _emitCommand?.Invoke($"+escort/post {hull} to={dest} fee={fee} go");
+                });
             CreateButton(actRow, "My Crew", new Color(0.22f, 0.32f, 0.44f), () => _emitCommand?.Invoke("+sortie/contract"));
 
-            _jobsOutputText = BuildScrollOutput(JobsTabBody.transform, "JobsViewport", -92f);
+            _jobsOutputText = BuildScrollOutput(JobsTabBody.transform, "JobsViewport", -134f);
             JobsTabBody.SetActive(false);
         }
 
@@ -376,58 +703,103 @@ namespace TacSim.UI
             var topRow = CreateRow(IndustryTabBody.transform, "WorksStatusRow", -38f, 0f);
             CreateButton(topRow, "Works (+works)", new Color(0.16f, 0.44f, 0.54f), () => _emitCommand?.Invoke("+works"));
             CreateButton(topRow, "Shipyard (+yard)", new Color(0.18f, 0.38f, 0.50f), () => _emitCommand?.Invoke("+yard"));
+            _bayHullInput = CreateMiniInput(topRow, "Hull/#", string.Empty);
             CreateButton(topRow, "Bay Status", new Color(0.18f, 0.42f, 0.36f), () =>
             {
-                string hull = _resolveActiveHullRef != null ? _resolveActiveHullRef() : "ship";
-                _emitCommand?.Invoke($"+bay {hull}");
+                _emitCommand?.Invoke($"+bay {ResolveBayTarget()}");
             });
-            CreateButton(topRow, "Rearm Magazines", new Color(0.50f, 0.30f, 0.14f), () =>
-            {
-                string hull = _resolveActiveHullRef != null ? _resolveActiveHullRef() : "ship";
-                _emitCommand?.Invoke($"+bay/order {hull}=rearm");
-            });
-            CreateButton(topRow, "Full Repair", new Color(0.16f, 0.48f, 0.36f), () =>
-            {
-                string hull = _resolveActiveHullRef != null ? _resolveActiveHullRef() : "ship";
-                _emitCommand?.Invoke($"+bay/order {hull}=all");
-            });
+            CreateConfirmButton(
+                topRow,
+                "bay_rearm",
+                "Rearm Magazines",
+                "CONFIRM REARM",
+                new Color(0.50f, 0.30f, 0.14f),
+                onFirstClickPreview: () =>
+                {
+                    if (_industryOutputText != null)
+                        _industryOutputText.text = $"<color=#FFCC66>Confirm magazine rearm for {MushProtocol.EscapeUnityRichText(ResolveBayTarget())}: click CONFIRM REARM to commit.</color>";
+                },
+                onConfirmed: () => _emitCommand?.Invoke($"+bay/order {ResolveBayTarget()}=rearm"));
+            CreateConfirmButton(
+                topRow,
+                "bay_repair",
+                "Full Repair",
+                "CONFIRM REPAIR",
+                new Color(0.16f, 0.48f, 0.36f),
+                onFirstClickPreview: () =>
+                {
+                    if (_industryOutputText != null)
+                        _industryOutputText.text = $"<color=#FFCC66>Confirm full repair order for {MushProtocol.EscapeUnityRichText(ResolveBayTarget())}: click CONFIRM REPAIR to commit.</color>";
+                },
+                onConfirmed: () => _emitCommand?.Invoke($"+bay/order {ResolveBayTarget()}=all"));
             CreateButton(topRow, "Core Shop (+core)", new Color(0.32f, 0.26f, 0.48f), () => _emitCommand?.Invoke("+core"));
             CreateButton(topRow, "Facilities", new Color(0.22f, 0.32f, 0.42f), () => _emitCommand?.Invoke("@facility/list"));
 
             var recipeRow = CreateRow(IndustryTabBody.transform, "WorksRecipesRow", -82f, -44f);
-            CreateButton(recipeRow, "Mill Metals", new Color(0.16f, 0.40f, 0.46f), () => _emitCommand?.Invoke("+works/order metals"));
-            CreateButton(recipeRow, "Fittings Batch", new Color(0.16f, 0.40f, 0.46f), () => _emitCommand?.Invoke("+works/order fittings"));
-            CreateButton(recipeRow, "30mm AP Box", new Color(0.42f, 0.28f, 0.16f), () => _emitCommand?.Invoke("+works/order ap_30"));
-            CreateButton(recipeRow, "105mm HE", new Color(0.42f, 0.28f, 0.16f), () => _emitCommand?.Invoke("+works/order he_105"));
-            CreateButton(recipeRow, "Order Dray", new Color(0.20f, 0.42f, 0.56f), () => _emitCommand?.Invoke("+yard/order dray"));
-            CreateButton(recipeRow, "Order Dray-P", new Color(0.20f, 0.42f, 0.56f), () => _emitCommand?.Invoke("+yard/order dray_p"));
-            CreateButton(recipeRow, "Order Line Tank", new Color(0.46f, 0.24f, 0.22f), () => _emitCommand?.Invoke("+yard/order line_tank"));
+            CreateConfirmButton(recipeRow, "works_metals", "Mill Metals", "CONFIRM MILL", new Color(0.16f, 0.40f, 0.46f),
+                () => NotifyIndustryConfirm("+works/order metals"), () => _emitCommand?.Invoke("+works/order metals"));
+            CreateConfirmButton(recipeRow, "works_fittings", "Fittings Batch", "CONFIRM FIT", new Color(0.16f, 0.40f, 0.46f),
+                () => NotifyIndustryConfirm("+works/order fittings"), () => _emitCommand?.Invoke("+works/order fittings"));
+            CreateConfirmButton(recipeRow, "works_ap30", "30mm AP Box", "CONFIRM 30MM", new Color(0.42f, 0.28f, 0.16f),
+                () => NotifyIndustryConfirm("+works/order ap_30"), () => _emitCommand?.Invoke("+works/order ap_30"));
+            CreateConfirmButton(recipeRow, "works_he105", "105mm HE", "CONFIRM 105MM", new Color(0.42f, 0.28f, 0.16f),
+                () => NotifyIndustryConfirm("+works/order he_105"), () => _emitCommand?.Invoke("+works/order he_105"));
+            CreateConfirmButton(recipeRow, "yard_dray", "Order Dray", "CONFIRM DRAY", new Color(0.20f, 0.42f, 0.56f),
+                () => NotifyIndustryConfirm("+yard/order dray"), () => _emitCommand?.Invoke("+yard/order dray"));
+            CreateConfirmButton(recipeRow, "yard_dray_p", "Order Dray-P", "CONFIRM DRAY-P", new Color(0.20f, 0.42f, 0.56f),
+                () => NotifyIndustryConfirm("+yard/order dray_p"), () => _emitCommand?.Invoke("+yard/order dray_p"));
+            CreateConfirmButton(recipeRow, "yard_tank", "Order Line Tank", "CONFIRM TANK", new Color(0.46f, 0.24f, 0.22f),
+                () => NotifyIndustryConfirm("+yard/order line_tank"), () => _emitCommand?.Invoke("+yard/order line_tank"));
 
             var orderRow = CreateRow(IndustryTabBody.transform, "OrderEscrowRow", -126f, -88f);
             _workOrderIdInput = CreateMiniInput(orderRow, "Order #", "1");
-            CreateButton(orderRow, "Buy Works Bill", new Color(0.16f, 0.46f, 0.38f), () =>
-            {
-                string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
-                _emitCommand?.Invoke($"+works/buy {ord}");
-            });
+            CreateConfirmButton(orderRow, "works_buy", "Buy Works Bill", "CONFIRM BUY", new Color(0.16f, 0.46f, 0.38f),
+                () =>
+                {
+                    string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
+                    NotifyIndustryConfirm($"+works/buy {ord}");
+                },
+                () =>
+                {
+                    string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+works/buy {ord}");
+                });
             CreateButton(orderRow, "Collect Works", new Color(0.48f, 0.34f, 0.14f), () =>
             {
                 string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
                 _emitCommand?.Invoke($"+works/collect {ord}");
             });
-            CreateButton(orderRow, "Buy Yard Bill", new Color(0.16f, 0.46f, 0.54f), () =>
-            {
-                string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
-                _emitCommand?.Invoke($"+yard/buy {ord}");
-            });
-            CreateButton(orderRow, "Commission Hull", new Color(0.50f, 0.32f, 0.16f), () =>
-            {
-                string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
-                _emitCommand?.Invoke($"+yard/collect {ord}");
-            });
+            CreateConfirmButton(orderRow, "yard_buy", "Buy Yard Bill", "CONFIRM BUY", new Color(0.16f, 0.46f, 0.54f),
+                () =>
+                {
+                    string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
+                    NotifyIndustryConfirm($"+yard/buy {ord}");
+                },
+                () =>
+                {
+                    string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+yard/buy {ord}");
+                });
+            CreateConfirmButton(orderRow, "yard_collect", "Commission Hull", "CONFIRM COMM", new Color(0.50f, 0.32f, 0.16f),
+                () =>
+                {
+                    string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
+                    NotifyIndustryConfirm($"+yard/collect {ord}");
+                },
+                () =>
+                {
+                    string ord = _workOrderIdInput != null && !string.IsNullOrWhiteSpace(_workOrderIdInput.text) ? _workOrderIdInput.text.Trim() : "1";
+                    _emitCommand?.Invoke($"+yard/collect {ord}");
+                });
 
             _industryOutputText = BuildScrollOutput(IndustryTabBody.transform, "IndustryViewport", -134f);
             IndustryTabBody.SetActive(false);
+        }
+
+        private void NotifyIndustryConfirm(string command)
+        {
+            if (_industryOutputText != null)
+                _industryOutputText.text = $"<color=#FFCC66>Click again to confirm order: <b>{MushProtocol.EscapeUnityRichText(command)}</b></color>";
         }
 
         private void HighlightGoodButtons(int selectedIdx)
@@ -519,6 +891,7 @@ namespace TacSim.UI
             t.fontStyle = style;
             t.alignment = align;
             t.color = color;
+            t.supportRichText = false;
             t.raycastTarget = false;
             return t;
         }

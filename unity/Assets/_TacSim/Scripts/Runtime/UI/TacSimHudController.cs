@@ -65,6 +65,17 @@ namespace TacSim.UI
         public event Action<CameraRigMode> OnCameraModeRequested;
         public event Action OnStandFromHelmRequested;
 
+        public static TacSimHudController ActiveInstance { get; private set; }
+
+        private static readonly (string code, string label)[] CanonicalCorridorPorts =
+        {
+            ("ceres", "Ceres"),
+            ("stickney", "Stickney"),
+            ("luna", "Luna (Aitken)"),
+            ("deimos", "Deimos"),
+            ("titan", "Titan")
+        };
+
         /// <summary>
         /// Non-serialized flag: always false when entering Play Mode from a saved scene so BuildHud()
         /// wires fresh runtime Button.onClick closures and InputField references.
@@ -73,20 +84,51 @@ namespace TacSim.UI
         public TacSimMissionOverlays Overlays { get; private set; }
         public TacSimEconomyPanels EconomyPanels { get; private set; }
         public TradeTerminalTab ActiveTradeTab { get; private set; } = TradeTerminalTab.Exchange;
+        public string ActiveHullRef => _activeHullRef;
+        public string ActivePortHint => _activePortHint;
+        public MushWsClient BoundWsClient => _boundWs;
+        public bool IsLoginOverlayVisible => _loginPanel != null && _loginPanel.activeSelf;
 
-        public bool IsModalOpen =>
-            (_modalPanel != null && _modalPanel.activeSelf) ||
-            (_tradePanel != null && _tradePanel.activeSelf) ||
-            (Overlays != null && Overlays.IsLobbyModalOpen);
+        private TacSimMindTerminal ResolveActiveMindTerminal()
+        {
+            var term = TacSimMindTerminal.ActiveInstance;
+            if (term == null) return null;
+            if (Application.isPlaying) return term;
+            if (ReferenceEquals(term.BoundHud, this)) return term;
+            if (_boundWs != null && ReferenceEquals(term.BoundClient, _boundWs)) return term;
+            return null;
+        }
 
-        public bool IsTextInputFocused =>
-            (_chatInput != null && _chatInput.isFocused) ||
-            (_npcSayInput != null && _npcSayInput.isFocused) ||
-            (EconomyPanels != null && EconomyPanels.IsAnyInputFocused) ||
-            (_loginPanel != null && _loginPanel.activeSelf);
+        public bool IsModalOpen
+        {
+            get
+            {
+                var term = ResolveActiveMindTerminal();
+                return (_modalPanel != null && _modalPanel.activeSelf) ||
+                       (_tradePanel != null && _tradePanel.activeSelf) ||
+                       (Overlays != null && Overlays.IsLobbyModalOpen) ||
+                       (term != null && term.IsTerminalOpen);
+            }
+        }
+
+        public bool IsTextInputFocused
+        {
+            get
+            {
+                var term = ResolveActiveMindTerminal();
+                return (_chatInput != null && _chatInput.isFocused) ||
+                       (_npcSayInput != null && _npcSayInput.isFocused) ||
+                       (EconomyPanels != null && EconomyPanels.IsAnyInputFocused) ||
+                       (term != null && term.IsAnyInputFocused) ||
+                       (_loginPanel != null && _loginPanel.activeSelf);
+            }
+        }
 
         private Font _uiFont;
         private Canvas _canvas;
+        private MushWsClient _boundWs;
+        private string _activeHullRef;
+        private string _activePortHint;
 
         // Login / Avatar panel
         private GameObject _loginPanel;
@@ -143,7 +185,33 @@ namespace TacSim.UI
         private readonly List<Image> _qtyPresetImages = new List<Image>();
         private readonly List<Image> _destPortImages = new List<Image>();
         private Text _sailingPlanOutputText;
-        private readonly List<string> _sailingEchoLines = new List<string>();
+        private const int MaxTabEchoLines = 64;
+        private readonly Dictionary<TradeTerminalTab, List<string>> _tabEchoLines = new Dictionary<TradeTerminalTab, List<string>>
+        {
+            { TradeTerminalTab.Exchange, new List<string>() },
+            { TradeTerminalTab.History, new List<string>() },
+            { TradeTerminalTab.Jobs, new List<string>() },
+            { TradeTerminalTab.Industry, new List<string>() },
+            { TradeTerminalTab.Sailing, new List<string>() },
+        };
+
+        private sealed class PooledListingCard
+        {
+            public GameObject Root;
+            public Image Background;
+            public Text Description;
+            public Button ActionButton;
+            public Image ActionButtonBg;
+            public Text ActionButtonLabel;
+            public Action OnActionClick;
+        }
+
+        private readonly List<PooledListingCard> _listingCardPool = new List<PooledListingCard>();
+        private GameObject _emptyListingsRow;
+        private Text _emptyListingsText;
+        private GameObject _loadMoreListingsRow;
+        private Action _loadMoreAction;
+        private string _lastListingsSignature;
 
         // Modal dialog
         private GameObject _modalPanel;
@@ -152,8 +220,10 @@ namespace TacSim.UI
         private ScrollRect _modalScrollRect;
         private Transform _modalButtonsRoot;
         private InputField _npcSayInput;
+        private Text _npcSayPlaceholderText;
         private string _activeNpcTargetName;
         private string _modalCommandPrefix;
+        private MushServerRequest _activeServerRequest;
         private string _modalBaseIntro = string.Empty;
         private readonly List<string> _modalResponseLines = new List<string>();
 
@@ -170,8 +240,187 @@ namespace TacSim.UI
         private readonly Queue<string> _logLines = new Queue<string>();
         private const int MaxLogLines = 45;
 
+        private void Awake()
+        {
+            ActiveInstance = this;
+            MushWsClient.OnInstanceCreated += HandleWsClientCreated;
+            if (MushWsClient.LatestInstance != null)
+                BindWsClient(MushWsClient.LatestInstance);
+        }
+
+        private void OnDestroy()
+        {
+            if (ActiveInstance == this)
+                ActiveInstance = null;
+            MushWsClient.OnInstanceCreated -= HandleWsClientCreated;
+            UnbindWsClient();
+            if (_boundTradeState != null)
+            {
+                _boundTradeState.OnStateChanged -= RefreshTradeTerminal;
+                _boundTradeState = null;
+            }
+        }
+
+        private void HandleWsClientCreated(MushWsClient client)
+        {
+            BindWsClient(client);
+        }
+
+        public void BindWsClient(MushWsClient client)
+        {
+            if (_boundWs == client) return;
+            UnbindWsClient();
+            _boundWs = client;
+            if (_boundWs != null)
+            {
+                _boundWs.OnPanelUpdated += HandleWsPanelUpdated;
+                _boundWs.OnRoomReceived += HandleWsRoomReceived;
+                _boundWs.OnFatalSessionEnded += HandleWsFatalSessionEnded;
+                _boundWs.OnHelloReceived += HandleWsHelloReceived;
+            }
+        }
+
+        private void UnbindWsClient()
+        {
+            if (_boundWs == null) return;
+            _boundWs.OnPanelUpdated -= HandleWsPanelUpdated;
+            _boundWs.OnRoomReceived -= HandleWsRoomReceived;
+            _boundWs.OnFatalSessionEnded -= HandleWsFatalSessionEnded;
+            _boundWs.OnHelloReceived -= HandleWsHelloReceived;
+            _boundWs = null;
+        }
+
+        private void HandleWsFatalSessionEnded(string _)
+        {
+            ResetSessionState();
+        }
+
+        private void HandleWsHelloReceived()
+        {
+            ResetSessionState();
+        }
+
+        private void HandleWsPanelUpdated(string feed, JsonNode data)
+        {
+            if (feed != "port.trade" || data == null || !data.IsObject) return;
+
+            var shipObj = data["ship"];
+            if (shipObj.IsObject)
+            {
+                string hid = shipObj.Str("hull_id", string.Empty);
+                if (TacSimEconomyPanels.IsValidHullDbref(hid))
+                    _activeHullRef = hid.Trim();
+                string shipPort = CanonicalizeCorridorPort(shipObj.Str("port", string.Empty));
+                if (!string.IsNullOrEmpty(shipPort))
+                    _activePortHint = shipPort;
+            }
+
+            string venuePort = CanonicalizeCorridorPort(data.Str("venue", string.Empty));
+            if (string.IsNullOrEmpty(venuePort))
+                venuePort = CanonicalizeCorridorPort(data.Str("aboard_docked_port", string.Empty));
+            if (!string.IsNullOrEmpty(venuePort))
+                _activePortHint = venuePort;
+        }
+
+        private void HandleWsRoomReceived(MushRoomView rv)
+        {
+            if (rv == null) return;
+            if (rv.TacSim != null)
+            {
+                string candidateHull = !string.IsNullOrEmpty(rv.TacSim.HullId) ? rv.TacSim.HullId : rv.TacSim.OwnHull;
+                if (TacSimEconomyPanels.IsValidHullDbref(candidateHull))
+                    _activeHullRef = candidateHull.Trim();
+
+                string p = CanonicalizeCorridorPort(rv.TacSim.Port);
+                if (string.IsNullOrEmpty(p))
+                    p = CanonicalizeCorridorPort(rv.TacSim.PortEntry);
+                if (!string.IsNullOrEmpty(p))
+                    _activePortHint = p;
+            }
+            if (rv.Atlas != null)
+            {
+                string packPort = CanonicalizeCorridorPort(rv.Atlas.Pack);
+                if (string.IsNullOrEmpty(packPort))
+                    packPort = CanonicalizeCorridorPort(rv.Atlas.NeighborhoodPack);
+                if (!string.IsNullOrEmpty(packPort))
+                    _activePortHint = packPort;
+            }
+        }
+
+        public void SetActiveHullRef(string hullRef)
+        {
+            _activeHullRef = TacSimEconomyPanels.IsValidHullDbref(hullRef) ? hullRef.Trim() : null;
+        }
+
+        public void SetActivePortHint(string portCode)
+        {
+            _activePortHint = CanonicalizeCorridorPort(portCode);
+        }
+
+        public static string CanonicalizeCorridorPort(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            string s = raw.Trim().ToLowerInvariant();
+            if (s == "ceres" || s.Contains("ceres")) return "ceres";
+            if (s == "stickney" || s.Contains("stickney") || s.Contains("phobos")) return "stickney";
+            if (s == "luna" || s.Contains("luna") || s.Contains("aitken")) return "luna";
+            if (s == "deimos" || s.Contains("deimos")) return "deimos";
+            if (s == "titan" || s.Contains("titan")) return "titan";
+            return null;
+        }
+
+        public string ResolveDockTarget()
+        {
+            if (_boundTradeState != null)
+            {
+                string sel = CanonicalizeCorridorPort(_boundTradeState.SelectedDestinationPort);
+                if (!string.IsNullOrEmpty(sel)) return sel;
+            }
+            if (!string.IsNullOrEmpty(_activePortHint))
+                return _activePortHint;
+            return "ceres";
+        }
+
+        public string ResolveDockCommand() => $"+helm/dock {ResolveDockTarget()}";
+
+        public void ResetSessionState()
+        {
+            _activeServerRequest = null;
+            _activeNpcTargetName = null;
+            _modalCommandPrefix = null;
+            _modalBaseIntro = string.Empty;
+            _modalResponseLines.Clear();
+            _activeHullRef = null;
+            _activePortHint = null;
+            _lastListingsSignature = null;
+            _composingActive = false;
+
+            if (_tradePanel != null) _tradePanel.SetActive(false);
+            if (_modalPanel != null) _modalPanel.SetActive(false);
+            if (_dockingPanel != null) _dockingPanel.SetActive(false);
+            if (_interactBanner != null) _interactBanner.SetActive(false);
+            if (_helmFlightBar != null) _helmFlightBar.SetActive(false);
+
+            _logLines.Clear();
+            if (_commsLogText != null) _commsLogText.text = string.Empty;
+            if (_chatInput != null) _chatInput.text = string.Empty;
+            if (_npcSayInput != null) _npcSayInput.text = string.Empty;
+            if (_passwordInput != null) _passwordInput.text = string.Empty;
+
+            foreach (var kv in _tabEchoLines)
+                kv.Value.Clear();
+
+            if (_sailingPlanOutputText != null)
+                _sailingPlanOutputText.text = "Select a corridor destination above to dry-run burn/stores (+ship/plan) or queue automated captain's orders (+ship/order).";
+
+            EconomyPanels?.ResetSessionState();
+            Overlays?.ResetSessionState();
+            ResolveActiveMindTerminal()?.ResetSessionState();
+        }
+
         public void BuildHud()
         {
+            ActiveInstance = this;
             _uiFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             if (_uiFont == null)
                 _uiFont = Font.CreateDynamicFontFromOSFont("Consolas", 14);
@@ -188,8 +437,16 @@ namespace TacSim.UI
             _qtyPresetImages.Clear();
             _destPortImages.Clear();
             _tradeTabBtnImages.Clear();
+            _listingCardPool.Clear();
+            _emptyListingsRow = null;
+            _emptyListingsText = null;
+            _loadMoreListingsRow = null;
+            _loadMoreAction = null;
+            _lastListingsSignature = null;
             _lastQuickActionKey = null;
             _lastQuickActionSeated = null;
+            if (Application.isPlaying && MushWsClient.LatestInstance != null && _boundWs == null)
+                BindWsClient(MushWsClient.LatestInstance);
 
             var canvasGo = new GameObject("TacSimCanvas");
             canvasGo.transform.SetParent(transform, false);
@@ -240,7 +497,8 @@ namespace TacSim.UI
             SetRect(_netBadgeText.rectTransform, new Vector2(0.50f, 0f), new Vector2(0.61f, 1f), Vector2.zero, Vector2.zero);
 
             _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | RMB: Orbit Camera", 15, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
-            SetRect(_shipAndClockText.rectTransform, new Vector2(0.61f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-18f, 0f));
+            // Reserve 224px at the far right of TopStrip for the docked `[F10] MINDS & SEALING` launcher pill (`U-H29`).
+            SetRect(_shipAndClockText.rectTransform, new Vector2(0.58f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-228f, 0f));
 
             // 2. Center-Bottom [E] Contextual Interaction Banner
             _interactBanner = CreatePanel(_hudRoot.transform, "InteractBanner", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-240f, 128f), new Vector2(240f, 198f), new Color(0.05f, 0.12f, 0.18f, 0.92f));
@@ -341,7 +599,11 @@ namespace TacSim.UI
             _tradeCreditsText = CreateText(_tradePanel.transform, "CREDITS: — cr", 16, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.45f, 1.0f, 0.72f));
             SetRect(_tradeCreditsText.rectTransform, new Vector2(0.62f, 1f), new Vector2(1f, 1f), new Vector2(0f, -44f), new Vector2(-132f, -8f));
 
-            var closeBtn = CreateButton(_tradePanel.transform, "CLOSE [ESC]", new Color(0.45f, 0.16f, 0.18f), () => _tradePanel.SetActive(false));
+            var closeBtn = CreateButton(_tradePanel.transform, "CLOSE [ESC]", new Color(0.45f, 0.16f, 0.18f), () =>
+            {
+                _tradePanel.SetActive(false);
+                EconomyPanels?.DisarmConfirm();
+            });
             SetRect(closeBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-118f, -42f), new Vector2(-16f, -10f));
 
             // Dual Dray Hold Mass / Volume + Tank + Stores Gauges Strip
@@ -450,20 +712,17 @@ namespace TacSim.UI
             var pLbl = CreateText(portStrip.transform, "CORRIDOR PORT:", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.75f, 0.88f, 0.96f));
             SetRect(pLbl.rectTransform, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(12f, 0f), new Vector2(142f, 0f));
 
-            (string code, string label)[] ports =
-            {
-                ("stickney", "Stickney Yards (Phobos)"),
-                ("aitken", "Aitken Highport (Luna)"),
-                ("occator", "Occator Rim"),
-                ("rheasilvia", "Rheasilvia (Vesta)")
-            };
-            for (int i = 0; i < ports.Length; i++)
+            var portsRow = CreatePanel(portStrip.transform, "CorridorPortButtons", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(146f, 4f), new Vector2(-8f, -4f), Color.clear);
+            var portHlg = portsRow.AddComponent<HorizontalLayoutGroup>();
+            portHlg.spacing = 6f;
+            portHlg.childControlWidth = true;
+            portHlg.childControlHeight = true;
+            portHlg.childForceExpandWidth = true;
+            for (int i = 0; i < CanonicalCorridorPorts.Length; i++)
             {
                 int idx = i;
-                string pCode = ports[i].code;
-                float x0 = 148f + i * 190f;
-                var pb = CreateButton(portStrip.transform, ports[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
-                SetRect(pb.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(x0, 4f), new Vector2(x0 + 184f, -4f));
+                string pCode = CanonicalCorridorPorts[i].code;
+                var pb = CreateButton(portsRow.transform, CanonicalCorridorPorts[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
                 _destPortImages.Add(pb.GetComponent<Image>());
             }
 
@@ -525,7 +784,7 @@ namespace TacSim.UI
                 () => _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.SelectedDestinationPort)
                     ? _boundTradeState.SelectedDestinationPort
                     : "stickney",
-                () => "ship");
+                () => _activeHullRef);
             EconomyPanels.BuildSubPanels(_tradePanel.transform);
 
             _sailingTabBody.SetActive(false);
@@ -577,7 +836,7 @@ namespace TacSim.UI
             _modalHeaderText = CreateText(_modalPanel.transform, "TERMINAL", 20, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.42f, 0.90f, 1.0f));
             SetRect(_modalHeaderText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -46f), new Vector2(-120f, -10f));
 
-            var closeBtn = CreateButton(_modalPanel.transform, "CLOSE [ESC]", new Color(0.45f, 0.16f, 0.18f), () => _modalPanel.SetActive(false));
+            var closeBtn = CreateButton(_modalPanel.transform, "CLOSE [ESC]", new Color(0.45f, 0.16f, 0.18f), () => CloseDetailModal(cancelServerRequest: true));
             SetRect(closeBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-115f, -44f), new Vector2(-14f, -10f));
 
             var modalViewport = CreatePanel(_modalPanel.transform, "ModalViewport", new Vector2(0f, 0.28f), new Vector2(1f, 1f), new Vector2(20f, 8f), new Vector2(-20f, -54f), new Color(0f, 0f, 0f, 0.02f));
@@ -605,6 +864,7 @@ namespace TacSim.UI
             _modalScrollRect.scrollSensitivity = 28f;
 
             _npcSayInput = CreateInputField(_modalPanel.transform, "Speak directly to NPC (Enter)...", new Vector2(0f, 0.18f), new Vector2(1f, 0.27f), new Vector2(20f, 0f), new Vector2(-20f, 0f));
+            _npcSayPlaceholderText = _npcSayInput.placeholder as Text;
             _npcSayInput.onSubmit.AddListener(_ => SubmitNpcInput());
             _npcSayInput.onValueChanged.AddListener(val => HandleInputComposingEdited(val, isNpcSayBox: true));
 
@@ -708,6 +968,10 @@ namespace TacSim.UI
             string pass = _passwordInput != null ? _passwordInput.text : "";
             string cname = _charNameInput != null ? _charNameInput.text.Trim() : "";
 
+            // Immediately scrub plaintext password from the uGUI input widget (`U-H12`).
+            if (_passwordInput != null)
+                _passwordInput.text = string.Empty;
+
             if (Application.isPlaying)
             {
                 PlayerPrefs.SetString(PrefLastUrl, url);
@@ -738,7 +1002,7 @@ namespace TacSim.UI
                 btn.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 46f);
             }
 
-            SetLoginStatus($"Authenticated as <b>{session.Account}</b> ({session.Characters.Count} characters available).");
+            SetLoginStatus($"Authenticated as <b>{MushProtocol.EscapeUnityRichText(session.Account)}</b> ({session.Characters.Count} characters available).");
         }
 
         private void SelectAvatar(PlayerAvatarPreset preset)
@@ -752,6 +1016,37 @@ namespace TacSim.UI
             }
         }
 
+        /// <summary>
+        /// Closes ONLY the topmost active modal layer in deterministic priority order (`U-H30`):
+        /// MindTerminal &gt; Detail/Request Modal &gt; Trade Terminal &gt; Arena Lobby.
+        /// </summary>
+        public bool TryCloseTopmostModal()
+        {
+            var term = ResolveActiveMindTerminal();
+            if (term != null && term.IsTerminalOpen)
+            {
+                term.SetTerminalOpen(false);
+                return true;
+            }
+            if (_modalPanel != null && _modalPanel.activeSelf)
+            {
+                CloseDetailModal(cancelServerRequest: true);
+                return true;
+            }
+            if (_tradePanel != null && _tradePanel.activeSelf)
+            {
+                _tradePanel.SetActive(false);
+                EconomyPanels?.DisarmConfirm();
+                return true;
+            }
+            if (Overlays != null && Overlays.IsLobbyModalOpen)
+            {
+                Overlays.ShowArenaLobbyModal(false);
+                return true;
+            }
+            return false;
+        }
+
         private void Update()
         {
             if (_composingActive && Time.unscaledTime >= _composingIdleAt)
@@ -761,41 +1056,31 @@ namespace TacSim.UI
 
             if (Input.GetKeyDown(KeyCode.Escape))
             {
-                if (_tradePanel != null && _tradePanel.activeSelf)
-                    _tradePanel.SetActive(false);
-                if (_modalPanel != null && _modalPanel.activeSelf)
-                    _modalPanel.SetActive(false);
-                if (Overlays != null && Overlays.IsLobbyModalOpen)
-                    Overlays.ShowArenaLobbyModal(false);
+                TryCloseTopmostModal();
             }
 
             if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
             {
-                // Pressing Enter on Password or Account field submits Login directly!
-                if (_loginPanel != null && _loginPanel.activeSelf && _credentialsGroup != null && _credentialsGroup.activeSelf)
+                // Pressing Enter on Login screen submits auth directly (never when MindTerminal is open).
+                var term = ResolveActiveMindTerminal();
+                if (_loginPanel != null && _loginPanel.activeSelf &&
+                    _credentialsGroup != null && _credentialsGroup.activeSelf &&
+                    !(term != null && term.IsTerminalOpen))
                 {
                     if ((_passwordInput != null && !string.IsNullOrEmpty(_passwordInput.text)) &&
                         (_accountInput != null && !string.IsNullOrWhiteSpace(_accountInput.text)))
                     {
                         SubmitAuth(isRegister: false);
-                        return;
                     }
                 }
-
-                if (_modalPanel != null && _modalPanel.activeSelf && _npcSayInput != null && _npcSayInput.gameObject.activeSelf && !string.IsNullOrWhiteSpace(_npcSayInput.text))
-                {
-                    SubmitNpcInput();
-                }
-                else if (_chatInput != null && !string.IsNullOrWhiteSpace(_chatInput.text))
-                {
-                    SubmitChatInput();
-                }
+                // Note: `_npcSayInput` and `_chatInput` already submit via Unity `InputField.onSubmit`,
+                // preventing double-submit (`U-H30`) and cross-modal Enter leaks into EconomyPanels / Rhai editor.
             }
         }
 
         private void HandleInputComposingEdited(string rawValue, bool isNpcSayBox)
         {
-            if (isNpcSayBox && !string.IsNullOrEmpty(_modalCommandPrefix))
+            if (isNpcSayBox && (!string.IsNullOrEmpty(_modalCommandPrefix) || _activeServerRequest != null))
                 return;
 
             string trimmed = rawValue != null ? rawValue.TrimStart() : string.Empty;
@@ -822,11 +1107,22 @@ namespace TacSim.UI
 
         public string GetModalInputValue() => _npcSayInput != null ? _npcSayInput.text.Trim() : string.Empty;
 
-        private void SubmitNpcInput()
+        public void SubmitNpcInput()
         {
             if (_npcSayInput == null || string.IsNullOrWhiteSpace(_npcSayInput.text)) return;
             string spoken = _npcSayInput.text.Trim();
+            // Always clear input BEFORE dispatch so single Enter can never double-submit (`U-H30`).
+            _npcSayInput.text = string.Empty;
             SetComposingState(false);
+
+            if (_activeServerRequest != null)
+            {
+                var req = _activeServerRequest;
+                _activeServerRequest = null;
+                if (_modalPanel != null) _modalPanel.SetActive(false);
+                OnRequestChoiceSubmitted?.Invoke(req, spoken);
+                return;
+            }
 
             if (!string.IsNullOrEmpty(_modalCommandPrefix))
             {
@@ -834,7 +1130,6 @@ namespace TacSim.UI
                 return;
             }
 
-            _npcSayInput.text = string.Empty;
             if (!string.IsNullOrEmpty(_activeNpcTargetName))
                 OnCommandSubmitted?.Invoke($"say {_activeNpcTargetName}, {spoken}");
             else
@@ -852,6 +1147,8 @@ namespace TacSim.UI
 
         public void ShowLoginOverlay(bool visible, string statusMessage = null)
         {
+            if (visible)
+                ResetSessionState();
             if (_loginPanel != null) _loginPanel.SetActive(visible);
             if (visible && _credentialsGroup != null && _charSelectGroup != null)
             {
@@ -976,7 +1273,7 @@ namespace TacSim.UI
                 AddQuickBtn("Sailing Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"));
                 AddQuickBtn("Undock Port", () => OnCommandSubmitted?.Invoke("action:undock_selected"));
                 AddQuickBtn("Decouple 3D", () => OnCommandSubmitted?.Invoke("+helm/decouple"));
-                AddQuickBtn("6-DOF Dock", () => OnCommandSubmitted?.Invoke("action:start_docking"));
+                AddQuickBtn("6-DOF Dock", () => OnCommandSubmitted?.Invoke(ResolveDockCommand()));
                 return;
             }
 
@@ -1003,18 +1300,29 @@ namespace TacSim.UI
                     AddQuickBtn("Back to Lobby", () => OnCommandSubmitted?.Invoke("lobby"));
                     AddQuickBtn("Return IC (+ic)", () => OnCommandSubmitted?.Invoke("+ic"));
                     break;
-                case "room.p11_service_counter":
-                    AddQuickBtn("Refit Dray-P", () => OnCommandSubmitted?.Invoke("+coop/refit prospector"));
-                    AddQuickBtn("Lease +tv Rig", () => OnCommandSubmitted?.Invoke("+tv/lease go"));
+                case "room.p11_service":
+                    AddQuickBtn("Shipyard (+yard)", () => OnCommandSubmitted?.Invoke("+yard"));
+                    AddQuickBtn("Bay Status (+bay ship)", () => OnCommandSubmitted?.Invoke("+bay ship"));
+                    AddQuickBtn("Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"));
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
                     break;
                 case "room.c05_registry":
+                    AddQuickBtn("Co-op Terms", () => OnCommandSubmitted?.Invoke("+coop"));
+                    AddQuickBtn("Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"));
+                    AddQuickBtn("Refit Dray-P", () => OnCommandSubmitted?.Invoke("+coop/refit prospector"));
+                    AddQuickBtn("Statement", () => OnCommandSubmitted?.Invoke("+coop/statement"));
+                    break;
                 case "room.l05_registry":
                     AddQuickBtn("Co-op Terms", () => OnCommandSubmitted?.Invoke("+coop"));
                     AddQuickBtn("Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"));
                     AddQuickBtn("Statement", () => OnCommandSubmitted?.Invoke("+coop/statement"));
                     break;
                 case "room.c07_exchange":
+                    AddQuickBtn("Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"));
+                    AddQuickBtn("Lease Rig Preview", () => OnCommandSubmitted?.Invoke("+tv/lease"));
+                    AddQuickBtn("Credits", () => OnCommandSubmitted?.Invoke("+credit"));
+                    AddQuickBtn("Ship Hold", () => OnCommandSubmitted?.Invoke("+ship/hold"));
+                    break;
                 case "room.c08_chandlery":
                 case "room.p08_exchange":
                 case "room.p09_commissary":
@@ -1048,7 +1356,7 @@ namespace TacSim.UI
                     break;
                 case "interior:bay":
                     AddQuickBtn("Launch Rig 1", () => OnCommandSubmitted?.Invoke("surface:launch"));
-                    AddQuickBtn("Lease Rig", () => OnCommandSubmitted?.Invoke("+tv/lease go"));
+                    AddQuickBtn("Rig Status (+tv)", () => OnCommandSubmitted?.Invoke("+tv"));
                     AddQuickBtn("Back to Hold", () => OnCommandSubmitted?.Invoke("+tv/bay out"));
                     break;
                 case "interior:bridge":
@@ -1085,16 +1393,17 @@ namespace TacSim.UI
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged -= RefreshTradeTerminal;
             _boundTradeState = state;
+            _lastListingsSignature = null;
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged += RefreshTradeTerminal;
             SelectTradeQuantityPreset(1, 10);
-            SelectDestinationPort(0, "stickney");
+            SelectDestinationPort(1, "stickney");
         }
 
         public void OpenTradeAndSailingModal(string header, bool openSailingTab)
         {
             if (_tradePanel == null) return;
-            if (_modalPanel != null) _modalPanel.SetActive(false);
+            CloseDetailModal(cancelServerRequest: true);
             _tradePanel.SetActive(true);
             if (_tradeHeaderText != null && !string.IsNullOrEmpty(header))
                 _tradeHeaderText.text = header;
@@ -1111,6 +1420,7 @@ namespace TacSim.UI
         {
             ActiveTradeTab = tab;
             _tradeSailingTabActive = tab == TradeTerminalTab.Sailing;
+            EconomyPanels?.DisarmConfirm();
             if (_exchangeTabBody != null) _exchangeTabBody.SetActive(tab == TradeTerminalTab.Exchange);
             if (EconomyPanels?.HistoryTabBody != null) EconomyPanels.HistoryTabBody.SetActive(tab == TradeTerminalTab.History);
             if (EconomyPanels?.JobsTabBody != null) EconomyPanels.JobsTabBody.SetActive(tab == TradeTerminalTab.Jobs);
@@ -1128,7 +1438,10 @@ namespace TacSim.UI
             if (autoQuery)
             {
                 if (tab == TradeTerminalTab.History)
-                    OnCommandSubmitted?.Invoke($"+market/history tacsim:{(EconomyPanels != null ? EconomyPanels.SelectedHistoryGood : "volatiles")}");
+                {
+                    string g = EconomyPanels != null ? EconomyPanels.SelectedHistoryGood : "volatiles";
+                    OnCommandSubmitted?.Invoke($"+market/history tacsim:{g}");
+                }
                 else if (tab == TradeTerminalTab.Jobs)
                     OnCommandSubmitted?.Invoke("+market/jobs");
                 else if (tab == TradeTerminalTab.Industry)
@@ -1137,7 +1450,10 @@ namespace TacSim.UI
                     OnCommandSubmitted?.Invoke("+ship/orders");
             }
 
-            EconomyPanels?.IngestEchoLines(_sailingEchoLines);
+            if (tab == TradeTerminalTab.History || tab == TradeTerminalTab.Jobs || tab == TradeTerminalTab.Industry)
+                EconomyPanels?.IngestTabEchoLines(tab, _tabEchoLines[tab]);
+            else if (tab == TradeTerminalTab.Sailing)
+                RefreshSailingOutputBox();
             RefreshTradeTerminal();
         }
 
@@ -1230,34 +1546,150 @@ namespace TacSim.UI
             if (label != null) label.text = text;
         }
 
+        private int ComputeFreeUnitsForGood(GoodItemDef good)
+        {
+            if (_boundTradeState == null) return 0;
+            if (good == null) return Mathf.Max(0, _boundTradeState.SelectedTradeQuantity);
+
+            if (good.Stowage == "stow.propellant")
+                return Mathf.Max(0, _boundTradeState.TankLimitTonnes - _boundTradeState.TankTonnes);
+            if (good.Stowage == "stow.provisions")
+                return Mathf.Max(0, _boundTradeState.StoresLimitCrewDays - _boundTradeState.StoresCrewDays);
+
+            int freeKg = Mathf.Max(0, (_boundTradeState.HoldMassLimitTonnes - _boundTradeState.HoldMassTonnes) * 1000);
+            int freeL = Mathf.Max(0, Mathf.RoundToInt((_boundTradeState.HoldVolumeLimitM3 - _boundTradeState.HoldVolumeM3) * 1000f));
+
+            int byMass = good.MassKgPerUnit > 0 ? freeKg / good.MassKgPerUnit : 999;
+            int byVol = good.VolumeLPerUnit > 0 ? freeL / good.VolumeLPerUnit : 999;
+            return Mathf.Max(0, Mathf.Min(byMass, byVol));
+        }
+
+        private string BuildListingsSignature()
+        {
+            if (_boundTradeState == null) return string.Empty;
+            var sb = new StringBuilder(256);
+            sb.Append(_boundTradeState.Listings.Count).Append('|')
+              .Append(_boundTradeState.SelectedSellAll).Append('|')
+              .Append(_boundTradeState.SelectedTradeQuantity).Append('|')
+              .Append(_boundTradeState.HoldMassTonnes).Append('/')
+              .Append(_boundTradeState.HoldMassLimitTonnes).Append('|')
+              .Append(_boundTradeState.HoldVolumeM3.ToString("0.0")).Append('/')
+              .Append(_boundTradeState.HoldVolumeLimitM3.ToString("0.0")).Append('|')
+              .Append(_boundTradeState.TankTonnes).Append('/')
+              .Append(_boundTradeState.TankLimitTonnes).Append('|')
+              .Append(_boundTradeState.StoresCrewDays).Append('/')
+              .Append(_boundTradeState.StoresLimitCrewDays).Append('|')
+              .Append(_boundTradeState.NextAfterListingId ?? 0UL).Append('|')
+              .Append(_boundTradeState.AboardDockedPortHint ?? string.Empty);
+            for (int i = 0; i < _boundTradeState.Listings.Count; i++)
+            {
+                var r = _boundTradeState.Listings[i];
+                sb.Append(';').Append(r.ListingId).Append(':')
+                  .Append(r.Quantity).Append(':')
+                  .Append(r.UnitPriceMinor).Append(':')
+                  .Append(r.IsWantedBid ? 'B' : 'A').Append(':')
+                  .Append(r.IsFunded ? '1' : '0').Append(':')
+                  .Append(r.UnitPriceText);
+            }
+            return sb.ToString();
+        }
+
+        private PooledListingCard GetOrCreatePooledListingCard(int index)
+        {
+            while (_listingCardPool.Count <= index)
+            {
+                var card = CreatePanel(_listingsContentRoot, $"PooledListingCard_{_listingCardPool.Count}", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.06f, 0.12f, 0.18f, 0.94f));
+                card.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 48f);
+
+                var txt = CreateText(card.transform, string.Empty, 13, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white);
+                txt.supportRichText = true;
+                SetRect(txt.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 2f), new Vector2(-190f, -2f));
+
+                var slot = new PooledListingCard
+                {
+                    Root = card,
+                    Background = card.GetComponent<Image>(),
+                    Description = txt
+                };
+                slot.ActionButton = CreateButton(card.transform, "BUY", new Color(0.14f, 0.52f, 0.36f), () => slot.OnActionClick?.Invoke());
+                SetRect(slot.ActionButton.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-178f, 6f), new Vector2(-10f, -6f));
+                slot.ActionButtonBg = slot.ActionButton.GetComponent<Image>();
+                slot.ActionButtonLabel = slot.ActionButton.GetComponentInChildren<Text>();
+                card.SetActive(false);
+                _listingCardPool.Add(slot);
+            }
+            return _listingCardPool[index];
+        }
+
+        private void EnsureEmptyAndLoadMoreRows()
+        {
+            if (_emptyListingsRow == null)
+            {
+                _emptyListingsRow = CreatePanel(_listingsContentRoot, "EmptyNotice", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.06f, 0.11f, 0.17f, 0.9f));
+                _emptyListingsRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 58f);
+                _emptyListingsText = CreateText(_emptyListingsRow.transform, string.Empty, 14, FontStyle.Italic, TextAnchor.MiddleCenter, new Color(0.75f, 0.88f, 0.98f));
+                _emptyListingsText.supportRichText = true;
+                SetRect(_emptyListingsText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 0f), new Vector2(-12f, 0f));
+                _emptyListingsRow.SetActive(false);
+            }
+            if (_loadMoreListingsRow == null)
+            {
+                _loadMoreListingsRow = CreatePanel(_listingsContentRoot, "LoadMoreRow", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.08f, 0.16f, 0.24f, 0.94f));
+                _loadMoreListingsRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 42f);
+                var moreBtn = CreateButton(_loadMoreListingsRow.transform, "LOAD MORE LISTINGS", new Color(0.16f, 0.42f, 0.58f), () => _loadMoreAction?.Invoke());
+                SetRect(moreBtn.GetComponent<RectTransform>(), new Vector2(0.25f, 0f), new Vector2(0.75f, 1f), new Vector2(0f, 4f), new Vector2(0f, -4f));
+                _loadMoreListingsRow.SetActive(false);
+            }
+        }
+
+        private static void ApplyButtonNormalColor(Button btn, Color bg)
+        {
+            if (btn == null) return;
+            var colors = btn.colors;
+            colors.normalColor = bg;
+            colors.highlightedColor = new Color(Mathf.Clamp01(bg.r * 1.38f + 0.06f), Mathf.Clamp01(bg.g * 1.38f + 0.06f), Mathf.Clamp01(bg.b * 1.38f + 0.06f), 1f);
+            colors.pressedColor = new Color(Mathf.Clamp01(bg.r * 0.65f), Mathf.Clamp01(bg.g * 0.65f), Mathf.Clamp01(bg.b * 0.65f), 1f);
+            colors.selectedColor = new Color(Mathf.Clamp01(bg.r * 1.25f + 0.04f), Mathf.Clamp01(bg.g * 1.25f + 0.04f), Mathf.Clamp01(bg.b * 1.25f + 0.04f), 1f);
+            btn.colors = colors;
+        }
+
         private void RebuildListingCards()
         {
             if (_listingsContentRoot == null || _boundTradeState == null) return;
-            for (int i = _listingsContentRoot.childCount - 1; i >= 0; i--)
-                DestroySafe(_listingsContentRoot.GetChild(i).gameObject);
+            string sig = BuildListingsSignature();
+            if (sig == _lastListingsSignature)
+                return;
+            _lastListingsSignature = sig;
+
+            EnsureEmptyAndLoadMoreRows();
 
             if (_boundTradeState.Listings.Count == 0)
             {
-                var emptyRow = CreatePanel(_listingsContentRoot, "EmptyNotice", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.06f, 0.11f, 0.17f, 0.9f));
-                emptyRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 58f);
+                for (int i = 0; i < _listingCardPool.Count; i++)
+                    _listingCardPool[i].Root.SetActive(false);
+                _loadMoreListingsRow.SetActive(false);
+
                 string safePortHint = MushProtocol.EscapeUnityRichText(_boundTradeState.AboardDockedPortHint);
-                string emptyMsg = !string.IsNullOrEmpty(safePortHint)
+                _emptyListingsText.text = !string.IsNullOrEmpty(safePortHint)
                     ? $"You are aboard your hull at <b>{safePortHint}</b> — step ashore (<b>+ship/leave</b>) to trade on the port exchange."
                     : "No cached listings yet — visit a port exchange/chandlery or click <b>REFRESH BOARD</b>.";
-                var msg = CreateText(emptyRow.transform, emptyMsg, 14, FontStyle.Italic, TextAnchor.MiddleCenter, new Color(0.75f, 0.88f, 0.98f));
-                msg.supportRichText = true;
-                SetRect(msg.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 0f), new Vector2(-12f, 0f));
+                _emptyListingsRow.SetActive(true);
+                LayoutRebuilder.ForceRebuildLayoutImmediate(_listingsContentRoot.GetComponent<RectTransform>());
                 return;
             }
 
-            for (int i = 0; i < _boundTradeState.Listings.Count; i++)
+            _emptyListingsRow.SetActive(false);
+            int count = _boundTradeState.Listings.Count;
+            for (int i = 0; i < count; i++)
             {
                 var row = _boundTradeState.Listings[i];
                 var good = _boundTradeState.FindGoodByNameOrCode(row.GoodCode);
+                var slot = GetOrCreatePooledListingCard(i);
 
-                var card = CreatePanel(_listingsContentRoot, $"Listing_{row.ListingId}", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero,
-                    row.IsWantedBid ? new Color(0.13f, 0.10f, 0.06f, 0.94f) : new Color(0.06f, 0.12f, 0.18f, 0.94f));
-                card.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 48f);
+                slot.Root.name = $"Listing_{row.ListingId}";
+                slot.Background.color = row.IsWantedBid
+                    ? new Color(0.13f, 0.10f, 0.06f, 0.94f)
+                    : new Color(0.06f, 0.12f, 0.18f, 0.94f);
 
                 string badge = row.IsWantedBid ? $"<color=#FFBB55>[BID #{row.ListingId}]</color>" : $"<color=#55DDFF>[ASK #{row.ListingId}]</color>";
                 string measureInfo = string.Empty;
@@ -1272,23 +1704,28 @@ namespace TacSim.UI
                 string vendorClause = MushProtocol.EscapeUnityRichText(rawVendor);
                 string safeItem = MushProtocol.EscapeUnityRichText((row.ItemName ?? string.Empty).ToUpperInvariant());
                 string safePrice = MushProtocol.EscapeUnityRichText(row.UnitPriceText);
-                string desc = $"{badge}  <b>{safeItem}</b>{measureInfo}   —   <b>{row.Quantity}</b> × <color=#77FFBB>{safePrice}</color>   <color=#99B8CC>[{vendorClause}]</color>";
-                var txt = CreateText(card.transform, desc, 13, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white);
-                txt.supportRichText = true;
-                SetRect(txt.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 2f), new Vector2(-190f, -2f));
+                slot.Description.text = $"{badge}  <b>{safeItem}</b>{measureInfo}   —   <b>{row.Quantity}</b> × <color=#77FFBB>{safePrice}</color>   <color=#99B8CC>[{vendorClause}]</color>";
 
                 if (!row.IsWantedBid)
                 {
+                    int freeUnits = ComputeFreeUnitsForGood(good);
                     int buyQty = _boundTradeState.SelectedSellAll
-                        ? Mathf.Min(row.Quantity, _boundTradeState.ComputeMaxAdditionalUnitsForHold(row.GoodCode))
-                        : Mathf.Min(Mathf.Max(1, row.Quantity), _boundTradeState.SelectedTradeQuantity);
-                    buyQty = Mathf.Max(1, buyQty);
+                        ? Mathf.Min(row.Quantity, freeUnits)
+                        : Mathf.Min(row.Quantity, _boundTradeState.SelectedTradeQuantity);
 
+                    bool canBuy = row.Quantity > 0 && (!_boundTradeState.SelectedSellAll || freeUnits > 0) && buyQty > 0;
                     var capturedRow = row;
                     int capturedQty = buyQty;
-                    var buyBtn = CreateButton(card.transform, $"BUY {buyQty}", new Color(0.14f, 0.52f, 0.36f), () =>
-                        OnMarketBuyRequested?.Invoke(capturedRow, capturedQty, _boundTradeState.SelectedSellAll));
-                    SetRect(buyBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-178f, 6f), new Vector2(-10f, -6f));
+                    bool capturedMaxFit = _boundTradeState.SelectedSellAll;
+
+                    slot.ActionButtonLabel.text = !canBuy
+                        ? (row.Quantity <= 0 ? "SOLD OUT" : "HOLD FULL")
+                        : $"BUY {buyQty}";
+                    ApplyButtonNormalColor(slot.ActionButton, canBuy ? new Color(0.14f, 0.52f, 0.36f) : new Color(0.25f, 0.25f, 0.28f));
+                    slot.ActionButton.interactable = canBuy;
+                    slot.OnActionClick = canBuy
+                        ? (Action)(() => OnMarketBuyRequested?.Invoke(capturedRow, capturedQty, capturedMaxFit))
+                        : null;
                 }
                 else
                 {
@@ -1296,24 +1733,33 @@ namespace TacSim.UI
                     int sellQty = Mathf.Max(1, _boundTradeState.SelectedTradeQuantity);
                     string btnLbl = !row.IsFunded ? "UNFUNDED" : (sellAll ? "SELL ALL" : $"SELL {sellQty}");
                     var capturedRow = row;
-                    var sellBtn = CreateButton(card.transform, btnLbl, row.IsFunded ? new Color(0.56f, 0.36f, 0.12f) : new Color(0.25f, 0.25f, 0.28f), () =>
-                    {
-                        if (capturedRow.IsFunded)
-                            OnMarketSellRequested?.Invoke(capturedRow, sellQty, sellAll);
-                    });
-                    sellBtn.interactable = row.IsFunded;
-                    SetRect(sellBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-178f, 6f), new Vector2(-10f, -6f));
+                    slot.ActionButtonLabel.text = btnLbl;
+                    ApplyButtonNormalColor(slot.ActionButton, row.IsFunded ? new Color(0.56f, 0.36f, 0.12f) : new Color(0.25f, 0.25f, 0.28f));
+                    slot.ActionButton.interactable = row.IsFunded;
+                    slot.OnActionClick = row.IsFunded
+                        ? (Action)(() => OnMarketSellRequested?.Invoke(capturedRow, sellQty, sellAll))
+                        : null;
                 }
+
+                if (!slot.Root.activeSelf) slot.Root.SetActive(true);
+            }
+
+            for (int i = count; i < _listingCardPool.Count; i++)
+            {
+                if (_listingCardPool[i].Root.activeSelf)
+                    _listingCardPool[i].Root.SetActive(false);
             }
 
             if (_boundTradeState.NextAfterListingId.HasValue)
             {
                 ulong afterId = _boundTradeState.NextAfterListingId.Value;
-                var moreRow = CreatePanel(_listingsContentRoot, "LoadMoreRow", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.08f, 0.16f, 0.24f, 0.94f));
-                moreRow.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 42f);
-                var moreBtn = CreateButton(moreRow.transform, "LOAD MORE LISTINGS", new Color(0.16f, 0.42f, 0.58f), () =>
-                    OnLoadMoreTradeRequested?.Invoke(afterId));
-                SetRect(moreBtn.GetComponent<RectTransform>(), new Vector2(0.25f, 0f), new Vector2(0.75f, 1f), new Vector2(0f, 4f), new Vector2(0f, -4f));
+                _loadMoreAction = () => OnLoadMoreTradeRequested?.Invoke(afterId);
+                _loadMoreListingsRow.SetActive(true);
+            }
+            else
+            {
+                _loadMoreAction = null;
+                _loadMoreListingsRow.SetActive(false);
             }
 
             LayoutRebuilder.ForceRebuildLayoutImmediate(_listingsContentRoot.GetComponent<RectTransform>());
@@ -1323,18 +1769,20 @@ namespace TacSim.UI
         {
             if (_sailingPlanOutputText == null || _boundTradeState == null) return;
             var sb = new StringBuilder(512);
-            sb.AppendFormat("<color=#66DDFF><b>SELECTED CORRIDOR DESTINATION:</b></color> {0}\n", _boundTradeState.SelectedDestinationPort.ToUpperInvariant());
+            string safeDest = MushProtocol.EscapeUnityRichText((_boundTradeState.SelectedDestinationPort ?? string.Empty).ToUpperInvariant());
+            sb.AppendFormat("<color=#66DDFF><b>SELECTED CORRIDOR DESTINATION:</b></color> {0}\n", safeDest);
             if (_boundTradeState.SailingOrderLines.Count > 0)
             {
                 sb.AppendLine("<color=#88EEAA><b>QUEUED STANDING ORDERS:</b></color>");
                 for (int i = 0; i < _boundTradeState.SailingOrderLines.Count; i++)
                     sb.AppendLine("  " + MushProtocol.EscapeUnityRichText(_boundTradeState.SailingOrderLines[i]));
             }
-            if (_sailingEchoLines.Count > 0)
+            var sailingLines = _tabEchoLines[TradeTerminalTab.Sailing];
+            if (sailingLines.Count > 0)
             {
                 sb.AppendLine("\n<color=#AADDFF><b>PORT / HELM TELEMETRY:</b></color>");
-                for (int i = 0; i < _sailingEchoLines.Count; i++)
-                    sb.AppendLine(_sailingEchoLines[i]);
+                for (int i = 0; i < sailingLines.Count; i++)
+                    sb.AppendLine(sailingLines[i]);
             }
             _sailingPlanOutputText.text = sb.ToString();
             LayoutRebuilder.ForceRebuildLayoutImmediate(_sailingPlanOutputText.rectTransform);
@@ -1343,6 +1791,24 @@ namespace TacSim.UI
         private void AddQuickBtn(string label, Action onClick)
         {
             CreateButton(_quickActionsContainer, label, new Color(0.11f, 0.24f, 0.34f, 0.95f), onClick);
+        }
+
+        public void CloseDetailModal(bool cancelServerRequest = true)
+        {
+            if (_modalPanel != null)
+                _modalPanel.SetActive(false);
+            _activeNpcTargetName = null;
+            _modalCommandPrefix = null;
+            if (cancelServerRequest && _activeServerRequest != null)
+            {
+                var pending = _activeServerRequest;
+                _activeServerRequest = null;
+                OnRequestChoiceSubmitted?.Invoke(pending, "__cancel__");
+            }
+            else
+            {
+                _activeServerRequest = null;
+            }
         }
 
         public void ShowDetailModal(
@@ -1355,6 +1821,7 @@ namespace TacSim.UI
         {
             if (_modalPanel == null) return;
             if (_tradePanel != null) _tradePanel.SetActive(false);
+            _activeServerRequest = null;
             _modalPanel.SetActive(true);
             _modalHeaderText.text = header;
             _modalBaseIntro = body ?? string.Empty;
@@ -1368,7 +1835,11 @@ namespace TacSim.UI
             bool showInput = !string.IsNullOrEmpty(npcName) || !string.IsNullOrEmpty(commandPrefix);
             _npcSayInput.gameObject.SetActive(showInput);
             if (showInput)
+            {
+                if (_npcSayPlaceholderText != null)
+                    _npcSayPlaceholderText.text = !string.IsNullOrEmpty(commandPrefix) ? "Enter value (Enter to submit)..." : "Speak directly to NPC (Enter)...";
                 _npcSayInput.text = defaultInputValue ?? string.Empty;
+            }
 
             for (int i = _modalButtonsRoot.childCount - 1; i >= 0; i--)
                 DestroySafe(_modalButtonsRoot.GetChild(i).gameObject);
@@ -1383,24 +1854,40 @@ namespace TacSim.UI
             }
         }
 
+        private static bool IsRoomSpeechLine(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return false;
+            if (line.StartsWith("<color=#BBD8EE>", StringComparison.Ordinal) ||
+                line.StartsWith("<color=#66CCFF>> ", StringComparison.Ordinal))
+                return false;
+            return line.IndexOf(" says, \"", StringComparison.Ordinal) >= 0;
+        }
+
         public void AppendModalResponseLine(string richLine, bool resetPreviousResponses = false)
         {
             if (_tradePanel != null && _tradePanel.activeSelf)
             {
-                if (resetPreviousResponses) _sailingEchoLines.Clear();
-                if (!string.IsNullOrWhiteSpace(richLine))
+                if (!IsRoomSpeechLine(richLine))
                 {
-                    foreach (string sub in richLine.Split('\n'))
+                    var tabLines = _tabEchoLines[ActiveTradeTab];
+                    if (resetPreviousResponses) tabLines.Clear();
+                    if (!string.IsNullOrWhiteSpace(richLine))
                     {
-                        if (string.IsNullOrWhiteSpace(sub)) continue;
-                        _sailingEchoLines.Add(sub.TrimEnd('\r'));
+                        foreach (string sub in richLine.Split('\n'))
+                        {
+                            if (string.IsNullOrWhiteSpace(sub)) continue;
+                            tabLines.Add(sub.TrimEnd('\r'));
+                        }
+                        while (tabLines.Count > MaxTabEchoLines)
+                            tabLines.RemoveAt(0);
                     }
-                    while (_sailingEchoLines.Count > 24)
-                        _sailingEchoLines.RemoveAt(0);
+                    if (ActiveTradeTab == TradeTerminalTab.Sailing)
+                        RefreshSailingOutputBox();
+                    else if (ActiveTradeTab == TradeTerminalTab.History ||
+                             ActiveTradeTab == TradeTerminalTab.Jobs ||
+                             ActiveTradeTab == TradeTerminalTab.Industry)
+                        EconomyPanels?.IngestTabEchoLines(ActiveTradeTab, tabLines);
                 }
-                if (_tradeSailingTabActive)
-                    RefreshSailingOutputBox();
-                EconomyPanels?.IngestEchoLines(_sailingEchoLines);
             }
 
             if (_modalPanel == null || !_modalPanel.activeSelf || _modalBodyText == null)
@@ -1435,17 +1922,51 @@ namespace TacSim.UI
 
         public void ShowServerRequestModal(MushServerRequest req)
         {
+            if (req == null) return;
+            bool isText = string.Equals(req.Kind, "text", StringComparison.OrdinalIgnoreCase);
+            bool isTarget = string.Equals(req.Kind, "target", StringComparison.OrdinalIgnoreCase);
+            bool needsTextInput = isText || isTarget || req.Options == null || req.Options.Count == 0;
+
             var btns = new List<(string, Action)>();
-            foreach (var opt in req.Options)
+            if (req.Options != null)
             {
-                string key = opt.Key;
-                btns.Add((opt.Label, () =>
+                foreach (var opt in req.Options)
                 {
-                    _modalPanel.SetActive(false);
-                    OnRequestChoiceSubmitted?.Invoke(req, key);
-                }));
+                    string key = opt.Key;
+                    btns.Add((opt.Label, () =>
+                    {
+                        _activeServerRequest = null;
+                        if (_modalPanel != null) _modalPanel.SetActive(false);
+                        OnRequestChoiceSubmitted?.Invoke(req, key);
+                    }));
+                }
             }
+
+            if (needsTextInput)
+            {
+                btns.Add(("SUBMIT", () => SubmitNpcInput()));
+            }
+
+            if (!string.Equals(req.Kind, "confirm", StringComparison.OrdinalIgnoreCase))
+            {
+                btns.Add(("CANCEL", () => CloseDetailModal(cancelServerRequest: true)));
+            }
+
             ShowDetailModal("PORT / SYSTEM REQUEST", req.Prompt, btns);
+            _activeServerRequest = req;
+
+            if (_npcSayInput != null)
+            {
+                _npcSayInput.gameObject.SetActive(needsTextInput);
+                if (needsTextInput)
+                {
+                    if (_npcSayPlaceholderText != null)
+                        _npcSayPlaceholderText.text = isTarget
+                            ? "Enter target name or #id (Enter to submit)..."
+                            : "Enter response text (Enter to submit)...";
+                    _npcSayInput.text = string.Empty;
+                }
+            }
         }
 
         public void UpdateDockingHud(DockingClientSession session, bool assistOn)
@@ -1467,7 +1988,7 @@ namespace TacSim.UI
             }
 
             var sb = new StringBuilder(256);
-            sb.AppendFormat("Target: <b>{0}</b>   [{1}/5 GATES GREEN]\n", session.TargetLabel, gates.GreenCount);
+            sb.AppendFormat("Target: <b>{0}</b>   [{1}/5 GATES GREEN]\n", MushProtocol.EscapeUnityRichText(session.TargetLabel), gates.GreenCount);
             sb.AppendFormat("Range Z: <b>{0} mm</b> (<= 500)   Closure: <b>{1} mm/s</b> (100..800)\n", session.DzMm, session.VzMmps);
             sb.AppendFormat("Lateral: X {0:+#;-#;0} mm ({1:+#;-#;0} mm/s) | Y {2:+#;-#;0} mm ({3:+#;-#;0} mm/s)\n",
                 session.DxMm, session.VxMmps, session.DyMm, session.VyMmps);
@@ -1501,6 +2022,7 @@ namespace TacSim.UI
             t.fontStyle = style;
             t.alignment = align;
             t.color = color;
+            t.supportRichText = false;
             t.raycastTarget = false;
             return t;
         }

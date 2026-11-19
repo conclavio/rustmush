@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using TacSim.Arena;
+using TacSim.Net;
 using TacSim.Space;
 using TacSim.Surface;
 using UnityEngine;
@@ -69,9 +70,17 @@ namespace TacSim.UI
         private Text _arenaOwnArmorText;
         private Text _arenaWeaponText;
         private Text _fireBtnLabel;
+        private Button _emconBtn;
+        private Text _emconBtnLabel;
+        private Button _advanceBtn;
+        private Text _advanceBtnLabel;
+        private string _selectedAdvanceSpot;
         private Transform _arenaContactsListRoot;
         private Transform _arenaKeySpotsRowRoot;
         private string _lastKeySpotsSignature = string.Empty;
+
+        private const string DefaultLobbyRosterHint =
+            "Walk north into <b>Red Room</b> or south into <b>Blue Room</b> after <b>SIM START</b>, then press <b>[E]</b> on your pod (or click <b>BOARD POD</b>)!";
 
         private sealed class PooledContactRow
         {
@@ -158,6 +167,73 @@ namespace TacSim.UI
             RefreshSpaceFireCard();
         }
 
+        private void OnDestroy()
+        {
+            if (_surface != null) _surface.OnSurfaceTelemetryChanged -= RefreshSurfaceHud;
+            if (_arena != null) _arena.OnArenaStateUpdated -= RefreshArenaHud;
+            if (_space != null) _space.OnSpaceTelemetryChanged -= RefreshSpaceFireCard;
+            _surface = null;
+            _arena = null;
+            _space = null;
+        }
+
+        public void ResetSessionState()
+        {
+            _seatedAtHelm = false;
+            _selectedAdvanceSpot = null;
+            _lastKeySpotsSignature = string.Empty;
+            if (_orbitalOpsBar != null) _orbitalOpsBar.SetActive(false);
+            if (_spaceFireCard != null) _spaceFireCard.SetActive(false);
+            if (_surfaceHudRoot != null) _surfaceHudRoot.SetActive(false);
+            if (_arenaLobbyModal != null) _arenaLobbyModal.SetActive(false);
+            if (_arenaBattleHudRoot != null) _arenaBattleHudRoot.SetActive(false);
+            if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
+        }
+
+        public string SelectedAdvanceSpot => ResolveAdvanceSpot();
+
+        public void SelectAdvanceSpot(string spotLetterOrName)
+        {
+            _selectedAdvanceSpot = string.IsNullOrWhiteSpace(spotLetterOrName) ? null : spotLetterOrName.Trim();
+            UpdateAdvanceButtonVisual();
+        }
+
+        public string ResolveAdvanceSpot()
+        {
+            var spots = _arena?.TerrainGrid?.KeySpots;
+            if (spots != null && spots.Count > 0)
+            {
+                if (!string.IsNullOrEmpty(_selectedAdvanceSpot))
+                {
+                    for (int i = 0; i < spots.Count; i++)
+                    {
+                        if (string.Equals(spots[i].Letter, _selectedAdvanceSpot, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(spots[i].Name, _selectedAdvanceSpot, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return spots[i].Letter;
+                        }
+                    }
+                }
+                return spots[0].Letter;
+            }
+            return !string.IsNullOrEmpty(_selectedAdvanceSpot) ? _selectedAdvanceSpot : null;
+        }
+
+        public string ResolveSquadAdvanceCommand()
+        {
+            string spot = ResolveAdvanceSpot();
+            return !string.IsNullOrEmpty(spot) ? $"order all advance {spot}" : null;
+        }
+
+        private void UpdateAdvanceButtonVisual()
+        {
+            string spot = ResolveAdvanceSpot();
+            if (_advanceBtn != null)
+                _advanceBtn.interactable = !string.IsNullOrEmpty(spot);
+            if (_advanceBtnLabel != null)
+                _advanceBtnLabel.text = !string.IsNullOrEmpty(spot) ? $"SQUAD: ADV [{spot}]" : "SQUAD: ADVANCE";
+        }
+
         public void SetHelmSeatedVisible(bool seatedAtHelm)
         {
             _seatedAtHelm = seatedAtHelm;
@@ -178,7 +254,7 @@ namespace TacSim.UI
         {
             if (_orbitalTargetLabel != null)
             {
-                string r = string.IsNullOrEmpty(rockId) ? "NONE" : rockId;
+                string r = string.IsNullOrEmpty(rockId) ? "NONE" : MushProtocol.EscapeUnityRichText(rockId);
                 string rState = string.Empty;
                 if (!string.IsNullOrEmpty(rockId))
                 {
@@ -189,9 +265,9 @@ namespace TacSim.UI
                     else if (matchedRockId != null || approachingRockId != null)
                         rState = " <color=#FF8866>[UNMATCHED]</color>";
                 }
-                string c = string.IsNullOrEmpty(contactId) ? "NONE" : contactId;
+                string c = string.IsNullOrEmpty(contactId) ? "NONE" : MushProtocol.EscapeUnityRichText(contactId);
                 string bandTag = !string.IsNullOrEmpty(lockFacet)
-                    ? $" <color=#FFBB55>[{lockFacet.ToUpperInvariant()} BAND]</color>"
+                    ? $" <color=#FFBB55>[{MushProtocol.EscapeUnityRichText(lockFacet.ToUpperInvariant())} BAND]</color>"
                     : string.Empty;
                 _orbitalTargetLabel.text = $"ROCK: <b>{r}</b>{rState} | LOCK: <b>{c}</b>{bandTag}";
             }
@@ -202,7 +278,8 @@ namespace TacSim.UI
 
         private void BuildSlice2OrbitalOpsBar(Transform parent)
         {
-            _orbitalOpsBar = CreatePanel(parent, "OrbitalMiningAndTacBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-540f, 126f), new Vector2(540f, 206f), new Color(0.03f, 0.08f, 0.14f, 0.92f));
+            // Anchored strictly right of CommsDrawer (`x = 452..-16`) so zero overlap at 1920x1080 or narrow viewports.
+            _orbitalOpsBar = CreatePanel(parent, "OrbitalMiningAndTacBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 124f), new Vector2(-16f, 204f), new Color(0.03f, 0.08f, 0.14f, 0.92f));
 
             var rowMine = CreatePanel(_orbitalOpsBar.transform, "ZeroGMiningRow", new Vector2(0f, 0.5f), new Vector2(1f, 1f), new Vector2(8f, 2f), new Vector2(-8f, -4f), Color.clear);
             var mHlg = rowMine.AddComponent<HorizontalLayoutGroup>();
@@ -289,7 +366,7 @@ namespace TacSim.UI
             string magOrMode = string.Empty;
             if (!string.IsNullOrEmpty(m.Mode))
             {
-                magOrMode = $" · {m.Mode.ToUpperInvariant()}";
+                magOrMode = $" · {MushProtocol.EscapeUnityRichText(m.Mode.ToUpperInvariant())}";
             }
             else if (m.Rounds >= 0 && m.RoundsMax > 0)
             {
@@ -319,7 +396,8 @@ namespace TacSim.UI
             else if (m.FlightMsAtLock >= 0)
                 atLock = $" · <b>{m.FlightMsAtLock / 1000f:F1}s FLIGHT</b>";
 
-            return $"<b>{m.Id.ToUpperInvariant()}</b> [{famLabel}{magOrMode}]  {stateWord}{atLock}";
+            string safeId = MushProtocol.EscapeUnityRichText((m.Id ?? string.Empty).ToUpperInvariant());
+            return $"<b>{safeId}</b> [{famLabel}{magOrMode}]  {stateWord}{atLock}";
         }
 
         public void RefreshSpaceFireCard()
@@ -341,12 +419,15 @@ namespace TacSim.UI
                     var lk = _space.ActiveLock;
                     string rangeTxt = lk.RangeM >= 1000 ? $"{lk.RangeM / 1000f:0.0} km" : $"{lk.RangeM} m";
                     string lbl = string.IsNullOrEmpty(lk.Label) ? lk.ShipId : lk.Label;
+                    string safeLbl = MushProtocol.EscapeUnityRichText((lbl ?? string.Empty).ToUpperInvariant());
+                    string safeShipId = MushProtocol.EscapeUnityRichText(lk.ShipId ?? string.Empty);
+                    string safeFacet = MushProtocol.EscapeUnityRichText((lk.Facet ?? string.Empty).ToUpperInvariant());
                     _spaceLockSummaryText.text =
-                        $"LOCK: <b>{lbl.ToUpperInvariant()}</b> ({lk.ShipId})  |  <b>{rangeTxt}</b>  |  BAND: <color=#FFBB55><b>[{lk.Facet.ToUpperInvariant()}]</b></color>";
+                        $"LOCK: <b>{safeLbl}</b> ({safeShipId})  |  <b>{rangeTxt}</b>  |  BAND: <color=#FFBB55><b>[{safeFacet}]</b></color>";
                 }
                 else if (!string.IsNullOrEmpty(_space.LockedContactId))
                 {
-                    _spaceLockSummaryText.text = $"LOCK DESIGNATED: <b>{_space.LockedContactId}</b> (awaiting sensor solution)";
+                    _spaceLockSummaryText.text = $"LOCK DESIGNATED: <b>{MushProtocol.EscapeUnityRichText(_space.LockedContactId)}</b> (awaiting sensor solution)";
                 }
                 else
                 {
@@ -442,10 +523,10 @@ namespace TacSim.UI
             _surfaceGaugesText.text = $"HOPPER: {_surface.HopperLoadedTonnes} / {_surface.HopperCapacityTonnes} t   |   BATTERY: {_surface.BatteryPct}%   |   HOLD FREE: {_surface.HoldUnreservedTonnes} t";
 
             var sb = new StringBuilder(256);
-            sb.AppendLine($"<color=#FFEE77>{_surface.StatusSummaryLine}</color>");
+            sb.AppendLine($"<color=#FFEE77>{MushProtocol.EscapeUnityRichText(_surface.StatusSummaryLine)}</color>");
             var lines = _surface.RecentSiteLines;
             for (int i = Mathf.Max(0, lines.Count - 4); i < lines.Count; i++)
-                sb.AppendLine("• " + lines[i]);
+                sb.AppendLine("• " + MushProtocol.EscapeUnityRichText(lines[i]));
             sb.Append("<color=#88CCFF>[WASD / LMB Terrain] Drive   [RMB + Scroll] Orbit Camera</color>");
             _surfaceReadingsText.text = sb.ToString();
         }
@@ -618,12 +699,14 @@ namespace TacSim.UI
                 string tColor = teamIdx == 0 ? "#FF6655" : "#55AAFF";
                 string mState = string.IsNullOrEmpty(_arena.LiveLobbyMatchState) ? "IDLE" : _arena.LiveLobbyMatchState.ToUpperInvariant();
                 _arenaLobbySummaryText.text =
-                    $"CENTRE STATE: <b>{mState}</b>   |   TEAM: <color={tColor}><b>{_arena.SelectedLobbyTeam.ToUpperInvariant()}</b></color>   |   UNIT: <b>{_arena.SelectedLobbyUnit.ToUpperInvariant()}</b>   |   AI SIDE SIZE: <b>{_arena.SelectedLobbyAiCount}</b>   |   RULE: <b>{_arena.SelectedLobbyMode.ToUpperInvariant()}</b>";
+                    $"CENTRE STATE: <b>{MushProtocol.EscapeUnityRichText(mState)}</b>   |   TEAM: <color={tColor}><b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyTeam.ToUpperInvariant())}</b></color>   |   UNIT: <b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyUnit.ToUpperInvariant())}</b>   |   AI SIDE SIZE: <b>{_arena.SelectedLobbyAiCount}</b>   |   RULE: <b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyMode.ToUpperInvariant())}</b>";
             }
 
-            if (_arenaLobbyLiveRosterText != null && !string.IsNullOrEmpty(_arena.LiveLobbySlotSummary))
+            if (_arenaLobbyLiveRosterText != null)
             {
-                _arenaLobbyLiveRosterText.text = _arena.LiveLobbySlotSummary;
+                _arenaLobbyLiveRosterText.text = !string.IsNullOrEmpty(_arena.LiveLobbySlotSummary)
+                    ? _arena.LiveLobbySlotSummary
+                    : DefaultLobbyRosterHint;
             }
         }
 
@@ -639,7 +722,7 @@ namespace TacSim.UI
             SetRect(_arenaScoreboardText.rectTransform, Vector2.zero, Vector2.one, new Vector2(10f, 0f), new Vector2(-10f, 0f));
 
             _arenaBannerText = CreateTxt(_arenaBattleHudRoot.transform, "", 24, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1f, 0.88f, 0.35f));
-            _arenaBannerText.supportRichText = true;
+            _arenaBannerText.supportRichText = false;
             SetRect(_arenaBannerText.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-420f, -166f), new Vector2(420f, -124f));
 
             var tacCard = CreatePanel(_arenaBattleHudRoot.transform, "ArenaContactsPanel", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-390f, -422f), new Vector2(-16f, -74f), new Color(0.03f, 0.07f, 0.12f, 0.90f));
@@ -694,25 +777,43 @@ namespace TacSim.UI
             var volleyBtn = CreateBtn(hullCard.transform, "VOLLEY ALL", new Color(0.54f, 0.26f, 0.14f), () => OnArenaCockpitVerbRequested?.Invoke("fire all"));
             SetRect(volleyBtn.GetComponent<RectTransform>(), new Vector2(0.64f, 0f), new Vector2(1f, 0.22f), new Vector2(4f, 8f), new Vector2(-12f, -2f));
 
-            var squadBar = CreatePanel(_arenaBattleHudRoot.transform, "ArenaSquadOrderBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-500f, 74f), new Vector2(500f, 122f), new Color(0.04f, 0.08f, 0.14f, 0.94f));
-            var sHlg = squadBar.AddComponent<HorizontalLayoutGroup>();
-            sHlg.spacing = 5f; sHlg.padding = new RectOffset(8, 8, 6, 6);
-            sHlg.childControlWidth = true; sHlg.childControlHeight = true; sHlg.childForceExpandWidth = true;
+            // Anchored strictly between CommsDrawer (x=14..436) and OwnPlatformCard (x=-430..-16) so zero overlap on any aspect ratio.
+            var squadBar = CreatePanel(_arenaBattleHudRoot.transform, "ArenaSquadOrderBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 16f), new Vector2(-446f, 108f), new Color(0.04f, 0.08f, 0.14f, 0.94f));
 
-            CreateBtn(squadBar.transform, "STARTUP", new Color(0.16f, 0.42f, 0.34f), () => OnArenaCockpitVerbRequested?.Invoke("startup"));
-            CreateBtn(squadBar.transform, "ALL STOP [X]", new Color(0.36f, 0.26f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("stop"));
-            CreateBtn(squadBar.transform, "SCAN", new Color(0.14f, 0.38f, 0.48f), () => OnArenaCockpitVerbRequested?.Invoke("scan"));
-            CreateBtn(squadBar.transform, "EMCON", new Color(0.22f, 0.28f, 0.44f), () => OnArenaCockpitVerbRequested?.Invoke("emcon"));
-            CreateBtn(squadBar.transform, "HOLD/FREE", new Color(0.32f, 0.26f, 0.42f), () =>
+            var helmRow = CreatePanel(squadBar.transform, "ArenaHelmRow", new Vector2(0f, 0.5f), new Vector2(1f, 1f), new Vector2(8f, 2f), new Vector2(-8f, -6f), Color.clear);
+            var hHlg = helmRow.AddComponent<HorizontalLayoutGroup>();
+            hHlg.spacing = 5f; hHlg.childControlWidth = true; hHlg.childControlHeight = true; hHlg.childForceExpandWidth = true;
+
+            CreateBtn(helmRow.transform, "STARTUP", new Color(0.16f, 0.42f, 0.34f), () => OnArenaCockpitVerbRequested?.Invoke("startup"));
+            CreateBtn(helmRow.transform, "ALL STOP [X]", new Color(0.36f, 0.26f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("speed 0"));
+            CreateBtn(helmRow.transform, "SCAN", new Color(0.14f, 0.38f, 0.48f), () => OnArenaCockpitVerbRequested?.Invoke("scan"));
+            _emconBtn = CreateBtn(helmRow.transform, "EMCON: ON", new Color(0.22f, 0.28f, 0.44f), () =>
+            {
+                bool silent = _arena != null && _arena.State.EmconSilent;
+                OnArenaCockpitVerbRequested?.Invoke(silent ? "emcon on" : "emcon off");
+            });
+            _emconBtnLabel = _emconBtn.GetComponentInChildren<Text>();
+            CreateBtn(helmRow.transform, "HOLD/FREE", new Color(0.32f, 0.26f, 0.42f), () =>
             {
                 bool free = _arena != null && _arena.State.WeaponsFree;
                 OnArenaCockpitVerbRequested?.Invoke(free ? "fire hold" : "fire free");
             });
-            CreateBtn(squadBar.transform, "SQUAD: ENGAGE", new Color(0.52f, 0.24f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("order all engage"));
-            CreateBtn(squadBar.transform, "SQUAD: ADVANCE", new Color(0.46f, 0.34f, 0.14f), () => OnArenaCockpitVerbRequested?.Invoke("order all advance"));
-            CreateBtn(squadBar.transform, "SQUAD: HOLD", new Color(0.20f, 0.36f, 0.46f), () => OnArenaCockpitVerbRequested?.Invoke("order all hold"));
-            CreateBtn(squadBar.transform, "CUPOLA [V]", new Color(0.28f, 0.28f, 0.46f), () => OnToggleVehicleCameraViewRequested?.Invoke());
-            CreateBtn(squadBar.transform, "EXIT POD", new Color(0.48f, 0.16f, 0.18f), () => OnArenaCockpitVerbRequested?.Invoke("exit"));
+
+            var squadRow = CreatePanel(squadBar.transform, "ArenaSquadRow", new Vector2(0f, 0f), new Vector2(1f, 0.5f), new Vector2(8f, 6f), new Vector2(-8f, -2f), Color.clear);
+            var sHlg = squadRow.AddComponent<HorizontalLayoutGroup>();
+            sHlg.spacing = 5f; sHlg.childControlWidth = true; sHlg.childControlHeight = true; sHlg.childForceExpandWidth = true;
+
+            CreateBtn(squadRow.transform, "SQUAD: ENGAGE", new Color(0.52f, 0.24f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("order all engage"));
+            _advanceBtn = CreateBtn(squadRow.transform, "SQUAD: ADVANCE", new Color(0.46f, 0.34f, 0.14f), () =>
+            {
+                string advCmd = ResolveSquadAdvanceCommand();
+                if (!string.IsNullOrEmpty(advCmd))
+                    OnArenaCockpitVerbRequested?.Invoke(advCmd);
+            });
+            _advanceBtnLabel = _advanceBtn.GetComponentInChildren<Text>();
+            CreateBtn(squadRow.transform, "SQUAD: HOLD", new Color(0.20f, 0.36f, 0.46f), () => OnArenaCockpitVerbRequested?.Invoke("order all hold"));
+            CreateBtn(squadRow.transform, "CUPOLA [V]", new Color(0.28f, 0.28f, 0.46f), () => OnToggleVehicleCameraViewRequested?.Invoke());
+            CreateBtn(squadRow.transform, "EXIT POD", new Color(0.48f, 0.16f, 0.18f), () => OnArenaCockpitVerbRequested?.Invoke("exit"));
 
             _arenaBattleHudRoot.SetActive(false);
         }
@@ -740,8 +841,11 @@ namespace TacSim.UI
                 ? "<color=#55FF99>[WEAPONS FREE]</color>"
                 : "<color=#FFAA44>[HOLD FIRE]</color>";
             float setKph = _arena != null ? _arena.TargetCruiseSpeedKph : 0f;
+            string safeCallsign = MushProtocol.EscapeUnityRichText(s.Callsign ?? string.Empty);
+            string safeUnit = MushProtocol.EscapeUnityRichText((s.UnitType ?? string.Empty).Replace("tacsim.unit.", ""));
+            string safePower = MushProtocol.EscapeUnityRichText((s.Power ?? string.Empty).ToUpperInvariant());
             _arenaOwnArmorText.text =
-                $"<color={pCol}><b>{s.Callsign}</b></color> [{s.UnitType.Replace("tacsim.unit.", "")}]   PWR: <color={pwrCol}><b>{s.Power.ToUpperInvariant()}</b></color>  {gateTag}\n" +
+                $"<color={pCol}><b>{safeCallsign}</b></color> [{safeUnit}]   PWR: <color={pwrCol}><b>{safePower}</b></color>  {gateTag}\n" +
                 $"SPD: <b>{s.SpeedKph:0} kph</b> <color=#99CCEE>(SET {setKph:0})</color>   HDG: <b>{s.HeadingDeg:000}°</b>   HEAT: <b>{s.Heat}/{s.HeatMax}</b>\n" +
                 $"ARMOR — F: <b>{s.ArmorFrontPct}%</b> | L: <b>{s.ArmorLeftPct}%</b> | R: <b>{s.ArmorRightPct}%</b> | AFT: <b>{s.ArmorRearPct}%</b>\n" +
                 $"INTERNAL STRUCTURE: <b>{s.InternalsPct}%</b>{(s.IsWreck ? "  <color=#FF4444>[WRECKED]</color>" : "")}";
@@ -759,7 +863,8 @@ namespace TacSim.UI
                     string armTxt = w.ArmedSlot > 0
                         ? $" <color=#77DDFF>[AUTO #{w.ArmedSlot} >={w.ArmedMinPercent}%{(w.ArmedKeeps > 0 ? $" KEEP {w.ArmedKeeps}" : "")}]</color>"
                         : string.Empty;
-                    wsb.Append($"<b>{w.Id.ToUpperInvariant()}</b> [{rdy}] AMMO {ammoTxt}{armTxt}");
+                    string safeWpnId = MushProtocol.EscapeUnityRichText((w.Id ?? string.Empty).ToUpperInvariant());
+                    wsb.Append($"<b>{safeWpnId}</b> [{rdy}] AMMO {ammoTxt}{armTxt}");
                 }
                 _arenaWeaponText.text = wsb.ToString();
             }
@@ -776,7 +881,11 @@ namespace TacSim.UI
                 _fireBtnLabel.text = lockTxt;
             }
 
+            if (_emconBtnLabel != null)
+                _emconBtnLabel.text = s.EmconSilent ? "EMCON: OFF" : "EMCON: ON";
+
             RebuildKeySpotButtonsIfChanged();
+            UpdateAdvanceButtonVisual();
             UpdatePooledContactRows(s);
         }
 
@@ -799,8 +908,12 @@ namespace TacSim.UI
             {
                 string letter = spots[i].Letter;
                 CreateBtn(_arenaKeySpotsRowRoot, $"DRIVE [{letter}]", new Color(0.14f, 0.34f, 0.44f), () =>
-                    OnArenaCockpitVerbRequested?.Invoke($"drive {letter}"));
+                {
+                    SelectAdvanceSpot(letter);
+                    OnArenaCockpitVerbRequested?.Invoke($"drive {letter}");
+                });
             }
+            UpdateAdvanceButtonVisual();
         }
 
         private void UpdatePooledContactRows(ArenaCockpitState s)
@@ -886,6 +999,7 @@ namespace TacSim.UI
             t.fontStyle = style;
             t.alignment = align;
             t.color = color;
+            t.supportRichText = false;
             t.raycastTarget = false;
             return t;
         }
