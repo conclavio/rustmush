@@ -16,7 +16,7 @@ use tacsim::port::HullRow;
 use tacsim::port::bay_work::OrderStatus;
 use tacsim::port::bay_work::magazines::{Magazine, SHORT_OF_ROUNDS, magazines};
 
-use crate::bay_gc8::{damage, dent, mint, order_of, section_id, unit};
+use crate::bay_gc8::{damage, mint, order_of, section_id, unit};
 use crate::driving_rig::{
     Rig, advance_to, board, cid, fire, hold_pool, hold_vault_of, land_quietly, pilot, port_map,
     run, seed_hold, seed_pool, staff_hand, stocked, store, to_ic,
@@ -421,8 +421,22 @@ async fn rounds_g4_g5_a_repair_clears_her_crits_and_a_rearm_does_not() {
         );
     }
 
-    let u = unit(&rig, hull);
-    damage(&mut rig, hull, vec![dent(&u, &section_id(&u, "hull"), 10)]);
+    // A point off an armoured facet (a section's own cells are her heat and radiator).
+    let (addr, cell) = unit(&rig, hull)
+        .cells()
+        .find(|(addr, cell)| {
+            matches!(addr, mush_tactics::CellAddr::Facet { .. }) && cell.current > cell.min
+        })
+        .map(|(addr, cell)| (addr.clone(), cell.clone()))
+        .expect("an armoured facet");
+    damage(
+        &mut rig,
+        hull,
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr,
+            value: cell.current - 1,
+        }],
+    );
     seed_hold(&mut rig, &row, "structural_alloys", 2, 9_102);
     seed_hold(&mut rig, &row, "industrial_parts", 40, 9_103);
     let taken = run(&mut rig.tw, pilot, &format!("+bay/order #{}=armor", hull.0));
