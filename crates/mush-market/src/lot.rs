@@ -534,7 +534,16 @@ fn paid_legs(
         {
             continue;
         }
-        let mut entry = paid_entry(q, lot, LotOp::Deliver, Value::Null);
+        // Doc 48e (exchange G12; 48c #5, 48d H-10): a delivery carries its destination's
+        // capacity plan, as a Draw does, so concurrent fills into one bidder's hold or locker
+        // are each asked for room inside the bundle that moves them. A house storefront has
+        // no plan and takes them as before; an oversized plan omits the entry, fail closed.
+        let plan = match capacity.and_then(|c| c.plan(world, lot.destination.0)) {
+            None => Value::Null,
+            Some(plan) if plan.within_bounds() => plan.0,
+            Some(_) => continue,
+        };
+        let mut entry = paid_entry(q, lot, LotOp::Deliver, plan);
         if let Some(map) = entry.as_object_mut() {
             map.insert("marker".to_owned(), json!(marker.as_str()));
         }
@@ -1323,6 +1332,8 @@ impl MarketLotProvider {
         ) {
             return Err(rejected());
         }
+        // Doc 48e (exchange G12): the destination's room, by the plan the entry carries.
+        self.room_for(txn, entry, destination, commodity, quantity)?;
         let quote = entry
             .get("quote")
             .and_then(Value::as_u64)
@@ -1395,6 +1406,8 @@ impl MarketLotProvider {
         {
             return Err(rejected());
         }
+        // Doc 48e (exchange G12): the destination's room, by the plan the entry carries.
+        self.room_for(txn, entry, destination, commodity, quantity)?;
         let quote = entry
             .get("quote")
             .and_then(Value::as_u64)
