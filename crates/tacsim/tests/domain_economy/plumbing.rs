@@ -2564,6 +2564,15 @@ fn sm5_only_ceres_bids_ore() {
                 120,
                 Some((20, 120)),
             ),
+            // Doc 48e lane L4 (lane v44, production G21): and its ice mill makes its volatiles.
+            (
+                "titan_port".to_owned(),
+                "titan_concession".to_owned(),
+                "ice_ore".to_owned(),
+                12,
+                240,
+                Some((40, 240)),
+            ),
         ]
     );
     let programme = port_def("ceres_port").programme.expect("the program");

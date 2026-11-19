@@ -151,23 +151,56 @@ pub fn view(world: &World, requester: ObjId) -> Option<CounterView> {
     Some(out)
 }
 
-/// **The dies `agent` issued since this boot that no integration offer names**, oldest first:
-/// the issuing operation, the class and the lot. The lot may since have left the agent's stock
-/// by another road; an offer that names it is then refused by its provider.
+/// **Whether the certified origin is initialized** (doc 48e, services G28): its `Initialize`
+/// credited the die depot's opening stock in its own bundle, once, so from then on the matter
+/// census counts that stock as a source. Read from this owner's acknowledged index.
+#[must_use]
+pub fn origin_initialized(world: &World) -> bool {
+    world
+        .module_state::<CoreProductionState>()
+        .is_some_and(|state| state.index.is_some())
+}
+
+/// **The die lots a live integration offer names** (doc 48e, production G14): an offer still open
+/// (unaccepted and not lapsed at `world.now()`), or one accepted, whose order took its die. A
+/// lapsed offer's die was never taken and is free to offer again; before this, any offer that
+/// ever named a die withheld it for good, so an offer that lapsed (a buyer whose money was held)
+/// stranded the die and the next order cut another from the finite depot.
+#[must_use]
+pub fn live_offered_lots(world: &World) -> std::collections::BTreeSet<LotId> {
+    let Some(p) = world
+        .module_state::<CoreProductionState>()
+        .and_then(|state| state.integration.as_ref())
+    else {
+        return std::collections::BTreeSet::new();
+    };
+    let now = world.now();
+    p.offers
+        .values()
+        .filter(|o| {
+            o.expires_utc > now
+                || p.orders
+                    .values()
+                    .any(|order| order.intent.offer == o.operation)
+        })
+        .filter_map(|o| match &o.input {
+            super::integration::offer::OfferedInput::SupplierStock { lot, .. } => Some(lot.id()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The dies `agent` issued since this boot that no live integration offer names**
+/// ([`live_offered_lots`]), oldest first: the issuing operation, the class and the lot. The lot
+/// may since have left the agent's stock by another road; an offer that names it is then refused
+/// by its provider. A restart forgets this record: the game's counter reads the retained
+/// certificates for a die it can offer again.
 #[must_use]
 pub fn unoffered_dies(world: &World, agent: ObjId) -> Vec<(CommitToken, DieClass, LotId)> {
     let Some(state) = world.module_state::<CoreProductionState>() else {
         return Vec::new();
     };
-    let offered: std::collections::BTreeSet<LotId> = state
-        .integration
-        .iter()
-        .flat_map(|p| p.offers.values())
-        .filter_map(|o| match &o.input {
-            super::integration::offer::OfferedInput::SupplierStock { lot, .. } => Some(lot.id()),
-            _ => None,
-        })
-        .collect();
+    let offered = live_offered_lots(world);
     state
         .issued
         .values()

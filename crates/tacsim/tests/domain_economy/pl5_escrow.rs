@@ -45,7 +45,7 @@ const CARBON: &str = "carbon_ore";
 const DAY: i64 = 86_400;
 
 /// A player with a credit account and 100,000 cr, standing on Stickney's exchange.
-fn buyer(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, AccountId) {
+pub(crate) fn buyer(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, AccountId) {
     let player = pilot(rig, who, seed);
     let _ = run(
         &mut rig.tw,
@@ -59,7 +59,7 @@ fn buyer(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, AccountId) {
 }
 
 /// Kasei's public alloy ask at Stickney, while it stands.
-fn kasei_alloys(rig: &Rig) -> Option<mush_market::ListingId> {
+pub(crate) fn kasei_alloys(rig: &Rig) -> Option<mush_market::ListingId> {
     let vault = port_map(&rig.tw, STICKNEY).vendors[&crate::driving_rig::cid("kasei")].vault;
     rig.tw
         .world()
@@ -86,7 +86,7 @@ fn posted(rig: &Rig, account: AccountId) -> i64 {
 }
 
 /// An account's available balance, minor units.
-fn available(rig: &Rig, account: AccountId) -> i64 {
+pub(crate) fn available(rig: &Rig, account: AccountId) -> i64 {
     rig.tw
         .world()
         .module_state::<EconomyStore>()
@@ -108,7 +108,7 @@ fn trades(rig: &Rig, who: ObjId) -> usize {
 }
 
 /// The order a booking line names: "Order {n} booked at the …".
-fn booked(out: &str) -> u64 {
+pub(crate) fn booked(out: &str) -> u64 {
     out.split("Order ")
         .nth(1)
         .and_then(|rest| rest.split(' ').next())
@@ -117,7 +117,11 @@ fn booked(out: &str) -> u64 {
 }
 
 /// Fires until `done`, at most `limit`.
-fn fires_until(rig: &mut Rig, limit: usize, mut done: impl FnMut(&mut Rig) -> bool) -> bool {
+pub(crate) fn fires_until(
+    rig: &mut Rig,
+    limit: usize,
+    mut done: impl FnMut(&mut Rig) -> bool,
+) -> bool {
     for _ in 0..limit {
         if done(rig) {
             return true;
@@ -306,7 +310,7 @@ async fn pl5_a_player_buys_a_works_bill_into_its_escrow_with_no_hold() {
 }
 
 /// The org named `name`.
-fn org_named(rig: &Rig, name: &str) -> mush_org::OrgId {
+pub(crate) fn org_named(rig: &Rig, name: &str) -> mush_org::OrgId {
     rig.tw
         .world()
         .module_state::<mush_org::OrgStore>()
@@ -320,11 +324,14 @@ fn org_named(rig: &Rig, name: &str) -> mush_org::OrgId {
         .unwrap_or_else(|| panic!("no organization {name}"))
 }
 
-fn house_pool(rig: &Rig, org: mush_org::OrgId) -> Option<tacsim::port::pools::HousePool> {
+pub(crate) fn house_pool(
+    rig: &Rig,
+    org: mush_org::OrgId,
+) -> Option<tacsim::port::pools::HousePool> {
     tacsim::port::pools::pool(rig.tw.world(), &tacsim::port::pools::house_key(org.0)).cloned()
 }
 
-fn phase(rig: &Rig, org: mush_org::OrgId) -> Option<Phase> {
+pub(crate) fn phase(rig: &Rig, org: mush_org::OrgId) -> Option<Phase> {
     house_pool(rig, org).and_then(|p| p.orders.first().map(|o| o.phase))
 }
 

@@ -241,7 +241,8 @@ under a salvage claim stays where it lies, and nobody buys it.
 
 The parts a workshop takes in, from its bids and from the hulls it scraps, go
 up on its board as lot asks at the reference price, one of each part at a time.
-A worn part is not listed.
+A worn part is not listed, and no yard order or bay replace takes one from the
+stores. A yard order buys its parts from the workshop's stores at its port.
 
 ## Hauls
 

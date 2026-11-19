@@ -49,6 +49,8 @@ mod coop;
 mod deposits;
 #[path = "domain_economy/drones.rs"]
 mod drones;
+#[path = "domain_economy/e48_l4_yard.rs"]
+mod e48_l4_yard;
 #[path = "domain_economy/e7c1.rs"]
 mod e7c1;
 #[path = "domain_economy/e7r1.rs"]
