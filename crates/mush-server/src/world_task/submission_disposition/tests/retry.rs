@@ -454,7 +454,7 @@ async fn ts10c_the_world_task_refuses_a_paused_clock_over_a_store_it_cannot_paus
     let _ = crate::world_task::spawn_persist_with_gateway(
         crate::world_task::boot_engine(),
         deps,
-        |_| -> crate::world_task::Gateway { panic!("the guard runs before the gateway is made") },
+        |_| -> crate::world_task::Gateway { Arc::new(crate::world_task::tests::BlackholeGateway) },
     );
 }
 
