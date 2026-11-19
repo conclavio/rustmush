@@ -1356,7 +1356,8 @@ pub(crate) fn settles_inside_the_contract(representation: Representation) -> boo
 }
 
 /// **Ask the frozen table whether this purchase could be delivered at all**, before the
-/// money moves (independent verify fold, M1). `Some(why)` refuses the accept.
+/// money moves (independent verify fold, M1). `Some(why)` refuses the accept, and so does an
+/// empty table ([`NO_DELIVERY`], doc 48e exchange G27).
 ///
 /// `Representation::Asset` and `Representation::Lot` are never asked
 /// ([`settles_inside_the_contract`]): their goods legs are the contract's and the lot
@@ -1377,6 +1378,12 @@ pub(crate) fn cannot_deliver(
         .module_state::<MarketStore>()
         .map(|s| s.tables.delivery.clone())
         .unwrap_or_default();
+    // Doc 48e (exchange G27; 48d M-08, doc 48 §4.3's latent defect): with no delivery
+    // provider composed at all, nothing could hand these goods over, so the purchase is refused
+    // before the money moves rather than paid and escalated.
+    if providers.is_empty() {
+        return Some(NO_DELIVERY.to_owned());
+    }
     for p in &providers {
         match p.can_deliver(ctx, &order) {
             Some(Ok(())) => return None,
@@ -1386,6 +1393,9 @@ pub(crate) fn cannot_deliver(
     }
     None
 }
+
+/// A purchase of goods no composed provider delivers (doc 48e, exchange G27).
+pub const NO_DELIVERY: &str = "Nothing here can hand those goods over, so nothing was bought.";
 
 /// One paid-and-undelivered purchase: loud in the log **and** on the staff ladder.
 fn undelivered(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId, why: String) {

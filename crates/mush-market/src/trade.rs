@@ -884,7 +884,11 @@ pub fn accept_at(
     if q.observed.state.is_some() && !mush_economy::has_fact_provider(ctx.w, crate::store::NS) {
         return Err(MarketError::bad(UNDELIVERABLE));
     }
-    if let Some(why) = crate::module::cannot_deliver(ctx, &q, representation) {
+    // A listing with a lot leg (frozen at publication, IC14 L8) is delivered by that leg,
+    // whatever its entry now says.
+    if matter.is_none()
+        && let Some(why) = crate::module::cannot_deliver(ctx, &q, representation)
+    {
         tracing::info!(
             quote = q.id.0,
             why,
