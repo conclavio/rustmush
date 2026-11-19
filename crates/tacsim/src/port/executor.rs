@@ -724,6 +724,28 @@ fn personal_ask(
     best
 }
 
+/// **Whether `pilot`'s order may take personal ask `a`** (doc 48e, exchange G9 and G10; 48d C-04,
+/// H-08). A personal ask is one exact lot, sold whole:
+///
+/// - **only a player takes one** (G9): an NPC hauler's hold reads its pool, and a lot it bought
+///   would sit there unseen and unsold;
+/// - **never the pilot's own** (G10): the quote refuses it, and the order would loop;
+/// - **whole, or not at all, unless the order takes a part** (G10): an order that may not fall
+///   short would otherwise hold behind a smaller, cheaper lot it can never complete.
+fn personal_takeable(w: &World, pilot: ObjId, a: &Ask, want: u64, on_short: OnShort) -> bool {
+    if !a.whole {
+        return true;
+    }
+    let player = w
+        .get(pilot)
+        .is_some_and(|o| o.kind == mush_core::ObjKind::Player);
+    let own = w
+        .module_state::<MarketStore>()
+        .and_then(|m| m.listing(a.listing))
+        .is_some_and(|l| l.seller == mush_org::PrincipalId::Object(pilot));
+    player && !own && (on_short == OnShort::Partial || a.quantity == want)
+}
+
 /// Whether a listing's deadline has passed on its own clock.
 fn lapsed(w: &World, deadline: &mush_economy::EconomicDeadline) -> bool {
     let now = match deadline.clock {
@@ -1384,7 +1406,7 @@ pub(crate) fn plan_queue(
                 good,
                 qty,
                 max_major,
-                ..
+                on_short,
             } => {
                 let label = label_of(goods, good);
                 let consumable = goods.good(good).and_then(|row| row.consumable);
@@ -1450,6 +1472,7 @@ pub(crate) fn plan_queue(
                         && a.quantity <= room.0
                         && drawn.get(&a.listing).is_none_or(|n| *n == 0)
                         && funds_units(funds_amount(funds), reserve, a.price) >= a.quantity
+                        && personal_takeable(w, ctx.actor, a, want, *on_short)
                 };
                 let ask = ask_for_order(w, def, map, good, ceiling.map(Amount::from_minor), &takes);
                 let stock = ask.as_ref().map_or(0, |ask| {
@@ -3061,6 +3084,7 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                 a.quantity <= want
                     && a.quantity <= room.0
                     && funds_units(available, reserve, a.price) >= a.quantity
+                    && personal_takeable(w, pilot, a, want, on_short)
             };
             let ask = ask_for_order(w, def, map, &good, ceiling.map(Amount::from_minor), &takes);
             let stock = ask.as_ref().map_or(0, |a| a.quantity);
@@ -3609,6 +3633,82 @@ pub const SKIP_NARRATION: &str = "The Bridge chimes: the sailing plan passes ove
 mod tests {
     use super::*;
     use crate::definitions::StowageDef;
+
+    /// **Doc 48e, exchange G9 and G10 (48d C-04, H-08)**: a personal ask is a player's to take,
+    /// whole unless the order takes a part; an NPC (a hauler) never takes one; a house's pooled
+    /// ask is anyone's.
+    #[test]
+    fn g9_g10_a_personal_ask_is_a_players_and_taken_whole() {
+        let mut w = World::new_minimal();
+        let player = w
+            .create(
+                mush_core::ObjKind::Player,
+                "Pilot",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("a player");
+        let hauler = w
+            .create(
+                mush_core::ObjKind::Npc,
+                "Hauler",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("an NPC");
+        let ask = |quantity, whole| Ask {
+            listing: ListingId(1),
+            price: Amount::from_minor(100),
+            quantity,
+            house: String::new(),
+            whole,
+        };
+        // A player's order wanting 5: a lot of 5 whole, or of 1 only when the order takes a part.
+        assert!(personal_takeable(
+            &w,
+            player,
+            &ask(5, true),
+            5,
+            OnShort::Hold
+        ));
+        assert!(!personal_takeable(
+            &w,
+            player,
+            &ask(1, true),
+            5,
+            OnShort::Hold
+        ));
+        assert!(!personal_takeable(
+            &w,
+            player,
+            &ask(1, true),
+            5,
+            OnShort::Skip
+        ));
+        assert!(personal_takeable(
+            &w,
+            player,
+            &ask(1, true),
+            5,
+            OnShort::Partial
+        ));
+        // An NPC hauler takes no personal ask at all.
+        assert!(!personal_takeable(
+            &w,
+            hauler,
+            &ask(5, true),
+            5,
+            OnShort::Partial
+        ));
+        // A house's pooled ask is anyone's.
+        assert!(personal_takeable(
+            &w,
+            hauler,
+            &ask(3, false),
+            5,
+            OnShort::Hold
+        ));
+    }
 
     fn cid(text: &str) -> CanonicalId {
         CanonicalId::new(text).expect("id")
