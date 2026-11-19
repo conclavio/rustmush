@@ -919,7 +919,9 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
   already exists it wakes nobody: run `@agent/enable <npc>` for each, and set the
   key as well so the next pack upgrade does not park them again. Without the key
   a pack upgrade rewrites `enabled` to the pack's value for every NPC, which
-  parks a major woken by hand and wakes any other NPC that staff parked.
+  parks a major woken by hand and wakes any other NPC that staff parked. An
+  instance rendered from `deploy/instance/mushd.toml.tmpl` sets the key with
+  `WAKE_MAJORS` in its `instance.env`; dev1 and dev2 set it `true`.
 - **Scene turns (H2b).** When `+timestop/next` hands the turn to an NPC agent,
   that turn is one durable decision: the NPC module requests it (cause
   `npc.scene_turn`, keyed on the scene, the round and the NPC), the agent tick

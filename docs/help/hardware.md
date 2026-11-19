@@ -42,6 +42,7 @@ suspend a registration; `+enduser` then says so, and staff can tell you why.
 +core
 +core/buy <I|II|III> [go]
 +core/fit <core>=<hull> [go]
++core/sell <core>[=go]
 ```
 
 The counter does the shop's half of every step below for you, and submits your own steps
@@ -58,6 +59,12 @@ displaces comes back to your hands. A Co-op charter is the Co-op's hull: `+coop/
 makes her yours first. A ship with a mind sealed aboard is held as she is; `+ship/mind off`
 first. `+core` reads where the shop stands, the cores in your hands and what the counter is
 doing for you. The Co-op's yard does not re-dress a cored Dray as a Dray-P.
+
+`+core/sell <core>` quotes what the shop pays for a governed core in your hands, one a
+fitting displaced or one never fitted: a share of its catalog price. `+core/sell <core>=go`
+sells it. The shop pays your own credit account and takes the core and its title. Say it
+where the shop stands, as you sign a fitting. A fitted core, a destroyed core and a core you
+do not hold are not bought, and the shop buys only while its till can pay.
 
 The steps the counter takes are the offers below, which `+act` also reaches.
 

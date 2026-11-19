@@ -790,7 +790,9 @@ store with no account the script bootstraps it). Then, in order:
 
 1. **The plain boot.** As #1: steps 2 to 6 below, the Tether back room (the
    ungoverning shop the dev launch names), and each House's procurement agent
-   with what the procurement section below asks for. It writes
+   with what the procurement section below asks for. The fitting shop's till
+   (Basin's factory-scope account) is funded, and the document names the shop's
+   buy-back (*The fitting shop*, below). It writes
    `<DATA_DIR>/launch.json` in mode `initialize` and renders the config again.
 2. **The Initialize boot.** All seven Registry grants to every operator, then
    the four initialize actions. It sets the document's mode to `active`.
@@ -807,8 +809,13 @@ store with no account the script bootstraps it). Then, in order:
    such desk stops there with nothing else left undone. A second run on a box
    that is already live hangs the door on its running world (written for boxes
    brought up before the door existed; not yet run on one). `--llm-check`
-   opens nothing. The desk is a provisional place for the door. Then the 18 major NPCs of the cast packs
-   are enabled with `@agent/enable` (Q-44-47; the shipped packs are not edited).
+   opens nothing. The desk is a provisional place for the door. **The fitting
+   shop is stood at its berth** just before the door, and the counter is read
+   there (*The fitting shop*, below). The 18 major NPCs of the cast packs
+   are enabled with `@agent/enable` (Q-44-47; the shipped packs are not edited);
+   `WAKE_MAJORS=true` in `instance.env` (`[npc].wake_majors`, which dev1 and dev2
+   set) has a wiped world's packs create them enabled in the first place, and
+   keeps each one as staff last left it across a later pack upgrade.
 4. **The unit is started**, and players are let in. On it the script reads
    `@mind/launch` again and runs the LLM check (below).
 5. **The seed line and a House's purchase**, on the running world: one line
@@ -914,6 +921,27 @@ House's to grant: `@org/grant #<member>=<House> unit.deploy` (a holder of
 older bring-up LENT the Co-op's Drays to a House gets them handed back to the
 Trust first.
 
+**The fitting shop** (doc 47 cuts CO.6 and CO.13; doc 48 section 4.3). The
+shop is an object, and `+core/fit` fits a hull only where it stands: a ship
+docked at the berth it stands at, her captain on the deck beside her. In the
+Active boot the script stands it at Ceres Freeport's Visiting Berth Gallery,
+where the Co-op's Drays and the Houses' hulls dock (five ports have a room of
+that name; the one `+atlas` heads `Ceres Freeport` is taken), and locks it to
+#1, since a thing left in a room is otherwise anybody's to pick up. The gallery
+is a provisional place, the owner's to move: `@teleport #<shop>=#<room>`.
+Then #1 reads the counter from the gallery: `+core` must say where the shop
+stands, and `+core/fit` and `+core/sell` must get past the place to the core
+they were asked for. A refusal there stops the script with the unit stopped.
+The document names `hardware.buy_back_permille` (500, the stories' rate: a
+stored core sells back at half its catalog price), which is what composes
+`+core/sell` and the player core resale (`+core/offer`); and the plain boot
+mints the shop's till, Basin's factory-scope account, up to `--shop-till`
+(5,000,000 minor: 50,000cr, four Class III cores' worth; nothing refills it but
+the shop's own fees). Both figures are provisional. A second run on a box
+brought up before this stands the shop too; its document names no buy-back and
+is left as it is, since the rate is part of the launch's identity, so that box
+has no `+core/sell` until its next wipe.
+
 **The LLM check** (doc 44 section 8, step 8; Q-44-6, Q-44-48). On the started
 unit, which has the provider keys, #1 asks a major NPC a question and starts a
 simulator match against an AI squad, then reads `@llm/log`. There must be an
@@ -926,7 +954,8 @@ run without the LLM. `@llm/budget` and `@llm/dashboard` are recorded in
 `--llm-check` runs this step alone on a running instance; `--no-llm-check`
 skips it.
 
-Other switches: `--no-npcs`, `--no-seed` (no line rated or listed, so no
+Other switches: `--no-npcs`, `--shop-till <minor>` (the fitting shop's till; 0
+funds none), `--no-seed` (no line rated or listed, so no
 purchase), `--no-purchase`, `--no-start` (leave the unit stopped after the
 Active boot's checks), `--no-systemd` (a rig with no unit: the bot's rig, CI;
 it stops after the Active boot, and the rig starts its own world).
@@ -1024,7 +1053,20 @@ Every id below is the one your world printed; replace every id in the example.
    @facility/open <fitting shop>=2 core_integration core_refit
    @facility/owner <fitting shop>=org:Basin
    @asset/title #<fitting shop>=org:Basin scope=<factory scope>
+   @econ/mint <faucet account>=<factory-scope account> 5000000
+   @teleport #<fitting shop>=#<Ceres Freeport's Visiting Berth Gallery>
+   @lock #<fitting shop>=#1
    ```
+
+   The last three are the fitting shop's (doc 47 cuts CO.6 and CO.13). The mint
+   funds the till the shop buys cores back from, which otherwise opens at 0
+   (50,000cr, provisional). The teleport stands the shop where it fits hulls:
+   until it stands in a room, `+core/fit` fits nothing. Five ports have a
+   Visiting Berth Gallery; `@find Visiting Berth Gallery` lists them, and the
+   one wanted is the one where `+atlas`, typed in it, heads its map
+   `Ceres Freeport`. The lock keeps a player from picking the shop up. After the
+   Active boot, `+core` typed in the gallery reads `The Basin fitting shop
+   stands at Visiting Berth Gallery.`
 
    The second origin agent is the first character of a second login, which
    is not #1's (`keeper`): at the welcome screen,
@@ -1051,6 +1093,11 @@ Every id below is the one your world printed; replace every id in the example.
    initialize action credits this stock once. The example's 112 t of boards and
    88 t of ore are one month of the full quota, provisional. Leave it out and the
    depot opens empty, so `+core/buy` refuses until the depot is stocked.
+   `hardware.buy_back_permille` is the fitting shop's buy-back rate (doc 47 cut
+   CO.13), per mille of a core's catalog price: the example's 500 is the
+   stories' rate, provisional. Leave it out and the world composes neither
+   `+core/sell` nor the player core resale (`+core/offer`); it is part of the
+   launch's identity, so it is named now or at the next wipe.
 8. Make `launch_path` live for that instance (the owner's choice, above) and
    boot. It boots Initialize.
 9. For each operator, as #1:

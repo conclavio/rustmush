@@ -852,6 +852,8 @@ folder):
    (`deploy/instance/launch-bringup.py`) makes the shop in staff's hands and does not stand it
    anywhere; until an operator does, `+core/fit` says the shop fits nothing (`CORE_SHOP_NOWHERE`
    reads that) and `+core/buy` works. A `deploy/` change, left to the owner. Cheap to reverse.
+   **Done 2026-11-18** (doc 44's cut notes, MW.3): the bring-up's Active boot stands the shop
+   at Ceres' berth gallery, locks it to #1 and reads `+core` there.
 2. **`go` is the consent; the counter submits the player's own acts after it.** The acceptance,
    reservation, completion, delivery and install are submitted as the player by the tick, as the
    Registry's service submits an author's rating steps. A player who wants each step by hand
@@ -877,7 +879,7 @@ folder):
   stories that fit rigs stand them there by staff, as before.
 - **MW.13's stories** still bind their Dray by staff (`ic_sortie_surface::fit`); the row names
   MW.21's only.
-- **The bring-up's shop placement** (default 1).
+- **The bring-up's shop placement** (default 1). Built 2026-11-18 (doc 44's cut notes, MW.3).
 - **A strip of a core** from a hull by a player, and the sale of a stored core (CO.13).
 
 ## CO.7
@@ -2109,6 +2111,9 @@ Selling a stored core (R-47-5's "or sold"). Built 2026-11-14 on
    output_container`), titled to the integrator's org in no scope. What the shop does with it
    next (refit it into a customer's hull, sell it on) is not built.
 5. **The seller stands in the shop** (the factory object, as every fitting).
+   **Changed 2026-11-18** (doc 44's cut notes, MW.3): no player verb takes a character into
+   the shop's object, so the sale asks the fitting's own rule (`at_shop`): in the shop, or
+   where it stands. The story sells from the berth gallery.
 
 **Persisted shapes.** No existing record changes and no `.snap` moves. Three additions:
 the economy fold (the checkpoint body) gains `core_sale_receipts`, skipped while uninitialized,

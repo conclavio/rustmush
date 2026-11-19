@@ -446,7 +446,88 @@ market's read rather than from the caller, which is why the answer has to be sli
 
 ## MW.3
 
-Not built.
+Not run: the go-live is the owner's, on the boxes (doc 44 §8). Nothing here was typed on dev1
+or dev2.
+
+### The bring-up before the go-live (2026-11-18)
+
+A read of main `1e9b41174` found three built features a fresh bring-up left unreachable. The
+bring-up now carries them, so the wipe and redeploy does:
+
+- **The fitting shop stands at a berth** (doc 47 CO.6, default 1's "owed").
+  `launch-bringup.py`'s Active boot (`fitting_shop`) stands `Basin fitting shop` at Ceres
+  Freeport's Visiting Berth Gallery and locks it to #1 (a thing in a room is otherwise
+  anybody's to `get`). Five ports have a room of that name; the one `+atlas` heads
+  `Ceres Freeport` is taken. Then #1 reads the counter from the gallery, and the run stops
+  unless `+core` says where the shop stands and `+core/fit` gets past the place.
+- **The buy-back is composed and can pay** (doc 47 CO.13; doc 48 §4.3). The document names
+  `hardware.buy_back_permille` 500, the stories' rate, which also composes the player core
+  resale (EX.2b). The plain boot mints Basin's factory-scope account, the shop's till, up to
+  `--shop-till` (5,000,000 minor, 50,000cr). The Active boot's check also wants `+core/sell`
+  past the place.
+- **`+core/sell` answers where the shop stands.** The sale's place rule was "inside the shop's
+  object" (CO.13, default 5), and no player verb takes a character into it, so a composed sale
+  was still only reachable by a staff teleport. It now asks the fitting's own rule
+  (`mush_economy::core_refit::at_shop`): in the shop, or on the deck it stands on. Two reads in
+  `hardware/sale.rs` (`quote`, `project_offer`); the kernel's image never asked where the
+  seller stood. This is game code, outside the brief's list, taken because the buy-back does
+  not work for a player without it.
+- **The major NPCs wake on a wiped world** (MW.18's "not built"). The template renders
+  `[npc].wake_majors` from `WAKE_MAJORS`; dev1 and dev2 set `true`, the reference instance and
+  the release smoke `false`. The bring-up's `@agent/enable` already woke them on a brought-up
+  box; the key is what creates them enabled and keeps them so across a pack upgrade.
+
+**Defaults taken (provisional), each cheap to reverse unless said.**
+
+1. **The shop's place is Ceres' berth gallery**, the M8 rig's. One `@teleport` moves it.
+2. **The rate is 500 per mille.** Part of the launch's identity (`launch_deployment`), so it
+   moves only at a wipe: **expensive to reverse** on a live world, free at the next one.
+3. **The till is 50,000cr**, minted from the launch's faucet: four Class III cores' worth.
+   Nothing refills it but the shop's own fees.
+4. **A document an older run wrote is left alone.** A second run on such a box stands the shop
+   and says the box has no buy-back until its next wipe.
+
+**Tests.**
+
+- `scripts/launch-bringup-acceptance.sh` (the rig that drives the script on a scratch
+  instance): each full bring-up's log must carry the shop's line and the buy-back's with its
+  till, and after the unit starts a registered player at the public front door types `+core`
+  and `+core/sell #1`: the shop stands at the gallery, and the sale is refused for the place,
+  which only a composed sale says. Run on conclav.dev with `SEED=0`.
+- `tacsim` `hardware::sale::tests::the_bring_up_names_this_rate_these_sentences_and_a_shipped_room`:
+  the script's rate is `BUY_BACK_PERMILLE`, its needles are in the game's sentences and not in
+  the refusals beside them, and its room and port are names the shipped Ceres pack has.
+- `c4_hardware::co13_a_stored_core_is_sold_with_its_title` now quotes and sells from the
+  gallery the shop stands at; the refusals are still read inside the shop.
+- `mush-config` `shipped_configs`: `WAKE_MAJORS` is a key of every shipped env and of the three
+  scripts that render the template, and each box renders the value it chose.
+
+**Sized, not built: hull cover on a launch** (MW.5's inventory, story 6). Not one line.
+`with_hull_coverage(service, products)` wants a service character and at least one
+`CoverageProductV1`: an insurer organization, scope and treasury, an adjudicator, terms, hull
+and zone definitions. A qualified product also names approvals, each a filed, certified Safe
+Conduct revision and a completed role trial, and those exist only after the launch's own
+rating has run on the live world, hours after the document is written. So it needs new
+deployment fields (the launch's identity: expensive to reverse), bring-up identities, a way
+to add a product after boot or a second composition pass, and a story: today only fixtures
+call it (`coverage_tests.rs`, `ic_integration_tests.rs`), and no launch rig has one to move.
+A unit of its own, two if qualified cover is wanted.
+
+**What MW.3 still needs from the owner, on each box.**
+
+1. The wipe and redeploy at main, from a stopped unit (`reset-instance.sh --no-start`, the
+   split deploy with `SERVER_HOLD=1`), then `launch-bringup.py`. Its log must carry the
+   fitting shop's line; `mushd.toml` must read `wake_majors = true`.
+2. The provider keys in the unit's environment file, and the LLM check passing (§8 step 8).
+   With `wake_majors` on, eighteen majors may now spend: read `@llm/budget` after the smoke.
+   The majors are still stubs (MW.18).
+3. The seed line's rating and a House's purchase (half an hour or more; `--seed-only`).
+4. §8 step 9's smoke by hand, on w11term, and with it the route this unit opened:
+   `+coop/buyout`, `+core/buy II go`, `+core/fit` from the gallery with the ship docked, a
+   second fitting to displace a core, then `+core/sell` of the stored one there. No story
+   flies that route on a real server; the acceptance reads the counter and sells nothing.
+5. The calls above: the shop's place, the rate and the till.
+6. §8 step 10: record what each box runs.
 
 ## MW.4
 
@@ -3489,6 +3570,8 @@ The ambient timer scheduled (doc 44 §7.1; Q-44-31, Q-44-47; second review, §4c
 
 - Nothing enables the majors on any box: that is MW.3, with the owner.
 - `deploy/instance/mushd.toml.tmpl` has no `wake_majors` line (the deploy chain's file).
+  **Added 2026-11-18** (MW.3's section): the template renders it from `WAKE_MAJORS`, on for
+  dev1 and dev2.
 - The windows are not persisted.
 - The stories drive the NPC module's tick by hand. No story runs the ambient timer
   through the production world task, and none flies it against the live cast.
