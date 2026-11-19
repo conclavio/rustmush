@@ -461,8 +461,13 @@ export class TacsimPortStore {
             ? p["sha256"].trim()
             : null;
         if (!id) continue;
+        const prevDigest = this.#manifestDigests.get(id) ?? null;
         if (digest !== null) {
           this.#manifestDigests.set(id, digest);
+          if (prevDigest !== null && prevDigest !== digest) {
+            this.#packRetryCounts.delete(id);
+            this.#packRetryAfterMs.delete(id);
+          }
         }
         if (
           cat === "neighborhood" ||

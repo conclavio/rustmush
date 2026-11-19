@@ -1529,10 +1529,25 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
       // 1 failed attempt (retry #1) + 1 sent attempt + remaining retries up to PACK_MAX_RETRIES
       expect(requestedPacks.length).toBe(PACK_MAX_RETRIES + 1);
 
-      // No further sends after bounded retry budget is exhausted
+      // No further sends after bounded retry budget is exhausted for digest g-1
       const countAtCap = requestedPacks.length;
       vi.advanceTimersByTime(120_000);
       expect(requestedPacks.length).toBe(countAtCap);
+
+      // A later manifest with a new digest (g-2) resets retry budget and refetches immediately
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "goods", category: "market", sha256: "g-2" }],
+      });
+      expect(requestedPacks.length).toBe(countAtCap + 1);
+      expect(requestedPacks[requestedPacks.length - 1]).toBe("goods");
+      store.observeContentFeed({
+        op: "pack",
+        found: true,
+        id: "goods",
+        sha256: "g-2",
+        json: readRepoContent("market/goods.json"),
+      });
 
       // Separate pack: verify timeout expiry -> retry -> successful delivery stops retries
       requestedPacks.length = 0;
