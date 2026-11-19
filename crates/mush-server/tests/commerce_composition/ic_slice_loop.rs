@@ -464,6 +464,9 @@ async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
                 .map(|clerk| ObjId(clerk.thing)),
         );
     }
+    // Doc 48 unit EX.9: and every other lane port's clerk, whose houses use up goods once an IC
+    // day (the Luna clerk's draw and act for the Habitat Board).
+    house.extend(tacsim::port::supply::buyers(rig.tw.world()));
     let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
         .into_iter()
         .partition(|submit| house.contains(&submit.actor));
@@ -978,6 +981,20 @@ fn closed_sum(tw: &TestWorld, pilots: &[ObjId]) -> i64 {
             }
         }
     }
+    // Doc 48 unit EX.9: the running costs the Ceres and Stickney operators paid went to the
+    // `tacsim.upkeep` sink, a System account outside the lane's books.
+    let sink = mush_org::PrincipalId::System(
+        mush_org::SystemPrincipalId::new(tacsim::port::upkeep::UPKEEP_SINK).expect("a name"),
+    );
+    sum += tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .map_or(0, |e| {
+            e.snapshot()
+                .accounts_of(&sink)
+                .map(|a| a.posted_balance.minor())
+                .sum::<i64>()
+        });
     sum
 }
 

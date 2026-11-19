@@ -4202,6 +4202,11 @@ running costs, or the lane moved to v42):
   the Board's whole days of provisions.
 - `commerce::a8_the_moon_ports_stock_list_and_bid` and PL.2's first pin pass unchanged: a port
   stocked today uses up nothing until the day turns.
+- mush-server's `commerce_composition` (six stories in `ic_buyout_dormancy`, `ic_slice_loop` and
+  `sm_story`): their `drain_players` now lands every lane port clerk's acts with the house's (the
+  Luna clerk's day of consumption is no player's submission), and the two money-conservation sums
+  (`closed_sum`) count the `tacsim.upkeep` sink, where the Ceres and Stickney operators' running
+  costs go. 93 of 93.
 
 Also adapted, the same way (each adds back exactly what a house paid in running costs, read
 from the new `upkeep::paid_by`): `knowing::survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract`

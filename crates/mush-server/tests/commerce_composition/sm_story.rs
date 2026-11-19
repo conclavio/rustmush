@@ -887,6 +887,20 @@ fn closed_sum(tw: &TestWorld, pilots: &[ObjId]) -> i64 {
             sum += purse.posted_balance.minor();
         }
     }
+    // Doc 48 unit EX.9: the running costs the Ceres and Stickney operators paid went to the
+    // `tacsim.upkeep` sink, a System account outside the lane's books.
+    let sink = mush_org::PrincipalId::System(
+        mush_org::SystemPrincipalId::new(tacsim::port::upkeep::UPKEEP_SINK).expect("a name"),
+    );
+    sum += tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .map_or(0, |e| {
+            e.snapshot()
+                .accounts_of(&sink)
+                .map(|a| a.posted_balance.minor())
+                .sum::<i64>()
+        });
     sum
 }
 
