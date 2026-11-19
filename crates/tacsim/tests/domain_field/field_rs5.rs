@@ -534,7 +534,8 @@ fn rs5_the_clerk_hands_an_unaccepted_job_and_a_lapsed_one_to_tycho() {
         Some(RetrievalStage::Accepted)
     );
     assert!(perform_by > first.accept_by_ic, "C accepted after posting");
-    // C lapses: the contract cancelled, a fresh one posted and taken by Tycho.
+    // C lapses: the contract ends by its expiry (48e services:G26: a bond would forfeit to the
+    // poster), a fresh one posted and taken by Tycho.
     skip_and_fire(&mut rig, perform_by + 60);
     let lapsed = order_of(rig.tw.world(), two).expect("the second job");
     assert_eq!(lapsed.stage, RetrievalStage::House, "{lapsed:?}");
@@ -543,8 +544,8 @@ fn rs5_the_clerk_hands_an_unaccepted_job_and_a_lapsed_one_to_tycho() {
     assert_ne!(lapsed.contract, second_job.contract);
     assert_eq!(
         contract_state(&rig, second_job.contract),
-        mush_economy::ContractState::Cancelled,
-        "the lapsed contract is canceled"
+        mush_economy::ContractState::Expired,
+        "the lapsed contract expired"
     );
     let fresh = rig
         .tw

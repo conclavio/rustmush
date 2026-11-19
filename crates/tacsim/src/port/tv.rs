@@ -3780,7 +3780,8 @@ fn section_words(id: &str) -> String {
 /// assessment (`assess_tactical_unit` over its spec's anatomy, the condition vocabulary) and
 /// quoted with the GC.7 tariff (`quote_full_restoration`) at `port`'s workshop multiplier
 /// (1x where the entry authors no workshop). Labour only, as the tariff is: the tonnes of
-/// `industrial_parts` the points consume and the rounds themselves are not priced. Read-only.
+/// `industrial_parts` the points consume are not priced. The rounds are not restored at all
+/// (48e review rounds:G9): the lessee rearms. Read-only.
 ///
 /// # Errors
 ///
@@ -4333,10 +4334,12 @@ fn take(
     // take, so every way a rig comes home (a return, a repossession, a staff move) reaches the
     // next lessee whole. The arena reset's own put-back-to-spec: cells to their initial values,
     // conditions to `intact`, capabilities restored; nothing written for an undamaged rig. The
-    // first write: a refusal here leaves nothing else written.
+    // rounds are not (48e review rounds:G9, A-14): a magazine holds what the last lessee left,
+    // and the next one rearms at the bay. The first write: a refusal here leaves nothing else
+    // written.
     if let Some(terms) = crate::port::vehicle::rig_terms(ctx.w, plan.tv) {
         let schema = SmolStr::new(terms.unit.as_str());
-        if let Err(error) = crate::match_::reset::reset_one(ctx, plan.tv, &schema) {
+        if let Err(error) = crate::match_::reset::reset_one(ctx, plan.tv, &schema, true) {
             tracing::error!(tv = plan.tv.0, %error, "tacsim: +tv/lease: the rig could not be restored before its lease");
             return Err(CmdError::msg(LEASE_FAILED));
         }

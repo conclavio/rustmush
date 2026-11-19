@@ -201,6 +201,14 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
                 .replace("{port}", &port),
         ));
     }
+    hull_here(w, def, hull)
+}
+
+/// **Whether `hull` lies at `def`'s port** (doc 48e, exchange G11: factored out of
+/// [`hull_admits`]): docked there, or the refusal saying where she is.
+fn hull_here(w: &World, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
+    let port = port_name(def);
+    let name = name_of(w, hull);
     match berth_of(w, hull) {
         Berth::Docked { def: there, .. } if there.venue == def.venue => Ok(()),
         Berth::Docked { def: there, .. } => Err(refusal(
@@ -380,6 +388,29 @@ impl VenueGate for PortVenueGate {
             (None, Presence::Ship(hull)) => hull_admits(w, actor, def, hull),
             (None, Presence::Here) => Ok(()),
         }
+    }
+
+    /// Doc 48e (exchange G11; 48d H-01): a governed hold takes delivery only while her hull is
+    /// docked at the venue's port (Q-48-6, local delivery), so a sale into a personal bid never
+    /// lands in a hold that has sailed or berths elsewhere. Doc 48e (exchange G15; 48d H-06): a
+    /// scrap vault takes only what the yard scraps, so no purchase or bid delivers into one. A
+    /// locker or another vault is the market's own rules' to judge.
+    fn receives_at(
+        &self,
+        w: &World,
+        venue: &MarketId,
+        endpoint: EndpointRef,
+    ) -> Result<(), VenueRefusal> {
+        if crate::port::bay_work::scrap::is_scrap_vault(w, endpoint.vault()) {
+            return Err(refusal(MOVE_INTO_SCRAP.to_owned()));
+        }
+        let Some(view) = governed_hold(w, endpoint) else {
+            return Ok(());
+        };
+        let Some((def, _)) = port_of_venue(w, venue) else {
+            return Ok(());
+        };
+        hull_here(w, def, view.hull())
     }
 
     fn governed(&self, w: &World, endpoint: EndpointRef) -> bool {
@@ -589,6 +620,73 @@ impl CapacityProvider for PortCapacity {
         let plan: HoldPlan =
             serde_json::from_value(plan.0.clone()).map_err(|_| CapacityRefusal::Unreadable)?;
         plan_check(&plan, commodity, quantity, read_pool)
+    }
+}
+
+/// `@inv/move` with nowhere to stand: no venue here.
+pub const MOVE_NOT_AT_VENUE: &str =
+    "You move goods between your stores only where you stand in a port.";
+/// `@inv/move` out of a chartered hold: `{name}`, the hull.
+pub const MOVE_CHARTER_CARGO: &str = "Cargo in {name}'s chartered hold is sold from there, so the Co-op's share is paid; it stays aboard.";
+/// `@inv/move` into a hold whose hull is for sale: `{name}`.
+pub const MOVE_HULL_ON_SALE: &str = "{name} is for sale, so nothing goes into her hold.";
+/// `@inv/move` into a scrap vault.
+pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
+
+/// **The ports' rule for a player's `@inv/move`** (doc 48e, exchange G7; 48d C-03). D-18-37 left a
+/// move's locality to P-H while a pilot held one vault; EX.1b's lockers and EX.3's scrap vaults
+/// gave players more, so a move between them is now judged here:
+///
+/// - **Where they stand.** The player stands in a port, and both vaults are admitted there by the
+///   venue gate (`PortVenueGate::admit`): a hold docked at that port that they may trade from, or
+///   their own locker there. Two lockers at two ports are two places.
+/// - **Charter cargo stays aboard.** Nothing leaves a chartered hold for another vault, so a sale
+///   of it pays the Co-op's share (Q-48-56).
+/// - **A hull for sale takes nothing** into her hold after she was listed.
+/// - **A scrap vault takes only the yard's scrap.**
+///
+/// The destination's room is the inventory's own check, inside the prepare (`PortCapacity`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PortMovePolicy;
+
+impl mush_inventory::MovePolicy for PortMovePolicy {
+    fn admit(
+        &self,
+        w: &World,
+        actor: ObjId,
+        from: EndpointRef,
+        to: EndpointRef,
+    ) -> Result<(), String> {
+        if from == to {
+            return Ok(());
+        }
+        let gate = PortVenueGate;
+        let venue = w
+            .get(actor)
+            .and_then(|o| o.location)
+            .and_then(|room| gate.venue_of_room(w, room))
+            .ok_or_else(|| MOVE_NOT_AT_VENUE.to_owned())?;
+        for endpoint in [from, to] {
+            gate.admit(w, actor, &venue, Some(endpoint), Presence::Here)
+                .map_err(|refusal| refusal.line)?;
+        }
+        if crate::port::proceeds::is_chartered_hold(w, from) {
+            let name = governed_hold(w, from).map_or_else(String::new, |view| {
+                crate::port::coop::name_of(w, view.hull())
+            });
+            return Err(MOVE_CHARTER_CARGO.replace("{name}", &name));
+        }
+        if let Some(view) = governed_hold(w, to)
+            && mush_market::asset_on_sale(w, view.hull())
+        {
+            return Err(
+                MOVE_HULL_ON_SALE.replace("{name}", &crate::port::coop::name_of(w, view.hull()))
+            );
+        }
+        if crate::port::bay_work::scrap::is_scrap_vault(w, to.vault()) {
+            return Err(MOVE_INTO_SCRAP.to_owned());
+        }
+        Ok(())
     }
 }
 

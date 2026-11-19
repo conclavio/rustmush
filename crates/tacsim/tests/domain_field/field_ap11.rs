@@ -1191,6 +1191,11 @@ fn round(command: &BubbleInputCommand) -> Option<(&str, &str)> {
             shooter_id,
             target_id,
         }
+        | BubbleInputCommand::FireMount {
+            shooter_id,
+            target_id,
+            ..
+        }
         | BubbleInputCommand::FireRailgun {
             shooter_id,
             target_id,

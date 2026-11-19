@@ -49,6 +49,8 @@ mod coop;
 mod deposits;
 #[path = "domain_economy/drones.rs"]
 mod drones;
+#[path = "domain_economy/e48_l4_yard.rs"]
+mod e48_l4_yard;
 #[path = "domain_economy/e7c1.rs"]
 mod e7c1;
 #[path = "domain_economy/e7r1.rs"]
@@ -67,6 +69,8 @@ mod ex3_board;
 mod ex4_charges;
 #[path = "domain_economy/ex5_jobs.rs"]
 mod ex5_jobs;
+#[path = "domain_economy/ex6_escort_passage.rs"]
+mod ex6_escort_passage;
 #[path = "domain_economy/ex6_haul.rs"]
 mod ex6_haul;
 #[path = "domain_economy/ex7_wages.rs"]
@@ -77,6 +81,8 @@ mod ex7b_discharge;
 mod ex8_prices;
 #[path = "domain_economy/ex9_balance.rs"]
 mod ex9_balance;
+#[path = "domain_economy/held_lots_48e.rs"]
+mod held_lots_48e;
 #[path = "domain_economy/house_arm_rs6b.rs"]
 mod house_arm_rs6b;
 #[path = "domain_economy/house_resale_rs6c2.rs"]
@@ -111,6 +117,8 @@ mod lane;
 mod mill;
 #[path = "domain_economy/mining.rs"]
 mod mining;
+#[path = "domain_economy/move_policy_48e.rs"]
+mod move_policy_48e;
 #[path = "domain_economy/orders.rs"]
 mod orders;
 #[path = "domain_economy/pl2_producers.rs"]

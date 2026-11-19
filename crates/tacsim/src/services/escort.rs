@@ -51,6 +51,10 @@ pub const NEAR_PERMILLE: i64 = 900;
 /// **Departed together** (provisional): two hulls on one route that left within this many IC
 /// seconds of each other fly one passage. One IC hour, 150 real seconds at 24:1.
 pub const TOGETHER_IC: i64 = 3_600;
+/// **How far the contract's term runs past the watch's** (48e services:G2), IC seconds: one IC
+/// day. The host decides a taken escort at [`ESCORT_TERM_IC_DAYS`] (calls off one that never
+/// started, fails one that did) before the economy's expiry can forfeit the bond on its own.
+pub const DECIDE_LEAD_IC: i64 = DAY;
 /// IC seconds in an IC day.
 const DAY: i64 = 86_400;
 /// The channel lines go out on.
@@ -74,6 +78,8 @@ pub const ESCORT_HELP: &str = "+escort                                your escor
                                        bubble in space, the same field in a sortie. A link drop\n\
                                        inside the grace does not count against you. The job\n\
                                        fails if she is wrecked or captured, or you leave.\n\
+                                       If her journey has not begun in 28 IC days, the job is\n\
+                                       called off and the fee and any bond come back.\n\
 +escort/withdraw <job> [go]            withdraw an escort nobody has taken; the fee comes back.\n\
 A fee over 10,000 cr asks the escort for a bond of a fifth of it.";
 /// The post's preview (`{name}`, `{journey}`, `{fee}`, `{days}`).
@@ -121,6 +127,11 @@ pub const TOLD_KEPT: &str =
     "Escort {job} is kept: near her for {near} of the journey. The fee follows.";
 /// The notice of a failed escort (`{job}`, `{why}`).
 pub const TOLD_FAILED: &str = "Escort {job} has failed, and its fee is not paid: {why}.";
+/// The notice of an escort called off because she never set out within the term (`{job}`,
+/// `{days}`): the fee and the escort's bond go back (48e services:G2).
+pub const TOLD_UNSTARTED: &str = "Escort {job} is called off: her journey never began within {days} IC      days. The fee and any bond are back in the accounts they came from.";
+/// The refusal for `field=` at a port with no field (48e services:G2; `{port}`).
+pub const NO_FIELD: &str = "There is no field at {port}; a sortie escort names a field site.";
 /// Why: wrecked.
 pub const WHY_WRECKED: &str = "she was wrecked";
 /// Why: captured.
@@ -478,8 +489,18 @@ fn left(w: &World, job: &EscortJob, escort: ObjId) -> bool {
         return false;
     }
     match &job.journey {
-        Journey::Passage { to, .. } => {
-            super::docked_venue(w, escort).is_some_and(|v| v.as_str() != to.as_str())
+        Journey::Passage { from, to } => {
+            // Still docked at the origin inside the departure gap is not leaving (48e
+            // services:G3): `near_in_space` counts a passage flown together within
+            // [`TOGETHER_IC`] of hers.
+            let now = w.world_ic_now().at;
+            let setting_out = job
+                .watch
+                .as_ref()
+                .is_some_and(|watch| now.saturating_sub(watch.started_ic) <= TOGETHER_IC);
+            super::docked_venue(w, escort).is_some_and(|v| {
+                v.as_str() != to.as_str() && !(setting_out && v.as_str() == from.as_str())
+            })
         }
         Journey::Field { site } => !near_in_field(w, site, escort),
     }
@@ -552,6 +573,24 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
         job.stage = EscortStage::Closed;
         return true;
     };
+    if live && job.stage == EscortStage::Taken && job.due_ic.is_some_and(|due| now >= due) {
+        // The term ran out and her journey never began (48e services:G2): no escort was owed,
+        // so the job is called off and the unwind returns the fee and the escort's bond. The
+        // contract's term runs [`DECIDE_LEAD_IC`] past this, so the host always gets here first.
+        if !matches!(
+            mush_economy::cancel_job(ctx, ContractId(job.contract)),
+            Ok(true)
+        ) {
+            // The economy refused (frozen, or busy): try again at the next fire.
+            return false;
+        }
+        job.stage = EscortStage::Closed;
+        let line = TOLD_UNSTARTED
+            .replace("{job}", &job.job())
+            .replace("{days}", &ESCORT_TERM_IC_DAYS.to_string());
+        tell_both(ctx, job, &line);
+        return true;
+    }
     if !live || job.due_ic.is_some_and(|due| now >= due) {
         // The term ran out before the journey ended: the fact never holds.
         fail(
@@ -764,11 +803,20 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
                 to: SmolStr::new(to.as_str()),
             }
         }
-        (None, Some(site)) => Journey::Field {
-            site: SmolStr::new(
-                super::entry_word(ctx.w, site).ok_or_else(|| NO_PORT.replace("{port}", site))?,
-            ),
-        },
+        (None, Some(site)) => {
+            let entry =
+                super::entry_word(ctx.w, site).ok_or_else(|| NO_PORT.replace("{port}", site))?;
+            // A sortie runs only where the port has a field (48e services:G2).
+            let has_field = crate::port::market::ports(ctx.w)
+                .into_iter()
+                .any(|(e, def, _)| e.as_str() == entry && def.site.is_some());
+            if !has_field {
+                return Err(NO_FIELD.replace("{port}", site));
+            }
+            Journey::Field {
+                site: SmolStr::new(entry),
+            }
+        }
         _ => return Err(ESCORT_USAGE.to_owned()),
     };
     if let Some(open) = escorts(ctx.w).into_iter().find(|j| {
@@ -807,7 +855,10 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
             poster_account: account,
             fee: Amount::from_minor(fee),
             fact: fact_of(peeked),
-            deadline_ic: now.saturating_add(window).saturating_add(term),
+            deadline_ic: now
+                .saturating_add(window)
+                .saturating_add(term)
+                .saturating_add(DECIDE_LEAD_IC),
         },
     )
     .map_err(|error| POST_FAILED.replace("{why}", &error.to_string()))?;
@@ -893,7 +944,7 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
             acceptor: taker.clone(),
             account,
             bond: (job.bond_minor > 0).then(|| Amount::from_minor(job.bond_minor)),
-            term_ic: Some(term),
+            term_ic: Some(term.saturating_add(DECIDE_LEAD_IC)),
         },
     )
     .map_err(|error| ACCEPT_FAILED.replace("{why}", &error.to_string()))?;

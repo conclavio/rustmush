@@ -592,6 +592,13 @@ pub mod exchange {
     pub const MINE_HEAD: &str = "Your listings:";
     /// `mush_market::seller::MINE_NONE`.
     pub const MINE_NONE: &str = "You have nothing listed.";
+    /// `mush_market::seller::MINE_AS_ORG`'s head (doc 48e): an organization's listings follow.
+    pub const MINE_AS_ORG: &str = "Listed as ";
+    /// `mush_market::seller::POST_BUSY`'s tail (doc 48e): the last order is still landing.
+    pub const POST_BUSY: &str = "still being handled; try again in a moment. Nothing was listed.";
+    /// `mush_market::seller::POST_QUEUE_FULL` (doc 48e): the exchange is busy.
+    pub const POST_QUEUE_FULL: &str =
+        "The exchange is busy right now; try again in a moment. Nothing was listed.";
     /// `mush_market::seller::MINE_COUNT`'s tail.
     pub const MINE_COUNT: &str = " listings a seller may.";
     /// `mush_market::seller::NO_SUCH_LOT`.
@@ -926,6 +933,10 @@ pub mod escort {
     pub const TOLD_KEPT: &str = "of the journey. The fee follows.";
     /// `tacsim::services::escort::TOLD_FAILED`.
     pub const TOLD_FAILED: &str = "has failed, and its fee is not paid:";
+    /// `tacsim::services::escort::TOLD_UNSTARTED`.
+    pub const TOLD_UNSTARTED: &str = "is called off: her journey never began within";
+    /// `tacsim::services::escort::NO_FIELD`.
+    pub const NO_FIELD: &str = "; a sortie escort names a field site.";
     /// `tacsim::services::escort::WHY_WRECKED`.
     pub const WHY_WRECKED: &str = "she was wrecked";
     /// `tacsim::services::escort::WHY_CAPTURED`.
@@ -1023,6 +1034,20 @@ pub mod scrap {
 /// `tacsim::port::locker`) and the venue gate's new refusals (`tacsim::port::market`). No lane
 /// reads them yet; each is held to the game's own text below.
 pub mod venue {
+    /// `mush_market::trade::WHOLE_LOT`'s head (doc 48e): an exact lot is quoted whole.
+    pub const WHOLE_LOT: &str = "That lot is sold whole: quote it at ";
+    /// `tacsim::port::market::MOVE_NOT_AT_VENUE` (doc 48e): a move from outside any port.
+    pub const MOVE_NOT_AT_VENUE: &str =
+        "You move goods between your stores only where you stand in a port.";
+    /// `tacsim::port::market::MOVE_CHARTER_CARGO`'s middle (doc 48e): charter cargo stays aboard.
+    pub const MOVE_CHARTER_CARGO: &str = "chartered hold is sold from there";
+    /// `tacsim::port::market::MOVE_HULL_ON_SALE`'s tail (doc 48e): a listed hull takes nothing.
+    pub const MOVE_HULL_ON_SALE: &str = " is for sale, so nothing goes into her hold.";
+    /// `tacsim::port::proceeds::CHARTER_ASK_AS_ORG`'s tail (doc 48e): charter cargo is listed by
+    /// its pilot.
+    pub const CHARTER_ASK_AS_ORG: &str = "chartered hold is listed by its pilot alone";
+    /// `tacsim::port::market::MOVE_INTO_SCRAP` (doc 48e).
+    pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
     /// `tacsim::port::locker::LOCKER_OPENED`'s tail: a locker opened.
     pub const LOCKER_OPENED: &str = "Goods you buy here with no hold docked go into it.";
     /// `tacsim::port::locker::LOCKER_ALREADY`'s tail.
@@ -1095,6 +1120,7 @@ pub const PARTIAL: &[&str] = &[
     "crew::LISTED",
     "crew::BOARD_SUBJECT",
     "crew::BOARD_TAKE",
+    "exchange::MINE_AS_ORG",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -1195,6 +1221,22 @@ mod tests {
                 NOT_AT_VENUE,
                 VENUE_UNPLACED,
                 LOCKER_ELSEWHERE,
+                MOVE_NOT_AT_VENUE,
+                MOVE_CHARTER_CARGO,
+                MOVE_HULL_ON_SALE,
+                MOVE_INTO_SCRAP,
+            )
+        });
+        rows.extend({
+            use mush_market as game;
+            rows!("";
+                WHOLE_LOT,
+            )
+        });
+        rows.extend({
+            use tacsim::port::proceeds as game;
+            rows!("";
+                CHARTER_ASK_AS_ORG,
             )
         });
         rows
@@ -1290,7 +1332,10 @@ mod tests {
             BID_WITHDRAWN,
             MINE_HEAD,
             MINE_NONE,
+            MINE_AS_ORG,
             MINE_COUNT,
+            POST_BUSY,
+            POST_QUEUE_FULL,
             NO_SUCH_LOT,
             NO_SUCH_VAULT,
             LOT_HELD,
@@ -1420,6 +1465,8 @@ mod tests {
             TOLD_STARTED,
             TOLD_KEPT,
             TOLD_FAILED,
+            TOLD_UNSTARTED,
+            NO_FIELD,
             WHY_WRECKED,
             WHY_CAPTURED,
             WHY_LEFT,

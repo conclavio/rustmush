@@ -677,6 +677,20 @@ pub(super) fn out_of_reach(frame: &Frame, weapon: &str) -> String {
     }
 }
 
+/// **Whether a volley's next shot is refused for heat** (doc 48e kernel G19): the platform's
+/// heat with `planned` already added by the shots before it, against the shot's own
+/// `per_shot`; the heat it would read when refused.
+#[must_use]
+fn volley_heat_refuses(
+    heat: Option<crate::arena::FrameHeat>,
+    planned: u32,
+    per_shot: u32,
+) -> Option<crate::arena::FrameHeat> {
+    let mut now = heat?;
+    now.heat = now.heat.saturating_add(planned);
+    now.refuses(per_shot).then_some(now)
+}
+
 /// **Bare `FIRE ALL`: one volley** (doc 21 cut G.12a, §7.3; the `g` key).
 ///
 /// Each weapon that is ready, has rounds and whose band reaches the lock
@@ -730,7 +744,9 @@ pub(super) fn fire_all(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitErro
     require_power(ctx.w, seat.driver).map_err(|said| all(&said.to_string()))?;
     // Each row's skip, in `FIRE`'s own order: the weapon's two refusals, the
     // reach, then the platform's heat for a weapon whose shot would carry it past its
-    // ceiling (doc 49 unit CC.3, Q-49-28).
+    // ceiling (doc 49 unit CC.3, Q-49-28), counting the heat of the shots before it in this
+    // volley (doc 48e kernel G19).
+    let mut planned_heat = 0_u32;
     let skips: Vec<Option<String>> = rows
         .iter()
         .map(|row| {
@@ -744,7 +760,11 @@ pub(super) fn fire_all(ctx: &mut Ctx<'_>, seat: &Seat) -> Result<(), CockpitErro
             } else if row.range_band.is_none() {
                 out_of_reach(frame, &row.id)
             } else {
-                let heat = frame.heat.filter(|heat| heat.refuses(row.heat_per_shot))?;
+                let Some(heat) = volley_heat_refuses(frame.heat, planned_heat, row.heat_per_shot)
+                else {
+                    planned_heat = planned_heat.saturating_add(row.heat_per_shot);
+                    return None;
+                };
                 CockpitError::Overheated {
                     heat: heat.heat,
                     max: heat.max,
@@ -1730,4 +1750,36 @@ pub fn resolve_designator(rows: &[ContactRow], word: &str) -> Option<ContactId> 
                 })
         })
         .map(|row| row.id)
+}
+
+#[cfg(test)]
+mod review_48e_tests {
+    use super::volley_heat_refuses;
+    use crate::arena::FrameHeat;
+
+    /// **Doc 48e kernel G19: a volley's heat pre-check counts the shots before it.** Two
+    /// mounts that each fit under the ceiling alone do not both fit: the second is refused at
+    /// the heat the first would leave.
+    #[test]
+    fn g19_a_volleys_heat_check_counts_the_shots_before_it() {
+        let heat = Some(FrameHeat {
+            heat: 600,
+            max: 1_000,
+        });
+        assert_eq!(volley_heat_refuses(heat, 0, 300), None, "the first fits");
+        assert_eq!(
+            volley_heat_refuses(heat, 300, 300),
+            Some(FrameHeat {
+                heat: 900,
+                max: 1_000
+            }),
+            "the second would carry her past the ceiling"
+        );
+        assert_eq!(
+            volley_heat_refuses(heat, 300, 0),
+            None,
+            "a shot with no heat"
+        );
+        assert_eq!(volley_heat_refuses(None, 900, 900), None, "no heat state");
+    }
 }

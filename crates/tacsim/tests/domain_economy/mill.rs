@@ -1152,7 +1152,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 43, "lane v43 since doc 48 unit EX.10");
+    assert_eq!(LANE_VERSION, 44, "lane v44 since doc 48e lane L4");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1282,10 +1282,20 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
                 5,
                 5
             ),
+            // Doc 48e lane L4 (lane v44, production G21): Titan's ice mill, Occator's terms.
+            at(
+                "titan_port",
+                "titan_concession",
+                "ice_ore",
+                "volatiles",
+                (5, 2),
+                20,
+                40
+            ),
         ],
         "the shipped lane's two mills, 5 : 2, 20 t a batch, at most 40 t an IC day; Occator's \
          refine, 5 : 4, 20 t a batch and an IC day; Kasei's, 5 : 4, at most 40 t an IC day; the \
-         farms, the fab and Titan's carbon mill"
+         farms, the fab, Titan's carbon mill and its ice mill"
     );
     let pack = load_pack(&lane_variant(13, strip_mill)).expect("the v13 shape verifies");
     assert_eq!(
@@ -2761,7 +2771,17 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let (foundry, others): (Vec<_>, Vec<_>) = credits
         .into_iter()
         .partition(|(path, _)| path == "tacsim/src/relay_foundry.rs");
-    assert_eq!(others, vec![("tacsim/src/port/mill.rs".to_owned(), 1)]);
+    // 48e review rounds:G1 and G12: three `.credit(` in the bay's acts, each matter put back
+    // and none made: a canceled order's landed draw returned to the hold and the workshop's
+    // stores (two), and a stripped mount's rounds, which a draw once took out of the world
+    // (the census's `loaded`), credited to the hold as whole units of their good.
+    assert_eq!(
+        others,
+        vec![
+            ("tacsim/src/port/bay_work/act.rs".to_owned(), 3),
+            ("tacsim/src/port/mill.rs".to_owned(), 1),
+        ]
+    );
     assert!(
         foundry.iter().any(|(_, n)| *n >= 1),
         "the relay foundry's credit (co-owned with the relay track) is present"
@@ -2818,9 +2838,11 @@ fn in1_the_receipt_kinds_a_mint_may_carry_are_closed() {
     }
     assert_eq!(tacsim::port::STOCK_SOURCE_KIND, "port.stock");
     // The bay's `why`: the strip's and the scrap's, and nothing else.
-    let strip = text("tacsim/src/port/bay_work/strip.rs");
+    let strip: String = text("tacsim/src/port/bay_work/strip.rs")
+        .split_whitespace()
+        .collect();
     let strip = strip.as_str();
-    let whys: Vec<&str> = ["owe_mint(ctx, record, act_no, vault.0, \"", "(act_no, \""]
+    let whys: Vec<&str> = ["owe_mint(ctx,record,act_no,vault.0,\"", "(act_no,\""]
         .into_iter()
         .flat_map(|needle| {
             strip.match_indices(needle).map(|(at, needle)| {

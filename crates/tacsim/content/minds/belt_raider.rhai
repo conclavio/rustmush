@@ -72,12 +72,19 @@ fn think(v, c) {
     if this.stage == 1 {
         this.stage = 2;
         speed(2500);
+        // Every mount that is ready and fires at a hull: a laser in offence, a pair from each
+        // tube family by its family, never by a name (doc 48e kernel G9).
         for w in v.weapons {
-            if w.ready_in_ms == 0 {
+            let m = space_mount(v, w.id);
+            if m == () || m.state != "ready" {
+                continue;
+            }
+            if m.family == "laser" && m.mode != "offence" {
+                continue;
+            }
+            fire(w.id, 1);
+            if m.family == "tubes" {
                 fire(w.id, 1);
-                if w.id == "torp_bow" {
-                    fire(w.id, 1);
-                }
             }
         }
         trace("RAIDER_TORCH_AND_SALVO");

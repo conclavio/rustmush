@@ -27,7 +27,7 @@ use crate::hull_resale_ex2::{
 const IC_DAY_REAL: i64 = 3_600;
 
 /// The port authority's account at Ceres (the venue's operator).
-fn authority(rig: &Rig) -> AccountId {
+pub(crate) fn authority(rig: &Rig) -> AccountId {
     let map = port_map(&rig.tw, "ceres_port");
     let row = map
         .orgs
@@ -39,7 +39,7 @@ fn authority(rig: &Rig) -> AccountId {
 }
 
 /// Ceres' treasury (the levy's sink).
-fn treasury(rig: &Rig) -> AccountId {
+pub(crate) fn treasury(rig: &Rig) -> AccountId {
     AccountId(
         port_map(&rig.tw, "ceres_port")
             .treasury
@@ -304,4 +304,17 @@ fn ex4_the_coop_share_applies_on_a_personal_chartered_sale() {
         60_000,
         "share {share}, net {net}: {said}"
     );
+    // Doc 48e (exchange G5; 48c #7): the Co-op's statement counts the ask's sale and share.
+    let enrolment = rig
+        .tw
+        .world()
+        .module_state::<tacsim::store::TacsimStore>()
+        .and_then(|s| {
+            s.enrolments()
+                .find(|e| e.pilot == seller && e.vault == hold.0)
+                .cloned()
+        })
+        .expect("her enrollment");
+    assert_eq!(enrolment.sales, 1, "the sale is counted");
+    assert_eq!(enrolment.shares_minor, share, "and its share");
 }

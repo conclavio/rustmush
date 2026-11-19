@@ -252,6 +252,11 @@ pub enum OwedKind {
         why: String,
         /// The lots.
         lots: Vec<LotMint>,
+        /// **The rounds that come off with them** (48e review rounds:G12, A-14): whole units of
+        /// a stripped mount's munitions good, credited to the same vault's pool. Omitted while
+        /// empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rounds: Vec<GoodUnits>,
         /// **What lands with it** (doc 39 cut IN.8): the holder's credit and the shop bale, for
         /// a workshop scrap or a return; `None` for a strip.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,6 +278,23 @@ pub enum OwedKind {
         order: u32,
         /// The part's lot.
         lot: LotId,
+    },
+    /// **Return what a landed draw took** (48e review rounds:G1): an order canceled after its
+    /// draw landed and before its work was written credits the munitions back to the hold
+    /// (`OwedAct::vault`) and the rounds bought back to the workshop's stores, so a cancel
+    /// loses no goods. (A part fitted from a lot was consumed by the draw and is not returned.)
+    Return {
+        /// The order's sequence.
+        order: u32,
+        /// The munitions the draw took from the hold.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        goods: Vec<GoodUnits>,
+        /// The rounds it took from the workshop's stores.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        store: Vec<GoodUnits>,
+        /// The storefront vault (`VaultId.0`) they came from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        store_at: Option<u64>,
     },
     /// Release the part a cancelled order held, where it lies.
     Release {
@@ -365,6 +387,7 @@ impl OwedKind {
             Self::Hot { .. } => "hot",
             Self::Hold { .. } => "hold",
             Self::Release { .. } => "release",
+            Self::Return { .. } => "return",
             Self::Commission { .. } => "commission",
         }
     }
@@ -394,8 +417,11 @@ impl OwedAct {
     /// A sentence naming what is wrong.
     pub fn check(&self) -> Result<(), String> {
         let rows = match &self.kind {
-            OwedKind::Draw { goods, store, .. } => goods.len().saturating_add(store.len()),
-            OwedKind::Mint { lots, .. } | OwedKind::Commission { lots, .. } => lots.len(),
+            OwedKind::Draw { goods, store, .. } | OwedKind::Return { goods, store, .. } => {
+                goods.len().saturating_add(store.len())
+            }
+            OwedKind::Mint { lots, rounds, .. } => lots.len().saturating_add(rounds.len()),
+            OwedKind::Commission { lots, .. } => lots.len(),
             OwedKind::Hot { .. } | OwedKind::Hold { .. } | OwedKind::Release { .. } => 0,
         };
         if self.act == 0 || rows > MAX_ACT_ROWS {
@@ -1056,9 +1082,17 @@ impl ActionProvider for BayActProvider {
                         .map_err(|_| refused("the part's provenance did not stage"))?;
                 }
             }
-            OwedKind::Mint { why, lots, .. } => {
+            OwedKind::Mint {
+                why, lots, rounds, ..
+            } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
                 self.lay(txn, parameters, endpoint, hull, act, why, lots)?;
+                // 48e review rounds:G12: the stripped mount's rounds, into the same vault.
+                for row in rounds.iter().filter(|r| r.units > 0) {
+                    self.inventory
+                        .credit(txn, endpoint, &row.good, row.units)
+                        .map_err(|_| refused("the hold could not take the rounds"))?;
+                }
                 for row in lots {
                     if let Some(part) = &row.part {
                         if part.lot != row.lot || part.parent_hull() != Some(hull) {
@@ -1082,6 +1116,33 @@ impl ActionProvider for BayActProvider {
                 self.inventory
                     .hold_lot(txn, endpoint, *lot, &bay_holder(hull, *order))
                     .map_err(|_| refused("the part is not in the hold, or is held already"))?;
+            }
+            OwedKind::Return {
+                goods,
+                store,
+                store_at,
+                ..
+            } => {
+                // 48e review rounds:G1: the landed draw's goods, credited back where they came
+                // from, all or nothing.
+                if !goods.is_empty() {
+                    let endpoint = endpoint.ok_or_else(invalid)?;
+                    for row in goods.iter().filter(|r| r.units > 0) {
+                        self.inventory
+                            .credit(txn, endpoint, &row.good, row.units)
+                            .map_err(|_| refused("the hold could not take the goods back"))?;
+                    }
+                }
+                if !store.is_empty() {
+                    let at = EndpointRef(VaultId(store_at.ok_or_else(invalid)?));
+                    for row in store.iter().filter(|r| r.units > 0) {
+                        self.inventory
+                            .credit(txn, at, &row.good, row.units)
+                            .map_err(|_| {
+                                refused("the workshop's stores could not take them back")
+                            })?;
+                    }
+                }
             }
             OwedKind::Release { order, lot } => {
                 // A release after the hold ended (the lot consumed, or never held) moves

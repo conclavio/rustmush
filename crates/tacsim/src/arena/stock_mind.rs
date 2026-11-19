@@ -4192,6 +4192,10 @@ mod tests {
         unit.reseal(&crate::match_::SealTerms::fixture())
             .expect("the fixture terms seal");
         let mut arena = arena_of(vec![unit]);
+        // Doc 48e kernel G10: a mind's view holds the mounts its slots arm, and
+        // this coreless hull reads Class 0, one slot; two, so both rows show.
+        arena.classes =
+            serde_json::from_str(r#"{"0": {"slots": 2}}"#).expect("an operator's table");
         if let Some(state) = arena.unit_mut(ObjId(4)) {
             state.heat = Some(HeatState {
                 section: SmolStr::new("hull"),

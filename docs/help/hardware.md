@@ -53,7 +53,8 @@ The counter does the shop's half of every step below for you, and submits your o
 when you have said go to the price. `+core/buy II` says what a Class II core costs and how
 long the shop works on it; `+core/buy II go` orders it. The shop draws a certified die, your
 payment goes in, the hours run, and the core is delivered into your hands, titled to you.
-You may order from anywhere. Class III needs your end-user registration (above).
+The price is paid from your free credit: money held on your account does not count. You may
+order from anywhere. Class III needs your end-user registration (above).
 
 `+core/fit <core>=<hull>` fits a governed core you hold, new or one a fitting displaced
 earlier, to a hull titled to you: a Dray or a prospector rig. Sign it where the shop stands,
