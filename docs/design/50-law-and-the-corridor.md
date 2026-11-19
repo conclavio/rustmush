@@ -1,6 +1,6 @@
 # 50. Law and the corridor — control that sets terms, a faction operation players feed, and offenses with consequences, surveyed
 
-Draft 0.3, 2026-11-19, docs only. Surveyed against `origin/main` at `1e9b41174` by five read-only
+Draft 0.4, 2026-11-19, docs only. Surveyed against `origin/main` at `1e9b41174` by five read-only
 lanes (fronts and clocks; the charges on a run; customs, offenses and standing; faction money and
 jobs; the prior rulings and the setting), with the lead spot-checking the claims §0 leans on:
 - `record_customs_assertion`'s whole path (six segments opening at one, the consequence text, the
@@ -39,13 +39,22 @@ open defaults and follow-ups apart from five held for his own call, he answered 
 - **Fifty-five more questions are ruled**, each marked **Ruled** in §6: the four the review
   cited and left unchanged, as written; the 34 corrected in place, as corrected; and seventeen
   of the follow-ups, as proposed. With the first ruling's eleven, 66 of 71 are ruled.
-- **Five stay open, for the owner's own call:** Q-50-55, -57, -62, -65 and -67. Each heading
-  says so.
-- **Some ruled answers wait on one of the five.** §6 lists which. Q-50-26 is built only if
-  Q-50-62 is ruled at its default.
+- **Five were held for the owner's own call:** Q-50-55, -57, -62, -65 and -67. Draft 0.4 rules
+  them.
 - **Two earlier documents are answered by these rulings.** Q-50-6 reverses Q-48-15's "No
   customs duty" where a holder levies one, and Q-50-52 takes doc 11 §9 question 2 at its
   recommended answer. Each of those documents carries a note.
+- No default's text changed in that draft.
+
+**Draft 0.4 records the owner's third ruling**, also made the same day. Shown the five with
+each default and its alternative, he answered "Take all five defaults".
+- **All 71 questions are ruled.** Q-50-55, -57, -62, -65 and -67 are accepted as proposed.
+- **`mush-campaign` stays the frame of the operation** (Q-50-57), with its five additions built
+  as their own unit first. That answer is marked expensive to reverse.
+- **Q-50-26 is built for the first operation**, because Q-50-62 gives a hull a way to break
+  off.
+- **Nothing waits on an open question now.** §6 says what the ruling settled in the answers
+  that had waited.
 - **No default's text changed in this draft.** Units are still cut only on the owner's word.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5,
@@ -644,33 +653,30 @@ the code allows:
 
 Every question has a proposed default, an alternative and a reason.
 
-**Where each stands at Draft 0.3.** The owner ruled twice on 2026-11-19. Sixty-six questions are
-ruled and five are open. Each heading says which.
-- **Ruled, accepted as written** (fifteen): Q-50-3, -5, -11, -12, -13, -14, -41, -45, -46, -48
-  and -49 by the first ruling; Q-50-8, -15, -16 and -17, which the outside review cited and
-  left unchanged, by the second.
-- **Ruled, accepted as corrected** (34): every other question from Q-50-1 to Q-50-47. The
-  original text is kept, and the correction follows it and governs.
-- **Ruled, accepted as proposed** (seventeen follow-ups in §6.6): Q-50-50 to -54, -56, -58 to
-  -61, -63, -64, -66 and -68 to -71.
-- **Open, for the owner's own call** (five):
-  - Q-50-55, the ways around the picket;
-  - Q-50-57, the frame of the operation **(expensive to reverse)**;
-  - Q-50-62, leaving a fight in an operation's bubble;
-  - Q-50-65, possession and the papers;
-  - Q-50-67, the buyer who reports.
+**Where each stands at Draft 0.4.** The owner ruled three times on 2026-11-19, and all 71
+questions are ruled. Each heading says how.
+- **Accepted as written** (fifteen): Q-50-3, -5, -11, -12, -13, -14, -41, -45, -46, -48 and -49
+  by the first ruling; Q-50-8, -15, -16 and -17, which the outside review cited and left
+  unchanged, by the second.
+- **Accepted as corrected** (34): every other question from Q-50-1 to Q-50-47, by the second
+  ruling. The original text is kept, and the correction follows it and governs.
+- **Accepted as proposed** (22, the follow-ups of §6.6): seventeen by the second ruling; and
+  Q-50-55, -57, -62, -65 and -67, which the lead had held for the owner's own call, by the
+  third.
 
-**Ruled answers that wait on an open question.** Each is settled but for the piece named.
-- **On Q-50-57:** which engine holds the operation's frame, in Q-50-18, -19, -21, -28 and -30;
-  the seam Q-50-26 reads; and the empty run of Q-50-47.
-- **On Q-50-62:** Q-50-26 as a whole. It is built only if Q-50-62 is ruled at its default. The
-  alternative there sets Q-50-26 aside for the first operation.
-- **On Q-50-65:** the papers that lift the restriction in Q-50-32, the buyer's side of the
-  board in Q-50-34, and what an audit asks of a hold in Q-50-36.
-- **On Q-50-55:** which inward routes the duty of Q-50-6 reaches. The duty at the picket is
-  ruled; a second picket and the closing of the shortcut are not.
-- **On Q-50-67:** whether the reporting buyer hands over the goods, in Q-50-43 and in the
-  third story of Q-50-47.
+**What the third ruling settled in answers already ruled.** Each of these had waited on one of
+the five.
+- **Q-50-57:** `mush-campaign` holds the operation's frame, with the five additions. That
+  settles the frame in Q-50-18, -19, -21, -28 and -30, the seam Q-50-26 reads, and the empty
+  run of Q-50-47. The TacSim-only operation record is not built.
+- **Q-50-62:** a hull may break off, so Q-50-26 is built for the first operation.
+- **Q-50-65:** one papers test, a license and a registered claim. It lifts the restriction in
+  Q-50-32. The board refuses an unlicensed buyer as well as an unlicensed seller (Q-50-34).
+  An audit asks it of a hold, and holding without the papers is an offense (Q-50-36).
+- **Q-50-55:** the duty of Q-50-6 reaches the direct run. The long way round stays free of a
+  picket, the free-flight shortcut closes, and the outward run stays free.
+- **Q-50-67:** the reporting buyer hands over the goods, in Q-50-43 and in the third story of
+  Q-50-47.
 
 ### 6.1 The model
 
@@ -1281,8 +1287,9 @@ ruled and five are open. Each heading says which.
 
 ### 6.6 Raised by the outside review (doc 50a)
 
-Twenty-two follow-ups. Seventeen are ruled, accepted as proposed. Five are open, held for the
-owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that raised it.
+Twenty-two follow-ups, all ruled, accepted as proposed: seventeen by the owner's second ruling,
+and Q-50-55, -57, -62, -65 and -67, which the lead had held for his own call, by the third.
+Each names the triage row that raised it.
 
 #### The model and the faction engine
 
@@ -1364,7 +1371,7 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
   tax. What an absent pilot's hull does at the picket today was not traced to the end (§8).
 
 **Q-50-55 — The ways around the picket.** (doc 50a B-3a, B-3b)
-**Open: held for the owner's own call.**
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:**
   - **The long way round stays open and carries no picket.** Ceres to Luna to Deimos to Stickney
     is the lawful detour: the duty buys the direct run, and the detour costs time and propellant.
@@ -1391,7 +1398,7 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
 #### The Isidis operation
 
 **Q-50-57 — What the campaign engine must gain to frame the operation.** (doc 50a A-2)
-**Open: held for the owner's own call.**
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** `mush-campaign` stays the frame, with five additions built as their own
   unit before any arm uses it. **(expensive to reverse)**
   1. **A public way to declare and activate**, so a compiled arm does both in one step. That also
@@ -1413,6 +1420,8 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
   that a change of control is an operation with notice, and the engine already holds the notice,
   the window, the bond and the three views. The alternative is less engine work and a second model
   of an operation. The owner should choose which is the frame before OP is cut.
+- **With this ruled (2026-11-19):** the campaign engine is the frame. OP.0 is the five additions
+  and the seam, and the TacSim-only record is not built.
 
 **Q-50-58 — Isidis's routes, and the tank farm's price.** (the review's item 12)
 **Ruled 2026-11-19: accepted as proposed.**
@@ -1464,7 +1473,7 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
   new captains do fly past the picket.
 
 **Q-50-62 — Leaving a fight in an operation's bubble.** (doc 50a A-9)
-**Open: held for the owner's own call.**
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** a hull flying for a side may break off. Holding outside a provisional
   distance from every hostile hull for a provisional time releases it to resume its passage. It
   loses the engagement and nothing else. Q-50-26 is not built without this.
@@ -1473,6 +1482,7 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
 - **Why:** a bubble holds a hull while any operational hostile hull remains, and today the only
   way out is to disable one. That is tolerable against a picket that stands down. It is not
   between two players, one of whom may have logged off.
+- **With this ruled (2026-11-19):** Q-50-26 is built for the first operation, with this way out.
 
 **Q-50-63 — Escorts for an organization's hauls.** (doc 50a A-8)
 **Ruled 2026-11-19: accepted as proposed.**
@@ -1499,7 +1509,7 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
 #### Law
 
 **Q-50-65 — Possession, the papers, and the buyer on the board.** (doc 50a C-1; the review's item 6)
-**Open: held for the owner's own call.**
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** one test, the picket's, as built: a prospecting license and a registered
   claim on a strategic rock in an orbital cluster, both. It is asked in three places.
   - **The public board** refuses a holder without the papers on either side of a trade in a
@@ -1528,7 +1538,7 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
   bought afterward. It stays within Q-S4: a record a party holds, acted on only when that party
   brings it.
 
-**Q-50-67 — The buyer who reports.** (doc 50a B-5) **Open: held for the owner's own call.**
+**Q-50-67 — The buyer who reports.** (doc 50a B-5) **Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** a buyer who reports hands over the lot, which goes to the authority's vault
   (Q-50-44). When the fine is collected the buyer is repaid the price they paid, and paid the
   reward of Q-50-43, both out of the fine and never more than it. A buyer who keeps the goods
@@ -1593,16 +1603,10 @@ owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that
 Three chains. The names and the split are provisional. Draft 0.2 adds the work the outside review
 showed the first units need; it is marked **(0.2)**.
 
-**Where the units stand at Draft 0.3.** No unit is cut; that waits on the owner's word. The
-order within a chain is unchanged.
-- **Every question ruled:** the cargo reading, KC.0a, KC.0, KC.1, KC.3, KC.4, LW.2, LW.4, LW.5
-  and OP.1 to OP.4.
-- **Waiting on an open question:**
-  - KC.2 on Q-50-55, for the shortcut and the routes the duty reaches;
-  - LW.1 on Q-50-65, for the papers and the buyer's side;
-  - LW.3 on Q-50-67 for the reporting buyer, and on Q-50-65 for what an audit asks;
-  - OP.0 on Q-50-57, and with it OP.5, OP.7 and OP.8, which stand on the frame;
-  - OP.6 on Q-50-62.
+**Where the units stand at Draft 0.4.** Every question is ruled, so no unit waits on one. No
+unit is cut; that waits on the owner's word. The order within a chain is unchanged. What still
+gates a unit is other work: the cargo reading and the defects named under "Edges with work in
+flight" below, EX.10 for OP.4, and OP.0 for the units that stand on the frame.
 
 **Before the chains (0.2): the cargo reading.** The picket, the hold's fill check and every new
 reader of a hold count a bulk good held as a lot (§4.3). KC.2, LW.3 and OP.3 all wait on it.
@@ -1633,8 +1637,8 @@ reader of a hold count a bulk good held as a lot (§4.3). KC.2, LW.3 and OP.3 al
 - LW.5: seized goods to a vault, cargo under a haul's hold included (Q-50-44).
 
 **OP: the Isidis operation**
-- OP.0 **(0.2)**: the campaign engine's five additions and the seam at the composition root, or
-  the TacSim record that replaces them (Q-50-57).
+- OP.0 **(0.2)**: the campaign engine's five additions and the seam at the composition root
+  (Q-50-57, ruled at its default).
 - OP.1: Isidis as a place, with its routes (Q-50-17, Q-50-58).
 - OP.2: the scheduled tick as a typed cause; the Concession Review and Hold the Concession; the
   hull's flag (Q-50-20, Q-50-61).
