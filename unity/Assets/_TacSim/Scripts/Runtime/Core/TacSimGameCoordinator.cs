@@ -405,7 +405,10 @@ namespace TacSim.Core
             }
 
             if (Hud != null && SpaceStage != null)
-                Hud.UpdateDockingHud(SpaceStage.ActiveDockingSession, SpaceStage.GuidanceAssistEnabled);
+            {
+                bool pilotDocking = Player != null && Player.IsSeatedAtHelm && SpaceStage.IsDockingActive;
+                Hud.UpdateDockingHud(pilotDocking ? SpaceStage.ActiveDockingSession : null, SpaceStage.GuidanceAssistEnabled);
+            }
         }
 
         private void OnDestroy()
@@ -582,6 +585,7 @@ namespace TacSim.Core
             _awaitingAppendedTradePage = false;
             _lastAutoTradeRefreshAt = -10f;
 
+            TacSimContentLoader.ClearDynamicPacks();
             TradeState?.ResetSessionState();
             if (ArenaStage != null) ArenaStage.ResetSessionState();
             if (SurfaceStage != null) SurfaceStage.ResetSessionState();
@@ -1482,26 +1486,28 @@ namespace TacSim.Core
         private void HandleDockingEndedByServer(string outcome)
         {
             string norm = (outcome ?? "closed").ToLowerInvariant();
+            bool seatedAtHelm = Player != null && Player.IsSeatedAtHelm;
             if (norm == "clamped")
             {
                 Audio?.PlayDockHardClamp();
-                Hud.AppendLogLine("<color=#55FF99>[HARD CLAMP CONFIRMED]</color> Authoritative server collar seal locked.");
-                CameraRig.SetMode(CameraRigMode.ShipBridgeHolo);
+                Hud?.AppendLogLine("<color=#55FF99>[HARD CLAMP CONFIRMED]</color> Authoritative server collar seal locked.");
+                CameraRig?.SetMode(seatedAtHelm ? CameraRigMode.ShipBridgeHolo : CameraRigMode.ThirdPersonWalk);
                 Audio?.SetSoundscape(AmbientSoundscape.ShipInterior);
             }
             else
             {
-                Hud.AppendLogLine($"<color=#FF8866>[DOCKING CLOSED]</color> Session ended ({norm}).");
-                CameraRig.SetMode(Player.IsSeatedAtHelm ? CameraRigMode.OrbitalExterior : CameraRigMode.ThirdPersonWalk);
+                Hud?.AppendLogLine($"<color=#FF8866>[DOCKING CLOSED]</color> Session ended ({norm}).");
+                CameraRig?.SetMode(seatedAtHelm ? CameraRigMode.OrbitalExterior : CameraRigMode.ThirdPersonWalk);
             }
         }
 
         private void HandleDockingAborted()
         {
-            Hud.AppendLogLine("<color=#FF8866>[DOCKING]</color> Approach aborted.");
+            Hud?.AppendLogLine("<color=#FF8866>[DOCKING]</color> Approach aborted.");
             if (_ws != null && _ws.IsConnected)
                 _ws.SendLine("+helm/dock abort");
-            CameraRig.SetMode(CameraRigMode.OrbitalExterior);
+            bool seatedAtHelm = Player != null && Player.IsSeatedAtHelm;
+            CameraRig?.SetMode(seatedAtHelm ? CameraRigMode.OrbitalExterior : CameraRigMode.ThirdPersonWalk);
         }
 
         private void HandleServerRoomView(MushRoomView rv)
@@ -1569,6 +1575,7 @@ namespace TacSim.Core
 
                 if (!keepPhysicalShipPose && (SurfaceStage == null || !SurfaceStage.IsExcursionActive))
                 {
+                    SpaceStage?.StopDockingSession();
                     Player.IsSeatedAtHelm = false;
                     Player.TeleportTo(ShipInterior.GetCompartmentSpawnWorldPos(resolvedComp), 180f);
                     CameraRig.SetMode(CameraRigMode.ThirdPersonWalk);
@@ -1608,6 +1615,7 @@ namespace TacSim.Core
                 _isAboardShip = false;
                 if (!firstSync && wasAboard)
                     Audio?.PlayAirlockCycle();
+                SpaceStage?.StopDockingSession();
                 Player.IsSeatedAtHelm = false;
                 _serverStationRoomEntry = matchedStationEntry;
                 _serverShipCompartment = null;
@@ -1979,12 +1987,7 @@ namespace TacSim.Core
                     RefreshOrbitalReadout();
                     break;
                 case "space.docking":
-                    SpaceStage.StartDockingFromFeed(data);
-                    if (SpaceStage.IsDockingActive)
-                    {
-                        CameraRig.SetMode(CameraRigMode.BowDockingCollar);
-                        if (Audio != null) Audio.SetSoundscape(AmbientSoundscape.OrbitalSpace);
-                    }
+                    HandleDockingPanelFrame(data);
                     break;
                 case "tv.status":
                     if (SurfaceStage != null)
@@ -2042,6 +2045,35 @@ namespace TacSim.Core
                         }
                     }
                     break;
+            }
+        }
+
+        public void HandleDockingPanelFrame(JsonNode data)
+        {
+            if (SpaceStage == null) return;
+            bool isTerminalFrame = data == null || !data.IsObject || data.Bool("closed", false) || data.Bool("refused", false);
+            if (isTerminalFrame)
+            {
+                if (SpaceStage.IsDockingActive)
+                    SpaceStage.StartDockingFromFeed(data);
+                return;
+            }
+
+            // Server broadcasts `space.docking` to every player aboard the hull (`commands.rs:push_space_panels`).
+            // Gate pilot 6-DOF docking mode, bow camera, and walk suspension strictly on whether the local player
+            // is actually seated at the bridge helm so unseated passengers keep walking unimpeded.
+            bool inVehicleOrArena = (ArenaStage != null && ArenaStage.IsArenaActive) ||
+                                    (SurfaceStage != null && SurfaceStage.IsExcursionActive);
+            bool seatedAtHelm = !inVehicleOrArena && Player != null && Player.IsSeatedAtHelm;
+            if (!seatedAtHelm)
+                return;
+
+            SpaceStage.StartDockingFromFeed(data);
+            if (SpaceStage.IsDockingActive)
+            {
+                CameraRig?.SetMode(CameraRigMode.BowDockingCollar);
+                if (Audio != null) Audio.SetSoundscape(AmbientSoundscape.OrbitalSpace);
+                _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
             }
         }
 

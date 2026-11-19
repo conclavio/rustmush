@@ -776,7 +776,7 @@ namespace TacSim.Net
             else if (req.Kind == "confirm")
             {
                 req.Options.Add(new MushRequestOption { Key = "true", Label = "Confirm" });
-                req.Options.Add(new MushRequestOption { Key = "false", Label = "Cancel" });
+                req.Options.Add(new MushRequestOption { Key = "false", Label = "Decline" });
             }
             return req;
         }
@@ -937,18 +937,20 @@ namespace TacSim.Net
             d["id"] = JsonNode.FromULong(requestId);
 
             var choice = JsonNode.NewObject();
-            if (requestKind == "confirm")
+            if (string.Equals(choiceKey, "__cancel__", StringComparison.Ordinal))
+            {
+                choice["t"] = JsonNode.FromString("cancel");
+            }
+            else if (string.Equals(requestKind, "confirm", StringComparison.OrdinalIgnoreCase))
             {
                 choice["t"] = JsonNode.FromString("confirm");
                 choice["d"] = JsonNode.FromBool(string.Equals(choiceKey, "true", StringComparison.OrdinalIgnoreCase));
             }
-            else if (choiceKey == "__cancel__")
-            {
-                choice["t"] = JsonNode.FromString("cancel");
-            }
             else
             {
-                choice["t"] = JsonNode.FromString(requestKind == "text" || requestKind == "target" ? "text" : "choose");
+                bool isText = string.Equals(requestKind, "text", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(requestKind, "target", StringComparison.OrdinalIgnoreCase);
+                choice["t"] = JsonNode.FromString(isText ? "text" : "choose");
                 choice["d"] = JsonNode.FromString(choiceKey ?? string.Empty);
             }
 

@@ -91,7 +91,7 @@ namespace TacSim.Core
                 }
             }
 
-            bool dockingActive = _spaceStage != null && _spaceStage.IsDockingActive;
+            bool dockingActive = seatedAtHelm && _spaceStage != null && _spaceStage.IsDockingActive;
             bool modalOpen = _hud != null && _hud.IsModalOpen;
             bool suspendControls = isTextInputFocused || modalOpen;
             bool inVehicleStage = inArena || inSurface;

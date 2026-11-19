@@ -1112,6 +1112,7 @@ namespace UnityEngine
             public Graphic targetGraphic { get; set; }
             public Image image { get; set; }
             public ColorBlock colors { get; set; } = ColorBlock.defaultColorBlock;
+            public virtual void Select() { }
         }
 
         public class Button : Selectable
@@ -1123,7 +1124,13 @@ namespace UnityEngine
         {
             public enum ContentType { Standard, Autocorrected, IntegerNumber, DecimalNumber, Alphanumeric, Name, EmailAddress, Password, Pin, Custom }
             public enum LineType { SingleLine, MultiLineSubmit, MultiLineNewline }
-            public string text { get; set; } = string.Empty;
+            private string _text = string.Empty;
+            private bool _isFocused;
+            public string text
+            {
+                get => _text;
+                set => SetText(value, sendCallback: true);
+            }
             public Text textComponent { get; set; }
             public Graphic placeholder { get; set; }
             public ContentType contentType { get; set; }
@@ -1132,12 +1139,26 @@ namespace UnityEngine
             public Color caretColor { get; set; }
             public Color selectionColor { get; set; }
             public bool customCaretColor { get; set; }
-            public bool isFocused { get; set; }
+            public bool isFocused => _isFocused;
             public UnityEvent<string> onValueChanged { get; } = new UnityEvent<string>();
             public UnityEvent<string> onEndEdit { get; } = new UnityEvent<string>();
             public UnityEvent<string> onSubmit { get; } = new UnityEvent<string>();
-            public void ActivateInputField() => isFocused = true;
-            public void Select() => isFocused = true;
+            public void SetTextWithoutNotify(string input) => SetText(input, sendCallback: false);
+            public void ActivateInputField() => _isFocused = true;
+            public void DeactivateInputField() => _isFocused = false;
+            public override void Select() => _isFocused = true;
+
+            private void SetText(string value, bool sendCallback)
+            {
+                // Real Unity uGUI InputField normalizes null to empty, strips embedded NULs,
+                // and invokes onValueChanged whenever the normalized text changes.
+                string normalized = (value ?? string.Empty).Replace("\0", string.Empty);
+                if (_text == normalized)
+                    return;
+                _text = normalized;
+                if (sendCallback)
+                    onValueChanged.Invoke(_text);
+            }
         }
 
         public class ScrollRect : EventSystems.UIBehaviour
@@ -1371,6 +1392,12 @@ namespace UnityEditor
 
     namespace Build
     {
+        public class BuildFailedException : Exception
+        {
+            public BuildFailedException(string message) : base(message) { }
+            public BuildFailedException(Exception innerException) : base(innerException?.Message, innerException) { }
+        }
+
         public interface IOrderedCallback
         {
             int callbackOrder { get; }

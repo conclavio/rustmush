@@ -35,6 +35,8 @@ namespace TacSim.Net
 
         private string _cacheRootDir;
         private readonly Dictionary<string, string> _localDigests = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, (string sha256, string json)> _cachedPackPayloads =
+            new Dictionary<string, (string, string)>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _manifestPinnedDigests = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Queue<ContentPackManifestItem> _pendingPacks = new Queue<ContentPackManifestItem>();
         private readonly Dictionary<string, (ContentPackManifestItem item, float sentAt, int attempts)> _inFlightPacks =
@@ -165,6 +167,7 @@ namespace TacSim.Net
             _manifestAttempts = 0;
             _manifestDirty = false;
             _localDigests.Clear();
+            _cachedPackPayloads.Clear();
             _manifestPinnedDigests.Clear();
             _pendingPacks.Clear();
             _inFlightPacks.Clear();
@@ -174,7 +177,8 @@ namespace TacSim.Net
             _dirtyCategories.Add("all");
             _syncedSinceLastNotify = 0;
             _lastDispatchRealtime = -1000f;
-            // Clear any dynamic packs retained from a previous server connection before hydrating this server's cache.
+            // Clear any dynamic packs retained from a previous server or character session.
+            // Cached disk bytes stay private to TacSimContentSync until the current session's live manifest authorizes each (id, sha256).
             TacSimContentLoader.ClearDynamicPacks();
 
             string hostSlug = "local";
@@ -182,7 +186,6 @@ namespace TacSim.Net
             if (!string.IsNullOrWhiteSpace(normalized) && Uri.TryCreate(normalized, UriKind.Absolute, out Uri u))
                 hostSlug = SanitizeFileSlug($"{u.Host}_{u.Port}");
 
-            int warmLoaded = 0;
             try
             {
                 if (!string.IsNullOrEmpty(explicitCacheDir))
@@ -200,9 +203,9 @@ namespace TacSim.Net
                 if (!string.IsNullOrEmpty(_cacheRootDir))
                 {
                     Directory.CreateDirectory(Path.Combine(_cacheRootDir, "packs"));
-                    warmLoaded = LoadCachedPacksIntoMemory();
-                    if (warmLoaded > 0)
-                        OnSyncLog?.Invoke($"[ContentSync] Hydrated {warmLoaded} verified pack(s) from local server cache.");
+                    int warmIndexed = LoadCachedPacksIntoPrivatePool();
+                    if (warmIndexed > 0)
+                        OnSyncLog?.Invoke($"[ContentSync] Indexed {warmIndexed} verified pack(s) in local server cache (awaiting session manifest).");
                 }
             }
             catch
@@ -211,18 +214,18 @@ namespace TacSim.Net
             }
             finally
             {
-                // Always notify subscribers so previously loaded server models invalidate even when the new server cache is empty!
-                OnPacksUpdated?.Invoke(warmLoaded);
+                // Always notify subscribers so previously loaded server/character models invalidate immediately.
+                OnPacksUpdated?.Invoke(0);
             }
         }
 
-        private int LoadCachedPacksIntoMemory()
+        private int LoadCachedPacksIntoPrivatePool()
         {
             if (string.IsNullOrEmpty(_cacheRootDir)) return 0;
             string manifestPath = Path.Combine(_cacheRootDir, "manifest.json");
             if (!File.Exists(manifestPath)) return 0;
 
-            int loaded = 0;
+            int indexed = 0;
             try
             {
                 var items = ParseManifestPacks(JsonNode.Parse(File.ReadAllText(manifestPath)));
@@ -235,8 +238,8 @@ namespace TacSim.Net
                     if (string.Equals(ComputeSha256Hex(json), item.Sha256, StringComparison.OrdinalIgnoreCase))
                     {
                         _localDigests[item.Id] = item.Sha256;
-                        TacSimContentLoader.RegisterDynamicPack(item.Id, json);
-                        loaded++;
+                        _cachedPackPayloads[item.Id] = (item.Sha256, json);
+                        indexed++;
                     }
                 }
             }
@@ -244,7 +247,7 @@ namespace TacSim.Net
             {
                 SafeLogWarn($"[TacSimContentSync] Failed reading local pack cache: {ex.Message}");
             }
-            return loaded;
+            return indexed;
         }
 
         private void PersistLocalManifest()
@@ -308,6 +311,7 @@ namespace TacSim.Net
             }
 
             _localDigests[id] = actualSha;
+            _cachedPackPayloads[id] = (actualSha, json);
             TacSimContentLoader.RegisterDynamicPack(id, json);
 
             if (!string.IsNullOrEmpty(_cacheRootDir))
@@ -373,24 +377,71 @@ namespace TacSim.Net
                 _manifestRequested = false;
                 var remote = ParseManifestPacks(data);
                 _manifestPinnedDigests.Clear();
-                for (int i = 0; i < remote.Count; i++)
-                    _manifestPinnedDigests[remote[i].Id] = remote[i].Sha256;
-
-                var changed = ComputeChangedPacks(_localDigests, remote);
                 _pendingPacks.Clear();
                 _inFlightPacks.Clear();
                 _attemptCounts.Clear();
                 _failedPackIds.Clear();
-                for (int i = 0; i < changed.Count; i++)
-                    _pendingPacks.Enqueue(changed[i]);
 
-                // Prune AFTER enqueuing changed packs so cold/partial syncs don't trigger a premature rebuild!
-                PruneRemovedServerPacks(remote);
+                // Reset loader dynamic packs so ONLY packs explicitly authorized by this session's
+                // live manifest (matching both pack ID and exact SHA-256 digest) become active.
+                TacSimContentLoader.ClearDynamicPacks();
+
+                var remoteIds = new HashSet<string>(StringComparer.Ordinal);
+                int warmAuthorized = 0;
+                int prunedCount = 0;
+
+                for (int i = 0; i < remote.Count; i++)
+                {
+                    var item = remote[i];
+                    if (item == null || string.IsNullOrEmpty(item.Id) || string.IsNullOrEmpty(item.Sha256))
+                        continue;
+                    if (!remoteIds.Add(item.Id))
+                        continue;
+
+                    _manifestPinnedDigests[item.Id] = item.Sha256;
+
+                    if (_cachedPackPayloads.TryGetValue(item.Id, out var cached) &&
+                        string.Equals(cached.sha256, item.Sha256, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(ComputeSha256Hex(cached.json), item.Sha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        TacSimContentLoader.RegisterDynamicPack(item.Id, cached.json);
+                        warmAuthorized++;
+                        if (!string.IsNullOrEmpty(item.Category))
+                            _dirtyCategories.Add(item.Category);
+                        else
+                            _dirtyCategories.Add("all");
+                    }
+                    else
+                    {
+                        if (_cachedPackPayloads.ContainsKey(item.Id) || _localDigests.ContainsKey(item.Id))
+                        {
+                            RemoveCachedPackEntry(item.Id);
+                            prunedCount++;
+                            _manifestDirty = true;
+                        }
+                        _pendingPacks.Enqueue(item);
+                    }
+                }
+
+                // Prune any cached pack IDs omitted from the current session's live manifest
+                // (e.g., retired server packs or staff-only packs cached by a prior character).
+                prunedCount += PruneRemovedServerPacks(remoteIds);
+
+                if (_manifestDirty)
+                    PersistLocalManifest();
 
                 if (_pendingPacks.Count > 0)
                 {
+                    _syncedSinceLastNotify += warmAuthorized + prunedCount;
                     OnSyncLog?.Invoke($"[ContentSync] Syncing {_pendingPacks.Count} updated pack(s) over WebSocket...");
                     PumpPackQueue(ws, nowRealtime);
+                }
+                else if (warmAuthorized > 0 || prunedCount > 0)
+                {
+                    if (warmAuthorized > 0)
+                        OnSyncLog?.Invoke($"[ContentSync] Authorized {warmAuthorized} cached pack(s) from live session manifest.");
+                    OnPacksUpdated?.Invoke(warmAuthorized + prunedCount);
+                    _dirtyCategories.Clear();
                 }
             }
             else if (op == "pack")
@@ -507,50 +558,38 @@ namespace TacSim.Net
             }
         }
 
-        private void PruneRemovedServerPacks(List<ContentPackManifestItem> remote)
+        private void RemoveCachedPackEntry(string key)
         {
-            var remoteIds = new HashSet<string>(StringComparer.Ordinal);
-            for (int i = 0; i < remote.Count; i++)
-                remoteIds.Add(remote[i].Id);
+            _localDigests.Remove(key);
+            _cachedPackPayloads.Remove(key);
+            if (!string.IsNullOrEmpty(_cacheRootDir))
+            {
+                try
+                {
+                    string packFile = Path.Combine(_cacheRootDir, "packs", SanitizeFileSlug(key) + ".json");
+                    if (File.Exists(packFile))
+                        File.Delete(packFile);
+                }
+                catch { /* ignore disk delete errors */ }
+            }
+        }
 
+        private int PruneRemovedServerPacks(HashSet<string> remoteIds)
+        {
             var staleKeys = new List<string>();
             foreach (var kv in _localDigests)
             {
                 if (!remoteIds.Contains(kv.Key))
                     staleKeys.Add(kv.Key);
             }
-            if (staleKeys.Count == 0) return;
+            if (staleKeys.Count == 0) return 0;
 
             for (int i = 0; i < staleKeys.Count; i++)
-            {
-                string key = staleKeys[i];
-                _localDigests.Remove(key);
-                if (!string.IsNullOrEmpty(_cacheRootDir))
-                {
-                    try
-                    {
-                        string packFile = Path.Combine(_cacheRootDir, "packs", SanitizeFileSlug(key) + ".json");
-                        if (File.Exists(packFile))
-                            File.Delete(packFile);
-                    }
-                    catch { /* ignore disk delete errors */ }
-                }
-            }
+                RemoveCachedPackEntry(staleKeys[i]);
 
-            // Persist the reduced manifest BEFORE reloading dynamic packs into memory!
-            PersistLocalManifest();
-            TacSimContentLoader.ClearDynamicPacks();
-            LoadCachedPacksIntoMemory();
             _dirtyCategories.Add("all");
-            if (_pendingPacks.Count == 0 && _inFlightPacks.Count == 0)
-            {
-                OnPacksUpdated?.Invoke(staleKeys.Count);
-                _dirtyCategories.Clear();
-            }
-            else
-            {
-                _syncedSinceLastNotify += staleKeys.Count;
-            }
+            _manifestDirty = true;
+            return staleKeys.Count;
         }
 
         /// <summary>

@@ -47,7 +47,7 @@ namespace TacSim.Net
         private const int ConnectTimeoutMs = 15000;
         private static readonly float[] BackoffSeconds = { 0.5f, 1.0f, 2.0f, 5.0f, 15.0f };
         private static readonly Regex Http401Regex = new Regex(
-            @"(?<![0-9])(HTTP/\d(?:\.\d)?\s+401|status\s+code\s*['""]?401['""]?|401\s+Unauthorized|close\s+code\s*4401|'\s*401\s*')(?![0-9])",
+            @"(?<![0-9])(HTTP/\d(?:\.\d)?\s+401|status\s+code\s*:?\s*['""]?401['""]?|401\s*\(?\s*Unauthorized\s*\)?|close\s+code\s*4401|'\s*401\s*')(?![0-9])",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         public static MushWsClient LatestInstance { get; private set; }
@@ -82,16 +82,34 @@ namespace TacSim.Net
         }
 
         private readonly object _socketLock = new object();
+        private readonly object _inboundLock = new object();
         private readonly SemaphoreSlim _connectGate = new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim _outboundSignal = new SemaphoreSlim(0);
         private SocketRuntime _runtime;
-        private readonly ConcurrentQueue<(long epoch, MushEnvelope env)> _inbound = new ConcurrentQueue<(long, MushEnvelope)>();
+        private readonly Queue<(long epoch, MushEnvelope env)> _reliableInbound = new Queue<(long, MushEnvelope)>();
+        private readonly Dictionary<string, (long epoch, MushEnvelope env)> _latestTelemetry = new Dictionary<string, (long, MushEnvelope)>(StringComparer.Ordinal);
+        private readonly Queue<string> _telemetryOrder = new Queue<string>();
+        private bool _inboundOverflowDetected;
         private readonly ConcurrentQueue<string> _priorityOutbound = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> _outbound = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<(long epoch, int? code, string message)> _socketDrops = new ConcurrentQueue<(long, int?, string)>();
         private readonly Dictionary<string, JsonNode> _panelFeeds = new Dictionary<string, JsonNode>(StringComparer.Ordinal);
         private readonly Dictionary<string, ViewStreamCursor> _viewCursors = new Dictionary<string, ViewStreamCursor>(StringComparer.Ordinal);
         private readonly HashSet<string> _advertisedPanels = new HashSet<string>(StringComparer.Ordinal);
+
+        private static readonly HashSet<string> ReplaceableTelemetryFeeds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "space.cockpit",
+            "space.holotank",
+            "space.docking",
+            "arena.cockpit",
+            "arena.observer",
+            "arena.replay",
+            "arena.map",
+            "site.map",
+            "tv.status",
+            "sky.chart"
+        };
 
         private MushAuthSession _activeAuth;
         private string _activeCharKey;
@@ -133,6 +151,9 @@ namespace TacSim.Net
         public ulong LastSeq => _lastSeq;
         public int OutboundQueueCount => _priorityOutbound.Count + _outbound.Count;
         public int ReconnectAttemptCount => _reconnectAttempt;
+        public bool InboundOverflowDetected { get { lock (_inboundLock) { return _inboundOverflowDetected; } } }
+        public int PendingReliableInboundCount { get { lock (_inboundLock) { return _reliableInbound.Count; } } }
+        public int PendingTelemetryInboundCount { get { lock (_inboundLock) { return _latestTelemetry.Count; } } }
         public MushObjRef ActiveCharacter { get; private set; }
         public string ConnectedServer { get; private set; }
         public IReadOnlyCollection<string> AdvertisedPanels => _advertisedPanels;
@@ -161,11 +182,31 @@ namespace TacSim.Net
             return WsCloseDisposition.ReconnectBackoff;
         }
 
+        private static bool HasUnauthorizedHttpStatus(Exception ex)
+        {
+            if (ex == null) return false;
+            if (ex is WebException we && we.Response is HttpWebResponse hwr && hwr.StatusCode == HttpStatusCode.Unauthorized)
+                return true;
+            if (ex is HttpRequestException)
+            {
+                // Unity's .NET Standard 2.1 profile does not expose HttpRequestException.StatusCode at compile time;
+                // inspect it dynamically so .NET 5+/8 runtimes still check StatusCode while Unity 6000 compiles cleanly.
+                var prop = ex.GetType().GetProperty("StatusCode");
+                if (prop != null)
+                {
+                    object val = prop.GetValue(ex, null);
+                    if (val is HttpStatusCode code && code == HttpStatusCode.Unauthorized)
+                        return true;
+                }
+            }
+            return false;
+        }
+
         public static bool IsAuthRejectionException(Exception ex)
         {
             for (Exception cur = ex; cur != null; cur = cur.InnerException)
             {
-                if (cur is HttpRequestException hre && hre.StatusCode == HttpStatusCode.Unauthorized)
+                if (HasUnauthorizedHttpStatus(cur))
                     return true;
                 string msg = cur.Message;
                 if (!string.IsNullOrEmpty(msg) && Http401Regex.IsMatch(msg))
@@ -224,7 +265,7 @@ namespace TacSim.Net
             DrainQueue(_outbound);
 
             long epoch = Interlocked.Increment(ref _sessionEpoch);
-            DrainQueue(_inbound);
+            ClearInboundQueues();
             DrainQueue(_socketDrops);
             _subscribedForCurrentSocket = false;
 
@@ -257,7 +298,18 @@ namespace TacSim.Net
                 throw;
             }
 
-            if (_intentionalDisconnect || Interlocked.Read(ref _sessionEpoch) != epoch)
+            var rt = new SocketRuntime(ws, cts);
+            bool activated = false;
+            lock (_socketLock)
+            {
+                if (!_intentionalDisconnect && Interlocked.Read(ref _sessionEpoch) == epoch)
+                {
+                    _runtime = rt;
+                    _isConnected = true;
+                    activated = true;
+                }
+            }
+            if (!activated)
             {
                 try { ws.Abort(); } catch { /* ignore */ }
                 try { ws.Dispose(); } catch { /* ignore */ }
@@ -265,13 +317,6 @@ namespace TacSim.Net
                 return;
             }
 
-            var rt = new SocketRuntime(ws, cts);
-            lock (_socketLock)
-            {
-                _runtime = rt;
-            }
-
-            _isConnected = true;
             // NOTE (U-H04): Do NOT reset _reconnectAttempt here; wait until the server actually completes `hello`
             // so immediate 1012/1013 post-upgrade closes still obey exponential backoff instead of 2 Hz storms.
             _nextReconnectAtMonotonicSec = -1.0;
@@ -294,7 +339,7 @@ namespace TacSim.Net
             _reconnectInFlight = false;
             _subscribedForCurrentSocket = false;
             State = MushWsConnectionState.Disconnected;
-            DrainQueue(_inbound);
+            ClearInboundQueues();
             DrainQueue(_socketDrops);
             DrainQueue(_priorityOutbound);
             DrainQueue(_outbound);
@@ -303,10 +348,10 @@ namespace TacSim.Net
 
         private void CloseSocketOnly()
         {
-            _isConnected = false;
             SocketRuntime prev;
             lock (_socketLock)
             {
+                _isConnected = false;
                 prev = _runtime;
                 _runtime = null;
             }
@@ -409,7 +454,7 @@ namespace TacSim.Net
 
             if (_intentionalDisconnect)
             {
-                DrainQueue(_inbound);
+                ClearInboundQueues();
                 return;
             }
 
@@ -419,16 +464,25 @@ namespace TacSim.Net
             }
 
             int processed = 0;
-            while (processed < 64 && _inbound.TryDequeue(out var item))
+            while (processed < 64 && !_intentionalDisconnect && TryDequeueNextInbound(currentEpoch, out var env, out bool isCoalescedTelemetry))
             {
-                if (item.epoch != currentEpoch || _intentionalDisconnect)
-                    continue;
                 processed++;
-                var env = item.env;
                 // Never overwrite _lastSeq with 0 (out-of-band hello/resumed/ping frames carry seq: 0),
-                // but accept lower sequence numbers after a non-replayed fresh incarnation.
+                // accept lower sequence numbers after a non-replayed fresh incarnation on reliable frames,
+                // and never let coalesced telemetry rewind _lastSeq below already-dispatched reliable events
+                // or advance _lastSeq past an overflow gap.
                 if (env.Seq > 0)
-                    _lastSeq = env.Seq;
+                {
+                    if (isCoalescedTelemetry)
+                    {
+                        if (!InboundOverflowDetected && env.Seq > _lastSeq)
+                            _lastSeq = env.Seq;
+                    }
+                    else
+                    {
+                        _lastSeq = env.Seq;
+                    }
+                }
                 DispatchEvent(env);
             }
         }
@@ -797,15 +851,182 @@ namespace TacSim.Net
             return true;
         }
 
-        private void EnqueueInboundBounded(long epoch, MushEnvelope env)
+        public static bool TryGetReplaceableTelemetryKey(MushEnvelope env, out string key)
         {
-            while (_inbound.Count >= MaxInboundQueueSize && _inbound.TryDequeue(out _)) { }
-            _inbound.Enqueue((epoch, env));
+            key = null;
+            if (env == null || env.Data == null || !env.Data.IsObject)
+                return false;
+
+            if (env.EventType == "panel")
+            {
+                string kind = env.Data.Str("kind", "keyframe");
+                if (kind == "delta")
+                    return false;
+                string feed = env.Data.Str("feed", string.Empty);
+                if (!ReplaceableTelemetryFeeds.Contains(feed))
+                    return false;
+                var payload = env.Data["data"];
+                if (feed == "space.docking" && payload != null && payload.IsObject &&
+                    (payload.Bool("closed", false) || payload.Bool("refused", false)))
+                    return false;
+                if (feed == "tv.status" && payload != null && payload.IsObject && payload.Bool("cleared", false))
+                    return false;
+                key = "panel:" + feed;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetReplaceableViewId(MushEnvelope env, out string viewId)
+        {
+            viewId = null;
+            if (env == null || env.EventType != "view" || env.Data == null || !env.Data.IsObject)
+                return false;
+            string id = env.Data.Str("view", string.Empty);
+            if (!ReplaceableTelemetryFeeds.Contains(id))
+                return false;
+            viewId = id;
+            return true;
+        }
+
+        private bool EnqueueInboundBounded(long epoch, MushEnvelope env)
+        {
+            if (env == null) return true;
+            lock (_inboundLock)
+            {
+                if (_inboundOverflowDetected)
+                    return false;
+
+                if (TryGetReplaceableTelemetryKey(env, out string telemetryKey))
+                {
+                    bool isNewKey = !_latestTelemetry.ContainsKey(telemetryKey);
+                    _latestTelemetry[telemetryKey] = (epoch, env);
+                    if (isNewKey)
+                        _telemetryOrder.Enqueue(telemetryKey);
+                    return true;
+                }
+
+                // Preserve causal ordering when a reliable terminal/delta/reset event supersedes queued telemetry.
+                if (env.EventType == "panel" && env.Data != null && env.Data.IsObject)
+                {
+                    string feed = env.Data.Str("feed", string.Empty);
+                    if (!string.IsNullOrEmpty(feed))
+                        _latestTelemetry.Remove("panel:" + feed);
+                }
+                else if (env.EventType == "disconnect" ||
+                         (env.EventType == "resumed" && env.Data != null && env.Data.IsObject && !env.Data.Bool("replayed", true)))
+                {
+                    _latestTelemetry.Clear();
+                    _telemetryOrder.Clear();
+                }
+
+                if (_reliableInbound.Count >= MaxInboundQueueSize)
+                    CompactReplaceableViewsLocked();
+
+                if (_reliableInbound.Count >= MaxInboundQueueSize)
+                {
+                    // Never drop queued reliable events or advance _lastSeq past an omitted gap;
+                    // latch overflow so ReceiveLoopAsync triggers a clean reconnect/resync from _lastSeq.
+                    _inboundOverflowDetected = true;
+                    return false;
+                }
+
+                _reliableInbound.Enqueue((epoch, env));
+                return true;
+            }
+        }
+
+        private void CompactReplaceableViewsLocked()
+        {
+            if (_reliableInbound.Count == 0) return;
+
+            var items = _reliableInbound.ToArray();
+            var lastIndexByView = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < items.Length; i++)
+            {
+                if (TryGetReplaceableViewId(items[i].env, out string viewId))
+                    lastIndexByView[viewId] = i;
+            }
+            if (lastIndexByView.Count == 0)
+                return;
+
+            _reliableInbound.Clear();
+            for (int i = 0; i < items.Length; i++)
+            {
+                if (TryGetReplaceableViewId(items[i].env, out string viewId) && lastIndexByView[viewId] != i)
+                    continue;
+                _reliableInbound.Enqueue(items[i]);
+            }
+        }
+
+        private bool TryDequeueNextInbound(long currentEpoch, out MushEnvelope env, out bool isCoalescedTelemetry)
+        {
+            lock (_inboundLock)
+            {
+                while (_reliableInbound.Count > 0)
+                {
+                    var item = _reliableInbound.Dequeue();
+                    if (item.epoch != currentEpoch)
+                        continue;
+                    env = item.env;
+                    isCoalescedTelemetry = false;
+                    return true;
+                }
+
+                while (_telemetryOrder.Count > 0)
+                {
+                    string key = _telemetryOrder.Dequeue();
+                    if (!_latestTelemetry.TryGetValue(key, out var item))
+                        continue;
+                    _latestTelemetry.Remove(key);
+                    if (item.epoch != currentEpoch)
+                        continue;
+                    env = item.env;
+                    isCoalescedTelemetry = true;
+                    return true;
+                }
+            }
+            env = null;
+            isCoalescedTelemetry = false;
+            return false;
+        }
+
+        private void ClearInboundQueues()
+        {
+            lock (_inboundLock)
+            {
+                _reliableInbound.Clear();
+                _latestTelemetry.Clear();
+                _telemetryOrder.Clear();
+                _inboundOverflowDetected = false;
+            }
         }
 
         private static void DrainQueue<T>(ConcurrentQueue<T> q)
         {
             while (q.TryDequeue(out _)) { }
+        }
+
+        private bool HandleSocketLoopFailureForEpoch(long epoch, SocketRuntime rt, int? closeCode, string message)
+        {
+            bool isCurrent;
+            lock (_socketLock)
+            {
+                isCurrent = Interlocked.Read(ref _sessionEpoch) == epoch &&
+                            (rt == null || ReferenceEquals(_runtime, rt));
+                if (isCurrent)
+                    _isConnected = false;
+            }
+            if (!isCurrent)
+                return false;
+            _socketDrops.Enqueue((epoch, closeCode, message));
+            return true;
+        }
+
+        internal bool HandleSocketLoopFailureForEpoch(long epoch, int? closeCode, string message)
+        {
+            return HandleSocketLoopFailureForEpoch(epoch, null, closeCode, message);
         }
 
         private async Task ReceiveLoopAsync(SocketRuntime rt, long epoch)
@@ -815,7 +1036,7 @@ namespace TacSim.Net
             var buffer = new byte[16384];
             try
             {
-                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
+                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open && Interlocked.Read(ref _sessionEpoch) == epoch)
                 {
                     using (var ms = new MemoryStream())
                     {
@@ -826,12 +1047,11 @@ namespace TacSim.Net
                             res = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
                             if (res.MessageType == WebSocketMessageType.Close)
                             {
-                                _isConnected = false;
                                 int? closeCode = res.CloseStatus.HasValue ? (int)res.CloseStatus.Value : (int?)null;
                                 string desc = !string.IsNullOrEmpty(res.CloseStatusDescription)
                                     ? MushAuthClient.RedactSensitiveTokens(res.CloseStatusDescription)
                                     : $"WebSocket closed ({(closeCode.HasValue ? closeCode.Value.ToString() : "EOF")})";
-                                _socketDrops.Enqueue((epoch, closeCode, desc));
+                                HandleSocketLoopFailureForEpoch(epoch, rt, closeCode, desc);
                                 return;
                             }
                             if (ms.Length + res.Count > MaxInboundFrameBytes)
@@ -844,11 +1064,13 @@ namespace TacSim.Net
 
                         if (oversized)
                         {
-                            _isConnected = false;
                             try { ws.Abort(); } catch { /* ignore */ }
-                            _socketDrops.Enqueue((epoch, null, $"Inbound frame exceeded {MaxInboundFrameBytes / (1024 * 1024)} MiB limit"));
+                            HandleSocketLoopFailureForEpoch(epoch, rt, null, $"Inbound frame exceeded {MaxInboundFrameBytes / (1024 * 1024)} MiB limit");
                             return;
                         }
+
+                        if (Interlocked.Read(ref _sessionEpoch) != epoch)
+                            return;
 
                         if (res.MessageType == WebSocketMessageType.Text)
                         {
@@ -860,21 +1082,29 @@ namespace TacSim.Net
                                 {
                                     _consecutiveParseErrors = 0;
                                     // Answer keepalive pings immediately on the priority lane so heavy frames never starve heartbeats.
-                                    if (env.EventType == "ping" && env.Data != null && env.Data.IsObject)
+                                    if (env.EventType == "ping" && env.Data != null && env.Data.IsObject && Interlocked.Read(ref _sessionEpoch) == epoch)
                                     {
                                         ulong nonce = env.Data.ULong("nonce", 0);
                                         EnqueuePriorityRaw(MushProtocol.BuildPongCommand(nonce));
                                         env.PongAlreadySent = true;
                                     }
-                                    EnqueueInboundBounded(epoch, env);
+                                    if (!EnqueueInboundBounded(epoch, env))
+                                    {
+                                        try { ws.Abort(); } catch { /* ignore */ }
+                                        HandleSocketLoopFailureForEpoch(epoch, rt, null, "Inbound reliable queue overflow; resyncing session");
+                                        return;
+                                    }
                                 }
                             }
                             catch (Exception)
                             {
                                 // Isolate malformed frame without tearing down the socket or trapping ?resume=<_lastSeq>.
-                                int errs = Interlocked.Increment(ref _consecutiveParseErrors);
-                                if (errs >= 3)
-                                    _lastSeq = 0;
+                                if (Interlocked.Read(ref _sessionEpoch) == epoch)
+                                {
+                                    int errs = Interlocked.Increment(ref _consecutiveParseErrors);
+                                    if (errs >= 3)
+                                        _lastSeq = 0;
+                                }
                             }
                         }
                     }
@@ -883,9 +1113,8 @@ namespace TacSim.Net
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _isConnected = false;
                 string safeMsg = MushAuthClient.RedactSensitiveTokens(ex.Message);
-                _socketDrops.Enqueue((epoch, null, $"WebSocket interrupted ({safeMsg})"));
+                HandleSocketLoopFailureForEpoch(epoch, rt, null, $"WebSocket interrupted ({safeMsg})");
             }
             finally
             {
@@ -899,7 +1128,7 @@ namespace TacSim.Net
             var ct = rt.Cts.Token;
             try
             {
-                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
+                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open && Interlocked.Read(ref _sessionEpoch) == epoch)
                 {
                     if (_priorityOutbound.TryDequeue(out string prioMsg))
                     {
@@ -919,10 +1148,9 @@ namespace TacSim.Net
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _isConnected = false;
                 try { ws.Abort(); } catch { /* ignore */ }
                 string safeMsg = MushAuthClient.RedactSensitiveTokens(ex.Message);
-                _socketDrops.Enqueue((epoch, null, $"WebSocket send failed ({safeMsg})"));
+                HandleSocketLoopFailureForEpoch(epoch, rt, null, $"WebSocket send failed ({safeMsg})");
             }
             finally
             {
