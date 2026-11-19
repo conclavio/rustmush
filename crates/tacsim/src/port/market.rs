@@ -201,6 +201,14 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
                 .replace("{port}", &port),
         ));
     }
+    hull_here(w, def, hull)
+}
+
+/// **Whether `hull` lies at `def`'s port** (doc 48e, exchange G11: factored out of
+/// [`hull_admits`]): docked there, or the refusal saying where she is.
+fn hull_here(w: &World, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
+    let port = port_name(def);
+    let name = name_of(w, hull);
     match berth_of(w, hull) {
         Berth::Docked { def: there, .. } if there.venue == def.venue => Ok(()),
         Berth::Docked { def: there, .. } => Err(refusal(
@@ -380,6 +388,25 @@ impl VenueGate for PortVenueGate {
             (None, Presence::Ship(hull)) => hull_admits(w, actor, def, hull),
             (None, Presence::Here) => Ok(()),
         }
+    }
+
+    /// Doc 48e (exchange G11; 48d H-01): a governed hold takes delivery only while her hull is
+    /// docked at the venue's port (Q-48-6, local delivery), so a sale into a personal bid never
+    /// lands in a hold that has sailed or berths elsewhere. A locker or another vault is the
+    /// market's own rules' to judge.
+    fn receives_at(
+        &self,
+        w: &World,
+        venue: &MarketId,
+        endpoint: EndpointRef,
+    ) -> Result<(), VenueRefusal> {
+        let Some(view) = governed_hold(w, endpoint) else {
+            return Ok(());
+        };
+        let Some((def, _)) = port_of_venue(w, venue) else {
+            return Ok(());
+        };
+        hull_here(w, def, view.hull())
     }
 
     fn governed(&self, w: &World, endpoint: EndpointRef) -> bool {

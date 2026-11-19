@@ -341,3 +341,77 @@ async fn g6_charter_cargo_is_not_listed_for_an_org() {
     );
     assert!(listed.contains("Listed for sale as #"), "{listed}");
 }
+
+/// **Doc 48e, exchange G11 (48d H-01): a bid delivers only into a hold docked at its venue.** A
+/// captain bids for a part into her hold at Ceres, then sails. A seller at Ceres sells a part
+/// into the bid: refused, the hold is under way, and nothing moves. Before the fix the sale was
+/// admitted (only the seller's source was gated), and the part was delivered into a ship in
+/// flight (against Q-48-6, local delivery).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g11_a_bid_into_a_hold_that_has_sailed_takes_nothing() {
+    let mut rig = crate::driving_rig::stocked();
+    let (captain, row) = prospector(&mut rig, "Bidder", 45, "Kestrel");
+    mint(&mut rig, captain);
+    let hold = hold_vault_of(&rig.tw, &row);
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    teleport(&mut rig.tw, captain, exchange);
+    let said = run(
+        &mut rig.tw,
+        captain,
+        &format!(
+            "+market/bid tacsim:{SIGHT} qty=1 price=1000 into={}",
+            hold.0
+        ),
+    );
+    assert!(said.contains(" is held from your account."), "{said}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let bid = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| {
+            m.personal_listings_of(&mush_org::PrincipalId::Object(captain))
+                .find(|l| l.source.is_wanted())
+                .map(|l| l.id)
+        })
+        .expect("the bid");
+    // She sails.
+    crate::driving_rig::load(&mut rig, &row, 60, 20, 98_601);
+    crate::driving_rig::board(&mut rig, captain);
+    let (said, queued) = crate::driving_rig::command(&mut rig, captain, "+ship/undock stickney");
+    assert!(said.contains("Clearance filed"), "{said}");
+    crate::driving_rig::land_quietly(&mut rig, &queued);
+    for _ in 0..48 {
+        if matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), mush_core::ObjId(row.hull)),
+            tacsim::port::ship::Berth::UnderWay
+        ) {
+            break;
+        }
+        crate::driving_rig::sweep(&mut rig.tw, 600);
+        let queued = drain(&mut rig.tw);
+        crate::driving_rig::land_quietly(&mut rig, &queued);
+    }
+    // A seller at Ceres, a part in their locker, sells into her bid: refused.
+    let seller = with_account(&mut rig, "Seller", 46);
+    teleport(&mut rig.tw, seller, exchange);
+    let _ = run(&mut rig.tw, seller, "+locker/open");
+    let locker = locker_vault(&rig, seller).expect("the locker");
+    seed_lot(&mut rig, locker, SIGHT, 1, LotId(0xe1b7));
+    let refused = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/sell {}=1 from={}", bid.0, locker.0),
+    );
+    assert!(
+        refused.contains("under way") || refused.contains("Kestrel"),
+        "{refused}"
+    );
+    assert!(!refused.contains("Sold "), "{refused}");
+    assert_eq!(
+        hold_pool(&mut rig.tw, hold, SIGHT),
+        0,
+        "nothing reached the hold"
+    );
+}

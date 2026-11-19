@@ -199,6 +199,20 @@ pub trait VenueGate: Send + Sync + std::fmt::Debug {
     /// Whether `endpoint` is governed (in IC8, a hull's hold): only a port listing
     /// delivers there (lead note 2e).
     fn governed(&self, w: &mush_core::World, endpoint: mush_inventory::EndpointRef) -> bool;
+    /// **Whether `endpoint` can take delivery at `venue` now** (doc 48e, exchange G11): asked of
+    /// a personal bid's destination when goods are sold into it, wherever its bidder stands.
+    /// Default: yes, so a composition whose gate does not answer is unchanged.
+    ///
+    /// # Errors
+    /// The gate's own refusal line; nothing is sold.
+    fn receives_at(
+        &self,
+        _w: &mush_core::World,
+        _venue: &crate::MarketId,
+        _endpoint: mush_inventory::EndpointRef,
+    ) -> Result<(), VenueRefusal> {
+        Ok(())
+    }
     /// Whether `seller` is one of `venue`'s own port institutions (L7).
     fn port_seller(
         &self,

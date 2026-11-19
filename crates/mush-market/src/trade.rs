@@ -2671,6 +2671,12 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             if !crate::seller::bid_funds(ctx.w, &listing, quantity) {
                 return Err(MarketError::bad(crate::seller::BIDDER_NOT_BUYING));
             }
+            // Doc 48e (exchange G11; 48d H-01): the bid's destination takes delivery here and
+            // now (a hold whose hull has sailed, or berths at another port, takes nothing).
+            if let Some(gate) = gate.as_ref() {
+                gate.receives_at(ctx.w, &listing.market, mush_inventory::EndpointRef(vault))
+                    .map_err(|r| MarketError::bad(r.line))?;
+            }
             personal_bid_room(ctx, vault, &commodity, quantity)?;
         }
     }
