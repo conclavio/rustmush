@@ -199,6 +199,21 @@ pub trait VenueGate: Send + Sync + std::fmt::Debug {
     /// Whether `endpoint` is governed (in IC8, a hull's hold): only a port listing
     /// delivers there (lead note 2e).
     fn governed(&self, w: &mush_core::World, endpoint: mush_inventory::EndpointRef) -> bool;
+    /// **Whether `endpoint` can take delivery at `venue` now** (doc 48e, exchange G11 and G15):
+    /// asked of a personal bid's destination when goods are sold into it, wherever its bidder
+    /// stands, and of a bid's or a purchase's destination when it is named.
+    /// Default: yes, so a composition whose gate does not answer is unchanged.
+    ///
+    /// # Errors
+    /// The gate's own refusal line; nothing is sold.
+    fn receives_at(
+        &self,
+        _w: &mush_core::World,
+        _venue: &crate::MarketId,
+        _endpoint: mush_inventory::EndpointRef,
+    ) -> Result<(), VenueRefusal> {
+        Ok(())
+    }
     /// Whether `seller` is one of `venue`'s own port institutions (L7).
     fn port_seller(
         &self,
@@ -1341,7 +1356,8 @@ pub(crate) fn settles_inside_the_contract(representation: Representation) -> boo
 }
 
 /// **Ask the frozen table whether this purchase could be delivered at all**, before the
-/// money moves (independent verify fold, M1). `Some(why)` refuses the accept.
+/// money moves (independent verify fold, M1). `Some(why)` refuses the accept, and so does an
+/// empty table ([`NO_DELIVERY`], doc 48e exchange G27).
 ///
 /// `Representation::Asset` and `Representation::Lot` are never asked
 /// ([`settles_inside_the_contract`]): their goods legs are the contract's and the lot
@@ -1362,6 +1378,12 @@ pub(crate) fn cannot_deliver(
         .module_state::<MarketStore>()
         .map(|s| s.tables.delivery.clone())
         .unwrap_or_default();
+    // Doc 48e (exchange G27; 48d M-08, doc 48 §4.3's latent defect): with no delivery
+    // provider composed at all, nothing could hand these goods over, so the purchase is refused
+    // before the money moves rather than paid and escalated.
+    if providers.is_empty() {
+        return Some(NO_DELIVERY.to_owned());
+    }
     for p in &providers {
         match p.can_deliver(ctx, &order) {
             Some(Ok(())) => return None,
@@ -1371,6 +1393,9 @@ pub(crate) fn cannot_deliver(
     }
     None
 }
+
+/// A purchase of goods no composed provider delivers (doc 48e, exchange G27).
+pub const NO_DELIVERY: &str = "Nothing here can hand those goods over, so nothing was bought.";
 
 /// One paid-and-undelivered purchase: loud in the log **and** on the staff ladder.
 fn undelivered(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId, why: String) {

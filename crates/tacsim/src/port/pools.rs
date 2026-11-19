@@ -191,6 +191,22 @@ pub struct HouseOrder {
     /// **Doc 48 unit PL.5**: the officer who ordered it for the House. Omitted while `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<ObjId>,
+    /// **Doc 48e, production G10**: what the house's account has topped the purse up by for
+    /// this order since its funding, minor units, because the board's live asks rose past the
+    /// prices it was funded at (`top_up`). Omitted while 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub topped_minor: u64,
+    /// **Doc 48e, production G11**: a yard order of this one that ended before its hull (a
+    /// cancel, a failure, a draft that never bound) with its bill in its escrow. The order is
+    /// booked again and this escrow is carried into the new one before anything more is bought.
+    /// Omitted while `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry: Option<u64>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// **One house's pool record** (`tacsim:house_pool:{org}`).
@@ -666,6 +682,8 @@ pub(crate) fn request(
         phase: Phase::Requested,
         recipe: Some(CanonicalId::new(recipe).map_err(|e| e.to_string())?),
         by: Some(by),
+        topped_minor: 0,
+        carry: None,
     });
     record.check()?;
     put(ctx, &record);
@@ -806,6 +824,8 @@ fn step(
         phase: Phase::Funded,
         recipe: None,
         by: None,
+        topped_minor: 0,
+        carry: None,
     });
     tracing::info!(
         org = floor.org,
@@ -839,6 +859,17 @@ fn advance(
             let facility = yard(ctx.w)?;
             let (recipe, pinned) = crate::port::works::find_recipe(ctx.w, &facility, spec.recipe)
                 .ok_or("the yard does not build that")?;
+            // Doc 48e, production G10: the booking fee is held at the booking and the fee at the
+            // submit, both from the purse, so it holds them before the yard is asked.
+            let booking = if &home.house == facility.owner() {
+                0
+            } else {
+                facility.booking_fee_minor().unwrap_or(0)
+            };
+            let fee = facility.fee_minor(pinned.work_units()).unwrap_or(0);
+            if top_up(ctx, spec, home, order, account, booking.saturating_add(fee))? {
+                return Ok(Advance::Changed);
+            }
             let saved = ctx.actor;
             ctx.actor = helm;
             let booked = crate::port::works::book(
@@ -873,6 +904,18 @@ fn advance(
         }
         Phase::Supplying => {
             let id = order.contract.ok_or("no contract")?;
+            if let Some(again) = rebook(ctx, spec, order, id) {
+                return Ok(again);
+            }
+            // Doc 48e, production G11: an earlier booking's bill comes into this one before
+            // anything more is bought, so nothing is bought twice.
+            if let Some(old) = order.carry {
+                if crate::port::works::carry_into(ctx, old, EndpointRef(VaultId(id)))? {
+                    order.carry = None;
+                    return Ok(Advance::Changed);
+                }
+                return Ok(Advance::Same);
+            }
             let c = crate::port::works::open_contract(ctx.w, id).ok_or("the order closed")?;
             if c.owed.is_some() || c.order.is_none() {
                 return Ok(Advance::Same);
@@ -891,9 +934,19 @@ fn advance(
                 }
                 // The owner's IN.11 ruling: a part the stores lack is made at the works.
                 if part && (order.part.is_some() || !stores_hold(ctx, &line.good)) {
-                    return supply_part(ctx, home, (helm, account), order, (id, &line.good));
+                    return supply_part(ctx, spec, home, (helm, account), order, (id, &line.good));
                 }
                 let want = if part { 1 } else { line.units - held };
+                // Doc 48e, production G10: the purse holds this purchase at the board's live
+                // price, and the fee the submit holds, before it buys.
+                let (map, def) = yard_port(ctx.w)?;
+                let unit = board::unit_minor(ctx, Some(helm), (&map, &def), &line.good)?;
+                let need = unit
+                    .saturating_mul(want)
+                    .saturating_add(c.fee_minor.unwrap_or(0));
+                if top_up(ctx, spec, home, order, account, need)? {
+                    return Ok(Advance::Changed);
+                }
                 buy(
                     ctx,
                     helm,
@@ -909,6 +962,9 @@ fn advance(
         }
         Phase::Building => {
             let id = order.contract.ok_or("no contract")?;
+            if let Some(again) = rebook(ctx, spec, order, id) {
+                return Ok(again);
+            }
             let Some(c) = crate::port::works::open_contract(ctx.w, id) else {
                 return Err("the order closed before its collection".to_owned());
             };
@@ -1037,11 +1093,92 @@ fn advance(
     }
 }
 
+/// **A yard order that ended before its hull is booked again** (doc 48e, production G11).
+///
+/// The arm steps the oldest order alone, so an order whose contract closed early (the yard's
+/// cancel when its fee rose after the booking, an unfunded submit, a draft that never bound)
+/// stood at the head of the queue for good, and every order behind it waited forever. It is
+/// booked again instead (back to [`Phase::Funded`]); a contract still open with its bill in its
+/// escrow, which the agent's missing hold leaves there, is noted as [`HouseOrder::carry`] and its
+/// bill is carried into the new booking. The new booking's fee and the asks are the live ones,
+/// and [`top_up`] covers any rise. `None` while the contract runs.
+fn rebook(ctx: &Ctx<'_>, spec: &Spec<'_>, order: &mut HouseOrder, id: u64) -> Option<Advance> {
+    let open = crate::port::works::ended_early(ctx, id)?;
+    // An escrow still open holds the bill, and any earlier carry has landed in it: an earlier
+    // carry still open means nothing was carried or bought into this one yet.
+    if open
+        && order
+            .carry
+            .is_none_or(|old| crate::port::works::open_contract(ctx.w, old).is_none())
+    {
+        order.carry = Some(id);
+    }
+    tracing::info!(
+        org = spec.org,
+        n = order.n,
+        contract = id,
+        "tacsim: a house's yard order ended before its hull; its agent books it again"
+    );
+    order.contract = None;
+    order.phase = Phase::Funded;
+    Some(Advance::Changed)
+}
+
+/// **The purse topped up from the house's account** (doc 48e, production G10): when `purse`
+/// holds less than `need` minor, the house pays it the difference under a key naming the order
+/// and what it has topped up so far, and the order records it ([`HouseOrder::topped_minor`]).
+/// An order is funded at the board's prices when it is ordered and bought at its live ones, which
+/// EX.8's weekly step moves, so a rise in between left the purse short mid-bill and the order
+/// failing every fire. `Ok(true)` when it paid: the purchase waits a fire for the post.
+///
+/// # Errors
+///
+/// The house's account cannot cover the difference, or the post did not land.
+fn top_up(
+    ctx: &mut Ctx<'_>,
+    spec: &Spec<'_>,
+    home: &Home,
+    order: &mut HouseOrder,
+    purse: AccountId,
+    need: u64,
+) -> Result<bool, String> {
+    let have = available_minor(ctx.w, purse);
+    if have >= need {
+        return Ok(false);
+    }
+    let short = need - have;
+    if available_minor(ctx.w, home.account) < short {
+        return Err(format!(
+            "the house's account cannot cover the {short} the yard's asks have risen by"
+        ));
+    }
+    pay(
+        ctx,
+        &format!("{}/{}/top/{}", spec.org, order.n, order.topped_minor),
+        (home.account, purse),
+        short,
+        &home.house,
+        format!(
+            "{} tops up its order {} at the yard's asks",
+            spec.org, order.n
+        ),
+    )?;
+    order.topped_minor = order.topped_minor.saturating_add(short);
+    tracing::info!(
+        org = spec.org,
+        n = order.n,
+        short,
+        "tacsim: a house tops its yard purse up at the board's live asks"
+    );
+    Ok(true)
+}
+
 /// **The works order for a part the stores lack** (the owner's IN.11 ruling, 2026-11-05): booked
 /// at the yard port's works as the helm for the house, its bill bought into its escrow, and once
 /// made and traced, moved into the hull order `into`'s escrow. One step a fire.
 fn supply_part(
     ctx: &mut Ctx<'_>,
+    spec: &Spec<'_>,
     home: &Home,
     (helm, account): (ObjId, AccountId),
     order: &mut HouseOrder,
@@ -1083,6 +1220,15 @@ fn supply_part(
             for line in &c.bill {
                 let held = crate::port::works::escrow_units(ctx, &c, &line.good);
                 if held < line.units {
+                    // Doc 48e, production G10: as the hull order's purchases.
+                    let (map, def) = yard_port(ctx.w)?;
+                    let unit = board::unit_minor(ctx, Some(helm), (&map, &def), &line.good)?;
+                    let need = unit
+                        .saturating_mul(line.units - held)
+                        .saturating_add(c.fee_minor.unwrap_or(0));
+                    if top_up(ctx, spec, home, order, account, need)? {
+                        return Ok(Advance::Changed);
+                    }
                     buy(
                         ctx,
                         helm,
@@ -1111,16 +1257,13 @@ fn supply_part(
     }
 }
 
-/// Whether the yard operator's stores hold a drawable `good` lot (a part), free of any listing.
+/// Whether the port's parts stores ([`parts_operator`]) hold a drawable `good` lot, free of any
+/// listing.
 fn stores_hold(ctx: &Ctx<'_>, good: &CanonicalId) -> bool {
     let Ok((map, def)) = yard_port(ctx.w) else {
         return false;
     };
-    let Some(row) = def
-        .yard
-        .as_ref()
-        .and_then(|yard| map.vendors.get(&yard.operator))
-    else {
+    let Some(row) = parts_operator(&def).and_then(|operator| map.vendors.get(&operator)) else {
         return false;
     };
     let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
@@ -1336,6 +1479,18 @@ pub(crate) fn owed_moves(w: &World, actor: ObjId) -> Vec<(u64, WorksAct)> {
         .collect()
 }
 
+/// **The vendor whose stores hold a port's parts** (doc 48e, production G13): the workshop's
+/// operator, whose storefront the parts market's bids and the scrap desk buy into (doc 48 unit
+/// PL.8), or the yard's operator at a port that authors no workshop. At Stickney both are
+/// Stickney Yards; at Ceres the yard is the Freeport Works' and the parts are Occator's, so a
+/// part line read from the yard's operator found none there.
+fn parts_operator(def: &PortDef) -> Option<CanonicalId> {
+    def.workshop
+        .as_ref()
+        .map(|workshop| workshop.operator.clone())
+        .or_else(|| def.yard.as_ref().map(|yard| yard.operator.clone()))
+}
+
 /// The seller of `good` at the yard's port and its unit price, minor: a bulk good's standing ask,
 /// a part's catalogue price from the vendor that stocks it.
 fn seller(
@@ -1346,13 +1501,9 @@ fn seller(
 ) -> Result<(crate::port::def::VendorDef, u64), String> {
     let scale = credit_scale(w);
     if part {
-        // The yard's operator's stores (IN.7: no part is seeded; what is made, scrapped or sold
-        // into them is drawable).
-        let operator = def
-            .yard
-            .as_ref()
-            .map(|yard| yard.operator.clone())
-            .ok_or("the yard's port authors no yard")?;
+        // The port's parts stores (IN.7: what is made, scrapped or sold into them is drawable;
+        // doc 48e, production G13: the workshop operator's).
+        let operator = parts_operator(def).ok_or("the yard's port authors no yard")?;
         let vendor = def
             .vendors
             .iter()
@@ -1453,7 +1604,9 @@ pub fn price_minor(ctx: &Ctx<'_>, floor: &Floor) -> Result<u64, String> {
 pub fn order_price_minor(ctx: &Ctx<'_>, recipe: &str, ferry: bool) -> Result<u64, String> {
     let w: &World = ctx.w;
     let facility = yard(w)?;
-    let (_, def) = yard_port(w)?;
+    let (map, def) = yard_port(w)?;
+    // Doc 48e, production G10: each good at the board's live price, the price the agent pays.
+    let unit = |good: &CanonicalId| board::unit_minor(ctx, None, (&map, &def), good);
     let (_, pinned) = crate::port::works::find_recipe(w, &facility, recipe)
         .ok_or("the yard does not build that")?;
     let mut total: u64 = 0;
@@ -1466,16 +1619,14 @@ pub fn order_price_minor(ctx: &Ctx<'_>, recipe: &str, ferry: bool) -> Result<u64
             let (_, made) = crate::port::works::recipe_making(w, &works, &line.good)
                 .ok_or_else(|| format!("the works makes no {}", line.good))?;
             for input in crate::port::works::bill_with_parts(w, &made, 1) {
-                let (_, unit) = seller(w, &def, &input.good, false)?;
-                total = total.saturating_add(unit.saturating_mul(input.units));
+                total = total.saturating_add(unit(&input.good)?.saturating_mul(input.units));
             }
             total = total
                 .saturating_add(works.fee_minor(made.work_units()).unwrap_or(0))
                 .saturating_add(works.booking_fee_minor().unwrap_or(0));
             continue;
         }
-        let (_, unit) = seller(w, &def, &line.good, part)?;
-        total = total.saturating_add(unit.saturating_mul(line.units));
+        total = total.saturating_add(unit(&line.good)?.saturating_mul(line.units));
     }
     let units = pinned.work_units();
     total = total
@@ -1501,8 +1652,7 @@ pub fn order_price_minor(ctx: &Ctx<'_>, recipe: &str, ferry: bool) -> Result<u64
         ),
     ] {
         let good = crate::port::burn::consumable_good(goods, kind).ok_or("no consumable")?;
-        let (_, unit) = seller(w, &def, &good, false)?;
-        total = total.saturating_add(unit.saturating_mul(units));
+        total = total.saturating_add(unit(&good)?.saturating_mul(units));
     }
     Ok(total)
 }
@@ -1900,6 +2050,68 @@ mod board {
             .is_none_or(|to| *to == PrincipalId::Object(buyer))
     }
 
+    /// **What one `good` costs on the board now**, minor (doc 48e, production G10): the listing
+    /// [`buy`] would take, at its live price, which EX.8's weekly step moves — a seller's standing
+    /// ask, a private ask already listed to `buyer`, or a part's lot ask open to them (`None`:
+    /// open to anyone, a public one) — else the price the port's clerk would list it at (the
+    /// authored ask or bid, a part's catalogue price). A read: it lists nothing.
+    ///
+    /// # Errors
+    ///
+    /// No one at the port sells the good, or its price cannot be read.
+    pub(crate) fn unit_minor(
+        ctx: &Ctx<'_>,
+        buyer: Option<ObjId>,
+        (map, def): (&PortMap, &PortDef),
+        good: &CanonicalId,
+    ) -> Result<u64, String> {
+        let market = ctx.w.module_state::<MarketStore>().ok_or("no market")?;
+        let open = |listing: &mush_market::Listing| match buyer {
+            Some(buyer) => open_to(listing, buyer),
+            None => listing.private_to.is_none(),
+        };
+        let price = |listing: &mush_market::Listing| u64::try_from(listing.price.minor()).ok();
+        let part = crate::port_tick::is_part(good);
+        let live = if part {
+            let row = super::parts_operator(def).and_then(|operator| map.vendors.get(&operator));
+            let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
+            row.map(|row| crate::port::stock::store_lots(ctx, row, good, &claimed))
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|lot| lot.listing)
+                .filter_map(|id| market.listing(id))
+                .find(|listing| open(listing))
+                .and_then(price)
+        } else {
+            let askers: Vec<u64> = def
+                .vendors
+                .iter()
+                .filter(|vendor| vendor.asks.iter().any(|ask| &ask.good == good))
+                .filter_map(|vendor| map.vendors.get(&vendor.org).map(|row| row.vault))
+                .collect();
+            if askers.is_empty() {
+                let (vendor, _) = super::seller(ctx.w, def, good, false)?;
+                map.vendors.get(&vendor.org).and_then(|row| {
+                    market
+                        .lot_listings_of(EndpointRef(VaultId(row.vault)), good)
+                        .find(|listing| open(listing))
+                        .and_then(price)
+                })
+            } else {
+                askers.iter().find_map(|vault| {
+                    market
+                        .lot_listings_of(EndpointRef(VaultId(*vault)), good)
+                        .find(|listing| listing.private_to.is_none())
+                        .and_then(price)
+                })
+            }
+        };
+        match live {
+            Some(unit) => Ok(unit),
+            None => super::seller(ctx.w, def, good, part).map(|(_, unit)| unit),
+        }
+    }
+
     /// The listing a bulk `good` is bought from at the port and how much of `want` to take from
     /// it now (0 while a draw on the pool is unsettled). A seller's standing ask, when a vendor
     /// here asks the good; else the vendor that stocks it and bids for it with no ask (the
@@ -2042,11 +2254,7 @@ mod board {
         (map, def): (&PortMap, &PortDef),
         good: &CanonicalId,
     ) -> Result<Pick, String> {
-        let operator = def
-            .yard
-            .as_ref()
-            .map(|yard| yard.operator.clone())
-            .ok_or("the port authors no yard")?;
+        let operator = super::parts_operator(def).ok_or("the port authors no yard")?;
         let row = map
             .vendors
             .get(&operator)

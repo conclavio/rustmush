@@ -1650,6 +1650,74 @@ pub(crate) fn open_contract(w: &World, id: u64) -> Option<WorksContract> {
     contract(w, id).filter(|c| c.closed.is_none())
 }
 
+/// **Whether a house order's contract ended before its output** (doc 48e, production G11, for
+/// `crate::port::pools`): closed cancelled, failed or seized; or still open on a cancelled or
+/// failed work order, or on a draft that never bound, with its bill waiting in the escrow (a
+/// house's agent docks no hold to return it to). `Some(true)` while it is still open, so its
+/// escrow is to be carried ([`carry_into`]); `Some(false)` once closed; `None` while it runs, once
+/// collected, or when its record does not read.
+pub(crate) fn ended_early(ctx: &Ctx<'_>, id: u64) -> Option<bool> {
+    let c = contract(ctx.w, id)?;
+    match c.closed {
+        Some(Close::Collected) => None,
+        Some(Close::Cancelled | Close::Failed | Close::Seized) => Some(false),
+        None => {
+            let dead = matches!(
+                order_state(ctx, &c),
+                Some(WorkOrderState::Cancelled | WorkOrderState::Failed)
+            ) || (c.order.is_none() && c.unbound >= MAX_UNBOUND_FIRES);
+            dead.then_some(true)
+        }
+    }
+}
+
+/// **A house order's bill carried into its next booking** (doc 48e, production G11, for
+/// `crate::port::pools`): the escrow of contract `id`, which ended early ([`ended_early`]), moved
+/// into `to` as its requester under its own ledger, one good or the lots a move; the last move's
+/// landing closes it as its order ended. `Ok(true)` once it is closed (an empty escrow closes at
+/// once).
+///
+/// One good a move because `to` is a fresh escrow: the move's `transfer` opens each pool there by
+/// writing the escrow's pool census, and a bundle writes a key once, so two goods in one move
+/// were refused at every try.
+///
+/// # Errors
+///
+/// The move does not check.
+pub(crate) fn carry_into(ctx: &mut Ctx<'_>, id: u64, to: EndpointRef) -> Result<bool, String> {
+    let Some(mut c) = open_contract(ctx.w, id) else {
+        return Ok(true);
+    };
+    if c.owed.is_some() {
+        return Ok(false);
+    }
+    let (mut goods, lots) = escrow_contents(ctx, &c);
+    if goods.is_empty() && lots.is_empty() {
+        let failed = order_state(ctx, &c).is_none_or(|state| state == WorkOrderState::Failed);
+        close(
+            ctx,
+            &mut c,
+            if failed {
+                Close::Failed
+            } else {
+                Close::Cancelled
+            },
+        );
+        return Ok(true);
+    }
+    let last = goods.len() + usize::from(!lots.is_empty()) == 1;
+    let then = if last { Then::Returned } else { Then::Supplied };
+    let moving = if goods.is_empty() {
+        (Vec::new(), lots)
+    } else {
+        goods.truncate(1);
+        (goods, Vec::new())
+    };
+    let (by, escrow) = (c.requester, c.escrow());
+    owe(ctx, &mut c, by, (escrow, to), moving, then)?;
+    Ok(false)
+}
+
 /// The state of a contract's work order, once its draft landed.
 pub(crate) fn order_state(ctx: &Ctx<'_>, c: &WorksContract) -> Option<WorkOrderState> {
     c.order.and_then(|o| work_order(ctx, o)).map(|o| *o.state())
@@ -2695,9 +2763,7 @@ impl WorksProvider {
                     .pool(txn, to, g)
                     .map(|pool| pool.map_or(0, |pool| pool.quantity))
                     .map_err(|_| mush_market::CapacityReadError)?;
-                if !crate::port_tick::is_part(g) {
-                    return Ok(pooled);
-                }
+                // Doc 48e (48c #6, 48d C-03): every good's lots take room, a divisible one's too.
                 self.inventory
                     .lot_quantity(txn, to, g)
                     .map(|held| pooled.saturating_add(held))

@@ -2972,6 +2972,24 @@ pub fn create_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tac
 /// instantiate, or a record that will not encode. **Nothing is written on any of
 /// them.**
 pub fn refit_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<TacticalUnit, String> {
+    refit_unit_carrying(ctx, obj, spec, &|_| Ok(Vec::new()))
+}
+
+/// **[`refit_unit`], carrying what the hull keeps across the re-bind** in its one write:
+/// `carry` is handed the re-bound unit and answers the ops that put back the caller's own
+/// records on it (a game's magazine record, say), applied before the unit is encoded and
+/// written. No ops is [`refit_unit`] exactly.
+///
+/// # Errors
+///
+/// [`refit_unit`]'s, and `carry`'s refusal or a plan of its ops the unit refuses. **Nothing is
+/// written on any of them.**
+pub fn refit_unit_carrying(
+    ctx: &mut Ctx<'_>,
+    obj: ObjId,
+    spec: &UnitSpec,
+    carry: &dyn Fn(&TacticalUnit) -> Result<Vec<UnitMutationOp>, String>,
+) -> Result<TacticalUnit, String> {
     if unit_of(ctx.w, obj).is_none() {
         return Err(format!("#{} holds no unit to refit", obj.0));
     }
@@ -3002,6 +3020,14 @@ pub fn refit_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tact
     let now = ctx.w.now();
     let mut u = TacticalUnit::from_spec(spec, obj).map_err(|error| error.to_string())?;
     u.settle_mobility(now);
+    let carried = carry(&u)?;
+    if !carried.is_empty() {
+        let plan =
+            UnitMutationPlan::new(carried, Some(u.revision()), None).map_err(|e| e.to_string())?;
+        u = unit::apply(&u, &plan, now)
+            .map_err(|error| error.to_string())?
+            .0;
+    }
     // Validate/encode before touching RAM: a refitted unit must always be
     // acceptable to the next boot.
     let (document, payload_digest) = encode_unit_document(&record_definition, &u, None)?;

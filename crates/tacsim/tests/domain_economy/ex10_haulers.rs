@@ -237,6 +237,111 @@ async fn ex10_a_laid_up_house_plans_no_trip() {
     );
 }
 
+/// Fires until both hulls are fitted out: hull, helm, grants and purse.
+fn fitted(rig: &mut Rig) {
+    for _ in 0..120 {
+        fires(rig, 1);
+        let rows = house(rig).rows;
+        if rows.len() == 2
+            && rows.iter().all(|row| {
+                row.hull.is_some()
+                    && row.helm.is_some()
+                    && row.grant.is_some()
+                    && row.account.is_some()
+            })
+        {
+            return;
+        }
+    }
+    panic!("the house fits its hulls out: {}", the_house(rig));
+}
+
+/// **48e services:G18, G19: the house loses a hull.** One whose title passes to another and one
+/// that is gone each leave the house's row: the helm no longer trades her hold, the purse goes
+/// home, and the mark is neither re-adopted nor sails again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ex10_a_hull_the_house_loses_leaves_its_row_and_sends_the_purse_home() {
+    let mut rig = opened();
+    fitted(&mut rig);
+    let first = row(&rig, "VCC-01");
+    let second = row(&rig, "VCC-02");
+    let (hull, helm) = (
+        ObjId(first.hull.expect("a hull")),
+        ObjId(first.helm.expect("a helm")),
+    );
+    assert_eq!(
+        tacsim::port::hauler::hauler_hull(rig.tw.world(), helm),
+        Some(hull)
+    );
+    let (purse, purse_2) = (
+        AccountId(first.account.expect("a purse")),
+        AccountId(second.account.expect("a purse")),
+    );
+    // Money in each purse, to see it go home.
+    let treasury = port_map(&rig.tw, CERES).treasury.expect("a treasury");
+    for account in [purse, purse_2] {
+        let out = run(
+            &mut rig.tw,
+            mush_core::GOD,
+            &format!("@econ/mint {treasury}={} 12345", account.0),
+        );
+        assert!(!out.contains("Usage"), "{out}");
+    }
+    let house_account = port_map(&rig.tw, CERES).orgs[&cid("vesta_carriers")]
+        .account
+        .map(AccountId)
+        .expect("the house's account");
+    let house_before = balance(rig.tw.world(), house_account);
+
+    // G18: VCC-01's title passes to another.
+    let moved = run(
+        &mut rig.tw,
+        mush_core::GOD,
+        &format!("@asset/transfer #{}=#{}", hull.0, mush_core::GOD.0),
+    );
+    assert_ne!(
+        tacsim::port::house_sweep::title_of(rig.tw.world(), hull),
+        Some(PrincipalId::Organization(vesta(&rig))),
+        "the title moved: {moved}"
+    );
+    fires(&mut rig, 3);
+    let lost = row(&rig, "VCC-01");
+    assert!(
+        lost.lost && lost.hull.is_none() && lost.trip.is_none(),
+        "{lost:?}"
+    );
+    assert_eq!(
+        tacsim::port::hauler::hauler_hull(rig.tw.world(), helm),
+        None
+    );
+    assert_eq!(balance(rig.tw.world(), purse), 0, "the purse went home");
+
+    // G19: VCC-02's hull is gone.
+    let gone = ObjId(second.hull.expect("a hull"));
+    rig.tw.world_mut().destroy(gone).expect("destroyed");
+    fires(&mut rig, 3);
+    let lost_2 = row(&rig, "VCC-02");
+    assert!(lost_2.lost && lost_2.hull.is_none(), "{lost_2:?}");
+    assert_eq!(balance(rig.tw.world(), purse_2), 0, "the purse went home");
+    assert!(
+        balance(rig.tw.world(), house_account) >= house_before + 2 * 12_345,
+        "both purses are the house's again"
+    );
+
+    // Past the opening day neither mark is re-adopted, re-seeded or sets out.
+    let day = ic_now(&rig.tw).div_euclid(DAY) + 1;
+    let _ = to_ic(&mut rig, day * DAY + 600);
+    fires(&mut rig, 20);
+    for mark in ["VCC-01", "VCC-02"] {
+        let row = row(&rig, mark);
+        assert!(
+            row.lost && row.hull.is_none() && row.trip.is_none() && row.trips == 0,
+            "{mark} stays lost: {}",
+            the_house(&rig)
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn ex10_the_house_seeds_its_hulls_and_trades_where_a_gap_pays() {

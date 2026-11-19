@@ -190,6 +190,9 @@ pub struct MarketStore {
     /// Doc 18 cut IC14 row 16: how many `hold_standing` reads the sweep made this boot
     /// (a counter for tests, [`MarketStore::hold_reads`]).
     pub(crate) hold_reads: u64,
+    /// Doc 48e (exchange G21; 48d M-01): the lot-hold reconcile's round-robin cursor, the last
+    /// listing it visited. RAM only: a reboot starts the lap again from the lowest id.
+    pub(crate) lot_reconcile_cursor: Option<crate::ids::ListingId>,
 }
 
 impl MarketStore {

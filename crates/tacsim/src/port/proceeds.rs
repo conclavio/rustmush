@@ -75,6 +75,9 @@ pub const REFERENCE_DARK: &str =
 /// A sale out of an enrolled hold by anyone but its pilot (`{name}`: the hull).
 pub const SALE_NOT_PILOT: &str =
     "Only the {name}'s chartered pilot sells out of its hold, so nothing was sold.";
+/// A personal ask of a chartered hold's cargo posted for an organization (doc 48e, exchange G6):
+/// `{name}`, the hull.
+pub const CHARTER_ASK_AS_ORG: &str = "Cargo in the {name}'s chartered hold is listed by its pilot alone, so the Co-op's share is paid; nothing was listed.";
 /// The payout's label on the sale contract and the line.
 pub const SHARE_LABEL: &str = "Co-op share";
 /// The contract-name memo when the reference fell back to the goods table.
@@ -287,6 +290,25 @@ fn enrolled_at(
     Ok(Some(enrolment.share_permille))
 }
 
+/// **Whether `endpoint` is a chartered hold** (doc 48e, exchange G7): a governed hold the Trust
+/// leases out under a live enrolment that takes the Co-op's share. Its cargo is sold from it, so
+/// the share is paid; a move out of it to another vault would carry the cargo past the share.
+#[must_use]
+pub(crate) fn is_chartered_hold(w: &World, endpoint: EndpointRef) -> bool {
+    let Some(view) = governed_hold(w, endpoint) else {
+        return false;
+    };
+    let Some(trust) = programme_port(w).and_then(|port| port.trust()) else {
+        return false;
+    };
+    let Some(lease) = trust_lease_on(w, &trust, view.hull()) else {
+        return false;
+    };
+    w.module_state::<TacsimStore>()
+        .and_then(|s| s.enrolment_for_lease(lease.id.0))
+        .is_some_and(|e| e.vault == endpoint.vault().0 && takes_share(e.status))
+}
+
 impl ProceedsPolicy for CoopProceeds {
     fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
         let Some(house) = house_of(w, sale) else {
@@ -352,6 +374,24 @@ impl ProceedsPolicy for CoopProceeds {
             line: Some(line),
             memo,
         })
+    }
+
+    /// **Charter cargo is listed by its pilot** (doc 48e, exchange G6; 48d H-05): the share on a
+    /// personal ask is decided by its seller (`fees::ask_policy_cuts` asks it of a person), so an
+    /// ask from a chartered hold posted for an organization the pilot officers would pay the Trust
+    /// nothing (Q-48-56). It is refused at posting; the pilot lists it as themself.
+    fn may_list(
+        &self,
+        w: &World,
+        seller: &PrincipalId,
+        source: EndpointRef,
+    ) -> Result<(), ProceedsRefusal> {
+        if matches!(seller, PrincipalId::Object(_)) || !is_chartered_hold(w, source) {
+            return Ok(());
+        }
+        let name =
+            governed_hold(w, source).map_or_else(String::new, |view| name_of(w, view.hull()));
+        Err(refuse(CHARTER_ASK_AS_ORG.replace("{name}", &name)))
     }
 
     fn settled(&self, ctx: &mut Ctx<'_>, sale: &SettledSale<'_>) {

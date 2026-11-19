@@ -1035,6 +1035,7 @@ fn mw13_two_sealed_minds_of_one_script_differ_by_their_rule_programs() {
     let fired = |run: &Run| {
         run.log.iter().any(|entry| match &entry.command {
             BubbleInputCommand::FireOffensiveLasers { shooter_id, .. }
+            | BubbleInputCommand::FireMount { shooter_id, .. }
             | BubbleInputCommand::FireRailgun { shooter_id, .. }
             | BubbleInputCommand::FireTorpedoSalvo { shooter_id, .. } => {
                 shooter_id.starts_with("hull.")
@@ -1254,6 +1255,11 @@ fn fly_the_picket(
                     BubbleInputCommand::FireOffensiveLasers {
                         shooter_id,
                         target_id,
+                    }
+                    | BubbleInputCommand::FireMount {
+                        shooter_id,
+                        target_id,
+                        ..
                     } if shooter_id == "hull.10" => Some(target_id.clone()),
                     _ => None,
                 })
@@ -1459,9 +1465,8 @@ fn co2_beside_a_sealed_mind_the_house_default_lands_its_shots_and_nothing_else()
             .entries
             .iter()
             .filter_map(|entry| match &entry.command {
-                BubbleInputCommand::FireOffensiveLasers { target_id, .. } => {
-                    Some(target_id.clone())
-                }
+                BubbleInputCommand::FireOffensiveLasers { target_id, .. }
+                | BubbleInputCommand::FireMount { target_id, .. } => Some(target_id.clone()),
                 _ => None,
             })
             .collect();
@@ -1632,4 +1637,77 @@ fn cc8_a_corvette_disables_a_dray_that_dodges() {
         .get(INTERDICTOR)
         .expect("the interdictor");
     assert_eq!(corvette.status, HullStatus::Operational);
+}
+
+/// **Doc 48e kernel G8: the interdictor chases a hull that runs.** She holds her drive only
+/// once she is closing at 50 m/s along the line between them; a hull opening the range at
+/// 80 m/s is not closing at all, so she burns after it. Before, any 50 m/s of relative speed
+/// held her drive, and running beat her.
+#[test]
+fn g8_the_interdictor_chases_a_hull_that_runs_from_her() {
+    const INTERDICTOR: &str = "interdictor.5.1";
+    let mut bubble = LocalSpaceBubble::new("bubble.48e.g8", "domain.5", "Test", 1_000);
+    let mut interdictor = SpaceShipState::new_corvette(
+        INTERDICTOR,
+        "Interdictor Picket",
+        INTERDICTOR_PARTY,
+        [0, 0, 0],
+        [0, 0, 0],
+    );
+    super::super::custody::apply_space_unit_overlay(
+        &mut interdictor,
+        &super::super::custody::space_unit_overlay_for_id("tacsim.unit.corvette_interdictor"),
+    );
+    bubble.insert_ship(interdictor);
+    let entry = carrier_entry(RUNNER, CARRIER_PARTY);
+    // Running straight away from her at 80 m/s, radiating for a fight, so she owes it no hail.
+    let mut runner = SpaceShipState::new_dray(
+        &entry.ship_id,
+        "Runner",
+        CARRIER_PARTY,
+        [20_000, 0, 0],
+        [80_000, 0, 0],
+    );
+    runner.emcon = EmconPosture::ActiveCombat;
+    bubble.insert_ship(runner);
+    bubble.set_party_relation(CARRIER_PARTY, INTERDICTOR_PARTY, Some(Mark::Hostile));
+    bubble.set_party_relation(INTERDICTOR_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
+    let mut carriers = BTreeMap::new();
+    carriers.insert(RUNNER, entry);
+    let active = active_over(
+        bubble,
+        DomainId(5),
+        carriers,
+        None,
+        (ObjId(900), INTERDICTOR.to_owned()),
+    );
+    let tw = TestWorld::new();
+    let fresh = Run {
+        active,
+        linkdead: BTreeMap::new(),
+        log: Vec::new(),
+    };
+    let never = |_: u32| 0_u32;
+    let run = drive(
+        &fresh,
+        &ThinkHost::inline(),
+        tw.world(),
+        8,
+        100,
+        WhileHeld::NeverHeld,
+        None,
+        &never,
+    );
+    let her = run
+        .active
+        .bubble
+        .ships
+        .get(INTERDICTOR)
+        .expect("the interdictor");
+    assert!(
+        her.vel_mmps[0] > 0,
+        "she burns after the runner: {:?}, {} thinks",
+        her.vel_mmps,
+        run.active.interdictor_think_seq
+    );
 }

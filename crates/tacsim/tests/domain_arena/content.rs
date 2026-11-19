@@ -92,7 +92,8 @@ const PACK_FILES: [&str; 10] = [
 ];
 
 /// **The digest pins.** A content change moves one of these, and moving one is a
-/// reviewed diff.
+/// reviewed diff: the old row goes to [`RETIRED_PINS`] with its version, and the pack's version
+/// moves (48e review rounds:G14).
 ///
 /// **17b cut M3.1** added the cores pack and moved the line tank's, for a core
 /// component (the line core in the turret; version 3). Was `607a1d6c…` at
@@ -333,6 +334,71 @@ fn the_pinned_digests_are_the_shipped_ones() {
         seen += 1;
     }
     assert_eq!(seen, DIGESTS.len(), "every pin names a shipped pack");
+}
+
+/// **Every retired digest pin, with the pack version it was signed at** (48e review
+/// rounds:G14). When a pack's content moves, its old row in [`DIGESTS`] comes here with its
+/// version, and [`a_pack_whose_digest_moved_moved_its_version`] then fails until the pack's
+/// `version` moves too. A persisted unit pins its definitions' exact digests, so content
+/// re-signed under the same version freezes every saved unit that requires it at boot. A digest
+/// may be given by its prefix, as the [`DIGESTS`] notes record them.
+const RETIRED_PINS: &[(&str, u32, &str, bool)] = &[
+    // Doc 49 unit CC.2 re-signed these at version 1 before this guard: grandfathered (pre-launch,
+    // no saves to keep; a dev world holding older units is wiped at its redeploy).
+    ("tacsim.pack.cannon_105", 1, "87aec3ba", true),
+    ("tacsim.pack.he_105", 1, "c377ca63", true),
+    ("tacsim.pack.mg_coax", 1, "d5a24fd7", true),
+    ("tacsim.pack.ball_762", 1, "59f3da8f", true),
+];
+
+/// Every shipped pack's `(id, version, digest)`.
+fn shipped_versions() -> Vec<(String, u32, String)> {
+    let mut all: Vec<&str> = content::SOURCES.iter().map(|(_, json)| *json).collect();
+    all.extend([
+        content::PROVING_GROUND_ATLAS_JSON,
+        content::WINTER_VALLEY_JSON,
+        content::WINTER_VALLEY_ATLAS_JSON,
+        content::MARS_CANYON_JSON,
+        content::MARS_CANYON_ATLAS_JSON,
+        content::RAIDER_HEAVY_JSON,
+        content::SPACE_MOUNTS_JSON,
+        content::SPACE_FITS_JSON,
+    ]);
+    all.into_iter()
+        .map(|json| {
+            let pack = mush_content::parse_pack(json).expect("a shipped pack parses");
+            let manifest = pack.manifest();
+            (
+                manifest.id().to_string(),
+                manifest.version(),
+                manifest.digest().to_hex(),
+            )
+        })
+        .collect()
+}
+
+/// **48e review rounds:G14: a pack whose digest moved moved its version.** No shipped pack is
+/// signed at a version a retired pin of it was signed at with other content, unless that pin is
+/// grandfathered.
+#[test]
+fn a_pack_whose_digest_moved_moved_its_version() {
+    let shipped = shipped_versions();
+    assert_eq!(shipped.len(), DIGESTS.len(), "every pinned pack is read");
+    for (id, version, digest) in &shipped {
+        for (retired, at, was, grandfathered) in RETIRED_PINS {
+            if retired == id && at == version && !digest.starts_with(was) && !grandfathered {
+                panic!(
+                    "{id} was re-signed at version {version} (it was {was}…); move its                      `version`, and the version of every unit that requires it"
+                );
+            }
+        }
+    }
+    for (retired, _, _, _) in RETIRED_PINS {
+        assert!(
+            shipped.iter().any(|(id, _, _)| id == retired),
+            "{retired} is no shipped pack"
+        );
+    }
 }
 
 #[test]

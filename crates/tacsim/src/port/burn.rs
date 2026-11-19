@@ -435,9 +435,8 @@ fn pool_of(
     // reading counts by the endpoint's lot tally (IN.1); the prepare counts them the same way, or
     // a hold with a part aboard could never burn ("the hold changed since the passage was
     // planned").
-    if !inventory.is_indivisible(good) {
-        return Ok((quantity, available));
-    }
+    // Doc 48e (48c #6, 48d C-03): a divisible good's lots weigh too, so the hull's mass counts
+    // them; the burn draws a consumable only from its pool, so they are not available to it.
     let key = mush_inventory::pool_key(EndpointRef(vault), good)
         .map_err(|error| unreadable(error.to_string()))?;
     let lots = txn
@@ -445,6 +444,9 @@ fn pool_of(
         .map_err(|error| unreadable(error.to_string()))?
         .copied()
         .unwrap_or(0);
+    if !inventory.is_indivisible(good) {
+        return Ok((quantity.saturating_add(lots), available));
+    }
     Ok((
         quantity.saturating_add(lots),
         available.saturating_add(lots),

@@ -316,6 +316,22 @@ pub struct MillLedger {
 }
 
 impl MillLedger {
+    /// **Whether a mill's terms are still this ledger's** (D9, O-5's default): its ore, its
+    /// product, its ratio and (doc 48 unit PL.2) a process's further inputs, each fixed for the
+    /// ledger's life. Doc 48e, production G20: the ore too. A process mill is keyed by its
+    /// product, so a changed ore found the same ledger and would have rewritten what the census
+    /// reads its batches as.
+    #[must_use]
+    pub fn same_terms(
+        &self,
+        ore: &CanonicalId,
+        into: &CanonicalId,
+        ratio: &MillRatio,
+        with: &[MillWith],
+    ) -> bool {
+        self.ore == *ore && self.into == *into && self.ratio == *ratio && self.with == with
+    }
+
     /// This ledger's mill id, re-derived from `(pack, entry, org, key)`: the key the ore, or
     /// for a process's ledger (doc 48 unit PL.3) the product.
     ///
@@ -742,9 +758,10 @@ impl ActionProvider for MillProvider {
             ));
         }
         // 7. D9: a mill's ratio and product are fixed for its ledger's life (doc 48 unit
-        // PL.2: and a process's second input).
+        // PL.2: and a process's second input; doc 48e, production G20: and its ore, which keys
+        // no process mill and which the census weighs).
         if let Some(ledger) = &prior
-            && (ledger.ratio != ratio || ledger.into != into || ledger.with != with)
+            && !ledger.same_terms(&ore, &into, &ratio, &with)
         {
             return Err(port_error(
                 ActionErrorCode::ProviderRejected,
@@ -1515,9 +1532,10 @@ pub(crate) fn mill_step(
                     continue;
                 }
             };
-            // D9: a mill's ratio and product are fixed for its ledger's life.
+            // D9: a mill's ratio and product are fixed for its ledger's life (doc 48e, production
+            // G20: and its ore).
             if ledger.as_ref().is_some_and(|ledger| {
-                ledger.ratio != mill.ratio || ledger.into != mill.into || ledger.with != mill.with
+                !ledger.same_terms(&mill.ore, &mill.into, &mill.ratio, &mill.with)
             }) {
                 mill_warn(state, row.vault, mill.key_good(), MillWarn::Terms, "");
                 refuse_today(state, row.vault, mill.key_good(), MillAct::Batch, today);
@@ -1772,8 +1790,9 @@ fn mill_line_read(
         if ledger.ratio != mill.ratio {
             return MillLineRead::Ratio;
         }
-        // Doc 48 unit PL.2: a changed second input changes what the product is made of.
-        if ledger.into != mill.into || ledger.with != mill.with {
+        // Doc 48 unit PL.2: a changed second input changes what the product is made of (doc 48e,
+        // production G20: and so does a changed ore).
+        if !ledger.same_terms(&mill.ore, &mill.into, &ledger.ratio, &mill.with) {
             return MillLineRead::Product;
         }
     }
@@ -1982,6 +2001,23 @@ mod tests {
             with_t: Vec::new(),
             process: false,
         }
+    }
+
+    /// **Doc 48e, production G20**: a mill's terms are its ledger's only while its ore, its
+    /// product, its ratio and its further inputs all are.
+    #[test]
+    fn e48_a_changed_ore_is_changed_terms() {
+        let ledger = ledger(1_000);
+        let (ore, into) = (cid("metal_ore"), cid("metals"));
+        assert!(ledger.same_terms(&ore, &into, &FIVE_TWO, &[]));
+        assert!(!ledger.same_terms(&cid("carbon_ore"), &into, &FIVE_TWO, &[]));
+        assert!(!ledger.same_terms(&ore, &cid("volatiles"), &FIVE_TWO, &[]));
+        assert!(!ledger.same_terms(&ore, &into, &MillRatio { ore: 5, product: 3 }, &[]));
+        let with = [MillWith {
+            good: cid("carbon_feedstock"),
+            per_ratio: 1,
+        }];
+        assert!(!ledger.same_terms(&ore, &into, &FIVE_TWO, &with));
     }
 
     /// **Doc 20 cut SM.12a**: the ledger's wire round-trips, is strict at every level, and

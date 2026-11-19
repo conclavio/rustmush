@@ -58,6 +58,8 @@ pub struct InventoryModule {
     cell: Option<InventoryHandleCell>,
     salvage: Option<std::sync::Arc<dyn crate::salvage::SalvageSource>>,
     capacity: Option<std::sync::Arc<dyn crate::provider::PoolCapacity>>,
+    /// Doc 48e (exchange G7): the game's rule for a player's `@inv/move`.
+    move_policy: Option<std::sync::Arc<dyn crate::provider::MovePolicy>>,
     core_inputs: Option<crate::core_input::CoreInputBinding>,
     bay_parts: Option<crate::bay_part::BayPartBinding>,
     indivisible: Option<std::sync::Arc<dyn crate::lot_hold::IndivisibleGoods>>,
@@ -73,6 +75,7 @@ impl InventoryModule {
             cell: None,
             salvage: None,
             capacity: None,
+            move_policy: None,
             core_inputs: None,
             bay_parts: None,
             indivisible: None,
@@ -102,6 +105,19 @@ impl InventoryModule {
         capacity: std::sync::Arc<dyn crate::provider::PoolCapacity>,
     ) -> Self {
         self.capacity = Some(capacity);
+        self
+    }
+
+    /// **Name the composition's rule for a player's move** (doc 48e, exchange G7; 48d C-03): where
+    /// a player stands, which of their vaults, and what is under sale, asked by `@inv/move` before
+    /// it submits ([`crate::provider::MovePolicy`]). Staff are never asked. Unwired, a move is
+    /// judged by its endpoints alone, as before.
+    #[must_use]
+    pub fn with_move_policy(
+        mut self,
+        policy: std::sync::Arc<dyn crate::provider::MovePolicy>,
+    ) -> Self {
+        self.move_policy = Some(policy);
         self
     }
 
@@ -539,7 +555,7 @@ impl GameModule for InventoryModule {
         )?;
 
         // ---- E7c2: B7 — commands ----
-        crate::commands::register(reg, &families)?;
+        crate::commands::register(reg, &families, self.move_policy.clone())?;
         if let Some(cell) = &self.cell {
             let _ = cell.set(families.clone());
         }

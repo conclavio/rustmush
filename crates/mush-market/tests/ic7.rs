@@ -2989,3 +2989,43 @@ fn sm12a_a_restock_makes_an_open_quote_stale() {
     settle(&mut r.tw, contract);
     no_settlement_pages(&r.tw);
 }
+
+/// **Doc 48e, exchange G27 (48d M-08): goods nothing here can deliver are not sold.** A counter
+/// listing on an instrument entry, with no delivery provider composed: Pat's accept is refused
+/// before any money moves. Before the fix the purchase settled and only then escalated, the
+/// buyer having paid and holding nothing.
+#[test]
+fn g27_goods_no_provider_delivers_are_refused_at_accept() {
+    let mut r = rig();
+    IRON_REPRESENTATION.with(|rep| rep.set("instrument"));
+    ok(&mut r.tw, GOD, &format!("@market/catalog load {PACK}"));
+    let vendor = r.vendor;
+    let shop = r.shop;
+    let counter = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::list_goods(
+            ctx,
+            mush_market::ListingSpec {
+                vendor,
+                catalog: mush_economy::CatalogRef {
+                    ruleset: "ic7".into(),
+                    code: "iron".into(),
+                },
+                price: mush_economy::Amount::from_minor(700),
+                quantity: 5,
+                source: mush_market::Supply::Stock {
+                    vault: shop.vault(),
+                },
+                object: None,
+                visibility: mush_market::MarketVisibility::Public,
+                ttl_secs: 86_400,
+                private_to: None,
+            },
+        )
+    })
+    .expect("a counter listing on an instrument entry");
+    let q = quote(&mut r.tw, r.pat, counter, 1);
+    let refused = err(&mut r.tw, r.pat, &format!("+market/accept {}", q.0));
+    assert!(refused.contains("cannot be delivered"), "{refused}");
+    assert_eq!(posted(&r.tw, r.pat_account), FUNDS, "nothing was charged");
+    IRON_REPRESENTATION.with(|rep| rep.set("lot"));
+}
