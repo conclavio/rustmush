@@ -960,7 +960,7 @@ No engine change. Every edit is under `crates/tacsim/tests/`.
   - **The fix.** `pass` now yields after each world second, with no tokio time passing.
   - **The wrong guess first.** I first took it for the arena's answer arriving late and added an egress-only
     wait. It failed 6 of 6; the yield passed 4 of 4 stress iterations of all 14 tests, 8 at a time.
-- **`ex6_escort` (one story; stays on two workers).**
+- **`ex6_escort` (one story; stayed on two workers until the owner ruled it, 2026-11-19, below).**
   - **What happens.** The field closes before the miner's `recover go`, because the raider's side is out of it,
     so the journey ends with the field.
   - **Why it fails.** The escort watch steps on the port tick (`services::escort::watch`). Its last tick reads
@@ -971,7 +971,7 @@ No engine change. Every edit is under `crates/tacsim/tests/`.
   - **The question.** So a field escort can be failed by one port interval at the end, and a field journey
     under about 50 s can never be kept. Whether the closing interval should count is a game question for the
     owner.
-- **`field_mw14c`'s CONCENTRATE story (one; stays on two workers).**
+- **`field_mw14c`'s CONCENTRATE story (one; stayed on two workers until the owner ruled it, 2026-11-19, below).**
   - **How the answer is made.** The host answers WILCO or NEGATIVE by reading the hull's frame at its visits
     (`field::orders::concentrate`). The intruder is fragile, so the first round kills it.
   - **Why it fails.** At 1:1 the kill can fall between two visits, and a hull that concentrated and fired is
@@ -1188,5 +1188,9 @@ for the next test that waits.
 - **More paused rigs** only where a test waits on a timer it owns (TS.10c's table).
 - **The arena's handle** (TS.10b, above) waits on its first reader.
 - **TS.10d** waits on the owner (above).
-- **Two owner questions from this cut:** the escort watch's closing interval, and the CONCENTRATE answer
-  between visits. `ex6_escort` and `field_mw14c`'s story 3 go to the paused clock once they are ruled.
+- ~~Two owner questions from this cut~~ **Ruled 2026-11-19** ("Yes, fix both"): the escort watch no longer
+  counts a field journey's closing interval (doc 48's cut notes, EX.6, "The closing interval"). A `CONCENTRATE`
+  whose row reads destroyed at the first visit that sees it stand is answered WILCO (doc 44's cut notes,
+  MW.14c, "The answer to a kill between visits"). `ex6_escort` and `field_mw14c`'s story 3 are on the paused
+  clock, as each rule's acceptance at the production rate. With them, 183 of `domain_field`'s 189 two-worker
+  tests are paused; the six left are m8_world's and c4_filed's dispatch stories.

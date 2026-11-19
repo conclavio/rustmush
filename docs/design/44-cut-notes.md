@@ -3092,7 +3092,8 @@ refused whole when any slot is unavailable. `CONCENTRATE` adds four things:
    so this is the hull finding the contact in its own observation. Not there: NEGATIVE, the
    kernel is offered nothing, and the earlier order goes on standing untouched.
 3. **A hull that holds it engages that contact** through the existing kernel path, and
-   answers WILCO once its own frame shows the engagement standing on a held row.
+   answers WILCO once its own frame shows the engagement standing on a held row, including a
+   row that already reads destroyed (the owner's ruling of 2026-11-19, below).
 4. **When the contact is destroyed or lost the hull goes back to its earlier order, by
    itself.** The poll that delivers a `CONCENTRATE` records what stood on the slot
    (`Concentration::before`) and reserves a sequence for the return above the order's own. Each
@@ -3320,6 +3321,50 @@ plan's bytes and hash for an older plan; that no contact knowledge passes to a r
 Building the stories then found one more thing the rule needed: a commander concentrating a
 roster of mining rigs would have sent hulls with nothing to fire at the Hostile it was holding
 for, so it concentrates armed hulls only.
+
+### The answer to a kill between visits (2026-11-19): the owner's ruling
+
+**The fault** (found by doc 43 TS.10a, which put story 3 on one clock with the arena). The host
+reads the hull's frame at its visits. The intruder in story 3 is fragile, so the first round
+kills it, and at the production rate the kill can fall between two visits. The first visit that
+saw the order stand then found its row already destroyed. That reading was
+`Concentrating::Over`, the same as "the kernel found no row", so a hull that took the order,
+fired and killed was answered NEGATIVE.
+
+**The ruling**, in the owner's words "Yes, fix both", on this recommendation: answer WILCO when
+the row the order stands on reads destroyed, and keep NEGATIVE for when the kernel found no row.
+
+- **Built** (`field/orders.rs`). The reading is split. `Destroyed` means the order row is
+  `MindObjective::Engage { target: Some(id) }` and the hull's frame holds `id` reading destroyed.
+  `Over` means there is no target, or a contact the hull holds no longer.
+- **The answers** (`answer`): `On` and `Destroyed` are WILCO; `Over` is NEGATIVE. A contact lost
+  after the order was taken stays NEGATIVE, as point 2 of `concentrate`'s doc says.
+- **The return is unchanged.** On the next visit both `Destroyed` and `Over` owe the return to the
+  earlier order, under the reserved sequence (`Concentration::resume`, or `stand` after a lapse),
+  exactly as after the old NEGATIVE.
+
+**What a WILCO changes beyond the one reply** (checked in the roster's history):
+
+- **The `Concentration` record** is written at delivery and does not read the answer. The return,
+  and the executor's visits ("visited whatever the answer was", `sortie/npc.rs`), are the same.
+- **The lapse scan** (`field_orders`, the AP.8 list) skips a delivered order answered NEGATIVE.
+  A WILCO'd `CONCENTRATE` whose player leader then leaves can be lapsed. That state was already
+  reachable before this change: a hull that was seen on the contact, WILCO'd, then saw it
+  destroyed. The new case lands in it, and the history treats it the same.
+- **An NPC commander's resend** (`sortie/commander.rs`, `owes`). A NEGATIVE counts the delivered
+  order as refused, so a commander still naming that contact would send it again. A WILCO counts
+  it as taken, so the commander does not. That only matters if the commander's own frame still
+  holds the contact alive while the hull's reads it destroyed. A player reads no difference
+  except the one reply, `WILCO received` for `NEGATIVE received`, in the leader's comms and in
+  `+sortie/orders`.
+
+**Tests.**
+- `field::orders::tests::mw14c_a_concentrate_on_a_destroyed_row_is_answered_wilco` pins the rule.
+- `domain_field::field_mw14c`'s story 3 moves to the paused clock (world and arena at the
+  production rate) and is the rule's acceptance there.
+- **Mutation** (applied over the fix in the conclav.dev clone, then edited back): answering
+  `Destroyed` NEGATIVE again fails the unit test, and fails the story with the leader reading
+  `NEGATIVE received`. With the fix the story passed 4 of 4.
 
 ## MW.15
 

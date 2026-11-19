@@ -567,7 +567,32 @@ fn step(ctx: &mut Ctx<'_>, job: &mut EscortJob) -> bool {
     }
 }
 
-/// The watch over a taken job.
+/// **One fire's interval into the watch**; the interval, IC seconds.
+///
+/// The interval counts to the journey's time, and to the near time when `is_near`. A field
+/// journey's **closing interval** (`field_closed`: the fire that finds the field journey ended)
+/// counts to neither (owner's ruling, 2026-11-19, on doc 43 TS.10a's question): once the field is
+/// gone the host cannot see where the escort was, so the keep or fail is decided on what was
+/// counted before it. A field journey with nothing counted before its close (watched on one fire,
+/// ended on the next) counts that interval as it always has, so its outcome is today's
+/// (provisional, flagged for the owner in doc 48's EX.6 cut note). A passage's closing interval
+/// counts as before: the passage's record outlives the arrival, so [`near_in_space`] still reads
+/// it.
+fn count(watch: &mut Watch, now: i64, is_near: bool, field_closed: bool) -> i64 {
+    let dt = now.saturating_sub(watch.last_ic).max(0);
+    watch.last_ic = now;
+    if field_closed && watch.journey_ic > 0 {
+        return dt;
+    }
+    watch.journey_ic = watch.journey_ic.saturating_add(dt);
+    if is_near {
+        watch.near_ic = watch.near_ic.saturating_add(dt);
+    }
+    dt
+}
+
+/// **The watch over a taken job.** Each fire's interval is counted by [`count`], which leaves a
+/// field journey's closing interval out; the outcome is decided when the journey ends.
 fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
     let Some(escort) = job.with else {
         job.stage = EscortStage::Closed;
@@ -631,15 +656,11 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
     }
     let is_near = near(ctx.w, job, escort) || within_grace(ctx.w, escort);
     let left_it = !ended && left(ctx.w, job, escort);
+    let in_field = matches!(job.journey, Journey::Field { .. });
     let Some(watch) = job.watch.as_mut() else {
         return false;
     };
-    let dt = now.saturating_sub(watch.last_ic).max(0);
-    watch.last_ic = now;
-    watch.journey_ic = watch.journey_ic.saturating_add(dt);
-    if is_near {
-        watch.near_ic = watch.near_ic.saturating_add(dt);
-    }
+    let dt = count(watch, now, is_near, in_field && ended);
     let permille = watch.permille();
     if left_it {
         fail(ctx, job, WHY_LEFT);
@@ -1045,5 +1066,44 @@ mod tests {
         assert!(watch.permille() >= NEAR_PERMILLE);
         assert_eq!(Watch::default().permille(), 0, "no journey, no share");
         assert_eq!(percent(899), "89%");
+    }
+
+    /// **Doc 48 cut EX.6, the owner's ruling (2026-11-19)**: a field journey's closing interval
+    /// counts to neither the journey nor the near time; the outcome is decided on what came
+    /// before it. A passage's closing interval, and a field journey with nothing counted before
+    /// its close, count as they always have.
+    #[test]
+    fn ex6_a_field_journeys_closing_interval_is_not_counted() {
+        let running = Watch {
+            started_ic: 0,
+            last_ic: 140,
+            journey_ic: 140,
+            near_ic: 140,
+        };
+        // The field closed: the escort reads far, and that interval is not counted.
+        let mut field = running.clone();
+        assert_eq!(count(&mut field, 175, false, true), 35);
+        assert_eq!(
+            (field.last_ic, field.journey_ic, field.near_ic),
+            (175, 140, 140)
+        );
+        assert!(
+            field.permille() >= NEAR_PERMILLE,
+            "kept on what came before"
+        );
+        // A passage's arrival (or any interval while the journey runs) counts.
+        let mut passage = running;
+        assert_eq!(count(&mut passage, 175, false, false), 35);
+        assert_eq!((passage.journey_ic, passage.near_ic), (175, 140));
+        assert!(passage.permille() < NEAR_PERMILLE);
+        // Nothing counted before the close: that interval counts, as it always has.
+        let mut first = Watch {
+            started_ic: 100,
+            last_ic: 100,
+            journey_ic: 0,
+            near_ic: 0,
+        };
+        assert_eq!(count(&mut first, 130, false, true), 30);
+        assert_eq!((first.journey_ic, first.near_ic), (30, 0));
     }
 }

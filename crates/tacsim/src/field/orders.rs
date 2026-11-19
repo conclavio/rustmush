@@ -942,7 +942,11 @@ enum Concentrating {
     Not,
     /// The order stands and the hull's own frame holds the contact, not read destroyed.
     On,
-    /// The order stands and the contact is destroyed, or the hull holds it no longer.
+    /// The order stands on a row the hull's own frame holds and reads destroyed: the
+    /// concentration did its work.
+    Destroyed,
+    /// The order stands and the hull holds no row for it: the kernel found none, or the
+    /// contact was lost.
     Over,
     /// The return stands: the hull is back on the order it had before.
     Returned,
@@ -950,7 +954,8 @@ enum Concentrating {
 
 /// **[`concentrate`]'s reading of the recipient's own frame**: which of the order (`taken`)
 /// and its return (`returned`) stands on the hull's order row, and, while the order stands,
-/// whether the row the kernel re-keyed its contact to is still held and not read destroyed.
+/// whether the row the kernel re-keyed its contact to is held and read destroyed, held and not,
+/// or not held at all.
 fn concentrating(
     frame: &crate::arena::step::Frame,
     (taken, returned): (&str, &str),
@@ -965,15 +970,35 @@ fn concentrating(
                 MindObjective::Engage { target } => target,
                 _ => None,
             }
-            .and_then(|id| frame.contacts.iter().find(|contact| contact.id == id))
-            .is_some_and(|contact| contact.reads_dead != Some(true));
-            if held {
-                Concentrating::On
-            } else {
-                Concentrating::Over
-            }
+            .and_then(|id| frame.contacts.iter().find(|contact| contact.id == id));
+            standing_on(
+                held.is_some(),
+                held.is_some_and(|contact| contact.reads_dead == Some(true)),
+            )
         }
         _ => Concentrating::Not,
+    }
+}
+
+/// **Where a standing `CONCENTRATE` has its hull**: on the row it names (`held`), and whether
+/// the hull's frame reads that row destroyed (`reads_dead`).
+const fn standing_on(held: bool, reads_dead: bool) -> Concentrating {
+    match (held, reads_dead) {
+        (true, true) => Concentrating::Destroyed,
+        (true, false) => Concentrating::On,
+        (false, _) => Concentrating::Over,
+    }
+}
+
+/// **The answer to a `CONCENTRATE` that stands on the hull's order row** (doc 44 unit MW.14c):
+/// WILCO when the row it names is held, destroyed or not (the owner's ruling, 2026-11-19: a kill
+/// between two visits is the order done, not declined); NEGATIVE when the hull holds no row for
+/// it. `None` when the order does not stand.
+const fn answer(stands: Concentrating) -> Option<Response> {
+    match stands {
+        Concentrating::On | Concentrating::Destroyed => Some(Response::Wilco),
+        Concentrating::Over => Some(Response::Negative),
+        Concentrating::Not | Concentrating::Returned => None,
     }
 }
 
@@ -1029,9 +1054,12 @@ fn holds_named(frame: &crate::arena::step::Frame, designator: &str) -> bool {
 ///    `ENGAGE` on that contact, from the leader's own unit, through the party's carrier relay
 ///    as any order is ([`relay_passes`]); the kernel re-keys the contact into the recipient's
 ///    own classified rows, and the mind flies `MindObjective::Engage` on that row. Once the
-///    recipient's frame shows it standing on a held row the answer is WILCO. If the kernel
-///    found no row after all (the contact was lost between the two looks), the answer is
-///    NEGATIVE and the hull returns as in 3.
+///    recipient's frame shows it standing on a held row the answer is WILCO. **It is WILCO too
+///    when that row already reads destroyed at the first visit that sees the order stand** (the
+///    kill fell between two visits: the hull took the order and it did its work; the owner's
+///    ruling, 2026-11-19). If the kernel found no row after all (no target on the order row, or
+///    a contact the hull holds no longer: it was lost between the two looks), the answer is
+///    NEGATIVE. Either way the hull then returns as in 3.
 /// 3. **When the contact is destroyed or lost, the hull returns to its earlier order.** Each
 ///    visit reads the recipient's own frame; once the row the order stands on reads destroyed,
 ///    or is held no longer, the host offers the kernel the earlier order again under the
@@ -1126,7 +1154,7 @@ pub(crate) fn concentrate(
     // went back to); or the hull declined and the order under it never reached the kernel.
     let (owed, through_relay) = match stands {
         Concentrating::Returned | Concentrating::On => (false, false),
-        Concentrating::Over => (!unanswered, false),
+        Concentrating::Destroyed | Concentrating::Over => (!unanswered, false),
         Concentrating::Not if unanswered => (false, false),
         Concentrating::Not if record.stand.is_some() => (true, false),
         Concentrating::Not => (before.is_some() && !earlier_stood, true),
@@ -1196,9 +1224,12 @@ pub(crate) fn concentrate(
         return Step::Waiting;
     }
     match stands {
-        Concentrating::On if unanswered => Step::Reply(Response::Wilco),
-        // Taken, and the kernel found no row: it never concentrated. Say so, then return.
-        Concentrating::Over if unanswered => Step::Reply(Response::Negative),
+        // On the contact, or on it and it already reads destroyed (the kill fell between two
+        // visits): WILCO. Taken, and the kernel found no row: it never concentrated, NEGATIVE.
+        // Then, on the next visit, the return.
+        Concentrating::On | Concentrating::Destroyed | Concentrating::Over if unanswered => {
+            answer(stands).map_or(Step::Idle, Step::Reply)
+        }
         Concentrating::Not if unanswered => {
             let key = (task, fence, order.sequence);
             match offered {
@@ -1299,6 +1330,25 @@ pub(crate) fn posture_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 44 unit MW.14c, the owner's ruling (2026-11-19)**: a `CONCENTRATE` standing on a
+    /// row its hull reads destroyed is answered WILCO, the order done; NEGATIVE stays for a
+    /// hull that holds no row for it.
+    #[test]
+    fn mw14c_a_concentrate_on_a_destroyed_row_is_answered_wilco() {
+        assert_eq!(standing_on(true, true), Concentrating::Destroyed);
+        assert_eq!(answer(standing_on(true, true)), Some(Response::Wilco));
+        assert_eq!(answer(standing_on(true, false)), Some(Response::Wilco));
+        for dead in [false, true] {
+            assert_eq!(
+                answer(standing_on(false, dead)),
+                Some(Response::Negative),
+                "no row held: the kernel found none, or the contact was lost"
+            );
+        }
+        assert_eq!(answer(Concentrating::Not), None);
+        assert_eq!(answer(Concentrating::Returned), None);
+    }
 
     #[test]
     fn a_row_is_one_word_with_an_optional_band() {
