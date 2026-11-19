@@ -3558,10 +3558,13 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
         active.interdictor_hull
     };
 
-    // 2. Inside the bubble, by play: she heaves to and is cleared; the raider's opening round
-    // finds her stern, so she takes real `hull` and `drive` damage + a `DriveDegraded` crit; the
-    // corvette disables the raider (`HullStatus::DisabledDerelict`), and the resolved bubble
-    // closes (`clear_resolved_bubbles` -> `check_in_space_unit`).
+    // 2. Inside the bubble, by play: she turns her stern to the raider (doc 48e kernel G6: a
+    // round strikes the facet facing its shooter, and the raider closes from ahead), heaves to
+    // and is cleared; the raider's opening round finds her stern, so she takes real `hull` and
+    // `drive` damage + a `DriveDegraded` crit; the corvette disables the raider
+    // (`HullStatus::DisabledDerelict`), and the resolved bubble closes
+    // (`clear_resolved_bubbles` -> `check_in_space_unit`).
+    let _ = run(&mut rig.tw, pilot, "+helm/heading 180 0");
     let _ = picket_until_the_raider_is_down(&mut rig, pilot, hull, false);
     for _ in 0..30 {
         let open = rig
@@ -3646,7 +3649,8 @@ fn sfr2_space_bubble_custody_checks_out_unit_persists_damage_on_checkin_and_open
     // Doc 49 unit CC.8: on the palette's cycles that takes some tens of seconds, where the
     // placeholder's 1 s laser took a few, so she shows it her stern, where a round splits
     // between her hull and her drive behind one plate and her drive goes first:
-    let _ = run(&mut rig.tw, pilot2, "+helm/heading 0 0");
+    // Doc 48e kernel G6: the picket lies ahead of her, so her stern is yaw 180.
+    let _ = run(&mut rig.tw, pilot2, "+helm/heading 180 0");
     let mut settle_heard = String::new();
     for _ in 0..120 {
         let next_real = rig.tw.world().now() + 1;
@@ -7348,6 +7352,48 @@ fn sfr13_presence_and_feeds_push_to_all_crew_filter_torpedoes_and_handle_linkdea
             "+tac/pdc {word}: {out}"
         );
     }
+    // Doc 48e kernel G4: one laser by its id; the others stay as they were.
+    let lasers: Vec<(String, tacsim::space::weapons::LaserMode)> = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        active.bubble.ships[active.carrier_ship_id_for(hull)]
+            .lasers
+            .iter()
+            .map(|l| (l.id.clone(), l.mode))
+            .collect()
+    };
+    let (first, _) = lasers.first().expect("a laser").clone();
+    let out = run(&mut rig.tw, gunner, &format!("+tac/pdc {first}=offense"));
+    assert!(
+        out.contains(&format!("Laser `{first}` switched to Offense.")),
+        "{out}"
+    );
+    let after: Vec<tacsim::space::weapons::LaserMode> = {
+        let book = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull(hull).expect("active bubble");
+        active.bubble.ships[active.carrier_ship_id_for(hull)]
+            .lasers
+            .iter()
+            .map(|l| l.mode)
+            .collect()
+    };
+    assert_eq!(after[0], tacsim::space::weapons::LaserMode::Offense);
+    for (i, (_, mode)) in lasers.iter().enumerate().skip(1) {
+        assert_eq!(after[i], *mode, "the other lasers stay as they were");
+    }
+    let out = run(&mut rig.tw, gunner, "+tac/pdc no_such_laser=offense");
+    assert!(
+        out.contains("She carries no laser `no_such_laser`."),
+        "{out}"
+    );
 }
 
 /// **Doc 35b cut SF.R14 acceptance (`D-35-17`, `35b` §4 #1–#5, §8 `SF.R14`)** — verifies:
@@ -7901,6 +7947,9 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     let _ = fire_quietly(&mut rig);
     let _ = to_ic(&mut rig, depart_ic + leg1_secs);
 
+    // Doc 48e kernel G6: a round strikes the facet facing its shooter, and the raider closes
+    // from ahead, so she turns her stern to it for the rear split read below.
+    let _ = run(&mut rig.tw, pilot, "+helm/heading 180 0");
     let _ = picket_until_the_raider_is_down(&mut rig, pilot, hull, false);
 
     // Approach, 6-DOF hard-dock clamp, and tow the disabled raider (`+helm/tow`):
@@ -7996,7 +8045,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     // Doc 49 unit CC.8: the damage is the raider's opening spinal round on her stern, read by
     // record (it was the interdictor's volleys, `drive 172/250, hull 524/600`).
     assert!(
-        ship_damaged.contains("Damage: drive 207/250, hull 558/600."),
+        ship_damaged.contains("Damage: drive 207/250, hull 557/600."),
         "expected rear-split combat damage on docked Dray: {ship_damaged}"
     );
 
@@ -10364,9 +10413,10 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
         pending_c.plan.depart_ic + i64::from(pending_c.plan.legs[0].secs),
     );
 
-    // Turn bow (`+helm/heading 180 0`) so the Interdictor Picket's fire penetrates `Front` and
-    // strips a point-defence mount offline (`PdcOffline`), then turn stern (`+helm/heading 0 0`)
-    // so later hits split `hull` / `drive` on `Rear`.
+    // Turn bow (`+helm/heading 0 0`) so the Interdictor Picket's fire penetrates `Front` and
+    // strips a point-defence mount offline (`PdcOffline`), then turn stern (`+helm/heading 180 0`)
+    // so later hits split `hull` / `drive` on `Rear`. Doc 48e kernel G6: the picket lies ahead of
+    // her, and every round now strikes the facet facing it.
     //
     // Doc 49 unit CC.8: the interdictor's fire comes on its own cycles now (a spinal round at a
     // hull that holds her course, every 6 s; a 5 s laser), not a volley a second, so the story
@@ -10386,7 +10436,7 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
             ship.sections[&tacsim::space::ShipSectionId::Drive].internals,
         ))
     };
-    let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 180 0");
+    let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 0 0");
     let _ = run(&mut rig_combat.tw, pilot_c, "+tac/beam Interdictor Picket");
     let mut turned = false;
     let mut rear_split = false;
@@ -10403,7 +10453,7 @@ fn sfr20_one_damage_table_and_canonical_drives_sub_1mps2_kinematics_pdc_checkin_
             panic!("the interdiction closed while she fought: {fight:#?}");
         };
         if !turned && stripped {
-            let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 0 0");
+            let _ = run(&mut rig_combat.tw, pilot_c, "+helm/heading 180 0");
             let _ = run(&mut rig_combat.tw, pilot_c, "+tac/beam Interdictor Picket");
             let _ = run(&mut rig_combat.tw, pilot_c, "+damage/vent");
             turned = true;

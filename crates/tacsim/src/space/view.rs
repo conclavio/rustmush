@@ -118,6 +118,24 @@ pub struct SpaceContactView {
     /// **The band of its hull that faces her** (doc 49 unit CC.9): the band a shot from her
     /// strikes, one of five, `top` among them. A script reads it as `Contact.aspect`.
     pub facet: FacetBand,
+    /// **How fast it and she close**, cm/s along the line between them (doc 48e kernel G8):
+    /// positive while the range falls, negative while it opens; nought at no range.
+    pub closing_cms: i64,
+}
+
+/// **The closing speed of a contact at `offset_m` from her**, cm/s (doc 48e kernel G8): minus
+/// the relative velocity along the line from her to it, so positive while the range falls.
+/// Integer throughout; nought at no range.
+#[must_use]
+pub fn closing_cms(offset_m: [i128; 3], own_vel_mmps: [i64; 3], other_vel_mmps: [i64; 3]) -> i64 {
+    let range2 = offset_m[0] * offset_m[0] + offset_m[1] * offset_m[1] + offset_m[2] * offset_m[2];
+    let range = isqrt_i128(range2);
+    if range == 0 {
+        return 0;
+    }
+    let rel = |axis: usize| i128::from(other_vel_mmps[axis]) - i128::from(own_vel_mmps[axis]);
+    let along_mmps = (rel(0) * offset_m[0] + rel(1) * offset_m[1] + rel(2) * offset_m[2]) / range;
+    i64::try_from(-along_mmps / 10).unwrap_or(0)
 }
 
 /// **What a mind reads of its own hull in space beyond the arena's view.**
@@ -529,12 +547,14 @@ fn ship_picture(ship: &SpaceShipState, target: Option<&SpaceShipState>) -> FireP
         let damage = range_m
             .filter(|_| laser.offence_allowed())
             .map(|range| laser.damage_at_range(range));
+        // Doc 48e kernel G5: a laser too hot to fire reads so in either mode (the kernel
+        // refuses a hot defence shot too), and one in defence reaches its defence range.
         let state = if laser.cooldown_remaining_ms > 0 {
             MountState::Cycling
-        } else if laser.mode == LaserMode::Defense {
-            MountState::Ready
         } else if too_hot(laser.heat_cost_permille) {
             MountState::TooHot
+        } else if laser.mode == LaserMode::Defense {
+            MountState::Ready
         } else if damage == Some(0) {
             MountState::PastReach
         } else {
@@ -549,7 +569,11 @@ fn ship_picture(ship: &SpaceShipState, target: Option<&SpaceShipState>) -> FireP
             rounds_max: None,
             ready_in_ms: laser.cooldown_remaining_ms,
             state,
-            reach_m: Some(laser.max_range_m),
+            reach_m: Some(if laser.mode == LaserMode::Defense {
+                laser.defense_range_m
+            } else {
+                laser.max_range_m
+            }),
             heat_per_shot: laser.heat_cost_permille,
             at_lock: damage.filter(|damage| *damage > 0).map(AtLock::Damage),
         });
@@ -845,6 +869,8 @@ pub fn space_mind_view(
         };
         // Doc 49 unit CC.9: the band of her hull a shot from here strikes, of five.
         let facet = other.select_facet_for_attack(observer.pos_m);
+        // Doc 48e kernel G8: the closing speed, along the line between them.
+        let closing_cms = closing_cms(offset, observer.vel_mmps, other.vel_mmps);
         rows.insert(
             cid,
             SpaceContactView {
@@ -853,6 +879,7 @@ pub fn space_mind_view(
                 stop: situation.stop_of(&other.id),
                 emcon: other.emcon,
                 facet,
+                closing_cms,
             },
         );
         contacts.push(ViewContact {
@@ -968,6 +995,20 @@ pub fn space_mind_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 48e kernel G8: the closing speed** is along the line between them, positive while
+    /// the range falls: a hull running straight away at 80 m/s opens at 80 m/s, one crossing
+    /// her line closes at nothing, and one coming at her closes.
+    #[test]
+    fn g8_the_closing_speed_is_along_the_line_between_them() {
+        let ahead = [20_000_i128, 0, 0];
+        assert_eq!(closing_cms(ahead, [0, 0, 0], [80_000, 0, 0]), -8_000);
+        assert_eq!(closing_cms(ahead, [0, 0, 0], [0, 80_000, 0]), 0);
+        assert_eq!(closing_cms(ahead, [0, 0, 0], [-30_000, 0, 0]), 3_000);
+        assert_eq!(closing_cms(ahead, [50_000, 0, 0], [80_000, 0, 0]), -3_000);
+        assert_eq!(closing_cms([3, 4, 0], [0, 0, 0], [-3_000, -4_000, 0]), 500);
+        assert_eq!(closing_cms([0, 0, 0], [0, 0, 0], [1, 1, 1]), 0);
+    }
 
     #[test]
     fn a_helm_word_keeps_its_bearing_and_its_elevation_to_a_tenth_of_a_degree() {
@@ -1566,6 +1607,10 @@ mod cc9_tests {
             "a laser in defense is ready to stop a torpedo"
         );
         assert!(!ventral.cycled(), "and not to fire at her lock");
+        // Doc 48e kernel G5: in defence it reaches its defence range, not its offence reach.
+        let defence_reach = bubble.ships["halcyon"].lasers[1].defense_range_m;
+        assert_eq!(ventral.reach_m, Some(defence_reach));
+        assert_ne!(defence_reach, bubble.ships["halcyon"].lasers[1].max_range_m);
         let spinal = mount(&picture, "rail_spinal");
         assert_eq!(
             (spinal.state, spinal.rounds, spinal.rounds_max),
@@ -1597,6 +1642,20 @@ mod cc9_tests {
         }
         let picture = fire_picture(&bubble, "halcyon").expect("her picture");
         assert_eq!(mount(&picture, "laser_dorsal").state, MountState::TooHot);
+        // Doc 48e kernel G5: a laser in defence as hot reads too hot as well; the kernel
+        // refuses its intercept.
+        {
+            let ship = bubble.ships.get_mut("halcyon").expect("her");
+            ship.lasers[1].cooldown_remaining_ms = 0;
+            ship.heat_permille = HEAT_CEILING_PERMILLE - ship.lasers[1].heat_cost_permille + 1;
+        }
+        let picture = fire_picture(&bubble, "halcyon").expect("her picture");
+        assert_eq!(mount(&picture, "laser_ventral").state, MountState::TooHot);
+        {
+            let ship = bubble.ships.get_mut("halcyon").expect("her");
+            ship.lasers[1].cooldown_remaining_ms = 1_000;
+            ship.heat_permille = HEAT_CEILING_PERMILLE - ship.lasers[0].heat_cost_permille + 1;
+        }
         assert!(
             bubble.fire_offensive_lasers("halcyon", "raider").is_empty(),
             "the kernel refuses the same shot"
