@@ -287,6 +287,25 @@ fn enrolled_at(
     Ok(Some(enrolment.share_permille))
 }
 
+/// **Whether `endpoint` is a chartered hold** (doc 48e, exchange G7): a governed hold the Trust
+/// leases out under a live enrolment that takes the Co-op's share. Its cargo is sold from it, so
+/// the share is paid; a move out of it to another vault would carry the cargo past the share.
+#[must_use]
+pub(crate) fn is_chartered_hold(w: &World, endpoint: EndpointRef) -> bool {
+    let Some(view) = governed_hold(w, endpoint) else {
+        return false;
+    };
+    let Some(trust) = programme_port(w).and_then(|port| port.trust()) else {
+        return false;
+    };
+    let Some(lease) = trust_lease_on(w, &trust, view.hull()) else {
+        return false;
+    };
+    w.module_state::<TacsimStore>()
+        .and_then(|s| s.enrolment_for_lease(lease.id.0))
+        .is_some_and(|e| e.vault == endpoint.vault().0 && takes_share(e.status))
+}
+
 impl ProceedsPolicy for CoopProceeds {
     fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
         let Some(house) = house_of(w, sale) else {

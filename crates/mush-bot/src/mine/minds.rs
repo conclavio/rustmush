@@ -1023,6 +1023,17 @@ pub mod scrap {
 /// `tacsim::port::locker`) and the venue gate's new refusals (`tacsim::port::market`). No lane
 /// reads them yet; each is held to the game's own text below.
 pub mod venue {
+    /// `mush_market::trade::WHOLE_LOT`'s head (doc 48e): an exact lot is quoted whole.
+    pub const WHOLE_LOT: &str = "That lot is sold whole: quote it at ";
+    /// `tacsim::port::market::MOVE_NOT_AT_VENUE` (doc 48e): a move from outside any port.
+    pub const MOVE_NOT_AT_VENUE: &str =
+        "You move goods between your stores only where you stand in a port.";
+    /// `tacsim::port::market::MOVE_CHARTER_CARGO`'s middle (doc 48e): charter cargo stays aboard.
+    pub const MOVE_CHARTER_CARGO: &str = "chartered hold is sold from there";
+    /// `tacsim::port::market::MOVE_HULL_ON_SALE`'s tail (doc 48e): a listed hull takes nothing.
+    pub const MOVE_HULL_ON_SALE: &str = " is for sale, so nothing goes into her hold.";
+    /// `tacsim::port::market::MOVE_INTO_SCRAP` (doc 48e).
+    pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
     /// `tacsim::port::locker::LOCKER_OPENED`'s tail: a locker opened.
     pub const LOCKER_OPENED: &str = "Goods you buy here with no hold docked go into it.";
     /// `tacsim::port::locker::LOCKER_ALREADY`'s tail.
@@ -1188,6 +1199,16 @@ mod tests {
                 NOT_AT_VENUE,
                 VENUE_UNPLACED,
                 LOCKER_ELSEWHERE,
+                MOVE_NOT_AT_VENUE,
+                MOVE_CHARTER_CARGO,
+                MOVE_HULL_ON_SALE,
+                MOVE_INTO_SCRAP,
+            )
+        });
+        rows.extend({
+            use mush_market as game;
+            rows!("";
+                WHOLE_LOT,
             )
         });
         rows

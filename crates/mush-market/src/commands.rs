@@ -704,10 +704,19 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(refuse(ctx, NO_SUCH_LISTING));
     };
     let remote = lhs.contains("remote") || rhs.contains("remote");
+    // Doc 48e (exchange G1): an omitted quantity is one unit, or an exact lot's whole quantity
+    // (it sells whole).
+    let whole = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(listing))
+        .filter(|l| l.source.exact_lot().is_some())
+        .map(|l| l.quantity);
     let quantity = rhs
         .split_whitespace()
         .next()
         .and_then(|s| s.parse::<u64>().ok())
+        .or(whole)
         .unwrap_or(1);
     let req = QuoteRequest {
         listing,

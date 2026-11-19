@@ -161,8 +161,9 @@ pub(crate) fn vantage_reading<'w>(
             .airlock()
             .map_or(0, |airlock| occupants(w, airlock))
             .max(1);
+        // Doc 48e (48c #6): the planner weighs what the hold holds, lots and all.
         let basis = basis_with(w, &view, souls, &|endpoint, good| {
-            reads.pool(endpoint, good)
+            reads.held(endpoint, good)
         })?;
         let body = body_of(pack, &def.location).ok_or_else(|| CHART_NOWHERE.to_owned())?;
         return Ok(Vantage {

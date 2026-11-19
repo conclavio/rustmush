@@ -169,7 +169,8 @@ impl mush_market::AssetSale for HullSale {
             return Some(Err(line(HULL_HOLD_DARK)));
         };
         for good in goods.goods.iter().filter(|g| g.consumable.is_none()) {
-            match crate::port_tick::read_pool(ctx, EndpointRef(hold), &good.id) {
+            // Doc 48e (48d H-07): a hold holding a divisible good's lot is laden too.
+            match crate::port_tick::read_held(ctx, EndpointRef(hold), &good.id) {
                 Ok(0) => {}
                 Ok(_) => return Some(Err(line(HULL_HOLD_LADEN))),
                 Err(_) => return Some(Err(line(HULL_HOLD_DARK))),
@@ -269,7 +270,8 @@ pub(crate) fn core_leg_hold_empty(ctx: &Ctx<'_>, hull: ObjId) -> Result<(), Stri
         .and_then(TacsimStore::goods)
         .ok_or_else(|| line(HULL_HOLD_DARK))?;
     for good in goods.goods.iter().filter(|g| g.consumable.is_none()) {
-        match crate::port_tick::read_pool(ctx, EndpointRef(hold), &good.id) {
+        // Doc 48e (48d H-07): a hold holding a divisible good's lot is laden too.
+        match crate::port_tick::read_held(ctx, EndpointRef(hold), &good.id) {
             Ok(0) => {}
             Ok(_) => return Err(line(HULL_HOLD_LADEN)),
             Err(_) => return Err(line(HULL_HOLD_DARK)),

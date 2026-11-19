@@ -100,7 +100,10 @@ fn boot() -> (TestWorld, InventoryFamilies) {
                 )])
                 // The market's ear, as the game's root wires it: a settlement
                 // becomes the trade-tape row and the hand-over `deliver` runs.
-                .with_observers(vec![Arc::new(mush_market::MarketObserver)]),
+                .with_observers(vec![Arc::new(mush_market::MarketObserver)])
+                // Doc 48e (exchange G2): a hold-backed sale settles on the market's fact,
+                // as the game's root wires it.
+                .with_facts(vec![Arc::new(mush_market::MarketFactProvider)]),
         ),
         Box::new(
             InventoryModule::new()

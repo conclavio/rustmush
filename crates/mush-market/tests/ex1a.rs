@@ -1184,9 +1184,13 @@ fn ex1a_the_standing_acceptance_holds_an_ask_to_its_terms() {
     let mut docs = Docs::new(&mut r.tw);
     let contract = buy(&mut r, bea, id, 4);
     let _ = r.tw.engine_mut().take_authoritative_submit();
+    // Doc 48e (exchange G2): the sale lapses the listing (its hold is the Consume's).
+    let now = r.tw.world().now();
     assert!(
-        market(&r.tw).listing(id).is_none(),
-        "the sale took the listing"
+        market(&r.tw)
+            .listing(id)
+            .is_none_or(|l| mush_market::listing_lapsed(l, now)),
+        "the sale took the listing off the board"
     );
     assert!(
         !stands_for(&r.tw, contract, sal.who, None, |_| {}),
@@ -1861,4 +1865,148 @@ fn ex1a_every_new_sentence_fits_120_columns() {
             line.chars().count()
         );
     }
+}
+
+/// **Doc 48e, exchange G1 (48c #3, 48d C-01): an exact lot sells whole.** A quote for part of one
+/// is refused before anything is written; a bare quote prices the whole lot. Before the fix a
+/// one-unit quote (the default) was accepted: the buyer paid for one unit, the Consume of the
+/// whole lot refused at prepare, the contract settled on its window anyway, and the seller's lot
+/// stayed held under a listing the accept had deleted.
+#[test]
+fn g1_an_exact_lot_is_quoted_whole_or_not_at_all() {
+    let mut r = rig();
+    let lot = LotId(0x5a2);
+    let bea = r.bea;
+    mint_lot(&mut r.tw, &r.families, r.sal.vault, "iron", 10, lot);
+    let id = post_lot(&mut r, lot, 700, "", 0x13);
+    for part in ["1", "9"] {
+        let refused = err(&mut r.tw, bea.who, &format!("+market/quote {id}={part}"));
+        assert!(
+            refused.contains(&mush_market::WHOLE_LOT.replace("{n}", "10")),
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        market(&r.tw)
+            .quotes_of_buyer(&PrincipalId::Object(bea.who))
+            .count(),
+        0,
+        "a refused quote writes nothing"
+    );
+    // A bare quote is the whole lot.
+    let quoted = ok(&mut r.tw, bea.who, &format!("+market/quote {id}"));
+    let quote = market(&r.tw)
+        .quotes_of_buyer(&PrincipalId::Object(bea.who))
+        .next()
+        .cloned()
+        .unwrap_or_else(|| panic!("a quote: {quoted}"));
+    assert_eq!(quote.quantity, 10, "{quoted}");
+    // And the whole lot is what is sold.
+    let contract = buy(&mut r, bea, id, 10);
+    land(&mut r.tw, 0x23);
+    settle(&mut r.tw, contract);
+    assert_eq!(lot_at(&mut r.tw, &r.families, lot), Some(bea.vault));
+}
+
+/// **Doc 48e, exchange G2 (48c #1, 48d C-02): a hold-backed sale settles only on proof the lot
+/// moved.** A sale whose Consume never lands pays the seller nothing: it stands unsettled, its
+/// window passes, and the buyer's money comes back. The listing is off the board, and once the
+/// sale has refunded its hold is the seller's to release. Before the fix the sale's one condition
+/// was its window, so it settled at the window and paid the seller for a lot the buyer never got.
+#[test]
+fn g2_a_hold_backed_sale_with_no_consume_pays_nothing_and_refunds() {
+    let mut r = rig();
+    let lot = LotId(0x5a3);
+    let (sal, bea) = (r.sal, r.bea);
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 10, lot);
+    let id = post_lot(&mut r, lot, 700, "", 0x14);
+    let contract = buy(&mut r, bea, id, 10);
+    // The Consume is dropped: it never lands.
+    let _ = take(&mut r.tw);
+    let start = r.tw.world().now();
+    for i in 1..=4 {
+        at(&mut r.tw, start + i * 31);
+    }
+    assert!(
+        !matches!(
+            state_of(&r.tw, contract),
+            Some(ContractState::Settled { .. })
+        ),
+        "no proof the lot moved, no settlement: {:?}",
+        state_of(&r.tw, contract)
+    );
+    assert_eq!(
+        posted(&r.tw, sal.account),
+        FUNDS,
+        "the seller is paid nothing"
+    );
+    // Past its window the sale refunds.
+    at(
+        &mut r.tw,
+        start + mush_market::DRAW_WINDOW_SECS + mush_economy::SWEEP_PERIOD_SECS + 1,
+    );
+    at(
+        &mut r.tw,
+        start + mush_market::DRAW_WINDOW_SECS + 2 * mush_economy::SWEEP_PERIOD_SECS + 2,
+    );
+    assert!(
+        matches!(state_of(&r.tw, contract), Some(ContractState::Expired)),
+        "{:?}",
+        state_of(&r.tw, contract)
+    );
+    assert_eq!(
+        posted(&r.tw, bea.account),
+        FUNDS,
+        "the buyer's money is back"
+    );
+    assert_eq!(posted(&r.tw, sal.account), FUNDS);
+    // The lot never left the seller.
+    assert_eq!(lot_at(&mut r.tw, &r.families, lot), Some(sal.vault));
+    // The sale is over, so its hold is free to release: it is no longer in force.
+    assert!(
+        !mush_market::sale_in_force(r.tw.world(), id),
+        "a refunded sale holds nothing"
+    );
+}
+
+/// **Doc 48e, exchange G21 (48d M-01): the hold reconcile reaches every lot listing.** Thirty-two
+/// healthy listings stand ahead of one whose hold was never placed. The reconcile checks at most
+/// 32 a fire; before the fix it took the first 32 every fire, so the unheld listing was never
+/// reached and stood on the board advertising stock nothing held. With the cursor it is reached
+/// on the next lap and withdrawn.
+#[test]
+fn g21_the_hold_reconcile_reaches_a_listing_past_the_first_lap() {
+    let mut r = rig();
+    let (sal, bea) = (r.sal, r.bea);
+    for n in 0..mush_market::MAX_LOT_RECONCILED_PER_FIRE as u64 {
+        let lot = LotId(0x7000 + n);
+        mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 1, lot);
+        post_lot(&mut r, lot, 100, "", 0x60);
+    }
+    // Bea's listing: its reserve is staged and dropped, so nothing holds it.
+    let lot = LotId(0x7fff);
+    mint_lot(&mut r.tw, &r.families, bea.vault, "iron", 1, lot);
+    let said = ok(
+        &mut r.tw,
+        bea.who,
+        &format!("+market/post {lot} price=100 market=luna"),
+    );
+    let unheld = listed_id(&said, "Listed for sale as #");
+    let _ = take(&mut r.tw);
+    let start = r.tw.world().now();
+    for i in 1..=12 {
+        at(&mut r.tw, start + i * 61);
+        if market(&r.tw).listing(unheld).is_none() {
+            break;
+        }
+    }
+    assert!(
+        market(&r.tw).listing(unheld).is_none(),
+        "the listing past the first lap is reached and withdrawn"
+    );
+    assert_eq!(
+        market(&r.tw).listings_of_seller(&PrincipalId::Object(sal.who)),
+        mush_market::MAX_LOT_RECONCILED_PER_FIRE,
+        "the healthy listings stand"
+    );
 }

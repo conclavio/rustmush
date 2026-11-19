@@ -146,6 +146,22 @@ pub const MANAGED_CORE_SALE: &str =
 pub const STALE_QUOTE: &str = "That quote no longer stands — the terms moved or it lapsed. Ask for a new one; nothing was \
      charged.";
 
+/// **An exact lot sells whole** (doc 48e, exchange G1; 48c #3, 48d C-01): a quote for any other
+/// quantity is refused, `{n}` the lot's units. Its Consume moves the whole lot, so a part of one
+/// could only fail at the prepare, after the buyer paid.
+pub const WHOLE_LOT: &str = "That lot is sold whole: quote it at {n}.";
+
+/// **Whether `quantity` is a quantity `listing` sells** (doc 48e, exchange G1): an exact lot's
+/// whole quantity and nothing else; any other listing at most what it has.
+#[must_use]
+pub fn sells_quantity(listing: &crate::Listing, quantity: u64) -> bool {
+    if listing.source.exact_lot().is_some() {
+        quantity == listing.quantity
+    } else {
+        quantity <= listing.quantity
+    }
+}
+
 /// Whether a quote is still good **right now** (D-E6-13, scenario 29).
 ///
 /// Deterministic and total: it compares declared stamps for **equality** and never
@@ -164,7 +180,7 @@ pub fn is_current(ctx: &Ctx<'_>, q: &Quote) -> bool {
     let Some(listing) = store.listing(q.listing) else {
         return false;
     };
-    if listing.revision != q.observed.listing || listing.quantity < q.quantity {
+    if listing.revision != q.observed.listing || !sells_quantity(listing, q.quantity) {
         return false;
     }
     // **The listing's own deadline** (independent verify fold, M3). `quote` checks it
@@ -353,6 +369,12 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     };
     let quantity = req.quantity.max(1);
+    // Doc 48e (exchange G1): an exact lot is quoted whole or not at all.
+    if listing.source.exact_lot().is_some() && quantity != listing.quantity {
+        return Err(MarketError::bad(
+            WHOLE_LOT.replace("{n}", &listing.quantity.to_string()),
+        ));
+    }
     if quantity > listing.quantity {
         return Err(MarketError::bad(STALE_QUOTE));
     }
@@ -833,15 +855,30 @@ pub fn accept_at(
     // unrepresentable instant refuses rather than taking the money for a deal whose
     // window cannot be written (checked arithmetic, real seconds).
     let accepted_at = ctx.w.now();
+    // Doc 48e (exchange G2; 48c #1, 48d C-02): a hold-backed sale settles only on proof the lot
+    // moved, as a Draw does: the same window, cutoff and `market.lot.drawn` fact, answered from
+    // the receipt its Consume writes. Before, its one condition was the window, so a Consume
+    // dropped or refused at prepare still paid the seller for nothing.
     let draw_by = match &matter {
-        Some(LotMatter::Draw { .. }) => Some(
+        Some(LotMatter::Draw { .. } | LotMatter::Hold { .. }) => Some(
             accepted_at
                 .checked_add(DRAW_WINDOW_SECS)
                 .and_then(|t| t.checked_sub(DRAW_SETTLE_MARGIN_SECS))
                 .ok_or_else(|| MarketError::bad(UNDELIVERABLE))?,
         ),
-        Some(LotMatter::Hold { .. }) | None => None,
+        None => None,
     };
+    // Doc 48e (exchange G2): the leg is staged after the money is in force, so a queued
+    // submission this step, or a full engine queue, refuses before any contract (the sale into
+    // a bid's rule).
+    if matter.is_some() {
+        if ctx.authoritative_pending(ctx.actor) {
+            return Err(MarketError::bad(SELL_BUSY));
+        }
+        if ctx.authoritative_queue_full() {
+            return Err(MarketError::bad(SELL_QUEUE_FULL));
+        }
+    }
     // Doc 48 cut EX.2: a sale pinned to its object's state settles on the market's own
     // fact, so somebody must answer it (the Draw's precheck).
     if q.observed.state.is_some() && !mush_economy::has_fact_provider(ctx.w, crate::store::NS) {
@@ -986,9 +1023,9 @@ pub fn accept_at(
             },
         };
         if !crate::lot::stage(ctx, &paid_leg(&q, &paid, contract)) {
-            // The money is in force and no leg was staged: a composition defect. A Draw
-            // sale then never sees its fact and expires with a refund at its window; a
-            // hold-backed one is §9 risk 3 (L14), and the log says so.
+            // The money is in force and no leg was staged: a composition defect. The sale
+            // then never sees its fact and expires with a refund at its window (doc 48e, G2:
+            // a hold-backed one too, no longer §9 risk 3).
             tracing::error!(
                 quote = q.id.0,
                 contract = contract.0,
@@ -1112,6 +1149,13 @@ fn lot_precheck(
             }
         }
     }
+    // Doc 48e (exchange G2): a hold-backed sale settles on the same fact, so somebody must
+    // answer it, or the buyer's money would only ever come back at the window.
+    if matches!(matter, LotMatter::Hold { .. })
+        && !mush_economy::has_fact_provider(ctx.w, crate::store::NS)
+    {
+        return Err(MarketError::bad(UNDELIVERABLE));
+    }
     // ---- a Draw: the storefront holds it, and its fact can be answered ----
     if let LotMatter::Draw { source, commodity } = matter {
         let stocked = crate::lot::pool_available(ctx, *source, commodity)
@@ -1163,7 +1207,8 @@ pub fn restage_draw(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<Option<ContractId>
     let (Some(lot), Some(contract)) = (q.lot.clone(), q.contract) else {
         return Ok(None);
     };
-    let (PaidKind::Draw, Some(draw_by)) = (lot.kind, lot.draw_by) else {
+    // Doc 48e (exchange G2; 48d M-05): a hold-backed sale's Consume is re-staged as a Draw is.
+    let (PaidKind::Draw | PaidKind::Hold, Some(draw_by)) = (lot.kind, lot.draw_by) else {
         return Ok(None);
     };
     let active = ctx
@@ -1197,8 +1242,23 @@ pub fn restage_draw(ctx: &mut Ctx<'_>, id: QuoteId) -> Result<Option<ContractId>
 /// money in force. `settle_sale` gives the seller the unsold remainder back as its own
 /// tranche-rooted lot instead, and the seller re-lists it.
 fn commit_quantity(ctx: &mut Ctx<'_>, listing: &Listing, quantity: u64) {
+    // Doc 48e (exchange G2; 48d C-01): a hold-backed listing is lapsed here, not deleted. Its
+    // hold is named by the listing, so a deleted one left a refunded sale's hold with no record
+    // anyone could release it by. Lapsed, it is in no projection and takes no quote; once the
+    // Consume lands the hold reads gone and the sweep deletes it, and if the sale refunds
+    // instead, the holder's release (a player's, through the port tick) gives the lot back.
     if listing.source.lot().is_some() {
-        crate::store::del_listing(ctx, listing.id);
+        put_listing(
+            ctx,
+            Listing {
+                expires: EconomicDeadline {
+                    clock: EconomicClock::RealUtc,
+                    at: ctx.w.now(),
+                },
+                revision: listing.revision.saturating_add(1),
+                ..listing.clone()
+            },
+        );
         return;
     }
     let left = listing.quantity.saturating_sub(quantity);
@@ -1285,6 +1345,11 @@ fn restore_quantity(ctx: &mut Ctx<'_>, q: &Quote) {
     // escrow to the bidder's available balance, not to the bid's hold, so the intake it
     // would restore is no longer backed.
     if listing.is_personal() && listing.source.is_wanted() {
+        return;
+    }
+    // Doc 48e (exchange G2): a hold-backed listing was lapsed whole at activation, never
+    // decremented; its hold is released to its holder, so nothing is restored.
+    if listing.source.lot().is_some() {
         return;
     }
     put_listing(
@@ -3354,9 +3419,10 @@ pub(crate) fn release_quote(ctx: &mut Ctx<'_>, q: &Quote) {
 pub(crate) fn awaits_receipt_read(q: &Quote) -> bool {
     q.activated
         && match q.lot.as_ref().map(|l| l.kind) {
-            Some(PaidKind::Draw) => q.drawn_at.is_none(),
+            // Doc 48e (exchange G2): a hold-backed sale awaits its receipt as a Draw does.
+            Some(PaidKind::Draw | PaidKind::Hold) => q.drawn_at.is_none(),
             Some(PaidKind::Deliver) => q.settled.is_none(),
-            Some(PaidKind::Hold) | None => false,
+            None => false,
         }
 }
 

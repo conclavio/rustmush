@@ -2679,9 +2679,7 @@ impl WorksProvider {
                     .pool(txn, to, g)
                     .map(|pool| pool.map_or(0, |pool| pool.quantity))
                     .map_err(|_| mush_market::CapacityReadError)?;
-                if !crate::port_tick::is_part(g) {
-                    return Ok(pooled);
-                }
+                // Doc 48e (48c #6, 48d C-03): every good's lots take room, a divisible one's too.
                 self.inventory
                     .lot_quantity(txn, to, g)
                     .map(|held| pooled.saturating_add(held))

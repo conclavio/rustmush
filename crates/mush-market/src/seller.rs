@@ -228,7 +228,15 @@ fn check_caps(w: &World, seller: &PrincipalId) -> Result<(), MarketError> {
     let Some(store) = w.module_state::<MarketStore>() else {
         return Err(MarketError::bad("The market is full; try later."));
     };
-    if store.listings_of_seller(seller) >= MAX_LISTINGS_PER_SELLER {
+    // Doc 48e (exchange G2): a seller holds at most 32 *open* listings (Q-48-44). A lapsed one
+    // (a sold lot's, kept until its Consume lands; an expired one, kept until its hold is
+    // released) is open to nobody, so it does not count; `MAX_LISTINGS` still bounds them all.
+    let now = w.now();
+    let open = store
+        .personal_listings_of(seller)
+        .filter(|l| !crate::api::listing_lapsed(l, now))
+        .count();
+    if open >= MAX_LISTINGS_PER_SELLER {
         return Err(MarketError::bad(
             SELLER_FULL.replace("{cap}", &MAX_LISTINGS_PER_SELLER.to_string()),
         ));
@@ -970,7 +978,7 @@ impl mush_economy::StandingAcceptance for ListingAcceptance {
             || crate::api::listing_lapsed(listing, w.now())
             || listing.revision != quote.observed.listing
             || quote.price != listing.price
-            || quote.quantity > listing.quantity
+            || !crate::trade::sells_quantity(listing, quote.quantity)
         {
             return false;
         }

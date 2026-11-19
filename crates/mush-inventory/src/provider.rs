@@ -154,6 +154,28 @@ pub trait PoolCapacity: Send + Sync + std::fmt::Debug {
     ) -> Result<(), String>;
 }
 
+/// **The composition's rule for a player's `@inv/move`** (doc 48e, exchange G7; 48d C-03). D-18-37
+/// left locality off because a pilot held one vault and only staff made vaults; EX.1b's lockers
+/// and EX.3's scrap vaults ended that, so a player's move between two of their vaults is the
+/// game's to judge: where they stand, which vaults, and what is under sale. Asked by `@inv/move`
+/// before it submits, never for staff. Unwired, every move the endpoints allow is admitted, as
+/// before. The destination's room is asked separately, inside the prepare, by
+/// [`PoolCapacity`].
+pub trait MovePolicy: Send + Sync + std::fmt::Debug {
+    /// Whether `actor` may move goods from `from` to `to`; the refusal, in the game's words.
+    ///
+    /// # Errors
+    ///
+    /// The sentence the player hears.
+    fn admit(
+        &self,
+        w: &mush_core::World,
+        actor: mush_core::ObjId,
+        from: EndpointRef,
+        to: EndpointRef,
+    ) -> Result<(), String>;
+}
+
 /// A pool [`PoolCapacity::check`] asked for could not be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolReadFailed;
@@ -406,6 +428,41 @@ pub(crate) fn prepare_wall(
 }
 
 impl InventoryProvider {
+    /// **The destination's room for a move** (doc 48e, exchange G7; 48d C-03): by the plan the
+    /// offer carried for it, every good it holds read as its pool and its lots. An endpoint the
+    /// offer carried no plan for is ungoverned and takes the move.
+    fn move_room(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        to: EndpointRef,
+        commodity: &CanonicalId,
+        quantity: u64,
+    ) -> Result<(), ActionError> {
+        let plan = parameters
+            .get("capacity")
+            .and_then(Value::as_object)
+            .and_then(|plans| plans.get(&to.vault().0.to_string()));
+        let (Some(capacity), Some(plan)) = (&self.capacity, plan) else {
+            return Ok(());
+        };
+        let mut read = |good: &CanonicalId| {
+            let pooled = self
+                .families
+                .pool(txn, to, good)
+                .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                .map_err(|_| PoolReadFailed)?;
+            let lots = self
+                .families
+                .lot_quantity(txn, to, good)
+                .map_err(|_| PoolReadFailed)?;
+            Ok(pooled.saturating_add(lots))
+        };
+        capacity
+            .check(plan, commodity, quantity, &mut read)
+            .map_err(|line| error(ActionErrorCode::ProviderRejected, line))
+    }
+
     /// **The endpoint's room for `lot`** (doc 36a P2-4), by the plan the offer carried for it;
     /// an endpoint the offer carried no plan for is ungoverned and takes the lot.
     fn room_for(
@@ -432,11 +489,25 @@ impl InventoryProvider {
             })?
             .cloned()
             .ok_or_else(|| error(ActionErrorCode::ProviderRejected, "no such lot"))?;
+        // Doc 48e (48c #6, 48d C-03): the endpoint holds its pools and its lots, every good's; the
+        // lot dissolving is already in its tally, so it is counted once, as the incoming units.
+        let dissolving = (record.commodity().clone(), record.quantity());
         let mut read = |good: &CanonicalId| {
-            self.families
+            let pooled = self
+                .families
                 .pool(txn, endpoint, good)
                 .map(|pool| pool.map_or(0, |pool| pool.quantity))
-                .map_err(|_| PoolReadFailed)
+                .map_err(|_| PoolReadFailed)?;
+            let lots = self
+                .families
+                .lot_quantity(txn, endpoint, good)
+                .map_err(|_| PoolReadFailed)?;
+            let lots = if *good == dissolving.0 {
+                lots.saturating_sub(dissolving.1)
+            } else {
+                lots
+            };
+            Ok(pooled.saturating_add(lots))
         };
         capacity
             .check(plan, record.commodity(), record.quantity(), &mut read)
@@ -705,7 +776,9 @@ impl ActionProvider for InventoryProvider {
         // Doc 36a P2-4: a dissolve carries each governed live endpoint's capacity plan, so
         // the prepare (which has no world) refuses a lot its pool has no room for. Without a
         // rule, or on any other verb, the offer is byte-identical to cut E7c2's.
-        if matches!(self.verb, InventoryVerb::Dissolve)
+        // Doc 48e (exchange G7): a move carries them too, so its destination's room is asked
+        // inside the bundle that moves the matter.
+        if matches!(self.verb, InventoryVerb::Dissolve | InventoryVerb::Move)
             && let Some(capacity) = &self.capacity
         {
             let plans: serde_json::Map<String, Value> = endpoints
@@ -811,6 +884,10 @@ impl ActionProvider for InventoryProvider {
                 let to = endpoint_field(&parameters, "to")?;
                 let commodity = commodity_field(&parameters)?;
                 let quantity = u64_field(&parameters, "quantity")?;
+                // Doc 48e (exchange G7): the destination's room, by the plan the offer carried.
+                if from != to {
+                    self.move_room(txn, &parameters, to, &commodity, quantity)?;
+                }
                 let moved = self
                     .families
                     .transfer(txn, from, to, &commodity, quantity)

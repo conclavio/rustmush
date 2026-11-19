@@ -592,6 +592,74 @@ impl CapacityProvider for PortCapacity {
     }
 }
 
+/// `@inv/move` with nowhere to stand: no venue here.
+pub const MOVE_NOT_AT_VENUE: &str =
+    "You move goods between your stores only where you stand in a port.";
+/// `@inv/move` out of a chartered hold: `{name}`, the hull.
+pub const MOVE_CHARTER_CARGO: &str = "Cargo in {name}'s chartered hold is sold from there, so the Co-op's share is paid; it stays aboard.";
+/// `@inv/move` into a hold whose hull is for sale: `{name}`.
+pub const MOVE_HULL_ON_SALE: &str = "{name} is for sale, so nothing goes into her hold.";
+/// `@inv/move` into a scrap vault.
+pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
+
+/// **The ports' rule for a player's `@inv/move`** (doc 48e, exchange G7; 48d C-03). D-18-37 left a
+/// move's locality to P-H while a pilot held one vault; EX.1b's lockers and EX.3's scrap vaults
+/// gave players more, so a move between them is now judged here:
+///
+/// - **Where they stand.** The player stands in a port, and both vaults are admitted there by the
+///   venue gate (`PortVenueGate::admit`): a hold docked at that port that they may trade from, or
+///   their own locker there. Two lockers at two ports are two places.
+/// - **Charter cargo stays aboard.** Nothing leaves a chartered hold for another vault, so a sale
+///   of it pays the Co-op's share (Q-48-56).
+/// - **A hull for sale takes nothing** into her hold after she was listed.
+/// - **A scrap vault takes only the yard's scrap.**
+///
+/// The destination's room is the inventory's own check, inside the prepare (`PortCapacity`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PortMovePolicy;
+
+impl mush_inventory::MovePolicy for PortMovePolicy {
+    fn admit(
+        &self,
+        w: &World,
+        actor: ObjId,
+        from: EndpointRef,
+        to: EndpointRef,
+    ) -> Result<(), String> {
+        if from == to {
+            return Ok(());
+        }
+        let gate = PortVenueGate;
+        let venue = w
+            .get(actor)
+            .and_then(|o| o.location)
+            .and_then(|room| gate.venue_of_room(w, room))
+            .ok_or_else(|| MOVE_NOT_AT_VENUE.to_owned())?;
+        for endpoint in [from, to] {
+            gate.admit(w, actor, &venue, Some(endpoint), Presence::Here)
+                .map_err(|refusal| refusal.line)?;
+        }
+        if crate::port::proceeds::is_chartered_hold(w, from) {
+            let name = governed_hold(w, from).map_or_else(String::new, |view| {
+                crate::port::coop::name_of(w, view.hull())
+            });
+            return Err(MOVE_CHARTER_CARGO.replace("{name}", &name));
+        }
+        if let Some(view) = governed_hold(w, to)
+            && mush_market::asset_on_sale(w, view.hull())
+        {
+            return Err(
+                MOVE_HULL_ON_SALE.replace("{name}", &crate::port::coop::name_of(w, view.hull()))
+            );
+        }
+        if crate::port::bay_work::scrap::scrap_vault_owner(w, to.vault(), venue.as_str()).is_some()
+        {
+            return Err(MOVE_INTO_SCRAP.to_owned());
+        }
+        Ok(())
+    }
+}
+
 /// **The hold's room for a lot dissolving into its pool** (doc 36a P2-4): `@inv/dissolve`
 /// consults the rule the market's draw and the bay's mint consult, through the inventory's own
 /// seam (`mush-inventory` has no edge to this crate; the composition root wires it).

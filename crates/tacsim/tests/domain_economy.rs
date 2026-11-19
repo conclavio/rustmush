@@ -77,6 +77,8 @@ mod ex7b_discharge;
 mod ex8_prices;
 #[path = "domain_economy/ex9_balance.rs"]
 mod ex9_balance;
+#[path = "domain_economy/held_lots_48e.rs"]
+mod held_lots_48e;
 #[path = "domain_economy/house_arm_rs6b.rs"]
 mod house_arm_rs6b;
 #[path = "domain_economy/house_resale_rs6c2.rs"]
@@ -111,6 +113,8 @@ mod lane;
 mod mill;
 #[path = "domain_economy/mining.rs"]
 mod mining;
+#[path = "domain_economy/move_policy_48e.rs"]
+mod move_policy_48e;
 #[path = "domain_economy/orders.rs"]
 mod orders;
 #[path = "domain_economy/pl2_producers.rs"]
