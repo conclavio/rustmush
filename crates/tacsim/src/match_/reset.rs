@@ -212,7 +212,7 @@ pub fn reset_stock_tanks(
             report.deployed.push(object);
             continue;
         }
-        match reset_one(ctx, object, &schema) {
+        match reset_one(ctx, object, &schema, false) {
             Ok((refitted, rewritten)) => {
                 if refitted {
                     report.refitted = report.refitted.saturating_add(1);
@@ -241,11 +241,14 @@ pub fn reset_stock_tanks(
 
 /// Put one tank's record back to its spec. Answers
 /// `(was it refitted, was a plan written)`. Doc 36 cut GC.9 also restores a leased rig with it
-/// before its next lease (`port::tv`'s take).
+/// before its next lease (`port::tv`'s take), with `keep_rounds`: 48e review rounds:G9 (A-14),
+/// a magazine's rounds are goods the last lessee spent, never conjured back; the next lessee
+/// rearms at the bay. A beam's charge (no good loads it) is restored with the rest.
 pub(crate) fn reset_one(
     ctx: &mut Ctx<'_>,
     object: ObjId,
     schema: &SmolStr,
+    keep_rounds: bool,
 ) -> Result<(bool, bool), String> {
     let Some(held) = mush_tactics::module::unit_of(ctx.w, object).cloned() else {
         // A roster object that is not a tactical unit at all: content the applier
@@ -310,8 +313,51 @@ pub(crate) fn reset_one(
     let Some(plan) = spec_plan(&held, &pristine) else {
         return Ok((refitted, false));
     };
+    let plan = if keep_rounds {
+        let Some(plan) = keeping_rounds(ctx.w, &spec, plan) else {
+            return Ok((refitted, false));
+        };
+        plan
+    } else {
+        plan
+    };
     mush_tactics::module::apply_plan(ctx, object, &plan)?;
     Ok((refitted, true))
+}
+
+/// **`plan` without its magazine refills** (48e review rounds:G9): every `ammo` cell a munitions
+/// good loads is left as it stands. `None` when nothing else is left to write.
+fn keeping_rounds(
+    w: &mush_core::World,
+    spec: &crate::definitions::UnitSpec,
+    plan: mush_tactics::UnitMutationPlan,
+) -> Option<mush_tactics::UnitMutationPlan> {
+    let store = w.module_state::<TacsimStore>()?;
+    let goods = store.goods();
+    let ops: Vec<mush_tactics::UnitMutationOp> = plan
+        .ops()
+        .iter()
+        .filter(|op| {
+            !matches!(op, mush_tactics::UnitMutationOp::SetCell {
+                addr: mush_tactics::CellAddr::Component { component, cell },
+                ..
+            } if cell.as_str() == crate::definitions::unit::AMMO_CELL
+                && goods.is_none_or(|goods| {
+                    crate::port::bay_work::jobs::munitions_good_of(
+                        spec,
+                        store.definitions(),
+                        goods,
+                        component,
+                    )
+                    .is_some()
+                }))
+        })
+        .cloned()
+        .collect();
+    if ops.is_empty() {
+        return None;
+    }
+    mush_tactics::UnitMutationPlan::new(ops, None, Some(SmolStr::new_static(RESET_CAUSE))).ok()
 }
 
 /// **The plan that turns `held` back into `pristine`** (doc 16 §3.3: *cells to

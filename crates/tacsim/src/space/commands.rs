@@ -5033,13 +5033,19 @@ fn apply_collar_scrape_damage(ctx: &mut Ctx<'_>, hull: ObjId, front_armor_damage
         out
     };
     if let Some((ship, domain, leg_cursor)) = bubble_ship {
-        let _ = super::custody::check_in_space_unit(ctx, hull, &ship, at_ic);
+        if let Err(error) = super::custody::check_in_space_unit(ctx, hull, &ship, at_ic) {
+            tracing::warn!(hull = hull.0, %error, "tacsim: a collar scrape's check-in failed");
+        }
         let site_key = format!("domain.{}", domain.0);
-        let _ = mush_tactics::custody::check_out(
+        // 48e review rounds:G11: a failed re-check-out leaves her in the bubble with no marker;
+        // her next check-in then applies its plan directly, and staff hear of it here.
+        if let Err(error) = mush_tactics::custody::check_out(
             ctx,
             hull,
             mush_sim::deployed::DeployedMark::field(site_key, leg_cursor),
-        );
+        ) {
+            tracing::warn!(hull = hull.0, %error, "tacsim: a collar scrape's re-check-out failed");
+        }
         return;
     }
 

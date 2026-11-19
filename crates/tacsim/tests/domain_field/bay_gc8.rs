@@ -945,3 +945,36 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     assert!(again.contains("has been scrapped"), "{again}");
     // Remains are scrapped where they lie on the site (doc 36 cut GC.6, `field_gc6.rs`).
 }
+
+/// **48e review rounds:G9: a re-leased rig keeps the rounds its last lessee left** (A-14). Occator
+/// restores a returned rig before its next lease, which once refilled its magazines from nothing;
+/// now the next lessee takes it with what was left, and rearms at the bay.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn rounds_g9_a_re_leased_rig_keeps_the_rounds_left_in_it() {
+    let mut rig = stocked();
+    let (pilot, _, escort, _) = leased(&mut rig);
+    let u = unit(&rig, escort);
+    let gun = component_id(&u, "machine_gun");
+    let (_, max) = magazine(&u, &gun);
+    damage(
+        &mut rig,
+        escort,
+        vec![UnitMutationOp::SetCell {
+            addr: CellAddr::Component {
+                component: gun.clone(),
+                cell: mush_tactics::CellId::new("ammo").expect("the ammo cell"),
+            },
+            value: max - 150,
+        }],
+    );
+    at_counter(&mut rig, pilot);
+    let back = run(&mut rig.tw, pilot, "+tv/1 lease return go");
+    assert!(back.contains("OWP-ES-01"), "{back}");
+    let again = run(&mut rig.tw, pilot, "+tv/lease escort go");
+    assert!(again.contains("leases you OWP-ES-01"), "{again}");
+    assert_eq!(
+        magazine(&unit(&rig, escort), &gun).0,
+        max - 150,
+        "the rounds the last lessee left, not a refill"
+    );
+}

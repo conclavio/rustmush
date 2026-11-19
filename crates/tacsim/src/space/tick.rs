@@ -3476,6 +3476,53 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// **Check a towed derelict in at the port with what the bubble did to her** (48e review
+/// rounds:G10, Q-CF-35). A derelict still holding a marker (towed out of a bubble that stays
+/// open, its tug one of several carriers) is checked in with her bubble ship's plan, so the
+/// damage and the rounds spent there stay; with no bubble ship, with an empty IC plan. Never
+/// with `None`, which restores her as she was at check-out. A derelict with no marker was
+/// checked in when her bubble closed: nothing to do.
+fn check_in_towed_derelict(ctx: &mut Ctx<'_>, derelict_hull: ObjId, at_ic: i64) {
+    if mush_tactics::custody::marker_of(ctx.w, derelict_hull).is_none() {
+        return;
+    }
+    let ship = ctx.w.module_state::<SpaceBubbleBook>().and_then(|book| {
+        book.by_domain.values().find_map(|active| {
+            active
+                .bubble
+                .ships
+                .iter()
+                .find(|(id, _)| active.hull_for_ship_id(id) == Some(derelict_hull))
+                .map(|(_, ship)| ship.clone())
+        })
+    });
+    let checked = match ship {
+        Some(ship) => check_in_space_unit(ctx, derelict_hull, &ship, at_ic).map(|_| ()),
+        None => mush_tactics::module::unit_of(ctx.w, derelict_hull)
+            .map(mush_tactics::TacticalUnit::revision)
+            .ok_or_else(|| "no unit".to_owned())
+            .and_then(|revision| {
+                mush_tactics::UnitMutationPlan::new(
+                    Vec::new(),
+                    Some(revision),
+                    Some(SmolStr::new_static("space:tow-delivery")),
+                )
+                .map_err(|e| e.to_string())
+            })
+            .and_then(|plan| {
+                mush_tactics::custody::check_in(ctx, derelict_hull, Some(&plan))
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }),
+    };
+    if let Err(error) = checked {
+        tracing::warn!(
+            hull = derelict_hull.0, %error,
+            "tacsim: a towed derelict's check-in at the port failed"
+        );
+    }
+}
+
 /// Complete port delivery for any active tow on `tug_hull` once `tug_hull` is berthed at a port
 /// (`SF.R19`, `Q-36-46`, `D-35-12`; doc 41 cut RS.8).
 ///
@@ -3494,7 +3541,7 @@ pub fn deliver_active_tow_at_port(ctx: &mut Ctx<'_>, tug_hull: ObjId, now: &Cloc
         return;
     };
     let derelict_hull = tow.derelict_hull;
-    let _ = mush_tactics::custody::check_in(ctx, derelict_hull, None);
+    check_in_towed_derelict(ctx, derelict_hull, now.at);
     if let Some((port_domain, port_pose)) = mush_sim::pose_of(ctx.w, tug_hull) {
         let _ = mush_sim::dock_carrier_at_destination(
             ctx,

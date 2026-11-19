@@ -4578,3 +4578,45 @@ fn gc9_an_undamaged_lease_rig_returned_gets_its_whole_deposit_back() {
     assert_eq!(balances(&rig.tw, account), (posted, held - DEPOSIT_MINOR));
     no_refused_writes(&rig.tw);
 }
+
+/// **48e review rounds:G11: a check-in with no marker still writes the bubble's damage.** A hull
+/// her bubble holds with no custody marker (a re-check-out that failed) once only cleared her
+/// deployed mark at check-in, so the scrape on her front armour was lost. Now the plan lands on
+/// her unit.
+#[test]
+fn rounds_g11_a_check_in_with_no_marker_keeps_the_bubble_damage() {
+    use tacsim::space::bubble::{FacetBand, ShipSectionId, SpaceShipState, admitted_party};
+    let mut rig = stocked();
+    let (_, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    let armour = |tw: &TestWorld| -> i64 {
+        mush_tactics::module::unit_of(tw.world(), hull)
+            .expect("a live unit")
+            .cells()
+            .filter(|(addr, _)| matches!(addr, mush_tactics::CellAddr::Facet { .. }))
+            .map(|(_, cell)| cell.current)
+            .sum()
+    };
+    let before = armour(&rig.tw);
+    let mut ship =
+        SpaceShipState::new_dray("ship.g11", "Salt Moth", admitted_party(0), [0; 3], [0; 3]);
+    let front = ship
+        .sections
+        .get_mut(&ShipSectionId::Hull)
+        .and_then(|section| section.facets.get_mut(&FacetBand::Front))
+        .expect("her front armour");
+    *front = front.saturating_sub(3);
+    assert!(
+        mush_tactics::custody::marker_of(rig.tw.world(), hull).is_none(),
+        "no marker"
+    );
+    support::with_ctx(&mut rig.tw, |ctx| {
+        tacsim::space::custody::check_in_space_unit(ctx, hull, &ship, 74_152_600_000)
+            .expect("the check-in");
+    });
+    assert!(
+        armour(&rig.tw) < before,
+        "the scrape is written to her unit: {before} -> {}",
+        armour(&rig.tw)
+    );
+}
