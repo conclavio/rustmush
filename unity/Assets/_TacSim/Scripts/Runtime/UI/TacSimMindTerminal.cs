@@ -306,7 +306,6 @@ namespace TacSim.UI
                 _ws.OnInvokeResultReceived += HandleInvokeResult;
                 _ws.OnSystemLineReceived += HandleSystemLine;
                 _ws.OnFatalSessionEnded += HandleFatalSessionEnded;
-                _ws.OnHelloReceived += HandleHelloReceived;
             }
         }
 
@@ -317,16 +316,10 @@ namespace TacSim.UI
             _ws.OnInvokeResultReceived -= HandleInvokeResult;
             _ws.OnSystemLineReceived -= HandleSystemLine;
             _ws.OnFatalSessionEnded -= HandleFatalSessionEnded;
-            _ws.OnHelloReceived -= HandleHelloReceived;
             _ws = null;
         }
 
         private void HandleFatalSessionEnded(string _)
-        {
-            ResetSessionState();
-        }
-
-        private void HandleHelloReceived()
         {
             ResetSessionState();
         }

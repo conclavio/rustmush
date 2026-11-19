@@ -332,8 +332,12 @@ namespace TacSim.Tests
                 var choices = new List<(ulong id, string choice)>();
                 hud.OnRequestChoiceSubmitted += (r, c) => choices.Add((r.Id, c));
 
-                var textReq = new MushServerRequest { Id = 10, Epoch = "e1", Kind = "text", Prompt = "Enter memo:" };
+                var textReq = new MushServerRequest { Id = 10, Epoch = "e1", Kind = "text", Prompt = "Enter memo for <color=#ff0000><size=99>HACK</size></color>:" };
                 hud.ShowServerRequestModal(textReq);
+                var modalBody = typeof(TacSimHudController).GetField("_modalBodyText", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(hud) as Text;
+                StringAssert.DoesNotContain("<color=#ff0000>", modalBody.text, "Server request prompt must escape Unity rich-text tags (U-M01)");
+                StringAssert.DoesNotContain("<size=99>", modalBody.text, "Server request prompt must escape Unity rich-text tags (U-M01)");
+                StringAssert.Contains("HACK", modalBody.text);
                 var npcInput = typeof(TacSimHudController).GetField("_npcSayInput", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(hud) as InputField;
                 Assert.IsTrue(npcInput.gameObject.activeSelf, "Text request must enable modal input field");
                 npcInput.text = "Manifest verified";
@@ -415,6 +419,25 @@ namespace TacSim.Tests
                 Assert.AreEqual(string.Empty, passInput.text);
                 var commsTxt = typeof(TacSimHudController).GetField("_commsLogText", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(hud) as Text;
                 Assert.AreEqual(string.Empty, commsTxt.text, "ShowLoginOverlay(true) must clear previous session comms log");
+
+                // Character selection in ShowCharacterPicker resets prior state BEFORE OnCharacterSelected runs,
+                // so a [CONNECTED] banner appended during selection is preserved.
+                hud.AppendLogLine("Stale previous character line");
+                hud.SetActiveHullRef("#99");
+                var authSession = new MushAuthSession
+                {
+                    Account = "captain",
+                    Characters = new List<MushCharacterSlot>
+                    {
+                        new MushCharacterSlot { Key = "42", Name = "Vanguard" }
+                    }
+                };
+                hud.OnCharacterSelected += (_, _, _) => hud.AppendLogLine("[CONNECTED] Attached as Vanguard");
+                hud.ShowCharacterPicker(authSession);
+                FindButton(rootGo.transform, "ENTER WORLD AS  VANGUARD  (#42)").onClick.Invoke();
+                StringAssert.DoesNotContain("Stale previous character line", commsTxt.text);
+                StringAssert.Contains("[CONNECTED] Attached as Vanguard", commsTxt.text);
+                Assert.IsNull(hud.ActiveHullRef);
             }
             finally
             {

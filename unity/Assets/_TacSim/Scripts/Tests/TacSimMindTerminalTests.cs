@@ -771,5 +771,96 @@ namespace TacSim.Tests
                 Object.DestroyImmediate(hudGo);
             }
         }
+
+        [Test]
+        public void MindTerminal_And_Hud_PreserveDirtyDraftAndCommsOnHelloReconnect_ButWipeOnFatalDisconnect()
+        {
+            using var ws = new MushWsClient();
+            var hudGo = new GameObject("ReconnectHud");
+            var termGo = new GameObject("ReconnectMindTerm");
+            try
+            {
+                var hud = hudGo.AddComponent<TacSimHudController>();
+                hud.BuildHud();
+                hud.BindWsClient(ws);
+                hud.ShowLoginOverlay(false);
+
+                var term = termGo.AddComponent<TacSimMindTerminal>();
+                term.BuildTerminalUi();
+                term.BindClient(ws);
+                term.BindHud(hud);
+
+                // Populate live session state: comms log, active hull, open Mind Terminal with dirty Rhai draft.
+                hud.AppendLogLine("[CONNECTED] Attached as Captain");
+                hud.SetActiveHullRef("#77");
+                term.SetTerminalOpen(true);
+
+                DrainOutboundFrames(ws);
+                term.RequestReadMind("escort_v1");
+                var readFrames = DrainOutboundFrames(ws);
+                Assert.AreEqual(1, readFrames.Count);
+                ulong readReqId = (ulong)readFrames[0]["d"].Long("id");
+
+                string initialDraft = BuildCanonicalMindDraftJson("fn think(ctx) { ctx.hold(); }");
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                    ""seq"": 1, ""ts"": 5000, ""t"": ""invoke_result"",
+                    ""d"": {{
+                        ""id"": {readReqId},
+                        ""result"": {{
+                            ""service"": ""mind"",
+                            ""result"": {{
+                                ""status"": ""read"",
+                                ""name"": ""escort_v1"",
+                                ""revision"": null,
+                                ""base"": {{ ""edit"": 1, ""revision"": 0 }},
+                                ""draft"": {initialDraft},
+                                ""rules_text"": {{}},
+                                ""rules_source"": {{}},
+                                ""diagnostics"": []
+                            }}
+                        }}
+                    }}
+                }}"));
+                ws.PumpMainThread();
+
+                var srcInput = typeof(TacSimMindTerminal).GetField("_rhaiSourceInput", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(term) as InputField;
+                srcInput.text = "// unsaved work\nfn think(ctx) { ctx.hold(); }";
+                srcInput.onValueChanged.Invoke(srcInput.text);
+                Assert.IsTrue(term.IsDraftDirty);
+
+                // Simulate fresh login hello / transient WS auto-reconnect hello -> MUST NOT wipe session or dirty edits!
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                    ""seq"": 2, ""ts"": 5100, ""t"": ""hello"",
+                    ""d"": { ""server"": ""rustmush"", ""panels"": [""mind.market"", ""mind.holdings"", ""arena.mind"", ""port.trade""] }
+                }"));
+                ws.PumpMainThread();
+
+                var commsTxt = typeof(TacSimHudController).GetField("_commsLogText", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(hud) as Text;
+                StringAssert.Contains("[CONNECTED] Attached as Captain", commsTxt.text, "Transient hello/reconnect must preserve comms log");
+                Assert.AreEqual("#77", hud.ActiveHullRef, "Transient hello/reconnect must preserve active hull ref");
+                Assert.IsTrue(term.IsTerminalOpen, "Transient hello/reconnect must keep Mind Terminal open");
+                Assert.IsNotNull(term.LoadedDraft, "Transient hello/reconnect must preserve loaded draft");
+                Assert.IsTrue(term.IsDraftDirty, "Transient hello/reconnect must preserve dirty flag");
+                StringAssert.Contains("// unsaved work", term.LoadedDraft.Str("source"));
+
+                // Fatal session disconnect (`OnFatalSessionEnded`) MUST wipe both HUD and Mind Terminal state (`U-H12`).
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                    ""seq"": 3, ""ts"": 5200, ""t"": ""disconnect"",
+                    ""d"": { ""reason"": ""session expired"" }
+                }"));
+                ws.PumpMainThread();
+
+                Assert.AreEqual(string.Empty, commsTxt.text, "Fatal session disconnect must wipe comms log");
+                Assert.IsNull(hud.ActiveHullRef, "Fatal session disconnect must clear active hull ref");
+                Assert.IsFalse(term.IsTerminalOpen, "Fatal session disconnect must close Mind Terminal");
+                Assert.IsNull(term.LoadedDraft, "Fatal session disconnect must clear loaded draft");
+                Assert.IsFalse(term.IsDraftDirty, "Fatal session disconnect must clear dirty flag");
+            }
+            finally
+            {
+                Object.DestroyImmediate(termGo);
+                Object.DestroyImmediate(hudGo);
+            }
+        }
     }
 }

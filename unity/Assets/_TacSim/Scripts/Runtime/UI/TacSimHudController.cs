@@ -276,7 +276,6 @@ namespace TacSim.UI
                 _boundWs.OnPanelUpdated += HandleWsPanelUpdated;
                 _boundWs.OnRoomReceived += HandleWsRoomReceived;
                 _boundWs.OnFatalSessionEnded += HandleWsFatalSessionEnded;
-                _boundWs.OnHelloReceived += HandleWsHelloReceived;
             }
         }
 
@@ -286,16 +285,10 @@ namespace TacSim.UI
             _boundWs.OnPanelUpdated -= HandleWsPanelUpdated;
             _boundWs.OnRoomReceived -= HandleWsRoomReceived;
             _boundWs.OnFatalSessionEnded -= HandleWsFatalSessionEnded;
-            _boundWs.OnHelloReceived -= HandleWsHelloReceived;
             _boundWs = null;
         }
 
         private void HandleWsFatalSessionEnded(string _)
-        {
-            ResetSessionState();
-        }
-
-        private void HandleWsHelloReceived()
         {
             ResetSessionState();
         }
@@ -998,7 +991,10 @@ namespace TacSim.UI
             {
                 var captured = slot;
                 var btn = CreateButton(_charSelectListRoot, $"ENTER WORLD AS  {captured.Name.ToUpperInvariant()}  (#{captured.Key})", new Color(0.14f, 0.46f, 0.42f), () =>
-                    OnCharacterSelected?.Invoke(session, captured, _selectedAvatar));
+                {
+                    ResetSessionState();
+                    OnCharacterSelected?.Invoke(session, captured, _selectedAvatar);
+                });
                 btn.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 46f);
             }
 
@@ -1952,7 +1948,7 @@ namespace TacSim.UI
                 btns.Add(("CANCEL", () => CloseDetailModal(cancelServerRequest: true)));
             }
 
-            ShowDetailModal("PORT / SYSTEM REQUEST", req.Prompt, btns);
+            ShowDetailModal("PORT / SYSTEM REQUEST", MushProtocol.EscapeUnityRichText(req.Prompt ?? string.Empty), btns);
             _activeServerRequest = req;
 
             if (_npcSayInput != null)
