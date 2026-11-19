@@ -250,6 +250,7 @@ async fn boot_duo_server_with(
                 llm: None,
                 quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
                 outbox_adapters: Vec::new(),
+                time: mush_config::TimeSource::System,
             },
         )
         .handle

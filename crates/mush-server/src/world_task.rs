@@ -1206,6 +1206,14 @@ pub struct ServerDeps {
     /// engine's own (programme D5: the on-call Discord DM adapter). Registered
     /// into the outbox registry at spawn; a duplicate is logged and skipped.
     pub outbox_adapters: Vec<Arc<dyn crate::durable_outbox::DurableOutboxAdapter>>,
+    /// Where the world loop reads the time for every read that gates
+    /// behaviour (doc 43c §2, TS.10b): the world's `now`, the timer and
+    /// outage wakes, `fire_due`, the shutdown grace, and the clone the hosted
+    /// arenas get. Production is always [`mush_config::TimeSource::System`],
+    /// the OS clock, exactly as before the field existed; a paused test rig
+    /// builds [`mush_config::TimeSource::tokio_at`]. Reads that measure (loop
+    /// lag, uptime) stay on `std`.
+    pub time: mush_config::TimeSource,
 }
 
 impl ServerDeps {
@@ -1238,6 +1246,7 @@ impl ServerDeps {
             metrics,
             quarantine_spool,
             outbox_adapters,
+            time: mush_config::TimeSource::System,
         }
     }
 
@@ -1259,6 +1268,7 @@ impl ServerDeps {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         }
     }
 }

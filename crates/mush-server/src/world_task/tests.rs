@@ -1228,6 +1228,7 @@ fn decision_test_deps(store: Arc<dyn ObjectStore>) -> ServerDeps {
         metrics: Arc::new(Metrics::new()),
         quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
         outbox_adapters: Vec::new(),
+        time: mush_config::TimeSource::System,
     }
 }
 
@@ -3739,6 +3740,7 @@ async fn all_in_one_offer_submission_reaches_durable_ownership() {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         move |_| -> Gateway { sink },
     );
@@ -5255,6 +5257,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         Arc::new(DurableOutboxRegistry::new()),
         None,
