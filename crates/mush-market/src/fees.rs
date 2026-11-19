@@ -281,6 +281,26 @@ pub fn ask_policy_cuts(
     quantity: u64,
     price: Amount,
 ) -> Result<Vec<(AccountId, Amount)>, MarketError> {
+    Ok(ask_policy_proceeds(w, listing, buyer, quantity, price)?
+        .map(|p| p.cuts.into_iter().map(|c| (c.to, c.amount)).collect())
+        .unwrap_or_default())
+}
+
+/// **The proceeds policy's whole answer on a person's lot ask** ([`ask_policy_cuts`]' rows with
+/// their labels and the basis they were measured on; doc 48e, exchange G5): frozen on the
+/// ask's quote at the accept, so the policy is told of the sale when it settles, as of a sale
+/// into a bid. `None` where [`ask_policy_cuts`] has no rows to ask for.
+///
+/// # Errors
+///
+/// As [`ask_policy_cuts`].
+pub fn ask_policy_proceeds(
+    w: &World,
+    listing: &crate::Listing,
+    buyer: &PrincipalId,
+    quantity: u64,
+    price: Amount,
+) -> Result<Option<crate::module::Proceeds>, MarketError> {
     let (
         crate::Supply::Lot {
             endpoint,
@@ -290,13 +310,13 @@ pub fn ask_policy_cuts(
         PrincipalId::Object(seller),
     ) = (&listing.source, &listing.seller)
     else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     if !listing.is_personal() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let Some(policy) = crate::module::proceeds_policy(w) else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let gross = gross_of(price, quantity)?;
     let terms = crate::module::SaleTerms {
@@ -323,10 +343,11 @@ pub fn ask_policy_cuts(
             return Err(MarketError::bad(crate::trade::UNSETTLEABLE));
         }
     }
-    if p.cuts.len() > crate::record::MAX_PROCEEDS_CUTS || sum > gross.minor() {
+    if p.cuts.len() > crate::record::MAX_PROCEEDS_CUTS || sum > gross.minor() || p.basis.minor() < 0
+    {
         return Err(MarketError::bad(crate::trade::UNSETTLEABLE));
     }
-    Ok(p.cuts.into_iter().map(|c| (c.to, c.amount)).collect())
+    Ok(Some(p))
 }
 
 /// **A person's ask's payouts** (doc 48 cut EX.4): [`sale_payouts`] over the policy's cuts, the

@@ -903,7 +903,12 @@ pub fn accept_at(
     };
     // Doc 48 cut EX.4 (Q-48-8, -56): a person's sale pays the venue's cut and levy and any
     // proceeds policy's share beside the seller; a vendor's pays the vendor the whole price.
+    // Doc 48e (exchange G5): a person's lot ask's policy share, frozen on the quote with its
+    // lot leg below, so the policy is told of the sale when it settles (`settled_sale`).
+    let mut frozen = None;
     let payouts = if listing.is_personal() {
+        frozen = crate::fees::ask_policy_proceeds(ctx.w, &listing, &q.buyer, q.quantity, q.price)?
+            .filter(|p| !p.cuts.is_empty() || p.basis.minor() > 0);
         crate::fees::personal_ask_payouts(ctx.w, &listing, &q.buyer, q.quantity, q.price, payee)?
     } else {
         vec![PayoutShare {
@@ -1037,6 +1042,10 @@ pub fn accept_at(
             );
         }
         q.lot = Some(paid);
+        if let Some(p) = frozen {
+            q.cuts = p.cuts;
+            q.basis = p.basis;
+        }
     }
     // **The single serialization point** (OPEN 4): the listing's quantity decrements
     // when — and only when — the contract came into force. A quote reserved nothing,
@@ -3450,10 +3459,15 @@ pub(crate) fn awaits_receipt_read(q: &Quote) -> bool {
         }
 }
 
-/// Tell the proceeds policy one sale into a bid settled (doc 18 cut IC10). A no-op for
-/// every other quote, and with no policy wired.
+/// Tell the proceeds policy one sale into a bid settled (doc 18 cut IC10), or a person's lot
+/// ask whose quote froze a share (doc 48e, exchange G5: the Co-op's chartered asks). A no-op
+/// for every other quote, and with no policy wired.
 pub(crate) fn settled_sale(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
-    let Some(lot) = q.lot.as_ref().filter(|l| l.kind == PaidKind::Deliver) else {
+    let Some(lot) = q
+        .lot
+        .as_ref()
+        .filter(|l| l.kind == PaidKind::Deliver || !q.cuts.is_empty() || q.basis.minor() > 0)
+    else {
         return;
     };
     let Some(policy) = crate::module::proceeds_policy(ctx.w) else {

@@ -304,4 +304,17 @@ fn ex4_the_coop_share_applies_on_a_personal_chartered_sale() {
         60_000,
         "share {share}, net {net}: {said}"
     );
+    // Doc 48e (exchange G5; 48c #7): the Co-op's statement counts the ask's sale and share.
+    let enrolment = rig
+        .tw
+        .world()
+        .module_state::<tacsim::store::TacsimStore>()
+        .and_then(|s| {
+            s.enrolments()
+                .find(|e| e.pilot == seller && e.vault == hold.0)
+                .cloned()
+        })
+        .expect("her enrollment");
+    assert_eq!(enrolment.sales, 1, "the sale is counted");
+    assert_eq!(enrolment.shares_minor, share, "and its share");
 }

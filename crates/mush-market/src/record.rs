@@ -1109,12 +1109,13 @@ pub struct Quote {
     /// **Who besides the seller is paid out of a sale into a standing bid** (doc 18
     /// §4.1 "The share", D-18-24; cut IC10): the proceeds policy's cuts, frozen at the
     /// offer, each an `Exact` payout of the contract. At most [`MAX_PROCEEDS_CUTS`], and
-    /// only on a Deliver quote.
+    /// only on a lot quote: a sale into a bid, or (doc 48e, exchange G5) a person's lot ask
+    /// whose policy took a share, frozen at the accept.
     #[serde(default)]
     pub cuts: Vec<ProceedsCut>,
     /// What the proceeds policy measured its cuts on — for the Co-op, the margin over
-    /// reference; `Amount::ZERO` otherwise (cut IC10). Only a Deliver quote carries a
-    /// non-zero basis.
+    /// reference; `Amount::ZERO` otherwise (cut IC10). Only a lot quote carries a non-zero
+    /// basis (a sale into a bid, or a person's lot ask: doc 48e, exchange G5).
     #[serde(default = "zero")]
     pub basis: Amount,
     /// Bumped by every write.
@@ -1442,12 +1443,13 @@ impl TryFrom<QuoteWire> for Quote {
 
 /// The proceeds half of a quote's wire check (doc 18 §4.1, cut IC10).
 fn check_proceeds(w: &QuoteWire) -> Result<(), RecordError> {
-    let delivers = w.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Deliver);
+    // Doc 48e (exchange G5): a person's lot ask freezes its policy share too.
+    let delivers = w.lot.is_some();
     if w.cuts.len() > MAX_PROCEEDS_CUTS {
         return Err(RecordError("a quote pays too many proceeds cuts"));
     }
     if (!w.cuts.is_empty() || w.basis.minor() != 0) && !delivers {
-        return Err(RecordError("only a sale into a bid carries proceeds cuts"));
+        return Err(RecordError("only a lot sale carries proceeds cuts"));
     }
     if w.basis.minor() < 0 {
         return Err(RecordError("a quote's proceeds basis is negative"));
@@ -1889,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn ic10_a_quotes_proceeds_split_rides_only_a_sale_into_a_bid() {
+    fn ic10_a_quotes_proceeds_split_rides_only_a_lot_sale() {
         let deliver = paid("deliver", Some(3_100), Some(MARKER));
         let share = serde_json::json!([{ "to": 7, "amount": 40000, "label": "Co-op share" }]);
         let q: Quote = serde_json::from_value(sale_quote(deliver.clone(), share.clone(), 160_000))
@@ -1918,11 +1920,23 @@ mod tests {
         assert!(loads(sale_quote(deliver.clone(), exact, 0)));
         // A negative basis.
         assert!(!loads(sale_quote(deliver, serde_json::json!([]), -1)));
-        // Cuts or a basis on anything but a Deliver quote.
+        // Doc 48e (exchange G5): a person's lot ask freezes its share too, on any lot leg;
+        // a quote with no lot leg carries neither cuts nor a basis.
         let draw = paid("draw", Some(3_100), None);
-        assert!(!loads(sale_quote(draw.clone(), share, 0)));
-        assert!(!loads(sale_quote(draw.clone(), serde_json::json!([]), 5)));
+        assert!(loads(sale_quote(draw.clone(), share.clone(), 0)));
+        assert!(loads(sale_quote(draw.clone(), serde_json::json!([]), 5)));
         assert!(loads(sale_quote(draw, serde_json::json!([]), 0)));
+        assert!(!loads(sale_quote(serde_json::Value::Null, share, 0)));
+        assert!(!loads(sale_quote(
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            5
+        )));
+        assert!(loads(sale_quote(
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            0
+        )));
     }
 
     // ---- doc 48 cut EX.1a: the personal seller's wire rules ----
