@@ -2273,12 +2273,22 @@ pub(crate) fn release_verify(ctx: &mut Ctx<'_>, state: &mut PortTickState) {
     }
 }
 
+/// **The clerk who acts for the vendor whose storefront is `vault`** (doc 48e, exchange G14): the
+/// clerk Thing of the lane port that lists `vault` as one of its vendors' storefronts.
+fn clerk_of_storefront(w: &World, vault: u64) -> Option<ObjId> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .filter_map(|(_, _, map)| map)
+        .find(|map| map.vendors.values().any(|row| row.vault == vault))
+        .and_then(|map| map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)))
+}
+
 /// **The fire's one release agent** (doc 18 §5's IC8 row; D-18-26): the lowest-id
-/// lapsed hold-backed listing whose endpoint vault a live player object owns, that is
+/// lapsed hold-backed listing whose endpoint vault a live player object owns, or (doc 48e,
+/// exchange G14) a port vendor's storefront, for which the port's clerk is the holder; that is
 /// not inside its re-stage grace and that was not refused within the last
-/// [`RELEASE_GRACE_FIRES`]. An org-owned vault is not a player listing, and a vault
-/// whose owner is GOD or gone has no holder the tick may act as (`Fire::turn` refuses
-/// both): each is skipped and logged once. **Skipped listings are filtered before the
+/// [`RELEASE_GRACE_FIRES`]. Another org's vault, and a vault whose owner is GOD or gone, has no
+/// holder the tick may act as (`Fire::turn` refuses both): each is skipped and logged once. **Skipped listings are filtered before the
 /// window is taken** (`mush_market::lapsed_holds_where`), so no number of them — the
 /// sweep keeps every lapsed hold-backed listing until its hold is gone (lead ruling
 /// L7) — and no listing that is always refused can starve a later player's release.
@@ -2312,6 +2322,26 @@ pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(Obj
             Some(PrincipalId::Object(owner)) if owner != GOD && !gone(w, owner) => {
                 holder = Some(owner);
                 true
+            }
+            // Doc 48e (exchange G14; 48d H-03): a vendor's storefront is its org's, and the port
+            // clerk acts for the port's vendors, so it releases their lapsed holds (an abandoned
+            // `+yard/buy` part ask, a refunded sale's lot) rather than leave the lot off the board.
+            Some(PrincipalId::Organization(_)) => {
+                match clerk_of_storefront(w, hold.endpoint.vault().0) {
+                    Some(clerk) if !gone(w, clerk) => {
+                        holder = Some(clerk);
+                        true
+                    }
+                    _ => {
+                        if release_warned.insert(listing) {
+                            tracing::info!(
+                                listing,
+                                "tacsim: a lapsed hold-backed listing's org vault is no port vendor's;                              it is left for its owner or staff to withdraw"
+                            );
+                        }
+                        false
+                    }
+                }
             }
             _ => {
                 if release_warned.insert(listing) {

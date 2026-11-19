@@ -592,3 +592,37 @@ async fn pl5_a_player_buys_a_stores_part_by_a_private_lot_ask() {
         trades(&rig, first)
     );
 }
+
+/// **Doc 48e, exchange G14 (48d H-03): an abandoned private part ask is released.** The first
+/// buyer's `+yard/buy` lists them the yard's only plant privately for 600 s, and they never take
+/// it. The ask lapses, and the port's clerk, acting for the yard, releases its hold, so the second
+/// buyer is listed the plant in turn. Before the fix the lapsed ask's hold was never released (the
+/// release arm acted only for player vaults), so the plant stayed held from everyone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g14_an_abandoned_private_part_ask_is_released_for_the_next_buyer() {
+    const PLANT: &str = "tacsim.part.plant.hauler_mk1";
+    let mut rig = stocked();
+    settle(&mut rig, 40);
+    let (first, _) = buyer(&mut rig, "Vesna", 3);
+    let (second, _) = buyer(&mut rig, "Wolfe", 4);
+    let out = run(&mut rig.tw, first, "+yard/order dray");
+    let order = booked(&out);
+    let out = run(&mut rig.tw, second, "+yard/order dray");
+    let theirs = booked(&out);
+    settle(&mut rig, 2);
+    crate::driving_rig::seed_store_parts(&mut rig, STICKNEY, "stickney_yards", PLANT, 1, 7_650_000);
+    let out = run(&mut rig.tw, first, &format!("+yard/buy {order}={PLANT}"));
+    assert!(out.contains(&format!("lists you 1 {PLANT} at ")), "{out}");
+    settle(&mut rig, 2);
+    let out = run(&mut rig.tw, second, &format!("+yard/buy {theirs}={PLANT}"));
+    assert!(out.contains(&BUY_HELD.replace("{good}", PLANT)), "{out}");
+    // The first buyer walks away: past the ask's 600 s, the clerk releases it.
+    let released = fires_until(&mut rig, 400, |rig| {
+        let out = run(&mut rig.tw, second, &format!("+yard/buy {theirs}={PLANT}"));
+        out.contains(&format!("lists you 1 {PLANT} at "))
+    });
+    assert!(
+        released,
+        "the abandoned ask's plant is listed to the next buyer"
+    );
+}
