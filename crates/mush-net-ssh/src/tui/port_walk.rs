@@ -667,7 +667,7 @@ impl PortWalkState {
         let has_content = manifest_panels.iter().any(|p| p == TACSIM_CONTENT_FEED);
         if has_content && !self.content_asked {
             self.content_asked = true;
-            out.push((TACSIM_CONTENT_FEED.to_string(), json!({})));
+            out.push((TACSIM_CONTENT_FEED.to_string(), json!({ "op": "manifest" })));
         }
         out.extend(self.drain_pack_queries(manifest_panels));
         let has_trade = manifest_panels.iter().any(|p| p == PORT_TRADE_FEED);
@@ -948,6 +948,23 @@ impl PortWalkState {
             }
         }
 
+        // If the player moves to another room inside an uncached non-Ceres/non-OOC port
+        // before its neighborhood pack arrives, keep the single placeholder synced to the
+        // new `atlas_entry` so `server_location_key` snaps cleanly once the pack lands.
+        if !self.neighborhood_cache.contains_key(&self.pack_id)
+            && self.pack_id != "neighborhood.ceres_freeport"
+            && self.pack_id != "neighborhood.ooc_area"
+            && !self.pack_id.contains("ooc")
+            && let Some(ref e) = atlas_entry
+            && !self.rooms.iter().any(|r| r.entry_id == *e)
+            && self.rooms.len() == 1
+        {
+            let kind = classify_room_kind(e, false, "indoor");
+            self.rooms[0].entry_id.clone_from(e);
+            self.rooms[0].name.clone_from(&clean_name);
+            self.rooms[0].kind = kind;
+        }
+
         let entry = atlas_entry
             .as_deref()
             .and_then(|e| {
@@ -1097,14 +1114,24 @@ impl PortWalkState {
         if let Some(bt) = obj.get("balance_text").and_then(Value::as_str) {
             self.balance_text = sanitize(bt);
         }
-        if let Some(v) = obj.get("venue").and_then(Value::as_str) {
-            let clean_v = sanitize(v);
-            if !clean_v.is_empty() {
-                self.current_venue = Some(clean_v);
+        if let Some(venue_val) = obj.get("venue") {
+            if venue_val.is_null() {
+                self.current_venue = None;
+            } else if let Some(v) = venue_val.as_str() {
+                let clean_v = sanitize(v);
+                self.current_venue = if clean_v.is_empty() {
+                    None
+                } else {
+                    Some(clean_v)
+                };
             }
         }
-        if let Some(pn) = obj.get("port_name").and_then(Value::as_str) {
-            self.port_name = sanitize(pn);
+        if let Some(pn_val) = obj.get("port_name") {
+            if pn_val.is_null() {
+                self.port_name.clear();
+            } else if let Some(pn) = pn_val.as_str() {
+                self.port_name = sanitize(pn);
+            }
         }
         self.trade_next_after = obj.get("next_after").and_then(Value::as_u64);
 
@@ -2492,16 +2519,22 @@ impl PortWalkState {
                     }
                 }
                 Key::Char('d') => {
-                    // Guard `+helm/dock` while ashore (`SSH-L-01`)
+                    // Guard `+helm/dock` while ashore (`SSH-L-01`); while underway in space
+                    // (`!self.docked`), prefer the selected corridor (`H-40`) over any stale venue.
                     if !self.aboard_ship {
                         self.push_drawer_log(
                             "[Sailing] Board your ship before issuing +helm/dock.".to_string(),
                         );
-                    } else if let Some(target_id) = self
-                        .current_venue
-                        .as_deref()
-                        .or_else(|| CORRIDORS.get(self.corridor_idx).map(|(id, _, _)| *id))
-                    {
+                    } else if let Some(target_id) = if !self.docked {
+                        CORRIDORS
+                            .get(self.corridor_idx)
+                            .map(|(id, _, _)| *id)
+                            .or(self.current_venue.as_deref())
+                    } else {
+                        self.current_venue
+                            .as_deref()
+                            .or_else(|| CORRIDORS.get(self.corridor_idx).map(|(id, _, _)| *id))
+                    } {
                         out.commands.push(format!("+helm/dock {target_id}"));
                         self.push_drawer_log(format!("> +helm/dock {target_id}"));
                     }
@@ -6096,5 +6129,112 @@ mod tests {
             st.server_location_key, "room.c03_arrivals",
             "server_location_key must wait for authoritative OutputEvent::Room"
         );
+    }
+
+    #[test]
+    fn sailing_dock_clears_stale_venue_manifest_uses_explicit_op_and_uncached_move_preserves_entry()
+    {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+
+        // 1. `ensure_queries` sends explicit `{"op": "manifest"}` to `tacsim.content`
+        let mut init_q = Vec::new();
+        st.ensure_queries(&[TACSIM_CONTENT_FEED.to_string()], &mut init_q, now);
+        assert_eq!(
+            init_q,
+            vec![(TACSIM_CONTENT_FEED.to_string(), json!({ "op": "manifest" }))]
+        );
+
+        // 2. Docked at Ceres (`venue: "ceres"`), then undock into space (`venue: null`),
+        // select `stickney` in Sailing drawer, and press `d` -> emits `+helm/dock stickney` (`H-40`)
+        let _ = st.observe_port_trade(&live_port_trade_fixture(), now);
+        assert_eq!(st.current_venue.as_deref(), Some("ceres"));
+        st.observe_room(
+            &sample_room(
+                "Salt Moth - Bridge",
+                "",
+                Some(json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": false
+                })),
+            ),
+            Some("Pilot"),
+        );
+        let _ = st.observe_port_trade(
+            &json!({ "venue": null, "port_name": null }),
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(st.current_venue, None);
+        st.open_drawer(PortDrawerKind::Sailing, &[], &mut Vec::new(), now);
+        // Move from index 0 (`ceres`) -> index 1 (`stickney`)
+        let _ = st.handle_key(Key::Down, false, false, &[], now);
+        let dock_out = st.handle_key(Key::Char('d'), false, false, &[], now);
+        assert_eq!(dock_out.commands, vec!["+helm/dock stickney"]);
+
+        // 3. Moving between two rooms of an uncached non-Ceres port BEFORE its pack arrives
+        // preserves the latest `atlas_entry` and snaps to it once the pack loads.
+        st.observe_room(
+            &RoomView {
+                id: "#500".into(),
+                name: "Republic Customs Hall".into(),
+                zone: None,
+                desc: "Customs.".into(),
+                contents: Vec::new(),
+                exits: Vec::new(),
+                ambient: std::collections::BTreeMap::from([(
+                    "atlas".into(),
+                    json!({ "pack": "neighborhood.stickney_yards", "entry": "room.p03_customs" }),
+                )]),
+            },
+            Some("Pilot"),
+        );
+        assert_eq!(st.server_location_key, "room.p03_customs");
+        st.observe_room(
+            &RoomView {
+                id: "#501".into(),
+                name: "Yard Concourse".into(),
+                zone: None,
+                desc: "Concourse.".into(),
+                contents: Vec::new(),
+                exits: Vec::new(),
+                ambient: std::collections::BTreeMap::from([(
+                    "atlas".into(),
+                    json!({ "pack": "neighborhood.stickney_yards", "entry": "room.p04_concourse" }),
+                )]),
+            },
+            Some("Pilot"),
+        );
+        assert_eq!(st.server_location_key, "room.p04_concourse");
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "neighborhood.stickney_yards",
+            "category": "neighborhood",
+            "json": serde_json::to_string(&json!({
+                "entries": {
+                    "room.p03_customs": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Republic Customs Hall",
+                            "footprint": { "rect": [[100, 140], [130, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    },
+                    "room.p04_concourse": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Yard Concourse",
+                            "footprint": { "rect": [[130, 140], [170, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    }
+                }
+            })).unwrap()
+        }));
+        assert_eq!(st.server_location_key, "room.p04_concourse");
+        assert_eq!(st.active_location_key, "room.p04_concourse");
     }
 }
