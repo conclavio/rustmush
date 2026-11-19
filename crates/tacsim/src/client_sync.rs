@@ -1321,6 +1321,68 @@ fn hash_footprint(h: &mut Sha256, fp: &mush_atlas::Footprint) {
     }
 }
 
+fn hash_atlas_records(h: &mut Sha256, w: &World, records: &mush_atlas::Records) {
+    h.update(b"|geo:");
+    for (room_id, geo) in &records.roomgeo {
+        h.update(room_id.0.to_le_bytes());
+        h.update(geo.revision.to_le_bytes());
+        h.update([match geo.kind {
+            mush_atlas::RoomKind::Outdoor => 0,
+            mush_atlas::RoomKind::Indoor => 1,
+            mush_atlas::RoomKind::Circulation => 2,
+        }]);
+        h.update([match geo.access {
+            mush_atlas::Access::Public => 0,
+            mush_atlas::Access::Restricted => 1,
+        }]);
+        match &geo.surface {
+            mush_atlas::SurfaceRef::Ground => h.update([0u8]),
+            mush_atlas::SurfaceRef::Floor {
+                structure, index, ..
+            } => {
+                h.update([1u8]);
+                h.update(structure.entry.as_str().as_bytes());
+                h.update(index.to_le_bytes());
+            }
+        }
+        if let Some(obj) = w.get(*room_id) {
+            h.update(obj.name.as_bytes());
+        }
+        hash_footprint(h, &geo.footprint);
+    }
+    h.update(b"|nb:");
+    for (nkey, nb) in &records.neighborhoods {
+        h.update(nkey.pack.as_str().as_bytes());
+        h.update(b":");
+        h.update(nkey.entry.as_str().as_bytes());
+        h.update(nb.revision.to_le_bytes());
+        h.update(nb.name.as_bytes());
+        h.update(nb.region.pack.as_str().as_bytes());
+        h.update(nb.setting.as_bytes());
+    }
+    h.update(b"|st:");
+    for (skey, st) in &records.structures {
+        h.update(skey.pack.as_str().as_bytes());
+        h.update(b":");
+        h.update(skey.entry.as_str().as_bytes());
+        h.update(st.revision.to_le_bytes());
+        h.update((st.footprint.0.len() as u64).to_le_bytes());
+        for mush_atlas::Point2(px, py) in &st.footprint.0 {
+            h.update(px.to_bits().to_le_bytes());
+            h.update(py.to_bits().to_le_bytes());
+        }
+        h.update((st.floors.len() as u64).to_le_bytes());
+        for fl in &st.floors {
+            h.update(fl.index.to_le_bytes());
+            h.update(fl.z_offset_m.to_bits().to_le_bytes());
+            h.update(fl.height_m.to_bits().to_le_bytes());
+            if let Some(name) = &fl.name {
+                h.update(name.as_bytes());
+            }
+        }
+    }
+}
+
 fn world_content_fingerprint(w: &World, actor: ObjId) -> [u8; 32] {
     let mut h = Sha256::new();
     let is_staff_viewer = mush_atlas::is_staff(w, actor);
@@ -1342,65 +1404,7 @@ fn world_content_fingerprint(w: &World, actor: ObjId) -> [u8; 32] {
             h.update(pack.manifest().version().to_le_bytes());
             h.update(pack.manifest().digest().as_bytes());
         }
-        h.update(b"|geo:");
-        for (room_id, geo) in &atlas.records.roomgeo {
-            h.update(room_id.0.to_le_bytes());
-            h.update(geo.revision.to_le_bytes());
-            h.update([match geo.kind {
-                mush_atlas::RoomKind::Outdoor => 0,
-                mush_atlas::RoomKind::Indoor => 1,
-                mush_atlas::RoomKind::Circulation => 2,
-            }]);
-            h.update([match geo.access {
-                mush_atlas::Access::Public => 0,
-                mush_atlas::Access::Restricted => 1,
-            }]);
-            match &geo.surface {
-                mush_atlas::SurfaceRef::Ground => h.update([0u8]),
-                mush_atlas::SurfaceRef::Floor {
-                    structure, index, ..
-                } => {
-                    h.update([1u8]);
-                    h.update(structure.entry.as_str().as_bytes());
-                    h.update(index.to_le_bytes());
-                }
-            }
-            if let Some(obj) = w.get(*room_id) {
-                h.update(obj.name.as_bytes());
-            }
-            hash_footprint(&mut h, &geo.footprint);
-        }
-        h.update(b"|nb:");
-        for (nkey, nb) in &atlas.records.neighborhoods {
-            h.update(nkey.pack.as_str().as_bytes());
-            h.update(b":");
-            h.update(nkey.entry.as_str().as_bytes());
-            h.update(nb.revision.to_le_bytes());
-            h.update(nb.name.as_bytes());
-            h.update(nb.region.pack.as_str().as_bytes());
-            h.update(nb.setting.as_bytes());
-        }
-        h.update(b"|st:");
-        for (skey, st) in &atlas.records.structures {
-            h.update(skey.pack.as_str().as_bytes());
-            h.update(b":");
-            h.update(skey.entry.as_str().as_bytes());
-            h.update(st.revision.to_le_bytes());
-            h.update((st.footprint.0.len() as u64).to_le_bytes());
-            for mush_atlas::Point2(px, py) in &st.footprint.0 {
-                h.update(px.to_bits().to_le_bytes());
-                h.update(py.to_bits().to_le_bytes());
-            }
-            h.update((st.floors.len() as u64).to_le_bytes());
-            for fl in &st.floors {
-                h.update(fl.index.to_le_bytes());
-                h.update(fl.z_offset_m.to_bits().to_le_bytes());
-                h.update(fl.height_m.to_bits().to_le_bytes());
-                if let Some(name) = &fl.name {
-                    h.update(name.as_bytes());
-                }
-            }
-        }
+        hash_atlas_records(&mut h, w, &atlas.records);
     }
     if let Some(store) = w.module_state::<TacsimStore>() {
         h.update(b"|tacsim:");
@@ -2231,30 +2235,34 @@ mod tests {
 
     #[test]
     fn world_content_bundle_gates_cast_unapplied_packs_and_withdrawn_designs() -> TestResult {
-        let mut tw = mush_testkit::TestWorld::new();
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_atlas::AtlasModule::default()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
         let player = tw.spawn_player("PlayerViewer");
-        let mut store = TacsimStore::default();
         // Stage an unapplied `CampaignSeed` (`ceres_phobos` lane) in `store.loaded` without
         // applying it — `world_content_bundle` must NOT expose it via `newest_loaded` (CS-H1).
         let lane_pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON)?;
-        store.stage_pack(crate::LoadedPack {
-            source: "<unapplied lane>".to_owned(),
-            pack: lane_pack,
-        })?;
-        // Mark `tacsim.unit.dray` withdrawn in the design registry.
-        store.designs.insert(
-            (crate::definitions::content::DRAY.to_owned(), 1),
-            crate::design::DesignRecord {
-                id: crate::definitions::content::DRAY.to_owned(),
-                version: 1,
-                pack: json!({}),
-                look: json!({}),
-                withdrawn: true,
-            },
-        );
-        tw.world_mut().module_state_insert(store);
-        tw.world_mut()
-            .module_state_insert(mush_atlas::AtlasState::default());
+        {
+            let Some(store) = tw.world_mut().module_state_mut::<TacsimStore>() else {
+                return crate::test_checks::failed("TacsimStore missing from TacsimRuleset");
+            };
+            store.stage_pack(crate::LoadedPack {
+                source: "<unapplied lane>".to_owned(),
+                pack: lane_pack,
+            })?;
+            // Mark `tacsim.unit.dray` withdrawn in the design registry.
+            store.designs.insert(
+                (crate::definitions::content::DRAY.to_owned(), 1),
+                crate::design::DesignRecord {
+                    id: crate::definitions::content::DRAY.to_owned(),
+                    version: 1,
+                    pack: json!({}),
+                    look: json!({}),
+                    withdrawn: true,
+                },
+            );
+        }
 
         // Non-staff sees neither `cast.ceres_freeport` (no accessible companion neighborhood),
         // nor the unapplied `ceres_phobos` lane pack, nor the withdrawn `dray` design!
@@ -2274,7 +2282,14 @@ mod tests {
         let fp2 = world_content_fingerprint(tw.world(), player);
         check_ne!(fp1, fp2);
 
-        // Fingerprint also invalidates on `atlas.records.structures` & `neighborhoods` edits (CS-M1).
+        // `hash_atlas_records` invalidates on `structures` & `neighborhoods` edits (CS-M1).
+        let digest_records = |records: &mush_atlas::Records| -> [u8; 32] {
+            let mut h = Sha256::new();
+            hash_atlas_records(&mut h, tw.world(), records);
+            h.finalize().into()
+        };
+        let mut records = mush_atlas::Records::default();
+        let rec_fp0 = digest_records(&records);
         let pack_id = mush_core::CanonicalId::new("neighborhood.fp_probe")?;
         let st_key = mush_atlas::RecordKey::new(
             pack_id.clone(),
@@ -2284,62 +2299,58 @@ mod tests {
             pack_id.clone(),
             mush_core::CanonicalId::new("neighborhood.fp_main")?,
         );
-        if let Some(atlas) = tw.world_mut().module_state_mut::<mush_atlas::AtlasState>() {
-            atlas.records.structures.insert(
-                st_key.clone(),
-                mush_atlas::StructureRec {
-                    key: st_key,
-                    site: mush_atlas::RecordKey::new(
-                        pack_id.clone(),
-                        mush_core::CanonicalId::new("site.fp_hub")?,
-                    ),
-                    footprint: mush_atlas::Polygon2(vec![
-                        mush_atlas::Point2(0.0, 0.0),
-                        mush_atlas::Point2(10.0, 0.0),
-                        mush_atlas::Point2(10.0, 10.0),
-                        mush_atlas::Point2(0.0, 10.0),
-                    ]),
-                    floors: vec![],
-                    revision: 1,
+        records.structures.insert(
+            st_key.clone(),
+            mush_atlas::StructureRec {
+                key: st_key,
+                site: mush_atlas::RecordKey::new(
+                    pack_id.clone(),
+                    mush_core::CanonicalId::new("site.fp_hub")?,
+                ),
+                footprint: mush_atlas::Polygon2(vec![
+                    mush_atlas::Point2(0.0, 0.0),
+                    mush_atlas::Point2(10.0, 0.0),
+                    mush_atlas::Point2(10.0, 10.0),
+                    mush_atlas::Point2(0.0, 10.0),
+                ]),
+                floors: vec![],
+                revision: 1,
+            },
+        );
+        let rec_fp1 = digest_records(&records);
+        check_ne!(rec_fp0, rec_fp1);
+        records.neighborhoods.insert(
+            nb_key.clone(),
+            mush_atlas::NeighborhoodRec {
+                key: nb_key,
+                region: mush_atlas::RecordKey::new(
+                    mush_core::CanonicalId::new("region.ceres")?,
+                    mush_core::CanonicalId::new("region.ceres")?,
+                ),
+                locality: mush_atlas::RecordKey::new(
+                    pack_id.clone(),
+                    mush_core::CanonicalId::new("locality.fp")?,
+                ),
+                name: "FP Probe".to_owned(),
+                setting: "station".to_owned(),
+                representation: mush_atlas::record::Representation::Authored,
+                footprint: mush_atlas::Polygon2(vec![]),
+                room_budget: mush_atlas::record::Budget {
+                    target: 10,
+                    maximum: 10,
                 },
-            );
-        }
-        let fp3 = world_content_fingerprint(tw.world(), player);
-        check_ne!(fp2, fp3);
-        if let Some(atlas) = tw.world_mut().module_state_mut::<mush_atlas::AtlasState>() {
-            atlas.records.neighborhoods.insert(
-                nb_key.clone(),
-                mush_atlas::NeighborhoodRec {
-                    key: nb_key,
-                    region: mush_atlas::RecordKey::new(
-                        mush_core::CanonicalId::new("region.ceres")?,
-                        mush_core::CanonicalId::new("region.ceres")?,
-                    ),
-                    locality: mush_atlas::RecordKey::new(
-                        pack_id.clone(),
-                        mush_core::CanonicalId::new("locality.fp")?,
-                    ),
-                    name: "FP Probe".to_owned(),
-                    setting: "station".to_owned(),
-                    representation: mush_atlas::record::Representation::Authored,
-                    footprint: mush_atlas::Polygon2(vec![]),
-                    room_budget: mush_atlas::record::Budget {
-                        target: 10,
-                        maximum: 10,
-                    },
-                    hydration: mush_atlas::record::HydrationPolicy::default(),
-                    zone: None,
-                    reviewers: vec![],
-                    tiles: vec![],
-                    resolution_cm: 100,
-                    theme: None,
-                    ambience: vec![],
-                    revision: 1,
-                },
-            );
-        }
-        let fp4 = world_content_fingerprint(tw.world(), player);
-        check_ne!(fp3, fp4);
+                hydration: mush_atlas::record::HydrationPolicy::default(),
+                zone: None,
+                reviewers: vec![],
+                tiles: vec![],
+                resolution_cm: 100,
+                theme: None,
+                ambience: vec![],
+                revision: 1,
+            },
+        );
+        let rec_fp2 = digest_records(&records);
+        check_ne!(rec_fp1, rec_fp2);
         Ok(())
     }
 

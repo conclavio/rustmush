@@ -7344,11 +7344,14 @@ mod thrust_permille_tests {
         check_eq!(ship_thrust_permille(&ship), 1_000);
 
         // Tier-1 free-flight cockpit payload emits live `thrust_permille`.
-        let mut tw = mush_testkit::TestWorld::new();
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
         let hull =
             tw.world_mut()
                 .create(mush_core::ObjKind::Thing, "M/V Test Dray", ObjId(1), None)?;
-        let mut book = SpaceBubbleBook::default();
+        let Some(book) = tw.world_mut().module_state_mut::<SpaceBubbleBook>() else {
+            return crate::test_checks::failed("SpaceBubbleBook missing from TacsimRuleset");
+        };
         book.free_flights.insert(
             hull,
             super::super::tick::SpaceFreeFlightRecord {
@@ -7367,7 +7370,6 @@ mod thrust_permille_tests {
                 prepaid_unflown_t: 0,
             },
         );
-        tw.world_mut().module_state_insert(book);
 
         let Some((_, idle_cockpit)) = build_tier1_space_panel_payloads(tw.world(), hull) else {
             return crate::test_checks::failed("expected tier1 cockpit payload when idle");

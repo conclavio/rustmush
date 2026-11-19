@@ -1939,9 +1939,12 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::port::owned::{Held, OwnedBody, OwnedHull};
         use mush_core::Flags;
-        use mush_sim::data::{DomainId, PlacementRecord, Pose};
+        use mush_sim::data::Pose;
 
-        let mut tw = mush_testkit::TestWorld::new();
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
         let pilot = tw.spawn_player("Captain");
         let gallery = tw.world_mut().create(
             mush_core::ObjKind::Room,
@@ -1961,6 +1964,29 @@ mod tests {
         let going_hull =
             tw.world_mut()
                 .create(mush_core::ObjKind::Thing, "Scrapped Dray", ObjId(1), None)?;
+
+        let posture = mush_sim::passive_rules_value(serde_json::json!({}))?;
+        let domain = {
+            let mut out = mush_core::Outbox::new();
+            let engine = tw.engine_mut();
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(smol_str::SmolStr::new(crate::store::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let domain = mush_sim::open_passive_domain(&mut ctx, gallery, gallery)
+                .map_err(|e| format!("open_passive_domain failed: {e}"))?;
+            for hull in [owned_hull, hauler_hull, going_hull] {
+                mush_sim::place(&mut ctx, hull, domain, Pose::passive(posture.clone()))
+                    .map_err(|e| format!("place hull failed: {e}"))?;
+            }
+            domain
+        };
         if let Some(obj) = tw.world_mut().get_mut(going_hull) {
             obj.flags.insert(Flags::GOING);
         }
@@ -1972,70 +1998,53 @@ mod tests {
         let lane_pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON)?;
         let lane_ver = lane_pack.manifest().version();
 
-        let mut store = TacsimStore::default();
-        store.cfg.enabled = true;
-        store.stage_pack(crate::LoadedPack {
-            source: "<test lane>".to_owned(),
-            pack: lane_pack,
-        })?;
-        // Latch lane version so `report_ports` and `berth_of` resolve `ceres_port`.
-        store.seeded_keys.insert((lane_id.clone(), lane_ver));
-        store.applied.insert(lane_id.clone(), lane_ver);
-        let domain = DomainId(901);
-        let mut map = PortMap::new(lane_id.clone(), ceres_entry.clone());
-        map.domain = Some(domain.0);
-        map.presentation = Some(gallery.0);
-        store.port_maps.insert((lane_id, ceres_entry.clone()), map);
-
-        let mut bridge_rooms = BTreeMap::new();
-        bridge_rooms.insert(CanonicalId::new("bridge")?, owned_bridge.0);
-        for (idx, (hull, mark, design, rooms)) in [
-            (owned_hull, "FPC-P-9001", dray_p.clone(), bridge_rooms),
-            (hauler_hull, "VCC-01", dray.clone(), BTreeMap::new()),
-            (going_hull, "FPC-D-9999", dray, BTreeMap::new()),
-        ]
-        .into_iter()
-        .enumerate()
         {
-            let row = HullRow {
-                n: idx as u32,
-                mark: mark.to_owned(),
-                hull: hull.0,
-                rooms,
-                exits: Vec::new(),
+            let Some(store) = tw.world_mut().module_state_mut::<TacsimStore>() else {
+                return crate::test_checks::failed("store missing from TacsimRuleset");
             };
-            store.yard.owned.insert(
-                hull,
-                Held::Present(Box::new(OwnedHull {
-                    hull,
-                    design,
+            store.cfg.enabled = true;
+            store.stage_pack(crate::LoadedPack {
+                source: "<test lane>".to_owned(),
+                pack: lane_pack,
+            })?;
+            // Latch lane version so `report_ports` and `berth_of` resolve `ceres_port`.
+            store.seeded_keys.insert((lane_id.clone(), lane_ver));
+            store.applied.insert(lane_id.clone(), lane_ver);
+            let mut map = PortMap::new(lane_id.clone(), ceres_entry.clone());
+            map.domain = Some(domain.0);
+            map.presentation = Some(gallery.0);
+            store.port_maps.insert((lane_id, ceres_entry.clone()), map);
+
+            let mut bridge_rooms = BTreeMap::new();
+            bridge_rooms.insert(CanonicalId::new("bridge")?, owned_bridge.0);
+            for (idx, (hull, mark, design, rooms)) in [
+                (owned_hull, "FPC-P-9001", dray_p.clone(), bridge_rooms),
+                (hauler_hull, "VCC-01", dray.clone(), BTreeMap::new()),
+                (going_hull, "FPC-D-9999", dray, BTreeMap::new()),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let row = HullRow {
+                    n: idx as u32,
                     mark: mark.to_owned(),
-                    home: ceres_entry.clone(),
-                    provenance: (idx as u64) + 1,
-                    body: OwnedBody::Ship(row),
-                })),
-            );
+                    hull: hull.0,
+                    rooms,
+                    exits: Vec::new(),
+                };
+                store.yard.owned.insert(
+                    hull,
+                    Held::Present(Box::new(OwnedHull {
+                        hull,
+                        design,
+                        mark: mark.to_owned(),
+                        home: ceres_entry.clone(),
+                        provenance: (idx as u64) + 1,
+                        body: OwnedBody::Ship(row),
+                    })),
+                );
+            }
         }
-
-        let posture = mush_sim::passive_rules_value(serde_json::json!({}))?;
-        let mut spatial = SpatialState::default();
-        for hull in [owned_hull, hauler_hull, going_hull] {
-            spatial.placements.insert(
-                hull,
-                PlacementRecord {
-                    object: hull,
-                    parent: SpatialParent::Direct {
-                        domain,
-                        pose: Pose::passive(posture.clone()),
-                    },
-                    revision: 1,
-                    unplaced: None,
-                },
-            );
-        }
-
-        tw.world_mut().module_state_insert(store);
-        tw.world_mut().module_state_insert(spatial);
 
         let w = tw.world();
         let Some(store_ref) = w.module_state::<TacsimStore>() else {
