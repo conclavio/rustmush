@@ -6,6 +6,17 @@
 
   import type { GameApp } from "$lib/game.svelte";
   import {
+    formatEscortPostCommand,
+    formatHaulPostCommand,
+    formatMarketDepthCommand,
+    formatMarketHistoryCommand,
+    HISTORY_GOODS,
+    JOB_BOARD_FILTERS,
+    parseMarketHistoryLines,
+    WORKS_RECIPES,
+    YARD_RECIPES,
+  } from "$lib/tacsim/economy";
+  import {
     buildNpcTopics,
     computeMaxFitQuantity,
     CORRIDOR_DESTINATIONS,
@@ -14,16 +25,30 @@
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
+  type TradeSubView = "book" | "history" | "jobs" | "industry";
+
   let npcSayDraft = $state("");
   let hullNameDraft = $state("");
+  let tradeSubView = $state<TradeSubView>("book");
+  let historyGood = $state<string>("volatiles");
+  let activeJobFilter = $state<string>("all");
+  let jobIdDraft = $state<string>("1");
+  let haulQtyDraft = $state<number>(10);
+  let haulFeeDraft = $state<number>(250);
+  let workOrderIdDraft = $state<string>("1");
+  let debtIdDraft = $state<string>("1");
 
   $effect(() => {
     if (app.tacsim.activeModal === "coop") {
       hullNameDraft = app.tacsim.coopSuggestedHull;
     } else if (app.tacsim.activeModal === "npc") {
       npcSayDraft = "";
+    } else if (app.tacsim.activeModal === "trade") {
+      tradeSubView = "book";
     }
   });
+
+  const parsedHistory = $derived(parseMarketHistoryLines(app.tacsim.modalLog));
 
   const modal = $derived(app.tacsim.activeModal);
   const trade = $derived(app.tacsim.trade);
@@ -94,10 +119,49 @@
             <button
               type="button"
               class="tbtn"
-              class:active={modal === "trade"}
-              onclick={() => (app.tacsim.activeModal = "trade")}
+              class:active={modal === "trade" && tradeSubView === "book"}
+              onclick={() => {
+                app.tacsim.activeModal = "trade";
+                tradeSubView = "book";
+              }}
             >
               Commodity Exchange
+            </button>
+            <button
+              type="button"
+              class="tbtn"
+              class:active={modal === "trade" && tradeSubView === "history"}
+              onclick={() => {
+                app.tacsim.activeModal = "trade";
+                tradeSubView = "history";
+                onCmd(formatMarketHistoryCommand(historyGood));
+              }}
+            >
+              24-Week History
+            </button>
+            <button
+              type="button"
+              class="tbtn"
+              class:active={modal === "trade" && tradeSubView === "jobs"}
+              onclick={() => {
+                app.tacsim.activeModal = "trade";
+                tradeSubView = "jobs";
+                onCmd("+market/jobs");
+              }}
+            >
+              Jobs & Crew
+            </button>
+            <button
+              type="button"
+              class="tbtn"
+              class:active={modal === "trade" && tradeSubView === "industry"}
+              onclick={() => {
+                app.tacsim.activeModal = "trade";
+                tradeSubView = "industry";
+                onCmd("+works");
+              }}
+            >
+              Works & Yard
             </button>
             <button
               type="button"
@@ -136,7 +200,7 @@
           </div>
         </div>
 
-        {#if modal === "trade"}
+        {#if modal === "trade" && tradeSubView === "book"}
           <div class="qty-row">
             <span class="muted">Lot Quantity:</span>
             {#each [1, 5, 10, 25, "max"] as const as q (q)}
@@ -149,6 +213,13 @@
                 {q === "max" ? "Max Fit" : `${q}`}
               </button>
             {/each}
+            <div class="book-acct-btns">
+              <button type="button" class="ghost sm" onclick={() => onCmd("+market/mine")}>My Listings</button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("+market/orders")}>Open Quotes</button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("+locker")}>Check Locker</button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("+locker/open")}>Open Locker</button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("+debts")}>Arrears & Debts</button>
+            </div>
           </div>
 
           <div class="tables">
@@ -229,6 +300,329 @@
               </button>
             </div>
           {/if}
+
+        {:else if modal === "trade" && tradeSubView === "history"}
+          <div class="econ-pane">
+            <div class="qty-row">
+              <span class="muted">Commodity Series:</span>
+              {#each HISTORY_GOODS as g (g.code)}
+                <button
+                  type="button"
+                  class="qchip"
+                  class:on={historyGood === g.code}
+                  onclick={() => {
+                    historyGood = g.code;
+                    onCmd(formatMarketHistoryCommand(g.code));
+                  }}
+                >
+                  {g.label}
+                </button>
+              {/each}
+            </div>
+
+            <div class="act-row">
+              <button
+                type="button"
+                class="buybtn"
+                onclick={() => onCmd(formatMarketHistoryCommand(historyGood))}
+              >
+                Load 24-Week Trend ({formatMarketHistoryCommand(historyGood)})
+              </button>
+              <button
+                type="button"
+                class="ghost"
+                onclick={() => onCmd(formatMarketDepthCommand(historyGood))}
+              >
+                Public Depth ({formatMarketDepthCommand(historyGood)})
+              </button>
+              <button type="button" class="ghost" onclick={() => onCmd("+debts")}>
+                Check Debts (+debts)
+              </button>
+              <input
+                type="text"
+                class="mini-input"
+                aria-label="debt obligation id"
+                bind:value={debtIdDraft}
+                placeholder="Debt #"
+              />
+              <button
+                type="button"
+                class="sellbtn"
+                onclick={() => onCmd(`+debts/pay ${debtIdDraft.trim() || "1"}`)}
+              >
+                Pay Debt
+              </button>
+            </div>
+
+            {#if parsedHistory.rowsNewestFirst.length > 0}
+              <div class="spark-grid">
+                <div class="spark-card">
+                  <span class="muted">House Ask Trend ({parsedHistory.goodLabel ?? historyGood})</span>
+                  <div class="spark-line ask">{parsedHistory.askSparkline}</div>
+                  <span class="muted">Latest: <strong>{parsedHistory.latestAsk}</strong> · Band: {parsedHistory.askRange}</span>
+                </div>
+                <div class="spark-card">
+                  <span class="muted">House Bid Trend ({parsedHistory.goodLabel ?? historyGood})</span>
+                  <div class="spark-line bid">{parsedHistory.bidSparkline}</div>
+                  <span class="muted">Latest: <strong>{parsedHistory.latestBid}</strong> · Band: {parsedHistory.bidRange}</span>
+                </div>
+              </div>
+              <div class="rows">
+                {#each parsedHistory.rowsNewestFirst as hr, i (i)}
+                  <div class="lrow">
+                    <span class="muted">{hr.when}</span>
+                    <div class="lact">
+                      <span class="price">Ask: {hr.askText}</span>
+                      <span class="price bid">Bid: {hr.bidText}</span>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <p class="muted">
+                Select a commodity above to query the venue's 24 IC-week house ask and bid series.
+              </p>
+            {/if}
+          </div>
+
+        {:else if modal === "trade" && tradeSubView === "jobs"}
+          <div class="econ-pane">
+            <div class="qty-row">
+              <span class="muted">Board Filter:</span>
+              {#each JOB_BOARD_FILTERS as jf (jf.id)}
+                <button
+                  type="button"
+                  class="qchip"
+                  class:on={activeJobFilter === jf.id}
+                  onclick={() => {
+                    activeJobFilter = jf.id;
+                    onCmd(jf.cmd);
+                  }}
+                >
+                  {jf.label}
+                </button>
+              {/each}
+              <button type="button" class="ghost sm" onclick={() => onCmd("+sortie/crew")}>
+                Crew Terms (+sortie/crew)
+              </button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("+sortie/contract")}>
+                My Crew (+sortie/contract)
+              </button>
+            </div>
+
+            <div class="tables">
+              <section class="tcol">
+                <h3>Accept or Deliver Open Job</h3>
+                <div class="act-row">
+                  <input
+                    type="text"
+                    class="mini-input"
+                    aria-label="job contract id"
+                    bind:value={jobIdDraft}
+                    placeholder="Job #"
+                  />
+                  <button
+                    type="button"
+                    class="buybtn"
+                    onclick={() => onCmd(`+haul/accept ${jobIdDraft.trim() || "1"} go`)}
+                  >
+                    Accept Haul
+                  </button>
+                  <button
+                    type="button"
+                    class="sellbtn"
+                    onclick={() => onCmd(`+haul/deliver ${jobIdDraft.trim() || "1"} go`)}
+                  >
+                    Deliver Haul
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost"
+                    onclick={() => onCmd(`+survey/accept ${jobIdDraft.trim() || "1"}`)}
+                  >
+                    Accept Survey
+                  </button>
+                </div>
+                <div class="act-row">
+                  <button type="button" class="ghost sm" onclick={() => onCmd("+haul")}>My Hauls (+haul)</button>
+                  <button type="button" class="ghost sm" onclick={() => onCmd("+escort")}>My Escorts (+escort)</button>
+                  <button type="button" class="ghost sm" onclick={() => onCmd("+survey")}>Surveys (+survey)</button>
+                  <button type="button" class="ghost sm" onclick={() => onCmd("+salvage/jobs")}>Retrieval (+salvage/jobs)</button>
+                  <button type="button" class="ghost sm" onclick={() => onCmd("+passage")}>Passage (+passage)</button>
+                </div>
+              </section>
+
+              <section class="tcol">
+                <h3>Post Shipper Haul or Convoy Escort</h3>
+                <div class="act-row">
+                  <input
+                    type="number"
+                    class="mini-input"
+                    aria-label="haul quantity tonnes"
+                    bind:value={haulQtyDraft}
+                    min="1"
+                  />
+                  <input
+                    type="number"
+                    class="mini-input"
+                    aria-label="job fee credits"
+                    bind:value={haulFeeDraft}
+                    min="1"
+                  />
+                  <button
+                    type="button"
+                    class="buybtn"
+                    onclick={() =>
+                      onCmd(
+                        formatHaulPostCommand(
+                          haulQtyDraft,
+                          historyGood,
+                          app.tacsim.selectedDestination,
+                          haulFeeDraft,
+                          true,
+                        ),
+                      )}
+                  >
+                    Post Haul ({historyGood} → {app.tacsim.selectedDestination})
+                  </button>
+                  <button
+                    type="button"
+                    class="sellbtn"
+                    onclick={() =>
+                      onCmd(
+                        formatEscortPostCommand(
+                          app.tacsim.ambient.ownHullName || app.tacsim.ambient.hullName || "ship",
+                          app.tacsim.selectedDestination,
+                          haulFeeDraft,
+                          true,
+                        ),
+                      )}
+                  >
+                    Post Escort (→ {app.tacsim.selectedDestination})
+                  </button>
+                </div>
+              </section>
+            </div>
+          </div>
+
+        {:else if modal === "trade" && tradeSubView === "industry"}
+          <div class="econ-pane">
+            <div class="act-row">
+              <button type="button" class="ghost sm" onclick={() => onCmd("+works")}>Works Status (+works)</button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("+yard")}>Shipyard Status (+yard)</button>
+              <button
+                type="button"
+                class="ghost sm"
+                onclick={() =>
+                  onCmd(`+bay ${app.tacsim.ambient.ownHullName || app.tacsim.ambient.hullName || "ship"}`)}
+              >
+                Bay & Magazines (+bay)
+              </button>
+              <button
+                type="button"
+                class="ghost sm"
+                onclick={() =>
+                  onCmd(`+bay/order ${app.tacsim.ambient.ownHullName || app.tacsim.ambient.hullName || "ship"}=rearm`)}
+              >
+                Rearm Magazines (+bay/order =rearm)
+              </button>
+              <button
+                type="button"
+                class="ghost sm"
+                onclick={() =>
+                  onCmd(`+bay/order ${app.tacsim.ambient.ownHullName || app.tacsim.ambient.hullName || "ship"}=all`)}
+              >
+                Full Repair (+bay/order =all)
+              </button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("+core")}>Core Shop (+core)</button>
+              <button type="button" class="ghost sm" onclick={() => onCmd("@facility/list")}>Facilities (@facility/list)</button>
+            </div>
+
+            <div class="act-row">
+              <span class="muted">Active Order #:</span>
+              <input
+                type="text"
+                class="mini-input"
+                aria-label="work or yard order id"
+                bind:value={workOrderIdDraft}
+                placeholder="Order #"
+              />
+              <button
+                type="button"
+                class="buybtn"
+                onclick={() => onCmd(`+works/buy ${workOrderIdDraft.trim() || "1"}`)}
+              >
+                Buy Works Bill (+works/buy)
+              </button>
+              <button
+                type="button"
+                class="sellbtn"
+                onclick={() => onCmd(`+works/collect ${workOrderIdDraft.trim() || "1"}`)}
+              >
+                Collect Works (+works/collect)
+              </button>
+              <button
+                type="button"
+                class="buybtn"
+                onclick={() => onCmd(`+yard/buy ${workOrderIdDraft.trim() || "1"}`)}
+              >
+                Buy Yard Bill (+yard/buy)
+              </button>
+              <button
+                type="button"
+                class="sellbtn"
+                onclick={() => onCmd(`+yard/collect ${workOrderIdDraft.trim() || "1"}`)}
+              >
+                Commission Hull (+yard/collect)
+              </button>
+            </div>
+
+            <div class="tables">
+              <section class="tcol">
+                <h3>Port Works — Milling, Munitions & Core Modules</h3>
+                <div class="rows">
+                  {#each WORKS_RECIPES as r (r.id)}
+                    <div class="lrow">
+                      <div class="lmeta">
+                        <strong>{r.label}</strong>
+                        <span class="muted">{r.inputsSummary} → {r.outputSummary}</span>
+                      </div>
+                      <div class="lact">
+                        <button type="button" class="ghost sm" onclick={() => onCmd(`+works/quote ${r.id}`)}>
+                          Quote
+                        </button>
+                        <button type="button" class="buybtn" onclick={() => onCmd(`+works/order ${r.id}`)}>
+                          Book
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              </section>
+
+              <section class="tcol">
+                <h3>Shipyard — Light & Heavy Hull Commissioning</h3>
+                <div class="rows">
+                  {#each YARD_RECIPES as y (y.id)}
+                    <div class="lrow">
+                      <div class="lmeta">
+                        <strong>{y.label}</strong>
+                        <span class="muted">{y.inputsSummary} · {y.outputSummary}</span>
+                      </div>
+                      <div class="lact">
+                        <button type="button" class="ghost sm" onclick={() => onCmd(`+yard/quote ${y.id}`)}>
+                          Quote
+                        </button>
+                        <button type="button" class="sellbtn" onclick={() => onCmd(`+yard/order ${y.id}`)}>
+                          Order Hull
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              </section>
+            </div>
+          </div>
         {:else}
           <div class="sailing-body">
             <h3>Select Corridor Destination Port</h3>
@@ -724,6 +1118,61 @@
 
   .slot-chip.red { color: #ff8877; border-color: #883328; }
   .slot-chip.blue { color: #77bbff; border-color: #285588; }
+
+  .book-acct-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-left: auto;
+  }
+
+  .econ-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .mini-input {
+    width: 5.5rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 0.25rem 0.45rem;
+  }
+
+  .spark-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: 0.6rem;
+  }
+
+  .spark-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .spark-line {
+    font-family: var(--font-mono);
+    font-size: 1.05rem;
+    letter-spacing: 0.08em;
+  }
+
+  .spark-line.ask {
+    color: #66d8ff;
+  }
+
+  .spark-line.bid {
+    color: #ffd077;
+  }
 
   .modal-log {
     background: #070d16;

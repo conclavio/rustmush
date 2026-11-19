@@ -41,6 +41,8 @@ const QTY_PRESETS: [i64; 5] = [1, 5, 10, 25, 0]; // 0 = MAX FIT
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PortDrawerKind {
     Trade,
+    Jobs,
+    Industry,
     Sailing,
     Coop,
     Sim,
@@ -51,7 +53,9 @@ impl PortDrawerKind {
     #[must_use]
     pub fn next(self) -> PortDrawerKind {
         match self {
-            PortDrawerKind::Trade => PortDrawerKind::Sailing,
+            PortDrawerKind::Trade => PortDrawerKind::Jobs,
+            PortDrawerKind::Jobs => PortDrawerKind::Industry,
+            PortDrawerKind::Industry => PortDrawerKind::Sailing,
             PortDrawerKind::Sailing => PortDrawerKind::Coop,
             PortDrawerKind::Coop => PortDrawerKind::Sim,
             PortDrawerKind::Sim => PortDrawerKind::Npc,
@@ -63,7 +67,9 @@ impl PortDrawerKind {
     pub fn prev(self) -> PortDrawerKind {
         match self {
             PortDrawerKind::Trade => PortDrawerKind::Npc,
-            PortDrawerKind::Sailing => PortDrawerKind::Trade,
+            PortDrawerKind::Jobs => PortDrawerKind::Trade,
+            PortDrawerKind::Industry => PortDrawerKind::Jobs,
+            PortDrawerKind::Sailing => PortDrawerKind::Industry,
             PortDrawerKind::Coop => PortDrawerKind::Sailing,
             PortDrawerKind::Sim => PortDrawerKind::Coop,
             PortDrawerKind::Npc => PortDrawerKind::Sim,
@@ -73,11 +79,13 @@ impl PortDrawerKind {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            PortDrawerKind::Trade => "EXCHANGE",
-            PortDrawerKind::Sailing => "SAILING",
-            PortDrawerKind::Coop => "CO-OP",
-            PortDrawerKind::Sim => "SIMULATOR",
-            PortDrawerKind::Npc => "TALK",
+            PortDrawerKind::Trade => "Exchange",
+            PortDrawerKind::Jobs => "Jobs",
+            PortDrawerKind::Industry => "Works",
+            PortDrawerKind::Sailing => "Sailing",
+            PortDrawerKind::Coop => "Co-op",
+            PortDrawerKind::Sim => "Simulator",
+            PortDrawerKind::Npc => "Talk",
         }
     }
 }
@@ -277,6 +285,37 @@ const SIM_LOADOUTS: [(&str, &str); 4] = [
     ("Join Blue Team", "SIM TEAM blue"),
     ("Free Range Proving Ground", "SIM RANGE 1"),
     ("Start Match", "SIM START"),
+];
+
+const DOC48_JOB_ACTIONS: [(&str, &str); 9] = [
+    ("All Open Port Jobs", "+market/jobs"),
+    ("Haulage Contracts", "+market/jobs haul"),
+    ("Armed Escort Contracts", "+market/jobs escort"),
+    ("Survey Commissions", "+market/jobs survey"),
+    ("Salvage Retrieval Jobs", "+market/jobs retrieval"),
+    ("Crew Terms In Room", "+sortie/crew"),
+    ("Active Crew Agreements", "+sortie/contract"),
+    ("Port Locker Status", "+locker"),
+    ("Arrears & Obligations", "+debts"),
+];
+
+const DOC48_INDUSTRY_ACTIONS: [(&str, &str); 10] = [
+    ("Port Works & Orders", "+works"),
+    ("Shipyard Queue & Orders", "+yard"),
+    (
+        "24-Week Volatiles Trend",
+        "+market/history tacsim:volatiles",
+    ),
+    ("24-Week Metals Trend", "+market/history tacsim:metals"),
+    (
+        "24-Week Alloys Trend",
+        "+market/history tacsim:structural_alloys",
+    ),
+    ("Quote Metal Ore Milling", "+works/quote metals"),
+    ("Quote 30mm AP Munitions", "+works/quote ap_30"),
+    ("Quote Dray Hull Build", "+yard/quote dray"),
+    ("Core Fitting Counter", "+core"),
+    ("Titled Facilities List", "@facility/list"),
 ];
 
 /// Per-connection spatial walk + port services state.
@@ -1622,6 +1661,44 @@ impl PortWalkState {
                     _ => {}
                 }
             }
+            PortDrawerKind::Jobs => match key {
+                Key::Up | Key::Char('k') => {
+                    self.cursor_row = self.cursor_row.saturating_sub(1);
+                }
+                Key::Down | Key::Char('j') => {
+                    self.cursor_row = (self.cursor_row + 1).min(DOC48_JOB_ACTIONS.len() - 1);
+                }
+                Key::Char('o') => {
+                    out.commands.push("+locker/open".to_string());
+                    self.push_drawer_log("> +locker/open".to_string());
+                }
+                Key::Enter => {
+                    if let Some(&(label, cmd)) = DOC48_JOB_ACTIONS.get(self.cursor_row) {
+                        out.commands.push(cmd.to_string());
+                        self.push_drawer_log(format!("[Jobs] {label}: {cmd}"));
+                    }
+                }
+                _ => {}
+            },
+            PortDrawerKind::Industry => match key {
+                Key::Up | Key::Char('k') => {
+                    self.cursor_row = self.cursor_row.saturating_sub(1);
+                }
+                Key::Down | Key::Char('j') => {
+                    self.cursor_row = (self.cursor_row + 1).min(DOC48_INDUSTRY_ACTIONS.len() - 1);
+                }
+                Key::Char('m') => {
+                    out.commands.push("+market/mine".to_string());
+                    self.push_drawer_log("> +market/mine".to_string());
+                }
+                Key::Enter => {
+                    if let Some(&(label, cmd)) = DOC48_INDUSTRY_ACTIONS.get(self.cursor_row) {
+                        out.commands.push(cmd.to_string());
+                        self.push_drawer_log(format!("[Works] {label}: {cmd}"));
+                    }
+                }
+                _ => {}
+            },
             PortDrawerKind::Sailing => match key {
                 Key::Up | Key::Char('k') => {
                     self.corridor_idx = self.corridor_idx.saturating_sub(1);
@@ -2176,6 +2253,28 @@ impl PortWalkState {
                         action: InteractAction::OpenDrawer(PortDrawerKind::Trade),
                     },
                 );
+            } else if key.contains("slack") || key.contains("arrivals") {
+                self.interactables.insert(
+                    0,
+                    InteractableTarget {
+                        label: "Open Jobs, Haulage & Crew Board".to_string(),
+                        x_m: rcx,
+                        y_m: rmax_y - 1.8,
+                        floor: rfloor,
+                        action: InteractAction::OpenDrawer(PortDrawerKind::Jobs),
+                    },
+                );
+            } else if key.contains("works") || key.contains("yard") || key.contains("service") {
+                self.interactables.insert(
+                    0,
+                    InteractableTarget {
+                        label: "Port Works, Shipyard & Core Counter".to_string(),
+                        x_m: rcx,
+                        y_m: rmax_y - 1.8,
+                        floor: rfloor,
+                        action: InteractAction::OpenDrawer(PortDrawerKind::Industry),
+                    },
+                );
             } else if key.contains("dockmaster") {
                 self.interactables.insert(
                     0,
@@ -2375,12 +2474,14 @@ impl PortWalkState {
         };
         let all_tabs = [
             PortDrawerKind::Trade,
+            PortDrawerKind::Jobs,
+            PortDrawerKind::Industry,
             PortDrawerKind::Sailing,
             PortDrawerKind::Coop,
             PortDrawerKind::Sim,
             PortDrawerKind::Npc,
         ];
-        let mut title_spans = vec![Span::raw(" PORT SERVICES: ")];
+        let mut title_spans = vec![Span::raw(" Port Services: ")];
         for t in all_tabs {
             if t == active {
                 title_spans.push(Span::styled(
@@ -2507,6 +2608,48 @@ impl PortWalkState {
                             st,
                         )));
                     }
+                }
+            }
+            PortDrawerKind::Jobs => {
+                lines.push(Line::from(Span::styled(
+                    "Open Jobs, Crew & Lockers — Up/Down select, Enter run, o: +locker/open",
+                    Style::default().fg(Color::Cyan),
+                )));
+                for (idx, &(label, cmd)) in DOC48_JOB_ACTIONS.iter().enumerate() {
+                    let sel = idx == self.cursor_row.min(DOC48_JOB_ACTIONS.len() - 1);
+                    let mark = if sel { "> " } else { "  " };
+                    let st = if sel {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("{mark}{label:<30} ({cmd})"),
+                        st,
+                    )));
+                }
+            }
+            PortDrawerKind::Industry => {
+                lines.push(Line::from(Span::styled(
+                    "Works, Shipyard & 24-Week Trends — Up/Down select, Enter run, m: +market/mine",
+                    Style::default().fg(Color::Cyan),
+                )));
+                for (idx, &(label, cmd)) in DOC48_INDUSTRY_ACTIONS.iter().enumerate() {
+                    let sel = idx == self.cursor_row.min(DOC48_INDUSTRY_ACTIONS.len() - 1);
+                    let mark = if sel { "> " } else { "  " };
+                    let st = if sel {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("{mark}{label:<30} ({cmd})"),
+                        st,
+                    )));
                 }
             }
             PortDrawerKind::Sailing => {
@@ -3226,5 +3369,24 @@ mod tests {
         assert!(out.enter_helm_cockpit);
         assert_eq!(out.commands, vec!["+helm/station command"]);
         assert!(st.seated_at_helm());
+    }
+
+    #[test]
+    fn doc48_jobs_and_industry_drawers_cycle_and_emit_registered_verbs() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.open_drawer(PortDrawerKind::Jobs, &[], &mut Vec::new(), now);
+        let jobs_out = st.handle_key(Key::Enter, false, &[], now);
+        assert_eq!(jobs_out.commands, vec!["+market/jobs"]);
+
+        let locker_out = st.handle_key(Key::Char('o'), false, &[], now);
+        assert_eq!(locker_out.commands, vec!["+locker/open"]);
+
+        let _ = st.handle_key(Key::Tab, false, &[], now);
+        assert_eq!(st.drawer, Some(PortDrawerKind::Industry));
+        let _ = st.handle_key(Key::Down, false, &[], now);
+        let _ = st.handle_key(Key::Down, false, &[], now);
+        let hist_out = st.handle_key(Key::Enter, false, &[], now);
+        assert_eq!(hist_out.commands, vec!["+market/history tacsim:volatiles"]);
     }
 }
