@@ -161,6 +161,18 @@ fn ex2b_a_stored_core_is_resold_to_the_player_its_seller_names() {
     assert_eq!(place_of(&world, core), Some(pilot));
     assert_eq!(title_of(&world, core), title);
 
+    // Doc 48e (48d H-07): a stored core changes hands where buyer and seller both stand.
+    let away = crate::driving_rig::station_room(&world.rig.tw, "ceres_port", "room.c07_exchange");
+    crate::driving_rig::teleport(&mut world.rig.tw, buyer, away);
+    let (out, landed) = says(&mut world, buyer, &format!("+core/accept #{}=go", core.0));
+    assert!(
+        out.contains(r::RESALE_APART),
+        "apart, nothing changes hands: {out}"
+    );
+    assert!(landed.is_empty(), "nothing submitted apart");
+    let room = place_of(&world, pilot).expect("the seller's room");
+    crate::driving_rig::teleport(&mut world.rig.tw, buyer, room);
+
     // 3. The buyer reads the offer, then accepts: one union.
     let (quote, landed) = says(&mut world, buyer, &format!("+core/accept #{}", core.0));
     assert!(landed.is_empty(), "a quote submits nothing");

@@ -36,8 +36,8 @@ yours. You do not need to be there.
 lists a hull whose title you hold, at one price for the whole of her. Her hold
 must be empty (her fuel and stores go with her), she must be out of the bay,
 with nothing in flight and no leased rig aboard. A hull with a governed core
-fitted cannot be listed yet: the core sells only through its own sale, which
-is not open.
+fitted is not listed here: she sells only with her core, by private offer to
+one player, `+core/offer #<hull>=<player> price=<n>` (see `help hardware`).
 
 While she is listed, and while a purchase of her is settling, the bay will not
 strip her, scrap her or fit anything to her. A buyer is quoted on her as she
@@ -52,9 +52,10 @@ her.
 
 lists a port's refinery, works or yard whose title you hold, or with `as=<org>`
 one an organization you act for holds; the organization is paid. It is sold only
-when idle: no order open there and nothing in its stores. The relay foundry,
-the workshops and the medical rooms are not for sale, nor is a facility whose
-stores a vendor trades from.
+when idle: no order open there and nothing in its stores. A facility that owes
+running costs is sold only once they are paid. While it is listed it takes no new
+order. The relay foundry, the workshops and the medical rooms are not for sale,
+nor is a facility whose stores a vendor trades from.
 
 When the sale settles, the facility passes to the buyer with its stores, and
 its takings are paid to the buyer from then on. The buyer sets who may order
@@ -64,6 +65,8 @@ stays open to every customer.
 
 A fee is fixed when an order is booked. If the owner raises it before the work
 starts, the order is canceled, and its booking fee and bill go back to the
+customer. Once the work starts, a margin raised later does not raise what a
+canceled order forfeits. An owner who orders at their own facility books as any
 customer.
 
 ## Posting a bid
@@ -145,7 +148,7 @@ sale at that port. A house's own hulls at their home port owe nothing.
 
 ## The job board
 
-  +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]
+  +market/jobs [retrieval|passage|survey|crew|haul|escort] [market=<venue>]
 
 Lists the jobs posted at the port you stand in, or at the market you name.
 Each job says what it pays, any bond you would escrow, when it is due, and the

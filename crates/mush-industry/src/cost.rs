@@ -173,7 +173,7 @@ impl FacilityCostDef {
 }
 
 /// `minor` rounded up to the whole credit, saturating.
-fn whole_credit(minor: u128) -> u64 {
+pub(crate) fn whole_credit(minor: u128) -> u64 {
     let credit = u128::from(MINOR_PER_CREDIT);
     u64::try_from(minor.div_ceil(credit) * credit).unwrap_or(u64::MAX)
 }

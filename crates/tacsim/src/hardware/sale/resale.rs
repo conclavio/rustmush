@@ -124,6 +124,9 @@ pub const RESALE_NO_OWN_OFFER: &str = "You have no standing offer of that core."
 pub const RESALE_NO_OFFER: &str = "No offer of that stands for you.";
 /// Lapsed.
 pub const RESALE_LAPSED: &str = "That offer has lapsed; ask the seller to offer it again.";
+/// **Doc 48e (48d H-07)**: a stored core changes hands where both stand (Q-48-6's local delivery).
+pub const RESALE_APART: &str =
+    "A stored core changes hands where you and its seller both stand; meet them, then accept.";
 /// Changed since the offer.
 pub const RESALE_CHANGED: &str =
     "That offer no longer stands: what it sells has changed since it was made.";
@@ -174,12 +177,13 @@ impl ResaleTerms {
     /// levy to the Registry.
     #[must_use]
     pub fn provisional(venue: Recipient, levy: Recipient) -> Self {
-        use mush_economy::registry_filing::core_sale::resale::{LEVY_PERMILLE, VENUE_PERMILLE};
+        // Doc 48e (48d M-03): EX.4's exchange rates, one source for every sale's cut and levy.
         Self {
             venue,
             levy,
-            venue_permille: VENUE_PERMILLE,
-            levy_permille: LEVY_PERMILLE,
+            // A rate that does not fit is refused loudly by the config's own check at composition.
+            venue_permille: u16::try_from(mush_market::fees::SALE_CUT_PERMILLE).unwrap_or(u16::MAX),
+            levy_permille: u16::try_from(mush_market::fees::LEVY_PERMILLE).unwrap_or(u16::MAX),
         }
     }
     /// The economy's closed leg.
@@ -435,6 +439,21 @@ pub(crate) fn holding(
     })
 }
 
+/// **Whether two characters stand together** (doc 48e, 48d H-07): in one room, or in rooms of one
+/// venue. A stored core is handed over, so it changes hands where both stand; a cored hull's
+/// title passes where she lies, and her core does not move.
+fn together(world: &World, a: ObjId, b: ObjId) -> bool {
+    let room = |who: ObjId| world.get(who).and_then(|o| o.location);
+    let (Some(ra), Some(rb)) = (room(a), room(b)) else {
+        return false;
+    };
+    if ra == rb {
+        return true;
+    }
+    let venue = |room| mush_market::venue_gate(world)?.venue_of_room(world, room);
+    matches!((venue(ra), venue(rb)), (Some(x), Some(y)) if x == y)
+}
+
 /// A live player other than `seller`.
 fn buyer_ok(world: &World, seller: ObjId, buyer: ObjId) -> bool {
     buyer != seller
@@ -463,6 +482,7 @@ impl CoreResalePolicy for ResalePolicy {
             || held.hull.as_ref().map(|(hull, _, _)| *hull) != request.hull()
             || held.pin() != request.pin()
             || !buyer_ok(world, seller, buyer)
+            || (request.hull().is_none() && !together(world, seller, buyer))
         {
             return Err(refused());
         }
@@ -1247,6 +1267,9 @@ fn accept(ctx: &mut Ctx<'_>, host: &ResaleHost) -> Result<(), CmdError> {
         .filter(|held| held.core == core && held.pin() == offer.pin());
     if current.is_none() {
         return Err(CmdError::msg(RESALE_CHANGED));
+    }
+    if offer.hull.is_none() && !together(ctx.w, offer.seller, buyer) {
+        return Err(CmdError::msg(RESALE_APART));
     }
     if let Some(hull) = offer.hull.as_ref().map(|h| h.hull) {
         crate::port::hull_sale::core_leg_hold_empty(ctx, hull).map_err(CmdError::msg)?;

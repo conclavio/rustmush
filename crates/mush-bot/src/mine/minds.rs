@@ -665,7 +665,7 @@ pub mod exchange {
 /// held to the game's own text below.
 pub mod jobs {
     /// `mush_market::services::JOBS_USAGE`.
-    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|haul|escort]";
+    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|crew|haul|escort]";
     /// `mush_market::services::JOBS_NO_VENUE`.
     pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=";
     /// `mush_market::services::JOBS_NONE`.
@@ -809,6 +809,8 @@ pub mod hull_sale {
     pub const HULL_HOLD_LADEN: &str = "hold must be empty before she is listed";
     /// `tacsim::port::hull_sale::HULL_HOLD_DARK`'s tail.
     pub const HULL_HOLD_DARK: &str = "hold cannot be read just now; nothing was listed.";
+    /// `tacsim::port::hull_sale::HULL_ELSEWHERE`'s tail.
+    pub const HULL_ELSEWHERE: &str = "she is listed and sold only where she lies.";
     /// `tacsim::port::hull_sale::HULL_IN_BAY`'s tail.
     pub const HULL_IN_BAY: &str = "stow her before she is listed.";
     /// `tacsim::port::hull_sale::HULL_RIG_ABOARD`'s tail.
@@ -993,6 +995,8 @@ pub mod core_resale {
     pub const RESALE_NO_OFFER: &str = "No offer of that stands for you.";
     /// `tacsim::hardware::sale::resale::RESALE_LAPSED`.
     pub const RESALE_LAPSED: &str = "That offer has lapsed; ask the seller to offer it again.";
+    /// `tacsim::hardware::sale::resale::RESALE_APART`'s tail.
+    pub const RESALE_APART: &str = "where you and its seller both stand; meet them, then accept.";
     /// `tacsim::hardware::sale::resale::RESALE_CHANGED`'s tail.
     pub const RESALE_CHANGED: &str = "what it sells has changed since it was made";
     /// `tacsim::hardware::sale::resale::RESALE_QUOTE`'s middle.
@@ -1113,6 +1117,13 @@ pub const PARTIAL: &[&str] = &[
     "jobs::TERM_TODAY",
     "history::HISTORY_ROW",
     "history::HISTORY_NO_PRICE",
+    // The crew family's short needles (48e L8, clients:G14: crew joined the table); the
+    // crew module's own docs say what a reader uses beside each.
+    "crew::OFFER_WAGE",
+    "crew::WAGE_LINE",
+    "crew::LISTED",
+    "crew::BOARD_SUBJECT",
+    "crew::BOARD_TAKE",
     "exchange::MINE_AS_ORG",
 ];
 
@@ -1376,6 +1387,7 @@ mod tests {
             HULL_CORED,
             HULL_HOLD_LADEN,
             HULL_HOLD_DARK,
+            HULL_ELSEWHERE,
             HULL_IN_BAY,
             HULL_RIG_ABOARD,
         )
@@ -1504,6 +1516,7 @@ mod tests {
             RESALE_NO_OWN_OFFER,
             RESALE_NO_OFFER,
             RESALE_LAPSED,
+            RESALE_APART,
             RESALE_CHANGED,
             RESALE_QUOTE,
             RESALE_QUOTE_HULL,
@@ -1780,7 +1793,8 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 18] = [
+        // 48e L8 (clients:G14): crew and discharge joined the cross-family checks.
+        let families: [(&str, Vec<Row>); 20] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1799,6 +1813,8 @@ mod tests {
             ("venue", venue_rows()),
             ("scrap", scrap_rows()),
             ("coop", coop_rows()),
+            ("crew", crew_rows()),
+            ("discharge", discharge_rows()),
         ];
         families
             .into_iter()

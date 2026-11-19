@@ -7,13 +7,18 @@
 //! head, Q-48-60) once an IC day, from its owner's account to the System account
 //! [`UPKEEP_SINK`]: all of it to a sink (Q-48-21's correction), nothing to a payee.
 //! - **A worked slot-hour** costs its share of the daily cost (`daily / slots / 24`), which the
-//!   fee recovers with its margin. The slots worked are the facility's open work orders
-//!   (`mush_industry::IndustryStore::open_orders_at`) and open bay orders, at most its slots,
-//!   summed over the IC day on every port fire ([`Worked`], RAM only: a restart counts the rest of
-//!   that day's work as idle).
+//!   fee recovers with its margin. The slots worked are the facility's work orders past their
+//!   draft (`mush_industry::IndustryStore::worked_orders_at`: a draft escrows nothing and holds
+//!   no slot) and its open bay orders, at most its slots, summed over the IC day on every port
+//!   fire ([`Worked`]). The tally is checkpointed into the row each IC hour
+//!   ([`TALLY_CHECKPOINT_IC`]), so a restart loses at most an hour of it, and a closed day's
+//!   figure is kept until its charge posts.
 //! - **An idle slot-hour** costs [`IDLE_PERMILLE`] of it (10%, provisional).
 //! - **A mill-run refinery** (Q-48-59: a facility nobody can book) pays one slot-hour of its daily
-//!   cost a refine batch its operator milled that day, and no standing share.
+//!   cost a refine batch its operator milled that day, and no standing share. A sold refinery
+//!   (owner-held) is costed as any slot facility: its buyer never pays for the operator's mills.
+//! - **A facility whose owner has no account to pay from** accrues each day's charge as a debt,
+//!   and mothballs.
 //!
 //! **A house that cannot pay** (Q-48-38, -39, -59): the day's charge and any debt are paid from
 //! what the account holds; what it cannot pay is a **debt** owed to the sink, never minted
@@ -74,11 +79,15 @@ pub const UPKEEP_KEY: &str = "tacsim.upkeep";
 pub const EXPORT_KEY: &str = "tacsim.export";
 /// A House stipend's idempotency scope.
 pub const STIPEND_KEY: &str = "tacsim.stipend";
-/// How far back the faucet looks for a consumption act to pay, IC seconds.
-const REFUND_WINDOW_IC: i64 = 2 * IC_DAY;
 
-/// **One facility's worked slot-seconds this IC day** (RAM; `PortTickState::upkeep_worked`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How often, IC seconds, a facility's day tally is checkpointed into its row (services G10): a
+/// restart loses at most this much of a day's work.
+pub const TALLY_CHECKPOINT_IC: i64 = 3_600;
+
+/// **One facility's worked slot-seconds this IC day** (RAM, `PortTickState::upkeep_worked`;
+/// checkpointed into [`UpkeepRow::tally`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Worked {
     /// The IC day being summed.
     pub day: i64,
@@ -128,6 +137,27 @@ impl Worked {
     }
 }
 
+/// **The tally a facility resumes from** after a restart (services G10): its row's checkpoint,
+/// when it is of today or earlier (the next [`Worked::add`] closes an earlier day), else a fresh
+/// one from `now`. Pure.
+#[must_use]
+pub fn resume_tally(checkpoint: Option<Worked>, today: i64, now: i64) -> Worked {
+    checkpoint
+        .filter(|tally| tally.day <= today)
+        .unwrap_or(Worked {
+            day: today,
+            at_ic: now,
+            slot_secs: 0,
+        })
+}
+
+/// **Whether a facility's tally is checkpointed into its row now**: at a day's close, with no
+/// checkpoint yet, or [`TALLY_CHECKPOINT_IC`] after the last. Pure.
+#[must_use]
+pub fn checkpoint_due(checkpoint: Option<Worked>, now: i64, closed: bool) -> bool {
+    closed || checkpoint.is_none_or(|tally| now.saturating_sub(tally.at_ic) >= TALLY_CHECKPOINT_IC)
+}
+
 // ---- the record ------------------------------------------------------------------------
 
 /// The document prefix of a port's running-cost record: `tacsim:upkeep:{entry}`.
@@ -152,6 +182,10 @@ pub struct PortUpkeep {
     /// Each costed facility's account, by its room's object id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub facilities: BTreeMap<u32, UpkeepRow>,
+    /// The export faucet's cursor (services G15): each consumption row's last act paid, by the
+    /// row's id (`crate::port::consume::ConsumeId::key_text`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refunded: BTreeMap<SmolStr, u64>,
 }
 
 /// **One facility's running-cost account** (Q-48-21, -38, -59): the last IC day charged and its
@@ -183,6 +217,22 @@ pub struct UpkeepRow {
     /// Running costs paid to the sink in all, minor units.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub paid_minor: i64,
+    /// The day's worked tally as last checkpointed (services G10): a restart resumes from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tally: Option<Worked>,
+    /// A closed day's worked slot-seconds, kept until that day's charge posts (services G10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<ClosedDay>,
+}
+
+/// **A closed IC day's worked slot-seconds**, not yet charged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClosedDay {
+    /// The IC day.
+    pub day: i64,
+    /// Busy slots × IC seconds that day.
+    pub slot_secs: u64,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` signature
@@ -532,6 +582,7 @@ fn running_costs(ctx: &mut Ctx<'_>) {
             entry: entry.clone(),
             consume_from: today + 1,
             facilities: BTreeMap::new(),
+            refunded: BTreeMap::new(),
         });
         for (block, room) in facilities(ctx.w, &entry, &def) {
             let Some(record) = ctx
@@ -546,12 +597,13 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                 continue;
             };
             let slots = record.maximum_slots();
-            // The busy slots now, summed into the day.
+            // The busy slots now, summed into the day: the orders past their draft (a draft
+            // holds no slot, services G17) and the open bay orders.
             let busy = {
                 let orders = ctx
                     .w
                     .module_state::<IndustryStore>()
-                    .map_or(0, |store| store.open_orders_at(room));
+                    .map_or(0, |store| store.worked_orders_at(room));
                 let bays = ctx
                     .w
                     .module_state::<crate::store::TacsimStore>()
@@ -560,68 +612,80 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                     .unwrap_or(u64::MAX)
                     .min(u64::from(slots))
             };
-            let closed = ctx
-                .w
-                .module_state_mut::<crate::port_tick::PortTickState>()
-                .and_then(|state| {
-                    let worked = state.upkeep_worked.entry(room.0).or_insert(Worked {
-                        day: today,
-                        at_ic: now,
-                        slot_secs: 0,
-                    });
-                    worked.add(now, busy)
-                });
             let owner = record.owner().clone();
             let org = match &owner {
                 PrincipalId::Organization(org) => Some(org.0),
                 _ => None,
             };
-            let refinery = block == "refinery";
+            // An authored refinery is mill-run and pays by its operator's batches; a sold one
+            // (owner-held) is costed as any slot facility, its buyer never paying for the
+            // operator's mills (production G5).
+            let by_batch = block == "refinery" && record.holding().is_authored();
             let operator = def.refinery.as_ref().map(|r| r.operator.clone());
-            let Some(mut row) = next.facilities.get(&room.0).cloned() else {
+            let first = !next.facilities.contains_key(&room.0);
+            let mut row = next.facilities.get(&room.0).cloned().unwrap_or_else(|| {
                 // First sight: charging starts with today.
-                let batches = match (&operator, refinery) {
+                let batches = match (&operator, by_batch) {
                     (Some(operator), true) => refine_batches(ctx, &map, &def, operator),
                     _ => 0,
                 };
-                next.facilities.insert(
-                    room.0,
-                    UpkeepRow {
-                        day: today - 1,
-                        org,
-                        batches,
-                        ..UpkeepRow::default()
-                    },
-                );
-                continue;
-            };
-            if row.day >= today - 1 && closed.is_none_or(|(day, _)| day <= row.day) {
+                UpkeepRow {
+                    day: today - 1,
+                    org,
+                    batches,
+                    ..UpkeepRow::default()
+                }
+            });
+            // The day's tally: RAM, seeded from the row's checkpoint after a restart, and
+            // checkpointed into the row each IC hour and at each day's close (services G10).
+            let seed = resume_tally(row.tally, today, now);
+            let tallied = ctx
+                .w
+                .module_state_mut::<crate::port_tick::PortTickState>()
+                .map(|state| {
+                    let worked = state.upkeep_worked.entry(room.0).or_insert(seed);
+                    let closed = worked.add(now, busy);
+                    (closed, *worked)
+                });
+            if let Some((closed, worked)) = tallied {
+                if let Some((day, slot_secs)) = closed {
+                    // Kept until that day's charge posts.
+                    row.closed = Some(ClosedDay { day, slot_secs });
+                }
+                if checkpoint_due(row.tally, now, closed.is_some()) {
+                    row.tally = Some(worked);
+                }
+            }
+            if first || row.day >= today - 1 {
+                next.facilities.insert(room.0, row);
                 continue;
             }
-            let Some(payer) = payer_of(ctx.w, &owner) else {
-                continue;
-            };
+            // No payer: the days still accrue as a debt, and it mothballs (services G14).
+            let payer = payer_of(ctx.w, &owner);
             // Each closed day since the last charge, the oldest skipped past the catch-up bound.
             let from = (row.day + 1).max(today - MAX_CATCH_UP_DAYS);
             for day in from..today {
-                let charge = if refinery {
+                // A refinery's batches: the total read now, the cursor moved only once the
+                // charge posts (services G11).
+                let mut batches = None;
+                let charge = if by_batch {
                     if day == today - 1 {
                         let total = operator
                             .as_ref()
                             .map_or(row.batches, |op| refine_batches(ctx, &map, &def, op));
-                        let charge = batch_charge(&cost, total.saturating_sub(row.batches));
-                        row.batches = total.max(row.batches);
-                        charge
+                        batches = Some(total.max(row.batches));
+                        batch_charge(&cost, total.saturating_sub(row.batches))
                     } else {
                         0
                     }
                 } else {
-                    let worked = closed
-                        .filter(|(closed_day, _)| *closed_day == day)
-                        .map_or(0, |(_, secs)| secs);
+                    let worked = row
+                        .closed
+                        .filter(|closed| closed.day == day)
+                        .map_or(0, |closed| closed.slot_secs);
                     day_charge(&cost, slots, worked, row.mothballed)
                 };
-                let standing = if refinery {
+                let standing = if by_batch {
                     0
                 } else {
                     standing_day(&cost, slots)
@@ -629,25 +693,27 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                 let (paid, debt, mothballed) = settle(
                     charge,
                     row.debt_minor,
-                    available(ctx.w, payer),
+                    payer.map_or(0, |payer| available(ctx.w, payer)),
                     row.mothballed,
                     standing,
                 );
-                let key = IdempotencyKey::new(UPKEEP_KEY, format!("{}/{day}", room.0));
-                if transfer(
-                    ctx,
-                    key,
-                    (payer, sink),
-                    paid,
-                    (
-                        UPKEEP_KEY,
-                        u64::from(room.0),
-                        format!("running costs of #{} for IC day {day}", room.0),
-                    ),
-                )
-                .is_err()
-                {
-                    break;
+                if let Some(payer) = payer {
+                    let key = IdempotencyKey::new(UPKEEP_KEY, format!("{}/{day}", room.0));
+                    if transfer(
+                        ctx,
+                        key,
+                        (payer, sink),
+                        paid,
+                        (
+                            UPKEEP_KEY,
+                            u64::from(room.0),
+                            format!("running costs of #{} for IC day {day}", room.0),
+                        ),
+                    )
+                    .is_err()
+                    {
+                        break;
+                    }
                 }
                 if mothballed != row.mothballed {
                     tracing::info!(
@@ -656,6 +722,12 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                         mothballed,
                         "tacsim: a facility's running costs changed its standing"
                     );
+                }
+                if let Some(batches) = batches {
+                    row.batches = batches;
+                }
+                if row.closed.is_some_and(|closed| closed.day <= day) {
+                    row.closed = None;
                 }
                 row.day = day;
                 row.charged_minor = charge;
@@ -688,10 +760,11 @@ fn authored_price(vendor: &crate::port::def::VendorDef, good: &CanonicalId) -> O
         })
 }
 
-/// **The faucet pays each consumer back** for its recent acts: the units at the good's authored
-/// price, at most the row's daily share, once an act.
+/// **The faucet pays each consumer back** for its acts: the units at the good's authored price,
+/// at most the row's daily share, once an act. Each row's last act paid is the port's record's
+/// ([`PortUpkeep::refunded`]), so a downtime of any length pays every act the ledger's ring still
+/// holds, and an act is posted once (services G15).
 fn refunds(ctx: &mut Ctx<'_>) {
-    let now = ctx.w.world_ic_now().at;
     let due: Vec<_> = crate::port::consume::ledgers(ctx)
         .into_iter()
         .filter(|(_, _, row, _)| row.export_major_per_ic_day > 0)
@@ -718,20 +791,30 @@ fn refunds(ctx: &mut Ctx<'_>) {
         let Ok(id) = ledger.consume_id() else {
             continue;
         };
-        for act in ledger
+        // The port's record carries the cursor; running costs open it on the same fire.
+        let Some(mut doc) = ctx
+            .w
+            .module_state::<crate::store::TacsimStore>()
+            .and_then(|store| store.port_upkeep(&map.entry).cloned())
+        else {
+            continue;
+        };
+        let row_key = id.key_text();
+        let through = doc.refunded.get(row_key.as_str()).copied().unwrap_or(0);
+        let mut acts: Vec<_> = ledger
             .recent
             .iter()
-            .filter(|act| act.at_ic >= now.saturating_sub(REFUND_WINDOW_IC))
-        {
+            .filter(|act| act.ordinal > through)
+            .collect();
+        acts.sort_by_key(|act| act.ordinal);
+        let mut paid_through = through;
+        for act in acts {
             let major = refund_major(act.units, price, row.export_major_per_ic_day);
             let Some(minor) = crate::port::apply::minor_of(major, scale) else {
-                continue;
+                break;
             };
-            let key = IdempotencyKey::new(EXPORT_KEY, format!("{}/{}", id.key_text(), act.ordinal));
-            if mush_economy::idempotency_resolved(ctx, &key) {
-                continue;
-            }
-            let _ = transfer(
+            let key = IdempotencyKey::new(EXPORT_KEY, format!("{row_key}/{}", act.ordinal));
+            if transfer(
                 ctx,
                 key,
                 (faucet, payee),
@@ -744,7 +827,16 @@ fn refunds(ctx: &mut Ctx<'_>) {
                         vendor.org, act.units, row.good
                     ),
                 ),
-            );
+            )
+            .is_err()
+            {
+                break;
+            }
+            paid_through = act.ordinal;
+        }
+        if paid_through != through {
+            doc.refunded.insert(SmolStr::new(&row_key), paid_through);
+            crate::store::put_port_upkeep(ctx, &doc);
         }
     }
 }
@@ -870,6 +962,41 @@ mod tests {
         assert_eq!(refund_major(20, 460, 18_400), 9_200);
         assert_eq!(refund_major(50, 460, 18_400), 18_400, "capped at the share");
         assert_eq!(refund_major(5, 460, 0), 0, "no share, no refund");
+    }
+
+    /// **A restart resumes the day's tally from the row's checkpoint** (doc 48e, services G10):
+    /// the work before it is kept, not lost to the idle rate; a checkpoint from a later day than
+    /// today is no seed; and one is taken hourly and at each day's close.
+    #[test]
+    fn g10_a_restart_resumes_the_days_tally() {
+        let checkpoint = Worked {
+            day: 0,
+            at_ic: 3_600,
+            slot_secs: 7_200,
+        };
+        let mut resumed = resume_tally(Some(checkpoint), 0, 7_200);
+        assert_eq!(resumed.slot_secs, 7_200, "the hours before the restart");
+        assert_eq!(resumed.add(7_200, 2), None);
+        assert_eq!(
+            resumed.slot_secs, 14_400,
+            "and the hour since, at two slots"
+        );
+        // Yesterday's checkpoint closes yesterday on the first add.
+        let mut late = resume_tally(Some(checkpoint), 1, IC_DAY + 60);
+        assert_eq!(late.add(IC_DAY + 60, 0), Some((0, 7_200)));
+        // None, or one from a day not yet begun: a fresh tally.
+        let fresh = resume_tally(None, 0, 500);
+        assert_eq!((fresh.day, fresh.at_ic, fresh.slot_secs), (0, 500, 0));
+        let ahead = Worked {
+            day: 2,
+            ..checkpoint
+        };
+        assert_eq!(resume_tally(Some(ahead), 0, 500).slot_secs, 0);
+        // Checkpoints: the first, hourly, and at a close.
+        assert!(checkpoint_due(None, 0, false));
+        assert!(!checkpoint_due(Some(checkpoint), 3_600 + 3_599, false));
+        assert!(checkpoint_due(Some(checkpoint), 3_600 + 3_600, false));
+        assert!(checkpoint_due(Some(checkpoint), 3_601, true));
     }
 
     /// The day's tally closes at the IC day's turn, splitting the span across it.

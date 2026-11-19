@@ -280,7 +280,7 @@ fn ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her() {
         sale.acceptances
     );
     assert!(
-        mush_market::sells_title_of(&sale, hull),
+        mush_market::sells_title_of(&sale, hull, &PrincipalId::Object(seller)),
         "the one asset sale"
     );
     sweep(&mut rig.tw, 31);
