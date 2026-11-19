@@ -1083,9 +1083,6 @@ namespace UnityEngine
             public HorizontalWrapMode horizontalOverflow { get; set; }
             public VerticalWrapMode verticalOverflow { get; set; }
             public float lineSpacing { get; set; } = 1f;
-            public bool resizeTextForBestFit { get; set; }
-            public int resizeTextMinSize { get; set; } = 10;
-            public int resizeTextMaxSize { get; set; } = 40;
         }
 
         public struct ColorBlock
