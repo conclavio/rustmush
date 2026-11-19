@@ -23,32 +23,34 @@
 //! `.market`), so existing clients ignore both unless they explicitly query
 //! them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use mush_core::module::{ModError, Registrar};
-use mush_core::{HookReadContext, ObjId, QueryHandler, World};
-use mush_economy::{Amount, EconomyStore, InstrumentId};
-use mush_market::{ListingId, MARKET_PAGE, MarketFilter, MarketStore};
+use mush_core::{Flags, HookReadContext, ObjId, ObjKind, QueryHandler, World};
+use mush_economy::{Amount, EconomicClock, EconomicDeadline, EconomyStore, InstrumentId};
+use mush_market::{ListingId, MARKET_PAGE, MarketFilter, MarketStore, Supply};
 use mush_org::PrincipalId;
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
 
 use crate::definitions::content::{
-    CAST_SOURCES, LANE_JSON, MARS_CANYON_ATLAS_JSON, PROVING_GROUND_ATLAS_JSON, SITE_SOURCES,
-    STATION_SOURCES, WIDE_SITE_SOURCES, WINTER_VALLEY_ATLAS_JSON, fielded_sources,
+    CAST_SOURCES, INDUSTRY_HULLS_JSON, LANE_JSON, MARS_CANYON_ATLAS_JSON,
+    PROVING_GROUND_ATLAS_JSON, SITE_SOURCES, STATION_SOURCES, WIDE_SITE_SOURCES,
+    WINTER_VALLEY_ATLAS_JSON, fielded_sources,
 };
 use crate::definitions::goods::GOODS_JSON;
 use crate::economy::CREDIT;
 use crate::port::board::money;
-use crate::port::coop::{EnrolmentStatus, helm_of, name_of, port_name};
+use crate::port::coop::{EnrolmentStatus, name_of, port_name};
 use crate::port::credit::own_account;
 use crate::port::market::{PortVenueGate, port_of_venue};
 use crate::port::ship::{
     Berth, berth_gallery_json, berth_of, hull_of_room, hull_stowage_json, hull_view,
-    simulator_lobby_json,
+    resolve_actor_hull, simulator_lobby_json,
 };
 use crate::store::TacsimStore;
 
@@ -156,19 +158,28 @@ fn is_allowed_client_entry_kind(kind: &str) -> bool {
             | "location"
             | "route"
             | "port"
+            | "space_mount"
+            | "space_fit"
+            | "recipe"
     )
 }
 
 fn entry_is_staff_or_hidden(kind: &str, def: Option<&Map<String, Value>>) -> bool {
     // Default-deny: drop secrets, lore, quests, hooks, deposits, facilities, crew_offers,
-    // passengers, relay_networks, recipes, and any non-allowlisted entry kind.
+    // passengers, relay_networks, and any non-allowlisted entry kind.
     if !is_allowed_client_entry_kind(kind) {
         return true;
     }
     let Some(def) = def else {
         return false;
     };
+    if kind == "room" && def.get("access").and_then(Value::as_str) == Some("restricted") {
+        return true;
+    }
     if def.get("reveal").and_then(Value::as_str) == Some("staff") {
+        return true;
+    }
+    if def.get("lock").and_then(Value::as_str) == Some("staff") {
         return true;
     }
     if def.get("visibility").and_then(Value::as_str) == Some("hidden") {
@@ -186,13 +197,82 @@ fn entry_is_staff_or_hidden(kind: &str, def: Option<&Map<String, Value>>) -> boo
     false
 }
 
+fn restricted_room_keys_in_doc(doc: &Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Some(entries) = doc.get("entries").and_then(Value::as_object) else {
+        return out;
+    };
+    for (key, entry) in entries {
+        if entry.get("kind").and_then(Value::as_str) == Some("room")
+            && entry
+                .get("def")
+                .and_then(Value::as_object)
+                .and_then(|d| d.get("access"))
+                .and_then(Value::as_str)
+                == Some("restricted")
+        {
+            out.insert(key.clone());
+        }
+    }
+    out
+}
+
+fn ref_targets_restricted(val: &Value, restricted: &BTreeSet<String>) -> bool {
+    if let Some(s) = val.as_str() {
+        return restricted.contains(s);
+    }
+    if let Some(obj) = val.as_object()
+        && let Some(r) = obj.get("room").and_then(Value::as_str)
+    {
+        return restricted.contains(r);
+    }
+    false
+}
+
+fn entry_refs_restricted_room(def: &Map<String, Value>, restricted: &BTreeSet<String>) -> bool {
+    if restricted.is_empty() {
+        return false;
+    }
+    ["room", "home", "from", "to"].iter().any(|field| {
+        def.get(*field)
+            .is_some_and(|v| ref_targets_restricted(v, restricted))
+    })
+}
+
 fn sanitize_entry_in_place(kind: &str, def: &mut Map<String, Value>) {
     match kind {
-        "room" => {
-            if def.get("access").and_then(Value::as_str) == Some("restricted") {
-                def.remove("desc");
-                def.remove("details");
-            }
+        "region" => {
+            // Strip authoring prose/style `theme` guidance; retain planetary/surface chart geometry.
+            const ALLOWED_REGION_KEYS: &[&str] = &[
+                "name",
+                "kind",
+                "body",
+                "extent",
+                "datum_m",
+                "background",
+                "ground_resolution_cm",
+            ];
+            def.retain(|k, _| ALLOWED_REGION_KEYS.contains(&k.as_str()));
+        }
+        "space_mount" => {
+            const ALLOWED_SPACE_MOUNT_KEYS: &[&str] = &["label", "family"];
+            def.retain(|k, _| ALLOWED_SPACE_MOUNT_KEYS.contains(&k.as_str()));
+        }
+        "space_fit" => {
+            const ALLOWED_SPACE_FIT_KEYS: &[&str] =
+                &["label", "unit", "pixel_model", "decoys", "rcs", "mounts"];
+            def.retain(|k, _| ALLOWED_SPACE_FIT_KEYS.contains(&k.as_str()));
+        }
+        "recipe" => {
+            const ALLOWED_RECIPE_KEYS: &[&str] = &[
+                "label",
+                "inputs",
+                "outputs",
+                "output_lots",
+                "requires",
+                "work_units",
+            ];
+            def.retain(|k, _| ALLOWED_RECIPE_KEYS.contains(&k.as_str()));
         }
         "npc" | "person" => {
             // Strict public-surface allowlist: strips `lore` (guarded/secret facts),
@@ -242,12 +322,28 @@ fn sanitize_entry_in_place(kind: &str, def: &mut Map<String, Value>) {
             if let Some(clusters) = def.get_mut("clusters").and_then(Value::as_array_mut) {
                 for cluster in clusters {
                     if let Some(cobj) = cluster.as_object_mut() {
-                        cobj.retain(|k, _| matches!(k.as_str(), "id" | "label" | "rocks"));
+                        cobj.retain(|k, _| {
+                            matches!(
+                                k.as_str(),
+                                "id" | "label" | "zone" | "anchor_body" | "rocks"
+                            )
+                        });
                         if let Some(rocks) = cobj.get_mut("rocks").and_then(Value::as_array_mut) {
                             for rock in rocks {
                                 if let Some(robj) = rock.as_object_mut() {
+                                    // Preserve real `ceres_phobos.json` public chart fields while
+                                    // stripping hidden reserve tonnage (`gross_t`) (CS-H2).
                                     robj.retain(|k, _| {
-                                        matches!(k.as_str(), "id" | "family" | "spectral_class")
+                                        matches!(
+                                            k.as_str(),
+                                            "letter"
+                                                | "alias"
+                                                | "spectral"
+                                                | "pos_m"
+                                                | "vel_mmps"
+                                                | "tenure"
+                                                | "holder_org"
+                                        )
                                     });
                                 }
                             }
@@ -304,7 +400,13 @@ fn neighborhood_is_player_accessible(doc: &Value) -> bool {
     has_public_room && !is_non_ooc_limbo
 }
 
-fn project_pack_value_for_client(mut doc: Value) -> Option<String> {
+fn project_pack_value_for_client_with_restricted(
+    mut doc: Value,
+    extra_restricted: &BTreeSet<String>,
+) -> Option<String> {
+    let mut restricted_rooms = restricted_room_keys_in_doc(&doc);
+    restricted_rooms.extend(extra_restricted.iter().cloned());
+
     let root = doc.as_object_mut()?;
     root.remove("brief");
     if let Some(manifest) = root.get_mut("manifest").and_then(Value::as_object_mut) {
@@ -317,7 +419,9 @@ fn project_pack_value_for_client(mut doc: Value) -> Option<String> {
             .filter_map(|(key, entry)| {
                 let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
                 let def = entry.get("def").and_then(Value::as_object);
-                entry_is_staff_or_hidden(kind, def).then_some(key.clone())
+                let hidden = entry_is_staff_or_hidden(kind, def)
+                    || def.is_some_and(|d| entry_refs_restricted_room(d, &restricted_rooms));
+                hidden.then_some(key.clone())
             })
             .collect();
         for key in drop_keys {
@@ -337,10 +441,15 @@ fn project_pack_value_for_client(mut doc: Value) -> Option<String> {
     serde_json::to_string(&doc).ok()
 }
 
+fn project_pack_value_for_client(doc: Value) -> Option<String> {
+    project_pack_value_for_client_with_restricted(doc, &BTreeSet::new())
+}
+
 /// Project an authoring JSON pack down to player-safe client geometry and public
 /// metadata, stripping `"brief"`, `"digest"`, `"secret"`/`"lore"`/`"quest"`
-/// entries, `"reveal": "staff"`, `"visibility": "hidden"` exits, restricted
-/// room prose, guarded NPC `def.lore`, and private NPC prompt fields.
+/// entries, `"reveal": "staff"`, `"lock": "staff"`, `"visibility": "hidden"` exits,
+/// restricted rooms and any items/exits/NPCs referencing them, guarded NPC `def.lore`,
+/// and private NPC prompt fields.
 #[must_use]
 pub fn project_pack_for_client(raw_json: &str) -> Option<String> {
     let doc: Value = serde_json::from_str(raw_json).ok()?;
@@ -352,6 +461,7 @@ struct PackCollector {
     entries: Vec<ClientPackEntry>,
     pack_rows: Vec<Value>,
     by_id: BTreeMap<String, usize>,
+    restricted_by_nb: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl PackCollector {
@@ -360,7 +470,25 @@ impl PackCollector {
             entries: Vec::new(),
             pack_rows: Vec::new(),
             by_id: BTreeMap::new(),
+            restricted_by_nb: BTreeMap::new(),
         }
+    }
+
+    fn record_restricted_rooms(&mut self, nb_id: &str, doc: &Value) {
+        let rooms = restricted_room_keys_in_doc(doc);
+        if !rooms.is_empty() {
+            self.restricted_by_nb
+                .entry(nb_id.to_owned())
+                .or_default()
+                .extend(rooms);
+        }
+    }
+
+    fn restricted_rooms_for(&self, nb_id: &str) -> BTreeSet<String> {
+        self.restricted_by_nb
+            .get(nb_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn finish(self) -> ClientContentBundle {
@@ -426,10 +554,22 @@ impl PackCollector {
         doc: Value,
         aliases: &[&str],
     ) {
+        self.push_projected_value_with_restricted(id, category, doc, aliases, &BTreeSet::new());
+    }
+
+    fn push_projected_value_with_restricted(
+        &mut self,
+        id: &str,
+        category: &'static str,
+        doc: Value,
+        aliases: &[&str],
+        extra_restricted: &BTreeSet<String>,
+    ) {
         if self.by_id.contains_key(id) {
             return;
         }
-        let Some(projected) = project_pack_value_for_client(doc) else {
+        let Some(projected) = project_pack_value_for_client_with_restricted(doc, extra_restricted)
+        else {
             return;
         };
         self.push_projected_string(id, category, projected, aliases);
@@ -452,8 +592,29 @@ impl PackCollector {
         else {
             return;
         };
+        self.record_restricted_rooms(&id, &doc);
         let short = id.strip_prefix("neighborhood.").unwrap_or("");
         self.push_projected_value(&id, "neighborhood", doc, &[short]);
+    }
+
+    fn push_manifest_region_if_applicable(&mut self, raw_json: &str, is_staff_viewer: bool) {
+        let Ok(doc) = serde_json::from_str::<Value>(raw_json) else {
+            return;
+        };
+        let Some(id) = doc
+            .get("manifest")
+            .and_then(Value::as_object)
+            .filter(|m| m.get("kind").and_then(Value::as_str) == Some("region"))
+            .and_then(|m| m.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        if !is_staff_viewer && id == "region.limbo" {
+            return;
+        }
+        self.push_projected_value(&id, "region", doc, &[]);
     }
 
     fn push_fielded_value_if_client_relevant(&mut self, doc: Value) {
@@ -463,39 +624,66 @@ impl PackCollector {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let (first_unit, first_weapon, first_arena) = {
+        let (units, weapons, arenas, has_space_mount, has_space_fit) = {
             let Some(entries) = doc.get("entries").and_then(Value::as_object) else {
                 return;
             };
-            let mut u: Option<String> = None;
-            let mut wp: Option<String> = None;
-            let mut ar: Option<String> = None;
+            let mut u = Vec::new();
+            let mut wp = Vec::new();
+            let mut ar = Vec::new();
+            let mut sm = false;
+            let mut sf = false;
             for (entry_id, entry) in entries {
                 match entry.get("kind").and_then(Value::as_str) {
-                    Some("unit") if u.is_none() => u = Some(entry_id.clone()),
-                    Some("weapon") if wp.is_none() => wp = Some(entry_id.clone()),
-                    Some("arena") if ar.is_none() => ar = Some(entry_id.clone()),
+                    Some("unit") => u.push(entry_id.clone()),
+                    Some("weapon") => wp.push(entry_id.clone()),
+                    Some("arena") => ar.push(entry_id.clone()),
+                    Some("space_mount") => sm = true,
+                    Some("space_fit") => sf = true,
                     _ => {}
                 }
             }
-            (u, wp, ar)
+            (u, wp, ar, sm, sf)
         };
-        if let Some(unit_id) = first_unit {
-            let slug = unit_id
+        if let Some(first_unit) = units.first() {
+            let slug = first_unit
                 .strip_prefix("tacsim.unit.")
-                .unwrap_or(&unit_id)
+                .unwrap_or(first_unit)
                 .to_owned();
-            self.push_projected_value(&slug, "unit", doc, &[&unit_id, &manifest_id]);
-        } else if let Some(weapon_id) = first_weapon {
-            let slug = weapon_id
+            let mut aliases: Vec<&str> = units.iter().map(String::as_str).collect();
+            if !manifest_id.is_empty() {
+                aliases.push(&manifest_id);
+            }
+            self.push_projected_value(&slug, "unit", doc, &aliases);
+        } else if let Some(first_weapon) = weapons.first() {
+            let slug = first_weapon
                 .strip_prefix("tacsim.weapon.")
-                .unwrap_or(&weapon_id)
+                .unwrap_or(first_weapon)
                 .to_owned();
-            self.push_projected_value(&slug, "weapon", doc, &[&weapon_id, &manifest_id]);
-        } else if let Some(arena_id) = first_arena {
-            let slug = arena_id.strip_prefix("tacsim.arena.").unwrap_or(&arena_id);
+            let mut aliases: Vec<&str> = weapons.iter().map(String::as_str).collect();
+            if !manifest_id.is_empty() {
+                aliases.push(&manifest_id);
+            }
+            self.push_projected_value(&slug, "weapon", doc, &aliases);
+        } else if let Some(first_arena) = arenas.first() {
+            let slug = first_arena
+                .strip_prefix("tacsim.arena.")
+                .unwrap_or(first_arena);
             let client_id = format!("arena.{slug}");
-            self.push_projected_value(&client_id, "arena", doc, &[&arena_id, &manifest_id]);
+            let mut aliases: Vec<&str> = arenas.iter().map(String::as_str).collect();
+            if !manifest_id.is_empty() {
+                aliases.push(&manifest_id);
+            }
+            self.push_projected_value(&client_id, "arena", doc, &aliases);
+        } else if has_space_mount {
+            self.push_projected_value(
+                "space_mounts",
+                "space",
+                doc,
+                &[manifest_id.as_str(), "mounts"],
+            );
+        } else if has_space_fit {
+            self.push_projected_value("space_fits", "space", doc, &[manifest_id.as_str(), "fits"]);
         }
     }
 
@@ -523,7 +711,8 @@ fn reconcile_neighborhood_with_live_records(
         .filter(|geo| &geo.key.pack == pack_id)
         .map(|geo| (geo.key.entry.as_str().to_owned(), geo))
         .collect();
-    if live_rooms.is_empty() {
+    let has_live_neighborhood = records.neighborhoods.keys().any(|k| &k.pack == pack_id);
+    if live_rooms.is_empty() && !has_live_neighborhood {
         return;
     }
 
@@ -683,8 +872,9 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
     let content = w.module_state::<mush_content::ContentState>();
     let mut col = PackCollector::new();
 
-    // 1. Live world neighborhoods & cast packs from `AtlasState` (`shelf` + `records`)
+    // 1. Live world neighborhoods, regions & arena atlases from `AtlasState` (`shelf` + `records`)
     if let Some(atlas) = atlas {
+        let mut pending_casts: Vec<(String, String, Value)> = Vec::new();
         for (id, pack) in &atlas.shelf {
             if let Some(content) = content {
                 let Some(applied) = content.latches.applied(id) else {
@@ -694,14 +884,23 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                     continue;
                 }
             }
-            if let Some(arena_slug) = id
-                .as_str()
-                .strip_prefix("tacsim.")
-                .filter(|s| matches!(*s, "proving_ground" | "mars_canyon" | "winter_valley"))
-            {
+            if pack.manifest().kind() == mush_content::PackKind::Region {
                 if let Ok(doc) = serde_json::to_value(pack) {
-                    let client_id = format!("arena_atlas.{arena_slug}");
-                    col.push_projected_value(&client_id, "arena_atlas", doc, &[id.as_str()]);
+                    let has_heightfield = doc
+                        .get("entries")
+                        .and_then(Value::as_object)
+                        .is_some_and(|e| {
+                            e.values().any(|row| {
+                                row.get("kind").and_then(Value::as_str) == Some("heightfield")
+                            })
+                        });
+                    if has_heightfield {
+                        let arena_slug = id.as_str().strip_prefix("tacsim.").unwrap_or(id.as_str());
+                        let client_id = format!("arena_atlas.{arena_slug}");
+                        col.push_projected_value(&client_id, "arena_atlas", doc, &[id.as_str()]);
+                    } else if is_staff_viewer || id.as_str() != "region.limbo" {
+                        col.push_projected_value(id.as_str(), "region", doc, &[]);
+                    }
                 }
                 continue;
             }
@@ -711,20 +910,20 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                     if !is_staff_viewer && !neighborhood_is_player_accessible(&doc) {
                         continue;
                     }
+                    col.record_restricted_rooms(id.as_str(), &doc);
                     let short = id.as_str().strip_prefix("neighborhood.").unwrap_or("");
                     col.push_projected_value(id.as_str(), "neighborhood", doc, &[short]);
                 }
             } else if let Some(cast_slug) = id.as_str().strip_prefix("tacsim.cast.")
                 && let Ok(doc) = serde_json::to_value(pack)
             {
-                let client_id = format!("cast.{cast_slug}");
-                col.push_projected_value(&client_id, "cast", doc, &[id.as_str()]);
+                pending_casts.push((id.as_str().to_owned(), cast_slug.to_owned(), doc));
             }
         }
 
         // Synthesize any applied neighborhood present in `atlas.records` whose source
         // pack is no longer on `atlas.shelf`.
-        let mut record_packs = std::collections::BTreeSet::new();
+        let mut record_packs = BTreeSet::new();
         for nkey in atlas.records.neighborhoods.keys() {
             record_packs.insert(nkey.pack.clone());
         }
@@ -755,8 +954,27 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
             if !is_staff_viewer && !neighborhood_is_player_accessible(&doc) {
                 continue;
             }
+            col.record_restricted_rooms(pack_id.as_str(), &doc);
             let short = pack_id.as_str().strip_prefix("neighborhood.").unwrap_or("");
             col.push_projected_value(pack_id.as_str(), "neighborhood", doc, &[short]);
+        }
+
+        // Gate `tacsim.cast.*` packs on companion neighborhood accessibility and drop NPCs
+        // stationed in companion restricted rooms (CS-H1).
+        for (raw_id, cast_slug, doc) in pending_casts {
+            let nb_id = format!("neighborhood.{cast_slug}");
+            if !is_staff_viewer && !col.by_id.contains_key(&nb_id) {
+                continue;
+            }
+            let restricted = col.restricted_rooms_for(&nb_id);
+            let client_id = format!("cast.{cast_slug}");
+            col.push_projected_value_with_restricted(
+                &client_id,
+                "cast",
+                doc,
+                &[raw_id.as_str()],
+                &restricted,
+            );
         }
     }
 
@@ -765,23 +983,31 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
         let Ok(cid) = mush_core::CanonicalId::new(pack_id) else {
             continue;
         };
-        if let Some(content) = content {
-            match content.latches.applied(&cid) {
-                Some(a) if a.is_retired() => continue,
-                None if !content.latches.all().count().eq(&0) => {
-                    // Include only if its companion neighborhood is applied or no cast latch exists
-                    let slug = pack_id.strip_prefix("tacsim.cast.").unwrap_or(pack_id);
-                    let nb_id = format!("neighborhood.{slug}");
-                    if !col.by_id.contains_key(&nb_id) {
-                        continue;
-                    }
-                }
-                _ => {}
-            }
+        if let Some(content) = content
+            && content
+                .latches
+                .applied(&cid)
+                .is_some_and(mush_content::Applied::is_retired)
+        {
+            continue;
         }
         let slug = pack_id.strip_prefix("tacsim.cast.").unwrap_or(pack_id);
-        let client_id = format!("cast.{slug}");
-        col.push_projected(&client_id, "cast", json_src, &[pack_id]);
+        let nb_id = format!("neighborhood.{slug}");
+        // Always gate non-staff cast packs on companion neighborhood accessibility (CS-H1).
+        if !is_staff_viewer && !col.by_id.contains_key(&nb_id) {
+            continue;
+        }
+        if let Ok(doc) = serde_json::from_str::<Value>(json_src) {
+            let restricted = col.restricted_rooms_for(&nb_id);
+            let client_id = format!("cast.{slug}");
+            col.push_projected_value_with_restricted(
+                &client_id,
+                "cast",
+                doc,
+                &[pack_id],
+                &restricted,
+            );
+        }
     }
 
     // 3. Authoritative `GoodsTable` (standalone typed document outside `TacsimStore::packs()`)
@@ -793,9 +1019,10 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
         col.push_projected("goods", "market", GOODS_JSON, &["tacsim.goods"]);
     }
 
-    // 4. Live `TacsimStore` rules, arena definitions, & campaign-seed packs at world-applied versions
+    // 4. Live `TacsimStore` rules, arena definitions, & campaign-seed packs at world-applied
+    //    or published versions (never unapplied staged drafts or withdrawn designs; CS-H1)
     if let Some(store) = store {
-        let mut unique_ids = std::collections::BTreeSet::new();
+        let mut unique_ids = BTreeSet::new();
         for loaded in store.packs() {
             unique_ids.insert(loaded.pack.manifest().id().clone());
         }
@@ -807,17 +1034,19 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
             }) {
                 continue;
             }
+            // Require applied status for CampaignSeed packs (including Arenas) and applied or
+            // published status for RulesDefinition packs; never fall back to unapplied
+            // `newest_loaded` (CS-H1).
             let active_ver = store.applied_in(w, &id).or_else(|| {
-                store.newest_loaded(&id).filter(|&v| {
-                    store.pack(&id, v).is_some_and(|lp| {
-                        lp.pack.manifest().kind() != mush_content::PackKind::CampaignSeed
-                            || lp
-                                .pack
-                                .entries()
-                                .values()
-                                .any(|e| matches!(e, crate::pack::PackEntry::Arena(_)))
+                store
+                    .versions_of(&id)
+                    .filter(|&v| {
+                        store.published_digest(&id, v).is_some()
+                            && store.pack(&id, v).is_some_and(|lp| {
+                                lp.pack.manifest().kind() == mush_content::PackKind::RulesDefinition
+                            })
                     })
-                })
+                    .max()
             });
             let Some(ver) = active_ver else {
                 continue;
@@ -825,9 +1054,22 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
             let Some(loaded) = store.pack(&id, ver) else {
                 continue;
             };
-            let Ok(doc) = loaded.pack.canonical_value() else {
+            let Ok(mut doc) = loaded.pack.canonical_value() else {
                 continue;
             };
+            // Drop any withdrawn unit designs (`store.design_withdrawn`) from the projected pack.
+            if let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) {
+                let withdrawn: Vec<String> = entries
+                    .iter()
+                    .filter_map(|(entry_id, row)| {
+                        let is_unit = row.get("kind").and_then(Value::as_str) == Some("unit");
+                        (is_unit && store.design_withdrawn(entry_id)).then_some(entry_id.clone())
+                    })
+                    .collect();
+                for key in withdrawn {
+                    entries.remove(&key);
+                }
+            }
             let has_fielded_def = doc
                 .get("entries")
                 .and_then(Value::as_object)
@@ -835,12 +1077,19 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                     e.values().any(|row| {
                         matches!(
                             row.get("kind").and_then(Value::as_str),
-                            Some("unit" | "weapon" | "arena")
+                            Some("unit" | "weapon" | "arena" | "space_mount" | "space_fit")
                         )
                     })
                 });
             if has_fielded_def {
                 col.push_fielded_value_if_client_relevant(doc);
+            } else if id.as_str() == "tacsim.industry.hulls" {
+                col.push_projected_value(
+                    "hulls",
+                    "industry",
+                    doc,
+                    &["tacsim.industry.hulls", "industry.hulls", "hulls-v2"],
+                );
             } else if loaded.pack.manifest().kind() == mush_content::PackKind::CampaignSeed {
                 let has_location = doc
                     .get("entries")
@@ -859,27 +1108,28 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
             }
         }
 
-        // Fill in stock `Catalog` unit/weapon/arena definitions (`fielded_sources` + conduct carrier)
-        // that were compiled into `store.definitions()` rather than repeated in `TacsimConfig.packs`,
-        // skipping any pack overridden above or retired in `ContentState`.
+        // Fill in stock `Catalog` unit/weapon/arena/space definitions (`fielded_sources` + conduct
+        // carrier) that were compiled into `store.definitions()` rather than repeated in
+        // `TacsimConfig.packs`, skipping any pack overridden above or retired in `ContentState`.
         for raw_src in fielded_sources()
             .into_iter()
             .map(|s| s.bytes)
             .chain(std::iter::once(CONDUCT_CARRIER_JSON.to_owned()))
         {
-            let Ok(doc) = serde_json::from_str::<Value>(&raw_src) else {
+            let Ok(mut doc) = serde_json::from_str::<Value>(&raw_src) else {
                 continue;
             };
             let manifest_id = doc
                 .get("manifest")
                 .and_then(|m| m.get("id"))
                 .and_then(Value::as_str)
-                .unwrap_or("");
+                .unwrap_or("")
+                .to_owned();
             if !manifest_id.is_empty() {
-                if col.by_id.contains_key(manifest_id) {
+                if col.by_id.contains_key(&manifest_id) {
                     continue;
                 }
-                if let Ok(cid) = mush_core::CanonicalId::new(manifest_id)
+                if let Ok(cid) = mush_core::CanonicalId::new(&manifest_id)
                     && content.is_some_and(|c| {
                         c.latches
                             .applied(&cid)
@@ -889,7 +1139,38 @@ pub fn world_content_bundle(w: &World, actor: ObjId) -> ClientContentBundle {
                     continue;
                 }
             }
+            if let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) {
+                let withdrawn: Vec<String> = entries
+                    .iter()
+                    .filter_map(|(entry_id, row)| {
+                        let is_unit = row.get("kind").and_then(Value::as_str) == Some("unit");
+                        (is_unit && store.design_withdrawn(entry_id)).then_some(entry_id.clone())
+                    })
+                    .collect();
+                for key in withdrawn {
+                    entries.remove(&key);
+                }
+            }
             col.push_fielded_value_if_client_relevant(doc);
+        }
+
+        // Yard hull recipes (`industry/hulls-v2.json`), if not overridden above or retired.
+        let hulls_retired = mush_core::CanonicalId::new("tacsim.industry.hulls")
+            .ok()
+            .is_some_and(|cid| {
+                content.is_some_and(|c| {
+                    c.latches
+                        .applied(&cid)
+                        .is_some_and(mush_content::Applied::is_retired)
+                })
+            });
+        if !hulls_retired && !col.by_id.contains_key("hulls") {
+            col.push_projected(
+                "hulls",
+                "industry",
+                INDUSTRY_HULLS_JSON,
+                &["tacsim.industry.hulls", "industry.hulls", "hulls-v2"],
+            );
         }
 
         // Companion ground heightfield atlases for active simulator arenas
@@ -934,27 +1215,46 @@ pub fn client_content_bundle() -> &'static ClientContentBundle {
             col.push_manifest_neighborhood_if_applicable(json_src);
         }
 
-        // 2. All station, surface site, wide site, and relay neighborhoods (`tacsim`)
+        // 2. All station, surface site, wide site, and relay neighborhoods & regions (`tacsim`)
         for &(_id, json_src) in STATION_SOURCES
             .iter()
             .chain(SITE_SOURCES.iter())
             .chain(WIDE_SITE_SOURCES.iter())
         {
             col.push_manifest_neighborhood_if_applicable(json_src);
+            col.push_manifest_region_if_applicable(json_src, false);
         }
         for json_src in crate::relay_content::GEOGRAPHY {
             col.push_manifest_neighborhood_if_applicable(json_src);
+            col.push_manifest_region_if_applicable(json_src, false);
         }
 
-        // 3. Station public cast metadata (`cast.<slug>`, with lore & prompt internals stripped)
+        // 3. Station public cast metadata (`cast.<slug>`, with lore, prompt internals,
+        //    and restricted-room NPCs stripped)
         for &(pack_id, json_src) in &CAST_SOURCES {
             let slug = pack_id.strip_prefix("tacsim.cast.").unwrap_or(pack_id);
+            let nb_id = format!("neighborhood.{slug}");
+            let restricted = col.restricted_rooms_for(&nb_id);
             let client_id = format!("cast.{slug}");
-            col.push_projected(&client_id, "cast", json_src, &[pack_id]);
+            if let Ok(doc) = serde_json::from_str::<Value>(json_src) {
+                col.push_projected_value_with_restricted(
+                    &client_id,
+                    "cast",
+                    doc,
+                    &[pack_id],
+                    &restricted,
+                );
+            }
         }
 
-        // 4. Economy goods table & trade corridor lane
+        // 4. Economy goods table, yard hull recipes, & trade corridor lane
         col.push_projected("goods", "market", GOODS_JSON, &["tacsim.goods"]);
+        col.push_projected(
+            "hulls",
+            "industry",
+            INDUSTRY_HULLS_JSON,
+            &["tacsim.industry.hulls", "industry.hulls", "hulls-v2"],
+        );
         col.push_projected(
             "ceres_phobos",
             "lane",
@@ -962,7 +1262,7 @@ pub fn client_content_bundle() -> &'static ClientContentBundle {
             &["tacsim.lane.ceres_phobos"],
         );
 
-        // 5. All fielded units, weapons, and arena definitions (`fielded_sources` + conduct carrier)
+        // 5. All fielded units, weapons, space mounts/fits, and arena definitions
         for src in fielded_sources() {
             col.push_fielded_pack_if_client_relevant(&src.bytes);
         }
@@ -988,15 +1288,40 @@ pub fn client_content_bundle() -> &'static ClientContentBundle {
             &["tacsim.winter_valley"],
         );
 
-        ClientContentBundle {
-            manifest_packs_value: Value::Array(col.pack_rows),
-            entries: col.entries,
-            by_id: col.by_id,
-        }
+        col.finish()
     })
 }
 
-fn world_content_fingerprint(w: &World, actor: ObjId) -> String {
+fn hash_footprint(h: &mut Sha256, fp: &mush_atlas::Footprint) {
+    match fp {
+        mush_atlas::Footprint::Rect(mush_atlas::Rect2(
+            mush_atlas::Point2(x0, y0),
+            mush_atlas::Point2(x1, y1),
+        )) => {
+            h.update([1u8]);
+            h.update(x0.to_bits().to_le_bytes());
+            h.update(y0.to_bits().to_le_bytes());
+            h.update(x1.to_bits().to_le_bytes());
+            h.update(y1.to_bits().to_le_bytes());
+        }
+        mush_atlas::Footprint::Polygon(mush_atlas::Polygon2(pts)) => {
+            h.update([2u8]);
+            h.update((pts.len() as u64).to_le_bytes());
+            for mush_atlas::Point2(px, py) in pts {
+                h.update(px.to_bits().to_le_bytes());
+                h.update(py.to_bits().to_le_bytes());
+            }
+        }
+        mush_atlas::Footprint::Anchor { point, radius_m } => {
+            h.update([3u8]);
+            h.update(point.0.to_bits().to_le_bytes());
+            h.update(point.1.to_bits().to_le_bytes());
+            h.update(radius_m.to_bits().to_le_bytes());
+        }
+    }
+}
+
+fn world_content_fingerprint(w: &World, actor: ObjId) -> [u8; 32] {
     let mut h = Sha256::new();
     let is_staff_viewer = mush_atlas::is_staff(w, actor);
     h.update([u8::from(is_staff_viewer)]);
@@ -1021,11 +1346,59 @@ fn world_content_fingerprint(w: &World, actor: ObjId) -> String {
         for (room_id, geo) in &atlas.records.roomgeo {
             h.update(room_id.0.to_le_bytes());
             h.update(geo.revision.to_le_bytes());
+            h.update([match geo.kind {
+                mush_atlas::RoomKind::Outdoor => 0,
+                mush_atlas::RoomKind::Indoor => 1,
+                mush_atlas::RoomKind::Circulation => 2,
+            }]);
+            h.update([match geo.access {
+                mush_atlas::Access::Public => 0,
+                mush_atlas::Access::Restricted => 1,
+            }]);
+            match &geo.surface {
+                mush_atlas::SurfaceRef::Ground => h.update([0u8]),
+                mush_atlas::SurfaceRef::Floor {
+                    structure, index, ..
+                } => {
+                    h.update([1u8]);
+                    h.update(structure.entry.as_str().as_bytes());
+                    h.update(index.to_le_bytes());
+                }
+            }
             if let Some(obj) = w.get(*room_id) {
                 h.update(obj.name.as_bytes());
             }
-            if let Ok(fp_bytes) = serde_json::to_vec(&geo.footprint) {
-                h.update(&fp_bytes);
+            hash_footprint(&mut h, &geo.footprint);
+        }
+        h.update(b"|nb:");
+        for (nkey, nb) in &atlas.records.neighborhoods {
+            h.update(nkey.pack.as_str().as_bytes());
+            h.update(b":");
+            h.update(nkey.entry.as_str().as_bytes());
+            h.update(nb.revision.to_le_bytes());
+            h.update(nb.name.as_bytes());
+            h.update(nb.region.pack.as_str().as_bytes());
+            h.update(nb.setting.as_bytes());
+        }
+        h.update(b"|st:");
+        for (skey, st) in &atlas.records.structures {
+            h.update(skey.pack.as_str().as_bytes());
+            h.update(b":");
+            h.update(skey.entry.as_str().as_bytes());
+            h.update(st.revision.to_le_bytes());
+            h.update((st.footprint.0.len() as u64).to_le_bytes());
+            for mush_atlas::Point2(px, py) in &st.footprint.0 {
+                h.update(px.to_bits().to_le_bytes());
+                h.update(py.to_bits().to_le_bytes());
+            }
+            h.update((st.floors.len() as u64).to_le_bytes());
+            for fl in &st.floors {
+                h.update(fl.index.to_le_bytes());
+                h.update(fl.z_offset_m.to_bits().to_le_bytes());
+                h.update(fl.height_m.to_bits().to_le_bytes());
+                if let Some(name) = &fl.name {
+                    h.update(name.as_bytes());
+                }
             }
         }
     }
@@ -1033,19 +1406,89 @@ fn world_content_fingerprint(w: &World, actor: ObjId) -> String {
         h.update(b"|tacsim:");
         for loaded in store.packs() {
             let id = loaded.pack.manifest().id();
+            let ver = loaded.pack.manifest().version();
             h.update(id.as_str().as_bytes());
-            h.update(loaded.pack.manifest().version().to_le_bytes());
+            h.update(ver.to_le_bytes());
+            h.update(loaded.pack.manifest().digest().as_bytes());
             let applied = store.applied_in(w, id).unwrap_or(0);
             h.update(applied.to_le_bytes());
+            let published = u8::from(store.published_digest(id, ver).is_some());
+            h.update([published]);
+        }
+        h.update(b"|designs:");
+        for d in store.designs() {
+            h.update(d.id.as_bytes());
+            h.update(d.version.to_le_bytes());
+            h.update([u8::from(d.withdrawn)]);
         }
     }
-    let digest = h.finalize();
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{b:02x}");
+    h.finalize().into()
+}
+
+/// Maximum serialized byte size of a `tacsim.content` or `port.trade` query parameter payload.
+const MAX_QUERY_PARAMS_BYTES: usize = 256;
+/// Maximum byte length of a requested pack identifier.
+const MAX_PACK_ID_BYTES: usize = 128;
+/// Maximum outbound keyframe byte size for `tacsim.content`.
+const MAX_CONTENT_KEYFRAME_BYTES: usize = 512 * 1024;
+/// Maximum outbound keyframe byte size for `port.trade`.
+const MAX_TRADE_KEYFRAME_BYTES: usize = 128 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ContentQueryOp {
+    Manifest,
+    Pack,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContentQueryParams {
+    #[serde(default)]
+    op: Option<ContentQueryOp>,
+    #[serde(default)]
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PortTradeParams {
+    #[serde(default)]
+    after: Option<u64>,
+}
+
+fn require_live_player(w: &World, actor: ObjId, err_msg: &str) -> Result<(), RichText> {
+    match w.get(actor) {
+        Some(obj) if obj.kind == ObjKind::Player && !obj.flags.contains(Flags::GOING) => Ok(()),
+        _ => Err(RichText::plain(err_msg)),
     }
-    out
+}
+
+fn decode_closed_params<T: serde::de::DeserializeOwned>(
+    w: &World,
+    actor: ObjId,
+    params: &Value,
+    err_msg: &str,
+) -> Result<T, RichText> {
+    require_live_player(w, actor, err_msg)?;
+    let encoded_len = serde_json::to_vec(params).map_or(usize::MAX, |v| v.len());
+    if encoded_len > MAX_QUERY_PARAMS_BYTES {
+        return Err(RichText::plain(err_msg));
+    }
+    let normalized = if params.is_null() {
+        json!({})
+    } else {
+        params.clone()
+    };
+    serde_json::from_value(normalized).map_err(|_| RichText::plain(err_msg))
+}
+
+fn check_keyframe_size(data: &Value, max_bytes: usize, err_msg: &str) -> Result<(), RichText> {
+    let bytes = serde_json::to_vec(data).map_or(usize::MAX, |v| v.len());
+    if bytes > max_bytes {
+        return Err(RichText::plain(err_msg));
+    }
+    Ok(())
 }
 
 /// Register the `port.trade` and `tacsim.content` pulled panel feeds and query handlers.
@@ -1062,8 +1505,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 }
 
 struct ClientContentQuery {
-    player_cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
-    staff_cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
+    player_cache: Mutex<Option<([u8; 32], Arc<ClientContentBundle>)>>,
+    staff_cache: Mutex<Option<([u8; 32], Arc<ClientContentBundle>)>>,
 }
 
 impl ClientContentQuery {
@@ -1098,38 +1541,57 @@ impl ClientContentQuery {
 
 impl QueryHandler for ClientContentQuery {
     fn query(&self, w: &World, actor: ObjId, params: &Value) -> Result<OutputEvent, RichText> {
-        let bundle = self.bundle_for(w, actor);
-        let op = params
-            .get("op")
-            .and_then(Value::as_str)
-            .unwrap_or("manifest");
-        let data = if op == "pack" {
-            let req_id = params.get("id").and_then(Value::as_str).unwrap_or("");
-            match bundle.find(req_id) {
-                Some(entry) => json!({
-                    "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
-                    "op": "pack",
-                    "found": true,
-                    "id": entry.id.as_ref(),
-                    "requested_id": req_id,
-                    "category": entry.category,
-                    "sha256": entry.sha256.as_ref(),
-                    "json": entry.json.as_ref(),
-                }),
-                None => json!({
-                    "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
-                    "op": "pack",
-                    "found": false,
-                    "id": req_id,
-                }),
+        const BAD_QUERY: &str = "Invalid content query.";
+        let parsed: ContentQueryParams = decode_closed_params(w, actor, params, BAD_QUERY)?;
+        let op = match (parsed.op, parsed.id.as_deref()) {
+            (None | Some(ContentQueryOp::Manifest), None) => ContentQueryOp::Manifest,
+            (Some(ContentQueryOp::Pack), Some(id)) => {
+                let trimmed = id.trim();
+                if trimmed.is_empty()
+                    || id.len() > MAX_PACK_ID_BYTES
+                    || id.chars().any(char::is_control)
+                {
+                    return Err(RichText::plain(BAD_QUERY));
+                }
+                ContentQueryOp::Pack
             }
-        } else {
-            json!({
+            _ => return Err(RichText::plain(BAD_QUERY)),
+        };
+
+        let bundle = self.bundle_for(w, actor);
+        let data = match op {
+            ContentQueryOp::Pack => {
+                let req_id = parsed.id.as_deref().unwrap_or("").trim();
+                match bundle.find(req_id) {
+                    Some(entry) => json!({
+                        "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
+                        "op": "pack",
+                        "found": true,
+                        "id": entry.id.as_ref(),
+                        "requested_id": req_id,
+                        "category": entry.category,
+                        "sha256": entry.sha256.as_ref(),
+                        "json": entry.json.as_ref(),
+                    }),
+                    None => json!({
+                        "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
+                        "op": "pack",
+                        "found": false,
+                        "id": req_id,
+                    }),
+                }
+            }
+            ContentQueryOp::Manifest => json!({
                 "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
                 "op": "manifest",
                 "packs": bundle.manifest_packs_value.clone(),
-            })
+            }),
         };
+        check_keyframe_size(
+            &data,
+            MAX_CONTENT_KEYFRAME_BYTES,
+            "Content payload too large.",
+        )?;
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static(CLIENT_CONTENT_FEED),
             kind: PanelFrameKind::Keyframe,
@@ -1185,20 +1647,44 @@ fn format_price(w: &World, instrument: Option<&InstrumentId>, amount: Amount) ->
     }
 }
 
+fn deadline_lapsed(w: &World, deadline: EconomicDeadline) -> bool {
+    match deadline.clock {
+        EconomicClock::RealUtc => w.now() >= deadline.at,
+        EconomicClock::WorldIc => w.world_ic_now().at >= deadline.at,
+        EconomicClock::Manual => false,
+        EconomicClock::Cadence(id) => w
+            .module_state::<EconomyStore>()
+            .and_then(|e| e.snapshot().cadence(id))
+            .is_some_and(|c| i64::try_from(c.position).map_or(true, |pos| pos >= deadline.at)),
+    }
+}
+
 fn build_open_quotes_json(w: &World, market_store: &MarketStore, actor: ObjId) -> Vec<Value> {
     let buyer = PrincipalId::Object(actor);
-    let now = w.now();
     let mut out = Vec::new();
     for q in market_store.quotes_of_buyer(&buyer) {
-        if q.contract.is_some() || q.settled.is_some() || now >= q.expires.at {
+        if q.contract.is_some() || q.settled.is_some() || deadline_lapsed(w, q.expires) {
             continue;
         }
-        let listing_still_matches = market_store
-            .listing(q.listing)
-            .is_some_and(|l| l.revision == q.observed.listing && l.quantity >= q.quantity);
-        if !listing_still_matches {
+        let Some(l) = market_store.listing(q.listing) else {
+            continue;
+        };
+        if deadline_lapsed(w, l.expires)
+            || l.revision != q.observed.listing
+            || l.definition_version != q.observed.definition_version
+            || l.quantity < q.quantity
+            || mush_market::asset_state(w, l) != q.observed.state
+        {
             continue;
         }
+        if let (Some(src_id), Some(obs_rev)) = (&q.source, q.observed.source)
+            && !market_store
+                .source(*src_id)
+                .is_some_and(|s| s.revision == obs_rev)
+        {
+            continue;
+        }
+        let summary = mush_market::summarize_listing(w, l);
         let total_minor = q
             .price
             .minor()
@@ -1211,8 +1697,8 @@ fn build_open_quotes_json(w: &World, market_store: &MarketStore, actor: ObjId) -
             "quantity": q.quantity,
             "unit_price_minor": q.price.minor(),
             "total_minor": total_minor,
-            "price_text": money(w, q.price),
-            "total_text": money(w, Amount::from_minor(total_minor)),
+            "price_text": format_price(w, summary.instrument.as_ref(), q.price),
+            "total_text": format_price(w, summary.instrument.as_ref(), Amount::from_minor(total_minor)),
             "expires_at": q.expires.at,
         }));
     }
@@ -1223,7 +1709,7 @@ fn build_port_trade_frame(
     ctx: Option<&HookReadContext<'_>>,
     w: &World,
     actor: ObjId,
-    params: &Value,
+    after: Option<u64>,
 ) -> Value {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return json!({
@@ -1244,7 +1730,7 @@ fn build_port_trade_frame(
         .and_then(|v| port_of_venue(w, v))
         .map(|(def, _)| port_name(def));
 
-    let after_cursor = params.get("after").and_then(Value::as_u64).map(ListingId);
+    let after_cursor = after.map(ListingId);
 
     let mut listings_json = Vec::new();
     let mut next_after: Option<u64> = None;
@@ -1264,6 +1750,20 @@ fn build_port_trade_frame(
                 let summary = mush_market::summarize_listing(w, l);
                 let is_bid = l.source.is_wanted();
                 let side = if is_bid { "bid" } else { "ask" };
+                let supply_kind = if l.object.is_some() {
+                    "asset"
+                } else {
+                    match &l.source {
+                        Supply::Stock { .. } => "stock",
+                        Supply::Lot { .. } => "lot",
+                        Supply::Wanted { .. } => "wanted",
+                        Supply::Market { .. } => "market",
+                        Supply::Procurement { .. } => "procurement",
+                    }
+                };
+                let is_exact_lot = l.source.exact_lot().is_some();
+                let is_private = l.private_to.is_some();
+                let grade = l.source.lot().map(|(_, _, g)| g);
                 let good_code = l.catalog.code.to_string();
                 let good_label = goods
                     .and_then(|g| {
@@ -1280,6 +1780,10 @@ fn build_port_trade_frame(
                 listings_json.push(json!({
                     "id": l.id.0,
                     "side": side,
+                    "supply_kind": supply_kind,
+                    "is_exact_lot": is_exact_lot,
+                    "is_private": is_private,
+                    "grade": grade,
                     "good": good_code,
                     "good_label": good_label,
                     "vendor_name": seller_display,
@@ -1293,32 +1797,30 @@ fn build_port_trade_frame(
         }
     }
 
-    let ship_json = helm_of(w, actor).and_then(|charter| {
-        let view = hull_view(w, charter.hull)?;
-        let (docked, port_entry) = match berth_of(w, charter.hull) {
+    let actor_room = w.get(actor).and_then(|o| o.location);
+    let ship_json = resolve_actor_hull(w, actor, actor_room, venue.as_ref()).and_then(|resolved| {
+        let view = hull_view(w, resolved.hull)?;
+        let (docked, port_entry) = match berth_of(w, resolved.hull) {
             Berth::Docked { map, .. } => (true, Some(map.entry.to_string())),
             Berth::UnderWay | Berth::Elsewhere => (false, None),
         };
-        let (standing_word, sales, buyout_minor) = match charter.standing {
-            crate::port::coop::Standing::Fleet => ("fleet", 0_u32, 0_i64),
-            crate::port::coop::Standing::Title => ("title", 0_u32, 0_i64),
-            crate::port::coop::Standing::Charter(contract) => store
+        let (sales, buyout_minor) = match resolved.charter_contract {
+            Some(contract) => store
                 .enrolment_for_lease(contract.0)
                 .filter(|e| e.status == EnrolmentStatus::Active)
-                .map_or(("charter", 0_u32, 0_i64), |e| {
-                    ("charter", e.sales, e.buyout_minor)
-                }),
+                .map_or((0_u32, 0_i64), |e| (e.sales, e.buyout_minor)),
+            None => (0_u32, 0_i64),
         };
         let stowage = ctx.and_then(|c| hull_stowage_json(c, w, store, &view));
         Some(json!({
-            "hull_id": charter.hull.to_string(),
-            "hull_name": name_of(w, charter.hull),
+            "hull_id": resolved.hull.to_string(),
+            "hull_name": name_of(w, resolved.hull),
             "mark": view.row.mark,
             "unit": view.unit.to_string(),
             "class": view.class_word(),
             "docked": docked,
             "port": port_entry,
-            "standing": standing_word,
+            "standing": resolved.standing_word,
             "sales": sales,
             "buyout_minor": buyout_minor,
             "buyout_text": money(w, Amount::from_minor(buyout_minor)),
@@ -1326,7 +1828,6 @@ fn build_port_trade_frame(
         }))
     });
 
-    let actor_room = w.get(actor).and_then(|o| o.location);
     let berth_json = actor_room.and_then(|room| berth_gallery_json(w, store, actor, room));
     let simulator_json = actor_room.and_then(|room| simulator_lobby_json(w, actor, room));
 
@@ -1349,10 +1850,18 @@ fn build_port_trade_frame(
 
 impl QueryHandler for PortTradeQuery {
     fn query(&self, w: &World, actor: ObjId, params: &Value) -> Result<OutputEvent, RichText> {
+        const BAD_QUERY: &str = "Invalid port trade query.";
+        let parsed: PortTradeParams = decode_closed_params(w, actor, params, BAD_QUERY)?;
+        let data = build_port_trade_frame(None, w, actor, parsed.after);
+        check_keyframe_size(
+            &data,
+            MAX_TRADE_KEYFRAME_BYTES,
+            "Port trade payload too large.",
+        )?;
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static(PORT_TRADE_FEED),
             kind: PanelFrameKind::Keyframe,
-            data: build_port_trade_frame(None, w, actor, params),
+            data,
         })
     }
 
@@ -1362,10 +1871,19 @@ impl QueryHandler for PortTradeQuery {
         actor: ObjId,
         params: &Value,
     ) -> Result<OutputEvent, RichText> {
+        const BAD_QUERY: &str = "Invalid port trade query.";
+        let parsed: PortTradeParams =
+            decode_closed_params(context.world(), actor, params, BAD_QUERY)?;
+        let data = build_port_trade_frame(Some(context), context.world(), actor, parsed.after);
+        check_keyframe_size(
+            &data,
+            MAX_TRADE_KEYFRAME_BYTES,
+            "Port trade payload too large.",
+        )?;
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static(PORT_TRADE_FEED),
             kind: PanelFrameKind::Keyframe,
-            data: build_port_trade_frame(Some(context), context.world(), actor, params),
+            data,
         })
     }
 }
@@ -1405,6 +1923,12 @@ pub fn validate_projected_bundle_cleanliness(bundle: &ClientContentBundle) -> Re
                     if def.get("reveal").and_then(Value::as_str) == Some("staff") {
                         return Err(format!("staff reveal leaked on `{}:{row_id}`", entry.id));
                     }
+                    if def.get("lock").and_then(Value::as_str) == Some("staff") {
+                        return Err(format!(
+                            "staff-locked entry leaked on `{}:{row_id}`",
+                            entry.id
+                        ));
+                    }
                     if def.get("visibility").and_then(Value::as_str) == Some("hidden") {
                         return Err(format!("hidden entry leaked on `{}:{row_id}`", entry.id));
                     }
@@ -1435,12 +1959,39 @@ pub fn validate_projected_bundle_cleanliness(bundle: &ClientContentBundle) -> Re
                     }
                     if kind == "room"
                         && def.get("access").and_then(Value::as_str) == Some("restricted")
-                        && (def.contains_key("desc") || def.contains_key("details"))
                     {
-                        return Err(format!(
-                            "restricted room prose leaked on `{}:{row_id}`",
-                            entry.id
-                        ));
+                        return Err(format!("restricted room leaked on `{}:{row_id}`", entry.id));
+                    }
+                    if kind == "location"
+                        && let Some(clusters) = def.get("clusters").and_then(Value::as_array)
+                    {
+                        for cluster in clusters {
+                            if let Some(rocks) = cluster.get("rocks").and_then(Value::as_array) {
+                                for rock in rocks {
+                                    let Some(robj) = rock.as_object() else {
+                                        return Err(format!(
+                                            "non-object cluster rock on `{}:{row_id}`",
+                                            entry.id
+                                        ));
+                                    };
+                                    if robj.is_empty()
+                                        || !robj.contains_key("letter")
+                                        || !robj.contains_key("spectral")
+                                    {
+                                        return Err(format!(
+                                            "cluster rock wiped or missing public chart keys on `{}:{row_id}`: {rock}",
+                                            entry.id
+                                        ));
+                                    }
+                                    if robj.contains_key("gross_t") {
+                                        return Err(format!(
+                                            "rock reserve `gross_t` leaked on `{}:{row_id}`",
+                                            entry.id
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     }
                     if let Some(prof) = def.get("profile").and_then(Value::as_object) {
                         for forbidden_prof in ["persona", "knows", "does_not_know", "fallback"] {
@@ -1493,9 +2044,39 @@ mod tests {
         let Some(ceres) = bundle.find("neighborhood.ceres_freeport") else {
             return crate::test_checks::failed("missing ceres_freeport pack");
         };
-        for hidden in ["secret.slowdown", "exit.c14_c15", "exit.c05_c16"] {
+        for hidden in [
+            "secret.slowdown",
+            "exit.c14_c15",
+            "exit.c05_c16",
+            "room.c15_maintenance",
+            "room.c16_authority",
+            "item.chandlery_cage",
+            "item.occator_manifold",
+            "item.exchange_manifold",
+            "staff only",
+        ] {
             check!(!ceres.json.contains(hidden));
         }
+        // CS-H1: staff-locked exits (`lock: "staff"`) and restricted rooms stripped from relays.
+        for relay_nb in [
+            "neighborhood.kirkwood_depot",
+            "neighborhood.mercury_relay",
+            "neighborhood.malapert_exchange",
+            "neighborhood.phobos_exchange",
+        ] {
+            let Some(relay) = bundle.find(relay_nb) else {
+                return crate::test_checks::failed(&format!("missing {relay_nb}"));
+            };
+            check!(!relay.json.contains("exit.relay"));
+            check!(!relay.json.contains("room.relay"));
+        }
+        // CS-H1: NPCs stationed in restricted rooms stripped from projected cast packs.
+        let Some(ceres_cast) = bundle.find("cast.ceres_freeport") else {
+            return crate::test_checks::failed("missing cast.ceres_freeport");
+        };
+        check!(!ceres_cast.json.contains("npc.holm"));
+        check!(ceres_cast.json.contains("npc.qureshi"));
+
         let Some(lane) = bundle.find("ceres_phobos") else {
             return crate::test_checks::failed("missing ceres_phobos lane pack");
         };
@@ -1510,11 +2091,36 @@ mod tests {
         ] {
             check!(!lane.json.contains(lane_secret));
         }
+        // CS-H2: cluster rocks preserve real public chart fields instead of wiping to `{}`.
+        let lane_val: Value = serde_json::from_str(&lane.json)?;
+        let Some(clusters) = lane_val["entries"]["kirkwood_depot"]["def"]["clusters"].as_array()
+        else {
+            return crate::test_checks::failed("missing kirkwood_depot clusters");
+        };
+        check!(!clusters.is_empty());
+        let mut rock_count = 0usize;
+        for cluster in clusters {
+            let Some(rocks) = cluster["rocks"].as_array() else {
+                return crate::test_checks::failed("missing rocks array on cluster");
+            };
+            for rock in rocks {
+                rock_count += 1;
+                check!(rock.get("letter").and_then(Value::as_str).is_some());
+                check!(rock.get("alias").and_then(Value::as_str).is_some());
+                check!(rock.get("spectral").and_then(Value::as_str).is_some());
+                check!(rock.get("pos_m").and_then(Value::as_array).is_some());
+                check!(rock.get("vel_mmps").and_then(Value::as_array).is_some());
+                check!(rock.get("tenure").and_then(Value::as_str).is_some());
+                check!(rock.get("gross_t").is_none());
+            }
+        }
+        check!(rock_count >= 12);
         Ok(())
     }
 
     #[test]
-    fn client_content_bundle_covers_every_content_neighborhood_and_unit_file() -> TestResult {
+    fn client_content_bundle_covers_every_content_neighborhood_region_unit_and_space_pack()
+    -> TestResult {
         let bundle = client_content_bundle();
         let content_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("content");
 
@@ -1531,6 +2137,19 @@ mod tests {
                     "neighborhood file `{fname}` missing from client_content_bundle"
                 ));
             }
+            if let Some(region_id) = fname
+                .strip_prefix("region.")
+                .and_then(|s| s.strip_suffix(".json"))
+                .map(|slug| format!("region.{slug}"))
+            {
+                let Some(pack) = bundle.find(&region_id) else {
+                    return crate::test_checks::failed(&format!(
+                        "region file `{fname}` missing from client_content_bundle"
+                    ));
+                };
+                check_eq!(pack.category, "region");
+                check!(!pack.json.contains("\"theme\""));
+            }
         }
 
         for entry in std::fs::read_dir(content_root.join("units"))? {
@@ -1544,6 +2163,183 @@ mod tests {
                 ));
             }
         }
+
+        // Missing packs (#55): space mounts/fits & industry hull recipes.
+        for (alias, expected_id) in [
+            ("space_mounts", "space_mounts"),
+            ("tacsim.pack.space_mounts", "space_mounts"),
+            ("space_fits", "space_fits"),
+            ("tacsim.pack.space_fits", "space_fits"),
+            ("hulls", "hulls"),
+            ("tacsim.industry.hulls", "hulls"),
+        ] {
+            let Some(found) = bundle.find(alias) else {
+                return crate::test_checks::failed(&format!("missing pack alias `{alias}`"));
+            };
+            check_eq!(found.id.as_ref(), expected_id);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn client_content_query_enforces_closed_params_and_live_player_gate() -> TestResult {
+        let mut tw = mush_testkit::TestWorld::new();
+        let player = tw.spawn_player("PlayerViewer");
+        let thing = tw
+            .world_mut()
+            .create(ObjKind::Thing, "NotAPlayer", ObjId(1), None)?;
+        let going_player = tw.spawn_player("GoingPlayer");
+        if let Some(obj) = tw.world_mut().get_mut(going_player) {
+            obj.flags.insert(Flags::GOING);
+        }
+        let w = &tw.engine().world;
+        let q = ClientContentQuery::new();
+
+        // Valid empty / null / explicit manifest queries succeed.
+        for valid in [json!({}), Value::Null, json!({"op": "manifest"})] {
+            let Ok(OutputEvent::Panel { data, .. }) = q.query(w, player, &valid) else {
+                return crate::test_checks::failed(&format!("expected ok for {valid}"));
+            };
+            check_eq!(data["op"], json!("manifest"));
+        }
+
+        // Malformed / unknown-field / amplification queries are refused closed (CS-M2).
+        for bad in [
+            json!({"op": "bogus"}),
+            json!({"pack": "dray"}),
+            json!({"id": "dray"}),
+            json!({"op": "manifest", "id": "dray"}),
+            json!({"op": "pack"}),
+            json!({"op": "pack", "id": ""}),
+            json!({"op": "pack", "id": "dray\n"}),
+            json!({"op": "pack", "id": "a".repeat(200)}),
+            json!({"op": "pack", "id": "dray", "extra": true}),
+        ] {
+            check!(q.query(w, player, &bad).is_err());
+        }
+
+        // Non-player and GOING actors are refused closed on both queries.
+        check!(q.query(w, thing, &json!({})).is_err());
+        check!(q.query(w, going_player, &json!({})).is_err());
+        let trade_q = PortTradeQuery;
+        check!(trade_q.query(w, thing, &json!({})).is_err());
+        check!(trade_q.query(w, going_player, &json!({})).is_err());
+        check!(trade_q.query(w, player, &json!({"bogus": 1})).is_err());
+        check!(trade_q.query(w, player, &json!({})).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn world_content_bundle_gates_cast_unapplied_packs_and_withdrawn_designs() -> TestResult {
+        let mut tw = mush_testkit::TestWorld::new();
+        let player = tw.spawn_player("PlayerViewer");
+        let mut store = TacsimStore::default();
+        // Stage an unapplied `CampaignSeed` (`ceres_phobos` lane) in `store.loaded` without
+        // applying it — `world_content_bundle` must NOT expose it via `newest_loaded` (CS-H1).
+        let lane_pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON)?;
+        store.stage_pack(crate::LoadedPack {
+            source: "<unapplied lane>".to_owned(),
+            pack: lane_pack,
+        })?;
+        // Mark `tacsim.unit.dray` withdrawn in the design registry.
+        store.designs.insert(
+            (crate::definitions::content::DRAY.to_owned(), 1),
+            crate::design::DesignRecord {
+                id: crate::definitions::content::DRAY.to_owned(),
+                version: 1,
+                pack: json!({}),
+                look: json!({}),
+                withdrawn: true,
+            },
+        );
+        tw.world_mut().module_state_insert(store);
+        tw.world_mut()
+            .module_state_insert(mush_atlas::AtlasState::default());
+
+        // Non-staff sees neither `cast.ceres_freeport` (no accessible companion neighborhood),
+        // nor the unapplied `ceres_phobos` lane pack, nor the withdrawn `dray` design!
+        let player_bundle = world_content_bundle(tw.world(), player);
+        check!(player_bundle.find("cast.ceres_freeport").is_none());
+        check!(player_bundle.find("ceres_phobos").is_none());
+        check!(player_bundle.find("dray").is_none());
+        // Fingerprint changes when withdrawn state toggles (CS-M1).
+        let fp1 = world_content_fingerprint(tw.world(), player);
+        if let Some(st) = tw.world_mut().module_state_mut::<TacsimStore>()
+            && let Some(rec) = st
+                .designs
+                .get_mut(&(crate::definitions::content::DRAY.to_owned(), 1))
+        {
+            rec.withdrawn = false;
+        }
+        let fp2 = world_content_fingerprint(tw.world(), player);
+        check_ne!(fp1, fp2);
+
+        // Fingerprint also invalidates on `atlas.records.structures` & `neighborhoods` edits (CS-M1).
+        let pack_id = mush_core::CanonicalId::new("neighborhood.fp_probe")?;
+        let st_key = mush_atlas::RecordKey::new(
+            pack_id.clone(),
+            mush_core::CanonicalId::new("structure.fp_hub")?,
+        );
+        let nb_key = mush_atlas::RecordKey::new(
+            pack_id.clone(),
+            mush_core::CanonicalId::new("neighborhood.fp_main")?,
+        );
+        if let Some(atlas) = tw.world_mut().module_state_mut::<mush_atlas::AtlasState>() {
+            atlas.records.structures.insert(
+                st_key.clone(),
+                mush_atlas::StructureRec {
+                    key: st_key,
+                    site: mush_atlas::RecordKey::new(
+                        pack_id.clone(),
+                        mush_core::CanonicalId::new("site.fp_hub")?,
+                    ),
+                    footprint: mush_atlas::Polygon2(vec![
+                        mush_atlas::Point2(0.0, 0.0),
+                        mush_atlas::Point2(10.0, 0.0),
+                        mush_atlas::Point2(10.0, 10.0),
+                        mush_atlas::Point2(0.0, 10.0),
+                    ]),
+                    floors: vec![],
+                    revision: 1,
+                },
+            );
+        }
+        let fp3 = world_content_fingerprint(tw.world(), player);
+        check_ne!(fp2, fp3);
+        if let Some(atlas) = tw.world_mut().module_state_mut::<mush_atlas::AtlasState>() {
+            atlas.records.neighborhoods.insert(
+                nb_key.clone(),
+                mush_atlas::NeighborhoodRec {
+                    key: nb_key,
+                    region: mush_atlas::RecordKey::new(
+                        mush_core::CanonicalId::new("region.ceres")?,
+                        mush_core::CanonicalId::new("region.ceres")?,
+                    ),
+                    locality: mush_atlas::RecordKey::new(
+                        pack_id.clone(),
+                        mush_core::CanonicalId::new("locality.fp")?,
+                    ),
+                    name: "FP Probe".to_owned(),
+                    setting: "station".to_owned(),
+                    representation: mush_atlas::record::Representation::Authored,
+                    footprint: mush_atlas::Polygon2(vec![]),
+                    room_budget: mush_atlas::record::Budget {
+                        target: 10,
+                        maximum: 10,
+                    },
+                    hydration: mush_atlas::record::HydrationPolicy::default(),
+                    zone: None,
+                    reviewers: vec![],
+                    tiles: vec![],
+                    resolution_cm: 100,
+                    theme: None,
+                    ambience: vec![],
+                    revision: 1,
+                },
+            );
+        }
+        let fp4 = world_content_fingerprint(tw.world(), player);
+        check_ne!(fp3, fp4);
         Ok(())
     }
 

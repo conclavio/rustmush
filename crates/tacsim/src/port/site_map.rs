@@ -1312,9 +1312,13 @@ fn frame_marks(grid: &[Vec<char>], layers: &Overlays) -> Value {
         .filter(|(at, letter)| !over_letter(at) && glyph_at(*at) == Some(*letter))
         .map(|(at, letter)| json!([at.0, at.1, letter.to_string()]))
         .collect();
+    // Preserve the landed hull's frame coordinates even when a rig (`@`/`o`), contact,
+    // or slot digit overlays `'H'` in the composed ASCII grid (U-H23). Graphical clients
+    // read `marks.hull` as the authoritative landed-pad location, while TUI glyph styling
+    // already checks `*marked == glyph` before applying bold `'H'` styling.
     let hull = layers
         .hull
-        .filter(|at| !over_hull(at) && glyph_at(*at) == Some('H'))
+        .filter(|at| glyph_at(*at).is_some())
         .map(|at| json!([at.0, at.1]));
     let slots: Vec<Value> = if layers.mine.len() >= 2 {
         layers
@@ -3350,6 +3354,50 @@ mod tests {
         compose(&mut lone_grid, &lone);
         assert_eq!(frame_marks(&lone_grid, &lone)["slots"], json!([]));
         assert_eq!(frame_marks(&lone_grid, &lone)["hull"], Value::Null);
+    }
+
+    /// Regression (U-H23): `marks.hull` preserves the landed hull cell even when a rig (`@`),
+    /// another player's rig (`o`), or a slot digit sits on top of `'H'` in the composed ASCII
+    /// grid, while block letters under the hull stay excluded.
+    #[test]
+    fn sm9_marks_hull_preserved_under_rig_overlay() {
+        let mut grid = vec![vec![','; 4]; 2];
+        let layers = Overlays {
+            letters: vec![((1, 0), 'H'), ((3, 0), 'C')],
+            hull: Some((1, 0)),
+            mine: vec![(1, (1, 0), Some((2, 0)))],
+            ..Overlays::default()
+        };
+        compose(&mut grid, &layers);
+        assert_eq!(
+            grid.first()
+                .map(|r| r.iter().collect::<String>())
+                .as_deref(),
+            Some(",@,C")
+        );
+        let marks = frame_marks(&grid, &layers);
+        assert_eq!(marks["hull"], json!([1, 0]));
+        assert_eq!(marks["letters"], json!([[3, 0, "C"]]));
+
+        // Also preserved when another rig (`o`) or a slot digit covers `'H'`.
+        let mut other_grid = vec![vec![','; 4]; 1];
+        let other_layers = Overlays {
+            hull: Some((2, 0)),
+            others: vec![(2, 0)],
+            ..Overlays::default()
+        };
+        compose(&mut other_grid, &other_layers);
+        assert_eq!(
+            other_grid
+                .first()
+                .map(|r| r.iter().collect::<String>())
+                .as_deref(),
+            Some(",,o,")
+        );
+        assert_eq!(
+            frame_marks(&other_grid, &other_layers)["hull"],
+            json!([2, 0])
+        );
     }
 
     /// A run view as the projection carries it (doc 20 cut SM.9).

@@ -78,47 +78,200 @@ struct Emitted {
     at: String,
 }
 
-/// The string literals of a source, with their 1-based lines: `"…"`, `'…'`
-/// and `` `…` ``, escapes skipped. A literal that opens on a comment line
-/// (`//`, `*`, `/*`, `<!--`) is not a client's.
-fn literals(source: &str) -> Vec<(usize, String)> {
+/// One extracted string literal with its 1-based start line and byte offset in `source`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExtractedLiteral {
+    line: usize,
+    offset: usize,
+    text: String,
+}
+
+/// The string literals of a source, with their 1-based start lines and byte offsets:
+/// - Rust (`is_rust == true`): `"…"` (including multiline) and raw strings `r#"…"#`, skipping
+///   `//` and `/* … */` comments and Rust char literals / lifetimes (`'a`, `'"'`).
+/// - JS/TS/Svelte (`is_rust == false`): `"…"`, `'…'` (same-line, skipping mid-word apostrophes),
+///   and `` `…` `` (including multiline), skipping `//`, `/* … */`, and `<!-- … -->` comments.
+fn literals(source: &str, is_rust: bool) -> Vec<ExtractedLiteral> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
     let mut out = Vec::new();
-    for (index, line) in source.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if ["//", "*", "/*", "<!--"]
-            .iter()
-            .any(|marker| trimmed.starts_with(marker))
-        {
+    let mut i = 0usize;
+    let mut line = 1usize;
+
+    while i < len {
+        let b = bytes[i];
+        if b == b'\n' {
+            line += 1;
+            i += 1;
             continue;
         }
-        let mut chars = line.char_indices().peekable();
-        while let Some((at, ch)) = chars.next() {
-            if ch == '/' && line[at..].starts_with("//") {
-                break;
+        // Line comment `// ...`
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
             }
-            if !matches!(ch, '"' | '\'' | '`') {
-                continue;
+            continue;
+        }
+        // Block comment `/* ... */`
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                if bytes[i] == b'\n' {
+                    line += 1;
+                }
+                i += 1;
             }
-            // A Rust lifetime or char literal is not a command line.
-            if ch == '\'' && line[..at].ends_with(|c: char| c.is_alphanumeric() || c == '&') {
-                continue;
+            i = (i + 2).min(len);
+            continue;
+        }
+        // HTML/Svelte comment `<!-- ... -->`
+        if !is_rust && bytes[i..].starts_with(b"<!--") {
+            i += 4;
+            while i < len && !bytes[i..].starts_with(b"-->") {
+                if bytes[i] == b'\n' {
+                    line += 1;
+                }
+                i += 1;
             }
-            let mut text = String::new();
-            let mut closed = false;
-            while let Some((_, next)) = chars.next() {
-                if next == '\\' {
-                    chars.next();
+            i = (i + 3).min(len);
+            continue;
+        }
+        // Rust raw string literal `r"..."`, `r#"..."#`, etc.
+        if is_rust
+            && b == b'r'
+            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_')
+        {
+            let mut j = i + 1;
+            while j < len && bytes[j] == b'#' {
+                j += 1;
+            }
+            if j < len && bytes[j] == b'"' {
+                let hashes = j - (i + 1);
+                let start_line = line;
+                let start_offset = i;
+                j += 1;
+                let content_start = j;
+                let mut closed = false;
+                while j < len {
+                    if bytes[j] == b'\n' {
+                        line += 1;
+                    }
+                    if bytes[j] == b'"' {
+                        let mut k = j + 1;
+                        let mut seen = 0;
+                        while k < len && seen < hashes && bytes[k] == b'#' {
+                            seen += 1;
+                            k += 1;
+                        }
+                        if seen == hashes {
+                            out.push(ExtractedLiteral {
+                                line: start_line,
+                                offset: start_offset,
+                                text: source[content_start..j].to_owned(),
+                            });
+                            i = k;
+                            closed = true;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                if closed {
                     continue;
                 }
-                if next == ch {
-                    closed = true;
+                i = len;
+                continue;
+            }
+        }
+        // Rust char literal (`'x'`, `'\''`, `'"'`, `'\x7f'`, `'\u{...}'`) or lifetime (`'a`):
+        // skip so `'"'` never opens a double-quoted string.
+        if is_rust && b == b'\'' {
+            let after = &source[i + 1..];
+            if let Some(rest) = after.strip_prefix('\\') {
+                // Escaped char literal: scan up to closing `'` on the same line.
+                if let Some(end) = rest.find('\'')
+                    && !rest[..end].contains('\n')
+                {
+                    i += 2 + end + 1;
+                    continue;
+                }
+            } else {
+                let mut chs = after.chars();
+                if let (Some(c1), Some('\'')) = (chs.next(), chs.next())
+                    && c1 != '\n'
+                {
+                    i += 1 + c1.len_utf8() + 1;
+                    continue;
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        let is_quote = if is_rust {
+            b == b'"'
+        } else {
+            matches!(b, b'"' | b'\'' | b'`')
+        };
+        if !is_quote {
+            i += 1;
+            continue;
+        }
+        // In JS/TS/Svelte, ignore apostrophes inside prose words (`don't`, `pilot's`).
+        if !is_rust
+            && b == b'\''
+            && i > 0
+            && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'&')
+        {
+            i += 1;
+            continue;
+        }
+
+        let quote = b;
+        let allow_multiline = is_rust || quote == b'`';
+        let start_line = line;
+        let start_offset = i;
+        i += 1;
+        let mut text = String::new();
+        let mut closed = false;
+        while i < len {
+            let ch = source[i..].chars().next().unwrap();
+            let ch_len = ch.len_utf8();
+            if ch == '\\' {
+                i += ch_len;
+                if i < len {
+                    let esc = source[i..].chars().next().unwrap();
+                    if esc == '\n' {
+                        line += 1;
+                    }
+                    i += esc.len_utf8();
+                }
+                continue;
+            }
+            if ch as u32 == u32::from(quote) {
+                i += ch_len;
+                closed = true;
+                break;
+            }
+            if ch == '\n' {
+                if !allow_multiline {
+                    // Unclosed single-line JS/TS quote (e.g., stray apostrophe in Svelte prose).
+                    line += 1;
+                    i += ch_len;
                     break;
                 }
-                text.push(next);
+                line += 1;
             }
-            if closed {
-                out.push((index + 1, text));
-            }
+            text.push(ch);
+            i += ch_len;
+        }
+        if closed {
+            out.push(ExtractedLiteral {
+                line: start_line,
+                offset: start_offset,
+                text,
+            });
         }
     }
     out
@@ -127,17 +280,87 @@ fn literals(source: &str) -> Vec<(usize, String)> {
 /// What a table entry's argument looks like in each client: the key tables'
 /// `Run("…")`/`Prefill("…")`/`PrefillRow("…")` (TUI) and `cmd: "…"` /
 /// `line: "…"` (web), and the send helpers.
-const TABLE_CALLS: [&str; 9] = [
+const TABLE_CALLS: [&str; 10] = [
     "Run(",
     "Prefill(",
     "PrefillRow(",
-    "cmd: ",
-    "line: ",
+    "cmd:",
+    "line:",
     "sendLine(",
     "submit(",
     "helm(",
     "orders.push(",
+    "commands.push(",
 ];
+
+/// Whether a JS/TS/Svelte literal at `start_offset` is a module path in an `import`/`export`
+/// statement (`import … from "@codemirror/state"`, including multiline imports). Never matches
+/// Rust source lines containing the English word `" from "`.
+fn is_js_module_specifier(source: &str, start_offset: usize, line_text: &str) -> bool {
+    let line_trimmed = line_text.trim_start();
+    if line_trimmed.starts_with("import ") || line_trimmed.starts_with("export ") {
+        return true;
+    }
+    let before = source[..start_offset].trim_end();
+    if let Some(prefix) = before.strip_suffix("from")
+        && prefix
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace() || matches!(c, '}' | '*'))
+    {
+        return true;
+    }
+    false
+}
+
+/// Whether the literal at `start_offset` is the direct argument of one of [`TABLE_CALLS`],
+/// tolerating multiline formatting (`self\n    .orders\n    .push(\n        "…")`) and
+/// `format!(` / `String::from(` wrappers.
+fn is_in_table_call(source: &str, start_offset: usize) -> bool {
+    let window_start = source[..start_offset]
+        .char_indices()
+        .rev()
+        .nth(200)
+        .map_or(0, |(idx, _)| idx);
+    let raw = &source[window_start..start_offset];
+    // Collapse whitespace around `.`, `(`, and `:` while preserving word boundaries.
+    let mut collapsed = String::with_capacity(raw.len());
+    let mut prev_ws = false;
+    for ch in raw.chars() {
+        if ch.is_whitespace() {
+            prev_ws = true;
+            continue;
+        }
+        if prev_ws
+            && !collapsed.is_empty()
+            && !matches!(ch, '.' | '(' | ':')
+            && !collapsed.ends_with(['.', '(', ':'])
+        {
+            collapsed.push(' ');
+        }
+        prev_ws = false;
+        collapsed.push(ch);
+    }
+    let mut tail = collapsed.trim_end();
+    loop {
+        if let Some(rest) = tail.strip_suffix("format!(") {
+            tail = rest.trim_end();
+        } else if let Some(rest) = tail.strip_suffix("String::from(") {
+            tail = rest.trim_end();
+        } else {
+            break;
+        }
+    }
+    TABLE_CALLS.iter().any(|call| {
+        let Some(prefix) = tail.strip_suffix(call) else {
+            return false;
+        };
+        prefix
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+    })
+}
 
 /// The command a literal is, if it is shaped like one. `in_table` is true
 /// when the literal is a key table's or a send helper's argument, where a
@@ -204,7 +427,8 @@ fn emitted(root: &Path) -> Vec<Emitted> {
             continue;
         };
         let relative = scan::relative(root, &file);
-        if relative.ends_with(".rs") {
+        let is_rust = relative.ends_with(".rs");
+        if is_rust {
             if relative.ends_with("/tests.rs") || relative.contains("/tests/") {
                 continue;
             }
@@ -213,25 +437,18 @@ fn emitted(root: &Path) -> Vec<Emitted> {
             }
         }
         let lines: Vec<&str> = source.lines().collect();
-        for (line, literal) in literals(&source) {
-            let text = lines.get(line - 1).copied().unwrap_or_default();
-            // A module path (`import … from "@codemirror/state"`) is no command.
-            if text.trim_start().starts_with("import ") || text.contains(" from ") {
+        for lit in literals(&source, is_rust) {
+            let text = lines.get(lit.line - 1).copied().unwrap_or_default();
+            // A JS/TS module path (`import … from "@codemirror/state"`) is no command.
+            if !is_rust && is_js_module_specifier(&source, lit.offset, text) {
                 continue;
             }
-            let quoted = [
-                format!("\"{literal}"),
-                format!("'{literal}"),
-                format!("`{literal}"),
-            ];
-            let in_table = TABLE_CALLS
-                .iter()
-                .any(|call| quoted.iter().any(|q| text.contains(&format!("{call}{q}"))));
-            if let Some((head, switches)) = command_of(&literal, in_table) {
+            let in_table = is_in_table_call(&source, lit.offset);
+            if let Some((head, switches)) = command_of(&lit.text, in_table) {
                 out.push(Emitted {
                     head,
                     switches,
-                    at: format!("{relative}:{line}"),
+                    at: format!("{relative}:{}", lit.line),
                 });
             }
         }
@@ -307,7 +524,12 @@ fn every_command_a_client_emits_is_a_registered_verb() {
             }
         };
         for switch in &command.switches {
-            if !spec.switches.iter().any(|s| s.eq_ignore_ascii_case(switch)) {
+            let known_switch = spec.switches.iter().any(|s| s.eq_ignore_ascii_case(switch))
+                || spec
+                    .switch_aliases
+                    .iter()
+                    .any(|(alias, _)| alias.eq_ignore_ascii_case(switch));
+            if !known_switch {
                 let key = (head.clone(), switch.clone());
                 if allowed.contains_key(&key) {
                     used.insert(key);
@@ -429,6 +651,59 @@ fn the_command_scan_reads_heads_switches_and_tables() {
     assert_eq!(command_of("Fire at will", true), None);
     assert_eq!(command_of("+", false), None);
     let source = "let a = \"FIRE HOLD\"; // \"DOCK X\"\n// \"SCAN\"\nRun(\"look\")\n";
-    let found: Vec<String> = literals(source).into_iter().map(|(_, l)| l).collect();
+    let found: Vec<String> = literals(source, true).into_iter().map(|l| l.text).collect();
     assert_eq!(found, ["FIRE HOLD", "look"]);
+
+    // Regression SSH-H-09:
+    // 1. Rust lines containing `" from "` are NOT skipped; JS/TS multiline imports ARE skipped.
+    let rs_from = "out.commands.push(\"+ship/leave\"); // leave from berth\n";
+    let rs_lits = literals(rs_from, true);
+    assert_eq!(rs_lits.len(), 1);
+    assert!(is_in_table_call(rs_from, rs_lits[0].offset));
+    assert_eq!(
+        command_of(&rs_lits[0].text, true),
+        Some(("+ship".into(), vec!["leave".into()]))
+    );
+
+    let ts_import = "import {\n  EditorState,\n} from \"@codemirror/state\";\n";
+    let ts_lits = literals(ts_import, false);
+    assert_eq!(ts_lits.len(), 1);
+    let ts_line = ts_import.lines().nth(ts_lits[0].line - 1).unwrap_or("");
+    assert!(is_js_module_specifier(
+        ts_import,
+        ts_lits[0].offset,
+        ts_line
+    ));
+
+    // 2. Multiline rustfmt-wrapped `orders.push(` and `commands.push(` set `in_table = true`.
+    let multiline_call = "self\n    .orders\n    .push(\n        \"look\".to_owned()\n    );\n\
+                          out.commands.push(\n    format!(\n        \"who\"\n    )\n);\n";
+    let ml_lits = literals(multiline_call, true);
+    assert_eq!(ml_lits.len(), 2);
+    assert!(is_in_table_call(multiline_call, ml_lits[0].offset));
+    assert!(is_in_table_call(multiline_call, ml_lits[1].offset));
+
+    // 3. Multiline template / Rust string literals are extracted cleanly.
+    let multiline_ts = "sendLine(\n`+helm/dock\n  ceres`\n);\n";
+    let mt_lits = literals(multiline_ts, false);
+    assert_eq!(mt_lits.len(), 1);
+    assert!(is_in_table_call(multiline_ts, mt_lits[0].offset));
+    assert_eq!(
+        command_of(&mt_lits[0].text, true),
+        Some(("+helm".into(), vec!["dock".into()]))
+    );
+
+    // 4. `switch_aliases` resolve as registered switches (`+coop/enrol` -> `/enroll`).
+    let composition = production_composition();
+    let (coop_spec, _) = composition
+        .registry()
+        .lookup("+coop")
+        .expect("+coop registered");
+    assert!(
+        coop_spec
+            .switch_aliases
+            .iter()
+            .any(|(alias, _)| alias.eq_ignore_ascii_case("enrol")),
+        "+coop declares /enrol switch alias"
+    );
 }

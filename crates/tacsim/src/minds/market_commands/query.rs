@@ -28,14 +28,15 @@
 //! a read that cannot run (a format-1 launch) answers the closed keyframe:
 //! `"open": false`, `notice` = `NOT_OPEN`, no rows.
 //!
-//! **The keyframes carry nothing the line does not print to the same actor**
-//! (C2 plan §2.8, the C3 plan §2.6): every row field is a C2 view field the
-//! line command shows; the listing token leaves only as its 8-character code
-//! (the paging cursor is a code too); no row carries a `publication`,
-//! `protocol`, `charter`, `owner_licence` or `renewal_operation`, and no
-//! account or digest is ever serialized
-//! (`market_panels_project_no_private_field`). The one record id a keyframe
-//! carries is the owner section's paging cursor: `holdings::owner_section`'s
+//! **The keyframes carry only the actor's own public/actionable facts**
+//! (C2 plan §2.8, the C3 plan §2.6): every row field is a C2 view field; the
+//! listing token leaves only as its 8-character code (the paging cursor is a
+//! code too); no row carries a `publication`, `protocol`, `charter` or
+//! `renewal_operation`, and no account or digest is ever serialized
+//! (`market_panels_project_no_private_field`). Owner rows carry both `filed`
+//! (for `@mind/publish` / `@mind/withdraw`) and `owner_licence` (the actor's
+//! own `LicenceId`, needed to seal owned minds via `+ship/mind filed:<licence>`).
+//! The one charter id a keyframe carries is the owner section's paging cursor: `holdings::owner_section`'s
 //! cursor is the last shown charter's asset id (a charter is its own E4
 //! asset), exactly the number `+minds/holdings`' `HOLD_MORE` prints to the
 //! same actor and the C3 plan §2.2 names ("an asset id for `owner`"); it
@@ -427,14 +428,13 @@ fn phase(phase: OwnerPhase) -> Value {
 }
 
 /// 17g C3a: one owner row as the panel reads it: every field of
-/// `OwnerHoldingView` (the charter and owner licence included, which the
-/// projection never serializes).
+/// `OwnerHoldingView` (`charter` is never serialized on a row; `owner_licence`
+/// is emitted so clients can seal owned minds with `+ship/mind filed:<licence>`).
 #[derive(Clone, Debug)]
 pub(super) struct OwnerFacts {
     pub(super) filed: u64,
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) charter: u64,
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) owner_licence: u64,
     pub(super) dependent: bool,
     pub(super) name: String,
@@ -468,11 +468,14 @@ pub(super) fn owner_actions(selling: bool) -> Vec<&'static str> {
 }
 
 /// One `mind.holdings` owner row: `HOLD_OWNER`'s facts (the name cut to the
-/// row's 20 characters).
+/// row's 20 characters) plus `owner_licence` (`<u64|null>`) so graphical
+/// clients can seal owned minds with the real `LicenceId` (`U-C06`).
 pub(super) fn owner_row(facts: &OwnerFacts) -> Value {
+    let owner_licence = (facts.owner_licence > 0).then_some(facts.owner_licence);
     json!({
         "kind": "owner",
         "filed": facts.filed,
+        "owner_licence": owner_licence,
         "name": cut(&facts.name, HOLDING_NAME),
         "dependent": facts.dependent,
         "phase": phase(facts.phase),
