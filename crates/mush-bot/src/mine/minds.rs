@@ -730,6 +730,44 @@ pub mod crew {
     pub const BOARD_TAKE: &str = "page ";
 }
 
+/// **A discharge at a port** (doc 48 cut EX.7b): `+sortie/discharge`
+/// (`tacsim::detachment::crew::discharge`). No lane reads them yet; each is held to the game's
+/// own text below.
+pub mod discharge {
+    /// `tacsim::detachment::crew::discharge::DISCHARGE_USAGE`'s head.
+    pub const DISCHARGE_USAGE: &str = "Usage: +sortie/discharge #<npc>";
+    /// `tacsim::detachment::crew::discharge::NOT_YOURS`.
+    pub const NOT_YOURS: &str =
+        "No crew contract of yours names that character: only the employer discharges a hire.";
+    /// `tacsim::detachment::crew::discharge::AT_PORT`.
+    pub const AT_PORT: &str =
+        "Discharge a hire from a port's station: its hall settles the final wage.";
+    /// `tacsim::detachment::crew::discharge::ON_SORTIE`'s tail. Partial: the name before it.
+    pub const ON_SORTIE: &str = " is out on a sortie: ";
+    /// `tacsim::detachment::crew::discharge::IN_FIELD`'s tail. Partial: the name before it.
+    pub const IN_FIELD: &str = " is in an open field: ";
+    /// `tacsim::detachment::crew::discharge::CAPTIVE`'s tail. Partial: the name before it.
+    pub const CAPTIVE: &str = " is in custody: ";
+    /// `tacsim::detachment::crew::discharge::BUSY`.
+    pub const BUSY: &str =
+        "One of your requests is still being settled: discharge again in a moment.";
+    /// `tacsim::detachment::crew::discharge::NOT_NOW`.
+    pub const NOT_NOW: &str = "The hiring hall cannot settle a discharge just now";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_PAID`'s tail. Partial: the payee before.
+    pub const DISCHARGED_PAID: &str = " as the final wage.";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_OWING`'s middle. Partial: the debt after.
+    pub const DISCHARGED_OWING: &str = " is discharged: the final wage, ";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_PART`'s middle. Partial: the debt after.
+    pub const DISCHARGED_PART: &str = " of the final wage is paid and ";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_FREE`'s tail.
+    pub const DISCHARGED_FREE: &str = " is discharged: no wage was charged, so nothing is owed.";
+    /// `tacsim::detachment::crew::discharge::RETURNED`'s head. Partial: the name and room after.
+    pub const RETURNED: &str = "The contract is ended. ";
+    /// `tacsim::detachment::crew::discharge::STANDING_DEBT`'s tail.
+    pub const STANDING_DEBT: &str =
+        " of its wage is your debt, collected when your account covers it.";
+}
+
 /// **The price history** (doc 48 cut EX.8): `+market/history` (`mush_market::history`). No lane
 /// reads them yet; each is held to the game's own text below.
 pub mod history {
@@ -1105,6 +1143,28 @@ mod tests {
             LIST_AT_PORT,
             BOARD_SUBJECT,
             BOARD_TAKE,
+        )
+    }
+    const DISCHARGE_RS: &str = include_str!("../../../tacsim/src/detachment/crew/discharge.rs");
+
+    fn discharge_rows() -> Vec<Row> {
+        use super::discharge as bot;
+        use tacsim::detachment::crew::discharge as game;
+        rows!("";
+            DISCHARGE_USAGE,
+            NOT_YOURS,
+            AT_PORT,
+            ON_SORTIE,
+            IN_FIELD,
+            CAPTIVE,
+            BUSY,
+            NOT_NOW,
+            DISCHARGED_PAID,
+            DISCHARGED_OWING,
+            DISCHARGED_PART,
+            DISCHARGED_FREE,
+            RETURNED,
+            STANDING_DEBT,
         )
     }
     const HAUL_RS: &str = include_str!("../../../tacsim/src/services/haul.rs");
@@ -2285,6 +2345,24 @@ mod tests {
     #[test]
     fn crew_needles_are_distinct() {
         distinct(&qualified("crew", crew_rows()), &[]);
+    }
+    // Doc 48 cut EX.7b: a discharge at a port.
+    #[test]
+    fn discharge_needles_are_in_step() {
+        in_step("discharge", &discharge_rows());
+    }
+    #[test]
+    fn discharge_census() {
+        census(
+            "discharge.rs",
+            DISCHARGE_RS,
+            &discharge_rows(),
+            &[("NPC_TOLD", "said to the NPC's own role, never to a player")],
+        );
+    }
+    #[test]
+    fn discharge_needles_are_distinct() {
+        distinct(&qualified("discharge", discharge_rows()), &[]);
     }
     #[test]
     fn jobs_needles_are_distinct() {

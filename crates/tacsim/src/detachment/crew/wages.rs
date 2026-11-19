@@ -12,7 +12,11 @@
 //!   name, paid when the account is funded. **A missed wage never ends the contract**: nothing
 //!   here unseats, unhires or moves the crew member.
 //! - **The wage ends with the contract** (doc 42's capture exit, `tacsim_crew_captured`); what
-//!   accrued stands as its debt.
+//!   accrued stands as its debt, and is collected at a port fire once the employer's account
+//!   covers it (`collect_ended`, doc 48 cut EX.7b).
+//! - **A discharge settles it** (doc 48 cut EX.7b, `settle_final`): the employer's
+//!   `+sortie/discharge` charges the IC day in progress whole beside the arrears, pays the lot if
+//!   the account covers it, and ends the wage at once.
 //! - **Crew for hire** (Q-48-14's second half): a player lists themselves with
 //!   `+sortie/available`, and while they stand in that port's station they are an `Offered` crew
 //!   service on its job board ([`services`]), asking the scale wage as an opening figure. The
@@ -228,6 +232,11 @@ fn wanted(ctx: &Ctx<'_>) -> BTreeMap<String, Want> {
         {
             continue;
         }
+        // Doc 48 cut EX.7b: a hire whose exit is owed (a discharge's, or a capture's) has left;
+        // its wage is not opened again while the roster's half lands.
+        if crate::field::npc_exit_of(ctx.w, contract.npc).is_some() {
+            continue;
+        }
         let Some((_, credit)) = payee(ctx.w, &contract.terms) else {
             continue;
         };
@@ -326,6 +335,164 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             tracing::warn!(%ns, %error, "tacsim: a wage was not opened");
         }
     }
+    collect_ended(ctx, &live);
+}
+
+/// The most ended-wage debts one port fire collects.
+const MAX_COLLECTED_PER_FIRE: usize = 16;
+
+/// Whether `account`'s available funds cover `minor`.
+fn covers(w: &World, account: AccountId, minor: i64) -> bool {
+    w.module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().account(account)?.available())
+        .is_some_and(|available| available.minor() >= minor)
+}
+
+/// **An ended wage's debt is collected once the employer can pay it** (doc 48 cut EX.7b): each
+/// one-term debt under a wage's name that no live wage still keeps as its arrears (the economy
+/// pays those itself, after a period settles) is paid whole, from the employer's account to the
+/// hiring port, at the first port fire that finds the account covering it. So what a discharge or
+/// a capture left standing is paid when the employer is funded, never forgiven.
+fn collect_ended(ctx: &mut Ctx<'_>, live: &BTreeMap<String, Obligation>) {
+    let kept: BTreeSet<mush_economy::ObligationId> = live
+        .values()
+        .filter_map(|o| o.arrears.as_ref()?.debt)
+        .collect();
+    let owed: Vec<(mush_economy::ObligationId, String)> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        store
+            .snapshot()
+            .obligations()
+            .filter(|o| o.schedule.cadence.is_none() && live_debt(o) && !kept.contains(&o.id))
+            .filter_map(|o| match &o.cause {
+                mush_economy::ObligationCause::Ruleset { namespace }
+                    if namespace.starts_with(WAGE_NS_PREFIX)
+                        && covers(ctx.w, o.debit_account, o.amount.minor()) =>
+                {
+                    Some((o.id, namespace.to_string()))
+                }
+                _ => None,
+            })
+            .take(MAX_COLLECTED_PER_FIRE)
+            .collect()
+    };
+    for (id, ns) in owed {
+        if let Err(error) = mush_economy::pay_debt(ctx, id, &ns) {
+            tracing::warn!(debt = id.0, %error, "tacsim: an ended wage's debt was not collected");
+        }
+    }
+}
+
+/// Whether a one-term debt is still owed.
+fn live_debt(o: &Obligation) -> bool {
+    matches!(
+        o.status,
+        ObligationStatus::Active | ObligationStatus::Grace { .. } | ObligationStatus::Delinquent
+    )
+}
+
+/// **What a discharge's final wage came to** (doc 48 cut EX.7b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FinalWage {
+    /// What moved at the discharge, minor units.
+    pub(super) paid: i64,
+    /// What stands as the employer's debt, minor units.
+    pub(super) owing: i64,
+    /// Who it is paid to.
+    pub(super) payee: String,
+}
+
+/// **Settle a hire's final wage at its discharge** (doc 48 cut EX.7b): the IC day in progress,
+/// charged whole, beside whatever stands in arrears, to the wage's own payee.
+///
+/// - The day in progress becomes one one-term debt under the wage's name, the wage's obligation
+///   is ended, so **no further period accrues** whatever fires afterwards.
+/// - Each debt under the name is paid whole now, oldest first, if the employer's account covers
+///   it. One it cannot cover stands, first swept [`mush_economy::ARREARS_DUE_IC_SECS`] on and
+///   collected at a port fire once the account covers it (`collect_ended`, the same rule). **A
+///   discharge is never refused for want of money.**
+///
+/// `None` when the hire owed no wage and no debt (a port with no authority, or an employer with
+/// no account).
+///
+/// # Errors
+///
+/// The economy refused to record the day or to end the wage (it is frozen); nothing is changed.
+pub(super) fn settle_final(
+    ctx: &mut Ctx<'_>,
+    contract: &CrewContract,
+) -> Result<Option<FinalWage>, mush_economy::EconomyError> {
+    let ns = wage_namespace(contract.npc);
+    let debtor = PrincipalId::Object(contract.employer);
+    let open = mush_economy::player_obligations_of(ctx.w, &debtor, &ns)
+        .into_iter()
+        .find(|o| o.schedule.cadence.is_some() && live(o));
+    // Who pays whom the day in progress: the open wage's own accounts, else what a wage opened
+    // now would name (a hire discharged before its first port fire).
+    let day = match &open {
+        Some(o) => Some((o.debit_account, o.credit_account, o.amount)),
+        None => payee(ctx.w, &contract.terms).and_then(|(_, credit)| {
+            let debit = crate::port::credit::own_account(ctx.w, contract.employer)?.id;
+            let amount = daily_wage(ctx.w, &contract.terms)?;
+            (debit != credit).then_some((debit, credit, amount))
+        }),
+    };
+    if let Some((debit, credit, amount)) = day {
+        let due = ctx
+            .w
+            .world_ic_now()
+            .at
+            .saturating_add(mush_economy::ARREARS_DUE_IC_SECS);
+        let last = mush_economy::create_debt_due(ctx, (debit, credit), amount, &ns, due)?;
+        if let Some(o) = &open
+            && let Err(error) = mush_economy::cancel_obligation(ctx, o.id, &ns)
+        {
+            // The wage still runs, so the day is not owed twice: take the debt back.
+            if let Err(undo) = mush_economy::cancel_obligation(ctx, last, &ns) {
+                tracing::error!(debt = last.0, %undo, "tacsim: a refused discharge's last day stands");
+            }
+            return Err(error);
+        }
+    }
+    let debts = mush_economy::debts_of(ctx.w, &debtor, &[ns.as_str()]);
+    if debts.is_empty() {
+        return Ok(None);
+    }
+    let total: i64 = debts.iter().map(|d| d.amount.minor()).sum();
+    let mut paid = 0_i64;
+    for debt in &debts {
+        if !covers(ctx.w, debt.debit_account, debt.amount.minor()) {
+            continue;
+        }
+        match mush_economy::pay_debt(ctx, debt.id, &ns) {
+            Ok(
+                mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_),
+            ) => paid = paid.saturating_add(debt.amount.minor()),
+            Ok(mush_economy::PostOutcome::NeedsApproval(_)) => {}
+            Err(error) => {
+                tracing::warn!(debt = debt.id.0, %error, "tacsim: a final wage was not paid; it stands");
+            }
+        }
+    }
+    let payee = payee(ctx.w, &contract.terms).map_or_else(
+        || "the hiring port".to_string(),
+        |(org, _)| {
+            crate::surface::retrieval::principal_name(ctx.w, &PrincipalId::Organization(org))
+                .to_string()
+        },
+    );
+    Ok(Some(FinalWage {
+        paid,
+        owing: total.saturating_sub(paid),
+        payee,
+    }))
+}
+
+/// A sum of minor units in the credit's render.
+pub(super) fn money_minor(w: &World, minor: i64) -> String {
+    money(w, Amount::from_minor(minor))
 }
 
 /// **What `employer` owes `npc`'s wage in arrears**, minor units.
@@ -364,7 +531,7 @@ pub fn listing_of(w: &World, who: ObjId) -> Option<CrewListing> {
 }
 
 /// The port whose station `who` stands in, by venue.
-fn port_here(w: &World, who: ObjId) -> Option<SmolStr> {
+pub(super) fn port_here(w: &World, who: ObjId) -> Option<SmolStr> {
     crate::port::market::ports(w)
         .into_iter()
         .map(|(_, def, _)| def.venue.as_str().to_owned())
