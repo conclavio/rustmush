@@ -202,7 +202,7 @@ pub(crate) async fn opened(plan: &Plan, armed: bool) -> Field {
 }
 
 impl Field {
-    /// Pump and tick until `done` holds or `secs` of wall time pass.
+    /// Pump and tick until `done` holds or `secs` of tokio time pass.
     pub(crate) async fn until(
         &mut self,
         secs: u64,
@@ -211,7 +211,7 @@ impl Field {
         until_composed(&mut self.rig, &mut self.rx, &mut self.lines, secs, done).await
     }
 
-    /// Pump and tick for `secs` of wall time.
+    /// Pump and tick for `secs` of tokio time.
     pub(crate) async fn wait(&mut self, secs: u64) {
         let _ = self.until(secs, |_, _| false).await;
     }
@@ -420,7 +420,7 @@ fn mining(hired: &'static str, commander: Option<&'static str>) -> Plan {
 
 /// **Story 1** (this module's head): an `ENGAGE` lapses after the grace, and the crew still
 /// answers a hit.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() {
     let mut field = opened(
@@ -554,14 +554,14 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
     // the tank answers from where it stands.
     let cell = stood.expect("the tank's cell");
     let third = (field.other, field.escort);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(150);
     assert_eq!(
         frame(&field.rig, adeyemi).and_then(|frame| frame.own_last_hit_ms),
         None,
         "nothing has hit the tank yet"
     );
     let mut answered = false;
-    while std::time::Instant::now() < deadline && !answered {
+    while tokio::time::Instant::now() < deadline && !answered {
         field.fire_on(third, cell);
         answered = field.until(1, |_, lines| fired(lines, tank) > spent).await;
     }
@@ -624,7 +624,7 @@ async fn ap8_an_absent_leaders_engage_lapses_and_the_crew_still_answers_a_hit() 
 }
 
 /// **Story 2** (this module's head): the plan's NPC commander replaces a lapsed order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap8_the_npc_commander_replaces_a_lapsed_advance() {
     let mut field = opened(&mining(OKONKWO, Some(OKONKWO)), false).await;
     let (captain, okonkwo) = (field.flown.organiser, field.flown.operator(2));
@@ -709,7 +709,7 @@ async fn ap8_the_npc_commander_replaces_a_lapsed_advance() {
 }
 
 /// **Story 3** (this module's head): a `HOLD` the leader left is still held.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap8_a_hold_the_leader_left_is_still_held() {
     let mut field = opened(&mining(MENDES, None), false).await;
     let (captain, mendes) = (field.flown.organiser, field.flown.operator(2));
@@ -759,7 +759,7 @@ async fn ap8_a_hold_the_leader_left_is_still_held() {
 
 /// **Story 4** (this module's head): a restart inside the grace neither restarts the clock nor
 /// loses the lapse.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
     let mut field = opened(&mining(MENDES, None), false).await;
@@ -911,7 +911,7 @@ async fn ap8_a_restart_keeps_the_clock_and_the_lapse() {
 
 /// **Story 5** (this module's head): a lapsed order stays lapsed until its leader gives it
 /// again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap8_a_lapsed_order_stays_lapsed_until_its_leader_gives_it_again() {
     let mut field = opened(&mining(MENDES, None), false).await;
     let (captain, mendes) = (field.flown.organiser, field.flown.operator(2));

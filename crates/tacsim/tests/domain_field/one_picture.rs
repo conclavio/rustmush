@@ -90,7 +90,7 @@ fn same_shape(real: &Value, fixture: &Value, key: &str) {
 }
 
 /// **CF.4's gate** (doc 32 §6; Q-CF-26, Q-CF-28, Q-CF-48, Q-CF-49, Q-CF-50).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers() {
     // CF.2's fast field, with a longer quiet interval so the checks below run inside the field.
@@ -371,7 +371,7 @@ async fn cf4_one_picture_of_the_site_in_both_layers_and_what_a_party_remembers()
 /// 4, P2-3; doc 32 §9: one picture). C's rig sounds loud on Ahuna Flank, out of A's sight. On
 /// the open surface A's `+tv/map` marks C's row "(a sounding)"; inside the field A's cockpit
 /// frame carries the same row, marked the same, on its campaign block.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn p2_3_the_cockpit_hears_a_loud_sounding_as_the_site_map_does() {
     let mut rig = stocked_tuned(|cfg| {
         tune(cfg);

@@ -127,7 +127,7 @@ fn ap4_a_posture_is_set_from_aboard_the_carrier_and_never_from_an_ooc_room() {
 }
 
 /// **Story 2** (this module's head): the seat, in a field of three parties.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap4_a_posture_is_set_from_the_units_seat_in_a_field() {
     let mut rig = stocked_tuned(quiet);
     let (pilot, _, _) = on_pad_as(&mut rig, "Pilot", 1, "Salt Moth", 0);

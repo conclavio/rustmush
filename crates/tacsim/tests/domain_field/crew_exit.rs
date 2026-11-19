@@ -5,8 +5,6 @@
 //! carries on without it; a stranded player is at port after the extraction delay; a departure
 //! with a unit out is refused without the leave-behind confirmation and files with it.
 
-use std::time::Duration;
-
 use mush_core::{GOD, ObjId, ObjKind};
 use tacsim::TacsimConfig;
 use tacsim::arena::party::Relation;
@@ -219,20 +217,17 @@ fn second(rig: &mut Rig) {
     }
 }
 
-/// Pump and tick until `done` holds or `secs` of wall time pass.
+/// Pump and tick until `done` holds or `secs` of tokio time pass.
 async fn until(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
     secs: u64,
     mut done: impl FnMut(&mut Rig) -> bool,
 ) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
-    let mut beat = 0_u32;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    let mut pace = crate::field_host_rig::Pace::new(secs);
+    while let Some(owed) = pace.beat().await {
         pump(rig, rx);
-        beat += 1;
-        if beat.is_multiple_of(8) {
+        for _ in 0..owed {
             second(rig);
         }
         if done(rig) {
@@ -302,7 +297,7 @@ fn in_field(rig: &Rig, unit: ObjId) -> bool {
 /// by its own recover — and the field carries on. B fights from inside the hull; when it is
 /// wrecked and the field demotes, B is stranded on the site, asks for extraction, and is at a
 /// safe port after the delay while the wreck stays where it fell.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf5_a_rig_recovers_out_of_a_running_field_and_a_stranded_pilot_is_extracted() {
     let mut rig = stocked_tuned(tune);

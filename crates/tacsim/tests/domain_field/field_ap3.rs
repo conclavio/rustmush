@@ -76,7 +76,7 @@ fn saved(rig: &Rig, unit: ObjId) -> Option<Posture> {
 }
 
 /// **The story** (this module's head).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ap3_a_units_posture_is_its_own_through_a_field_a_restart_and_a_demotion() {
     let mut rig = stocked_tuned(brisk);

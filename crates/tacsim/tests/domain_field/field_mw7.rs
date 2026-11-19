@@ -50,7 +50,8 @@ use tokio::sync::mpsc::Receiver;
 use crate::driving_rig::{Rig, cid, command, crash, land, on_pad_as, run, stocked_tuned, to_ic};
 use crate::escort_lease::{contact_near, fired, in_field, stand_up};
 use crate::field_host_rig::{
-    AHUNA, armed, egress, frame, pump, seat, second, site_record, task, tune, until, weapon_of,
+    AHUNA, armed, egress, frame, pump, seat, second, settle, site_record, task, tune, until,
+    weapon_of,
 };
 
 /// The field holds through the stories' quiet stretches.
@@ -257,7 +258,7 @@ async fn yard() -> Yard {
 }
 
 impl Yard {
-    /// Pump and tick until `done` holds or `secs` of wall time pass.
+    /// Pump and tick until `done` holds or `secs` of tokio time pass.
     pub(crate) async fn wait(
         &mut self,
         secs: u64,
@@ -271,8 +272,17 @@ impl Yard {
         pass(&mut self.rig, &mut self.rx, &mut self.lines, secs);
     }
 
+    /// The arena's answer, no world second passing (`field_host_rig::settle`).
+    pub(crate) async fn settle(
+        &mut self,
+        secs: u64,
+        done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
+    ) -> bool {
+        settle(&mut self.rig, &mut self.rx, &mut self.lines, secs, done).await
+    }
+
     /// **The raider's player keeps a lock on the ward and fires** until `done` holds or `secs`
-    /// of wall time pass: the two lines a player types, once a wall second.
+    /// of tokio time pass: the two lines a player types, once a second.
     pub(crate) async fn raid(
         &mut self,
         secs: u64,
@@ -324,7 +334,7 @@ impl Yard {
 
 /// **Story 1** (this module's head): the house mind takes an absent pilot's rig home, with a
 /// Hostile in view, and never fires first.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_first() {
     let mut rig = stocked_tuned(quiet);
@@ -394,6 +404,11 @@ async fn mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_firs
     );
     // Five minutes: the unit passes to its mind.
     pass(&mut rig, &mut rx, &mut lines, 25);
+    // The hand-over is the world's; the seat's release is the arena's answer at its next pulse.
+    let _ = settle(&mut rig, &mut rx, &mut lines, 5, |rig, _| {
+        minded(rig.tw.world(), hull) && !bound(rig, escort)
+    })
+    .await;
     assert!(
         minded(rig.tw.world(), hull) && !bound(&rig, escort),
         "at five minutes the mind has the unit: {:?}",
@@ -448,7 +463,7 @@ async fn mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_firs
 
 /// **Story 2** (this module's head): a clean QUIT hands over at once; the mind fires on nobody
 /// it holds Hostile, and answers the unit that fires on it and no other.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw7_an_absent_pilots_mind_answers_only_the_unit_that_fired_on_it() {
     let mut yard = yard().await;
     let (pilot, ward, raider, escort) = (yard.pilot, yard.ward, yard.raider, yard.escort);
@@ -516,7 +531,7 @@ async fn mw7_an_absent_pilots_mind_answers_only_the_unit_that_fired_on_it() {
 /// **Story 3** (this module's head): the seat's `FIRE HOLD` is the seat's, and does not bind
 /// the mind that flies for its absent pilot (doc 45 unit AP.6; Q-45-5, Q-45-7 to Q-45-9). The
 /// unit is on `RETURN`, the default, and still answers the unit that fires on it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind() {
     let mut yard = yard().await;
     let (pilot, ward, raider, escort) = (yard.pilot, yard.ward, yard.raider, yard.escort);
@@ -565,7 +580,7 @@ async fn ap6_a_seat_left_at_fire_hold_does_not_bind_the_mind() {
 
 /// **Story 4** (this module's head): ten minutes later the pilot is back in the seat, and their
 /// first command wins.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
     let mut yard = yard().await;
     let (pilot, ward) = (yard.pilot, yard.ward);
@@ -579,6 +594,12 @@ async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
     // The server's own grace ends the session; the field's clock hands the unit over.
     end_session(&mut yard.rig, pilot);
     yard.pass(5);
+    // The hand-over is the world's; the seat's release is the arena's answer at its next pulse.
+    let _ = yard
+        .settle(5, |rig, _| {
+            minded(rig.tw.world(), ward) && !bound(rig, pilot)
+        })
+        .await;
     assert!(
         minded(yard.rig.tw.world(), ward) && !bound(&yard.rig, pilot),
         "at five minutes the mind has the unit: {:?}",
@@ -629,7 +650,7 @@ async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
 }
 
 /// **Story 5** (this module's head): a pilot knocked out while connected stops steering.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw7_a_pilot_knocked_out_while_connected_stops_steering() {
     use tacsim::field::crew::{CrewCondition, crew_of};
     let mut rig = stocked_tuned(quiet);
@@ -699,7 +720,7 @@ async fn mw7_a_pilot_knocked_out_while_connected_stops_steering() {
 
 /// **Story 6** (this module's head): a restart while the mind holds the unit resumes the mind,
 /// seats nobody who is not connected, and the pilot who connects afterwards is seated.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind() {
     let mut yard = yard().await;
     let (pilot, ward, raider, escort) = (yard.pilot, yard.ward, yard.raider, yard.escort);
@@ -784,7 +805,7 @@ async fn mw7_a_restart_while_the_mind_holds_the_unit_resumes_the_mind() {
 /// host owes was held in memory only, so before the fix the unit stood beside the ramp for good.
 /// Now the resumed field rebuilds it from what the store kept, the host puts the unit aboard as
 /// its pilot, and the pilot reads at login that it is aboard (D4).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn co11b_a_restart_between_the_ramp_and_the_recover_still_puts_the_unit_aboard() {
     let mut rig = stocked_tuned(quiet);
@@ -813,9 +834,9 @@ async fn co11b_a_restart_between_the_ramp_and_the_recover_still_puts_the_unit_ab
     );
     // The kernel lets it out. The story stops the world at the answer, before any later
     // world second can land the exit and start the recover.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
     let mut gone = false;
-    while std::time::Instant::now() < deadline {
+    while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         let _ = pump(&mut rig, &mut rx, &mut lines);
         if !in_field(&rig, hull) {

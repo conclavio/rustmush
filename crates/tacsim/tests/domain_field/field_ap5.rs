@@ -140,7 +140,7 @@ fn admitted_away(rig: &Rig, unit: ObjId) -> Option<(Why, bool)> {
 
 /// **Story 1** (this module's head): a player logged off in a rig's seat is not admitted as its
 /// pilot. The rig is its mind's, goes home and never fires.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ap5_a_player_logged_off_in_a_rigs_seat_is_flown_home_by_its_mind() {
     let mut rig = stocked_tuned(quiet);
@@ -245,7 +245,7 @@ async fn ap5_a_player_logged_off_in_a_rigs_seat_is_flown_home_by_its_mind() {
 /// **Story 2** (this module's head): a mark left by a player who then quit is not fired on, and
 /// the same player, reconnecting while the field runs, is seated again and their first command
 /// wins.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ap5_a_mark_left_by_a_player_who_then_quit_is_not_fired_on() {
     // A hull released to a mind under no rule falls back first and rallies after
@@ -356,7 +356,7 @@ async fn ap5_a_mark_left_by_a_player_who_then_quit_is_not_fired_on() {
 
 /// **Story 3** (this module's head): a connected pilot is admitted as before, a `DARK` one
 /// included.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap5_a_connected_pilot_is_admitted_as_before() {
     let mut rig = stocked_tuned(quiet);
     let cast = cast(&mut rig);
@@ -406,7 +406,7 @@ async fn ap5_a_connected_pilot_is_admitted_as_before() {
 
 /// **Story 4** (this module's head): a link lost before the field opens keeps what is left of
 /// its five minutes, and no more.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap5_a_link_lost_before_the_field_opens_keeps_what_is_left_of_its_five_minutes() {
     let mut rig = stocked_tuned(quiet);
     let cast = cast(&mut rig);
@@ -451,6 +451,8 @@ async fn ap5_a_link_lost_before_the_field_opens_keeps_what_is_left_of_its_five_m
         away_of(yard.rig.tw.world(), ward)
     );
     yard.pass(15);
+    // The hand-over is the world's; the seat's release is the arena's answer at its next pulse.
+    let _ = yard.settle(5, |rig, _| !bound(rig, pilot)).await;
     assert_eq!(
         admitted_away(&yard.rig, ward),
         Some((Why::LinkLost, true)),
@@ -462,7 +464,7 @@ async fn ap5_a_link_lost_before_the_field_opens_keeps_what_is_left_of_its_five_m
 
 /// **Story 5** (this module's head): a seated character who is incapacitated, or held, is not
 /// at the controls, connected or not (Q-44-43).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap5_a_pilot_who_is_down_or_held_is_admitted_under_the_mind() {
     use tacsim::field::crew::{CREW_FORMAT, CrewCondition, CrewLocation, CrewRecord};
     let mut rig = stocked_tuned(quiet);
@@ -537,7 +539,7 @@ async fn ap5_a_pilot_who_is_down_or_held_is_admitted_under_the_mind() {
 
 /// **Story 6** (this module's head): a restart between admission and the player's return keeps
 /// the unit under its mind, and the player who then connects is seated.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap5_a_restart_before_the_player_returns_keeps_the_mind_and_still_seats_them() {
     let mut rig = stocked_tuned(quiet);
     let cast = cast(&mut rig);

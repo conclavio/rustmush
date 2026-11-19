@@ -293,7 +293,7 @@ pub(crate) fn stand_up_out(
 }
 
 /// **CF.6c's gate** (doc 32 §14): lease, fly out, fight from the line cockpit, withdraw, return.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf6c_a_leased_escort_flies_out_fights_withdraws_and_goes_back() {
     // The field stays up while the escort drives home under fire's quiet.
@@ -529,7 +529,7 @@ fn carrier_of(rig: &Rig, pilot: ObjId) -> ObjId {
 /// **The loss** (doc 32 §14's write-off rule): a leased escort wrecked in a field strands its
 /// lessee; extracted to Ceres, they write it off at the counter — the lease ends, the deposit is
 /// Occator's, the wreck stays where it fell, and the escort clearance bars the next armed lease.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf6c_a_leased_escort_wrecked_in_a_field_is_written_off() {
     let mut rig = stocked_tuned(tune);
@@ -625,7 +625,7 @@ async fn cf6c_a_leased_escort_wrecked_in_a_field_is_written_off() {
 /// (`driving::land_composed`), so a harness story can carry a DT activation's grants. Landed,
 /// the grant is on Org's registry, the counter reads it as allowed now, and the lessee's
 /// `+tv/1 board` passes on it (doc 36a lane 4).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc0_the_harness_lands_the_org_unit_grant() {
     let mut rig = stocked_tuned(tune);
     // The loan is typed and landed at the counter, where it is offered, as `lease_escort` types
@@ -682,7 +682,7 @@ async fn gc0_the_harness_lands_the_org_unit_grant() {
 /// standing in the carrier's vehicle bay, boards the lessee's rig with `+tv/1 board` and is put
 /// at its console, and the lessee stays the lease's principal. Before the fix the board listed
 /// only the actor's own leases, so a held grant could never be used.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn lane3_a_delegate_with_operate_crew_boards_the_lessees_rig() {
     let mut rig = stocked_tuned(tune);
     let mut loan: Option<u64> = None;

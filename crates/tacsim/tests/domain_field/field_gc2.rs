@@ -91,7 +91,7 @@ fn ended_disengaged(lines: &[LedgerEvent]) -> bool {
 /// **GC.2's gate** (Q-36-6, the tempo half): an armed hull holding an unarmed hull Hostile in
 /// its reach does not hold the field engaged. The idle bound is an hour, so only the quiet
 /// interval can end it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc2_an_unarmed_barge_does_not_hold_a_field_engaged() {
     let mut rig = stocked_tuned(tuned(15, 3_600));
     let (a, _, _) = on_pad(&mut rig, 1);
@@ -136,7 +136,7 @@ async fn gc2_an_unarmed_barge_does_not_hold_a_field_engaged() {
 
 /// **GC.2's gate** (Q-36-5): two armed hulls holding each other in reach, one marked Hostile,
 /// nobody firing. The quiet interval is an hour, so only the idle bound can end it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc2_an_idle_declared_field_demotes() {
     let mut rig = stocked_tuned(tuned(3_600, 10));
     let (a, _, _) = on_pad(&mut rig, 1);

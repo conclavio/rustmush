@@ -15,7 +15,7 @@ use crate::field_host_rig::*;
 
 /// **CF.2's gate** (doc 32 §6; Q-CF-9, Q-CF-10, Q-CF-14, Q-CF-16, Q-CF-20, Q-CF-24, Q-CF-33,
 /// Q-CF-35, Q-CF-36).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf2_two_armed_hulls_fight_the_loser_stays_and_a_restart_resumes_after_the_freeze() {
     let mut rig = stocked_tuned(tune);

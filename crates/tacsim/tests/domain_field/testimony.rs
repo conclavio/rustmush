@@ -258,7 +258,7 @@ async fn story(rig: Rig, site: &str, operator: ObjId, tv: ObjId, raiders: &[ObjI
 
 /// **S.4b-T at 256** (Ahuna Flank): the prospector's rig works east of the pad and the content's
 /// raider launches from its own carrier and marks it Hostile.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn s4bt_a_rig_earns_what_it_told_apart_in_a_field_at_256() {
     let mut rig = stocked_tuned(claim_tune);
     let (a, _row, tvs) = on_pad(&mut rig, 1);
@@ -271,7 +271,7 @@ async fn s4bt_a_rig_earns_what_it_told_apart_in_a_field_at_256() {
 
 /// **S.4b-T at 512** (Urvara Reach): the same, with the raider rebased on the 512 site
 /// (`field_raiders.rs`'s S.1 setup).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn s4bt_a_rig_earns_what_it_told_apart_in_a_field_at_512() {
     const URVARA: &str = "urvara_port";
     let mut rig = stocked_tuned(claim_tune);

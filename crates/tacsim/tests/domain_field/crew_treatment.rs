@@ -138,7 +138,7 @@ fn treatment(rig: &Rig, b: ObjId) -> Treatment {
 /// to a port with a medical room and under treatment there at the medical room's time. Leaving
 /// the port drops the treatment and keeps the condition; back at the port it starts over, and at
 /// its due instant B is fit again and told so.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc13_an_extracted_incapacitated_pilot_is_fit_again_after_treatment() {
     let mut rig = stocked_tuned(tune);
     let (b, _rx, _lines) = extracted_incapacitated(&mut rig, |_| {}).await;
@@ -216,7 +216,7 @@ async fn gc13_an_extracted_incapacitated_pilot_is_fit_again_after_treatment() {
 
 /// **GC.13, the medical room is faster** (Q-36-45): the same path with every medical room closed
 /// before the extraction lands takes the full treatment time, twice the medical room's.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc13_a_port_without_a_medical_room_treats_slower() {
     let mut rig = stocked_tuned(tune);
     let (b, _rx, _lines) = extracted_incapacitated(&mut rig, |rig| {
@@ -311,7 +311,7 @@ fn control_damaged(rig: &mut Rig, unit: ObjId) {
 /// from the carrier's own sections and wrote B fit; it keeps the worse of what the record held
 /// and what the hull says: B is still injured, aboard the carrier, and only a port's treatment
 /// makes B fit.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury() {
     let mut rig = stocked_tuned(tune);

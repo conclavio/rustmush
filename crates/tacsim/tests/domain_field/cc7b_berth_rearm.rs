@@ -145,7 +145,7 @@ fn price(rig: &Rig, good: &str) -> u64 {
 
 /// **The Dray's point defence**: one rotary short three whole boxes, the other short less than
 /// one. One box is in her hold, two are bought from the stores; the short rotary waits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn cc7b_a_dray_rearms_her_point_defence_from_her_hold_and_the_stores() {
     let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
@@ -237,7 +237,7 @@ async fn cc7b_a_dray_rearms_her_point_defence_from_her_hold_and_the_stores() {
 
 /// **A hull with tubes** (the corvette's fit on her unit): torpedoes from her hold and from the
 /// stores, spinal rounds all bought, and every magazine full after.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn cc7b_a_corvette_rearms_her_tubes_and_spinal_gun_from_her_hold_and_the_stores() {
     let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 2, "Tin Kettle");
@@ -308,7 +308,7 @@ async fn cc7b_a_corvette_rearms_her_tubes_and_spinal_gun_from_her_hold_and_the_s
 
 /// **Too few rounds anywhere**: the order is refused before any escrow, naming what the hold
 /// and the stores carry.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn cc7b_a_rearm_her_hold_and_the_stores_cannot_cover_is_refused() {
     let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "Pilot", 3, "Salt Moth");

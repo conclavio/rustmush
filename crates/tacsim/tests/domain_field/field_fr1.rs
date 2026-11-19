@@ -65,12 +65,12 @@ const ON_URVARA: Stand = Stand {
     halo: ((258, 262), 90_000),
 };
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr1_declared_stances_at_256() {
     stances_story(&ON_AHUNA).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr1_declared_stances_at_512() {
     stances_story(&ON_URVARA).await;
 }

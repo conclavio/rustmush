@@ -255,7 +255,7 @@ pub(crate) fn in_bay(rig: &Rig, tv: ObjId, room: ObjId) -> bool {
     )
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     let mut rig = stocked();
     let (pilot, row, escort, prospect) = leased(&mut rig);
@@ -516,7 +516,7 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
 
 /// **The rights** (Q-36-33) at Ceres' workshop (C14, Occator's): a stranger may do nothing; the
 /// lessee berths and repairs; a holder of Occator's `unit.maintain_refit` repairs too.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8_who_may_have_a_hull_worked_on() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = leased(&mut rig);
@@ -663,7 +663,7 @@ pub(crate) fn lot_record(rig: &mut Rig, lot: mush_inventory::LotId) -> Option<mu
 /// claim is vacated (the staff fixture standing in for GC.5/GC.6's contest), so it is hot and
 /// the bay refuses to fit it; the clean cannon is fitted back from its lot, which the work
 /// consumes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = leased(&mut rig);
@@ -789,7 +789,7 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
 /// stock and each salvageable part a lot with its provenance in its stores, the Dray's hold
 /// untouched; the hull is an irrecoverable shell and its berth free. The lessee may not scrap a
 /// leased hull; remains are scrapped on the site (GC.6).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = leased(&mut rig);

@@ -315,7 +315,7 @@ fn typed(rig: &mut Rig, who: ObjId, line: &str) -> String {
 /// **Doc 36 cut GC.0's gate** (Q-36-6, the host half): this is CF.7's story at 256 a side
 /// (`cf7_the_field_story` until GC.0), with the escort pilot's Friendly stand-down removed. The
 /// raider loses, its surviving hull boards, its barge lifts, and the field demotes on its own.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark() {
     field_story(&AHUNA_FLANK).await;
 }
@@ -323,7 +323,7 @@ async fn gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_ma
 /// **Doc 32 cut S.2: the field story at 512 a side** on Urvara Reach (Q-CF-51), the same script
 /// as [`gc0_the_raiders_barge_lifts_and_the_field_demotes_without_a_friendly_mark`] over the far
 /// quadrant's ground.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn s2_the_field_story_at_512() {
     field_story(&URVARA_REACH).await;
 }
@@ -1299,7 +1299,7 @@ fn s2_a_field_pulse_is_measured_at_both_sides() {
 /// share it. Before the fix admission then refused the whole field ("occupancy is one unit per
 /// cell"); now it parts them, the first in unit order keeping the ramp's cell and the other
 /// stood on the nearest free cell, and admits both.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn cf7_two_rigs_on_one_ramp_cell_are_parted_at_admission_and_the_field_opens() {
     let mut rig = stocked_tuned(crate::field_host_rig::tune);
     let (a, _, a_tvs) = on_pad(&mut rig, 1);

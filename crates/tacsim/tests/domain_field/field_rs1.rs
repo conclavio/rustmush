@@ -439,13 +439,13 @@ async fn tender_on(ground: &Ground) {
 }
 
 /// **RS.1 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn rs1_ahuna_the_tender_works_through_fields_and_the_tow_counts_her_laden() {
     tender_on(&AHUNA_FLANK).await;
 }
 
 /// **RS.1 at 512**: Urvara Reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn rs1_urvara_the_tender_works_through_fields_and_the_tow_counts_her_laden() {
     tender_on(&URVARA_REACH).await;
 }

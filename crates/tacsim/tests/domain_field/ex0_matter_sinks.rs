@@ -69,7 +69,7 @@ fn kg(rig: &Rig, good: &str) -> i128 {
         .unwrap_or_else(|| panic!("{good} has a mass"))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ex0_the_census_holds_across_a_burn_and_a_rearm() {
     let mut rig = stocked();
     let (pilot, row, escort, _rig) = leased(&mut rig);

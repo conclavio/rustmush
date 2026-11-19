@@ -283,7 +283,7 @@ async fn ground(posture: Posture, prepare: impl FnOnce(&mut Rig, ObjId)) -> Grou
 }
 
 impl Ground {
-    /// Pump and tick until `done` holds or `secs` of wall time pass.
+    /// Pump and tick until `done` holds or `secs` of tokio time pass.
     async fn wait(
         &mut self,
         secs: u64,
@@ -293,7 +293,7 @@ impl Ground {
     }
 
     /// **The intruder's player keeps a lock on the unit plotted at `at` and fires** until
-    /// `done` holds or `secs` of wall time pass: the two lines a player types, once a second.
+    /// `done` holds or `secs` of tokio time pass: the two lines a player types, once a second.
     async fn raid(
         &mut self,
         at: (u16, u16),
@@ -398,7 +398,7 @@ fn first(lines: &[LedgerEvent], pick: impl Fn(&EventKind) -> bool) -> Option<usi
 
 /// **Story 1** (this module's head): `GUARD` answers for its owner's other rig, and holds fire
 /// on a stranger's quarrel beside it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strangers_quarrel() {
     let mut g = ground(Posture::Guard, |_, _| {}).await;
@@ -523,7 +523,7 @@ async fn ap6_a_guard_answers_for_its_owners_other_rig_and_holds_fire_on_a_strang
 
 /// **Story 2** (this module's head): `HOLD` does not answer for its neighbour, answers for
 /// itself, and stays.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap6_the_same_rig_on_hold_does_not_answer_for_its_neighbour() {
     let mut g = ground(Posture::Hold, |_, _| {}).await;
     let (lessee, hull, kin, hostile) = (g.lessee, g.hull, g.kin, g.hostile);
@@ -636,7 +636,7 @@ fn answered_across(lines: &[LedgerEvent], hull: ObjId) -> Option<(Recorded, Reco
 
 impl Ground {
     /// **The intruder's player keeps a lock on the lessee's rig wherever the field last
-    /// recorded it and fires** until `done` holds or `secs` of wall time pass.
+    /// recorded it and fires** until `done` holds or `secs` of tokio time pass.
     async fn raid_the_rig(
         &mut self,
         secs: u64,
@@ -682,7 +682,7 @@ impl Ground {
 /// R-47-3). Until CO.2 this story was `ap6_the_same_rig_on_return_goes_home`: the rig was
 /// fired on only through its neighbour, and fired nothing; under fire itself the doctrine's
 /// cornered stand would have stopped it where it was.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
     let mut g = ground(Posture::Return, |_, _| {}).await;
     let (hull, kin, hostile) = (g.hull, g.kin, g.hostile);
@@ -739,7 +739,7 @@ async fn co2_the_same_rig_on_return_answers_on_its_way_home() {
 }
 
 /// **Story 4** (this module's head): a guard that loses its last fire channel goes home.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap6_a_guard_that_loses_its_last_fire_channel_goes_home() {
     // One fire channel with two rounds in it, and nothing else to fire.
     let mut g = ground(Posture::Guard, |rig, hull| magazines(rig, hull, 2)).await;
@@ -792,7 +792,7 @@ fn officer(rig: &mut Rig, faction: &str, who: ObjId) {
 
 /// **Story 5** (this module's head): a party declared Hostile by stance is not fired on first,
 /// under any posture.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ap6_a_party_declared_hostile_by_stance_is_not_fired_on_first_under_any_posture() {
     // A hull a mind flies under no rule falls back first and fights after the doctrine's rally

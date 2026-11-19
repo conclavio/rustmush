@@ -156,7 +156,7 @@ pub(crate) fn second(rig: &mut Rig, heard: &mut Heard) {
     }
 }
 
-/// Pump and tick until `done` holds or `secs` of wall time pass; answers whether it held.
+/// Pump and tick until `done` holds or `secs` of tokio time pass; answers whether it held.
 pub(crate) async fn until(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
@@ -165,13 +165,10 @@ pub(crate) async fn until(
     secs: u64,
     mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
 ) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-    let mut beat = 0_u32;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let mut pace = crate::field_host_rig::Pace::new(secs);
+    while let Some(owed) = pace.beat().await {
         pump(rig, rx, lines, heard);
-        beat += 1;
-        if beat.is_multiple_of(8) {
+        for _ in 0..owed {
             second(rig, heard);
         }
         if done(rig, lines) {
@@ -465,13 +462,13 @@ async fn absent_gate(at: &At) {
 
 /// **AP.1 at 256**: an offline player reads at login that a field opened on their site and what
 /// became of each of their units, and has a letter for the loss.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap1_ahuna_an_absent_defender_reads_the_field_and_its_losses_at_login() {
     absent_gate(&AHUNA_FLANK).await;
 }
 
 /// **AP.1 at 512**: the same, on Urvara Reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap1_urvara_an_absent_defender_reads_the_field_and_its_losses_at_login() {
     absent_gate(&URVARA_REACH).await;
 }
