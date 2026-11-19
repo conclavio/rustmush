@@ -360,6 +360,16 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     assert_eq!(built.step, Step::Done, "{built:?}");
     let dray = built.object().expect("the Dray-P");
     assert_eq!(titled(&rig, dray), PrincipalId::Object(captain));
+    // 48e review rounds:G7 (Q-39-36): a space hull's magazines are empty too; her magazine
+    // record holds each at 0, where its absence read every one full.
+    let mags = tacsim::port::bay_work::magazines::magazines(
+        &mush_tactics::module::unit_of(rig.tw.world(), dray).expect("her unit"),
+    );
+    assert!(!mags.is_empty(), "the Dray-P carries magazines");
+    assert!(
+        mags.iter().all(|magazine| magazine.left == 0),
+        "her magazines are empty (Q-39-36): {mags:?}"
+    );
     assert!(
         matches!(tacsim::port::ship::berth_of(rig.tw.world(), dray),
             tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == STICKNEY),

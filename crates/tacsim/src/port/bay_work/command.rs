@@ -305,10 +305,26 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                 }
             }
             if !quote.jobs.is_empty() {
+                // Doc 49 unit CC.7 part 2: a ship's rounds, from her hold and then the stores.
+                // 48e review rounds:G13: split (and so priced) before "all", which carries
+                // the rounds bought as the order's escrow does.
+                let mut priced = quote.jobs.clone();
+                let split =
+                    (!super::magazines::magazine_goods(&quote.jobs).is_empty()).then(|| {
+                        let hold = super::source_hold(ctx.w, hull, &facility).ok();
+                        let stores = super::stores_of(ctx.w, &facility)
+                            .map(|row| mush_economy::VaultId(row.vault));
+                        ctx.w
+                            .module_state::<crate::store::TacsimStore>()
+                            .and_then(|store| store.goods())
+                            .map(|table| {
+                                super::magazines::split(ctx, hold, stores, table, &mut priced)
+                            })
+                    });
                 lines.push(format!(
                     "  {:<34} {:>12}  {}",
                     "all",
-                    price(ctx, BayQuote::fee_minor(&quote.jobs)),
+                    price(ctx, BayQuote::fee_minor(&priced)),
                     hours(BayQuote::secs(&quote.jobs, facility.class))
                 ));
                 // Doc 39 cut IN.4 (Q-39-9): the workshop's berth time at its slot-hour, before
@@ -334,30 +350,22 @@ fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
                         words.join(", ")
                     ));
                 }
-                // Doc 49 unit CC.7 part 2: a ship's rounds, from her hold and then the stores.
-                if !super::magazines::magazine_goods(&quote.jobs).is_empty() {
-                    let hold = super::source_hold(ctx.w, hull, &facility).ok();
-                    let stores = super::stores_of(ctx.w, &facility)
-                        .map(|row| mush_economy::VaultId(row.vault));
-                    let mut jobs = quote.jobs.clone();
-                    let table = ctx
-                        .w
-                        .module_state::<crate::store::TacsimStore>()
-                        .and_then(|store| store.goods());
-                    lines.push(
-                        match table.map(|table| {
-                            super::magazines::split(ctx, hold, stores, table, &mut jobs)
-                        }) {
-                            Some(Ok(split)) => {
-                                let bought: u64 = jobs.iter().map(|job| job.part_minor).sum();
-                                super::magazines::split_line(&split, bought, &|minor| {
-                                    money_minor(ctx, i64::try_from(minor).unwrap_or(i64::MAX))
-                                })
-                            }
-                            Some(Err(why)) => format!("  {why}"),
-                            None => "  The goods table is not loaded.".to_owned(),
-                        },
-                    );
+                if let Some(split) = split {
+                    lines.push(match split {
+                        Some(Ok(split)) => {
+                            // 48e review rounds:G13: the rounds bought, not a replaced part.
+                            let bought: u64 = priced
+                                .iter()
+                                .filter(|job| matches!(job.job, BayJob::Magazine { .. }))
+                                .map(|job| job.part_minor)
+                                .sum();
+                            super::magazines::split_line(&split, bought, &|minor| {
+                                money_minor(ctx, i64::try_from(minor).unwrap_or(i64::MAX))
+                            })
+                        }
+                        Some(Err(why)) => format!("  {why}"),
+                        None => "  The goods table is not loaded.".to_owned(),
+                    });
                 }
                 // Doc 39 cut IN.1: what the hull's bale holds once the work is done.
                 if let Some(after) = after {

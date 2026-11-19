@@ -45,8 +45,9 @@ use tacsim::definitions::content::{
 use tacsim::pack::{PackEntry, RulesPack, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::refit::{
-    REFIT_ALREADY, REFIT_BAY, REFIT_FAILED, REFIT_HOLD, REFIT_NOT_HERE, REFIT_NOT_OFFERED,
-    REFIT_UNDER_WAY, REFIT_USAGE, REFIT_WHERE, REFITTED_PROSPECTOR, REFITTED_STANDARD,
+    REFIT_ALREADY, REFIT_BAY, REFIT_DAMAGED, REFIT_FAILED, REFIT_HOLD, REFIT_NOT_HERE,
+    REFIT_NOT_OFFERED, REFIT_UNDER_WAY, REFIT_USAGE, REFIT_WHERE, REFITTED_PROSPECTOR,
+    REFITTED_STANDARD,
 };
 use tacsim::port::tv::{
     BAY_FULL, CHARGE_PART, CHARGE_WHOLE, HOPPER_FULL, LEASE_FAILED, LEASE_FUNDS, LEASE_NOT_HERE,
@@ -1615,6 +1616,112 @@ fn sm3a_refit_prospector_and_back() {
         "the enrollment document is unchanged"
     );
     no_refused_writes(&rig.tw);
+}
+
+/// Her space magazines, by mount id: what each holds and what it stows.
+fn held_rounds(tw: &TestWorld, hull: ObjId) -> BTreeMap<String, (u32, u32)> {
+    let unit = mush_tactics::module::unit_of(tw.world(), hull).expect("a live unit");
+    tacsim::port::bay_work::magazines::magazines(unit)
+        .into_iter()
+        .map(|magazine| (magazine.mount, (magazine.left, magazine.stow)))
+        .collect()
+}
+
+/// Staff write `ops` to `hull`'s unit through the one plan path.
+fn mutate(tw: &mut TestWorld, hull: ObjId, ops: Vec<mush_tactics::UnitMutationOp>) {
+    let unit = mush_tactics::module::unit_of(tw.world(), hull)
+        .cloned()
+        .expect("a live unit");
+    let plan =
+        mush_tactics::UnitMutationPlan::new(ops, Some(unit.revision()), None).expect("a plan");
+    support::with_ctx(tw, |ctx| {
+        mush_tactics::module::apply_plan(ctx, hull, &plan).expect("the plan applies");
+    });
+}
+
+/// **48e review rounds:G2: a refit conserves rounds and repairs nothing** (A-14, Q-49-12). The
+/// re-dress builds her unit afresh, which once refilled every space magazine and healed every
+/// hurt for no fee. Now each magazine of the new fit holds what the same mount held, there and
+/// back, through a restart; and a hull the bay would repair is refused with nothing written.
+#[test]
+fn rounds_g2_a_refit_keeps_her_magazines_and_refuses_a_hull_that_needs_repair() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    let full = held_rounds(&rig.tw, hull);
+    assert!(!full.is_empty(), "a Dray flies magazines: {full:?}");
+    // Spent to a third of each.
+    let spent: BTreeMap<String, u32> = full
+        .iter()
+        .map(|(mount, (_, stow))| (mount.clone(), stow / 3))
+        .collect();
+    let unit = mush_tactics::module::unit_of(rig.tw.world(), hull)
+        .cloned()
+        .expect("a live unit");
+    let op = tacsim::space::custody::magazine_op(&unit, &spent)
+        .expect("the record")
+        .expect("a change");
+    mutate(&mut rig.tw, hull, vec![op]);
+    let total =
+        |held: &BTreeMap<String, (u32, u32)>| -> u32 { held.values().map(|(left, _)| left).sum() };
+    let before = total(&held_rounds(&rig.tw, hull));
+    for word in ["prospector", "standard"] {
+        let out = refit(&mut rig, pilot, word);
+        assert!(
+            out.contains("The Co-op's yard refits the Salt Moth"),
+            "{word}: {out}"
+        );
+        for (mount, (left, stow)) in held_rounds(&rig.tw, hull) {
+            let want = spent.get(&mount).copied().unwrap_or(0).min(stow);
+            assert_eq!(left, want, "{word}: {mount} holds what it held");
+        }
+        assert!(
+            total(&held_rounds(&rig.tw, hull)) <= before,
+            "{word}: no round is made"
+        );
+    }
+    let mut rig = reboot(rig);
+    for (mount, (left, stow)) in held_rounds(&rig.tw, hull) {
+        assert_eq!(
+            left,
+            spent.get(&mount).copied().unwrap_or(0).min(stow),
+            "{mount} after the restart"
+        );
+    }
+    // A hurt on her hull: the yard refuses, and nothing is written.
+    let unit = mush_tactics::module::unit_of(rig.tw.world(), hull)
+        .cloned()
+        .expect("a live unit");
+    let (addr, cell) = unit
+        .cells()
+        .find(|(addr, cell)| {
+            matches!(addr, mush_tactics::CellAddr::Facet { .. }) && cell.current > cell.min
+        })
+        .map(|(addr, cell)| (addr.clone(), cell.clone()))
+        .expect("an armoured facet");
+    mutate(
+        &mut rig.tw,
+        hull,
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr,
+            value: cell.current - 1,
+        }],
+    );
+    let revision = mush_tactics::module::unit_of(rig.tw.world(), hull)
+        .map(mush_tactics::TacticalUnit::revision)
+        .expect("a live unit");
+    let out = refit(&mut rig, pilot, "prospector");
+    assert!(
+        out.contains(&REFIT_DAMAGED.replace("{name}", "Salt Moth")),
+        "{out}"
+    );
+    assert_eq!(unit_id(&rig.tw, hull), DRAY, "the unit is as it was");
+    assert_eq!(
+        mush_tactics::module::unit_of(rig.tw.world(), hull)
+            .map(mush_tactics::TacticalUnit::revision),
+        Some(revision),
+        "nothing is written"
+    );
 }
 
 /// **The refit refuses** (A5): away from the desk, with cargo, with provisions, with a rig

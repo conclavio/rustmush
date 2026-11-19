@@ -756,7 +756,7 @@ fn empty_magazines(ctx: &mut Ctx<'_>, obj: ObjId) -> Result<(), String> {
         crate::port::bay_work::jobs::munitions_good_of(spec, store.definitions(), goods, component)
             .is_some()
     };
-    let ops: Vec<mush_tactics::UnitMutationOp> = unit
+    let mut ops: Vec<mush_tactics::UnitMutationOp> = unit
         .cells()
         .filter(|(addr, cell)| {
             matches!(addr, mush_tactics::CellAddr::Component { component, cell: id }
@@ -768,6 +768,23 @@ fn empty_magazines(ctx: &mut Ctx<'_>, obj: ObjId) -> Result<(), String> {
             value: 0,
         })
         .collect();
+    // 48e review rounds:G7 (Q-39-36, A-14): a space hull's rounds live in her magazine record,
+    // whose absence reads every magazine full; a commissioned hull's record holds each at 0.
+    let empty: std::collections::BTreeMap<String, u32> =
+        crate::port::bay_work::magazines::magazines(unit)
+            .into_iter()
+            .filter(|magazine| magazine.left > 0)
+            .map(|magazine| (magazine.mount, 0))
+            .collect();
+    if !empty.is_empty() {
+        let mut rounds = crate::space::custody::kept_magazines(unit);
+        rounds.extend(empty);
+        if let Some(op) =
+            crate::space::custody::magazine_op(unit, &rounds).map_err(|e| e.to_string())?
+        {
+            ops.push(op);
+        }
+    }
     if ops.is_empty() {
         return Ok(());
     }
