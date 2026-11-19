@@ -43,6 +43,11 @@ import {
   type PortListingRow,
   type PortTradeSnapshot,
 } from "../tacsim/trade";
+import {
+  decodeSpaceFireFeed,
+  emptySpaceFireSnapshot,
+  type SpaceFireSnapshot,
+} from "../tacsim/space-fire";
 
 export const SCENE_3D_PREF_KEY = "rustmush.scene3d";
 
@@ -103,6 +108,8 @@ export class TacsimPortStore {
 
   /** Structured `port.trade` snapshot. */
   trade = $state<PortTradeSnapshot>(emptyPortTradeSnapshot());
+  /** Authoritative Doc 49 (`CC.9`) `space.cockpit` mounts, magazines & 5-band lock snapshot. */
+  spaceFire = $state<SpaceFireSnapshot>(emptySpaceFireSnapshot());
 
   /** Active speech bubbles & composing flags keyed by actor id or lowercase name. */
   actorSpeech = $state<Record<string, { text: string; expiresAt: number }>>({});
@@ -183,6 +190,7 @@ export class TacsimPortStore {
     this.serverShipCompartment = null;
     this.physicalLocationKey = null;
     this.trade = emptyPortTradeSnapshot();
+    this.spaceFire = emptySpaceFireSnapshot();
     this.actorSpeech = {};
     this.actorComposing = {};
     this.focusedPrompt = null;
@@ -311,6 +319,10 @@ export class TacsimPortStore {
     } else if (res.priceWarning) {
       this.#pushModalLine(`[PRICE MOVED] ${res.priceWarning}`);
     }
+  }
+
+  observeSpaceCockpit(data: unknown): void {
+    this.spaceFire = decodeSpaceFireFeed(data);
   }
 
   observeContentFeed(data: unknown): void {

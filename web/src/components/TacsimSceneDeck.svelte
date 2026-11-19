@@ -6,6 +6,12 @@
   import type { GameApp } from "$lib/game.svelte";
   import { PICTURE_PREF_KEY } from "$lib/picture";
   import { storageGet, storageSet } from "$lib/storage";
+  import {
+    formatHeldLockSummary,
+    formatMountAtLockEffect,
+    formatMountMeta,
+    formatMountStateLabel,
+  } from "$lib/tacsim/space-fire";
   import { TacsimStage3D, type WorldInteractable3D } from "$lib/tacsim/stage3d";
   import PictureView from "./PictureView.svelte";
   import TacsimPortModals from "./TacsimPortModals.svelte";
@@ -183,7 +189,7 @@
     {#if app.tacsim.seatedAtBridgeHelm}
       <div class="helm-visor">
         <div class="visor-bar">
-          <span class="visor-title">BRIDGE FLIGHT VISOR · ORBITAL & 60 HZ DOCKING</span>
+          <span class="visor-title">Bridge Flight Visor · Orbital & 60 Hz Docking</span>
           <div class="visor-btns">
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 0")}>0%</button>
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 500")}>50%</button>
@@ -195,6 +201,46 @@
             </button>
           </div>
         </div>
+
+        <div class="visor-tac-strip" aria-label="space fire control and mounts">
+          <div class="visor-lock-row">
+            <span class="lock-pill" class:active={app.tacsim.spaceFire.lock !== null}>
+              {formatHeldLockSummary(app.tacsim.spaceFire)}
+            </span>
+            <div class="visor-btns">
+              <button type="button" class="qbtn" onclick={() => onCmd("+tac/scan")}>Scan</button>
+              <button type="button" class="qbtn danger" onclick={() => onCmd("+tac/beam")}>Fire Beam</button>
+              <button type="button" class="qbtn" onclick={() => onCmd("+tac/railgun")}>Fire Railgun</button>
+              <button type="button" class="qbtn" onclick={() => onCmd("+tac/torp")}>Launch Torpedo</button>
+              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc offense")}>Laser Offense</button>
+              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc point")}>Laser Defense</button>
+              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc auto")}>Auto Point Defense</button>
+              <button type="button" class="qbtn" onclick={() => onCmd("+helm/submit")}>Customs Submit</button>
+            </div>
+          </div>
+
+          {#if app.tacsim.spaceFire.mounts.length > 0}
+            <div class="visor-mounts-row">
+              {#each app.tacsim.spaceFire.mounts as m (m.id)}
+                {@const effect = formatMountAtLockEffect(m)}
+                <div
+                  class="mount-chip"
+                  class:ready={m.state === "ready" && m.mode !== "defense"}
+                  class:warn={m.state === "cycling" || m.state === "too_hot" || m.state === "past_reach"}
+                  class:down={m.state === "empty" || m.state === "down"}
+                >
+                  <span class="m-id">{m.id}</span>
+                  <span class="m-meta">{formatMountMeta(m)}</span>
+                  <span class="m-state">{formatMountStateLabel(m)}</span>
+                  {#if effect}
+                    <span class="m-effect">{effect}</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
         <div class="visor-canvas">
           <PictureView {app} headingDeg={0} prefill={(ln) => app.focusComposer(ln)} />
         </div>
@@ -419,12 +465,116 @@
     font-size: 0.76rem;
     font-weight: 700;
     color: #77d4ff;
+    text-transform: uppercase;
   }
 
   .visor-btns {
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem;
+  }
+
+  .qbtn.danger {
+    background: #521a24;
+    border-color: #c44a62;
+    color: #ffeef2;
+    font-weight: 600;
+  }
+
+  .visor-tac-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.35rem 0.75rem;
+    background: #08121f;
+    border-bottom: 1px solid #18324c;
+  }
+
+  .visor-lock-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .lock-pill {
+    font-family: var(--font-mono);
+    font-size: 0.73rem;
+    padding: 0.14rem 0.55rem;
+    border-radius: 6px;
+    border: 1px solid #2b4a68;
+    background: #0e1d30;
+    color: #9ec0dd;
+  }
+
+  .lock-pill.active {
+    border-color: #e69b38;
+    background: #2b1d0c;
+    color: #ffd588;
+    font-weight: 600;
+  }
+
+  .visor-mounts-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .mount-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    padding: 0.16rem 0.52rem;
+    border-radius: 6px;
+    border: 1px solid #24405c;
+    background: #0c1a2a;
+    font-family: var(--font-mono);
+    font-size: 0.71rem;
+    color: #d8ecfc;
+  }
+
+  .mount-chip.ready {
+    border-color: #2f8f66;
+    background: #0b241c;
+  }
+
+  .mount-chip.warn {
+    border-color: #9e7428;
+    background: #241b0c;
+  }
+
+  .mount-chip.down {
+    border-color: #8c353e;
+    background: #261015;
+  }
+
+  .m-id {
+    font-weight: 700;
+    color: #eff8ff;
+    text-transform: uppercase;
+  }
+
+  .m-meta {
+    color: #9ac4e2;
+  }
+
+  .m-state {
+    color: #77f2b4;
+    font-weight: 600;
+  }
+
+  .mount-chip.warn .m-state {
+    color: #ffcf6e;
+  }
+
+  .mount-chip.down .m-state {
+    color: #ff858f;
+  }
+
+  .m-effect {
+    color: #ffdd8a;
+    font-weight: 700;
   }
 
   .visor-canvas {

@@ -1082,11 +1082,94 @@ green runs 44381619838, 44413835411 and 44436872677:
 
 Neither touches anything this cut changed.
 
+### TS.10b — `TimeSource`, the world's clock provider
+
+**What was built.**
+- **`mush_config::TimeSource`** (`crates/mush-config/src/time_source.rs`), as 43c §2 drew it.
+  - `System` is the OS clock and tokio's sleeps. `Tokio { epoch_unix_ms, base }` derives unix time from
+    tokio's clock.
+  - It is `Copy`. There is no global and no trait object. Only `tokio_at`, which a test calls, makes the
+    `Tokio` arm.
+- **`ServerDeps::time`.** It lands in one commit with every literal that names the struct's fields: 48 of
+  them, each now `time: mush_config::TimeSource::System`. The literals that spread
+  `..ServerDeps::in_memory()` take `System` from it.
+- **The world loop's gating reads go through it.** `run` reads `deps.time` once. These go through the
+  provider:
+  - the per-iteration `set_now`;
+  - the outage wake;
+  - the timer wake (`sleep_until_unix_ms`);
+  - `fire_due`;
+  - the shutdown grace, now a `tokio::time::Instant`.
+- **Measuring reads stay `std`:** `iteration_start`'s loop lag, `boot_unix`, and the sample throttle.
+- **Production behaves exactly as before.** `System` reads `unix_now_s`/`unix_now_ms`. Its instant is
+  `tokio::time::Instant::now()`, which on a running runtime is `std`'s.
+- **The test.** `ts10b_a_paused_world_fires_an_hours_wait_on_tokio_time` runs a paused world on
+  `tokio_at`. An hour's `@wait` does not fire at 3,590 s of tokio time, fires by 3,610, and takes 43 ms of
+  wall time. Mutation-checked: on `System` the wait never fires.
+
+**Where it departs from 43c's row** (recorded, not ruled; the owner may want to look):
+- **The arena's spawn terms do not carry the provider.**
+  - The arena reads no wall clock: its clock is a `tokio::time::Instant` base, which a paused runtime
+    already moves (43c §2, "the arena's arithmetic does not change").
+  - The three readers 43c named for an arena handle are not arena code. The tape's `Restart` and a
+    snapshot's wall stamp carry no OS-clock read today. The bulk executor's worker day
+    (`minds/bulk/executor.rs`) is the genuine Registry's real-time UTC budget, real time by design
+    (43c §3.3).
+  - Carrying the handle would also need a new crate edge. The host seam is `mush-core`'s
+    `OffLoopSimulationHost`, `mush-config` depends on `mush-core`, and `tacsim` does not depend on
+    `mush-config`.
+  - So the arena gets the provider when it first has a reader. TS.10e's lint scans `arena_task*` so the
+    arena stays free of OS-clock reads meanwhile.
+- **`staff.rs:349` stays on the OS clock.** Its tempban-lift stamp is compared by `IpGuard` against
+  its own OS clock (`ipguard.rs`, `apply_tempban_lift_at`), and the gateway shares that guard, so the
+  stamp belongs to the guard's clock, not the world's.
+- **`staff_ops.rs:316` stays on the OS clock.** It is the economy journal's per-hour rate, which is a
+  measurement.
+- **`boot_engine`'s first `set_now`** stays too. The loop's first iteration overwrites it from the
+  provider.
+
+### TS.10c — the paused rigs and the guard
+
+**The guard.**
+- `ObjectStore::holds_process_memory` defaults to false, and `InMemoryStore` says true. A forwarding test
+  double opts in by asking its inner store.
+- `spawn_persist_with_gateway_mode` asserts that `TimeSource::Tokio` only runs over a store that says yes.
+  Every in-process composition comes through that function.
+- 43c §5 first put the guard at boot (`boot.rs`, `serve_classified`). It sits at the spawn instead, for two
+  reasons. The store is `dyn ObjectStore` at boot. And both production boots build
+  `ServerDeps::production`, which is always `System`, so the spawn is the one place a `Tokio` arm can
+  reach.
+- **Tested both ways.** `Tokio` over a store that does not claim process memory is refused before any task
+  starts, and `System` over the same store spawns.
+- `assert!` is not one of the panic budget's needles. A `panic!` in the first test's gateway closure did
+  count (`retry.rs` is not test-fenced), and it was replaced.
+
+**What moved to the paused clock** (Q-43c-2 at the lead's default: in-process memory-store rigs only):
+- **`mush-server::world_task::preflight_retry_bounds`, 4 tests.** It moved with no engine change, because
+  the coordinator's retry window already reads tokio's clock. The slow store's 2-s answers are tokio sleeps.
+  The window's floor-and-ceiling assertions now measure tokio time.
+  - Main's hosted run summed 10.3 s; locally the module takes 0.19 s.
+
+**What did not move, measured first** (main run 44436872677's hosted JUnit, summed):
+
+| suite | summed | why not |
+|---|---:|---|
+| mush-server `world_task::submission_disposition::tests::player_market*` | 637 s | CPU. One test on the paused clock took 8.55 s against 8.21 s on two workers: the cost is the production launch's boot, not a wait |
+| mush-server `commerce_composition`, `split_boundary` | 5,020 s | `TestWorld` (43c §4: their cost is work) |
+| mush-server `hostile_lines` | 10.8 s | `TestWorld` fuzz |
+| mush-server's other src `world_task` tests | 31 s | under 0.5 s each |
+| mushd `sim_lenses`, and `world_journeys`' `modules_e2e`, `onboarding_e2e`, `ssh_e2e` and `web_e2e` | 1,061.9 s | real SSH or web clients (43c §3.3) |
+| mushd `world_journeys`' network-free files (`admin`, `legal_action_web`, `mind_market_web`, `web_bridge`) | under 0.5 s each | nothing to win |
+
+So outside `domain_field` the seam pays only where a test waits on a timer it owns. In the in-process
+memory-store suites that is the one module above. TS.10c's value is the guard, plus the seam being in place
+for the next test that waits.
+
 ### What is left of TS.10
 
-- **TS.10b** `TimeSource` in `mush-config`, carried in `ServerDeps` and the arena's spawn terms;
-  **TS.10c** mush-server's memory-store `world_task` tests and mushd's in-process journeys on the paused
-  clock, with the boot guard; **TS.10e** the contract lint. Each is a stacked PR after this one.
+- **TS.10e** the contract lint, a stacked PR after this one.
+- **More paused rigs** only where a test waits on a timer it owns (TS.10c's table).
+- **The arena's handle** (TS.10b, above) waits on its first reader.
 - **TS.10d** waits on the owner (above).
 - **Two owner questions from this cut:** the escort watch's closing interval, and the CONCENTRATE answer
   between visits. `ex6_escort` and `field_mw14c`'s story 3 go to the paused clock once they are ruled.

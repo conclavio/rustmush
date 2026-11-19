@@ -209,7 +209,7 @@ namespace TacSim.Core
                 Hud.BuildHud();
 
             Hud.BindTradeState(TradeState);
-            Hud.Overlays?.BindControllers(SurfaceStage, ArenaStage);
+            Hud.Overlays?.BindControllers(SurfaceStage, ArenaStage, SpaceStage);
             TradeState.OnStateChanged += () =>
             {
                 if (ShipInterior != null)
@@ -367,7 +367,8 @@ namespace TacSim.Core
                 SpaceStage.SelectedRockId,
                 SpaceStage.LockedContactId,
                 SpaceStage.HasClusterMiningTelemetry ? SpaceStage.AuthoritativeMatchedRockId : null,
-                SpaceStage.HasClusterMiningTelemetry ? SpaceStage.AuthoritativeApproachingRockId : null);
+                SpaceStage.HasClusterMiningTelemetry ? SpaceStage.AuthoritativeApproachingRockId : null,
+                SpaceStage.ActiveLock?.Facet);
         }
 
         /// <summary>

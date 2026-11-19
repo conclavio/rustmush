@@ -2039,5 +2039,156 @@ namespace TacSim.Tests
             }
             throw new System.IO.FileNotFoundException($"Missing Rust-pinned cross-language fixture '{fileName}'.");
         }
+
+        [Test]
+        public void Track5_Doc49_SpaceFireMounts_5BandAspect_AndGroundMultiMountTelemetry()
+        {
+            var rootGo = new UnityEngine.GameObject("TestDoc49Root");
+            try
+            {
+                // 1. Verify CC.9 `space.cockpit.fire` parser across all 4 mount families & 5-band hull lock
+                var cockpitJson = JsonNode.Parse(@"{
+                    ""yaw_deg"": 42,
+                    ""pitch_deg"": -6,
+                    ""thrust_permille"": 500,
+                    ""emcon"": ""ACTIVE"",
+                    ""fire"": {
+                        ""mounts"": [
+                            { ""id"": ""laser_dorsal"", ""family"": ""laser"", ""ready_in_ms"": 0, ""state"": ""ready"", ""mode"": ""offence"", ""damage"": 98 },
+                            { ""id"": ""laser_ventral"", ""family"": ""laser"", ""ready_in_ms"": 0, ""state"": ""ready"", ""mode"": ""defence"" },
+                            { ""id"": ""tube_fore"", ""family"": ""tubes"", ""ready_in_ms"": 0, ""state"": ""ready"", ""rounds"": 3, ""rounds_max"": 4 },
+                            { ""id"": ""rail_spinal"", ""family"": ""spinal"", ""ready_in_ms"": 2400, ""state"": ""cycling"", ""rounds"": 31, ""rounds_max"": 32, ""flight_ms"": 2200 },
+                            { ""id"": ""pdc_port"", ""family"": ""point_defence"", ""ready_in_ms"": 0, ""state"": ""ready"", ""rounds"": 4000 }
+                        ],
+                        ""lock_id"": ""raider.7.1"",
+                        ""lock"": {
+                            ""id"": ""raider.7.1"",
+                            ""label"": ""Belt Raider"",
+                            ""range_m"": 42000,
+                            ""facet"": ""top""
+                        }
+                    }
+                }");
+
+                var parsedMounts = new List<TacSim.Space.SpaceMountTelemetry>();
+                TacSim.Space.SpaceFlightController.ParseSpaceFireTelemetry(
+                    cockpitJson["fire"],
+                    parsedMounts,
+                    out var parsedLock);
+
+                Assert.AreEqual(5, parsedMounts.Count);
+                Assert.AreEqual("offense", parsedMounts[0].Mode, "Wire 'offence' normalizes to US 'offense'");
+                Assert.AreEqual(98, parsedMounts[0].DamageAtLock);
+                Assert.AreEqual("defense", parsedMounts[1].Mode, "Wire 'defence' normalizes to US 'defense'");
+                Assert.AreEqual(3, parsedMounts[2].Rounds);
+                Assert.AreEqual(4, parsedMounts[2].RoundsMax);
+                Assert.AreEqual(31, parsedMounts[3].Rounds);
+                Assert.AreEqual(32, parsedMounts[3].RoundsMax);
+                Assert.AreEqual(2200, parsedMounts[3].FlightMsAtLock);
+                Assert.AreEqual(4000, parsedMounts[4].Rounds);
+                Assert.AreEqual(-1, parsedMounts[4].RoundsMax, "Rotary PDC omits rounds_max");
+
+                Assert.IsNotNull(parsedLock);
+                Assert.AreEqual("raider.7.1", parsedLock.ShipId);
+                Assert.AreEqual("Belt Raider", parsedLock.Label);
+                Assert.AreEqual(42000L, parsedLock.RangeM);
+                Assert.AreEqual("top", parsedLock.Facet);
+
+                // 2. Verify live SpaceFlightController 3D 5-Band Aspect Indicator & TacSimMissionOverlays Fire-Control Card
+                var spaceGo = new UnityEngine.GameObject("SpaceStage");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<SpaceFlightController>();
+                space.BuildSpaceStage(null);
+
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                var hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, null, space);
+                hud.Overlays.SetHelmSeatedVisible(true);
+
+                var holotankJson = JsonNode.Parse(@"{
+                    ""contacts"": [
+                        { ""id"": ""ship.1"", ""you"": true, ""x_km"": 0.0, ""y_km"": 0.0, ""z_km"": 0.0 },
+                        { ""id"": ""raider.7.1"", ""label"": ""Belt Raider"", ""kind"": ""ship"", ""relation"": ""hostile"", ""you"": false, ""locked"": true, ""x_km"": 42.0, ""y_km"": 0.0, ""z_km"": 0.0 }
+                    ]
+                }");
+                space.ApplyHolotankFeed(holotankJson);
+                space.ApplyCockpitFeed(cockpitJson);
+                hud.Overlays.UpdateOrbitalTargetReadout(
+                    space.SelectedRockId,
+                    space.LockedContactId,
+                    null,
+                    null,
+                    space.ActiveLock?.Facet);
+
+                Assert.IsTrue(hud.Overlays.IsSpaceFireCardVisible);
+                StringAssert.Contains("[TOP]", hud.Overlays.SpaceLockSummaryText);
+                StringAssert.Contains("42.0 km", hud.Overlays.SpaceLockSummaryText);
+                Assert.AreEqual(5, hud.Overlays.VisibleSpaceMountRowCount);
+                StringAssert.Contains("98 DMG", hud.Overlays.GetSpaceMountRowText(0));
+                StringAssert.Contains("DEFENSE SCREEN", hud.Overlays.GetSpaceMountRowText(1));
+                StringAssert.Contains("3/4", hud.Overlays.GetSpaceMountRowText(2));
+                StringAssert.Contains("CYCLING 2.4s", hud.Overlays.GetSpaceMountRowText(3));
+                StringAssert.Contains("2.2s FLIGHT", hud.Overlays.GetSpaceMountRowText(3));
+                StringAssert.Contains("4000 LEFT", hud.Overlays.GetSpaceMountRowText(4));
+
+                var lockInd = spaceGo.transform.Find("LockedAspectIndicator");
+                Assert.IsNotNull(lockInd);
+                Assert.IsTrue(lockInd.gameObject.activeSelf);
+                var bandArc = lockInd.Find("StrikeBandArc");
+                Assert.IsNotNull(bandArc);
+                Assert.AreEqual(6.4f, bandArc.localPosition.y, 0.05f, "'top' facet elevates strike arc over dorsal hull");
+
+                // 3. Verify Doc 49 Ground Arena multi-mount, `weapons_free`, & `armed` condition-slot decoding
+                var arenaGo = new UnityEngine.GameObject("ArenaStage");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                hud.Overlays.BindControllers(null, arena, space);
+
+                var groundFrame = JsonNode.Parse(@"{
+                    ""match"": 77,
+                    ""seated"": true,
+                    ""callsign"": ""R1"",
+                    ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"",
+                    ""power"": ""online"",
+                    ""weapons_free"": false,
+                    ""weapons"": [
+                        {
+                            ""id"": ""ac10"",
+                            ""ready"": false,
+                            ""ready_in_ms"": 10000,
+                            ""rounds"": 18,
+                            ""rounds_max"": 20,
+                            ""percent"": 62,
+                            ""heat_per_shot"": 120,
+                            ""armed"": { ""slot"": 1, ""target"": ""lock"", ""percent"": 55, ""keeps"": 2 }
+                        },
+                        {
+                            ""id"": ""coax_mg"",
+                            ""ready"": true,
+                            ""ready_in_ms"": 0,
+                            ""rounds"": 90,
+                            ""rounds_max"": 100,
+                            ""percent"": 48,
+                            ""heat_per_shot"": 15,
+                            ""armed"": null
+                        }
+                    ]
+                }");
+                arena.ApplyLiveCockpitFrame(groundFrame);
+                Assert.IsFalse(arena.State.WeaponsFree);
+                Assert.AreEqual(2, arena.State.Weapons.Count);
+                Assert.AreEqual(1, arena.State.Weapons[0].ArmedSlot);
+                Assert.AreEqual(55, arena.State.Weapons[0].ArmedMinPercent);
+                Assert.AreEqual(2, arena.State.Weapons[0].ArmedKeeps);
+                Assert.AreEqual(0, arena.State.Weapons[1].ArmedSlot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

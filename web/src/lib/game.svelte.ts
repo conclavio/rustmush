@@ -1159,6 +1159,7 @@ export class GameApp {
     } else if (d.feed === SPACE_COCKPIT_FEED) {
       if (d.kind === "keyframe") {
         this.picture.observeSpaceCockpit(d.data);
+        this.tacsim.observeSpaceCockpit(d.data);
       }
     } else if (d.feed === SPACE_DOCKING_FEED) {
       if (d.kind === "keyframe") {
