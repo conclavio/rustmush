@@ -24,7 +24,9 @@
 //!
 //! **Refused**: a core that is fitted (it is in a hull), a core someone else holds, a core whose
 //! title is not the seller's alone (another's, a claim on it, impounded), a destroyed core (the
-//! refit that displaced it found it destroyed: CO.4's rule), and a seller not at the shop.
+//! refit that displaced it found it destroyed: CO.4's rule), and a seller not at the shop. At the
+//! shop is the fitting's own rule (`mush_economy::core_refit::at_shop`): in the shop's object,
+//! or in the place the shop stands, so a seller on the berth gallery beside it is at its counter.
 
 use std::sync::{Arc, Mutex};
 
@@ -268,8 +270,10 @@ pub(crate) fn quote(
     seller: ObjId,
     core: ObjId,
 ) -> Result<Quote, Refusal> {
-    let at = world.get(seller).and_then(|o| o.location);
-    if at != Some(terms.factory) {
+    // At the shop as a fitting is (doc 47 CO.6): in it, or on the deck it stands on. No player
+    // verb takes a character into the shop's object, so its inside alone would be a counter
+    // only staff could carry a seller to.
+    if !mush_economy::core_refit::at_shop(world, seller, terms.factory) {
         return Err(Refusal::NotHere);
     }
     let economy = world
@@ -446,8 +450,9 @@ impl ActionProvider for Provider {
             .with_eligible_witnesses(vec![inv.principal().clone()]))
     }
 
-    /// **Offered to a character standing in the fitting shop**: which core is the parameter;
-    /// whether that core may be sold is the prepare's read.
+    /// **Offered to a character at the fitting shop** (in it, or where it stands: the quote's
+    /// own place rule): which core is the parameter; whether that core may be sold is the
+    /// prepare's read.
     fn project_offer(
         &self,
         action: &DefinitionRef,
@@ -457,7 +462,8 @@ impl ActionProvider for Provider {
         let here = engine
             .world
             .get(query.actor())
-            .is_some_and(|o| o.kind == ObjKind::Player && o.location == Some(self.terms.factory));
+            .is_some_and(|o| o.kind == ObjKind::Player)
+            && mush_economy::core_refit::at_shop(&engine.world, query.actor(), self.terms.factory);
         if action != &self.action
             || query.truth_subject() != &(mush_core::SubjectKey::Object { id: query.actor() })
             || query.projected_subject() != &PerceivedRef::SelfActor
@@ -738,5 +744,80 @@ mod tests {
             assert_eq!(entry.pack.as_str(), CORE_PACK);
         }
         assert_eq!(credits(400_000), "4000.00cr");
+    }
+
+    /// **The launch bring-up and this crate agree** (`deploy/instance/launch-bringup.py`): the
+    /// script names the buy-back at this crate's rate, reads the counter by needles of these
+    /// sentences, and stands the shop in a room the shipped Ceres Freeport has. A retuned rate, a
+    /// reworded sentence or a renamed room fails here, and not on a box mid bring-up.
+    #[test]
+    fn the_bring_up_names_this_rate_these_sentences_and_a_shipped_room() {
+        const BRINGUP_PY: &str = include_str!("../../../../deploy/instance/launch-bringup.py");
+        const CERES_JSON: &str =
+            include_str!("../../content/atlas/neighborhood.ceres_freeport.json");
+        let line_of = |name: &str| {
+            let head = format!("{name} = ");
+            BRINGUP_PY
+                .lines()
+                .find_map(|line| line.strip_prefix(head.as_str()))
+                .unwrap_or_else(|| panic!("the bring-up has no line `{head}...`"))
+                .trim()
+                .trim_matches('"')
+                .to_owned()
+        };
+        assert_eq!(
+            line_of("BUY_BACK_PERMILLE"),
+            BUY_BACK_PERMILLE.to_string(),
+            "the document's rate is the stories' rate"
+        );
+        assert!(
+            BRINGUP_PY.contains("\"buy_back_permille\": BUY_BACK_PERMILLE"),
+            "the bring-up's document names the buy-back"
+        );
+        for (name, sentence) in [
+            ("CORE_STANDS", crate::hardware::counter::CORE_SHOP),
+            (
+                "CORE_NO_SUCH_CORE",
+                crate::hardware::counter::CORE_NO_SUCH_CORE,
+            ),
+            ("SALE_NOT_CORE", SALE_NOT_CORE),
+        ] {
+            let needle = line_of(name);
+            assert!(
+                !needle.is_empty() && sentence.contains(needle.as_str()),
+                "{name} = {needle:?} is not in the game's sentence {sentence:?}"
+            );
+        }
+        // The needles tell the reply wanted from the refusals beside it. The shop's place is
+        // read as the needle and the room together ("stands at <room>"): the sentence for a
+        // shop that stands nowhere says "until it stands at a berth".
+        let placed = format!("{} {}", line_of("CORE_STANDS"), line_of("SHOP_ROOM"));
+        assert!(
+            BRINGUP_PY.contains("f\"{CORE_STANDS} {SHOP_ROOM}\""),
+            "the bring-up reads the shop's place as the needle and the room together"
+        );
+        assert!(
+            crate::hardware::counter::CORE_SHOP
+                .replace("{place}", line_of("SHOP_ROOM").as_str())
+                .contains(placed.as_str())
+        );
+        assert!(!crate::hardware::counter::CORE_SHOP_NOWHERE.contains(placed.as_str()));
+        assert!(
+            !crate::hardware::counter::CORE_NOT_AT_SHOP
+                .contains(line_of("CORE_NO_SUCH_CORE").as_str())
+        );
+        for other in [SALE_OFF, SALE_NOT_HERE] {
+            assert!(
+                !other.contains(line_of("SALE_NOT_CORE").as_str()),
+                "{other}"
+            );
+        }
+        for name in ["SHOP_ROOM", "SHOP_PORT"] {
+            let room = format!("\"name\": \"{}\"", line_of(name));
+            assert!(
+                CERES_JSON.contains(room.as_str()),
+                "the shipped Ceres Freeport has no {room}"
+            );
+        }
     }
 }

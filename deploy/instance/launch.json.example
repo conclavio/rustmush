@@ -69,6 +69,7 @@
     },
     "factory": 752,
     "output_container": 753,
+    "buy_back_permille": 500,
     "depot_stock": [
       {
         "commodity": "instrument_boards",

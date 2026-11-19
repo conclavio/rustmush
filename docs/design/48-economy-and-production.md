@@ -563,7 +563,8 @@ would break D11 only as a global book, and Q-46-3 only as a runtime engine. §5 
 - **CO.13's sale needs `buy_back_permille` in the launch deployment.** It composes only when the
   deployment names it (`launch/deployment.rs:96`; doc 47's cut note), and neither
   `deploy/instance/launch-bringup.py` nor the deploy templates name it. Without it, `+core/sell` is
-  not composed on a launched server. MW.3's go-live should set it.
+  not composed on a launched server. MW.3's go-live should set it. **Fixed 2026-11-18** (doc
+  44's cut notes, MW.3): the bring-up's document names 500 per mille, the stories' rate.
 - **The industry `bay_refit` (UD.4b) has no production submitter.** Only the hardware flow rig drives
   it. Its three defects stand (47-cut-notes: a destroyed part returns worn, the lot lands in the
   operator's stores, no provenance).
@@ -592,7 +593,8 @@ would break D11 only as a global book, and Q-46-3 only as a runtime engine. §5 
   That is 24 IC days, under the owner's 28-IC-day minimum for a wait on a player. **Fixed 2026-11-15** (the doc 48b fix PR). The cap
   and the provisional default are 100,800 real seconds, 28 IC days at 24:1.
 - **CO.13's integrator account starts at 0 cr** (`deploy/instance/launch-bringup.py:918-929`). The
-  buy-back has no money to pay with until it is funded.
+  buy-back has no money to pay with until it is funded. **Fixed 2026-11-18** (doc 44's cut notes,
+  MW.3): the bring-up mints it up to `--shop-till`, 50,000cr, provisional.
 
 ## 5. The shape proposed
 
