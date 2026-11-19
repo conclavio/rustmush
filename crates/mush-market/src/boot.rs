@@ -183,7 +183,9 @@ fn reconcile_draws(ctx: &mut Ctx<'_>, budget: usize) {
                     && q.lot.as_ref().is_some_and(|l| {
                         matches!(
                             l.kind,
-                            crate::record::PaidKind::Draw | crate::record::PaidKind::Deliver
+                            crate::record::PaidKind::Draw
+                                | crate::record::PaidKind::Hold
+                                | crate::record::PaidKind::Deliver
                         )
                     })
             })
@@ -321,13 +323,35 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
         String,
         Option<mush_inventory::LotId>,
     );
+    // Doc 48e (exchange G21; 48d M-01): a round-robin lap from the cursor, so every lot
+    // listing is checked in turn rather than only the first `budget`; a lapsed one is the
+    // lapsed arm's (`sweep`), which deletes it once its hold is gone without a page.
+    let now = ctx.w.now();
     let candidates: Vec<Candidate> = ctx
         .w
         .module_state::<MarketStore>()
         .map(|store| {
-            store
+            let eligible =
+                |listing: &&crate::record::Listing| !crate::api::listing_lapsed(listing, now);
+            let after: Vec<&crate::record::Listing> = store
                 .lot_listings()
+                .filter(eligible)
+                .filter(|l| store.lot_reconcile_cursor.is_none_or(|c| l.id > c))
                 .take(budget)
+                .collect();
+            let wrapped: Vec<&crate::record::Listing> = if after.len() < budget {
+                store
+                    .lot_listings()
+                    .filter(eligible)
+                    .filter(|l| store.lot_reconcile_cursor.is_some_and(|c| l.id <= c))
+                    .take(budget - after.len())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            after
+                .into_iter()
+                .chain(wrapped)
                 .filter_map(|listing| {
                     listing.source.lot().map(|(endpoint, commodity, _)| {
                         (
@@ -341,6 +365,10 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
                 .collect()
         })
         .unwrap_or_default();
+    let last = candidates.last().map(|(id, ..)| *id);
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.lot_reconcile_cursor = last;
+    }
     // Doc 39 cut IN.6: a reserve staged within the grace may still be landing.
     let fresh: std::collections::BTreeSet<crate::ids::ListingId> = ctx
         .w
@@ -361,14 +389,14 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
             continue;
         };
         // Doc 39 cut IN.2: a lot-transfer listing's hold is the lot's own.
+        // Doc 48e (exchange G21): a read that is refused is not "not held": the listing is
+        // left for the next lap rather than deleted over a hold that may stand.
         if let Some(lot) = exact {
             let holder = crate::lot::listing_holder_text(id);
-            let held = ctx
-                .action_state(&families.lot_holds, &lot)
-                .ok()
-                .flatten()
-                .is_some_and(|h| h.holder() == holder);
-            if held {
+            let Ok(found) = ctx.action_state(&families.lot_holds, &lot) else {
+                continue;
+            };
+            if found.is_some_and(|h| h.holder() == holder) {
                 continue;
             }
         }
@@ -377,12 +405,10 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
         };
         // The reservation index is written in the same bundle as the hold, so a live
         // hold is a point lookup rather than a walk (cut 2's fold B10).
-        let held = ctx
-            .action_state(&families.reservations, &reservation)
-            .ok()
-            .flatten()
-            .is_some();
-        if held {
+        let Ok(found) = ctx.action_state(&families.reservations, &reservation) else {
+            continue;
+        };
+        if found.is_some() {
             continue;
         }
         tracing::error!(

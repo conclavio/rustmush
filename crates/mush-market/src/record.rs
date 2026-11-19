@@ -1208,9 +1208,9 @@ pub struct PaidLot {
 }
 
 impl PaidLot {
-    /// The record's invariants: two distinct endpoints, a cutoff on exactly the Draw
-    /// and Deliver kinds, never before the deal itself, and a well-formed marker on
-    /// exactly the Deliver kind (cut IC10).
+    /// The record's invariants: two distinct endpoints, a cutoff on the Draw and Deliver
+    /// kinds (and, since doc 48e's exchange G2, on a hold-backed sale too), never before the deal
+    /// itself, and a well-formed marker on exactly the Deliver kind (cut IC10).
     ///
     /// # Errors
     /// [`RecordError`] naming the broken invariant.
@@ -1221,9 +1221,12 @@ impl PaidLot {
         if self.grade > mush_inventory::MAX_GRADE {
             return Err(RecordError("a paid lot's grade is out of range"));
         }
-        if self.lot.is_some() && self.kind != PaidKind::Hold {
+        // Doc 48e (exchange G3; 48d C-05): a part sold into a bid hands over its exact lot too
+        // (`sell_into_bid` writes `Deliver` with the lot), and a quote that failed this on
+        // reload was skipped, losing its re-stage, its bid restore and its tape row.
+        if self.lot.is_some() && !matches!(self.kind, PaidKind::Hold | PaidKind::Deliver) {
             return Err(RecordError(
-                "only a hold-backed sale hands over an exact lot",
+                "only a hold-backed sale or a sale into a bid hands over an exact lot",
             ));
         }
         match (self.kind, self.draw_by, self.marker.as_deref()) {
@@ -1234,6 +1237,8 @@ impl PaidLot {
                 Ok(())
             }
             (PaidKind::Hold, None, None) => Ok(()),
+            // Doc 48e (exchange G2): a hold-backed sale settles on its receipt by a cutoff.
+            (PaidKind::Hold, Some(by), None) if by >= self.accepted_at => Ok(()),
             (PaidKind::Draw, _, Some(_)) => Err(RecordError("a paid draw carries no marker")),
             (PaidKind::Draw, _, None) => {
                 Err(RecordError("a paid draw carries a cutoff after its deal"))
@@ -1242,7 +1247,7 @@ impl PaidLot {
                 "a paid delivery carries a cutoff after its deal and a marker",
             )),
             (PaidKind::Hold, _, _) => Err(RecordError(
-                "a paid hold sale carries no cutoff and no marker",
+                "a paid hold sale carries no marker, and a cutoff only after its deal",
             )),
         }
     }
@@ -1842,12 +1847,24 @@ mod tests {
         assert!(check(paid("deliver", Some(3_100), None)).is_err());
         assert!(check(paid("deliver", Some(3_100), Some("XYZ"))).is_err());
         assert!(check(paid("deliver", Some(3_100), Some(&"a".repeat(97)))).is_err());
-        // A Draw keeps its rule and carries no marker; a Hold carries neither.
+        // A Draw keeps its rule and carries no marker. Doc 48e (exchange G2): a Hold carries
+        // no marker, and a cutoff (its receipt's) never before its deal.
         assert!(check(paid("draw", Some(3_100), None)).is_ok());
         assert!(check(paid("draw", Some(3_100), Some(MARKER))).is_err());
         assert!(check(paid("hold", None, None)).is_ok());
         assert!(check(paid("hold", None, Some(MARKER))).is_err());
-        assert!(check(paid("hold", Some(3_100), None)).is_err());
+        assert!(check(paid("hold", Some(3_100), None)).is_ok());
+        assert!(check(paid("hold", Some(99), None)).is_err());
+        // Doc 48e (exchange G3; 48d C-05): a part sold into a bid hands over its exact lot, and
+        // its quote reloads; a Draw still carries none.
+        let with_lot = |kind: &str, draw_by: Option<i64>, marker: Option<&str>| {
+            let mut v = paid(kind, draw_by, marker);
+            v["lot"] = serde_json::json!(7);
+            check(v)
+        };
+        assert!(with_lot("deliver", Some(3_100), Some(MARKER)).is_ok());
+        assert!(with_lot("hold", None, None).is_ok());
+        assert!(with_lot("draw", Some(3_100), None).is_err());
     }
 
     fn sale_quote(

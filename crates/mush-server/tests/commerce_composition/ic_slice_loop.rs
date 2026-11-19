@@ -3607,22 +3607,6 @@ async fn bunker(rig: &mut Rig, who: ObjId, dest: &str, fuel: ListingId, food: Li
     panic!("the planner's burn and stores did not converge");
 }
 
-/// `@inv/move <hold>/metals:1=<store>` as `who`: queued, then refused at the
-/// coordinator before any intent; the refusal's detail.
-async fn inv_move_out(rig: &mut Rig, who: ObjId, hold: VaultId, store: u64) -> String {
-    let out = run(rig, who, &format!("@inv/move {}/metals:1={store}", hold.0)).await;
-    let queued = drain_players(rig).await;
-    assert!(out.contains("Queued."), "{out}");
-    assert_eq!(queued.len(), 1, "{out}");
-    match land(rig, &queued[0]).await {
-        Landing::Refused(detail) => {
-            assert_eq!(detail, "offered action parameters are invalid");
-            detail
-        }
-        Landing::Replay | Landing::Landed => panic!("the move out of the hold landed"),
-    }
-}
-
 /// Walk `who` through `steps` of `(word, port entry, room local)`.
 async fn walk_path(rig: &mut Rig, who: ObjId, steps: &[(&str, &str, &str)]) {
     for (word, entry, local) in steps {
@@ -4037,10 +4021,21 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     walk_path(&mut rig, vex, &to_gallery).await;
     let _ = run(&mut rig, vex, "+ship/board").await;
     // 10's docked counterpart: the pilot's own move out of the docked hold is
-    // refused the same way (the endpoint rule, not the hull's berth).
+    // refused. Doc 48e (exchange G7; 48d C-03): aboard, the pilot stands in no port room,
+    // so the ports' move rule refuses before anything is queued.
     let exchange_store = port_map(&rig.tw, C).vendors[&cid("freeport_exchange")].vault;
     let before = snap(&mut rig);
-    let docked_move = inv_move_out(&mut rig, vex, hold, exchange_store).await;
+    let docked_move = run(
+        &mut rig,
+        vex,
+        &format!("@inv/move {}/metals:1={exchange_store}", hold.0),
+    )
+    .await;
+    assert!(
+        docked_move.contains(tacsim::port::market::MOVE_NOT_AT_VENUE),
+        "{docked_move}"
+    );
+    assert!(drain_players(&mut rig).await.is_empty(), "nothing queued");
     assert_eq!(snap(&mut rig), before, "nothing left the docked hold");
     let filed = run(&mut rig, vex, "+ship/undock stickney").await;
     assert!(filed.contains("Clearance filed"), "{filed}");
@@ -4066,12 +4061,21 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     // or under way. No under-way rule of its own exists: a staff move out of a hold
     // under way lands (D-18-37's deferral to P-H; Q-18-62), so §6's check 10 as
     // written stays open there.
+    // Doc 48e (exchange G7; 48d C-03): under way the pilot stands in no port, so the ports'
+    // move rule refuses before anything is queued, as it did aboard at the berth (above).
     let before = snap(&mut rig);
-    let refused_move = inv_move_out(&mut rig, vex, hold, exchange_store).await;
-    assert_eq!(
-        refused_move, docked_move,
-        "the same refusal docked and under way"
+    let _ = &docked_move;
+    let out = run(
+        &mut rig,
+        vex,
+        &format!("@inv/move {}/metals:1={exchange_store}", hold.0),
+    )
+    .await;
+    assert!(
+        out.contains(tacsim::port::market::MOVE_NOT_AT_VENUE),
+        "{out}"
     );
+    assert!(drain_players(&mut rig).await.is_empty(), "nothing queued");
     assert_eq!(snap(&mut rig), before, "nothing left the hold");
 
     // To Stickney.

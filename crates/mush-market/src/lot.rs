@@ -478,6 +478,11 @@ fn paid_legs(
                 draws = draws.saturating_add(1);
             }
             PaidKind::Hold => {
+                // Doc 48e (exchange G2): a sale whose Consume landed, or whose cutoff passed,
+                // offers no more; it settles on the receipt or refunds at the window.
+                if q.drawn_at.is_some() || lot.draw_by.is_some_and(|by| now > by) {
+                    continue;
+                }
                 let settled = match state_of(contract) {
                     Some(ContractState::Active | ContractState::ReadyToSettle) => false,
                     Some(ContractState::Settled { .. }) => true,
@@ -915,6 +920,16 @@ impl ActionProvider for MarketLotProvider {
                 if moved.commodity() != &commodity || moved.quantity() != quantity {
                     return Err(error(ActionErrorCode::ProviderRejected, LOT_REFUSED));
                 }
+                // Doc 48e (exchange G2): the durable receipt the sale settles on.
+                self.consume_receipt(
+                    txn,
+                    entry,
+                    (contract, listing),
+                    (source, destination),
+                    (&commodity, quantity),
+                    invocation.actor(),
+                    now.at,
+                )?;
                 data.insert("endpoint".to_owned(), json!(destination.vault().0));
                 data.insert("source".to_owned(), json!(source.vault().0));
                 data.insert("lot".to_owned(), json!(lot.0));
@@ -1031,6 +1046,16 @@ impl ActionProvider for MarketLotProvider {
                         },
                     )
                     .map_err(|source| refuse(&source))?;
+                // Doc 48e (exchange G2): the durable receipt the sale settles on.
+                self.consume_receipt(
+                    txn,
+                    entry,
+                    (contract, listing),
+                    (source, destination),
+                    (&commodity, quantity),
+                    invocation.actor(),
+                    now.at,
+                )?;
                 data.insert("endpoint".to_owned(), json!(destination.vault().0));
                 data.insert("source".to_owned(), json!(source.vault().0));
                 data.insert("lot".to_owned(), json!(settled.buyer.id().0));
@@ -1096,12 +1121,55 @@ impl ActionProvider for MarketLotProvider {
 }
 
 impl MarketLotProvider {
+    /// **A Consume's durable receipt** (doc 48e, exchange G2; 48c #1, 48d C-02): the Draw's
+    /// receipt, written in the bundle that hands the lot over, so the hold-backed sale's
+    /// `market.lot.drawn` fact holds only once the lot moved. One per contract, ever: a second
+    /// is refused, as a Draw's replay is.
+    #[allow(clippy::too_many_arguments)]
+    fn consume_receipt(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        entry: &serde_json::Map<String, Value>,
+        (contract, listing): (ContractId, ListingId),
+        (source, destination): (EndpointRef, EndpointRef),
+        (commodity, quantity): (&CanonicalId, u64),
+        actor: mush_core::ObjId,
+        at_ic: i64,
+    ) -> Result<(), ActionError> {
+        let quote = entry
+            .get("quote")
+            .and_then(Value::as_u64)
+            .map(QuoteId)
+            .ok_or_else(rejected)?;
+        if txn
+            .get(&self.draws, &contract)
+            .map_err(|_| rejected())?
+            .is_some()
+        {
+            return Err(rejected());
+        }
+        let receipt = DrawReceipt {
+            contract,
+            quote,
+            listing,
+            source: source.vault(),
+            destination: destination.vault(),
+            commodity: smol_str::SmolStr::new(commodity.as_str()),
+            quantity,
+            actor,
+            at_ic,
+        };
+        txn.insert(&self.draws, &contract, receipt)
+            .map_err(|_| rejected())
+    }
+
     /// **The capacity backstop** (doc 18 cut IC7; doc 48 §4.3 for an exact lot's Consume):
     /// the plan a paid entry carries, resolved where a World existed, asked again inside the
     /// bundle that moves the matter. A `null` plan is an ungoverned endpoint. The
-    /// destination's holding of a good is its pool, and for an indivisible good (a part,
-    /// which never pools) its lots too: [`held_balance`]'s reading, which the accept's
-    /// pre-check weighs. Every refusal is the pinned `LOT_REFUSED` line.
+    /// destination's holding of a good is its pool and its lots: [`held_balance`]'s reading,
+    /// which the accept's pre-check weighs. Doc 48e (48c #6, 48d C-03): a divisible good's lots
+    /// count too, or an exact lot bought off a personal ask, or one crystallized from a pool,
+    /// would weigh nothing. Every refusal is the pinned `LOT_REFUSED` line.
     fn room_for(
         &self,
         txn: &mut ActionTxn<'_>,
@@ -1128,9 +1196,6 @@ impl MarketLotProvider {
                 Ok(None) => 0,
                 Err(_) => return Err(CapacityReadError),
             };
-            if !families.is_indivisible(c) {
-                return Ok(pooled);
-            }
             families
                 .lot_quantity(txn, destination, c)
                 .map(|held| pooled.saturating_add(held))
@@ -1763,9 +1828,9 @@ pub(crate) fn pool_balance(
     }
 }
 
-/// **What an endpoint holds of a good, for its room** (doc 39 cut IN.2): the pool's balance,
-/// and for an indivisible good (a part, which never pools) the units held in lots too — the
-/// reading the composition's capacity rule weighs. Refused as [`pool_balance`] is.
+/// **What an endpoint holds of a good, for its room** (doc 39 cut IN.2): the pool's balance and
+/// the units held in lots there — the reading the composition's capacity rule weighs. Doc 48e
+/// (48c #6, 48d C-03): every good's lots, a divisible good's too. Refused as [`pool_balance`] is.
 pub(crate) fn held_balance(
     ctx: &mush_core::Ctx<'_>,
     endpoint: EndpointRef,
@@ -1773,9 +1838,6 @@ pub(crate) fn held_balance(
 ) -> Result<u64, ()> {
     let pooled = pool_balance(ctx, endpoint, commodity)?;
     let families = crate::module::lot_supply(ctx.w).ok_or(())?;
-    if !families.is_indivisible(commodity) {
-        return Ok(pooled);
-    }
     let key = mush_inventory::pool_key(endpoint, commodity).map_err(|_| ())?;
     match ctx.action_state(&families.lot_tally, &key) {
         Ok(held) => Ok(pooled.saturating_add(held.copied().unwrap_or(0))),
@@ -1844,6 +1906,32 @@ pub fn lapsed_holds(w: &mush_core::World, limit: usize) -> Vec<LapsedHold> {
     lapsed_holds_where(w, limit, |_| true)
 }
 
+/// **Whether a lapsed hold-backed listing's sale is still in force** (doc 48e, exchange G2): a
+/// sale activated on it, its contract not terminal and its receipt not yet mirrored. Its hold is
+/// the Consume's to take, so nobody releases it from under the sale; a sale that refunds, or
+/// whose lot moved, frees it.
+#[must_use]
+pub fn sale_in_force(w: &mush_core::World, listing: ListingId) -> bool {
+    let (Some(store), Some(economy)) = (
+        w.module_state::<crate::store::MarketStore>(),
+        w.module_state::<mush_economy::EconomyStore>(),
+    ) else {
+        return false;
+    };
+    store.quotes.values().any(|q| {
+        q.listing == listing
+            && q.activated
+            && q.drawn_at.is_none()
+            && q.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Hold)
+            && q.contract.is_some_and(|c| {
+                economy
+                    .snapshot()
+                    .contract(c)
+                    .is_some_and(|c| !c.state.is_terminal())
+            })
+    })
+}
+
 /// [`lapsed_holds`], keeping only the entries `keep` accepts, **filtered before the
 /// limit is taken** — so a releaser that skips some listings (an org-owned vault, a
 /// holder it has just been refused for) is never starved by a window full of them.
@@ -1861,6 +1949,8 @@ pub fn lapsed_holds_where(
     store
         .lot_listings()
         .filter(|l| crate::projection::lapsed(l.expires.at, l.expires.clock, now))
+        // Doc 48e (exchange G2): a hold under a sale in force is the sale's.
+        .filter(|l| !sale_in_force(w, l.id))
         .filter_map(|l| {
             let (endpoint, commodity, grade) = l.source.lot()?;
             Some(LapsedHold {
@@ -1931,6 +2021,12 @@ pub fn release_lapsed_hold(
     if !crate::projection::lapsed(listing.expires.at, listing.expires.clock, ctx.w.now()) {
         return Err(crate::api::MarketError::bad(
             "That listing has not lapsed; withdraw it to give its stock back.",
+        ));
+    }
+    // Doc 48e (exchange G2): a hold under a sale still in force is the sale's to take.
+    if sale_in_force(ctx.w, id) {
+        return Err(crate::api::MarketError::bad(
+            "That listing's stock is sold and on its way; there is nothing to release.",
         ));
     }
     let leg = LotLeg {

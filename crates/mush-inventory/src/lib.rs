@@ -90,8 +90,8 @@ pub use pool::{
     reservation_deadline_after, reservation_id_from_text, reservation_id_text, tranche_key,
 };
 pub use provider::{
-    InventoryVerb, MAX_ENDPOINT_CHOICES, PoolCapacity, PoolReadFailed, action_ref, endpoint_status,
-    endpoint_visible, endpoints_truncated, live_endpoints, may_take,
+    InventoryVerb, MAX_ENDPOINT_CHOICES, MovePolicy, PoolCapacity, PoolReadFailed, action_ref,
+    endpoint_status, endpoint_visible, endpoints_truncated, live_endpoints, may_take,
 };
 pub use record::{
     AppliedMarker, EndpointRef, FACT_LOT_CREATED, FACT_SALVAGE_RECOVERED, FACT_TRANSFERRED, Grade,

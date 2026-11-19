@@ -378,6 +378,8 @@ impl InventoryCapacityExt for mush_inventory::InventoryModule {
         if on {
             self.with_pool_capacity(Arc::new(crate::port::market::PortCapacity))
                 .with_indivisible_goods(Arc::new(crate::port_tick::PartGoods))
+                // Doc 48e (exchange G7): a player's `@inv/move` is the ports' to judge.
+                .with_move_policy(Arc::new(crate::port::market::PortMovePolicy))
         } else {
             self
         }

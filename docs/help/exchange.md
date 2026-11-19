@@ -23,8 +23,11 @@ you cannot also use it or list it twice. A listing stands for 14 days unless
 you name `days=`, and up to 90.
 
 A buyer quotes it with `+market/quote`, and takes it up with `+market/accept`
-into a vault of their own. Their payment is held first, the lot itself moves to
-them, and you are paid once the deal settles. You do not need to be there.
+into a vault of their own. A lot is sold whole: a quote names all of it, and
+`+market/quote <listing>` with no quantity does. The buyer's payment is held
+first, the lot itself moves to them, and you are paid once it has moved. If it
+never moves, the buyer's money comes back within the hour and the lot stays
+yours. You do not need to be there.
 
 ## Listing a hull
 
@@ -106,6 +109,12 @@ With no hull of yours docked there, it goes into your locker at that market.
 owes. A locker holds 20 t and 40 m3, and costs 1 cr an IC day for each tonne
 it holds, taken from your own account. A day you cannot pay is owed as arrears,
 and paid once your account is funded.
+
+`@inv/move <vault>/<good>:<n>=<vault>` moves goods between your own stores
+where you stand in a port: the hold of a hull of yours docked there, and your
+locker there. The goods must fit where they go. Cargo in a chartered hold stays
+aboard, since it is sold from there and the Co-op's share is paid on it. A hull
+you have listed for sale takes nothing more into her hold.
 
 A market that belongs to no port, such as a counter, trades only with people
 standing at it.

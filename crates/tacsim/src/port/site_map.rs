@@ -152,6 +152,12 @@ pub(crate) trait SurfaceReads {
     fn cursor(&self, deposit: mush_industry::OreDepositId) -> Result<Option<PocketCursor>, String>;
     /// One pool's balance.
     fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError>;
+    /// **What an endpoint holds of a good** (doc 48e; 48c #6): its pool and its lots, every
+    /// good's ([`crate::port_tick::read_held`]): the reading for a hull's mass and room. A reader
+    /// without lots answers its pool.
+    fn held(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
+        self.pool(endpoint, good)
+    }
     /// **One pool's availability** (doc 20 cut SM.11, the reviewer's R1): its balance less every
     /// live hold — [`crate::port_tick::read_available`]'s rule (absent is 0; a scalar without its
     /// book, or a book without its scalar, is `Corrupt`; a refusal is never 0).
@@ -484,6 +490,10 @@ impl SurfaceReads for Ctx<'_> {
         crate::port_tick::read_pool(self, endpoint, good)
     }
 
+    fn held(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
+        crate::port_tick::read_held(self, endpoint, good)
+    }
+
     fn available(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
         crate::port_tick::read_available(self, endpoint, good)
     }
@@ -600,6 +610,10 @@ impl SurfaceReads for HookReadContext<'_> {
 
     fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
         crate::port_tick::read_pool_in(self, endpoint, good)
+    }
+
+    fn held(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
+        crate::port_tick::read_held_in(self, endpoint, good)
     }
 
     fn available(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {

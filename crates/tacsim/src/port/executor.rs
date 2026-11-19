@@ -2441,10 +2441,21 @@ pub(crate) fn order_step(
             match called {
                 Ok(Ok((quote, contract))) => {
                     let mut doc = *pre;
+                    // Doc 48e (exchange G2; 48d M-05): a hold-backed buy's leg is its Consume,
+                    // completed and re-staged as a Draw is (the quote's receipt mirror).
+                    let op = ctx
+                        .w
+                        .module_state::<mush_market::MarketStore>()
+                        .and_then(|m| m.quote(quote))
+                        .and_then(|q| q.lot.as_ref())
+                        .map_or("draw", |l| match l.kind {
+                            mush_market::PaidKind::Hold => "consume",
+                            _ => "draw",
+                        });
                     if let Some(record) = doc.inflight.as_mut() {
                         record.refs.quote = Some(quote.0);
                         record.refs.contract = Some(contract.0);
-                        record.key = format!("market.lot.draw.{:x}", contract.0);
+                        record.key = format!("market.lot.{op}.{:x}", contract.0);
                     }
                     commit(ctx, Outcome::new(doc), Step::Submitted)
                 }

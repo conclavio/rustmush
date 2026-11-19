@@ -2634,6 +2634,59 @@ pub fn read_pool(
         .map(|held| pooled.saturating_add(held))
 }
 
+/// **What an endpoint holds of a good** (doc 48e; 48c #6, 48d C-03): its pool's balance and the
+/// units held in lots there, for **every** good. [`read_pool`] counts a divisible good's pool
+/// alone, as trading must (a storefront lists, and a sale draws, only what is pooled); this is
+/// the reading for what the endpoint *holds*: its room, its rent, its mass and whether it is empty.
+/// A divisible good's lots (an exact lot bought off a personal ask, one crystallized from a pool)
+/// weigh, take room and pay rent like the same units pooled.
+///
+/// # Errors
+///
+/// [`PoolReadError`], as [`read_pool`]'s.
+pub fn read_held(
+    ctx: &Ctx<'_>,
+    endpoint: mush_inventory::record::EndpointRef,
+    commodity: &CanonicalId,
+) -> Result<u64, PoolReadError> {
+    let Some(inventory) = ctx
+        .w
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+    else {
+        return Err(PoolReadError::Unwired);
+    };
+    let key = mush_inventory::pool_key(endpoint, commodity)
+        .map_err(|error| PoolReadError::Key(error.to_string()))?;
+    let pooled = pool_value(ctx.action_state(&inventory.pools, &key))?;
+    tally_value(ctx.action_state(&inventory.lot_tally, &key))
+        .map(|held| pooled.saturating_add(held))
+}
+
+/// [`read_held`] from a hook ([`read_pool_in`]'s rule).
+///
+/// # Errors
+///
+/// [`PoolReadError`], as [`read_pool_in`]'s.
+pub fn read_held_in(
+    hook: &mush_core::HookReadContext<'_>,
+    endpoint: mush_inventory::record::EndpointRef,
+    commodity: &CanonicalId,
+) -> Result<u64, PoolReadError> {
+    let Some(inventory) = hook
+        .world()
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+    else {
+        return Err(PoolReadError::Unwired);
+    };
+    let key = mush_inventory::pool_key(endpoint, commodity)
+        .map_err(|error| PoolReadError::Key(error.to_string()))?;
+    let pooled = pool_value(hook.action_state(&inventory.pools, &key))?;
+    tally_value(hook.action_state(&inventory.lot_tally, &key))
+        .map(|held| pooled.saturating_add(held))
+}
+
 /// **The parts are indivisible** (doc 39 cut IN.2, Q-39-27): the inventory's split, merge and
 /// dissolve refuse a `class: part` good, answered through [`is_part`].
 #[derive(Debug)]
