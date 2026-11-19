@@ -1785,7 +1785,7 @@ fn sale_net(
     let cuts: i64 = proceeds.cuts.iter().map(|cut| cut.amount.minor()).sum();
     // Doc 48e (exchange G4): a person's bid also pays the venue's cut and levy.
     let fees: i64 = if listing.is_personal() {
-        mush_market::fees::sale_fee_rows(w, &venue, Amount::from_minor(gross))
+        mush_market::fees::bid_fee_rows(w, listing, Amount::from_minor(gross))
             .iter()
             .map(|(_, a)| a.minor())
             .sum()

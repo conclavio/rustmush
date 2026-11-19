@@ -2809,7 +2809,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
     // Doc 48e (exchange G4; Q-48-8): a sale into a person's bid pays the venue's cut and levy,
     // as a sale off a person's ask does; a house's bid pays neither.
     let fee_rows = match bidder {
-        BidBuyer::Personal => crate::fees::sale_fee_rows(ctx.w, &listing.market, gross),
+        BidBuyer::Personal => crate::fees::bid_fee_rows(ctx.w, &listing, gross),
         BidBuyer::House(_) => Vec::new(),
     };
     let Some(payouts) =

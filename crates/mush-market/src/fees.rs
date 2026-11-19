@@ -231,6 +231,23 @@ pub fn sale_payouts(
     Some(out)
 }
 
+/// **The venue's rows on a sale into a person's bid** (doc 48e, exchange G4): its cut and levy
+/// ([`sale_fee_rows`]), none when the bidder bids as the venue's own house
+/// ([`VenueFees::house_lists`], TacSim's buy-back desk), as a house's listings pay none.
+#[must_use]
+pub fn bid_fee_rows(
+    w: &World,
+    listing: &crate::Listing,
+    gross: Amount,
+) -> Vec<(AccountId, Amount)> {
+    let house = crate::module::venue_fees(w)
+        .is_some_and(|seam| seam.house_lists(w, &listing.market, &listing.seller));
+    if house {
+        return Vec::new();
+    }
+    sale_fee_rows(w, &listing.market, gross)
+}
+
 /// **The payouts of a sale into a bid** (doc 48e, exchange G4 and G26): the seller's account
 /// `gross` less every other row (when that is more than nothing), then `fees` (the venue's cut
 /// and levy, on a person's bid only) and the proceeds policy's `cuts`, each an exact payout.

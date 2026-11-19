@@ -1074,7 +1074,7 @@ impl mush_economy::StandingAcceptance for ListingAcceptance {
             // Doc 48e (exchange G26; 48d M-07): every outcome pays exactly what the market
             // builds for a sale into a person's bid: the seller the rest, then the venue's cut
             // and levy and the quote's frozen proceeds cuts.
-            let fee_rows = crate::fees::sale_fee_rows(w, &listing.market, total);
+            let fee_rows = crate::fees::bid_fee_rows(w, listing, total);
             let outcomes = &contract.consent.terms.outcomes;
             let pays_as_built = !outcomes.is_empty()
                 && outcomes.iter().all(|o| {
