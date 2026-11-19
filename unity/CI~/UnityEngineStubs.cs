@@ -448,10 +448,20 @@ namespace UnityEngine
         }
         public static void DestroyImmediate(Object obj, bool allowDestroyingAssets = false)
         {
-            if (obj is GameObject go && go.transform != null)
-                go.transform.SetParent(null);
+            if (obj is GameObject go)
+            {
+                var cams = go.GetComponentsInChildren<Camera>(includeInactive: true);
+                for (int i = 0; i < cams.Length; i++)
+                    Camera.Unregister(cams[i]);
+                if (go.transform != null)
+                    go.transform.SetParent(null);
+            }
             else if (obj is Component comp && comp.gameObject != null)
+            {
+                if (comp is Camera cam)
+                    Camera.Unregister(cam);
                 comp.gameObject.RemoveComponentInternal(comp);
+            }
         }
         public static void DontDestroyOnLoad(Object target) { }
         public static T Instantiate<T>(T original) where T : Object => original;
@@ -607,7 +617,19 @@ namespace UnityEngine
         private readonly List<Component> _components = new List<Component>();
         public Transform transform { get; private set; }
         public bool activeSelf { get; private set; } = true;
-        public bool activeInHierarchy => activeSelf;
+        public bool activeInHierarchy
+        {
+            get
+            {
+                if (!activeSelf) return false;
+                for (var p = transform?.parent; p != null; p = p.parent)
+                {
+                    if (p.gameObject != null && !p.gameObject.activeSelf)
+                        return false;
+                }
+                return true;
+            }
+        }
         public int layer { get; set; }
         public string tag { get; set; } = "Untagged";
 
@@ -661,6 +683,8 @@ namespace UnityEngine
             inst.gameObject = this;
             inst.name = name;
             _components.Add(inst);
+            if (inst is Camera cam)
+                Camera.Register(cam);
             return inst;
         }
 
@@ -669,7 +693,11 @@ namespace UnityEngine
         internal void RemoveComponentInternal(Component comp)
         {
             if (comp != null && comp != transform)
+            {
+                if (comp is Camera cam)
+                    Camera.Unregister(cam);
                 _components.Remove(comp);
+            }
         }
 
         public T GetComponent<T>()
@@ -873,7 +901,36 @@ namespace UnityEngine
 
     public class Camera : Behaviour
     {
-        public static Camera main { get; set; }
+        private static readonly List<Camera> RegisteredCameras = new List<Camera>();
+
+        internal static void Register(Camera cam)
+        {
+            if (cam != null && !RegisteredCameras.Contains(cam))
+                RegisteredCameras.Add(cam);
+        }
+
+        internal static void Unregister(Camera cam)
+        {
+            if (cam != null)
+                RegisteredCameras.Remove(cam);
+        }
+
+        public static Camera main
+        {
+            get
+            {
+                for (int i = 0; i < RegisteredCameras.Count; i++)
+                {
+                    var c = RegisteredCameras[i];
+                    if (c != null && c.enabled && c.gameObject != null &&
+                        c.gameObject.activeInHierarchy && c.gameObject.tag == "MainCamera")
+                    {
+                        return c;
+                    }
+                }
+                return null;
+            }
+        }
         public float fieldOfView { get; set; } = 60f;
         public float nearClipPlane { get; set; } = 0.1f;
         public float farClipPlane { get; set; } = 2000f;

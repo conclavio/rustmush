@@ -2920,6 +2920,9 @@ namespace TacSim.Tests
             var isFocusedProp = typeof(UnityEngine.UI.InputField).GetProperty("isFocused");
             Assert.IsNotNull(isFocusedProp);
             Assert.IsNull(isFocusedProp.GetSetMethod(nonPublic: false), "InputField.isFocused must not expose a public setter");
+            var camMainProp = typeof(UnityEngine.Camera).GetProperty("main");
+            Assert.IsNotNull(camMainProp);
+            Assert.IsNull(camMainProp.GetSetMethod(nonPublic: false), "Camera.main must be get-only matching real Unity");
             Assert.IsNotNull(typeof(UnityEngine.UI.InputField).GetMethod("ActivateInputField"));
             Assert.IsNotNull(typeof(UnityEngine.UI.InputField).GetMethod("DeactivateInputField"));
             Assert.IsNotNull(typeof(UnityEngine.UI.InputField).GetMethod("SetTextWithoutNotify"));
@@ -3150,13 +3153,24 @@ namespace TacSim.Tests
         [Test]
         public void PR693_WorldBillboard_CameraFacingOffsetNeverCrossesRoomWallBounds()
         {
-            var prevMainCam = UnityEngine.Camera.main;
+            var disabledPriorMainCams = new List<UnityEngine.Camera>();
             var rootGo = new UnityEngine.GameObject("PR693BillboardBoundsTest");
             try
             {
+                // Disable any pre-existing MainCamera in the scene so our tagged test camera resolves as Camera.main
+                // (Camera.main is get-only in real Unity 6000.6.7f1).
+                while (UnityEngine.Camera.main != null)
+                {
+                    var existing = UnityEngine.Camera.main;
+                    existing.enabled = false;
+                    disabledPriorMainCams.Add(existing);
+                }
+
                 var camGo = new UnityEngine.GameObject("OutsideCam", typeof(UnityEngine.Camera));
+                camGo.tag = "MainCamera";
                 camGo.transform.SetParent(rootGo.transform, false);
-                UnityEngine.Camera.main = camGo.GetComponent<UnityEngine.Camera>();
+                var testCam = camGo.GetComponent<UnityEngine.Camera>();
+                Assert.AreSame(testCam, UnityEngine.Camera.main, "Active MainCamera-tagged test camera must resolve as Camera.main");
 
                 var actorGo = new UnityEngine.GameObject("CornerActor");
                 actorGo.transform.SetParent(rootGo.transform, false);
@@ -3191,8 +3205,12 @@ namespace TacSim.Tests
             }
             finally
             {
-                UnityEngine.Camera.main = prevMainCam;
                 UnityEngine.Object.DestroyImmediate(rootGo);
+                for (int i = 0; i < disabledPriorMainCams.Count; i++)
+                {
+                    if (disabledPriorMainCams[i] != null)
+                        disabledPriorMainCams[i].enabled = true;
+                }
             }
         }
 
@@ -3313,6 +3331,17 @@ namespace TacSim.Tests
                 ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":11,""ts"":2,""t"":""panel"",""d"":{""feed"":""space.docking"",""kind"":""keyframe"",""data"":{""closed"":true,""refused"":true,""outcome"":""clamped""}}}"));
                 ws.PumpMainThread();
                 Assert.IsTrue(sawClosedLast, "Terminal closed space.docking frame must not be overwritten by earlier queued open frame");
+            }
+
+            // Item 8B-delta: A reliable panel delta invalidation must not discard an earlier queued telemetry keyframe for the same feed
+            using (var ws = new MushWsClient())
+            {
+                int yawSeen = -1;
+                ws.OnPanelUpdated += (feed, data) => { if (feed == "space.cockpit") yawSeen = data.Int("yaw_deg", -1); };
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":10,""ts"":1,""t"":""panel"",""d"":{""feed"":""space.cockpit"",""kind"":""keyframe"",""data"":{""yaw_deg"":77}}}"));
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":11,""ts"":2,""t"":""panel"",""d"":{""feed"":""space.cockpit"",""kind"":""delta"",""data"":{}}}"));
+                ws.PumpMainThread();
+                Assert.AreEqual(77, yawSeen, "Panel delta must not drop earlier queued keyframe for the same feed");
             }
 
             // Item 8C: Genuine reliable queue overflow (> 2,048 reliable events) MUST NOT evict oldest events or advance _lastSeq past omitted events!

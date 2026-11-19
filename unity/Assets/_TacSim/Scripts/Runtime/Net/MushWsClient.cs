@@ -907,8 +907,10 @@ namespace TacSim.Net
                     return true;
                 }
 
-                // Preserve causal ordering when a reliable terminal/delta/reset event supersedes queued telemetry.
-                if (env.EventType == "panel" && env.Data != null && env.Data.IsObject)
+                // Preserve causal ordering when a reliable terminal keyframe or reset event supersedes queued telemetry,
+                // without letting a delta invalidation drop an earlier queued keyframe for the same feed.
+                if (env.EventType == "panel" && env.Data != null && env.Data.IsObject &&
+                    env.Data.Str("kind", "keyframe") != "delta")
                 {
                     string feed = env.Data.Str("feed", string.Empty);
                     if (!string.IsNullOrEmpty(feed))
