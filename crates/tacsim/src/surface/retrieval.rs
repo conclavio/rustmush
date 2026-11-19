@@ -825,8 +825,9 @@ fn to_house(ctx: &mut Ctx<'_>, order: &RetrievalOrder) {
     }
 }
 
-/// A player's acceptance lapsed: the contract cancelled, a fresh one posted for Tycho with one
-/// window's deadline, and Tycho's acceptance on the same tick.
+/// A player's acceptance lapsed: the contract lapses (its bond, if any, forfeit to the poster,
+/// Q-48-13; 48e services:G26), a fresh one is posted for Tycho with one window's deadline, and
+/// Tycho accepts it on the same tick.
 fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
     let Some(house) = house(ctx.w) else {
         return;
@@ -834,11 +835,11 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
     let Some(account) = house.account else {
         return;
     };
-    match mush_economy::cancel_retrieval(ctx, ContractId(order.contract)) {
+    match mush_economy::lapse_job(ctx, ContractId(order.contract)) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            tracing::warn!(hull = order.hull.0, %error, "tacsim: a lapsed retrieval could not be canceled; the next tick tries again");
+            tracing::warn!(hull = order.hull.0, %error, "tacsim: a lapsed retrieval could not be ended; the next tick tries again");
             return;
         }
     }

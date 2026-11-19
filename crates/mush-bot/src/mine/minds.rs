@@ -926,6 +926,10 @@ pub mod escort {
     pub const TOLD_KEPT: &str = "of the journey. The fee follows.";
     /// `tacsim::services::escort::TOLD_FAILED`.
     pub const TOLD_FAILED: &str = "has failed, and its fee is not paid:";
+    /// `tacsim::services::escort::TOLD_UNSTARTED`.
+    pub const TOLD_UNSTARTED: &str = "is called off: her journey never began within";
+    /// `tacsim::services::escort::NO_FIELD`.
+    pub const NO_FIELD: &str = "; a sortie escort names a field site.";
     /// `tacsim::services::escort::WHY_WRECKED`.
     pub const WHY_WRECKED: &str = "she was wrecked";
     /// `tacsim::services::escort::WHY_CAPTURED`.
@@ -1413,6 +1417,8 @@ mod tests {
             TOLD_STARTED,
             TOLD_KEPT,
             TOLD_FAILED,
+            TOLD_UNSTARTED,
+            NO_FIELD,
             WHY_WRECKED,
             WHY_CAPTURED,
             WHY_LEFT,

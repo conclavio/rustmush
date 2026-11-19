@@ -120,6 +120,11 @@ pub struct HaulerRow {
     /// Why it waits, for staff: what its last look found (at most [`MAX_NOTE`] bytes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// **The house lost this mark's hull** (48e services:G18, G19): its title passed to
+    /// another, or it was wrecked or is gone. The row keeps its history and sails nothing again;
+    /// the mark is neither re-adopted nor seeded afresh.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lost: bool,
 }
 
 /// The longest wait note a row keeps, bytes.
@@ -999,6 +1004,66 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// **Whether the helm's plan has ended**: `Some(false)` finished, `Some(true)` held, `None` still
+/// running. A held plan with a step still in flight has not ended (48e services:G20): its
+/// landing step is outstanding, and a plan written over it would orphan that leg.
+fn plan_end(doc: &Orders) -> Option<bool> {
+    if doc.inflight.is_some() {
+        return None;
+    }
+    if doc.state == crate::port::orders::PlanState::Held {
+        return Some(true);
+    }
+    doc.cursor.is_none().then_some(false)
+}
+
+/// **Why the house no longer has `hull` to sail**, if it does not (48e services:G18, G19): it is
+/// gone, wrecked, or titled to anyone but the house.
+fn lost_why(w: &World, hull: ObjId, org: OrgId) -> Option<&'static str> {
+    if w.get(hull)
+        .is_none_or(|o| o.flags.contains(mush_core::Flags::GOING))
+    {
+        return Some("hull lost: gone");
+    }
+    if crate::services::escort::wrecked(w, hull) {
+        return Some("hull lost: wrecked");
+    }
+    if crate::port::house_sweep::title_of(w, hull) != Some(PrincipalId::Organization(org)) {
+        return Some("hull lost: its title is not the house's");
+    }
+    None
+}
+
+/// **The house loses a row's hull**: the trip dropped, every credit in the purse sent home, the
+/// hull let go, and the row marked lost for staff.
+fn lose(
+    ctx: &mut Ctx<'_>,
+    hauler: &HaulerDef,
+    row: &mut HaulerRow,
+    (purse, house_account): (AccountId, AccountId),
+    why: &str,
+) {
+    let all = available(ctx.w, purse);
+    if !pay(
+        ctx,
+        format!("{}/lost", row.mark),
+        (purse, house_account),
+        all,
+        format!(
+            "{} hauler {} lost; its purse goes home",
+            hauler.org, row.mark
+        ),
+    ) {
+        // The purse did not move: try again at the next fire.
+        return;
+    }
+    tracing::warn!(mark = %row.mark, why, "tacsim: a hauling house lost a hull");
+    row.trip = None;
+    row.hull = None;
+    row.lost = true;
+    row.note = Some(why.to_owned());
+}
+
 /// **One hull's step.**
 #[allow(clippy::too_many_lines)] // one hull's life, in order
 fn step(
@@ -1008,6 +1073,10 @@ fn step(
     (org, root, house_account): (OrgId, mush_org::OrgScopeId, AccountId),
     row: &mut HaulerRow,
 ) {
+    // A lost hull's row sails nothing again (48e services:G18, G19).
+    if row.lost {
+        return;
+    }
     // 1. The hull: seeded for the house, then found by its mark once laid up.
     let Some(hull) = row.hull.map(ObjId) else {
         if let Some(found) = crate::port::owned::rows(ctx.w)
@@ -1070,6 +1139,12 @@ fn step(
         }
         return;
     };
+    // The hull is still the house's to sail (48e services:G18, G19): titled to the house, and
+    // neither wrecked nor gone. One lost drops its trip and sends the purse home.
+    if let Some(why) = lost_why(ctx.w, hull, org) {
+        lose(ctx, hauler, row, (purse, house_account), why);
+        return;
+    }
     // 3. Under way: the house's mind holds her helm.
     let berth = crate::port::ship::berth_of(ctx.w, hull);
     if matches!(berth, Berth::UnderWay) {
@@ -1093,11 +1168,9 @@ fn step(
     if let Some(doc) = &state
         && doc.author == helm
     {
-        let finished = doc.cursor.is_none() && doc.inflight.is_none();
-        let held = doc.state == crate::port::orders::PlanState::Held;
-        if !finished && !held {
+        let Some(held) = plan_end(doc) else {
             return;
-        }
+        };
         if let Some(trip) = row.trip.take() {
             row.trips = row.trips.saturating_add(1);
             if held {
@@ -1268,5 +1341,44 @@ mod tests {
         assert!(wire["rows"][0].get("helm").is_none());
         let back: HaulerHouse = serde_json::from_value(wire).unwrap();
         assert_eq!(back, house);
+    }
+
+    /// **48e services:G20**: a held plan with a step in flight has not ended; held with none
+    /// has, and so has a running plan with nothing left.
+    #[test]
+    fn a_held_plan_with_a_step_in_flight_has_not_ended() {
+        use crate::port::orders::{Inflight, InflightRefs, PlanState};
+        let mut doc = Orders {
+            schema: crate::port::orders::ORDERS_SCHEMA,
+            hull: ObjId(7),
+            author: ObjId(8),
+            rev: 1,
+            state: PlanState::Held,
+            hold: None,
+            cursor: Some(1),
+            next_id: 2,
+            inflight: Some(Inflight {
+                order: 1,
+                attempt: 1,
+                key: "burn".to_owned(),
+                refs: InflightRefs::default(),
+                staged_utc: 0,
+                issued_ic: 0,
+                restaged: 0,
+                want: 1,
+                qty: 1,
+                bounds: Vec::new(),
+                line: None,
+            }),
+            orders: Vec::new(),
+            log: Vec::new(),
+        };
+        assert_eq!(plan_end(&doc), None, "held, its leg still in flight");
+        doc.inflight = None;
+        assert_eq!(plan_end(&doc), Some(true), "held, nothing in flight");
+        doc.state = PlanState::Running;
+        assert_eq!(plan_end(&doc), None, "running, an order left");
+        doc.cursor = None;
+        assert_eq!(plan_end(&doc), Some(false), "finished");
     }
 }
