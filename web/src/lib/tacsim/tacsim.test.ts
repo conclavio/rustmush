@@ -33,6 +33,13 @@ import {
   resolvePendingQuoteFromFeed,
   TACSIM_CONTENT_FEED,
 } from "./trade";
+import {
+  decodeSpaceFireFeed,
+  formatHeldLockSummary,
+  formatMountAtLockEffect,
+  formatMountMeta,
+  formatMountStateLabel,
+} from "./space-fire";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 
@@ -332,10 +339,111 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
     await tick();
 
     expect(app.tacsim.seatedAtBridgeHelm).toBe(true);
+
+    // Deliver a Doc 49 CC.9 `space.cockpit` frame while seated at Bridge Helm
+    socket.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.cockpit",
+          kind: "keyframe",
+          data: {
+            active: true,
+            yaw_deg: 20,
+            thrust_permille: 500,
+            emcon: "ACTIVE",
+            fire: {
+              mounts: [
+                {
+                  id: "laser_dorsal",
+                  family: "laser",
+                  ready_in_ms: 0,
+                  state: "ready",
+                  mode: "offence",
+                  damage: 98,
+                },
+                {
+                  id: "rail_spinal",
+                  family: "spinal",
+                  ready_in_ms: 2400,
+                  state: "cycling",
+                  rounds: 31,
+                  rounds_max: 32,
+                  flight_ms: 2200,
+                },
+              ],
+              lock_id: "raider.7.1",
+              lock: {
+                id: "raider.7.1",
+                label: "Belt Raider",
+                range_m: 42_000,
+                facet: "top",
+              },
+            },
+          },
+        },
+      } as OutputEvent,
+      4,
+    );
+    await tick();
+
+    expect(screen.getByText(/Strike Band: Top/)).toBeTruthy();
+    expect(screen.getByText("98 dmg")).toBeTruthy();
+    expect(screen.getByText("Spinal · 31/32")).toBeTruthy();
+    expect(screen.getByText("Cycling 2.4s")).toBeTruthy();
+
+    const laserDefBtn = screen.getByRole("button", { name: "Laser Defense" });
+    await fireEvent.click(laserDefBtn);
+    expect(socket.sent.some((raw) => raw.includes("+tac/pdc point"))).toBe(true);
+
     const standBtns = screen.getAllByRole("button", { name: "Stand From Helm" });
     expect(standBtns.length).toBeGreaterThanOrEqual(1);
     await fireEvent.click(standBtns[0]!);
     await tick();
     expect(app.tacsim.seatedAtBridgeHelm).toBe(false);
+  });
+
+  it("decodes all four Doc 49 CC.9 space mount families, persistent magazines, and 5-band hull aspect", () => {
+    const snap = decodeSpaceFireFeed({
+      emcon: "SILENT",
+      thrust_permille: 350,
+      mining: {
+        matched_rock: "b",
+        approaching_rock: null,
+        active_drones: 2,
+        laser: { rock: "b" },
+      },
+      fire: {
+        mounts: [
+          { id: "laser_1", family: "laser", state: "ready", ready_in_ms: 0, mode: "offence", damage: 112 },
+          { id: "laser_2", family: "laser", state: "ready", ready_in_ms: 0, mode: "defence" },
+          { id: "tube_1", family: "tubes", state: "ready", ready_in_ms: 0, rounds: 3, rounds_max: 4 },
+          { id: "spinal_1", family: "spinal", state: "too_hot", ready_in_ms: 0, rounds: 15, rounds_max: 16, flight_ms: 1800 },
+          { id: "pdc_1", family: "point_defence", state: "ready", ready_in_ms: 0, rounds: 4000 },
+        ],
+        lock_id: "corsair.2",
+        lock: { id: "corsair.2", label: "Red Corsair", range_m: 18_500, facet: "rear" },
+      },
+    });
+
+    expect(snap.mounts).toHaveLength(5);
+    expect(formatMountMeta(snap.mounts[0]!)).toBe("Laser · Offense");
+    expect(formatMountAtLockEffect(snap.mounts[0]!)).toBe("112 dmg");
+    expect(formatMountMeta(snap.mounts[1]!)).toBe("Laser · Defense");
+    expect(formatMountStateLabel(snap.mounts[1]!)).toBe("Defense Screen");
+    expect(formatMountMeta(snap.mounts[2]!)).toBe("Tubes · 3/4");
+    expect(formatMountMeta(snap.mounts[3]!)).toBe("Spinal · 15/16");
+    expect(formatMountStateLabel(snap.mounts[3]!)).toBe("Too Hot");
+    expect(formatMountAtLockEffect(snap.mounts[3]!)).toBe("1.8s flight");
+    expect(formatMountMeta(snap.mounts[4]!)).toBe("Point Defense · 4000 left");
+    expect(formatHeldLockSummary(snap)).toBe(
+      "Lock: Red Corsair (corsair.2) · 18.5 km · Strike Band: Rear",
+    );
+    expect(snap.mining).toEqual({
+      matchedRock: "B",
+      approachingRock: null,
+      activeDrones: 2,
+      laserRock: "B",
+    });
   });
 });

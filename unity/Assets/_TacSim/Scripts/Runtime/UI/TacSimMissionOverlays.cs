@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using TacSim.Arena;
+using TacSim.Space;
 using TacSim.Surface;
 using UnityEngine;
 using UnityEngine.UI;
@@ -26,10 +27,24 @@ namespace TacSim.UI
         private Font _font;
         private SurfaceMiningController _surface;
         private OocArenaController _arena;
+        private SpaceFlightController _space;
+        private bool _seatedAtHelm;
 
-        // Slice 2: Orbital Ops Bar (Mining + Space Tactical)
+        // Slice 2: Orbital Ops Bar (Mining + Space Tactical) & Doc 49 (`CC.9`) Fire-Control Card
         private GameObject _orbitalOpsBar;
         private Text _orbitalTargetLabel;
+        private GameObject _spaceFireCard;
+        private Text _spaceLockSummaryText;
+
+        private sealed class PooledSpaceMountRow
+        {
+            public GameObject Root;
+            public Image Background;
+            public Text Label;
+        }
+
+        private const int MaxPooledSpaceMountRows = 8;
+        private readonly List<PooledSpaceMountRow> _spaceMountRowPool = new List<PooledSpaceMountRow>(MaxPooledSpaceMountRows);
 
         // Slice 3: Surface Rover HUD
         private GameObject _surfaceHudRoot;
@@ -72,6 +87,28 @@ namespace TacSim.UI
         private readonly List<PooledContactRow> _contactRowPool = new List<PooledContactRow>(MaxPooledContactRows);
 
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
+        public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
+        public string SpaceLockSummaryText => _spaceLockSummaryText != null ? _spaceLockSummaryText.text : string.Empty;
+        public int VisibleSpaceMountRowCount
+        {
+            get
+            {
+                int n = 0;
+                for (int i = 0; i < _spaceMountRowPool.Count; i++)
+                {
+                    if (_spaceMountRowPool[i].Root != null && _spaceMountRowPool[i].Root.activeSelf)
+                        n++;
+                }
+                return n;
+            }
+        }
+
+        public string GetSpaceMountRowText(int index)
+        {
+            if (index < 0 || index >= _spaceMountRowPool.Count || _spaceMountRowPool[index].Label == null)
+                return string.Empty;
+            return _spaceMountRowPool[index].Label.text ?? string.Empty;
+        }
 
         public void BuildOverlays(Transform gameplayHudRoot, Font sharedFont)
         {
@@ -82,11 +119,13 @@ namespace TacSim.UI
             _aiFillBtnImages.Clear();
             _modeBtnImages.Clear();
             _contactRowPool.Clear();
+            _spaceMountRowPool.Clear();
 
             if (gameplayHudRoot == null) return;
 
-            // 1. Slice 2 Orbital Mining & Space Tactical Bar (shown when seated at Bridge Helm)
+            // 1. Slice 2 Orbital Mining, Space Tactical Bar & Doc 49 (`CC.9`) Fire-Control Card
             BuildSlice2OrbitalOpsBar(gameplayHudRoot);
+            BuildSpaceFireControlCard(gameplayHudRoot);
 
             // 2. Slice 3 Planetary Surface & Quarry HUD (shown when live rover excursion is active)
             BuildSlice3SurfaceHud(gameplayHudRoot);
@@ -96,33 +135,46 @@ namespace TacSim.UI
             BuildArenaBattleCockpitHud(gameplayHudRoot);
         }
 
-        public void BindControllers(SurfaceMiningController surface, OocArenaController arena)
+        public void BindControllers(
+            SurfaceMiningController surface,
+            OocArenaController arena,
+            SpaceFlightController space = null)
         {
             if (_surface != null) _surface.OnSurfaceTelemetryChanged -= RefreshSurfaceHud;
             if (_arena != null) _arena.OnArenaStateUpdated -= RefreshArenaHud;
+            if (_space != null) _space.OnSpaceTelemetryChanged -= RefreshSpaceFireCard;
 
             _surface = surface;
             _arena = arena;
+            _space = space;
 
             if (_surface != null) _surface.OnSurfaceTelemetryChanged += RefreshSurfaceHud;
             if (_arena != null) _arena.OnArenaStateUpdated += RefreshArenaHud;
+            if (_space != null) _space.OnSpaceTelemetryChanged += RefreshSpaceFireCard;
 
             RefreshLobbySelectionHighlights();
             RefreshSurfaceHud();
             RefreshArenaHud();
+            RefreshSpaceFireCard();
         }
 
         public void SetHelmSeatedVisible(bool seatedAtHelm)
         {
+            _seatedAtHelm = seatedAtHelm;
+            bool showHelm = seatedAtHelm &&
+                            (_surface == null || !_surface.IsExcursionActive) &&
+                            (_arena == null || !_arena.IsArenaActive);
             if (_orbitalOpsBar != null)
-                _orbitalOpsBar.SetActive(seatedAtHelm && (_surface == null || !_surface.IsExcursionActive) && (_arena == null || !_arena.IsArenaActive));
+                _orbitalOpsBar.SetActive(showHelm);
+            RefreshSpaceFireCard();
         }
 
         public void UpdateOrbitalTargetReadout(
             string rockId,
             string contactId,
             string matchedRockId = null,
-            string approachingRockId = null)
+            string approachingRockId = null,
+            string lockFacet = null)
         {
             if (_orbitalTargetLabel != null)
             {
@@ -138,15 +190,19 @@ namespace TacSim.UI
                         rState = " <color=#FF8866>[UNMATCHED]</color>";
                 }
                 string c = string.IsNullOrEmpty(contactId) ? "NONE" : contactId;
-                _orbitalTargetLabel.text = $"ROCK: <b>{r}</b>{rState} | LOCK: <b>{c}</b>";
+                string bandTag = !string.IsNullOrEmpty(lockFacet)
+                    ? $" <color=#FFBB55>[{lockFacet.ToUpperInvariant()} BAND]</color>"
+                    : string.Empty;
+                _orbitalTargetLabel.text = $"ROCK: <b>{r}</b>{rState} | LOCK: <b>{c}</b>{bandTag}";
             }
+            RefreshSpaceFireCard();
         }
 
-        // ---- SLICE 2: ORBITAL MINING & NAVAL TACTICAL BAR ----
+        // ---- SLICE 2: ORBITAL MINING, NAVAL TACTICAL BAR & DOC 49 FIRE-CONTROL CARD ----
 
         private void BuildSlice2OrbitalOpsBar(Transform parent)
         {
-            _orbitalOpsBar = CreatePanel(parent, "OrbitalMiningAndTacBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-490f, 126f), new Vector2(490f, 206f), new Color(0.03f, 0.08f, 0.14f, 0.92f));
+            _orbitalOpsBar = CreatePanel(parent, "OrbitalMiningAndTacBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-540f, 126f), new Vector2(540f, 206f), new Color(0.03f, 0.08f, 0.14f, 0.92f));
 
             var rowMine = CreatePanel(_orbitalOpsBar.transform, "ZeroGMiningRow", new Vector2(0f, 0.5f), new Vector2(1f, 1f), new Vector2(8f, 2f), new Vector2(-8f, -4f), Color.clear);
             var mHlg = rowMine.AddComponent<HorizontalLayoutGroup>();
@@ -166,17 +222,157 @@ namespace TacSim.UI
 
             var rowTac = CreatePanel(_orbitalOpsBar.transform, "NavalTacticalRow", new Vector2(0f, 0f), new Vector2(1f, 0.5f), new Vector2(8f, 4f), new Vector2(-8f, -2f), Color.clear);
             var tHlg = rowTac.AddComponent<HorizontalLayoutGroup>();
-            tHlg.spacing = 5f; tHlg.childControlWidth = true; tHlg.childControlHeight = true; tHlg.childForceExpandWidth = true;
+            tHlg.spacing = 4f; tHlg.childControlWidth = true; tHlg.childControlHeight = true; tHlg.childForceExpandWidth = true;
 
-            CreateBtn(rowTac.transform, "SCAN CONTACTS", new Color(0.16f, 0.32f, 0.48f), () => OnCommandRequested?.Invoke("+tac/scan"));
+            CreateBtn(rowTac.transform, "SCAN", new Color(0.16f, 0.32f, 0.48f), () => OnCommandRequested?.Invoke("+tac/scan"));
             CreateBtn(rowTac.transform, "TAC STATUS", new Color(0.22f, 0.30f, 0.44f), () => OnCommandRequested?.Invoke("+tac/status"));
             CreateBtn(rowTac.transform, "FIRE BEAM", new Color(0.55f, 0.18f, 0.24f), () => OnCommandRequested?.Invoke("space:tac_beam"));
             CreateBtn(rowTac.transform, "RAILGUN", new Color(0.20f, 0.40f, 0.62f), () => OnCommandRequested?.Invoke("space:tac_railgun"));
             CreateBtn(rowTac.transform, "TORPEDO", new Color(0.58f, 0.30f, 0.12f), () => OnCommandRequested?.Invoke("space:tac_torp"));
+            CreateBtn(rowTac.transform, "LASER OFFENSE", new Color(0.52f, 0.24f, 0.18f), () => OnCommandRequested?.Invoke("+tac/pdc offense"));
+            CreateBtn(rowTac.transform, "LASER DEFENSE", new Color(0.18f, 0.38f, 0.50f), () => OnCommandRequested?.Invoke("+tac/pdc point"));
             CreateBtn(rowTac.transform, "PDC AUTO", new Color(0.22f, 0.34f, 0.42f), () => OnCommandRequested?.Invoke("+tac/pdc auto"));
             CreateBtn(rowTac.transform, "CUSTOMS SUBMIT", new Color(0.20f, 0.42f, 0.36f), () => OnCommandRequested?.Invoke("+helm/submit"));
 
             _orbitalOpsBar.SetActive(false);
+        }
+
+        private void BuildSpaceFireControlCard(Transform parent)
+        {
+            _spaceFireCard = CreatePanel(parent, "SpaceFireControlCard", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-430f, -346f), new Vector2(-16f, -74f), new Color(0.03f, 0.07f, 0.13f, 0.91f));
+
+            var hdr = CreateTxt(_spaceFireCard.transform, "FIRE CONTROL — MOUNTS, MAGAZINES & 5-BAND LOCK", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.58f, 0.90f, 1.0f));
+            SetRect(hdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -26f), new Vector2(-10f, -4f));
+
+            _spaceLockSummaryText = CreateTxt(_spaceFireCard.transform, "NO ACTIVE LOCK — Click 3D contact or press <b>SCAN</b>", 11, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.92f, 0.96f, 1.0f));
+            _spaceLockSummaryText.supportRichText = true;
+            SetRect(_spaceLockSummaryText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -52f), new Vector2(-10f, -28f));
+
+            var mountsArea = CreatePanel(_spaceFireCard.transform, "SpaceMountsArea", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(8f, 8f), new Vector2(-8f, -56f), Color.clear);
+            var vlg = mountsArea.AddComponent<VerticalLayoutGroup>();
+            vlg.spacing = 3f;
+            vlg.childControlWidth = true;
+            vlg.childControlHeight = false;
+            vlg.childForceExpandWidth = true;
+            vlg.childForceExpandHeight = false;
+
+            for (int i = 0; i < MaxPooledSpaceMountRows; i++)
+            {
+                var rowGo = CreatePanel(mountsArea.transform, $"MountRow_{i}", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.08f, 0.15f, 0.22f, 0.90f));
+                rowGo.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 24f);
+                var lbl = CreateTxt(rowGo.transform, string.Empty, 11, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white);
+                lbl.supportRichText = true;
+                SetRect(lbl.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 1f), new Vector2(-8f, -1f));
+                rowGo.SetActive(false);
+                _spaceMountRowPool.Add(new PooledSpaceMountRow
+                {
+                    Root = rowGo,
+                    Background = rowGo.GetComponent<Image>(),
+                    Label = lbl,
+                });
+            }
+
+            _spaceFireCard.SetActive(false);
+        }
+
+        public static string FormatSpaceMountRowSummary(SpaceMountTelemetry m)
+        {
+            if (m == null) return string.Empty;
+            string famLabel = m.Family switch
+            {
+                "tubes" => "TUBES",
+                "spinal" => "SPINAL",
+                "point_defence" => "POINT DEF",
+                _ => "LASER"
+            };
+
+            string magOrMode = string.Empty;
+            if (!string.IsNullOrEmpty(m.Mode))
+            {
+                magOrMode = $" · {m.Mode.ToUpperInvariant()}";
+            }
+            else if (m.Rounds >= 0 && m.RoundsMax > 0)
+            {
+                string col = m.Rounds == 0 ? "#FF6666" : (m.Rounds < m.RoundsMax ? "#FFCC66" : "#BBEEFF");
+                magOrMode = $" · <color={col}>{m.Rounds}/{m.RoundsMax}</color>";
+            }
+            else if (m.Rounds >= 0)
+            {
+                magOrMode = $" · {m.Rounds} LEFT";
+            }
+
+            string stateWord = m.State switch
+            {
+                "cycling" => $"<color=#FFCC55>CYCLING {m.ReadyInMs / 1000f:F1}s</color>",
+                "empty" => "<color=#FF5555>EMPTY</color>",
+                "too_hot" => "<color=#FF7744>TOO HOT</color>",
+                "past_reach" => "<color=#CCBB77>PAST REACH</color>",
+                "down" => "<color=#AA6666>DOWN</color>",
+                _ => m.Mode == "defense"
+                    ? "<color=#66CCFF>DEFENSE SCREEN</color>"
+                    : "<color=#55FF99>READY</color>"
+            };
+
+            string atLock = string.Empty;
+            if (m.DamageAtLock >= 0)
+                atLock = $" · <b>{m.DamageAtLock} DMG</b>";
+            else if (m.FlightMsAtLock >= 0)
+                atLock = $" · <b>{m.FlightMsAtLock / 1000f:F1}s FLIGHT</b>";
+
+            return $"<b>{m.Id.ToUpperInvariant()}</b> [{famLabel}{magOrMode}]  {stateWord}{atLock}";
+        }
+
+        public void RefreshSpaceFireCard()
+        {
+            if (_spaceFireCard == null) return;
+            bool show = _seatedAtHelm &&
+                        _space != null &&
+                        !_space.IsDockingActive &&
+                        (_surface == null || !_surface.IsExcursionActive) &&
+                        (_arena == null || !_arena.IsArenaActive) &&
+                        (_space.FireMounts.Count > 0 || _space.ActiveLock != null || !string.IsNullOrEmpty(_space.LockedContactId));
+            _spaceFireCard.SetActive(show);
+            if (!show) return;
+
+            if (_spaceLockSummaryText != null)
+            {
+                if (_space.ActiveLock != null)
+                {
+                    var lk = _space.ActiveLock;
+                    string rangeTxt = lk.RangeM >= 1000 ? $"{lk.RangeM / 1000f:0.0} km" : $"{lk.RangeM} m";
+                    string lbl = string.IsNullOrEmpty(lk.Label) ? lk.ShipId : lk.Label;
+                    _spaceLockSummaryText.text =
+                        $"LOCK: <b>{lbl.ToUpperInvariant()}</b> ({lk.ShipId})  |  <b>{rangeTxt}</b>  |  BAND: <color=#FFBB55><b>[{lk.Facet.ToUpperInvariant()}]</b></color>";
+                }
+                else if (!string.IsNullOrEmpty(_space.LockedContactId))
+                {
+                    _spaceLockSummaryText.text = $"LOCK DESIGNATED: <b>{_space.LockedContactId}</b> (awaiting sensor solution)";
+                }
+                else
+                {
+                    _spaceLockSummaryText.text = "NO ACTIVE LOCK — Click 3D contact or press <b>SCAN</b>";
+                }
+            }
+
+            var mounts = _space.FireMounts;
+            int shown = Mathf.Min(mounts.Count, _spaceMountRowPool.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                var m = mounts[i];
+                var slot = _spaceMountRowPool[i];
+                slot.Label.text = FormatSpaceMountRowSummary(m);
+                slot.Background.color = m.State == "down" || m.State == "empty"
+                    ? new Color(0.26f, 0.12f, 0.14f, 0.90f)
+                    : (m.State == "ready" && m.Mode != "defense"
+                        ? new Color(0.08f, 0.22f, 0.18f, 0.90f)
+                        : new Color(0.09f, 0.16f, 0.24f, 0.90f));
+                if (!slot.Root.activeSelf) slot.Root.SetActive(true);
+            }
+            for (int i = shown; i < _spaceMountRowPool.Count; i++)
+            {
+                if (_spaceMountRowPool[i].Root.activeSelf)
+                    _spaceMountRowPool[i].Root.SetActive(false);
+            }
         }
 
         // ---- SLICE 3: PLANETARY SURFACE ROVER & QUARRY HUD ----
@@ -482,28 +678,36 @@ namespace TacSim.UI
                 _contactRowPool.Add(pooled);
             }
 
-            var hullCard = CreatePanel(_arenaBattleHudRoot.transform, "OwnPlatformCard", new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-410f, 18f), new Vector2(-16f, 232f), new Color(0.03f, 0.07f, 0.12f, 0.93f));
-            _arenaOwnArmorText = CreateTxt(hullCard.transform, "", 13, FontStyle.Normal, TextAnchor.UpperLeft, Color.white);
+            var hullCard = CreatePanel(_arenaBattleHudRoot.transform, "OwnPlatformCard", new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-430f, 18f), new Vector2(-16f, 276f), new Color(0.03f, 0.07f, 0.12f, 0.93f));
+            _arenaOwnArmorText = CreateTxt(hullCard.transform, "", 12, FontStyle.Normal, TextAnchor.UpperLeft, Color.white);
             _arenaOwnArmorText.supportRichText = true;
-            SetRect(_arenaOwnArmorText.rectTransform, new Vector2(0f, 0.44f), new Vector2(1f, 1f), new Vector2(12f, 0f), new Vector2(-12f, -8f));
+            SetRect(_arenaOwnArmorText.rectTransform, new Vector2(0f, 0.56f), new Vector2(1f, 1f), new Vector2(12f, 0f), new Vector2(-12f, -8f));
 
-            _arenaWeaponText = CreateTxt(hullCard.transform, "", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.65f, 0.95f, 0.80f));
+            _arenaWeaponText = CreateTxt(hullCard.transform, "", 11, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.65f, 0.95f, 0.80f));
             _arenaWeaponText.supportRichText = true;
-            SetRect(_arenaWeaponText.rectTransform, new Vector2(0f, 0.26f), new Vector2(1f, 0.44f), new Vector2(12f, 0f), new Vector2(-12f, 0f));
+            SetRect(_arenaWeaponText.rectTransform, new Vector2(0f, 0.23f), new Vector2(1f, 0.56f), new Vector2(12f, 0f), new Vector2(-12f, 0f));
 
             var fireBtn = CreateBtn(hullCard.transform, "FIRE MAIN WEAPON [SPACE]", new Color(0.72f, 0.18f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("fire"));
-            SetRect(fireBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(1f, 0.25f), new Vector2(12f, 8f), new Vector2(-12f, -2f));
+            SetRect(fireBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.64f, 0.22f), new Vector2(12f, 8f), new Vector2(-4f, -2f));
             _fireBtnLabel = fireBtn.GetComponentInChildren<Text>();
 
-            var squadBar = CreatePanel(_arenaBattleHudRoot.transform, "ArenaSquadOrderBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-460f, 74f), new Vector2(460f, 122f), new Color(0.04f, 0.08f, 0.14f, 0.94f));
+            var volleyBtn = CreateBtn(hullCard.transform, "VOLLEY ALL", new Color(0.54f, 0.26f, 0.14f), () => OnArenaCockpitVerbRequested?.Invoke("fire all"));
+            SetRect(volleyBtn.GetComponent<RectTransform>(), new Vector2(0.64f, 0f), new Vector2(1f, 0.22f), new Vector2(4f, 8f), new Vector2(-12f, -2f));
+
+            var squadBar = CreatePanel(_arenaBattleHudRoot.transform, "ArenaSquadOrderBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-500f, 74f), new Vector2(500f, 122f), new Color(0.04f, 0.08f, 0.14f, 0.94f));
             var sHlg = squadBar.AddComponent<HorizontalLayoutGroup>();
-            sHlg.spacing = 6f; sHlg.padding = new RectOffset(8, 8, 6, 6);
+            sHlg.spacing = 5f; sHlg.padding = new RectOffset(8, 8, 6, 6);
             sHlg.childControlWidth = true; sHlg.childControlHeight = true; sHlg.childForceExpandWidth = true;
 
             CreateBtn(squadBar.transform, "STARTUP", new Color(0.16f, 0.42f, 0.34f), () => OnArenaCockpitVerbRequested?.Invoke("startup"));
             CreateBtn(squadBar.transform, "ALL STOP [X]", new Color(0.36f, 0.26f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("stop"));
             CreateBtn(squadBar.transform, "SCAN", new Color(0.14f, 0.38f, 0.48f), () => OnArenaCockpitVerbRequested?.Invoke("scan"));
             CreateBtn(squadBar.transform, "EMCON", new Color(0.22f, 0.28f, 0.44f), () => OnArenaCockpitVerbRequested?.Invoke("emcon"));
+            CreateBtn(squadBar.transform, "HOLD/FREE", new Color(0.32f, 0.26f, 0.42f), () =>
+            {
+                bool free = _arena != null && _arena.State.WeaponsFree;
+                OnArenaCockpitVerbRequested?.Invoke(free ? "fire hold" : "fire free");
+            });
             CreateBtn(squadBar.transform, "SQUAD: ENGAGE", new Color(0.52f, 0.24f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("order all engage"));
             CreateBtn(squadBar.transform, "SQUAD: ADVANCE", new Color(0.46f, 0.34f, 0.14f), () => OnArenaCockpitVerbRequested?.Invoke("order all advance"));
             CreateBtn(squadBar.transform, "SQUAD: HOLD", new Color(0.20f, 0.36f, 0.46f), () => OnArenaCockpitVerbRequested?.Invoke("order all hold"));
@@ -532,22 +736,36 @@ namespace TacSim.UI
 
             string pCol = s.Party == "R" ? "#FF6655" : "#55AAFF";
             string pwrCol = s.Power == "online" ? "#55FF99" : "#FFAA55";
+            string gateTag = s.WeaponsFree
+                ? "<color=#55FF99>[WEAPONS FREE]</color>"
+                : "<color=#FFAA44>[HOLD FIRE]</color>";
             float setKph = _arena != null ? _arena.TargetCruiseSpeedKph : 0f;
             _arenaOwnArmorText.text =
-                $"<color={pCol}><b>{s.Callsign}</b></color> [{s.UnitType.Replace("tacsim.unit.", "")}]   PWR: <color={pwrCol}><b>{s.Power.ToUpperInvariant()}</b></color>\n" +
+                $"<color={pCol}><b>{s.Callsign}</b></color> [{s.UnitType.Replace("tacsim.unit.", "")}]   PWR: <color={pwrCol}><b>{s.Power.ToUpperInvariant()}</b></color>  {gateTag}\n" +
                 $"SPD: <b>{s.SpeedKph:0} kph</b> <color=#99CCEE>(SET {setKph:0})</color>   HDG: <b>{s.HeadingDeg:000}°</b>   HEAT: <b>{s.Heat}/{s.HeatMax}</b>\n" +
                 $"ARMOR — F: <b>{s.ArmorFrontPct}%</b> | L: <b>{s.ArmorLeftPct}%</b> | R: <b>{s.ArmorRightPct}%</b> | AFT: <b>{s.ArmorRearPct}%</b>\n" +
                 $"INTERNAL STRUCTURE: <b>{s.InternalsPct}%</b>{(s.IsWreck ? "  <color=#FF4444>[WRECKED]</color>" : "")}";
 
             if (s.Weapons.Count > 0)
             {
-                var w = s.Weapons[0];
-                string rdy = w.Ready ? "<color=#55FF99>READY</color>" : $"<color=#FFAA44>RELOAD {w.ReadyInMs / 1000f:0.1}s</color>";
-                _arenaWeaponText.text = $"WPN: <b>{w.Id.ToUpperInvariant()}</b> [{rdy}]  AMMO: {w.Rounds}";
+                var wsb = new StringBuilder(220);
+                int showCount = Mathf.Min(s.Weapons.Count, 4);
+                for (int i = 0; i < showCount; i++)
+                {
+                    if (i > 0) wsb.Append('\n');
+                    var w = s.Weapons[i];
+                    string rdy = w.Ready ? "<color=#55FF99>RDY</color>" : $"<color=#FFAA44>{w.ReadyInMs / 1000f:F1}s</color>";
+                    string ammoTxt = w.RoundsMax > 0 ? $"{w.Rounds}/{w.RoundsMax}" : $"{w.Rounds}";
+                    string armTxt = w.ArmedSlot > 0
+                        ? $" <color=#77DDFF>[AUTO #{w.ArmedSlot} >={w.ArmedMinPercent}%{(w.ArmedKeeps > 0 ? $" KEEP {w.ArmedKeeps}" : "")}]</color>"
+                        : string.Empty;
+                    wsb.Append($"<b>{w.Id.ToUpperInvariant()}</b> [{rdy}] AMMO {ammoTxt}{armTxt}");
+                }
+                _arenaWeaponText.text = wsb.ToString();
             }
             else
             {
-                _arenaWeaponText.text = "WPN: <b>PRIMARY MOUNT</b> [READY]";
+                _arenaWeaponText.text = "WPN: <b>UNARMED SCOUT</b>";
             }
 
             if (_fireBtnLabel != null)
