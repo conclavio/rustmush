@@ -197,6 +197,17 @@ Off-map buyers pay these houses back for what they use, so their bids stay
 funded. That is the only money that comes into the lane after it opens: it
 reaches you when you sell into their bids.
 
+## Haulers
+
+The Vesta Carrying Company of Ceres runs two Drays between the lane's ports. A
+hauler buys a lot from one port's house and sells it to a house one route
+away, whenever the price gap pays for the trip's fuel and stores with some
+margin left. Its trips are real passages: a hauler bound from Ceres to Stickney
+meets the Kirkwood picket like any other ship, and can be stopped there.
+
+Deimos makes nothing of its own. What reaches it, from the haulers or from you,
+is used up there, and its houses bid for more.
+
 ## Running costs
 
 A port facility (a refinery, works, yard or workshop) costs its owner money

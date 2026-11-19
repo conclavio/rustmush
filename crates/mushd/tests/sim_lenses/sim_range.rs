@@ -61,10 +61,11 @@ const RETRY_BUDGET: usize = 40;
 /// stationary target's rear from forty metres; the loop ends at the first hit.
 const MAX_SHOTS: usize = 20;
 /// **One cycle and the flight**, and a margin for the pulses either side: the
-/// stock cannon cycles in 6,000 ms (`weapons/cannon_105.json`) and a round
-/// crosses forty metres in well under a pulse. What a wait for the cannon's
-/// readiness is bounded by.
-const CYCLE_AND_FLIGHT: Duration = Duration::from_secs(12);
+/// stock cannon cycles in 15,000 ms (`weapons/cannon_105.json`, doc 49 cut
+/// CC.2) and a round crosses forty metres in well under a pulse. What a wait
+/// for the cannon's readiness is bounded by: a first round that misses leaves
+/// the next one a whole cycle away.
+const CYCLE_AND_FLIGHT: Duration = Duration::from_secs(21);
 
 /// The one pilot, created before the world task spawns so its id is stable.
 const ADA: ObjId = ObjId(2);

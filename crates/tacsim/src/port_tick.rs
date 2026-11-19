@@ -2173,6 +2173,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::detachment::crew::wages::tick(ctx);
     // Doc 48 unit EX.9: running costs, the export faucet's refunds and the House stipends.
     crate::port::upkeep::tick(ctx);
+    // Doc 48 unit EX.10: the hauling houses, one step a hull.
+    crate::port::hauler::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;

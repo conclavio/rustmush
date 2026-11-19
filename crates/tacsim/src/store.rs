@@ -410,6 +410,10 @@ pub struct TacsimStore {
     /// one is skipped loudly, and the tick starts the port afresh (its debts are lost to staff
     /// repair, never minted).
     pub(crate) upkeeps: BTreeMap<CanonicalId, crate::port::upkeep::PortUpkeep>,
+    /// **Doc 48 unit EX.10** — `tacsim:hauler:{entry}`: each port's hauling house
+    /// ([`crate::port::hauler::HaulerHouse`]). Persisted through [`put_hauler`]; an unreadable one
+    /// is skipped loudly.
+    pub(crate) haulers: BTreeMap<CanonicalId, crate::port::hauler::HaulerHouse>,
     /// **Doc 39 cut IN.3** — `tacsim:works:{id}`: each order contract
     /// ([`crate::port::works::WorksContract`]), keyed by its escrow vault. Persisted through
     /// [`put_works`]; an unreadable one is held (the arm skips it) until staff repair it.
@@ -684,6 +688,17 @@ impl TacsimStore {
     #[must_use]
     pub fn port_upkeep(&self, entry: &CanonicalId) -> Option<&crate::port::upkeep::PortUpkeep> {
         self.upkeeps.get(entry)
+    }
+
+    /// **Doc 48 unit EX.10**: a port's hauling house, when it keeps one.
+    #[must_use]
+    pub fn hauler(&self, entry: &CanonicalId) -> Option<&crate::port::hauler::HaulerHouse> {
+        self.haulers.get(entry)
+    }
+
+    /// **Doc 48 unit EX.10**: every port's hauling house, in entry order.
+    pub fn haulers(&self) -> impl Iterator<Item = &crate::port::hauler::HaulerHouse> {
+        self.haulers.values()
     }
 
     /// **Doc 48 unit EX.9**: every port's running-cost record, in entry order.
@@ -2455,6 +2470,21 @@ pub(crate) fn put_bay_hull(ctx: &mut Ctx<'_>, record: &crate::port::bay_work::Ba
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Write a port's hauling house** (doc 48 unit EX.10): RAM, then one `JsonSet`.
+pub(crate) fn put_hauler(ctx: &mut Ctx<'_>, house: &crate::port::hauler::HaulerHouse) {
+    let key = crate::port::hauler::hauler_key(&house.entry);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.haulers.insert(house.entry.clone(), house.clone());
+    }
+    match serde_json::to_value(house) {
+        Ok(value) => push_op(ctx.out, ModuleWrite::JsonSet { key, value }),
+        Err(error) => tracing::error!(
+            entry = %house.entry, %error,
+            "tacsim: a hauling house did not serialize and was not written"
+        ),
+    }
+}
+
 /// **Write a port's running-cost record** (doc 48 unit EX.9): RAM, then one `JsonSet`.
 pub(crate) fn put_port_upkeep(ctx: &mut Ctx<'_>, doc: &crate::port::upkeep::PortUpkeep) {
     let key = crate::port::upkeep::upkeep_key(&doc.entry);
@@ -3020,6 +3050,17 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_security(&mut store, key, actor, value);
+        } else if let Some(rest) = key.strip_prefix(crate::port::hauler::HAULER_PREFIX) {
+            // Doc 48 unit EX.10: a port's hauling house, its entry the key's.
+            match (
+                CanonicalId::new(rest),
+                serde_json::from_value::<crate::port::hauler::HaulerHouse>(value.clone()),
+            ) {
+                (Ok(entry), Ok(house)) if house.entry == entry => {
+                    store.haulers.insert(entry, house);
+                }
+                _ => tracing::error!(%key, "tacsim: a hauling house is unreadable; skipped"),
+            }
         } else if let Some(rest) = key.strip_prefix(crate::port::upkeep::UPKEEP_PREFIX) {
             // Doc 48 unit EX.9: a port's running-cost record, its entry the key's.
             match (
