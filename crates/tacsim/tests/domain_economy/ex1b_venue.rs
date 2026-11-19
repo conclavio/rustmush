@@ -584,3 +584,62 @@ async fn g4_a_sale_into_a_persons_bid_pays_the_venue_cut_and_levy() {
         "the seller 96%, the port authority the 3% cut, the treasury the 1% levy"
     );
 }
+
+/// **Doc 48e, exchange G15 (48d H-06): a scrap vault takes only what the yard scraps.** A player
+/// with a scrap vault at Ceres names it as a bid's destination and as a purchase's: both are
+/// refused, and nothing is held or bought. Before the fix both were admitted (the scrap owner's
+/// bypass let any use of the vault through), so it was rent-free, uncapped storage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g15_a_scrap_vault_is_no_purchase_destination() {
+    let mut rig = crate::driving_rig::stocked();
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    let buyer = with_account(&mut rig, "Scrapper", 53);
+    mint(&mut rig, buyer);
+    teleport(&mut rig.tw, buyer, exchange);
+    let crate_ = rig
+        .tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Scrap crate", buyer, Some(buyer))
+        .expect("a crate");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@vault/create scrap at ceres=container:#{} owner=#{}",
+            crate_.0, buyer.0
+        ),
+    );
+    let scrap = tacsim::port::bay_work::scrap::scrap_vault(rig.tw.world(), buyer, "ceres")
+        .unwrap_or_else(|| panic!("the scrap vault: {out}"));
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let refused = run(
+        &mut rig.tw,
+        buyer,
+        &format!(
+            "+market/bid tacsim:metals qty=10 price=100 into={}",
+            scrap.0
+        ),
+    );
+    assert!(
+        refused.contains(tacsim::port::market::MOVE_INTO_SCRAP),
+        "a bid into it: {refused}"
+    );
+    let listing = metals_listing(&rig);
+    let said = run(
+        &mut rig.tw,
+        buyer,
+        &format!("+market/quote {}=1", listing.0),
+    );
+    let quote = crate::hull_resale_ex2::newest(&rig, buyer).unwrap_or_else(|| panic!("{said}"));
+    let refused = run(
+        &mut rig.tw,
+        buyer,
+        &format!("+market/accept {}={}", quote.0, scrap.0),
+    );
+    assert!(
+        refused.contains(tacsim::port::market::MOVE_INTO_SCRAP),
+        "a purchase into it: {refused}"
+    );
+    assert!(drain(&mut rig.tw).is_empty(), "nothing was queued");
+}

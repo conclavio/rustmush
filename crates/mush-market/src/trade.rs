@@ -1121,6 +1121,9 @@ fn lot_precheck(
             presence,
         )
         .map_err(|r| MarketError::bad(r.line))?;
+        // Doc 48e (exchange G15): the destination takes delivery at this venue at all.
+        gate.receives_at(ctx.w, &listing.market, destination)
+            .map_err(|r| MarketError::bad(r.line))?;
         // Doc 39 cut IN.2: a lot-transfer sale hands one identified lot over whole, so it
         // may land in a governed endpoint too, the capacity pre-check below its gate.
         if gate.governed(ctx.w, destination)

@@ -392,14 +392,18 @@ impl VenueGate for PortVenueGate {
 
     /// Doc 48e (exchange G11; 48d H-01): a governed hold takes delivery only while her hull is
     /// docked at the venue's port (Q-48-6, local delivery), so a sale into a personal bid never
-    /// lands in a hold that has sailed or berths elsewhere. A locker or another vault is the
-    /// market's own rules' to judge.
+    /// lands in a hold that has sailed or berths elsewhere. Doc 48e (exchange G15; 48d H-06): a
+    /// scrap vault takes only what the yard scraps, so no purchase or bid delivers into one. A
+    /// locker or another vault is the market's own rules' to judge.
     fn receives_at(
         &self,
         w: &World,
         venue: &MarketId,
         endpoint: EndpointRef,
     ) -> Result<(), VenueRefusal> {
+        if crate::port::bay_work::scrap::is_scrap_vault(w, endpoint.vault()) {
+            return Err(refusal(MOVE_INTO_SCRAP.to_owned()));
+        }
         let Some(view) = governed_hold(w, endpoint) else {
             return Ok(());
         };
@@ -679,8 +683,7 @@ impl mush_inventory::MovePolicy for PortMovePolicy {
                 MOVE_HULL_ON_SALE.replace("{name}", &crate::port::coop::name_of(w, view.hull()))
             );
         }
-        if crate::port::bay_work::scrap::scrap_vault_owner(w, to.vault(), venue.as_str()).is_some()
-        {
+        if crate::port::bay_work::scrap::is_scrap_vault(w, to.vault()) {
             return Err(MOVE_INTO_SCRAP.to_owned());
         }
         Ok(())

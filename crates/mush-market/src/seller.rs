@@ -714,6 +714,9 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
             crate::module::Presence::Here,
         )
         .map_err(|r| MarketError::bad(r.line))?;
+        // Doc 48e (exchange G15): the destination takes delivery at this venue at all.
+        gate.receives_at(ctx.w, &spec.market, spec.into)
+            .map_err(|r| MarketError::bad(r.line))?;
     }
     let twice = ctx.w.module_state::<MarketStore>().and_then(|s| {
         s.personal_listings_of(&spec.bidder)
