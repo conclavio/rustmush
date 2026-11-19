@@ -1,9 +1,11 @@
 # Ships
 
 The ship of the trade run is the **Dray**, a Stickney-built bulk hauler: slow,
-efficient, unarmed. A Co-op pilot flies one on charter (`help coop`). `+ship`
-says where yours is, what its hold carries and how your program stands, from
-anywhere.
+efficient, lightly armed. Her two dual-mode lasers start in offense, short-reach
+and weak against a hull, enough to answer fire; in defense they stop torpedoes,
+beside her two point-defense rotaries (`help space`). A Co-op pilot flies one on
+charter (`help coop`). `+ship` says where yours is, what its hold carries and how
+your program stands, from anywhere.
 
 ## Aboard
 

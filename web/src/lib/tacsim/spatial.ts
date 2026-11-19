@@ -976,36 +976,33 @@ function parseIdSet(arrVal: unknown): Set<string> {
   return out;
 }
 
+/**
+ * Decodes `ship.stowage` as `tacsim::port::ship::hull_stowage_json` writes it:
+ * `cargo_kg` / `cargo_limit_kg`, `cargo_l` / `cargo_limit_l`, `tank_kg` /
+ * `tank_limit_kg`, `stores_days` / `stores_limit_days` and `items[]` of
+ * `{ good, qty }` (48e L8, clients:G2). A limit the server reports as 0 (no such
+ * compartment) reads as 1 so the gauges never divide by zero.
+ */
 export function parseStowageNode(nodeVal: unknown): StowageSnapshot | null {
   const node = asObj(nodeVal);
   if (!node) return null;
   const cargoLines: StowageSnapshot["cargoLines"] = [];
-  const linesArr = asArr(node["cargo"]) ?? asArr(node["lines"]);
-  if (linesArr) {
-    for (const lnVal of linesArr) {
-      const ln = asObj(lnVal);
-      if (!ln) continue;
-      cargoLines.push({
-        good: asStr(ln["good"], asStr(ln["id"])),
-        label: asStr(ln["label"], asStr(ln["good"])),
-        qty: asNum(ln["qty"], asNum(ln["quantity"], 0)),
-        unit: asStr(ln["unit"], "t"),
-        massKg: asNum(ln["mass_kg"], 0),
-      });
-    }
+  for (const lnVal of asArr(node["items"]) ?? []) {
+    const ln = asObj(lnVal);
+    if (!ln) continue;
+    const good = asStr(ln["good"]);
+    if (!good) continue;
+    cargoLines.push({ good, label: good, qty: asNum(ln["qty"], 0), unit: "t", massKg: 0 });
   }
   return {
     cargoKg: asNum(node["cargo_kg"], 0),
-    cargoMaxKg: Math.max(1, asNum(node["cargo_max_kg"], 100_000)),
+    cargoMaxKg: Math.max(1, asNum(node["cargo_limit_kg"], 0)),
     cargoL: asNum(node["cargo_l"], 0),
-    cargoMaxL: Math.max(1, asNum(node["cargo_max_l"], 120_000)),
-    propellantKg: asNum(node["propellant_kg"], asNum(node["tank_kg"], 0)),
-    propellantMaxKg: Math.max(1, asNum(node["propellant_max_kg"], asNum(node["tank_max_kg"], 80_000))),
-    provisionsCrewDays: asNum(node["provisions_crew_days"], asNum(node["stores_days"], 0)),
-    provisionsMaxCrewDays: Math.max(
-      1,
-      asNum(node["provisions_max_crew_days"], asNum(node["stores_max_days"], 120)),
-    ),
+    cargoMaxL: Math.max(1, asNum(node["cargo_limit_l"], 0)),
+    propellantKg: asNum(node["tank_kg"], 0),
+    propellantMaxKg: Math.max(1, asNum(node["tank_limit_kg"], 0)),
+    provisionsCrewDays: asNum(node["stores_days"], 0),
+    provisionsMaxCrewDays: Math.max(1, asNum(node["stores_limit_days"], 0)),
     cargoLines,
   };
 }
@@ -1524,7 +1521,8 @@ export function contextualQuickActions(
     return [
       { label: "Stand From Helm", action: "ui:stand_helm", accent: true },
       { label: "Undock", action: "ui:open_sailing" },
-      { label: "Dock Collar", action: "+helm/dock ceres" },
+      // Docks at the sailing plan's destination (48e L8, clients:G7), not always Ceres.
+      { label: "Dock Collar", action: "ui:dock_destination" },
       { label: "Mine Ping", action: "+mine/ping" },
       { label: "Ship Status", action: "+ship" },
     ];

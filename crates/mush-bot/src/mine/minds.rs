@@ -665,7 +665,7 @@ pub mod exchange {
 /// held to the game's own text below.
 pub mod jobs {
     /// `mush_market::services::JOBS_USAGE`.
-    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|haul|escort]";
+    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|crew|haul|escort]";
     /// `mush_market::services::JOBS_NO_VENUE`.
     pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=";
     /// `mush_market::services::JOBS_NONE`.
@@ -1117,6 +1117,13 @@ pub const PARTIAL: &[&str] = &[
     "jobs::TERM_TODAY",
     "history::HISTORY_ROW",
     "history::HISTORY_NO_PRICE",
+    // The crew family's short needles (48e L8, clients:G14: crew joined the table); the
+    // crew module's own docs say what a reader uses beside each.
+    "crew::OFFER_WAGE",
+    "crew::WAGE_LINE",
+    "crew::LISTED",
+    "crew::BOARD_SUBJECT",
+    "crew::BOARD_TAKE",
     "exchange::MINE_AS_ORG",
 ];
 
@@ -1786,7 +1793,8 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 18] = [
+        // 48e L8 (clients:G14): crew and discharge joined the cross-family checks.
+        let families: [(&str, Vec<Row>); 20] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1805,6 +1813,8 @@ mod tests {
             ("venue", venue_rows()),
             ("scrap", scrap_rows()),
             ("coop", coop_rows()),
+            ("crew", crew_rows()),
+            ("discharge", discharge_rows()),
         ];
         families
             .into_iter()

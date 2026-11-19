@@ -43,6 +43,7 @@ import {
   type PortListingRow,
   type PortTradeSnapshot,
 } from "../tacsim/trade";
+import { foldMarketHistoryLine } from "../tacsim/economy";
 import {
   decodeSpaceFireFeed,
   emptySpaceFireSnapshot,
@@ -87,6 +88,8 @@ export class TacsimPortStore {
   focusedNpc = $state<{ id: string; name: string; bio: string; isNpc: boolean } | null>(null);
   detailModal = $state<{ title: string; body: string } | null>(null);
   modalLog = $state<string[]>([]);
+  /** The latest whole `+market/history` reply (heading plus every week row). */
+  marketHistoryLines = $state<string[]>([]);
   coopSuggestedHull = $state<string>(suggestUniqueHullName());
   selectedDestination = $state<string>(CORRIDOR_DESTINATIONS[1]?.id ?? "stickney");
   selectedQtyPreset = $state<number | "max">(5);
@@ -122,6 +125,8 @@ export class TacsimPortStore {
   #rawPacks = new Map<string, string>();
   #manifestRequested = false;
   #packQueue: string[] = [];
+  /** Every pack id asked for since the last `clear()`: each is requested once. */
+  #packsRequested = new Set<string>();
   #packDrainTimer: ReturnType<typeof setTimeout> | null = null;
   #pendingQuote: PendingQuoteLatch | null = null;
   #awaitingAppendTradePage = false;
@@ -183,6 +188,7 @@ export class TacsimPortStore {
     this.focusedNpc = null;
     this.detailModal = null;
     this.modalLog = [];
+    this.marketHistoryLines = [];
     this.roomView = null;
     this.ambient = decodeTacsimRoomAmbient(null);
     this.isAboardShip = false;
@@ -196,6 +202,7 @@ export class TacsimPortStore {
     this.focusedPrompt = null;
     this.#manifestRequested = false;
     this.#packQueue = [];
+    this.#packsRequested.clear();
     this.#pendingQuote = null;
     this.#awaitingAppendTradePage = false;
     if (this.#packDrainTimer !== null) {
@@ -297,6 +304,8 @@ export class TacsimPortStore {
   }
 
   observeSys(line: string): void {
+    const history = foldMarketHistoryLine(this.marketHistoryLines, line);
+    if (history !== null) this.marketHistoryLines = history;
     if (this.activeModal !== null && line.trim().length > 0) {
       this.#pushModalLine(line.trim());
     }
@@ -353,7 +362,9 @@ export class TacsimPortStore {
       return;
     }
 
-    // Individual pack frame (`id`, `json`)
+    // Individual pack frame (`op: "pack"`, `found`, `id`, `json`); a pack the
+    // server no longer has (`found: false`) stays requested and is not re-asked.
+    if (obj["found"] === false) return;
     const id = typeof obj["id"] === "string" ? obj["id"] : "";
     const jsonText =
       typeof obj["json"] === "string"
@@ -475,6 +486,10 @@ export class TacsimPortStore {
       this.standFromBridgeHelm();
       return;
     }
+    if (action === "ui:dock_destination") {
+      this.#hooks.sendCommand(`+helm/dock ${this.selectedDestination}`);
+      return;
+    }
     this.#hooks.sendCommand(action);
   }
 
@@ -517,7 +532,8 @@ export class TacsimPortStore {
 
   #enqueuePackFetches(ids: string[]): void {
     for (const id of ids) {
-      if (!this.#packQueue.includes(id) && !this.#rawPacks.has(id)) {
+      if (!this.#packsRequested.has(id) && !this.#rawPacks.has(id)) {
+        this.#packsRequested.add(id);
         this.#packQueue.push(id);
       }
     }
@@ -528,7 +544,7 @@ export class TacsimPortStore {
     if (this.#packDrainTimer !== null || this.#packQueue.length === 0) return;
     const batch = this.#packQueue.splice(0, 3);
     for (const id of batch) {
-      this.#hooks.subscribePanel(TACSIM_CONTENT_FEED, { pack: id });
+      this.#hooks.subscribePanel(TACSIM_CONTENT_FEED, { op: "pack", id });
     }
     if (this.#packQueue.length > 0) {
       this.#packDrainTimer = setTimeout(() => {

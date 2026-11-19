@@ -89,6 +89,12 @@ namespace TacSim.World
         public int StoresLimitCrewDays { get; private set; } = 120;
         public string CreditsText { get; private set; } = "— cr";
 
+        /// <summary>
+        /// The helm hull as `#&lt;dbref&gt;` (the `port.trade` frame's `ship.hull_id`), or empty with no helm hull.
+        /// `+escort/post` takes exactly this word.
+        /// </summary>
+        public string ShipHullId { get; private set; } = string.Empty;
+
         // Pending correlated 1-click buy intent (matched strictly against structured open_quotes)
         private ulong? _pendingBuyListingId;
         private int _pendingBuyQuantity;
@@ -285,6 +291,7 @@ namespace TacSim.World
             }
 
             var shipObj = data["ship"];
+            ShipHullId = shipObj.IsObject ? NormalizeHullRef(shipObj.Str("hull_id", string.Empty)) : string.Empty;
             if (shipObj.IsObject && shipObj["stowage"].IsObject)
             {
                 var st = shipObj["stowage"];
@@ -301,6 +308,21 @@ namespace TacSim.World
             }
 
             OnStateChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// A hull reference as `#&lt;dbref&gt;` (what `ObjId` prints), or empty when it is not one.
+        /// A bare number gains its `#`.
+        /// </summary>
+        public static string NormalizeHullRef(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+            string digits = raw.Trim();
+            if (digits.StartsWith("#", StringComparison.Ordinal))
+                digits = digits.Substring(1);
+            if (!uint.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out uint id))
+                return string.Empty;
+            return "#" + id.ToString(CultureInfo.InvariantCulture);
         }
 
         public void ApplyStowageAmbient(TacSimStowageAmbient st)
