@@ -64,6 +64,7 @@ namespace TacSim.Space
         public float ShipRollDeg { get; private set; }
         public float ThrottlePermille { get; private set; }
         public string EmconPosture { get; private set; } = "standard";
+        public string ActiveSiteId { get; private set; } = string.Empty;
         public string SelectedRockId { get; private set; } = string.Empty;
         public string LockedContactId { get; private set; } = string.Empty;
         public IReadOnlyList<SpaceMountTelemetry> FireMounts => _fireMounts;
@@ -418,6 +419,7 @@ namespace TacSim.Space
             ShipRollDeg = 0f;
             ThrottlePermille = 0f;
             EmconPosture = "standard";
+            ActiveSiteId = string.Empty;
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
             OwnShipHolotankId = string.Empty;
@@ -1253,6 +1255,9 @@ namespace TacSim.Space
             }
 
             EmconPosture = cockpit.Str("emcon", EmconPosture);
+            string siteId = cockpit.Str("site_id", string.Empty).Trim();
+            if (!string.IsNullOrEmpty(siteId))
+                ActiveSiteId = siteId;
 
             // Fallback contact/torpedo projection from `space.cockpit.contacts[]` when `space.holotank` has not populated contacts yet
             var cockpitContacts = cockpit["contacts"].AsArray();

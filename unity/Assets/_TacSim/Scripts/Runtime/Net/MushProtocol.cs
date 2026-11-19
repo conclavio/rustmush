@@ -269,8 +269,7 @@ namespace TacSim.Net
                 var link = sp["link"];
 
                 bool bold = style.IsObject && style.Bool("bold", false);
-                bool italic = style.IsObject && style.Bool("italic", false);
-                bool underline = style.IsObject && style.Bool("underline", false);
+                bool italic = style.IsObject && (style.Bool("italic", false) || style.Bool("underline", false));
                 string hexColor = ResolveSpanHexColor(tag, style, link);
 
                 if (link.IsObject)
@@ -279,14 +278,13 @@ namespace TacSim.Net
                     escaped = $"[{escaped}]";
                 }
 
+                // Emit only tags supported by both legacy uGUI UnityEngine.UI.Text and TextMeshPro (<b>, <i>, <color>).
                 if (!string.IsNullOrEmpty(hexColor)) sb.Append("<color=").Append(hexColor).Append('>');
                 if (bold) sb.Append("<b>");
                 if (italic) sb.Append("<i>");
-                if (underline) sb.Append("<u>");
 
                 sb.Append(escaped);
 
-                if (underline) sb.Append("</u>");
                 if (italic) sb.Append("</i>");
                 if (bold) sb.Append("</b>");
                 if (!string.IsNullOrEmpty(hexColor)) sb.Append("</color>");

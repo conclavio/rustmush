@@ -992,12 +992,13 @@ namespace TacSim.Core
 
                 case "desk:refit":
                     Hud.ShowDetailModal(
-                        "STICKNEY SERVICE & PROSPECTOR REFIT DESK",
-                        "Refit a chartered Dray into a <b>Dray-P Prospector</b> (adds 2-rig stern Vehicle Bay + 86 t ore hold) and lease Co-op terrain rigs (`+tv`):",
+                        "STICKNEY YARD REFIT & SERVICE DESK",
+                        "Refit a chartered Dray into a <b>Dray-P Prospector</b> (adds 2-rig stern Vehicle Bay + 86 t ore hold), inspect Stickney yard works, or review rig status (Occator terrain rigs are leased at Ceres Freeport Exchange):",
                         new List<(string, Action)>
                         {
                             ("Refit Dray-P (+coop/refit prospector)", () => ExecutePlayerCommand("+coop/refit prospector")),
-                            ("Lease Rig 1 (+tv/lease go)", () => ExecutePlayerCommand("+tv/lease go")),
+                            ("Inspect Works (+works)", () => ExecutePlayerCommand("+works")),
+                            ("Rig Status (+tv)", () => ExecutePlayerCommand("+tv")),
                             ("Check Ship Status (+ship)", () => ExecutePlayerCommand("+ship"))
                         });
                     break;
@@ -1164,6 +1165,33 @@ namespace TacSim.Core
                    string.Equals(token, "rare", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(token, "silicates", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(token, "all", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static string NormalizeCorridorPortSlug(string rawHint)
+        {
+            if (string.IsNullOrWhiteSpace(rawHint)) return null;
+            string low = rawHint.Trim().ToLowerInvariant();
+            if (low.Contains("stickney") || low.Contains("phobos")) return "stickney";
+            if (low.Contains("aitken") || low.Contains("luna")) return "luna";
+            if (low.Contains("voltaire") || low.Contains("deimos")) return "deimos";
+            if (low.Contains("ligeia") || low.Contains("titan")) return "titan";
+            if (low.Contains("ceres") || low.Contains("freeport")) return "ceres";
+            return null;
+        }
+
+        public static string ResolveDockingTargetPort(
+            string activeSpaceSiteId,
+            string aboardDockedPortHint,
+            string activeVenue,
+            string loadedStationPackId,
+            string selectedDestinationPort)
+        {
+            return NormalizeCorridorPortSlug(activeSpaceSiteId)
+                ?? NormalizeCorridorPortSlug(aboardDockedPortHint)
+                ?? NormalizeCorridorPortSlug(activeVenue)
+                ?? NormalizeCorridorPortSlug(loadedStationPackId)
+                ?? NormalizeCorridorPortSlug(selectedDestinationPort)
+                ?? "ceres";
         }
 
         public void ExecutePlayerCommand(string cmd)
@@ -1366,16 +1394,13 @@ namespace TacSim.Core
             }
             if (cmd == "action:start_docking")
             {
-                if (Audio != null) Audio.PlayUiClick();
-                if (_ws != null && _ws.IsConnected)
-                {
-                    Hud.AppendLogLine("<color=#66CCFF>> +helm/dock ceres</color>");
-                    _ws.SendLine("+helm/dock ceres");
-                }
-                else
-                {
-                    LogDisconnectedCommandNotice();
-                }
+                string dockTarget = ResolveDockingTargetPort(
+                    SpaceStage != null ? SpaceStage.ActiveSiteId : null,
+                    TradeState != null ? TradeState.AboardDockedPortHint : null,
+                    TradeState != null ? TradeState.ActiveVenue : null,
+                    StationWorld != null ? StationWorld.LoadedPackId : null,
+                    TradeState != null ? TradeState.SelectedDestinationPort : null);
+                ExecutePlayerCommand($"+helm/dock {dockTarget}");
                 return;
             }
 

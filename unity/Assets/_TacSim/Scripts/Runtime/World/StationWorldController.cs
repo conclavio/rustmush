@@ -1233,8 +1233,8 @@ namespace TacSim.World
             }
             else if (low.Contains("service"))
             {
-                title = "Yard Refit & Rover Lease Desk";
-                subtitle = "Refit Dray-P Prospector (+coop/refit prospector) & yard services";
+                title = "Yard Refit & Service Desk";
+                subtitle = "Refit Dray-P Prospector (+coop/refit prospector), yard works (+works) & rig status (+tv)";
                 cmd = "desk:refit";
             }
 

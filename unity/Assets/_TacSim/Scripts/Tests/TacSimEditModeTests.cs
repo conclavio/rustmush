@@ -2617,18 +2617,30 @@ namespace TacSim.Tests
             Assert.IsFalse(MushWsClient.IsAuthRejectionException(new System.Exception("Connection refused to 127.0.0.1:4010")));
             Assert.IsTrue(MushWsClient.IsAuthRejectionException(new System.Exception("The server returned status code '401' when status code '101' was expected.")));
 
-            // U-H08: ANSI/idx256 color support, RichText hex injection block, base_sequence=0 & stale snapshot <= & schema_version
+            // U-H08: ANSI/idx256 color support (legacy uGUI-safe tags only — never literal <u>), RichText string hex injection block, base_sequence=0 & stale snapshot <= & schema_version
             var rich = JsonNode.Parse(@"{
                 ""spans"": [
                     { ""text"": ""Red"", ""style"": { ""fg"": { ""ansi"": 1 }, ""underline"": true } },
                     { ""text"": ""256"", ""style"": { ""fg"": { ""idx256"": 196 } } },
-                    { ""text"": ""Inject"", ""style"": { ""fg"": { ""hex"": ""#FF0000><b>BAD<color=#000"" } } }
+                    { ""text"": ""Inject7"", ""style"": { ""fg"": ""#a><b>x"" } },
+                    { ""text"": ""Inject9"", ""style"": { ""fg"": ""#a><b>xxx"" } }
                 ]
             }");
             string markup = MushProtocol.RenderRichTextToUnityMarkup(rich);
-            StringAssert.Contains("<color=#CC4444><u>Red</u></color>", markup);
+            StringAssert.Contains("<color=#CC4444><i>Red</i></color>", markup);
+            StringAssert.DoesNotContain("<u>", markup, "Legacy UnityEngine.UI.Text does not support <u> tags");
             StringAssert.Contains("<color=#FF0000>256</color>", markup);
-            StringAssert.DoesNotContain("<b>BAD", markup, "Malformed hex must never inject RichText tags");
+            StringAssert.DoesNotContain("<b>x", markup, "7-char malformed string color must never inject RichText tags");
+            StringAssert.DoesNotContain("<b>xxx", markup, "9-char malformed string color must never inject RichText tags");
+            StringAssert.Contains("Inject7", markup);
+            StringAssert.Contains("Inject9", markup);
+
+            // Dynamic corridor port resolution for action:start_docking
+            Assert.AreEqual("stickney", TacSimGameCoordinator.ResolveDockingTargetPort("stickney_orbit", null, null, "neighborhood.ceres_freeport", "luna"));
+            Assert.AreEqual("luna", TacSimGameCoordinator.ResolveDockingTargetPort(null, "aitken_highport", null, "neighborhood.ceres_freeport", "ceres"));
+            Assert.AreEqual("deimos", TacSimGameCoordinator.ResolveDockingTargetPort(null, null, null, "neighborhood.voltaire_station", null));
+            Assert.AreEqual("titan", TacSimGameCoordinator.ResolveDockingTargetPort(null, null, null, "neighborhood.ooc_area", "titan"));
+            Assert.AreEqual("ceres", TacSimGameCoordinator.ResolveDockingTargetPort(null, null, null, "neighborhood.ooc_area", null));
 
             var cursor = new ViewStreamCursor();
             Assert.AreEqual(ViewCursorDisposition.ApplySnapshot,
