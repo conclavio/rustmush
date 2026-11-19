@@ -6,6 +6,7 @@
   import type { GameApp } from "$lib/game.svelte";
   import { PICTURE_PREF_KEY } from "$lib/picture";
   import { storageGet, storageSet } from "$lib/storage";
+  import { tacsimAudio } from "$lib/tacsim/audio";
   import {
     formatHeldLockSummary,
     formatMountAtLockEffect,
@@ -24,6 +25,11 @@
   let resizing = $state(false);
   let dragStartY = 0;
   let dragStartH = 380;
+
+  function sendTacCmd(cmd: string): void {
+    tacsimAudio.playForCommand(cmd);
+    onCmd(cmd);
+  }
 
   function handleAction(act: string): void {
     stage?.notifyExplicitCommandSent();
@@ -116,7 +122,13 @@
       isAboardShip: app.tacsim.isAboardShip,
       serverStationRoomEntry: app.tacsim.serverStationRoomEntry,
       serverShipCompartment: app.tacsim.serverShipCompartment,
+      roomRevision: app.tacsim.roomRevision,
       ambient: app.tacsim.ambient,
+      berthDockedHulls: app.tacsim.berthDockedHulls,
+      berthOwnHullName:
+        app.tacsim.trade.berth?.ownHullName ?? app.tacsim.ambient.ownHullName,
+      berthOwnHullDockedHere:
+        app.tacsim.trade.berth?.ownHullDockedHere ?? app.tacsim.ambient.ownHullDockedHere,
       visibleActors: app.tacsim.visibleActors,
       actorSpeech: app.tacsim.actorSpeech,
       actorComposing: app.tacsim.actorComposing,
@@ -195,7 +207,9 @@
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 500")}>50%</button>
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 1000")}>100%</button>
             <button type="button" class="qbtn" onclick={() => handleAction("ui:open_sailing")}>Undock / Route</button>
-            <button type="button" class="qbtn" onclick={() => onCmd("+helm/dock ceres")}>60 Hz Dock</button>
+            <button type="button" class="qbtn" onclick={() => onCmd(`+helm/dock ${app.tacsim.dockTarget}`)}>
+              60 Hz Dock ({app.tacsim.dockTarget})
+            </button>
             <button type="button" class="qbtn accent" onclick={() => app.tacsim.standFromBridgeHelm()}>
               Stand From Helm
             </button>
@@ -208,13 +222,13 @@
               {formatHeldLockSummary(app.tacsim.spaceFire)}
             </span>
             <div class="visor-btns">
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/scan")}>Scan</button>
-              <button type="button" class="qbtn danger" onclick={() => onCmd("+tac/beam")}>Fire Beam</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/railgun")}>Fire Railgun</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/torp")}>Launch Torpedo</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc offense")}>Laser Offense</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc point")}>Laser Defense</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc auto")}>Auto Point Defense</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/scan")}>Scan</button>
+              <button type="button" class="qbtn danger" onclick={() => sendTacCmd("+tac/beam")}>Fire Beam</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/railgun")}>Fire Railgun</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/torp")}>Launch Torpedo</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/pdc offense")}>Laser Offense</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/pdc point")}>Laser Defense</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/pdc auto")}>Auto Point Defense</button>
               <button type="button" class="qbtn" onclick={() => onCmd("+helm/submit")}>Customs Submit</button>
             </div>
           </div>

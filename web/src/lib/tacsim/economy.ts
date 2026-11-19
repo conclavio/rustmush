@@ -272,13 +272,39 @@ export function formatHaulPostCommand(
     : `+haul/post ${q} ${g} to=${p} fee=${f}`;
 }
 
+export const SURVEY_OFFERS: readonly { id: string; label: string }[] = [
+  { id: "ahuna-a", label: "Ahuna Flank · Block A (ahuna-a)" },
+  { id: "kerwan-f", label: "Kerwan Floor · Block F (kerwan-f)" },
+  { id: "juling-k", label: "Juling Shadow · Block K (juling-k)" },
+  { id: "occator-p", label: "Occator Rim · Block P (occator-p)" },
+];
+
+export const SIMULATOR_CHASSIS_IDS: readonly { id: string; label: string }[] = [
+  { id: "line_tank", label: "Line Tank" },
+  { id: "line_tank_laser", label: "Laser Tank" },
+  { id: "heavy_mk1", label: "Heavy Mk1" },
+  { id: "biped_mk1", label: "Biped Mk1" },
+  { id: "biped_mk2", label: "Biped Mk2" },
+  { id: "scout_mk1", label: "Scout Mk1" },
+];
+
+export function isValidHullDbref(hullRef: string | null | undefined): boolean {
+  return typeof hullRef === "string" && /^#\d+$/.test(hullRef.trim());
+}
+
+export function formatSurveyAcceptCommand(surveyId: string, commit = true): string {
+  const clean = surveyId.trim() || SURVEY_OFFERS[0]!.id;
+  return commit ? `+survey/accept ${clean} go` : `+survey/accept ${clean}`;
+}
+
 export function formatEscortPostCommand(
   hullRef: string,
   destPort: string,
   feeCredits: number,
   commit = true,
-): string {
-  const h = hullRef.trim() || "ship";
+): string | null {
+  const h = hullRef.trim();
+  if (!isValidHullDbref(h)) return null;
   const p = destPort.trim() || "stickney";
   const f = Math.max(1, Math.trunc(feeCredits));
   return commit

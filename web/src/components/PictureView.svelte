@@ -472,6 +472,7 @@
             const stepped = l.stepDocking(app.picture.spaceDockingData, 0);
             if (stepped !== null && stepped.clamped && submittedDockingSessionId !== stepped.session_id) {
               submittedDockingSessionId = stepped.session_id;
+              tacsimAudio.playDockClamp();
               app.helm(stepped.tape_command);
             }
           }
@@ -1141,7 +1142,10 @@
                 class="toggle zoom-btn wpn-slot-btn"
                 class:armed={w.ready}
                 title={`Fire ${w.id} (Shift+${idx + 1})`}
-                onclick={() => app.helm(`FIRE ${w.id}`)}>{idx + 1}:{w.id}</button
+                onclick={() => {
+                  tacsimAudio.playForCommand(`FIRE ${w.id}`);
+                  app.helm(`FIRE ${w.id}`);
+                }}>{idx + 1}:{w.id}</button
               >
             {/each}
           </span>

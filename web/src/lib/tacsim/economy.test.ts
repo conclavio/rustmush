@@ -16,7 +16,11 @@ import {
   formatHaulPostCommand,
   formatMarketDepthCommand,
   formatMarketHistoryCommand,
+  formatSurveyAcceptCommand,
+  isValidHullDbref,
   parseMarketHistoryLines,
+  SIMULATOR_CHASSIS_IDS,
+  SURVEY_OFFERS,
 } from "./economy";
 import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./trade";
 
@@ -73,12 +77,31 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
     expect(formatHaulPostCommand(12, "metals", "stickney", 340, true)).toBe(
       "+haul/post 12 metals to=stickney fee=340 go",
     );
-    expect(formatEscortPostCommand("Salt Moth", "stickney", 500, true)).toBe(
-      "+escort/post Salt Moth to=stickney fee=500 go",
+    // C-21: +escort/post requires a real `#<u32>` hull dbref, rejecting hull names / `"ship"`
+    expect(isValidHullDbref("#99")).toBe(true);
+    expect(isValidHullDbref("Salt Moth")).toBe(false);
+    expect(isValidHullDbref("ship")).toBe(false);
+    expect(formatEscortPostCommand("Salt Moth", "stickney", 500, true)).toBeNull();
+    expect(formatEscortPostCommand("ship", "stickney", 500, true)).toBeNull();
+    expect(formatEscortPostCommand("#99", "stickney", 500, true)).toBe(
+      "+escort/post #99 to=stickney fee=500 go",
     );
+    // H-42: Survey acceptance emits real survey offer ID + `go`
+    expect(SURVEY_OFFERS.map((s) => s.id)).toEqual(["ahuna-a", "kerwan-f", "juling-k", "occator-p"]);
+    expect(formatSurveyAcceptCommand("ahuna-a", true)).toBe("+survey/accept ahuna-a go");
+    expect(formatSurveyAcceptCommand("kerwan-f", false)).toBe("+survey/accept kerwan-f");
+    // H-41: Simulator chassis list only includes server-valid SIM UNIT IDs
+    expect(SIMULATOR_CHASSIS_IDS.map((u) => u.id)).toEqual([
+      "line_tank",
+      "line_tank_laser",
+      "heavy_mk1",
+      "biped_mk1",
+      "biped_mk2",
+      "scout_mk1",
+    ]);
   });
 
-  it("renders 24-Week History, Jobs & Crew, and Works & Yard tabs inside Port Exchange", async () => {
+  it("renders 24-Week History (H-39), Jobs & Crew (C-21/H-42), Works & Yard, Simulator (H-41), and unfocused Esc (W3D-M7)", async () => {
     let ws: FakeSocket | null = null;
     const app = new GameApp({
       url: "ws://test/ws",
@@ -116,7 +139,7 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
           exits: [],
           ambient: {
             atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c07_exchange", surface: "station" },
-            tacsim: { own_hull_name: "Salt Moth", own_hull_docked_here: true },
+            tacsim: { own_hull: "#99", own_hull_name: "Salt Moth", own_hull_docked_here: true },
           },
         },
       } as OutputEvent,
@@ -130,19 +153,28 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
     // Preserves single `"command input"` invariant across all Doc 48 inputs!
     expect(screen.getAllByRole("textbox", { name: "command input" })).toHaveLength(1);
 
-    // 1. Switch to 24-Week History tab & feed real `mushd` history lines
+    // 1. H-39: Switch to 24-Week History tab & feed a full 25-line (header + 24 IC weeks) server table
     await fireEvent.click(screen.getByRole("button", { name: "24-Week History" }));
     await tick();
     expect(socket.sent.some((raw) => raw.includes("+market/history tacsim:volatiles"))).toBe(true);
 
-    app.tacsim.observeSys("House prices of Volatiles here, by IC week, newest first (2):");
-    app.tacsim.observeSys("  this IC week: ask 115.00 cr, bid 96.00 cr");
-    app.tacsim.observeSys("  last IC week: ask 105.00 cr, bid 88.00 cr");
+    app.tacsim.observeSys("House prices of Volatiles here, by IC week, newest first (24):");
+    app.tacsim.observeSys("  this IC week: ask 124.00 cr, bid 104.00 cr");
+    app.tacsim.observeSys("  last IC week: ask 123.00 cr, bid 103.00 cr");
+    for (let w = 2; w < 24; w++) {
+      const ask = (124 - w).toFixed(2);
+      const bid = (104 - w).toFixed(2);
+      app.tacsim.observeSys(`  ${w} IC weeks ago: ask ${ask} cr, bid ${bid} cr`);
+    }
     await tick();
 
-    expect(screen.getByText(/105\.00 – 115\.00/)).toBeTruthy();
+    // Header + all 24 IC weeks survive inside modalLog without truncation!
+    const parsedHistory = parseMarketHistoryLines(app.tacsim.modalLog);
+    expect(parsedHistory.goodLabel).toBe("Volatiles");
+    expect(parsedHistory.rowsNewestFirst).toHaveLength(24);
+    expect(screen.getByText(/101\.00 – 124\.00/)).toBeTruthy();
 
-    // 2. Switch to Jobs & Crew tab & verify Crew Terms + Haul dispatch
+    // 2. C-21 & H-42: Switch to Jobs & Crew tab & verify Crew Terms, Escort `#99`, and Survey `go`
     await fireEvent.click(screen.getByRole("button", { name: "Jobs & Crew" }));
     await tick();
     expect(socket.sent.some((raw) => raw.includes("+market/jobs"))).toBe(true);
@@ -150,12 +182,35 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Crew Terms (+sortie/crew)" }));
     expect(socket.sent.some((raw) => raw.includes("+sortie/crew"))).toBe(true);
 
-    // 3. Switch to Works & Yard tab & verify Works / Yard / Rearm dispatch
+    await fireEvent.click(screen.getByRole("button", { name: "Accept Survey" }));
+    expect(socket.sent.some((raw) => raw.includes("+survey/accept ahuna-a go"))).toBe(true);
+
+    await fireEvent.click(screen.getByRole("button", { name: /Post Escort \(#99/ }));
+    expect(socket.sent.some((raw) => raw.includes("+escort/post #99 to=stickney fee=250 go"))).toBe(true);
+
+    // 3. Switch to Works & Yard tab & verify Works / Yard / Rearm dispatch with `#99`
     await fireEvent.click(screen.getByRole("button", { name: "Works & Yard" }));
     await tick();
     expect(socket.sent.some((raw) => raw.includes("+works"))).toBe(true);
 
     await fireEvent.click(screen.getByRole("button", { name: "Rearm Magazines (+bay/order =rearm)" }));
-    expect(socket.sent.some((raw) => raw.includes("+bay/order Salt Moth=rearm"))).toBe(true);
+    expect(socket.sent.some((raw) => raw.includes("+bay/order #99=rearm"))).toBe(true);
+
+    // 4. W3D-M7: Pressing Escape on window closes the modal even when body (not modal) has focus
+    (document.body as HTMLElement).focus();
+    await fireEvent.keyDown(window, { key: "Escape" });
+    await tick();
+    expect(app.tacsim.activeModal).toBeNull();
+
+    // 5. H-41: Simulator Console modal emits valid server chassis IDs (`scout_mk1`, `heavy_mk1`), never bogus IDs
+    app.tacsim.openModal("sim");
+    await tick();
+    await fireEvent.click(screen.getByRole("button", { name: "Scout Mk1" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Heavy Mk1" }));
+    expect(socket.sent.some((raw) => raw.includes("SIM UNIT scout_mk1"))).toBe(true);
+    expect(socket.sent.some((raw) => raw.includes("SIM UNIT heavy_mk1"))).toBe(true);
+    expect(screen.queryByRole("button", { name: /^scout$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /missile_carrier/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /heavy_mech/i })).toBeNull();
   });
 });

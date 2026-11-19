@@ -14,9 +14,13 @@ import {
 } from "./mupk-mesh";
 import {
   areRoomsConnectedWithinHops,
+  atlasToWorldPos,
   BRIDGE_STAIRWELL_XZ,
+  classifyStationDesk,
   computeDoorwaysAndStairs,
+  computeInterFloorStairPlacement,
   computePackGeometrySignature,
+  computeRightHandedMoveDelta,
   findShipExitPath,
   findStationExitPath,
   getDefaultSpawnRoomEntry,
@@ -27,15 +31,16 @@ import {
   resolveCompartmentDef,
   tryFindContainingCompartment,
   tryFindContainingRoomWithHysteresis,
+  worldToAtlas2D,
   type AtlasExitDef,
   type AtlasNeighborhoodPack,
   type AtlasRoomDef,
   type DecodedRoomAmbient,
+  type DockedHullSummary,
   type HorizontalDoorDef,
   type RectXZ,
   type ShipCompartmentDef,
   type ShipUnitTemplate,
-  type Vec3,
   type VerticalDoorDef,
   type VisibleRoomActor,
 } from "./spatial";
@@ -75,6 +80,7 @@ interface SpawnedActorRecord {
   id: string;
   name: string;
   isNpc: boolean;
+  actor: VisibleRoomActor;
   group: THREE.Group;
   leftLeg: THREE.Object3D;
   rightLeg: THREE.Object3D;
@@ -86,6 +92,9 @@ interface SpawnedActorRecord {
   billboardTex: THREE.CanvasTexture;
   billboardCanvas: HTMLCanvasElement;
   lastRenderedLabel: string;
+  speechExpiresAt: number;
+  lastIsTyping: boolean;
+  interactable: WorldInteractable3D;
   safeBounds: { minX: number; maxX: number; minZ: number; maxZ: number; margin: number };
 }
 
@@ -108,6 +117,7 @@ interface SharedPbrTextures {
 }
 
 let cachedTextures: SharedPbrTextures | null = null;
+const sharedBaseTextures = new Set<THREE.Texture>();
 
 function getOrBuildProceduralTextures(): SharedPbrTextures {
   if (cachedTextures) return cachedTextures;
@@ -226,6 +236,12 @@ function getOrBuildProceduralTextures(): SharedPbrTextures {
     ceilingMap: makeTex(clPx),
     rockMap: makeTex(rkPx),
   };
+  sharedBaseTextures.add(cachedTextures.bulkheadMap);
+  sharedBaseTextures.add(cachedTextures.bulkheadNormal);
+  sharedBaseTextures.add(cachedTextures.deckMap);
+  sharedBaseTextures.add(cachedTextures.deckNormal);
+  sharedBaseTextures.add(cachedTextures.ceilingMap);
+  sharedBaseTextures.add(cachedTextures.rockMap);
   return cachedTextures;
 }
 
@@ -278,6 +294,19 @@ export class TacsimStage3D {
 
   private holotankContactsGroup: THREE.Group | null = null;
   private cargoPalletsGroup: THREE.Group | null = null;
+  private readonly cargoCrateGeo = new THREE.BoxGeometry(1.4, 1.15, 1.4);
+  private readonly cargoCrateMat = new THREE.MeshStandardMaterial({
+    color: 0x4f6882,
+    roughness: 0.6,
+    metalness: 0.35,
+  });
+  private readonly holoBlipGeo = new THREE.SphereGeometry(1, 10, 8);
+  private readonly holoBlipMats = new Map<number, THREE.MeshBasicMaterial>();
+  private readonly sharedPoolGeos = new Set<THREE.BufferGeometry>();
+  private readonly sharedPoolMats = new Set<THREE.Material>();
+  private lastCargoStacks = -1;
+  private lastHolotankFeed: unknown = undefined;
+
   private cradleSignSprites: Array<{ sprite: THREE.Sprite; canvas: HTMLCanvasElement; tex: THREE.CanvasTexture }> = [];
   private cradleHullGroups: THREE.Group[] = [];
   private airlockBoardWi: WorldInteractable3D | null = null;
@@ -298,19 +327,31 @@ export class TacsimStage3D {
   private serverStationRoomEntry: string | null = null;
   private activeShipCompartment = "airlock";
   private serverShipCompartment: string | null = null;
+  private lastSyncedRoomRevision = -1;
   private awaitingInitialRoomSync = true;
   private pendingMoveTarget: string | null = null;
   private pendingMoveSentAtMs = -10_000;
   private nextMoveStepAllowedAtMs = 0;
 
+  // Reusable scratch objects for hot frame-loop math (eliminates per-frame GC allocations)
+  private readonly tmpProbeBox = new THREE.Box3();
+  private readonly tmpVecA = new THREE.Vector3();
+  private readonly tmpVecB = new THREE.Vector3();
+  private readonly tmpVecC = new THREE.Vector3();
+
   private rafId = 0;
   private lastFrameMs = 0;
+  private contextLost = false;
   private disposed = false;
 
   constructor(canvas: HTMLCanvasElement, callbacks: Stage3DCallbacks) {
     this.canvas = canvas;
     this.cb = callbacks;
     this.headlessDom = typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent);
+
+    this.sharedPoolGeos.add(this.cargoCrateGeo);
+    this.sharedPoolGeos.add(this.holoBlipGeo);
+    this.sharedPoolMats.add(this.cargoCrateMat);
 
     this.scene.background = new THREE.Color(0x06090f);
     this.scene.fog = new THREE.FogExp2(0x070b13, 0.0055);
@@ -359,11 +400,88 @@ export class TacsimStage3D {
 
   dispose(): void {
     this.disposed = true;
-    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
     this.unbindDomEvents();
     this.clearAllActors();
+    this.clearAndDisposeGroup(this.stationRoot);
+    this.clearAndDisposeGroup(this.shipRoot);
+    this.clearAndDisposeGroup(this.playerGroup);
+    this.cargoCrateGeo.dispose();
+    this.cargoCrateMat.dispose();
+    this.holoBlipGeo.dispose();
+    for (const mat of this.holoBlipMats.values()) {
+      mat.dispose();
+    }
+    this.holoBlipMats.clear();
+    this.sharedPoolGeos.clear();
+    this.sharedPoolMats.clear();
     this.renderer?.dispose();
     this.renderer = null;
+  }
+
+  private disposeSubtree(root: THREE.Object3D): void {
+    const geos = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
+    const texs = new Set<THREE.Texture>();
+
+    const collectMaterialTextures = (mat: THREE.Material): void => {
+      const m = mat as unknown as Record<string, unknown>;
+      for (const prop of [
+        "map",
+        "normalMap",
+        "roughnessMap",
+        "metalnessMap",
+        "emissiveMap",
+        "alphaMap",
+        "aoMap",
+        "bumpMap",
+      ]) {
+        const val = m[prop];
+        if (val && typeof (val as THREE.Texture).dispose === "function") {
+          const t = val as THREE.Texture;
+          if (!sharedBaseTextures.has(t)) texs.add(t);
+        }
+      }
+    };
+
+    root.traverse((obj) => {
+      obj.userData["disposed"] = true;
+      const mesh = obj as THREE.Mesh;
+      if (
+        mesh.geometry &&
+        typeof mesh.geometry.dispose === "function" &&
+        !this.sharedPoolGeos.has(mesh.geometry)
+      ) {
+        geos.add(mesh.geometry);
+      }
+      const mat = mesh.material;
+      if (Array.isArray(mat)) {
+        for (const m of mat) {
+          if (m && typeof m.dispose === "function" && !this.sharedPoolMats.has(m)) {
+            mats.add(m);
+            collectMaterialTextures(m);
+          }
+        }
+      } else if (mat && typeof mat.dispose === "function" && !this.sharedPoolMats.has(mat)) {
+        mats.add(mat);
+        collectMaterialTextures(mat);
+      }
+    });
+
+    for (const t of texs) t.dispose();
+    for (const g of geos) g.dispose();
+    for (const m of mats) m.dispose();
+  }
+
+  private clearAndDisposeGroup(group: THREE.Group): void {
+    while (group.children.length > 0) {
+      const child = group.children[0]!;
+      group.remove(child);
+      this.disposeSubtree(child);
+    }
   }
 
   resize(widthPx: number, heightPx: number): void {
@@ -423,7 +541,11 @@ export class TacsimStage3D {
     isAboardShip: boolean;
     serverStationRoomEntry: string | null;
     serverShipCompartment: string | null;
+    roomRevision?: number;
     ambient: DecodedRoomAmbient;
+    berthDockedHulls?: ReadonlyArray<DockedHullSummary>;
+    berthOwnHullName?: string | null;
+    berthOwnHullDockedHere?: boolean;
     visibleActors: VisibleRoomActor[];
     actorSpeech: Record<string, { text: string; expiresAt: number }>;
     actorComposing: Record<string, boolean>;
@@ -436,7 +558,11 @@ export class TacsimStage3D {
       isAboardShip,
       serverStationRoomEntry,
       serverShipCompartment,
+      roomRevision,
       ambient,
+      berthDockedHulls,
+      berthOwnHullName,
+      berthOwnHullDockedHere,
       visibleActors,
       actorSpeech,
       actorComposing,
@@ -446,13 +572,33 @@ export class TacsimStage3D {
 
     const prevPackId = this.activeStationPack?.packId ?? null;
     const prevUnitId = this.activeShipTemplate?.unitId ?? null;
+    const prevServerRoom = this.serverStationRoomEntry;
+    const prevServerComp = this.serverShipCompartment;
     const wasAboard = this.isAboardShip;
     const firstSync = this.awaitingInitialRoomSync;
-    const ackTarget = this.pendingMoveTarget;
+    const packSwitched = prevPackId !== null && prevPackId !== stationPack.packId;
+    const unitChanged = prevUnitId !== null && prevUnitId !== shipTemplate.unitId;
+    const modeChanged = wasAboard !== isAboardShip;
 
     const newSig = computePackGeometrySignature(stationPack);
     if (newSig !== this.builtStationSig) {
+      // Preserve player's atlas position when live content pack geometry streams in for the same station
+      const preserveAtlasPos =
+        !firstSync && !wasAboard && !isAboardShip && !packSwitched && this.activeStationPack !== null;
+      const savedAtlas = preserveAtlasPos
+        ? worldToAtlas2D(
+            this.playerGroup.position.x,
+            this.playerGroup.position.z,
+            this.originOffsetX,
+            this.originOffsetZ,
+          )
+        : null;
+      const savedY = this.playerGroup.position.y;
       this.buildStationWorld(stationPack, newSig);
+      if (savedAtlas) {
+        const remapped = this.atlasToWorld(savedAtlas.x, savedY, savedAtlas.y);
+        this.playerGroup.position.copy(remapped);
+      }
     } else {
       this.activeStationPack = stationPack;
     }
@@ -467,34 +613,60 @@ export class TacsimStage3D {
     this.stationRoot.visible = !isAboardShip;
     this.shipRoot.visible = isAboardShip;
 
+    const nowMs = performance.now();
+    const roomEventArrived =
+      roomRevision !== undefined
+        ? roomRevision !== this.lastSyncedRoomRevision
+        : serverStationRoomEntry !== prevServerRoom || serverShipCompartment !== prevServerComp;
+    if (roomRevision !== undefined) {
+      this.lastSyncedRoomRevision = roomRevision;
+    }
+
     if (isAboardShip && serverShipCompartment) {
-      this.awaitingInitialRoomSync = false;
-      this.pendingMoveTarget = null;
-      this.nextMoveStepAllowedAtMs = performance.now() + 220;
-      this.serverShipCompartment = serverShipCompartment;
-      this.serverStationRoomEntry = null;
-
-      const unitChanged = prevUnitId !== null && prevUnitId !== shipTemplate.unitId;
-      const lp = this.playerGroup.position.clone().sub(this.shipOrigin);
-      const physComp = tryFindContainingCompartment(
-        shipTemplate,
-        lp,
-        this.activeShipCompartment,
-        0.55,
-      );
-      const alreadyInComp =
-        wasAboard && !firstSync && !unitChanged && physComp === serverShipCompartment;
-      const walkedAhead =
-        wasAboard &&
+      const serverCompChanged = serverShipCompartment !== prevServerComp;
+      const moveInFlightElsewhere =
         !firstSync &&
+        !modeChanged &&
         !unitChanged &&
-        ackTarget === serverShipCompartment &&
-        physComp !== null &&
-        findShipExitPath(shipTemplate, serverShipCompartment, physComp).length > 0;
+        !serverCompChanged &&
+        this.pendingMoveTarget !== null &&
+        this.pendingMoveTarget !== serverShipCompartment &&
+        nowMs - this.pendingMoveSentAtMs < 3500;
+      const shouldReconcile =
+        (firstSync || modeChanged || unitChanged || serverCompChanged || roomEventArrived) &&
+        !moveInFlightElsewhere;
 
-      this.activeShipCompartment = walkedAhead && physComp ? physComp : serverShipCompartment;
-      if (!alreadyInComp && !walkedAhead) {
-        this.teleportPlayer(this.getShipCompartmentSpawn(serverShipCompartment), Math.PI);
+      if (shouldReconcile) {
+        const ackTarget = this.pendingMoveTarget;
+        this.awaitingInitialRoomSync = false;
+        this.pendingMoveTarget = null;
+        this.nextMoveStepAllowedAtMs = nowMs + 220;
+        this.serverShipCompartment = serverShipCompartment;
+        this.serverStationRoomEntry = null;
+
+        const lp = this.tmpVecA.copy(this.playerGroup.position).sub(this.shipOrigin);
+        const physComp = tryFindContainingCompartment(
+          shipTemplate,
+          lp,
+          this.activeShipCompartment,
+          0.55,
+        );
+        const alreadyInComp =
+          wasAboard && !firstSync && !unitChanged && physComp === serverShipCompartment;
+        const walkedAhead =
+          wasAboard &&
+          !firstSync &&
+          !unitChanged &&
+          ackTarget === serverShipCompartment &&
+          physComp !== null &&
+          findShipExitPath(shipTemplate, serverShipCompartment, physComp).length > 0;
+
+        this.activeShipCompartment = walkedAhead && physComp ? physComp : serverShipCompartment;
+        if (!alreadyInComp && !walkedAhead) {
+          const spawnYaw = serverShipCompartment === "bridge" ? 0 : Math.PI;
+          this.teleportPlayer(this.getShipCompartmentSpawn(serverShipCompartment), spawnYaw);
+        }
+        this.cb.onPhysicalLocationChanged(this.activeShipCompartment);
       }
       if (this.airlockLeaveWi) {
         this.airlockLeaveWi.title = ambient.docked
@@ -503,39 +675,59 @@ export class TacsimStage3D {
       }
       this.updateCargoFill(Math.round(stowageCargoKg / 1000));
       this.updateHolotank(holotankData);
-      this.cb.onPhysicalLocationChanged(this.activeShipCompartment);
     } else if (!isAboardShip && serverStationRoomEntry) {
-      this.awaitingInitialRoomSync = false;
-      this.pendingMoveTarget = null;
-      this.nextMoveStepAllowedAtMs = performance.now() + 220;
-      this.serverStationRoomEntry = serverStationRoomEntry;
-      this.serverShipCompartment = null;
-
-      const packSwitched = prevPackId !== null && prevPackId !== stationPack.packId;
-      const physRoom = tryFindContainingRoomWithHysteresis(
-        stationPack,
-        this.playerGroup.position,
-        this.originOffsetX,
-        this.originOffsetZ,
-        this.activeStationRoomEntry,
-      );
-      const alreadyInRoom =
-        !wasAboard && !firstSync && !packSwitched && physRoom === serverStationRoomEntry;
-      const walkedAhead =
-        !wasAboard &&
+      const serverRoomChanged = serverStationRoomEntry !== prevServerRoom;
+      const moveInFlightElsewhere =
         !firstSync &&
+        !modeChanged &&
         !packSwitched &&
-        ackTarget === serverStationRoomEntry &&
-        physRoom !== null &&
-        areRoomsConnectedWithinHops(stationPack, serverStationRoomEntry, physRoom, 3);
+        !serverRoomChanged &&
+        this.pendingMoveTarget !== null &&
+        this.pendingMoveTarget !== serverStationRoomEntry &&
+        nowMs - this.pendingMoveSentAtMs < 3500;
+      const shouldReconcile =
+        (firstSync || modeChanged || packSwitched || serverRoomChanged || roomEventArrived) &&
+        !moveInFlightElsewhere;
 
-      const activeRoom = walkedAhead && physRoom ? physRoom : serverStationRoomEntry;
-      this.highlightStationRoom(activeRoom);
-      if (!alreadyInRoom && !walkedAhead) {
-        this.teleportPlayer(this.getStationRoomSpawn(serverStationRoomEntry), 0);
+      if (shouldReconcile) {
+        const ackTarget = this.pendingMoveTarget;
+        this.awaitingInitialRoomSync = false;
+        this.pendingMoveTarget = null;
+        this.nextMoveStepAllowedAtMs = nowMs + 220;
+        this.serverStationRoomEntry = serverStationRoomEntry;
+        this.serverShipCompartment = null;
+
+        const physRoom = tryFindContainingRoomWithHysteresis(
+          stationPack,
+          this.playerGroup.position,
+          this.originOffsetX,
+          this.originOffsetZ,
+          this.activeStationRoomEntry,
+        );
+        const alreadyInRoom =
+          !wasAboard && !firstSync && !packSwitched && physRoom === serverStationRoomEntry;
+        const walkedAhead =
+          !wasAboard &&
+          !firstSync &&
+          !packSwitched &&
+          ackTarget === serverStationRoomEntry &&
+          physRoom !== null &&
+          areRoomsConnectedWithinHops(stationPack, serverStationRoomEntry, physRoom, 3);
+
+        const activeRoom = walkedAhead && physRoom ? physRoom : serverStationRoomEntry;
+        this.highlightStationRoom(activeRoom);
+        if (!alreadyInRoom && !walkedAhead) {
+          // Face North (`-Z`, `yaw = Math.PI`) in right-handed station coordinates
+          this.teleportPlayer(this.getStationRoomSpawn(serverStationRoomEntry), Math.PI);
+        }
+        this.cb.onPhysicalLocationChanged(activeRoom);
       }
-      this.updateBerthGalleryCradles(ambient);
-      this.cb.onPhysicalLocationChanged(activeRoom);
+      this.updateBerthGalleryCradles(
+        ambient,
+        berthDockedHulls,
+        berthOwnHullName,
+        berthOwnHullDockedHere,
+      );
     }
 
     const scopeKey = isAboardShip
@@ -609,10 +801,33 @@ export class TacsimStage3D {
     return { root, leftLeg, rightLeg, leftArm, rightArm };
   }
 
+  private pruneActorInteractable(actorId: string): void {
+    const targetId = `actor:${actorId}`;
+    for (const list of [this.interactables, this.shipInteractables]) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i]?.id === targetId) {
+          list.splice(i, 1);
+        }
+      }
+    }
+    if (this.focusedInteractable?.id === targetId) {
+      this.focusedInteractable = null;
+      this.cb.onFocusedPromptChanged(null);
+    }
+  }
+
+  private removeAndDisposeActor(rec: SpawnedActorRecord): void {
+    this.actorsRoot.remove(rec.group);
+    this.disposeSubtree(rec.group);
+    this.actorsRoot.remove(rec.billboardSprite);
+    this.disposeSubtree(rec.billboardSprite);
+    rec.billboardTex.dispose();
+    this.pruneActorInteractable(rec.id);
+  }
+
   private clearAllActors(): void {
     for (const rec of this.spawnedActors.values()) {
-      this.actorsRoot.remove(rec.group);
-      rec.billboardTex.dispose();
+      this.removeAndDisposeActor(rec);
     }
     this.spawnedActors.clear();
   }
@@ -638,6 +853,7 @@ export class TacsimStage3D {
 
       const existing = this.spawnedActors.get(act.id);
       if (existing) {
+        existing.actor = act;
         existing.targetPos.copy(spot);
         existing.safeBounds = safeBounds;
         this.refreshActorBillboard(existing, act, actorSpeech, actorComposing, now);
@@ -665,9 +881,8 @@ export class TacsimStage3D {
       sprite.scale.set(2.9, 1.45, 1);
       sprite.position.set(spot.x, spot.y + 2.35, spot.z);
 
-      const group = new THREE.Group();
-      group.add(suit.root);
-      this.actorsRoot.add(group);
+      // Add `suit.root` directly to `actorsRoot` so `actorsRoot.remove(rec.group)` always removes it cleanly (`W3D-C1`).
+      this.actorsRoot.add(suit.root);
       this.actorsRoot.add(sprite);
 
       // Register click/[E] interactable on actor mesh
@@ -689,6 +904,7 @@ export class TacsimStage3D {
         id: act.id,
         name: act.name,
         isNpc: act.isNpc,
+        actor: act,
         group: suit.root,
         leftLeg: suit.leftLeg,
         rightLeg: suit.rightLeg,
@@ -700,6 +916,9 @@ export class TacsimStage3D {
         billboardTex: tex,
         billboardCanvas: canvas,
         lastRenderedLabel: "",
+        speechExpiresAt: 0,
+        lastIsTyping: false,
+        interactable: actorWi,
         safeBounds,
       };
       this.spawnedActors.set(act.id, rec);
@@ -708,9 +927,7 @@ export class TacsimStage3D {
 
     for (const [id, rec] of [...this.spawnedActors.entries()]) {
       if (!seenIds.has(id)) {
-        this.actorsRoot.remove(rec.group);
-        this.actorsRoot.remove(rec.billboardSprite);
-        rec.billboardTex.dispose();
+        this.removeAndDisposeActor(rec);
         this.spawnedActors.delete(id);
       }
     }
@@ -725,9 +942,18 @@ export class TacsimStage3D {
   ): void {
     const sp = actorSpeech[act.id] ?? actorSpeech[act.name.toLowerCase()];
     const activeSpeech = sp && sp.expiresAt > nowMs ? sp.text : "";
-    const isTyping =
-      !activeSpeech &&
-      Boolean(actorComposing[act.id] || actorComposing[act.name.toLowerCase()]);
+    const isTyping = Boolean(actorComposing[act.id] || actorComposing[act.name.toLowerCase()]);
+    rec.speechExpiresAt = activeSpeech && sp ? sp.expiresAt : 0;
+    rec.lastIsTyping = isTyping;
+    this.renderActorBillboard(rec, act, activeSpeech, isTyping);
+  }
+
+  private renderActorBillboard(
+    rec: SpawnedActorRecord,
+    act: VisibleRoomActor,
+    activeSpeech: string,
+    isTyping: boolean,
+  ): void {
     const bubble = activeSpeech || (isTyping ? "..." : "");
     const sig = `${act.name}|${act.isNpc ? "N" : "P"}|${bubble}`;
     if (sig === rec.lastRenderedLabel) return;
@@ -814,16 +1040,19 @@ export class TacsimStage3D {
     if (!pack || !room) return new THREE.Vector3(0, 6, 0);
 
     const elev = getFloorElevationY(pack, room.floorIndex);
-    const cx = (room.minX + room.maxX) * 0.5 + this.originOffsetX;
-    const cz = (room.minY + room.maxY) * 0.5 + this.originOffsetZ;
+    const centerPos = this.atlasToWorld(
+      (room.minX + room.maxX) * 0.5,
+      elev,
+      (room.minY + room.maxY) * 0.5,
+    );
     const halfW = Math.max(1.5, (room.maxX - room.minX) * 0.5 - 2.2);
     const halfD = Math.max(1.5, (room.maxY - room.minY) * 0.5 - 2.2);
     const angle = idx * 1.35 + 0.6;
     const rad = Math.min(halfW, halfD, 2.8 + (idx % 3) * 1.1);
     return new THREE.Vector3(
-      cx + Math.cos(angle) * rad,
+      centerPos.x + Math.cos(angle) * rad,
       elev,
-      cz + Math.sin(angle) * rad,
+      centerPos.z + Math.sin(angle) * rad,
     );
   }
 
@@ -848,8 +1077,8 @@ export class TacsimStage3D {
     return {
       minX: room.minX + this.originOffsetX,
       maxX: room.maxX + this.originOffsetX,
-      minZ: room.minY + this.originOffsetZ,
-      maxZ: room.maxY + this.originOffsetZ,
+      minZ: this.atlasZ(room.maxY),
+      maxZ: this.atlasZ(room.minY),
       margin: 1.5,
     };
   }
@@ -860,13 +1089,16 @@ export class TacsimStage3D {
     this.activeStationPack = pack;
     this.builtStationSig = sig;
 
-    while (this.stationRoot.children.length > 0) {
-      this.stationRoot.remove(this.stationRoot.children[0]!);
-    }
+    this.clearAndDisposeGroup(this.stationRoot);
     this.roomLights.clear();
     this.wallObstacles.length = 0;
     this.stationStairs.length = 0;
-    this.interactables.length = 0;
+    // Preserve live actor interactables? Rebuilding station clears station fixtures, re-keep spawned actors in syncOccupants.
+    for (let i = this.interactables.length - 1; i >= 0; i--) {
+      if (!this.interactables[i]?.id.startsWith("actor:")) {
+        this.interactables.splice(i, 1);
+      }
+    }
     this.cradleSignSprites = [];
     this.cradleHullGroups = [];
     this.airlockBoardWi = null;
@@ -909,8 +1141,13 @@ export class TacsimStage3D {
     }
   }
 
+  private atlasZ(ay: number): number {
+    return -(ay + this.originOffsetZ);
+  }
+
   private atlasToWorld(ax: number, elevY: number, ay: number): THREE.Vector3 {
-    return new THREE.Vector3(ax + this.originOffsetX, elevY, ay + this.originOffsetZ);
+    const p = atlasToWorldPos(ax, elevY, ay, this.originOffsetX, this.originOffsetZ);
+    return new THREE.Vector3(p.x, p.y, p.z);
   }
 
   private buildStationRoom(
@@ -927,8 +1164,12 @@ export class TacsimStage3D {
     const height = getFloorHeight(pack, room.floorIndex);
     const w = room.maxX - room.minX;
     const d = room.maxY - room.minY;
-    const cx = (room.minX + room.maxX) * 0.5 + this.originOffsetX;
-    const cz = (room.minY + room.maxY) * 0.5 + this.originOffsetZ;
+    const roomMinX = room.minX + this.originOffsetX;
+    const roomMaxX = room.maxX + this.originOffsetX;
+    const roomMinZ = this.atlasZ(room.maxY);
+    const roomMaxZ = this.atlasZ(room.minY);
+    const cx = (roomMinX + roomMaxX) * 0.5;
+    const cz = (roomMinZ + roomMaxZ) * 0.5;
     const isGallery = room.entryId.includes("berth_gallery");
 
     const floorMat = new THREE.MeshStandardMaterial({
@@ -939,26 +1180,29 @@ export class TacsimStage3D {
       metalness: 0.38,
     });
 
-    // Cut stairwell opening if an inter-floor stair lands in this upper-floor room
+    // Cut stairwell opening ONLY when this room is the UPPER end of an inter-floor exit (`W3D-H3`),
+    // using the exact authored `portal.at` placement clamped inside upper ∩ lower footprints.
     let stairCut: RectXZ | null = null;
-    if (room.floorIndex > 0) {
-      for (const ex of interFloorExits) {
-        if (ex.fromRoom === room.entryId || ex.toRoom === room.entryId) {
-          const sx = cx + w * 0.22;
-          const sz = cz;
-          stairCut = { minX: sx - 1.5, maxX: sx + 1.5, minZ: sz - 3.2, maxZ: sz + 3.2 };
-          break;
-        }
+    for (const ex of interFloorExits) {
+      const placement = computeInterFloorStairPlacement(pack, ex);
+      if (placement && placement.upperRoomId === room.entryId) {
+        stairCut = {
+          minX: placement.cutMinAx + this.originOffsetX,
+          maxX: placement.cutMaxAx + this.originOffsetX,
+          minZ: this.atlasZ(placement.cutMaxAy),
+          maxZ: this.atlasZ(placement.cutMinAy),
+        };
+        break;
       }
     }
     this.addSlabWithCutout(
       this.stationRoot,
       elev - 0.14,
       0.28,
-      room.minX + this.originOffsetX,
-      room.maxX + this.originOffsetX,
-      room.minY + this.originOffsetZ,
-      room.maxY + this.originOffsetZ,
+      roomMinX,
+      roomMaxX,
+      roomMinZ,
+      roomMaxZ,
       stairCut,
       floorMat,
     );
@@ -974,10 +1218,10 @@ export class TacsimStage3D {
         this.stationRoot,
         elev - 0.30,
         0.05,
-        room.minX + this.originOffsetX,
-        room.maxX + this.originOffsetX,
-        room.minY + this.originOffsetZ,
-        room.maxY + this.originOffsetZ,
+        roomMinX,
+        roomMaxX,
+        roomMinZ,
+        roomMaxZ,
         stairCut,
         ceilMat,
       );
@@ -994,7 +1238,7 @@ export class TacsimStage3D {
       metalness: 0.32,
     });
 
-    // North wall (maxY) & South wall (minY)
+    // North wall (maxY -> roomMinZ) & South wall (minY -> roomMaxZ)
     this.buildHorizontalWall(room, room.maxY, elev, height, wallMat, hDoors);
     if (isGallery) {
       this.buildGalleryViewportWall(room, elev, height);
@@ -1018,7 +1262,7 @@ export class TacsimStage3D {
     this.stationRoot.add(pt);
     this.roomLights.set(room.entryId, pt);
 
-    // Diegetic Room Status Board on North wall (avoiding doors)
+    // Diegetic Room Status Board on North wall (roomMinZ), facing South (+Z, yaw=0) into the room
     const boardX = cx;
     const hasNorthDoorCenter = hDoors.some(
       (hd) => hd.floor === room.floorIndex && Math.abs(hd.yWall - room.maxY) < 0.3 && Math.abs(hd.centerX + this.originOffsetX - boardX) < 3.5,
@@ -1027,8 +1271,8 @@ export class TacsimStage3D {
     this.buildDiegeticWallSign(
       this.stationRoot,
       `${room.name.toUpperCase()}\n${room.shortDesc}`,
-      new THREE.Vector3(placedBoardX, elev + 2.35, room.maxY + this.originOffsetZ - 0.16),
-      Math.PI,
+      new THREE.Vector3(placedBoardX, elev + 2.35, roomMinZ + 0.16),
+      0,
       3.8,
       1.35,
     );
@@ -1064,7 +1308,7 @@ export class TacsimStage3D {
 
     const doorHalfW = 1.65;
     const doorH = Math.min(2.9, height - 0.4);
-    const wz = yAtlas + this.originOffsetZ;
+    const wz = this.atlasZ(yAtlas);
     let curX = room.minX;
 
     for (const dx of doors) {
@@ -1122,14 +1366,14 @@ export class TacsimStage3D {
       const segEnd = dy - doorHalfW;
       if (segEnd - curY > 0.2) {
         const sd = segEnd - curY;
-        const scz = (curY + segEnd) * 0.5 + this.originOffsetZ;
+        const scz = this.atlasZ((curY + segEnd) * 0.5);
         this.addBox(this.stationRoot, new THREE.Vector3(wx, elev + height * 0.5, scz), new THREE.Vector3(0.26, height, sd), mat, true);
       }
       if (height - doorH > 0.2) {
         const lh = height - doorH;
         this.addBox(
           this.stationRoot,
-          new THREE.Vector3(wx, elev + doorH + lh * 0.5, dy + this.originOffsetZ),
+          new THREE.Vector3(wx, elev + doorH + lh * 0.5, this.atlasZ(dy)),
           new THREE.Vector3(0.26, lh, doorHalfW * 2),
           mat,
           false,
@@ -1140,7 +1384,7 @@ export class TacsimStage3D {
 
     if (room.maxY - curY > 0.2) {
       const sd = room.maxY - curY;
-      const scz = (curY + room.maxY) * 0.5 + this.originOffsetZ;
+      const scz = this.atlasZ((curY + room.maxY) * 0.5);
       this.addBox(this.stationRoot, new THREE.Vector3(wx, elev + height * 0.5, scz), new THREE.Vector3(0.26, height, sd), mat, true);
     }
   }
@@ -1148,7 +1392,7 @@ export class TacsimStage3D {
   private buildGalleryViewportWall(room: AtlasRoomDef, elev: number, height: number): void {
     const w = room.maxX - room.minX;
     const cx = (room.minX + room.maxX) * 0.5 + this.originOffsetX;
-    const wz = room.minY + this.originOffsetZ;
+    const wz = this.atlasZ(room.minY);
     const frameMat = new THREE.MeshStandardMaterial({ color: 0x2c3644, roughness: 0.45, metalness: 0.65 });
     const railMat = new THREE.MeshStandardMaterial({ color: 0x8090a4, roughness: 0.35, metalness: 0.78 });
     const glassMat = new THREE.MeshPhysicalMaterial({
@@ -1163,8 +1407,8 @@ export class TacsimStage3D {
     this.addBox(this.stationRoot, new THREE.Vector3(cx, elev + height - 0.32, wz), new THREE.Vector3(w, 0.64, 0.28), frameMat, false);
     this.addBox(this.stationRoot, new THREE.Vector3(cx, elev + height * 0.5, wz), new THREE.Vector3(w, height - 1.4, 0.08), glassMat, true);
 
-    // Brushed-steel stanchion handrail inside the gallery
-    const railZ = wz + 0.85;
+    // Brushed-steel stanchion handrail inside the gallery (North of South viewport wall -> -Z)
+    const railZ = this.atlasZ(room.minY + 0.85);
     this.addBox(this.stationRoot, new THREE.Vector3(cx, elev + 1.02, railZ), new THREE.Vector3(w - 2.0, 0.06, 0.06), railMat, false);
     const stanchions = Math.max(4, Math.floor(w / 6));
     for (let i = 0; i <= stanchions; i++) {
@@ -1172,8 +1416,8 @@ export class TacsimStage3D {
       this.addBox(this.stationRoot, new THREE.Vector3(sx, elev + 0.51, railZ), new THREE.Vector3(0.05, 1.02, 0.05), railMat, false);
     }
 
-    // Berth Gallery Airlock Boarding Hatch (`+ship/board`)
-    const airlockPos = new THREE.Vector3(room.minX + 8 + this.originOffsetX, elev + 1.35, wz + 0.25);
+    // Berth Gallery Airlock Boarding Hatch (`+ship/board`), inside the gallery
+    const airlockPos = new THREE.Vector3(room.minX + 8 + this.originOffsetX, elev + 1.35, this.atlasZ(room.minY + 0.25));
     const hatchMat = new THREE.MeshStandardMaterial({ color: 0x22553a, emissive: 0x22cc66, emissiveIntensity: 0.8 });
     const hatch = this.addBox(this.stationRoot, airlockPos, new THREE.Vector3(2.3, 2.7, 0.32), hatchMat, false);
     this.airlockBoardWi = {
@@ -1200,18 +1444,18 @@ export class TacsimStage3D {
     if (!gallery) return;
 
     const elev = getFloorElevationY(pack, gallery.floorIndex);
-    const wz = gallery.minY + this.originOffsetZ;
+    const wz = this.atlasZ(gallery.minY);
     const gantryMat = new THREE.MeshStandardMaterial({ color: 0x28323e, roughness: 0.55, metalness: 0.68 });
     const hullMat = new THREE.MeshStandardMaterial({ color: 0x5c6a7a, roughness: 0.48, metalness: 0.52 });
     const trimMat = new THREE.MeshStandardMaterial({ color: 0x3b4858, roughness: 0.42, metalness: 0.62 });
 
-    // Exterior starfield outside the gallery window
+    // Exterior starfield outside the South gallery viewport (+Z)
     const starGeo = new THREE.BufferGeometry();
     const starPts = new Float32Array(180 * 3);
     for (let i = 0; i < 180; i++) {
       starPts[i * 3] = ((i * 53) % 180) - 90;
       starPts[i * 3 + 1] = elev - 18 + ((i * 29) % 52);
-      starPts[i * 3 + 2] = wz - 26 - ((i * 41) % 95);
+      starPts[i * 3 + 2] = wz + 26 + ((i * 41) % 95);
     }
     starGeo.setAttribute("position", new THREE.BufferAttribute(starPts, 3));
     const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xd8ecff, size: 0.35 }));
@@ -1221,26 +1465,28 @@ export class TacsimStage3D {
     const span = gallery.maxX - gallery.minX;
     for (let c = 0; c < cradleCount; c++) {
       const cx = gallery.minX + span * ((c + 0.5) / cradleCount) + this.originOffsetX;
-      const cz = wz - 17;
+      const cz = wz + 17;
 
-      // Shipyard Cradle Gantry & Docking Boom
+      // Shipyard Cradle Gantry & Docking Boom (South of gallery viewport, +Z)
       this.addBox(this.stationRoot, new THREE.Vector3(cx, elev - 2.6, cz), new THREE.Vector3(10.5, 0.55, 22), gantryMat, false);
       this.addBox(this.stationRoot, new THREE.Vector3(cx - 5.1, elev + 1.2, cz), new THREE.Vector3(0.45, 7.6, 0.45), gantryMat, false);
       this.addBox(this.stationRoot, new THREE.Vector3(cx + 5.1, elev + 1.2, cz), new THREE.Vector3(0.45, 7.6, 0.45), gantryMat, false);
       this.addBox(this.stationRoot, new THREE.Vector3(cx, elev + 4.9, cz), new THREE.Vector3(10.6, 0.45, 0.45), gantryMat, false);
-      this.addBox(this.stationRoot, new THREE.Vector3(cx, elev + 1.5, wz - 6.5), new THREE.Vector3(1.1, 1.1, 12.5), trimMat, false);
+      this.addBox(this.stationRoot, new THREE.Vector3(cx, elev + 1.5, wz + 6.5), new THREE.Vector3(1.1, 1.1, 12.5), trimMat, false);
 
       const spot = new THREE.PointLight(0x99ccff, 2.4, 28, 1.2);
-      spot.position.set(cx, elev + 4.4, cz + 4);
+      spot.position.set(cx, elev + 4.4, cz - 4);
       this.stationRoot.add(spot);
 
       const hull = this.buildSculptedDrayHull(hullMat, trimMat);
       hull.position.set(cx, elev - 0.1, cz);
+      hull.rotation.y = Math.PI; // Nose points -Z toward gallery docking boom
+      hull.visible = false;
       this.stationRoot.add(hull);
       this.cradleHullGroups.push(hull);
 
-      const sign = this.createFloatingBannerSprite(`Cradle 0${c + 1} — Standby`);
-      sign.sprite.position.set(cx, elev + 3.6, cz + 7.5);
+      const sign = this.createFloatingBannerSprite(`Cradle 0${c + 1} — Clear Berth`);
+      sign.sprite.position.set(cx, elev + 3.6, cz - 7.5);
       this.stationRoot.add(sign.sprite);
       this.cradleSignSprites.push(sign);
     }
@@ -1256,18 +1502,27 @@ export class TacsimStage3D {
     return g;
   }
 
-  private updateBerthGalleryCradles(ambient: DecodedRoomAmbient): void {
-    if (this.airlockBoardWi && ambient.ownHullName) {
-      this.airlockBoardWi.title = ambient.ownHullDockedHere
-        ? `Board ${ambient.ownHullName}`
-        : `${ambient.ownHullName} (Not Cradled Here)`;
+  private updateBerthGalleryCradles(
+    ambient: DecodedRoomAmbient,
+    berthDockedHulls?: ReadonlyArray<DockedHullSummary>,
+    berthOwnHullName?: string | null,
+    berthOwnHullDockedHere?: boolean,
+  ): void {
+    const ownName = berthOwnHullName ?? ambient.ownHullName;
+    const ownDockedHere = berthOwnHullDockedHere ?? ambient.ownHullDockedHere;
+    const dockedList = berthDockedHulls ?? ambient.dockedHulls;
+
+    if (this.airlockBoardWi && ownName) {
+      this.airlockBoardWi.title = ownDockedHere
+        ? `Board ${ownName}`
+        : `${ownName} (Not Cradled Here)`;
     }
 
     const labels: string[] = [];
-    if (ambient.ownHullDockedHere && ambient.ownHullName) {
-      labels.push(`Cradle 01 — ${ambient.ownHullName} [Your Hull]`);
+    if (ownDockedHere && ownName) {
+      labels.push(`Cradle 01 — ${ownName} [Your Hull]`);
     }
-    for (const dh of ambient.dockedHulls) {
+    for (const dh of dockedList) {
       if (!dh.name) continue;
       const upper = dh.name.toUpperCase();
       if (labels.some((l) => l.toUpperCase().includes(upper))) continue;
@@ -1279,7 +1534,8 @@ export class TacsimStage3D {
       const lbl = labels[idx] ?? `Cradle 0${idx + 1} — Clear Berth`;
       this.drawBannerCanvas(entry.canvas, entry.tex, lbl);
       const hull = this.cradleHullGroups[idx];
-      if (hull) hull.visible = idx < Math.max(1, labels.length);
+      // Show 3D hull strictly when a ship occupies this cradle (`W3D-L3`: no ghost hull in empty Cradle 01)
+      if (hull) hull.visible = idx < labels.length;
     });
   }
 
@@ -1297,42 +1553,60 @@ export class TacsimStage3D {
     const railMat = new THREE.MeshStandardMaterial({ color: 0x8596aa, roughness: 0.4, metalness: 0.72 });
 
     for (const ex of interFloorExits) {
-      const rA = pack.rooms.get(ex.fromRoom);
-      const rB = pack.rooms.get(ex.toRoom);
-      if (!rA || !rB) continue;
+      const st = computeInterFloorStairPlacement(pack, ex);
+      if (!st) continue;
+      const upper = pack.rooms.get(st.upperRoomId);
+      const lower = pack.rooms.get(st.lowerRoomId);
+      if (!upper || !lower) continue;
 
-      const upper = rA.floorIndex > rB.floorIndex ? rA : rB;
-      const lower = rA.floorIndex > rB.floorIndex ? rB : rA;
       const yTop = getFloorElevationY(pack, upper.floorIndex);
       const yBot = getFloorElevationY(pack, lower.floorIndex);
 
-      const cx = (upper.minX + upper.maxX) * 0.5 + (upper.maxX - upper.minX) * 0.22 + this.originOffsetX;
-      const cz = (upper.minY + upper.maxY) * 0.5 + this.originOffsetZ;
-      const pBot = new THREE.Vector3(cx, yBot, cz - 2.8);
-      const pTop = new THREE.Vector3(cx, yTop, cz + 2.8);
+      const pBot =
+        st.axis === "x"
+          ? this.atlasToWorld(st.centerAx - st.halfRun, yBot, st.centerAy)
+          : this.atlasToWorld(st.centerAx, yBot, st.centerAy - st.halfRun);
+      const pTop =
+        st.axis === "x"
+          ? this.atlasToWorld(st.centerAx + st.halfRun, yTop, st.centerAy)
+          : this.atlasToWorld(st.centerAx, yTop, st.centerAy + st.halfRun);
 
       const steps = 14;
+      const treadW = st.halfWidth * 1.8;
+      const treadD = Math.max(0.36, (st.halfRun * 2) / steps + 0.12);
+      const stepSize =
+        st.axis === "x"
+          ? new THREE.Vector3(treadD, 0.28, treadW)
+          : new THREE.Vector3(treadW, 0.28, treadD);
+
       for (let i = 0; i < steps; i++) {
         const t = (i + 0.5) / steps;
         const pos = new THREE.Vector3().lerpVectors(pBot, pTop, t);
-        this.addBox(this.stationRoot, pos, new THREE.Vector3(2.4, 0.28, 0.52), stepMat, false);
+        this.addBox(this.stationRoot, pos, stepSize, stepMat, false);
       }
 
-      // Brushed-steel stair handrails (never neon cyan bars!)
-      for (const side of [-1.25, 1.25]) {
-        const rBot = pBot.clone().add(new THREE.Vector3(side, 0.95, 0));
-        const rTop = pTop.clone().add(new THREE.Vector3(side, 0.95, 0));
+      // Brushed-steel stair handrails
+      const railOff = st.halfWidth * 0.92;
+      for (const side of [-railOff, railOff]) {
+        const offsetVec =
+          st.axis === "x"
+            ? new THREE.Vector3(0, 0.95, side)
+            : new THREE.Vector3(side, 0.95, 0);
+        const rBot = pBot.clone().add(offsetVec);
+        const rTop = pTop.clone().add(offsetVec);
         const mid = rBot.clone().add(rTop).multiplyScalar(0.5);
         const len = rBot.distanceTo(rTop);
         const rail = this.addBox(this.stationRoot, mid, new THREE.Vector3(0.05, 0.05, len), railMat, false);
         rail.lookAt(rTop);
       }
 
+      const cx = st.centerAx + this.originOffsetX;
+      const cz = this.atlasZ(st.centerAy);
       this.stationStairs.push({
-        minX: cx - 1.35,
-        maxX: cx + 1.35,
-        minZ: cz - 3.1,
-        maxZ: cz + 3.1,
+        minX: st.axis === "x" ? Math.min(pBot.x, pTop.x) - 0.3 : cx - st.halfWidth,
+        maxX: st.axis === "x" ? Math.max(pBot.x, pTop.x) + 0.3 : cx + st.halfWidth,
+        minZ: st.axis === "x" ? cz - st.halfWidth : Math.min(pBot.z, pTop.z) - 0.3,
+        maxZ: st.axis === "x" ? cz + st.halfWidth : Math.max(pBot.z, pTop.z) + 0.3,
         pA: pBot,
         pB: pTop,
       });
@@ -1373,18 +1647,13 @@ export class TacsimStage3D {
     };
 
     for (const r of pack.rooms.values()) {
+      const deskSpec = classifyStationDesk(pack.packId, r);
+      if (deskSpec) {
+        placeServiceDesk(r.entryId, deskSpec.deskKey, deskSpec.title, deskSpec.subtitle);
+        continue;
+      }
       const low = `${r.entryId} ${r.name}`.toLowerCase();
-      if (low.includes("registry")) {
-        placeServiceDesk(r.entryId, "ui:open_coop", "Co-op First Captain Desk", "Enroll a charter Dray hull (+coop)");
-      } else if (low.includes("exchange")) {
-        placeServiceDesk(r.entryId, "ui:open_trade", "Commodity Exchange Terminal", "Live asks, standing bids & 1-click trade");
-      } else if (low.includes("chandlery")) {
-        placeServiceDesk(r.entryId, "ui:open_trade", "Chandlery & Bunkering Desk", "Reaction mass & crew provisions");
-      } else if (low.includes("dockmaster")) {
-        placeServiceDesk(r.entryId, "ui:open_sailing", "Dockmaster Clearance Desk", "Sailing plans & corridor departures");
-      } else if (low.includes("simulator_lobby")) {
-        placeServiceDesk(r.entryId, "ui:open_sim", "Simulator Roster Selector", "Pick Red/Blue team, unit & AI fill");
-      } else if (low.includes("sim_red") || low.includes("sim_blue")) {
+      if (low.includes("sim_red") || low.includes("sim_blue")) {
         const isRed = low.includes("sim_red");
         const teamRamp = isRed ? RED_TEAM_RAMP : BLUE_TEAM_RAMP;
         const simModels = ["vf.mech.brawler_med", "vf.mech.assault_hvy", "vf.mech.recon_lt"];
@@ -1434,14 +1703,18 @@ export class TacsimStage3D {
     this.activeShipTemplate = tpl;
     this.builtShipUnitId = tpl.unitId;
 
-    while (this.shipRoot.children.length > 0) {
-      this.shipRoot.remove(this.shipRoot.children[0]!);
-    }
+    this.clearAndDisposeGroup(this.shipRoot);
     this.shipWallObstacles.length = 0;
     this.shipStairs.length = 0;
-    this.shipInteractables.length = 0;
+    for (let i = this.shipInteractables.length - 1; i >= 0; i--) {
+      if (!this.shipInteractables[i]?.id.startsWith("actor:")) {
+        this.shipInteractables.splice(i, 1);
+      }
+    }
     this.holotankContactsGroup = null;
     this.cargoPalletsGroup = null;
+    this.lastCargoStacks = -1;
+    this.lastHolotankFeed = undefined;
     this.airlockLeaveWi = null;
 
     const tex = getOrBuildProceduralTextures();
@@ -1493,14 +1766,43 @@ export class TacsimStage3D {
       this.addShipBox(new THREE.Vector3(minX, comp.localCenter.y, comp.localCenter.z), new THREE.Vector3(0.22, comp.localSize.y, comp.localSize.z), sideMat, true);
       this.addShipBox(new THREE.Vector3(maxX, comp.localCenter.y, comp.localCenter.z), new THREE.Vector3(0.22, comp.localSize.y, comp.localSize.z), sideMat, true);
 
-      if (comp.id === "airlock" || comp.id === "hold") {
+      if (comp.id === "airlock" || comp.id === "hold" || comp.id === "bay") {
         this.addShipBox(new THREE.Vector3(comp.localCenter.x, comp.localCenter.y, maxZ), new THREE.Vector3(comp.localSize.x, comp.localSize.y, 0.24), sideMat, true);
       } else if (comp.id === "bridge") {
         this.buildBridgeCanopy(comp, floorY, ceilY, maxZ, sideMat, frameMat);
-        this.addShipBox(new THREE.Vector3(comp.localCenter.x, comp.localCenter.y, minZ), new THREE.Vector3(comp.localSize.x, comp.localSize.y, 0.22), sideMat, false);
+        // Framed aft bulkhead around `BRIDGE_STAIRWELL_XZ` with solid side panels (`W3D-M5`)
+        const openMinX = Math.max(minX, BRIDGE_STAIRWELL_XZ.minX);
+        const openMaxX = Math.min(maxX, BRIDGE_STAIRWELL_XZ.maxX);
+        if (openMinX - minX > 0.1) {
+          this.addShipBox(
+            new THREE.Vector3((minX + openMinX) * 0.5, comp.localCenter.y, minZ),
+            new THREE.Vector3(openMinX - minX, comp.localSize.y, 0.22),
+            sideMat,
+            true,
+          );
+        }
+        if (maxX - openMaxX > 0.1) {
+          this.addShipBox(
+            new THREE.Vector3((openMaxX + maxX) * 0.5, comp.localCenter.y, minZ),
+            new THREE.Vector3(maxX - openMaxX, comp.localSize.y, 0.22),
+            sideMat,
+            true,
+          );
+        }
+        if (openMaxX - openMinX > 0.2) {
+          const lintelH = 0.36;
+          this.addShipBox(
+            new THREE.Vector3((openMinX + openMaxX) * 0.5, ceilY - lintelH * 0.5, minZ),
+            new THREE.Vector3(openMaxX - openMinX, lintelH, 0.22),
+            frameMat,
+            false,
+          );
+        }
       }
 
-      if (comp.id === "crew" || (comp.id === "engineering" && !tpl.compartments.has("bay")) || comp.id === "bay") {
+      // Always seal `crew`, `engineering`, and `bay` aft bulkheads (`W3D-M5`: prevents walking across
+      // the 0.5 m gap between `engineering` and `bay`, since `bay` is accessed via `+tv/bay in` from `hold`).
+      if (comp.id === "crew" || comp.id === "engineering" || comp.id === "bay") {
         this.addShipBox(new THREE.Vector3(comp.localCenter.x, comp.localCenter.y, minZ), new THREE.Vector3(comp.localSize.x, comp.localSize.y, 0.24), sideMat, true);
       }
 
@@ -1681,20 +1983,33 @@ export class TacsimStage3D {
     });
   }
 
+  private getOrCreateHoloMat(hex: number): THREE.MeshBasicMaterial {
+    let mat = this.holoBlipMats.get(hex);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({ color: hex });
+      this.holoBlipMats.set(hex, mat);
+      this.sharedPoolMats.add(mat);
+    }
+    return mat;
+  }
+
   private updateCargoFill(loadedTonnes: number): void {
     if (!this.cargoPalletsGroup || !this.activeShipTemplate) return;
     const hold = this.activeShipTemplate.compartments.get("hold");
     if (!hold) return;
+    const stacks = Math.max(0, Math.min(8, Math.floor((loadedTonnes + 11) / 12)));
+    if (stacks === this.lastCargoStacks && this.cargoPalletsGroup.children.length === stacks) {
+      return;
+    }
+    this.lastCargoStacks = stacks;
     while (this.cargoPalletsGroup.children.length > 0) {
       this.cargoPalletsGroup.remove(this.cargoPalletsGroup.children[0]!);
     }
-    const stacks = Math.max(0, Math.min(8, Math.floor((loadedTonnes + 11) / 12)));
     const floorY = hold.localCenter.y - hold.localSize.y * 0.5;
-    const crateMat = new THREE.MeshStandardMaterial({ color: 0x4f6882, roughness: 0.6, metalness: 0.35 });
     for (let i = 0; i < stacks; i++) {
       const sx = i % 2 === 0 ? -2.8 : 2.8;
       const sz = hold.localCenter.z - 3.6 + Math.floor(i / 2) * 2.4;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.15, 1.4), crateMat);
+      const mesh = new THREE.Mesh(this.cargoCrateGeo, this.cargoCrateMat);
       mesh.position.set(sx, floorY + 0.58, sz);
       this.cargoPalletsGroup.add(mesh);
     }
@@ -1702,11 +2017,16 @@ export class TacsimStage3D {
 
   private updateHolotank(holoFeed: unknown): void {
     if (!this.holotankContactsGroup) return;
+    if (holoFeed === this.lastHolotankFeed && this.holotankContactsGroup.children.length > 0) {
+      return;
+    }
+    this.lastHolotankFeed = holoFeed;
     while (this.holotankContactsGroup.children.length > 0) {
       this.holotankContactsGroup.remove(this.holotankContactsGroup.children[0]!);
     }
     const addBlip = (x: number, y: number, z: number, r: number, hex: number): void => {
-      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), new THREE.MeshBasicMaterial({ color: hex }));
+      const m = new THREE.Mesh(this.holoBlipGeo, this.getOrCreateHoloMat(hex));
+      m.scale.setScalar(r);
       m.position.set(x, y, z);
       this.holotankContactsGroup!.add(m);
     };
@@ -1946,7 +2266,10 @@ export class TacsimStage3D {
   // -- Frame Loop, Movement, Collision & Sync -------------------------------
 
   private readonly onFrame = (nowMs: number): void => {
-    if (this.disposed) return;
+    if (this.disposed || this.contextLost) {
+      this.rafId = 0;
+      return;
+    }
     this.rafId = requestAnimationFrame(this.onFrame);
     const dt = Math.min(0.08, Math.max(0.001, (nowMs - this.lastFrameMs) / 1000));
     this.lastFrameMs = nowMs;
@@ -1982,15 +2305,14 @@ export class TacsimStage3D {
     }
 
     const speed = sprint ? 6.8 : 4.3;
-    const len = Math.hypot(fwdIn, rightIn);
-    if (len > 0.01) {
-      const nf = fwdIn / len;
-      const nr = rightIn / len;
-      const sin = Math.sin(this.camYawRad);
-      const cos = Math.cos(this.camYawRad);
-      const moveX = (sin * nf + cos * nr) * speed * dt;
-      const moveZ = (cos * nf - sin * nr) * speed * dt;
-
+    const { dx: moveX, dz: moveZ } = computeRightHandedMoveDelta(
+      this.camYawRad,
+      fwdIn,
+      rightIn,
+      speed,
+      dt,
+    );
+    if (Math.abs(moveX) > 1e-6 || Math.abs(moveZ) > 1e-6) {
       this.tryMovePlayerAxis(moveX, 0);
       this.tryMovePlayerAxis(0, moveZ);
       this.snapPlayerToDeckOrStair();
@@ -2003,10 +2325,11 @@ export class TacsimStage3D {
       this.playerLeftArm.rotation.x = swing * 0.7;
       this.playerRightArm.rotation.x = -swing * 0.7;
     } else {
-      this.playerLeftLeg.rotation.x *= 0.82;
-      this.playerRightLeg.rotation.x *= 0.82;
-      this.playerLeftArm.rotation.x *= 0.82;
-      this.playerRightArm.rotation.x *= 0.82;
+      const decay = Math.exp(-12 * dt);
+      this.playerLeftLeg.rotation.x *= decay;
+      this.playerRightLeg.rotation.x *= decay;
+      this.playerLeftArm.rotation.x *= decay;
+      this.playerRightArm.rotation.x *= decay;
     }
   }
 
@@ -2015,13 +2338,12 @@ export class TacsimStage3D {
     const nextZ = this.playerGroup.position.z + dz;
     const y = this.playerGroup.position.y;
     const r = 0.36;
-    const probe = new THREE.Box3(
-      new THREE.Vector3(nextX - r, y + 0.35, nextZ - r),
-      new THREE.Vector3(nextX + r, y + 1.65, nextZ + r),
-    );
+    this.tmpVecA.set(nextX - r, y + 0.35, nextZ - r);
+    this.tmpVecB.set(nextX + r, y + 1.65, nextZ + r);
+    this.tmpProbeBox.set(this.tmpVecA, this.tmpVecB);
     const list = this.isAboardShip ? this.shipWallObstacles : this.wallObstacles;
     for (const box of list) {
-      if (probe.intersectsBox(box)) return;
+      if (this.tmpProbeBox.intersectsBox(box)) return;
     }
     this.playerGroup.position.x = nextX;
     this.playerGroup.position.z = nextZ;
@@ -2032,8 +2354,12 @@ export class TacsimStage3D {
     const stairs = this.isAboardShip ? this.shipStairs : this.stationStairs;
     for (const st of stairs) {
       if (pos.x >= st.minX && pos.x <= st.maxX && pos.z >= st.minZ && pos.z <= st.maxZ) {
+        const dx = st.pB.x - st.pA.x;
         const dz = st.pB.z - st.pA.z;
-        const t = Math.max(0, Math.min(1, Math.abs(dz) > 0.01 ? (pos.z - st.pA.z) / dz : 0.5));
+        const denom = dx * dx + dz * dz;
+        const rawT =
+          denom > 0.0001 ? ((pos.x - st.pA.x) * dx + (pos.z - st.pA.z) * dz) / denom : 0.5;
+        const t = Math.max(0, Math.min(1, rawT));
         const stairY = st.pA.y + (st.pB.y - st.pA.y) * t;
         if (Math.abs(pos.y - stairY) < 2.2) {
           pos.y = stairY;
@@ -2043,7 +2369,7 @@ export class TacsimStage3D {
     }
 
     if (this.isAboardShip && this.activeShipTemplate) {
-      const lp = pos.clone().sub(this.shipOrigin);
+      const lp = this.tmpVecA.copy(pos).sub(this.shipOrigin);
       const compId = tryFindContainingCompartment(this.activeShipTemplate, lp, this.activeShipCompartment, 0.55);
       const comp = compId ? resolveCompartmentDef(this.activeShipTemplate, compId) : null;
       if (comp) {
@@ -2065,12 +2391,14 @@ export class TacsimStage3D {
   }
 
   private stepActors(dt: number): void {
+    const nowWallMs = Date.now();
+    const decay = Math.exp(-10 * dt);
     for (const rec of this.spawnedActors.values()) {
       const cur = rec.group.position;
       const dist = cur.distanceTo(rec.targetPos);
       if (dist > 0.02) {
         const step = Math.min(dist, 3.2 * dt);
-        const dir = rec.targetPos.clone().sub(cur).normalize();
+        const dir = this.tmpVecA.copy(rec.targetPos).sub(cur).normalize();
         cur.addScaledVector(dir, step);
         rec.group.rotation.y = Math.atan2(dir.x, dir.z);
         rec.walkPhase += dt * 7.8;
@@ -2080,10 +2408,19 @@ export class TacsimStage3D {
         rec.leftArm.rotation.x = sw * 0.65;
         rec.rightArm.rotation.x = -sw * 0.65;
       } else {
-        rec.leftLeg.rotation.x *= 0.85;
-        rec.rightLeg.rotation.x *= 0.85;
-        rec.leftArm.rotation.x *= 0.85;
-        rec.rightArm.rotation.x *= 0.85;
+        rec.leftLeg.rotation.x *= decay;
+        rec.rightLeg.rotation.x *= decay;
+        rec.leftArm.rotation.x *= decay;
+        rec.rightArm.rotation.x *= decay;
+      }
+
+      // Keep actor interactable position synced with live avatar movement
+      rec.interactable.worldPos.copy(cur);
+
+      // Automatically clear expired speech bubbles without waiting for reactive events (`W3D-L2`)
+      if (rec.speechExpiresAt > 0 && nowWallMs >= rec.speechExpiresAt) {
+        rec.speechExpiresAt = 0;
+        this.renderActorBillboard(rec, rec.actor, "", rec.lastIsTyping);
       }
 
       // Clamp billboard inside safe room bounds so speech bubbles never clip into walls
@@ -2099,15 +2436,16 @@ export class TacsimStage3D {
   }
 
   private updateCameraTransform(): void {
-    const target = this.playerGroup.position.clone().add(new THREE.Vector3(0, 1.55, 0));
+    const target = this.tmpVecA.copy(this.playerGroup.position);
+    target.y += 1.55;
     const hDist = Math.cos(this.camPitchRad) * this.camDist;
     const vDist = Math.sin(this.camPitchRad) * this.camDist;
-    const offset = new THREE.Vector3(
+    this.tmpVecB.set(
       -Math.sin(this.camYawRad) * hDist,
       vDist,
       -Math.cos(this.camYawRad) * hDist,
     );
-    this.camera.position.copy(target).add(offset);
+    this.camera.position.copy(target).add(this.tmpVecB);
     this.camera.lookAt(target);
   }
 
@@ -2241,6 +2579,7 @@ export class TacsimStage3D {
   };
 
   private readonly onPointerDown = (ev: PointerEvent): void => {
+    if (this.cb.isUiBlockingInput()) return;
     if (ev.button === 2 || ev.button === 1 || (ev.button === 0 && ev.shiftKey)) {
       ev.preventDefault();
       this.rmbOrbiting = true;
@@ -2259,13 +2598,21 @@ export class TacsimStage3D {
       const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(ndc, this.camera);
       const list = this.isAboardShip ? this.shipInteractables : this.interactables;
+      // Pick closest raycast hit by distance (`W3D-M7`), never array-order first hit.
+      let closestWi: WorldInteractable3D | null = null;
+      let closestDist = Infinity;
       for (const wi of list) {
         if (this.playerGroup.position.distanceTo(wi.worldPos) > wi.maxDistance + 2.5) continue;
         const hits = raycaster.intersectObjects(wi.meshTargets, true);
-        if (hits.length > 0) {
-          this.triggerInteractableWithAudio(wi);
-          return;
+        const hitDist = hits[0]?.distance;
+        if (hitDist !== undefined && hitDist < closestDist) {
+          closestDist = hitDist;
+          closestWi = wi;
         }
+      }
+      if (closestWi) {
+        this.triggerInteractableWithAudio(closestWi);
+        return;
       }
       // Left-drag also orbits smoothly when not clicking an interactable
       this.rmbOrbiting = true;
@@ -2293,12 +2640,48 @@ export class TacsimStage3D {
   };
 
   private readonly onWheel = (ev: WheelEvent): void => {
+    if (this.cb.isUiBlockingInput()) return;
     ev.preventDefault();
     this.camDist = Math.max(2.4, Math.min(11.5, this.camDist + Math.sign(ev.deltaY) * 0.55));
   };
 
   private readonly onContextMenu = (ev: MouseEvent): void => {
     ev.preventDefault();
+  };
+
+  private readonly onContextLost = (ev: Event): void => {
+    ev.preventDefault();
+    this.contextLost = true;
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+  };
+
+  private readonly onContextRestored = (): void => {
+    this.contextLost = false;
+    if (this.disposed || !this.supported) return;
+    for (const tex of sharedBaseTextures) {
+      tex.needsUpdate = true;
+    }
+    for (const rec of this.spawnedActors.values()) {
+      rec.billboardTex.needsUpdate = true;
+    }
+    this.builtStationSig = "";
+    this.builtShipUnitId = "";
+    if (this.activeStationPack) {
+      this.buildStationWorld(
+        this.activeStationPack,
+        computePackGeometrySignature(this.activeStationPack),
+      );
+    }
+    if (this.activeShipTemplate) {
+      this.buildShipInterior(this.activeShipTemplate);
+    }
+    this.lastFrameMs = performance.now();
+    if (!this.rafId) {
+      this.rafId = requestAnimationFrame(this.onFrame);
+    }
   };
 
   private bindDomEvents(): void {
@@ -2311,6 +2694,8 @@ export class TacsimStage3D {
     this.canvas.addEventListener("pointerup", this.onPointerUp);
     this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
     this.canvas.addEventListener("contextmenu", this.onContextMenu);
+    this.canvas.addEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.addEventListener("webglcontextrestored", this.onContextRestored);
   }
 
   private unbindDomEvents(): void {
@@ -2323,5 +2708,7 @@ export class TacsimStage3D {
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
     this.canvas.removeEventListener("wheel", this.onWheel);
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
+    this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
   }
 }

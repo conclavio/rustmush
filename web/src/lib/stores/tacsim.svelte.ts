@@ -5,6 +5,8 @@
 import type { NarrativeKind, ObjRef, RichText, RoomView } from "../proto";
 import { plainText } from "../render";
 import { storageGet, storageSet } from "../storage";
+import { tacsimAudio } from "../tacsim/audio";
+import { isValidHullDbref } from "../tacsim/economy";
 import {
   areRoomsConnectedWithinHops,
   buildFallbackDray,
@@ -18,10 +20,12 @@ import {
   normalizeUnitId,
   parseNeighborhoodPack,
   parseShipUnitJson,
+  resolveDynamicDockTarget,
   resolveShipCompartmentFromRoom,
   resolveStationPackAndEntry,
   type AtlasNeighborhoodPack,
   type DecodedRoomAmbient,
+  type DockedHullSummary,
   type QuickActionItem,
   type ShipUnitTemplate,
   type VisibleRoomActor,
@@ -93,6 +97,8 @@ export class TacsimPortStore {
 
   /** Latest decoded `RoomView` & `ambient`. */
   roomView = $state<RoomView | null>(null);
+  /** Monotonic revision incremented strictly on server `Room` events (never on chat/typing/holotank). */
+  roomRevision = $state<number>(0);
   ambient = $state<DecodedRoomAmbient>(decodeTacsimRoomAmbient(null));
   isAboardShip = $state<boolean>(false);
   serverStationRoomEntry = $state<string | null>(null);
@@ -120,6 +126,8 @@ export class TacsimPortStore {
 
   #hooks: TacsimTransportHooks;
   #rawPacks = new Map<string, string>();
+  #packsInFlight = new Set<string>();
+  #packsFailed = new Set<string>();
   #manifestRequested = false;
   #packQueue: string[] = [];
   #packDrainTimer: ReturnType<typeof setTimeout> | null = null;
@@ -142,12 +150,48 @@ export class TacsimPortStore {
     );
   }
 
+  /** Docked hulls for the Berth Gallery, preferring live `port.trade.berth.docked_hulls` (`W3D-H4`). */
+  get berthDockedHulls(): DockedHullSummary[] {
+    if (this.trade.berth !== null) {
+      return this.trade.berth.dockedHulls;
+    }
+    return this.ambient.dockedHulls;
+  }
+
+  /** Active hull `#<dbref>` required by `+escort/post` (`C-21`) and supported by `+bay`. */
+  get activeHullRef(): string | null {
+    const candidates = [
+      this.ambient.hullId,
+      this.trade.hullId,
+      this.trade.berth?.ownHull ?? null,
+      this.ambient.ownHull,
+    ];
+    for (const c of candidates) {
+      if (isValidHullDbref(c)) return c!.trim();
+    }
+    return null;
+  }
+
+  /** Dynamic docking target venue derived from orbital site, current port, or selected route (`H-40`). */
+  get dockTarget(): string {
+    return resolveDynamicDockTarget({
+      cockpitSiteId: this.spaceFire.siteId,
+      ambientPort: this.ambient.port,
+      ambientPortEntry: this.ambient.portEntry,
+      tradeHullPort: this.trade.hullPort,
+      tradeVenueId: this.trade.venueId,
+      stationPackId: this.stationPack.packId,
+      selectedDestination: this.selectedDestination,
+    });
+  }
+
   get visibleActors(): VisibleRoomActor[] {
     return filterVisibleRoomActors(
       this.roomView,
       this.ambient,
       this.#hooks.selfCharacterId(),
       this.isAboardShip ? null : this.stationPack,
+      this.berthDockedHulls,
     );
   }
 
@@ -155,7 +199,13 @@ export class TacsimPortStore {
     const loc =
       this.physicalLocationKey ??
       (this.isAboardShip ? this.serverShipCompartment : this.serverStationRoomEntry);
-    return contextualQuickActions(loc, this.isAboardShip, this.seatedAtBridgeHelm);
+    return contextualQuickActions(
+      loc,
+      this.isAboardShip,
+      this.seatedAtBridgeHelm,
+      this.dockTarget,
+      this.stationPack.packId,
+    );
   }
 
   toggle3dView(force?: boolean): void {
@@ -171,7 +221,7 @@ export class TacsimPortStore {
   ensurePacksSynced(): void {
     if (this.#manifestRequested) return;
     if (!this.#hooks.hasPanel(TACSIM_CONTENT_FEED)) return;
-    const sent = this.#hooks.subscribePanel(TACSIM_CONTENT_FEED);
+    const sent = this.#hooks.subscribePanel(TACSIM_CONTENT_FEED, { op: "manifest" });
     if (sent) {
       this.#manifestRequested = true;
     }
@@ -184,6 +234,7 @@ export class TacsimPortStore {
     this.detailModal = null;
     this.modalLog = [];
     this.roomView = null;
+    this.roomRevision = 0;
     this.ambient = decodeTacsimRoomAmbient(null);
     this.isAboardShip = false;
     this.serverStationRoomEntry = null;
@@ -196,6 +247,8 @@ export class TacsimPortStore {
     this.focusedPrompt = null;
     this.#manifestRequested = false;
     this.#packQueue = [];
+    this.#packsInFlight.clear();
+    this.#packsFailed.clear();
     this.#pendingQuote = null;
     this.#awaitingAppendTradePage = false;
     if (this.#packDrainTimer !== null) {
@@ -205,8 +258,13 @@ export class TacsimPortStore {
   }
 
   observeRoom(view: RoomView): void {
+    const prevRoomId = this.roomView?.id ?? null;
     const wasAboard = this.isAboardShip;
     this.roomView = view;
+    this.roomRevision += 1;
+    if (prevRoomId !== null && prevRoomId !== view.id) {
+      this.actorComposing = {};
+    }
     const dec = decodeTacsimRoomAmbient(view);
     this.ambient = dec;
 
@@ -273,9 +331,13 @@ export class TacsimPortStore {
 
   observeNarrative(ev: { kind: NarrativeKind; actor?: ObjRef | null; text: RichText | string }): void {
     const plain = typeof ev.text === "string" ? ev.text : plainText(ev.text);
+    const now = Date.now();
     if (ev.actor && plain.trim().length > 0) {
-      const next = { ...this.actorSpeech };
-      const exp = Date.now() + 8_500;
+      const next: Record<string, { text: string; expiresAt: number }> = {};
+      for (const [k, v] of Object.entries(this.actorSpeech)) {
+        if (v.expiresAt > now) next[k] = v;
+      }
+      const exp = now + 8_500;
       next[ev.actor.id] = { text: plain.trim(), expiresAt: exp };
       next[ev.actor.name.toLowerCase()] = { text: plain.trim(), expiresAt: exp };
       this.actorSpeech = next;
@@ -284,7 +346,7 @@ export class TacsimPortStore {
       const who = ev.actor?.name ? `${ev.actor.name}: ` : "";
       this.#pushModalLine(`${who}${plain.trim()}`);
     }
-    this.#maybeAutoRefreshTrade(Date.now());
+    this.#maybeAutoRefreshTrade(now);
   }
 
   observeComposing(ev: { actor: ObjRef; active: boolean }): void {
@@ -314,6 +376,7 @@ export class TacsimPortStore {
     }
     if (res.acceptCommand) {
       this.#pushModalLine(`[QUOTE VERIFIED] ${res.acceptCommand}`);
+      tacsimAudio.playMarketFillChime();
       this.#hooks.sendCommand(res.acceptCommand);
       this.requestPortTrade();
     } else if (res.priceWarning) {
@@ -329,10 +392,12 @@ export class TacsimPortStore {
     const obj = asObj(data);
     if (!obj) return;
 
-    // Manifest frame (`packs: [{ id, category, sha256 }, ...]`)
-    if (Array.isArray(obj["packs"])) {
+    const op = typeof obj["op"] === "string" ? obj["op"] : "";
+    // Manifest frame (`op: "manifest"`, `packs: [{ id, category, sha256 }, ...]`)
+    if (op === "manifest" || Array.isArray(obj["packs"])) {
+      const packs = Array.isArray(obj["packs"]) ? obj["packs"] : [];
       const wanted: string[] = [];
-      for (const item of obj["packs"]) {
+      for (const item of packs) {
         const p = asObj(item);
         if (!p) continue;
         const id = typeof p["id"] === "string" ? p["id"] : "";
@@ -344,7 +409,11 @@ export class TacsimPortStore {
           cat === "unit" ||
           cat === "market"
         ) {
-          if (!this.#rawPacks.has(id)) {
+          if (
+            !this.#rawPacks.has(id) &&
+            !this.#packsInFlight.has(id) &&
+            !this.#packsFailed.has(id)
+          ) {
             wanted.push(id);
           }
         }
@@ -353,8 +422,18 @@ export class TacsimPortStore {
       return;
     }
 
-    // Individual pack frame (`id`, `json`)
+    // Individual pack frame (`op: "pack"`, `found`, `id`, `requested_id`, `json`)
     const id = typeof obj["id"] === "string" ? obj["id"] : "";
+    const reqId = typeof obj["requested_id"] === "string" ? obj["requested_id"] : "";
+    if (id) this.#packsInFlight.delete(id);
+    if (reqId) this.#packsInFlight.delete(reqId);
+
+    if (obj["found"] === false) {
+      if (id) this.#packsFailed.add(id);
+      if (reqId) this.#packsFailed.add(reqId);
+      return;
+    }
+
     const jsonText =
       typeof obj["json"] === "string"
         ? obj["json"]
@@ -364,6 +443,9 @@ export class TacsimPortStore {
     if (!id || !jsonText) return;
 
     this.#rawPacks.set(id, jsonText);
+    if (reqId && reqId !== id) {
+      this.#rawPacks.set(reqId, jsonText);
+    }
     if (id === "goods") {
       this.goodsById = parseGoodsJson(jsonText);
     } else if (id.startsWith("neighborhood.")) {
@@ -490,13 +572,14 @@ export class TacsimPortStore {
   sellListing(row: PortListingRow, qty: number, sellAll = false): void {
     const cmd = formatOneClickSellCommand(row.listingId, qty, sellAll);
     this.#pushModalLine(`> ${cmd}`);
+    tacsimAudio.playMarketFillChime();
     this.#hooks.sendCommand(cmd);
     this.requestPortTrade();
   }
 
   #pushModalLine(line: string): void {
     const next = [...this.modalLog, line];
-    if (next.length > 18) next.splice(0, next.length - 18);
+    if (next.length > 64) next.splice(0, next.length - 64);
     this.modalLog = next;
   }
 
@@ -517,7 +600,12 @@ export class TacsimPortStore {
 
   #enqueuePackFetches(ids: string[]): void {
     for (const id of ids) {
-      if (!this.#packQueue.includes(id) && !this.#rawPacks.has(id)) {
+      if (
+        !this.#packQueue.includes(id) &&
+        !this.#rawPacks.has(id) &&
+        !this.#packsInFlight.has(id) &&
+        !this.#packsFailed.has(id)
+      ) {
         this.#packQueue.push(id);
       }
     }
@@ -528,7 +616,8 @@ export class TacsimPortStore {
     if (this.#packDrainTimer !== null || this.#packQueue.length === 0) return;
     const batch = this.#packQueue.splice(0, 3);
     for (const id of batch) {
-      this.#hooks.subscribePanel(TACSIM_CONTENT_FEED, { pack: id });
+      this.#packsInFlight.add(id);
+      this.#hooks.subscribePanel(TACSIM_CONTENT_FEED, { op: "pack", id });
     }
     if (this.#packQueue.length > 0) {
       this.#packDrainTimer = setTimeout(() => {

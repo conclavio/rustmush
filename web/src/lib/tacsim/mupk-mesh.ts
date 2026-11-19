@@ -75,11 +75,23 @@ const MUPK_ASSET_URLS = import.meta.glob<string>("../pixel/models/*.mupk", {
   eager: true,
 });
 
+/** Strict basename allowlist for `.mupk` model prefixes (blocks path traversal). */
+export function isValidMupkPrefix(modelIdPrefix: string): boolean {
+  if (!modelIdPrefix || modelIdPrefix.length > 128) return false;
+  if (modelIdPrefix.includes("..") || modelIdPrefix.includes("/") || modelIdPrefix.includes("\\")) {
+    return false;
+  }
+  return /^[a-z0-9][a-z0-9._-]*$/i.test(modelIdPrefix);
+}
+
 /** Resolve the Vite asset URL for a model id prefix (e.g. `"vf.mech.brawler_med"` or `"mc.vh.bug_rover"`). */
 export function resolveMupkAssetUrl(modelIdPrefix: string): string | null {
-  const needle = `/${modelIdPrefix}.`;
+  if (!isValidMupkPrefix(modelIdPrefix)) return null;
+  const prefixWithDot = `${modelIdPrefix}.`;
   for (const [key, url] of Object.entries(MUPK_ASSET_URLS)) {
-    if (key.includes(needle) && key.endsWith(".mupk")) {
+    const slash = key.lastIndexOf("/");
+    const basename = slash >= 0 ? key.slice(slash + 1) : key;
+    if (basename.startsWith(prefixWithDot) && basename.endsWith(".mupk")) {
       return url;
     }
   }
@@ -163,6 +175,19 @@ export function decodeMupkRuns(rleBytes: Uint8Array, expectedPixels: number): Ui
   return out;
 }
 
+const MUPK_MAX_LIST = 64;
+const MUPK_MAX_CHAINS = 2;
+const MUPK_MAX_SIZE_PX = 255;
+const MUPK_MAX_FRAMES = 48;
+const MUPK_MAX_RLE_BYTES = MUPK_MAX_SIZE_PX * MUPK_MAX_SIZE_PX * 2;
+
+function expectBound(val: number, max: number, label: string): number {
+  if (val < 0 || val > max) {
+    throw new Error(`mupk ${label} ${val} exceeds bound ${max}`);
+  }
+  return val;
+}
+
 /**
  * Decode a `.mupk` Format v5 binary buffer and extract the 4 orthogonal `still` frames
  * (`Front`, `Right`, `Rear`, `Left`) from the `fp` chain at `preferredSizePx` (default `24`).
@@ -183,44 +208,54 @@ export function decodeMupkModel(
     throw new Error(`unsupported mupk version ${version} (expected ${MUPK_FORMAT_VERSION})`);
   }
 
-  const entryCount = r.varint();
+  const entryCount = expectBound(r.varint(), MUPK_MAX_LIST, "entry count");
   if (entryCount === 0) return null;
 
   const modelId = r.str();
   const assetPack = r.str();
   const _assetVersion = r.str();
   const prefab = r.str();
-  const clipCount = r.varint();
+  const clipCount = expectBound(r.varint(), MUPK_MAX_LIST, "clip count");
   for (let i = 0; i < clipCount; i++) r.str();
   const _bakeCommit = r.str();
   const _reduceCommit = r.str();
   const widthCm = r.varint();
   const heightCm = r.varint();
-  const muzzleNameCount = r.varint();
+  const muzzleNameCount = expectBound(r.varint(), MUPK_MAX_LIST, "muzzle name count");
   for (let i = 0; i < muzzleNameCount; i++) r.str();
 
-  const chainCount = r.varint();
+  const chainCount = expectBound(r.varint(), MUPK_MAX_CHAINS, "chain count");
   for (let c = 0; c < chainCount; c++) {
     const viewTag = r.u8(); // 0 = fp, 1 = iso
     const spanCm = r.varint();
-    const sizeCount = r.varint();
+    const sizeCount = expectBound(r.varint(), MUPK_MAX_LIST, "size count");
 
     // First scan or pick inside `fp` chain (`viewTag === 0`):
     // `FP_SIZES` is stored largest-first (`[192, 96, 64, 48, 32, 24, 16, 12, 8]`).
     let pickedFrames: Map<number, DecodedMupkFrame2D> | null = null;
     let pickedSizePx = 0;
+    let smallestLargerFrames: Map<number, DecodedMupkFrame2D> | null = null;
+    let smallestLargerSizePx = Infinity;
 
     for (let s = 0; s < sizeCount; s++) {
-      const sizePx = r.varint();
-      const frameCount = r.varint();
-      const wantThisSize: boolean =
+      const sizePx = expectBound(r.varint(), MUPK_MAX_SIZE_PX, "size_px");
+      if (sizePx === 0) {
+        throw new Error("mupk size_px must be > 0");
+      }
+      const frameCount = expectBound(r.varint(), MUPK_MAX_FRAMES, "frame count");
+      const wantExactOrSmaller: boolean =
         viewTag === 0 &&
-        frameCount >= 42 &&
+        frameCount >= 37 &&
         (sizePx === preferredSizePx || (pickedFrames === null && sizePx <= preferredSizePx));
+      const wantLargerFallback: boolean =
+        viewTag === 0 &&
+        frameCount >= 37 &&
+        pickedFrames === null &&
+        sizePx > preferredSizePx &&
+        sizePx < smallestLargerSizePx;
 
-      const captured: Map<number, DecodedMupkFrame2D> | null = wantThisSize
-        ? new Map<number, DecodedMupkFrame2D>()
-        : null;
+      const captured: Map<number, DecodedMupkFrame2D> | null =
+        wantExactOrSmaller || wantLargerFallback ? new Map<number, DecodedMupkFrame2D>() : null;
 
       for (let f = 0; f < frameCount; f++) {
         const head = r.take(7);
@@ -228,17 +263,22 @@ export function decodeMupkModel(
         const fy = head[1]!;
         const fw = head[2]!;
         const fh = head[3]!;
+        if (fx + fw > sizePx || fy + fh > sizePx) {
+          throw new Error(
+            `mupk frame box (${fx},${fy},${fw},${fh}) runs outside ${sizePx}px canvas`,
+          );
+        }
         const anchorX = head[4]!;
         const anchorY = head[5]!;
         const heightPx = head[6]!;
 
-        const muzzleCount = r.varint();
+        const muzzleCount = expectBound(r.varint(), MUPK_MAX_LIST, "muzzle count");
         for (let m = 0; m < muzzleCount; m++) {
-          r.varint();
+          expectBound(r.varint(), MUPK_MAX_LIST, "muzzle name index");
           r.take(2);
         }
 
-        const rleLen = r.varint();
+        const rleLen = expectBound(r.varint(), MUPK_MAX_RLE_BYTES, "rle length");
         // Orthogonal `still` frames: facing 0 (`f=0`), 2 (`f=12`), 4 (`f=24`), 6 (`f=36`)
         if (captured !== null && (f === 0 || f === 12 || f === 24 || f === 36)) {
           const rleSlice = r.take(rleLen);
@@ -274,23 +314,30 @@ export function decodeMupkModel(
             left: captured.get(36)!,
           };
         }
-        pickedFrames = captured;
-        pickedSizePx = sizePx;
+        if (sizePx <= preferredSizePx) {
+          pickedFrames = captured;
+          pickedSizePx = sizePx;
+        } else if (sizePx < smallestLargerSizePx) {
+          smallestLargerFrames = captured;
+          smallestLargerSizePx = sizePx;
+        }
       }
     }
 
-    if (pickedFrames !== null && pickedFrames.size === 4) {
+    const chosenFrames = pickedFrames ?? smallestLargerFrames;
+    const chosenSize = pickedFrames ? pickedSizePx : smallestLargerSizePx;
+    if (chosenFrames !== null && chosenFrames.size === 4 && Number.isFinite(chosenSize)) {
       return {
         modelId,
         assetPack,
         prefab,
         sizeCm: [widthCm, heightCm],
         spanCm,
-        chosenSizePx: pickedSizePx,
-        front: pickedFrames.get(0)!,
-        right: pickedFrames.get(12)!,
-        rear: pickedFrames.get(24)!,
-        left: pickedFrames.get(36)!,
+        chosenSizePx: chosenSize,
+        front: chosenFrames.get(0)!,
+        right: chosenFrames.get(12)!,
+        rear: chosenFrames.get(24)!,
+        left: chosenFrames.get(36)!,
       };
     }
   }
@@ -358,9 +405,22 @@ function sampleFrame(f: DecodedMupkFrame2D, duFromAnchor: number, dvAboveAnchor:
   return f.pixels[(cy - f.y) * f.w + (cx - f.x)]!;
 }
 
+/** Standard IEC 61966-2-1 sRGB byte (`0..255`) to linear-sRGB (`0..1`) for Three.js vertex colors. */
+export function srgbChannelToLinear(c8: number): number {
+  const c = Math.max(0, Math.min(255, c8)) / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
 /**
  * Carve a watertight 3D visual-hull mesh from the 4 orthogonal `.mupk` silhouettes,
  * culling all internal faces between adjacent solid voxels.
+ *
+ * Right-handed Three.js basis (`+Z` = unit front, `+Y` = up, `Up × Front = +X` = unit LEFT,
+ * `-X` = unit RIGHT):
+ * - `model.front` (viewer looking at front): viewer right (`+u`) = unit left (`+X`) -> `du = +dx`
+ * - `model.rear` (viewer looking at rear): viewer right (`+u`) = unit right (`-X`) -> `du = -dx`
+ * - `model.right` (viewer looking at right side, front to viewer right): `du = +dz`
+ * - `model.left` (viewer looking at left side, front to viewer left): `du = -dz`
  */
 export function carveMupkVisualHull(
   model: DecodedMupkModel,
@@ -395,8 +455,8 @@ export function carveMupkVisualHull(
 
       for (let gx = 0; gx < gridW; gx++) {
         const dx = gx - half;
-        const pFront = sampleFrame(model.front, -dx, dv);
-        const pRear = sampleFrame(model.rear, dx, dv);
+        const pFront = sampleFrame(model.front, dx, dv);
+        const pRear = sampleFrame(model.rear, -dx, dv);
         if (pFront === 0 && pRear === 0) continue;
 
         solid[idxOf(gx, gy, gz)] = 1;
@@ -447,9 +507,9 @@ export function carveMupkVisualHull(
     nz: number,
     rgb: RgbTriplet,
   ): void => {
-    const r = rgb[0] / 255;
-    const g = rgb[1] / 255;
-    const b = rgb[2] / 255;
+    const r = srgbChannelToLinear(rgb[0]);
+    const g = srgbChannelToLinear(rgb[1]);
+    const b = srgbChannelToLinear(rgb[2]);
     const triVerts = [v0, v1, v2, v0, v2, v3];
     for (const v of triVerts) {
       posOut.push(v[0], v[1], v[2]);
@@ -476,37 +536,37 @@ export function carveMupkVisualHull(
         const dx = gx - half;
         const x0 = (gx - centerGx) * voxelMeters;
         const x1 = x0 + voxelMeters;
-        const pFront = sampleFrame(model.front, -dx, dv);
-        const pRear = sampleFrame(model.rear, dx, dv);
+        const pFront = sampleFrame(model.front, dx, dv);
+        const pRear = sampleFrame(model.rear, -dx, dv);
 
         // +Z (Front)
         if (!isSolid(gx, gy, gz + 1)) {
-          const px = pFront || pRight || pLeft || pRear;
+          const px = pFront || pLeft || pRight || pRear;
           pushQuad([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], 0, 0, 1, shadedMupkRgb(px, team));
         }
         // -Z (Rear)
         if (!isSolid(gx, gy, gz - 1)) {
-          const px = pRear || pRight || pLeft || pFront;
+          const px = pRear || pLeft || pRight || pFront;
           pushQuad([x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], 0, 0, -1, shadedMupkRgb(px, team));
         }
-        // +X (Right)
+        // +X (Unit Left in right-handed +Y up, +Z forward)
         if (!isSolid(gx + 1, gy, gz)) {
-          const px = pRight || pFront || pRear || pLeft;
+          const px = pLeft || pFront || pRear || pRight;
           pushQuad([x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], 1, 0, 0, shadedMupkRgb(px, team));
         }
-        // -X (Left)
+        // -X (Unit Right in right-handed +Y up, +Z forward)
         if (!isSolid(gx - 1, gy, gz)) {
-          const px = pLeft || pFront || pRear || pRight;
+          const px = pRight || pFront || pRear || pLeft;
           pushQuad([x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], -1, 0, 0, shadedMupkRgb(px, team));
         }
         // +Y (Top)
         if (!isSolid(gx, gy + 1, gz)) {
-          const px = pFront || pRight || pRear || pLeft;
+          const px = pFront || pLeft || pRear || pRight;
           pushQuad([x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0], 0, 1, 0, shadedMupkRgb(px, team));
         }
         // -Y (Bottom)
         if (!isSolid(gx, gy - 1, gz)) {
-          const px = pRear || pRight || pLeft || pFront;
+          const px = pRear || pLeft || pRight || pFront;
           pushQuad([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], 0, -1, 0, shadedMupkRgb(px, team));
         }
       }
@@ -590,24 +650,55 @@ export function buildArticulatedFallbackUnitGroup(
 
 const decodedModelCache = new Map<string, Promise<DecodedMupkModel | null>>();
 
+/** Dispose all unique `BufferGeometry` and `Material` instances inside a `THREE.Object3D` subtree. */
+export function disposeObject3DResources(root: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  root.traverse((obj) => {
+    obj.userData["disposed"] = true;
+    const mesh = obj as THREE.Mesh;
+    if (mesh.geometry && typeof mesh.geometry.dispose === "function") {
+      geometries.add(mesh.geometry);
+    }
+    const mat = mesh.material;
+    if (Array.isArray(mat)) {
+      for (const m of mat) {
+        if (m && typeof m.dispose === "function") materials.add(m);
+      }
+    } else if (mat && typeof mat.dispose === "function") {
+      materials.add(mat);
+    }
+  });
+  for (const g of geometries) g.dispose();
+  for (const m of materials) m.dispose();
+}
+
 function fetchAndDecodeMupk(modelIdPrefix: string): Promise<DecodedMupkModel | null> {
   const existing = decodedModelCache.get(modelIdPrefix);
   if (existing) return existing;
 
   const url = resolveMupkAssetUrl(modelIdPrefix);
   if (!url || typeof fetch !== "function") {
-    const empty = Promise.resolve(null);
-    decodedModelCache.set(modelIdPrefix, empty);
-    return empty;
+    return Promise.resolve(null);
   }
 
   const pending = fetch(url)
     .then(async (res) => {
-      if (!res.ok) return null;
+      if (!res.ok) {
+        decodedModelCache.delete(modelIdPrefix);
+        return null;
+      }
       const buf = await res.arrayBuffer();
-      return decodeMupkModel(new Uint8Array(buf), 24);
+      const decoded = decodeMupkModel(new Uint8Array(buf), 24);
+      if (!decoded) {
+        decodedModelCache.delete(modelIdPrefix);
+      }
+      return decoded;
     })
-    .catch(() => null);
+    .catch(() => {
+      decodedModelCache.delete(modelIdPrefix);
+      return null;
+    });
 
   decodedModelCache.set(modelIdPrefix, pending);
   return pending;
@@ -638,10 +729,11 @@ export function createAsyncMupkUnitGroup(
   root.add(hitTarget);
 
   void fetchAndDecodeMupk(modelIdPrefix).then((decoded) => {
-    if (!decoded || !root.parent) return;
+    if (!decoded || !root.parent || root.userData["disposed"] === true) return;
     const hull = carveMupkVisualHull(decoded, team, targetHeightMeters);
     if (hull.quadCount === 0) return;
     root.remove(fallback);
+    disposeObject3DResources(fallback);
     const mesh = buildThreeMeshFromHullData(hull);
     root.add(mesh);
   });
