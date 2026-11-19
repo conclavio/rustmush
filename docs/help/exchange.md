@@ -52,9 +52,10 @@ her.
 
 lists a port's refinery, works or yard whose title you hold, or with `as=<org>`
 one an organization you act for holds; the organization is paid. It is sold only
-when idle: no order open there and nothing in its stores. The relay foundry,
-the workshops and the medical rooms are not for sale, nor is a facility whose
-stores a vendor trades from.
+when idle: no order open there and nothing in its stores. A facility that owes
+running costs is sold only once they are paid. While it is listed it takes no new
+order. The relay foundry, the workshops and the medical rooms are not for sale,
+nor is a facility whose stores a vendor trades from.
 
 When the sale settles, the facility passes to the buyer with its stores, and
 its takings are paid to the buyer from then on. The buyer sets who may order
@@ -64,6 +65,8 @@ stays open to every customer.
 
 A fee is fixed when an order is booked. If the owner raises it before the work
 starts, the order is canceled, and its booking fee and bill go back to the
+customer. Once the work starts, a margin raised later does not raise what a
+canceled order forfeits. An owner who orders at their own facility books as any
 customer.
 
 ## Posting a bid

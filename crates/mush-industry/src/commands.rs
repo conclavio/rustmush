@@ -970,11 +970,9 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
     // at another's facility pays a genuinely distinct account and the headline is
     // restorable unqualified.
     //
-    // The gate is the record's own, not a second one: **staff, or a principal
-    // `mush_economy::acts_for` answers true for over the CURRENT owner** — the same
-    // predicate `@wo/draft` and `@wo/submit` already ask of the same field, so an
-    // organization's officer may hand its facility on and a stranger reads
-    // `NO_SUCH_FACILITY`, byte-identically to a facility that does not exist.
+    // The gate is **staff only** (doc 48e, production G3; it once also admitted anyone
+    // `mush_economy::acts_for` answers true for over the CURRENT owner). Anyone else
+    // reads `NO_SUCH_FACILITY`, byte-identically to a facility that does not exist.
     //
     // It writes the facility document and nothing else. It moves no money, opens no
     // account and touches no work order: the payee is re-resolved from the live record
@@ -993,10 +991,11 @@ fn cmd_facility(ctx: &mut Ctx<'_>, families: &IndustryFamilies) -> Result<(), Cm
             return Err(CmdError::msg(NO_SUCH_FACILITY));
         };
         // Existence-hiding: a facility this actor may not re-assign reads exactly what
-        // an object that is no facility reads.
-        if !crate::store::is_staff(ctx.w, ctx.actor)
-            && !mush_economy::acts_for(ctx.w, ctx.actor, facility.owner())
-        {
+        // an object that is no facility reads. **Staff only** (doc 48e, production G3):
+        // a re-assignment needs no consent from the new owner, who then pays its running
+        // costs, so an owner's officer may not push one onto anybody. A player passes a
+        // facility on by selling it (doc 48 unit PL.9, `market.asset` sale).
+        if !crate::store::is_staff(ctx.w, ctx.actor) {
             return Err(CmdError::msg(NO_SUCH_FACILITY));
         }
         let Some(rhs) = ctx.args.rhs().map(str::trim).filter(|rhs| !rhs.is_empty()) else {

@@ -1806,3 +1806,173 @@ async fn pl9_a_busy_or_unsellable_facility_is_refused_with_its_reason() {
         "nothing was listed"
     );
 }
+
+// ---- doc 48e review fixes ------------------------------------------------------------------
+
+/// The IC clock to 600 s into the next IC day, a few fires landed there.
+fn next_day(rig: &mut Rig) {
+    let day = ic_now(&rig.tw).div_euclid(DAY) + 1;
+    ic_to(rig, day * DAY + 600);
+    settle(rig, 8);
+}
+
+/// A contract's work order, read.
+fn work_order(rig: &mut Rig, id: u64) -> mush_industry::workorder::WorkOrder {
+    let order = contract(rig, id).order.expect("the draft landed");
+    let families = rig
+        .tw
+        .world()
+        .module_state::<mush_industry::IndustryHandles>()
+        .expect("industry")
+        .0
+        .clone();
+    crate::driving_rig::typed(
+        &mut rig.tw,
+        &families.work_orders,
+        &mush_industry::workorder::WorkOrderId(order),
+    )
+    .expect("the work order")
+}
+
+fn upkeep_row(rig: &Rig, room: ObjId) -> tacsim::port::upkeep::UpkeepRow {
+    tacsim::port::upkeep::row_of(rig.tw.world(), room)
+        .unwrap_or_else(|| panic!("#{} keeps a running-cost row", room.0))
+}
+
+/// **Doc 48e (production G1, G2, G4, G24, Q-48-45, -53): a facility owing running costs is not
+/// sold; one on sale takes no order; its buyer books at it as a customer; and a margin raised
+/// under a running order does not raise its forfeit.**
+/// 1. The Yards' account drained, the next day's charge is a debt, and the yard does not list
+///    (`FACILITY_IN_DEBT`): its buyer would inherit the debt. Paid, it lists.
+/// 2. Listed, it takes no new order (`works::ON_SALE`).
+/// 3. Bought, its owner's own order is a customer's, not a house order the arm would collect.
+/// 4. A day into that order, the owner raises the margin: a cancel would forfeit what it would
+///    have before (the fee pinned in the hold).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g1_a_facility_owing_running_costs_is_not_sold_and_one_on_sale_takes_no_order() {
+    let mut rig = stocked();
+    let yard = yard_room(&rig);
+    let yards_account = port_map(&rig.tw, STICKNEY).orgs[&cid("stickney_yards")]
+        .account
+        .map(mush_economy::AccountId)
+        .expect("the Yards' account");
+    let treasury = port_map(&rig.tw, STICKNEY).treasury.expect("a treasury");
+    let name = name_of(&rig, yard);
+
+    // ---- (1) In debt: not sold ----
+    next_day(&mut rig);
+    let all = posted(&rig, yards_account);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay {}={treasury} {all}", yards_account.0),
+    );
+    assert_eq!(posted(&rig, yards_account), 0, "{out}");
+    next_day(&mut rig);
+    assert!(upkeep_row(&rig, yard).debt_minor > 0, "the yard owes");
+    let refused = list_for(
+        &mut rig,
+        (STICKNEY, "stickney_yards", "stickney"),
+        yard,
+        YARD_PRICE,
+    )
+    .expect_err("a yard in debt");
+    assert!(
+        refused.contains(&tacsim::port::facility_sale::FACILITY_IN_DEBT.replace("{name}", &name)),
+        "{refused}"
+    );
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay {treasury}={} 50000000", yards_account.0),
+    );
+    next_day(&mut rig);
+    assert_eq!(upkeep_row(&rig, yard).debt_minor, 0, "the debt is paid");
+    let listing = list_for(
+        &mut rig,
+        (STICKNEY, "stickney_yards", "stickney"),
+        yard,
+        YARD_PRICE,
+    )
+    .expect("paid, it lists");
+
+    // ---- (2) On sale: no new order ----
+    let customer = free_captain(&mut rig, "Customer", 84);
+    let out = run(&mut rig.tw, customer, "+yard/order tv_wrecker");
+    assert!(out.contains(tacsim::port::works::ON_SALE), "{out}");
+
+    // ---- (3) Bought: the owner books as a customer ----
+    let owner = free_captain(&mut rig, "YardOwner", 85);
+    buy_listing(&mut rig, owner, listing);
+    assert_eq!(facility_of(&rig, yard).owner(), &PrincipalId::Object(owner));
+    let floor = open_yard(&mut rig);
+    teleport(&mut rig.tw, owner, floor);
+    let own = booked(&mut rig, owner, "+yard/order tv_wrecker");
+    assert!(
+        !contract(&rig, own).house,
+        "a bought yard's owner books as a customer"
+    );
+
+    // ---- (4) A margin raised under a running order ----
+    lay_wrecker_bill(&mut rig, VaultId(own), 98_430);
+    settle(&mut rig, 3);
+    days_on(&mut rig, 1);
+    let order = work_order(&mut rig, own);
+    assert_eq!(
+        *order.state(),
+        mush_industry::workorder::WorkOrderState::Running,
+        "the order runs"
+    );
+    let ran = order
+        .schedule()
+        .map_or(0, mush_industry::ProductionSchedule::progress_units);
+    assert!(ran > 0, "a day of work");
+    let held = mush_industry::money::order_price_minor(rig.tw.world(), &order);
+    let before = mush_industry::money::cancel_forfeit_minor(rig.tw.world(), &order, held);
+    assert!(before > 0, "the work done is forfeit on a cancel");
+    let out = run(
+        &mut rig.tw,
+        owner,
+        &format!("@facility/terms #{}=public margin=900", yard.0),
+    );
+    assert!(out.contains("margin 900"), "{out}");
+    assert_eq!(
+        mush_industry::money::cancel_forfeit_minor(rig.tw.world(), &order, held),
+        before,
+        "a margin raised under a running order does not raise its forfeit"
+    );
+}
+
+/// **Doc 48e (production G5): a sold refinery never bills its buyer for its old operator's
+/// batches.** Kasei's officer sells the Stickney refinery to a captain; Kasei still mills two
+/// batches on its own storefront that day, and the captain's next charge is the refinery's idle
+/// standing share, as any slot facility's, not those batches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g5_a_sold_refinery_never_bills_its_buyer_for_the_operators_batches() {
+    let mut rig = stocked();
+    let refinery = station_room(&rig.tw, STICKNEY, "room.p07_receiving");
+    next_day(&mut rig);
+    let listing = list_for(
+        &mut rig,
+        (STICKNEY, "kasei", "stickney"),
+        refinery,
+        YARD_PRICE,
+    )
+    .expect("the idle refinery lists");
+    let buyer = free_captain(&mut rig, "Smelter", 86);
+    buy_listing(&mut rig, buyer, listing);
+    let sold = facility_of(&rig, refinery);
+    assert_eq!(sold.owner(), &PrincipalId::Object(buyer));
+    assert!(!sold.holding().is_authored(), "owner-held");
+    let kasei = VaultId(port_map(&rig.tw, STICKNEY).vendors[&cid("kasei")].vault);
+    seed_pool(&mut rig, kasei, "metals", 40, LotId(98_440));
+    settle(&mut rig, 30);
+    next_day(&mut rig);
+    let cost = *sold.cost().expect("a costed refinery");
+    let r = upkeep_row(&rig, refinery);
+    assert_eq!(
+        r.charged_minor,
+        tacsim::port::upkeep::standing_day(&cost, sold.maximum_slots()),
+        "the buyer pays the refinery's idle day, not Kasei's batches"
+    );
+}
