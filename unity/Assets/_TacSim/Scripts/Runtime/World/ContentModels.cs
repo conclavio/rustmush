@@ -411,6 +411,57 @@ namespace TacSim.World
         }
 
         /// <summary>
+        /// Structural check mirroring server `neighborhood_is_player_accessible`: returns false if a neighborhood
+        /// pack is explicitly marked staff-only or contains only restricted/staff rooms.
+        /// </summary>
+        public static bool IsNeighborhoodPackPlayerAccessible(string rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+                return false;
+            try
+            {
+                JsonNode root = JsonNode.Parse(rawJson);
+                if (root == null || !root.IsObject) return false;
+                var entriesObj = root["entries"].AsObject();
+                if (entriesObj == null || entriesObj.Count == 0) return true;
+
+                int totalRooms = 0;
+                int publicRooms = 0;
+                foreach (var kv in entriesObj)
+                {
+                    var entry = kv.Value;
+                    if (entry == null || !entry.IsObject) continue;
+                    string kind = entry.Str("kind", string.Empty);
+                    var def = entry["def"];
+                    if (!def.IsObject) continue;
+
+                    if (kind == "neighborhood")
+                    {
+                        if (string.Equals(def.Str("reveal"), "staff", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(def.Str("access"), "staff", StringComparison.OrdinalIgnoreCase))
+                            return false;
+                    }
+                    else if (kind == "room")
+                    {
+                        totalRooms++;
+                        bool restricted = string.Equals(def.Str("access"), "restricted", StringComparison.OrdinalIgnoreCase) ||
+                                          string.Equals(def.Str("access"), "staff", StringComparison.OrdinalIgnoreCase) ||
+                                          string.Equals(def.Str("reveal"), "staff", StringComparison.OrdinalIgnoreCase) ||
+                                          def.Bool("restricted", false) ||
+                                          def["access"].Bool("restricted", false);
+                        if (!restricted)
+                            publicRooms++;
+                    }
+                }
+                return totalRooms == 0 || publicRooms > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Strips server-only narrative secrets, lore, quests, hooks, vendor lane schedules, hidden exits,
         /// restricted-room descriptions, and private NPC prompts before staging fallback packs into a client build.
         /// Mirrors <c>crates/tacsim/src/client_sync.rs</c>'s public projection boundary.
@@ -432,6 +483,22 @@ namespace TacSim.World
             var entriesObj = root["entries"].AsObject();
             if (entriesObj != null)
             {
+                // First pass: identify restricted rooms so items inside them can also be sanitized.
+                var restrictedRoomIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var kv in entriesObj)
+                {
+                    var entry = kv.Value;
+                    if (entry == null || !entry.IsObject || entry.Str("kind") != "room") continue;
+                    var def = entry["def"];
+                    if (!def.IsObject) continue;
+                    bool restricted = string.Equals(def.Str("access"), "restricted", StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(def.Str("access"), "staff", StringComparison.OrdinalIgnoreCase) ||
+                                      def.Bool("restricted", false) ||
+                                      def["access"].Bool("restricted", false);
+                    if (restricted)
+                        restrictedRoomIds.Add(kv.Key);
+                }
+
                 var removeKeys = new List<string>();
                 foreach (var kv in entriesObj)
                 {
@@ -464,6 +531,7 @@ namespace TacSim.World
                     if (string.Equals(def.Str("reveal"), "staff", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(def.Str("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(def["portal"].Str("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(def.Str("lock"), "staff", StringComparison.OrdinalIgnoreCase) ||
                         def.Bool("hidden", false) ||
                         def["portal"].Bool("hidden", false))
                     {
@@ -476,13 +544,21 @@ namespace TacSim.World
 
                     if (kind == "room")
                     {
-                        bool restricted = string.Equals(def.Str("access"), "restricted", StringComparison.OrdinalIgnoreCase) ||
-                                          def.Bool("restricted", false) ||
-                                          def["access"].Bool("restricted", false);
-                        if (restricted)
+                        if (restrictedRoomIds.Contains(kv.Key))
                         {
                             defObj.Remove("desc");
+                            defObj.Remove("short_desc");
                             defObj.Remove("details");
+                            defObj.Remove("geometry");
+                        }
+                    }
+                    else if (kind == "item")
+                    {
+                        string roomId = def.Str("room", string.Empty);
+                        if (!string.IsNullOrEmpty(roomId) && restrictedRoomIds.Contains(roomId))
+                        {
+                            removeKeys.Add(kv.Key);
+                            continue;
                         }
                     }
                     else if (kind == "npc" || kind == "person")
@@ -504,8 +580,16 @@ namespace TacSim.World
                         {
                             bool enabled = profileObj.ContainsKey("enabled") ? def["profile"].Bool("enabled", true) : true;
                             string bg = def["profile"].Str("background", string.Empty);
-                            if (bg.Length > 96)
-                                bg = bg.Substring(0, 93) + "...";
+                            if (!string.IsNullOrEmpty(bg))
+                            {
+                                int semi = bg.IndexOf(';');
+                                int dot = bg.IndexOf('.');
+                                int cut = semi > 0 && (dot < 0 || semi < dot) ? semi : dot;
+                                if (cut > 0 && cut <= 96)
+                                    bg = bg.Substring(0, cut).Trim();
+                                else if (bg.Length > 96)
+                                    bg = bg.Substring(0, 93).Trim() + "...";
+                            }
                             profileObj.Clear();
                             profileObj["enabled"] = JsonNode.FromBool(enabled);
                             if (!string.IsNullOrEmpty(bg))
@@ -530,7 +614,7 @@ namespace TacSim.World
                 if (!string.IsNullOrEmpty(assetsDir))
                 {
                     string candidate = Path.GetFullPath(Path.Combine(assetsDir, "..", "..", "crates", "tacsim", "content", relativeUnderTacsimContent));
-                    if (File.Exists(candidate))
+                    if (File.Exists(candidate) || Directory.Exists(candidate))
                         return candidate;
                 }
             }
@@ -543,7 +627,7 @@ namespace TacSim.World
             for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
             {
                 string candidate = Path.Combine(dir, "crates", "tacsim", "content", relativeUnderTacsimContent);
-                if (File.Exists(candidate))
+                if (File.Exists(candidate) || Directory.Exists(candidate))
                     return Path.GetFullPath(candidate);
                 dir = Directory.GetParent(dir)?.FullName;
             }
@@ -559,7 +643,7 @@ namespace TacSim.World
                 if (!string.IsNullOrEmpty(assetsDir))
                 {
                     string candidate = Path.GetFullPath(Path.Combine(assetsDir, "..", "..", "crates", "mush-atlas", "content", relativeUnderMushAtlasContent));
-                    if (File.Exists(candidate))
+                    if (File.Exists(candidate) || Directory.Exists(candidate))
                         return candidate;
                 }
             }
@@ -572,7 +656,7 @@ namespace TacSim.World
             for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
             {
                 string candidate = Path.Combine(dir, "crates", "mush-atlas", "content", relativeUnderMushAtlasContent);
-                if (File.Exists(candidate))
+                if (File.Exists(candidate) || Directory.Exists(candidate))
                     return Path.GetFullPath(candidate);
                 dir = Directory.GetParent(dir)?.FullName;
             }
@@ -684,6 +768,31 @@ namespace TacSim.World
             }
         }
 
+        private static int ParseSurfaceFloorIndex(JsonNode surfaceNode, Dictionary<int, AtlasFloorDef> floors)
+        {
+            if (surfaceNode != null && !surfaceNode.IsNull)
+            {
+                if (surfaceNode.Kind == JsonKind.String &&
+                    string.Equals(surfaceNode.AsString(), "ground", StringComparison.OrdinalIgnoreCase))
+                    return 0;
+
+                if (surfaceNode.IsObject)
+                {
+                    var floorTuple = surfaceNode["floor"].AsArray();
+                    if (floorTuple != null && floorTuple.Count >= 2)
+                        return floorTuple[1].AsInt(0);
+                    if (surfaceNode.ContainsKey("ground"))
+                        return 0;
+                }
+            }
+
+            if (floors != null && floors.ContainsKey(0))
+                return 0;
+            if (floors != null && floors.ContainsKey(1))
+                return 1;
+            return 0;
+        }
+
         public static AtlasNeighborhoodPack ParseNeighborhoodJson(string json, string defaultPackId = "neighborhood.ceres_freeport")
         {
             var root = JsonNode.Parse(json);
@@ -733,10 +842,7 @@ namespace TacSim.World
                 {
                     var rect = def["footprint"]["rect"].AsArray();
                     if (rect == null || rect.Count < 2) continue;
-                    int floorIdx = 1;
-                    var floorTuple = def["surface"]["floor"].AsArray();
-                    if (floorTuple != null && floorTuple.Count >= 2)
-                        floorIdx = floorTuple[1].AsInt(1);
+                    int floorIdx = ParseSurfaceFloorIndex(def["surface"], pack.Floors);
 
                     var r = new AtlasRoomDef
                     {
@@ -810,10 +916,7 @@ namespace TacSim.World
                 {
                     var poly = def["polyline"].AsArray();
                     if (poly == null || poly.Count < 2) continue;
-                    int floorIdx = 1;
-                    var floorTuple = def["surface"]["floor"].AsArray();
-                    if (floorTuple != null && floorTuple.Count >= 2)
-                        floorIdx = floorTuple[1].AsInt(1);
+                    int floorIdx = ParseSurfaceFloorIndex(def["surface"], pack.Floors);
 
                     var zRange = def["z_range"].AsArray();
                     float h = (zRange != null && zRange.Count >= 2) ? (zRange[1].AsFloat(1.1f) - zRange[0].AsFloat(0f)) : 1.1f;
@@ -1089,19 +1192,23 @@ namespace TacSim.World
 
         private static Dictionary<string, (Vector3 center, Vector3 size)> GetStandardDrayCompartmentBounds()
         {
-            // Contiguous 3-level ship spine so the player can walk continuously from Airlock -> Passage -> Crew / Bridge / Hold / Engineering / Bay!
+            // Contiguous 3-level ship spine so the player can walk continuously from Airlock -> Passage -> Crew / Bridge / Relay / Hold / Engineering / Bay!
             return new Dictionary<string, (Vector3 center, Vector3 size)>(StringComparer.Ordinal)
             {
-                // Main spine (Y = 0)
-                ["airlock"]     = (new Vector3(0f, 0f, 13f),    new Vector3(5.5f, 3.2f, 6f)),
-                ["passage"]     = (new Vector3(0f, 0f, 4f),     new Vector3(5.5f, 3.2f, 12f)),
-                ["crew"]        = (new Vector3(0f, 0f, -6f),    new Vector3(7.5f, 3.2f, 8f)),
-                // Upper forward bridge deck (Y = +3.4m, ramp/stair from passage)
-                ["bridge"]      = (new Vector3(0f, 3.4f, 9f),   new Vector3(7.5f, 3.2f, 9f)),
-                // Lower cargo hold, engineering crawlway & Dray-P stern Vehicle Bay (Y = -3.6m)
-                ["hold"]        = (new Vector3(0f, -3.6f, 2f),  new Vector3(9.0f, 3.4f, 12f)),
-                ["engineering"] = (new Vector3(0f, -3.6f, -9f), new Vector3(7.5f, 3.4f, 10f)),
-                ["bay"]         = (new Vector3(0f, -3.6f, -20f), new Vector3(9.0f, 3.6f, 11f))
+                // Main spine (Y = 0, floor = -1.6m)
+                ["airlock"]     = (new Vector3(0f, 0f, 13f),      new Vector3(5.5f, 3.2f, 6f)),
+                ["passage"]     = (new Vector3(0f, 0f, 4f),       new Vector3(5.5f, 3.2f, 12f)),
+                ["crew"]        = (new Vector3(0f, 0f, -6f),      new Vector3(7.5f, 3.2f, 8f)),
+                // Starboard side compartment off passage (Halcyon relief cruiser entanglement relay; flush at X = +2.75m)
+                ["relay"]       = (new Vector3(5.25f, 0f, 3f),    new Vector3(5.0f, 3.2f, 6f)),
+                // Single-cab surface/crawler rigs
+                ["cab"]         = (new Vector3(0f, 0f, 0f),       new Vector3(4.2f, 2.8f, 4.8f)),
+                // Upper forward bridge deck (Y = +3.4m, floor = +1.8m, ramp/stair from passage)
+                ["bridge"]      = (new Vector3(0f, 3.4f, 9f),     new Vector3(7.5f, 3.2f, 9f)),
+                // Lower cargo hold, engineering crawlway & Dray-P/Halcyon stern Vehicle Bay (flush floor Y = -5.3m, flush Z = -14.0m)
+                ["hold"]        = (new Vector3(0f, -3.6f, 2f),    new Vector3(9.0f, 3.4f, 12f)),
+                ["engineering"] = (new Vector3(0f, -3.6f, -9f),   new Vector3(7.5f, 3.4f, 10f)),
+                ["bay"]         = (new Vector3(0f, -3.5f, -19.5f), new Vector3(9.0f, 3.6f, 11f))
             };
         }
 

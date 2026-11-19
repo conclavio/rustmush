@@ -146,8 +146,13 @@ namespace TacSim.World
 
             if (TurretPivot != null && worldTurretAimYawDeg.HasValue)
             {
-                Quaternion targetWorld = Quaternion.Euler(0f, worldTurretAimYawDeg.Value, 0f);
-                TurretPivot.rotation = Quaternion.Slerp(TurretPivot.rotation, targetWorld, 1f - Mathf.Exp(-10f * dt));
+                // Aim turret in local yaw relative to HullTiltRoot so hillside pitch/roll slope tilt is preserved!
+                float parentYaw = TurretPivot.parent != null
+                    ? TurretPivot.parent.eulerAngles.y
+                    : (Root != null ? Root.transform.eulerAngles.y : 0f);
+                float localYaw = Mathf.DeltaAngle(parentYaw, worldTurretAimYawDeg.Value);
+                Quaternion targetLocal = Quaternion.Euler(0f, localYaw, 0f);
+                TurretPivot.localRotation = Quaternion.Slerp(TurretPivot.localRotation, targetLocal, 1f - Mathf.Exp(-10f * dt));
             }
             else if (TurretPivot != null)
             {

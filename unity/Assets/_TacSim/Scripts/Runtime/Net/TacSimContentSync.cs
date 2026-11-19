@@ -35,26 +35,47 @@ namespace TacSim.Net
 
         private string _cacheRootDir;
         private readonly Dictionary<string, string> _localDigests = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _manifestPinnedDigests = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Queue<ContentPackManifestItem> _pendingPacks = new Queue<ContentPackManifestItem>();
         private readonly Dictionary<string, (ContentPackManifestItem item, float sentAt, int attempts)> _inFlightPacks =
             new Dictionary<string, (ContentPackManifestItem, float, int)>(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _attemptCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        private readonly HashSet<string> _failedPackIds = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _dirtyCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private int _syncedSinceLastNotify;
+        private bool _manifestDirty;
         private float _lastDispatchRealtime = -1000f;
+        private bool _manifestRequested;
+        private float _manifestSentAtRealtime = -1000f;
+        private int _manifestAttempts;
         private bool _manifestReceived;
 
         public event Action<string> OnSyncLog;
         public event Action<int> OnPacksUpdated;
 
         public IReadOnlyCollection<string> LastUpdatedCategories => _dirtyCategories;
+        public IReadOnlyCollection<string> FailedPackIds => _failedPackIds;
+        public bool HasFailedPacks => _failedPackIds.Count > 0;
 
-        public bool IsSyncComplete => _manifestReceived && _pendingPacks.Count == 0 && _inFlightPacks.Count == 0;
+        public bool IsSyncComplete => _manifestReceived && _pendingPacks.Count == 0 && _inFlightPacks.Count == 0 && _failedPackIds.Count == 0;
         public int PendingPackCount => _pendingPacks.Count + _inFlightPacks.Count;
 
         private static void SafeLogWarn(string msg)
         {
             try { Debug.LogWarning(msg); } catch { /* standalone managed test runner */ }
+        }
+
+        public static bool IsValidSha256Hex(string sha)
+        {
+            if (string.IsNullOrEmpty(sha) || sha.Length != 64)
+                return false;
+            for (int i = 0; i < 64; i++)
+            {
+                char c = sha[i];
+                bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                if (!isHex) return false;
+            }
+            return true;
         }
 
         public static string ComputeSha256Hex(string utf8Text)
@@ -139,10 +160,16 @@ namespace TacSim.Net
         public void InitializeDiskCacheForServer(string baseHttpUrl, string explicitCacheDir = null)
         {
             _manifestReceived = false;
+            _manifestRequested = false;
+            _manifestSentAtRealtime = -1000f;
+            _manifestAttempts = 0;
+            _manifestDirty = false;
             _localDigests.Clear();
+            _manifestPinnedDigests.Clear();
             _pendingPacks.Clear();
             _inFlightPacks.Clear();
             _attemptCounts.Clear();
+            _failedPackIds.Clear();
             _dirtyCategories.Clear();
             _dirtyCategories.Add("all");
             _syncedSinceLastNotify = 0;
@@ -236,7 +263,26 @@ namespace TacSim.Net
                 var doc = JsonNode.NewObject();
                 doc["version"] = JsonNode.FromLong(2);
                 doc["packs"] = packsArr;
-                File.WriteAllText(Path.Combine(_cacheRootDir, "manifest.json"), doc.ToJson());
+                string manifestPath = Path.Combine(_cacheRootDir, "manifest.json");
+                string tmpPath = manifestPath + ".tmp";
+                File.WriteAllText(tmpPath, doc.ToJson());
+                if (File.Exists(manifestPath))
+                {
+                    try
+                    {
+                        File.Replace(tmpPath, manifestPath, null);
+                    }
+                    catch
+                    {
+                        File.Delete(manifestPath);
+                        File.Move(tmpPath, manifestPath);
+                    }
+                }
+                else
+                {
+                    File.Move(tmpPath, manifestPath);
+                }
+                _manifestDirty = false;
             }
             catch (Exception ex)
             {
@@ -248,10 +294,14 @@ namespace TacSim.Net
         {
             if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(json))
                 return false;
+            if (!IsValidSha256Hex(expectedSha256))
+            {
+                SafeLogWarn($"[TacSimContentSync] Missing or malformed SHA-256 digest for pack '{id}'.");
+                return false;
+            }
 
             string actualSha = ComputeSha256Hex(json);
-            if (!string.IsNullOrEmpty(expectedSha256) &&
-                !string.Equals(actualSha, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(actualSha, expectedSha256, StringComparison.OrdinalIgnoreCase))
             {
                 SafeLogWarn($"[TacSimContentSync] Digest mismatch for pack '{id}': expected {expectedSha256}, got {actualSha}.");
                 return false;
@@ -265,7 +315,17 @@ namespace TacSim.Net
                 try
                 {
                     string packFile = Path.Combine(_cacheRootDir, "packs", SanitizeFileSlug(id) + ".json");
-                    File.WriteAllText(packFile, json);
+                    string tmpPackFile = packFile + ".tmp";
+                    File.WriteAllText(tmpPackFile, json);
+                    if (File.Exists(packFile))
+                    {
+                        try { File.Replace(tmpPackFile, packFile, null); }
+                        catch { File.Delete(packFile); File.Move(tmpPackFile, packFile); }
+                    }
+                    else
+                    {
+                        File.Move(tmpPackFile, packFile);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -284,15 +344,19 @@ namespace TacSim.Net
 
         public void RequestManifestOverWebSocket(MushWsClient ws, float nowRealtime = 0f)
         {
-            if (ws == null || !ws.IsConnected)
+            if (ws == null || !ws.CanEnqueueOutbound)
                 return;
-            if (!ws.HasAdvertisedPanel("tacsim.content"))
+            if (ws.IsConnected && !ws.HasAdvertisedPanel("tacsim.content"))
                 return;
 
             _inFlightPacks.Clear();
             _pendingPacks.Clear();
             _attemptCounts.Clear();
+            _failedPackIds.Clear();
             _manifestReceived = false;
+            _manifestRequested = true;
+            _manifestSentAtRealtime = nowRealtime;
+            _manifestAttempts = 1;
 
             var p = JsonNode.NewObject();
             p["op"] = JsonNode.FromString("manifest");
@@ -306,14 +370,22 @@ namespace TacSim.Net
             if (op == "manifest")
             {
                 _manifestReceived = true;
+                _manifestRequested = false;
                 var remote = ParseManifestPacks(data);
-                PruneRemovedServerPacks(remote);
+                _manifestPinnedDigests.Clear();
+                for (int i = 0; i < remote.Count; i++)
+                    _manifestPinnedDigests[remote[i].Id] = remote[i].Sha256;
+
                 var changed = ComputeChangedPacks(_localDigests, remote);
                 _pendingPacks.Clear();
                 _inFlightPacks.Clear();
                 _attemptCounts.Clear();
+                _failedPackIds.Clear();
                 for (int i = 0; i < changed.Count; i++)
                     _pendingPacks.Enqueue(changed[i]);
+
+                // Prune AFTER enqueuing changed packs so cold/partial syncs don't trigger a premature rebuild!
+                PruneRemovedServerPacks(remote);
 
                 if (_pendingPacks.Count > 0)
                 {
@@ -325,28 +397,94 @@ namespace TacSim.Net
             {
                 string id = data.Str("id", string.Empty);
                 string reqId = data.Str("requested_id", id);
-                _inFlightPacks.Remove(id);
-                if (!string.IsNullOrEmpty(reqId))
-                    _inFlightPacks.Remove(reqId);
 
+                bool hadInFlight = false;
+                (ContentPackManifestItem item, float sentAt, int attempts) inFlight = default;
+                if (!string.IsNullOrEmpty(id) && _inFlightPacks.TryGetValue(id, out inFlight))
+                {
+                    hadInFlight = true;
+                    _inFlightPacks.Remove(id);
+                }
+                if (!string.IsNullOrEmpty(reqId) && _inFlightPacks.TryGetValue(reqId, out var reqInFlight))
+                {
+                    if (!hadInFlight)
+                    {
+                        inFlight = reqInFlight;
+                        hadInFlight = true;
+                    }
+                    _inFlightPacks.Remove(reqId);
+                }
+
+                bool stored = false;
                 if (data.Bool("found", false))
                 {
-                    string sha = data.Str("sha256", string.Empty);
+                    string replySha = data.Str("sha256", string.Empty);
                     string json = data.Str("json", string.Empty);
                     string cat = data.Str("category", string.Empty);
-                    if (StoreVerifiedPack(id, sha, json))
+
+                    // Enforce manifest-pinned SHA-256 whenever a manifest has been received.
+                    string expectedSha = null;
+                    if (hadInFlight && inFlight.item != null && IsValidSha256Hex(inFlight.item.Sha256))
                     {
+                        expectedSha = inFlight.item.Sha256;
+                    }
+                    else if (_manifestPinnedDigests.TryGetValue(id, out string pinned))
+                    {
+                        expectedSha = pinned;
+                    }
+                    else if (!string.IsNullOrEmpty(reqId) && _manifestPinnedDigests.TryGetValue(reqId, out string pinnedReq))
+                    {
+                        expectedSha = pinnedReq;
+                    }
+                    else if (!_manifestReceived && _manifestPinnedDigests.Count == 0)
+                    {
+                        expectedSha = replySha;
+                    }
+
+                    bool replyDisagreesWithPin = !string.IsNullOrEmpty(replySha) &&
+                                                 !string.IsNullOrEmpty(expectedSha) &&
+                                                 !string.Equals(replySha, expectedSha, StringComparison.OrdinalIgnoreCase);
+
+                    if (!replyDisagreesWithPin && StoreVerifiedPack(id, expectedSha, json))
+                    {
+                        stored = true;
                         _attemptCounts.Remove(id);
+                        _failedPackIds.Remove(id);
                         if (!string.IsNullOrEmpty(reqId))
+                        {
                             _attemptCounts.Remove(reqId);
+                            _failedPackIds.Remove(reqId);
+                        }
                         if (!string.IsNullOrEmpty(cat))
                             _dirtyCategories.Add(cat);
                         else
                             _dirtyCategories.Add("all");
                         _syncedSinceLastNotify++;
-                        PersistLocalManifest();
+                        _manifestDirty = true;
+                    }
+                    else
+                    {
+                        OnSyncLog?.Invoke($"[ContentSync] Rejected pack '{id}': SHA-256 did not match manifest pin.");
                     }
                 }
+                else
+                {
+                    OnSyncLog?.Invoke($"[ContentSync] Pack '{(!string.IsNullOrEmpty(id) ? id : reqId)}' returned found=false.");
+                }
+
+                if (!stored && hadInFlight && inFlight.item != null)
+                {
+                    if (inFlight.attempts < MaxPackAttempts)
+                    {
+                        _pendingPacks.Enqueue(inFlight.item);
+                    }
+                    else
+                    {
+                        _failedPackIds.Add(inFlight.item.Id);
+                        OnSyncLog?.Invoke($"[ContentSync] Pack '{inFlight.item.Id}' failed after {MaxPackAttempts} attempts.");
+                    }
+                }
+
                 PumpPackQueue(ws, nowRealtime);
                 FlushCompletedSyncNotification();
             }
@@ -354,13 +492,18 @@ namespace TacSim.Net
 
         private void FlushCompletedSyncNotification()
         {
-            // Coalesce burst pack downloads so a cold sync of dozens of packs triggers one scene rebuild at completion!
-            if (_syncedSinceLastNotify > 0 && _pendingPacks.Count == 0 && _inFlightPacks.Count == 0)
+            // Coalesce burst pack downloads so a cold sync of dozens of packs triggers one manifest write & scene rebuild at completion!
+            if (_pendingPacks.Count == 0 && _inFlightPacks.Count == 0)
             {
-                int count = _syncedSinceLastNotify;
-                _syncedSinceLastNotify = 0;
-                OnPacksUpdated?.Invoke(count);
-                _dirtyCategories.Clear();
+                if (_manifestDirty)
+                    PersistLocalManifest();
+                if (_syncedSinceLastNotify > 0)
+                {
+                    int count = _syncedSinceLastNotify;
+                    _syncedSinceLastNotify = 0;
+                    OnPacksUpdated?.Invoke(count);
+                    _dirtyCategories.Clear();
+                }
             }
         }
 
@@ -416,7 +559,25 @@ namespace TacSim.Net
         /// </summary>
         public void PumpPackQueue(MushWsClient ws, float nowRealtime)
         {
-            if (ws == null) return;
+            if (ws == null || !ws.CanEnqueueOutbound)
+                return;
+
+            // Retry a dropped initial manifest query when online.
+            if (_manifestRequested && !_manifestReceived)
+            {
+                if (_manifestAttempts < MaxPackAttempts &&
+                    nowRealtime - _manifestSentAtRealtime >= RequestRetryTimeoutSec &&
+                    (!ws.IsConnected || ws.HasAdvertisedPanel("tacsim.content")))
+                {
+                    _manifestAttempts++;
+                    _manifestSentAtRealtime = nowRealtime;
+                    var mp = JsonNode.NewObject();
+                    mp["op"] = JsonNode.FromString("manifest");
+                    ws.SendPanelSubscribe("tacsim.content", mp);
+                    OnSyncLog?.Invoke($"[ContentSync] Retrying content manifest request (attempt {_manifestAttempts}/{MaxPackAttempts})...");
+                }
+                return;
+            }
 
             // Re-queue any in-flight pack that timed out (e.g. dropped by flood limiter or reconnect)
             if (_inFlightPacks.Count > 0)
@@ -437,7 +598,14 @@ namespace TacSim.Net
                         var entry = _inFlightPacks[timedOut[i]];
                         _inFlightPacks.Remove(timedOut[i]);
                         if (entry.attempts < MaxPackAttempts)
+                        {
                             _pendingPacks.Enqueue(entry.item);
+                        }
+                        else
+                        {
+                            _failedPackIds.Add(entry.item.Id);
+                            OnSyncLog?.Invoke($"[ContentSync] Pack '{entry.item.Id}' timed out after {MaxPackAttempts} attempts.");
+                        }
                     }
                     FlushCompletedSyncNotification();
                 }
@@ -461,7 +629,10 @@ namespace TacSim.Net
                 }
                 int attempt = (_attemptCounts.TryGetValue(next.Id, out int prev) ? prev : 0) + 1;
                 if (attempt > MaxPackAttempts)
+                {
+                    _failedPackIds.Add(next.Id);
                     continue;
+                }
                 _attemptCounts[next.Id] = attempt;
                 _inFlightPacks[next.Id] = (next, nowRealtime, attempt);
                 var p = JsonNode.NewObject();

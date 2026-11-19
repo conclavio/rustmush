@@ -69,6 +69,8 @@ namespace TacSim.World
         public List<GoodItemDef> GoodsCatalog { get; private set; }
         public List<MarketListingRow> Listings { get; } = new List<MarketListingRow>();
         public List<string> SailingOrderLines { get; } = new List<string>();
+        public List<TacSimDockedHullRef> BerthDockedHulls { get; } = new List<TacSimDockedHullRef>();
+        public bool HasAuthoritativeBerthFeed { get; private set; }
 
         public int SelectedTradeQuantity { get; set; } = 10;
         public bool SelectedSellAll { get; set; }
@@ -95,12 +97,38 @@ namespace TacSim.World
         private long _pendingBuyMaxTotalMinor;
         private float _pendingBuyExpiresAt;
         private bool _clearListingsOnNextRow;
+        private readonly HashSet<ulong> _knownOpenQuoteIds = new HashSet<ulong>();
+        private readonly HashSet<ulong> _excludedQuoteIdsForPendingBuy = new HashSet<ulong>();
 
         public event Action OnStateChanged;
 
         public TacSimTradeAndShipState(List<GoodItemDef> goodsCatalog = null)
         {
             GoodsCatalog = goodsCatalog ?? TacSimContentLoader.LoadGoodsTable();
+        }
+
+        public void ResetSessionState()
+        {
+            Listings.Clear();
+            SailingOrderLines.Clear();
+            BerthDockedHulls.Clear();
+            HasAuthoritativeBerthFeed = false;
+            ActiveVenue = string.Empty;
+            AboardDockedPortHint = string.Empty;
+            NextAfterListingId = null;
+            HoldMassTonnes = 0;
+            HoldMassLimitTonnes = 100;
+            HoldVolumeM3 = 0f;
+            HoldVolumeLimitM3 = 120f;
+            TankTonnes = 0;
+            TankLimitTonnes = 80;
+            StoresCrewDays = 0;
+            StoresLimitCrewDays = 120;
+            CreditsText = "— cr";
+            _clearListingsOnNextRow = false;
+            _knownOpenQuoteIds.Clear();
+            CancelPendingBuy();
+            OnStateChanged?.Invoke();
         }
 
         public void ReloadGoodsCatalog()
@@ -137,8 +165,20 @@ namespace TacSim.World
 
             _pendingBuyListingId = listingId;
             _pendingBuyQuantity = safeQty;
-            _pendingBuyMaxTotalMinor = displayedUnitPriceMinor * safeQty;
+            try
+            {
+                _pendingBuyMaxTotalMinor = checked(displayedUnitPriceMinor * safeQty);
+            }
+            catch (OverflowException)
+            {
+                _pendingBuyMaxTotalMinor = long.MaxValue;
+            }
             _pendingBuyExpiresAt = currentTimeS + 8.0f;
+            // Snapshot already-open quote IDs so an unrelated pre-existing open quote is NEVER auto-accepted!
+            _excludedQuoteIdsForPendingBuy.Clear();
+            foreach (ulong qid in _knownOpenQuoteIds)
+                _excludedQuoteIdsForPendingBuy.Add(qid);
+
             // `mush-market` reads quantity from the `=` right-hand side (`+market/quote #<id>=<qty>`)
             return $"+market/quote #{listingId}={safeQty}";
         }
@@ -148,6 +188,7 @@ namespace TacSim.World
             _pendingBuyListingId = null;
             _pendingBuyQuantity = 0;
             _pendingBuyMaxTotalMinor = 0;
+            _excludedQuoteIdsForPendingBuy.Clear();
         }
 
         /// <summary>
@@ -185,16 +226,18 @@ namespace TacSim.World
             int wantedQty = _pendingBuyQuantity;
             long maxTotal = _pendingBuyMaxTotalMinor;
 
-            // Scan newest quote first in case buyer has an older open quote on the same listing
+            // Scan newest quote first, skipping any quote_id that already existed before BeginOneClickBuy.
             for (int i = quotes.Count - 1; i >= 0; i--)
             {
                 var q = quotes[i];
                 if (!q.IsObject) continue;
-                ulong qid = (ulong)Math.Max(0L, q.Long("quote_id", 0));
-                ulong lid = (ulong)Math.Max(0L, q.Long("listing_id", 0));
+                ulong qid = q.ULong("quote_id", 0);
+                ulong lid = q.ULong("listing_id", 0);
                 int qty = q.Int("quantity", 0);
                 long totalMinor = q.Long("total_minor", -1);
                 if (qid == 0 || lid != wantedListing || qty != wantedQty || totalMinor < 0)
+                    continue;
+                if (_excludedQuoteIdsForPendingBuy.Contains(qid))
                     continue;
 
                 CancelPendingBuy();
@@ -284,6 +327,42 @@ namespace TacSim.World
                 }
             }
 
+            var openQuotesArr = data["open_quotes"].AsArray();
+            if (openQuotesArr != null)
+            {
+                _knownOpenQuoteIds.Clear();
+                for (int i = 0; i < openQuotesArr.Count; i++)
+                {
+                    var q = openQuotesArr[i];
+                    if (!q.IsObject) continue;
+                    ulong qid = q.ULong("quote_id", 0);
+                    if (qid > 0) _knownOpenQuoteIds.Add(qid);
+                }
+            }
+
+            var berthObj = data["berth"];
+            if (berthObj.IsObject)
+            {
+                HasAuthoritativeBerthFeed = true;
+                BerthDockedHulls.Clear();
+                var bhArr = berthObj["docked_hulls"].AsArray();
+                if (bhArr != null)
+                {
+                    for (int i = 0; i < bhArr.Count; i++)
+                    {
+                        var h = bhArr[i];
+                        if (!h.IsObject) continue;
+                        BerthDockedHulls.Add(new TacSimDockedHullRef
+                        {
+                            Id = h.Str("id", string.Empty),
+                            Name = h.Str("name", string.Empty),
+                            Mark = h.Str("mark", string.Empty),
+                            Unit = h.Str("unit", string.Empty)
+                        });
+                    }
+                }
+            }
+
             var shipObj = data["ship"];
             if (shipObj.IsObject && shipObj["stowage"].IsObject)
             {
@@ -365,16 +444,16 @@ namespace TacSim.World
             if (g == null) return SelectedTradeQuantity;
 
             if (g.Stowage == "stow.propellant")
-                return Mathf.Max(1, TankLimitTonnes - TankTonnes);
+                return Mathf.Max(0, TankLimitTonnes - TankTonnes);
             if (g.Stowage == "stow.provisions")
-                return Mathf.Max(1, StoresLimitCrewDays - StoresCrewDays);
+                return Mathf.Max(0, StoresLimitCrewDays - StoresCrewDays);
 
             int freeKg = Mathf.Max(0, (HoldMassLimitTonnes - HoldMassTonnes) * 1000);
             int freeL = Mathf.Max(0, Mathf.RoundToInt((HoldVolumeLimitM3 - HoldVolumeM3) * 1000f));
 
             int byMass = g.MassKgPerUnit > 0 ? freeKg / g.MassKgPerUnit : 999;
             int byVol = g.VolumeLPerUnit > 0 ? freeL / g.VolumeLPerUnit : 999;
-            return Mathf.Max(1, Mathf.Min(byMass, byVol));
+            return Mathf.Max(0, Mathf.Min(byMass, byVol));
         }
 
         public bool IngestServerLine(string rawLine, float currentTimeS, out List<string> followUpCommands)

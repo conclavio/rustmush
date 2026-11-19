@@ -18,12 +18,16 @@ namespace TacSim.Editor
     public sealed class TacSimStandaloneBuilder : IPreprocessBuildWithReport
     {
         public const string FallbackResourcesDir = "Assets/_TacSim/Resources/TacSimFallbackPacks";
+        private static bool _stagedDuringExecuteBuild;
 
         public int callbackOrder => 0;
 
         public void OnPreprocessBuild(BuildReport report)
         {
-            int count = StageEmbeddedFallbackPacks();
+            if (_stagedDuringExecuteBuild)
+                return;
+            // Never invoke AssetDatabase.Refresh(ForceSynchronousImport) inside IPreprocessBuildWithReport.OnPreprocessBuild.
+            int count = StageEmbeddedFallbackPacks(explicitOutputDir: null, refreshAssetDatabase: false);
             Debug.Log($"[TacSim Build Preprocess] Staged {count} sanitized fallback content packs into {FallbackResourcesDir}.");
         }
 
@@ -109,22 +113,53 @@ namespace TacSim.Editor
             };
 
             Debug.Log($"[TacSim Builder] Building {target} standalone player -> {outputFilePath}...");
-            BuildReport report = BuildPipeline.BuildPlayer(opts);
-            Debug.Log($"[TacSim Builder] Build finished: result={report.summary.result} errors={report.summary.totalErrors} warnings={report.summary.totalWarnings}");
+            _stagedDuringExecuteBuild = true;
+            BuildReport report;
+            try
+            {
+                report = BuildPipeline.BuildPlayer(opts);
+            }
+            finally
+            {
+                _stagedDuringExecuteBuild = false;
+            }
+            if (report != null)
+                Debug.Log($"[TacSim Builder] Build finished: result={report.summary.result} errors={report.summary.totalErrors} warnings={report.summary.totalWarnings}");
+            else
+                Debug.LogError("[TacSim Builder] BuildPipeline.BuildPlayer returned null BuildReport.");
             return report;
         }
 
         public static int StageEmbeddedFallbackPacks()
         {
-            string diskOutDir = Path.GetFullPath(Path.Combine(Application.dataPath, "_TacSim", "Resources", "TacSimFallbackPacks"));
+            return StageEmbeddedFallbackPacks(explicitOutputDir: null, refreshAssetDatabase: true);
+        }
+
+        public static int StageEmbeddedFallbackPacks(string explicitOutputDir, bool refreshAssetDatabase)
+        {
+            string diskOutDir = !string.IsNullOrWhiteSpace(explicitOutputDir)
+                ? Path.GetFullPath(explicitOutputDir)
+                : Path.GetFullPath(Path.Combine(Application.dataPath, "_TacSim", "Resources", "TacSimFallbackPacks"));
             Directory.CreateDirectory(diskOutDir);
 
-            int written = 0;
+            // Clean stale staged JSON packs so removed/renamed content files do not linger across builds.
+            string[] existingStaged = Directory.GetFiles(diskOutDir, "*.json");
+            for (int i = 0; i < existingStaged.Length; i++)
+            {
+                try { File.Delete(existingStaged[i]); } catch { /* ignore */ }
+            }
 
-            // 1. Corridor port & OOC neighborhood packs
+            int written = 0;
+            int neighborhoodsWritten = 0;
+            int unitsWritten = 0;
+
+            // 1. Corridor port & OOC neighborhood packs + planetary surface regions & arena atlases
             string oocSrc = TacSimContentLoader.ResolveMushAtlasContentPath("neighborhood.ooc_area.json");
-            if (TryStageSanitizedFile(oocSrc, Path.Combine(diskOutDir, "neighborhood.ooc_area.json")))
+            if (TryStageSanitizedFile(oocSrc, Path.Combine(diskOutDir, "neighborhood.ooc_area.json"), checkAccessibility: true))
+            {
                 written++;
+                neighborhoodsWritten++;
+            }
 
             string atlasDir = TacSimContentLoader.ResolveRepoContentPath("atlas");
             if (Directory.Exists(atlasDir))
@@ -135,9 +170,32 @@ namespace TacSim.Editor
                     string fileName = Path.GetFileName(neighborhoodFiles[i]);
                     if (fileName.IndexOf("staff", StringComparison.OrdinalIgnoreCase) >= 0)
                         continue;
-                    if (TryStageSanitizedFile(neighborhoodFiles[i], Path.Combine(diskOutDir, fileName)))
+                    if (TryStageSanitizedFile(neighborhoodFiles[i], Path.Combine(diskOutDir, fileName), checkAccessibility: true))
+                    {
+                        written++;
+                        neighborhoodsWritten++;
+                    }
+                }
+
+                string[] regionFiles = Directory.GetFiles(atlasDir, "region.*.json");
+                for (int i = 0; i < regionFiles.Length; i++)
+                {
+                    string fileName = Path.GetFileName(regionFiles[i]);
+                    if (TryStageSanitizedFile(regionFiles[i], Path.Combine(diskOutDir, fileName), checkAccessibility: false))
                         written++;
                 }
+
+                string[] arenaAtlasFiles = Directory.GetFiles(atlasDir, "arena_atlas.*.json");
+                for (int i = 0; i < arenaAtlasFiles.Length; i++)
+                {
+                    string fileName = Path.GetFileName(arenaAtlasFiles[i]);
+                    if (TryStageSanitizedFile(arenaAtlasFiles[i], Path.Combine(diskOutDir, fileName), checkAccessibility: false))
+                        written++;
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[TacSim Builder] Atlas content directory not found at '{atlasDir}'.");
             }
 
             // 2. Cast packs (`cast.<slug>.json`)
@@ -150,12 +208,16 @@ namespace TacSim.Editor
                     string slug = Path.GetFileNameWithoutExtension(castFiles[i]);
                     if (slug.IndexOf("staff", StringComparison.OrdinalIgnoreCase) >= 0)
                         continue;
-                    if (TryStageSanitizedFile(castFiles[i], Path.Combine(diskOutDir, $"cast.{slug}.json")))
+                    if (TryStageSanitizedFile(castFiles[i], Path.Combine(diskOutDir, $"cast.{slug}.json"), checkAccessibility: false))
                         written++;
                 }
             }
+            else
+            {
+                Debug.LogWarning($"[TacSim Builder] Cast content directory not found at '{castDir}'.");
+            }
 
-            // 3. Walkable ship hull unit templates (`dray.json`, `dray_p.json`, `corvette.json`, etc.)
+            // 3. Walkable ship hull & vehicle unit templates (`dray.json`, `dray_p.json`, `corvette.json`, etc.)
             string unitsDir = TacSimContentLoader.ResolveRepoContentPath("units");
             if (Directory.Exists(unitsDir))
             {
@@ -163,25 +225,58 @@ namespace TacSim.Editor
                 for (int i = 0; i < unitFiles.Length; i++)
                 {
                     string fileName = Path.GetFileName(unitFiles[i]);
-                    if (TryStageSanitizedFile(unitFiles[i], Path.Combine(diskOutDir, fileName)))
+                    if (TryStageSanitizedFile(unitFiles[i], Path.Combine(diskOutDir, fileName), checkAccessibility: false))
+                    {
+                        written++;
+                        unitsWritten++;
+                    }
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[TacSim Builder] Units content directory not found at '{unitsDir}'.");
+            }
+
+            // 4. Arena battle maps (`arenas/<slug>.json` -> `arena.<slug>.json` matching TacSimTerrainDecoder)
+            string arenasDir = TacSimContentLoader.ResolveRepoContentPath("arenas");
+            if (Directory.Exists(arenasDir))
+            {
+                string[] arenaFiles = Directory.GetFiles(arenasDir, "*.json");
+                for (int i = 0; i < arenaFiles.Length; i++)
+                {
+                    string slug = Path.GetFileNameWithoutExtension(arenaFiles[i]);
+                    string dstName = slug.StartsWith("arena.", StringComparison.OrdinalIgnoreCase)
+                        ? $"{slug}.json"
+                        : $"arena.{slug}.json";
+                    if (TryStageSanitizedFile(arenaFiles[i], Path.Combine(diskOutDir, dstName), checkAccessibility: false))
                         written++;
                 }
             }
 
-            // 4. Canonical market goods catalog (`goods.json`)
+            // 5. Canonical market goods catalog (`goods.json`)
             string goodsSrc = TacSimContentLoader.ResolveRepoContentPath(Path.Combine("market", "goods.json"));
-            if (TryStageSanitizedFile(goodsSrc, Path.Combine(diskOutDir, "goods.json")))
+            if (TryStageSanitizedFile(goodsSrc, Path.Combine(diskOutDir, "goods.json"), checkAccessibility: false))
                 written++;
 
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            if (written == 0 || neighborhoodsWritten == 0 || unitsWritten == 0)
+            {
+                Debug.LogError(
+                    $"[TacSim Builder] Fallback staging incomplete: total={written}, neighborhoods={neighborhoodsWritten}, units={unitsWritten}. " +
+                    $"Verify crates/tacsim/content is reachable from '{Directory.GetCurrentDirectory()}'.");
+            }
+
+            if (refreshAssetDatabase)
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             return written;
         }
 
-        private static bool TryStageSanitizedFile(string srcPath, string dstPath)
+        private static bool TryStageSanitizedFile(string srcPath, string dstPath, bool checkAccessibility)
         {
             if (string.IsNullOrEmpty(srcPath) || !File.Exists(srcPath))
                 return false;
             string raw = File.ReadAllText(srcPath);
+            if (checkAccessibility && !TacSimContentLoader.IsNeighborhoodPackPlayerAccessible(raw))
+                return false;
             string sanitized = TacSimContentLoader.SanitizePackJsonForClient(raw);
             File.WriteAllText(dstPath, sanitized);
             return true;

@@ -92,19 +92,24 @@ namespace TacSim.Core
             }
 
             bool dockingActive = _spaceStage != null && _spaceStage.IsDockingActive;
+            bool modalOpen = _hud != null && _hud.IsModalOpen;
+            bool suspendControls = isTextInputFocused || modalOpen;
             bool inVehicleStage = inArena || inSurface;
             if (_player != null)
             {
                 _player.SetStagePhysicsSuspended(inVehicleStage);
-                _player.InputSuspended = isTextInputFocused || dockingActive || inVehicleStage;
+                _player.InputSuspended = suspendControls || dockingActive || inVehicleStage;
             }
-            _hud?.SetWalkQuickActionsVisible(!inVehicleStage);
+            if (_hud != null)
+                _hud.SetWalkQuickActionsVisible(!inVehicleStage);
             if (_cameraRig != null)
-                _cameraRig.OrbitInputEnabled = !isTextInputFocused && !dockingActive;
+                _cameraRig.OrbitInputEnabled = !suspendControls && !dockingActive;
+            if (_spaceStage != null)
+                _spaceStage.KeyboardSuspended = suspendControls;
             if (_surfaceStage != null)
-                _surfaceStage.KeyboardSuspended = isTextInputFocused;
+                _surfaceStage.KeyboardSuspended = suspendControls;
             if (_arenaStage != null)
-                _arenaStage.KeyboardSuspended = isTextInputFocused;
+                _arenaStage.KeyboardSuspended = suspendControls;
         }
 
         public void ApplySoundscapeForCamera(CameraRigMode mode, bool isAboardShip)

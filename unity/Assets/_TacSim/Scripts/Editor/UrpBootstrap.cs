@@ -15,10 +15,12 @@ namespace TacSim.Editor
 
         public static void EnsureUrpAssigned()
         {
-            if (GraphicsSettings.defaultRenderPipeline != null)
+            if (GraphicsSettings.defaultRenderPipeline != null && QualitySettings.renderPipeline != null)
                 return;
 
-            var rp = AssetDatabase.LoadAssetAtPath<RenderPipelineAsset>("Assets/_TacSim/Settings/PC_RPAsset.asset");
+            var rp = GraphicsSettings.defaultRenderPipeline;
+            if (rp == null)
+                rp = AssetDatabase.LoadAssetAtPath<RenderPipelineAsset>("Assets/_TacSim/Settings/PC_RPAsset.asset");
             if (rp == null)
             {
                 string[] guids = AssetDatabase.FindAssets("t:UniversalRenderPipelineAsset");

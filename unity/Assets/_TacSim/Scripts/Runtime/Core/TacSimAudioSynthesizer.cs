@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using UnityEngine;
 
 namespace TacSim.Core
@@ -22,11 +24,16 @@ namespace TacSim.Core
     {
         public const string MutePlayerPrefKey = "TacSim.AudioMuted";
         public const int SampleRate = 22050;
+        private const double MinPerClipIntervalSec = 0.045;
+        private const double MinGlobalBurstIntervalSec = 0.015;
 
         public bool IsMuted { get; private set; }
+        public int AllocatedClipCount => CountAllocatedClips();
 
         private AudioSource _ambientLoop;
         private AudioSource _sfxSource;
+        private readonly Dictionary<AudioClip, double> _lastPlayByClip = new Dictionary<AudioClip, double>();
+        private double _lastGlobalOneShotSec = -10.0;
 
         private AudioClip _stationHumClip;
         private AudioClip _shipHumClip;
@@ -40,40 +47,103 @@ namespace TacSim.Core
         private AudioClip _railgunCrackClip;
         private AudioClip _torpedoLaunchClip;
 
+        private static double MonotonicSeconds() =>
+            Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+
         private void Awake()
         {
             InitializeAudioGraph();
         }
 
+        private void OnDestroy()
+        {
+            DisposeClips();
+        }
+
+        public void DisposeClips()
+        {
+            if (_ambientLoop != null)
+            {
+                _ambientLoop.Stop();
+                _ambientLoop.clip = null;
+            }
+            if (_sfxSource != null)
+                _sfxSource.Stop();
+
+            _lastPlayByClip.Clear();
+            DestroyClip(ref _stationHumClip);
+            DestroyClip(ref _shipHumClip);
+            DestroyClip(ref _spaceHumClip);
+            DestroyClip(ref _uiClickClip);
+            DestroyClip(ref _marketChimeClip);
+            DestroyClip(ref _airlockCycleClip);
+            DestroyClip(ref _dockClampClip);
+            DestroyClip(ref _radarPingClip);
+            DestroyClip(ref _laserPulseClip);
+            DestroyClip(ref _railgunCrackClip);
+            DestroyClip(ref _torpedoLaunchClip);
+        }
+
+        private static void DestroyClip(ref AudioClip clip)
+        {
+            if (clip == null) return;
+            if (Application.isPlaying) Destroy(clip);
+            else DestroyImmediate(clip);
+            clip = null;
+        }
+
+        private int CountAllocatedClips()
+        {
+            int c = 0;
+            if (_stationHumClip != null) c++;
+            if (_shipHumClip != null) c++;
+            if (_spaceHumClip != null) c++;
+            if (_uiClickClip != null) c++;
+            if (_marketChimeClip != null) c++;
+            if (_airlockCycleClip != null) c++;
+            if (_dockClampClip != null) c++;
+            if (_radarPingClip != null) c++;
+            if (_laserPulseClip != null) c++;
+            if (_railgunCrackClip != null) c++;
+            if (_torpedoLaunchClip != null) c++;
+            return c;
+        }
+
         public void InitializeAudioGraph()
         {
-            if (_ambientLoop != null) return;
+            if (_ambientLoop != null && _stationHumClip != null) return;
 
             IsMuted = PlayerPrefs.GetInt(MutePlayerPrefKey, 0) == 1;
 
-            _ambientLoop = gameObject.AddComponent<AudioSource>();
-            _ambientLoop.loop = true;
-            _ambientLoop.spatialBlend = 0f;
-            _ambientLoop.volume = IsMuted ? 0f : 0.085f;
-            _ambientLoop.playOnAwake = false;
+            if (_ambientLoop == null)
+            {
+                _ambientLoop = gameObject.AddComponent<AudioSource>();
+                _ambientLoop.loop = true;
+                _ambientLoop.spatialBlend = 0f;
+                _ambientLoop.volume = IsMuted ? 0f : 0.085f;
+                _ambientLoop.playOnAwake = false;
+            }
 
-            _sfxSource = gameObject.AddComponent<AudioSource>();
-            _sfxSource.loop = false;
-            _sfxSource.spatialBlend = 0f;
-            _sfxSource.volume = 0.22f;
-            _sfxSource.playOnAwake = false;
+            if (_sfxSource == null)
+            {
+                _sfxSource = gameObject.AddComponent<AudioSource>();
+                _sfxSource.loop = false;
+                _sfxSource.spatialBlend = 0f;
+                _sfxSource.volume = 0.22f;
+                _sfxSource.playOnAwake = false;
+            }
 
-            _stationHumClip = BuildDroneLoop("StationHum", baseHz: 55f, fifthHz: 82.5f, airNoise: 0.018f);
-            _shipHumClip = BuildDroneLoop("ShipReactorHum", baseHz: 64f, fifthHz: 128f, airNoise: 0.026f);
-            _spaceHumClip = BuildDroneLoop("SpaceCanopyHum", baseHz: 42f, fifthHz: 63f, airNoise: 0.008f);
-            _uiClickClip = BuildClipFromSamples("UiChime", GenerateUiChimeSamples());
-            _marketChimeClip = BuildClipFromSamples("MarketChime", GenerateMarketChimeSamples());
-            _airlockCycleClip = BuildClipFromSamples("AirlockCycle", GenerateAirlockHissSamples());
-            _dockClampClip = BuildClipFromSamples("DockHardClamp", GenerateDockClampSamples());
-            _radarPingClip = BuildClipFromSamples("RadarScanPing", GenerateRadarPingSamples());
-            _laserPulseClip = BuildClipFromSamples("LaserPulse", GenerateLaserPulseSamples());
-            _railgunCrackClip = BuildClipFromSamples("RailgunCrack", GenerateRailgunCrackSamples());
-            _torpedoLaunchClip = BuildClipFromSamples("TorpedoLaunch", GenerateTorpedoLaunchSamples());
+            if (_stationHumClip == null) _stationHumClip = BuildDroneLoop("StationHum", baseHz: 55f, fifthHz: 82.5f, airNoise: 0.018f);
+            if (_shipHumClip == null) _shipHumClip = BuildDroneLoop("ShipReactorHum", baseHz: 64f, fifthHz: 128f, airNoise: 0.026f);
+            if (_spaceHumClip == null) _spaceHumClip = BuildDroneLoop("SpaceCanopyHum", baseHz: 42f, fifthHz: 63f, airNoise: 0.008f);
+            if (_uiClickClip == null) _uiClickClip = BuildClipFromSamples("UiChime", GenerateUiChimeSamples());
+            if (_marketChimeClip == null) _marketChimeClip = BuildClipFromSamples("MarketChime", GenerateMarketChimeSamples());
+            if (_airlockCycleClip == null) _airlockCycleClip = BuildClipFromSamples("AirlockCycle", GenerateAirlockHissSamples());
+            if (_dockClampClip == null) _dockClampClip = BuildClipFromSamples("DockHardClamp", GenerateDockClampSamples());
+            if (_radarPingClip == null) _radarPingClip = BuildClipFromSamples("RadarScanPing", GenerateRadarPingSamples());
+            if (_laserPulseClip == null) _laserPulseClip = BuildClipFromSamples("LaserPulse", GenerateLaserPulseSamples());
+            if (_railgunCrackClip == null) _railgunCrackClip = BuildClipFromSamples("RailgunCrack", GenerateRailgunCrackSamples());
+            if (_torpedoLaunchClip == null) _torpedoLaunchClip = BuildClipFromSamples("TorpedoLaunch", GenerateTorpedoLaunchSamples());
 
             SetSoundscape(AmbientSoundscape.StationRing);
         }
@@ -84,7 +154,18 @@ namespace TacSim.Core
             PlayerPrefs.SetInt(MutePlayerPrefKey, muted ? 1 : 0);
             PlayerPrefs.Save();
             if (_ambientLoop != null)
+            {
                 _ambientLoop.volume = muted ? 0f : 0.085f;
+                if (muted)
+                {
+                    if (_ambientLoop.isPlaying)
+                        _ambientLoop.Stop();
+                }
+                else if (_ambientLoop.clip != null && !_ambientLoop.isPlaying)
+                {
+                    _ambientLoop.Play();
+                }
+            }
         }
 
         public bool ToggleMuted()
@@ -99,13 +180,15 @@ namespace TacSim.Core
             AudioClip desired = mode == AmbientSoundscape.ShipInterior ? _shipHumClip
                               : mode == AmbientSoundscape.OrbitalSpace ? _spaceHumClip
                               : _stationHumClip;
-            if (_ambientLoop.clip == desired && _ambientLoop.isPlaying)
+            if (_ambientLoop.clip == desired && (_ambientLoop.isPlaying || IsMuted))
                 return;
 
             _ambientLoop.clip = desired;
             _ambientLoop.volume = IsMuted ? 0f : 0.085f;
-            if (desired != null)
+            if (desired != null && !IsMuted)
                 _ambientLoop.Play();
+            else if (IsMuted && _ambientLoop.isPlaying)
+                _ambientLoop.Stop();
         }
 
         public void PlayUiClick() => PlayOneShotIfUnmuted(_uiClickClip, 0.35f);
@@ -130,18 +213,31 @@ namespace TacSim.Core
                 PlayRailgunCrack();
             else if (low.StartsWith("+tac/torp", StringComparison.Ordinal))
                 PlayTorpedoLaunch();
-            else if (low.StartsWith("+tac/scan", StringComparison.Ordinal) || low == "scan")
+            else if (low.StartsWith("+tac/scan", StringComparison.Ordinal) ||
+                     low.StartsWith("+tac/lock", StringComparison.Ordinal) ||
+                     low.StartsWith("+tv/scan", StringComparison.Ordinal) ||
+                     low == "scan" || low.StartsWith("scan ", StringComparison.Ordinal))
                 PlayRadarScanPing();
-            else if (low.StartsWith("+market/accept", StringComparison.Ordinal) || low.StartsWith("+market/quote", StringComparison.Ordinal))
+            else if (low.StartsWith("+market/accept", StringComparison.Ordinal) ||
+                     low.StartsWith("+market/quote", StringComparison.Ordinal) ||
+                     low.StartsWith("+market/sell", StringComparison.Ordinal) ||
+                     low.StartsWith("+market/buy", StringComparison.Ordinal))
                 PlayMarketChime();
-            else if (low.StartsWith("fire ", StringComparison.Ordinal))
+            else if (low.StartsWith("fire ", StringComparison.Ordinal) || low == "fire")
                 PlayRailgunCrack();
         }
 
         private void PlayOneShotIfUnmuted(AudioClip clip, float scale)
         {
-            if (!IsMuted && _sfxSource != null && clip != null)
-                _sfxSource.PlayOneShot(clip, scale);
+            if (IsMuted || _sfxSource == null || clip == null) return;
+            double now = MonotonicSeconds();
+            if (now - _lastGlobalOneShotSec < MinGlobalBurstIntervalSec)
+                return;
+            if (_lastPlayByClip.TryGetValue(clip, out double prev) && now - prev < MinPerClipIntervalSec)
+                return;
+            _lastPlayByClip[clip] = now;
+            _lastGlobalOneShotSec = now;
+            _sfxSource.PlayOneShot(clip, scale);
         }
 
         private static AudioClip BuildClipFromSamples(string name, float[] samples)
@@ -154,10 +250,19 @@ namespace TacSim.Core
         private static AudioClip BuildDroneLoop(string name, float baseHz, float fifthHz, float airNoise)
         {
             int samples = SampleRate * 4;
-            float[] buf = new float[samples];
+            int xfade = SampleRate / 10; // 100 ms seamless loop crossfade for filtered noise
+            float[] noiseBuf = new float[samples + xfade];
             uint rng = 0x9E3779B9u;
             float lp = 0f;
+            for (int i = 0; i < noiseBuf.Length; i++)
+            {
+                rng = rng * 1664525u + 1013904223u;
+                float white = ((rng & 0xFFFFu) / 32768f) - 1f;
+                lp = lp * 0.94f + white * 0.06f;
+                noiseBuf[i] = lp;
+            }
 
+            float[] buf = new float[samples];
             for (int i = 0; i < samples; i++)
             {
                 float t = i / (float)SampleRate;
@@ -165,11 +270,14 @@ namespace TacSim.Core
                 float s2 = Mathf.Sin(t * fifthHz * Mathf.PI * 2f) * 0.22f;
                 float lfo = 0.85f + 0.15f * Mathf.Sin(t * 0.25f * Mathf.PI * 2f);
 
-                rng = rng * 1664525u + 1013904223u;
-                float white = ((rng & 0xFFFFu) / 32768f) - 1f;
-                lp = lp * 0.94f + white * 0.06f;
+                float n = noiseBuf[i];
+                if (i < xfade)
+                {
+                    float w = i / (float)xfade;
+                    n = noiseBuf[samples + i] * (1f - w) + noiseBuf[i] * w;
+                }
 
-                buf[i] = (s1 + s2) * lfo + lp * airNoise;
+                buf[i] = Mathf.Clamp((s1 + s2) * lfo + n * airNoise, -1f, 1f);
             }
 
             return BuildClipFromSamples(name, buf);
@@ -179,12 +287,18 @@ namespace TacSim.Core
         {
             int samples = (int)(SampleRate * 0.085f);
             float[] buf = new float[samples];
+            float phase = 0f;
+            int split = samples / 2;
+            int ramp = Math.Max(1, (int)(SampleRate * 0.002f));
             for (int i = 0; i < samples; i++)
             {
                 float t = i / (float)SampleRate;
                 float env = Mathf.Exp(-t * 42f);
-                float freq = i < samples / 2 ? 880f : 1174.66f;
-                buf[i] = Mathf.Sin(t * freq * Mathf.PI * 2f) * env * 0.45f;
+                if (i < ramp) env *= i / (float)ramp;
+                if (i >= samples - ramp) env *= (samples - 1 - i) / (float)ramp;
+                float freq = i < split ? 880f : 1174.66f;
+                phase += (freq / SampleRate) * Mathf.PI * 2f;
+                buf[i] = Mathf.Sin(phase) * env * 0.45f;
             }
             return buf;
         }
@@ -193,15 +307,25 @@ namespace TacSim.Core
         {
             int samples = (int)(SampleRate * 0.24f);
             float[] buf = new float[samples];
+            float p1 = 0f;
+            float p2 = 0f;
+            int splitIdx = (int)(SampleRate * 0.09f);
+            int ramp = Math.Max(1, (int)(SampleRate * 0.003f));
             for (int i = 0; i < samples; i++)
             {
-                float t = i / (float)SampleRate;
-                bool second = t >= 0.09f;
-                float localT = second ? t - 0.09f : t;
+                bool second = i >= splitIdx;
+                int localIdx = second ? (i - splitIdx) : i;
+                int noteLen = second ? (samples - splitIdx) : splitIdx;
+                float localT = localIdx / (float)SampleRate;
                 float env = Mathf.Exp(-localT * 22f);
+                if (localIdx < ramp) env *= localIdx / (float)ramp;
+                if (localIdx >= noteLen - ramp) env *= Math.Max(0, noteLen - 1 - localIdx) / (float)ramp;
+
                 float f1 = second ? 783.99f : 587.33f;
                 float f2 = second ? 1174.66f : 880.0f;
-                buf[i] = (Mathf.Sin(t * f1 * Mathf.PI * 2f) * 0.32f + Mathf.Sin(t * f2 * Mathf.PI * 2f) * 0.18f) * env;
+                p1 += (f1 / SampleRate) * Mathf.PI * 2f;
+                p2 += (f2 / SampleRate) * Mathf.PI * 2f;
+                buf[i] = Mathf.Clamp((Mathf.Sin(p1) * 0.32f + Mathf.Sin(p2) * 0.18f) * env, -1f, 1f);
             }
             return buf;
         }
@@ -236,7 +360,7 @@ namespace TacSim.Core
             {
                 float t = i / (float)SampleRate;
                 float thud = Mathf.Exp(-t * 18f) * Mathf.Sin(t * 68f * Mathf.PI * 2f) * 0.7f;
-                float chimeEnv = t > 0.10f ? Mathf.Exp(-(t - 0.10f) * 4.5f) : 0f;
+                float chimeEnv = t > 0.10f ? Mathf.Clamp01((t - 0.10f) / 0.005f) * Mathf.Exp(-(t - 0.10f) * 4.5f) : 0f;
                 float chord = (Mathf.Sin(t * 523.25f * Mathf.PI * 2f) + Mathf.Sin(t * 659.25f * Mathf.PI * 2f) + Mathf.Sin(t * 783.99f * Mathf.PI * 2f)) * 0.18f * chimeEnv;
                 buf[i] = Mathf.Clamp(thud + chord, -1f, 1f);
             }
@@ -247,12 +371,16 @@ namespace TacSim.Core
         {
             int samples = (int)(SampleRate * 0.34f);
             float[] buf = new float[samples];
+            float phase = 0f;
+            int ramp = Math.Max(1, (int)(SampleRate * 0.002f));
             for (int i = 0; i < samples; i++)
             {
                 float t = i / (float)SampleRate;
                 float env = Mathf.Exp(-t * 11.5f);
+                if (i < ramp) env *= i / (float)ramp;
                 float sweepHz = 1320f + 220f * Mathf.Exp(-t * 18f);
-                buf[i] = Mathf.Sin(t * sweepHz * Mathf.PI * 2f) * env * 0.38f;
+                phase += (sweepHz / SampleRate) * Mathf.PI * 2f;
+                buf[i] = Mathf.Sin(phase) * env * 0.38f;
             }
             return buf;
         }

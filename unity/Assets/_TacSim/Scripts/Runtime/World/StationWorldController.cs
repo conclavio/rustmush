@@ -27,14 +27,19 @@ namespace TacSim.World
         private readonly Dictionary<string, Transform> _roomRoots = new Dictionary<string, Transform>(StringComparer.Ordinal);
         private readonly Dictionary<string, Light> _roomLights = new Dictionary<string, Light>(StringComparer.Ordinal);
         private readonly Dictionary<string, TextMeshPro> _roomBoards = new Dictionary<string, TextMeshPro>(StringComparer.Ordinal);
+        private readonly Dictionary<string, List<string>> _roomBoardLines = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         private readonly Dictionary<string, GameObject> _spawnedActors = new Dictionary<string, GameObject>(StringComparer.Ordinal);
+        private readonly Dictionary<string, CharacterVisualSpawner> _actorSpawners = new Dictionary<string, CharacterVisualSpawner>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _actorDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<string, Vector3> _actorTargetPositions = new Dictionary<string, Vector3>(StringComparer.Ordinal);
         private readonly Dictionary<string, WorldBillboard> _actorBillboards = new Dictionary<string, WorldBillboard>(StringComparer.Ordinal);
+        private readonly List<TacSimDockedHullRef> _lastBerthTradeHulls = new List<TacSimDockedHullRef>();
+        private bool _hasAuthoritativeBerthHulls;
         private string _spawnedActorsRoomEntry;
 
         private Transform _actorsContainer;
         private Transform _dockedShipVisual;
-        private readonly List<Transform> _berthDrones = new List<Transform>();
+        private readonly List<(Transform tr, float baseY)> _berthDrones = new List<(Transform, float)>();
         private readonly List<TextMeshPro> _cradleHullSigns = new List<TextMeshPro>();
         private readonly List<GameObject> _cradleHullObjects = new List<GameObject>();
         private WorldInteractable _airlockBoardInteractable;
@@ -165,7 +170,10 @@ namespace TacSim.World
             _roomRoots.Clear();
             _roomLights.Clear();
             _roomBoards.Clear();
+            _roomBoardLines.Clear();
             _spawnedActors.Clear();
+            _actorSpawners.Clear();
+            _actorDisplayNames.Clear();
             _actorTargetPositions.Clear();
             _actorBillboards.Clear();
             _spawnedActorsRoomEntry = null;
@@ -178,10 +186,11 @@ namespace TacSim.World
             _actorsContainer = new GameObject("LiveStationActors").transform;
             _actorsContainer.SetParent(transform, false);
 
-            // Map shared wall doorways & inter-floor stairs/ladders across ANY corridor port pack
+            // Map shared wall doorways, non-adjacent transit portals, & inter-floor stairs/ladders across ANY corridor port pack
             var horizontalDoors = new List<(int floor, float yWall, float centerX, AtlasExitDef exit)>();
             var verticalDoors = new List<(int floor, float xWall, float centerY, AtlasExitDef exit)>();
             var interFloorExits = new List<AtlasExitDef>();
+            var nonAdjacentExits = new List<AtlasExitDef>();
 
             foreach (var ex in Pack.Exits)
             {
@@ -199,6 +208,7 @@ namespace TacSim.World
                 }
 
                 // Shared horizontal wall (Y constant)
+                bool matchedWall = false;
                 if (Mathf.Abs(rA.MaxY - rB.MinY) < 0.25f || Mathf.Abs(rB.MaxY - rA.MinY) < 0.25f)
                 {
                     float yShared = Mathf.Abs(rA.MaxY - rB.MinY) < 0.25f ? rA.MaxY : rA.MinY;
@@ -207,6 +217,7 @@ namespace TacSim.World
                     if (xOverlapMax - xOverlapMin >= 2.2f)
                     {
                         horizontalDoors.Add((rA.FloorIndex, yShared, (xOverlapMin + xOverlapMax) * 0.5f, ex));
+                        matchedWall = true;
                     }
                 }
                 // Shared vertical wall (X constant)
@@ -218,7 +229,13 @@ namespace TacSim.World
                     if (yOverlapMax - yOverlapMin >= 2.2f)
                     {
                         verticalDoors.Add((rA.FloorIndex, xShared, (yOverlapMin + yOverlapMax) * 0.5f, ex));
+                        matchedWall = true;
                     }
+                }
+
+                if (!matchedWall && !ex.Locked)
+                {
+                    nonAdjacentExits.Add(ex);
                 }
             }
 
@@ -227,7 +244,7 @@ namespace TacSim.World
                 BuildRoomGeometry(kv.Value, horizontalDoors, verticalDoors, interFloorExits);
             }
 
-            BuildPortalTriggers(horizontalDoors, verticalDoors, interFloorExits);
+            BuildPortalTriggers(horizontalDoors, verticalDoors, interFloorExits, nonAdjacentExits);
             BuildCountersAndServiceDesks();
             BuildOocSimulatorCentreProps();
             if (LoadedPackId != "neighborhood.ooc_area")
@@ -429,25 +446,46 @@ namespace TacSim.World
                 AtlasRoomDef upper = rA.FloorIndex > rB.FloorIndex ? rA : rB;
                 if (upper != room) continue;
 
-                ComputeInterFloorStairGeometry(ex, rA, rB, out float cx, out float yLow, out float yHigh, out _, out _);
-                hx0 = Mathf.Max(room.MinX + 0.5f, cx - 2.6f);
-                hx1 = Mathf.Min(room.MaxX - 0.5f, cx + 2.6f);
-                hy0 = Mathf.Max(room.MinY + 0.5f, Mathf.Min(yLow, yHigh) - 0.8f);
-                hy1 = Mathf.Min(room.MaxY - 0.5f, Mathf.Max(yLow, yHigh) + 0.8f);
-                return (hx1 - hx0 > 1.5f) && (hy1 - hy0 > 2.0f);
+                ComputeInterFloorStairGeometry(ex, rA, rB, out Vector2 topXY, out Vector2 botXY, out _, out _, out bool runAlongX, out float stairWidth);
+                float halfW = stairWidth * 0.5f + 0.25f;
+                if (runAlongX)
+                {
+                    hx0 = Mathf.Max(room.MinX + 0.4f, Mathf.Min(topXY.x, botXY.x) - 0.7f);
+                    hx1 = Mathf.Min(room.MaxX - 0.4f, Mathf.Max(topXY.x, botXY.x) + 0.7f);
+                    hy0 = Mathf.Max(room.MinY + 0.4f, topXY.y - halfW);
+                    hy1 = Mathf.Min(room.MaxY - 0.4f, topXY.y + halfW);
+                }
+                else
+                {
+                    hx0 = Mathf.Max(room.MinX + 0.4f, topXY.x - halfW);
+                    hx1 = Mathf.Min(room.MaxX - 0.4f, topXY.x + halfW);
+                    hy0 = Mathf.Max(room.MinY + 0.4f, Mathf.Min(topXY.y, botXY.y) - 0.7f);
+                    hy1 = Mathf.Min(room.MaxY - 0.4f, Mathf.Max(topXY.y, botXY.y) + 0.7f);
+                }
+                return (hx1 - hx0 > 1.5f) && (hy1 - hy0 > 1.5f);
             }
             return false;
         }
 
-        private void ComputeInterFloorStairGeometry(AtlasExitDef ex, AtlasRoomDef rA, AtlasRoomDef rB, out float cx, out float ayTop, out float ayBot, out float elevTop, out float elevBot)
+        private void ComputeInterFloorStairGeometry(
+            AtlasExitDef ex,
+            AtlasRoomDef rA,
+            AtlasRoomDef rB,
+            out Vector2 topXY,
+            out Vector2 botXY,
+            out float elevTop,
+            out float elevBot,
+            out bool runAlongX,
+            out float stairWidth)
         {
             if (LoadedPackId == "neighborhood.ceres_freeport" && (rA.EntryId == "room.c03_arrivals" || rB.EntryId == "room.c03_arrivals"))
             {
-                cx = 125f;
-                ayTop = 153.5f;
-                ayBot = 143.5f;
+                topXY = new Vector2(125f, 153.5f);
+                botXY = new Vector2(125f, 143.5f);
                 elevTop = 5.85f;
                 elevBot = 0.15f;
+                runAlongX = false;
+                stairWidth = 4.8f;
                 return;
             }
 
@@ -456,21 +494,43 @@ namespace TacSim.World
             elevTop = Pack.GetFloorElevationY(upper.FloorIndex) - 0.15f;
             elevBot = Pack.GetFloorElevationY(lower.FloorIndex) + 0.15f;
 
-            if (ex.HasExplicitPortal)
+            // Clamp stair strictly inside the horizontal intersection of upper & lower rooms so stairs NEVER pierce adjacent walls/floors!
+            float ovMinX = Mathf.Max(upper.MinX, lower.MinX);
+            float ovMaxX = Mathf.Min(upper.MaxX, lower.MaxX);
+            float ovMinY = Mathf.Max(upper.MinY, lower.MinY);
+            float ovMaxY = Mathf.Min(upper.MaxY, lower.MaxY);
+
+            bool hasOverlap = (ovMaxX - ovMinX) > 2.0f && (ovMaxY - ovMinY) > 2.0f;
+            float boundMinX = hasOverlap ? ovMinX : upper.MinX;
+            float boundMaxX = hasOverlap ? ovMaxX : upper.MaxX;
+            float boundMinY = hasOverlap ? ovMinY : upper.MinY;
+            float boundMaxY = hasOverlap ? ovMaxY : upper.MaxY;
+
+            float spanX = boundMaxX - boundMinX;
+            float spanY = boundMaxY - boundMinY;
+
+            float anchorX = ex.HasExplicitPortal ? ex.PortalA.x : (boundMinX + boundMaxX) * 0.5f;
+            float anchorY = ex.HasExplicitPortal ? ex.PortalA.z : (boundMinY + boundMaxY) * 0.5f;
+
+            // Orient stair along the longer overlap axis when the Y depth is too shallow (e.g. Aitken Highport l07_exchange <-> l08_receiving).
+            runAlongX = spanY < 9.0f && spanX > spanY;
+            if (runAlongX)
             {
-                cx = ex.PortalA.x;
-                float baseY = ex.PortalA.z;
-                ayTop = baseY + 4.2f;
-                ayBot = baseY - 4.2f;
+                stairWidth = Mathf.Clamp(spanY - 1.2f, 2.2f, 4.4f);
+                float halfRun = Mathf.Min(4.2f, Mathf.Max(1.4f, spanX * 0.5f - 0.8f));
+                float safeY = Mathf.Clamp(anchorY, boundMinY + stairWidth * 0.5f + 0.4f, boundMaxY - stairWidth * 0.5f - 0.4f);
+                float safeCx = Mathf.Clamp(anchorX, boundMinX + halfRun + 0.5f, boundMaxX - halfRun - 0.5f);
+                topXY = new Vector2(safeCx + halfRun, safeY);
+                botXY = new Vector2(safeCx - halfRun, safeY);
             }
             else
             {
-                float ox0 = Mathf.Max(upper.MinX, lower.MinX);
-                float ox1 = Mathf.Min(upper.MaxX, lower.MaxX);
-                cx = ox1 > ox0 ? (ox0 + ox1) * 0.5f : upper.Center2D.x;
-                float cy = upper.Center2D.y;
-                ayTop = Mathf.Min(upper.MaxY - 1.5f, cy + 4.2f);
-                ayBot = Mathf.Max(upper.MinY + 1.5f, cy - 4.2f);
+                stairWidth = Mathf.Clamp(spanX - 1.2f, 2.2f, 4.8f);
+                float halfRun = Mathf.Min(4.2f, Mathf.Max(1.4f, spanY * 0.5f - 0.8f));
+                float safeX = Mathf.Clamp(anchorX, boundMinX + stairWidth * 0.5f + 0.4f, boundMaxX - stairWidth * 0.5f - 0.4f);
+                float safeCy = Mathf.Clamp(anchorY, boundMinY + halfRun + 0.5f, boundMaxY - halfRun - 0.5f);
+                topXY = new Vector2(safeX, safeCy + halfRun);
+                botXY = new Vector2(safeX, safeCy - halfRun);
             }
         }
 
@@ -595,6 +655,42 @@ namespace TacSim.World
             PrefabFittingHelper.SpawnGrounded(mdl, parent, label, floorPos, rot, targetHeightM: 1.78f, maxDimensionM: 2.0f, keepColliders: false, overrideAlbedo: albedo);
         }
 
+        private static List<(float start, float end)> SubtractIntervals(float min, float max, List<(float start, float end)> cuts)
+        {
+            var result = new List<(float start, float end)> { (min, max) };
+            if (cuts == null || cuts.Count == 0)
+                return result;
+
+            var sorted = new List<(float start, float end)>(cuts);
+            sorted.Sort((a, b) => a.start.CompareTo(b.start));
+
+            for (int c = 0; c < sorted.Count; c++)
+            {
+                float cutStart = sorted[c].start;
+                float cutEnd = sorted[c].end;
+                if (cutEnd <= cutStart) continue;
+
+                var next = new List<(float start, float end)>(result.Count + 1);
+                for (int i = 0; i < result.Count; i++)
+                {
+                    float s = result[i].start;
+                    float e = result[i].end;
+                    if (cutEnd <= s || cutStart >= e)
+                    {
+                        next.Add((s, e));
+                    }
+                    else
+                    {
+                        if (cutStart > s + 0.05f) next.Add((s, cutStart));
+                        if (cutEnd < e - 0.05f) next.Add((cutEnd, e));
+                    }
+                }
+                result = next;
+                if (result.Count == 0) break;
+            }
+            return result;
+        }
+
         private void BuildHorizontalWallIfCanonical(
             Transform parent,
             AtlasRoomDef room,
@@ -606,60 +702,79 @@ namespace TacSim.World
             bool isRockCut,
             List<(int floor, float yWall, float centerX, AtlasExitDef exit)> hDoors)
         {
-            // Avoid double-building shared walls: north room owns only its outer boundary unless no neighbor owns it
+            // Subtract ONLY the exact spans owned by adjacent south neighbors (prevents both double walls AND partial-overlap voids!).
+            var neighborCuts = new List<(float start, float end)>();
             if (isSouthOfRoom)
             {
                 foreach (var other in Pack.Rooms.Values)
                 {
                     if (other != room && other.FloorIndex == room.FloorIndex &&
-                        Mathf.Abs(other.MaxY - yCoord) < 0.2f &&
-                        Mathf.Min(room.MaxX, other.MaxX) - Mathf.Max(room.MinX, other.MinX) > 0.5f)
+                        Mathf.Abs(other.MaxY - yCoord) < 0.2f)
                     {
-                        return; // Neighbor to the south already builds its MaxY wall across its span
+                        float ovMin = Mathf.Max(room.MinX, other.MinX);
+                        float ovMax = Mathf.Min(room.MaxX, other.MaxX);
+                        if (ovMax - ovMin > 0.2f)
+                            neighborCuts.Add((ovMin, ovMax));
                     }
                 }
             }
 
-            float doorWidth = 4.2f;
+            var ownedSpans = SubtractIntervals(room.MinX, room.MaxX, neighborCuts);
+            if (ownedSpans.Count == 0)
+                return;
+
+            // Collect ALL doorways along this horizontal wall edge (multi-door walls like Stickney Concourse cut every door!).
             float doorHeight = 3.1f;
-            float? apertureX = null;
+            var doorIntervals = new List<(float start, float end)>();
             foreach (var d in hDoors)
             {
                 if (d.floor == room.FloorIndex && Mathf.Abs(d.yWall - yCoord) < 0.25f &&
-                    d.centerX > room.MinX + 1f && d.centerX < room.MaxX - 1f)
+                    d.centerX > room.MinX + 0.5f && d.centerX < room.MaxX - 0.5f)
                 {
-                    apertureX = d.centerX;
-                    if (d.exit.Mode == "open") doorWidth = 7.5f;
-                    break;
+                    float halfW = (d.exit.Mode == "open" ? 7.5f : 4.2f) * 0.5f;
+                    float ds = Mathf.Max(room.MinX + 0.1f, d.centerX - halfW);
+                    float de = Mathf.Min(room.MaxX - 0.1f, d.centerX + halfW);
+                    if (de - ds > 0.5f)
+                        doorIntervals.Add((ds, de));
                 }
             }
 
-            if (apertureX.HasValue)
+            int segIdx = 0;
+            int lintelIdx = 0;
+            float lintelH = Mathf.Max(0.3f, height - doorHeight);
+
+            for (int s = 0; s < ownedSpans.Count; s++)
             {
-                float cx = apertureX.Value;
-                float leftEnd = cx - doorWidth * 0.5f;
-                float rightStart = cx + doorWidth * 0.5f;
-                if (leftEnd > room.MinX + 0.2f)
+                float spanMin = ownedSpans[s].start;
+                float spanMax = ownedSpans[s].end;
+                var spanDoors = new List<(float start, float end)>();
+                for (int d = 0; d < doorIntervals.Count; d++)
                 {
-                    float w = leftEnd - room.MinX;
-                    CreateBox(parent, "Wall_H_L", AtlasToUnity((room.MinX + leftEnd) * 0.5f, elev + height * 0.5f, yCoord), new Vector3(w, height, 0.32f),
-                        GetWallMaterialForSpan(room.EntryId, wallTint, w, height, isRockCut), true);
+                    float ds = Mathf.Max(spanMin, doorIntervals[d].start);
+                    float de = Mathf.Min(spanMax, doorIntervals[d].end);
+                    if (de - ds > 0.4f)
+                        spanDoors.Add((ds, de));
                 }
-                if (room.MaxX > rightStart + 0.2f)
+
+                var solidSegs = SubtractIntervals(spanMin, spanMax, spanDoors);
+                for (int k = 0; k < solidSegs.Count; k++)
                 {
-                    float w = room.MaxX - rightStart;
-                    CreateBox(parent, "Wall_H_R", AtlasToUnity((rightStart + room.MaxX) * 0.5f, elev + height * 0.5f, yCoord), new Vector3(w, height, 0.32f),
-                        GetWallMaterialForSpan(room.EntryId, wallTint, w, height, isRockCut), true);
+                    float w = solidSegs[k].end - solidSegs[k].start;
+                    if (w <= 0.15f) continue;
+                    string segName = solidSegs.Count == 1 && spanDoors.Count == 0 ? "Wall_H" : $"Wall_H_Seg_{segIdx++}";
+                    CreateBox(parent, segName, AtlasToUnity((solidSegs[k].start + solidSegs[k].end) * 0.5f, elev + height * 0.5f, yCoord),
+                        new Vector3(w, height, 0.32f), GetWallMaterialForSpan(room.EntryId, wallTint, w, height, isRockCut), true);
                 }
-                float lintelH = Mathf.Max(0.3f, height - doorHeight);
-                CreateBox(parent, "Wall_H_Lintel", AtlasToUnity(cx, elev + doorHeight + lintelH * 0.5f, yCoord), new Vector3(doorWidth, lintelH, 0.32f),
-                    GetWallMaterialForSpan(room.EntryId, wallTint, doorWidth, lintelH, isRockCut), true);
-            }
-            else
-            {
-                float w = room.MaxX - room.MinX;
-                CreateBox(parent, "Wall_H", AtlasToUnity((room.MinX + room.MaxX) * 0.5f, elev + height * 0.5f, yCoord), new Vector3(w, height, 0.32f),
-                    GetWallMaterialForSpan(room.EntryId, wallTint, w, height, isRockCut), true);
+
+                for (int d = 0; d < spanDoors.Count; d++)
+                {
+                    float dw = spanDoors[d].end - spanDoors[d].start;
+                    float dcx = (spanDoors[d].start + spanDoors[d].end) * 0.5f;
+                    string lintelName = lintelIdx == 0 ? "Wall_H_Lintel" : $"Wall_H_Lintel_{lintelIdx}";
+                    lintelIdx++;
+                    CreateBox(parent, lintelName, AtlasToUnity(dcx, elev + doorHeight + lintelH * 0.5f, yCoord),
+                        new Vector3(dw, lintelH, 0.32f), GetWallMaterialForSpan(room.EntryId, wallTint, dw, lintelH, isRockCut), true);
+                }
             }
         }
 
@@ -674,66 +789,87 @@ namespace TacSim.World
             bool isRockCut,
             List<(int floor, float xWall, float centerY, AtlasExitDef exit)> vDoors)
         {
+            // Subtract ONLY the exact spans owned by adjacent west neighbors.
+            var neighborCuts = new List<(float start, float end)>();
             if (isWestOfRoom)
             {
                 foreach (var other in Pack.Rooms.Values)
                 {
                     if (other != room && other.FloorIndex == room.FloorIndex &&
-                        Mathf.Abs(other.MaxX - xCoord) < 0.2f &&
-                        Mathf.Min(room.MaxY, other.MaxY) - Mathf.Max(room.MinY, other.MinY) > 0.5f)
+                        Mathf.Abs(other.MaxX - xCoord) < 0.2f)
                     {
-                        return;
+                        float ovMin = Mathf.Max(room.MinY, other.MinY);
+                        float ovMax = Mathf.Min(room.MaxY, other.MaxY);
+                        if (ovMax - ovMin > 0.2f)
+                            neighborCuts.Add((ovMin, ovMax));
                     }
                 }
             }
 
-            float doorWidth = 4.2f;
+            var ownedSpans = SubtractIntervals(room.MinY, room.MaxY, neighborCuts);
+            if (ownedSpans.Count == 0)
+                return;
+
+            // Collect ALL doorways along this vertical wall edge.
             float doorHeight = 3.1f;
-            float? apertureY = null;
+            var doorIntervals = new List<(float start, float end)>();
             foreach (var d in vDoors)
             {
                 if (d.floor == room.FloorIndex && Mathf.Abs(d.xWall - xCoord) < 0.25f &&
-                    d.centerY > room.MinY + 1f && d.centerY < room.MaxY - 1f)
+                    d.centerY > room.MinY + 0.5f && d.centerY < room.MaxY - 0.5f)
                 {
-                    apertureY = d.centerY;
-                    if (d.exit.Mode == "open") doorWidth = 8.0f;
-                    break;
+                    float halfW = (d.exit.Mode == "open" ? 8.0f : 4.2f) * 0.5f;
+                    float ds = Mathf.Max(room.MinY + 0.1f, d.centerY - halfW);
+                    float de = Mathf.Min(room.MaxY - 0.1f, d.centerY + halfW);
+                    if (de - ds > 0.5f)
+                        doorIntervals.Add((ds, de));
                 }
             }
 
-            if (apertureY.HasValue)
+            int segIdx = 0;
+            int lintelIdx = 0;
+            float lintelH = Mathf.Max(0.3f, height - doorHeight);
+
+            for (int s = 0; s < ownedSpans.Count; s++)
             {
-                float cy = apertureY.Value;
-                float southEnd = cy - doorWidth * 0.5f;
-                float northStart = cy + doorWidth * 0.5f;
-                if (southEnd > room.MinY + 0.2f)
+                float spanMin = ownedSpans[s].start;
+                float spanMax = ownedSpans[s].end;
+                var spanDoors = new List<(float start, float end)>();
+                for (int d = 0; d < doorIntervals.Count; d++)
                 {
-                    float len = southEnd - room.MinY;
-                    CreateBox(parent, "Wall_V_S", AtlasToUnity(xCoord, elev + height * 0.5f, (room.MinY + southEnd) * 0.5f), new Vector3(0.32f, height, len),
-                        GetWallMaterialForSpan(room.EntryId, wallTint, len, height, isRockCut), true);
+                    float ds = Mathf.Max(spanMin, doorIntervals[d].start);
+                    float de = Mathf.Min(spanMax, doorIntervals[d].end);
+                    if (de - ds > 0.4f)
+                        spanDoors.Add((ds, de));
                 }
-                if (room.MaxY > northStart + 0.2f)
+
+                var solidSegs = SubtractIntervals(spanMin, spanMax, spanDoors);
+                for (int k = 0; k < solidSegs.Count; k++)
                 {
-                    float len = room.MaxY - northStart;
-                    CreateBox(parent, "Wall_V_N", AtlasToUnity(xCoord, elev + height * 0.5f, (northStart + room.MaxY) * 0.5f), new Vector3(0.32f, height, len),
-                        GetWallMaterialForSpan(room.EntryId, wallTint, len, height, isRockCut), true);
+                    float len = solidSegs[k].end - solidSegs[k].start;
+                    if (len <= 0.15f) continue;
+                    string segName = solidSegs.Count == 1 && spanDoors.Count == 0 ? "Wall_V" : $"Wall_V_Seg_{segIdx++}";
+                    CreateBox(parent, segName, AtlasToUnity(xCoord, elev + height * 0.5f, (solidSegs[k].start + solidSegs[k].end) * 0.5f),
+                        new Vector3(0.32f, height, len), GetWallMaterialForSpan(room.EntryId, wallTint, len, height, isRockCut), true);
                 }
-                float lintelH = Mathf.Max(0.3f, height - doorHeight);
-                CreateBox(parent, "Wall_V_Lintel", AtlasToUnity(xCoord, elev + doorHeight + lintelH * 0.5f, cy), new Vector3(0.32f, lintelH, doorWidth),
-                    GetWallMaterialForSpan(room.EntryId, wallTint, doorWidth, lintelH, isRockCut), true);
-            }
-            else
-            {
-                float len = room.MaxY - room.MinY;
-                CreateBox(parent, "Wall_V", AtlasToUnity(xCoord, elev + height * 0.5f, (room.MinY + room.MaxY) * 0.5f), new Vector3(0.32f, height, len),
-                    GetWallMaterialForSpan(room.EntryId, wallTint, len, height, isRockCut), true);
+
+                for (int d = 0; d < spanDoors.Count; d++)
+                {
+                    float dw = spanDoors[d].end - spanDoors[d].start;
+                    float dcy = (spanDoors[d].start + spanDoors[d].end) * 0.5f;
+                    string lintelName = lintelIdx == 0 ? "Wall_V_Lintel" : $"Wall_V_Lintel_{lintelIdx}";
+                    lintelIdx++;
+                    CreateBox(parent, lintelName, AtlasToUnity(xCoord, elev + doorHeight + lintelH * 0.5f, dcy),
+                        new Vector3(0.32f, lintelH, dw), GetWallMaterialForSpan(room.EntryId, wallTint, dw, lintelH, isRockCut), true);
+                }
             }
         }
 
         private void BuildPortalTriggers(
             List<(int floor, float yWall, float centerX, AtlasExitDef exit)> hDoors,
             List<(int floor, float xWall, float centerY, AtlasExitDef exit)> vDoors,
-            List<AtlasExitDef> interFloorExits)
+            List<AtlasExitDef> interFloorExits,
+            List<AtlasExitDef> nonAdjacentExits)
         {
             var portalsRoot = new GameObject("ExitPortals").transform;
             portalsRoot.SetParent(transform, false);
@@ -759,6 +895,19 @@ namespace TacSim.World
                 CreatePortalTrigger(portalsRoot, d.exit, pos, new Vector3(1.6f, 3.0f, 4.0f), axis, portalMat, horizontal: false);
             }
 
+            // Spawn explicit transit portal arches for non-adjacent same-floor exits (e.g. OOC exit.hall_simulator_lobby)
+            if (nonAdjacentExits != null)
+            {
+                for (int i = 0; i < nonAdjacentExits.Count; i++)
+                {
+                    var ex = nonAdjacentExits[i];
+                    if (!Pack.Rooms.TryGetValue(ex.FromRoom, out var rA) || !Pack.Rooms.TryGetValue(ex.ToRoom, out var rB))
+                        continue;
+                    SpawnTransitPortalArch(portalsRoot, ex, rA, rB, isForward: true, portalMat);
+                    SpawnTransitPortalArch(portalsRoot, ex, rB, rA, isForward: false, portalMat);
+                }
+            }
+
             // Build walkable 3D steel staircases / spoke ramps for every inter-floor exit in the pack
             Material stairMat = UrpMaterialFactory.GetOpaque("SteelStair", new Color(0.28f, 0.30f, 0.33f), 0.5f, 0.7f);
             if (interFloorExits != null)
@@ -769,44 +918,114 @@ namespace TacSim.World
                     if (!Pack.Rooms.TryGetValue(ex.FromRoom, out var rA) || !Pack.Rooms.TryGetValue(ex.ToRoom, out var rB))
                         continue;
 
-                    ComputeInterFloorStairGeometry(ex, rA, rB, out float cx, out float ayTop, out float ayBot, out float elevTop, out float elevBot);
+                    ComputeInterFloorStairGeometry(ex, rA, rB, out Vector2 topXY, out Vector2 botXY, out float elevTop, out float elevBot, out bool runAlongX, out float stairWidth);
                     var stairRoot = new GameObject($"InterFloorStair_{ex.EntryId}").transform;
                     stairRoot.SetParent(transform, false);
                     int steps = 18;
+                    Vector3 stepScale = runAlongX ? new Vector3(0.72f, 0.34f, stairWidth) : new Vector3(stairWidth, 0.34f, 0.72f);
                     for (int i = 0; i < steps; i++)
                     {
                         float t = (i + 0.5f) / steps;
                         float y = Mathf.Lerp(elevTop, elevBot, t);
-                        float ay = Mathf.Lerp(ayTop, ayBot, t);
-                        CreateBox(stairRoot, $"Step_{i}", AtlasToUnity(cx, y, ay), new Vector3(4.8f, 0.34f, 0.72f), stairMat, true);
+                        float ax = Mathf.Lerp(topXY.x, botXY.x, t);
+                        float ay = Mathf.Lerp(topXY.y, botXY.y, t);
+                        CreateBox(stairRoot, $"Step_{i}", AtlasToUnity(ax, y, ay), stepScale, stairMat, true);
                     }
 
                     // Architectural dark-steel stair side stringers & handrails (no glowing cyan doorway posts on stairs!)
                     Material railMat = UrpMaterialFactory.GetOpaque("StairRailSteel", new Color(0.20f, 0.23f, 0.27f), 0.32f, 0.65f);
-                    Vector3 topMid = AtlasToUnity(cx, elevTop + 0.85f, ayTop);
-                    Vector3 botMid = AtlasToUnity(cx, elevBot + 0.85f, ayBot);
+                    Vector3 topMid = AtlasToUnity(topXY.x, elevTop + 0.85f, topXY.y);
+                    Vector3 botMid = AtlasToUnity(botXY.x, elevBot + 0.85f, botXY.y);
                     Vector3 spanDelta = botMid - topMid;
                     float spanLen = spanDelta.magnitude;
                     if (spanLen > 0.5f)
                     {
                         Quaternion slopeRot = Quaternion.LookRotation(spanDelta.normalized, Vector3.up);
                         Vector3 midCenter = (topMid + botMid) * 0.5f;
-                        var railL = CreateBox(stairRoot, "StairRail_L", midCenter + new Vector3(-2.46f, 0f, 0f), new Vector3(0.10f, 0.12f, spanLen), railMat, false);
+                        Vector3 sideOffset = runAlongX
+                            ? new Vector3(0f, 0f, stairWidth * 0.5f + 0.06f)
+                            : new Vector3(stairWidth * 0.5f + 0.06f, 0f, 0f);
+                        var railL = CreateBox(stairRoot, "StairRail_L", midCenter - sideOffset, new Vector3(0.10f, 0.12f, spanLen), railMat, false);
                         railL.transform.rotation = slopeRot;
-                        var railR = CreateBox(stairRoot, "StairRail_R", midCenter + new Vector3(2.46f, 0f, 0f), new Vector3(0.10f, 0.12f, spanLen), railMat, false);
+                        var railR = CreateBox(stairRoot, "StairRail_R", midCenter + sideOffset, new Vector3(0.10f, 0.12f, spanLen), railMat, false);
                         railR.transform.rotation = slopeRot;
                     }
 
+                    Vector2 midXY = (topXY + botXY) * 0.5f;
+                    Vector3 trigAxis = (botMid - topMid).sqrMagnitude > 0.01f ? (botMid - topMid).normalized : (Vector3.down + Vector3.back).normalized;
+                    Vector3 trigSize = runAlongX ? new Vector3(3.0f, 3.0f, stairWidth) : new Vector3(stairWidth, 3.0f, 3.0f);
                     CreatePortalTrigger(
                         portalsRoot,
                         ex,
-                        AtlasToUnity(cx, (elevTop + elevBot) * 0.5f, (ayTop + ayBot) * 0.5f),
-                        new Vector3(4.8f, 3.0f, 3.0f),
-                        (Vector3.down + Vector3.back).normalized,
+                        AtlasToUnity(midXY.x, (elevTop + elevBot) * 0.5f, midXY.y),
+                        trigSize,
+                        trigAxis,
                         portalMat,
-                        horizontal: true);
+                        horizontal: !runAlongX);
                 }
             }
+        }
+
+        private void SpawnTransitPortalArch(Transform parent, AtlasExitDef ex, AtlasRoomDef srcRoom, AtlasRoomDef dstRoom, bool isForward, Material portalMat)
+        {
+            float elev = Pack.GetFloorElevationY(srcRoom.FloorIndex);
+            Vector2 delta = dstRoom.Center2D - srcRoom.Center2D;
+            float px, py;
+            bool onVerticalWall = Mathf.Abs(delta.x) >= Mathf.Abs(delta.y);
+            if (onVerticalWall)
+            {
+                px = delta.x >= 0f ? srcRoom.MaxX - 1.15f : srcRoom.MinX + 1.15f;
+                py = srcRoom.Center2D.y;
+            }
+            else
+            {
+                px = srcRoom.Center2D.x;
+                py = delta.y >= 0f ? srcRoom.MaxY - 1.15f : srcRoom.MinY + 1.15f;
+            }
+
+            Vector3 floorPos = AtlasToUnity(px, elev, py);
+            string suffix = isForward ? "Fwd" : "Rev";
+            var root = new GameObject($"TransitPortal_{ex.EntryId}_{suffix}");
+            root.transform.SetParent(parent, false);
+            root.transform.position = floorPos;
+            root.transform.localScale = Vector3.one;
+
+            var bc = root.AddComponent<BoxCollider>();
+            bc.isTrigger = true;
+            bc.center = new Vector3(0f, 1.5f, 0f);
+            bc.size = onVerticalWall ? new Vector3(1.6f, 3.0f, 3.2f) : new Vector3(3.2f, 3.0f, 1.6f);
+
+            // Visual arch posts + lintel + destination sign
+            Vector3 postOff = onVerticalWall ? new Vector3(0f, 1.5f, 1.4f) : new Vector3(1.4f, 1.5f, 0f);
+            Vector3 postMirror = onVerticalWall ? new Vector3(0f, 1.5f, -1.4f) : new Vector3(-1.4f, 1.5f, 0f);
+            CreateBox(root.transform, "TransitPost_A", floorPos + postOff, new Vector3(0.18f, 3.0f, 0.18f), portalMat, false);
+            CreateBox(root.transform, "TransitPost_B", floorPos + postMirror, new Vector3(0.18f, 3.0f, 0.18f), portalMat, false);
+            Vector3 lintelScale = onVerticalWall ? new Vector3(0.22f, 0.22f, 3.0f) : new Vector3(3.0f, 0.22f, 0.22f);
+            CreateBox(root.transform, "TransitLintel", floorPos + new Vector3(0f, 3.05f, 0f), lintelScale, portalMat, false);
+
+            string label = isForward ? ex.ForwardLabel : ex.ReverseLabel;
+            string cmd = isForward ? ex.ForwardCommand : ex.ReverseCommand;
+            float signYaw = onVerticalWall ? (delta.x >= 0f ? 90f : -90f) : (delta.y >= 0f ? 0f : 180f);
+            CreateWorldSign(root.transform, $"TRANSIT -> {(label ?? dstRoom.Name).ToUpperInvariant()}", floorPos + new Vector3(0f, 3.45f, 0f), Quaternion.Euler(0f, signYaw, 0f), 1.9f, new Color(0.45f, 0.95f, 1f));
+
+            var trig = root.AddComponent<ExitPortalTrigger>();
+            trig.roomA = srcRoom.EntryId;
+            trig.roomB = dstRoom.EntryId;
+            trig.commandAToB = cmd;
+            trig.commandBToA = isForward ? ex.ReverseCommand : ex.ForwardCommand;
+            trig.labelAToB = label;
+            trig.labelBToA = isForward ? ex.ReverseLabel : ex.ForwardLabel;
+            trig.axisAToB = new Vector3(delta.x, 0f, delta.y).normalized;
+            trig.isLocked = ex.Locked;
+            trig.OnPortalCrossed = (p, target, c) => OnPortalCrossed?.Invoke(p, target, c);
+
+            var wi = root.AddComponent<WorldInteractable>();
+            wi.kind = InteractableKind.GenericCommand;
+            wi.promptTitle = $"Transit to {dstRoom.Name}";
+            wi.promptSubtitle = $"Step through transit arch ({cmd})";
+            wi.commandOrKey = cmd;
+            wi.maxInteractDistance = 4.2f;
+            wi.OnInteracted = item => OnInteractableTriggered?.Invoke(item);
         }
 
         private void CreatePortalTrigger(Transform parent, AtlasExitDef ex, Vector3 pos, Vector3 boxSize, Vector3 axisAToB, Material frameMat, bool horizontal)
@@ -972,7 +1191,7 @@ namespace TacSim.World
             string low = roomId.ToLowerInvariant();
             return low.Contains("registry") || low.Contains("exchange") || low.Contains("chandlery") ||
                    low.Contains("commissary") || low.Contains("victualling") || low.Contains("clearing") ||
-                   low.Contains("dockmaster") || low.Contains("harbourmaster") || low.Contains("service_counter");
+                   low.Contains("dockmaster") || low.Contains("harbourmaster") || low.Contains("service");
         }
 
         private void AttachServiceDeskInteractable(GameObject counterGo, string roomId)
@@ -1012,10 +1231,10 @@ namespace TacSim.World
                 subtitle = "Review corridor departures & captain's standing orders";
                 cmd = "desk:dockmaster";
             }
-            else if (low.Contains("service_counter"))
+            else if (low.Contains("service"))
             {
                 title = "Yard Refit & Rover Lease Desk";
-                subtitle = "Refit Dray-P Prospector (+coop/refit prospector) & lease +tv rigs";
+                subtitle = "Refit Dray-P Prospector (+coop/refit prospector) & yard services";
                 cmd = "desk:refit";
             }
 
@@ -1033,7 +1252,7 @@ namespace TacSim.World
         {
             if (LoadedPackId != "neighborhood.ooc_area") return;
 
-            // 1. Simulator Lobby: Red vs Blue Match Selector Console + Return to IC Port Gate
+            // 1. Simulator Lobby: Red vs Blue Match Selector Console + Return to IC Port Gate (unscaled (1,1,1) roots so TMP signs never stretch!)
             if (Pack.Rooms.TryGetValue("room.simulator_lobby", out var lobby))
             {
                 float elev = Pack.GetFloorElevationY(lobby.FloorIndex);
@@ -1043,10 +1262,17 @@ namespace TacSim.World
                 Material redGlow = UrpMaterialFactory.GetEmissive("SimRedBtn", new Color(0.85f, 0.18f, 0.16f), new Color(1.0f, 0.25f, 0.20f) * 2.0f);
                 Material blueGlow = UrpMaterialFactory.GetEmissive("SimBlueBtn", new Color(0.16f, 0.45f, 0.92f), new Color(0.22f, 0.58f, 1.0f) * 2.0f);
 
-                var selDesk = CreateBox(transform, "SimulatorSelectorConsole", selPos + Vector3.up * 0.58f, new Vector3(3.4f, 1.16f, 1.4f), consoleMat, true);
+                var selDesk = new GameObject("SimulatorSelectorConsole");
+                selDesk.transform.SetParent(transform, false);
+                selDesk.transform.position = selPos;
+                selDesk.transform.localScale = Vector3.one;
+                CreateBox(selDesk.transform, "SelectorDeskBody", selPos + Vector3.up * 0.58f, new Vector3(3.4f, 1.16f, 1.4f), consoleMat, true);
                 CreateBox(selDesk.transform, "RedTeamBeacon", selPos + new Vector3(-0.9f, 1.24f, 0f), new Vector3(0.9f, 0.16f, 0.6f), redGlow, false);
                 CreateBox(selDesk.transform, "BlueTeamBeacon", selPos + new Vector3(0.9f, 1.24f, 0f), new Vector3(0.9f, 0.16f, 0.6f), blueGlow, false);
                 CreateWorldSign(selDesk.transform, "RED vs BLUE SIMULATOR SELECTOR", selPos + new Vector3(0f, 2.05f, 0f), Quaternion.Euler(0f, 180f, 0f), 2.4f, new Color(1f, 0.88f, 0.45f));
+                var selCol = selDesk.AddComponent<BoxCollider>();
+                selCol.center = new Vector3(0f, 0.58f, 0f);
+                selCol.size = new Vector3(3.4f, 1.16f, 1.4f);
 
                 var wi = selDesk.AddComponent<WorldInteractable>();
                 wi.kind = InteractableKind.StationServiceDesk;
@@ -1056,11 +1282,18 @@ namespace TacSim.World
                 wi.maxInteractDistance = 4.6f;
                 wi.OnInteracted = item => OnInteractableTriggered?.Invoke(item);
 
-                // Return to IC Port kiosk
+                // Return to IC Port kiosk (unscaled (1,1,1) root)
                 Vector3 icPos = AtlasToUnity(lobby.MinX + 2.4f, elev, lobby.MinY + 2.4f);
-                var icStand = CreateBox(transform, "ReturnToIcKiosk", icPos + Vector3.up * 0.9f, new Vector3(1.2f, 1.8f, 0.6f),
+                var icStand = new GameObject("ReturnToIcKiosk");
+                icStand.transform.SetParent(transform, false);
+                icStand.transform.position = icPos;
+                icStand.transform.localScale = Vector3.one;
+                CreateBox(icStand.transform, "IcKioskBody", icPos + Vector3.up * 0.9f, new Vector3(1.2f, 1.8f, 0.6f),
                     UrpMaterialFactory.GetEmissive("IcGate", new Color(0.12f, 0.42f, 0.34f), new Color(0.20f, 0.90f, 0.65f) * 1.3f), true);
                 CreateWorldSign(icStand.transform, "RETURN TO IC PORT (+IC)", icPos + new Vector3(0f, 2.25f, 0f), Quaternion.identity, 2.0f, new Color(0.45f, 1f, 0.78f));
+                var icCol = icStand.AddComponent<BoxCollider>();
+                icCol.center = new Vector3(0f, 0.9f, 0f);
+                icCol.size = new Vector3(1.2f, 1.8f, 0.6f);
                 var icWi = icStand.AddComponent<WorldInteractable>();
                 icWi.kind = InteractableKind.GenericCommand;
                 icWi.promptTitle = "Return to IC Corridor Port";
@@ -1098,9 +1331,16 @@ namespace TacSim.World
                 float py = Mathf.Lerp(room.MinY + 4.5f, room.MaxY - 4.5f, rowIdx == 0 ? 0.22f : 0.78f);
                 Vector3 podPos = AtlasToUnity(px, elev, py);
 
-                var podGo = CreateBox(transform, $"{teamWord}_Pod_{slot}", podPos + Vector3.up * 1.35f, new Vector3(2.1f, 2.7f, 2.3f), podShell, true);
+                var podGo = new GameObject($"{teamWord}_Pod_{slot}");
+                podGo.transform.SetParent(transform, false);
+                podGo.transform.position = podPos;
+                podGo.transform.localScale = Vector3.one;
+                CreateBox(podGo.transform, "PodShell", podPos + Vector3.up * 1.35f, new Vector3(2.1f, 2.7f, 2.3f), podShell, true);
                 CreateBox(podGo.transform, "TeamChevron", podPos + new Vector3(0f, 2.45f, 1.18f), new Vector3(1.65f, 0.28f, 0.08f), stripeMat, false);
                 CreateWorldSign(podGo.transform, $"{teamWord} {slot}", podPos + new Vector3(0f, 3.05f, 0f), Quaternion.identity, 2.6f, teamCol);
+                var podCol = podGo.AddComponent<BoxCollider>();
+                podCol.center = new Vector3(0f, 1.35f, 0f);
+                podCol.size = new Vector3(2.1f, 2.7f, 2.3f);
 
                 var wi = podGo.AddComponent<WorldInteractable>();
                 wi.kind = InteractableKind.SimulatorPodBoard;
@@ -1215,7 +1455,7 @@ namespace TacSim.World
                         Quaternion.Euler(0f, -125f, 0f),
                         3.6f,
                         keepColliders: false);
-                    if (drone != null) _berthDrones.Add(drone.transform);
+                    if (drone != null) _berthDrones.Add((drone.transform, drone.transform.position.y));
                 }
             }
 
@@ -1239,10 +1479,11 @@ namespace TacSim.World
         {
             for (int i = 0; i < _berthDrones.Count; i++)
             {
-                var d = _berthDrones[i];
-                if (d == null) continue;
-                float bob = Mathf.Sin(Time.time * 1.35f + i * 2.1f) * 0.004f;
-                d.position += new Vector3(0f, bob, 0f);
+                var entry = _berthDrones[i];
+                if (entry.tr == null) continue;
+                Vector3 p = entry.tr.position;
+                p.y = entry.baseY + Mathf.Sin(Time.time * 1.35f + i * 2.1f) * 0.14f;
+                entry.tr.position = p;
             }
 
             float dt = Mathf.Max(0.001f, Time.deltaTime);
@@ -1255,7 +1496,7 @@ namespace TacSim.World
                 Vector3 curPos = actorGo.transform.position;
                 Vector3 delta = targetPos - curPos;
                 float dist = delta.magnitude;
-                var spawner = actorGo.GetComponent<CharacterVisualSpawner>();
+                _actorSpawners.TryGetValue(kv.Key, out var spawner);
 
                 if (dist > 0.02f)
                 {
@@ -1282,14 +1523,15 @@ namespace TacSim.World
             var root = new GameObject(name);
             root.transform.SetParent(parent, false);
             root.transform.position = pos;
+            root.transform.localRotation = Quaternion.identity;
 
-            // Blunt Stickney-built bulk hauler silhouette: bow collar, armoured spine, twin bulk pods, aft fusion bell
-            CreateBox(root.transform, "HullSpine", pos, new Vector3(6.2f, 5.2f, 20f), hullMat, false);
-            CreateBox(root.transform, "BowCollar", pos + new Vector3(0f, 0.2f, 11.2f), new Vector3(3.8f, 3.8f, 2.6f), trimMat, false);
-            CreateBox(root.transform, "PortPod", pos + new Vector3(-4.6f, -0.3f, -1f), new Vector3(3.0f, 4.2f, 13f), hullMat, false);
-            CreateBox(root.transform, "StarboardPod", pos + new Vector3(4.6f, -0.3f, -1f), new Vector3(3.0f, 4.2f, 13f), hullMat, false);
-            CreateBox(root.transform, "BridgeSuperstructure", pos + new Vector3(0f, 3.4f, 5.5f), new Vector3(4.6f, 2.0f, 5.6f), trimMat, false);
-            CreateBox(root.transform, "DriveBell", pos + new Vector3(0f, 0f, -11.8f), new Vector3(4.2f, 4.2f, 3.6f), trimMat, false);
+            // Build all structural sub-parts in LOCAL space so rotating parent/cRoot rotates the entire Dray cleanly!
+            CreateLocalBox(root.transform, "HullSpine", Vector3.zero, new Vector3(6.2f, 5.2f, 20f), hullMat, false);
+            CreateLocalBox(root.transform, "BowCollar", new Vector3(0f, 0.2f, 11.2f), new Vector3(3.8f, 3.8f, 2.6f), trimMat, false);
+            CreateLocalBox(root.transform, "PortPod", new Vector3(-4.6f, -0.3f, -1f), new Vector3(3.0f, 4.2f, 13f), hullMat, false);
+            CreateLocalBox(root.transform, "StarboardPod", new Vector3(4.6f, -0.3f, -1f), new Vector3(3.0f, 4.2f, 13f), hullMat, false);
+            CreateLocalBox(root.transform, "BridgeSuperstructure", new Vector3(0f, 3.4f, 5.5f), new Vector3(4.6f, 2.0f, 5.6f), trimMat, false);
+            CreateLocalBox(root.transform, "DriveBell", new Vector3(0f, 0f, -11.8f), new Vector3(4.2f, 4.2f, 3.6f), trimMat, false);
             return root;
         }
 
@@ -1388,14 +1630,95 @@ namespace TacSim.World
             SyncRoomOccupants(rv, selfActorId, matched ? resolvedEntry : ActiveRoomEntryId);
         }
 
+        public void ResetSessionState()
+        {
+            ClearAllSpawnedActors();
+            _spawnedActorsRoomEntry = null;
+            _lastBerthTradeHulls.Clear();
+            _hasAuthoritativeBerthHulls = false;
+            _roomBoardLines.Clear();
+            ApplyCradleLabels(Array.Empty<string>());
+        }
+
+        public void ApplyBerthDockedHulls(
+            IReadOnlyList<TacSimDockedHullRef> hulls,
+            string ownHullId = null,
+            string ownHullName = null,
+            bool ownHullDockedHere = false)
+        {
+            _hasAuthoritativeBerthHulls = true;
+            _lastBerthTradeHulls.Clear();
+            if (hulls != null)
+            {
+                for (int i = 0; i < hulls.Count; i++)
+                {
+                    if (hulls[i] != null)
+                        _lastBerthTradeHulls.Add(hulls[i]);
+                }
+            }
+
+            var labels = new List<string>();
+            if (ownHullDockedHere && !string.IsNullOrEmpty(ownHullName))
+                labels.Add($"CRADLE 01 — {MushProtocol.EscapeUnityRichText(ownHullName.ToUpperInvariant())} [YOUR HULL]");
+
+            for (int i = 0; i < _lastBerthTradeHulls.Count; i++)
+            {
+                var dh = _lastBerthTradeHulls[i];
+                if (string.IsNullOrEmpty(dh.Name)) continue;
+                string upper = MushProtocol.EscapeUnityRichText(dh.Name.ToUpperInvariant());
+                bool dup = false;
+                for (int m = 0; m < labels.Count; m++)
+                {
+                    if (labels[m].IndexOf(upper, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup)
+                {
+                    string markSuffix = !string.IsNullOrEmpty(dh.Mark) ? $" ({MushProtocol.EscapeUnityRichText(dh.Mark)})" : string.Empty;
+                    bool isOwn = !string.IsNullOrEmpty(ownHullId) && string.Equals(dh.Id, ownHullId, StringComparison.Ordinal);
+                    string ownTag = isOwn ? " [YOUR HULL]" : string.Empty;
+                    labels.Add($"CRADLE {labels.Count + 1:D2} — {upper}{markSuffix}{ownTag}");
+                }
+            }
+
+            ApplyCradleLabels(labels);
+        }
+
+        private void ApplyCradleLabels(IReadOnlyList<string> mooredLabelsForCradles)
+        {
+            int count = mooredLabelsForCradles != null ? mooredLabelsForCradles.Count : 0;
+            for (int c = 0; c < _cradleHullSigns.Count; c++)
+            {
+                bool hasShip = c < count;
+                if (_cradleHullObjects.Count > c && _cradleHullObjects[c] != null)
+                    _cradleHullObjects[c].SetActive(hasShip);
+                if (_cradleHullSigns[c] != null)
+                {
+                    _cradleHullSigns[c].gameObject.SetActive(hasShip);
+                    if (hasShip) _cradleHullSigns[c].text = mooredLabelsForCradles[c];
+                }
+            }
+            if (_dockedShipVisual != null)
+                _dockedShipVisual.gameObject.SetActive(count > 0);
+        }
+
         public void AppendBoardLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line)) return;
             if (_roomBoards.TryGetValue(ActiveRoomEntryId, out var tmp) && tmp != null)
             {
-                string existing = tmp.text ?? string.Empty;
-                if (existing.Length > 420) existing = existing.Substring(existing.Length - 320);
-                tmp.text = existing + "\n" + line.Trim();
+                if (!_roomBoardLines.TryGetValue(ActiveRoomEntryId, out var lines))
+                {
+                    lines = new List<string>();
+                    _roomBoardLines[ActiveRoomEntryId] = lines;
+                }
+                lines.Add(MushProtocol.EscapeUnityRichText(line.Trim()));
+                while (lines.Count > 8)
+                    lines.RemoveAt(0);
+                tmp.text = string.Join("\n", lines);
             }
         }
 
@@ -1407,14 +1730,17 @@ namespace TacSim.World
                 bb.ShowSpeech(safeText);
                 return;
             }
-            // Fallback match by primary name
-            foreach (var kv in _spawnedActors)
+            if (!string.IsNullOrWhiteSpace(actorName))
             {
-                if (kv.Value != null && kv.Value.name.IndexOf(actorName ?? string.Empty, StringComparison.OrdinalIgnoreCase) >= 0)
+                string trimmed = actorName.Trim();
+                foreach (var kv in _actorDisplayNames)
                 {
-                    if (_actorBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
-                        b2.ShowSpeech(safeText);
-                    break;
+                    if (string.Equals(kv.Value, trimmed, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (_actorBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
+                            b2.ShowSpeech(safeText);
+                        break;
+                    }
                 }
             }
         }
@@ -1429,11 +1755,12 @@ namespace TacSim.World
                     bb.SpeechBubbleText.gameObject.SetActive(false);
                 return;
             }
-            if (!string.IsNullOrEmpty(actorName))
+            if (!string.IsNullOrWhiteSpace(actorName))
             {
-                foreach (var kv in _spawnedActors)
+                string trimmed = actorName.Trim();
+                foreach (var kv in _actorDisplayNames)
                 {
-                    if (kv.Value != null && kv.Value.name.IndexOf(actorName, StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (string.Equals(kv.Value, trimmed, StringComparison.OrdinalIgnoreCase))
                     {
                         if (_actorBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
                         {
@@ -1457,6 +1784,8 @@ namespace TacSim.World
                 }
             }
             _spawnedActors.Clear();
+            _actorSpawners.Clear();
+            _actorDisplayNames.Clear();
             _actorTargetPositions.Clear();
             _actorBillboards.Clear();
         }
@@ -1496,15 +1825,18 @@ namespace TacSim.World
                         dockedHullIds.Add(rv.TacSim.OwnHull);
                 }
 
-                // Prefer structured `ambient.tacsim.docked_hulls` from mushd when present!
-                for (int h = 0; h < rv.TacSim.DockedHulls.Count; h++)
+                // Prefer structured `ambient.tacsim.docked_hulls` or live `port.trade.berth.docked_hulls` from mushd!
+                IReadOnlyList<TacSimDockedHullRef> sourceHulls = rv.TacSim.DockedHulls.Count > 0
+                    ? (IReadOnlyList<TacSimDockedHullRef>)rv.TacSim.DockedHulls
+                    : (_hasAuthoritativeBerthHulls ? (IReadOnlyList<TacSimDockedHullRef>)_lastBerthTradeHulls : rv.TacSim.DockedHulls);
+                for (int h = 0; h < sourceHulls.Count; h++)
                 {
-                    var dh = rv.TacSim.DockedHulls[h];
+                    var dh = sourceHulls[h];
                     if (!string.IsNullOrEmpty(dh.Id)) dockedHullIds.Add(dh.Id);
                     if (!string.IsNullOrEmpty(dh.Name))
                     {
                         dockedHullNames.Add(dh.Name);
-                        string upper = dh.Name.ToUpperInvariant();
+                        string upper = MushProtocol.EscapeUnityRichText(dh.Name.ToUpperInvariant());
                         bool dup = false;
                         for (int m = 0; m < mooredLabelsForCradles.Count; m++)
                         {
@@ -1516,7 +1848,7 @@ namespace TacSim.World
                         }
                         if (!dup)
                         {
-                            string markSuffix = !string.IsNullOrEmpty(dh.Mark) ? $" ({dh.Mark})" : string.Empty;
+                            string markSuffix = !string.IsNullOrEmpty(dh.Mark) ? $" ({MushProtocol.EscapeUnityRichText(dh.Mark)})" : string.Empty;
                             mooredLabelsForCradles.Add($"CRADLE {mooredLabelsForCradles.Count + 1:D2} — {upper}{markSuffix}");
                         }
                     }
@@ -1631,6 +1963,8 @@ namespace TacSim.World
                 wi.OnInteracted = target => OnInteractableTriggered?.Invoke(target);
 
                 _spawnedActors[item.Id] = npcGo;
+                _actorSpawners[item.Id] = spawner;
+                _actorDisplayNames[item.Id] = item.Name ?? string.Empty;
                 _actorBillboards[item.Id] = bb;
             }
 
@@ -1651,25 +1985,17 @@ namespace TacSim.World
                         else DestroyImmediate(depGo);
                     }
                     _spawnedActors.Remove(depId);
+                    _actorSpawners.Remove(depId);
+                    _actorDisplayNames.Remove(depId);
                     _actorTargetPositions.Remove(depId);
                     _actorBillboards.Remove(depId);
                 }
             }
 
-            // Update exterior 3D ship cradle nameplates outside the Berth Gallery glass!
-            if (isBerthGallery && mooredLabelsForCradles.Count > 0)
+            // Always update exterior 3D ship cradles when in Berth Gallery (including clearing all placeholder cradles on 0 hulls!).
+            if (isBerthGallery && (rv.TacSim != null || _hasAuthoritativeBerthHulls || mooredLabelsForCradles.Count > 0))
             {
-                for (int c = 0; c < _cradleHullSigns.Count; c++)
-                {
-                    bool hasShip = c < mooredLabelsForCradles.Count;
-                    if (_cradleHullObjects.Count > c && _cradleHullObjects[c] != null)
-                        _cradleHullObjects[c].SetActive(hasShip);
-                    if (_cradleHullSigns[c] != null)
-                    {
-                        _cradleHullSigns[c].gameObject.SetActive(hasShip);
-                        if (hasShip) _cradleHullSigns[c].text = mooredLabelsForCradles[c];
-                    }
-                }
+                ApplyCradleLabels(mooredLabelsForCradles);
             }
         }
 
@@ -2088,11 +2414,14 @@ namespace TacSim.World
                 UrpMaterialFactory.GetOpaque("BoardFrame", new Color(0.06f, 0.09f, 0.13f), 0.6f, 0.4f), true);
             backing.transform.localRotation = Quaternion.identity;
 
-            string summary = $"{room.Name.ToUpperInvariant()}\n<color=#88CCFF>{room.ShortDesc}</color>";
+            string safeTitle = MushProtocol.EscapeUnityRichText(room.Name.ToUpperInvariant());
+            string safeShort = MushProtocol.EscapeUnityRichText(room.ShortDesc);
+            string summary = $"{safeTitle}\n<color=#88CCFF>{safeShort}</color>";
             var tmp = CreateTmp3D(boardRoot.transform, "BoardText", new Vector3(0f, 0f, -0.07f), summary, 1.45f, new Color(0.82f, 0.95f, 1f));
             tmp.rectTransform.sizeDelta = new Vector2(4.30f, 1.65f);
             tmp.alignment = TextAlignmentOptions.TopLeft;
             tmp.overflowMode = TextOverflowModes.Ellipsis;
+            _roomBoardLines[room.EntryId] = new List<string> { safeTitle, $"<color=#88CCFF>{safeShort}</color>" };
 
             var wi = backing.AddComponent<WorldInteractable>();
             wi.kind = InteractableKind.RoomDetailPlaque;
@@ -2163,6 +2492,28 @@ namespace TacSim.World
                 Material ceilMat = UrpMaterialFactory.GetStationCeilingMaterial($"Soffit_{entryId}", new Color(0.32f, 0.36f, 0.42f), ceilTiling);
                 CreateBox(parent, name + "_CeilingSoffit", new Vector3(cx, elev - 0.30f, cz), new Vector3(w, 0.04f, d), ceilMat, withCollider: false);
             }
+        }
+
+        private static GameObject CreateLocalBox(Transform parent, string name, Vector3 localPos, Vector3 scale, Material mat, bool withCollider)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = name;
+            go.transform.SetParent(parent, false);
+            go.transform.localPosition = localPos;
+            go.transform.localRotation = Quaternion.identity;
+            go.transform.localScale = scale;
+            if (!withCollider)
+            {
+                var col = go.GetComponent<Collider>();
+                if (col != null)
+                {
+                    if (Application.isPlaying) Destroy(col);
+                    else DestroyImmediate(col);
+                }
+            }
+            var mr = go.GetComponent<MeshRenderer>();
+            if (mr != null) mr.sharedMaterial = mat;
+            return go;
         }
 
         private static GameObject CreateBox(Transform parent, string name, Vector3 worldPos, Vector3 scale, Material mat, bool withCollider)
