@@ -17,6 +17,10 @@ namespace TacSim.Arena
         public int RoundsMax;
         public int HitPercent;
         public int HeatPerShot;
+        public int ArmedSlot;
+        public int ArmedMinPercent;
+        public int ArmedKeeps;
+        public string ArmedTarget = string.Empty;
     }
 
     public sealed class ArenaContactState
@@ -48,6 +52,7 @@ namespace TacSim.Arena
         public bool IsWreck;
         public bool Immobile;
         public bool EmconSilent;
+        public bool WeaponsFree = true;
 
         public float Xm = 240f;
         public float Zm = 1280f;
@@ -328,6 +333,7 @@ namespace TacSim.Arena
             State.LockedDesignator = d.Str("lock_designator", string.Empty);
             State.LockRangeM = d.Float("lock_range_m", 0f);
             State.LockHitPercent = d.Int("lock_percent", 0);
+            State.WeaponsFree = d.Bool("weapons_free", true);
 
             State.Weapons.Clear();
             var wArr = d["weapons"].AsArray();
@@ -336,6 +342,8 @@ namespace TacSim.Arena
                 for (int i = 0; i < wArr.Count; i++)
                 {
                     var w = wArr[i];
+                    var armedObj = w["armed"];
+                    bool hasArmed = armedObj.IsObject;
                     State.Weapons.Add(new ArenaWeaponSlotState
                     {
                         Id = w.Str("id", $"wpn_{i + 1}"),
@@ -344,7 +352,11 @@ namespace TacSim.Arena
                         Rounds = w.Int("rounds", 0),
                         RoundsMax = w.Int("rounds_max", 0),
                         HitPercent = w.Int("percent", State.LockHitPercent),
-                        HeatPerShot = w.Int("heat_per_shot", 0)
+                        HeatPerShot = w.Int("heat_per_shot", 0),
+                        ArmedSlot = hasArmed ? armedObj.Int("slot", 1) : 0,
+                        ArmedMinPercent = hasArmed ? armedObj.Int("percent", 0) : 0,
+                        ArmedKeeps = hasArmed ? armedObj.Int("keeps", 0) : 0,
+                        ArmedTarget = hasArmed ? armedObj.Str("target", string.Empty) : string.Empty
                     });
                 }
             }
