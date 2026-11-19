@@ -20,6 +20,11 @@
 //!    there. A worn plant in the same stores (the scrap desk's, production G12) is not served:
 //!    it is scrap, not a new hull's part.
 //!
+//! 3. **Worn lots leave a workshop's part bid at par**
+//!    (`e48_worn_lots_leave_a_workshop_s_part_bid_at_par`; production G30). Four worn cannon in
+//!    Occator's storefront are scrap, not stock its cannon bid fills: EX.8's weekly step leaves
+//!    the bid at par.
+//!
 //! **Seeds** (doc 43 rule 2.3 #4): the House, its treasury, its officer's grant and its money
 //! (staff's, as the bring-up makes them); the plant lots in the stores (staff's); Kasei's price
 //! (EX.8's step, by hand) and the yard's margin (staff's `@facility/terms`).
@@ -251,5 +256,43 @@ async fn e48_a_ceres_yard_order_buys_its_part_from_occator_s_stores() {
                 .is_some_and(|lot| lot.endpoint() == escrow)
         }),
         "the intact plant moves into the order's escrow"
+    );
+}
+
+/// **Production G30: worn lots leave a workshop's part bid at par.** Occator bids for four
+/// 105 mm cannon. Four worn ones lie in its storefront, the scrap desk's: scrap, not stock the bid
+/// fills. An IC week on, EX.8's step leaves the bid at par. Before, the step read every cannon lot
+/// as held, wanted none, and stepped the bid down 5%.
+#[test]
+fn e48_worn_lots_leave_a_workshop_s_part_bid_at_par() {
+    const CANNON: &str = "tacsim.part.weapon.cannon_105";
+    let mut rig = stocked();
+    crate::driving_rig::set_rate(&mut rig.tw, 3_600);
+    let occator = VaultId(port_map(&rig.tw, CERES).vendors[&cid("occator")].vault);
+    for n in 0..4 {
+        seed_part_at(
+            &mut rig,
+            occator,
+            CANNON,
+            LotId(7_690_000 + n),
+            (ComponentCondition::Damaged, WORN_GRADE),
+            ProvenanceLegalityStatus::CleanTitle,
+        );
+    }
+    let start = crate::driving_rig::ic_now(&rig.tw);
+    let week = (mush_market::period_of(start) + 1) * mush_market::PERIOD_IC_SECS + 3_600;
+    let _ = crate::driving_rig::to_ic(&mut rig, week);
+    let venue = mush_market::MarketId::new("ceres").expect("Ceres's venue");
+    let catalog = tacsim::port::price::catalog_of_good(&cid(CANNON));
+    assert_eq!(
+        mush_market::latest_point(
+            rig.tw.world(),
+            &venue,
+            &catalog,
+            mush_market::PriceSide::Bid
+        )
+        .map(|(_, point)| point.factor_permille),
+        Some(1_000),
+        "the worn cannon are not stock the bid fills"
     );
 }

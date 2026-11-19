@@ -555,8 +555,18 @@ pub(crate) fn weekly_step(ctx: &mut mush_core::Ctx<'_>, map: &crate::port::PortM
                 continue;
             }
             let endpoint = mush_inventory::EndpointRef(mush_economy::VaultId(row.vault));
-            let Ok(held) = crate::port_tick::read_pool(ctx, endpoint, &bid.good) else {
-                continue;
+            // Doc 48e, production G30: a part bid steps with the sound lots it holds. A worn lot
+            // the scrap desk took in is scrap, not stock the bid fills, and no yard order or bay
+            // replace takes it (`stock::store_lots`), so it no longer pushes the bid down.
+            let held = if crate::port_tick::is_part(&bid.good) {
+                let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
+                let sound = crate::port::stock::store_lots(ctx, row, &bid.good, &claimed);
+                u64::try_from(sound.len()).unwrap_or(u64::MAX)
+            } else {
+                let Ok(held) = crate::port_tick::read_pool(ctx, endpoint, &bid.good) else {
+                    continue;
+                };
+                held
             };
             let intake = bid.intake;
             let current = latest.map_or(PAR_PERMILLE, |(_, p)| p.factor_permille);

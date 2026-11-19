@@ -1112,7 +1112,8 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
 /// quantity, and the triple's payer and beneficiary with the payer's own account.
 /// **Doc 48 unit EX.9**: the refusal of a house's own order at a facility mothballed for its
 /// running costs.
-pub const MOTHBALLED: &str = "That facility is mothballed for its running costs: its house places      no order of its own there until they are paid.";
+pub const MOTHBALLED: &str = "That facility is mothballed for its running costs: its house \
+                                  places no order of its own there until they are paid.";
 
 pub(crate) struct Booking<'a> {
     /// The front.

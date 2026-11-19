@@ -5580,8 +5580,9 @@ async fn pl2b_blanks_are_made_up_to_the_registry_room_and_boot_again() {
     r9_command(&mut rig, who, "+relaypair/stock").await;
     assert_eq!(pool(&mut rig.tw, f.vault, "relay_blank"), 13);
     let status = run(&mut rig, who, "+relaypair").await;
+    // Doc 48e, production G32: the blanks received, not their one receipt.
     assert!(
-        status.contains("blanks received: 1; blanks issued: 13 / 13"),
+        status.contains("blanks received: 5; blanks issued: 13 / 13"),
         "{status}"
     );
 

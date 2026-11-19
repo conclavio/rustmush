@@ -103,8 +103,8 @@ pub const CORE_FUNDS: &str = "That costs {price}; you have {available}.";
 pub const CORE_END_USER: &str =
     "A Class III core is built only for a registered end user; +enduser/apply registers you.";
 /// The buy preview: `{class}`, `{price}`, `{hours}`.
-pub const CORE_BUY_PREVIEW: &str =
-    "A governed Class {class} core: {price}, made in {hours} IC hours from a      certified die.
+pub const CORE_BUY_PREVIEW: &str = "A governed Class {class} core: {price}, made in {hours} IC \
+                                        hours from a certified die.
 It is delivered into your hands, titled to you. Add go to order it.";
 /// The buy ordered: `{class}`, `{price}`.
 pub const CORE_BUY_QUEUED: &str =
@@ -292,16 +292,17 @@ const fn roman(class: DieClass) -> &'static str {
     }
 }
 
-/// The shop's hours of an integration and of a fitting, by class (the shipped catalogue's).
-const fn hours(class: DieClass, fitting: bool) -> u32 {
-    match (class, fitting) {
-        (DieClass::I, false) => 24,
-        (DieClass::II, false) => 48,
-        (DieClass::III, false) => 96,
-        (DieClass::I, true) => 1,
-        (DieClass::II, true) => 2,
-        (DieClass::III, true) => 4,
-    }
+/// The shop's hours of an integration and of a fitting, by class: the shipped catalogue's work
+/// units, which the work orders run (doc 48e, production G32: no table of the counter's own to
+/// drift from them). 0 only if the shipped catalogue does not load, which its own test refuses.
+fn hours(class: DieClass, fitting: bool) -> u64 {
+    let process = if fitting {
+        crate::hardware::HardwareProcess::Refit
+    } else {
+        crate::hardware::HardwareProcess::Integrate
+    };
+    crate::hardware::PublishedHardware::shipped_once()
+        .map_or(0, |hardware| hardware.work_units(process, class))
 }
 
 /// The governed cores in `actor`'s hands titled to them: each with its class and manufacture.
@@ -1013,7 +1014,7 @@ fn next(
 }
 
 /// Whether the request's acceptance has landed, and the hours and words to tell it with.
-fn accepted(w: &World, requester: ObjId, request: &Request) -> Option<(u32, String)> {
+fn accepted(w: &World, requester: ObjId, request: &Request) -> Option<(u64, String)> {
     let view = counter::view(w, requester)?;
     match &request.kind {
         Kind::Buy { class, offer, .. } => {
@@ -1278,11 +1279,11 @@ mod tests {
         let shipped = crate::hardware::PublishedHardware::shipped().expect("the shipped hardware");
         for class in [DieClass::I, DieClass::II, DieClass::III] {
             assert_eq!(
-                u64::from(hours(class, false)),
+                hours(class, false),
                 shipped.work_units(crate::hardware::HardwareProcess::Integrate, class)
             );
             assert_eq!(
-                u64::from(hours(class, true)),
+                hours(class, true),
                 shipped.work_units(crate::hardware::HardwareProcess::Refit, class)
             );
         }
