@@ -302,9 +302,15 @@ const DOC48_JOB_ACTIONS: [(&str, &str); 9] = [
 const DOC48_INDUSTRY_ACTIONS: [(&str, &str); 10] = [
     ("Port Works & Orders", "+works"),
     ("Shipyard Queue & Orders", "+yard"),
-    ("24-Week Volatiles Trend", "+market/history tacsim:volatiles"),
+    (
+        "24-Week Volatiles Trend",
+        "+market/history tacsim:volatiles",
+    ),
     ("24-Week Metals Trend", "+market/history tacsim:metals"),
-    ("24-Week Alloys Trend", "+market/history tacsim:structural_alloys"),
+    (
+        "24-Week Alloys Trend",
+        "+market/history tacsim:structural_alloys",
+    ),
     ("Quote Metal Ore Milling", "+works/quote metals"),
     ("Quote 30mm AP Munitions", "+works/quote ap_30"),
     ("Quote Dray Hull Build", "+yard/quote dray"),
