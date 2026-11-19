@@ -1165,9 +1165,26 @@ So outside `domain_field` the seam pays only where a test waits on a timer it ow
 memory-store suites that is the one module above. TS.10c's value is the guard, plus the seam being in place
 for the next test that waits.
 
+### TS.10e — the contract lint
+
+**The gate.** `mush-contract-tests::engine_contracts::world_clock_reads` runs on TS.8's scanner.
+- **The rule.** No `unix_now_s()`, `unix_now_ms()` or `SystemTime::now()` call may appear in the production
+  code of a `world_task*` or `arena_task*` file under a crate's `src/`. That is 9 files today: seven in
+  mush-server and two in tacsim.
+- **The allow-list.** Eight rows, each with its count and reason:
+  - displays: `@ps`, `@stats`, the uptime;
+  - the store health's last-write stamp;
+  - the economy journal's rate;
+  - `boot_engine`'s first `set_now`;
+  - three account-side records that the gateway or the Discord bridge compares on the OS clock (an `@sshkey`
+    stamp, a link code's expiry, a ban stamp).
+- **Counts are exact.** A new read fails the gate, and a removed one asks for its row to go.
+- **The arena reads none.** It is scanned so that stays true.
+- **Mutation-checked.** Putting `fire_due` back on `unix_now_ms()` fails the gate with the file, the line
+  and the count.
+
 ### What is left of TS.10
 
-- **TS.10e** the contract lint, a stacked PR after this one.
 - **More paused rigs** only where a test waits on a timer it owns (TS.10c's table).
 - **The arena's handle** (TS.10b, above) waits on its first reader.
 - **TS.10d** waits on the owner (above).
