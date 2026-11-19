@@ -281,6 +281,10 @@ struct Server {
     /// A magazine of this many rounds a gun, counting down one a shot (so the
     /// picture's rounds rule runs); unset, the rows print `30 of 40`.
     magazine: Option<u32>,
+    /// **The rounds one shot spends, a gun** (doc 48e kernel G11): empty, one
+    /// a shot, as the magazine knob's figures are written; [`shipped_bursts`]
+    /// spends the content's, the machine gun's burst of ten.
+    bursts: BTreeMap<String, u32>,
     rounds: BTreeMap<String, u32>,
     /// See [`HeldKnob`]; unset, nothing holds the tank.
     held: Option<HeldKnob>,
@@ -430,7 +434,40 @@ fn shipped_cycles() -> BTreeMap<String, u64> {
         .collect()
 }
 
+/// **Each of the line tank's mounts and the rounds one shot spends**, off the
+/// shipped content (doc 48e kernel G11): the component id and its weapon's
+/// `burst_rounds`.
+fn shipped_bursts() -> BTreeMap<String, u32> {
+    use tacsim::definitions::unit::ComponentRole;
+    let catalog = tacsim::builtin_definitions()
+        .unwrap_or_else(|error| panic!("the shipped content binds: {error}"));
+    let key = mush_core::CanonicalId::new(tacsim::definitions::content::LINE_TANK)
+        .unwrap_or_else(|_| panic!("{} is an id", tacsim::definitions::content::LINE_TANK));
+    let spec = catalog
+        .specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is fielded"));
+    spec.components
+        .iter()
+        .filter_map(|slot| match &slot.role {
+            ComponentRole::Weapon { weapon, .. } => {
+                let def = catalog
+                    .weapons
+                    .get(weapon)
+                    .unwrap_or_else(|| panic!("{weapon} is in the catalog"));
+                Some((slot.id.as_str().to_owned(), def.burst_rounds))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl Server {
+    /// The rounds one shot of `weapon` spends (doc 48e kernel G11).
+    fn burst(&self, weapon: &str) -> u32 {
+        self.bursts.get(weapon).copied().unwrap_or(1).max(1)
+    }
+
     fn new() -> Server {
         Server {
             now: 0,
@@ -450,6 +487,7 @@ impl Server {
             speed: 0,
             pulse_ms: None,
             magazine: None,
+            bursts: BTreeMap::new(),
             rounds: BTreeMap::new(),
             held: None,
             held_from: None,
@@ -696,7 +734,7 @@ impl Server {
     /// spent its round yet.
     fn rounds_shown(&self, weapon: &str, size: u32) -> u32 {
         let left = self.rounds.get(weapon).copied().unwrap_or(size);
-        left + u32::from(self.pending(weapon))
+        left + u32::from(self.pending(weapon)) * self.burst(weapon)
     }
 
     fn weapon_row(&self, weapon: &str, short: &str) -> String {
@@ -1025,8 +1063,9 @@ impl Server {
                         self.fired.insert(weapon.to_owned(), start);
                         *self.shots.entry(weapon.to_owned()).or_default() += 1;
                         if let Some(size) = self.magazine {
+                            let burst = self.burst(weapon);
                             let left = self.rounds.entry(weapon.to_owned()).or_insert(size);
-                            *left = left.saturating_sub(1);
+                            *left = left.saturating_sub(burst);
                         }
                         self.say(self.fire_answer_ms, &format!("Firing {weapon}."));
                         self.acks
@@ -2440,6 +2479,53 @@ fn a_refused_fire_is_the_exception() {
         .find(|w| w.id == "machine_gun")
         .expect("the machine gun");
     assert!(mg.rounds < 200, "the magazine counted down");
+}
+
+/// **Doc 48e kernel G11: the lane counts the rounds a burst spends.** The
+/// shipped bursts on a 2,000-round magazine, two minutes on BA: the machine
+/// gun's count in the picture follows the server's, ten rounds a shot, and is
+/// never more than one burst above it; before G11 it came down one a shot and
+/// ran nine rounds a burst high between rows.
+#[test]
+fn g11_the_lane_counts_a_machine_guns_burst() {
+    let mut run = to_the_fight_with(base(), |server| {
+        server.magazine = Some(2_000);
+        server.bursts = shipped_bursts();
+    });
+    assert_eq!(run.server.burst("machine_gun"), 10, "the shipped burst");
+    sight_a_hostile(&mut run);
+    assert!(run.until(5_000, |run| run.lane.picture().lock.is_some()));
+    let mut worst = 0;
+    for _ in 0..120 {
+        run.until(1_000, |_| false);
+        let server = run
+            .server
+            .rounds
+            .get("machine_gun")
+            .copied()
+            .unwrap_or(2_000);
+        let mg = run
+            .lane
+            .picture()
+            .weapons
+            .iter()
+            .find(|w| w.id == "machine_gun")
+            .expect("the machine gun");
+        worst = worst.max(mg.rounds_left().saturating_sub(server));
+    }
+    let mg = run
+        .lane
+        .picture()
+        .weapons
+        .iter()
+        .find(|w| w.id == "machine_gun")
+        .expect("the machine gun");
+    assert_eq!(mg.per_shot(), 10, "learned: {mg:?}");
+    assert!(shots_of(&run, "machine_gun") > 5, "{:?}", run.server.shots);
+    assert!(
+        worst <= 10,
+        "the count ran {worst} rounds above the server's"
+    );
 }
 
 /// **A refused `FIRE` is tried again inside the second it was refused for**

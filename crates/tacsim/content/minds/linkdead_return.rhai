@@ -31,8 +31,17 @@ fn think(v, c) {
         }
         if at != () {
             lock(at);
+            // She answers with what is ready: her tubes, and a laser in offence (a laser
+            // in point defence guards her). A spinal round waits for a seat that can see a
+            // steady course (doc 48e kernel G9).
             for w in v.weapons {
-                if w.ready_in_ms == 0 {
+                let m = space_mount(v, w.id);
+                if m == () || m.state != "ready" {
+                    continue;
+                }
+                if m.family == "tubes" {
+                    fire(w.id, 1);
+                } else if m.family == "laser" && m.mode == "offence" {
                     fire(w.id, 1);
                 }
             }

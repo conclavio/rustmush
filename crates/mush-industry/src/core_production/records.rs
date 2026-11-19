@@ -211,6 +211,18 @@ impl DieCertificate {
     pub fn lot(&self) -> LotId {
         self.lot
     }
+    /// **The stock agent who issued the die** (doc 48e, production G14): the counter offers a
+    /// die its agent issued and never sold again after a restart or a lapsed offer.
+    #[must_use]
+    pub fn agent(&self) -> ObjId {
+        self.agent
+    }
+    /// **Where the die lot was minted** (doc 48e, production G14): the agent's stock, where an
+    /// unsold die still lies.
+    #[must_use]
+    pub fn origin(&self) -> EndpointRef {
+        self.origin_endpoint
+    }
     pub(crate) fn key(&self) -> String {
         self.operation.to_hex()
     }

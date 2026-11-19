@@ -59,7 +59,8 @@ impl FactProvider for MarketFactProvider {
         let accepted_at = accepted_at.parse::<i64>().ok()?;
         let q = w.module_state::<MarketStore>()?.quote(quote)?;
         let lot = q.lot.as_ref()?;
-        if lot.kind != PaidKind::Draw || lot.accepted_at != accepted_at {
+        // Doc 48e (exchange G2): a hold-backed sale's Consume writes the same receipt.
+        if !matches!(lot.kind, PaidKind::Draw | PaidKind::Hold) || lot.accepted_at != accepted_at {
             return None;
         }
         let at = q.drawn_at?;

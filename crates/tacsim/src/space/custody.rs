@@ -1108,6 +1108,12 @@ pub fn check_in_space_unit(
         mush_tactics::custody::check_in(ctx, hull, Some(plan_ref))
             .map_err(|e| format!("space check_in failed for #{}: {e}", hull.0))?;
     } else {
+        // 48e review rounds:G11: a hull with no marker still takes the bubble's damage and
+        // spends; there is no snapshot to restore, so the plan is applied to her unit directly.
+        if let Some(plan) = plan_opt.as_ref() {
+            mush_tactics::module::apply_plan(ctx, hull, plan)
+                .map_err(|e| format!("space check_in failed for #{}: {e}", hull.0))?;
+        }
         mush_sim::deployed::clear(ctx.w, hull);
     }
     // Doc 42 cut CR.6 (Q-42-24): the crew aboard check in with the hull.

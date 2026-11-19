@@ -132,6 +132,7 @@ pub const TAC_HELP: &str = "\
 +tac/torp [<contact>[=<count>]]       Launch torpedo salvo (default 1) at a detected hostile contact.
 +tac/railgun [<contact>]              Fire spinal/turret railguns at a detected hostile contact.
 +tac/pdc <auto|manual|point|offense>  Configure point-defense autocannons or dual-mode laser mounts.
++tac/pdc <laser>=<point|offense>      Switch one laser mount's mode, by its id.
 +tac/hail <contact|port>[=<message>]  Hail a detected contact, or an open port from free flight (`d / c`, `D-35-10`).";
 
 /// Feed identifier for the 3D holotank tactical display (`SF.2`, `SF.7`).
@@ -540,6 +541,17 @@ pub struct SpaceContactObservation {
     pub emcon: EmconPosture,
     /// `mush-propagation` detection outcome (`Detected` or `Missed`).
     pub outcome: DetectionOutcome,
+}
+
+/// **The holotank's point-defence ring**, km (doc 48e kernel G16): the widest envelope of her
+/// rotaries, nought for a hull that carries none, so the client draws no ring for her.
+#[must_use]
+pub fn pdc_ring_km(ship: &super::bubble::SpaceShipState) -> f64 {
+    ship.pdcs
+        .iter()
+        .map(|pd| pd.envelope_m)
+        .max()
+        .map_or(0.0, |m| (m as f64) / 1_000.0)
 }
 
 /// Evaluate whether `observer` detects `target` across vacuum using
@@ -1024,10 +1036,10 @@ pub(crate) fn build_tier1_space_panel_payloads(
         }));
     }
 
-    let holotank = serde_json::json!({
+    let mut holotank = serde_json::json!({
         "title": format!("{} ({})", callsign, site_id.to_ascii_uppercase()),
         "range_km": holotank_range_km,
-        "pdc_range_km": 15.0,
+        "pdc_range_km": 0.0,
         "contacts": holotank_contacts,
         "torpedoes": [],
     });
@@ -1052,6 +1064,8 @@ pub(crate) fn build_tier1_space_panel_payloads(
                 [0, 0, 0],
             )
         });
+    // Doc 48e kernel G16: the point-defence ring is her rotaries' envelope, none without one.
+    holotank["pdc_range_km"] = serde_json::json!(pdc_ring_km(&tier1_ship));
     if let Some(ledger) = book.propellant_ledger(hull) {
         let live_kg = ledger.effective_live_kg(ledger.last_vault_tank_t);
         tier1_ship.propellant_kg =
@@ -3950,12 +3964,11 @@ fn tac_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(ship) = active.bubble.ships.get(active.carrier_ship_id_for(hull)) else {
         return Err(CmdError::msg("Carrier ship state missing from bubble."));
     };
-    let mut lines = vec![format!(
-        "Tactical status aboard {} ({}): lock={}, PDC auto={}, heat={}‰/1000‰.",
-        display_name(ctx.w, hull),
-        ship.id,
+    let mut lines = vec![status_header(
+        &display_name(ctx.w, hull),
+        &ship.id,
         ship.locked_target_id.as_deref().unwrap_or("none"),
-        if ship.pdc_auto { "on" } else { "off" },
+        ship.pdc_auto,
         ship.heat_permille,
     )];
     // Doc 49 unit CC.9: a row a mount, then the lock, as the canopy and the TUI print them.
@@ -3967,6 +3980,30 @@ fn tac_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     push_space_panels(ctx, hull);
     Ok(())
+}
+
+/// `text`, cut to at most `max` characters, the last an ellipsis when it was cut.
+fn clipped(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// **`+tac/status`'s head line**, within the 120-column floor (doc 48e kernel G20): her name
+/// cut to 20 characters and the two ids to 16 each, so the widest line is 120.
+#[must_use]
+pub fn status_header(name: &str, ship_id: &str, lock: &str, pdc_auto: bool, heat: u16) -> String {
+    format!(
+        "Tactical status aboard {} ({}): lock={}, PDC auto={}, heat={}‰/1000‰.",
+        clipped(name, 20),
+        clipped(ship_id, 16),
+        clipped(lock, 16),
+        if pdc_auto { "on" } else { "off" },
+        heat.min(9_999),
+    )
 }
 
 /// **`+tac/status`'s fire rows** (doc 49 unit CC.9): `mush_pixel::space_cockpit::fire_rows` of
@@ -4327,18 +4364,25 @@ fn tac_torp(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (shooter_id, target_id) = resolve_detected_contact(ctx.w, hull, target_arg)?;
     verify_hostile_fire_allowed(ctx.w, hull, &shooter_id, &target_id)?;
 
+    let held = mount_hold(ctx.w, hull, &shooter_id, super::view::MountFamily::Tubes);
     let cmd = BubbleInputCommand::FireTorpedoSalvo {
         shooter_id,
         target_id: target_id.clone(),
         count,
     };
-    let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let events = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let launched = events
+        .iter()
+        .filter(|e| matches!(e, super::bubble::SpaceCombatEvent::TorpedoLaunched { .. }))
+        .count();
     let _ = super::tick::submit_bubble_input(ctx, hull, "torp", Some(cmd));
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "tacsim.space",
-        format!("Launched torpedo salvo (x{count}) at `{target_id}`."),
-    );
+    // Doc 48e kernel G4: a salvo the kernel refused reads as refused, with why.
+    let said = if launched == 0 {
+        format!("No torpedo left her tubes: {}.", held_words(held))
+    } else {
+        format!("Launched torpedo salvo (x{launched}) at `{target_id}`.")
+    };
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", said);
     push_space_panels(ctx, hull);
     Ok(())
 }
@@ -4350,17 +4394,23 @@ fn tac_railgun(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         resolve_detected_contact(ctx.w, hull, (!raw.is_empty()).then_some(raw))?;
     verify_hostile_fire_allowed(ctx.w, hull, &shooter_id, &target_id)?;
 
+    let held = mount_hold(ctx.w, hull, &shooter_id, super::view::MountFamily::Spinal);
     let cmd = BubbleInputCommand::FireRailgun {
         shooter_id,
         target_id: target_id.clone(),
     };
-    let _ = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let events = apply_bubble_command(ctx.w, hull, cmd.clone());
+    let fired = events
+        .iter()
+        .any(|e| matches!(e, super::bubble::SpaceCombatEvent::RailgunFired { .. }));
     let _ = super::tick::submit_bubble_input(ctx, hull, "railgun", Some(cmd));
-    ctx.out.sys_to_actor(
-        ctx.actor,
-        "tacsim.space",
-        format!("Railgun salvo fired at `{target_id}`."),
-    );
+    // Doc 48e kernel G4: a round the kernel refused reads as refused, with why.
+    let said = if fired {
+        format!("Railgun salvo fired at `{target_id}`.")
+    } else {
+        format!("No round left her spinal gun: {}.", held_words(held))
+    };
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", said);
     push_space_panels(ctx, hull);
     Ok(())
 }
@@ -4393,24 +4443,30 @@ fn tac_pdc(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.out
                 .sys_to_actor(ctx.actor, "tacsim.space", "PDC auto-intercept disabled.");
         }
-        "point" | "defense" | "defence" => {
-            bubble_cmd = set_all_laser_modes(ctx.w, hull, &ship_id, LaserMode::Defense);
-            ctx.out.sys_to_actor(
-                ctx.actor,
-                "tacsim.space",
-                "Dual-mode laser mounts switched to Defense.",
-            );
+        "point" | "defense" | "defence" | "offense" | "offence" => {
+            let mode = laser_mode_word(&raw).unwrap_or(LaserMode::Offense);
+            let (cmd, said) = set_laser_modes(ctx.w, hull, &ship_id, None, mode);
+            bubble_cmd = cmd;
+            for line in said {
+                ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+            }
         }
-        "offense" | "offence" => {
-            bubble_cmd = set_all_laser_modes(ctx.w, hull, &ship_id, LaserMode::Offense);
-            ctx.out.sys_to_actor(
-                ctx.actor,
-                "tacsim.space",
-                "Dual-mode laser mounts switched to Offense.",
-            );
-        }
-        _ => {
-            return Err(CmdError::msg("Usage: +tac/pdc <auto|manual|point|offense>"));
+        other => {
+            // Doc 48e kernel G4: `+tac/pdc <laser>=<point|offense>`, one laser by its id.
+            let Some((laser, mode)) = other
+                .split_once('=')
+                .and_then(|(id, word)| Some((id.trim(), laser_mode_word(word.trim())?)))
+            else {
+                return Err(CmdError::msg(PDC_USAGE));
+            };
+            let (cmd, said) = set_laser_modes(ctx.w, hull, &ship_id, Some(laser), mode);
+            if cmd.is_none() && said.is_empty() {
+                return Err(CmdError::msg(format!("She carries no laser `{laser}`.")));
+            }
+            bubble_cmd = cmd;
+            for line in said {
+                ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+            }
         }
     }
     let _ = super::tick::submit_bubble_input(ctx, hull, "pdc", bubble_cmd);
@@ -4418,29 +4474,102 @@ fn tac_pdc(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-fn set_all_laser_modes(
+/// `+tac/pdc`'s usage.
+const PDC_USAGE: &str =
+    "Usage: +tac/pdc <auto|manual|point|offense>, or +tac/pdc <laser>=<point|offense>";
+
+/// The laser mode a `+tac/pdc` word names.
+fn laser_mode_word(word: &str) -> Option<LaserMode> {
+    match word.to_ascii_lowercase().as_str() {
+        "point" | "defense" | "defence" => Some(LaserMode::Defense),
+        "offense" | "offence" => Some(LaserMode::Offense),
+        _ => None,
+    }
+}
+
+/// **Switch her lasers to `mode`**, every one or the one `only` names (doc 48e kernel G4), and
+/// say for each whether it switched: a laser her fit does not allow in that mode stays as it
+/// was, and is named. The last command applied, for the bubble input, and the lines to print.
+fn set_laser_modes(
     w: &mut World,
     hull: ObjId,
     ship_id: &str,
+    only: Option<&str>,
     mode: LaserMode,
-) -> Option<BubbleInputCommand> {
-    let laser_ids: Vec<String> = w
+) -> (Option<BubbleInputCommand>, Vec<String>) {
+    let lasers: Vec<String> = w
         .module_state::<SpaceBubbleBook>()
         .and_then(|b| b.active_for_hull(hull))
         .and_then(|a| a.bubble.ships.get(ship_id))
-        .map(|s| s.lasers.iter().map(|m| m.id.clone()).collect())
+        .map(|s| {
+            s.lasers
+                .iter()
+                .filter(|m| only.is_none_or(|id| m.id == id))
+                .map(|m| m.id.clone())
+                .collect()
+        })
         .unwrap_or_default();
+    let word = match mode {
+        LaserMode::Defense => "Defense",
+        LaserMode::Offense => "Offense",
+    };
     let mut last_cmd = None;
-    for laser_id in laser_ids {
+    let mut said = Vec::new();
+    for laser_id in lasers {
         let cmd = BubbleInputCommand::SetLaserMode {
             ship_id: ship_id.to_owned(),
-            laser_id,
+            laser_id: laser_id.clone(),
             mode,
         };
         let _ = apply_bubble_command(w, hull, cmd.clone());
-        last_cmd = Some(cmd);
+        let now = w
+            .module_state::<SpaceBubbleBook>()
+            .and_then(|b| b.active_for_hull(hull))
+            .and_then(|a| a.bubble.ships.get(ship_id))
+            .and_then(|s| s.lasers.iter().find(|m| m.id == laser_id))
+            .map(|m| m.mode);
+        if now == Some(mode) {
+            said.push(format!("Laser `{laser_id}` switched to {word}."));
+            last_cmd = Some(cmd);
+        } else {
+            said.push(format!(
+                "Laser `{laser_id}` stays as it was: her fit does not allow it in {word}."
+            ));
+        }
     }
-    last_cmd
+    (last_cmd, said)
+}
+
+/// **What holds her first mount of `family` back**, read before the order (doc 48e kernel G4):
+/// the state the fire picture gives it, and the seconds to its next cycle.
+fn mount_hold(
+    w: &World,
+    hull: ObjId,
+    ship_id: &str,
+    family: super::view::MountFamily,
+) -> Option<(super::view::MountState, u32)> {
+    let book = w.module_state::<SpaceBubbleBook>()?;
+    let active = book.active_for_hull(hull)?;
+    let picture = super::view::fire_picture(&active.bubble, ship_id)?;
+    picture
+        .mounts
+        .iter()
+        .find(|m| m.family == family)
+        .map(|m| (m.state, m.ready_in_ms))
+}
+
+/// The words for what held a mount back.
+fn held_words(held: Option<(super::view::MountState, u32)>) -> String {
+    use super::view::MountState;
+    match held {
+        None => "she carries none".to_owned(),
+        Some((MountState::Empty, _)) => "the magazine is empty".to_owned(),
+        Some((MountState::Cycling, ms)) => format!("cycling, ready in {} s", ms.div_ceil(1_000)),
+        Some((MountState::TooHot, _)) => "she is too hot to fire it".to_owned(),
+        Some((MountState::PastReach, _)) => "the lock is past its reach".to_owned(),
+        Some((MountState::Down, _)) => "it is down".to_owned(),
+        Some((MountState::Ready, _)) => "the kernel refused the order".to_owned(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5077,13 +5206,19 @@ fn apply_collar_scrape_damage(ctx: &mut Ctx<'_>, hull: ObjId, front_armor_damage
         out
     };
     if let Some((ship, domain, leg_cursor)) = bubble_ship {
-        let _ = super::custody::check_in_space_unit(ctx, hull, &ship, at_ic);
+        if let Err(error) = super::custody::check_in_space_unit(ctx, hull, &ship, at_ic) {
+            tracing::warn!(hull = hull.0, %error, "tacsim: a collar scrape's check-in failed");
+        }
         let site_key = format!("domain.{}", domain.0);
-        let _ = mush_tactics::custody::check_out(
+        // 48e review rounds:G11: a failed re-check-out leaves her in the bubble with no marker;
+        // her next check-in then applies its plan directly, and staff hear of it here.
+        if let Err(error) = mush_tactics::custody::check_out(
             ctx,
             hull,
             mush_sim::deployed::DeployedMark::field(site_key, leg_cursor),
-        );
+        ) {
+            tracing::warn!(hull = hull.0, %error, "tacsim: a collar scrape's re-check-out failed");
+        }
         return;
     }
 
@@ -7389,5 +7524,50 @@ mod thrust_permille_tests {
         let burn_val = burning_cockpit["thrust_permille"].as_u64().unwrap_or(0);
         check!((490..=510).contains(&burn_val));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod review_48e_tests {
+    use super::*;
+    use crate::space::view::MountState;
+
+    /// **Doc 48e kernel G4: a refused order says why**, from the state that held the mount.
+    #[test]
+    fn g4_a_refused_order_says_what_held_the_mount() {
+        assert_eq!(held_words(None), "she carries none");
+        assert_eq!(
+            held_words(Some((MountState::Empty, 0))),
+            "the magazine is empty"
+        );
+        assert_eq!(
+            held_words(Some((MountState::Cycling, 4_200))),
+            "cycling, ready in 5 s"
+        );
+        assert_eq!(
+            held_words(Some((MountState::PastReach, 0))),
+            "the lock is past its reach"
+        );
+        assert_eq!(laser_mode_word("point"), Some(LaserMode::Defense));
+        assert_eq!(laser_mode_word("Offence"), Some(LaserMode::Offense));
+        assert_eq!(laser_mode_word("auto"), None);
+    }
+
+    /// **Doc 48e kernel G20: the status head line stays within 120 columns** however long her
+    /// name and the ids.
+    #[test]
+    fn g20_the_status_head_line_fits_120_columns() {
+        let long = "x".repeat(200);
+        let line = status_header(&long, &long, &long, false, 1_000);
+        assert!(
+            line.chars().count() <= 120,
+            "{} wide: {line}",
+            line.chars().count()
+        );
+        let short = status_header("Salt Moth", "ship.12", "none", true, 40);
+        assert_eq!(
+            short,
+            "Tactical status aboard Salt Moth (ship.12): lock=none, PDC auto=on, heat=40‰/1000‰."
+        );
     }
 }

@@ -884,6 +884,31 @@ fn unit_parts(
     Ok((unit, spec, anatomy))
 }
 
+/// **Whether `hull` needs the bay's repair** (48e review rounds:G2): [`jobs::needs_repair`] on
+/// its unit where it stands.
+///
+/// # Errors
+///
+/// The sentence: no unit, or its design is not in the catalogue.
+pub fn needs_repair_here(w: &World, hull: ObjId) -> Result<bool, String> {
+    let (unit, _, anatomy) = unit_parts(w, hull)?;
+    Ok(jobs::needs_repair(&unit, &anatomy))
+}
+
+/// **The op that lands a repair's clearing of `before`'s space crits** (48e review rounds:G4):
+/// a revoke of [`crate::space::custody::SPACE_SUBSYSTEMS_CAPABILITY`] when `before` holds the
+/// record and the work's `after` does not.
+fn crits_cleared(
+    before: &TacticalUnit,
+    after: &TacticalUnit,
+) -> Option<mush_tactics::UnitMutationOp> {
+    let id =
+        mush_tactics::CapabilityId::new(crate::space::custody::SPACE_SUBSYSTEMS_CAPABILITY).ok()?;
+    let key = mush_tactics::CapabilityKey { id, source: None };
+    (before.capability(&key).is_some() && after.capability(&key).is_none())
+        .then_some(mush_tactics::UnitMutationOp::RevokeCapability { key })
+}
+
 /// **A quote for `hull` where it stands now** (D-31-13): the tariff at the operator's
 /// multiplier, split by what this facility may do.
 ///
@@ -1318,8 +1343,10 @@ fn take(
     if record.scrapped_ic.is_some() {
         return Err("That hull has been scrapped.".to_owned());
     }
-    // Doc 48 cut EX.2 (Q-48-52): nothing is fitted to a hull being sold.
-    if fit.is_some() && under_sale(ctx.w, hull) {
+    // Doc 48 cut EX.2 (Q-48-52): nothing is fitted to a hull being sold. Doc 48e (exchange
+    // G24; 48d M-04): nor is any other order taken on her, so the state her sale pins is the
+    // state she is sold in.
+    if under_sale(ctx.w, hull) {
         return Err(UNDER_SALE.to_owned());
     }
     let (facility, quote) = quote_here(ctx.w, hull)?;
@@ -1597,6 +1624,39 @@ fn take(
 /// fits a part from a lot, owing the release of the lot it held (doc 39 cut IN.2).
 fn close_cancelled(ctx: &mut Ctx<'_>, record: BayHull, note: &str) {
     close_order(ctx, record, note, true);
+}
+
+/// **Cancel an order whose draw may have landed** (48e review rounds:G1): the goods it took are
+/// owed back ([`owe_return`]) before the order closes, so a refusal at [`complete`] loses none.
+fn close_returning(ctx: &mut Ctx<'_>, mut record: BayHull, order: &BayOrder, note: &str) {
+    owe_return(ctx, &mut record, order);
+    close_cancelled(ctx, record, note);
+}
+
+/// **Owe back what `order`'s landed draw took** (48e review rounds:G1): an
+/// [`OwedKind::Return`] of its munitions to the hold and its bought rounds to the workshop's
+/// stores. Nothing when it drew no goods, its draw never landed, or an act is already owed.
+fn owe_return(ctx: &mut Ctx<'_>, record: &mut BayHull, order: &BayOrder) {
+    if order.draw_act.is_none()
+        || (order.goods.is_empty() && order.store_goods.is_empty())
+        || record.owed.is_some()
+    {
+        return;
+    }
+    let act = next_act(ctx, record);
+    record.acts = act;
+    record.owed = Some(Box::new(OwedAct {
+        act,
+        by: order.requester,
+        vault: order.munitions_vault.or(order.store_vault),
+        kind: OwedKind::Return {
+            order: order.seq,
+            goods: order.goods.clone(),
+            store: order.store_goods.clone(),
+            store_at: order.store_vault,
+        },
+        tries: 0,
+    }));
 }
 
 fn close_order(ctx: &mut Ctx<'_>, mut record: BayHull, note: &str, release: bool) {
@@ -1892,15 +1952,15 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         return;
     };
     if let Some(note) = refused_now(ctx.w, hull, &order) {
-        close_cancelled(ctx, record, note);
+        close_returning(ctx, record, &order, note);
         return;
     }
     let Some(before) = mush_tactics::module::unit_of(ctx.w, hull).cloned() else {
-        close_cancelled(ctx, record, "the hull is gone");
+        close_returning(ctx, record, &order, "the hull is gone");
         return;
     };
     let Ok((_, _, anatomy)) = unit_parts(ctx.w, hull) else {
-        close_cancelled(ctx, record, "the hull's design cannot be read");
+        close_returning(ctx, record, &order, "the hull's design cannot be read");
         return;
     };
     // Doc 36a P2-5: the work runs under the custody the order's right gives — a salvor's under
@@ -1908,7 +1968,12 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
     // instant the engine stamps. (The right itself is not re-read here: a grant is an owner read
     // the tick has no line to.)
     if order.right == Right::Salvor && salvor_custody(ctx, order.requester, hull).is_none() {
-        close_cancelled(ctx, record, "the requester's custody of the hull has ended");
+        close_returning(
+            ctx,
+            record,
+            &order,
+            "the requester's custody of the hull has ended",
+        );
         return;
     }
     let fitted = fitted_of(ctx, &order);
@@ -1933,12 +1998,21 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         )
         .map_err(|e| e.to_string())?;
         // Doc 49 unit CC.7 part 2: the condition plan carries cells and conditions only, so a
-        // space hull's rearmed magazines ride as their own op beside it.
-        let Some(record) = magazines::record_op(&before, &after)? else {
+        // space hull's rearmed magazines ride as their own op beside it. 48e review rounds:G4:
+        // and so does a repair's clearing of her space crits, which the work revoked on its own
+        // copy of the hull.
+        let mut records = Vec::new();
+        if let Some(record) = magazines::record_op(&before, &after)? {
+            records.push(record);
+        }
+        if let Some(revoke) = crits_cleared(&before, &after) {
+            records.push(revoke);
+        }
+        if records.is_empty() {
             return Ok(plan);
-        };
+        }
         let mut ops = plan.map_or_else(Vec::new, |plan| plan.ops().to_vec());
-        ops.push(record);
+        ops.extend(records);
         mush_tactics::UnitMutationPlan::new(
             ops,
             Some(before.revision()),
@@ -1950,9 +2024,10 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
     let plan = match plan {
         Ok(plan) => plan,
         Err(error) => {
-            close_cancelled(
+            close_returning(
                 ctx,
                 record,
+                &order,
                 &format!("the work could not be done ({error})"),
             );
             return;
@@ -1975,24 +2050,38 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         })
     });
     if !paid {
-        close_cancelled(ctx, record, "the facility could not take the fee");
+        close_returning(ctx, record, &order, "the facility could not take the fee");
         return;
     }
+    let mut record = record;
+    let mut landed = plan.is_none();
     if let Some(plan) = plan {
         if let Err(error) = mush_tactics::module::apply_plan(ctx, hull, &plan) {
             tracing::error!(
                 hull = hull.0, contract = order.contract, %error,
-                "tacsim: a paid bay order's work was refused by the unit; staff refund the fee and \
-                 repair by hand"
+                "tacsim: a paid bay order's work was refused by the unit; its goods go back to \
+                 the hold, and staff refund the fee and repair by hand"
             );
-        } else if let Some(book) = ctx
-            .w
-            .module_state_mut::<crate::space::tick::SpaceBubbleBook>()
-        {
-            book.derelicts.remove(&hull);
+            // 48e review rounds:G1: the drawn goods go back; the work was not written.
+            owe_return(ctx, &mut record, &order);
+        } else {
+            landed = true;
+            if let Some(book) = ctx
+                .w
+                .module_state_mut::<crate::space::tick::SpaceBubbleBook>()
+            {
+                book.derelicts.remove(&hull);
+            }
         }
     }
-    let mut record = record;
+    // Doc 48 cut EX.0: the draw's munitions left the hold into the hull (the census's `loaded`).
+    // Doc 49 unit CC.7 part 2: and the rounds bought from the workshop's stores with them.
+    // 48e review rounds:G1: counted once the work is written, not as the draw lands.
+    if landed && order.draw_act.is_some() {
+        let kg = crate::port::census::munitions_kg(ctx.w, &order.goods)
+            .saturating_add(crate::port::census::munitions_kg(ctx.w, &order.store_goods));
+        record.loaded_kg = record.loaded_kg.saturating_add(kg);
+    }
     if let Some(row) = record.order.as_mut() {
         row.status = OrderStatus::Done;
         row.closed_ic = Some(ctx.w.world_ic_now().at);
@@ -2054,17 +2143,14 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     };
     if landed >= owed.act {
         record.owed = None;
-        // Doc 48 cut EX.0: the draw's munitions left the hold as it landed (the census's `loaded`).
-        // Doc 49 unit CC.7 part 2: and the rounds bought from the workshop's stores with them.
-        if let OwedKind::Draw { goods, store, .. } = &owed.kind {
-            let kg = crate::port::census::munitions_kg(ctx.w, goods)
-                .saturating_add(crate::port::census::munitions_kg(ctx.w, store));
-            record.loaded_kg = record.loaded_kg.saturating_add(kg);
-        }
+        // The census's `loaded` counts a draw's munitions once its work is written
+        // ([`complete`], 48e review rounds:G1), not as it lands.
         put_bay_hull(ctx, &record);
         match &owed.kind {
             OwedKind::Draw { .. } => complete(ctx, hull),
-            OwedKind::Mint { why, lots, settle } => {
+            OwedKind::Mint {
+                why, lots, settle, ..
+            } => {
                 strip::land_mint(ctx, hull, owed.by, why, lots);
                 // Doc 39 cut IN.8: a workshop scrap's or a return's lots are the operator's,
                 // and its credit and shop bale land with them.
@@ -2095,6 +2181,17 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
                             .map(|l| lot_words(ctx.w, l))
                             .collect::<Vec<_>>()
                             .join(", ")
+                    ),
+                );
+            }
+            OwedKind::Return { .. } => {
+                ctx.out.sys_to_actor(
+                    owed.by,
+                    "tacsim",
+                    format!(
+                        "The goods drawn for the canceled order on #{} are back where they came \
+                         from.",
+                        hull.0
                     ),
                 );
             }

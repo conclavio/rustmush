@@ -240,11 +240,11 @@ impl TendWork {
                 ..
             } => (
                 Bale::default(),
+                // 48e review rounds:G3: `rounds` is whole units of the good, so the units
+                // drawn hold exactly the rounds loaded.
                 Some((
                     good.clone(),
-                    u64::try_from(*rounds)
-                        .unwrap_or(0)
-                        .div_ceil((*per_unit).max(1)),
+                    u64::try_from(*rounds).unwrap_or(0) / (*per_unit).max(1),
                 )),
             ),
         }
@@ -518,6 +518,14 @@ fn works(
                 let Some((good, per_unit)) = munitions_of(w, &spec, mount.as_str()) else {
                     continue;
                 };
+                // 48e review rounds:G3 (A-14: a reload conserves rounds): whole units of the
+                // good only, so a mount short by less than one waits rather than opening a box
+                // and losing the rest of it.
+                let per = i64::try_from(per_unit.max(1)).unwrap_or(i64::MAX);
+                let rounds = rounds / per * per;
+                if rounds <= 0 {
+                    continue;
+                }
                 out.push(TendWork::Rearm {
                     component: mount.as_str().to_owned(),
                     good,
@@ -1145,9 +1153,12 @@ fn work(
                 .copied()
                 .unwrap_or(0)
                 .saturating_mul(per_unit);
+            // 48e review rounds:G3: whole units only, of what the magazine lacks and the
+            // stores hold.
+            let per = i64::try_from(per_unit.max(1)).unwrap_or(i64::MAX);
             TendWork::Rearm {
                 component,
-                rounds: rounds.min(i64::try_from(held).unwrap_or(i64::MAX)),
+                rounds: rounds.min(i64::try_from(held).unwrap_or(i64::MAX)) / per * per,
                 good,
                 per_unit,
             }
@@ -1510,9 +1521,11 @@ mod tests {
             rounds: 250,
             per_unit: 100,
         };
+        // 48e review rounds:G3 (A-14): whole units of the mount's good, rounded down, so no box
+        // is opened and part-lost (the listing floors a rearm's rounds to whole units first).
         assert_eq!(
             rearm.need(None).1,
-            Some((CanonicalId::new("ammo_ball_762").expect("an id"), 3)),
+            Some((CanonicalId::new("ammo_ball_762").expect("an id"), 2)),
             "whole units of the mount's good"
         );
         // Through the bale: an unopened bale opens with a tonne of each; an open one draws

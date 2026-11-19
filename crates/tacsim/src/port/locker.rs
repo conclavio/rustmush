@@ -243,7 +243,8 @@ pub fn held_kg(ctx: &Ctx<'_>, vault: VaultId) -> u64 {
         .goods
         .iter()
         .map(|good| {
-            let units = crate::port_tick::read_pool(ctx, EndpointRef(vault), &good.id).unwrap_or(0);
+            // Doc 48e (48d C-03): a divisible good's lots in the locker pay rent too.
+            let units = crate::port_tick::read_held(ctx, EndpointRef(vault), &good.id).unwrap_or(0);
             good.mass_kg_per_unit().unwrap_or(0).saturating_mul(units)
         })
         .fold(0u64, u64::saturating_add)

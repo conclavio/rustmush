@@ -143,7 +143,11 @@ fn owe_mint(
     act: u32,
     vault: u64,
     why: &str,
-    (lots, settle): (Vec<LotMint>, Option<super::scrap::Settlement>),
+    (lots, rounds, settle): (
+        Vec<LotMint>,
+        Vec<act::GoodUnits>,
+        Option<super::scrap::Settlement>,
+    ),
 ) {
     record.acts = act;
     record.owed = Some(Box::new(OwedAct {
@@ -153,6 +157,7 @@ fn owe_mint(
         kind: OwedKind::Mint {
             why: why.to_owned(),
             lots,
+            rounds,
             settle: settle.map(Box::new),
         },
         tries: 0,
@@ -200,7 +205,7 @@ fn provenance(
 pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String> {
     let (record, facility) = ready(ctx, hull, Act::Strip)?;
     let vault = super::source_hold(ctx.w, hull, &facility)?;
-    let (before, _, anatomy) = super::unit_parts(ctx.w, hull)?;
+    let (before, spec, anatomy) = super::unit_parts(ctx.w, hull)?;
     let part = part.trim();
     let slot = before
         .components()
@@ -274,8 +279,62 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             vacated: None,
         });
     }
-    owe_mint(ctx, record, act_no, vault.0, "strip", (vec![row], None));
+    // 48e review rounds:G12 (A-14: salvage conserves rounds): the part's whole units of rounds
+    // come off with it, into the same hold.
+    let rounds = stripped_rounds(ctx.w, &before, &spec, &anatomy, &slot);
+    owe_mint(
+        ctx,
+        record,
+        act_no,
+        vault.0,
+        "strip",
+        (vec![row], rounds, None),
+    );
     Ok(lot)
+}
+
+/// **The rounds a stripped `slot` holds, as whole units of its munitions good** (48e review
+/// rounds:G12): none for a part that is no mount, a beam (its charge is no good), or a
+/// magazine holding less than one unit.
+fn stripped_rounds(
+    w: &mush_core::World,
+    unit: &mush_tactics::TacticalUnit,
+    spec: &crate::definitions::UnitSpec,
+    anatomy: &mush_tactics::field_ops::UnitAnatomyProfile,
+    slot: &mush_tactics::unit::ComponentId,
+) -> Vec<act::GoodUnits> {
+    let (Some(ammo), true) = (
+        &anatomy.weapon_ammo_cell,
+        anatomy.weapon_components.contains(slot),
+    ) else {
+        return Vec::new();
+    };
+    let Some(store) = w.module_state::<crate::store::TacsimStore>() else {
+        return Vec::new();
+    };
+    let Some(goods) = store.goods() else {
+        return Vec::new();
+    };
+    let Some(good) =
+        super::jobs::munitions_good_of(spec, store.definitions(), goods, slot).cloned()
+    else {
+        return Vec::new();
+    };
+    let per = goods
+        .good(&good)
+        .and_then(|def| def.munitions.as_ref())
+        .map_or(1, |m| u64::from(m.rounds_per_unit.max(1)));
+    let held = unit
+        .cell(&mush_tactics::CellAddr::Component {
+            component: slot.clone(),
+            cell: ammo.clone(),
+        })
+        .map_or(0, |cell| u64::try_from(cell.current).unwrap_or(0));
+    let units = held / per;
+    if units == 0 {
+        return Vec::new();
+    }
+    vec![act::GoodUnits { good, units }]
 }
 
 /// What a scrapping yields.
@@ -407,7 +466,16 @@ fn settle_or_owe(
         },
     );
     let vault = settle.vault;
-    owe_mint(ctx, record, act_no, vault, why, (lots, Some(settle)));
+    // 48e review rounds:G12: a scrapped hull's rounds are not carried into the scrap vault
+    // (the workshop's buy-back reads it); named as a gap in the 48e L6 PR.
+    owe_mint(
+        ctx,
+        record,
+        act_no,
+        vault,
+        why,
+        (lots, Vec::new(), Some(settle)),
+    );
 }
 
 /// **`+bay/scrap`** (Q-36-39; doc 39 cut IN.8, §4.6): the title holder breaks a berthed hull up

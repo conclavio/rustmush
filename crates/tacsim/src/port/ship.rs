@@ -852,8 +852,9 @@ fn with_readings<T>(
         .and_then(TacsimStore::goods)
         .ok_or_else(|| "the goods table is not loaded".to_owned())?;
     let vault = hold_vault(ctx.w, view);
+    // Doc 48e (48c #6): the hold shows what it holds, a divisible good's lots too.
     let read = |endpoint: EndpointRef, good: &CanonicalId| {
-        crate::port_tick::read_pool(ctx, endpoint, good)
+        crate::port_tick::read_held(ctx, endpoint, good)
     };
     let readings = readings_with(goods, compartments(view), vault, &read)?;
     render(goods, &readings)
@@ -1383,7 +1384,7 @@ impl EventHook for ShipLook {
         if !shown.is_empty() {
             let label = gauges::room_instrument(&tid);
             let read = |endpoint: EndpointRef, good: &CanonicalId| {
-                crate::port_tick::read_pool_in(ctx, endpoint, good)
+                crate::port_tick::read_held_in(ctx, endpoint, good)
             };
             // Doc 18 cut IC14 row 54: the tank's rooms (not the manifest slate) carry
             // the burn gauge; an unreadable sailing plan shows no burn line at all.
@@ -1834,7 +1835,7 @@ pub(crate) fn hull_stowage_json(
 ) -> Option<serde_json::Value> {
     let goods = store.goods()?;
     let read = |endpoint: EndpointRef, good: &CanonicalId| {
-        crate::port_tick::read_pool_in(ctx, endpoint, good)
+        crate::port_tick::read_held_in(ctx, endpoint, good)
     };
     let readings = readings_with(goods, compartments(view), hold_vault(w, view), &read).ok()?;
     let mass_id = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;

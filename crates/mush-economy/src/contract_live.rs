@@ -7305,6 +7305,32 @@ pub fn cancel_retrieval(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, Contr
     Ok(live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()))
 }
 
+/// **Lapse a job now** (48e services:G26): the job's expiry, run when its host's performance
+/// window ends before the contract's deadline. A bound job with a bond forfeits by its
+/// `on_expiry` (the bond, with the fee, to the poster's fee account, Q-48-13); one with nothing
+/// to forfeit refunds, as a deadline does. Answers whether the contract is terminal afterwards.
+///
+/// # Errors
+///
+/// [`ContractError::Infeasible`] for a frozen economy or a contract that is not a job.
+pub fn lapse_job(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, ContractError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    let c = live_contract(ctx, id)
+        .filter(|c| job_shape(c).is_some())
+        .ok_or(ContractError::Infeasible("no such job"))?;
+    if c.state.is_terminal() {
+        return Ok(true);
+    }
+    expire(ctx, id);
+    Ok(live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()))
+}
+
 /// **Cancel a job** (doc 48 cut EX.6): [`cancel_retrieval`] for any job ([`job_shape`]): the
 /// ordinary unwind, every escrow back to whoever placed it (the fee to the poster, a bond to
 /// its acceptor). The host decides when a job may be cancelled: before anyone takes it, or

@@ -67,6 +67,9 @@ pub const BID_WITHDRAWN: &str = "Withdrew bid #{listing}; what it still held is 
 pub const MINE_HEAD: &str = "Your listings:";
 /// `+market/mine` with nothing listed.
 pub const MINE_NONE: &str = "You have nothing listed.";
+/// `+market/mine`'s heading over an organization's listings the actor acts for (doc 48e,
+/// exchange G29): `{org}`.
+pub const MINE_AS_ORG: &str = "Listed as {org}:";
 /// `+market/mine`'s count line: `{n}`, `{cap}`.
 pub const MINE_COUNT: &str = "You hold {n} of the {cap} listings a seller may.";
 /// The existence-hiding answer for a lot the actor may not take, or that does not exist.
@@ -96,8 +99,16 @@ pub const PRIVATE_TO_OTHER: &str =
     "That offer is made to someone else, so you cannot take it up. Nothing was charged.";
 /// The actor's own listing, quoted or sold into: `{listing}`.
 pub const OWN_LISTING: &str = "That is your own listing; +market/withdraw {listing} takes it down.";
-/// A second bid for one good: `{listing}`.
-pub const BID_TWICE: &str = "You already bid for that good (#{listing}); withdraw that bid first.";
+/// A lot ask posted while the actor's last submission is still in flight (doc 48e, exchange
+/// G18): the hold could not be staged, so nothing is charged.
+pub const POST_BUSY: &str =
+    "You have an order still being handled; try again in a moment. Nothing was listed.";
+/// A lot ask posted while the engine's submit queue is full (doc 48e, exchange G18).
+pub const POST_QUEUE_FULL: &str =
+    "The exchange is busy right now; try again in a moment. Nothing was listed.";
+/// A second bid for one good at one venue: `{listing}`.
+pub const BID_TWICE: &str =
+    "You already bid for that good here (#{listing}); withdraw that bid first.";
 /// A bulk bid into a governed hold.
 pub const BID_INTO_HOLD: &str = "A bid for bulk goods receives into a vault, not a hold: goods are poured into a hold only \
      from its port's own counters.";
@@ -228,7 +239,15 @@ fn check_caps(w: &World, seller: &PrincipalId) -> Result<(), MarketError> {
     let Some(store) = w.module_state::<MarketStore>() else {
         return Err(MarketError::bad("The market is full; try later."));
     };
-    if store.listings_of_seller(seller) >= MAX_LISTINGS_PER_SELLER {
+    // Doc 48e (exchange G2): a seller holds at most 32 *open* listings (Q-48-44). A lapsed one
+    // (a sold lot's, kept until its Consume lands; an expired one, kept until its hold is
+    // released) is open to nobody, so it does not count; `MAX_LISTINGS` still bounds them all.
+    let now = w.now();
+    let open = store
+        .personal_listings_of(seller)
+        .filter(|l| !crate::api::listing_lapsed(l, now))
+        .count();
+    if open >= MAX_LISTINGS_PER_SELLER {
         return Err(MarketError::bad(
             SELLER_FULL.replace("{cap}", &MAX_LISTINGS_PER_SELLER.to_string()),
         ));
@@ -354,6 +373,14 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
             .map_err(|r| MarketError::bad(r.line))?;
     }
     check_caps(ctx.w, &spec.seller)?;
+    // Doc 48e (exchange G18; 48d H-11): the hold is staged as the actor's submission, so one
+    // already in flight this step, or a full engine queue, refuses before the fee is charged.
+    if ctx.authoritative_pending(ctx.actor) {
+        return Err(MarketError::bad(POST_BUSY));
+    }
+    if ctx.authoritative_queue_full() {
+        return Err(MarketError::bad(POST_QUEUE_FULL));
+    }
     let ttl = spec.ttl_secs.clamp(60, crate::api::MAX_LISTING_TTL_SECS);
     let now = ctx.w.now();
     let Some(id) = ctx
@@ -440,7 +467,7 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
 /// **Give back a listing fee whose listing was not written** (doc 48 cut EX.4): the operator
 /// pays `fee` back to `account` under `market.listing_fee.refund/<listing>`. Logged when refused;
 /// the fee then stands as a staff matter.
-fn refund_listing_fee(
+pub(crate) fn refund_listing_fee(
     ctx: &mut Ctx<'_>,
     market: &MarketId,
     account: AccountId,
@@ -464,6 +491,34 @@ fn refund_listing_fee(
     plan.description = format!("market listing #{listing} fee refunded");
     if let Err(error) = mush_economy::post(ctx, &plan) {
         tracing::error!(listing = listing.0, %error, "market: a listing fee could not be refunded");
+    }
+}
+
+/// **Give back the fee a listing paid, read from its own posting** (doc 48e, exchange G18;
+/// 48d H-11): the transaction keyed `market.listing_fee/<listing>` names the payer and the
+/// amount, so the refund is exactly what was charged (nothing, when nothing was). Keyed, so a
+/// second call pays nothing more.
+pub(crate) fn refund_posted_fee(ctx: &mut Ctx<'_>, market: &MarketId, listing: ListingId) {
+    let key = mush_economy::IdempotencyKey::new(
+        smol_str::SmolStr::new_static("market.listing_fee"),
+        smol_str::SmolStr::new(listing.0.to_string()),
+    );
+    let paid = ctx.w.module_state::<EconomyStore>().and_then(|store| {
+        let tx = store.snapshot().idempotency(&key)?.transaction;
+        store
+            .transaction(tx)?
+            .lines
+            .iter()
+            .find(|line| line.delta.minor() < 0)
+            .map(|line| {
+                (
+                    line.account,
+                    Amount::from_minor(line.delta.minor().saturating_neg()),
+                )
+            })
+    });
+    if let Some((account, fee)) = paid {
+        refund_listing_fee(ctx, market, account, listing, fee);
     }
 }
 
@@ -654,7 +709,7 @@ pub fn bid_purpose(listing: ListingId) -> mush_economy::HoldPurpose {
 /// lot-represented or whose code is not a commodity id; a receiving vault the actor may not
 /// take from; a non-positive price, an out-of-range quantity, a total that overflows; a
 /// bulk good received into a governed hold ([`BID_INTO_HOLD`]); the venue gate; a second
-/// live bid of this bidder for this good; a private bid naming nobody else; no account in
+/// live bid of this bidder for this good at this venue; a private bid naming nobody else; no account in
 /// the venue's currency; the caps. The hold's post is the last fallible step; the listing
 /// is written only once it is held.
 ///
@@ -706,10 +761,20 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
             crate::module::Presence::Here,
         )
         .map_err(|r| MarketError::bad(r.line))?;
+        // Doc 48e (exchange G15): the destination takes delivery at this venue at all.
+        gate.receives_at(ctx.w, &spec.market, spec.into)
+            .map_err(|r| MarketError::bad(r.line))?;
     }
+    // Doc 48e (exchange G22; 48d M-02): one live bid for a good at each venue, so a bidder
+    // bids at two ports; a lapsed bid waiting on the sweep is no longer live.
+    let now = ctx.w.now();
     let twice = ctx.w.module_state::<MarketStore>().and_then(|s| {
         s.personal_listings_of(&spec.bidder)
-            .find(|l| matches!(&l.source, Supply::Wanted { commodity: c, .. } if c.0 == commodity))
+            .find(|l| {
+                l.market == spec.market
+                    && !crate::api::listing_lapsed(l, now)
+                    && matches!(&l.source, Supply::Wanted { commodity: c, .. } if c.0 == commodity)
+            })
             .map(|l| l.id)
     });
     if let Some(other) = twice {
@@ -768,7 +833,13 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
             fee_lines,
         )
     };
-    let rendered = crate::commands::money(ctx.w, Some(&spec.instrument), total);
+    // Doc 48e (exchange G28; 48d Low): the total the account must cover is the escrow and
+    // the listing fee posted with it.
+    let covered = match fee {
+        Some((fee, _)) => Amount::from_minor(total.minor().saturating_add(fee.minor().max(0))),
+        None => total,
+    };
+    let rendered = crate::commands::money(ctx.w, Some(&spec.instrument), covered);
     match mush_economy::post(ctx, &plan) {
         Ok(mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_)) => {}
         Ok(mush_economy::PostOutcome::NeedsApproval(_)) => {
@@ -970,7 +1041,7 @@ impl mush_economy::StandingAcceptance for ListingAcceptance {
             || crate::api::listing_lapsed(listing, w.now())
             || listing.revision != quote.observed.listing
             || quote.price != listing.price
-            || quote.quantity > listing.quantity
+            || !crate::trade::sells_quantity(listing, quote.quantity)
         {
             return false;
         }
@@ -1000,9 +1071,22 @@ impl mush_economy::StandingAcceptance for ListingAcceptance {
                 mush_economy::ContractState::Draft => against.is_none(),
                 _ => against.is_some() && against == listing.escrow,
             };
+            // Doc 48e (exchange G26; 48d M-07): every outcome pays exactly what the market
+            // builds for a sale into a person's bid: the seller the rest, then the venue's cut
+            // and levy and the quote's frozen proceeds cuts.
+            let fee_rows = crate::fees::bid_fee_rows(w, listing, total);
+            let outcomes = &contract.consent.terms.outcomes;
+            let pays_as_built = !outcomes.is_empty()
+                && outcomes.iter().all(|o| {
+                    o.payouts.first().is_some_and(|first| {
+                        crate::fees::bid_sale_payouts(first.to, total, &fee_rows, &quote.cuts)
+                            .is_some_and(|expected| o.payouts == expected)
+                    })
+                });
             quote.buyer == *party
                 && private_ok
                 && backing_ok
+                && pays_as_built
                 && listing
                     .account
                     .is_some_and(|account| owed(party) == vec![(account, total)])
