@@ -123,7 +123,8 @@ standing at it.
 
 Goods in a Co-op chartered hold may go on a personal ask. When they sell, the
 Co-op takes its share of the margin over its reference price, as it does on a
-sale into a house's bid, and you are paid the rest.
+sale into a house's bid, and you are paid the rest. The pilot lists them as
+themself, never `as=<org>`.
 
 ## Fees
 

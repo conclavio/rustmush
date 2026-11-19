@@ -1032,6 +1032,9 @@ pub mod venue {
     pub const MOVE_CHARTER_CARGO: &str = "chartered hold is sold from there";
     /// `tacsim::port::market::MOVE_HULL_ON_SALE`'s tail (doc 48e): a listed hull takes nothing.
     pub const MOVE_HULL_ON_SALE: &str = " is for sale, so nothing goes into her hold.";
+    /// `tacsim::port::proceeds::CHARTER_ASK_AS_ORG`'s tail (doc 48e): charter cargo is listed by
+    /// its pilot.
+    pub const CHARTER_ASK_AS_ORG: &str = "chartered hold is listed by its pilot alone";
     /// `tacsim::port::market::MOVE_INTO_SCRAP` (doc 48e).
     pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
     /// `tacsim::port::locker::LOCKER_OPENED`'s tail: a locker opened.
@@ -1209,6 +1212,12 @@ mod tests {
             use mush_market as game;
             rows!("";
                 WHOLE_LOT,
+            )
+        });
+        rows.extend({
+            use tacsim::port::proceeds as game;
+            rows!("";
+                CHARTER_ASK_AS_ORG,
             )
         });
         rows
