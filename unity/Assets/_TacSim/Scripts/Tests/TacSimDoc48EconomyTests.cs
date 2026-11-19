@@ -329,14 +329,27 @@ namespace TacSim.Tests
                 Assert.AreEqual(string.Empty, hud.GetModalInputValue());
 
                 // 2. `U-H31`: `ShowServerRequestModal` supports `RequestKind::Text` / `Target` input AND sends `"__cancel__"` on close.
+                //    `MushProtocol.ParseRequest` already renders & escapes RichText spans once; modal must preserve rendered markup without double-escaping.
                 var choices = new List<(ulong id, string choice)>();
                 hud.OnRequestChoiceSubmitted += (r, c) => choices.Add((r.Id, c));
 
-                var textReq = new MushServerRequest { Id = 10, Epoch = "e1", Kind = "text", Prompt = "Enter memo for <color=#ff0000><size=99>HACK</size></color>:" };
+                var textReq = MushProtocol.ParseRequest(JsonNode.Parse(@"{
+                    ""epoch"": ""e1"",
+                    ""id"": 10,
+                    ""kind"": ""text"",
+                    ""prompt"": {
+                        ""spans"": [
+                            { ""text"": ""Enter memo for "", ""style"": { ""bold"": true, ""fg"": ""#66EEFF"" } },
+                            { ""text"": ""<color=#ff0000><size=99>HACK</size></color>:"" }
+                        ]
+                    }
+                }"));
                 hud.ShowServerRequestModal(textReq);
                 var modalBody = typeof(TacSimHudController).GetField("_modalBodyText", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(hud) as Text;
-                StringAssert.DoesNotContain("<color=#ff0000>", modalBody.text, "Server request prompt must escape Unity rich-text tags (U-M01)");
-                StringAssert.DoesNotContain("<size=99>", modalBody.text, "Server request prompt must escape Unity rich-text tags (U-M01)");
+                StringAssert.Contains("<color=#66EEFF><b>Enter memo for </b></color>", modalBody.text, "Styled protocol prompt markup must render without double-escaping");
+                StringAssert.DoesNotContain("‹color=#66EEFF›", modalBody.text, "Styled protocol markup must not be double-escaped");
+                StringAssert.DoesNotContain("<color=#ff0000>", modalBody.text, "Untrusted span text must escape Unity rich-text tags (U-M01)");
+                StringAssert.DoesNotContain("<size=99>", modalBody.text, "Untrusted span text must escape Unity rich-text tags (U-M01)");
                 StringAssert.Contains("HACK", modalBody.text);
                 var npcInput = typeof(TacSimHudController).GetField("_npcSayInput", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(hud) as InputField;
                 Assert.IsTrue(npcInput.gameObject.activeSelf, "Text request must enable modal input field");
@@ -438,6 +451,100 @@ namespace TacSim.Tests
                 StringAssert.DoesNotContain("Stale previous character line", commsTxt.text);
                 StringAssert.Contains("[CONNECTED] Attached as Vanguard", commsTxt.text);
                 Assert.IsNull(hud.ActiveHullRef);
+            }
+            finally
+            {
+                Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void HudServerRequestModal_ConfirmCancelDistinctFromDecline_AndStyledPromptSingleEscape()
+        {
+            var rootGo = new GameObject("TestHudServerRequests");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+
+                var submitted = new List<(ulong id, string kind, string choice)>();
+                hud.OnRequestChoiceSubmitted += (r, c) => submitted.Add((r.Id, r.Kind, c));
+
+                // 1. Styled confirm prompt: single escaping pass preserves protocol `<color>`/`<b>` tags while escaping untrusted text.
+                var confirmReq = MushProtocol.ParseRequest(JsonNode.Parse(@"{
+                    ""epoch"": ""ep-42"",
+                    ""id"": 77,
+                    ""kind"": ""confirm"",
+                    ""prompt"": {
+                        ""spans"": [
+                            { ""text"": ""CONSENT CHECK: "", ""tag"": ""alert"", ""style"": { ""bold"": true } },
+                            { ""text"": ""Allow <size=99><b>inject</b></size> scene turn?"" }
+                        ]
+                    }
+                }"));
+                Assert.IsNotNull(confirmReq);
+
+                hud.ShowServerRequestModal(confirmReq);
+                var modalBody = typeof(TacSimHudController).GetField("_modalBodyText", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(hud) as Text;
+                Assert.IsNotNull(modalBody);
+                StringAssert.Contains("<color=#FF7766><b>CONSENT CHECK: </b></color>", modalBody.text);
+                StringAssert.DoesNotContain("‹color=#FF7766›", modalBody.text);
+                StringAssert.DoesNotContain("<size=99>", modalBody.text);
+                StringAssert.Contains("‹size=99›‹b›inject‹/b›‹/size›", modalBody.text);
+
+                // Plain-string prompt with untrusted tags is also escaped once by ParseRequest.
+                var plainReq = MushProtocol.ParseRequest(JsonNode.Parse(@"{
+                    ""epoch"": ""ep-42"",
+                    ""id"": 78,
+                    ""kind"": ""confirm"",
+                    ""prompt"": ""Proceed with <color=red>raw</color>?""
+                }"));
+                hud.ShowServerRequestModal(plainReq);
+                StringAssert.DoesNotContain("<color=red>", modalBody.text);
+                StringAssert.Contains("‹color=red›raw‹/color›", modalBody.text);
+                hud.CloseDetailModal(cancelServerRequest: false);
+
+                // 2. Confirm modal paths: Confirm -> "true", Decline/No -> "false", Close/Esc/CANCEL -> "__cancel__" (independent of "false").
+                hud.ShowServerRequestModal(confirmReq);
+                var confirmBtn = FindButton(rootGo.transform, "Confirm");
+                Assert.IsNotNull(confirmBtn);
+                confirmBtn.onClick.Invoke();
+                Assert.AreEqual(1, submitted.Count);
+                Assert.AreEqual((77UL, "confirm", "true"), submitted[0]);
+
+                // Explicit No/Decline emits "false" (Confirm(false) disagreement).
+                hud.ShowServerRequestModal(confirmReq);
+                var declineBtn = FindButton(rootGo.transform, "Decline") ?? FindButton(rootGo.transform, "No");
+                Assert.IsNotNull(declineBtn, "Confirm modal must provide an explicit Decline/No button distinct from Cancel");
+                declineBtn.onClick.Invoke();
+                Assert.AreEqual(2, submitted.Count);
+                Assert.AreEqual((77UL, "confirm", "false"), submitted[1]);
+
+                // Clicking CLOSE [ESC] emits explicit "__cancel__" (NOT "false").
+                hud.ShowServerRequestModal(confirmReq);
+                var modalPanel = FindPath(rootGo.transform, "TacSimCanvas/GameplayHud/ModalInspector");
+                Assert.IsNotNull(modalPanel);
+                var closeBtn = FindButton(modalPanel, "CLOSE [ESC]");
+                Assert.IsNotNull(closeBtn);
+                closeBtn.onClick.Invoke();
+                Assert.AreEqual(3, submitted.Count);
+                Assert.AreEqual((77UL, "confirm", "__cancel__"), submitted[2]);
+
+                // Pressing Escape (TryCloseTopmostModal) emits explicit "__cancel__" (NOT "false").
+                hud.ShowServerRequestModal(confirmReq);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.AreEqual(4, submitted.Count);
+                Assert.AreEqual((77UL, "confirm", "__cancel__"), submitted[3]);
+
+                // Clicking modal CANCEL button emits explicit "__cancel__" once, and repeated CloseDetailModal does not double-emit.
+                hud.ShowServerRequestModal(confirmReq);
+                var cancelBtn = FindButton(modalPanel, "CANCEL");
+                Assert.IsNotNull(cancelBtn);
+                cancelBtn.onClick.Invoke();
+                hud.CloseDetailModal(cancelServerRequest: true);
+                Assert.AreEqual(5, submitted.Count);
+                Assert.AreEqual((77UL, "confirm", "__cancel__"), submitted[4]);
             }
             finally
             {

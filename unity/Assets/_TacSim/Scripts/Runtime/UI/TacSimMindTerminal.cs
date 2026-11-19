@@ -214,11 +214,10 @@ namespace TacSim.UI
         private InputField _traceUnitInput;
 
         private bool _suppressSourceDirtyCallback;
+        private int _draftSessionGeneration;
+        private int _draftBaseGeneration;
         private int _localDraftEditVersion;
         private ulong _latestReadRequestId;
-        private bool _pendingCheckAfterReplace;
-        private bool _pendingSaveAfterReplace;
-        private string _pendingSaveNotes = string.Empty;
         private int _followingTraceUnitId;
 
         private readonly List<string> _libraryNames = new List<string>();
@@ -243,7 +242,10 @@ namespace TacSim.UI
         {
             public PendingMindOp Op;
             public string TargetName;
+            public int DraftSessionGenerationAtSend;
+            public int DraftBaseGenerationAtSend;
             public int DraftEditVersionAtSend;
+            public bool AllowDiscardDirty;
             public bool ChainCheckAfterReplace;
             public bool ChainSaveAfterReplace;
             public string PendingSaveNotes;
@@ -329,10 +331,9 @@ namespace TacSim.UI
             DisarmConfirm();
             _followingTraceUnitId = 0;
             _pendingRequests.Clear();
-            _pendingCheckAfterReplace = false;
-            _pendingSaveAfterReplace = false;
-            _pendingSaveNotes = string.Empty;
             _latestReadRequestId = 0;
+            _draftSessionGeneration = 0;
+            _draftBaseGeneration = 0;
             _localDraftEditVersion = 0;
 
             MarketPage = null;
@@ -842,11 +843,6 @@ namespace TacSim.UI
 
                 case "error":
                 {
-                    if (pending == null || pending.Op == PendingMindOp.Replace)
-                    {
-                        _pendingCheckAfterReplace = false;
-                        _pendingSaveAfterReplace = false;
-                    }
                     string code = res.Str("code", "error");
                     string message = res.Str("message", "Request failed.");
                     if (pending != null && pending.Op == PendingMindOp.Save)
@@ -890,7 +886,11 @@ namespace TacSim.UI
                     if (IsDraftDirty)
                     {
                         bool userEditedSinceReadSent = pending != null && _localDraftEditVersion != pending.DraftEditVersionAtSend;
-                        if (pending == null || pending.Op != PendingMindOp.Read || userEditedSinceReadSent)
+                        bool allowOverwriteDirty = pending != null &&
+                            pending.Op == PendingMindOp.Read &&
+                            pending.AllowDiscardDirty &&
+                            !userEditedSinceReadSent;
+                        if (!allowOverwriteDirty)
                         {
                             SetStatus("Ignored out-of-order read to preserve unsaved local Rhai edits.");
                             break;
@@ -901,6 +901,9 @@ namespace TacSim.UI
                     LoadedDraftBase = res["base"] != null && !res["base"].IsNull ? res["base"].Clone() : null;
                     LoadedDraft = res["draft"] != null && !res["draft"].IsNull ? res["draft"].Clone() : null;
                     IsDraftDirty = false;
+                    _draftSessionGeneration++;
+                    _draftBaseGeneration++;
+                    _localDraftEditVersion++;
                     _lastDiagnostics.Clear();
                     _lastDiagnostics.AddRange(DecodeDiagnostics(res["diagnostics"]));
                     _lastReports.Clear();
@@ -922,16 +925,28 @@ namespace TacSim.UI
 
                 case "edited":
                 {
-                    string editedName = res.Str("name", LoadedMindName);
-                    LoadedMindName = editedName;
-                    if (res["base"] != null && !res["base"].IsNull)
-                        LoadedDraftBase = res["base"].Clone();
-
                     if (pending != null && pending.Op == PendingMindOp.Create)
                     {
+                        string createdName = res.Str("name", pending.TargetName);
+                        bool switchedOrEditedDuringCreate =
+                            pending.DraftSessionGenerationAtSend != _draftSessionGeneration ||
+                            (IsDraftDirty && pending.DraftEditVersionAtSend != _localDraftEditVersion);
+                        if (switchedOrEditedDuringCreate)
+                        {
+                            SetStatus($"Created '{createdName}' in background; kept active draft '{LoadedMindName}'.");
+                            RequestLibraryList();
+                            RefreshWorkshopPane();
+                            break;
+                        }
+
                         // Reset stale previous draft immediately so new `base` is never paired with old `LoadedDraft` (`U-H28`).
+                        LoadedMindName = createdName;
+                        LoadedDraftBase = res["base"] != null && !res["base"].IsNull ? res["base"].Clone() : null;
                         LoadedDraft = null;
                         IsDraftDirty = false;
+                        _draftSessionGeneration++;
+                        _draftBaseGeneration++;
+                        _localDraftEditVersion++;
                         _lastDiagnostics.Clear();
                         _lastReports.Clear();
                         if (_rhaiSourceInput != null)
@@ -941,22 +956,46 @@ namespace TacSim.UI
                             _suppressSourceDirtyCallback = false;
                             _rhaiSourceInput.interactable = false;
                         }
-                        SetStatus($"Created '{editedName}'; loading working copy...");
-                        RequestReadMind(editedName);
+                        SetStatus($"Created '{createdName}'; loading working copy...");
+                        RequestReadMind(createdName);
                         RequestLibraryList();
                         RefreshWorkshopPane();
                         break;
                     }
 
+                    string editedName = res.Str("name", pending != null ? pending.TargetName : string.Empty);
+                    bool matchesActiveDraft =
+                        pending != null &&
+                        pending.Op == PendingMindOp.Replace &&
+                        !string.IsNullOrEmpty(LoadedMindName) &&
+                        string.Equals(pending.TargetName, LoadedMindName, StringComparison.OrdinalIgnoreCase) &&
+                        (string.IsNullOrEmpty(editedName) || string.Equals(editedName, LoadedMindName, StringComparison.OrdinalIgnoreCase)) &&
+                        pending.DraftSessionGenerationAtSend == _draftSessionGeneration &&
+                        pending.DraftBaseGenerationAtSend == _draftBaseGeneration;
+
+                    if (!matchesActiveDraft)
+                    {
+                        string targetLabel = !string.IsNullOrEmpty(editedName)
+                            ? editedName
+                            : (pending != null && !string.IsNullOrEmpty(pending.TargetName) ? pending.TargetName : "unknown");
+                        SetStatus($"Ignored late edit reply for '{targetLabel}' (active draft is '{LoadedMindName}').");
+                        RequestLibraryList();
+                        break;
+                    }
+
+                    if (res["base"] != null && !res["base"].IsNull)
+                    {
+                        LoadedDraftBase = res["base"].Clone();
+                        _draftBaseGeneration++;
+                    }
+
                     // Preserve dirty flag if the player typed additional edits while `replace` was in flight (`U-H28`).
-                    bool editedWhileInFlight = pending != null && _localDraftEditVersion != pending.DraftEditVersionAtSend;
+                    bool editedWhileInFlight = _localDraftEditVersion != pending.DraftEditVersionAtSend;
                     IsDraftDirty = editedWhileInFlight;
 
-                    bool chainCheck = (pending != null && pending.ChainCheckAfterReplace) || (pending == null && _pendingCheckAfterReplace);
-                    bool chainSave = (pending != null && pending.ChainSaveAfterReplace) || (pending == null && _pendingSaveAfterReplace);
-                    string saveNotes = pending != null ? pending.PendingSaveNotes : _pendingSaveNotes;
-                    _pendingCheckAfterReplace = false;
-                    _pendingSaveAfterReplace = false;
+                    bool chainCheck = pending.ChainCheckAfterReplace;
+                    bool chainSave = pending.ChainSaveAfterReplace;
+                    string saveNotes = pending.PendingSaveNotes;
 
                     if (chainCheck)
                     {
@@ -974,9 +1013,9 @@ namespace TacSim.UI
                     }
                     else
                     {
-                        SetStatus($"Updated '{editedName}'.");
+                        SetStatus($"Updated '{LoadedMindName}'.");
                         if (!IsDraftDirty)
-                            RequestReadMind(editedName);
+                            RequestReadMind(LoadedMindName);
                         RequestLibraryList();
                     }
                     RefreshWorkshopPane();
@@ -985,12 +1024,30 @@ namespace TacSim.UI
 
                 case "checked":
                 {
+                    bool matchesActiveDraft =
+                        pending != null &&
+                        (pending.Op == PendingMindOp.Check || pending.Op == PendingMindOp.Save) &&
+                        !string.IsNullOrEmpty(LoadedMindName) &&
+                        string.Equals(pending.TargetName, LoadedMindName, StringComparison.OrdinalIgnoreCase) &&
+                        pending.DraftSessionGenerationAtSend == _draftSessionGeneration &&
+                        pending.DraftBaseGenerationAtSend == _draftBaseGeneration &&
+                        pending.DraftEditVersionAtSend == _localDraftEditVersion;
+
+                    if (!matchesActiveDraft)
+                    {
+                        string targetLabel = pending != null && !string.IsNullOrEmpty(pending.TargetName)
+                            ? $" for '{pending.TargetName}'"
+                            : string.Empty;
+                        SetStatus($"Ignored stale check result{targetLabel} (active draft changed).");
+                        break;
+                    }
+
                     _lastDiagnostics.Clear();
                     _lastDiagnostics.AddRange(DecodeDiagnostics(res["diagnostics"]));
                     _lastReports.Clear();
                     _lastReports.AddRange(DecodePictureReports(res["reports"]));
 
-                    bool wasSave = pending != null && pending.Op == PendingMindOp.Save;
+                    bool wasSave = pending.Op == PendingMindOp.Save;
                     int faultOrViolationCount = 0;
                     for (int i = 0; i < _lastReports.Count; i++)
                     {
@@ -1022,8 +1079,30 @@ namespace TacSim.UI
                     long rev = res.Long("revision", 1);
                     string dig = res.Str("digest", string.Empty);
                     if (dig.Length > 12) dig = dig.Substring(0, 12);
+
+                    bool matchesActiveDraft =
+                        pending != null &&
+                        pending.Op == PendingMindOp.Save &&
+                        !string.IsNullOrEmpty(LoadedMindName) &&
+                        string.Equals(pending.TargetName, LoadedMindName, StringComparison.OrdinalIgnoreCase) &&
+                        pending.DraftSessionGenerationAtSend == _draftSessionGeneration &&
+                        pending.DraftBaseGenerationAtSend == _draftBaseGeneration &&
+                        pending.DraftEditVersionAtSend == _localDraftEditVersion;
+
+                    if (!matchesActiveDraft)
+                    {
+                        string targetLabel = pending != null && !string.IsNullOrEmpty(pending.TargetName)
+                            ? $" for '{pending.TargetName}'"
+                            : string.Empty;
+                        SetStatus($"Saved revision r{rev} ({dig}){targetLabel} in background; active draft unchanged.");
+                        break;
+                    }
+
                     if (res["base"] != null && !res["base"].IsNull)
+                    {
                         LoadedDraftBase = res["base"].Clone();
+                        _draftBaseGeneration++;
+                    }
                     _lastDiagnostics.Clear();
                     SetStatus($"Saved revision r{rev} ({dig}). Existing hull seals keep their earlier revision.");
                     RefreshWorkshopPane();
@@ -1066,6 +1145,9 @@ namespace TacSim.UI
                         LoadedDraftBase = null;
                         LoadedDraft = null;
                         IsDraftDirty = false;
+                        _draftSessionGeneration++;
+                        _draftBaseGeneration++;
+                        _localDraftEditVersion++;
                         if (_rhaiSourceInput != null)
                         {
                             _suppressSourceDirtyCallback = true;
@@ -1116,7 +1198,7 @@ namespace TacSim.UI
         }
 
         private ulong SendTrackedMindInvoke(JsonNode req, PendingMindOp op, string targetName = null,
-            bool chainCheck = false, bool chainSave = false, string saveNotes = null)
+            bool chainCheck = false, bool chainSave = false, string saveNotes = null, bool allowDiscardDirty = false)
         {
             if (_ws == null) return 0;
             ulong reqId = _ws.SendMindInvoke(req);
@@ -1126,7 +1208,10 @@ namespace TacSim.UI
                 {
                     Op = op,
                     TargetName = targetName ?? LoadedMindName,
+                    DraftSessionGenerationAtSend = _draftSessionGeneration,
+                    DraftBaseGenerationAtSend = _draftBaseGeneration,
                     DraftEditVersionAtSend = _localDraftEditVersion,
+                    AllowDiscardDirty = allowDiscardDirty,
                     ChainCheckAfterReplace = chainCheck,
                     ChainSaveAfterReplace = chainSave,
                     PendingSaveNotes = saveNotes ?? string.Empty
@@ -1236,7 +1321,7 @@ namespace TacSim.UI
             SendTrackedMindInvoke(req, PendingMindOp.List);
         }
 
-        public void RequestReadMind(string name)
+        public void RequestReadMind(string name, bool allowDiscardDirty = false)
         {
             if (_ws == null || string.IsNullOrWhiteSpace(name)) return;
             string trimmed = name.Trim();
@@ -1244,7 +1329,7 @@ namespace TacSim.UI
             req["op"] = JsonNode.FromString("read");
             req["name"] = JsonNode.FromString(trimmed);
             req["revision"] = JsonNode.Null;
-            _latestReadRequestId = SendTrackedMindInvoke(req, PendingMindOp.Read, targetName: trimmed);
+            _latestReadRequestId = SendTrackedMindInvoke(req, PendingMindOp.Read, targetName: trimmed, allowDiscardDirty: allowDiscardDirty);
         }
 
         public void RequestCreateMindFromStandard(string newName)
@@ -1298,8 +1383,6 @@ namespace TacSim.UI
             }
             if (IsDraftDirty)
             {
-                _pendingCheckAfterReplace = true;
-                _pendingSaveAfterReplace = false;
                 SendReplaceWorkingCopy(chainCheck: true, chainSave: false, saveNotes: string.Empty);
                 return;
             }
@@ -1321,9 +1404,6 @@ namespace TacSim.UI
             }
             if (IsDraftDirty)
             {
-                _pendingSaveAfterReplace = true;
-                _pendingCheckAfterReplace = false;
-                _pendingSaveNotes = cleanNotes;
                 SendReplaceWorkingCopy(chainCheck: false, chainSave: true, saveNotes: cleanNotes);
                 return;
             }
@@ -1928,7 +2008,14 @@ namespace TacSim.UI
                 {
                     if (slot >= _libraryNames.Count) return;
                     string target = _libraryNames[slot];
-                    if (IsDraftDirty && !string.Equals(target, LoadedMindName, StringComparison.OrdinalIgnoreCase))
+                    bool isCurrentMind = string.Equals(target, LoadedMindName, StringComparison.OrdinalIgnoreCase);
+                    if (IsDraftDirty && isCurrentMind)
+                    {
+                        DisarmConfirm();
+                        SetStatus($"'{LoadedMindName}' is already open with unsaved edits.");
+                        return;
+                    }
+                    if (IsDraftDirty)
                     {
                         InvokeWithTwoClickConfirm(
                             $"switch_mind_{target}",
@@ -1936,11 +2023,7 @@ namespace TacSim.UI
                             target,
                             $"DISCARD->{target}",
                             $"Unsaved edits in '{LoadedMindName}' — click again to discard & open '{target}'.",
-                            () =>
-                            {
-                                IsDraftDirty = false;
-                                RequestReadMind(target);
-                            });
+                            () => RequestReadMind(target, allowDiscardDirty: true));
                     }
                     else
                     {

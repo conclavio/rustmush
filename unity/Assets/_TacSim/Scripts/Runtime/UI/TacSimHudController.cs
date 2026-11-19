@@ -1919,17 +1919,25 @@ namespace TacSim.UI
         public void ShowServerRequestModal(MushServerRequest req)
         {
             if (req == null) return;
+            bool isConfirm = string.Equals(req.Kind, "confirm", StringComparison.OrdinalIgnoreCase);
             bool isText = string.Equals(req.Kind, "text", StringComparison.OrdinalIgnoreCase);
             bool isTarget = string.Equals(req.Kind, "target", StringComparison.OrdinalIgnoreCase);
-            bool needsTextInput = isText || isTarget || req.Options == null || req.Options.Count == 0;
+            bool needsTextInput = isText || isTarget || (!isConfirm && (req.Options == null || req.Options.Count == 0));
 
             var btns = new List<(string, Action)>();
-            if (req.Options != null)
+            if (req.Options != null && req.Options.Count > 0)
             {
                 foreach (var opt in req.Options)
                 {
                     string key = opt.Key;
-                    btns.Add((opt.Label, () =>
+                    string label = opt.Label;
+                    if (isConfirm &&
+                        string.Equals(key, "false", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(label, "Cancel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        label = "Decline";
+                    }
+                    btns.Add((label, () =>
                     {
                         _activeServerRequest = null;
                         if (_modalPanel != null) _modalPanel.SetActive(false);
@@ -1937,18 +1945,32 @@ namespace TacSim.UI
                     }));
                 }
             }
+            else if (isConfirm)
+            {
+                btns.Add(("Confirm", () =>
+                {
+                    _activeServerRequest = null;
+                    if (_modalPanel != null) _modalPanel.SetActive(false);
+                    OnRequestChoiceSubmitted?.Invoke(req, "true");
+                }));
+                btns.Add(("Decline", () =>
+                {
+                    _activeServerRequest = null;
+                    if (_modalPanel != null) _modalPanel.SetActive(false);
+                    OnRequestChoiceSubmitted?.Invoke(req, "false");
+                }));
+            }
 
             if (needsTextInput)
             {
                 btns.Add(("SUBMIT", () => SubmitNpcInput()));
             }
 
-            if (!string.Equals(req.Kind, "confirm", StringComparison.OrdinalIgnoreCase))
-            {
-                btns.Add(("CANCEL", () => CloseDetailModal(cancelServerRequest: true)));
-            }
+            btns.Add(("CANCEL", () => CloseDetailModal(cancelServerRequest: true)));
 
-            ShowDetailModal("PORT / SYSTEM REQUEST", MushProtocol.EscapeUnityRichText(req.Prompt ?? string.Empty), btns);
+            // `MushProtocol.ParseRequest` already escapes untrusted span text via `RenderRichTextToUnityMarkup`
+            // and wraps only allowlisted `<color>`/`<b>`/`<i>` markup; preserve it without double-escaping.
+            ShowDetailModal("PORT / SYSTEM REQUEST", req.Prompt ?? string.Empty, btns);
             _activeServerRequest = req;
 
             if (_npcSayInput != null)

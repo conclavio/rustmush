@@ -6,6 +6,7 @@ using TacSim.Core;
 using TacSim.Net;
 using TacSim.UI;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace TacSim.Tests
@@ -57,6 +58,80 @@ namespace TacSim.Tests
                     return buttons[i];
             }
             return null;
+        }
+
+        private static void FocusInputFieldForTest(InputField input)
+        {
+            Assert.IsNotNull(input);
+            if (EventSystem.current == null)
+            {
+                var es = UnityEngine.Object.FindAnyObjectByType<EventSystem>();
+                if (es != null)
+                    EventSystem.current = es;
+            }
+            input.ActivateInputField();
+            if (!input.isFocused)
+            {
+                // In real Unity EditMode, ActivateInputField() defers m_AllowInput until LateUpdate().
+                var lateUpdate = typeof(InputField).GetMethod("LateUpdate", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                lateUpdate?.Invoke(input, null);
+            }
+            if (!input.isFocused)
+            {
+                // Fallback only if headless EditMode EventSystem has no active InputModule.
+                var allowField = typeof(InputField).GetField("m_AllowInput", BindingFlags.Instance | BindingFlags.NonPublic);
+                allowField?.SetValue(input, true);
+            }
+        }
+
+        private static void BlurInputFieldForTest(InputField input)
+        {
+            Assert.IsNotNull(input);
+            var deactivate = typeof(InputField).GetMethod("DeactivateInputField", BindingFlags.Instance | BindingFlags.Public, null, System.Type.EmptyTypes, null);
+            if (deactivate != null)
+            {
+                deactivate.Invoke(input, null);
+            }
+            else
+            {
+                // Pre-merge stub compatibility only (real Unity 6000 & post-merge stubs expose DeactivateInputField()).
+                var prop = typeof(InputField).GetProperty("isFocused", BindingFlags.Instance | BindingFlags.Public);
+                if (prop != null && prop.CanWrite)
+                    prop.SetValue(input, false);
+            }
+            if (input.isFocused)
+            {
+                var allowField = typeof(InputField).GetField("m_AllowInput", BindingFlags.Instance | BindingFlags.NonPublic);
+                allowField?.SetValue(input, false);
+            }
+            if (EventSystem.current != null && EventSystem.current.currentSelectedGameObject == input.gameObject)
+                EventSystem.current.SetSelectedGameObject(null);
+        }
+
+        private static void InjectMindReadReply(MushWsClient ws, ulong seq, ulong reqId, string name, long edit, long? revision, string source)
+        {
+            string revJson = revision.HasValue ? revision.Value.ToString() : "null";
+            string draftJson = BuildCanonicalMindDraftJson(source);
+            ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                ""seq"": {seq}, ""ts"": {3000 + seq * 10}, ""t"": ""invoke_result"",
+                ""d"": {{
+                    ""id"": {reqId},
+                    ""result"": {{
+                        ""service"": ""mind"",
+                        ""result"": {{
+                            ""status"": ""read"",
+                            ""name"": ""{name}"",
+                            ""revision"": null,
+                            ""base"": {{ ""edit"": {edit}, ""revision"": {revJson} }},
+                            ""draft"": {draftJson},
+                            ""rules_text"": {{}},
+                            ""rules_source"": {{}},
+                            ""diagnostics"": []
+                        }}
+                    }}
+                }}
+            }}"));
+            ws.PumpMainThread();
         }
 
         [Test]
@@ -487,6 +562,7 @@ namespace TacSim.Tests
                 term.BuildTerminalUi();
                 term.BindClient(ws);
                 term.SetTerminalOpen(true);
+                term.SwitchTab(MindTerminalTab.Workshop, autoRefresh: false);
                 DrainOutboundFrames(ws);
 
                 var srcField = typeof(TacSimMindTerminal).GetField("_rhaiSourceInput", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -540,16 +616,17 @@ namespace TacSim.Tests
                 Assert.IsTrue(srcInput.interactable);
                 Assert.IsFalse(term.IsDraftDirty);
 
-                // Bounds validation: >32 KiB or NUL must reject AND revert `_rhaiSourceInput.text` (`U-H27`).
-                srcInput.text = "bad\0source";
+                // Bounds validation: raw model must reject NUL & >32 KiB without relying on stub-only InputField NUL retention (`U-H27`).
                 term.UpdateWorkingSource("bad\0source");
                 Assert.IsFalse(term.IsDraftDirty);
+                Assert.AreEqual("fn think(ctx) { ctx.hold(); }", term.LoadedDraft.Str("source"));
                 Assert.AreEqual("fn think(ctx) { ctx.hold(); }", srcInput.text);
 
                 string huge = new string('a', 32 * 1024 + 5);
                 srcInput.text = huge;
                 term.UpdateWorkingSource(huge);
                 Assert.IsFalse(term.IsDraftDirty);
+                Assert.AreEqual("fn think(ctx) { ctx.hold(); }", term.LoadedDraft.Str("source"));
                 Assert.AreEqual("fn think(ctx) { ctx.hold(); }", srcInput.text);
 
                 // Edit draft -> SaveWorkingMindRevision -> sends `replace` first.
@@ -726,9 +803,17 @@ namespace TacSim.Tests
 
                 var srcField = typeof(TacSimMindTerminal).GetField("_rhaiSourceInput", BindingFlags.Instance | BindingFlags.NonPublic);
                 var srcInput = srcField?.GetValue(term) as InputField;
-                srcInput.isFocused = true;
+                Assert.IsNotNull(srcInput);
+                term.SwitchTab(MindTerminalTab.Workshop, autoRefresh: false);
+                srcInput.interactable = true;
+                FocusInputFieldForTest(srcInput);
+                Assert.IsTrue(srcInput.isFocused, "ActivateInputField must focus the Rhai source InputField");
                 Assert.IsTrue(hud.IsTextInputFocused, "HUD IsTextInputFocused must include TacSimMindTerminal inputs");
-                srcInput.isFocused = false;
+                BlurInputFieldForTest(srcInput);
+                Assert.IsFalse(srcInput.isFocused, "DeactivateInputField must unfocus the Rhai source InputField");
+                Assert.IsFalse(hud.IsTextInputFocused, "HUD IsTextInputFocused must clear once MindTerminal input blurs");
+                srcInput.interactable = false;
+                term.SwitchTab(MindTerminalTab.Market, autoRefresh: false);
 
                 // Follow live trace -> closing terminal sends unfollow (`follow: false`) automatically (`U-M16`).
                 DrainOutboundFrames(ws);
@@ -858,8 +943,343 @@ namespace TacSim.Tests
             }
             finally
             {
-                Object.DestroyImmediate(termGo);
-                Object.DestroyImmediate(hudGo);
+                UnityEngine.Object.DestroyImmediate(termGo);
+                UnityEngine.Object.DestroyImmediate(hudGo);
+            }
+        }
+
+        [Test]
+        public void MindTerminal_Workshop_BoundsValidation_SeparatesRawModelFromInputField()
+        {
+            using var ws = new MushWsClient();
+            var go = new GameObject("TestMindBoundsSeparate");
+            try
+            {
+                var term = go.AddComponent<TacSimMindTerminal>();
+                term.BuildTerminalUi();
+                term.BindClient(ws);
+                term.SetTerminalOpen(true);
+                term.SwitchTab(MindTerminalTab.Workshop, autoRefresh: false);
+                DrainOutboundFrames(ws);
+
+                var srcInput = typeof(TacSimMindTerminal).GetField("_rhaiSourceInput", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(term) as InputField;
+                Assert.IsNotNull(srcInput);
+
+                term.RequestReadMind("alpha");
+                ulong readReqId = (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id");
+                const string initialSrc = "fn think(ctx) { ctx.hold(); }";
+                InjectMindReadReply(ws, 1, readReqId, "alpha", edit: 2, revision: 1, source: initialSrc);
+                Assert.IsFalse(term.IsDraftDirty);
+
+                // 1. Raw model validation rejects embedded NUL and >32 KiB cleanly.
+                term.UpdateWorkingSource("bad\0source");
+                Assert.IsFalse(term.IsDraftDirty);
+                Assert.AreEqual(initialSrc, term.LoadedDraft.Str("source"));
+                Assert.AreEqual(initialSrc, srcInput.text);
+                StringAssert.Contains("NUL", term.StatusBanner);
+
+                string huge = new string('x', 32 * 1024 + 1);
+                term.UpdateWorkingSource(huge);
+                Assert.IsFalse(term.IsDraftDirty);
+                Assert.AreEqual(initialSrc, term.LoadedDraft.Str("source"));
+                Assert.AreEqual(initialSrc, srcInput.text);
+                StringAssert.Contains("32 KiB", term.StatusBanner);
+
+                // 2. InputField >32 KiB edit through onValueChanged reverts widget and preserves clean model.
+                srcInput.text = huge;
+                if (srcInput.text == huge)
+                    srcInput.onValueChanged.Invoke(srcInput.text);
+                Assert.IsFalse(term.IsDraftDirty);
+                Assert.AreEqual(initialSrc, srcInput.text);
+                Assert.AreEqual(initialSrc, term.LoadedDraft.Str("source"));
+
+                // 3. InputField NUL behavior exercised separately: Unity 6000 (and matching stubs) strip NULs
+                //    before onValueChanged; legacy stubs retain NULs until UpdateWorkingSource rejects them.
+                //    Either way, no NUL character may ever enter InputField or LoadedDraft.
+                srcInput.text = "bad\0source";
+                if (srcInput.text.IndexOf('\0') >= 0)
+                {
+                    srcInput.onValueChanged.Invoke(srcInput.text);
+                    Assert.IsFalse(term.IsDraftDirty, "Unstripped NUL must be rejected by UpdateWorkingSource");
+                    Assert.AreEqual(initialSrc, term.LoadedDraft.Str("source"));
+                }
+                else
+                {
+                    Assert.AreEqual("badsource", srcInput.text);
+                    Assert.IsTrue(term.IsDraftDirty, "Unity InputField strips NULs and raises onValueChanged with sanitized text");
+                    Assert.AreEqual("badsource", term.LoadedDraft.Str("source"));
+                }
+                Assert.AreEqual(-1, srcInput.text.IndexOf('\0'));
+                Assert.AreEqual(-1, term.LoadedDraft.Str("source").IndexOf('\0'));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void MindTerminal_Workshop_ClickingCurrentDirtyDraft_PreservesLocalEdits_AndDifferentDraftRequiresTwoClickConfirm()
+        {
+            using var ws = new MushWsClient();
+            var go = new GameObject("TestMindDirtyReselect");
+            try
+            {
+                var term = go.AddComponent<TacSimMindTerminal>();
+                term.BuildTerminalUi();
+                term.BindClient(ws);
+                term.SetTerminalOpen(true);
+                term.SwitchTab(MindTerminalTab.Workshop, autoRefresh: false);
+                DrainOutboundFrames(ws);
+
+                var srcInput = typeof(TacSimMindTerminal).GetField("_rhaiSourceInput", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(term) as InputField;
+                Assert.IsNotNull(srcInput);
+
+                // Populate library with 2 drafts: alpha, beta.
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                    ""seq"": 1, ""ts"": 1000, ""t"": ""invoke_result"",
+                    ""d"": { ""id"": 1, ""result"": { ""service"": ""mind"", ""result"": { ""status"": ""library"", ""names"": [""alpha"", ""beta""] } } }
+                }"));
+                ws.PumpMainThread();
+
+                var namesRoot = FindPath(go.transform, "MindTerminalCanvas/MindTerminalWindow/WorkshopPane/OwnedNamesViewport/OwnedNamesContent");
+                Assert.IsNotNull(namesRoot);
+                var alphaBtn = FindChildButton(namesRoot, "alpha");
+                var betaBtn = FindChildButton(namesRoot, "beta");
+                Assert.IsNotNull(alphaBtn);
+                Assert.IsNotNull(betaBtn);
+
+                // Open alpha and make unsaved local edits.
+                alphaBtn.onClick.Invoke();
+                var openAlphaFrames = DrainOutboundFrames(ws);
+                Assert.AreEqual(1, openAlphaFrames.Count);
+                InjectMindReadReply(ws, 2, (ulong)openAlphaFrames[0]["d"].Long("id"), "alpha", edit: 3, revision: 1, source: "fn think(ctx) { ctx.hold(); }");
+
+                const string editedAlpha = "fn think(ctx) { /* local edit */ ctx.guard(); }";
+                term.UpdateWorkingSource(editedAlpha);
+                Assert.IsTrue(term.IsDraftDirty);
+
+                // Clicking the already-selected dirty draft ("alpha") once or twice must be a no-op (zero `read` sent, edits preserved).
+                alphaBtn.onClick.Invoke();
+                alphaBtn.onClick.Invoke();
+                Assert.AreEqual(0, DrainOutboundFrames(ws).Count, "Reselecting current dirty draft must not emit read");
+                Assert.IsTrue(term.IsDraftDirty);
+                Assert.AreEqual("alpha", term.LoadedMindName);
+                Assert.AreEqual(editedAlpha, term.LoadedDraft.Str("source"));
+                StringAssert.Contains("unsaved", term.StatusBanner);
+
+                // Even if an unconfirmed direct `RequestReadMind("alpha")` reply arrives while dirty, it must NOT overwrite local edits.
+                term.RequestReadMind("alpha");
+                ulong unconfirmedReadId = (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id");
+                InjectMindReadReply(ws, 3, unconfirmedReadId, "alpha", edit: 3, revision: 1, source: "fn think(ctx) { ctx.hold(); }");
+                Assert.IsTrue(term.IsDraftDirty, "Unconfirmed read reply must not clear IsDraftDirty");
+                Assert.AreEqual(editedAlpha, term.LoadedDraft.Str("source"), "Unconfirmed read reply must not overwrite dirty draft");
+
+                // Clicking a different draft ("beta") arms two-click discard confirm without issuing `read` on click 1.
+                betaBtn.onClick.Invoke();
+                Assert.AreEqual(0, DrainOutboundFrames(ws).Count);
+                Assert.IsTrue(term.IsDraftDirty);
+                StringAssert.Contains("DISCARD", betaBtn.GetComponentInChildren<Text>().text);
+
+                // Second click confirms discard & requests `read` for "beta", then loads "beta" cleanly.
+                betaBtn.onClick.Invoke();
+                var openBetaFrames = DrainOutboundFrames(ws);
+                Assert.AreEqual(1, openBetaFrames.Count);
+                Assert.AreEqual("read", openBetaFrames[0]["d"]["request"]["request"].Str("op"));
+                Assert.AreEqual("beta", openBetaFrames[0]["d"]["request"]["request"].Str("name"));
+                InjectMindReadReply(ws, 4, (ulong)openBetaFrames[0]["d"].Long("id"), "beta", edit: 7, revision: 2, source: "fn think(ctx) { ctx.orbit(); }");
+
+                Assert.AreEqual("beta", term.LoadedMindName);
+                Assert.IsFalse(term.IsDraftDirty);
+                Assert.AreEqual("fn think(ctx) { ctx.orbit(); }", term.LoadedDraft.Str("source"));
+                Assert.AreEqual("fn think(ctx) { ctx.orbit(); }", srcInput.text);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void MindTerminal_Workshop_LateSaveEditOrCheck_CannotOverwriteDifferentDraftBase_OrRunChainedActions()
+        {
+            using var ws = new MushWsClient();
+            var go = new GameObject("TestMindLateSaveGuard");
+            try
+            {
+                var term = go.AddComponent<TacSimMindTerminal>();
+                term.BuildTerminalUi();
+                term.BindClient(ws);
+                term.SetTerminalOpen(true);
+                term.SwitchTab(MindTerminalTab.Workshop, autoRefresh: false);
+                DrainOutboundFrames(ws);
+
+                // 1. Open alpha (base edit=3, rev=1) and start clean save (`saveAlphaReqId`), server queues it.
+                term.RequestReadMind("alpha");
+                InjectMindReadReply(ws, 1, (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id"), "alpha", edit: 3, revision: 1, source: "fn think(ctx) { ctx.hold(); }");
+
+                term.SaveWorkingMindRevision("alpha rev 2");
+                var saveAlphaFrames = DrainOutboundFrames(ws);
+                Assert.AreEqual(1, saveAlphaFrames.Count);
+                Assert.AreEqual("save", saveAlphaFrames[0]["d"]["request"]["request"].Str("op"));
+                ulong saveAlphaReqId = (ulong)saveAlphaFrames[0]["d"].Long("id");
+
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                    ""seq"": 2, ""ts"": 3020, ""t"": ""invoke_result"",
+                    ""d"": {{ ""id"": {saveAlphaReqId}, ""result"": {{ ""service"": ""mind"", ""result"": {{ ""status"": ""queued"", ""job"": 101 }} }} }}
+                }}"));
+                ws.PumpMainThread();
+
+                // Switch to beta (base edit=7, rev=2) BEFORE alpha's save finishes.
+                term.RequestReadMind("beta");
+                InjectMindReadReply(ws, 3, (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id"), "beta", edit: 7, revision: 2, source: "fn think(ctx) { ctx.guard(); }");
+                Assert.AreEqual("beta", term.LoadedMindName);
+                Assert.AreEqual(7L, term.LoadedDraftBase.Long("edit"));
+
+                // Late `saved` for alpha arrives with alpha's new base {edit: 4, revision: 2} -> MUST NOT replace beta's base!
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                    ""seq"": 4, ""ts"": 3040, ""t"": ""invoke_result"",
+                    ""d"": {{
+                        ""id"": {saveAlphaReqId},
+                        ""result"": {{
+                            ""service"": ""mind"",
+                            ""result"": {{
+                                ""status"": ""saved"",
+                                ""job"": 101,
+                                ""revision"": 2,
+                                ""digest"": ""abcdef0123456789"",
+                                ""base"": {{ ""edit"": 4, ""revision"": 2 }}
+                            }}
+                        }}
+                    }}
+                }}"));
+                ws.PumpMainThread();
+
+                Assert.AreEqual("beta", term.LoadedMindName);
+                Assert.AreEqual(7L, term.LoadedDraftBase.Long("edit"), "Late save for alpha must NOT overwrite beta's base edit token");
+                Assert.AreEqual(2L, term.LoadedDraftBase.Long("revision"), "Late save for alpha must NOT overwrite beta's base revision");
+
+                // Next save of beta must send beta's own base {edit: 7, revision: 2}, NOT alpha's {edit: 4, revision: 2}.
+                term.SaveWorkingMindRevision("beta rev 3");
+                var saveBetaFrames = DrainOutboundFrames(ws);
+                Assert.AreEqual(1, saveBetaFrames.Count);
+                Assert.AreEqual("beta", saveBetaFrames[0]["d"]["request"]["request"].Str("name"));
+                Assert.AreEqual(7L, saveBetaFrames[0]["d"]["request"]["request"]["base"].Long("edit"));
+                Assert.AreEqual(2L, saveBetaFrames[0]["d"]["request"]["request"]["base"].Long("revision"));
+                ulong saveBetaReqId = (ulong)saveBetaFrames[0]["d"].Long("id");
+
+                // 2. Reload same mind ("beta") with newer base {edit: 9, rev: 3} -> late save from older generation must NOT roll back base!
+                term.RequestReadMind("beta");
+                InjectMindReadReply(ws, 5, (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id"), "beta", edit: 9, revision: 3, source: "fn think(ctx) { ctx.guard(); }");
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                    ""seq"": 6, ""ts"": 3060, ""t"": ""invoke_result"",
+                    ""d"": {{
+                        ""id"": {saveBetaReqId},
+                        ""result"": {{
+                            ""service"": ""mind"",
+                            ""result"": {{
+                                ""status"": ""saved"",
+                                ""job"": 102,
+                                ""revision"": 3,
+                                ""digest"": ""1111222233334444"",
+                                ""base"": {{ ""edit"": 8, ""revision"": 3 }}
+                            }}
+                        }}
+                    }}
+                }}"));
+                ws.PumpMainThread();
+                Assert.AreEqual(9L, term.LoadedDraftBase.Long("edit"), "Stale same-name save from prior draft generation must not roll back base");
+
+                // 3. Late `edited` from dirty `replace` with `chainSave: true` after switching drafts must NOT overwrite base or run chained save!
+                term.UpdateWorkingSource("fn think(ctx) { ctx.engage(); }");
+                term.SaveWorkingMindRevision("beta chained");
+                var replaceBetaFrames = DrainOutboundFrames(ws);
+                Assert.AreEqual(1, replaceBetaFrames.Count);
+                Assert.AreEqual("replace", replaceBetaFrames[0]["d"]["request"]["request"].Str("op"));
+                ulong replaceBetaReqId = (ulong)replaceBetaFrames[0]["d"].Long("id");
+
+                // Switch to gamma (confirmed discard) with base {edit: 12, revision: 4}.
+                term.RequestReadMind("gamma", allowDiscardDirty: true);
+                InjectMindReadReply(ws, 7, (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id"), "gamma", edit: 12, revision: 4, source: "fn think(ctx) { ctx.evade(); }");
+
+                // Late `edited` for beta arrives -> must NOT clobber gamma's name/base or chain a save/replace!
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                    ""seq"": 8, ""ts"": 3080, ""t"": ""invoke_result"",
+                    ""d"": {{ ""id"": {replaceBetaReqId}, ""result"": {{ ""service"": ""mind"", ""result"": {{ ""status"": ""edited"", ""name"": ""beta"", ""base"": {{ ""edit"": 10, ""revision"": 3 }} }} }} }}
+                }}"));
+                ws.PumpMainThread();
+
+                Assert.AreEqual("gamma", term.LoadedMindName);
+                Assert.AreEqual(12L, term.LoadedDraftBase.Long("edit"));
+                Assert.AreEqual("fn think(ctx) { ctx.evade(); }", term.LoadedDraft.Str("source"));
+                var afterLateEditFrames = DrainOutboundFrames(ws);
+                for (int i = 0; i < afterLateEditFrames.Count; i++)
+                {
+                    string op = afterLateEditFrames[i]["d"]["request"]["request"].Str("op");
+                    Assert.AreNotEqual("save", op, "Late edit from previous draft must not trigger chained save");
+                    Assert.AreNotEqual("replace", op, "Late edit from previous draft must not trigger chained replace");
+                    Assert.AreNotEqual("check", op, "Late edit from previous draft must not trigger chained check");
+                }
+
+                // 4. Local edit on same draft while `save` is in flight: edit generation mismatch prevents stale save from mutating base.
+                term.SaveWorkingMindRevision("gamma rev 5");
+                ulong saveGammaReqId = (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id");
+                term.UpdateWorkingSource("fn think(ctx) { ctx.evade(); /* edited during save */ }");
+                Assert.IsTrue(term.IsDraftDirty);
+
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                    ""seq"": 9, ""ts"": 3090, ""t"": ""invoke_result"",
+                    ""d"": {{
+                        ""id"": {saveGammaReqId},
+                        ""result"": {{
+                            ""service"": ""mind"",
+                            ""result"": {{
+                                ""status"": ""saved"",
+                                ""job"": 103,
+                                ""revision"": 5,
+                                ""digest"": ""9999888877776666"",
+                                ""base"": {{ ""edit"": 13, ""revision"": 5 }}
+                            }}
+                        }}
+                    }}
+                }}"));
+                ws.PumpMainThread();
+
+                Assert.IsTrue(term.IsDraftDirty);
+                Assert.AreEqual(12L, term.LoadedDraftBase.Long("edit"), "Save for older local edit generation must not silently overwrite base");
+
+                // 5. Cross-draft late `checked` must NOT pollute active draft's diagnostics!
+                term.RequestReadMind("alpha", allowDiscardDirty: true);
+                InjectMindReadReply(ws, 10, (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id"), "alpha", edit: 4, revision: 2, source: "fn think(ctx) { ctx.hold(); }");
+                term.CheckWorkingMind();
+                ulong checkAlphaReqId = (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id");
+
+                term.RequestReadMind("gamma");
+                InjectMindReadReply(ws, 11, (ulong)DrainOutboundFrames(ws)[0]["d"].Long("id"), "gamma", edit: 13, revision: 5, source: "fn think(ctx) { ctx.evade(); }");
+
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{
+                    ""seq"": 12, ""ts"": 3120, ""t"": ""invoke_result"",
+                    ""d"": {{
+                        ""id"": {checkAlphaReqId},
+                        ""result"": {{
+                            ""service"": ""mind"",
+                            ""result"": {{
+                                ""status"": ""checked"",
+                                ""job"": 104,
+                                ""reports"": [],
+                                ""diagnostics"": [{{ ""field"": ""source"", ""message"": ""alpha syntax error"", ""line"": 1, ""column"": 1 }}]
+                            }}
+                        }}
+                    }}
+                }}"));
+                ws.PumpMainThread();
+
+                Assert.AreEqual("gamma", term.LoadedMindName);
+                Assert.AreEqual(0, term.LastDiagnostics.Count, "Late check diagnostics for alpha must not pollute gamma");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
             }
         }
     }
