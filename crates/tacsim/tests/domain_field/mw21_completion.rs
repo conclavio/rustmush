@@ -186,6 +186,49 @@ fn accounts(world: &M8World) -> BTreeMap<u64, (String, i64)> {
         .collect()
 }
 
+/// **No credit but the ports' own day** between `before` and `after`. Doc 48 unit EX.9 runs the
+/// ports' day whoever is at sea: every costed facility's owner pays its running cost once an IC
+/// day into the System sink [`tacsim::port::upkeep::UPKEEP_SINK`], and the System faucet
+/// [`tacsim::port::upkeep::EXPORT_FAUCET`] pays the consumers back for what they used up. So the
+/// sink may rise, and the other accounts together may take no more than the faucet paid out.
+/// Any other credit, or an account that came or went, is a payment.
+fn no_credit_but_upkeep(
+    before: &BTreeMap<u64, (String, i64)>,
+    after: &BTreeMap<u64, (String, i64)>,
+) -> Result<(), String> {
+    let system = |id: &str| format!("System(SystemPrincipalId({id:?}))");
+    let (sink, faucet) = (
+        system(tacsim::port::upkeep::UPKEEP_SINK),
+        system(tacsim::port::upkeep::EXPORT_FAUCET),
+    );
+    if before.keys().ne(after.keys()) {
+        return Err(format!("the accounts changed: {before:?} to {after:?}"));
+    }
+    let moved: Vec<_> = before
+        .iter()
+        .zip(after.values())
+        .filter(|((_, (_, was)), (_, now))| now != was)
+        .map(|((id, (owner, was)), (_, now))| (*id, owner.as_str(), now - was))
+        .collect();
+    let paid_out: i64 = moved
+        .iter()
+        .filter(|(_, owner, _)| *owner == faucet)
+        .map(|(_, _, delta)| -delta)
+        .sum();
+    let credited: i64 = moved
+        .iter()
+        .filter(|(_, owner, delta)| *delta > 0 && *owner != sink && *owner != faucet)
+        .map(|(_, _, delta)| delta)
+        .sum();
+    if credited <= paid_out.max(0) {
+        Ok(())
+    } else {
+        Err(format!(
+            "credited {credited} past the faucet's {paid_out}: {moved:?}"
+        ))
+    }
+}
+
 /// The typed rows the rig keeps, by owner and family: what a restart boots from.
 fn families(world: &M8World) -> BTreeMap<String, BTreeMap<String, Value>> {
     let mut by_family: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
@@ -996,7 +1039,8 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
     let boundary = sail_and_lose_the_link(&mut world.rig, buyer, hull);
     let under_way = books(&mut world);
     assert_eq!(
-        under_way.accounts, at_her_berth.accounts,
+        no_credit_but_upkeep(&at_her_berth.accounts, &under_way.accounts),
+        Ok(()),
         "her passage is paid in her stores, not in credits"
     );
     assert!(
@@ -1292,19 +1336,29 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
             "she never runs the picket: {now:?}"
         );
         assert_eq!(now.emcon, EmconPosture::Standard, "{now:?}");
+        // Doc 47 unit CO.2 (R-47-2): the house default's answer beside the bought mind.
+        let answers = |command: &BubbleInputCommand| match command {
+            BubbleInputCommand::FireOffensiveLasers { target_id, .. }
+            | BubbleInputCommand::FireMount { target_id, .. }
+            | BubbleInputCommand::FireRailgun { target_id, .. }
+            | BubbleInputCommand::FireTorpedoSalvo { target_id, .. } => {
+                *target_id != now.corvette && was.fired_on_by.contains(target_id)
+            }
+            _ => false,
+        };
+        let answered = now.wrote.iter().any(answers);
         for command in &now.wrote {
-            // Doc 47 unit CO.2 (R-47-2): the house default's answer beside the bought mind.
-            let answers = match command {
-                BubbleInputCommand::FireOffensiveLasers { target_id, .. }
-                | BubbleInputCommand::FireMount { target_id, .. }
-                | BubbleInputCommand::FireRailgun { target_id, .. }
-                | BubbleInputCommand::FireTorpedoSalvo { target_id, .. } => {
-                    *target_id != now.corvette && was.fired_on_by.contains(target_id)
-                }
-                _ => false,
-            };
+            // The applier blows her coolant down before a shot when she runs hot
+            // (`space::applier`, `BLOWDOWN_HEAT_PERMILLE`): that is part of the answer, so it
+            // is allowed only for her own ship and only in a think that also answers.
+            let vents_for_the_answer = answered
+                && matches!(
+                    command,
+                    BubbleInputCommand::BlowdownCoolant { ship_id } if *ship_id == now.ship
+                );
             let allowed = *command == now.locks_on()
-                || answers
+                || answers(command)
+                || vents_for_the_answer
                 || matches!(command, BubbleInputCommand::CommandBurnMmps2 { .. })
                 || (now.helm == Helm::Crew
                     && matches!(
@@ -1351,9 +1405,11 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
 
     // 5. Only her own stores, from her sailing to her berth.
     for (when, then) in [("at the reconnect", &at_the_reconnect), ("docked", &docked)] {
+        // Doc 48 unit EX.9: the facilities' running costs fall due as the IC days pass.
         assert_eq!(
-            then.accounts, under_way.accounts,
-            "no account in the world moved while a mind flew her ({when})"
+            no_credit_but_upkeep(&under_way.accounts, &then.accounts),
+            Ok(()),
+            "no account but the running-cost sink took a credit while a mind flew her ({when})"
         );
         let rows = moved(&under_way.typed, &then.typed);
         eprintln!("MW21 rows moved since she sailed ({when}): {rows:?}");
@@ -1362,8 +1418,13 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
                 .all(|family| family.starts_with("tacsim/") || family.starts_with("inventory/")),
             "no row of the market, the Roll or the economy moved ({when}): {rows:?}"
         );
+        // Doc 48 unit EX.9: the ports' own day (their consumers using up stock, a mill's batch)
+        // moves the ports' pools too; her hold is the stores check below. With no port day,
+        // her reaction mass is the one pool that moves.
+        let port_day = rows.contains_key("tacsim/tacsim.port_consume")
+            || rows.contains_key("tacsim/tacsim.port_mill");
         assert!(
-            rows.get("inventory/inventory_pools").copied().unwrap_or(0) <= 1,
+            port_day || rows.get("inventory/inventory_pools").copied().unwrap_or(0) <= 1,
             "at most one inventory pool moved, her hold's reaction mass ({when}): {rows:?}"
         );
         assert!(
