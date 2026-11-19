@@ -3,6 +3,7 @@
   // Toggleable 3D split above `Scrollback`; when seated at the Bridge Helm, hands off
   // seamlessly into `PictureView.svelte` (`mush-pixel-wasm` SpaceCockpit & 60 Hz Docking).
 
+  import { untrack } from "svelte";
   import type { GameApp } from "$lib/game.svelte";
   import { PICTURE_PREF_KEY } from "$lib/picture";
   import { storageGet, storageSet } from "$lib/storage";
@@ -92,15 +93,19 @@
     });
     stage = inst;
 
+    const wrap = wrapEl;
     const ro =
-      typeof ResizeObserver !== "undefined" && wrapEl
+      typeof ResizeObserver !== "undefined" && wrap
         ? new ResizeObserver((entries) => {
             const rect = entries[0]?.contentRect;
             if (rect) inst.resize(rect.width, rect.height);
           })
         : null;
-    if (ro && wrapEl) ro.observe(wrapEl);
-    if (wrapEl) inst.resize(wrapEl.clientWidth || 720, app.tacsim.viewportHeightPx);
+    if (ro && wrap) ro.observe(wrap);
+    if (wrap) {
+      const initialHeight = untrack(() => app.tacsim.viewportHeightPx);
+      inst.resize(wrap.clientWidth || 720, wrap.clientHeight || initialHeight);
+    }
 
     return () => {
       ro?.disconnect();
@@ -108,6 +113,16 @@
       stage = null;
       app.tacsim.focusedPrompt = null;
     };
+  });
+
+  // Resize the live stage in-place without tearing down WebGL state when viewport height changes
+  $effect(() => {
+    const s = stage;
+    const h = app.tacsim.viewportHeightPx;
+    const wrap = wrapEl;
+    if (s && wrap) {
+      s.resize(wrap.clientWidth || 720, h);
+    }
   });
 
   // Push reactive room/pack/actor/stowage/holotank state into the live Three.js stage

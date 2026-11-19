@@ -10,8 +10,15 @@ import { tick } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 
 import Game from "../../components/Game.svelte";
+import TacsimSceneDeck from "../../components/TacsimSceneDeck.svelte";
 import { GameApp } from "../game.svelte";
 import type { Envelope, OutputEvent, RoomView } from "../proto";
+import {
+  PACK_IN_FLIGHT_TIMEOUT_MS,
+  PACK_MAX_RETRIES,
+  PACK_RETRY_BASE_DELAY_MS,
+  TacsimPortStore,
+} from "../stores/tacsim.svelte";
 import type { WebSocketLike } from "../ws";
 import {
   atlasToWorldPos,
@@ -842,12 +849,22 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
     let uiBlocked = false;
     const triggered: string[] = [];
 
+    const mockRenderer = () => ({
+      setPixelRatio: () => {},
+      setSize: () => {},
+      render: () => {},
+      dispose: () => {},
+      toneMapping: 0 as unknown as import("three").ToneMapping,
+      toneMappingExposure: 1,
+    });
+
     const stage = new TacsimStage3D(canvas, {
       onSendCommand: () => {},
       onPhysicalLocationChanged: () => {},
       onFocusedPromptChanged: () => {},
       onInteractableTriggered: (wi) => triggered.push(wi.id),
       isUiBlockingInput: () => uiBlocked,
+      createRenderer: mockRenderer,
     });
 
     const intern = stage as unknown as {
@@ -1067,5 +1084,688 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
     // Dispose cleans everything cleanly without throwing
     expect(() => stage.dispose()).not.toThrow();
     expect(triggered).toHaveLength(0);
+  });
+});
+
+describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
+  const makeMockRenderer = () => ({
+    setPixelRatio: () => {},
+    setSize: () => {},
+    render: () => {},
+    dispose: () => {},
+    toneMapping: 0 as unknown as import("three").ToneMapping,
+    toneMappingExposure: 1,
+  });
+
+  it("Item 1 [P1]: rejects pre-existing or larger quotes and auto-accepts only a fresh exact quote within authorized max total", () => {
+    const sentCommands: string[] = [];
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: (line) => sentCommands.push(line),
+      selfCharacterId: () => "#10",
+    });
+
+    // Existing open quote #2 for 100 units of listing #41 at 100.00 Cr/t (10,000 Cr total)
+    store.observePortTrade({
+      venue: "ceres",
+      balance_minor: 5_000_000,
+      listings: [
+        {
+          id: 41,
+          side: "ask",
+          good: "volatiles",
+          good_label: "water ice",
+          vendor_name: "Occator Ice",
+          unit_price_minor: 10_000,
+          available_qty: 200,
+        },
+      ],
+      open_quotes: [
+        {
+          quote_id: 2,
+          listing_id: 41,
+          quantity: 100,
+          unit_price_minor: 10_000,
+          total_minor: 1_000_000,
+        },
+      ],
+    });
+    const ask = store.trade.asks[0]!;
+    expect(store.trade.quotes).toHaveLength(1);
+
+    // User clicks Buy 1 unit on listing #41
+    store.buyListing(ask, 1);
+    expect(sentCommands).toEqual(["+market/quote 41=1"]);
+
+    // Feed arrives still carrying only old 100-unit quote #2 -> MUST NOT accept #2!
+    store.observePortTrade({
+      open_quotes: [
+        {
+          quote_id: 2,
+          listing_id: 41,
+          quantity: 100,
+          unit_price_minor: 10_000,
+          total_minor: 1_000_000,
+        },
+      ],
+    });
+    expect(sentCommands).toEqual(["+market/quote 41=1"]);
+
+    // Even if a pre-existing quote has the exact same listingId & quantity, it must NOT be accepted
+    const preSameQtyLatch = beginOneClickBuy(ask, 1, 1_000, [{ quoteId: 2 }])!.latch;
+    const staleSameQtySnap = decodePortTradeFeed(
+      {
+        open_quotes: [
+          { quote_id: 2, listing_id: 41, quantity: 1, unit_price_minor: 10_000, total_minor: 10_000 },
+        ],
+      },
+      store.goodsById,
+      store.trade,
+    );
+    expect(resolvePendingQuoteFromFeed(staleSameQtySnap, preSameQtyLatch, 1_200)).toEqual({
+      acceptCommand: null,
+      priceWarning: null,
+      clearLatch: false,
+    });
+
+    // Fresh quote #3 with inflated total_minor (> authorizedMaxTotal) must warn and NOT accept
+    const inflatedSnap = decodePortTradeFeed(
+      {
+        open_quotes: [
+          { quote_id: 2, listing_id: 41, quantity: 100, unit_price_minor: 10_000, total_minor: 1_000_000 },
+          { quote_id: 3, listing_id: 41, quantity: 1, unit_price_minor: 10_000, total_minor: 15_000 },
+        ],
+      },
+      store.goodsById,
+      store.trade,
+    );
+    const inflatedRes = resolvePendingQuoteFromFeed(inflatedSnap, preSameQtyLatch, 1_200);
+    expect(inflatedRes.acceptCommand).toBeNull();
+    expect(inflatedRes.priceWarning).toContain("Quote #3 moved");
+    expect(inflatedRes.clearLatch).toBe(true);
+
+    // Fresh quote #4 for 1 unit at 10,000 minor total arrives alongside old quote #2 -> accepts ONLY #4!
+    store.observePortTrade({
+      open_quotes: [
+        { quote_id: 2, listing_id: 41, quantity: 100, unit_price_minor: 10_000, total_minor: 1_000_000 },
+        { quote_id: 4, listing_id: 41, quantity: 1, unit_price_minor: 10_000, total_minor: 10_000 },
+      ],
+    });
+    expect(sentCommands).toEqual(["+market/quote 41=1", "+market/accept 4"]);
+  });
+
+  it("Item 2 [P2]: cold web port immediately swaps Ceres fallback to Stickney Yards when Stickney pack arrives", () => {
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: () => {},
+      selfCharacterId: () => "#10",
+    });
+
+    // Cold room arrival in Stickney Berth Gallery before Stickney pack has streamed in
+    store.observeRoom({
+      id: "#201",
+      name: "Visiting Berth Gallery",
+      desc: [{ text: "Stickney basalt gallery." }],
+      contents: [],
+      exits: [],
+      ambient: {
+        atlas: { pack: "neighborhood.stickney_yards", entry: "room.p01_berth_gallery", surface: "station" },
+        tacsim: { mode: "berth_gallery", port_entry: "stickney_port" },
+      },
+    });
+    expect(store.serverStationRoomEntry).toBe("room.p01_berth_gallery");
+    expect(store.stationPack.packId).toBe("neighborhood.ceres_freeport"); // fallback before pack arrives
+
+    const revBefore = store.packsRevision;
+    const stickneyJson = readRepoContent("atlas/neighborhood.stickney_yards.json");
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "neighborhood.stickney_yards",
+      sha256: "sha-stickney-1",
+      json: stickneyJson,
+    });
+
+    expect(store.stationPack.packId).toBe("neighborhood.stickney_yards");
+    expect(store.stationPack.rooms.has("room.p01_berth_gallery")).toBe(true);
+    expect(store.stationPack.rooms.has("room.p05_harbourmaster")).toBe(true);
+    expect(store.serverStationRoomEntry).toBe("room.p01_berth_gallery");
+    expect(store.packsRevision).toBeGreaterThan(revBefore);
+  });
+
+  it("Item 3 [P2]: text-mode quick actions follow authoritative server location on station and ship walks", () => {
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: () => {},
+      selfCharacterId: () => "#10",
+    });
+    store.toggle3dView(false);
+
+    // Start in Freeport Concourse
+    store.observeRoom({
+      id: "#104",
+      name: "Freeport Concourse",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: {
+        atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c04_concourse" },
+      },
+    });
+    expect(store.physicalLocationKey).toBe("room.c04_concourse");
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(false);
+
+    // Walk within 2 hops to Registry & Co-op Desk in text mode (3D view closed)
+    store.observeRoom({
+      id: "#105",
+      name: "Registry & Co-op Desk",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: {
+        atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c05_registry" },
+      },
+    });
+    expect(store.serverStationRoomEntry).toBe("room.c05_registry");
+    expect(store.physicalLocationKey).toBe("room.c05_registry");
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(true);
+
+    // Even if physicalLocationKey was left ahead from an earlier 3D walk, closing 3D view uses server room
+    store.toggle3dView(true);
+    store.physicalLocationKey = "room.c04_concourse";
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(false);
+    store.toggle3dView(false);
+    expect(store.physicalLocationKey).toBe("room.c05_registry");
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(true);
+
+    // Same invariant aboard ship: text-mode walk from Airlock -> Bridge switches toolbar to Take Bridge Helm
+    store.observeRoom({
+      id: "#801",
+      name: "Salt Moth - Airlock",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: { tacsim: { mode: "interior", unit: "dray", room: "airlock", docked: true } },
+    });
+    expect(store.quickActions.some((a) => a.label === "Disembark Ashore")).toBe(true);
+    store.observeRoom({
+      id: "#802",
+      name: "Salt Moth - Bridge",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: { tacsim: { mode: "interior", unit: "dray", room: "bridge", docked: true } },
+    });
+    expect(store.physicalLocationKey).toBe("bridge");
+    expect(store.quickActions.some((a) => a.label === "Take Bridge Helm")).toBe(true);
+  });
+
+  it("Item 4 [P2]: failed WebGL initialization does not capture WASD, Shift, or Arrow keys", () => {
+    const canvas = document.createElement("canvas");
+    const failedStage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+      createRenderer: () => {
+        throw new Error("WebGL context creation failed");
+      },
+    });
+    expect(failedStage.supported).toBe(false);
+
+    const bubbleReceived: string[] = [];
+    const onBubble = (ev: KeyboardEvent): void => {
+      bubbleReceived.push(ev.code);
+    };
+    window.addEventListener("keydown", onBubble);
+    try {
+      for (const code of ["ArrowUp", "ArrowDown", "KeyW", "KeyA", "ShiftLeft"]) {
+        const ev = new KeyboardEvent("keydown", { code, cancelable: true, bubbles: true });
+        window.dispatchEvent(ev);
+        expect(ev.defaultPrevented).toBe(false);
+      }
+      expect(bubbleReceived).toEqual(["ArrowUp", "ArrowDown", "KeyW", "KeyA", "ShiftLeft"]);
+    } finally {
+      window.removeEventListener("keydown", onBubble);
+      failedStage.dispose();
+    }
+
+    // Contrast: a supported stage DOES capture movement keys while mounted and releases on dispose
+    const liveStage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+      createRenderer: makeMockRenderer,
+    });
+    expect(liveStage.supported).toBe(true);
+    const activeEv = new KeyboardEvent("keydown", { code: "ArrowUp", cancelable: true, bubbles: true });
+    window.dispatchEvent(activeEv);
+    expect(activeEv.defaultPrevented).toBe(true);
+    liveStage.dispose();
+    const afterDisposeEv = new KeyboardEvent("keydown", { code: "ArrowUp", cancelable: true, bubbles: true });
+    window.dispatchEvent(afterDisposeEv);
+    expect(afterDisposeEv.defaultPrevented).toBe(false);
+  });
+
+  it("Item 5 [P2]: resizing TacsimSceneDeck viewport resizes the live Stage3D without disposing or recreating it", async () => {
+    let ws: FakeSocket | null = null;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (url) => (ws = new FakeSocket(url)),
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    const socket = ws as unknown as FakeSocket;
+    socket.readyState = 1;
+    socket.onopen?.();
+    socket.deliver(
+      {
+        t: "hello",
+        d: { proto: 1, server: "test", features: [], panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED] },
+      } as OutputEvent,
+      0,
+    );
+    app.tacsim.toggle3dView(true);
+
+    const resizeSpy = vi.spyOn(TacsimStage3D.prototype, "resize");
+    const disposeSpy = vi.spyOn(TacsimStage3D.prototype, "dispose");
+
+    const { container, unmount } = render(TacsimSceneDeck, {
+      props: { app, onCmd: () => {} },
+    });
+    await tick();
+
+    expect(disposeSpy).toHaveBeenCalledTimes(0);
+    const resizeCallsAfterMount = resizeSpy.mock.calls.length;
+    expect(resizeCallsAfterMount).toBeGreaterThanOrEqual(1);
+
+    // Drag the resize separator across multiple heights
+    const grip = container.querySelector(".resize-grip") as HTMLElement;
+    expect(grip).not.toBeNull();
+    await fireEvent.pointerDown(grip, { clientY: 400, pointerId: 1 });
+    await fireEvent.pointerMove(grip, { clientY: 460, pointerId: 1 });
+    await tick();
+    await fireEvent.pointerMove(grip, { clientY: 520, pointerId: 1 });
+    await tick();
+    await fireEvent.pointerUp(grip, { clientY: 520, pointerId: 1 });
+    await tick();
+
+    // Stage must NEVER have been disposed/recreated during resize!
+    expect(disposeSpy).toHaveBeenCalledTimes(0);
+    expect(app.tacsim.viewportHeightPx).toBe(500);
+    expect(resizeSpy.mock.calls.length).toBeGreaterThan(resizeCallsAfterMount);
+    expect(resizeSpy.mock.calls.some((call) => call[1] === 500)).toBe(true);
+
+    unmount();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+    resizeSpy.mockRestore();
+    disposeSpy.mockRestore();
+  });
+
+  it("Items 6 & 7 [P2]: holotank plots contacts in observer-relative frame and renders no fabricated contacts when empty or unavailable", () => {
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const dray = parseShipUnitJson(readRepoContent("units/dray.json"), "tacsim.unit.dray");
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+    });
+
+    const intern = stage as unknown as {
+      holotankContactsGroup: {
+        children: Array<{
+          position: { x: number; y: number; z: number };
+          userData: Record<string, unknown>;
+        }>;
+      } | null;
+      holotankStatusBanner: { lastText: string } | null;
+    };
+    const baseAmbient = decodeTacsimRoomAmbient(null);
+    const syncBridge = (holotankData: unknown): void => {
+      stage.syncWorldState({
+        stationPack: ceres,
+        shipTemplate: dray,
+        isAboardShip: true,
+        serverStationRoomEntry: null,
+        serverShipCompartment: "bridge",
+        roomRevision: 1,
+        ambient: baseAmbient,
+        visibleActors: [],
+        actorSpeech: {},
+        actorComposing: {},
+        stowageCargoKg: 0,
+        holotankData,
+      });
+    };
+
+    // Item 7: Missing / null / refused feed produces ZERO fabricated blips
+    syncBridge(null);
+    expect(intern.holotankContactsGroup?.children).toHaveLength(0);
+    expect(intern.holotankStatusBanner?.lastText).toContain("NO TELEMETRY");
+
+    syncBridge({ refused: true });
+    expect(intern.holotankContactsGroup?.children).toHaveLength(0);
+
+    // Item 7: Empty scan (0 other contacts) renders ONLY own-ship center blip, NO dummy ship/asteroid
+    syncBridge({
+      range_km: 250,
+      contacts: [{ id: "self", you: true, x_km: 500, y_km: -300, z_km: 50 }],
+    });
+    expect(intern.holotankContactsGroup?.children).toHaveLength(1);
+    expect(intern.holotankContactsGroup?.children[0]?.userData["holoKind"]).toBe("self");
+    expect(intern.holotankStatusBanner?.lastText).toContain("0 CONTACTS");
+
+    // Item 6: Nearby contact in bubble-absolute coordinates is plotted relative to observer (`you: true`)
+    syncBridge({
+      range_km: 250,
+      contacts: [
+        { id: "self", you: true, x_km: 500, y_km: -300, z_km: 50, kind: "ship" },
+        { id: "raider", you: false, x_km: 525, y_km: -250, z_km: 75, kind: "ship", relation: "hostile" },
+      ],
+    });
+    expect(intern.holotankContactsGroup?.children).toHaveLength(2);
+    const selfBlip = intern.holotankContactsGroup!.children[0]!;
+    const raiderBlip = intern.holotankContactsGroup!.children[1]!;
+    expect(selfBlip.position).toMatchObject({ x: 0, y: 0, z: 0 });
+    // Relative delta = (+25, +50, +25) km / 250 km => x=0.065, z=0.13, y=0.045
+    expect(raiderBlip.position.x).toBeCloseTo((25 / 250) * 0.65, 5);
+    expect(raiderBlip.position.z).toBeCloseTo((50 / 250) * 0.65, 5);
+    expect(raiderBlip.position.y).toBeCloseTo((25 / 250) * 0.45, 5);
+
+    stage.dispose();
+  });
+
+  it("Item 9 [P2]: failed sends are not stuck in flight and timed-out/throttled pack requests retry with bounded backoff", () => {
+    vi.useFakeTimers();
+    try {
+      let allowSend = false;
+      const requestedPacks: string[] = [];
+      const store = new TacsimPortStore({
+        hasPanel: () => true,
+        subscribePanel: (_feed, params) => {
+          if (params?.["op"] === "pack" && typeof params["id"] === "string") {
+            requestedPacks.push(params["id"]);
+          }
+          return allowSend;
+        },
+        sendCommand: () => {},
+        selfCharacterId: () => "#10",
+      });
+
+      // 1. Failed send (`subscribePanel` returns false) must NOT lock ID in flight forever
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "goods", category: "market", sha256: "g-1" }],
+      });
+      expect(requestedPacks).toEqual(["goods"]);
+
+      // Transport recovers before retry timer fires -> retry sends successfully
+      allowSend = true;
+      vi.advanceTimersByTime(PACK_RETRY_BASE_DELAY_MS);
+      expect(requestedPacks).toEqual(["goods", "goods"]);
+
+      // 2. Sent successfully (`true`), but server throttles/drops the reply:
+      //    duplicate manifest within timeout does NOT spam
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "goods", category: "market", sha256: "g-1" }],
+      });
+      expect(requestedPacks).toHaveLength(2);
+
+      //    Once in-flight timeout elapses + backoff fires, store retries automatically and bounds retries
+      vi.advanceTimersByTime(60_000);
+      // 1 failed attempt (retry #1) + 1 sent attempt + remaining retries up to PACK_MAX_RETRIES
+      expect(requestedPacks.length).toBe(PACK_MAX_RETRIES + 1);
+
+      // No further sends after bounded retry budget is exhausted
+      const countAtCap = requestedPacks.length;
+      vi.advanceTimersByTime(120_000);
+      expect(requestedPacks.length).toBe(countAtCap);
+
+      // Separate pack: verify timeout expiry -> retry -> successful delivery stops retries
+      requestedPacks.length = 0;
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "dray", category: "unit", sha256: "d-1" }],
+      });
+      expect(requestedPacks).toEqual(["dray"]);
+      vi.advanceTimersByTime(PACK_IN_FLIGHT_TIMEOUT_MS + PACK_RETRY_BASE_DELAY_MS);
+      expect(requestedPacks).toEqual(["dray", "dray"]);
+
+      // Deliver reply -> stops all retries
+      store.observeContentFeed({
+        op: "pack",
+        found: true,
+        id: "dray",
+        sha256: "d-1",
+        json: readRepoContent("units/dray.json"),
+      });
+      vi.advanceTimersByTime(60_000);
+      expect(requestedPacks).toEqual(["dray", "dray"]);
+
+      store.clear();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Item 10 [P2]: compares manifest digests, invalidates stale packs, and resets raw + derived caches across sessions/characters", () => {
+    let charId = "#10";
+    const requestedPacks: string[] = [];
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: (_feed, params) => {
+        if (params?.["op"] === "pack" && typeof params["id"] === "string") {
+          requestedPacks.push(params["id"]);
+        }
+        return true;
+      },
+      sendCommand: () => {},
+      selfCharacterId: () => charId,
+    });
+
+    const goodsV1 = JSON.stringify({
+      goods: [
+        {
+          id: "metals",
+          label: "ore v1",
+          class: "trade",
+          ledger_unit: "t",
+          measures: { "si.mass_kg": 1000, "si.volume_l": 400 },
+          stowage: "stow.bulk",
+          reference_major: 200,
+        },
+      ],
+    });
+    const goodsV2 = JSON.stringify({
+      goods: [
+        {
+          id: "metals",
+          label: "ore v2",
+          class: "trade",
+          ledger_unit: "t",
+          measures: { "si.mass_kg": 2500, "si.volume_l": 900 },
+          stowage: "stow.bulk",
+          reference_major: 350,
+        },
+      ],
+    });
+
+    // 1. Initial manifest with digest A -> fetches & caches goods v1
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-A" }],
+    });
+    expect(requestedPacks).toEqual(["goods"]);
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-A",
+      json: goodsV1,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v1");
+
+    // 2. Identical digest A -> zero refetches
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-A" }],
+    });
+    expect(requestedPacks).toEqual(["goods"]);
+
+    // 3. Updated manifest with digest B -> invalidates stale cache and re-fetches!
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-B" }],
+    });
+    expect(requestedPacks).toEqual(["goods", "goods"]);
+    // Out-of-order stale digest-A reply must be rejected
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-A",
+      json: goodsV1,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v1");
+    // Fresh digest-B reply updates derived goods table
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-B",
+      json: goodsV2,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v2");
+    expect(store.goodsById.get("metals")?.massKgPerUnit).toBe(2500);
+
+    // 4. Clearing session resets BOTH raw and derived caches; receiving digest-B again fetches fresh!
+    store.clear();
+    expect(store.goodsById.get("metals")?.label).toBe("metal concentrate"); // fallback restored
+    requestedPacks.length = 0;
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-B" }],
+    });
+    expect(requestedPacks).toEqual(["goods"]);
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-B",
+      json: goodsV2,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v2");
+
+    // 5. Switching character automatically partitions/resets raw & derived pack caches
+    charId = "#20";
+    requestedPacks.length = 0;
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-B" }],
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("metal concentrate");
+    expect(requestedPacks).toEqual(["goods"]);
+  });
+
+  it("Item 11 [P2]: arriving ship pack replaces fallback geometry for a cold Tycho Lifter and builds its vehicle bay", () => {
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: () => {},
+      selfCharacterId: () => "#10",
+    });
+
+    // Cold room arrival aboard Tycho Lifter before `tycho_lifter` unit pack has arrived
+    store.observeRoom({
+      id: "#901",
+      name: "Iron Anchor - Airlock",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: {
+        tacsim: {
+          mode: "interior",
+          unit: "tacsim.unit.tycho_lifter",
+          room: "airlock",
+          hull_name: "Iron Anchor",
+          docked: true,
+        },
+      },
+    });
+    expect(store.shipTemplate.unitId).toBe("tacsim.unit.tycho_lifter");
+    expect(store.shipTemplate.isFallback).toBe(true);
+    expect(store.shipTemplate.compartments.has("bay")).toBe(false);
+
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+    });
+    const intern = stage as unknown as {
+      shipInteractables: Array<{ id: string }>;
+    };
+
+    stage.syncWorldState({
+      stationPack: store.stationPack,
+      shipTemplate: store.shipTemplate,
+      isAboardShip: true,
+      serverStationRoomEntry: null,
+      serverShipCompartment: "airlock",
+      roomRevision: store.roomRevision,
+      ambient: store.ambient,
+      visibleActors: [],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+    // Fallback 6-room interior has no vehicle bay rigs
+    expect(intern.shipInteractables.filter((i) => i.id.startsWith("ship:rig:"))).toHaveLength(0);
+
+    // Real Tycho Lifter pack arrives over `tacsim.content`
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "tycho_lifter",
+      sha256: "sha-tycho-1",
+      json: readRepoContent("units/tycho_lifter.json"),
+    });
+    expect(store.shipTemplate.unitId).toBe("tacsim.unit.tycho_lifter");
+    expect(store.shipTemplate.isFallback).toBe(false);
+    expect(store.shipTemplate.compartments.has("bay")).toBe(true);
+
+    // Next syncWorldState MUST rebuild ship interior despite unchanged unitId!
+    stage.syncWorldState({
+      stationPack: store.stationPack,
+      shipTemplate: store.shipTemplate,
+      isAboardShip: true,
+      serverStationRoomEntry: null,
+      serverShipCompartment: "airlock",
+      roomRevision: store.roomRevision,
+      ambient: store.ambient,
+      visibleActors: [],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+    expect(intern.shipInteractables.filter((i) => i.id.startsWith("ship:rig:"))).toHaveLength(2);
+    stage.dispose();
   });
 });

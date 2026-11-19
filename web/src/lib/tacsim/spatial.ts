@@ -137,6 +137,7 @@ export interface ShipUnitTemplate {
   label: string;
   compartments: Map<string, ShipCompartmentDef>;
   exits: ShipExitPairDef[];
+  isFallback?: boolean;
 }
 
 export interface DockedHullSummary {
@@ -530,6 +531,29 @@ export function computePackGeometrySignature(pack: AtlasNeighborhoodPack): strin
   for (const k of keys) {
     const r = pack.rooms.get(k);
     if (r) parts.push(`${r.entryId}:${r.floorIndex}:${r.minX},${r.minY},${r.maxX},${r.maxY}`);
+  }
+  return parts.join("|");
+}
+
+export function computeShipTemplateSignature(tpl: ShipUnitTemplate): string {
+  const parts: string[] = [
+    tpl.unitId,
+    tpl.isFallback ? "fallback" : "pack",
+    tpl.label,
+    `c=${tpl.compartments.size}`,
+    `e=${tpl.exits.length}`,
+  ];
+  const keys = [...tpl.compartments.keys()].sort();
+  for (const k of keys) {
+    const c = tpl.compartments.get(k);
+    if (c) {
+      parts.push(
+        `${c.id}:${c.name}:${c.shortDesc}:${c.localCenter.x},${c.localCenter.y},${c.localCenter.z}:${c.localSize.x},${c.localSize.y},${c.localSize.z}`,
+      );
+    }
+  }
+  for (const ex of tpl.exits) {
+    parts.push(`${ex.from}->${ex.to}:${ex.forwardCommand}/${ex.reverseCommand}`);
   }
   return parts.join("|");
 }
@@ -1056,6 +1080,7 @@ export function parseShipUnitJson(
     label: asStr(def["label"], "Dray-class bulk hauler"),
     compartments: new Map(),
     exits: [],
+    isFallback: false,
   };
 
   rooms.forEach((rVal, i) => {
@@ -1790,6 +1815,7 @@ export function buildFallbackDray(unitId = "tacsim.unit.dray"): ShipUnitTemplate
       { from: "passage", to: "hold", forwardLabel: "Cargo Hold", forwardCommand: "d", reverseLabel: "Central Passage", reverseCommand: "u" },
       { from: "hold", to: "engineering", forwardLabel: "Engineering Access", forwardCommand: "aft", reverseLabel: "Cargo Hold", reverseCommand: "fore" },
     ],
+    isFallback: true,
   };
 
   const bounds = getStandardDrayCompartmentBounds();

@@ -24,6 +24,7 @@ import {
   isValidMupkPrefix,
   RED_TEAM_RAMP,
   resolveMupkAssetUrl,
+  resolveOpposingSilhouetteShift,
   shadedMupkRgb,
   srgbChannelToLinear,
 } from "./mupk-mesh";
@@ -215,6 +216,168 @@ describe("Track 8: .mupk v5 3D visual-hull carver & procedural WebAudio", () => 
     for (const s of geoSpies) expect(s).toHaveBeenCalledTimes(1);
     for (const s of matSpies) expect(s).toHaveBeenCalledTimes(1);
     expect(fallback.userData["disposed"]).toBe(true);
+  });
+
+  it("enforces strict 4-view registered silhouette intersection (zero transparent pixels filled on synthetic & shipped .mupk models)", () => {
+    const samplePx = (f: DecodedMupkFrame2D, du: number, dv: number): number => {
+      const cx = f.anchorX + du;
+      const cy = f.anchorY - dv;
+      if (cx < f.x || cx >= f.x + f.w || cy < f.y || cy >= f.y + f.h) return 0;
+      return f.pixels[(cy - f.y) * f.w + (cx - f.x)]!;
+    };
+
+    // 1. Synthetic 4-view test: punching a single transparent hole in ANY one of the 4 silhouettes
+    //    must carve out the entire ray through that hole (strict intersection, never opposing union).
+    const N = 8;
+    const makeFrame = (fill: (du: number, dv: number) => number): DecodedMupkFrame2D => {
+      const pixels = new Uint8Array(N * N);
+      for (let py = 0; py < N; py++) {
+        const dv = N - 1 - py;
+        for (let px = 0; px < N; px++) {
+          const du = px - N / 2;
+          pixels[py * N + px] = fill(du, dv);
+        }
+      }
+      return {
+        sizePx: N,
+        x: 0,
+        y: 0,
+        w: N,
+        h: N,
+        anchorX: N / 2,
+        anchorY: N - 1,
+        heightPx: N,
+        pixels,
+      };
+    };
+
+    const solidBox = (du: number, dv: number): number =>
+      du >= -1 && du <= 1 && dv >= 0 && dv <= 2 ? 0x75 : 0;
+
+    const fullCube: DecodedMupkModel = {
+      modelId: "test.cube",
+      assetPack: "test",
+      prefab: "test",
+      sizeCm: [200, 200],
+      spanCm: 200,
+      chosenSizePx: N,
+      front: makeFrame(solidBox),
+      rear: makeFrame(solidBox),
+      right: makeFrame(solidBox),
+      left: makeFrame(solidBox),
+    };
+    expect(carveMupkVisualHull(fullCube, RED_TEAM_RAMP, 1.5).solidVoxelCount).toBe(27);
+
+    // Transparent pixel in FRONT only (rear still opaque) -> removes 3 voxels along Z ray (27 - 3 = 24)
+    const frontHole: DecodedMupkModel = {
+      ...fullCube,
+      front: makeFrame((du, dv) => (du === 0 && dv === 1 ? 0 : solidBox(du, dv))),
+    };
+    expect(carveMupkVisualHull(frontHole, RED_TEAM_RAMP, 1.5).solidVoxelCount).toBe(24);
+
+    // Transparent pixel in REAR only (front still opaque) -> removes 3 voxels along Z ray (27 - 3 = 24)
+    const rearHole: DecodedMupkModel = {
+      ...fullCube,
+      rear: makeFrame((du, dv) => (du === 0 && dv === 1 ? 0 : solidBox(du, dv))),
+    };
+    expect(carveMupkVisualHull(rearHole, RED_TEAM_RAMP, 1.5).solidVoxelCount).toBe(24);
+
+    // Transparent pixel in LEFT only (right still opaque) -> removes 3 voxels along X ray (27 - 3 = 24)
+    const leftHole: DecodedMupkModel = {
+      ...fullCube,
+      left: makeFrame((du, dv) => (du === 0 && dv === 1 ? 0 : solidBox(du, dv))),
+    };
+    expect(carveMupkVisualHull(leftHole, RED_TEAM_RAMP, 1.5).solidVoxelCount).toBe(24);
+
+    // Transparent pixel in RIGHT only (left still opaque) -> removes 3 voxels along X ray (27 - 3 = 24)
+    const rightHole: DecodedMupkModel = {
+      ...fullCube,
+      right: makeFrame((du, dv) => (du === 0 && dv === 1 ? 0 : solidBox(du, dv))),
+    };
+    expect(carveMupkVisualHull(rightHole, RED_TEAM_RAMP, 1.5).solidVoxelCount).toBe(24);
+
+    // 2. Shipped .mupk models: verify exact 4-view registered intersection and that NO carved
+    //    surface voxel projects onto a transparent pixel in ANY of the 4 registered silhouettes.
+    for (const prefix of [
+      "vf.mech.brawler_med",
+      "mc.vh.bug_rover",
+      "mc.vh.bug_truck",
+      "mc.st.tank_lvl2",
+    ]) {
+      const decoded = decodeMupkModel(readShippedMupk(prefix), 24)!;
+      const sz = decoded.chosenSizePx;
+      const half = Math.floor(sz / 2);
+      const rearShift = resolveOpposingSilhouetteShift(decoded.front, decoded.rear, sz);
+      const leftShift = resolveOpposingSilhouetteShift(decoded.right, decoded.left, sz);
+      expect(rearShift).toBe(-1);
+      expect(leftShift).toBe(-1);
+
+      let expectedStrict = 0;
+      let unionCount = 0;
+      let minGx = sz;
+      let maxGx = -1;
+      let minGy = sz + 4;
+      let maxGy = -1;
+      let minGz = sz;
+      let maxGz = -1;
+      for (let gy = 0; gy < sz + 4; gy++) {
+        const dv = gy - 2;
+        for (let gz = 0; gz < sz; gz++) {
+          const dz = gz - half;
+          const pR = samplePx(decoded.right, dz, dv) !== 0;
+          const pL = samplePx(decoded.left, -dz + leftShift, dv) !== 0;
+          for (let gx = 0; gx < sz; gx++) {
+            const dx = gx - half;
+            const pF = samplePx(decoded.front, dx, dv) !== 0;
+            const pB = samplePx(decoded.rear, -dx + rearShift, dv) !== 0;
+            if ((pR || pL) && (pF || pB)) unionCount++;
+            if (pR && pL && pF && pB) {
+              expectedStrict++;
+              if (gx < minGx) minGx = gx;
+              if (gx > maxGx) maxGx = gx;
+              if (gy < minGy) minGy = gy;
+              if (gy > maxGy) maxGy = gy;
+              if (gz < minGz) minGz = gz;
+              if (gz > maxGz) maxGz = gz;
+            }
+          }
+        }
+      }
+
+      const targetH = 2.0;
+      const hull = carveMupkVisualHull(decoded, RED_TEAM_RAMP, targetH);
+      expect(hull.solidVoxelCount).toBe(expectedStrict);
+      expect(hull.solidVoxelCount).toBeLessThan(unionCount);
+
+      // Reconstruct every emitted quad's owning voxel (gx, gy, gz) and assert all 4 views are opaque
+      const spanY = maxGy - minGy + 1;
+      const voxelMeters = Math.max(0.03, targetH / spanY);
+      const centerGx = (minGx + maxGx + 1) * 0.5;
+      const centerGz = (minGz + maxGz + 1) * 0.5;
+      for (let q = 0; q < hull.quadCount; q++) {
+        const base = q * 6 * 3;
+        // Quad center is midpoint of opposite vertices v0 (index 0) and v2 (index 2)
+        const cx = (hull.positions[base]! + hull.positions[base + 6]!) * 0.5;
+        const cy = (hull.positions[base + 1]! + hull.positions[base + 7]!) * 0.5;
+        const cz = (hull.positions[base + 2]! + hull.positions[base + 8]!) * 0.5;
+        const nx = hull.normals[base]!;
+        const ny = hull.normals[base + 1]!;
+        const nz = hull.normals[base + 2]!;
+        const vx = cx - nx * voxelMeters * 0.5;
+        const vy = cy - ny * voxelMeters * 0.5;
+        const vz = cz - nz * voxelMeters * 0.5;
+        const gx = Math.floor(vx / voxelMeters + centerGx);
+        const gy = Math.floor(vy / voxelMeters + minGy);
+        const gz = Math.floor(vz / voxelMeters + centerGz);
+        const dx = gx - half;
+        const dv = gy - 2;
+        const dz = gz - half;
+        expect(samplePx(decoded.front, dx, dv)).toBeGreaterThan(0);
+        expect(samplePx(decoded.rear, -dx + rearShift, dv)).toBeGreaterThan(0);
+        expect(samplePx(decoded.right, dz, dv)).toBeGreaterThan(0);
+        expect(samplePx(decoded.left, -dz + leftShift, dv)).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("enforces .mupk prefix allowlist and bake.rs bounds caps (W3D-L1)", () => {

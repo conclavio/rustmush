@@ -85,6 +85,8 @@ export interface PendingQuoteLatch {
   listingId: number;
   quantity: number;
   maxUnitPriceMinor: number;
+  maxTotalMinor: number;
+  preExistingQuoteIds: ReadonlySet<number>;
   requestedAtMs: number;
 }
 
@@ -350,8 +352,8 @@ export function decodePortTradeFeed(
       if (!q) continue;
       const quoteId = Math.trunc(asNum(q["quote_id"], asNum(q["id"], 0)));
       const listingId = Math.trunc(asNum(q["listing_id"], asNum(q["listing"], 0)));
-      if (quoteId <= 0) continue;
-      const quantity = Math.max(1, Math.trunc(asNum(q["quantity"], asNum(q["qty"], 1))));
+      const quantity = Math.trunc(asNum(q["quantity"], asNum(q["qty"], 0)));
+      if (quoteId <= 0 || listingId <= 0 || quantity <= 0) continue;
       const unitPriceMinor = Math.round(
         asNum(q["unit_price_minor"], asNum(q["execution_price_minor"], 0)),
       );
@@ -514,6 +516,7 @@ export function beginOneClickBuy(
   row: PortListingRow,
   quantity: number,
   nowMs: number,
+  existingQuotes: ReadonlyArray<Pick<OpenBuyerQuote, "quoteId">> = [],
 ): { quoteCommand: string; latch: PendingQuoteLatch } | null {
   if (row.listingId <= 0 || row.unitPriceMinor <= 0) return null;
   const qty = Math.max(1, Math.min(row.quantity || quantity, Math.trunc(quantity)));
@@ -523,6 +526,8 @@ export function beginOneClickBuy(
       listingId: row.listingId,
       quantity: qty,
       maxUnitPriceMinor: row.unitPriceMinor,
+      maxTotalMinor: row.unitPriceMinor * qty,
+      preExistingQuoteIds: new Set(existingQuotes.map((q) => q.quoteId)),
       requestedAtMs: nowMs,
     },
   };
@@ -538,15 +543,31 @@ export function resolvePendingQuoteFromFeed(
     return { acceptCommand: null, priceWarning: null, clearLatch: true };
   }
 
-  const matched = snapshot.quotes.find((q) => q.listingId === latch.listingId);
-  if (!matched) {
+  const freshMatches = snapshot.quotes.filter(
+    (q) =>
+      !latch.preExistingQuoteIds.has(q.quoteId) &&
+      q.listingId === latch.listingId &&
+      q.quantity === latch.quantity,
+  );
+  if (freshMatches.length === 0) {
     return { acceptCommand: null, priceWarning: null, clearLatch: false };
   }
 
-  if (matched.unitPriceMinor > latch.maxUnitPriceMinor) {
+  const matched = freshMatches.reduce((best, q) => (q.quoteId > best.quoteId ? q : best));
+  const authorizedMaxTotal =
+    typeof latch.maxTotalMinor === "number" && Number.isFinite(latch.maxTotalMinor)
+      ? latch.maxTotalMinor
+      : latch.maxUnitPriceMinor * latch.quantity;
+
+  if (
+    matched.unitPriceMinor <= 0 ||
+    matched.totalMinor <= 0 ||
+    matched.unitPriceMinor > latch.maxUnitPriceMinor ||
+    matched.totalMinor > authorizedMaxTotal
+  ) {
     return {
       acceptCommand: null,
-      priceWarning: `Quote #${matched.quoteId} moved to ${formatMinorCredits(matched.unitPriceMinor)} (above ${formatMinorCredits(latch.maxUnitPriceMinor)}) — review before accepting.`,
+      priceWarning: `Quote #${matched.quoteId} moved to ${formatMinorCredits(matched.unitPriceMinor)} (total ${formatMinorCredits(matched.totalMinor)}, above authorized ${formatMinorCredits(authorizedMaxTotal)}) — review before accepting.`,
       clearLatch: true,
     };
   }

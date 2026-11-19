@@ -412,15 +412,53 @@ export function srgbChannelToLinear(c8: number): number {
 }
 
 /**
+ * Determine the opposing-view horizontal mirror offset (`0` or `-1`) between two
+ * opposite orthogonal frames (`front`/`rear` or `right`/`left`).
+ *
+ * Baked even-width `.mupk` frames (`reduce.rs::scale_point`) place `anchorX = N / 2`
+ * on the boundary between columns `anchorX - 1` and `anchorX`, so column `anchorX + d`
+ * mirrors to `anchorX - 1 - d` (`shift = -1`). Pixel-centered synthetic silhouettes
+ * mirror `anchorX + d` to `anchorX - d` (`shift = 0`).
+ */
+export function resolveOpposingSilhouetteShift(
+  primary: DecodedMupkFrame2D,
+  opposite: DecodedMupkFrame2D,
+  sizePx: number,
+): 0 | -1 {
+  const half = Math.floor(sizePx / 2);
+  const gridH = sizePx + 4;
+  const padBelowAnchor = 2;
+
+  const overlapScore = (shift: 0 | -1): number => {
+    let inter = 0;
+    let uni = 0;
+    for (let gy = 0; gy < gridH; gy++) {
+      const dv = gy - padBelowAnchor;
+      for (let g = 0; g < sizePx; g++) {
+        const d = g - half;
+        const a = sampleFrame(primary, d, dv) !== 0;
+        const b = sampleFrame(opposite, -d + shift, dv) !== 0;
+        if (a && b) inter++;
+        if (a || b) uni++;
+      }
+    }
+    return uni > 0 ? inter / uni : 0;
+  };
+
+  return overlapScore(-1) > overlapScore(0) ? -1 : 0;
+}
+
+/**
  * Carve a watertight 3D visual-hull mesh from the 4 orthogonal `.mupk` silhouettes,
- * culling all internal faces between adjacent solid voxels.
+ * intersecting all four registered silhouette masks and culling all internal faces
+ * between adjacent solid voxels.
  *
  * Right-handed Three.js basis (`+Z` = unit front, `+Y` = up, `Up × Front = +X` = unit LEFT,
  * `-X` = unit RIGHT):
  * - `model.front` (viewer looking at front): viewer right (`+u`) = unit left (`+X`) -> `du = +dx`
- * - `model.rear` (viewer looking at rear): viewer right (`+u`) = unit right (`-X`) -> `du = -dx`
+ * - `model.rear` (viewer looking at rear): viewer right (`+u`) = unit right (`-X`) -> `du = -dx + rearShift`
  * - `model.right` (viewer looking at right side, front to viewer right): `du = +dz`
- * - `model.left` (viewer looking at left side, front to viewer left): `du = -dz`
+ * - `model.left` (viewer looking at left side, front to viewer left): `du = -dz + leftShift`
  */
 export function carveMupkVisualHull(
   model: DecodedMupkModel,
@@ -433,6 +471,8 @@ export function carveMupkVisualHull(
   const gridH = N + 4;
   const gridD = N;
   const padBelowAnchor = 2;
+  const rearShift = resolveOpposingSilhouetteShift(model.front, model.rear, N);
+  const leftShift = resolveOpposingSilhouetteShift(model.right, model.left, N);
 
   const solid = new Uint8Array(gridW * gridH * gridD);
   const idxOf = (gx: number, gy: number, gz: number): number => (gy * gridD + gz) * gridW + gx;
@@ -450,14 +490,14 @@ export function carveMupkVisualHull(
     for (let gz = 0; gz < gridD; gz++) {
       const dz = gz - half;
       const pRight = sampleFrame(model.right, dz, dv);
-      const pLeft = sampleFrame(model.left, -dz, dv);
-      if (pRight === 0 && pLeft === 0) continue;
+      const pLeft = sampleFrame(model.left, -dz + leftShift, dv);
+      if (pRight === 0 || pLeft === 0) continue;
 
       for (let gx = 0; gx < gridW; gx++) {
         const dx = gx - half;
         const pFront = sampleFrame(model.front, dx, dv);
-        const pRear = sampleFrame(model.rear, -dx, dv);
-        if (pFront === 0 && pRear === 0) continue;
+        const pRear = sampleFrame(model.rear, -dx + rearShift, dv);
+        if (pFront === 0 || pRear === 0) continue;
 
         solid[idxOf(gx, gy, gz)] = 1;
         solidCount++;
@@ -529,7 +569,7 @@ export function carveMupkVisualHull(
       const z0 = (gz - centerGz) * voxelMeters;
       const z1 = z0 + voxelMeters;
       const pRight = sampleFrame(model.right, dz, dv);
-      const pLeft = sampleFrame(model.left, -dz, dv);
+      const pLeft = sampleFrame(model.left, -dz + leftShift, dv);
 
       for (let gx = minGx; gx <= maxGx; gx++) {
         if (!isSolid(gx, gy, gz)) continue;
@@ -537,7 +577,7 @@ export function carveMupkVisualHull(
         const x0 = (gx - centerGx) * voxelMeters;
         const x1 = x0 + voxelMeters;
         const pFront = sampleFrame(model.front, dx, dv);
-        const pRear = sampleFrame(model.rear, -dx, dv);
+        const pRear = sampleFrame(model.rear, -dx + rearShift, dv);
 
         // +Z (Front)
         if (!isSolid(gx, gy, gz + 1)) {

@@ -21,6 +21,7 @@ import {
   computeInterFloorStairPlacement,
   computePackGeometrySignature,
   computeRightHandedMoveDelta,
+  computeShipTemplateSignature,
   findShipExitPath,
   findStationExitPath,
   getDefaultSpawnRoomEntry,
@@ -74,6 +75,11 @@ export interface Stage3DCallbacks {
   onFocusedPromptChanged: (prompt: { title: string; subtitle: string } | null) => void;
   onPhysicalLocationChanged: (locKey: string | null) => void;
   isUiBlockingInput: () => boolean;
+  /** Optional renderer factory seam for testing WebGL success/failure paths. */
+  createRenderer?: (canvas: HTMLCanvasElement) => Pick<
+    THREE.WebGLRenderer,
+    "setPixelRatio" | "setSize" | "render" | "dispose" | "toneMapping" | "toneMappingExposure"
+  >;
 }
 
 interface SpawnedActorRecord {
@@ -292,7 +298,15 @@ export class TacsimStage3D {
   private readonly shipInteractables: WorldInteractable3D[] = [];
   private focusedInteractable: WorldInteractable3D | null = null;
 
+  private static readonly HOLO_UNSET = Symbol("holo-unset");
+
   private holotankContactsGroup: THREE.Group | null = null;
+  private holotankStatusBanner: {
+    sprite: THREE.Sprite;
+    canvas: HTMLCanvasElement;
+    tex: THREE.CanvasTexture;
+    lastText: string;
+  } | null = null;
   private cargoPalletsGroup: THREE.Group | null = null;
   private readonly cargoCrateGeo = new THREE.BoxGeometry(1.4, 1.15, 1.4);
   private readonly cargoCrateMat = new THREE.MeshStandardMaterial({
@@ -305,7 +319,7 @@ export class TacsimStage3D {
   private readonly sharedPoolGeos = new Set<THREE.BufferGeometry>();
   private readonly sharedPoolMats = new Set<THREE.Material>();
   private lastCargoStacks = -1;
-  private lastHolotankFeed: unknown = undefined;
+  private lastHolotankFeed: unknown = TacsimStage3D.HOLO_UNSET;
 
   private cradleSignSprites: Array<{ sprite: THREE.Sprite; canvas: HTMLCanvasElement; tex: THREE.CanvasTexture }> = [];
   private cradleHullGroups: THREE.Group[] = [];
@@ -316,7 +330,7 @@ export class TacsimStage3D {
   private spawnedActorsScopeKey = "";
 
   private builtStationSig = "";
-  private builtShipUnitId = "";
+  private builtShipSig = "";
   private activeStationPack: AtlasNeighborhoodPack | null = null;
   private activeShipTemplate: ShipUnitTemplate | null = null;
   private originOffsetX = -160;
@@ -341,6 +355,7 @@ export class TacsimStage3D {
 
   private rafId = 0;
   private lastFrameMs = 0;
+  private eventsBound = false;
   private contextLost = false;
   private disposed = false;
 
@@ -373,13 +388,15 @@ export class TacsimStage3D {
     this.scene.add(this.playerGroup);
 
     let glOk = false;
-    if (!this.headlessDom) {
+    if (callbacks.createRenderer || !this.headlessDom) {
       try {
-        this.renderer = new THREE.WebGLRenderer({
-          canvas: this.canvas,
-          antialias: true,
-          powerPreference: "high-performance",
-        });
+        this.renderer = callbacks.createRenderer
+          ? (callbacks.createRenderer(this.canvas) as THREE.WebGLRenderer)
+          : new THREE.WebGLRenderer({
+              canvas: this.canvas,
+              antialias: true,
+              powerPreference: "high-performance",
+            });
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
         this.renderer.toneMappingExposure = 1.12;
@@ -391,8 +408,8 @@ export class TacsimStage3D {
     }
     this.supported = glOk;
 
-    this.bindDomEvents();
     if (this.supported) {
+      this.bindDomEvents();
       this.lastFrameMs = performance.now();
       this.rafId = requestAnimationFrame(this.onFrame);
     }
@@ -404,7 +421,9 @@ export class TacsimStage3D {
       cancelAnimationFrame(this.rafId);
       this.rafId = 0;
     }
-    this.unbindDomEvents();
+    if (this.eventsBound) {
+      this.unbindDomEvents();
+    }
     this.clearAllActors();
     this.clearAndDisposeGroup(this.stationRoot);
     this.clearAndDisposeGroup(this.shipRoot);
@@ -603,8 +622,10 @@ export class TacsimStage3D {
       this.activeStationPack = stationPack;
     }
 
-    if (shipTemplate.unitId !== this.builtShipUnitId) {
-      this.buildShipInterior(shipTemplate);
+    const newShipSig = computeShipTemplateSignature(shipTemplate);
+    const shipRebuilt = newShipSig !== this.builtShipSig;
+    if (shipRebuilt) {
+      this.buildShipInterior(shipTemplate, newShipSig);
     } else {
       this.activeShipTemplate = shipTemplate;
     }
@@ -633,7 +654,7 @@ export class TacsimStage3D {
         this.pendingMoveTarget !== serverShipCompartment &&
         nowMs - this.pendingMoveSentAtMs < 3500;
       const shouldReconcile =
-        (firstSync || modeChanged || unitChanged || serverCompChanged || roomEventArrived) &&
+        (firstSync || modeChanged || unitChanged || shipRebuilt || serverCompChanged || roomEventArrived) &&
         !moveInFlightElsewhere;
 
       if (shouldReconcile) {
@@ -1699,9 +1720,9 @@ export class TacsimStage3D {
 
   // -- Ship Interior Builder ------------------------------------------------
 
-  private buildShipInterior(tpl: ShipUnitTemplate): void {
+  private buildShipInterior(tpl: ShipUnitTemplate, sig = computeShipTemplateSignature(tpl)): void {
     this.activeShipTemplate = tpl;
-    this.builtShipUnitId = tpl.unitId;
+    this.builtShipSig = sig;
 
     this.clearAndDisposeGroup(this.shipRoot);
     this.shipWallObstacles.length = 0;
@@ -1712,9 +1733,10 @@ export class TacsimStage3D {
       }
     }
     this.holotankContactsGroup = null;
+    this.holotankStatusBanner = null;
     this.cargoPalletsGroup = null;
     this.lastCargoStacks = -1;
-    this.lastHolotankFeed = undefined;
+    this.lastHolotankFeed = TacsimStage3D.HOLO_UNSET;
     this.airlockLeaveWi = null;
 
     const tex = getOrBuildProceduralTextures();
@@ -1867,6 +1889,14 @@ export class TacsimStage3D {
       this.holotankContactsGroup = new THREE.Group();
       this.holotankContactsGroup.position.set(0, fy + 1.45, bridge.localCenter.z + 0.4);
       this.shipRoot.add(this.holotankContactsGroup);
+      const statusBanner = this.createFloatingBannerSprite("HOLOTANK STANDBY — NO TELEMETRY");
+      statusBanner.sprite.position.set(0, fy + 2.02, bridge.localCenter.z + 0.4);
+      statusBanner.sprite.scale.set(2.2, 0.42, 1);
+      this.shipRoot.add(statusBanner.sprite);
+      this.holotankStatusBanner = {
+        ...statusBanner,
+        lastText: "HOLOTANK STANDBY — NO TELEMETRY",
+      };
       this.updateHolotank(null);
 
       const couchPos = new THREE.Vector3(0, fy + 0.45, bridge.localCenter.z + 2.5);
@@ -2015,43 +2045,98 @@ export class TacsimStage3D {
     }
   }
 
+  private setHolotankStatus(text: string): void {
+    const banner = this.holotankStatusBanner;
+    if (!banner || banner.lastText === text) return;
+    banner.lastText = text;
+    this.drawBannerCanvas(banner.canvas, banner.tex, text);
+  }
+
   private updateHolotank(holoFeed: unknown): void {
     if (!this.holotankContactsGroup) return;
-    if (holoFeed === this.lastHolotankFeed && this.holotankContactsGroup.children.length > 0) {
+    if (holoFeed === this.lastHolotankFeed) {
       return;
     }
     this.lastHolotankFeed = holoFeed;
     while (this.holotankContactsGroup.children.length > 0) {
       this.holotankContactsGroup.remove(this.holotankContactsGroup.children[0]!);
     }
-    const addBlip = (x: number, y: number, z: number, r: number, hex: number): void => {
+
+    const obj =
+      typeof holoFeed === "object" && holoFeed !== null && !Array.isArray(holoFeed)
+        ? (holoFeed as Record<string, unknown>)
+        : null;
+    const contacts = obj && Array.isArray(obj["contacts"]) ? obj["contacts"] : null;
+    if (!obj || obj["refused"] === true || obj["closed"] === true || !contacts) {
+      this.setHolotankStatus("HOLOTANK STANDBY — NO TELEMETRY");
+      return;
+    }
+
+    const addBlip = (
+      x: number,
+      y: number,
+      z: number,
+      r: number,
+      hex: number,
+      kind: "self" | "contact",
+    ): void => {
       const m = new THREE.Mesh(this.holoBlipGeo, this.getOrCreateHoloMat(hex));
       m.scale.setScalar(r);
       m.position.set(x, y, z);
+      m.userData["holoKind"] = kind;
       this.holotankContactsGroup!.add(m);
     };
-    addBlip(0, 0, 0, 0.06, 0x44ffaa);
 
-    const obj = typeof holoFeed === "object" && holoFeed !== null ? (holoFeed as Record<string, unknown>) : null;
-    const contacts = obj && Array.isArray(obj["contacts"]) ? obj["contacts"] : null;
-    const rangeKm = Math.max(1, typeof obj?.["range_km"] === "number" ? obj["range_km"] : 1000);
-    if (contacts && contacts.length > 0) {
-      for (const c of contacts) {
-        if (typeof c !== "object" || c === null) continue;
-        const rec = c as Record<string, unknown>;
-        if (rec["you"] === true) continue;
-        const x = ((typeof rec["x_km"] === "number" ? rec["x_km"] : 0) / rangeKm) * 0.65;
-        const z = ((typeof rec["y_km"] === "number" ? rec["y_km"] : 0) / rangeKm) * 0.65;
-        const y = ((typeof rec["z_km"] === "number" ? rec["z_km"] : 0) / rangeKm) * 0.45;
-        const rel = typeof rec["relation"] === "string" ? rec["relation"] : "neutral";
-        const kind = typeof rec["kind"] === "string" ? rec["kind"] : "ship";
-        const col = kind === "asteroid" || kind === "rock" ? 0xffc844 : rel === "hostile" ? 0xff5544 : 0x55ccff;
-        addBlip(x, y, z, 0.045, col);
+    // Resolve observer position in bubble-absolute coordinates so all contacts plot in
+    // the same observer-centered frame as the own-ship center marker.
+    let obsX = 0;
+    let obsY = 0;
+    let obsZ = 0;
+    for (const c of contacts) {
+      if (typeof c !== "object" || c === null) continue;
+      const rec = c as Record<string, unknown>;
+      if (rec["you"] === true) {
+        obsX = typeof rec["x_km"] === "number" && Number.isFinite(rec["x_km"]) ? rec["x_km"] : 0;
+        obsY = typeof rec["y_km"] === "number" && Number.isFinite(rec["y_km"]) ? rec["y_km"] : 0;
+        obsZ = typeof rec["z_km"] === "number" && Number.isFinite(rec["z_km"]) ? rec["z_km"] : 0;
+        break;
       }
-    } else {
-      addBlip(0.38, 0.10, 0.24, 0.075, 0x55ccff);
-      addBlip(-0.32, -0.06, 0.34, 0.04, 0xffc844);
     }
+
+    addBlip(0, 0, 0, 0.06, 0x44ffaa, "self");
+
+    const rawRange = typeof obj["range_km"] === "number" && Number.isFinite(obj["range_km"]) ? obj["range_km"] : 1000;
+    const rangeKm = Math.max(1, rawRange);
+    let plottedContacts = 0;
+    for (const c of contacts) {
+      if (typeof c !== "object" || c === null) continue;
+      const rec = c as Record<string, unknown>;
+      if (rec["you"] === true) continue;
+      const cx = typeof rec["x_km"] === "number" && Number.isFinite(rec["x_km"]) ? rec["x_km"] : 0;
+      const cy = typeof rec["y_km"] === "number" && Number.isFinite(rec["y_km"]) ? rec["y_km"] : 0;
+      const cz = typeof rec["z_km"] === "number" && Number.isFinite(rec["z_km"]) ? rec["z_km"] : 0;
+      let x = ((cx - obsX) / rangeKm) * 0.65;
+      let z = ((cy - obsY) / rangeKm) * 0.65;
+      let y = ((cz - obsZ) / rangeKm) * 0.45;
+      const horizR = Math.hypot(x, z);
+      if (horizR > 0.72) {
+        const s = 0.72 / horizR;
+        x *= s;
+        z *= s;
+      }
+      y = Math.max(-0.45, Math.min(0.45, y));
+      const rel = typeof rec["relation"] === "string" ? rec["relation"] : "neutral";
+      const kind = typeof rec["kind"] === "string" ? rec["kind"] : "ship";
+      const col = kind === "asteroid" || kind === "rock" ? 0xffc844 : rel === "hostile" ? 0xff5544 : 0x55ccff;
+      addBlip(x, y, z, 0.045, col, "contact");
+      plottedContacts += 1;
+    }
+
+    this.setHolotankStatus(
+      plottedContacts === 0
+        ? "HOLOTANK CLEAR — 0 CONTACTS"
+        : `HOLOTANK LIVE — ${plottedContacts} CONTACT${plottedContacts === 1 ? "" : "S"}`,
+    );
   }
 
   // -- Primitives & Plaques -------------------------------------------------
@@ -2530,6 +2615,7 @@ export class TacsimStage3D {
   // -- Input Events ---------------------------------------------------------
 
   private readonly onKeyDown = (ev: KeyboardEvent): void => {
+    if (!this.supported || this.contextLost) return;
     if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
     if (this.cb.isUiBlockingInput() || isTextField(ev.target)) return;
 
@@ -2579,7 +2665,7 @@ export class TacsimStage3D {
   };
 
   private readonly onPointerDown = (ev: PointerEvent): void => {
-    if (this.cb.isUiBlockingInput()) return;
+    if (!this.supported || this.contextLost || this.cb.isUiBlockingInput()) return;
     if (ev.button === 2 || ev.button === 1 || (ev.button === 0 && ev.shiftKey)) {
       ev.preventDefault();
       this.rmbOrbiting = true;
@@ -2640,7 +2726,7 @@ export class TacsimStage3D {
   };
 
   private readonly onWheel = (ev: WheelEvent): void => {
-    if (this.cb.isUiBlockingInput()) return;
+    if (!this.supported || this.contextLost || this.cb.isUiBlockingInput()) return;
     ev.preventDefault();
     this.camDist = Math.max(2.4, Math.min(11.5, this.camDist + Math.sign(ev.deltaY) * 0.55));
   };
@@ -2668,7 +2754,7 @@ export class TacsimStage3D {
       rec.billboardTex.needsUpdate = true;
     }
     this.builtStationSig = "";
-    this.builtShipUnitId = "";
+    this.builtShipSig = "";
     if (this.activeStationPack) {
       this.buildStationWorld(
         this.activeStationPack,
@@ -2676,7 +2762,10 @@ export class TacsimStage3D {
       );
     }
     if (this.activeShipTemplate) {
-      this.buildShipInterior(this.activeShipTemplate);
+      this.buildShipInterior(
+        this.activeShipTemplate,
+        computeShipTemplateSignature(this.activeShipTemplate),
+      );
     }
     this.lastFrameMs = performance.now();
     if (!this.rafId) {
@@ -2685,7 +2774,8 @@ export class TacsimStage3D {
   };
 
   private bindDomEvents(): void {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || this.eventsBound) return;
+    this.eventsBound = true;
     window.addEventListener("keydown", this.onKeyDown, true);
     window.addEventListener("keyup", this.onKeyUp, true);
     window.addEventListener("blur", this.onBlur);
@@ -2699,7 +2789,8 @@ export class TacsimStage3D {
   }
 
   private unbindDomEvents(): void {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !this.eventsBound) return;
+    this.eventsBound = false;
     window.removeEventListener("keydown", this.onKeyDown, true);
     window.removeEventListener("keyup", this.onKeyUp, true);
     window.removeEventListener("blur", this.onBlur);
