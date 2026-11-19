@@ -340,11 +340,91 @@ fn names(w: &World, thing: ObjId, text: &str) -> bool {
         )
 }
 
-/// The actor's available credit and account, or the refusal.
+/// The actor's available credit and account, or the refusal: the posted balance less what is
+/// held (doc 48e, production G14), which is what an acceptance can pay. The posted balance let a
+/// buyer whose money was held order a core whose offer then lapsed unpaid.
 fn wallet(ctx: &Ctx<'_>) -> Result<(AccountId, i64), String> {
     let account = crate::port::credit::own_account(ctx.w, ctx.actor)
         .ok_or_else(|| CORE_NO_CREDIT.to_owned())?;
-    Ok((account.id, account.posted_balance.minor()))
+    let available = account
+        .posted_balance
+        .minor()
+        .saturating_sub(account.held_amount.minor());
+    Ok((account.id, available))
+}
+
+/// Pages of the retained die certificates a search for a spare die reads.
+const DIE_PAGES: usize = 16;
+/// Certificates a page reads.
+const DIE_PAGE: usize = 64;
+
+/// **The dies the shop's stock agent can offer again** (doc 48e, production G14), by class: from
+/// durable state, each retained certificate of `agent`'s whose die lot still lies whole and
+/// unheld in the stock it was minted into, and that no live offer names
+/// ([`counter::live_offered_lots`]), less the dies another request has drawn (`drawn`).
+///
+/// The counter used to reuse only the dies this boot's record held that no offer had ever named,
+/// so a die issued before a restart, or named by an offer that lapsed, stayed in the agent's
+/// stock for good while the next order cut another die from the importer's finite depot.
+fn spare_dies(ctx: &Ctx<'_>, agent: ObjId, drawn: &[LotId]) -> Vec<(DieClass, LotId)> {
+    let Some(certificates) = ctx
+        .w
+        .module_state::<mush_industry::core_production::DieCertificates>()
+    else {
+        return Vec::new();
+    };
+    let Some(inventory) = ctx
+        .w
+        .module_state::<mush_inventory::InventoryHandles>()
+        .map(|handles| handles.0.clone())
+    else {
+        return Vec::new();
+    };
+    let live = counter::live_offered_lots(ctx.w);
+    let mut spare = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..DIE_PAGES {
+        let Ok(page) = ctx.scan_action_state(certificates.handle(), cursor.as_deref(), DIE_PAGE)
+        else {
+            break;
+        };
+        for entry in page.entries() {
+            let certificate = entry.value();
+            let lot = certificate.lot();
+            if certificate.agent() != agent || live.contains(&lot) || drawn.contains(&lot) {
+                continue;
+            }
+            let lies = matches!(
+                ctx.action_state(&inventory.lots, &lot),
+                Ok(Some(here)) if here.endpoint() == certificate.origin() && here.quantity() > 0
+            );
+            let free = matches!(ctx.action_state(&inventory.lot_holds, &lot), Ok(None));
+            if lies && free {
+                spare.push((certificate.class(), lot));
+            }
+        }
+        match page.next_after() {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
+        }
+    }
+    spare
+}
+
+/// The dies the counter's requests have drawn and not yet seen offered.
+fn drawn_dies(w: &World) -> Vec<LotId> {
+    w.module_state::<CounterState>()
+        .map(|state| {
+            state
+                .requests
+                .values()
+                .filter_map(|request| match request.kind {
+                    Kind::Buy { die, .. } => die,
+                    Kind::Fit { .. } => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Refuse when `price` is more than `available`.
@@ -445,18 +525,30 @@ fn status(ctx: &mut Ctx<'_>, shop: &Shop) {
 /// it could not cut a die for. An integration of the class already offered to the actor needs no
 /// new die (a restart's request picks it up), so it is not asked.
 fn stocked(ctx: &Ctx<'_>, class: DieClass) -> Result<(), String> {
+    // Doc 48e, production G14: an offer that lapsed unaccepted is not one under way (the rule a
+    // request's pickup reads in `next`); its die, if it is still in stock, is a spare one below.
+    let now = ctx.w.now();
     let offered = counter::view(ctx.w, ctx.actor)
         .unwrap_or_default()
         .integrations
         .iter()
         .any(|line| {
             line.class == class
-                && line
-                    .order
-                    .as_ref()
-                    .is_none_or(|order| !order.cancelled && !order.delivered)
+                && match line.order {
+                    Some(order) => !order.cancelled && !order.delivered,
+                    None => line.expires_utc > now,
+                }
         });
     if offered {
+        return Ok(());
+    }
+    // Doc 48e, production G14: a die the agent issued and never sold is offered again, so it
+    // needs nothing from the depot either.
+    if let Some(shop) = shop(ctx.w)
+        && spare_dies(ctx, shop.agent, &drawn_dies(ctx.w))
+            .iter()
+            .any(|(spare, _)| *spare == class)
+    {
         return Ok(());
     }
     let Some(depot) = ctx
@@ -741,7 +833,13 @@ enum Next {
 /// **The next step of `requester`'s `request`**, reading where it stands. It may note what it
 /// learned (the die, the offer) on the request.
 #[allow(clippy::too_many_lines)] // one ordered list of steps a kind
-fn next(w: &World, shop: &Shop, requester: ObjId, request: &mut Request) -> Next {
+fn next(
+    w: &World,
+    shop: &Shop,
+    requester: ObjId,
+    request: &mut Request,
+    spare: &mut Vec<(DieClass, LotId)>,
+) -> Next {
     let Some(view) = counter::view(w, requester) else {
         return Next::Wait;
     };
@@ -750,9 +848,15 @@ fn next(w: &World, shop: &Shop, requester: ObjId, request: &mut Request) -> Next
     let (reserve_sent, accepted_here) = (request.reserve_sent, request.accepted_here);
     match &mut request.kind {
         Kind::Buy { class, die, offer } => {
+            // Doc 48e, production G14: the die's own offer is its newest live one. A spare die
+            // was named by an offer that lapsed, and taking that one gave the request up.
             if offer.is_none()
                 && let Some(lot) = *die
-                && let Some(line) = view.integrations.iter().find(|l| l.lot == Some(lot))
+                && let Some(line) = view
+                    .integrations
+                    .iter()
+                    .rev()
+                    .find(|l| l.lot == Some(lot) && (l.order.is_some() || l.expires_utc > now))
             {
                 *offer = Some(line.offer);
             }
@@ -774,11 +878,12 @@ fn next(w: &World, shop: &Shop, requester: ObjId, request: &mut Request) -> Next
             }
             let line = offer.and_then(|o| view.integrations.iter().find(|l| l.offer == o));
             let Some(line) = line else {
-                if die.is_none() {
-                    *die = counter::unoffered_dies(w, shop.agent)
-                        .into_iter()
-                        .find(|(_, c, _)| c == class)
-                        .map(|(_, _, lot)| lot);
+                // Doc 48e, production G14: a die the agent issued and never sold, read from the
+                // retained certificates (`spare_dies`), before a new one is cut from the depot.
+                if die.is_none()
+                    && let Some(at) = spare.iter().position(|(c, _)| c == class)
+                {
+                    *die = Some(spare.remove(at).1);
                 }
                 return match *die {
                     Some(lot) => Next::Submit {
@@ -973,12 +1078,29 @@ fn counter_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId
         return;
     };
     let mut fire = Fire::new(BTreeMap::new());
+    // Doc 48e, production G14: the agent's spare dies, read once a fire, and only when a buy has
+    // drawn no die and has no offer yet.
+    let wants_die = state.requests.values().any(|request| {
+        matches!(
+            request.kind,
+            Kind::Buy {
+                die: None,
+                offer: None,
+                ..
+            }
+        )
+    });
+    let mut spare = if wants_die {
+        spare_dies(ctx, shop.agent, &drawn_dies(ctx.w))
+    } else {
+        Vec::new()
+    };
     let requesters: Vec<ObjId> = state.requests.keys().copied().collect();
     for requester in requesters {
         let Some(mut request) = state.requests.get(&requester).cloned() else {
             continue;
         };
-        let outcome = next(ctx.w, &shop, requester, &mut request);
+        let outcome = next(ctx.w, &shop, requester, &mut request, &mut spare);
         if !request.told_accepted
             && let Some((hours, what)) = accepted(ctx.w, requester, &request)
         {

@@ -1106,10 +1106,11 @@ pub(crate) struct StoreLot {
 }
 
 /// **The lots of `good` in `row`'s stores** (doc 39 cut IN.6; the index, IN.7): each part lot
-/// of `good` at the storefront — seeded, made, scrapped or sold into it — traced, unfitted and
-/// clean, held by nothing but its own lot ask and claimed by no open bay order (`claimed`),
-/// lowest grade first. The stores are found by a bounded walk of the lot family
-/// ([`MAX_STORE_PAGES`] pages), since the inventory keeps no index of an endpoint's lots.
+/// of `good` at the storefront — seeded, made, scrapped or sold into it — traced, unfitted,
+/// clean and intact (doc 48e, production G12), held by nothing but its own lot ask and claimed
+/// by no open bay order (`claimed`), lowest grade first. The stores are found by a bounded walk
+/// of the lot family ([`MAX_STORE_PAGES`] pages), since the inventory keeps no index of an
+/// endpoint's lots.
 pub(crate) fn store_lots(
     ctx: &Ctx<'_>,
     row: &crate::port::map::VendorRow,
@@ -1130,9 +1131,13 @@ pub(crate) fn store_lots(
         if claimed.contains(&lot) {
             continue;
         }
+        // Doc 48e, production G12: intact as well. A worn lot the scrap desk took in is scrap,
+        // so no buyer is served it at the catalogue price, in a hull or by a replace.
         if !matches!(
             crate::port::bay_work::act::provenance(ctx, lot),
-            Ok(Some(part)) if part.fitted_into.is_none() && !part.is_hot()
+            Ok(Some(part)) if part.fitted_into.is_none()
+                && !part.is_hot()
+                && part.condition == mush_tactics::field_ops::ComponentCondition::Intact
         ) {
             continue;
         }
