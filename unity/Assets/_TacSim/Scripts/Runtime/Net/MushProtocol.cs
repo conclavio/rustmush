@@ -769,6 +769,66 @@ namespace TacSim.Net
         }
 
         /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::MindMarket (`kind == "listings"` or `"holdings"`):
+        /// {"t":"req","d":{"id":1,"q":{"t":"mind_market","d":{"kind":"listings","after":null}}}}
+        /// </summary>
+        public static string BuildMindMarketQueryCommand(
+            ulong id,
+            string kind,
+            string section = null,
+            string afterListingCode = null,
+            long? afterHoldingNumber = null)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromLong((long)id);
+
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("mind_market");
+            var qd = JsonNode.NewObject();
+            if (string.Equals(kind, "holdings", StringComparison.OrdinalIgnoreCase))
+            {
+                qd["kind"] = JsonNode.FromString("holdings");
+                qd["section"] = JsonNode.FromString(
+                    string.Equals(section, "owner", StringComparison.OrdinalIgnoreCase) ? "owner" : "paid");
+                qd["after"] = afterHoldingNumber.HasValue
+                    ? JsonNode.FromLong(afterHoldingNumber.Value)
+                    : JsonNode.Null;
+            }
+            else
+            {
+                qd["kind"] = JsonNode.FromString("listings");
+                qd["after"] = !string.IsNullOrWhiteSpace(afterListingCode)
+                    ? JsonNode.FromString(afterListingCode.Trim())
+                    : JsonNode.Null;
+            }
+            q["d"] = qd;
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
+        /// Builds canonical ClientCommand::Invoke for `InvokeRequest::Mind`:
+        /// {"t":"invoke","d":{"id":2,"request":{"service":"mind","request":{...}}}}
+        /// </summary>
+        public static string BuildMindInvokeCommand(ulong id, JsonNode mindRequest)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("invoke");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromLong((long)id);
+
+            var reqWrap = JsonNode.NewObject();
+            reqWrap["service"] = JsonNode.FromString("mind");
+            reqWrap["request"] = mindRequest != null ? mindRequest.Clone() : JsonNode.NewObject();
+            d["request"] = reqWrap;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
         /// Builds canonical ClientCommand::Respond:
         /// {"t":"respond","d":{"epoch":"...","id":1,"choice":{"t":"choose","d":"opt_id"}}}
         /// </summary>
