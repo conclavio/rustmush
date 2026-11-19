@@ -2118,3 +2118,27 @@ fn g18_a_post_while_the_last_is_landing_is_refused() {
         1
     );
 }
+
+/// **Doc 48e, exchange G29 (48d H-27): `+market/mine` shows what the actor listed for an
+/// organization.** Sal, granted Ares' posting right, lists a lot `as=Ares`: her page shows it
+/// under "Listed as". Before the fix the page said she had nothing listed.
+#[test]
+fn g29_mine_shows_an_orgs_listing_the_actor_posted() {
+    let mut r = rig();
+    let sal = r.sal;
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!("@org/grant #{}=Ares economy.account.post", sal.who.0),
+    );
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 4, LotId(0xda));
+    let said = ok(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/post {} price=100 market=luna as=Ares", LotId(0xda)),
+    );
+    assert!(said.contains("Listed for sale as #"), "{said}");
+    let page = ok(&mut r.tw, sal.who, "+market/mine");
+    assert!(page.contains("Listed as "), "{page}");
+    assert!(page.contains("Ares"), "{page}");
+}

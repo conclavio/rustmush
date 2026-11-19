@@ -1429,7 +1429,32 @@ fn mine(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<MarketStore>()
         .map(|s| s.personal_listings_of(&me).cloned().collect())
         .unwrap_or_default();
-    if mine.is_empty() {
+    // Doc 48e (exchange G29; 48d H-27): what the actor listed `as=<org>` (PL.9), under each
+    // organization it acts for.
+    let orgs: std::collections::BTreeSet<mush_org::OrgId> = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .map(|st| {
+            st.state()
+                .member_orgs(ctx.actor)
+                .chain(st.state().grant_orgs(ctx.actor))
+                .collect()
+        })
+        .unwrap_or_default();
+    let as_orgs: Vec<Vec<crate::record::Listing>> = orgs
+        .into_iter()
+        .map(mush_org::PrincipalId::Organization)
+        .filter(|org| mush_economy::acts_for(ctx.w, ctx.actor, org))
+        .filter_map(|org| {
+            let listed: Vec<crate::record::Listing> = ctx
+                .w
+                .module_state::<MarketStore>()
+                .map(|s| s.personal_listings_of(&org).cloned().collect())
+                .unwrap_or_default();
+            (!listed.is_empty()).then_some(listed)
+        })
+        .collect();
+    if mine.is_empty() && as_orgs.is_empty() {
         info(ctx, crate::seller::MINE_NONE);
         return Ok(());
     }
@@ -1440,6 +1465,14 @@ fn mine(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .replace("{n}", &mine.len().to_string())
             .replace("{cap}", &crate::record::MAX_LISTINGS_PER_SELLER.to_string()),
     );
+    for listed in &as_orgs {
+        let name = listed
+            .first()
+            .map(|l| crate::seller::seller_name(ctx.w, l))
+            .unwrap_or_default();
+        out.push(crate::seller::MINE_AS_ORG.replace("{org}", &name));
+        out.extend(listed.iter().map(|l| listing_line(ctx, l)));
+    }
     lines(ctx, out);
     Ok(())
 }

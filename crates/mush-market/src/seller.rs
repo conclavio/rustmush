@@ -67,6 +67,9 @@ pub const BID_WITHDRAWN: &str = "Withdrew bid #{listing}; what it still held is 
 pub const MINE_HEAD: &str = "Your listings:";
 /// `+market/mine` with nothing listed.
 pub const MINE_NONE: &str = "You have nothing listed.";
+/// `+market/mine`'s heading over an organization's listings the actor acts for (doc 48e,
+/// exchange G29): `{org}`.
+pub const MINE_AS_ORG: &str = "Listed as {org}:";
 /// `+market/mine`'s count line: `{n}`, `{cap}`.
 pub const MINE_COUNT: &str = "You hold {n} of the {cap} listings a seller may.";
 /// The existence-hiding answer for a lot the actor may not take, or that does not exist.

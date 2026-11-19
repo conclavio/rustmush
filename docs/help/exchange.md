@@ -92,7 +92,8 @@ something between themselves at an agreed price.
 lot is yours to use again; a bid gives back whatever it still holds. A bid also
 gives its hold back on its own when it lapses.
 
-`+market/mine` lists your listings and bids, and how many more you may post.
+`+market/mine` lists your listings and bids, and how many more you may post,
+then what you listed for each organization you act for.
 
 ## Limits
 
