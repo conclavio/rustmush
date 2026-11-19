@@ -304,3 +304,40 @@ async fn ex1b_an_offline_buy_takes_a_players_ask_only_under_a_ceiling() {
         });
     assert!(gone, "the player's lot sold whole");
 }
+
+/// **Doc 48e, exchange G6 (48d H-05): charter cargo is listed by its pilot.** A chartered pilot
+/// who officers an organization posts the chartered hold's lot `as=<org>`: refused, since the
+/// Co-op's share on a personal ask is decided by its seller and an org seller would pay the Trust
+/// nothing. As themself, the same lot lists. Before the fix the org ask listed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g6_charter_cargo_is_not_listed_for_an_org() {
+    let mut rig = crate::driving_rig::stocked();
+    let (captain, row) = prospector(&mut rig, "Officer", 44, "Wren");
+    for line in [
+        "@org/create Lark".to_owned(),
+        format!("@org/grant #{}=Lark economy.account.post", captain.0),
+        format!("@account/open org:Lark={}", tacsim::CREDIT),
+    ] {
+        let out = run(&mut rig.tw, mush_core::GOD, &line);
+        assert!(!out.contains("Permission denied"), "{line}: {out}");
+    }
+    let hold = hold_vault_of(&rig.tw, &row);
+    seed_lot(&mut rig, hold, SIGHT, 1, LotId(0xe1b6));
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    teleport(&mut rig.tw, captain, exchange);
+    let refused = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/post {} price=500 as=Lark", LotId(0xe1b6)),
+    );
+    assert!(
+        refused.contains(&tacsim::port::proceeds::CHARTER_ASK_AS_ORG.replace("{name}", "Wren")),
+        "{refused}"
+    );
+    let listed = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/post {} price=500", LotId(0xe1b6)),
+    );
+    assert!(listed.contains("Listed for sale as #"), "{listed}");
+}
