@@ -22,6 +22,12 @@ use mush_proto::{ClientCaps, ClientKind, ColorDepth};
 pub const DEFAULT_WIDTH: u16 = 80;
 /// Fallback terminal height.
 pub const DEFAULT_HEIGHT: u16 = 24;
+/// Upper bound on accepted SSH terminal columns (`pty-req` / `window-change`).
+/// Bounded well above any real terminal while preventing `u16::MAX × u16::MAX`
+/// pixel or ratatui allocations from OOM-killing the server (`SSH-C-01`).
+pub const MAX_WIDTH: u16 = 400;
+/// Upper bound on accepted SSH terminal rows; see [`MAX_WIDTH`].
+pub const MAX_HEIGHT: u16 = 200;
 
 /// Color support implied by `TERM` and `COLORTERM`.
 pub fn detect_color_depth(term: Option<&str>, colorterm: Option<&str>) -> ColorDepth {
@@ -69,8 +75,16 @@ pub fn detect_caps(
     ClientCaps {
         kind: ClientKind::Ssh,
         color: detect_color_depth(term, colorterm),
-        width: if width == 0 { DEFAULT_WIDTH } else { width },
-        height: if height == 0 { DEFAULT_HEIGHT } else { height },
+        width: if width == 0 {
+            DEFAULT_WIDTH
+        } else {
+            width.min(MAX_WIDTH)
+        },
+        height: if height == 0 {
+            DEFAULT_HEIGHT
+        } else {
+            height.min(MAX_HEIGHT)
+        },
         utf8: detect_utf8(lang, lc_all),
         structured: false,
     }
@@ -149,5 +163,7 @@ mod tests {
         assert!(!caps.structured);
         let caps = detect_caps(Some("xterm"), None, None, None, 120, 40);
         assert_eq!((caps.width, caps.height), (120, 40));
+        let clamped = detect_caps(Some("xterm"), None, None, None, u16::MAX, u16::MAX);
+        assert_eq!((clamped.width, clamped.height), (MAX_WIDTH, MAX_HEIGHT));
     }
 }

@@ -208,18 +208,33 @@ pub fn scale_for(frame: &Frame) -> usize {
 }
 
 pub(crate) fn fill_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px: Rgb) {
-    for yy in y.max(0)..(y + h).max(0) {
-        for xx in x.max(0)..(x + w).max(0) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let fw = frame.width() as i64;
+    let fh = frame.height() as i64;
+    if fw <= 0 || fh <= 0 {
+        return;
+    }
+    let x0 = x.max(0).min(fw);
+    let y0 = y.max(0).min(fh);
+    let x1 = x.saturating_add(w).clamp(0, fw);
+    let y1 = y.saturating_add(h).clamp(0, fh);
+    for yy in y0..y1 {
+        for xx in x0..x1 {
             frame.put(xx as usize, yy as usize, px);
         }
     }
 }
 
 pub(crate) fn outline_rect(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64, px: Rgb) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
     fill_rect(frame, x, y, w, 1, px);
-    fill_rect(frame, x, y + h - 1, w, 1, px);
+    fill_rect(frame, x, y.saturating_add(h).saturating_sub(1), w, 1, px);
     fill_rect(frame, x, y, 1, h, px);
-    fill_rect(frame, x + w - 1, y, 1, h, px);
+    fill_rect(frame, x.saturating_add(w).saturating_sub(1), y, 1, h, px);
 }
 
 /// A panel: a filled box with a border.
@@ -228,10 +243,86 @@ pub(crate) fn panel(frame: &mut Frame, x: i64, y: i64, w: i64, h: i64) {
     outline_rect(frame, x, y, w, h, BORDER);
 }
 
+/// Clip a line segment against `[0, w - 1] × [0, h - 1]` using Liang-Barsky in `f64`
+/// so lines with extreme off-screen endpoints never overflow `i64` or burn the
+/// Bresenham step budget off-screen.
+fn clip_line_to_frame(
+    x0: i64,
+    y0: i64,
+    x1: i64,
+    y1: i64,
+    w: i64,
+    h: i64,
+) -> Option<(i64, i64, i64, i64)> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let min_x = 0.0;
+    let min_y = 0.0;
+    let max_x = (w - 1) as f64;
+    let max_y = (h - 1) as f64;
+    let fx0 = x0 as f64;
+    let fy0 = y0 as f64;
+    let dx = (x1 as f64) - fx0;
+    let dy = (y1 as f64) - fy0;
+    let mut t0 = 0.0f64;
+    let mut t1 = 1.0f64;
+    let checks = [
+        (-dx, fx0 - min_x),
+        (dx, max_x - fx0),
+        (-dy, fy0 - min_y),
+        (dy, max_y - fy0),
+    ];
+    for (p, q) in checks {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                if r > t1 {
+                    return None;
+                }
+                if r > t0 {
+                    t0 = r;
+                }
+            } else {
+                if r < t0 {
+                    return None;
+                }
+                if r < t1 {
+                    t1 = r;
+                }
+            }
+        }
+    }
+    let cx0 = (fx0 + t0 * dx).round().clamp(min_x, max_x) as i64;
+    let cy0 = (fy0 + t0 * dy).round().clamp(min_y, max_y) as i64;
+    let cx1 = (fx0 + t1 * dx).round().clamp(min_x, max_x) as i64;
+    let cy1 = (fy0 + t1 * dy).round().clamp(min_y, max_y) as i64;
+    Some((cx0, cy0, cx1, cy1))
+}
+
 /// A line from `(x0, y0)` to `(x1, y1)`, Bresenham.
 pub(crate) fn line(frame: &mut Frame, x0: i64, y0: i64, x1: i64, y1: i64, px: Rgb) {
-    let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
-    let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
+    let fw = frame.width() as i64;
+    let fh = frame.height() as i64;
+    let (x0, y0, x1, y1) =
+        if x0.abs() > 4096 || y0.abs() > 4096 || x1.abs() > 4096 || y1.abs() > 4096 {
+            let Some(clipped) = clip_line_to_frame(x0, y0, x1, y1, fw, fh) else {
+                return;
+            };
+            clipped
+        } else {
+            (x0, y0, x1, y1)
+        };
+    let dx = (i128::from(x1) - i128::from(x0)).abs();
+    let dy = -(i128::from(y1) - i128::from(y0)).abs();
+    let (sx, sy) = (
+        if x0 < x1 { 1i64 } else { -1i64 },
+        if y0 < y1 { 1i64 } else { -1i64 },
+    );
     let (mut x, mut y, mut err) = (x0, y0, dx + dy);
     for _ in 0..4096 {
         if x >= 0 && y >= 0 {
@@ -240,14 +331,14 @@ pub(crate) fn line(frame: &mut Frame, x0: i64, y0: i64, x1: i64, y1: i64, px: Rg
         if x == x1 && y == y1 {
             break;
         }
-        let e2 = 2 * err;
+        let e2 = err.saturating_mul(2);
         if e2 >= dy {
-            err += dy;
-            x += sx;
+            err = err.saturating_add(dy);
+            x = x.saturating_add(sx);
         }
         if e2 <= dx {
-            err += dx;
-            y += sy;
+            err = err.saturating_add(dx);
+            y = y.saturating_add(sy);
         }
     }
 }

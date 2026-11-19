@@ -390,43 +390,62 @@ pub fn viewport_25d(
 ) -> Viewport25D {
     let phys_cw = usize::from(cell.map_or(DEFAULT_CELL_W, |c| c.width.max(4)));
     let phys_ch = usize::from(cell.map_or(DEFAULT_CELL_H, |c| c.height.max(6)));
-    let avail_cols = usize::from(area_cols.max(2));
-    let avail_rows = usize::from(area_rows.max(2));
-    let avail_w = avail_cols * phys_cw;
-    let avail_h = avail_rows * phys_ch;
+    let avail_cols = usize::from(area_cols.clamp(2, 512));
+    let avail_rows = usize::from(area_rows.clamp(2, 256));
+    let avail_w = avail_cols.saturating_mul(phys_cw);
+    let avail_h = avail_rows.saturating_mul(phys_ch);
 
     // Match the 4:1 .. 4:3 aspect-preserving cell box inside `picture_area`
     // so the 2.5D view fills the full terminal viewport box on any DPI.
-    let (raw_cols, raw_rows) = if avail_h * 4 < avail_w {
-        ((avail_h * 4 / phys_cw).clamp(2, avail_cols), avail_rows)
-    } else if avail_h * 4 > avail_w * 3 {
-        (avail_cols, (avail_w * 3 / 4 / phys_ch).clamp(2, avail_rows))
+    let (raw_cols, raw_rows) = if avail_h.saturating_mul(4) < avail_w {
+        (
+            (avail_h.saturating_mul(4) / phys_cw.max(1)).clamp(2, avail_cols),
+            avail_rows,
+        )
+    } else if avail_h.saturating_mul(4) > avail_w.saturating_mul(3) {
+        (
+            avail_cols,
+            (avail_w.saturating_mul(3) / 4 / phys_ch.max(1)).clamp(2, avail_rows),
+        )
     } else {
         (avail_cols, avail_rows)
     };
     let box_cols = (raw_cols & !1).max(2);
     let box_rows = (raw_rows & !1).max(2);
 
-    let max_w = if step_down { 640 } else { MAX_WIDTH_PX };
-    let max_h = if step_down { 360 } else { MAX_HEIGHT_PX };
+    // Hard cap <= 1920x1080 (normal cap 1280x720, step-down 640x360) so
+    // unclamped terminal dimensions can never OOM Frame::new.
+    let max_w = if step_down {
+        640
+    } else {
+        MAX_WIDTH_PX.min(1920)
+    };
+    let max_h = if step_down {
+        360
+    } else {
+        MAX_HEIGHT_PX.min(1080)
+    };
 
     let mut cw_px = phys_cw.clamp(2, SHEET_PAD_X);
-    let mut ch_px = ((cw_px * phys_ch + phys_cw / 2) / phys_cw.max(1)).clamp(2, SHEET_PAD_Y);
+    let mut ch_px =
+        ((cw_px.saturating_mul(phys_ch) + phys_cw / 2) / phys_cw.max(1)).clamp(2, SHEET_PAD_Y);
 
-    if box_cols * cw_px > max_w {
-        cw_px = (max_w / box_cols).clamp(2, SHEET_PAD_X);
-        ch_px = ((cw_px * phys_ch + phys_cw / 2) / phys_cw.max(1)).clamp(2, SHEET_PAD_Y);
+    if box_cols.saturating_mul(cw_px) > max_w {
+        cw_px = (max_w / box_cols).clamp(1, SHEET_PAD_X);
+        ch_px =
+            ((cw_px.saturating_mul(phys_ch) + phys_cw / 2) / phys_cw.max(1)).clamp(1, SHEET_PAD_Y);
     }
-    if box_rows * ch_px > max_h {
-        ch_px = (max_h / box_rows).clamp(2, SHEET_PAD_Y);
-        cw_px = ((ch_px * phys_cw + phys_ch / 2) / phys_ch.max(1)).clamp(2, SHEET_PAD_X);
+    if box_rows.saturating_mul(ch_px) > max_h {
+        ch_px = (max_h / box_rows).clamp(1, SHEET_PAD_Y);
+        cw_px =
+            ((ch_px.saturating_mul(phys_cw) + phys_ch / 2) / phys_ch.max(1)).clamp(1, SHEET_PAD_X);
     }
 
-    let width_px = (box_cols * cw_px).max(2);
-    let height_px = (box_rows * ch_px).max(2);
-    let cols = u16::try_from(box_cols).unwrap_or(area_cols);
-    let rows = u16::try_from(box_rows).unwrap_or(area_rows);
-    let col_offset = area_cols.saturating_sub(cols) / 2;
+    let width_px = (box_cols.saturating_mul(cw_px).min(max_w) & !1).max(2);
+    let height_px = (box_rows.saturating_mul(ch_px).min(max_h) & !1).max(2);
+    let cols = u16::try_from(box_cols).unwrap_or(area_cols.min(512));
+    let rows = u16::try_from(box_rows).unwrap_or(area_rows.min(256));
+    let col_offset = area_cols.min(512).saturating_sub(cols) / 2;
     let row_offset = 0;
 
     Viewport25D {
@@ -3158,6 +3177,33 @@ mod tests {
         assert_eq!(lo.rows, 50);
         assert!(lo.width_px <= 640);
         assert!(lo.height_px <= 360);
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn viewport_25d_clamps_adversarial_u16_max_dimensions() {
+        for cell in [
+            None,
+            Some(CellSize {
+                width: 8,
+                height: 16,
+            }),
+            Some(CellSize {
+                width: 64,
+                height: 128,
+            }),
+        ] {
+            for step_down in [false, true] {
+                let vp = viewport_25d(u16::MAX, u16::MAX, cell, step_down);
+                assert!(
+                    vp.width_px <= 1920 && vp.height_px <= 1080,
+                    "vp={vp:?} exceeded 1920x1080 cap"
+                );
+                assert!(vp.width_px <= MAX_WIDTH_PX && vp.height_px <= MAX_HEIGHT_PX);
+                assert!(vp.width_px >= 2 && vp.height_px >= 2);
+                assert!(vp.cols <= 512 && vp.rows <= 256);
+            }
+        }
     }
 
     #[cfg(feature = "encode")]

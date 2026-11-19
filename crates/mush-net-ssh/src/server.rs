@@ -1995,8 +1995,10 @@ impl Handler for ConnHandler {
             let base = sh.base_echo;
             sh.editor.set_mode(base);
             sh.term = Some(term.to_owned());
-            sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
-            sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
+            sh.width =
+                u16::try_from(col_width.min(u32::from(caps::MAX_WIDTH))).unwrap_or(caps::MAX_WIDTH);
+            sh.height = u16::try_from(row_height.min(u32::from(caps::MAX_HEIGHT)))
+                .unwrap_or(caps::MAX_HEIGHT);
             if let Some(cell) = cell_size_from_pty_px(col_width, row_height, pix_width, pix_height)
             {
                 sh.cell_size = Some(cell);
@@ -2040,8 +2042,10 @@ impl Handler for ConnHandler {
         if self.channel == Some(channel) {
             let (caps, is_tui) = {
                 let mut sh = self.lock();
-                sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
-                sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
+                sh.width = u16::try_from(col_width.min(u32::from(caps::MAX_WIDTH)))
+                    .unwrap_or(caps::MAX_WIDTH);
+                sh.height = u16::try_from(row_height.min(u32::from(caps::MAX_HEIGHT)))
+                    .unwrap_or(caps::MAX_HEIGHT);
                 if let Some(cell) =
                     cell_size_from_pty_px(col_width, row_height, pix_width, pix_height)
                 {
@@ -2384,7 +2388,7 @@ impl GameCommands {
             // before the screen it sits on goes away.
             let mut out = sh
                 .tui
-                .as_ref()
+                .as_mut()
                 .map(|t| t.pixel_close_bytes())
                 .unwrap_or_default();
             // Doc 21 cut G.4: a turn in progress stops where it was shown.
@@ -3128,6 +3132,9 @@ fn spawn_output_pump(
                             Mode::Tui if reply_wire_boundary(&ev) => {
                                 let mut bytes = Vec::new();
                                 if done {
+                                    if let Some(t) = sh.tui.as_mut() {
+                                        bytes.extend(t.pixel_close_bytes());
+                                    }
                                     bytes.extend_from_slice(TuiSession::leave_bytes());
                                     sh.tui = None;
                                     sh.mode = Mode::InGame;
@@ -3311,14 +3318,23 @@ fn spawn_output_pump(
             hooks.pixel_event(PixelEvent::Closed);
         }
         // If the connection tore down while still on the alternate screen,
-        // restore it so the client is never stuck there (invariant T5).
-        let was_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
-        if was_tui {
-            let _ = tokio::time::timeout(
-                WRITE_TIMEOUT,
-                handle.data(channel, TuiSession::leave_bytes().to_vec()),
-            )
-            .await;
+        // free retained Kitty images & restore it so the client is never stuck there (invariant T5).
+        let teardown_bytes = {
+            let mut sh = shared.lock().expect("conn state poisoned");
+            if matches!(sh.mode, Mode::Tui) {
+                let mut out = sh
+                    .tui
+                    .as_mut()
+                    .map(|t| t.pixel_close_bytes())
+                    .unwrap_or_default();
+                out.extend_from_slice(TuiSession::leave_bytes());
+                Some(out)
+            } else {
+                None
+            }
+        };
+        if let Some(bytes) = teardown_bytes {
+            let _ = tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await;
         }
 
         // Close in channel order, after the last data. A connection-level
