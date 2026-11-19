@@ -275,6 +275,9 @@ Posts a job to escort your hull on her next passage from the port she lies at,
 or on her next sortie in a field. Whoever takes it with +escort/accept <job>
 with=<hull> must stay near her for nine tenths of the journey: on the same
 passage or in the same bubble in space, in the same field in a sortie. A link
-drop inside the linkdead grace does not count against the escort. The job
-fails if she is wrecked or captured, or the escort leaves her. +escort lists
-your escorts.
+drop inside the linkdead grace does not count against the escort, and neither
+does an escort still at the port of departure in the hour after she leaves. The
+job fails if she is wrecked or captured, or the escort leaves her. If her
+journey has not begun within 28 IC days of the acceptance, the job is called
+off: the fee and the escort's bond come back. A field= sortie names a port
+with a field. +escort lists your escorts.
