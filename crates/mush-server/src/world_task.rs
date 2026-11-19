@@ -3440,6 +3440,11 @@ async fn run(
     // borrowing `deps` (staff queue) freely each iteration.
     let llm = deps.llm.clone();
     let metrics = Arc::clone(&deps.metrics);
+    // Doc 43c TS.10b: every read below that gates behaviour (the world's now, the
+    // timer and outage wakes, fire_due, the shutdown grace) goes through this one
+    // provider; production passes System, the OS clock. Measuring reads (loop lag,
+    // boot_unix, the sample throttle) stay on std.
+    let time = deps.time;
     let mut durable_schedules = DurableScheduleDriver::new(action_epoch);
     // E7c2 B1: the command-ingress adapter, sharing the same process epoch as
     // every other in-process action identity.
@@ -3573,7 +3578,7 @@ async fn run(
     // Top-level shutdown has a priority watch lane, so it cannot be trapped
     // behind the bounded world queue while a commit holds one deferred message.
     let mut shutdown_requested = false;
-    let mut shutdown_deadline: Option<Instant> = None;
+    let mut shutdown_deadline: Option<tokio::time::Instant> = None;
     // Set at the two clean breaks ONLY, and consumed by the very last statement
     // of this function. Everything else that can end the loop — the
     // channel-closed exit, the bounded shutdown grace, an unacknowledged,
@@ -3640,7 +3645,7 @@ async fn run(
         let clock_frozen = engine.world.world_timeline().is_frozen();
         let outage_wake_due =
             if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
-                next_outage_wake_unix_ms(&engine.world, &outage_countdown, unix_now_s())
+                next_outage_wake_unix_ms(&engine.world, &outage_countdown, time.unix_s())
             } else {
                 None
             };
@@ -3810,7 +3815,7 @@ async fn run(
                     None => std::future::pending().await,
                 }
             } => Wake::CommitReceipt(receipt),
-            () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
+            () = sleep_until_unix_ms(&time, next_due), if sched_armed => Wake::Timer,
             // New command submissions are immediately ready. Only a retained
             // transient preflight waits, without blocking other loop arms.
             () = command_submit_ready(command_submits.retry_after), if command_submit_armed => Wake::CommandSubmits,
@@ -3862,7 +3867,7 @@ async fn run(
             },
             () = async {
                 match shutdown_deadline {
-                    Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
                     None => std::future::pending().await,
                 }
             } => Wake::ShutdownDeadline,
@@ -3892,7 +3897,7 @@ async fn run(
             wake => wake,
         };
         let iteration_start = Instant::now();
-        let now_unix = unix_now_s();
+        let now_unix = time.unix_s();
         // CommitPending freezes guard-producing truth; boot/recovery and an
         // integrity freeze likewise do not advance the world's logical clock.
         // Transient StoreReadOnly retains the historical wall-clock behavior.
@@ -4696,7 +4701,7 @@ async fn run(
                     } else {
                         guarded!(
                             "fire_due",
-                            engine.fire_due(unix_now_ms(), &mut out, &mut fx)
+                            engine.fire_due(time.unix_ms(), &mut out, &mut fx)
                         );
                     }
                 }
@@ -5380,7 +5385,7 @@ async fn run(
                     }
                     deferred_world_msg =
                         Some(WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)));
-                    shutdown_deadline = Some(Instant::now() + WORLD_SHUTDOWN_GRACE);
+                    shutdown_deadline = Some(time.instant() + WORLD_SHUTDOWN_GRACE);
                     StepOutcome::Continue
                 } else {
                     guarded!(
@@ -5434,7 +5439,7 @@ async fn run(
                 shutdown_requested = true;
                 if let Some(pending) = pending_commit.as_mut() {
                     pending.exit_after_ack = true;
-                    shutdown_deadline = Some(Instant::now() + WORLD_SHUTDOWN_GRACE);
+                    shutdown_deadline = Some(time.instant() + WORLD_SHUTDOWN_GRACE);
                     tracing::warn!(
                         "world inbound channel closed with a commit pending; waiting a bounded grace period for exact custody"
                     );
@@ -6114,17 +6119,17 @@ async fn run(
     }
 }
 
-/// Sleep until `due` (unix milliseconds). Only ever polled when `due` is
-/// `Some` (the select guard); an already-past deadline yields immediately.
+/// Sleep until `due` (unix milliseconds) on the world's clock provider. Only
+/// ever polled when `due` is `Some` (the select guard); an already-past
+/// deadline yields immediately.
 ///
-/// Deadlines are wall-clock unix ms armed against a monotonic sleep: a
-/// backward NTP step delays timers by the step size (the loop re-arms
-/// harmlessly each iteration), a forward step fires them early. Accepted
-/// for M1; revisit if `@wait` precision ever matters.
-async fn sleep_until_unix_ms(due: Option<i64>) {
+/// On `TimeSource::System` the deadlines are wall-clock unix ms armed against a
+/// monotonic sleep: a backward NTP step delays timers by the step size (the
+/// loop re-arms harmlessly each iteration), a forward step fires them early.
+/// Accepted for M1; revisit if `@wait` precision ever matters.
+async fn sleep_until_unix_ms(time: &mush_config::TimeSource, due: Option<i64>) {
     let Some(due) = due else { return };
-    let delta = due.saturating_sub(unix_now_ms()).max(0);
-    tokio::time::sleep(Duration::from_millis(u64::try_from(delta).unwrap_or(0))).await;
+    time.sleep_until_unix_ms(due).await;
 }
 
 /// Create a Player in the start room (Limbo). Players own themselves.
