@@ -449,6 +449,9 @@ async fn drain_players(rig: &mut Rig) -> Vec<AuthoritativeSubmit> {
             house.extend(map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)));
         }
     }
+    // Doc 48 unit EX.9: and every other lane port's clerk, whose houses use up goods once an IC
+    // day (the Luna clerk's draw and act for the Habitat Board).
+    house.extend(tacsim::port::supply::buyers(rig.tw.world()));
     let (theirs, rest): (Vec<_>, Vec<_>) = drain(&mut rig.tw)
         .into_iter()
         .partition(|submit| house.contains(&submit.actor));

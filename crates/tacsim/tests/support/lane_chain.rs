@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v41 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v42 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,11 +45,33 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48 unit EX.9 (lane v42): the consumers' rows taken out** — every vendor's `consume`
+/// rows (the Habitat Board, Syrtis Bonded and the Selk Townships Board), so a strip chain
+/// rebuilds a lane before v42 (idempotent). The chain's head.
+pub fn strip_consumption(doc: &mut Value) {
+    let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for entry in entries.values_mut() {
+        let Some(vendors) = entry
+            .get_mut("def")
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for vendor in vendors.iter_mut().filter_map(Value::as_object_mut) {
+            vendor.remove("consume");
+        }
+    }
+}
+
 /// **Doc 48 unit PL.8 (lane v41): the workshops' part bids taken out** — every part bid of
 /// Occator's at Ceres, and Stickney Yards' but its light plant's, which goes back to IN.11's 4,000
 /// with no refresh in its old place (Q-48-29), so a strip chain rebuilds a lane before v41
-/// (idempotent). The chain's head.
+/// (idempotent); lane v42's [`strip_consumption`] first.
 pub fn strip_parts_market(doc: &mut Value) {
+    strip_consumption(doc);
     let light = "tacsim.part.plant.light_mk1";
     for (entry, org) in [
         ("ceres_port", "occator"),

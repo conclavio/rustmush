@@ -192,6 +192,7 @@ mod tests {
             publisher: ObjId(2),
             source_name: name.into(),
             attestation_agent: None,
+            stipend_minor_per_ic_day: None,
         }
     }
     /// A format-1 deployment with illustrative ids; decode never reads a world.

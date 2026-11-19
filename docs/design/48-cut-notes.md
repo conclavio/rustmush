@@ -4022,7 +4022,276 @@ on `claude/pl9-facilities-assets`, cut from main at `73d05678b`. Main was merged
 
 ## EX.9
 
-Not built.
+Row: §7.1 EX.9 (Q-48-19, -21, -22, -34, -36, -38..41, -55, -59, -60). Stacked on PL.8 (#672,
+`464a7dccc`), which shares the lane chain and `port/stock.rs`.
+
+**Survey** (at `464a7dccc`):
+- **Nothing consumed.** The three consumers' storefronts only filled. Syrtis Bonded and the Selk
+  Townships Board hold no stock and ask nothing; their bids for alloys and boards put what they
+  buy in their storefronts. The Habitat Board's process mill (PL.2) already uses up the volatiles
+  and carbon feedstock its bids buy, making provisions, which it asks.
+- **A vendor never both asks and bids one good** (`check_vendor_lines`). So Q-48-40's "provisions
+  are added to [the Board's] bids" cannot be done as written: the Board asks provisions.
+- **No running cost was charged.** The cost model (IN.4) only priced fees. No facility had a
+  mothball state, and the industry kept no record of worked slot-hours. `IndustryStore::open_orders_at`
+  (PL.9's RAM index) counts a facility's live work orders; the bay keeps its open orders in RAM
+  too.
+- **EX.8's throttle** read one sign of a house that cannot pay: a delinquent obligation.
+- **No recurring faucet.** The only System sources were the port treasury (capital, once) and
+  the bring-up's `launch.faucet` (a House's 2,000 cr, once).
+- **The matter census's `consumed` term** read 0 (EX.0 left it for this unit).
+
+**Built:**
+1. **Consumption** (`tacsim/src/port/consume.rs`, Q-48-19, -40, -41):
+   - **Lane rows** (`VendorDef.consume`, `ConsumeDef`): a good, units an IC day, and the export
+     faucet's daily share for the row. The good must be one of the vendor's bids or asks; at most
+     4 rows; `per_ic_day` 1..=100,000; the share at most 500,000 cr.
+   - **The act**, `tacsim_port_consume` (provider, outcome and the ledger family
+     `tacsim.port_consume`, registered beside the customs ruling): once an IC day a row, the
+     stock clerk debits the day's units (or what the storefront holds, when less) from the
+     storefront and advances the row's `ConsumeLedger` in the same bundle. The ledger's `day` is
+     the once-a-day guard and its ordinal the replay guard.
+   - **An asked good** (the Board's provisions) is drawn off the house's own ask first
+     (`shrink_ask`, the own-stock mill's draw), then used up on a later fire. `consume::drawn`
+     nets the drawn units out of the drift check and the readiness Listings line ("drawn to be
+     used up"), so nothing pages between the two acts.
+   - It runs on the clerk's turn after the mill and before the bids, one act a fire. A submitted
+     or refused act passes the row over for the rest of the IC day.
+   - **A port starts using up goods the day after the tick first sees it**
+     (`PortUpkeep.consume_from`), so a port stocked today stands at its authored stock until the
+     day turns.
+   - **The census** sums every ledger's units as `consumed`.
+2. **Running costs** (`tacsim/src/port/upkeep.rs`, Q-48-21, -38, -59, -60), once an IC day for
+   every costed facility of a laid-up port (refinery, works, yard, workshop), whoever owns it:
+   - **Worked**: each slot-second a facility's open work orders and open bay orders fill (at most
+     its slots) costs its share of the daily cost (`daily / slots / 86,400 s`), rounded up.
+   - **Idle**: each other slot-second costs `IDLE_PERMILLE` (100, 10%) of that, rounded down.
+   - **A mill-run refinery** pays one slot-hour of its daily cost (`daily / 24`) a refine batch
+     its operator milled that day, and no standing share.
+   - The payroll is in the daily cost, at 150 cr a head (Q-48-60 kept), so it bites only while
+     the facility works.
+   - **All of it** goes to a new System account, `tacsim.upkeep`, a sink; nothing to a payee.
+   - The busy slots are summed fire to fire in RAM (`PortTickState::upkeep_worked`); the day's
+     charge is posted under `tacsim.upkeep/{facility}/{day}`, and the charged day, the debt and
+     the mothball flag are kept in a document of the port's own (`tacsim:upkeep:{entry}`,
+     `PortUpkeep` and its `UpkeepRow`s), not the port map, which is the applier's record of what
+     it made. Each row also keeps the last day's charge and the total paid (`upkeep::paid_by`
+     sums an organisation's). A gap of several days is caught up, at most 7, the missed days
+     idle.
+3. **Insolvency** (Q-48-38, -39, -59):
+   - The owner pays the day's charge and any debt from what its account holds. The rest is a
+     **debt** (`UpkeepRow.debt_minor`), owed to the sink and never minted.
+   - **A facility in debt is mothballed.** While mothballed it owes no standing share.
+   - **Its house places no order of its own there** (`works::book` refuses a house order,
+     `works::MOTHBALLED`). A customer's order, whose escrowed fee covers its worked cost, still
+     books and runs.
+   - **Its owner is throttled**: `price::throttled` now also reads `upkeep::in_arrears` (debt or a
+     mothballed facility), so EX.8's 10% an IC week on asks and no new bids apply.
+   - **Money in pays the debt first** (each fee's margin, the berth fees, any income), at the
+     next day's charge.
+   - **It reopens** once its debt is paid and its owner's account holds `REOPEN_DAYS` (7) IC days
+     of that facility's standing share.
+4. **The export faucet** (Q-48-22, -40, -55), a new System account, `tacsim.export`:
+   - **It pays the consumers back**: for each act, the good's authored bid price (or ask price,
+     for an asked good) times the units used, at most the row's daily share, into the consuming
+     house's account (`tacsim.export/{row}/{ordinal}`). Money enters only as goods are used up,
+     so a consumer's treasury holds steady at its rate of consumption, and players earn it by
+     selling into the consumers' bids.
+   - **It pays each named House a stipend**: `HouseDeployment.stipend_minor_per_ic_day` (new,
+     optional, skipped when absent), once an IC day, on the day's first fire, into the House's
+     root-scope treasury (else the deployment's treasury) (`tacsim.stipend/{org}/{day}`). A day
+     the server never fired is not paid.
+   - **The bring-up** (`deploy/instance/launch-bringup.py`) writes `--house-stipend` (default
+     50,000 minor, 500 cr an IC day; 0 writes none) into each House's row of the launch document.
+5. **The lane, v42 / relay v33** (re-signed over v41 / v32): the consumption rows, each sized so
+   the house's intake (or the Board's seed) lasts about 60 IC days with no trade (Q-48-19), with
+   its share the row's day at its price:
+
+   | House | Good | Per IC day | Share (cr an IC day) |
+   |---|---|---|---|
+   | Lunar Habitat Board | provisions | 16 | 160 |
+   | Syrtis Bonded | structural alloys | 40 | 18,400 |
+   | Syrtis Bonded | instrument boards | 26 | 28,600 |
+   | Selk Townships Board | structural alloys | 12 | 9,120 |
+   | Selk Townships Board | instrument boards | 8 | 12,000 |
+
+   The strip chain's new head, `strip_consumption`, rebuilds v41
+   (`ex9_strip_consumption_rebuilds_the_published_v41`); `strip_parts_market` calls it first.
+6. **Help:** `exchange.md`'s "What the houses use up" and "Running costs".
+
+**What the figures come to** (at 24:1, an IC day a real hour):
+- **Running costs, idle:** about 1,100 cr an IC day across the lane's six booked facilities
+  (Stickney's yard 326, Ceres's 193, each works 169, each workshop 123), plus each refinery's
+  batches (Kasei 99 cr a batch, Occator 56). About 26,500 cr a real day.
+- **Consumption at full rate:** 68,280 cr an IC day of faucet money, if players keep the three
+  consumers' bids filled. That money goes to the players who sell; the consumers hold steady.
+- **The Board** uses up 16 crew-days of its own provisions a day and is paid 160 cr for them.
+- **The House stipends:** 1,500 cr an IC day for the three.
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`, on `464a7dccc` plus this unit.)
+- **Unit tests** (`port/upkeep.rs`, `port/consume.rs`, `port/def.rs`): a day's charge (idle 10%,
+  worked whole, mothballed idle nothing, capped at the slots); a refinery's batch charge;
+  insolvency, repayment and reopening; the day's tally closing at the turn; the ledger's
+  invariants and wire; the drawn allowance; each consume rule's sentence.
+- **`domain_economy::ex9_balance`:**
+  - `ex9_the_consumers_use_up_what_they_buy_and_the_faucet_pays_them_back`: Syrtis uses up
+    40, 40 and the last 20 t of 100 t of alloys over three IC days, one act a day, and nothing
+    after. The faucet pays it 18,400, 18,400 and 9,200 cr. The Board uses up 16 crew-days a day
+    off its ask, which stays within a day's draw of its pool, with no Listings line flagged, and
+    is paid 160 cr a day. The faucet's account falls by exactly those payments. The census's
+    `consumed` rises by the alloys' and provisions' kilograms, and its balance holds.
+  - `ex9_the_running_cost_follows_the_work_and_an_insolvent_house_mothballs`: a captain's
+    twenty-day order runs in one of the Stickney works' two slots. The works' day charge is that
+    slot worked and the other idle (within an IC hour, see Divergences); the idle workshop and
+    yard pay their standing share; every port's charges for the day reach the sink. The Yards'
+    account drained, the next day's charges are debts, every facility mothballs, and the Yards are
+    throttled. Mothballed, the works charges only its worked slots, the idle ones nothing; a
+    customer's order books; the house's own order is refused. Money in pays the debt first, and
+    the works stays mothballed until the Yards can pay seven days ahead; then all three reopen
+    and the throttle lifts.
+  - `ex9_a_mill_run_refinery_pays_by_the_batch`: Kasei's refinery costs nothing on a day with no
+    batch, and two slot-hours on a day with two.
+  - `ex9_the_lane_holds_its_money_within_one_percent_a_real_day`: see the measured run below.
+- **`domain_field::ex9_stipend`**, `ex9_each_house_draws_its_stipend_once_an_ic_day`: the M8
+  world with a 500 cr stipend. Each House is paid once on a new day however many fires, the faucet
+  falls by at least the three, and after a two-day jump each House is paid once.
+- **The pins:** every lane and relay version and digest pin moved to v42 / v33; the lane's
+  version sentence.
+
+**The measured run** (`ex9_the_lane_holds_its_money_within_one_percent_a_real_day`): the shipped
+lane, nobody playing, 72 IC days (three real days at 24:1), fired every six IC hours, read every
+24 IC days. The lane's capital is 16,700,000 cr, so the bound is 167,000 cr a real day.
+
+| Real day at 24:1 | Lane money change | To the sink | From the faucet |
+|---|---|---|---|
+| 1 | −22,644.96 cr | 26,484.96 cr | 3,840 cr |
+| 2 | −22,644.96 cr | 26,484.96 cr | 3,840 cr |
+| 3 | −24,334.96 cr | 26,484.96 cr | 2,150 cr |
+
+- The idle lane loses about 0.14% of its capital a real day, all of it running costs.
+- The faucet pays only the Habitat Board's 160 cr a day, until its 1,000 crew-days of
+  provisions run out on IC day 63 or so: with nobody selling it volatiles, its farm cannot make
+  more. That is Q-48-19's "a port's seed lasts about 60 IC days with no trade".
+- On the launch world the three House stipends add 36,000 cr a real day to the Houses, so the
+  whole economy then gains about 13,400 cr a real day while nobody plays (0.08%).
+- With players, every credit the consumers pay out comes back from the faucet as the goods are
+  used up, so the lane's own money holds; what grows is the players', by what they export.
+
+The defaults are kept: 10% idle, seven days to reopen, the 60-day sizing, the shares at the
+rows' authored prices, and 500 cr a day a House. Each is provisional (the owner's economy
+rule) and cheap to retune: a constant, a lane row, or a bring-up flag.
+
+**Changed expectations** (each because a port house now uses up goods, a facility now pays its
+running costs, or the lane moved to v42):
+- `stations::ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order`: the relay requires
+  lane v42.
+- `mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`: the census of inventory
+  debits gains `port/consume.rs`'s one.
+- `mill::sm12a_the_drip_acts_first_and_one_act_a_fire`: the one-act check passes over the port
+  tick's `tacsim:upkeep:` record and the other ports' clerks' listings (the Luna clerk's draw for
+  the Board), as it already passed over Stickney's.
+- `mill::sm12a_a_month_of_milling_conserves_and_restocks_only_by_the_mill`: a restock fire that
+  also posts the day's running costs or a refund (the two new System accounts moved) is not read
+  as the restock moving money.
+- `pl2_producers::pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cycle`:
+  the Board's provisions are its farm's batch less the crew-days it has used up, and its ask
+  within a day's draw of its pool.
+- `orders::ic11_a_reboot_mid_step_reruns_nothing`: the Luna clerk's day of consumption is not
+  the order's re-stage. Its assertion now names what was staged.
+- `ex0_matter_sinks::ex0_the_census_holds_across_a_burn_and_a_rearm`: `consumed` moves only by
+  the Board's whole days of provisions.
+- `commerce::a8_the_moon_ports_stock_list_and_bid` and PL.2's first pin pass unchanged: a port
+  stocked today uses up nothing until the day turns.
+- mush-server's `commerce_composition` (six stories in `ic_buyout_dormancy`, `ic_slice_loop` and
+  `sm_story`): their `drain_players` now lands every lane port clerk's acts with the house's (the
+  Luna clerk's day of consumption is no player's submission), and the two money-conservation sums
+  (`closed_sum`) count the `tacsim.upkeep` sink, where the Ceres and Stickney operators' running
+  costs go. 93 of 93.
+
+Also adapted, the same way (each adds back exactly what a house paid in running costs, read
+from the new `upkeep::paid_by`): `knowing::survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract`
+and `knowing::survey_commission_uncommitted_filing_stays_unfunded_and_expires_after_restart`
+(Occator, the survey's sponsor and payee, pays its Ceres refinery's and workshop's costs over the
+commission's IC days), and `vehicles::sm3a_the_return_arm_repossesses_after_a_staff_cancel` (the
+fires after a 170-day skip catch up Occator's last seven days). IN.3's story helpers
+(`in3_order_contract`) are `pub(crate)` so EX.9's running-cost story books through them.
+
+**Suites** (conclav.dev, `CARGO_INCREMENTAL=0`, on main `fe31e013c` plus this unit):
+- tacsim whole: 4,885 of 4,888, the three failures the survey and vehicles stories above, then
+  fixed and rerun (53 of 53 of the touched tests);
+- mush-server `split_boundary` 227 of 227; mush-bot lib 575 of 575;
+- the contract guards (`mush-contract-tests`, every binary), with a new `state-slot-owners.toml`
+  row for `port/upkeep.rs` opening the two System accounts;
+- fmt, clippy `-D warnings` (tacsim, mush-server), the M7 memory-size pass, and rustdoc in both
+  modes.
+
+**Mutations** (conclav.dev, each one alone against the EX.9 tests; 23 run, 20 caught):
+
+| # | Mutation | Caught by |
+|---|---|---|
+| C4 | an asked good consumed without drawing it off the ask | the consumption story |
+| C23 | a day's use not capped at `per_ic_day`, in the step and the act | the consumption story |
+| C5 | the drift check not netting the drawn units | the consumption story (a drift page) |
+| C6 | the readiness Listings line not netting them | the consumption story (a flagged line) |
+| C7 | the census's `consumed` term dropped | the consumption story |
+| F1 | the refund not capped at the share | `ex9_a_refund_is_the_units_at_the_price_within_the_share` |
+| F2 | the refund not priced | the same, and the consumption story |
+| F3 | the stipend keyed once, not once a day | the stipend story |
+| F4 | no refund for an act | the consumption story, the measured run |
+| U1 | no idle share | `ex9_a_days_running_cost_follows_the_work` |
+| U2 | no worked share | the same |
+| U3 | a mothballed facility still owing its standing share | the same |
+| U4 | no debt kept | `ex9_a_house_that_cannot_pay_mothballs_and_repays` |
+| U5 | never reopening | the same |
+| U6 | the whole charge posted whatever the account holds | the same |
+| U7 | the refinery charged a standing share, not by the batch | the refinery story |
+| U8 | the busy slots never counted | the running-cost story |
+| U9 | the throttle not reading the running costs | the running-cost story |
+| U11 | a customer's order refused at a mothballed facility | the running-cost story |
+| U12 | the house's own order not refused | the running-cost story |
+
+**Three survive, all equivalent:**
+- **C1** (the act's own once-a-day guard removed): the clerk's step never submits a row twice in
+  an IC day (its ledger's day, then its pass-over). The guard is the act's defence in depth.
+- **C2** and **C3** (one of the two caps on a day's units removed, the act's or the step's): each
+  is the other's twin, and C23, both removed, is caught.
+
+A fourth mutation found dead code, now removed: the catch-up loop always ends at yesterday unless
+a post must wait, so the line that advanced the day after it never ran.
+
+**Divergences:**
+- **The Board's provisions are added to what it uses up, not to its bids.** A vendor may not ask
+  and bid one good, and the Board asks the provisions its farm makes. It feeds its people from
+  its own stock, drawn off its ask; its farm's volatiles and feedstock, which it does buy, its
+  process mill already uses up.
+- **The cost follows the work by a tally, not the orders' schedules.** Busy slots are summed
+  fire to fire in RAM. A restart counts the rest of that day as idle, and the span before a
+  day's first fire can read idle (the story allows an IC hour). Reading each order's schedule
+  would be exact, but the work orders are typed action state the port tick cannot scan cheaply.
+- **"Busy" counts every live order at the facility**, a booked Draft included, since it holds
+  the booking.
+- **Reopening is per facility**: each needs seven IC days of its own standing share in the
+  owner's account.
+- **The refund is priced at the authored price**, not the stepped one (EX.8), so a consumer's
+  treasury can drift by the step. Each row's share caps it.
+- **The stipend pays the day the server fires in**; a day missed in downtime is not paid. The
+  running costs, by contrast, catch up to seven missed days as idle.
+- **A sold facility owned by a person** pays from that person's lowest credit account.
+
+**Expensive to reverse (flagged):**
+- The two System accounts' names, `tacsim.upkeep` and `tacsim.export`, which the census shows.
+- The `tacsim:upkeep:{entry}` document (`PortUpkeep`, `UpkeepRow`) and the
+  `tacsim.port_consume` ledger family's stored shapes.
+- `HouseDeployment.stipend_minor_per_ic_day` in the launch document.
+
+**Not built:**
+- **Consumption where no producer is in reach** waits for EX.10's haulers (Q-48-41). No row is
+  authored for a good whose producer is out of reach: the three consumers' goods are made in the
+  lane (alloys at Kasei and Cabeus, boards at Crisium and Stickney).
+- **A staff or owner view of a facility's running costs** (`+works` or `@facility/show`). The row
+  is in the port's `tacsim:upkeep:` document, and the story reads it there.
+- **A live 24:1 run on a server.** The measured run is a story that drives the shipped lane
+  through 72 IC days (three real days at 24:1); no server ran for three real days.
 
 ## EX.10
 

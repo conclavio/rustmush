@@ -905,6 +905,10 @@ def identities(box, staff):
         staff.fund(faucet, treasury, FILING_FEE_MINOR)
         houses[key] = {"organization": org, "scope": publication, "treasury": treasury,
                        "publisher": 1, "source_name": source}
+        # Doc 48 unit EX.9 (Q-48-55): the House's daily stipend from the export faucet, paid
+        # into its root-scope treasury once an IC day; 0 pays none.
+        if box.args.house_stipend > 0:
+            houses[key]["stipend_minor_per_ic_day"] = box.args.house_stipend
         # Procurement (doc 17h cut M8f, Q-44-8): the agent on a login of its
         # own, at the counter, a member of the Republic, holding the House's
         # licences on the root scope up to the month's budget and attesting on
@@ -1613,6 +1617,9 @@ def main():
                         help="the design each House's hulls are seeded as (dray)")
     parser.add_argument("--procurement-budget", type=int, default=200_000,
                         help="each House's monthly budget and its treasury's funding, minor credits")
+    parser.add_argument("--house-stipend", type=int, default=50_000,
+                        help="each House's stipend from the export faucet, minor credits an IC "
+                             "day (50,000 = 500cr; 0 pays none; doc 48 unit EX.9)")
     parser.add_argument("--no-npcs", action="store_true", help="leave the major NPCs parked")
     parser.add_argument("--no-seed", action="store_true", help="rate and list no line (and buy none)")
     parser.add_argument("--no-purchase", action="store_true", help="do not wait for a House's purchase")

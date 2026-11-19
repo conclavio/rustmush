@@ -2157,9 +2157,18 @@ fn ic11_a_reboot_mid_step_reruns_nothing() {
             break;
         }
         sweep(&mut rig.tw, 1);
+        // Doc 48 unit EX.9: a house's day of consumption is the clerks' own, not the order's.
+        let staged: Vec<_> = drain(&mut rig.tw)
+            .into_iter()
+            .filter(|s| s.action.key().id.as_str() != tacsim::port::consume::CONSUME_ACTION)
+            .collect();
         assert!(
-            drain(&mut rig.tw).is_empty(),
-            "nothing staged before the mirror"
+            staged.is_empty(),
+            "nothing staged before the mirror: {:?}",
+            staged
+                .iter()
+                .map(|s| (s.actor, s.action.key().id.to_string()))
+                .collect::<Vec<_>>()
         );
     }
     assert!(drawn(&rig), "the market mirror read the landing");

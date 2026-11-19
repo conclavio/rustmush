@@ -37,8 +37,8 @@
 //!     is no longer a good, and what it does there is the combat code's.
 //!   - `seized`: the unlicensed strategic ore an in-flight burn's customs picket took, on the
 //!     same receipt.
-//!   - `consumed`: what a consumer used up (Q-48-19's consumption arm, EX.9's). No act
-//!     consumes yet, so it reads 0.
+//!   - `consumed`: what the port houses used up (doc 48 unit EX.9's consumption,
+//!     `crate::port::consume`): each `tacsim.port_consume` ledger's total.
 //!
 //! `balance` = `stock` + `opened` + `scrapped` + `rerolled` − `in_ground` − `pools` − `lots` −
 //! `bales` − `worked` − `milled` − `built` − `fitted` − `repaired` − `burned` − `loaded` −
@@ -138,7 +138,7 @@ pub struct MatterCensus {
     pub loaded: u64,
     /// The strategic ore in-flight customs pickets seized (doc 48 cut EX.0).
     pub seized: u64,
-    /// What a consumer used up (Q-48-19; EX.9 writes it, 0 until then).
+    /// What the port houses used up (Q-48-19; doc 48 unit EX.9's consumption ledgers).
     pub consumed: u64,
     /// One line a commission: `(order, inputs, hull, waste)`.
     pub builds: Vec<(u64, u64, u64, u64)>,
@@ -464,6 +464,14 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .seized
             .saturating_add(spent(&strategic_ore, receipts.seized_t));
     });
+    // Doc 48 unit EX.9: what the port houses used up.
+    if let Some(consume) = w.module_state::<crate::port::consume::ConsumeHandles>() {
+        scan(ctx, &consume.ledgers, |ledger| {
+            if counted(&ledger.good) {
+                out.consumed = out.consumed.saturating_add(kg(&ledger.good, ledger.units));
+            }
+        });
+    }
     for record in crate::port::commission::commissions(w) {
         if record.step == crate::port::commission::Step::Consuming {
             continue;

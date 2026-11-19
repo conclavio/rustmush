@@ -76,6 +76,11 @@ pub const MAX_VENDOR_ROWS: usize = 24;
 /// The most mill rows one vendor may author (doc 20 cut SM.12a; doc 48 unit PL.3: 4 → 8, so
 /// Stickney Yards' seven munitions processes fit).
 pub const MAX_VENDOR_MILLS: usize = 8;
+/// **The most consumption rows one vendor authors** (doc 48 unit EX.9).
+pub const MAX_VENDOR_CONSUMES: usize = 4;
+/// **The largest daily export share one consumption row may name**, whole credits an IC day (doc
+/// 48 unit EX.9): a bound on a typo, ten times Q-48-22's whole lane's starting budget.
+pub const MAX_EXPORT_MAJOR_PER_IC_DAY: u64 = 500_000;
 /// The most tonnes of ore (and so of product) one mill ratio may name (doc 20
 /// cut SM.12a): `1 <= product <= ore <= MAX_MILL_RATIO`.
 pub const MAX_MILL_RATIO: u32 = 100;
@@ -1194,6 +1199,29 @@ pub struct VendorDef {
     /// empty, so a vendor without a mill re-encodes byte-identically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mill: Vec<MillDef>,
+    /// **Doc 48 unit EX.9 (Q-48-19, Q-48-40): what the house's people use up**, once an IC day a
+    /// row (`crate::port::consume`), and the export faucet's daily share that pays it back.
+    /// Skipped when empty, so a vendor that consumes nothing re-encodes byte-identically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consume: Vec<ConsumeDef>,
+}
+
+/// **One consumption row** (doc 48 unit EX.9; Q-48-19, Q-48-36, Q-48-40): the house uses up
+/// `per_ic_day` units of `good` from its storefront each IC day (what it holds, when less), and
+/// the export faucet pays it back the good's authored price for what it used, at most
+/// `export_major_per_ic_day` an IC day. The good is one of the vendor's bids (it consumes what it
+/// buys) or one of its asks (the Habitat Board's provisions, drawn off its own ask as an
+/// own-stock mill draws). Provisional figures, sized from the census (Q-48-36).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumeDef {
+    /// The good used up.
+    pub good: CanonicalId,
+    /// Units an IC day, `1..=mush_market::MAX_QUANTITY`.
+    pub per_ic_day: u64,
+    /// The export faucet's share for this row, whole credits an IC day,
+    /// `0..=`[`MAX_EXPORT_MAJOR_PER_IC_DAY`]: the most it pays back in one IC day.
+    pub export_major_per_ic_day: u64,
 }
 
 /// **What a mill row converts** (doc 39 cut IN.5; §4.3's rule, Q-39-6): a one-input house
@@ -2401,6 +2429,46 @@ impl PortDef {
         Ok(())
     }
 
+    /// **A vendor's consumption rows** (doc 48 unit EX.9): at most [`MAX_VENDOR_CONSUMES`]; no good
+    /// named twice; each one of the vendor's bids or asks; `per_ic_day` `1..=MAX_QUANTITY`; the
+    /// export share at most [`MAX_EXPORT_MAJOR_PER_IC_DAY`].
+    fn check_vendor_consumes(
+        vendor: &VendorDef,
+        asks: &BTreeSet<&CanonicalId>,
+        bids: &BTreeSet<&CanonicalId>,
+    ) -> Result<(), String> {
+        let org = &vendor.org;
+        if vendor.consume.len() > MAX_VENDOR_CONSUMES {
+            return Err(format!(
+                "vendor {org}: at most {MAX_VENDOR_CONSUMES} consume rows"
+            ));
+        }
+        let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
+        for row in &vendor.consume {
+            let good = &row.good;
+            if !seen.insert(good) {
+                return Err(format!("vendor {org}: consume {good} is authored twice"));
+            }
+            if !asks.contains(good) && !bids.contains(good) {
+                return Err(format!(
+                    "vendor {org}: consume {good} is neither one of its bids nor one of its asks"
+                ));
+            }
+            if !(1..=mush_market::MAX_QUANTITY).contains(&row.per_ic_day) {
+                return Err(format!(
+                    "vendor {org}: consume {good}: per_ic_day must be 1..={}",
+                    mush_market::MAX_QUANTITY
+                ));
+            }
+            if row.export_major_per_ic_day > MAX_EXPORT_MAJOR_PER_IC_DAY {
+                return Err(format!(
+                    "vendor {org}: consume {good}: export_major_per_ic_day must be at most {MAX_EXPORT_MAJOR_PER_IC_DAY}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// **A vendor's mill rows** (doc 20 cut SM.12a; §7.3 "The mill"), checked in
     /// this order: at most [`MAX_VENDOR_MILLS`] rows; no ore and no product named
     /// twice; the ore one of the vendor's bids or (doc 48 unit PL.1, an own-stock mill)
@@ -2593,6 +2661,7 @@ impl PortDef {
             }
         }
         self.check_vendor_mills(vendor, &asks, &bids)?;
+        Self::check_vendor_consumes(vendor, &asks, &bids)?;
         let lines = vendor
             .asks
             .iter()
@@ -3526,6 +3595,7 @@ mod tests {
             }],
             bids: Vec::new(),
             mill: Vec::new(),
+            consume: Vec::new(),
         };
         let mut def = port();
         def.vendors.push(vendor.clone());
@@ -3558,6 +3628,7 @@ mod tests {
             asks: Vec::new(),
             bids: Vec::new(),
             mill: Vec::new(),
+            consume: Vec::new(),
         };
         let mut def = port();
         def.vendors.push(vendor(
@@ -3794,6 +3865,7 @@ mod tests {
                 .collect(),
             bids,
             mill: Vec::new(),
+            consume: Vec::new(),
         }
     }
 
@@ -4110,6 +4182,56 @@ mod tests {
         );
         vendor.mill = mills;
         vendor
+    }
+
+    /// **Doc 48 unit EX.9**: each consumption rule refuses at load with its sentence.
+    #[test]
+    fn ex9_each_consume_rule_refuses_with_its_sentence() {
+        let with = |rows: Vec<(&str, u64, u64)>| {
+            let mut vendor = sm12a_vendor(Vec::new());
+            vendor.consume = rows
+                .into_iter()
+                .map(|(good, per_ic_day, export)| ConsumeDef {
+                    good: cid(good),
+                    per_ic_day,
+                    export_major_per_ic_day: export,
+                })
+                .collect();
+            let mut def = port();
+            def.vendors.push(vendor);
+            refused(&def)
+        };
+        // A bid's good and an ask's good.
+        assert_eq!(
+            with(vec![("metal_ore", 10, 700), ("metals", 4, 0)]),
+            "accepted"
+        );
+        assert_eq!(
+            with(vec![("metal_ore", 1, 0); MAX_VENDOR_CONSUMES + 1]),
+            "vendor coop: at most 4 consume rows"
+        );
+        assert_eq!(
+            with(vec![("metal_ore", 1, 0), ("metal_ore", 2, 0)]),
+            "vendor coop: consume metal_ore is authored twice"
+        );
+        assert_eq!(
+            with(vec![("carbon_ore", 1, 0)]),
+            "vendor coop: consume carbon_ore is neither one of its bids nor one of its asks"
+        );
+        for bad in [0, mush_market::MAX_QUANTITY + 1] {
+            assert_eq!(
+                with(vec![("metal_ore", bad, 0)]),
+                "vendor coop: consume metal_ore: per_ic_day must be 1..=100000",
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            with(vec![("metal_ore", 1, MAX_EXPORT_MAJOR_PER_IC_DAY + 1)]),
+            "vendor coop: consume metal_ore: export_major_per_ic_day must be at most 500000"
+        );
+        // A vendor that consumes nothing re-encodes without the field.
+        let quiet = serde_json::to_value(sm12a_vendor(Vec::new())).expect("encodes");
+        assert!(quiet.get("consume").is_none());
     }
 
     /// **Doc 20 cut SM.12a (§7.3 "The mill")**: each mill rule refuses at load with

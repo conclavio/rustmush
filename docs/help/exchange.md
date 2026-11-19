@@ -185,6 +185,32 @@ Shows a house's ask and bid for a good at this venue, an IC week a row, newest
 first, for the last 24 IC weeks (about a real week). A good reads as
 tacsim:<good>, for example +market/history tacsim:metals.
 
+## What the houses use up
+
+Some houses use up what they buy. Syrtis Bonded at Deimos and the Selk
+Townships Board at Titan build off-map, so each IC day they use up some of the
+structural alloys and instrument boards their bids took in. The Lunar Habitat
+Board feeds its people from its own provisions. A house that uses its stores up
+wants more, so its bid stays open and its price comes back up.
+
+Off-map buyers pay these houses back for what they use, so their bids stay
+funded. That is the only money that comes into the lane after it opens: it
+reaches you when you sell into their bids.
+
+## Running costs
+
+A port facility (a refinery, works, yard or workshop) costs its owner money
+every IC day. An hour a slot is working costs its full share of the facility's
+daily cost, and the fee you pay covers it. An idle hour costs a tenth of that. A
+refinery nobody can book pays for each batch it refines instead. The money goes
+out of the game, to nobody.
+
+An owner who cannot pay goes into debt, and the facility is mothballed. It
+takes no orders of its own, but your order still runs, and its fee pays the
+debt first. The owner's prices rise and its bids stop, as for any house in
+debt. It reopens once the debt is paid and the owner has seven IC days of
+running costs in hand.
+
 ## Used parts
 
 Each port's workshop bids for every part its bay fits, at 60% of the part's

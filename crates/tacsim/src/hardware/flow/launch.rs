@@ -163,6 +163,7 @@ fn setup_with(format: u16) -> Result<(Rig, LaunchDeployment)> {
             publisher: GOD,
             source_name: source_name.into(),
             attestation_agent: None,
+            stipend_minor_per_ic_day: None,
         });
     }
     let [meridiani, coprates, tycho]: [HouseDeployment; 3] =

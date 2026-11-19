@@ -150,6 +150,7 @@ pub mod chart_panel;
 pub mod claims;
 /// Doc 39 cut IN.9: the yard commission — a kit lot to a hull somebody can sail (§4.13).
 pub mod commission;
+pub mod consume;
 pub mod coop;
 pub mod credit;
 pub mod def;
@@ -211,6 +212,7 @@ pub mod supply;
 pub mod survey;
 mod traffic;
 pub mod tv;
+pub mod upkeep;
 pub mod vehicle;
 pub mod vendor;
 pub mod voyage;

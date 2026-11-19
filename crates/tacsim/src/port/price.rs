@@ -454,12 +454,14 @@ pub fn ask_price_major(w: &World, def: &PortDef, good: &CanonicalId, authored_ma
 #[must_use]
 pub fn throttled(w: &World, org: mush_org::OrgId) -> bool {
     let debtor = mush_org::PrincipalId::Organization(org);
-    w.module_state::<mush_economy::EconomyStore>()
-        .is_some_and(|e| {
-            e.snapshot().obligations().any(|o| {
-                o.debtor == debtor && o.status == mush_economy::ObligationStatus::Delinquent
+    // Doc 48 unit EX.9 (Q-48-39): a house owing running costs, or with a facility mothballed.
+    crate::port::upkeep::in_arrears(w, org)
+        || w.module_state::<mush_economy::EconomyStore>()
+            .is_some_and(|e| {
+                e.snapshot().obligations().any(|o| {
+                    o.debtor == debtor && o.status == mush_economy::ObligationStatus::Delinquent
+                })
             })
-        })
 }
 
 /// The minor units of `major` on this world's credit.

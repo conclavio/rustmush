@@ -753,6 +753,29 @@ fn exchange(tw: &TestWorld) -> ObjId {
 }
 
 /// Every economy account's `(posted, held)`, minor units.
+/// **Whether the EX.9 System accounts moved between two readings** (doc 48 unit EX.9): the
+/// running costs' sink (`tacsim.upkeep`) or the export faucet (`tacsim.export`).
+fn ex9_moved(
+    tw: &TestWorld,
+    before: &BTreeMap<u64, (i64, i64)>,
+    after: &BTreeMap<u64, (i64, i64)>,
+) -> bool {
+    [
+        tacsim::port::upkeep::UPKEEP_SINK,
+        tacsim::port::upkeep::EXPORT_FAUCET,
+    ]
+    .into_iter()
+    .filter_map(mush_org::SystemPrincipalId::new)
+    .flat_map(|name| {
+        economy(tw)
+            .snapshot()
+            .accounts_of(&mush_org::PrincipalId::System(name))
+            .map(|a| a.id.0)
+            .collect::<Vec<_>>()
+    })
+    .any(|id| before.get(&id) != after.get(&id))
+}
+
 fn money(tw: &TestWorld) -> BTreeMap<u64, (i64, i64)> {
     economy(tw)
         .snapshot()
@@ -1128,7 +1151,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 41, "lane v41 since doc 48 unit PL.8");
+    assert_eq!(LANE_VERSION, 42, "lane v42 since doc 48 unit EX.9");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1494,6 +1517,7 @@ fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String], quote
         let posted = after.iter().any(|key| !stickney.contains(key));
         // Doc 48 cut EX.3: the works' purchase is a quote on the board, the market's allocator too.
         let posted = posted || stickney_quotes(rig) != quoted;
+        let elsewhere = other_ports_listings(rig);
         let ceres: Vec<&String> = rig
             .last_keys
             .iter()
@@ -1502,6 +1526,10 @@ fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String], quote
                     && !stickney.contains(key)
                     && !after.contains(key)
                     && !(posted && key.as_str() == "market:meta")
+                    // Doc 48 unit EX.9: the port tick's running-cost record, not the clerk's;
+                    // and the Luna clerk's draw of the Habitat Board's provisions ask.
+                    && !key.starts_with(tacsim::port::upkeep::UPKEEP_PREFIX)
+                    && !elsewhere.contains(*key)
             })
             .collect();
         assert!(
@@ -1528,6 +1556,32 @@ fn stickney_quotes(rig: &Rig) -> usize {
 
 /// The keys of every listing Stickney's vendors hold before a fire (doc 39 cut IN.5), so a
 /// listing that fire withdraws is still known to be theirs.
+/// **Doc 48 unit EX.9**: the live listings of every port's vendors but Ceres's and Stickney's
+/// (the other clerks' acts, such as the Luna clerk's draw for the Board's consumption).
+fn other_ports_listings(rig: &Rig) -> Vec<String> {
+    let vendors: Vec<u64> = ["luna_port", "deimos_port", "titan_port"]
+        .into_iter()
+        .flat_map(|entry| {
+            port_map(&rig.tw, entry)
+                .vendors
+                .values()
+                .filter_map(|row| row.vendor)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    rig.tw
+        .world()
+        .module_state::<MarketStore>()
+        .map(|market| {
+            market
+                .live_listings()
+                .filter(|listing| vendors.contains(&listing.vendor.0))
+                .map(|listing| format!("market:listing:{}", listing.id.0))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn stickney_listings(rig: &Rig) -> Vec<String> {
     let vendors: Vec<u64> = port_map(&rig.tw, "stickney_port")
         .vendors
@@ -2716,6 +2770,8 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
         vec![
             ("tacsim/src/port/bay_work/act.rs".to_owned(), 2),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
+            // Doc 48 unit EX.9: a house's day of consumption.
+            ("tacsim/src/port/consume.rs".to_owned(), 1),
             ("tacsim/src/port/mill.rs".to_owned(), 2),
             ("tacsim/src/space/customs.rs".to_owned(), 1),
             ("tacsim/src/surface/tow.rs".to_owned(), 3),
@@ -2990,7 +3046,11 @@ impl Month {
                 ask(&rig.tw, EXCHANGE, "metals").map(|l| l.quantity),
                 ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
             );
-            if after.0 > listed.0 || after.1 > listed.1 {
+            // Doc 48 unit EX.9: a fire may also post the day's running costs or the export
+            // faucet's refunds; the restock itself moves no money.
+            if (after.0 > listed.0 || after.1 > listed.1)
+                && !ex9_moved(&rig.tw, &before, &money(&rig.tw))
+            {
                 assert_eq!(money(&rig.tw), before, "day {}: a restock fire", self.day);
             }
             let idle = queued.is_empty() && rig.last_keys.is_empty();

@@ -247,6 +247,20 @@ through the economy module's own path.
 """
 
 [[site]]
+path = "crates/tacsim/src/port/upkeep.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 48 unit EX.9: the running costs' sink (`tacsim.upkeep`) and the export
+faucet (`tacsim.export`) are System accounts, opened create-only the first time
+the port tick needs one, exactly as the port applier opens the port treasury
+(`port/apply.rs`'s row above): `alloc_account` takes the next account id from
+`economy`'s monotonic allocator, and `mush_economy::open_account` installs it.
+Nothing else in the store is written.
+"""
+
+[[site]]
 path = "crates/tacsim/src/port/house.rs"
 accessor = "World::module_state_mut"
 slot = "EconomyStore"

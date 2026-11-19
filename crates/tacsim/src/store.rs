@@ -405,6 +405,11 @@ pub struct TacsimStore {
     /// workshop then scraps and takes back nothing until staff repair it). Persisted through
     /// [`put_shop_bale`].
     pub(crate) shop_bales: BTreeMap<CanonicalId, Option<crate::port::bay_work::ShopBale>>,
+    /// **Doc 48 unit EX.9** — `tacsim:upkeep:{entry}`: each port's running-cost record
+    /// ([`crate::port::upkeep::PortUpkeep`]). Persisted through [`put_port_upkeep`]; an unreadable
+    /// one is skipped loudly, and the tick starts the port afresh (its debts are lost to staff
+    /// repair, never minted).
+    pub(crate) upkeeps: BTreeMap<CanonicalId, crate::port::upkeep::PortUpkeep>,
     /// **Doc 39 cut IN.3** — `tacsim:works:{id}`: each order contract
     /// ([`crate::port::works::WorksContract`]), keyed by its escrow vault. Persisted through
     /// [`put_works`]; an unreadable one is held (the arm skips it) until staff repair it.
@@ -675,6 +680,17 @@ impl TacsimStore {
         }
     }
 
+    /// **Doc 48 unit EX.9**: a port's running-cost record, when one is kept.
+    #[must_use]
+    pub fn port_upkeep(&self, entry: &CanonicalId) -> Option<&crate::port::upkeep::PortUpkeep> {
+        self.upkeeps.get(entry)
+    }
+
+    /// **Doc 48 unit EX.9**: every port's running-cost record, in entry order.
+    pub fn port_upkeeps(&self) -> impl Iterator<Item = &crate::port::upkeep::PortUpkeep> {
+        self.upkeeps.values()
+    }
+
     /// Every readable port map, in `(pack, entry)` order.
     pub fn port_maps(&self) -> impl Iterator<Item = &crate::port::PortMap> {
         self.port_maps.values()
@@ -805,6 +821,21 @@ impl TacsimStore {
             })
             .map(|(hull, _)| *hull)
             .collect()
+    }
+
+    /// **Doc 48 unit EX.9**: how many open bay orders stand at `facility` (the running costs'
+    /// busy berths), from the RAM mirror.
+    #[must_use]
+    pub fn bay_open_at(&self, facility: ObjId) -> usize {
+        self.bay_hulls
+            .values()
+            .filter(|state| match state {
+                crate::port::bay_work::BayHullState::Present(row) => {
+                    row.open().is_some_and(|order| order.facility == facility)
+                }
+                _ => false,
+            })
+            .count()
     }
 
     /// **Every hull with an open repair order** (doc 36 cut GC.8), in hull order.
@@ -2424,6 +2455,21 @@ pub(crate) fn put_bay_hull(ctx: &mut Ctx<'_>, record: &crate::port::bay_work::Ba
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Write a port's running-cost record** (doc 48 unit EX.9): RAM, then one `JsonSet`.
+pub(crate) fn put_port_upkeep(ctx: &mut Ctx<'_>, doc: &crate::port::upkeep::PortUpkeep) {
+    let key = crate::port::upkeep::upkeep_key(&doc.entry);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.upkeeps.insert(doc.entry.clone(), doc.clone());
+    }
+    match serde_json::to_value(doc) {
+        Ok(value) => push_op(ctx.out, ModuleWrite::JsonSet { key, value }),
+        Err(error) => tracing::error!(
+            entry = %doc.entry, %error,
+            "tacsim: a port's running-cost record did not serialize and was not written"
+        ),
+    }
+}
+
 /// **Write a workshop's shop bale** (doc 39 cut IN.8): RAM, then one `JsonSet`.
 pub(crate) fn put_shop_bale(ctx: &mut Ctx<'_>, bale: &crate::port::bay_work::ShopBale) {
     let key = crate::port::bay_work::shop_bale_key(&bale.port);
@@ -2974,6 +3020,20 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_security(&mut store, key, actor, value);
+        } else if let Some(rest) = key.strip_prefix(crate::port::upkeep::UPKEEP_PREFIX) {
+            // Doc 48 unit EX.9: a port's running-cost record, its entry the key's.
+            match (
+                CanonicalId::new(rest),
+                serde_json::from_value::<crate::port::upkeep::PortUpkeep>(value.clone()),
+            ) {
+                (Ok(entry), Ok(doc)) if doc.entry == entry => {
+                    store.upkeeps.insert(entry, doc);
+                }
+                _ => tracing::error!(
+                    %key,
+                    "tacsim: a port's running-cost record is unreadable; the port tick keeps it afresh (staff repair any debt it held)"
+                ),
+            }
         } else if let Some(rest) = key.strip_prefix(crate::port::bay_work::SHOP_BALE_PREFIX) {
             // Doc 39 cut IN.8. The claim is the KEY's (the R8 rule): a shop bale that will not
             // read holds its workshop's scraps and returns until staff repair the document.
