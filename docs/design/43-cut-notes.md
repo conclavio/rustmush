@@ -1128,10 +1128,47 @@ Neither touches anything this cut changed.
 - **`boot_engine`'s first `set_now`** stays too. The loop's first iteration overwrites it from the
   provider.
 
+### TS.10c — the paused rigs and the guard
+
+**The guard.**
+- `ObjectStore::holds_process_memory` defaults to false, and `InMemoryStore` says true. A forwarding test
+  double opts in by asking its inner store.
+- `spawn_persist_with_gateway_mode` asserts that `TimeSource::Tokio` only runs over a store that says yes.
+  Every in-process composition comes through that function.
+- 43c §5 first put the guard at boot (`boot.rs`, `serve_classified`). It sits at the spawn instead, for two
+  reasons. The store is `dyn ObjectStore` at boot. And both production boots build
+  `ServerDeps::production`, which is always `System`, so the spawn is the one place a `Tokio` arm can
+  reach.
+- **Tested both ways.** `Tokio` over a store that does not claim process memory is refused before any task
+  starts, and `System` over the same store spawns.
+- `assert!` is not one of the panic budget's needles. A `panic!` in the first test's gateway closure did
+  count (`retry.rs` is not test-fenced), and it was replaced.
+
+**What moved to the paused clock** (Q-43c-2 at the lead's default: in-process memory-store rigs only):
+- **`mush-server::world_task::preflight_retry_bounds`, 4 tests.** It moved with no engine change, because
+  the coordinator's retry window already reads tokio's clock. The slow store's 2-s answers are tokio sleeps.
+  The window's floor-and-ceiling assertions now measure tokio time.
+  - Main's hosted run summed 10.3 s; locally the module takes 0.19 s.
+
+**What did not move, measured first** (main run 44436872677's hosted JUnit, summed):
+
+| suite | summed | why not |
+|---|---:|---|
+| mush-server `world_task::submission_disposition::tests::player_market*` | 637 s | CPU. One test on the paused clock took 8.55 s against 8.21 s on two workers: the cost is the production launch's boot, not a wait |
+| mush-server `commerce_composition`, `split_boundary` | 5,020 s | `TestWorld` (43c §4: their cost is work) |
+| mush-server `hostile_lines` | 10.8 s | `TestWorld` fuzz |
+| mush-server's other src `world_task` tests | 31 s | under 0.5 s each |
+| mushd `sim_lenses`, and `world_journeys`' `modules_e2e`, `onboarding_e2e`, `ssh_e2e` and `web_e2e` | 1,061.9 s | real SSH or web clients (43c §3.3) |
+| mushd `world_journeys`' network-free files (`admin`, `legal_action_web`, `mind_market_web`, `web_bridge`) | under 0.5 s each | nothing to win |
+
+So outside `domain_field` the seam pays only where a test waits on a timer it owns. In the in-process
+memory-store suites that is the one module above. TS.10c's value is the guard, plus the seam being in place
+for the next test that waits.
+
 ### What is left of TS.10
 
-- **TS.10c** mush-server's memory-store `world_task` tests and mushd's in-process journeys on the paused
-  clock, with the boot guard; **TS.10e** the contract lint. Each is a stacked PR after this one.
+- **TS.10e** the contract lint, a stacked PR after this one.
+- **More paused rigs** only where a test waits on a timer it owns (TS.10c's table).
 - **The arena's handle** (TS.10b, above) waits on its first reader.
 - **TS.10d** waits on the owner (above).
 - **Two owner questions from this cut:** the escort watch's closing interval, and the CONCENTRATE answer

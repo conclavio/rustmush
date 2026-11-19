@@ -57,7 +57,7 @@ use crate::decision_dispatch::{
     DecisionProviderFailureKind,
 };
 
-struct BlackholeGateway;
+pub(crate) struct BlackholeGateway;
 
 #[test]
 fn operated_known_subject_requires_exact_unambiguous_grant_epoch() {
