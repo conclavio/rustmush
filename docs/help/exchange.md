@@ -92,7 +92,8 @@ something between themselves at an agreed price.
 lot is yours to use again; a bid gives back whatever it still holds. A bid also
 gives its hold back on its own when it lapses.
 
-`+market/mine` lists your listings and bids, and how many more you may post.
+`+market/mine` lists your listings and bids, and how many more you may post,
+then what you listed for each organization you act for.
 
 ## Limits
 
@@ -123,13 +124,16 @@ standing at it.
 
 Goods in a Co-op chartered hold may go on a personal ask. When they sell, the
 Co-op takes its share of the margin over its reference price, as it does on a
-sale into a house's bid, and you are paid the rest.
+sale into a house's bid, and you are paid the rest. The pilot lists them as
+themself, never `as=<org>`.
 
 ## Fees
 
 At a port, the port's authority takes a listing fee of 1% of what you list (at
 least 10 cr), once, when you post it, and 3% of each sale. A further 1% of each
-sale is a levy to the port's treasury. A house's own listings pay none of these.
+sale is a levy to the port's treasury. A sale into a player's bid pays the same
+3% and 1%, out of what the seller receives. A house's own listings pay none of
+these.
 
 ## Berths
 

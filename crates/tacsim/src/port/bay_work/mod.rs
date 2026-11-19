@@ -1318,8 +1318,10 @@ fn take(
     if record.scrapped_ic.is_some() {
         return Err("That hull has been scrapped.".to_owned());
     }
-    // Doc 48 cut EX.2 (Q-48-52): nothing is fitted to a hull being sold.
-    if fit.is_some() && under_sale(ctx.w, hull) {
+    // Doc 48 cut EX.2 (Q-48-52): nothing is fitted to a hull being sold. Doc 48e (exchange
+    // G24; 48d M-04): nor is any other order taken on her, so the state her sale pins is the
+    // state she is sold in.
+    if under_sale(ctx.w, hull) {
         return Err(UNDER_SALE.to_owned());
     }
     let (facility, quote) = quote_here(ctx.w, hull)?;

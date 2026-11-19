@@ -1149,6 +1149,26 @@ fn ex1a_the_standing_acceptance_holds_a_bid_to_its_terms() {
         }),
         "a consideration that is not the quote's"
     );
+    // Doc 48e (exchange G26; 48d M-07): the payouts are the ones the market builds.
+    assert!(
+        !stands_for(&r.tw, contract, bea.who, escrow, |c| {
+            c.consent.terms.outcomes[0].payouts[0].share =
+                mush_economy::Share::Exact(mush_economy::Amount::from_minor(1_999));
+        }),
+        "an outcome that pays the seller other than the market built"
+    );
+    assert!(
+        !stands_for(&r.tw, contract, bea.who, escrow, |c| {
+            let to = c.consent.terms.outcomes[0].payouts[0].to;
+            c.consent.terms.outcomes[0]
+                .payouts
+                .push(mush_economy::PayoutShare {
+                    to,
+                    share: mush_economy::Share::Exact(mush_economy::Amount::from_minor(1)),
+                });
+        }),
+        "an outcome with a payee the market did not build"
+    );
     docs.edit(&mut r.tw, &listing_key, "price", json!(501));
     assert!(
         !stands(&r.tw, bea.who, escrow),
@@ -2009,4 +2029,116 @@ fn g21_the_hold_reconcile_reaches_a_listing_past_the_first_lap() {
         mush_market::MAX_LOT_RECONCILED_PER_FIRE,
         "the healthy listings stand"
     );
+}
+
+/// **Doc 48e, exchange G22 (48d M-02): one live bid for a good at each venue.** Bea bids for
+/// iron at Luna and then at Mars: both stand. A second bid for iron at Luna is still refused.
+/// Before the fix the Mars bid was refused as a second bid.
+#[test]
+fn g22_a_bidder_bids_for_one_good_at_two_venues() {
+    let mut r = rig();
+    let bea = r.bea;
+    let line = |venue: &str| {
+        format!(
+            "+market/bid ex1a:iron qty=2 price=100 into={} market={venue}",
+            bea.vault.vault().0
+        )
+    };
+    // A second venue, Mars, with a vendor of its own, so it trades in credits.
+    ok(&mut r.tw, GOD, "@org/create Hermes");
+    let hermes = OrgId(1);
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!("@account/open org:#{}={CREDIT}", hermes.0),
+    );
+    let strongbox =
+        r.tw.world_mut()
+            .create(ObjKind::Thing, "Hermes strongbox", GOD, None)
+            .expect("a container");
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@vault/create Hermes=container:#{} owner=org:#{}",
+            strongbox.0, hermes.0
+        ),
+    );
+    let vault = economy(&r.tw)
+        .snapshot()
+        .vaults()
+        .find(|v| v.owner == PrincipalId::Organization(hermes))
+        .expect("the Hermes vault")
+        .id;
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor create #{}=#{} name=Hermes market=mars",
+            hermes.0, vault.0
+        ),
+    );
+    let luna = ok(&mut r.tw, bea.who, &line("luna"));
+    assert!(luna.contains("Bid #"), "{luna}");
+    let mars = ok(&mut r.tw, bea.who, &line("mars"));
+    assert!(mars.contains("Bid #"), "a bid at another venue: {mars}");
+    let again = err(&mut r.tw, bea.who, &line("luna"));
+    assert!(
+        again.contains("You already bid for that good here"),
+        "{again}"
+    );
+}
+
+/// **Doc 48e, exchange G18 (48d H-11): a lot ask posted while the last is still landing is
+/// refused before anything is charged.** Sal posts one lot; before its hold lands she posts a
+/// second: refused with [`mush_market::seller::POST_BUSY`], and no second listing stands. Before
+/// the fix the second was listed, its hold's submission voided, and its fee kept.
+#[test]
+fn g18_a_post_while_the_last_is_landing_is_refused() {
+    let mut r = rig();
+    let sal = r.sal;
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 4, LotId(0xd8));
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 4, LotId(0xd9));
+    let first = ok(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/post {} price=100 market=luna", LotId(0xd8)),
+    );
+    assert!(first.contains("Listed for sale as #"), "{first}");
+    let second = err(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/post {} price=100 market=luna", LotId(0xd9)),
+    );
+    assert!(second.contains(mush_market::seller::POST_BUSY), "{second}");
+    assert_eq!(
+        market(&r.tw)
+            .personal_listings_of(&PrincipalId::Object(sal.who))
+            .count(),
+        1
+    );
+}
+
+/// **Doc 48e, exchange G29 (48d H-27): `+market/mine` shows what the actor listed for an
+/// organization.** Sal, granted Ares' posting right, lists a lot `as=Ares`: her page shows it
+/// under "Listed as". Before the fix the page said she had nothing listed.
+#[test]
+fn g29_mine_shows_an_orgs_listing_the_actor_posted() {
+    let mut r = rig();
+    let sal = r.sal;
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!("@org/grant #{}=Ares economy.account.post", sal.who.0),
+    );
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 4, LotId(0xda));
+    let said = ok(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/post {} price=100 market=luna as=Ares", LotId(0xda)),
+    );
+    assert!(said.contains("Listed for sale as #"), "{said}");
+    let page = ok(&mut r.tw, sal.who, "+market/mine");
+    assert!(page.contains("Listed as "), "{page}");
+    assert!(page.contains("Ares"), "{page}");
 }

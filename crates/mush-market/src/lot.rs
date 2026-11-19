@@ -534,7 +534,16 @@ fn paid_legs(
         {
             continue;
         }
-        let mut entry = paid_entry(q, lot, LotOp::Deliver, Value::Null);
+        // Doc 48e (exchange G12; 48c #5, 48d H-10): a delivery carries its destination's
+        // capacity plan, as a Draw does, so concurrent fills into one bidder's hold or locker
+        // are each asked for room inside the bundle that moves them. A house storefront has
+        // no plan and takes them as before; an oversized plan omits the entry, fail closed.
+        let plan = match capacity.and_then(|c| c.plan(world, lot.destination.0)) {
+            None => Value::Null,
+            Some(plan) if plan.within_bounds() => plan.0,
+            Some(_) => continue,
+        };
+        let mut entry = paid_entry(q, lot, LotOp::Deliver, plan);
         if let Some(map) = entry.as_object_mut() {
             map.insert("marker".to_owned(), json!(marker.as_str()));
         }
@@ -1323,6 +1332,8 @@ impl MarketLotProvider {
         ) {
             return Err(rejected());
         }
+        // Doc 48e (exchange G12): the destination's room, by the plan the entry carries.
+        self.room_for(txn, entry, destination, commodity, quantity)?;
         let quote = entry
             .get("quote")
             .and_then(Value::as_u64)
@@ -1395,6 +1406,8 @@ impl MarketLotProvider {
         {
             return Err(rejected());
         }
+        // Doc 48e (exchange G12): the destination's room, by the plan the entry carries.
+        self.room_for(txn, entry, destination, commodity, quantity)?;
         let quote = entry
             .get("quote")
             .and_then(Value::as_u64)
@@ -1909,7 +1922,9 @@ pub fn lapsed_holds(w: &mush_core::World, limit: usize) -> Vec<LapsedHold> {
 /// **Whether a lapsed hold-backed listing's sale is still in force** (doc 48e, exchange G2): a
 /// sale activated on it, its contract not terminal and its receipt not yet mirrored. Its hold is
 /// the Consume's to take, so nobody releases it from under the sale; a sale that refunds, or
-/// whose lot moved, frees it.
+/// whose lot moved, frees it. A pooled listing's Draw counts too (doc 48e, exchange G14: the
+/// port clerk now releases its vendors' lapsed holds, and must not release one a Draw is still
+/// drawing on).
 #[must_use]
 pub fn sale_in_force(w: &mush_core::World, listing: ListingId) -> bool {
     let (Some(store), Some(economy)) = (
@@ -1922,7 +1937,9 @@ pub fn sale_in_force(w: &mush_core::World, listing: ListingId) -> bool {
         q.listing == listing
             && q.activated
             && q.drawn_at.is_none()
-            && q.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Hold)
+            && q.lot
+                .as_ref()
+                .is_some_and(|l| matches!(l.kind, PaidKind::Hold | PaidKind::Draw))
             && q.contract.is_some_and(|c| {
                 economy
                     .snapshot()

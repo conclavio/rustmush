@@ -422,7 +422,7 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
             mush_economy::EscalationSubject::MarketListing(id.0),
             format!(
                 "market listing #{id} advertised inventory stock and its reservation was never \
-                 placed. The listing has been withdrawn; nothing was sold and no quantity moved."
+                 placed. The listing has been withdrawn, its listing fee refunded; nothing was sold                  and no quantity moved."
             ),
             vec![
                 format!("@inv/show {}", endpoint.vault().0),
@@ -432,6 +432,14 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
                 ),
             ],
         );
+        // Doc 48e (exchange G18; 48d H-11): the fee it paid goes back with it.
+        let market = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.listing(id).map(|l| l.market.clone()));
+        if let Some(market) = market {
+            crate::seller::refund_posted_fee(ctx, &market, id);
+        }
         del_listing(ctx, id);
     }
 }

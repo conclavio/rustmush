@@ -884,7 +884,11 @@ pub fn accept_at(
     if q.observed.state.is_some() && !mush_economy::has_fact_provider(ctx.w, crate::store::NS) {
         return Err(MarketError::bad(UNDELIVERABLE));
     }
-    if let Some(why) = crate::module::cannot_deliver(ctx, &q, representation) {
+    // A listing with a lot leg (frozen at publication, IC14 L8) is delivered by that leg,
+    // whatever its entry now says.
+    if matter.is_none()
+        && let Some(why) = crate::module::cannot_deliver(ctx, &q, representation)
+    {
         tracing::info!(
             quote = q.id.0,
             why,
@@ -899,7 +903,12 @@ pub fn accept_at(
     };
     // Doc 48 cut EX.4 (Q-48-8, -56): a person's sale pays the venue's cut and levy and any
     // proceeds policy's share beside the seller; a vendor's pays the vendor the whole price.
+    // Doc 48e (exchange G5): a person's lot ask's policy share, frozen on the quote with its
+    // lot leg below, so the policy is told of the sale when it settles (`settled_sale`).
+    let mut frozen = None;
     let payouts = if listing.is_personal() {
+        frozen = crate::fees::ask_policy_proceeds(ctx.w, &listing, &q.buyer, q.quantity, q.price)?
+            .filter(|p| !p.cuts.is_empty() || p.basis.minor() > 0);
         crate::fees::personal_ask_payouts(ctx.w, &listing, &q.buyer, q.quantity, q.price, payee)?
     } else {
         vec![PayoutShare {
@@ -1033,6 +1042,10 @@ pub fn accept_at(
             );
         }
         q.lot = Some(paid);
+        if let Some(p) = frozen {
+            q.cuts = p.cuts;
+            q.basis = p.basis;
+        }
     }
     // **The single serialization point** (OPEN 4): the listing's quantity decrements
     // when — and only when — the contract came into force. A quote reserved nothing,
@@ -1121,6 +1134,9 @@ fn lot_precheck(
             presence,
         )
         .map_err(|r| MarketError::bad(r.line))?;
+        // Doc 48e (exchange G15): the destination takes delivery at this venue at all.
+        gate.receives_at(ctx.w, &listing.market, destination)
+            .map_err(|r| MarketError::bad(r.line))?;
         // Doc 39 cut IN.2: a lot-transfer sale hands one identified lot over whole, so it
         // may land in a governed endpoint too, the capacity pre-check below its gate.
         if gate.governed(ctx.w, destination)
@@ -2100,7 +2116,8 @@ pub struct BidSale {
     pub gross: Amount,
     /// The proceeds policy's cuts, frozen on the quote.
     pub cuts: Vec<crate::record::ProceedsCut>,
-    /// What the seller receives: `gross − Σ cuts`.
+    /// What the seller receives: `gross − Σ cuts`, less the venue's cut and levy on a
+    /// person's bid (doc 48e, exchange G4).
     pub net: Amount,
     /// The line the seller reads (the policy's, else [`SOLD_GENERIC`] filled in).
     pub line: String,
@@ -2671,6 +2688,12 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             if !crate::seller::bid_funds(ctx.w, &listing, quantity) {
                 return Err(MarketError::bad(crate::seller::BIDDER_NOT_BUYING));
             }
+            // Doc 48e (exchange G11; 48d H-01): the bid's destination takes delivery here and
+            // now (a hold whose hull has sailed, or berths at another port, takes nothing).
+            if let Some(gate) = gate.as_ref() {
+                gate.receives_at(ctx.w, &listing.market, mush_inventory::EndpointRef(vault))
+                    .map_err(|r| MarketError::bad(r.line))?;
+            }
             personal_bid_room(ctx, vault, &commodity, quantity)?;
         }
     }
@@ -2783,10 +2806,24 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             p
         }
     };
+    // Doc 48e (exchange G4; Q-48-8): a sale into a person's bid pays the venue's cut and levy,
+    // as a sale off a person's ask does; a house's bid pays neither.
+    let fee_rows = match bidder {
+        BidBuyer::Personal => crate::fees::bid_fee_rows(ctx.w, &listing, gross),
+        BidBuyer::House(_) => Vec::new(),
+    };
+    let Some(payouts) =
+        crate::fees::bid_sale_payouts(seller_account, gross, &fee_rows, &proceeds.cuts)
+    else {
+        return Err(MarketError::bad(UNSETTLEABLE));
+    };
+    let fee_total = fee_rows
+        .iter()
+        .fold(0_i64, |sum, (_, a)| sum.saturating_add(a.minor()));
     let cut_total = proceeds
         .cuts
         .iter()
-        .fold(0_i64, |sum, c| sum.saturating_add(c.amount.minor()));
+        .fold(fee_total, |sum, c| sum.saturating_add(c.amount.minor()));
     let net = Amount::from_minor(gross.minor().saturating_sub(cut_total));
     // 15. The quote id, the window and cutoff, and the marker id.
     let Some(quote) = ctx
@@ -2832,10 +2869,8 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             buyer: &house,
             buyer_account: payer,
             seller: actor,
-            seller_account,
             gross,
-            net,
-            cuts: &proceeds.cuts,
+            payouts,
             deadline,
             marker: &marker,
         },
@@ -2997,6 +3032,7 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             quantity,
             gross,
             net,
+            Amount::from_minor(fee_total),
             &proceeds.cuts,
         )
     });
@@ -3056,10 +3092,10 @@ struct SaleShape<'a> {
     /// What it pays from: the vendor's account, or the personal bid's own.
     buyer_account: mush_economy::AccountId,
     seller: ObjId,
-    seller_account: mush_economy::AccountId,
     gross: Amount,
-    net: Amount,
-    cuts: &'a [crate::record::ProceedsCut],
+    /// The seller's net, then every other payee (doc 48e, exchange G4:
+    /// [`crate::fees::bid_sale_payouts`]).
+    payouts: Vec<PayoutShare>,
     deadline: i64,
     marker: &'a SmolStr,
 }
@@ -3070,19 +3106,7 @@ struct SaleShape<'a> {
 /// `Fact{inventory, inventory.transferred, <marker>}` — so the house's money is paid out
 /// only once the goods are in its stores. Deterministic, refunded at the deadline.
 fn sale_spec(s: &SaleShape<'_>, memo: Option<&SmolStr>) -> ContractSpec {
-    let mut payouts = Vec::new();
-    if s.net.minor() > 0 {
-        payouts.push(PayoutShare {
-            to: s.seller_account,
-            share: Share::Exact(s.net),
-        });
-    }
-    for cut in s.cuts {
-        payouts.push(PayoutShare {
-            to: cut.to,
-            share: Share::Exact(cut.amount),
-        });
-    }
+    let payouts = s.payouts.clone();
     let deadline = EconomicDeadline {
         clock: EconomicClock::RealUtc,
         at: s.deadline,
@@ -3139,6 +3163,7 @@ fn sold_generic(
     quantity: u64,
     gross: Amount,
     net: Amount,
+    fees: Amount,
     cuts: &[crate::record::ProceedsCut],
 ) -> String {
     let name = ctx
@@ -3147,9 +3172,17 @@ fn sold_generic(
         .and_then(|s| s.entry_of(&listing.catalog).map(|e| e.name.to_string()))
         .unwrap_or_else(|| listing.catalog.code.to_string());
     let money = |a: Amount| crate::commands::money(ctx.w, Some(instrument), a);
-    let cut_text: String = cuts
-        .iter()
-        .map(|c| format!("; {} {}", c.label, money(c.amount)))
+    // Doc 48e (exchange G4): a person's bid pays the venue's cut and levy first.
+    let fee_text = if fees.minor() > 0 {
+        format!("; venue fees {}", money(fees))
+    } else {
+        String::new()
+    };
+    let cut_text: String = std::iter::once(fee_text)
+        .chain(
+            cuts.iter()
+                .map(|c| format!("; {} {}", c.label, money(c.amount))),
+        )
         .collect();
     SOLD_GENERIC
         .replace("{qty}", &quantity.to_string())
@@ -3426,10 +3459,15 @@ pub(crate) fn awaits_receipt_read(q: &Quote) -> bool {
         }
 }
 
-/// Tell the proceeds policy one sale into a bid settled (doc 18 cut IC10). A no-op for
-/// every other quote, and with no policy wired.
+/// Tell the proceeds policy one sale into a bid settled (doc 18 cut IC10), or a person's lot
+/// ask whose quote froze a share (doc 48e, exchange G5: the Co-op's chartered asks). A no-op
+/// for every other quote, and with no policy wired.
 pub(crate) fn settled_sale(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
-    let Some(lot) = q.lot.as_ref().filter(|l| l.kind == PaidKind::Deliver) else {
+    let Some(lot) = q
+        .lot
+        .as_ref()
+        .filter(|l| l.kind == PaidKind::Deliver || !q.cuts.is_empty() || q.basis.minor() > 0)
+    else {
         return;
     };
     let Some(policy) = crate::module::proceeds_policy(ctx.w) else {

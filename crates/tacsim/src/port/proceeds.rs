@@ -75,6 +75,9 @@ pub const REFERENCE_DARK: &str =
 /// A sale out of an enrolled hold by anyone but its pilot (`{name}`: the hull).
 pub const SALE_NOT_PILOT: &str =
     "Only the {name}'s chartered pilot sells out of its hold, so nothing was sold.";
+/// A personal ask of a chartered hold's cargo posted for an organization (doc 48e, exchange G6):
+/// `{name}`, the hull.
+pub const CHARTER_ASK_AS_ORG: &str = "Cargo in the {name}'s chartered hold is listed by its pilot alone, so the Co-op's share is paid; nothing was listed.";
 /// The payout's label on the sale contract and the line.
 pub const SHARE_LABEL: &str = "Co-op share";
 /// The contract-name memo when the reference fell back to the goods table.
@@ -371,6 +374,24 @@ impl ProceedsPolicy for CoopProceeds {
             line: Some(line),
             memo,
         })
+    }
+
+    /// **Charter cargo is listed by its pilot** (doc 48e, exchange G6; 48d H-05): the share on a
+    /// personal ask is decided by its seller (`fees::ask_policy_cuts` asks it of a person), so an
+    /// ask from a chartered hold posted for an organization the pilot officers would pay the Trust
+    /// nothing (Q-48-56). It is refused at posting; the pilot lists it as themself.
+    fn may_list(
+        &self,
+        w: &World,
+        seller: &PrincipalId,
+        source: EndpointRef,
+    ) -> Result<(), ProceedsRefusal> {
+        if matches!(seller, PrincipalId::Object(_)) || !is_chartered_hold(w, source) {
+            return Ok(());
+        }
+        let name =
+            governed_hold(w, source).map_or_else(String::new, |view| name_of(w, view.hull()));
+        Err(refuse(CHARTER_ASK_AS_ORG.replace("{name}", &name)))
     }
 
     fn settled(&self, ctx: &mut Ctx<'_>, sale: &SettledSale<'_>) {

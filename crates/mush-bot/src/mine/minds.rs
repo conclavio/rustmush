@@ -592,6 +592,13 @@ pub mod exchange {
     pub const MINE_HEAD: &str = "Your listings:";
     /// `mush_market::seller::MINE_NONE`.
     pub const MINE_NONE: &str = "You have nothing listed.";
+    /// `mush_market::seller::MINE_AS_ORG`'s head (doc 48e): an organization's listings follow.
+    pub const MINE_AS_ORG: &str = "Listed as ";
+    /// `mush_market::seller::POST_BUSY`'s tail (doc 48e): the last order is still landing.
+    pub const POST_BUSY: &str = "still being handled; try again in a moment. Nothing was listed.";
+    /// `mush_market::seller::POST_QUEUE_FULL` (doc 48e): the exchange is busy.
+    pub const POST_QUEUE_FULL: &str =
+        "The exchange is busy right now; try again in a moment. Nothing was listed.";
     /// `mush_market::seller::MINE_COUNT`'s tail.
     pub const MINE_COUNT: &str = " listings a seller may.";
     /// `mush_market::seller::NO_SUCH_LOT`.
@@ -1032,6 +1039,9 @@ pub mod venue {
     pub const MOVE_CHARTER_CARGO: &str = "chartered hold is sold from there";
     /// `tacsim::port::market::MOVE_HULL_ON_SALE`'s tail (doc 48e): a listed hull takes nothing.
     pub const MOVE_HULL_ON_SALE: &str = " is for sale, so nothing goes into her hold.";
+    /// `tacsim::port::proceeds::CHARTER_ASK_AS_ORG`'s tail (doc 48e): charter cargo is listed by
+    /// its pilot.
+    pub const CHARTER_ASK_AS_ORG: &str = "chartered hold is listed by its pilot alone";
     /// `tacsim::port::market::MOVE_INTO_SCRAP` (doc 48e).
     pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
     /// `tacsim::port::locker::LOCKER_OPENED`'s tail: a locker opened.
@@ -1099,6 +1109,7 @@ pub const PARTIAL: &[&str] = &[
     "jobs::TERM_TODAY",
     "history::HISTORY_ROW",
     "history::HISTORY_NO_PRICE",
+    "exchange::MINE_AS_ORG",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -1211,6 +1222,12 @@ mod tests {
                 WHOLE_LOT,
             )
         });
+        rows.extend({
+            use tacsim::port::proceeds as game;
+            rows!("";
+                CHARTER_ASK_AS_ORG,
+            )
+        });
         rows
     }
 
@@ -1304,7 +1321,10 @@ mod tests {
             BID_WITHDRAWN,
             MINE_HEAD,
             MINE_NONE,
+            MINE_AS_ORG,
             MINE_COUNT,
+            POST_BUSY,
+            POST_QUEUE_FULL,
             NO_SUCH_LOT,
             NO_SUCH_VAULT,
             LOT_HELD,
