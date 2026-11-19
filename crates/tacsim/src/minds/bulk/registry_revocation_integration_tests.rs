@@ -272,7 +272,7 @@ fn private_status(w: &mut PlayerWorld, actor: ObjId, id: LicenceId, revoked: boo
     let text = PlayerWorld::private_text(&events, actor);
     check!(
         text.contains(if revoked {
-            "Registry revocation: your mind license"
+            "Registry revocation: your mind licence"
         } else {
             "No Registry revocation is recorded"
         }),
@@ -313,7 +313,7 @@ fn notices(world: &mut PlayerWorld, owner: LicenceId, paid: LicenceId) -> TestRe
         let mut emitted = 0;
         for (audience, event) in notice_tick(world)? {
             let text = mush_testkit::text_of(&event);
-            if text.starts_with("Registry revocation: your mind license") {
+            if text.starts_with("Registry revocation: your mind licence") {
                 emitted += 1;
                 let actor = match audience {
                     mush_core::Audience::Actor(actor) => actor,
@@ -327,7 +327,7 @@ fn notices(world: &mut PlayerWorld, owner: LicenceId, paid: LicenceId) -> TestRe
                     return Err("unrelated notice recipient".into());
                 };
                 check!(
-                    text.contains(&format!("license {} term 1 ", expected.get())),
+                    text.contains(&format!("licence {} term 1 ", expected.get())),
                     "actual own term notice"
                 );
                 check!(seen.insert(actor), "same-session notice is deduplicated");
@@ -614,7 +614,7 @@ fn new_owner_term(
     original_owner_available(&mut w, owner, true)?;
     private_status(&mut w, GOD, owner, false)?;
     let old = w.say(GOD, &format!("@mindrevoke/status {}/1", owner.get()))?;
-    check!(PlayerWorld::private_text(&old, GOD).contains("Registry revocation: your mind license"));
+    check!(PlayerWorld::private_text(&old, GOD).contains("Registry revocation: your mind licence"));
     let saved = capture(&w, &disk(&w));
     let mut cold = Rig::personal(f, Compose::revocation(policy.clone())).boot(&saved)?;
     original_owner_available(&mut cold, owner, true)?;

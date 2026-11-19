@@ -1142,7 +1142,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // hand-off, and no renewal operation appears.
     let not_due = |l: &str| {
         l.starts_with(&format!(
-            "License {sealed} is not due for renewal; its term has "
+            "Licence {sealed} is not due for renewal; its term has "
         )) && l.ends_with(" IC days left.")
     };
     let renew = private_later(w, cy, format!("+minds/renew {sealed}"), not_due).await?;
@@ -1198,7 +1198,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // never pays one, D-UM-39); give it a moment, then read what stands.
     tokio::time::sleep(Duration::from_secs(20)).await;
     let renewing = format!(
-        "Asking for a renewal offer on license {sealed}. +minds/renew {sealed} shows it once it is confirmed."
+        "Asking for a renewal offer on licence {sealed}. +minds/renew {sealed} shows it once it is confirmed."
     );
     let how = format!(
         "Pay it with +minds/renew/pay {sealed}, or turn it down with +minds/renew/decline {sealed}."
@@ -1237,7 +1237,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         answered(l) || l == unavailable || l == no_renewal
     })
     .await?;
-    let declining = format!("Turning down the renewal offer on license {sealed}.");
+    let declining = format!("Turning down the renewal offer on licence {sealed}.");
     check!(
         declined.first() == Some(&declining)
             || declined == vec![unavailable.to_owned()]
@@ -1284,7 +1284,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     let offer = private_later(w, cy, format!("+minds/renew {sealed}"), |l| l == how).await?;
     let price = offer
         .first()
-        .and_then(|l| l.strip_prefix(&format!("License {sealed} renews for ")))
+        .and_then(|l| l.strip_prefix(&format!("Licence {sealed} renews for ")))
         .and_then(|rest| rest.split_once(" (90+28 IC days); the offer is open "))
         .and_then(|(price, rest)| rest.ends_with(" more IC hours.").then_some(price))
         .ok_or_else(|| format!("RENEW_OFFER: {offer:?}"))?
@@ -1316,7 +1316,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
         private_later(w, cy, format!("+minds/renew/pay {sealed}"), answered).await?,
         vec![
             format!(
-                "Paying {price} for the renewal of license {sealed} into escrow; it completes on its own."
+                "Paying {price} for the renewal of licence {sealed} into escrow; it completes on its own."
             ),
             QUEUED.to_owned(),
             "Done.".to_owned()
@@ -1567,7 +1567,7 @@ async fn part_three(w: &mut World, sold: &Sold) -> TestResult {
     // operator's step keeps what reached the buyer meanwhile (`Seen`) and
     // the buyer waits only when the notice was not among it.
     let notice = format!(
-        "Registry recall: your mind license {open} selects filed revision {filed}, recalled by operation "
+        "Registry recall: your mind licence {open} selects filed revision {filed}, recalled by operation "
     );
     let mut recall = typed_seen(w, operator, format!("@registry/recall {filed}")).await?;
     if !recall.own.iter().any(|l| answered(l)) {

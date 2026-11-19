@@ -22,7 +22,7 @@ on:
       # The M7 acceptance stories' Registry pace (`mind-commerce-acceptance`):
       # empty, the default, is the fast path (a 50 ms maintenance pulse, a
       # genuine rating in minutes); `1000` is production's pulse, the
-      # three-hour wall-clock run the nightly schedule always takes.
+      # four-to-six-hour wall-clock run the nightly schedule always takes.
       # `gh workflow run CI --ref <branch> -f mind_pulse_ms=1000`.
       mind_pulse_ms:
         description: "M7 stories' maintenance pulse, ms (empty = fast, 1000 = production's pace)"
@@ -79,8 +79,10 @@ jobs:
     name: M7 ${{ matrix.name }}
     # Daily with the scale job, or by hand. The three mush-server stories each
     # take one genuine Registry rating through the live server's maintenance
-    # ticks (about six a lease, ~1,070 leases a certificate): at production's
-    # 1,000 ms pulse that is about three hours a story. Since 2026-10-28 their
+    # ticks (about six a lease, ~2,115 leases a certificate since doc 49 units
+    # CC.1 and CC.2 slowed the rated trial cases; ~1,070 before): at production's
+    # 1,000 ms pulse that is about four hours for the server story and nearer
+    # six for the two market stories (7 and 10 s a lease). Since 2026-10-28 their
     # harness reads `MIND_PULSE_MS` (`paid_purchase::mind_pulse`): unset or
     # empty is a 50 ms pulse, a rating in minutes; `1000` is production's pace.
     # The owner's rule: the nightly schedule always runs at production's pace

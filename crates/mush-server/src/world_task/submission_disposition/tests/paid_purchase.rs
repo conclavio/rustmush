@@ -39,13 +39,18 @@ const QUOTE_SECONDS: i64 = 30;
 // A finite hang guard, not a pace requirement (timing is report-only under
 // the owner's waiver): the live server paces a Registry lease through its
 // maintenance ticks (about six a lease; `mind_pulse`), and this certificate
-// takes ~1,070 of them: about three hours at production's 1,000 ms pulse,
-// minutes at the stories' `MIND_PULSE_MS` default.
-const REGISTRY_GUARD: Duration = Duration::from_secs(14_400);
+// takes ~2,115 leases: about 4 h 10 min at production's 1,000 ms pulse
+// (about 7 s a lease on the hosted runner), minutes at the stories'
+// `MIND_PULSE_MS` default. It was ~1,070 and about three hours until doc 49
+// units CC.1 and CC.2 slowed the rated trial cases (each ends at 241,500 ms
+// where it ended at 58,500), and the nightly of 2026-11-18 met the old
+// 14,400 s guard at lease ~2,050. 19,800 s (5 h 30 min) leaves the job's
+// 360 minutes room for its build and the rest of the story.
+const REGISTRY_GUARD: Duration = Duration::from_secs(19_800);
 /// The stories' maintenance pulse when `MIND_PULSE_MS` is unset: a lease
-/// about a third of a second, a certificate about six minutes.
+/// about a third of a second, a certificate about twelve minutes.
 const STORY_PULSE_MS: u64 = 50;
-/// Production's pulse, `MIND_PULSE_MS=1000`: the three-hour run.
+/// Production's pulse, `MIND_PULSE_MS=1000`: the four-hour run.
 const PRODUCTION_PULSE_MS: u64 = 1_000;
 
 /// Sets the proving service's maintenance pulse
