@@ -2963,7 +2963,7 @@ fn frame_shape(v: &serde_json::Value) -> serde_json::Value {
 /// one open quote, so `listings`, `open_quotes`, `ship.stowage.items`, `berth`
 /// and the balance are all present. A key the server renames or drops fails here
 /// before a client reads a key that is no longer sent. Run with
-/// `TACSIM_BLESS_PORT_TRADE=1` to rewrite the fixture from the live frame.
+/// `TACSIM_BLESS=1` to rewrite the fixture from the live frame.
 #[test]
 fn port_trade_frame_matches_the_clients_shared_fixture() {
     let (mut rig, who) = enrolled();
@@ -3029,7 +3029,7 @@ fn port_trade_frame_matches_the_clients_shared_fixture() {
     }
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../web/src/lib/fixtures/port/port_trade.json");
-    if std::env::var_os("TACSIM_BLESS_PORT_TRADE").is_some() {
+    if std::env::var_os("TACSIM_BLESS").is_some() {
         let text = serde_json::to_string_pretty(&frame).expect("frame serialises");
         std::fs::write(
             &path,
@@ -3047,6 +3047,6 @@ fn port_trade_frame_matches_the_clients_shared_fixture() {
     assert_eq!(
         frame_shape(&fixture),
         frame_shape(&frame),
-        "web/src/lib/fixtures/port/port_trade.json no longer has the live port.trade shape;          rerun with TACSIM_BLESS_PORT_TRADE=1 and fix the web and TUI decoders"
+        "port_trade.json no longer has the live port.trade shape: rerun with TACSIM_BLESS=1, fix the decoders"
     );
 }
