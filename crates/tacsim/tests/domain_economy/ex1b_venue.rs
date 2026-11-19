@@ -458,7 +458,13 @@ async fn g12_two_fills_into_one_locker_are_each_asked_for_room() {
         teleport(&mut rig.tw, seller, exchange);
         let _ = run(&mut rig.tw, seller, "+locker/open");
         let theirs = locker_vault(&rig, seller).expect("a locker");
-        crate::driving_rig::seed_pool(&mut rig, theirs, "metals", 15, LotId(0xe1c0 + n as u64));
+        crate::driving_rig::seed_pool(
+            &mut rig,
+            theirs,
+            "metals",
+            15,
+            LotId(0xe1c0 + u64::try_from(n).expect("n")),
+        );
         sellers.push((seller, theirs));
     }
     // Both sell before either delivery lands.
