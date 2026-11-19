@@ -2332,22 +2332,22 @@ impl PixelView {
             } else {
                 ""
             };
-            return match self.kind {
-                PictureKind::SpaceCockpit => (
+            if let Some(hud) = match self.kind {
+                PictureKind::SpaceCockpit => Some((
                     format!(
                         "Bridge Canopy  |  {probe}, drawing {drawing}  {w}x{h} {clock}{slow}"
                     ),
                     "z/F1: beam   x/F2: torp   c/F3: railgun   r: scan   v: view   Enter: chat   Esc/q: close"
                         .to_string(),
-                ),
-                PictureKind::Holotank => (
+                )),
+                PictureKind::Holotank => Some((
                     format!(
                         "Holo-Tank  az {:+}°  |  {probe}, drawing {drawing}  {w}x{h} {clock}{slow}",
                         self.look_mdeg() / 1_000
                     ),
                     ",/. a/d: rotate   z/x/c: fire   r: scan   v: view   Enter: chat   Esc/q: close"
                         .to_string(),
-                ),
+                )),
                 PictureKind::Docking => {
                     let top = if let Some(s) = &self.docking_session {
                         format!(
@@ -2360,14 +2360,16 @@ impl PixelView {
                             "6-DOF Docking  |  {probe}, drawing {drawing}  {w}x{h} {clock}{slow}"
                         )
                     };
-                    (
+                    Some((
                         top,
                         "WASD: trans   Arrows: pitch/yaw   Q/E: roll   R/F: closure   X: damp   Bksp: abort   v: view   Esc: exit"
                             .to_string(),
-                    )
+                    ))
                 }
-                _ => unreachable!(),
-            };
+                _ => None,
+            } {
+                return hud;
+            }
         }
         let heading = cockpit
             .and_then(|c| c.get("heading_mdeg"))
