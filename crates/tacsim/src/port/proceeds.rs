@@ -77,7 +77,7 @@ pub const SALE_NOT_PILOT: &str =
     "Only the {name}'s chartered pilot sells out of its hold, so nothing was sold.";
 /// A personal ask of a chartered hold's cargo posted for an organization (doc 48e, exchange G6):
 /// `{name}`, the hull.
-pub const CHARTER_ASK_AS_ORG: &str = "Cargo in the {name}'s chartered hold is listed by its pilot      alone, so the Co-op's share is paid; nothing was listed.";
+pub const CHARTER_ASK_AS_ORG: &str = "Cargo in the {name}'s chartered hold is listed by its pilot alone, so the Co-op's share is paid; nothing was listed.";
 /// The payout's label on the sale contract and the line.
 pub const SHARE_LABEL: &str = "Co-op share";
 /// The contract-name memo when the reference fell back to the goods table.

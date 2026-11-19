@@ -592,6 +592,13 @@ pub mod exchange {
     pub const MINE_HEAD: &str = "Your listings:";
     /// `mush_market::seller::MINE_NONE`.
     pub const MINE_NONE: &str = "You have nothing listed.";
+    /// `mush_market::seller::MINE_AS_ORG`'s head (doc 48e): an organization's listings follow.
+    pub const MINE_AS_ORG: &str = "Listed as ";
+    /// `mush_market::seller::POST_BUSY`'s tail (doc 48e): the last order is still landing.
+    pub const POST_BUSY: &str = "still being handled; try again in a moment. Nothing was listed.";
+    /// `mush_market::seller::POST_QUEUE_FULL` (doc 48e): the exchange is busy.
+    pub const POST_QUEUE_FULL: &str =
+        "The exchange is busy right now; try again in a moment. Nothing was listed.";
     /// `mush_market::seller::MINE_COUNT`'s tail.
     pub const MINE_COUNT: &str = " listings a seller may.";
     /// `mush_market::seller::NO_SUCH_LOT`.
@@ -1102,6 +1109,7 @@ pub const PARTIAL: &[&str] = &[
     "jobs::TERM_TODAY",
     "history::HISTORY_ROW",
     "history::HISTORY_NO_PRICE",
+    "exchange::MINE_AS_ORG",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -1313,7 +1321,10 @@ mod tests {
             BID_WITHDRAWN,
             MINE_HEAD,
             MINE_NONE,
+            MINE_AS_ORG,
             MINE_COUNT,
+            POST_BUSY,
+            POST_QUEUE_FULL,
             NO_SUCH_LOT,
             NO_SUCH_VAULT,
             LOT_HELD,
