@@ -127,6 +127,7 @@ async fn boot_rig(
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     (sessions, handles)
@@ -165,6 +166,7 @@ async fn boot_module_rig(
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     (sessions, handles)
@@ -290,6 +292,7 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     let mut nick_rx = attach_direct(&sessions2, &handles2.handle, 7, nick, "nick").await;
@@ -920,6 +923,7 @@ async fn boot_onboarding_rig(
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     (sessions, handles)
@@ -1124,6 +1128,7 @@ async fn boot_worldgen_rig(
             llm: Some(llm),
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     (sessions, handles)
@@ -1273,6 +1278,7 @@ async fn boot_sheet_rig(
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     (sessions, handles)
@@ -2276,6 +2282,7 @@ async fn boot_npc_rig_with_fold(
             llm: Some(llm),
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     (sessions, handles)
@@ -2561,6 +2568,7 @@ async fn a_macro_survives_a_restart_through_the_store() {
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     let mut god2_rx = attach_direct(&sessions2, &handles2.handle, 7, GOD, "god").await;

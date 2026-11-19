@@ -620,6 +620,7 @@ fn boot(store: Arc<dyn ObjectStore>, metrics: &Arc<Metrics>) -> PersistHandles {
             metrics: Arc::clone(metrics),
             quarantine_spool: QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         |_| -> Gateway { Arc::new(BlackholeGateway) },
     )

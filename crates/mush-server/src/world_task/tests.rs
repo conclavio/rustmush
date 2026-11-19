@@ -1228,6 +1228,7 @@ fn decision_test_deps(store: Arc<dyn ObjectStore>) -> ServerDeps {
         metrics: Arc::new(Metrics::new()),
         quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
         outbox_adapters: Vec::new(),
+        time: mush_config::TimeSource::System,
     }
 }
 
@@ -3739,6 +3740,7 @@ async fn all_in_one_offer_submission_reaches_durable_ownership() {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         move |_| -> Gateway { sink },
     );
@@ -5255,6 +5257,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         Arc::new(DurableOutboxRegistry::new()),
         None,
@@ -12777,4 +12780,71 @@ fn lane3_a_barrier_behind_the_slot_is_told_from_the_lines() {
         behind_barrier(WorldMsg::Inbound(cmd("look"))).is_err(),
         "a typed line is not a barrier"
     );
+}
+
+/// Doc 43c TS.10b: the world loop's timer wake and `fire_due` read
+/// `ServerDeps::time`. On a paused runtime with the Tokio arm, an hour's
+/// `@wait` fires after an hour of tokio time and not before. On the System
+/// arm `fire_due` would read the OS clock, which a paused runtime does not
+/// move, so the wait would never fire here.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ts10b_a_paused_world_fires_an_hours_wait_on_tokio_time() {
+    const CONN: u64 = 0x10b;
+    let recorder = Arc::new(RecordingGateway::default());
+    let sink = Arc::clone(&recorder);
+    let deps = ServerDeps {
+        time: mush_config::TimeSource::tokio_at(1_900_000_000_000),
+        ..ServerDeps::in_memory()
+    };
+    let handles = spawn_persist_with_gateway(boot_engine(), deps, move |_| -> Gateway { sink });
+    let fired = || {
+        recorder
+            .sends
+            .lock()
+            .expect("recording gateway poisoned")
+            .iter()
+            .any(|(_, event)| format!("{event:?}").contains("ts10b fired"))
+    };
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::ConnUp {
+                conn: CONN,
+                actor: GOD,
+                caps_structured: false,
+                from_linkdead: false,
+            })
+            .await
+    );
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Cmd {
+                conn: CONN,
+                actor: GOD,
+                line: "@wait 3600=think ts10b fired".into(),
+            })
+            .await
+    );
+    assert!(handles.handle.barrier().await);
+
+    tokio::time::sleep(Duration::from_secs(3_590)).await;
+    assert!(handles.handle.barrier().await);
+    assert!(!fired(), "the wait fired before its hour of tokio time");
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    assert!(handles.handle.barrier().await);
+    assert!(
+        fired(),
+        "the wait did not fire after its hour of tokio time"
+    );
+
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Control(ControlMsg::Shutdown))
+            .await
+    );
+    handles.world_join.await.unwrap();
+    handles.writer_join.await.unwrap();
+    handles.outbox_join.await.unwrap();
 }

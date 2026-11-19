@@ -402,6 +402,7 @@ fn boot_world(
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         move |_| -> Gateway { gateway },
     )
@@ -893,6 +894,7 @@ async fn the_world_loop_tells_the_space_minds_to_hold_late_steps() {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         move |_| -> Gateway { gateway },
     );

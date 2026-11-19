@@ -67,6 +67,7 @@ fn spawn_staffed(
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     )
 }
@@ -213,6 +214,7 @@ async fn tempban_lift_confirms_after_store_ack_and_does_not_clear_a_siteban() {
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     let world = handles.handle;

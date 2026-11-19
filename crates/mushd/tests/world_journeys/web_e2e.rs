@@ -182,6 +182,7 @@ async fn boot_inner(
             llm: None,
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));

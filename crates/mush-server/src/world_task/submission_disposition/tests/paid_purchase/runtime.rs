@@ -301,6 +301,7 @@ impl Running {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         };
         let handles = crate::world_task::spawn_persist_with_gateway_production(
             *engine,
