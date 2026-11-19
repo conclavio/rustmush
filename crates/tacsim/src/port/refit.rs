@@ -14,16 +14,27 @@
 //! The checks run in order and nothing is written on a refusal: the word, the
 //! charter or title, the refit offered, the berth, nothing in flight, the hold empty but
 //! for her tank (provisions refuse: lead ruling 8), the bay empty, not already
-//! that unit, at the desk, and the binding and its bay laid up.
+//! that unit, no open bay order and nothing to repair (48e review rounds:G1, G2: the re-dress
+//! writes the unit fresh from its design, so a damaged hull is sent to the bay's quote rather
+//! than mended for free), at the desk, and the binding and its bay laid up.
+//!
+//! **Her rounds come with her** (48e review rounds:G2, A-14): the same write carries each space
+//! magazine's rounds left onto the new unit (`refit_unit_carrying`), capped at the new mount's
+//! stowage, and a mount the new design adds starts empty. A refit is never a rearm.
+
+use std::collections::BTreeMap;
 
 use mush_core::{CanonicalId, CmdError, Ctx, ObjId, World};
 use mush_inventory::record::EndpointRef;
+use mush_tactics::UnitMutationOp;
 
 use crate::definitions::Consumable;
+use crate::port::bay_work::magazines;
 use crate::port::capacity::{format_m3, format_tonnes};
 use crate::port::coop::{COUNTERSIGN, name_of, office_of, port_name, programme_port, say};
 use crate::port::def::STANDARD_REFIT;
 use crate::port::ship::{Berth, HULL_CLASS_PROSPECTOR, HullView, berth_of, hull_view};
+use crate::space::custody;
 use crate::store::TacsimStore;
 
 /// The grammar.
@@ -49,6 +60,14 @@ pub const REFIT_WHERE: &str = "Refits are signed at the {office} in {port}.";
 /// core's mount with it.
 pub const REFIT_CORED: &str =
     "The {name} carries a fitted core; the Co-op's yard re-dresses only a coreless Dray.";
+/// An open bay order (48e review rounds:G1): `{name}`. The order works the hull as it stands, and
+/// a re-dress under it would strand the goods its draw took.
+pub const REFIT_BAY_WORK: &str =
+    "The {name} has an open bay order; the yard refits her once it is done or canceled.";
+/// Damage or a crit aboard (48e review rounds:G2): `{name}`. The re-dress builds her unit sound,
+/// so it would repair her for nothing; the bay repairs her for its fee.
+pub const REFIT_DAMAGED: &str =
+    "The {name} needs repair before the yard refits her; the bay quotes the work.";
 /// A step that should not fail did: `{name}`.
 pub const REFIT_FAILED: &str = "The yard could not refit the {name}; nothing changed.";
 /// The refit to a Dray-P: `{name}`, `{mark}`, `{tonnes}`, `{m3}`, `{countersign}`.
@@ -209,6 +228,22 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
         };
         return Err(refused(REFIT_ALREADY).replace("{class}", class));
     }
+    // 8b. (48e review rounds:G1) An open bay order holds the hull as it stands; a re-dress
+    // under it would cancel the order after its draw had taken the goods.
+    if crate::port::bay_work::under_work(w, hull) {
+        return Err(refused(REFIT_BAY_WORK));
+    }
+    // 48e review rounds:G2: the re-dress builds her unit sound, so a hull the bay would repair is
+    // refused: the yard repairs nothing for free. (Her magazines are carried across, at
+    // `refit_cmd`.)
+    match crate::port::bay_work::needs_repair_here(w, hull) {
+        Ok(false) => {}
+        Ok(true) => return Err(refused(REFIT_DAMAGED)),
+        Err(error) => {
+            tracing::error!(hull = hull.0, %error, "tacsim: +coop/refit could not read the hull's repair");
+            return Err(refused(REFIT_FAILED));
+        }
+    }
     // 9. At the desk.
     let (office, office_name, port_label) = office_of(w, &port);
     let here = w.get(actor).and_then(|o| o.location);
@@ -260,7 +295,37 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
 /// Every refusal is a [`CmdError`] line said to the actor.
 pub(crate) fn refit_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let plan = plan_refit(ctx).map_err(CmdError::msg)?;
-    if let Err(error) = mush_tactics::module::refit_unit(ctx, plan.hull, &plan.spec) {
+    // 48e review rounds:G2 (A-14: a refit conserves rounds): each magazine of the new fit holds
+    // what the same mount held before the re-dress, at most what it stows, and a mount the old
+    // fit did not carry comes empty. Carried in the re-bind's one write.
+    let kept: BTreeMap<String, u32> = mush_tactics::module::unit_of(ctx.w, plan.hull)
+        .map(|unit| {
+            magazines::magazines(unit)
+                .into_iter()
+                .map(|magazine| (magazine.mount, magazine.left))
+                .collect()
+        })
+        .unwrap_or_default();
+    let carry = |fresh: &mush_tactics::TacticalUnit| -> Result<Vec<UnitMutationOp>, String> {
+        let short: BTreeMap<String, u32> = magazines::magazines(fresh)
+            .into_iter()
+            .filter_map(|magazine| {
+                let left = kept
+                    .get(&magazine.mount)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(magazine.stow);
+                (left < magazine.stow).then_some((magazine.mount, left))
+            })
+            .collect();
+        Ok(custody::magazine_op(fresh, &short)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .collect())
+    };
+    if let Err(error) =
+        mush_tactics::module::refit_unit_carrying(ctx, plan.hull, &plan.spec, &carry)
+    {
         tracing::error!(
             hull = plan.hull.0,
             target = %plan.target,

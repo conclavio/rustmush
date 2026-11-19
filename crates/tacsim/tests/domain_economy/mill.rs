@@ -2771,7 +2771,17 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let (foundry, others): (Vec<_>, Vec<_>) = credits
         .into_iter()
         .partition(|(path, _)| path == "tacsim/src/relay_foundry.rs");
-    assert_eq!(others, vec![("tacsim/src/port/mill.rs".to_owned(), 1)]);
+    // 48e review rounds:G1 and G12: three `.credit(` in the bay's acts, each matter put back
+    // and none made: a canceled order's landed draw returned to the hold and the workshop's
+    // stores (two), and a stripped mount's rounds, which a draw once took out of the world
+    // (the census's `loaded`), credited to the hold as whole units of their good.
+    assert_eq!(
+        others,
+        vec![
+            ("tacsim/src/port/bay_work/act.rs".to_owned(), 3),
+            ("tacsim/src/port/mill.rs".to_owned(), 1),
+        ]
+    );
     assert!(
         foundry.iter().any(|(_, n)| *n >= 1),
         "the relay foundry's credit (co-owned with the relay track) is present"
@@ -2828,9 +2838,11 @@ fn in1_the_receipt_kinds_a_mint_may_carry_are_closed() {
     }
     assert_eq!(tacsim::port::STOCK_SOURCE_KIND, "port.stock");
     // The bay's `why`: the strip's and the scrap's, and nothing else.
-    let strip = text("tacsim/src/port/bay_work/strip.rs");
+    let strip: String = text("tacsim/src/port/bay_work/strip.rs")
+        .split_whitespace()
+        .collect();
     let strip = strip.as_str();
-    let whys: Vec<&str> = ["owe_mint(ctx, record, act_no, vault.0, \"", "(act_no, \""]
+    let whys: Vec<&str> = ["owe_mint(ctx,record,act_no,vault.0,\"", "(act_no,\""]
         .into_iter()
         .flat_map(|needle| {
             strip.match_indices(needle).map(|(at, needle)| {

@@ -16,10 +16,10 @@ use tacsim::port::HullRow;
 use tacsim::port::bay_work::OrderStatus;
 use tacsim::port::bay_work::magazines::{Magazine, SHORT_OF_ROUNDS, magazines};
 
-use crate::bay_gc8::{damage, mint, order_of, unit};
+use crate::bay_gc8::{damage, mint, order_of, section_id, unit};
 use crate::driving_rig::{
-    Rig, board, cid, fire, hold_pool, hold_vault_of, land_quietly, pilot, port_map, run, seed_hold,
-    seed_pool, staff_hand, stocked, store, to_ic,
+    Rig, advance_to, board, cid, fire, hold_pool, hold_vault_of, land_quietly, pilot, port_map,
+    run, seed_hold, seed_pool, staff_hand, stocked, store, to_ic,
 };
 
 /// The census line's terms, by name (`ex0_matter_sinks`').
@@ -330,4 +330,201 @@ async fn cc7b_a_rearm_her_hold_and_the_stores_cannot_cover_is_refused() {
     assert!(refused.contains(&want), "{refused}");
     assert_eq!(available(&rig, pilot), funds, "nothing held");
     assert_eq!(held(&rig, hull)["pdc_dorsal"].left, stow - 1_500);
+}
+
+/// A crit on record (`tacsim.space.subsystems`): her dorsal rotary stripped, as a check-in from
+/// a bubble writes it.
+fn crit_record(u: &mush_tactics::TacticalUnit) -> mush_tactics::UnitMutationOp {
+    let schema = u
+        .capabilities()
+        .next()
+        .and_then(|k| u.capability(k))
+        .map_or_else(|| u.schema().clone(), |rv| rv.schema().clone());
+    mush_tactics::UnitMutationOp::GrantCapability {
+        key: crits_key(),
+        rules: mush_core::RulesValue::new(
+            schema,
+            serde_json::json!({ "crits": [], "stripped_pdcs": ["pdc_dorsal"], "slow_pct": 100 }),
+        )
+        .expect("the record"),
+    }
+}
+
+fn crits_key() -> mush_tactics::CapabilityKey {
+    mush_tactics::CapabilityKey {
+        id: mush_tactics::CapabilityId::new(tacsim::space::custody::SPACE_SUBSYSTEMS_CAPABILITY)
+            .expect("an id"),
+        source: None,
+    }
+}
+
+/// Her hull's heat sink, `(current, max)`: the radiator a space hull's check-in writes down.
+fn sink(rig: &Rig, hull: ObjId) -> Option<(i64, i64)> {
+    let u = unit(rig, hull);
+    let addr = mush_tactics::CellAddr::Section {
+        section: section_id(&u, "hull"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::HEAT_SINK_CELL).expect("a cell"),
+    };
+    u.cell(&addr).map(|cell| (cell.current, cell.max))
+}
+
+/// **48e review rounds:G4 and G5: a repair clears her crits and her radiator; a rearm does not.**
+/// A rearm-only order loads rounds and leaves the crit record and the heat sink as they were,
+/// where it once healed the radiator for the labor of a few rounds (G5). An armour repair clears
+/// the crits, where the work once revoked them on its own copy of the hull and never wrote it
+/// (G4).
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn rounds_g4_g5_a_repair_clears_her_crits_and_a_rearm_does_not() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    let stow = held(&rig, hull)["pdc_dorsal"].stow;
+    spend(&mut rig, hull, &[("pdc_dorsal", stow - 500)]);
+    let crit = crit_record(&unit(&rig, hull));
+    damage(&mut rig, hull, vec![crit]);
+    let hot = sink(&rig, hull).map(|(_, max)| {
+        let u = unit(&rig, hull);
+        let addr = mush_tactics::CellAddr::Section {
+            section: section_id(&u, "hull"),
+            cell: mush_tactics::CellId::new(tacsim::definitions::unit::HEAT_SINK_CELL)
+                .expect("a cell"),
+        };
+        damage(
+            &mut rig,
+            hull,
+            vec![mush_tactics::UnitMutationOp::SetCell {
+                addr,
+                value: max / 2,
+            }],
+        );
+        max / 2
+    });
+    seed_hold(&mut rig, &row, "pd_box", 1, 9_101);
+    board(&mut rig, pilot);
+
+    let taken = run(&mut rig.tw, pilot, &format!("+bay/order #{}=rearm", hull.0));
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    let order = order_of(&rig, hull);
+    let _ = to_ic(&mut rig, order.due_ic + 60);
+    let _ = to_ic(&mut rig, order.due_ic + 600);
+    assert_eq!(order_of(&rig, hull).status, OrderStatus::Done);
+    assert_eq!(held(&rig, hull)["pdc_dorsal"].left, stow, "rearmed");
+    assert!(
+        unit(&rig, hull).capability(&crits_key()).is_some(),
+        "a rearm repairs no crit"
+    );
+    if let Some(hot) = hot {
+        assert_eq!(
+            sink(&rig, hull).map(|(current, _)| current),
+            Some(hot),
+            "a rearm heals no radiator"
+        );
+    }
+
+    // A point off an armoured facet (a section's own cells are her heat and radiator).
+    let (addr, cell) = unit(&rig, hull)
+        .cells()
+        .find(|(addr, cell)| {
+            matches!(addr, mush_tactics::CellAddr::Facet { .. }) && cell.current > cell.min
+        })
+        .map(|(addr, cell)| (addr.clone(), *cell))
+        .expect("an armoured facet");
+    damage(
+        &mut rig,
+        hull,
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr,
+            value: cell.current - 1,
+        }],
+    );
+    seed_hold(&mut rig, &row, "structural_alloys", 2, 9_102);
+    seed_hold(&mut rig, &row, "industrial_parts", 40, 9_103);
+    let taken = run(&mut rig.tw, pilot, &format!("+bay/order #{}=armor", hull.0));
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    let order = order_of(&rig, hull);
+    let _ = to_ic(&mut rig, order.due_ic + 60);
+    let _ = to_ic(&mut rig, order.due_ic + 600);
+    assert_eq!(order_of(&rig, hull).status, OrderStatus::Done);
+    assert!(
+        unit(&rig, hull).capability(&crits_key()).is_none(),
+        "the repair cleared her crits"
+    );
+    if hot.is_some() {
+        assert_eq!(
+            sink(&rig, hull).map(|(current, max)| current == max),
+            Some(true),
+            "and her radiator"
+        );
+    }
+}
+
+/// **48e review rounds:G1 and G13: an order canceled after its draw landed gives the rounds back;
+/// the quote's "all" carries the rounds bought.** The draw lands, then staff touch her hull before
+/// the work is written, so the order is canceled at its completion. Once that cancel took the
+/// fee's refund and kept the goods; now her box goes back to her hold and the two bought go back
+/// to the stores, nothing is loaded, and the census counts nothing `loaded`.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn rounds_g1_g13_a_canceled_order_gives_its_rounds_back() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    let stow = held(&rig, hull)["pdc_dorsal"].stow;
+    spend(&mut rig, hull, &[("pdc_dorsal", stow - 1_500)]);
+    seed_hold(&mut rig, &row, "pd_box", 1, 9_101);
+    let stores = stores(&rig);
+    seed_pool(&mut rig, stores, "pd_box", 5, LotId(9_102));
+    let hold = hold_vault_of(&rig.tw, &row);
+    board(&mut rig, pilot);
+
+    // G13: "all" is the labor and the two boxes bought.
+    let quote = run(&mut rig.tw, pilot, &format!("+bay #{}", hull.0));
+    let all = labour(&rig, hull, 1_500) + 2 * price(&rig, "pd_box");
+    let line = quote
+        .lines()
+        .find(|line| line.trim_start().starts_with("all "))
+        .unwrap_or_else(|| panic!("an all line: {quote}"));
+    assert!(
+        line.contains(&format!("{}.{:02}cr", all / 100, all % 100)),
+        "all is {all} minor: {line}"
+    );
+
+    let taken = run(&mut rig.tw, pilot, &format!("+bay/order #{}=rearm", hull.0));
+    assert!(taken.contains("taken in the workshop"), "{taken}");
+    let order = order_of(&rig, hull);
+    let before = steady(&mut rig);
+    // The order comes due and its draw lands.
+    let (_, queued) = advance_to(&mut rig, order.due_ic);
+    assert!(
+        !queued.is_empty(),
+        "the draw is submitted at the order's due time"
+    );
+    land_quietly(&mut rig, &queued);
+    assert_eq!(hold_pool(&mut rig.tw, hold, "pd_box"), 0, "her box drawn");
+    assert_eq!(hold_pool(&mut rig.tw, stores, "pd_box"), 3, "two bought");
+    // Staff touch her hull before the work is written: its revision moves.
+    spend(
+        &mut rig,
+        hull,
+        &[("pdc_dorsal", stow - 1_500), ("pdc_ventral", stow - 1)],
+    );
+    let _ = to_ic(&mut rig, order.due_ic + 60);
+    let _ = to_ic(&mut rig, order.due_ic + 600);
+    assert_eq!(order_of(&rig, hull).status, OrderStatus::Cancelled);
+    assert_eq!(hold_pool(&mut rig.tw, hold, "pd_box"), 1, "her box is back");
+    assert_eq!(
+        hold_pool(&mut rig.tw, stores, "pd_box"),
+        5,
+        "the two bought are back"
+    );
+    assert_eq!(
+        held(&rig, hull)["pdc_dorsal"].left,
+        stow - 1_500,
+        "nothing loaded"
+    );
+    let after = steady(&mut rig);
+    assert_eq!(
+        after["loaded"], before["loaded"],
+        "nothing loaded: {after:?}"
+    );
+    assert_eq!(after["balance"], before["balance"]);
 }
