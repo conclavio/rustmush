@@ -405,34 +405,6 @@ pub(crate) async fn until_with(
     false
 }
 
-/// **The arena's answer to what the world just did**, with no world second passing: pump the
-/// egress beat by beat until `done` holds or `secs` of tokio time pass; answers whether it held.
-///
-/// A story that steps world seconds synchronously (`field_mw7::pass`) gives the arena no turn:
-/// on a current-thread runtime the task runs only while the test awaits. On two worker threads
-/// the arena ran beside those seconds, so an assertion straight after them read its answer by a
-/// race the test happened to win (doc 43 TS.10a). The world's clock stands still here, so a
-/// story's count of world seconds is unchanged by the wait.
-pub(crate) async fn settle(
-    rig: &mut Rig,
-    rx: &mut Receiver<ArenaOut>,
-    lines: &mut Vec<LedgerEvent>,
-    secs: u64,
-    mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
-) -> bool {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    loop {
-        pump(rig, rx, lines);
-        if done(rig, lines) {
-            return true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(BEAT).await;
-    }
-}
-
 /// The site's field task, when one runs.
 pub(crate) fn task(rig: &Rig) -> Option<tacsim::arena_task::MatchId> {
     rig.tw

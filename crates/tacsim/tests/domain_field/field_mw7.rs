@@ -50,8 +50,7 @@ use tokio::sync::mpsc::Receiver;
 use crate::driving_rig::{Rig, cid, command, crash, land, on_pad_as, run, stocked_tuned, to_ic};
 use crate::escort_lease::{contact_near, fired, in_field, stand_up};
 use crate::field_host_rig::{
-    AHUNA, armed, egress, frame, pump, seat, second, settle, site_record, task, tune, until,
-    weapon_of,
+    AHUNA, armed, egress, frame, pump, seat, second, site_record, task, tune, until, weapon_of,
 };
 
 /// The field holds through the stories' quiet stretches.
@@ -110,7 +109,13 @@ pub(crate) fn connect(rig: &mut Rig, who: ObjId) -> String {
 }
 
 /// `secs` world seconds, the arena's egress pumped as they pass.
-pub(crate) fn pass(
+///
+/// The runtime is yielded to after each second, with no tokio time passing (doc 43 TS.10a). The
+/// arena then takes what the world offered it, as it did beside the world on a second worker
+/// thread, and its clock stands still. Without the yield a current-thread runtime never polls the
+/// arena during the loop. Its inbox, which is bounded, fills, and the hand-over's word is refused
+/// (`field::absent`'s `tell_arena` then releases no seat).
+pub(crate) async fn pass(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
     lines: &mut Vec<LedgerEvent>,
@@ -118,6 +123,7 @@ pub(crate) fn pass(
 ) {
     for n in 0..secs {
         let _ = second(rig);
+        tokio::task::yield_now().await;
         if n % 10 == 0 {
             let _ = pump(rig, rx, lines);
         }
@@ -268,17 +274,8 @@ impl Yard {
     }
 
     /// World seconds, with nothing waited for.
-    pub(crate) fn pass(&mut self, secs: i64) {
-        pass(&mut self.rig, &mut self.rx, &mut self.lines, secs);
-    }
-
-    /// The arena's answer, no world second passing (`field_host_rig::settle`).
-    pub(crate) async fn settle(
-        &mut self,
-        secs: u64,
-        done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
-    ) -> bool {
-        settle(&mut self.rig, &mut self.rx, &mut self.lines, secs, done).await
+    pub(crate) async fn pass(&mut self, secs: i64) {
+        pass(&mut self.rig, &mut self.rx, &mut self.lines, secs).await;
     }
 
     /// **The raider's player keeps a lock on the ward and fires** until `done` holds or `secs`
@@ -396,19 +393,15 @@ async fn mw7_the_house_mind_takes_an_absent_pilots_rig_home_and_never_fires_firs
         &mut rx,
         &mut lines,
         FIELD_LINKDEAD_GRACE_WALL_S - 20,
-    );
+    )
+    .await;
     assert!(
         !minded(rig.tw.world(), hull) && bound(&rig, escort),
         "inside the five minutes the seat is still the pilot's: {:?}",
         away_of(rig.tw.world(), hull)
     );
     // Five minutes: the unit passes to its mind.
-    pass(&mut rig, &mut rx, &mut lines, 25);
-    // The hand-over is the world's; the seat's release is the arena's answer at its next pulse.
-    let _ = settle(&mut rig, &mut rx, &mut lines, 5, |rig, _| {
-        minded(rig.tw.world(), hull) && !bound(rig, escort)
-    })
-    .await;
+    pass(&mut rig, &mut rx, &mut lines, 25).await;
     assert!(
         minded(rig.tw.world(), hull) && !bound(&rig, escort),
         "at five minutes the mind has the unit: {:?}",
@@ -585,7 +578,7 @@ async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
     let mut yard = yard().await;
     let (pilot, ward) = (yard.pilot, yard.ward);
     lose_link(&mut yard.rig, pilot);
-    yard.pass(FIELD_LINKDEAD_GRACE_WALL_S - 1);
+    yard.pass(FIELD_LINKDEAD_GRACE_WALL_S - 1).await;
     assert!(
         !minded(yard.rig.tw.world(), ward) && bound(&yard.rig, pilot),
         "a second short of five minutes the seat is the pilot's: {:?}",
@@ -593,20 +586,14 @@ async fn mw7_a_pilot_who_reconnects_ten_minutes_later_is_back_in_the_seat() {
     );
     // The server's own grace ends the session; the field's clock hands the unit over.
     end_session(&mut yard.rig, pilot);
-    yard.pass(5);
-    // The hand-over is the world's; the seat's release is the arena's answer at its next pulse.
-    let _ = yard
-        .settle(5, |rig, _| {
-            minded(rig.tw.world(), ward) && !bound(rig, pilot)
-        })
-        .await;
+    yard.pass(5).await;
     assert!(
         minded(yard.rig.tw.world(), ward) && !bound(&yard.rig, pilot),
         "at five minutes the mind has the unit: {:?}",
         away_of(yard.rig.tw.world(), ward)
     );
     // Ten minutes after the link was lost.
-    yard.pass(FIELD_LINKDEAD_GRACE_WALL_S);
+    yard.pass(FIELD_LINKDEAD_GRACE_WALL_S).await;
     assert!(minded(yard.rig.tw.world(), ward) && in_field(&yard.rig, ward));
     let heard = connect(&mut yard.rig, pilot);
     assert!(

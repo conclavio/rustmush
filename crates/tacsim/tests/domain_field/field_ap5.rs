@@ -444,15 +444,13 @@ async fn ap5_a_link_lost_before_the_field_opens_keeps_what_is_left_of_its_five_m
         (20..FIELD_LINKDEAD_GRACE_WALL_S - 100).contains(&left),
         "well under five minutes are left: {left}"
     );
-    yard.pass(left - 10);
+    yard.pass(left - 10).await;
     assert!(
         !minded(yard.rig.tw.world(), ward),
         "ten seconds short of five minutes from the loss the mind has nothing: {:?}",
         away_of(yard.rig.tw.world(), ward)
     );
-    yard.pass(15);
-    // The hand-over is the world's; the seat's release is the arena's answer at its next pulse.
-    let _ = yard.settle(5, |rig, _| !bound(rig, pilot)).await;
+    yard.pass(15).await;
     assert_eq!(
         admitted_away(&yard.rig, ward),
         Some((Why::LinkLost, true)),
