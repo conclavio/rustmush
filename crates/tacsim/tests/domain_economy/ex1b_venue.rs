@@ -415,3 +415,71 @@ async fn g11_a_bid_into_a_hold_that_has_sailed_takes_nothing() {
         "nothing reached the hold"
     );
 }
+
+/// **Doc 48e, exchange G12 (48c #5, 48d H-10): concurrent fills cannot overfill a bid's
+/// destination.** A buyer bids for 30 t of metals into her 20 t locker. Two sellers each sell 15 t
+/// into it in the same step, before either delivery lands, so each sale's room check reads the
+/// locker empty. The deliveries carry the locker's plan: the first lands, the second is refused
+/// for room inside its own bundle, and the locker holds 15 t. Before the fix both landed: 30 t in a
+/// 20 t locker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g12_two_fills_into_one_locker_are_each_asked_for_room() {
+    let mut rig = crate::driving_rig::stocked();
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    let buyer = with_account(&mut rig, "Buyer", 47);
+    mint(&mut rig, buyer);
+    teleport(&mut rig.tw, buyer, exchange);
+    let _ = run(&mut rig.tw, buyer, "+locker/open");
+    let locker = locker_vault(&rig, buyer).expect("the locker");
+    let said = run(
+        &mut rig.tw,
+        buyer,
+        &format!(
+            "+market/bid tacsim:metals qty=30 price=100 into={}",
+            locker.0
+        ),
+    );
+    assert!(said.contains(" is held from your account."), "{said}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let bid = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| {
+            m.personal_listings_of(&mush_org::PrincipalId::Object(buyer))
+                .find(|l| l.source.is_wanted())
+                .map(|l| l.id)
+        })
+        .expect("the bid");
+    let mut sellers = Vec::new();
+    for (n, name) in ["Ana", "Bram"].into_iter().enumerate() {
+        let seller = with_account(&mut rig, name, 48 + i64::try_from(n).expect("n"));
+        teleport(&mut rig.tw, seller, exchange);
+        let _ = run(&mut rig.tw, seller, "+locker/open");
+        let theirs = locker_vault(&rig, seller).expect("a locker");
+        crate::driving_rig::seed_pool(&mut rig, theirs, "metals", 15, LotId(0xe1c0 + n as u64));
+        sellers.push((seller, theirs));
+    }
+    // Both sell before either delivery lands.
+    let mut queued = Vec::new();
+    for (seller, theirs) in &sellers {
+        let out = run(
+            &mut rig.tw,
+            *seller,
+            &format!("+market/sell {}=15 from={}", bid.0, theirs.0),
+        );
+        assert!(out.contains("Sold "), "{out}");
+        queued.extend(drain(&mut rig.tw));
+    }
+    crate::driving_rig::land_quietly(&mut rig, &queued);
+    for _ in 0..20 {
+        let (_, more) = fire(&mut rig);
+        crate::driving_rig::land_quietly(&mut rig, &more);
+    }
+    assert_eq!(
+        hold_pool(&mut rig.tw, locker, "metals"),
+        15,
+        "the locker takes one fill; the second has no room"
+    );
+}
