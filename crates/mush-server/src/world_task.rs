@@ -1708,6 +1708,16 @@ fn spawn_persist_with_gateway_mode(
     world_clock_checkpoint_s: u64,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
+    // Doc 43c §3.3 (TS.10c): a paused test clock only over the memory store.
+    // A paused runtime that waits on I/O it does not own (Redis, a child
+    // process, another runtime's socket) fires its next timeout at once. Every
+    // in-process composition comes through here; production always passes
+    // `TimeSource::System`, so this refuses only a mis-wired test rig.
+    assert!(
+        !deps.time.is_tokio() || deps.store.holds_process_memory(),
+        "the world task refuses TimeSource::Tokio over a store that is not the \
+         in-process memory store (doc 43c §3.3)"
+    );
     engine.use_gateway_reply_framing();
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

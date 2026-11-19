@@ -2230,6 +2230,10 @@ impl ObjectStore for InMemoryStore {
         Some(self)
     }
 
+    fn holds_process_memory(&self) -> bool {
+        true
+    }
+
     fn load_world(&self) -> BoxFuture<'_, Result<Option<WorldSnapshot>, StoreError>> {
         Box::pin(async move {
             let inner = self.lock()?;
