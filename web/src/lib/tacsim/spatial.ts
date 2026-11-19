@@ -587,7 +587,7 @@ export function parseNeighborhoodPack(
   }
   const root = asObj(parsed);
   const entries = root ? asObj(root["entries"]) : null;
-  if (!entries) {
+  if (!root || !entries) {
     return fallbackId.includes("ooc") ? buildFallbackOocArea() : buildFallbackFreeport();
   }
 
