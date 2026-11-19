@@ -2080,7 +2080,8 @@ closing interval, since the host cannot see where the escort was once the field 
 - `domain_field::ex6_escort` moves to the paused clock (world and arena at the production rate)
   and is the rule's acceptance there.
 - **Mutation** (applied over the fix in the conclav.dev clone, then edited back): counting the
-  closing interval again fails the unit test and the story. Results are in the PR.
+  closing interval again fails the unit test, and fails the story's kept escort at 85% (30 of
+  35 IC seconds near), the figure TS.10a found. With the fix the story passed 4 of 4.
 
 ## EX.7
 

@@ -3363,7 +3363,8 @@ the row the order stands on reads destroyed, and keep NEGATIVE for when the kern
 - `domain_field::field_mw14c`'s story 3 moves to the paused clock (world and arena at the
   production rate) and is the rule's acceptance there.
 - **Mutation** (applied over the fix in the conclav.dev clone, then edited back): answering
-  `Destroyed` NEGATIVE again fails the unit test and the story. Results are in the PR.
+  `Destroyed` NEGATIVE again fails the unit test, and fails the story with the leader reading
+  `NEGATIVE received`. With the fix the story passed 4 of 4.
 
 ## MW.15
 
