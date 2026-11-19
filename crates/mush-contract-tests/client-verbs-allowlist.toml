@@ -3,10 +3,6 @@
 # fails on a row no client line uses.
 
 [[allow]]
-head = "DOCK"
-reason = "KNOWN DEAD END (doc 35b, doc 43 §5.2): both clients' docking keys fall back to `DOCK TRANS UP` and its kin when no local docking session is open (tui/pixel.rs, web picture.ts and PictureView.svelte), and no verb parses `DOCK`; docking is `+helm/dock` (its tape, `+helm/dock tape`, is what the docking session sends). Owed: route the fallback keys to `+helm/dock` or drop them, then remove this row."
-
-[[allow]]
 head = "+roll"
 switch = "last"
 reason = "KNOWN DEAD END (found by TS.7): both clients' dice screens bind a key to `+roll/last`, and `+roll` declares no switches, so dispatch answers `Unknown switch \"/last\" for +roll.` Owed: give `+roll` a `/last` switch or drop the key, then remove this row."

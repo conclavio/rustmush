@@ -24,6 +24,26 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/three") || id.includes("node_modules\\three")) {
+            return "vendor-three";
+          }
+          if (
+            id.includes("node_modules/@codemirror") ||
+            id.includes("node_modules\\@codemirror") ||
+            id.includes("node_modules/@lezer") ||
+            id.includes("node_modules\\@lezer") ||
+            id.includes("node_modules/codemirror") ||
+            id.includes("node_modules\\codemirror")
+          ) {
+            return "vendor-codemirror";
+          }
+          return undefined;
+        },
+      },
+    },
   },
   server: {
     proxy: {

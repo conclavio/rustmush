@@ -360,39 +360,39 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(nextSpaceCamera("docking")).toBe("holotank");
 
     // 6-DOF docking keys match `crates/mush-net-ssh/src/tui/pixel.rs` and leave digits 0..9 free.
-    expect(spacePictureKey("w", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS UP" });
-    expect(spacePictureKey("s", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS DOWN" });
-    expect(spacePictureKey("a", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS LEFT" });
-    expect(spacePictureKey("d", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS RIGHT" });
+    expect(spacePictureKey("w", "docking")).toEqual({ kind: "dockOrder", cmd: "+helm/dock DOCK TRANS UP" });
+    expect(spacePictureKey("s", "docking")).toEqual({ kind: "dockOrder", cmd: "+helm/dock DOCK TRANS DOWN" });
+    expect(spacePictureKey("a", "docking")).toEqual({ kind: "dockOrder", cmd: "+helm/dock DOCK TRANS LEFT" });
+    expect(spacePictureKey("d", "docking")).toEqual({ kind: "dockOrder", cmd: "+helm/dock DOCK TRANS RIGHT" });
     expect(spacePictureKey("ArrowUp", "docking")).toEqual({
       kind: "dockOrder",
-      cmd: "DOCK PITCH UP",
+      cmd: "+helm/dock DOCK PITCH UP",
     });
     expect(spacePictureKey("ArrowDown", "docking")).toEqual({
       kind: "dockOrder",
-      cmd: "DOCK PITCH DOWN",
+      cmd: "+helm/dock DOCK PITCH DOWN",
     });
     expect(spacePictureKey("ArrowLeft", "docking")).toEqual({
       kind: "dockOrder",
-      cmd: "DOCK YAW LEFT",
+      cmd: "+helm/dock DOCK YAW LEFT",
     });
     expect(spacePictureKey("ArrowRight", "docking")).toEqual({
       kind: "dockOrder",
-      cmd: "DOCK YAW RIGHT",
+      cmd: "+helm/dock DOCK YAW RIGHT",
     });
-    expect(spacePictureKey("q", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK ROLL CCW" });
-    expect(spacePictureKey("e", "docking")).toEqual({ kind: "dockOrder", cmd: "DOCK ROLL CW" });
+    expect(spacePictureKey("q", "docking")).toEqual({ kind: "dockOrder", cmd: "+helm/dock DOCK ROLL CCW" });
+    expect(spacePictureKey("e", "docking")).toEqual({ kind: "dockOrder", cmd: "+helm/dock DOCK ROLL CW" });
     expect(spacePictureKey("r", "docking")).toEqual({
       kind: "dockOrder",
-      cmd: "DOCK CLOSURE FORWARD",
+      cmd: "+helm/dock DOCK CLOSURE FORWARD",
     });
     expect(spacePictureKey("f", "docking")).toEqual({
       kind: "dockOrder",
-      cmd: "DOCK CLOSURE REVERSE",
+      cmd: "+helm/dock DOCK CLOSURE REVERSE",
     });
     expect(spacePictureKey("x", "docking")).toEqual({
       kind: "dockOrder",
-      cmd: "DOCK DAMPENERS TOGGLE",
+      cmd: "+helm/dock DOCK DAMPENERS TOGGLE",
     });
     expect(spacePictureKey("v", "docking")).toEqual({ kind: "spaceView" });
     expect(spacePictureKey("0", "docking")).toBeNull();
@@ -508,9 +508,10 @@ describe("the keyframes the picture is drawn from here (doc 21 cut G.3b)", () =>
     expect(spacePictureKey(" ", "docking")).toBeNull();
 
     const rightKey = spacePictureKey("d", "docking");
-    expect(rightKey).toEqual({ kind: "dockOrder", cmd: "DOCK TRANS RIGHT" });
+    expect(rightKey).toEqual({ kind: "dockOrder", cmd: "+helm/dock DOCK TRANS RIGHT" });
+    expect(dockOrderToFrameInput("+helm/dock DOCK TRANS RIGHT")?.transX).toBe(1);
     expect(dockOrderToFrameInput("DOCK TRANS RIGHT")?.transX).toBe(1);
-    const rightMask = dockOrderToInputMask("DOCK TRANS RIGHT");
+    const rightMask = dockOrderToInputMask("+helm/dock DOCK TRANS RIGHT");
     expect(rightMask).toBe(1);
     const afterOne = mod.stepDocking(rightMask ?? 0);
     expect(afterOne?.feed.vx_mmps).toBe(32);
