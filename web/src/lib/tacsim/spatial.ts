@@ -591,8 +591,11 @@ export function parseNeighborhoodPack(
     return fallbackId.includes("ooc") ? buildFallbackOocArea() : buildFallbackFreeport();
   }
 
+  const manifest = asObj(root["manifest"]);
+  const manifestId = manifest ? asStr(manifest["id"]) : "";
+
   const pack: AtlasNeighborhoodPack = {
-    packId: fallbackId,
+    packId: manifestId || fallbackId,
     name: "Station",
     floors: new Map(),
     rooms: new Map(),
@@ -610,7 +613,9 @@ export function parseNeighborhoodPack(
     if (!def) continue;
 
     if (kind === "neighborhood") {
-      pack.packId = id;
+      if (id && id !== "neighborhood") {
+        pack.packId = id;
+      }
       pack.name = asStr(def["name"], pack.name);
     } else if (kind === "structure") {
       const floors = asArr(def["floors"]);
@@ -1845,7 +1850,7 @@ export function normalizePortVenueTarget(raw: string | null | undefined): string
   if (low.includes("ligeia") || low.includes("titan")) return "titan";
   if (low.includes("ceres") || low.includes("freeport")) return "ceres";
   const stripped = low.replace(/^neighborhood\./, "").replace(/_port$/, "");
-  if (/^[a-z0-9_-]+$/.test(stripped) && stripped !== "ooc_area") {
+  if (/^[a-z0-9_-]+$/.test(stripped) && stripped !== "ooc_area" && stripped !== "neighborhood") {
     return stripped;
   }
   return null;

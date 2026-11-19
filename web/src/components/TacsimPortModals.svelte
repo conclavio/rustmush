@@ -128,6 +128,13 @@
       aria-label="port terminal dialog"
       tabindex="-1"
       onclick={(ev) => ev.stopPropagation()}
+      onkeydown={(ev) => {
+        if (ev.key === "Escape") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          app.tacsim.closeModal();
+        }
+      }}
     >
       {#if modal === "trade" || modal === "sailing"}
         <header class="mhead">

@@ -25,6 +25,7 @@ import {
   findShipExitPath,
   findStationExitPath,
   getFloorElevationY,
+  normalizePortVenueTarget,
   parseNeighborhoodPack,
   parseShipUnitJson,
   resolveDynamicDockTarget,
@@ -203,24 +204,31 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
       }
     }
 
-    // W3D-M6: Ceres registry gets Co-op desk; Aitken registry does NOT; Stickney/Voltaire/Ligeia desks resolve
-    const ceres = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.ceres_freeport.json"), "neighborhood.ceres_freeport");
+    // W3D-M6: parseNeighborhoodPack preserves manifest.id (not bare "neighborhood"), Ceres registry
+    // gets Co-op desk, Aitken registry does NOT, and Stickney/Voltaire/Ligeia desks resolve.
+    const ceres = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.ceres_freeport.json"));
+    expect(ceres.packId).toBe("neighborhood.ceres_freeport");
     expect(classifyStationDesk(ceres.packId, ceres.rooms.get("room.c05_registry")!)?.deskKey).toBe("ui:open_coop");
+    expect(normalizePortVenueTarget("neighborhood")).toBeNull();
 
-    const aitken = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.aitken_highport.json"), "neighborhood.aitken_highport");
+    const aitken = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.aitken_highport.json"));
+    expect(aitken.packId).toBe("neighborhood.aitken_highport");
     const aitkenReg = classifyStationDesk(aitken.packId, aitken.rooms.get("room.l05_registry")!);
     expect(aitkenReg?.deskKey).toBe("ui:open_sailing");
     expect(aitkenReg?.title).not.toContain("Co-op");
 
-    const stickney = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.stickney_yards.json"), "neighborhood.stickney_yards");
+    const stickney = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.stickney_yards.json"));
+    expect(stickney.packId).toBe("neighborhood.stickney_yards");
     expect(classifyStationDesk(stickney.packId, stickney.rooms.get("room.p05_harbourmaster")!)?.deskKey).toBe("ui:open_sailing");
     expect(classifyStationDesk(stickney.packId, stickney.rooms.get("room.p09_commissary")!)?.deskKey).toBe("ui:open_trade");
 
-    const voltaire = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.voltaire_anchorage.json"), "neighborhood.voltaire_anchorage");
+    const voltaire = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.voltaire_anchorage.json"));
+    expect(voltaire.packId).toBe("neighborhood.voltaire_anchorage");
     expect(classifyStationDesk(voltaire.packId, voltaire.rooms.get("room.d05_harbourmaster")!)?.deskKey).toBe("ui:open_sailing");
     expect(classifyStationDesk(voltaire.packId, voltaire.rooms.get("room.d09_commissary")!)?.deskKey).toBe("ui:open_trade");
 
-    const ligeia = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.ligeia_terminal.json"), "neighborhood.ligeia_terminal");
+    const ligeia = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.ligeia_terminal.json"));
+    expect(ligeia.packId).toBe("neighborhood.ligeia_terminal");
     expect(classifyStationDesk(ligeia.packId, ligeia.rooms.get("room.t11_bunkering")!)?.deskKey).toBe("ui:open_trade");
   });
 
@@ -729,6 +737,13 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
     const parseContentParams = (): Array<Record<string, unknown>> =>
       socket.sent
         .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+        .map((msg) => {
+          if (msg["t"] === "req" && msg["d"] && typeof msg["d"] === "object") {
+            const q = (msg["d"] as Record<string, unknown>)["q"];
+            if (q && typeof q === "object") return q as Record<string, unknown>;
+          }
+          return msg;
+        })
         .filter((msg) => msg["t"] === "panel_subscribe")
         .map((msg) => msg["d"] as Record<string, unknown>)
         .filter((d) => d["feed"] === TACSIM_CONTENT_FEED && d["params"] && typeof d["params"] === "object")
@@ -866,8 +881,8 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
       berthOwnHullName: null,
       berthOwnHullDockedHere: false,
       visibleActors: [
-        { id: "#41", name: "Dock Clerk", isNpc: true },
-        { id: "#77", name: "Other Pilot", isNpc: false },
+        { id: "#41", name: "Dock Clerk", isNpc: true, isMale: false, shortDesc: "" },
+        { id: "#77", name: "Other Pilot", isNpc: false, isMale: false, shortDesc: "" },
       ],
       actorSpeech: {},
       actorComposing: {},
@@ -897,7 +912,7 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
       ],
       berthOwnHullName: "Salt Moth",
       berthOwnHullDockedHere: true,
-      visibleActors: [{ id: "#41", name: "Dock Clerk", isNpc: true }],
+      visibleActors: [{ id: "#41", name: "Dock Clerk", isNpc: true, isMale: false, shortDesc: "" }],
       actorSpeech: {},
       actorComposing: {},
       stowageCargoKg: 0,
@@ -929,7 +944,7 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
       berthDockedHulls: [
         { id: "#99", name: "Salt Moth", mark: "CF-DR-01", unit: "dray", captain: "", yours: true },
       ],
-      visibleActors: [{ id: "#41", name: "Dock Clerk", isNpc: true }],
+      visibleActors: [{ id: "#41", name: "Dock Clerk", isNpc: true, isMale: false, shortDesc: "" }],
       actorSpeech: { "#41": { text: "Berth clamps locked.", expiresAt: Date.now() + 8000 } },
       actorComposing: { "#41": true },
       stowageCargoKg: 0,
