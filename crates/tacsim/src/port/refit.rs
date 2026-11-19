@@ -14,9 +14,9 @@
 //! The checks run in order and nothing is written on a refusal: the word, the
 //! charter or title, the refit offered, the berth, nothing in flight, the hold empty but
 //! for her tank (provisions refuse: lead ruling 8), the bay empty, not already
-//! that unit, at the desk, and the binding and its bay laid up. Then (48e review rounds:G2) no
-//! open bay order, and nothing to repair: the re-dress writes the unit fresh from its design, so
-//! a damaged hull is sent to the bay's quote rather than mended for free.
+//! that unit, no open bay order and nothing to repair (48e review rounds:G1, G2: the re-dress
+//! writes the unit fresh from its design, so a damaged hull is sent to the bay's quote rather
+//! than mended for free), at the desk, and the binding and its bay laid up.
 //!
 //! **Her rounds come with her** (48e review rounds:G2, A-14): the same write carries each space
 //! magazine's rounds left onto the new unit (`refit_unit_carrying`), capped at the new mount's
@@ -172,22 +172,6 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
     {
         return Err(refused(REFIT_CORED));
     }
-    // 48e review rounds:G1: an open bay order holds the hull as it stands; a re-dress under it
-    // would cancel the order after its draw had taken the goods.
-    if crate::port::bay_work::under_work(w, hull) {
-        return Err(refused(REFIT_BAY_WORK));
-    }
-    // 48e review rounds:G2: the re-dress builds her unit sound, so a hull the bay would repair is
-    // refused: the yard repairs nothing for free. (Her magazines are carried across, at
-    // `refit_cmd`.)
-    match crate::port::bay_work::needs_repair_here(w, hull) {
-        Ok(false) => {}
-        Ok(true) => return Err(refused(REFIT_DAMAGED)),
-        Err(error) => {
-            tracing::error!(hull = hull.0, %error, "tacsim: +coop/refit could not read the hull's repair");
-            return Err(refused(REFIT_FAILED));
-        }
-    }
     let view: HullView<'_> = hull_view(w, hull).ok_or_else(|| refused(REFIT_FAILED))?;
     let vault =
         crate::port::coop::mining_hold(w, actor, &view).ok_or_else(|| refused(REFIT_HOLD_DARK))?;
@@ -243,6 +227,22 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
             HULL_CLASS_PROSPECTOR
         };
         return Err(refused(REFIT_ALREADY).replace("{class}", class));
+    }
+    // 8b. (48e review rounds:G1) An open bay order holds the hull as it stands; a re-dress
+    // under it would cancel the order after its draw had taken the goods.
+    if crate::port::bay_work::under_work(w, hull) {
+        return Err(refused(REFIT_BAY_WORK));
+    }
+    // 48e review rounds:G2: the re-dress builds her unit sound, so a hull the bay would repair is
+    // refused: the yard repairs nothing for free. (Her magazines are carried across, at
+    // `refit_cmd`.)
+    match crate::port::bay_work::needs_repair_here(w, hull) {
+        Ok(false) => {}
+        Ok(true) => return Err(refused(REFIT_DAMAGED)),
+        Err(error) => {
+            tracing::error!(hull = hull.0, %error, "tacsim: +coop/refit could not read the hull's repair");
+            return Err(refused(REFIT_FAILED));
+        }
     }
     // 9. At the desk.
     let (office, office_name, port_label) = office_of(w, &port);

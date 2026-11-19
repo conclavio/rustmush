@@ -363,7 +363,7 @@ async fn in9_the_yard_builds_a_dray_p_and_an_escort_and_hands_them_over() {
     // 48e review rounds:G7 (Q-39-36): a space hull's magazines are empty too; her magazine
     // record holds each at 0, where its absence read every one full.
     let mags = tacsim::port::bay_work::magazines::magazines(
-        &mush_tactics::module::unit_of(rig.tw.world(), dray).expect("her unit"),
+        mush_tactics::module::unit_of(rig.tw.world(), dray).expect("her unit"),
     );
     assert!(!mags.is_empty(), "the Dray-P carries magazines");
     assert!(

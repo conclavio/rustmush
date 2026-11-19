@@ -1697,7 +1697,7 @@ fn rounds_g2_a_refit_keeps_her_magazines_and_refuses_a_hull_that_needs_repair() 
         .find(|(addr, cell)| {
             matches!(addr, mush_tactics::CellAddr::Facet { .. }) && cell.current > cell.min
         })
-        .map(|(addr, cell)| (addr.clone(), cell.clone()))
+        .map(|(addr, cell)| (addr.clone(), *cell))
         .expect("an armoured facet");
     mutate(
         &mut rig.tw,

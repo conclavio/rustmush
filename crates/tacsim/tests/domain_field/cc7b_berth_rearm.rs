@@ -427,7 +427,7 @@ async fn rounds_g4_g5_a_repair_clears_her_crits_and_a_rearm_does_not() {
         .find(|(addr, cell)| {
             matches!(addr, mush_tactics::CellAddr::Facet { .. }) && cell.current > cell.min
         })
-        .map(|(addr, cell)| (addr.clone(), cell.clone()))
+        .map(|(addr, cell)| (addr.clone(), *cell))
         .expect("an armoured facet");
     damage(
         &mut rig,
