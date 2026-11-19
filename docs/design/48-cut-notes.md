@@ -1925,6 +1925,9 @@ Stacked on EX.5 (#657), built 2026-11-18 on `claude/ex6-haul-escort`, cut from E
       300 s grace and not yet handed to its mind.
     - **It ends** when she arrives or docks anywhere else (a passage), or leaves the field. It is
       kept at 90% near (`NEAR_PERMILLE`).
+    - **A field journey's closing interval is not counted** (the owner's ruling, 2026-11-19; see
+      "The closing interval" below): the fire that finds the field journey ended adds nothing to
+      either time, and the keep or fail is decided on what came before it.
     - **It fails at once** when she is wrecked (a derelict in space, a wreck in a field) or
       captured (yielded, doc 42b), or when the escort leaves: docked elsewhere while she is under
       way, or out of the field while she is in it, outside the grace. It also fails when the term
@@ -2041,6 +2044,43 @@ the guard; it is still refused by the family below it.
   out.
 - Cargo insurance (Q-48-42's later coverage product).
 - No story runs the passage half of the escort: the space near rule is reached only by its code.
+
+### The closing interval (2026-11-19): the owner's ruling on Q-48-46's near rule
+
+**The fault** (found by doc 43 TS.10a, which put the field stories on one clock with the arena).
+The watch steps on the port tick. The fire that finds a field journey ended reads the escort out
+of a field that is gone, so the whole interval since the last fire was counted far. At the
+production rate that one interval was 5 of the story's 35 IC seconds, and an escort that was in
+the field the whole time failed at 85%. Any field journey under about 50 s could never be kept.
+
+**The ruling**, in the owner's words "Yes, fix both", on this recommendation: do not count the
+closing interval, since the host cannot see where the escort was once the field is gone.
+
+- **Built** (`services::escort::count`, called by `watch`): on the fire that finds a field
+  journey ended, that interval is added to neither the journey's time nor the near time. The
+  keep or fail is decided on what was counted before it.
+- **Unchanged:** the wrecked and captured checks, the term running out, the escort leaving while
+  she is still in the field, the linkdead grace, and the 90% bar.
+- **Flagged for the owner: a field journey with nothing counted before its close.** The watch
+  starts on one fire and finds the journey ended on the next, so the closing interval is its only
+  interval. That interval is counted as before, which keeps today's outcome: kept only if the
+  escort was inside the linkdead grace on that fire, failed at 0% otherwise. Not counting it would
+  leave a journey of no time, and "kept or failed on nothing" is a game question.
+- **The passage's closing interval does not have the fault**, read from the code; no story flies
+  a passage escort. On a passage the fire that finds her docked away still reads the passage:
+  `mush_sim::JourneyBook` keeps an arrived record (`JourneyState::Arrived`) until a workshop
+  retires it (`retire_finished_journey`, RS.9a). So `near_in_space` still compares the two
+  records' route and departure, as it did under way. Its interval counts as before; the owner
+  ruled on the field case only. The one edge: an escort that docked at `to` and departed again
+  before that fire has a new record on another route, and reads far for it.
+
+**Tests.**
+- `services::escort::tests::ex6_a_field_journeys_closing_interval_is_not_counted` pins the rule:
+  the field's close, a passage's arrival, and the first-interval default.
+- `domain_field::ex6_escort` moves to the paused clock (world and arena at the production rate)
+  and is the rule's acceptance there.
+- **Mutation** (applied over the fix in the conclav.dev clone, then edited back): counting the
+  closing interval again fails the unit test and the story. Results are in the PR.
 
 ## EX.7
 
