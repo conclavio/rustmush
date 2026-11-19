@@ -8,6 +8,7 @@
   import { plainText } from "$lib/render";
 
   import RoomBand from "./RoomBand.svelte";
+  import TacsimSceneDeck from "./TacsimSceneDeck.svelte";
   import MapCanvas from "./MapCanvas.svelte";
   import Scrollback from "./Scrollback.svelte";
   import VitalsStrip from "./VitalsStrip.svelte";
@@ -21,6 +22,7 @@
 
 <div class="scene">
   <RoomBand {app} {onCmd} />
+  <TacsimSceneDeck {app} {onCmd} />
   <Scrollback sb={app.scrollback} {onCmd} onLoadOlder={() => app.loadOlderNarrative()} />
   {#if app.map.loaded}
     <MapCanvas {app} />

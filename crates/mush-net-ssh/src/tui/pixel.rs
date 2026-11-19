@@ -76,6 +76,7 @@ use mush_pixel::overhead::OverheadPicture;
 use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::replay::ReplayPicture;
 use mush_pixel::space_cockpit::SpaceCockpitPicture;
+use mush_pixel::station_walk::StationWalkPicture;
 use mush_pixel::{Frame, kitty, png, sixel};
 use serde_json::Value;
 
@@ -214,6 +215,8 @@ pub enum PictureKind {
     SpaceCockpit,
     /// The Out-of-Time-Loop 6-DOF Bow Docking Camera (`space.docking`; doc 35 cut SF.7).
     Docking,
+    /// The 2.5D Cutaway & First-Person Raycast Station/Ship Walk viewport (`station.walk`).
+    StationWalk,
 }
 
 /// **The cockpit's camera** (doc 21 §7.4, cut G.12b): which of its three
@@ -424,6 +427,8 @@ pub struct PixelView {
     space_cockpit_pic: SpaceCockpitPicture,
     /// The 6-DOF Bow Docking Camera picture and retained Kitty compositor (doc 35 cut SF.7).
     docking_pic: DockingPicture,
+    /// The Station & Ship Interior 2.5D/1P walk picture and retained Kitty compositor.
+    station_walk_pic: StationWalkPicture,
     /// Dynamic pixel dimensions of the last rendered retained Kitty viewport (up to 1280×720).
     last_25d_size: Option<(usize, usize)>,
     /// The other orders the flight keys made (`FIRE …`, `LOCK …`), oldest
@@ -583,6 +588,7 @@ impl PixelView {
             holotank_pic: HolotankPicture::new(),
             space_cockpit_pic: SpaceCockpitPicture::new(),
             docking_pic: DockingPicture::new(),
+            station_walk_pic: StationWalkPicture::new(),
             last_25d_size: None,
             orders: Vec::new(),
             detachment: None,
@@ -821,6 +827,7 @@ impl PixelView {
         self.holotank_pic.invalidate_image(image_id);
         self.space_cockpit_pic.invalidate_image(image_id);
         self.docking_pic.invalidate_image(image_id);
+        self.station_walk_pic.invalidate_image(image_id);
         self.last_sent = None;
     }
 
@@ -836,6 +843,7 @@ impl PixelView {
         out.extend(self.holotank_pic.cleanup_kitty_bytes());
         out.extend(self.space_cockpit_pic.cleanup_kitty_bytes());
         out.extend(self.docking_pic.cleanup_kitty_bytes());
+        out.extend(self.station_walk_pic.cleanup_kitty_bytes());
         out
     }
 
@@ -971,6 +979,10 @@ impl PixelView {
         if !cleanup_dk.is_empty() {
             self.term_bytes.extend_from_slice(&cleanup_dk);
         }
+        let cleanup_sw = self.station_walk_pic.cleanup_kitty_bytes();
+        if !cleanup_sw.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_sw);
+        }
         self.kind = kind;
         self.picture = match kind {
             PictureKind::Cockpit => Box::new(CockpitPicture::new()),
@@ -980,9 +992,29 @@ impl PixelView {
             PictureKind::Holotank => Box::new(HolotankPicture::new()),
             PictureKind::SpaceCockpit => Box::new(SpaceCockpitPicture::new()),
             PictureKind::Docking => Box::new(DockingPicture::new()),
+            PictureKind::StationWalk => Box::new(StationWalkPicture::new()),
         };
         self.last_sent = None;
         self.chart_asked = None;
+    }
+
+    /// Switch the active picture kind in place without closing the viewport
+    /// (used for Bridge Helm handoff between `StationWalk` and `SpaceCockpit`).
+    pub fn switch_kind_live(&mut self, kind: PictureKind) {
+        if kind != self.kind {
+            self.set_kind_internal(kind);
+        }
+    }
+
+    /// Whether the terminal confirmed Kitty keyboard flag 8 for held letter releases.
+    #[must_use]
+    pub fn letters_held(&self) -> bool {
+        self.keyboard_pushed && self.letters_held
+    }
+
+    /// Mark the cached frame hash dirty so the next tick repaints immediately.
+    pub fn invalidate_last_sent(&mut self) {
+        self.last_sent = None;
     }
 
     /// Cycle the view mode (`v` toggle) across the orbital/space views (`Chart` $\to$
@@ -1231,6 +1263,10 @@ impl PixelView {
         if !cleanup_dk.is_empty() {
             self.term_bytes.extend_from_slice(&cleanup_dk);
         }
+        let cleanup_sw = self.station_walk_pic.cleanup_kitty_bytes();
+        if !cleanup_sw.is_empty() {
+            self.term_bytes.extend_from_slice(&cleanup_sw);
+        }
         self.last_25d_size = None;
         self.letters_held = false;
         self.last_sent = None;
@@ -1433,6 +1469,37 @@ impl PixelView {
                 Key::Char('v') => self.cycle_space_view(),
                 Key::Esc | Key::Char('q') => self.close(),
                 Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                | Key::Enter
+                | Key::Ctrl(_)
+                | Key::Alt(_) => return KeyUse::Passed,
+                _ => {}
+            }
+            return KeyUse::Used;
+        }
+        // Station & Ship Walk (`StationWalk`): `,`/`.` rotate the cutaway azimuth, `+`/`-`
+        // adjust zoom, while movement/interact keys are handled by `TuiApp`'s `port_walk`
+        // ahead of `PixelView::key`.
+        if self.kind == PictureKind::StationWalk {
+            match key {
+                Key::Char(',') => {
+                    self.look_mdeg = (self.look_mdeg - 15_000).rem_euclid(360_000);
+                    self.last_sent = None;
+                }
+                Key::Char('.') => {
+                    self.look_mdeg = (self.look_mdeg + 15_000).rem_euclid(360_000);
+                    self.last_sent = None;
+                }
+                Key::Char('+' | '=') => {
+                    let next = self.zoom_permille().saturating_add(250).min(2000);
+                    self.set_zoom_permille(next);
+                    self.last_sent = None;
+                }
+                Key::Char('-' | '_') => {
+                    let next = self.zoom_permille().saturating_sub(250).max(500);
+                    self.set_zoom_permille(next);
+                    self.last_sent = None;
+                }
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?')
                 | Key::Enter
                 | Key::Ctrl(_)
                 | Key::Alt(_) => return KeyUse::Passed,
@@ -1754,6 +1821,7 @@ impl PixelView {
                 self.holotank_pic.invalidate_placements();
                 self.space_cockpit_pic.invalidate_placements();
                 self.docking_pic.invalidate_placements();
+                self.station_walk_pic.invalidate_placements();
             }
             Key::Char('+' | '=') => {
                 let base = if self.camera == CockpitCamera::FirstPerson {
@@ -1941,6 +2009,9 @@ impl PixelView {
                 PictureKind::Docking => self
                     .docking_pic
                     .draw_kitty(feeds, &look, area, self.cell, step_down),
+                PictureKind::StationWalk => self
+                    .station_walk_pic
+                    .draw_kitty(feeds, &look, area, self.cell, step_down),
                 PictureKind::Cockpit => match self.camera {
                     CockpitCamera::FirstPerson => self
                         .cockpit_fp
@@ -2028,6 +2099,9 @@ impl PixelView {
         } else if self.kind == PictureKind::Docking {
             self.last_25d_size = None;
             self.docking_pic.draw(&mut self.frame, feeds, &look)
+        } else if self.kind == PictureKind::StationWalk {
+            self.last_25d_size = None;
+            self.station_walk_pic.draw(&mut self.frame, feeds, &look)
         } else {
             self.last_25d_size = None;
             self.picture.draw(&mut self.frame, feeds, &look)

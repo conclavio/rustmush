@@ -1,0 +1,435 @@
+<script lang="ts">
+  // 3D Station & Ship Interior Viewport + Contextual Quick Actions (`SceneScreen.svelte`).
+  // Toggleable 3D split above `Scrollback`; when seated at the Bridge Helm, hands off
+  // seamlessly into `PictureView.svelte` (`mush-pixel-wasm` SpaceCockpit & 60 Hz Docking).
+
+  import type { GameApp } from "$lib/game.svelte";
+  import { PICTURE_PREF_KEY } from "$lib/picture";
+  import { storageGet, storageSet } from "$lib/storage";
+  import { TacsimStage3D, type WorldInteractable3D } from "$lib/tacsim/stage3d";
+  import PictureView from "./PictureView.svelte";
+  import TacsimPortModals from "./TacsimPortModals.svelte";
+
+  let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
+
+  let canvasEl: HTMLCanvasElement | undefined = $state();
+  let wrapEl: HTMLDivElement | undefined = $state();
+  let stage = $state.raw<TacsimStage3D | null>(null);
+  let resizing = $state(false);
+  let dragStartY = 0;
+  let dragStartH = 380;
+
+  function handleAction(act: string): void {
+    stage?.notifyExplicitCommandSent();
+    if (act.startsWith("ui:") || act === "seat:helm") {
+      if (act === "ui:sit_helm" || act === "seat:helm") {
+        // Ensure PictureView renders immediately on helm handoff
+        if (storageGet(PICTURE_PREF_KEY) !== "on") {
+          storageSet(PICTURE_PREF_KEY, "on");
+        }
+      }
+      app.tacsim.executeUiOrMushAction(act);
+    } else {
+      onCmd(act);
+    }
+  }
+
+  function handleInteractable(wi: WorldInteractable3D): void {
+    switch (wi.kind) {
+      case "npc":
+        if (wi.npcMeta) {
+          app.tacsim.openNpcModal(wi.npcMeta);
+        }
+        break;
+      case "plaque":
+        app.tacsim.openDetailModal(
+          wi.title.toUpperCase(),
+          wi.detailBody || "Inspecting...",
+          wi.actionOrKey,
+        );
+        break;
+      case "helm_seat":
+        handleAction("ui:sit_helm");
+        break;
+      default:
+        handleAction(wi.actionOrKey);
+        break;
+    }
+  }
+
+  // Mount / teardown Three.js stage when the 3D walk canvas is active
+  $effect(() => {
+    const c = canvasEl;
+    if (!c || !app.tacsim.view3dOpen || app.tacsim.seatedAtBridgeHelm) {
+      return;
+    }
+    const inst = new TacsimStage3D(c, {
+      onSendCommand: (cmd) => onCmd(cmd),
+      onInteractableTriggered: handleInteractable,
+      onFocusedPromptChanged: (p) => {
+        app.tacsim.focusedPrompt = p;
+      },
+      onPhysicalLocationChanged: (loc) => {
+        app.tacsim.physicalLocationKey = loc;
+      },
+      isUiBlockingInput: () =>
+        app.tacsim.activeModal !== null ||
+        app.requests.current !== null ||
+        app.screens.helpOpen ||
+        app.screens.paletteOpen,
+    });
+    stage = inst;
+
+    const ro =
+      typeof ResizeObserver !== "undefined" && wrapEl
+        ? new ResizeObserver((entries) => {
+            const rect = entries[0]?.contentRect;
+            if (rect) inst.resize(rect.width, rect.height);
+          })
+        : null;
+    if (ro && wrapEl) ro.observe(wrapEl);
+    if (wrapEl) inst.resize(wrapEl.clientWidth || 720, app.tacsim.viewportHeightPx);
+
+    return () => {
+      ro?.disconnect();
+      inst.dispose();
+      stage = null;
+      app.tacsim.focusedPrompt = null;
+    };
+  });
+
+  // Push reactive room/pack/actor/stowage/holotank state into the live Three.js stage
+  $effect(() => {
+    const s = stage;
+    const _rev = app.tacsim.packsRevision;
+    void _rev;
+    if (!s) return;
+    s.syncWorldState({
+      stationPack: app.tacsim.stationPack,
+      shipTemplate: app.tacsim.shipTemplate,
+      isAboardShip: app.tacsim.isAboardShip,
+      serverStationRoomEntry: app.tacsim.serverStationRoomEntry,
+      serverShipCompartment: app.tacsim.serverShipCompartment,
+      ambient: app.tacsim.ambient,
+      visibleActors: app.tacsim.visibleActors,
+      actorSpeech: app.tacsim.actorSpeech,
+      actorComposing: app.tacsim.actorComposing,
+      stowageCargoKg: app.tacsim.trade.stowage.cargoKg,
+      holotankData: app.picture.spaceHolotankData,
+    });
+  });
+
+  function onResizeDown(ev: PointerEvent): void {
+    ev.preventDefault();
+    resizing = true;
+    dragStartY = ev.clientY;
+    dragStartH = app.tacsim.viewportHeightPx;
+    (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId);
+  }
+
+  function onResizeMove(ev: PointerEvent): void {
+    if (!resizing) return;
+    const next = Math.max(220, Math.min(680, Math.round(dragStartH + (ev.clientY - dragStartY))));
+    app.tacsim.viewportHeightPx = next;
+    if (stage && wrapEl) {
+      stage.resize(wrapEl.clientWidth || 720, next);
+    }
+  }
+
+  function onResizeUp(ev: PointerEvent): void {
+    if (!resizing) return;
+    resizing = false;
+    (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
+  }
+</script>
+
+{#if app.tacsim.available}
+  <div class="port-bar" role="toolbar" aria-label="port and ship actions">
+    <button
+      type="button"
+      class="btn3d"
+      class:on={app.tacsim.view3dOpen}
+      onclick={() => app.tacsim.toggle3dView()}
+      title="Toggle 3D station & ship interior viewport"
+    >
+      {app.tacsim.view3dOpen ? "3D ON" : "3D VIEW"}
+    </button>
+
+    {#if app.tacsim.isAboardShip && app.tacsim.ambient.hullName}
+      <span class="hull-pill">
+        {app.tacsim.ambient.hullName} · {app.tacsim.ambient.docked ? "Docked" : "Under Way"}
+      </span>
+    {:else if app.tacsim.ambient.ownHullName}
+      <span class="hull-pill">
+        {app.tacsim.ambient.ownHullName} · {app.tacsim.ambient.ownHullDockedHere ? "Cradled Here" : "Away"}
+      </span>
+    {/if}
+
+    <div class="quick-actions">
+      {#each app.tacsim.quickActions as qa (qa.label)}
+        <button
+          type="button"
+          class="qbtn"
+          class:accent={qa.accent}
+          onclick={() => handleAction(qa.action)}
+        >
+          {qa.label}
+        </button>
+      {/each}
+    </div>
+  </div>
+
+  {#if app.tacsim.view3dOpen}
+    {#if app.tacsim.seatedAtBridgeHelm}
+      <div class="helm-visor">
+        <div class="visor-bar">
+          <span class="visor-title">BRIDGE FLIGHT VISOR · ORBITAL & 60 HZ DOCKING</span>
+          <div class="visor-btns">
+            <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 0")}>0%</button>
+            <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 500")}>50%</button>
+            <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 1000")}>100%</button>
+            <button type="button" class="qbtn" onclick={() => handleAction("ui:open_sailing")}>Undock / Route</button>
+            <button type="button" class="qbtn" onclick={() => onCmd("+helm/dock ceres")}>60 Hz Dock</button>
+            <button type="button" class="qbtn accent" onclick={() => app.tacsim.standFromBridgeHelm()}>
+              Stand From Helm
+            </button>
+          </div>
+        </div>
+        <div class="visor-canvas">
+          <PictureView {app} headingDeg={0} prefill={(ln) => app.focusComposer(ln)} />
+        </div>
+      </div>
+    {:else}
+      <div
+        class="stage-wrap"
+        bind:this={wrapEl}
+        style="height: {app.tacsim.viewportHeightPx}px;"
+      >
+        <canvas bind:this={canvasEl} class="stage-canvas"></canvas>
+
+        <div class="hud-hint">
+          WASD move · Shift sprint · Drag orbit · Scroll zoom · E / Click interact
+        </div>
+
+        {#if app.tacsim.focusedPrompt}
+          <button
+            type="button"
+            class="interact-banner"
+            onclick={() => {
+              // Trigger focused interactable on click too
+              const ev = new KeyboardEvent("keydown", { code: "KeyE", key: "e", bubbles: true });
+              window.dispatchEvent(ev);
+            }}
+          >
+            <span class="ititle">{app.tacsim.focusedPrompt.title}</span>
+            <span class="isub">{app.tacsim.focusedPrompt.subtitle}</span>
+          </button>
+        {/if}
+
+        {#if stage && !stage.supported}
+          <div class="webgl-fallback">
+            WebGL is unavailable in this browser context — using text & diegetic port modals.
+          </div>
+        {/if}
+      </div>
+      <div
+        class="resize-grip"
+        role="separator"
+        aria-orientation="horizontal"
+        onpointerdown={onResizeDown}
+        onpointermove={onResizeMove}
+        onpointerup={onResizeUp}
+      ></div>
+    {/if}
+  {/if}
+
+  <TacsimPortModals {app} {onCmd} />
+{/if}
+
+<style>
+  .port-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.3rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-panel) 88%, #0c2238 12%);
+    flex: none;
+  }
+
+  .btn3d {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg-muted);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    font-weight: 700;
+    padding: 0.16rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .btn3d.on {
+    background: #144a6e;
+    border-color: #3da8e8;
+    color: #e8f7ff;
+  }
+
+  .hull-pill {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    color: #88d4ff;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid rgb(80 170 230 / 35%);
+    background: rgb(16 42 68 / 45%);
+  }
+
+  .quick-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-left: auto;
+  }
+
+  .qbtn {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.76rem;
+    padding: 0.16rem 0.58rem;
+    cursor: pointer;
+  }
+
+  .qbtn:hover {
+    border-color: var(--accent);
+  }
+
+  .qbtn.accent {
+    background: #164866;
+    border-color: #3ca6e0;
+    color: #effaff;
+    font-weight: 600;
+  }
+
+  .stage-wrap {
+    position: relative;
+    width: 100%;
+    background: #06090f;
+    overflow: hidden;
+    flex: none;
+  }
+
+  .stage-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+  }
+
+  .hud-hint {
+    position: absolute;
+    top: 0.45rem;
+    right: 0.6rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 5px;
+    background: rgb(6 12 22 / 72%);
+    color: #9bb8d4;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    pointer-events: none;
+  }
+
+  .interact-banner {
+    position: absolute;
+    left: 50%;
+    bottom: 0.75rem;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+    padding: 0.38rem 1.05rem;
+    border-radius: 8px;
+    background: rgb(8 20 34 / 88%);
+    border: 1px solid #44d492;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 45%);
+  }
+
+  .ititle {
+    color: #66ffaa;
+    font-weight: 700;
+    font-size: 0.86rem;
+  }
+
+  .isub {
+    color: #b8d8ee;
+    font-size: 0.74rem;
+  }
+
+  .webgl-fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .resize-grip {
+    height: 5px;
+    background: var(--border);
+    cursor: ns-resize;
+    flex: none;
+  }
+
+  .resize-grip:hover {
+    background: var(--accent);
+  }
+
+  .helm-visor {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--border);
+    background: #060a12;
+    flex: none;
+  }
+
+  .visor-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.35rem 0.75rem;
+    background: #0c1828;
+    border-bottom: 1px solid #1e3d5c;
+  }
+
+  .visor-title {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: #77d4ff;
+  }
+
+  .visor-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .visor-canvas {
+    padding: 0.35rem 0.6rem;
+    max-height: 440px;
+    overflow: auto;
+  }
+</style>

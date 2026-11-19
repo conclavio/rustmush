@@ -103,6 +103,8 @@ import { decodeProvingView } from "./mind-bulk";
 import { decodeBenchView } from "./mind-bench";
 import { WsClient, type EnvelopeOf, type WebSocketLike } from "./ws";
 import { parseResolutionOutcome } from "./view";
+import { TacsimPortStore } from "./stores/tacsim.svelte";
+import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./tacsim/trade";
 
 /** Doc 31 cut UD.3b: the pulled feed of published unit designs' looks. */
 export const UNIT_LOOKS_FEED = "unit.looks";
@@ -150,7 +152,9 @@ type PendingReq =
   // with the market store's generation: an answer to an ask made before a reset (a
   // character switch on this socket) belongs to the store that was reset, never this one.
   | { kind: "mind.market"; gen: number }
-  | { kind: "mind.holdings"; gen: number };
+  | { kind: "mind.holdings"; gen: number }
+  | { kind: "port.trade" }
+  | { kind: "tacsim.content" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -305,6 +309,20 @@ export class GameApp {
   #legalActionRpc: LegalActionRpcClient | null = null;
   actionRequests = new ActionRequestsStore(request => this.#legalActionRpc!.request(request),
     () => this.refreshLegalActions());
+  /** Track 4A: 3D Station/Ship Viewport & Diegetic Corridor Port UI store. */
+  tacsim = new TacsimPortStore({
+    hasPanel: (feed) => this.session.hasPanel(feed),
+    subscribePanel: (feed, params) =>
+      this.#req(
+        { kind: feed === PORT_TRADE_FEED ? "port.trade" : "tacsim.content" },
+        {
+          t: "panel_subscribe",
+          d: params ? { feed, params: params as never } : { feed },
+        },
+      ),
+    sendCommand: (line) => this.submit(line),
+    selfCharacterId: () => this.session.character?.id ?? null,
+  });
 
   screen = $state<Screen>("login");
   /** The latest `scenes` keyframe (the scene screen's glance rides in
@@ -576,6 +594,7 @@ export class GameApp {
     this.requests.clear();
     this.notifications.clear();
     this.presence.clear();
+    this.tacsim.clear();
     this.sceneFrame = null;
     this.paletteEntries = [];
     this.paletteSelected = 0;
@@ -617,6 +636,7 @@ export class GameApp {
     });
     c.on("composing", (env) => {
       this.presence.applyComposing(env.d.actor.name, env.d.active, Date.now());
+      this.tacsim.observeComposing(env.d);
     });
     c.on("narrative", (env) => {
       // Speech and action group under a speaker header (I5); emits, OOC
@@ -635,9 +655,12 @@ export class GameApp {
           seq: env.seq,
         },
       );
+      this.tacsim.observeNarrative(env.d);
     });
     c.on("sys", (env) => {
       this.scrollback.push("ev-sys ev-demoted", [renderRich(env.d)], env.ts);
+      const plain = plainText(env.d);
+      this.tacsim.observeSys(plain);
       // …and, while seated, the cockpit's notices ring too (16b cut B.1): a
       // pilot kept on screen 0 reads `Locking BA.` or a usage line there,
       // where the scrollback is not mounted. Every `Sys` line but one kind —
@@ -645,7 +668,7 @@ export class GameApp {
       // frame carries is left out, because the ring composes that notice from
       // the frame itself, and ringing both would say it twice (16b cut F.2).
       if (!isNoticeSentence(env.d)) {
-        this.cockpit.pushReply(plainText(env.d));
+        this.cockpit.pushReply(plain);
       }
     });
     c.on("channel", (env) => this.#onChannel(env));
@@ -872,6 +895,7 @@ export class GameApp {
     // (D-I-19), rebuilt on every Room event.
     this.screens.exits = exitKeys(view);
     this.scrollback.push("ev-room", roomLines(view), ts);
+    this.tacsim.observeRoom(view);
   }
 
   #routeReply(event: OutputEvent, pending: PendingReq | null, ts: number): void {
@@ -986,6 +1010,9 @@ export class GameApp {
           // renders `Not in a cockpit.` / `Waiting for the arena map...` on
           // its own, and the map ask repeats on its own latch — a bystander's
           // hello pass must not print a line for asking.
+          return;
+        }
+        if (pending?.kind === "port.trade" || pending?.kind === "tacsim.content") {
           return;
         }
         // The generic reply-error line, demoted like every other
@@ -1184,6 +1211,14 @@ export class GameApp {
       this.sceneFrame = d.data;
     } else if (d.feed === "npc.thinking") {
       this.presence.applyThinking(d.data, Date.now());
+    } else if (d.feed === PORT_TRADE_FEED) {
+      if (d.kind === "keyframe") {
+        this.tacsim.observePortTrade(d.data);
+      }
+    } else if (d.feed === TACSIM_CONTENT_FEED) {
+      if (d.kind === "keyframe") {
+        this.tacsim.observeContentFeed(d.data);
+      }
     } else if (isViewFeed(d.feed)) {
       // A `<name>.view` generic view (I9): hold it and make sure a screen
       // exists for it — a module ships a view and gets a screen with no
