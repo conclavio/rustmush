@@ -163,7 +163,10 @@ fn board_ready(rig: &mut Rig) -> bool {
 fn checked_next_day(rig: &mut Rig) -> i64 {
     let day = ic_now(&rig.tw).div_euclid(DAY) + 1;
     let _ = to_ic(rig, day * DAY + 600);
-    assert!(board_ready(rig), "IC day {day}'s first fire: the Board's ask reads ready");
+    assert!(
+        board_ready(rig),
+        "IC day {day}'s first fire: the Board's ask reads ready"
+    );
     for n in 0..8 {
         fires(rig, 1);
         assert!(
