@@ -2273,14 +2273,19 @@ pub(crate) fn release_verify(ctx: &mut Ctx<'_>, state: &mut PortTickState) {
     }
 }
 
-/// **The clerk who acts for the vendor whose storefront is `vault`** (doc 48e, exchange G14): the
-/// clerk Thing of the lane port that lists `vault` as one of its vendors' storefronts.
-fn clerk_of_storefront(w: &World, vault: u64) -> Option<ObjId> {
+/// **The storefront and clerk for the vendor whose storefront vault is `vault`** (doc 48e,
+/// exchange G14): the vendor's storefront Thing, and the clerk Thing of the lane port that lists
+/// it. The storefront is the release's agent and the clerk its principal: the clerk is already
+/// the stock arm's agent, and one object is one arm's agent a fire.
+fn clerk_of_storefront(w: &World, vault: u64) -> Option<(ObjId, ObjId)> {
     crate::port::market::ports(w)
         .into_iter()
         .filter_map(|(_, _, map)| map)
-        .find(|map| map.vendors.values().any(|row| row.vault == vault))
-        .and_then(|map| map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)))
+        .find_map(|map| {
+            let row = map.vendors.values().find(|row| row.vault == vault)?;
+            let clerk = map.clerk.as_ref()?;
+            Some((ObjId(row.storefront), ObjId(clerk.thing)))
+        })
 }
 
 /// **The fire's one release agent** (doc 18 §5's IC8 row; D-18-26): the lowest-id
@@ -2292,7 +2297,7 @@ fn clerk_of_storefront(w: &World, vault: u64) -> Option<ObjId> {
 /// window is taken** (`mush_market::lapsed_holds_where`), so no number of them — the
 /// sweep keeps every lapsed hold-backed listing until its hold is gone (lead ruling
 /// L7) — and no listing that is always refused can starve a later player's release.
-pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(ObjId, u64)> {
+pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(ObjId, ObjId, u64)> {
     let economy = w.module_state::<mush_economy::EconomyStore>()?;
     let fires = state.fires;
     state
@@ -2304,7 +2309,7 @@ pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(Obj
         release_backoff,
         ..
     } = state;
-    let mut holder = None;
+    let mut holder: Option<(ObjId, ObjId)> = None;
     let first = mush_market::lapsed_holds_where(w, 1, |hold| {
         let listing = hold.listing.0;
         if release_backoff.contains_key(&listing)
@@ -2320,7 +2325,7 @@ pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(Obj
             .map(|vault| vault.owner.clone());
         match owner {
             Some(PrincipalId::Object(owner)) if owner != GOD && !gone(w, owner) => {
-                holder = Some(owner);
+                holder = Some((owner, owner));
                 true
             }
             // Doc 48e (exchange G14; 48d H-03): a vendor's storefront is its org's, and the port
@@ -2328,15 +2333,15 @@ pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(Obj
             // `+yard/buy` part ask, a refunded sale's lot) rather than leave the lot off the board.
             Some(PrincipalId::Organization(_)) => {
                 match clerk_of_storefront(w, hold.endpoint.vault().0) {
-                    Some(clerk) if !gone(w, clerk) => {
-                        holder = Some(clerk);
+                    Some((storefront, clerk)) if !gone(w, clerk) => {
+                        holder = Some((storefront, clerk));
                         true
                     }
                     _ => {
                         if release_warned.insert(listing) {
                             tracing::info!(
                                 listing,
-                                "tacsim: a lapsed hold-backed listing's org vault is no port vendor's;                              it is left for its owner or staff to withdraw"
+                                "tacsim: a lapsed hold-backed listing's org vault is no port vendor's;                                  it is left for its owner or staff to withdraw"
                             );
                         }
                         false
@@ -2356,7 +2361,7 @@ pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(Obj
         }
     });
     let listing = first.first()?.listing.0;
-    holder.map(|holder| (holder, listing))
+    holder.map(|(agent, holder)| (agent, holder, listing))
 }
 
 /// **The release step** (lead rulings L7, L20): as the holder, stage the release of
@@ -2369,6 +2374,7 @@ pub(crate) fn release_step(
     ctx: &mut Ctx<'_>,
     state: &mut PortTickState,
     fire: &mut Fire,
+    agent: ObjId,
     holder: ObjId,
     listing: u64,
 ) -> Step {
@@ -2388,7 +2394,7 @@ pub(crate) fn release_step(
         state.release_backoff.insert(listing, state.fires);
         return Step::Refused;
     }
-    match fire.as_principal(ctx, holder, holder, |ctx| {
+    match fire.as_principal(ctx, agent, holder, |ctx| {
         mush_market::release_lapsed_hold(ctx, ListingId(listing))
     }) {
         Ok(Ok(())) => {

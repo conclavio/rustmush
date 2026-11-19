@@ -2289,8 +2289,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     }
     // One per fire: a holder already offered this fire is refused by the
     // duplicate rule above and waits for the next.
-    if let Some((holder, listing)) = release {
-        offer(holder, holder, Arm::Release { listing });
+    // Doc 48e (exchange G14): a vendor's release runs with its storefront as the agent and the
+    // clerk as principal, since the clerk is the stock arm's agent.
+    if let Some((agent, holder, listing)) = release {
+        offer(agent, holder, Arm::Release { listing });
     }
     // Doc 18 cut IC9: one launch agent per hull with a filed passage (agent = the
     // hull, principal = the filing pilot), hulls in their backoff skipped.
@@ -2420,7 +2422,7 @@ fn step(
     match arm {
         Arm::Stock => crate::port::stock::stock_step(ctx, state, fire, agent),
         Arm::Release { listing } => {
-            crate::port::stock::release_step(ctx, state, fire, principal, listing)
+            crate::port::stock::release_step(ctx, state, fire, agent, principal, listing)
         }
         Arm::Launch { hull } => crate::port::voyage::launch_step(ctx, state, hull),
         Arm::Recall { hull } => crate::port::recall::recall_step(ctx, state, ObjId(hull)),
