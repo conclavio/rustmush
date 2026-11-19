@@ -1108,12 +1108,17 @@ fn order(ctx: &mut Ctx<'_>, front: Front, raw: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// **What one booking names** (`book`'s terms): the front and its facility, the recipe, the
-/// quantity, and the triple's payer and beneficiary with the payer's own account.
 /// **Doc 48 unit EX.9**: the refusal of a house's own order at a facility mothballed for its
 /// running costs.
-pub const MOTHBALLED: &str = "That facility is mothballed for its running costs: its house places      no order of its own there until they are paid.";
+pub const MOTHBALLED: &str = "That facility is mothballed for its running costs: its house places \
+                              no order of its own there until they are paid.";
 
+/// **Doc 48e (production G2)**: the refusal of an order at a facility listed for sale.
+pub const ON_SALE: &str =
+    "That facility is up for sale and takes no new order until the sale closes or is withdrawn.";
+
+/// **What one booking names** (`book`'s terms): the front and its facility, the recipe, the
+/// quantity, and the triple's payer and beneficiary with the payer's own account.
 pub(crate) struct Booking<'a> {
     /// The front.
     pub front: Front,
@@ -1154,11 +1159,17 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
     if front == Front::Yard && quantity != 1 {
         return Err(YARD_ONE_HULL.to_owned());
     }
-    let house = &beneficiary == facility.owner();
+    // A house order is an authored facility's operator's own. A bought facility's owner books
+    // as any customer and collects through `+yard/collect` (doc 48e, production G4).
+    let house = &beneficiary == facility.owner() && facility.holding().is_authored();
     // Doc 48 unit EX.9 (Q-48-38, -59): a mothballed facility's house places no order of its own
     // there; a customer's, whose escrow covers its worked cost, still books.
     if house && crate::port::upkeep::mothballed(ctx.w, facility.object()) {
         return Err(MOTHBALLED.to_owned());
+    }
+    // A facility on sale takes no new order: its buyer bought it idle (doc 48e, production G2).
+    if mush_market::asset_on_sale(ctx.w, facility.object()) {
+        return Err(ON_SALE.to_owned());
     }
     let units = pinned.work_units().saturating_mul(u64::from(quantity));
     let booking = if house {
@@ -2401,9 +2412,14 @@ fn charge_storage(
     payee: Option<AccountId>,
     now: i64,
 ) {
-    let (Some(delivered), Some(payee), Some(day_fee)) =
-        (c.delivered_ic, payee, facility.booking_fee_minor())
-    else {
+    // A slot-day is the booking fee, pinned at booking (doc 48e, production G24); a house order
+    // books none, and pays the live one.
+    let pinned = (c.booking_minor > 0).then_some(c.booking_minor);
+    let (Some(delivered), Some(payee), Some(day_fee)) = (
+        c.delivered_ic,
+        payee,
+        pinned.or_else(|| facility.booking_fee_minor()),
+    ) else {
         return;
     };
     let due = now

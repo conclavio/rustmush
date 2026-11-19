@@ -1765,8 +1765,8 @@ pub struct PortTickState {
     /// `crate::port::stock::MAX_CLERK_ROWS`; stale days are pruned at each insert.
     pub(crate) consume_refused: BTreeMap<(u64, CanonicalId), i64>,
     /// **Doc 48 unit EX.9**: the running costs' worked slot-seconds this IC day, by facility
-    /// object, and the IC instant they were last added to (`crate::port::upkeep`). RAM only: a
-    /// restart counts the rest of that day's work as idle.
+    /// object, and the IC instant they were last added to (`crate::port::upkeep`). Seeded after
+    /// a restart from the row's hourly checkpoint (`UpkeepRow::tally`).
     pub(crate) upkeep_worked: BTreeMap<u32, crate::port::upkeep::Worked>,
 }
 

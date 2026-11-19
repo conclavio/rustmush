@@ -474,7 +474,9 @@ async fn ex9_the_running_cost_follows_the_work_and_an_insolvent_house_mothballs(
             standing_day(&c, slots)
         })
         .sum();
-    let worked_day = day_charge(&works_cost, works_slots, 2 * DAY.unsigned_abs(), true);
+    // One slot worked: order `a` runs, and `s`, never supplied, is a draft, which holds no slot
+    // (doc 48e, services G17).
+    let worked_day = day_charge(&works_cost, works_slots, DAY.unsigned_abs(), true);
     let income = debt + worked_day + standing / 4;
     let _ = run(
         &mut rig.tw,
@@ -540,6 +542,180 @@ async fn ex9_a_mill_run_refinery_pays_by_the_batch() {
         worked.charged_minor,
         batch_charge(&refinery_cost, 2),
         "one slot-hour of the refinery's daily cost a batch"
+    );
+}
+
+// ---- doc 48e review fixes ------------------------------------------------------------------
+
+/// **Doc 48e (services G17): a draft holds no slot.** A captain's works order booked but not yet
+/// supplied stands as a draft, which escrows nothing; the works' next day is billed idle, its
+/// standing share, not a worked slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g17_a_drafted_order_is_billed_idle() {
+    let mut rig = stocked_tuned(|cfg| {
+        cfg.packs.push(tacsim::PackSource {
+            name: "<test tacsim.test.works>".into(),
+            bytes: recipes(),
+        });
+    });
+    let (captain, captain_row) = prospector(&mut rig, "Hauler", 1, "Long Ox");
+    let _ = mint(&mut rig, captain);
+    sail_to_stickney(&mut rig, &[(captain, &captain_row, 9_500)]);
+    let counter = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    rig.tw
+        .world_mut()
+        .move_to(captain, counter)
+        .expect("to the counter");
+    let works = station_room(&rig.tw, STICKNEY, "room.p15_maintenance");
+    let a = booked(&mut rig, captain, "+works/order hauler_plant");
+    settle(&mut rig, 2);
+    assert_eq!(*order_of(&mut rig, a).state(), WorkOrderState::Draft);
+    let day = into_next_day(&mut rig, 600);
+    let _ = into_next_day(&mut rig, 600);
+    let open = rig
+        .tw
+        .world()
+        .module_state::<IndustryStore>()
+        .map_or(0, |s| s.open_orders_at(works));
+    assert_eq!(open, 1, "the draft is open there");
+    let (works_cost, works_slots) = cost(&rig, works);
+    let charged = row(&rig, STICKNEY, works);
+    assert_eq!(charged.day, day, "the works charged the day just closed");
+    assert_eq!(
+        *order_of(&mut rig, a).state(),
+        WorkOrderState::Draft,
+        "still a draft"
+    );
+    assert_eq!(
+        charged.charged_minor,
+        standing_day(&works_cost, works_slots),
+        "a draft's day is billed idle"
+    );
+}
+
+/// **Doc 48e (services G14): a facility whose owner has no account to pay from still owes.**
+/// Staff re-assign the Stickney works to a character with no credit account; each day closed
+/// is a debt, and the works mothballs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g14_a_facility_with_no_payer_accrues_its_days_as_a_debt() {
+    let mut rig = stocked();
+    let works = station_room(&rig.tw, STICKNEY, "room.p15_maintenance");
+    let nobody = rig.tw.spawn_player("Nobody");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@facility/owner {}=#{}", works.0, nobody.0),
+    );
+    assert!(out.contains("re-assigned"), "{out}");
+    let _ = into_next_day(&mut rig, 600);
+    let day = into_next_day(&mut rig, 600);
+    let (works_cost, works_slots) = cost(&rig, works);
+    let r = row(&rig, STICKNEY, works);
+    assert_eq!(r.day, day - 1, "the day closed is charged");
+    assert!(r.mothballed, "with no payer it mothballs");
+    assert!(
+        r.debt_minor >= standing_day(&works_cost, works_slots),
+        "at least a standing share owed, never minted: {}",
+        r.debt_minor
+    );
+    assert_eq!(r.paid_minor, 0, "nothing paid");
+}
+
+/// **Doc 48e (services G11): a refused charge keeps the refinery's batches.** Kasei's account
+/// needs an approval for any debit, so the day's batch charge cannot post: the batches stay
+/// uncharged, not skipped, and once the rule is cleared the next day charges them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g11_a_refused_charge_keeps_the_refinerys_batches() {
+    let mut rig = stocked();
+    let refinery = station_room(&rig.tw, STICKNEY, "room.p07_receiving");
+    let (refinery_cost, _) = cost(&rig, refinery);
+    let _ = into_next_day(&mut rig, 600);
+    let _ = into_next_day(&mut rig, 600);
+    let idle = row(&rig, STICKNEY, refinery);
+    let kasei = org_account(&rig, STICKNEY, "kasei");
+    let set = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/approval {}=1 threshold:1", kasei.0),
+    );
+    assert!(!set.contains("Usage"), "{set}");
+    let concentrate = vault(&rig, STICKNEY, "kasei");
+    seed_pool(&mut rig, concentrate, "metals", 40, LotId(9_903));
+    fires(&mut rig, 30);
+    let _ = into_next_day(&mut rig, 600);
+    let held = row(&rig, STICKNEY, refinery);
+    assert_eq!(held.day, idle.day, "the refused day is not charged");
+    assert_eq!(held.batches, idle.batches, "nor its batches counted");
+    let cleared = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/approval {}=none", kasei.0),
+    );
+    assert!(cleared.contains("Cleared"), "{cleared}");
+    let _ = into_next_day(&mut rig, 600);
+    let paid = row(&rig, STICKNEY, refinery);
+    assert_eq!(paid.batches - idle.batches, 2, "the two batches counted");
+    assert!(
+        paid.paid_minor - idle.paid_minor >= batch_charge(&refinery_cost, 2),
+        "and charged: {} paid since",
+        paid.paid_minor - idle.paid_minor
+    );
+}
+
+/// **Doc 48e (services G15): a refund outlives a long gap.** Syrtis Bonded uses up the 40 t it
+/// holds in one act while the faucet's account needs an approval for any payment (a stand-in
+/// for a frozen economy or a downtime), so the refund cannot post; the IC clock runs three days
+/// on and the rule is cleared. The faucet still pays the act, once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g15_a_refund_outlives_a_long_gap() {
+    let mut rig = stocked();
+    let syrtis = org_account(&rig, DEIMOS, "syrtis_bonded");
+    let syrtis_vault = vault(&rig, DEIMOS, "syrtis_bonded");
+    let _ = into_next_day(&mut rig, 600);
+    let owner = PrincipalId::System(SystemPrincipalId::new(EXPORT_FAUCET).expect("a name"));
+    let faucet = rig
+        .tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().accounts_of(&owner).map(|a| a.id).min())
+        .expect("the faucet's account, opened by the first fires");
+    let set = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/approval {}=1 threshold:1", faucet.0),
+    );
+    assert!(!set.contains("Usage"), "{set}");
+    seed_pool(&mut rig, syrtis_vault, ALLOYS, 40, LotId(9_904));
+    let before = balance(rig.tw.world(), syrtis);
+    let day = ic_now(&rig.tw).div_euclid(DAY) + 1;
+    let _ = to_ic(&mut rig, day * DAY + 600);
+    let mut acted = false;
+    for _ in 0..8 {
+        fires(&mut rig, 1);
+        if ledger(&mut rig, DEIMOS, "syrtis_bonded", ALLOYS).is_some_and(|l| l.acts == 1) {
+            acted = true;
+            break;
+        }
+    }
+    assert!(acted, "Syrtis used up its alloys");
+    assert_eq!(
+        balance(rig.tw.world(), syrtis),
+        before,
+        "the act landed and is not yet paid"
+    );
+    let now = ic_now(&rig.tw);
+    let _ = to_ic(&mut rig, now + 3 * DAY);
+    let cleared = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/approval {}=none", faucet.0),
+    );
+    assert!(cleared.contains("Cleared"), "{cleared}");
+    fires(&mut rig, 8);
+    assert_eq!(
+        balance(rig.tw.world(), syrtis) - before,
+        40 * 460 * 100,
+        "the faucet paid the act after the gap, once"
     );
 }
 
