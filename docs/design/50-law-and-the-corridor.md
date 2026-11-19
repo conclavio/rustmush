@@ -1,6 +1,6 @@
 # 50. Law and the corridor — control that sets terms, a faction operation players feed, and offenses with consequences, surveyed
 
-Draft 0.2, 2026-11-19, docs only. Surveyed against `origin/main` at `1e9b41174` by five read-only
+Draft 0.3, 2026-11-19, docs only. Surveyed against `origin/main` at `1e9b41174` by five read-only
 lanes (fronts and clocks; the charges on a run; customs, offenses and standing; faction money and
 jobs; the prior rulings and the setting), with the lead spot-checking the claims §0 leans on:
 - `record_customs_assertion`'s whole path (six segments opening at one, the consequence text, the
@@ -28,11 +28,25 @@ tree. Of about 55 claim parts, about 40 held, about a dozen held in part and fou
 - **Facts the survey had wrong are corrected in place**, marked **Correction (outside review, doc
   50a …)** with the triage row: §0, §3.1 to §3.4, §3.6 and §4.2.
 - **§4.3 gains eleven live defects** the review found, for the fix thread.
-- **Thirty-four defaults are corrected in place** and stay open. Four that the review cited are
-  unchanged and stay open: Q-50-8, -15, -16 and -17.
-- **Choices the findings need** are the follow-ups Q-50-50 to Q-50-71 (§6.6), open.
+- **Thirty-four defaults are corrected in place.** Four that the review cited are unchanged:
+  Q-50-8, -15, -16 and -17.
+- **Choices the findings need** are the follow-ups Q-50-50 to Q-50-71 (§6.6).
 - **The model of §5 stands.** The largest change is to Q-50-18: the campaign engine cannot frame
   the Isidis operation as built, and Q-50-57 lists what it must gain.
+
+**Draft 0.3 records the owner's second ruling**, made the same day. Asked whether to accept the
+open defaults and follow-ups apart from five held for his own call, he answered "Accept those".
+- **Fifty-five more questions are ruled**, each marked **Ruled** in §6: the four the review
+  cited and left unchanged, as written; the 34 corrected in place, as corrected; and seventeen
+  of the follow-ups, as proposed. With the first ruling's eleven, 66 of 71 are ruled.
+- **Five stay open, for the owner's own call:** Q-50-55, -57, -62, -65 and -67. Each heading
+  says so.
+- **Some ruled answers wait on one of the five.** §6 lists which. Q-50-26 is built only if
+  Q-50-62 is ruled at its default.
+- **Two earlier documents are answered by these rulings.** Q-50-6 reverses Q-48-15's "No
+  customs duty" where a holder levies one, and Q-50-52 takes doc 11 §9 question 2 at its
+  recommended answer. Each of those documents carries a note.
+- **No default's text changed in this draft.** Units are still cut only on the owner's word.
 
 This is a survey in the form [doc 38](38-after-the-ic-phase-next-systems.md) §5,
 [doc 44](44-minds-wired-through-the-game.md) and [doc 48](48-economy-and-production.md) used. It
@@ -630,18 +644,37 @@ the code allows:
 
 Every question has a proposed default, an alternative and a reason.
 
-**Where each stands at Draft 0.2:**
-- **Ruled 2026-11-19, accepted as written** (eleven): Q-50-3, -5, -11, -12, -13, -14, -41, -45,
-  -46, -48 and -49. Each heading says so.
-- **Cited by the outside review and unchanged, open** (four): Q-50-8, -15, -16 and -17. Each ends
-  with a note.
-- **Corrected in place, open** (34): every other question from Q-50-1 to Q-50-47. The original
-  text is kept, and the correction follows it and governs.
-- **Follow-ups, open** (22): Q-50-50 to Q-50-71, in §6.6.
+**Where each stands at Draft 0.3.** The owner ruled twice on 2026-11-19. Sixty-six questions are
+ruled and five are open. Each heading says which.
+- **Ruled, accepted as written** (fifteen): Q-50-3, -5, -11, -12, -13, -14, -41, -45, -46, -48
+  and -49 by the first ruling; Q-50-8, -15, -16 and -17, which the outside review cited and
+  left unchanged, by the second.
+- **Ruled, accepted as corrected** (34): every other question from Q-50-1 to Q-50-47. The
+  original text is kept, and the correction follows it and governs.
+- **Ruled, accepted as proposed** (seventeen follow-ups in §6.6): Q-50-50 to -54, -56, -58 to
+  -61, -63, -64, -66 and -68 to -71.
+- **Open, for the owner's own call** (five):
+  - Q-50-55, the ways around the picket;
+  - Q-50-57, the frame of the operation **(expensive to reverse)**;
+  - Q-50-62, leaving a fight in an operation's bubble;
+  - Q-50-65, possession and the papers;
+  - Q-50-67, the buyer who reports.
+
+**Ruled answers that wait on an open question.** Each is settled but for the piece named.
+- **On Q-50-57:** which engine holds the operation's frame, in Q-50-18, -19, -21, -28 and -30;
+  the seam Q-50-26 reads; and the empty run of Q-50-47.
+- **On Q-50-62:** Q-50-26 as a whole. It is built only if Q-50-62 is ruled at its default. The
+  alternative there sets Q-50-26 aside for the first operation.
+- **On Q-50-65:** the papers that lift the restriction in Q-50-32, the buyer's side of the
+  board in Q-50-34, and what an audit asks of a hold in Q-50-36.
+- **On Q-50-55:** which inward routes the duty of Q-50-6 reaches. The duty at the picket is
+  ruled; a second picket and the closing of the shortcut are not.
+- **On Q-50-67:** whether the reporting buyer hands over the goods, in Q-50-43 and in the
+  third story of Q-50-47.
 
 ### 6.1 The model
 
-**Q-50-1 — Where control lives.**
+**Q-50-1 — Where control lives.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the faction engine's regions and control records are the one record of who
   holds a place. TacSim reads them through one function, and a front's completion flips one through
   the engine's own `on_complete_control`. **(expensive to reverse)**
@@ -653,7 +686,7 @@ Every question has a proposed default, an alternative and a reason.
   clock or by staff). `+territory` shows it. Doc 11 §5 is written in its four kinds. A second
   record would be a twin of the first.
 
-**Q-50-2 — The polities as factions, from content.**
+**Q-50-2 — The polities as factions, from content.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** at boot each lane organization's `faction` tag is bound to a faction of
   that name, made from content when it is missing. The bring-up stops making the Republic by hand.
   The Houses stay organizations under their polity.
@@ -674,7 +707,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Alternative:** staff make regions with `@region` at bring-up.
 - **Why:** control has to exist on a fresh world. Content is reviewed and pinned by digest.
 
-**Q-50-4 — Which kind of control sets what.**
+**Q-50-4 — Which kind of control sets what.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** fees and enforcement follow **de facto** control. Licenses, permits and
   claims follow **de jure**. Covert and economic control are recorded and read by nothing yet.
   **(expensive to reverse)**
@@ -700,7 +733,7 @@ Every question has a proposed default, an alternative and a reason.
 
 ### 6.2 The Kirkwood cut
 
-**Q-50-6 — What "Republic fees apply to the lane" is.**
+**Q-50-6 — What "Republic fees apply to the lane" is.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** a **transit duty**, assessed at the picket's inspection on every laden hull
   that submits while the Republic holds the approach de facto. It is a share of the cargo's
   reference value (provisional 2%, floor 50 cr), paid to the Republic's customs office (Q-50-14).
@@ -719,8 +752,10 @@ Every question has a proposed default, an alternative and a reason.
     nothing.
   - What is assessed, and at what value, is Q-50-53. A pilot who cannot pay, or who is away, is
     Q-50-54.
+- **With this ruled (2026-11-19):** Q-48-15's "No customs duty" is reversed for a place whose
+  holder levies one. Doc 48 carries a note at Q-48-15.
 
-**Q-50-7 — What "the Co-op's rates rise" is.**
+**Q-50-7 — What "the Co-op's rates rise" is.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** new Co-op enrollments sign at a higher share while the Republic holds the
   approach (provisional 300‰ against 250‰). Standing enrollments keep the terms frozen at signing.
 - **Alternative A:** a surcharge on every chartered sale while the hold stands.
@@ -735,18 +770,18 @@ Every question has a proposed default, an alternative and a reason.
     schedule at signing, and the two lines of copy that say "a quarter" become templates.
   - The duty reaches every hauler on the direct run, not every hauler.
 
-**Q-50-8 — Which quote shows it.**
+**Q-50-8 — Which quote shows it.** **Ruled 2026-11-19: accepted as written.**
 - **Proposed default:** three places. Where a passage through Kirkwood is planned or filed, a line
   with the duty estimated for the cargo aboard. The picket's ruling line. The job board, where a
   haul routed through Kirkwood shows the duty its hauler will meet.
 - **Alternative:** the ruling line only.
 - **Why:** the owner's test is the same run before and after, and a hauler decides before launch.
   §8 notes the survey did not find where a passage is priced before launch.
-- **Outside review (doc 50a D-1): unchanged, open.** The screen exists. `+ship/plan` is the dry
+- **Outside review (doc 50a D-1): unchanged.** The screen exists. `+ship/plan` is the dry
   run before launch: it shows the waypoints, the burn and the ETA, and no money. The duty estimate
   goes there and on the filing.
 
-**Q-50-9 — The reason line.**
+**Q-50-9 — The reason line.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** every charge that control sets carries a clause naming the holder and the
   IC date its hold began, within 120 columns. `+territory` and `+chronicle` show the same record.
 - **Correction (outside review, doc 50a A-1):** the control record holds wall-clock time, and
@@ -755,7 +790,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** no surface in the game says why a price is what it is. The owner asked that a hauler
   "be able to find out why".
 
-**Q-50-10 — A passage under way when control flips.**
+**Q-50-10 — A passage under way when control flips.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** terms are pinned when a passage is filed. A hull that launched before the
   flip clears under the old terms.
 - **Correction (outside review, doc 50a B-3b):** a passage engaged from free flight by
@@ -796,28 +831,28 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** enforcement follows de facto control (Q-50-4). The owner may also want to rule on
   today's oddity, a Republic corvette collecting for the Freeport.
 
-**Q-50-15 — Whether the picket's own findings change.**
+**Q-50-15 — Whether the picket's own findings change.** **Ruled 2026-11-19: accepted as written.**
 - **Proposed default:** no. Under the Republic's hold the picket still fines when the pilot can pay
   and seizes when they cannot. The duty is the one change.
 - **Alternative:** under the Republic's hold unlicensed ore is always seized, which is what the
   consequence text says.
 - **Why:** one change at a time. The first cut's test is one price measured before and after.
-- **Outside review (doc 50a B-2): unchanged, open.** The review cites this only to show that a
+- **Outside review (doc 50a B-2): unchanged.** The review cites this only to show that a
   lawful supply hull is never seized. That is Q-50-20's problem, and it is answered there.
 
-**Q-50-16 — Whether it can be pushed back.**
+**Q-50-16 — Whether it can be pushed back.** **Ruled 2026-11-19: accepted as written.**
 - **Proposed default:** not in the first cut. The hold stands until a later unit gives the Freeport
   side a clock that flips it back, which is the engine's own model of opposition, or staff act.
 - **Alternative:** an opposing clock on the Freeport's board now, advanced by licensed strategic
   ore clearing the picket.
 - **Why:** the owner asked for a small first cut. Worlds are wiped between steps (Q-38-9). The
   causes of a counter-clock belong with the campaign work of §6.3.
-- **Outside review (doc 50a A-1): unchanged, open.** A later push-back needs the call of Q-50-51
+- **Outside review (doc 50a A-1): unchanged.** A later push-back needs the call of Q-50-51
   that reopens a front and sets a clock, which the engine lacks today.
 
 ### 6.3 The Isidis operation
 
-**Q-50-17 — What Isidis is, in play.**
+**Q-50-17 — What Isidis is, in play.** **Ruled 2026-11-19: accepted as written.**
 - **Proposed default:** a port entry of the lane: the landing field, the tank farm (a vault with
   stock), the tariff-free market (a venue) and the Factor's office (its authority). It is a region
   and a neighborhood pack pair, like the moon ports of doc 19 cut A.8. How a Dray's cargo reaches
@@ -828,11 +863,11 @@ Every question has a proposed default, an alternative and a reason.
 - **Alternative B:** a surface site, with a pad and blocks, for a field.
 - **Why:** the milestone is a newcomer who arrives and reads the terms. A port is content, not
   engine. Alternative A is the cheap path if the atlas work is unwelcome now.
-- **Outside review (doc 50a D-7): unchanged, open.** The review supports the default against
+- **Outside review (doc 50a D-7): unchanged.** The review supports the default against
   alternative B. No Dray can land on Mars (131‰ laden against a floor of 1,200‰), so a surface
   site would refuse every hauler. Isidis's routes are Q-50-58.
 
-**Q-50-18 — What the operation is, in the engine.**
+**Q-50-18 — What the operation is, in the engine.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** both engines, each used as built. A `mush-campaign` operation is the frame:
   declared, bond held, notice, window, sides, stakes, one resolution record. The two fronts' clocks
   are the visible progress. Resolution commits the operation's canon record; a clock watching it
@@ -848,7 +883,7 @@ Every question has a proposed default, an alternative and a reason.
   the Review's completion "declare an operation". The engine was built for this and nothing has
   used it.
 
-**Q-50-19 — Who declares, and when.**
+**Q-50-19 — Who declares, and when.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** a compiled arm on the port tick acts for the Republic. When the Concession
   Review fills it declares the operation from the Republic's treasury, bond held, naming the
   Freeport and Meridiani as defenders, with 28 IC days' notice and a 28-day window. No player or
@@ -860,7 +895,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** the faction design's own test is "no faction-head bottleneck". Institutions are
   compiled arms today.
 
-**Q-50-20 — What moves the Review before that.**
+**Q-50-20 — What moves the Review before that.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the two causes of doc 11 the code can supply: a seized Freeport-flagged
   hauler at Kirkwood, which the picket already writes as canon, and a scheduled tick of one an IC
   month (about 30 real hours). The scheduled tick is a new typed cause, deferred since M25. The
@@ -873,7 +908,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Alternative:** seizures only.
 - **Why:** doc 11 §6 says these clocks are "what move when nobody is logged in".
 
-**Q-50-21 — The stockpile objective.**
+**Q-50-21 — The stockpile objective.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** a named vault at Isidis (the tank farm), a list of goods with target
   tonnages (provisional: propellant and provisions) and a deadline, the window's close. Progress is
   the vault's level, read on the port tick. "Threshold reached" is committed once as canon, which
@@ -887,7 +922,7 @@ Every question has a proposed default, an alternative and a reason.
   sale into a standing bid or by the faction's own hull, so a player who took no job still counts.
   A level is safe across a restart. Events double count on a retry unless each carries a cause id.
 
-**Q-50-22 — The budget, and who spends it.**
+**Q-50-22 — The budget, and who spends it.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the Freeport side's money is its backing organization's treasury (Occator,
   for the tank farm). A compiled arm on the procurement pattern, with a monthly cap counted from
   its own ledger rows and an agent object of its own, posts haul jobs from Occator's stock at Ceres
@@ -899,7 +934,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** procurement is the working precedent of an organization spending toward a goal with no
   player. A real budget makes interdiction a way to bleed it.
 
-**Q-50-23 — Posting as an organization.**
+**Q-50-23 — Posting as an organization.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** haul and escort posts gain `as=<org>` for a member holding a new
   capability, paid from the organization's account and shipped vault to vault. The NPC arm uses the
   same path.
@@ -909,7 +944,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** today only a character standing in a port can post, from their own locker to their own.
   A player House will want this the day after. It needs §4.3's NPC defect fixed or worked around.
 
-**Q-50-24 — If no player takes the job.**
+**Q-50-24 — If no player takes the job.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** after a provisional 7 IC days an untaken haul is carried by doc 48's NPC
   hauling house (EX.10) in a real hull that can be intercepted. The operation resolves with nobody
   connected.
@@ -920,7 +955,7 @@ Every question has a proposed default, an alternative and a reason.
   answers the picket today, and the one NPC house that flies avoids it for that reason. EX.10's
   hulls must answer it by rule (Q-50-56) before one can carry a haul on the direct run.
 
-**Q-50-25 — What a loss does.**
+**Q-50-25 — What a loss does.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** cargo seized, wrecked or captured on the way never reaches the stockpile.
   It costs the hauler the bond, as today. When the hull flew for a side of the operation it also
   commits a canon record that advances the other side's clock by one. The haul gains the handling
@@ -935,6 +970,7 @@ Every question has a proposed default, an alternative and a reason.
   owner asked that "deliveries or losses affect the declared operation".
 
 **Q-50-26 — Whether players may fight over a hauler in space.**
+**Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** inside a declared operation's window, hulls flying for its named sides are
   legal targets to each other in a bubble, read from the operation's legal-target list. Outside it
   today's rule stands: every carrier is friendly to every other. This answers doc 47's open call
@@ -949,7 +985,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** an escort has nothing to guard against but NPCs today. Limiting it to a declared window
   leaves doc 45's absent-player rules as they are everywhere else.
 
-**Q-50-27 — Work for players on the Republic's side.**
+**Q-50-27 — Work for players on the Republic's side.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** in the first operation the Republic's arm posts a standing bid at Stickney
   for the same goods at a premium, and retrieval jobs on interdicted hulls. Both use job kinds that
   exist.
@@ -962,7 +998,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** two buyers for one cargo is a choice a trader can feel with no new job kind: every tonne
   sold to the Republic is one not landed at Isidis. A campaign with one side's work is a quest.
 
-**Q-50-28 — How it is decided.**
+**Q-50-28 — How it is decided.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** at the window's close. If the threshold record exists, the Concession is
   held and the Freeport keeps de facto administration. If it does not, the Republic assumes it.
   The declaring arm resolves; staff do not. No fight is required and none is forbidden.
@@ -976,7 +1012,7 @@ Every question has a proposed default, an alternative and a reason.
   landed there, is the smallest honest reading of "a ground operation that changes control or
   access". The owner may prefer the alternative once assaults are in scope.
 
-**Q-50-29 — What winning changes.**
+**Q-50-29 — What winning changes.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the de facto control record for Isidis, and through the schedule the
   import duty there: zero while the Freeport administers it, and a provisional 5% of reference
   value under the Republic, on a list of goods in the schedule, paid to Republic customs. The
@@ -990,7 +1026,7 @@ Every question has a proposed default, an alternative and a reason.
   today, so the prize needs the tax. The duty names goods and not origin because the survey found
   nothing on a lot that records where it came from (§8).
 
-**Q-50-30 — Following it.**
+**Q-50-30 — Following it.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** one player page, `+operation`, on one screen: who declared against whom;
   the stake in plain words, as what each outcome changes in the terms; the notice and the window
   in IC and real time; both clocks; the stockpile's level against its target; the jobs open for
@@ -1005,7 +1041,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** the owner's words are "discover, influence, and follow". `@op/show` is shaped for staff.
   Nothing today joins the pieces.
 
-**Q-50-31 — Whether it repeats.**
+**Q-50-31 — Whether it repeats.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** yes, by the same shape. A held Concession sets the Review back to two of
   six, and it climbs again. An assumed one opens a Freeport front to win it back, sides swapped.
   Only the first operation is built first.
@@ -1017,7 +1053,7 @@ Every question has a proposed default, an alternative and a reason.
 
 ### 6.4 Law: jurisdiction, evidence, penalties and standing
 
-**Q-50-32 — The first restricted good, and its port.**
+**Q-50-32 — The first restricted good, and its port.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** strategic ore at Ceres. Its sale on the Freeport Exchange is restricted:
   sold under the Registry's prospecting license or a registered claim, the two papers the picket
   already reads. It stays lawful to sell at Stickney and Luna.
@@ -1031,7 +1067,7 @@ Every question has a proposed default, an alternative and a reason.
   is also higher (700 against 600 in the lane pack), and each run caught there advances Customs
   Assertion.
 
-**Q-50-33 — Where legality lives.**
+**Q-50-33 — Where legality lives.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** in the terms schedule, per polity: a list of goods, each restricted or
   forbidden, with the paper that lifts a restriction. A venue's rule for a good is the law of its
   region's de facto holder. Catalog rows read it in place of the hard-coded `legal`.
@@ -1045,7 +1081,7 @@ Every question has a proposed default, an alternative and a reason.
   restricted there changes with it and no second table is kept. The market's own comment gives the
   test to the ruleset.
 
-**Q-50-34 — Where it is enforced.**
+**Q-50-34 — Where it is enforced.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** at both ends, differently. The public board refuses an unlicensed seller
   of a restricted good: the exchange checks papers, so the venue gate learns the good. A private
   offer between players goes through, and is an offense if it comes to light. A forbidden good
@@ -1061,7 +1097,7 @@ Every question has a proposed default, an alternative and a reason.
   for, and the licensed trader a clean path. An exchange that sold contraband openly would make
   the license worthless.
 
-**Q-50-35 — What establishes an offense.**
+**Q-50-35 — What establishes an offense.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** port security's standard, generalized. An authority's own inspection: the
   picket's manifest check, or a port audit (Q-50-36). A witness report backed by the witness's own
   record no more than one IC day old: a party to the trade, or one present at the venue. An
@@ -1073,7 +1109,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Alternative:** the trade tape proves every sale.
 - **Why:** Q-S4 forbids the automatic omniscient fine, and Q-41-24 says "proven rows only".
 
-**Q-50-36 — The port audit.**
+**Q-50-36 — The port audit.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** at docking in a port whose law restricts a good, the hold is audited with a
   chance from the schedule, moved by the pilot's standing there: provisional one in four at
   neutral, always in the hostile band, never when trusted. It is a seeded roll, so a story can pin
@@ -1089,7 +1125,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** "if caught" needs a chance, or smuggling is either impossible or free. It gives
   standing its first mechanical reader.
 
-**Q-50-37 — One record of proven offenses.**
+**Q-50-37 — One record of proven offenses.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** each domain keeps its evidence where it is: the site log, the customs
   rulings and the Registry's inspections stay as they are. A proven offense is written through one
   function into a record per actor and per polity, which is port security's own record with a
@@ -1104,7 +1140,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** closed families stay closed. Port security's record is already half of this. Three
   enforcers need one reader.
 
-**Q-50-38 — Jurisdiction.**
+**Q-50-38 — Jurisdiction.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** an offense is proven by one polity and binds only where that polity holds
   de facto. Other ports ignore it. Port security's constant list of ports becomes "the ports held
   by the polity that proved it". A fine is paid to the enforcing authority: the port's `authority`,
@@ -1116,7 +1152,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** it gives crime a geography: wanted at Stickney and clean at Ceres is a route choice. It
   follows Q-50-4. It also ends a Stickney fine being paid to the Freeport Registry.
 
-**Q-50-39 — The penalties.**
+**Q-50-39 — The penalties.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default,** in order:
   - **A fine** by offense kind, scaled by tonnage for goods, from the schedule, posted from the
     actor's account. Unpaid, it is an obligation with 28 IC days' grace, then a quarantine of the
@@ -1137,7 +1173,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** the owner named all three. Each has a working precedent: port security's fine and
   quarantine, standing grants with a cause, and the Roll's 90-day bar.
 
-**Q-50-40 — Seeing it and resolving it.**
+**Q-50-40 — Seeing it and resolving it.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** `+record`, one page for the actor. Each open matter shows what it is, which
   polity proved it and by what kind of evidence (never who reported), the fine and its grace in IC
   and real time, the restriction in force, and exactly what lifts it. `+debts/pay` settles, as
@@ -1154,7 +1190,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** the proof standard is high by construction: an authority's own check or a witness's own
   record. An appeal needs an adjudicator, and the storyteller role is disconnected (Q-44-29).
 
-**Q-50-42 — How standing is earned back.**
+**Q-50-42 — How standing is earned back.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** no decay, as built. Paying a fine restores nothing. Lawful work for that
   polity earns standing: survey commissions do today, and delivering to its stockpile or escorting
   its hulls would.
@@ -1165,7 +1201,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** grants are immutable and stamped with a cause by design. Decay is a hidden clock.
   Work for standing ties this part to §6.3.
 
-**Q-50-43 — A witness's reward.**
+**Q-50-43 — A witness's reward.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** a witness whose report proves an offense is paid a share of the fine when
   it is collected (provisional 20%), and is never named to the offender.
 - **Alternative:** no reward.
@@ -1180,7 +1216,7 @@ Every question has a proposed default, an alternative and a reason.
   costs the buyer nothing also invites buying at a discount and informing for the rebate; Q-50-67
   makes the reporting buyer hand over the goods.
 
-**Q-50-44 — Seized goods.**
+**Q-50-44 — Seized goods.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** credited to the enforcing authority's vault and offered at its port, so
   matter is conserved.
 - **Alternative:** destroyed, and counted in the matter census under a `seized` term.
@@ -1210,7 +1246,7 @@ Every question has a proposed default, an alternative and a reason.
 - **Why:** a rate per IC day is felt per real hour (Q-48-15's lesson). The playtest will say
   whether 56 real hours is a weekend's campaign or too quick to notice.
 
-**Q-50-47 — The acceptance stories.**
+**Q-50-47 — The acceptance stories.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** three, each on production command paths at 24:1 with two accounts.
   - A hauler files the same run before and after the Kirkwood flip, and reads the duty and its
     reason.
@@ -1245,11 +1281,13 @@ Every question has a proposed default, an alternative and a reason.
 
 ### 6.6 Raised by the outside review (doc 50a)
 
-Twenty-two follow-ups, all open. Each names the triage row that raised it.
+Twenty-two follow-ups. Seventeen are ruled, accepted as proposed. Five are open, held for the
+owner's own call: Q-50-55, -57, -62, -65 and -67. Each names the triage row that raised it.
 
 #### The model and the faction engine
 
 **Q-50-50 — One de facto holder a region, and the date its hold began.** (doc 50a A-1)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** de facto control is exclusive. A flip, by a clock or by staff, moves the
   prior de facto holder out. De jure, covert and economic control stay plural, as doc 11 §5 uses
   them. The control record gains the IC date of the hold, set at the flip, and `+territory` shows
@@ -1262,6 +1300,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   that nothing reads.
 
 **Q-50-51 — A front's lifecycle, and what moves a polity's clock.** (doc 50a A-1, A-2d, A-2e)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** three changes to the engine.
   - **One completion path.** Every clock in this plan completes through the engine's own path, and
     that path marks the front resolved when its last clock fills. Today the engine's path flips
@@ -1279,6 +1318,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   "only from a typed cause with a stored cause id".
 
 **Q-50-52 — Papers where two polities claim de jure.** (doc 50a D-6)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** doc 11 §9 question 2 is taken at its recommended answer: Isidis is seeded
   with two de jure claimants, the Republic and the Freeport. An enforcer reads its own polity's
   papers where that polity is a de jure claimant, and otherwise the de jure holder's. So at
@@ -1289,10 +1329,13 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   never arises.
 - **Why:** Q-50-4 says licenses follow de jure, which is one answer only where de jure is one
   holder. Doc 11 §5's table already assumes two at Isidis.
+- **With this ruled (2026-11-19):** doc 11 §9 question 2 is answered at its option A. Doc 11
+  carries a note there.
 
 #### The Kirkwood cut
 
 **Q-50-53 — What the transit duty is assessed on.** (doc 50a A-4; the review's item 2)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:**
   - **Cargo is dutiable:** every good in the hold, pooled or held as a lot, and cargo under a
     haul's hold.
@@ -1309,6 +1352,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   that the survey has not checked which hulls can carry which goods as cargo.
 
 **Q-50-54 — A pilot who cannot pay the duty, and a pilot who is away.** (the review's item 1)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** the hull is cleared, and the duty becomes a debt to the customs office with
   28 IC days of grace, then the penalties of Q-50-39. Lawful cargo is never seized for a duty. A
   hull whose pilot is away at the picket, on a queued departure or with a lost link, is assessed
@@ -1320,6 +1364,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   tax. What an absent pilot's hull does at the picket today was not traced to the end (§8).
 
 **Q-50-55 — The ways around the picket.** (doc 50a B-3a, B-3b)
+**Open: held for the owner's own call.**
 - **Proposed default:**
   - **The long way round stays open and carries no picket.** Ceres to Luna to Deimos to Stickney
     is the lawful detour: the duty buys the direct run, and the detour costs time and propellant.
@@ -1333,7 +1378,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
 - **Why:** a duty with a detour that costs time is a real choice between money and hours. A duty
   with a free shortcut is no duty. The shortcut is also a way past the contraband check today.
 
-**Q-50-56 — NPC hulls at the picket.** (doc 50a B-3c)
+**Q-50-56 — NPC hulls at the picket.** (doc 50a B-3c) **Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** an NPC hull answers the picket by rule, in compiled code. It heaves to, is
   assessed, and its house pays the duty or the fine from its own account. No NPC hauler is sent
   the long way only because it cannot answer. EX.10's hauling house is built to this rule.
@@ -1346,6 +1391,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
 #### The Isidis operation
 
 **Q-50-57 — What the campaign engine must gain to frame the operation.** (doc 50a A-2)
+**Open: held for the owner's own call.**
 - **Proposed default:** `mush-campaign` stays the frame, with five additions built as their own
   unit before any arm uses it. **(expensive to reverse)**
   1. **A public way to declare and activate**, so a compiled arm does both in one step. That also
@@ -1369,6 +1415,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   of an operation. The owner should choose which is the frame before OP is cut.
 
 **Q-50-58 — Isidis's routes, and the tank farm's price.** (the review's item 12)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** Isidis is reached from Stickney alone, by one short route each way with no
   picket. Belt cargo for Isidis therefore arrives by the direct run or by the long way. The
   stockpile is **propellant only** in the first operation. The tank farm's standing bid is priced
@@ -1383,6 +1430,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   approach.
 
 **Q-50-59 — Where the import duty falls.** (the review's item 12)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** at sale. When a good on the schedule's list is sold at Isidis's venue,
   into a bid or from a listing, the duty comes out of the seller's proceeds through the proceeds
   policy, and the quote shows it with its reason. Cargo that is landed and stored pays nothing
@@ -1394,6 +1442,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   and the price.
 
 **Q-50-60 — What a repeat starts from.** (the review's item 12)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** the tank farm drains. The garrison and the landing field draw it down at a
   steady provisional rate, on the pattern of EX.9's consumption arm, so the level at each window's
   close reflects what was landed during that campaign.
@@ -1403,6 +1452,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   to continue between operations.
 
 **Q-50-61 — Whose side a hull is on.** (doc 50a B-2; the review's item 13)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** a hull's flag is the polity of whoever holds its title or its charter. An
   organization's hull takes that organization's polity from the lane, a Co-op Dray is
   Freeport-flagged, and a personally titled hull flies none. During an operation a hull flies for
@@ -1414,6 +1464,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   new captains do fly past the picket.
 
 **Q-50-62 — Leaving a fight in an operation's bubble.** (doc 50a A-9)
+**Open: held for the owner's own call.**
 - **Proposed default:** a hull flying for a side may break off. Holding outside a provisional
   distance from every hostile hull for a provisional time releases it to resume its passage. It
   loses the engagement and nothing else. Q-50-26 is not built without this.
@@ -1424,6 +1475,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   between two players, one of whom may have logged off.
 
 **Q-50-63 — Escorts for an organization's hauls.** (doc 50a A-8)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** an escort may be posted for a haul job as well as for a hull. Posted with
   the haul, by the arm or `as=<org>`, it binds to the hauler's hull when the haul is taken. It
   runs to the haul's destination across every hop. The escort has until the protected hull has
@@ -1434,6 +1486,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   can before the hauler is known.
 
 **Q-50-64 — When a port changes hands: who is paid.** (doc 50a A-10d; the review's item 14)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** in the first operation only the import duty follows the holder. Isidis's
   venue fees, berth, locker, crew wages and release fee stay with the port's authored authority.
 - **Alternative:** every payee follows the de facto holder: new charges at once, standing berth
@@ -1446,6 +1499,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
 #### Law
 
 **Q-50-65 — Possession, the papers, and the buyer on the board.** (doc 50a C-1; the review's item 6)
+**Open: held for the owner's own call.**
 - **Proposed default:** one test, the picket's, as built: a prospecting license and a registered
   claim on a strategic rock in an orbital cluster, both. It is asked in three places.
   - **The public board** refuses a holder without the papers on either side of a trade in a
@@ -1461,6 +1515,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   for nothing either way, as built.
 
 **Q-50-66 — The receipt of a private sale.** (doc 50a B-5)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** when a good the venue's law restricts is sold privately, settlement writes
   a TacSim receipt for each party: seller, buyer, venue, good, tonnage, price, the IC time, and
   whether the seller held the papers at that moment. Each party reads their own on `+record`. A
@@ -1473,7 +1528,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   bought afterward. It stays within Q-S4: a record a party holds, acted on only when that party
   brings it.
 
-**Q-50-67 — The buyer who reports.** (doc 50a B-5)
+**Q-50-67 — The buyer who reports.** (doc 50a B-5) **Open: held for the owner's own call.**
 - **Proposed default:** a buyer who reports hands over the lot, which goes to the authority's vault
   (Q-50-44). When the fine is collected the buyer is repaid the price they paid, and paid the
   reward of Q-50-43, both out of the fine and never more than it. A buyer who keeps the goods
@@ -1484,6 +1539,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   chooses: an inspector's sting, repaid only if the fine is collected.
 
 **Q-50-68 — Who answers: character, organization, account and hull.** (doc 50a A-10b, A-10c)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:**
   - **The record is written against whoever acted:** the character for their own act, the
     organization for an act made `as=<org>`. The fine is drawn on that principal's account.
@@ -1498,6 +1554,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   be defined before it is built.
 
 **Q-50-69 — Standing: the threshold, the sizes and the way back.** (doc 50a B-1)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:**
   - **"Below neutral" is the unfriendly band or lower:** a score of −10 or less.
   - **Sizes, provisional:** nothing for an offense an authority's own inspection found and the
@@ -1513,6 +1570,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
   delivery would fill it.
 
 **Q-50-70 — What `+record` and `+debts` cover.** (doc 50a A-10e; the review's item 10)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** `+record` lists proven offenses, open fines with their grace, restrictions
   in force, the viewer's own receipts (Q-50-66), and a core under a live Registry impound on a
   hull the viewer holds. A forfeited core is not listed, because the seizure's row names no owner.
@@ -1521,6 +1579,7 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
 - **Why:** the Roll's families are closed (doc 46). The page reads them and does not move them.
 
 **Q-50-71 — Fees on a private sale of a restricted good.** (doc 50a B-4)
+**Ruled 2026-11-19: accepted as proposed.**
 - **Proposed default:** as built. A private ask pays the venue's listing fee and cut whatever is
   sold, and a private bid sold into pays nothing. The fee's ledger row is evidence of nothing.
 - **Alternative:** a private trade in a restricted good pays no venue fee; or a private bid pays
@@ -1533,6 +1592,17 @@ Twenty-two follow-ups, all open. Each names the triage row that raised it.
 
 Three chains. The names and the split are provisional. Draft 0.2 adds the work the outside review
 showed the first units need; it is marked **(0.2)**.
+
+**Where the units stand at Draft 0.3.** No unit is cut; that waits on the owner's word. The
+order within a chain is unchanged.
+- **Every question ruled:** the cargo reading, KC.0a, KC.0, KC.1, KC.3, KC.4, LW.2, LW.4, LW.5
+  and OP.1 to OP.4.
+- **Waiting on an open question:**
+  - KC.2 on Q-50-55, for the shortcut and the routes the duty reaches;
+  - LW.1 on Q-50-65, for the papers and the buyer's side;
+  - LW.3 on Q-50-67 for the reporting buyer, and on Q-50-65 for what an audit asks;
+  - OP.0 on Q-50-57, and with it OP.5, OP.7 and OP.8, which stand on the frame;
+  - OP.6 on Q-50-62.
 
 **Before the chains (0.2): the cargo reading.** The picket, the hold's fill check and every new
 reader of a hold count a bulk good held as a lot (§4.3). KC.2, LW.3 and OP.3 all wait on it.
@@ -1593,7 +1663,8 @@ gate units here: the cargo reading, the seizure under a haul's hold, and the two
   verb.
 - **A seeded roll in the port tick:** none; the precedents are a keyed hash.
 - **The escort fact in code:** read; §3.4 and §4.3 hold what was found.
-- **Doc 11 §9's questions:** unruled. Q-50-52 takes question 2 at its recommended answer.
+- **Doc 11 §9's questions:** unruled when read. Q-50-52, ruled at Draft 0.3, answers question 2
+  at its recommended option. The others stay unruled.
 - **How `+territory` reads today:** "No territory is mapped."
 
 **Still not checked:**

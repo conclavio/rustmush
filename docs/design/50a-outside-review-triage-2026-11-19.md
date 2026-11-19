@@ -41,10 +41,14 @@ the review, the code decides. The review's links pointed at GitHub; here they ar
     be hostile today. The deadlock is real only once Q-50-26 is built.
 - **Eleven findings are live defects in the tree today**, whatever doc 50 decides. They are listed
   in doc 50 §4.3 for the fix thread.
-- **The owner ruled on 2026-11-19:** "defaults not addressed specifically by the reviews are
-  accepted as written". Eleven questions are ruled that way (§5). Thirty-four defaults are
-  corrected in place and four stand unchanged; those 38 stay open. Twenty-two follow-up questions,
-  Q-50-50 to Q-50-71, carry the choices the findings need (doc 50 §6.6).
+- **The owner ruled twice on 2026-11-19** (§5).
+  - First: "defaults not addressed specifically by the reviews are accepted as written". Eleven
+    questions are ruled that way.
+  - Thirty-four defaults were then corrected in place, four stood unchanged, and twenty-two
+    follow-up questions, Q-50-50 to Q-50-71, took the choices the findings need (doc 50 §6.6).
+  - Second: asked whether to accept those open defaults and follow-ups apart from five held for
+    his own call, he answered "Accept those". That rules 55 more. Five stay open: Q-50-55, -57,
+    -62, -65 and -67.
 
 ## 1. Engine and seam findings (the review's 2A)
 
@@ -117,20 +121,36 @@ All six answers held, and one of the review's own supporting facts needed a corr
 | D-6 | Doc 11 §9's questions | Still unruled. §9 question 2 asks whether Isidis has two de jure claimants; §5's table already assumes it has | Q-50-52; §8 |
 | D-7 | (The review's support for Q-50-17) no Dray can land on Mars | True: 131‰ laden and 231‰ empty against a floor of 1,200‰. The gate applies to a location whose role is a site (`port/passage.rs:235, 327`), not to a `site` field | Q-50-17 notes it |
 
-## 5. The owner's ruling, and what stays open
+## 5. The owner's rulings, and what stays open
 
-**Ruled on 2026-11-19, accepted as written** (the review raised nothing against them):
+**The first ruling, 2026-11-19:** "defaults not addressed specifically by the reviews are accepted
+as written". The review raised nothing against eleven:
 - never cited: Q-50-3, Q-50-12, Q-50-13, Q-50-14, Q-50-41, Q-50-48 and Q-50-49;
 - cited only in agreement: Q-50-5, Q-50-11, Q-50-45 and Q-50-46.
 
-**Cited by the review, and unchanged after the triage** (open, for the owner's word): Q-50-8,
-Q-50-15, Q-50-16 and Q-50-17. The review's facts either support them or are carried by a follow-up.
+**The second ruling, the same day.** The lead set five questions aside for the owner's own call
+and asked whether to accept the rest of the open defaults and follow-ups. He answered "Accept
+those". Doc 50 Draft 0.3 records it. It rules 55 questions:
+- **as written:** Q-50-8, Q-50-15, Q-50-16 and Q-50-17, which the review cited and the triage
+  left unchanged. The review's facts either support them or are carried by a follow-up;
+- **as corrected:** the other 34 from Q-50-1 to Q-50-47. Each correction is marked **Correction
+  (outside review, doc 50a …)** with the row above that caused it, and it governs;
+- **as proposed:** seventeen of the follow-ups in doc 50 §6.6: Q-50-50 to -54, -56, -58 to -61,
+  -63, -64, -66 and -68 to -71.
 
-**Corrected in place, open:** the other 34. Each correction is marked **Correction (outside review,
-doc 50a …)** with the row above that caused it.
+**Open, held for the owner's own call** (five):
+- **Q-50-57**, whether `mush-campaign` frames the operation with five additions or TacSim keeps
+  an operation record of its own. It is marked expensive to reverse.
+- **Q-50-65**, whether possession is an offense and whether the board refuses an unlicensed
+  buyer, or a license alone opens a merchant's trade in strategic ore.
+- **Q-50-62**, the way out of a fight in an operation's bubble. Q-50-26 is ruled, and is built
+  only if this is ruled at its default.
+- **Q-50-55**, whether the long way round stays free of a picket and the shortcut closes.
+- **Q-50-67**, whether a buyer who reports hands over the goods.
 
-**Follow-ups, open:** Q-50-50 to Q-50-71, in doc 50 §6.6. They cover the review's fourteen "missing
-contracts" as follows.
+Doc 50 §6 lists the ruled answers that wait on one of the five.
+
+The 22 follow-ups cover the review's fourteen "missing contracts" as follows.
 
 | The review's item | Verdict on the gap | Question |
 |---|---|---|
@@ -160,5 +180,12 @@ contracts" as follows.
   - §7's sketch gains the engine work the first units need (KC.0a, OP.0) and a cargo-reading fix
     that gates every unit that measures a hold;
   - §8 loses the six items answered here and gains what the lanes could not settle.
+- **Doc 50 Draft 0.3:**
+  - the owner's second ruling recorded on 55 questions, and the five left open marked;
+  - doc 50 §6 lists the ruled answers that wait on an open question, and §7 the units whose
+    questions are all ruled;
+  - a note in doc 48 at Q-48-15, which Q-50-6 reverses, and in doc 11 §9 at question 2, which
+    Q-50-52 answers;
+  - no default's text changed.
 - **Not changed:** the model of §5. Control in the faction engine, an authored schedule in the lane
   pack, compiled arms and a port for Isidis all survived the review, which says so.
