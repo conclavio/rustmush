@@ -279,7 +279,7 @@ fn every_command_a_client_emits_is_a_registered_verb() {
     let allowed = allowlist(&root);
     let commands = emitted(&root);
     let heads: BTreeSet<&str> = commands.iter().map(|c| c.head.as_str()).collect();
-    for floor in ["+tac", "fire", "look", "DOCK"] {
+    for floor in ["+tac", "+helm", "fire", "look"] {
         assert!(
             heads.iter().any(|head| head.eq_ignore_ascii_case(floor)),
             "the scan found no `{floor}` in the clients ({} heads): it is broken, not the clients",

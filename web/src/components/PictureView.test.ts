@@ -916,16 +916,16 @@ describe("PictureView mounted, drawn here: a fresh canvas is painted", () => {
     await fireEvent.keyDown(frame, { key: "r" });
     await fireEvent.keyDown(frame, { key: "x" });
     expect(helm.mock.calls).toEqual([
-      ["DOCK TRANS UP"],
-      ["DOCK PITCH UP"],
-      ["DOCK ROLL CCW"],
-      ["DOCK CLOSURE FORWARD"],
-      ["DOCK DAMPENERS TOGGLE"],
+      ["+helm/dock DOCK TRANS UP"],
+      ["+helm/dock DOCK PITCH UP"],
+      ["+helm/dock DOCK ROLL CCW"],
+      ["+helm/dock DOCK CLOSURE FORWARD"],
+      ["+helm/dock DOCK DAMPENERS TOGGLE"],
     ]);
 
     const dampBtn = screen.getByRole("button", { name: "Dampeners (X)" });
     await fireEvent.click(dampBtn);
-    expect(helm).toHaveBeenLastCalledWith("DOCK DAMPENERS TOGGLE");
+    expect(helm).toHaveBeenLastCalledWith("+helm/dock DOCK DAMPENERS TOGGLE");
 
     await fireEvent.click(screen.getByRole("button", { name: "Holo-Tank" }));
     expect(picture.spaceMode).toBe("holotank");
