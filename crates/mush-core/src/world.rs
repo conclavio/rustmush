@@ -16,6 +16,7 @@
 
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use mush_proto::PromptSpec;
 use smol_str::SmolStr;
@@ -141,6 +142,25 @@ pub struct SessionStat {
 
 pub use mush_proto::OutputBrackets;
 
+static NEXT_WORLD_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Runtime-only unique identity per [`World`] instance; fresh on `Default` and `Clone`
+/// so derived read caches never alias across reloaded or cloned worlds.
+#[derive(Debug)]
+struct WorldInstanceId(u64);
+
+impl Default for WorldInstanceId {
+    fn default() -> Self {
+        Self(NEXT_WORLD_INSTANCE_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Clone for WorldInstanceId {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 /// The entire game state, in RAM, dense by [`ObjId`].
 ///
 /// Ids are never recycled: a destroyed-and-swept object leaves a permanent
@@ -244,6 +264,17 @@ pub struct World {
     /// Per-actor input-context stacks (transient parser state — empty on
     /// clone).
     input_stacks: InputStacks,
+    /// Runtime-only unique identity for derived read caches (never persisted).
+    instance_id: WorldInstanceId,
+    /// Runtime-only monotonic counter bumped on object metadata mutations
+    /// (never persisted; untouched by ordinary actor/thing movement or clock ticks).
+    obj_meta_rev: u64,
+    /// Runtime-only monotonic counter allocator for module state slot mutations.
+    next_state_rev: u64,
+    /// Last revision assigned to each mutably accessed/installed module state slot.
+    module_state_revs: HashMap<TypeId, u64>,
+    /// Last revision assigned by `composed_install_parts_mut`.
+    composed_install_rev: u64,
 }
 
 fn game_clock_compatibility(epoch: WorldTimelineEpoch) -> GameClock {
@@ -583,6 +614,41 @@ impl World {
         self.next_id
     }
 
+    /// Process-unique runtime identity of this [`World`] instance (never persisted;
+    /// cloned and reloaded worlds receive fresh ids so derived read caches never alias).
+    #[must_use]
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id.0
+    }
+
+    /// Runtime-only monotonic counter bumped on object metadata mutations
+    /// (create/destroy/sweep/rename/alias/flag/lock/link/marker/raw `get_mut`)
+    /// and untouched by ordinary actor/thing movement or clock ticks.
+    #[must_use]
+    pub fn obj_meta_rev(&self) -> u64 {
+        self.obj_meta_rev
+    }
+
+    /// Runtime-only monotonic counter for mutable access, install, or replacement
+    /// of module state slot `T`.
+    #[must_use]
+    pub fn module_state_rev<T: Any + Send>(&self) -> u64 {
+        self.module_state_revs
+            .get(&TypeId::of::<T>())
+            .copied()
+            .unwrap_or(0)
+            .max(self.composed_install_rev)
+    }
+
+    fn bump_obj_meta_rev(&mut self) {
+        self.obj_meta_rev = self.obj_meta_rev.wrapping_add(1);
+    }
+
+    fn bump_module_state_rev(&mut self, ty: TypeId) {
+        self.next_state_rev = self.next_state_rev.wrapping_add(1);
+        self.module_state_revs.insert(ty, self.next_state_rev);
+    }
+
     // ------------------------------------------------------------------
     // Accessors
     // ------------------------------------------------------------------
@@ -604,6 +670,7 @@ impl World {
     pub fn get_mut(&mut self, id: ObjId) -> Option<&mut Obj> {
         if self.get(id).is_some() {
             self.dirty.insert(id);
+            self.bump_obj_meta_rev();
         }
         self.objs.get_mut(id.0 as usize).and_then(Option::as_mut)
     }
@@ -1137,6 +1204,7 @@ impl World {
             self.reindex_actor(id);
         }
         self.dirty.insert(id);
+        self.bump_obj_meta_rev();
         Ok(id)
     }
 
@@ -1238,6 +1306,7 @@ impl World {
             }
         }
         self.touch_modified(id);
+        self.bump_obj_meta_rev();
         Ok(destroyed)
     }
 
@@ -1255,6 +1324,9 @@ impl World {
                 *slot = None;
             }
             self.dirty.insert(id);
+        }
+        if !going.is_empty() {
+            self.bump_obj_meta_rev();
         }
         going
     }
@@ -1292,6 +1364,9 @@ impl World {
         self.touch_modified(dest);
         if let Some(o) = self.slot_mut(obj) {
             o.location = Some(dest);
+        }
+        if kind == ObjKind::Exit {
+            self.bump_obj_meta_rev();
         }
         self.touch_modified(obj);
         Ok(())
@@ -1347,6 +1422,7 @@ impl World {
             self.reindex_actor(id);
         }
         self.touch_modified(id);
+        self.bump_obj_meta_rev();
         Ok(())
     }
 
@@ -1373,6 +1449,7 @@ impl World {
             self.reindex_actor(id);
         }
         self.touch_modified(id);
+        self.bump_obj_meta_rev();
         Ok(())
     }
 
@@ -1396,6 +1473,7 @@ impl World {
                 self.reindex_actor(id);
             }
             self.touch_modified(id);
+            self.bump_obj_meta_rev();
         }
         Ok(removed)
     }
@@ -1441,6 +1519,7 @@ impl World {
             o.flags.set(flag, on);
         }
         self.touch_modified(id);
+        self.bump_obj_meta_rev();
         Ok(())
     }
 
@@ -1457,6 +1536,7 @@ impl World {
             o.destination = dest;
         }
         self.touch_modified(exit);
+        self.bump_obj_meta_rev();
         Ok(())
     }
 
@@ -1528,6 +1608,7 @@ impl World {
         }
         if changed {
             self.touch_modified(id);
+            self.bump_obj_meta_rev();
         }
         Ok(())
     }
@@ -1663,6 +1744,9 @@ impl World {
         &mut ModuleStateMap,
         crate::reserved_shell::ShellObjectStorage<'_>,
     ) {
+        self.next_state_rev = self.next_state_rev.wrapping_add(1);
+        self.composed_install_rev = self.next_state_rev;
+        self.bump_obj_meta_rev();
         (
             &mut self.module_state,
             crate::reserved_shell::ShellObjectStorage {
@@ -1691,6 +1775,7 @@ impl World {
     /// convention pinned by a scan, and this sentence is the only place the
     /// compiler will ever say so.
     pub fn module_state_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
+        self.bump_module_state_rev(TypeId::of::<T>());
         self.module_state.get_mut::<T>()
     }
 
@@ -1700,6 +1785,8 @@ impl World {
     pub fn module_state_pair_mut<A: Any + Send, B: Any + Send>(
         &mut self,
     ) -> Option<(&mut A, &mut B)> {
+        self.bump_module_state_rev(TypeId::of::<A>());
+        self.bump_module_state_rev(TypeId::of::<B>());
         self.module_state.get_pair_mut::<A, B>()
     }
 
@@ -1709,6 +1796,9 @@ impl World {
     pub fn module_state_triple_mut<A: Any + Send, B: Any + Send, C: Any + Send>(
         &mut self,
     ) -> Option<(&mut A, &mut B, &mut C)> {
+        self.bump_module_state_rev(TypeId::of::<A>());
+        self.bump_module_state_rev(TypeId::of::<B>());
+        self.bump_module_state_rev(TypeId::of::<C>());
         self.module_state.get_triple_mut::<A, B, C>()
     }
 
@@ -1727,12 +1817,14 @@ impl World {
     /// `state-slot-owners.toml` baselines every cross-owner call site — and
     /// not an invariant enforced by the types.
     pub fn module_state_insert<T: Any + Send + Clone>(&mut self, value: T) {
+        self.bump_module_state_rev(TypeId::of::<T>());
         self.module_state.insert(value);
     }
 
     /// Install a collected [`StateInit`] (engine construction), recording
     /// the declaring module as the slot's owner.
     pub fn module_state_apply(&mut self, init: StateInit) {
+        self.bump_module_state_rev(init.type_id());
         self.module_state_owners
             .insert(init.type_id(), init.module().clone());
         self.module_state.apply(init);
@@ -2635,5 +2727,69 @@ mod tests {
             w.set_attr(ObjId(99), "x", Attr::text("y", GOD)),
             Err(WorldError::NoSuchObj(ObjId(99)))
         );
+    }
+
+    #[test]
+    fn runtime_revision_counters_track_object_metadata_and_module_slots() {
+        #[derive(Clone, Default)]
+        struct SlotA(u32);
+        #[derive(Clone, Default)]
+        struct SlotB;
+
+        let mut w = World::new_minimal();
+        let w2 = World::new_minimal();
+        assert_ne!(w.instance_id(), w2.instance_id());
+        let cloned = w.clone();
+        assert_ne!(w.instance_id(), cloned.instance_id());
+        let loaded = World::from_objects(w.iter().cloned(), w.next_id()).unwrap();
+        assert_ne!(w.instance_id(), loaded.instance_id());
+
+        let room1 = w.create(ObjKind::Room, "Deck 1", GOD, None).unwrap();
+        let room2 = w.create(ObjKind::Room, "Deck 2", GOD, None).unwrap();
+        let player = w
+            .create(ObjKind::Player, "Pilot", GOD, Some(room1))
+            .unwrap();
+        let exit = w.create(ObjKind::Exit, "North", GOD, Some(room1)).unwrap();
+
+        let rev_after_setup = w.obj_meta_rev();
+        // Moving an actor or ticking the clock does NOT bump obj_meta_rev.
+        w.move_to(player, room2).unwrap();
+        w.set_now(9_999);
+        assert_eq!(w.obj_meta_rev(), rev_after_setup);
+
+        // Moving an exit, renaming, aliasing, flags, linking, markers, and get_mut DO bump it.
+        w.move_to(exit, room2).unwrap();
+        assert!(w.obj_meta_rev() > rev_after_setup);
+        let r = w.obj_meta_rev();
+        w.set_name(room1, "Deck Alpha").unwrap();
+        assert!(w.obj_meta_rev() > r);
+        let r = w.obj_meta_rev();
+        w.add_alias(exit, "n").unwrap();
+        assert!(w.obj_meta_rev() > r);
+        let r = w.obj_meta_rev();
+        w.set_flag(exit, Flags::DARK, true).unwrap();
+        assert!(w.obj_meta_rev() > r);
+        let r = w.obj_meta_rev();
+        w.link_exit(exit, Some(room1)).unwrap();
+        assert!(w.obj_meta_rev() > r);
+        let r = w.obj_meta_rev();
+        w.set_marker(room1, "port.dock", true).unwrap();
+        assert!(w.obj_meta_rev() > r);
+        let r = w.obj_meta_rev();
+        let _ = w.get_mut(exit);
+        assert!(w.obj_meta_rev() > r);
+
+        // Per-slot module_state_rev isolates mutations to the touched TypeId.
+        assert_eq!(w.module_state_rev::<SlotA>(), 0);
+        assert_eq!(w.module_state_rev::<SlotB>(), 0);
+        w.module_state_insert(SlotA(1));
+        let rev_a1 = w.module_state_rev::<SlotA>();
+        assert!(rev_a1 > 0);
+        assert_eq!(w.module_state_rev::<SlotB>(), 0);
+        if let Some(a) = w.module_state_mut::<SlotA>() {
+            a.0 = 2;
+        }
+        assert!(w.module_state_rev::<SlotA>() > rev_a1);
+        assert_eq!(w.module_state_rev::<SlotB>(), 0);
     }
 }

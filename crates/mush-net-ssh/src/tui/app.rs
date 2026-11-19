@@ -11076,7 +11076,7 @@ mod tests {
             kind: PanelFrameKind::Keyframe,
             data: serde_json::json!({
                 "open_quotes": [
-                    { "quote_id": 701, "listing_id": 91, "unit_price_minor": 950, "expired": false }
+                    { "quote_id": 701, "listing_id": 91, "quantity": 5, "unit_price_minor": 950, "total_minor": 4_750, "expired": false }
                 ]
             }),
         });

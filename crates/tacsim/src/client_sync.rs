@@ -695,10 +695,36 @@ impl PackCollector {
     }
 }
 
+fn exit_spec_from_obj(obj: &mush_core::Obj) -> String {
+    if obj.aliases.is_empty() {
+        obj.name.clone()
+    } else {
+        let mut spec = obj.name.clone();
+        for alias in &obj.aliases {
+            spec.push(';');
+            spec.push_str(alias.as_str());
+        }
+        spec
+    }
+}
+
+fn exit_lock_label(obj: &mush_core::Obj) -> Option<String> {
+    let expr = obj.locks.get(&mush_core::lock::LockType::Basic)?;
+    let rendered = expr.to_string();
+    let upper = rendered.to_ascii_uppercase();
+    if upper.contains("FLAG^WIZARD") || upper.contains("FLAG^ROYALTY") {
+        Some("staff".to_owned())
+    } else {
+        Some(rendered)
+    }
+}
+
 /// Reconcile a serialized neighborhood document with the live world's applied
-/// [`mush_atlas::Records`] (`RoomGeo` footprints/floors/names and `StructureRec`
-/// floors), so worlds running an older applied revision or live geometry edits
-/// receive exact matching room bounds and room sets.
+/// [`mush_atlas::Records`] (`RoomGeo` footprints/floors/names, `PortalRec`
+/// endpoints/commands/geometry, `NeighborhoodRec`, and `StructureRec` floors),
+/// so worlds running an older applied revision, off-shelf record recovery, or
+/// live geometry edits receive exact matching room bounds, room sets, and
+/// walkable public portals.
 fn reconcile_neighborhood_with_live_records(
     w: &World,
     records: &mush_atlas::Records,
@@ -711,8 +737,14 @@ fn reconcile_neighborhood_with_live_records(
         .filter(|geo| &geo.key.pack == pack_id)
         .map(|geo| (geo.key.entry.as_str().to_owned(), geo))
         .collect();
+    let live_portals: BTreeMap<String, &mush_atlas::PortalRec> = records
+        .portals
+        .iter()
+        .filter(|(k, _)| &k.pack == pack_id)
+        .map(|(k, p)| (k.entry.as_str().to_owned(), p))
+        .collect();
     let has_live_neighborhood = records.neighborhoods.keys().any(|k| &k.pack == pack_id);
-    if live_rooms.is_empty() && !has_live_neighborhood {
+    if live_rooms.is_empty() && !has_live_neighborhood && live_portals.is_empty() {
         return;
     }
 
@@ -736,16 +768,44 @@ fn reconcile_neighborhood_with_live_records(
         entries.remove(&k);
     }
 
+    // When live portal records exist for this pack, prune unapplied shelf exits so
+    // the reconstructed exit graph matches the applied revision.
+    if !live_portals.is_empty() {
+        let unapplied_exits: Vec<String> = entries
+            .iter()
+            .filter_map(|(k, v)| {
+                let is_exit = v.get("kind").and_then(Value::as_str) == Some("exit");
+                (is_exit && !live_portals.contains_key(k)).then_some(k.clone())
+            })
+            .collect();
+        for k in unapplied_exits {
+            entries.remove(&k);
+        }
+    }
+
     // Overlay live RoomGeo footprint (`def.footprint.rect`), surface (`def.surface.floor`),
     // room kind, access, and live room object name using the exact `mush-atlas` pack wire schema
     // consumed by Unity's `TacSimContentLoader.ParseNeighborhoodJson`.
+    let mut room_entry_by_obj: BTreeMap<ObjId, &str> = BTreeMap::new();
     for (entry_key, geo) in &live_rooms {
+        room_entry_by_obj.insert(geo.room, entry_key.as_str());
         let row = entries
             .entry(entry_key.clone())
             .or_insert_with(|| json!({ "kind": "room", "def": {} }));
         if let Some(def) = row.get_mut("def").and_then(Value::as_object_mut) {
             if let Some(obj) = w.get(geo.room) {
                 def.insert("name".to_owned(), Value::String(obj.name.to_string()));
+                if obj.markers.contains("port.dock") {
+                    let markers = def
+                        .entry("markers".to_owned())
+                        .or_insert_with(|| json!([]))
+                        .as_array_mut();
+                    if let Some(arr) = markers
+                        && !arr.iter().any(|m| m.as_str() == Some("port.dock"))
+                    {
+                        arr.push(json!("port.dock"));
+                    }
+                }
             }
             def.insert(
                 "kind".to_owned(),
@@ -813,6 +873,136 @@ fn reconcile_neighborhood_with_live_records(
                     mush_atlas::Access::Restricted => "restricted",
                 }),
             );
+        }
+    }
+
+    // Reconstruct live PortalRec endpoints, exit commands/aliases, locks, and portal geometry
+    // from the applied revision (critical when recovering an off-shelf neighborhood from
+    // `atlas.records`, and to keep shelf-present packs aligned with live edits).
+    let resolve_endpoint = |obj_id: ObjId| -> Option<(String, bool)> {
+        if obj_id == mush_core::LIMBO {
+            return Some(("limbo".to_owned(), false));
+        }
+        if let Some(entry_key) = room_entry_by_obj.get(&obj_id) {
+            return Some(((*entry_key).to_owned(), false));
+        }
+        let geo = records.roomgeo.get(&obj_id)?;
+        let cross_restricted = geo.access != mush_atlas::Access::Public;
+        Some((
+            format!("{}.{}", geo.key.pack, geo.key.entry),
+            cross_restricted,
+        ))
+    };
+
+    for (entry_key, portal) in &live_portals {
+        let (
+            mush_atlas::record::Endpoint::Room(from_obj),
+            mush_atlas::record::Endpoint::Room(to_obj),
+        ) = (portal.from, portal.to)
+        else {
+            entries.remove(entry_key);
+            continue;
+        };
+        let (Some((mut from_key, from_cross_restricted)), Some((mut to_key, to_cross_restricted))) =
+            (resolve_endpoint(from_obj), resolve_endpoint(to_obj))
+        else {
+            entries.remove(entry_key);
+            continue;
+        };
+
+        let mut forward_obj: Option<&mush_core::Obj> = None;
+        let mut back_obj: Option<&mush_core::Obj> = None;
+        for &exit_id in &portal.exits {
+            let Some(obj) = w.get(exit_id) else {
+                continue;
+            };
+            if obj.kind != ObjKind::Exit || obj.flags.contains(Flags::GOING) {
+                continue;
+            }
+            if obj.location == Some(from_obj) && obj.destination == Some(to_obj) {
+                forward_obj = Some(obj);
+            } else if obj.location == Some(to_obj) && obj.destination == Some(from_obj) {
+                back_obj = Some(obj);
+            } else if forward_obj.is_none() {
+                forward_obj = Some(obj);
+            } else if back_obj.is_none() {
+                back_obj = Some(obj);
+            }
+        }
+
+        let mut names = Vec::with_capacity(2);
+        let mut dz_m = portal.dz_m;
+        match (forward_obj, back_obj) {
+            (Some(fwd), Some(bck)) => {
+                names.push(Value::String(exit_spec_from_obj(fwd)));
+                names.push(Value::String(exit_spec_from_obj(bck)));
+            }
+            (Some(fwd), None) => {
+                names.push(Value::String(exit_spec_from_obj(fwd)));
+            }
+            (None, Some(bck)) => {
+                std::mem::swap(&mut from_key, &mut to_key);
+                dz_m = -dz_m;
+                names.push(Value::String(exit_spec_from_obj(bck)));
+            }
+            (None, None) => {}
+        }
+        let existing_has_names = entries
+            .get(entry_key)
+            .and_then(|r| r.get("def"))
+            .and_then(|d| d.get("names"))
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty());
+        if names.is_empty() && !existing_has_names {
+            entries.remove(entry_key);
+            continue;
+        }
+
+        let is_hidden = portal.visibility == mush_atlas::record::Visibility::Hidden
+            || from_cross_restricted
+            || to_cross_restricted
+            || forward_obj.is_some_and(|o| o.flags.contains(Flags::DARK))
+            || back_obj.is_some_and(|o| o.flags.contains(Flags::DARK));
+        let lock_label = forward_obj
+            .and_then(exit_lock_label)
+            .or_else(|| back_obj.and_then(exit_lock_label));
+
+        let mut portal_obj = Map::new();
+        portal_obj.insert("mode".to_owned(), json!(portal.mode.label()));
+        portal_obj.insert(
+            "visibility".to_owned(),
+            json!(if is_hidden { "hidden" } else { "public" }),
+        );
+        if dz_m != 0.0 {
+            portal_obj.insert("dz_m".to_owned(), json!(dz_m));
+        }
+        if portal.distance_m > 0 {
+            portal_obj.insert("distance_m".to_owned(), json!(portal.distance_m));
+        }
+        match portal.geometry {
+            mush_atlas::record::PortalGeometry::Segment(a, b) => {
+                portal_obj.insert("at".to_owned(), json!([[a.0, a.1, a.2], [b.0, b.1, b.2]]));
+            }
+            mush_atlas::record::PortalGeometry::Point(p) => {
+                portal_obj.insert("at".to_owned(), json!([p.0, p.1, p.2]));
+            }
+        }
+
+        let row = entries
+            .entry(entry_key.clone())
+            .or_insert_with(|| json!({ "kind": "exit", "def": {} }));
+        if let Some(def) = row.get_mut("def").and_then(Value::as_object_mut) {
+            def.insert("from".to_owned(), Value::String(from_key));
+            def.insert("to".to_owned(), Value::String(to_key));
+            if !names.is_empty() {
+                def.insert("names".to_owned(), Value::Array(names));
+            }
+            def.insert("portal".to_owned(), Value::Object(portal_obj));
+            if let Some(lock) = lock_label {
+                def.insert("lock".to_owned(), Value::String(lock));
+            } else if forward_obj.is_some() || back_obj.is_some() {
+                def.remove("lock");
+            }
         }
     }
 
@@ -1347,6 +1537,7 @@ fn hash_atlas_records(h: &mut Sha256, w: &World, records: &mush_atlas::Records) 
         }
         if let Some(obj) = w.get(*room_id) {
             h.update(obj.name.as_bytes());
+            h.update([u8::from(obj.markers.contains("port.dock"))]);
         }
         hash_footprint(h, &geo.footprint);
     }
@@ -1378,6 +1569,76 @@ fn hash_atlas_records(h: &mut Sha256, w: &World, records: &mush_atlas::Records) 
             h.update(fl.height_m.to_bits().to_le_bytes());
             if let Some(name) = &fl.name {
                 h.update(name.as_bytes());
+            }
+        }
+    }
+    h.update(b"|pt:");
+    for (pkey, portal) in &records.portals {
+        h.update(pkey.pack.as_str().as_bytes());
+        h.update(b":");
+        h.update(pkey.entry.as_str().as_bytes());
+        h.update(portal.revision.to_le_bytes());
+        for ep in [portal.from, portal.to] {
+            match ep {
+                mush_atlas::record::Endpoint::Room(id) => {
+                    h.update([1u8]);
+                    h.update(id.0.to_le_bytes());
+                }
+                mush_atlas::record::Endpoint::Outside(p) => {
+                    h.update([2u8]);
+                    h.update(p.0.to_bits().to_le_bytes());
+                    h.update(p.1.to_bits().to_le_bytes());
+                    h.update(p.2.to_bits().to_le_bytes());
+                }
+            }
+        }
+        h.update(portal.mode.label().as_bytes());
+        h.update([u8::from(
+            portal.visibility == mush_atlas::record::Visibility::Hidden,
+        )]);
+        h.update(portal.distance_m.to_le_bytes());
+        h.update(portal.dz_m.to_bits().to_le_bytes());
+        match portal.geometry {
+            mush_atlas::record::PortalGeometry::Segment(a, b) => {
+                h.update([1u8]);
+                for v in [a.0, a.1, a.2, b.0, b.1, b.2] {
+                    h.update(v.to_bits().to_le_bytes());
+                }
+            }
+            mush_atlas::record::PortalGeometry::Point(p) => {
+                h.update([2u8]);
+                for v in [p.0, p.1, p.2] {
+                    h.update(v.to_bits().to_le_bytes());
+                }
+            }
+        }
+        h.update((portal.exits.len() as u64).to_le_bytes());
+        for &exit_id in &portal.exits {
+            h.update(exit_id.0.to_le_bytes());
+            if let Some(obj) = w.get(exit_id) {
+                h.update([
+                    1u8,
+                    u8::from(obj.flags.contains(Flags::GOING)),
+                    u8::from(obj.flags.contains(Flags::DARK)),
+                ]);
+                h.update(obj.name.as_bytes());
+                h.update(b";");
+                for alias in &obj.aliases {
+                    h.update(alias.as_str().as_bytes());
+                    h.update(b";");
+                }
+                if let Some(loc) = obj.location {
+                    h.update(loc.0.to_le_bytes());
+                }
+                if let Some(dest) = obj.destination {
+                    h.update(dest.0.to_le_bytes());
+                }
+                if let Some(lock) = exit_lock_label(obj) {
+                    h.update(b"|lock:");
+                    h.update(lock.as_bytes());
+                }
+            } else {
+                h.update([0u8]);
             }
         }
     }
@@ -1508,9 +1769,40 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ContentCacheRev {
+    world_id: u64,
+    obj_meta_rev: u64,
+    content_rev: u64,
+    atlas_rev: u64,
+    tacsim_rev: u64,
+}
+
+impl ContentCacheRev {
+    fn capture(w: &World) -> Self {
+        Self {
+            world_id: w.instance_id(),
+            obj_meta_rev: w.obj_meta_rev(),
+            content_rev: w.module_state_rev::<mush_content::ContentState>(),
+            atlas_rev: w.module_state_rev::<mush_atlas::AtlasState>(),
+            tacsim_rev: w.module_state_rev::<TacsimStore>(),
+        }
+    }
+}
+
+struct CachedContentBundle {
+    rev: ContentCacheRev,
+    fingerprint: [u8; 32],
+    bundle: Arc<ClientContentBundle>,
+}
+
 struct ClientContentQuery {
-    player_cache: Mutex<Option<([u8; 32], Arc<ClientContentBundle>)>>,
-    staff_cache: Mutex<Option<([u8; 32], Arc<ClientContentBundle>)>>,
+    player_cache: Mutex<Option<CachedContentBundle>>,
+    staff_cache: Mutex<Option<CachedContentBundle>>,
+    #[cfg(test)]
+    fingerprint_scans: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    bundle_builds: std::sync::atomic::AtomicU64,
 }
 
 impl ClientContentQuery {
@@ -1518,6 +1810,10 @@ impl ClientContentQuery {
         Self {
             player_cache: Mutex::new(None),
             staff_cache: Mutex::new(None),
+            #[cfg(test)]
+            fingerprint_scans: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            bundle_builds: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1528,16 +1824,34 @@ impl ClientContentQuery {
         } else {
             &self.player_cache
         };
-        let fp = world_content_fingerprint(w, actor);
+        let rev = ContentCacheRev::capture(w);
         if let Ok(guard) = slot.lock()
-            && let Some((cached_fp, cached_bundle)) = guard.as_ref()
-            && *cached_fp == fp
+            && let Some(cached) = guard.as_ref()
+            && cached.rev == rev
         {
-            return Arc::clone(cached_bundle);
+            return Arc::clone(&cached.bundle);
         }
+        #[cfg(test)]
+        self.fingerprint_scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let fp = world_content_fingerprint(w, actor);
+        if let Ok(mut guard) = slot.lock()
+            && let Some(cached) = guard.as_mut()
+            && cached.fingerprint == fp
+        {
+            cached.rev = rev;
+            return Arc::clone(&cached.bundle);
+        }
+        #[cfg(test)]
+        self.bundle_builds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let built = Arc::new(world_content_bundle(w, actor));
         if let Ok(mut guard) = slot.lock() {
-            *guard = Some((fp, Arc::clone(&built)));
+            *guard = Some(CachedContentBundle {
+                rev,
+                fingerprint: fp,
+                bundle: Arc::clone(&built),
+            });
         }
         built
     }
@@ -2541,6 +2855,474 @@ mod tests {
         }
         let disk_val: Value = serde_json::from_str(&std::fs::read_to_string(&fixture_path)?)?;
         check_eq!(disk_val, projected_val);
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_off_shelf_neighborhood_recovers_public_portals_and_strips_hidden_or_locked()
+    -> TestResult {
+        use mush_atlas::record::{
+            Endpoint, Floor, PortalGeometry, PortalMode, PortalRec, TimePolicy, Visibility,
+        };
+        use mush_atlas::{
+            Access, Footprint, Point2, Point3, Polygon2, RecordKey, Records, Rect2, RoomGeo,
+            RoomKind, StructureRec, SurfaceRef,
+        };
+        use mush_core::CanonicalId;
+
+        let mut tw = mush_testkit::TestWorld::new();
+        let w = tw.world_mut();
+        let r_berth = w.create(ObjKind::Room, "Off-Shelf Berth", ObjId(1), None)?;
+        w.set_marker(r_berth, "port.dock", true)?;
+        let r_hall = w.create(ObjKind::Room, "Off-Shelf Concourse", ObjId(1), None)?;
+        let r_upper = w.create(ObjKind::Room, "Upper Observation", ObjId(1), None)?;
+        let r_vault = w.create(ObjKind::Room, "Authority Vault", ObjId(1), None)?;
+        let r_foreign = w.create(ObjKind::Room, "Neighboring Dock", ObjId(1), None)?;
+
+        // Public bidirectional door: r_berth <-> r_hall
+        let e_fwd = w.create(ObjKind::Exit, "Concourse <N>", ObjId(1), Some(r_berth))?;
+        w.add_alias(e_fwd, "n")?;
+        w.add_alias(e_fwd, "north")?;
+        w.link_exit(e_fwd, Some(r_hall))?;
+        let e_back = w.create(ObjKind::Exit, "Berth <S>", ObjId(1), Some(r_hall))?;
+        w.add_alias(e_back, "s")?;
+        w.link_exit(e_back, Some(r_berth))?;
+
+        // Public inter-floor lift: r_hall <-> r_upper (Point geometry + dz_m)
+        let e_up = w.create(ObjKind::Exit, "Lift Up <U>", ObjId(1), Some(r_hall))?;
+        w.add_alias(e_up, "u")?;
+        w.link_exit(e_up, Some(r_upper))?;
+        let e_down = w.create(ObjKind::Exit, "Lift Down <D>", ObjId(1), Some(r_upper))?;
+        w.add_alias(e_down, "d")?;
+        w.link_exit(e_down, Some(r_hall))?;
+
+        // Cross-pack public exit: r_hall <-> r_foreign
+        let e_cross_fwd = w.create(ObjKind::Exit, "Bridge <X>", ObjId(1), Some(r_hall))?;
+        w.add_alias(e_cross_fwd, "x")?;
+        w.link_exit(e_cross_fwd, Some(r_foreign))?;
+
+        // Hidden portal (PortalRec::visibility == Hidden)
+        let e_hidden = w.create(ObjKind::Exit, "Service Hatch <H>", ObjId(1), Some(r_hall))?;
+        w.link_exit(e_hidden, Some(r_upper))?;
+
+        // DARK-flagged live exit
+        let e_dark = w.create(ObjKind::Exit, "Dark Vent <V>", ObjId(1), Some(r_hall))?;
+        w.link_exit(e_dark, Some(r_berth))?;
+        w.set_flag(e_dark, Flags::DARK, true)?;
+
+        // Staff-locked live exit
+        let e_staff = w.create(ObjKind::Exit, "Staff Lift <SL>", ObjId(1), Some(r_hall))?;
+        w.link_exit(e_staff, Some(r_upper))?;
+        let staff_lock = mush_core::lock::parse_lock("flag^WIZARD|flag^ROYALTY", |_| None)
+            .map_err(|e| format!("parse staff lock: {e}"))?;
+        if let Some(o) = w.get_mut(e_staff) {
+            o.locks.insert(mush_core::lock::LockType::Basic, staff_lock);
+        }
+
+        // Portal into restricted room
+        let e_vault = w.create(ObjKind::Exit, "Vault Door <VD>", ObjId(1), Some(r_hall))?;
+        w.link_exit(e_vault, Some(r_vault))?;
+
+        let pack_id = CanonicalId::new("neighborhood.off_shelf_station")?;
+        let foreign_pack = CanonicalId::new("neighborhood.foreign_annex")?;
+        let nb_key = RecordKey::new(pack_id.clone(), CanonicalId::new("neighborhood.main")?);
+        let st_key = RecordKey::new(pack_id.clone(), CanonicalId::new("structure.ring")?);
+
+        let mut records = Records::default();
+        records.structures.insert(
+            st_key.clone(),
+            StructureRec {
+                key: st_key.clone(),
+                site: RecordKey::new(pack_id.clone(), CanonicalId::new("site.ring")?),
+                footprint: Polygon2(vec![
+                    Point2(0.0, 0.0),
+                    Point2(100.0, 0.0),
+                    Point2(100.0, 100.0),
+                    Point2(0.0, 100.0),
+                ]),
+                floors: vec![
+                    Floor {
+                        index: 0,
+                        name: Some("Lower Deck".to_owned()),
+                        z_offset_m: 0.0,
+                        height_m: 4.5,
+                        tile: None,
+                    },
+                    Floor {
+                        index: 1,
+                        name: Some("Upper Deck".to_owned()),
+                        z_offset_m: 5.0,
+                        height_m: 4.5,
+                        tile: None,
+                    },
+                ],
+                revision: 1,
+            },
+        );
+        let add_room = |records: &mut Records,
+                        room: ObjId,
+                        pack: &CanonicalId,
+                        entry: &str,
+                        floor: i16,
+                        rect: ((f64, f64), (f64, f64)),
+                        access: Access|
+         -> TestResult {
+            records.roomgeo.insert(
+                room,
+                RoomGeo {
+                    room,
+                    key: RecordKey::new(pack.clone(), CanonicalId::new(entry)?),
+                    neighborhood: nb_key.clone(),
+                    site: None,
+                    surface: SurfaceRef::Floor {
+                        structure: st_key.clone(),
+                        index: floor,
+                    },
+                    footprint: Footprint::Rect(Rect2(
+                        Point2(rect.0.0, rect.0.1),
+                        Point2(rect.1.0, rect.1.1),
+                    )),
+                    kind: RoomKind::Indoor,
+                    access,
+                    revision: 1,
+                },
+            );
+            Ok(())
+        };
+        add_room(
+            &mut records,
+            r_berth,
+            &pack_id,
+            "room.o01_berth",
+            0,
+            ((0.0, 0.0), (20.0, 20.0)),
+            Access::Public,
+        )?;
+        add_room(
+            &mut records,
+            r_hall,
+            &pack_id,
+            "room.o02_concourse",
+            0,
+            ((0.0, 20.0), (20.0, 40.0)),
+            Access::Public,
+        )?;
+        add_room(
+            &mut records,
+            r_upper,
+            &pack_id,
+            "room.o03_upper",
+            1,
+            ((0.0, 20.0), (20.0, 40.0)),
+            Access::Public,
+        )?;
+        add_room(
+            &mut records,
+            r_vault,
+            &pack_id,
+            "room.o04_vault",
+            0,
+            ((20.0, 20.0), (35.0, 40.0)),
+            Access::Restricted,
+        )?;
+        add_room(
+            &mut records,
+            r_foreign,
+            &foreign_pack,
+            "room.f01_dock",
+            0,
+            ((0.0, 40.0), (20.0, 60.0)),
+            Access::Public,
+        )?;
+
+        let add_portal = |records: &mut Records,
+                          entry: &str,
+                          exits: Vec<ObjId>,
+                          from: ObjId,
+                          to: ObjId,
+                          geometry: PortalGeometry,
+                          mode: PortalMode,
+                          dz_m: f64,
+                          visibility: Visibility|
+         -> TestResult {
+            let key = RecordKey::new(pack_id.clone(), CanonicalId::new(entry)?);
+            records.portals.insert(
+                key.clone(),
+                PortalRec {
+                    key,
+                    exits,
+                    from: Endpoint::Room(from),
+                    to: Endpoint::Room(to),
+                    geometry,
+                    mode,
+                    distance_m: 0,
+                    dz_m,
+                    time: TimePolicy::Instant,
+                    visibility,
+                    revision: 1,
+                },
+            );
+            Ok(())
+        };
+        add_portal(
+            &mut records,
+            "exit.o01_o02",
+            vec![e_fwd, e_back],
+            r_berth,
+            r_hall,
+            PortalGeometry::Segment(Point3(0.0, 20.0, 0.0), Point3(20.0, 20.0, 0.0)),
+            PortalMode::Door,
+            0.0,
+            Visibility::Public,
+        )?;
+        add_portal(
+            &mut records,
+            "exit.o02_o03",
+            vec![e_up, e_down],
+            r_hall,
+            r_upper,
+            PortalGeometry::Point(Point3(10.0, 30.0, 0.0)),
+            PortalMode::Stair,
+            5.0,
+            Visibility::Public,
+        )?;
+        add_portal(
+            &mut records,
+            "exit.o02_foreign",
+            vec![e_cross_fwd],
+            r_hall,
+            r_foreign,
+            PortalGeometry::Point(Point3(10.0, 40.0, 0.0)),
+            PortalMode::Open,
+            0.0,
+            Visibility::Public,
+        )?;
+        add_portal(
+            &mut records,
+            "exit.o02_hidden",
+            vec![e_hidden],
+            r_hall,
+            r_upper,
+            PortalGeometry::Point(Point3(2.0, 22.0, 0.0)),
+            PortalMode::Hatch,
+            5.0,
+            Visibility::Hidden,
+        )?;
+        add_portal(
+            &mut records,
+            "exit.o02_dark",
+            vec![e_dark],
+            r_hall,
+            r_berth,
+            PortalGeometry::Point(Point3(18.0, 20.0, 0.0)),
+            PortalMode::Hatch,
+            0.0,
+            Visibility::Public,
+        )?;
+        add_portal(
+            &mut records,
+            "exit.o02_staff",
+            vec![e_staff],
+            r_hall,
+            r_upper,
+            PortalGeometry::Point(Point3(18.0, 38.0, 0.0)),
+            PortalMode::Door,
+            5.0,
+            Visibility::Public,
+        )?;
+        add_portal(
+            &mut records,
+            "exit.o02_vault",
+            vec![e_vault],
+            r_hall,
+            r_vault,
+            PortalGeometry::Segment(Point3(20.0, 20.0, 0.0), Point3(20.0, 40.0, 0.0)),
+            PortalMode::Door,
+            0.0,
+            Visibility::Public,
+        )?;
+
+        // Start from the exact empty off-shelf skeleton that `world_content_bundle` builds.
+        let mut doc = json!({
+            "manifest": { "id": pack_id.as_str(), "version": 1, "kind": "neighborhood" },
+            "entries": {}
+        });
+        reconcile_neighborhood_with_live_records(&tw.engine().world, &records, &pack_id, &mut doc);
+
+        let Some(projected_str) = project_pack_value_for_client(doc) else {
+            return crate::test_checks::failed("projection failed for off-shelf neighborhood");
+        };
+        let projected: Value = serde_json::from_str(&projected_str)?;
+        let entries = projected["entries"]
+            .as_object()
+            .ok_or("missing entries object")?;
+
+        // Public rooms + port.dock marker survive; restricted room is stripped.
+        check!(entries.contains_key("room.o01_berth"));
+        check_eq!(
+            entries["room.o01_berth"]["def"]["markers"],
+            json!(["port.dock"])
+        );
+        check!(entries.contains_key("room.o02_concourse"));
+        check!(entries.contains_key("room.o03_upper"));
+        check!(!entries.contains_key("room.o04_vault"));
+
+        // Public walkable bidirectional door is recovered with endpoints, exit commands, and segment geometry.
+        let door = &entries["exit.o01_o02"]["def"];
+        check_eq!(door["from"], json!("room.o01_berth"));
+        check_eq!(door["to"], json!("room.o02_concourse"));
+        check_eq!(
+            door["names"],
+            json!(["Concourse <N>;n;north", "Berth <S>;s"])
+        );
+        check_eq!(door["portal"]["mode"], json!("door"));
+        check_eq!(door["portal"]["visibility"], json!("public"));
+        check_eq!(
+            door["portal"]["at"],
+            json!([[0.0, 20.0, 0.0], [20.0, 20.0, 0.0]])
+        );
+
+        // Public inter-floor lift preserves point `at` and `dz_m`.
+        let lift = &entries["exit.o02_o03"]["def"];
+        check_eq!(lift["from"], json!("room.o02_concourse"));
+        check_eq!(lift["to"], json!("room.o03_upper"));
+        check_eq!(lift["names"], json!(["Lift Up <U>;u", "Lift Down <D>;d"]));
+        check_eq!(lift["portal"]["mode"], json!("stair"));
+        check_eq!(lift["portal"]["dz_m"], json!(5.0));
+        check_eq!(lift["portal"]["at"], json!([10.0, 30.0, 0.0]));
+
+        // Cross-pack public exit preserves qualified endpoint key.
+        let cross = &entries["exit.o02_foreign"]["def"];
+        check_eq!(cross["from"], json!("room.o02_concourse"));
+        check_eq!(
+            cross["to"],
+            json!("neighborhood.foreign_annex.room.f01_dock")
+        );
+        check_eq!(cross["names"], json!(["Bridge <X>;x"]));
+
+        // Hidden, DARK, staff-locked, and restricted-destination portals are ALL stripped.
+        for stripped in [
+            "exit.o02_hidden",
+            "exit.o02_dark",
+            "exit.o02_staff",
+            "exit.o02_vault",
+        ] {
+            check!(
+                !entries.contains_key(stripped),
+                "expected `{stripped}` to be stripped from projected off-shelf pack"
+            );
+        }
+
+        // Fingerprint detects portal/exit mutations (e.g. exit rename or DARK flag).
+        let digest = |w: &World, r: &Records| -> [u8; 32] {
+            let mut h = Sha256::new();
+            hash_atlas_records(&mut h, w, r);
+            h.finalize().into()
+        };
+        let fp_before = digest(&tw.engine().world, &records);
+        tw.world_mut().set_name(e_fwd, "Main Concourse <N>")?;
+        let fp_after_rename = digest(&tw.engine().world, &records);
+        check_ne!(fp_before, fp_after_rename);
+        tw.world_mut().set_flag(e_fwd, Flags::DARK, true)?;
+        let fp_after_dark = digest(&tw.engine().world, &records);
+        check_ne!(fp_after_rename, fp_after_dark);
+
+        Ok(())
+    }
+
+    #[test]
+    fn client_content_query_reuses_warm_cache_in_o1_and_invalidates_on_mutations() -> TestResult {
+        use std::sync::atomic::Ordering;
+
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_atlas::AtlasModule::default()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let room_a = tw
+            .world_mut()
+            .create(ObjKind::Room, "Dock A", ObjId(1), None)?;
+        let room_b = tw
+            .world_mut()
+            .create(ObjKind::Room, "Dock B", ObjId(1), None)?;
+        let player = tw.spawn_player("CachePilot");
+        tw.world_mut().move_to(player, room_a)?;
+
+        let q = ClientContentQuery::new();
+
+        // Cold manifest + 20 warm pack downloads must scan and build ONLY ONCE.
+        let b0 = q.bundle_for(tw.world(), player);
+        check_eq!(q.fingerprint_scans.load(Ordering::Relaxed), 1);
+        check_eq!(q.bundle_builds.load(Ordering::Relaxed), 1);
+        for _ in 0..20 {
+            let bn = q.bundle_for(tw.world(), player);
+            check!(Arc::ptr_eq(&b0, &bn));
+        }
+        check_eq!(
+            q.fingerprint_scans.load(Ordering::Relaxed),
+            1,
+            "warm pack downloads must hit O(1) revision cache without rescanning atlas"
+        );
+        check_eq!(q.bundle_builds.load(Ordering::Relaxed), 1);
+
+        // Unrelated runtime activity (actor movement & world clock ticks) must NOT trigger a rescan.
+        tw.world_mut().move_to(player, room_b)?;
+        tw.world_mut().set_now(123_456);
+        let b_after_move = q.bundle_for(tw.world(), player);
+        check!(Arc::ptr_eq(&b0, &b_after_move));
+        check_eq!(q.fingerprint_scans.load(Ordering::Relaxed), 1);
+        check_eq!(q.bundle_builds.load(Ordering::Relaxed), 1);
+
+        // Unrelated TacsimStore write bumps tacsim_rev -> Level-2 fingerprint check runs ONCE
+        // and reuses the cached Arc without rebuilding, then returns to O(1) on subsequent hits.
+        let _ = tw.world_mut().module_state_mut::<TacsimStore>();
+        let b_after_noop_store = q.bundle_for(tw.world(), player);
+        check!(Arc::ptr_eq(&b0, &b_after_noop_store));
+        check_eq!(q.fingerprint_scans.load(Ordering::Relaxed), 2);
+        check_eq!(q.bundle_builds.load(Ordering::Relaxed), 1);
+        let _ = q.bundle_for(tw.world(), player);
+        check_eq!(q.fingerprint_scans.load(Ordering::Relaxed), 2);
+
+        // Content-relevant TacsimStore mutation (withdrawing `dray`) invalidates and rebuilds.
+        {
+            let Some(store) = tw.world_mut().module_state_mut::<TacsimStore>() else {
+                return crate::test_checks::failed("TacsimStore missing");
+            };
+            store.designs.insert(
+                (crate::definitions::content::DRAY.to_owned(), 1),
+                crate::design::DesignRecord {
+                    id: crate::definitions::content::DRAY.to_owned(),
+                    version: 1,
+                    pack: json!({}),
+                    look: json!({}),
+                    withdrawn: true,
+                },
+            );
+        }
+        let b_withdrawn = q.bundle_for(tw.world(), player);
+        check!(!Arc::ptr_eq(&b0, &b_withdrawn));
+        check!(b_withdrawn.find("dray").is_none());
+        check_eq!(q.fingerprint_scans.load(Ordering::Relaxed), 3);
+        check_eq!(q.bundle_builds.load(Ordering::Relaxed), 2);
+        // Subsequent warm queries stay O(1).
+        let b_withdrawn_2 = q.bundle_for(tw.world(), player);
+        check!(Arc::ptr_eq(&b_withdrawn, &b_withdrawn_2));
+        check_eq!(q.fingerprint_scans.load(Ordering::Relaxed), 3);
+
+        // Room metadata mutation (`set_name`) bumps `obj_meta_rev` and triggers fingerprint check.
+        tw.world_mut().set_name(room_a, "Dock Alpha")?;
+        let _ = q.bundle_for(tw.world(), player);
+        check_eq!(q.fingerprint_scans.load(Ordering::Relaxed), 4);
+
+        // A freshly created World instance cannot falsely match the prior World's rev tuple.
+        let mut tw2 = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_atlas::AtlasModule::default()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let player2 = tw2.spawn_player("FreshWorldPilot");
+        let b_fresh = q.bundle_for(tw2.world(), player2);
+        check!(b_fresh.find("dray").is_some());
+        check_eq!(q.bundle_builds.load(Ordering::Relaxed), 3);
+
         Ok(())
     }
 }

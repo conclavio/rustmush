@@ -816,7 +816,7 @@ pub(crate) struct ConnHandler {
     /// Owned by the transport so a closed connection cannot later log a timeout.
     preauth_watchdog: Option<tokio::task::JoinHandle<()>>,
     /// Bounded typed-command queue; the SSH event loop must remain free to write.
-    commands: Option<mpsc::Sender<String>>,
+    commands: Option<mpsc::Sender<CommandJob>>,
     command_task: Option<tokio::task::JoinHandle<()>>,
     /// What this connection claimed at accept, released exactly once in
     /// `Drop`. A refused slot means over-cap: told in the banner, refused at
@@ -1186,7 +1186,7 @@ impl ConnHandler {
         };
         // Never await capacity in a russh callback: that would also stop writes.
         commands
-            .try_send(line)
+            .try_send(CommandJob::Line(line))
             .map_err(|_| russh::Error::Disconnect)
     }
 
@@ -1215,13 +1215,6 @@ impl ConnHandler {
 
     // ---- TUI (milestone M15) --------------------------------------------
 
-    /// Pulse the repaint signal so the output pump renders a fresh frame
-    /// without waiting for a world event (input edits, resize).
-    fn fire_repaint(&self) {
-        let notify = Arc::clone(&self.lock().repaint);
-        notify.notify_one();
-    }
-
     /// Raw input while in [`Mode::Tui`]: decode it into the TUI app, then
     /// repaint / submit / detach. Painting is left to the pump (fired via the
     /// repaint signal) so there is one steady-state frame writer.
@@ -1233,50 +1226,19 @@ impl ConnHandler {
                 None => return Ok(()),
             }
         };
-        if result.detach {
-            return self.queue_line("@notui".to_owned());
-        }
-        // One burst can carry typed requests AND submitted lines (17g cut
-        // C3b's review): a form's Enter, then the screen's `Enter type` and
-        // the line's own Enter in the same read — key repeat, a slow link.
-        // Everything the burst produced is forwarded; returning after the
-        // lines once dropped the typed request, whose owner then waited on a
-        // reply that could never come. The typed requests and queries go
-        // first: their keys came before the line's own Enter in that case.
-        // Author edits use the typed owner path; hydration stays read-only.
-        // Replies land on the pump and repaint the current view.
-        for (id, request) in result.invokes {
-            self.hooks.invoke(self.conn_id, id, request).await;
-        }
-        for (name, args) in result.queries {
-            submit_query(
-                self.hooks.as_ref(),
-                &self.shared,
-                self.conn_id,
-                name,
-                args,
-                None,
-            )
-            .await;
-        }
-        for (id, epoch, choice) in result.responds {
-            self.hooks.respond(self.conn_id, id, epoch, choice).await;
-        }
-        if !result.submit.is_empty() {
-            // Show the cleared input line immediately; the world's echo
-            // repaints again via the pump.
-            self.fire_repaint();
-            // A burst can carry more than one line (a multi-line paste); each
-            // is forwarded in order so none is dropped.
-            for line in result.submit {
-                self.queue_line(line)?;
-            }
-            return Ok(());
-        }
-        if result.redraw {
-            self.fire_repaint();
-        }
-        Ok(())
+        dispatch_tui_input_result(
+            result,
+            self.hooks.as_ref(),
+            &self.shared,
+            self.conn_id,
+            self.commands.as_ref(),
+        )
+        .await
+    }
+
+    fn fire_repaint(&self) {
+        let notify = Arc::clone(&self.lock().repaint);
+        notify.notify_one();
     }
 
     async fn welcome_line(
@@ -1545,7 +1507,7 @@ impl ConnHandler {
                     sh.mode = Mode::InGame;
                     Arc::clone(&sh.repaint)
                 };
-                let (tx, mut commands) = mpsc::channel::<String>(64);
+                let (tx, mut commands) = mpsc::channel::<CommandJob>(128);
                 self.commands = Some(tx);
                 let mut worker = GameCommands {
                     hooks: Arc::clone(&self.hooks),
@@ -1555,17 +1517,34 @@ impl ConnHandler {
                     handle: session.handle(),
                 };
                 self.command_task = Some(tokio::spawn(async move {
-                    while let Some(line) = commands.recv().await {
-                        match worker.local_line(&line).await {
-                            Ok(true) => {}
-                            Ok(false) => worker.hooks.line(worker.conn_id, line.clone()).await,
-                            Err(_) => {
-                                let _ = worker.handle.close(channel).await;
-                                break;
+                    while let Some(job) = commands.recv().await {
+                        match job {
+                            CommandJob::Line(line) => {
+                                match worker.local_line(&line).await {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        worker.hooks.line(worker.conn_id, line.clone()).await;
+                                    }
+                                    Err(_) => {
+                                        let _ = worker.handle.close(channel).await;
+                                        break;
+                                    }
+                                }
+                                if line.trim().eq_ignore_ascii_case("QUIT") {
+                                    break;
+                                }
                             }
-                        }
-                        if line.trim().eq_ignore_ascii_case("QUIT") {
-                            break;
+                            CommandJob::Query { name, args } => {
+                                submit_query(
+                                    worker.hooks.as_ref(),
+                                    &worker.shared,
+                                    worker.conn_id,
+                                    name,
+                                    args,
+                                    None,
+                                )
+                                .await;
+                            }
                         }
                     }
                 }));
@@ -2287,6 +2266,93 @@ impl Handler for ConnHandler {
             return Err(russh::Error::Disconnect);
         }
         Ok(())
+    }
+}
+
+/// Ordered work items processed sequentially by [`GameCommands`] so follow-up
+/// read-only queries emitted alongside submitted commands (e.g. `+market/quote`
+/// + `port.trade` refresh) never race ahead of the command they refresh.
+#[derive(Debug)]
+enum CommandJob {
+    Line(String),
+    Query {
+        name: String,
+        args: serde_json::Value,
+    },
+}
+
+/// Dispatch one decoded TUI input burst: typed invokes/responds first (preserving
+/// 17g cut C3b), then submitted lines followed on the SAME FIFO command channel
+/// by any follow-up queries emitted alongside them so commands execute before
+/// refresh queries read world state.
+async fn dispatch_tui_input_result(
+    result: crate::tui::InputResult,
+    hooks: &dyn SshHooks,
+    shared: &Mutex<Shared>,
+    conn_id: u64,
+    commands: Option<&mpsc::Sender<CommandJob>>,
+) -> Result<(), russh::Error> {
+    if result.detach {
+        let Some(tx) = commands else {
+            return Err(russh::Error::Disconnect);
+        };
+        return tx
+            .try_send(CommandJob::Line("@notui".to_owned()))
+            .map_err(|_| russh::Error::Disconnect);
+    }
+    for (id, request) in result.invokes {
+        hooks.invoke(conn_id, id, request).await;
+    }
+    for (id, epoch, choice) in result.responds {
+        hooks.respond(conn_id, id, epoch, choice).await;
+    }
+    if !result.submit.is_empty() {
+        let notify = Arc::clone(&connection_state(shared).repaint);
+        notify.notify_one();
+        let Some(tx) = commands else {
+            return Err(russh::Error::Disconnect);
+        };
+        for line in result.submit {
+            tx.try_send(CommandJob::Line(line))
+                .map_err(|_| russh::Error::Disconnect)?;
+        }
+        for (name, args) in result.queries {
+            tx.try_send(CommandJob::Query { name, args })
+                .map_err(|_| russh::Error::Disconnect)?;
+        }
+        return Ok(());
+    }
+    for (name, args) in result.queries {
+        submit_query(hooks, shared, conn_id, name, args, None).await;
+    }
+    if result.redraw {
+        let notify = Arc::clone(&connection_state(shared).repaint);
+        notify.notify_one();
+    }
+    Ok(())
+}
+
+/// Dispatch output-pump follow-up side effects after dropping the connection
+/// lock: typed invokes, then control lines (e.g. auto-accepted `+market/accept`
+/// or resumed room interactions), then follow-up refresh queries so commands
+/// always land ahead of the queries that observe their outcome.
+async fn flush_pump_side_effects(
+    hooks: &dyn SshHooks,
+    shared: &Mutex<Shared>,
+    conn_id: u64,
+    generation: u64,
+    invokes: Vec<(u64, mush_proto::InvokeRequest)>,
+    lines: Vec<String>,
+    queries: Vec<(String, serde_json::Value)>,
+) {
+    for (id, request) in invokes {
+        hooks.invoke(conn_id, id, request).await;
+    }
+    for line in lines {
+        hooks.control_line(conn_id, line).await;
+    }
+    for (name, args) in queries {
+        submit_query(hooks, shared, conn_id, name, args, Some(generation)).await;
     }
 }
 
@@ -3185,6 +3251,9 @@ fn spawn_output_pump(
                                         );
                                     }
                                 }
+                                if let Some(t) = sh.tui.as_mut() {
+                                    lines.extend(t.pixel_take_orders());
+                                }
                                 sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
                             }
                             _ => {
@@ -3246,23 +3315,16 @@ fn spawn_output_pump(
             // locally, and a `Hello` names feeds to hydrate: ask the ordinary
             // read-only query seam after the connection lock has dropped; the
             // TUI de-duplicates resyncs until a valid replacement arrives.
-            for (id, request) in invokes {
-                hooks.invoke(conn_id, id, request).await;
-            }
-            for (name, args) in queries {
-                submit_query(
-                    hooks.as_ref(),
-                    &shared,
-                    conn_id,
-                    name,
-                    args,
-                    Some(generation),
-                )
-                .await;
-            }
-            for line in lines {
-                hooks.control_line(conn_id, line).await;
-            }
+            flush_pump_side_effects(
+                hooks.as_ref(),
+                &shared,
+                conn_id,
+                generation,
+                invokes,
+                lines,
+                queries,
+            )
+            .await;
 
             if !bytes.is_empty() {
                 let sent = bytes.len();
@@ -3814,5 +3876,177 @@ mod tests {
         }
         assert!(!serving.is_finished());
         serving.abort();
+    }
+
+    struct RecordingHooks {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl RecordingHooks {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn push(&self, entry: String) {
+            self.events.lock().unwrap().push(entry);
+        }
+
+        fn snapshot(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl SshHooks for RecordingHooks {
+        fn auth_account<'a>(
+            &'a self,
+            _account: &'a str,
+            _password: &'a str,
+        ) -> futures::future::BoxFuture<'a, AuthResult> {
+            Box::pin(async { AuthResult::BadCreds })
+        }
+
+        fn create_account<'a>(
+            &'a self,
+            _account: &'a str,
+            _password: &'a str,
+        ) -> futures::future::BoxFuture<'a, Result<(), crate::hooks::CreateErr>> {
+            Box::pin(async { Err(crate::hooks::CreateErr::Taken) })
+        }
+
+        fn connect_character<'a>(
+            &'a self,
+            _conn: NewConn,
+            _account: &'a str,
+            _character: u64,
+        ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn line(&self, _conn: u64, line: String) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("line:{line}"));
+            })
+        }
+
+        fn control_line(&self, _conn: u64, line: String) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("control_line:{line}"));
+            })
+        }
+
+        fn invoke(
+            &self,
+            _conn: u64,
+            id: u64,
+            _request: mush_proto::InvokeRequest,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("invoke:{id}"));
+            })
+        }
+
+        fn query(
+            &self,
+            _conn: u64,
+            _id: u64,
+            name: String,
+            _args: serde_json::Value,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("query:{name}"));
+            })
+        }
+
+        fn disconnected(&self, _conn: u64) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+
+        fn is_ip_blocked(&self, _addr: IpAddr) -> bool {
+            false
+        }
+
+        fn block_reason(&self, _addr: IpAddr) -> Option<crate::hooks::BlockReason> {
+            None
+        }
+
+        fn auth_failed(&self, _addr: IpAddr) {}
+    }
+
+    #[tokio::test]
+    async fn dispatch_tui_input_result_queues_commands_strictly_before_followup_queries() {
+        let hooks = RecordingHooks::new();
+        let shared = Mutex::new(line_mode_shared());
+        let (tx, mut rx) = mpsc::channel::<CommandJob>(16);
+
+        let result = crate::tui::InputResult {
+            submit: vec!["+market/quote 42=5".to_owned()],
+            queries: vec![("port.trade".to_owned(), serde_json::json!({}))],
+            redraw: true,
+            ..Default::default()
+        };
+        dispatch_tui_input_result(result, &hooks, &shared, 1, Some(&tx))
+            .await
+            .unwrap();
+
+        // Must NOT have dispatched `port.trade` eagerly ahead of `+market/quote 42=5`.
+        assert!(
+            hooks.snapshot().is_empty(),
+            "follow-up queries paired with submit must wait behind the submitted command"
+        );
+
+        // Drain the FIFO command queue in exact consumer order.
+        drop(tx);
+        while let Some(job) = rx.recv().await {
+            match job {
+                CommandJob::Line(line) => hooks.line(1, line).await,
+                CommandJob::Query { name, args } => {
+                    submit_query(&hooks, &shared, 1, name, args, None).await;
+                }
+            }
+        }
+        assert_eq!(
+            hooks.snapshot(),
+            vec!["line:+market/quote 42=5", "query:port.trade"],
+            "submitted trade command must execute strictly before port.trade refresh query"
+        );
+
+        // Query-only inputs (no submit) still dispatch immediately.
+        let query_only = crate::tui::InputResult {
+            queries: vec![(
+                "tacsim.content".to_owned(),
+                serde_json::json!({"op": "manifest"}),
+            )],
+            ..Default::default()
+        };
+        dispatch_tui_input_result(query_only, &hooks, &shared, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            hooks.snapshot().last().map(String::as_str),
+            Some("query:tacsim.content")
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_pump_side_effects_runs_control_lines_before_refresh_queries() {
+        let hooks = RecordingHooks::new();
+        let shared = Mutex::new(line_mode_shared());
+        flush_pump_side_effects(
+            &hooks,
+            &shared,
+            1,
+            0,
+            Vec::new(),
+            vec!["+market/accept 77".to_owned()],
+            vec![("port.trade".to_owned(), serde_json::json!({}))],
+        )
+        .await;
+        assert_eq!(
+            hooks.snapshot(),
+            vec!["control_line:+market/accept 77", "query:port.trade"],
+            "auto-accept control line must run strictly before follow-up refresh query"
+        );
     }
 }

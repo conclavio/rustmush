@@ -255,6 +255,8 @@ struct PendingQuote {
     listing_id: i64,
     quantity: i64,
     max_unit_price_minor: i64,
+    authorized_total_minor: i64,
+    prior_quote_ids: HashSet<String>,
     created_at: Instant,
 }
 
@@ -262,8 +264,18 @@ struct PendingQuote {
 struct OwnQuoteRow {
     quote_id: String,
     listing_id: i64,
+    quantity: i64,
     unit_price_minor: i64,
+    total_minor: Option<i64>,
     expired: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PendingInteraction {
+    action: InteractAction,
+    target_room: String,
+    manifest_panels: Vec<String>,
+    created_at: Instant,
 }
 
 /// Canonical corridor port venue IDs from `crates/tacsim/content/lane/ceres_phobos.json` (`H-40`).
@@ -373,10 +385,14 @@ pub struct PortWalkState {
     ship_portals: Vec<PortalGeom>,
     neighborhood_cache: HashMap<String, (Vec<RoomGeom>, Vec<PortalGeom>)>,
     unit_cache: HashMap<String, (Vec<RoomGeom>, Vec<PortalGeom>)>,
-    manifest_packs: HashSet<String>,
-    requested_packs: HashSet<String>,
-    loaded_packs: HashSet<String>,
+    manifest_packs: HashMap<String, String>,
+    manifest_gen: u64,
+    in_flight_packs: HashSet<String>,
+    loaded_packs: HashMap<String, String>,
+    missing_packs: HashMap<String, u64>,
+    total_pack_requests: usize,
     pending_pack_requests: Vec<String>,
+    pending_followup_queries: Vec<(String, Value)>,
 
     aboard_ship: bool,
     seated_at_helm: bool,
@@ -407,9 +423,12 @@ pub struct PortWalkState {
     last_step_at: Option<Instant>,
     pending_move_target: Option<(String, Instant)>,
     next_move_allowed_at: Option<Instant>,
+    pending_interaction: Option<PendingInteraction>,
     /// Prevents instant floor-0 <-> floor-1 ping-pong right after traversing a stair/warp portal.
     portal_rearm: Option<(f64, f64, i64)>,
     pending_orders: Vec<String>,
+    last_room_view: Option<RoomView>,
+    last_self_name: Option<String>,
 
     actors: Vec<ActorEntry>,
     speech_bubbles: HashMap<String, (String, Instant)>,
@@ -470,10 +489,14 @@ impl PortWalkState {
             ship_portals,
             neighborhood_cache: HashMap::new(),
             unit_cache: HashMap::new(),
-            manifest_packs: HashSet::new(),
-            requested_packs: HashSet::new(),
-            loaded_packs: HashSet::new(),
+            manifest_packs: HashMap::new(),
+            manifest_gen: 0,
+            in_flight_packs: HashSet::new(),
+            loaded_packs: HashMap::new(),
+            missing_packs: HashMap::new(),
+            total_pack_requests: 0,
             pending_pack_requests: Vec::new(),
+            pending_followup_queries: Vec::new(),
             aboard_ship: false,
             seated_at_helm: false,
             hull_name: String::new(),
@@ -501,8 +524,11 @@ impl PortWalkState {
             last_step_at: None,
             pending_move_target: None,
             next_move_allowed_at: None,
+            pending_interaction: None,
             portal_rearm: None,
             pending_orders: Vec::new(),
+            last_room_view: None,
+            last_self_name: None,
             actors: Vec::new(),
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
@@ -512,14 +538,7 @@ impl PortWalkState {
             balance_text: String::new(),
             current_venue: None,
             port_name: String::new(),
-            stowage: StowageState {
-                max_cargo_kg: 100_000,
-                max_cargo_m3: 120.0,
-                max_reaction_kg: 80_000,
-                max_stores_days: 120.0,
-                crew_count: 1,
-                ..StowageState::default()
-            },
+            stowage: StowageState::default(),
             stowage_loaded: false,
             asks: Vec::new(),
             bids: Vec::new(),
@@ -613,9 +632,15 @@ impl PortWalkState {
         std::mem::take(&mut self.pending_orders)
     }
 
-    /// Drain any pending on-demand `tacsim.content` pack requests queued when switching neighborhoods/hulls.
+    /// Drain any pending on-demand `tacsim.content` pack requests queued when switching neighborhoods/hulls,
+    /// plus any follow-up queries scheduled when a queued interaction resumes after room acknowledgement.
     pub fn drain_pack_queries(&mut self, manifest_panels: &[String]) -> Vec<(String, Value)> {
         let mut out = Vec::new();
+        for (feed, args) in std::mem::take(&mut self.pending_followup_queries) {
+            if manifest_panels.is_empty() || manifest_panels.iter().any(|p| p == &feed) {
+                out.push((feed, args));
+            }
+        }
         if !manifest_panels.iter().any(|p| p == TACSIM_CONTENT_FEED) {
             self.pending_pack_requests.clear();
             return out;
@@ -631,16 +656,37 @@ impl PortWalkState {
         out
     }
 
+    fn is_pack_loaded_current(&self, id: &str) -> bool {
+        let Some(loaded_sha) = self.loaded_packs.get(id) else {
+            return false;
+        };
+        if let Some(manifest_sha) = self.manifest_packs.get(id)
+            && !manifest_sha.is_empty()
+            && !loaded_sha.is_empty()
+        {
+            return loaded_sha == manifest_sha;
+        }
+        true
+    }
+
     fn try_enqueue_pack(&mut self, id: &str) -> bool {
         if id.is_empty()
-            || self.loaded_packs.contains(id)
-            || self.requested_packs.contains(id)
-            || self.requested_packs.len() >= MAX_PACK_REQUESTS_PER_SESSION
+            || self.is_pack_loaded_current(id)
+            || self.in_flight_packs.contains(id)
+            || self.missing_packs.get(id) == Some(&self.manifest_gen)
+            || self.total_pack_requests >= MAX_PACK_REQUESTS_PER_SESSION
         {
             return false;
         }
-        self.requested_packs.insert(id.to_string());
+        self.in_flight_packs.insert(id.to_string());
+        self.total_pack_requests = self.total_pack_requests.saturating_add(1);
         true
+    }
+
+    fn reset_stowage(&mut self) {
+        self.stowage = StowageState::default();
+        self.stowage_loaded = false;
+        self.cargo_lots.clear();
     }
 
     /// Tick using internal `last_tick` timestamp and queue any emitted movement commands.
@@ -765,23 +811,39 @@ impl PortWalkState {
         let clean_name = sanitize(&view.name);
         self.room_title = clean_name.clone();
         let clean_self = self_name.map(sanitize);
+        self.last_room_view = Some(view.clone());
+        self.last_self_name.clone_from(&clean_self);
 
         let tac = view.ambient.get("tacsim").and_then(Value::as_object);
         let atlas = view.ambient.get("atlas").and_then(Value::as_object);
 
+        let mut received_room_stowage = false;
         if let Some(st) = tac
             .and_then(|t| t.get("stowage").or_else(|| t.get("own_stowage")))
             .and_then(Value::as_object)
         {
             self.decode_stowage_obj(st);
+            received_room_stowage = true;
         }
 
         if let Some(t) = tac {
             if let Some(own_h_val) = t.get("own_hull_name") {
                 if let Some(own_h) = own_h_val.as_str() {
-                    self.own_hull_name = sanitize(own_h);
+                    let clean_h = sanitize(own_h);
+                    if !self.own_hull_name.is_empty()
+                        && self.own_hull_name != clean_h
+                        && !received_room_stowage
+                    {
+                        self.own_hull_id = None;
+                        self.reset_stowage();
+                    }
+                    self.own_hull_name = clean_h;
                 } else if own_h_val.is_null() {
+                    self.own_hull_id = None;
                     self.own_hull_name.clear();
+                    if !received_room_stowage {
+                        self.reset_stowage();
+                    }
                 }
             }
             if let Some(docked_here) = t.get("own_hull_docked_here").and_then(Value::as_bool) {
@@ -813,6 +875,7 @@ impl PortWalkState {
                 let slug = normalize_unit_slug(&sanitize(unit_raw));
                 if !slug.is_empty() && slug != self.ship_unit_id {
                     self.ship_unit_id = slug.clone();
+                    self.missing_packs.remove(&slug);
                     if let Some((sr, sp)) = self.unit_cache.get(&slug).cloned() {
                         self.ship_rooms = sr;
                         self.ship_portals = sp;
@@ -820,7 +883,7 @@ impl PortWalkState {
                         let (sr, sp) = builtin_dray_layout();
                         self.ship_rooms = sr;
                         self.ship_portals = sp;
-                        if !self.loaded_packs.contains(&slug) {
+                        if !self.is_pack_loaded_current(&slug) {
                             self.pending_pack_requests.push(slug);
                         }
                     }
@@ -840,12 +903,20 @@ impl PortWalkState {
                 .unwrap_or_else(|| "airlock".to_string());
 
             self.aboard_ship = true;
-            self.hull_name = tac
+            let new_hull_name = tac
                 .and_then(|t| t.get("hull_name"))
                 .and_then(Value::as_str)
                 .map(sanitize)
                 .or_else(|| clean_name.split_once(" - ").map(|(h, _)| h.to_string()))
                 .unwrap_or_else(|| "Charter Hull".to_string());
+            if !self.hull_name.is_empty()
+                && self.hull_name != new_hull_name
+                && !received_room_stowage
+            {
+                self.own_hull_id = None;
+                self.reset_stowage();
+            }
+            self.hull_name = new_hull_name;
             self.docked = tac
                 .and_then(|t| t.get("docked"))
                 .and_then(Value::as_bool)
@@ -853,12 +924,18 @@ impl PortWalkState {
             if comp != "bridge" {
                 self.seated_at_helm = false;
             }
+            if !was_aboard {
+                self.pending_move_target = None;
+                self.pending_interaction = None;
+            }
             self.server_location_key.clone_from(&comp);
             if let Some((pt, _)) = &self.pending_move_target
                 && pt == &comp
             {
                 self.pending_move_target = None;
             }
+            let now = self.last_tick.unwrap_or_else(Instant::now);
+            self.advance_pending_interaction_move(now);
             if !was_aboard
                 || !self
                     .ship_rooms
@@ -869,6 +946,7 @@ impl PortWalkState {
                 self.snap_to_room(&comp);
             }
             self.rebuild_actors_and_interactables(view, clean_self.as_deref());
+            self.resume_pending_interaction_if_arrived(now);
             self.bump_scene();
             return;
         }
@@ -876,6 +954,10 @@ impl PortWalkState {
         // Station / OOC room
         self.aboard_ship = false;
         self.seated_at_helm = false;
+        if was_aboard {
+            self.pending_move_target = None;
+            self.pending_interaction = None;
+        }
 
         let atlas_pack = atlas
             .and_then(|a| {
@@ -906,6 +988,7 @@ impl PortWalkState {
 
         if self.pack_id != want_pack {
             self.pack_id = want_pack.clone();
+            self.missing_packs.remove(&want_pack);
             if let Some((r, p)) = self.neighborhood_cache.get(&want_pack).cloned() {
                 self.rooms = r;
                 self.portals = p;
@@ -913,14 +996,14 @@ impl PortWalkState {
                 let (r, p) = builtin_ooc_layout();
                 self.rooms = r;
                 self.portals = p;
-                if !self.loaded_packs.contains(&want_pack) {
+                if !self.is_pack_loaded_current(&want_pack) {
                     self.pending_pack_requests.push(want_pack.clone());
                 }
             } else if want_pack == "neighborhood.ceres_freeport" {
                 let (r, p) = builtin_ceres_layout();
                 self.rooms = r;
                 self.portals = p;
-                if !self.loaded_packs.contains(&want_pack) {
+                if !self.is_pack_loaded_current(&want_pack) {
                     self.pending_pack_requests.push(want_pack.clone());
                 }
             } else {
@@ -942,7 +1025,7 @@ impl PortWalkState {
                     kind,
                 }];
                 self.portals = Vec::new();
-                if !self.loaded_packs.contains(&want_pack) {
+                if !self.is_pack_loaded_current(&want_pack) {
                     self.pending_pack_requests.push(want_pack.clone());
                 }
             }
@@ -992,6 +1075,8 @@ impl PortWalkState {
         {
             self.pending_move_target = None;
         }
+        let now = self.last_tick.unwrap_or_else(Instant::now);
+        self.advance_pending_interaction_move(now);
         if was_aboard
             || !self
                 .rooms
@@ -1012,6 +1097,7 @@ impl PortWalkState {
         }
 
         self.rebuild_actors_and_interactables(view, clean_self.as_deref());
+        self.resume_pending_interaction_if_arrived(now);
         self.bump_scene();
     }
 
@@ -1138,45 +1224,86 @@ impl PortWalkState {
         // Live `port.trade.ship` (`client_sync.rs:1296-1327`)
         if let Some(ship_val) = obj.get("ship") {
             if ship_val.is_null() {
-                if !self.own_hull_name.is_empty() || self.own_hull_id.is_some() {
+                if !self.own_hull_name.is_empty()
+                    || self.own_hull_id.is_some()
+                    || self.stowage_loaded
+                    || self.stowage.cargo_kg != 0
+                    || !self.cargo_lots.is_empty()
+                {
                     visual_changed = true;
                 }
                 self.own_hull_id = None;
                 self.own_hull_name.clear();
-                self.cargo_lots.clear();
+                self.reset_stowage();
             } else if let Some(ship_obj) = ship_val.as_object() {
-                if let Some(hid) = ship_obj.get("hull_id").and_then(Value::as_str) {
-                    self.own_hull_id = Some(sanitize(hid));
-                }
-                if let Some(hname) = ship_obj.get("hull_name").and_then(Value::as_str) {
-                    let clean_h = sanitize(hname);
-                    if self.own_hull_name != clean_h {
-                        self.own_hull_name = clean_h;
+                let new_hull_id = ship_obj
+                    .get("hull_id")
+                    .map(|v| match v {
+                        Value::String(s) => sanitize(s),
+                        Value::Number(n) => n.to_string(),
+                        _ => String::new(),
+                    })
+                    .filter(|s| !s.is_empty());
+                let new_hull_name = ship_obj
+                    .get("hull_name")
+                    .and_then(Value::as_str)
+                    .map(sanitize);
+                let ship_changed = match (&self.own_hull_id, &new_hull_id) {
+                    (Some(old), Some(new)) => old != new,
+                    (None, Some(_)) => !self.own_hull_name.is_empty() || self.stowage_loaded,
+                    _ => new_hull_name
+                        .as_deref()
+                        .is_some_and(|n| !self.own_hull_name.is_empty() && self.own_hull_name != n),
+                };
+                if let Some(hid) = new_hull_id {
+                    if self.own_hull_id.as_deref() != Some(hid.as_str()) {
                         visual_changed = true;
                     }
+                    self.own_hull_id = Some(hid);
+                }
+                if let Some(clean_h) = new_hull_name
+                    && self.own_hull_name != clean_h
+                {
+                    self.own_hull_name = clean_h;
+                    visual_changed = true;
                 }
                 if let Some(unit) = ship_obj.get("unit").and_then(Value::as_str) {
                     let slug = normalize_unit_slug(&sanitize(unit));
-                    if !slug.is_empty() && !self.loaded_packs.contains(&slug) {
+                    if !slug.is_empty() && !self.is_pack_loaded_current(&slug) {
                         self.pending_pack_requests.push(slug);
                     }
                 }
-                if let Some(st) = ship_obj.get("stowage").and_then(Value::as_object) {
+                let stowage_val = ship_obj.get("stowage");
+                if let Some(st) = stowage_val.and_then(Value::as_object) {
                     let old_kg = self.stowage.cargo_kg;
+                    if ship_changed {
+                        self.reset_stowage();
+                    }
                     self.decode_stowage_obj(st);
-                    if self.stowage.cargo_kg != old_kg {
+                    if ship_changed || self.stowage.cargo_kg != old_kg {
                         visual_changed = true;
                     }
+                } else if ship_changed || stowage_val.is_some_and(Value::is_null) {
+                    self.reset_stowage();
+                    visual_changed = true;
                 }
             }
         }
 
         // Legacy top-level `stowage` fallback
-        if let Some(st) = obj.get("stowage").and_then(Value::as_object) {
-            let old_kg = self.stowage.cargo_kg;
-            self.decode_stowage_obj(st);
-            if self.stowage.cargo_kg != old_kg {
-                visual_changed = true;
+        if let Some(stowage_val) = obj.get("stowage") {
+            if stowage_val.is_null() {
+                if self.stowage_loaded || self.stowage.cargo_kg != 0 || !self.cargo_lots.is_empty()
+                {
+                    visual_changed = true;
+                }
+                self.reset_stowage();
+            } else if let Some(st) = stowage_val.as_object() {
+                let old_kg = self.stowage.cargo_kg;
+                self.decode_stowage_obj(st);
+                if self.stowage.cargo_kg != old_kg {
+                    visual_changed = true;
+                }
             }
         }
 
@@ -1446,14 +1573,14 @@ impl PortWalkState {
         }
 
         // Live `port.trade.open_quotes[]` (`client_sync.rs:1188-1220`), fallback `own.quotes` / `quotes`
-        self.own_quotes.clear();
         if let Some(q_arr) = obj
             .get("open_quotes")
             .or_else(|| obj.get("own").and_then(|o| o.get("quotes")))
             .or_else(|| obj.get("quotes"))
             .and_then(Value::as_array)
         {
-            for q in q_arr.iter().take(16) {
+            self.own_quotes.clear();
+            for q in q_arr.iter().take(64) {
                 let qid = q
                     .get("quote_id")
                     .or_else(|| q.get("id"))
@@ -1464,47 +1591,68 @@ impl PortWalkState {
                     })
                     .unwrap_or_default();
                 let lid = q.get("listing_id").and_then(Value::as_i64).unwrap_or(0);
+                let qty = q
+                    .get("quantity")
+                    .or_else(|| q.get("qty"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
                 let uprice = q
                     .get("unit_price_minor")
                     .or_else(|| q.get("price_minor"))
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
+                let total_minor = q.get("total_minor").and_then(Value::as_i64);
                 let expired = q.get("expired").and_then(Value::as_bool).unwrap_or(false);
                 if !qid.is_empty() {
                     self.own_quotes.push(OwnQuoteRow {
                         quote_id: qid,
                         listing_id: lid,
+                        quantity: qty,
                         unit_price_minor: uprice,
+                        total_minor,
                         expired,
                     });
                 }
             }
         }
 
-        // Verify pending 1-click Quote -> Accept
+        // Verify pending 1-click Quote -> Accept: require exact `listing_id`, exact `quantity`,
+        // a fresh `quote_id` not present prior to `+market/quote`, and total <= authorized total.
         if let Some(pq) = self.pending_quote.clone() {
             if now.saturating_duration_since(pq.created_at) > Duration::from_secs(12) {
                 self.pending_quote = None;
-            } else if let Some(matched) = self
-                .own_quotes
-                .iter()
-                .find(|q| !q.expired && (q.listing_id == 0 || q.listing_id == pq.listing_id))
-            {
+            } else if let Some(matched) = self.own_quotes.iter().find(|q| {
+                !q.expired
+                    && q.listing_id > 0
+                    && q.listing_id == pq.listing_id
+                    && q.quantity > 0
+                    && q.quantity == pq.quantity
+                    && !pq.prior_quote_ids.contains(&q.quote_id)
+            }) {
                 self.pending_quote = None;
-                if matched.unit_price_minor <= pq.max_unit_price_minor {
+                let effective_total = matched
+                    .total_minor
+                    .or_else(|| matched.unit_price_minor.checked_mul(matched.quantity));
+                let within_authorized = matched.unit_price_minor >= 0
+                    && matched.unit_price_minor <= pq.max_unit_price_minor
+                    && effective_total
+                        .is_some_and(|tot| tot >= 0 && tot <= pq.authorized_total_minor);
+                if within_authorized {
                     let accept = format!("+market/accept {}", matched.quote_id);
                     self.push_drawer_log(format!(
                         "[QUOTE VERIFIED] Accepting #{} ({} units)...",
-                        matched.quote_id, pq.quantity
+                        matched.quote_id, matched.quantity
                     ));
                     self.pending_orders.push(accept);
                     self.awaiting_trade_page = false;
                     queries.push((PORT_TRADE_FEED.to_string(), json!({})));
                 } else {
                     self.push_drawer_log(format!(
-                        "[PRICE MOVED] Quote {} > expected {}; purchase halted.",
+                        "[PRICE MOVED] Quote {} (total {}) > expected {} (max total {}); purchase halted.",
                         format_credits(matched.unit_price_minor),
-                        format_credits(pq.max_unit_price_minor)
+                        effective_total.map_or_else(|| "overflow".to_string(), format_credits),
+                        format_credits(pq.max_unit_price_minor),
+                        format_credits(pq.authorized_total_minor),
                     ));
                 }
             }
@@ -1528,12 +1676,26 @@ impl PortWalkState {
         let op = obj.get("op").and_then(Value::as_str);
         if op == Some("manifest") || (op != Some("pack") && obj.get("packs").is_some()) {
             if let Some(packs) = obj.get("packs").and_then(Value::as_array) {
+                let mut next_manifest = HashMap::new();
                 for p in packs {
-                    let id = p.get("id").and_then(Value::as_str).unwrap_or("");
+                    let id = p
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
                     if id.is_empty() {
                         continue;
                     }
-                    self.manifest_packs.insert(id.to_string());
+                    let sha = p
+                        .get("sha256")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    next_manifest.insert(id, sha);
+                }
+                if next_manifest != self.manifest_packs {
+                    self.manifest_packs = next_manifest;
+                    self.manifest_gen = self.manifest_gen.wrapping_add(1);
                 }
             }
             // Request only the packs we actually need right now (goods, active neighborhood, active ship unit).
@@ -1543,7 +1705,8 @@ impl PortWalkState {
                 self.ship_unit_id.clone(),
             ];
             for id in wanted {
-                let available = self.manifest_packs.is_empty() || self.manifest_packs.contains(&id);
+                let available =
+                    self.manifest_packs.is_empty() || self.manifest_packs.contains_key(&id);
                 if available && self.try_enqueue_pack(&id) {
                     followups.push((
                         TACSIM_CONTENT_FEED.to_string(),
@@ -1556,13 +1719,35 @@ impl PortWalkState {
 
         let id = obj
             .get("id")
-            .or_else(|| obj.get("requested_id"))
             .and_then(Value::as_str)
             .map(sanitize)
             .unwrap_or_default();
+        let requested_id = obj
+            .get("requested_id")
+            .and_then(Value::as_str)
+            .map(sanitize)
+            .unwrap_or_default();
+        let effective_id = if !id.is_empty() {
+            id.clone()
+        } else {
+            requested_id.clone()
+        };
+        if !id.is_empty() {
+            self.in_flight_packs.remove(&id);
+        }
+        if !requested_id.is_empty() {
+            self.in_flight_packs.remove(&requested_id);
+        }
+
         if obj.get("found").and_then(Value::as_bool) == Some(false) {
-            if !id.is_empty() {
-                self.loaded_packs.insert(id);
+            // Do NOT mark missing packs as loaded; record the current manifest generation so
+            // duplicate identical manifests don't spin, while a new manifest/revision or revisit retries.
+            if !effective_id.is_empty() {
+                self.missing_packs
+                    .insert(effective_id.clone(), self.manifest_gen);
+            }
+            if !requested_id.is_empty() && requested_id != effective_id {
+                self.missing_packs.insert(requested_id, self.manifest_gen);
             }
             return followups;
         }
@@ -1577,23 +1762,41 @@ impl PortWalkState {
             return followups;
         };
 
-        if !id.is_empty() {
-            self.loaded_packs.insert(id.clone());
+        let pack_sha = obj
+            .get("sha256")
+            .and_then(Value::as_str)
+            .map(sanitize)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                self.manifest_packs
+                    .get(&effective_id)
+                    .cloned()
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_default();
+        if !effective_id.is_empty() {
+            self.loaded_packs
+                .insert(effective_id.clone(), pack_sha.clone());
+            self.missing_packs.remove(&effective_id);
+        }
+        if !requested_id.is_empty() && requested_id != effective_id {
+            self.loaded_packs.insert(requested_id.clone(), pack_sha);
+            self.missing_packs.remove(&requested_id);
         }
 
         // 1. Goods pack (`goods.json`: `goods[]` with `measures["si.mass_kg"]`, `measures["si.volume_l"]`)
-        if id == "goods" || category == "market" || pack_val.get("goods").is_some() {
+        if effective_id == "goods" || category == "market" || pack_val.get("goods").is_some() {
             self.parse_goods_pack(&pack_val);
             return followups;
         }
 
         // 2. Neighborhood pack (`neighborhood.*`: `entries` with `kind: "room"` & `kind: "exit"`)
-        if category == "neighborhood" || id.starts_with("neighborhood.") {
+        if category == "neighborhood" || effective_id.starts_with("neighborhood.") {
             if let Some((rooms, portals)) = parse_neighborhood_pack(&pack_val) {
-                let key = if id.is_empty() {
+                let key = if effective_id.is_empty() {
                     self.pack_id.clone()
                 } else {
-                    id.clone()
+                    effective_id.clone()
                 };
                 self.neighborhood_cache
                     .insert(key.clone(), (rooms.clone(), portals.clone()));
@@ -1603,9 +1806,22 @@ impl PortWalkState {
                     let target = self.server_location_key.clone();
                     if self.rooms.iter().any(|r| r.entry_id == target) {
                         self.snap_to_room(&target);
+                    } else if let Some(by_name) = self
+                        .rooms
+                        .iter()
+                        .find(|r| {
+                            let rlow = r.name.to_ascii_lowercase();
+                            let tlow = self.room_title.trim().to_ascii_lowercase();
+                            rlow == tlow || (!rlow.is_empty() && tlow.contains(&rlow))
+                        })
+                        .map(|r| r.entry_id.clone())
+                    {
+                        self.server_location_key.clone_from(&by_name);
+                        self.snap_to_room(&by_name);
                     } else if let Some(first) = self.rooms.first().map(|r| r.entry_id.clone()) {
                         self.snap_to_room(&first);
                     }
+                    self.rebuild_last_room_interactions();
                     self.bump_scene();
                 }
             }
@@ -1616,7 +1832,7 @@ impl PortWalkState {
         if (category == "unit" || has_unit_interior(&pack_val))
             && let Some((sr, sp)) = parse_unit_interior_pack(&pack_val)
         {
-            let slug = normalize_unit_slug(&id);
+            let slug = normalize_unit_slug(&effective_id);
             if !slug.is_empty() {
                 self.unit_cache
                     .insert(slug.clone(), (sr.clone(), sp.clone()));
@@ -1629,12 +1845,20 @@ impl PortWalkState {
                     if self.ship_rooms.iter().any(|r| r.entry_id == target) {
                         self.snap_to_room(&target);
                     }
+                    self.rebuild_last_room_interactions();
                 }
                 self.bump_scene();
             }
         }
 
         followups
+    }
+
+    fn rebuild_last_room_interactions(&mut self) {
+        if let Some(view) = self.last_room_view.clone() {
+            let self_name = self.last_self_name.clone();
+            self.rebuild_actors_and_interactables(&view, self_name.as_deref());
+        }
     }
 
     fn parse_goods_pack(&mut self, pack_val: &Value) {
@@ -1671,6 +1895,7 @@ impl PortWalkState {
                     .max(1);
                 self.goods_meta.insert(gid, (label, mass, vol));
             }
+            self.refresh_trade_rows_from_goods_meta();
             return;
         }
         // Legacy `entries` fallback
@@ -1697,21 +1922,82 @@ impl PortWalkState {
                     .max(1);
                 self.goods_meta.insert(clean_gid, (name, mass, vol));
             }
+            self.refresh_trade_rows_from_goods_meta();
         }
     }
 
-    fn lookup_goods_meta(&self, gid: &str) -> (String, i64, i64) {
+    fn refresh_trade_rows_from_goods_meta(&mut self) {
+        let mut changed = false;
+        let asks_meta: Vec<Option<(String, i64, i64)>> = self
+            .asks
+            .iter()
+            .map(|a| self.lookup_goods_meta_opt(&a.good_id))
+            .collect();
+        for (ask, meta) in self.asks.iter_mut().zip(asks_meta) {
+            if let Some((label, mass_kg, vol_dm3)) = meta {
+                if ask.unit_mass_kg != mass_kg || ask.unit_vol_dm3 != vol_dm3 {
+                    ask.unit_mass_kg = mass_kg;
+                    ask.unit_vol_dm3 = vol_dm3;
+                    changed = true;
+                }
+                if (ask.good_name.is_empty() || ask.good_name == ask.good_id)
+                    && ask.good_name != label
+                {
+                    ask.good_name = label;
+                    changed = true;
+                }
+            }
+        }
+        let bids_meta: Vec<Option<(String, i64, i64)>> = self
+            .bids
+            .iter()
+            .map(|b| self.lookup_goods_meta_opt(&b.good_id))
+            .collect();
+        for (bid, meta) in self.bids.iter_mut().zip(bids_meta) {
+            if let Some((label, _, _)) = meta
+                && (bid.good_name.is_empty() || bid.good_name == bid.good_id)
+                && bid.good_name != label
+            {
+                bid.good_name = label;
+                changed = true;
+            }
+        }
+        let lots_meta: Vec<Option<(String, i64, i64)>> = self
+            .cargo_lots
+            .iter()
+            .map(|l| self.lookup_goods_meta_opt(&l.good_id))
+            .collect();
+        for (lot, meta) in self.cargo_lots.iter_mut().zip(lots_meta) {
+            if let Some((label, _, _)) = meta
+                && (lot.good_name.is_empty() || lot.good_name == lot.good_id)
+                && lot.good_name != label
+            {
+                lot.good_name = label;
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_scene();
+        }
+    }
+
+    fn lookup_goods_meta_opt(&self, gid: &str) -> Option<(String, i64, i64)> {
         if let Some(v) = self.goods_meta.get(gid) {
-            return v.clone();
+            return Some(v.clone());
         }
         let stripped = gid
             .strip_prefix("tacsim:")
             .or_else(|| gid.strip_prefix("tacsim."))
             .unwrap_or(gid);
         if let Some(v) = self.goods_meta.get(stripped) {
-            return v.clone();
+            return Some(v.clone());
         }
-        (gid.to_string(), 1000, 1000)
+        None
+    }
+
+    fn lookup_goods_meta(&self, gid: &str) -> (String, i64, i64) {
+        self.lookup_goods_meta_opt(gid)
+            .unwrap_or_else(|| (gid.to_string(), 1000, 1000))
     }
 
     /// Advance 20 Hz continuous avatar walking, turning, doorway collision, and BFS room sync.
@@ -1746,6 +2032,12 @@ impl PortWalkState {
             && now.saturating_duration_since(*sent_at) > PENDING_MOVE_TIMEOUT
         {
             self.pending_move_target = None;
+            self.pending_interaction = None;
+        }
+        if let Some(pi) = &self.pending_interaction
+            && now.saturating_duration_since(pi.created_at) > PENDING_MOVE_TIMEOUT * 2
+        {
+            self.pending_interaction = None;
         }
 
         if self.drawer.is_some() {
@@ -1812,6 +2104,7 @@ impl PortWalkState {
         match key {
             Key::Esc => {
                 self.stop_motion();
+                self.pending_interaction = None;
                 out.close_pixel_view = true;
             }
             Key::Char('v' | 'V') => {
@@ -2643,9 +2936,16 @@ impl PortWalkState {
             self.push_drawer_log(format!("[BUY] #{} has no available stock.", ask.listing_id));
             return;
         }
-        let max_fit = self.max_fit_for_ask(&ask);
         let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
         let want_qty = if preset == 0 {
+            if !self.stowage_loaded {
+                self.push_drawer_log(
+                    "[BUY] Hold stowage unavailable; press r to refresh before using Max Fit."
+                        .to_string(),
+                );
+                return;
+            }
+            let max_fit = self.max_fit_for_ask(&ask);
             if max_fit <= 0 {
                 self.push_drawer_log(format!(
                     "[BUY] Cannot fit or afford 1 unit of {} (max fit: 0).",
@@ -2660,10 +2960,17 @@ impl PortWalkState {
         if want_qty <= 0 {
             return;
         }
+        let Some(authorized_total_minor) = ask.unit_price_minor.checked_mul(want_qty) else {
+            self.push_drawer_log("[BUY] Quote total overflow; purchase halted.".to_string());
+            return;
+        };
+        let prior_quote_ids = self.own_quotes.iter().map(|q| q.quote_id.clone()).collect();
         self.pending_quote = Some(PendingQuote {
             listing_id: ask.listing_id,
             quantity: want_qty,
             max_unit_price_minor: ask.unit_price_minor,
+            authorized_total_minor,
+            prior_quote_ids,
             created_at: now,
         });
         // Canonical server syntax (`mush-market/src/commands.rs:700-711`): `+market/quote <id>=<qty>` (`C-20`).
@@ -2686,25 +2993,27 @@ impl PortWalkState {
             self.push_drawer_log(format!("[SELL] Bid #{} is already filled.", bid.listing_id));
             return;
         }
+        if !self.stowage_loaded {
+            self.push_drawer_log(
+                "[SELL] Hold stowage unavailable; press r to refresh before selling.".to_string(),
+            );
+            return;
+        }
         let held = self
             .cargo_lots
             .iter()
             .filter(|c| c.good_id == bid.good_id)
             .map(|c| c.quantity)
             .sum::<i64>();
+        if held <= 0 {
+            self.push_drawer_log(format!("[SELL] Hold carries 0 units of {}.", bid.good_name));
+            return;
+        }
         let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
         let sell_qty = if preset == 0 {
-            if held <= 0 {
-                self.push_drawer_log(format!("[SELL] Hold carries 0 units of {}.", bid.good_name));
-                return;
-            }
             held.min(bid.quantity_wanted)
         } else {
-            if self.stowage_loaded && held <= 0 {
-                self.push_drawer_log(format!("[SELL] Hold carries 0 units of {}.", bid.good_name));
-                return;
-            }
-            preset.min(bid.quantity_wanted)
+            preset.min(held).min(bid.quantity_wanted)
         };
         if sell_qty <= 0 {
             return;
@@ -2729,10 +3038,36 @@ impl PortWalkState {
         let Some(target) = self.interactables.get(self.focus_idx).cloned() else {
             return;
         };
-        // Flush any unreached room transition without optimistically overwriting server_location_key (`SSH-M-02`).
-        self.flush_pending_move_steps(&mut out.commands, now);
+        // Keep at most ONE movement command in flight; if a room transition is still
+        // unacknowledged, defer the interaction until authoritative `OutputEvent::Room` lands.
+        if self.pending_move_target.is_some()
+            || self.active_location_key != self.server_location_key
+        {
+            if self.pending_move_target.is_none() {
+                let from = self.server_location_key.clone();
+                let dest = self.active_location_key.clone();
+                let _ = self.try_send_single_move_hop(&from, &dest, now, &mut out.commands);
+            }
+            self.pending_interaction = Some(PendingInteraction {
+                action: target.action,
+                target_room: self.active_location_key.clone(),
+                manifest_panels: manifest_panels.to_vec(),
+                created_at: now,
+            });
+            return;
+        }
 
-        match target.action {
+        self.execute_interact_action(target.action, manifest_panels, now, out);
+    }
+
+    fn execute_interact_action(
+        &mut self,
+        action: InteractAction,
+        manifest_panels: &[String],
+        now: Instant,
+        out: &mut WalkKeyOutcome,
+    ) {
+        match action {
             InteractAction::OpenDrawer(kind) => {
                 self.open_drawer(kind, manifest_panels, &mut out.queries, now);
             }
@@ -2749,6 +3084,62 @@ impl PortWalkState {
                 out.enter_helm_cockpit = true;
             }
         }
+    }
+
+    fn try_send_single_move_hop(
+        &mut self,
+        from_id: &str,
+        target_id: &str,
+        now: Instant,
+        cmds: &mut Vec<String>,
+    ) -> bool {
+        if from_id == target_id || self.pending_move_target.is_some() {
+            return false;
+        }
+        if let Some((cmd, hop_room)) = self.first_bfs_step(from_id, target_id) {
+            self.pending_move_target = Some((hop_room, now));
+            self.next_move_allowed_at = Some(now + MOVE_STEP_COOLDOWN);
+            cmds.push(cmd);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn advance_pending_interaction_move(&mut self, now: Instant) {
+        let Some(target_room) = self
+            .pending_interaction
+            .as_ref()
+            .map(|pi| pi.target_room.clone())
+        else {
+            return;
+        };
+        if self.server_location_key == target_room || self.pending_move_target.is_some() {
+            return;
+        }
+        let from = self.server_location_key.clone();
+        let mut step_cmds = Vec::new();
+        if self.try_send_single_move_hop(&from, &target_room, now, &mut step_cmds) {
+            self.pending_orders.extend(step_cmds);
+        } else {
+            self.pending_interaction = None;
+        }
+    }
+
+    fn resume_pending_interaction_if_arrived(&mut self, now: Instant) {
+        let arrived = self.pending_interaction.as_ref().is_some_and(|pi| {
+            self.pending_move_target.is_none() && self.server_location_key == pi.target_room
+        });
+        if !arrived {
+            return;
+        }
+        let Some(pi) = self.pending_interaction.take() else {
+            return;
+        };
+        let mut out = WalkKeyOutcome::default();
+        self.execute_interact_action(pi.action, &pi.manifest_panels, now, &mut out);
+        self.pending_orders.extend(out.commands);
+        self.pending_followup_queries.extend(out.queries);
     }
 
     fn step_avatar(&mut self, fwd_m: f64, strafe_m: f64, now: Instant, cmds: &mut Vec<String>) {
@@ -2857,6 +3248,15 @@ impl PortWalkState {
             }
         }
 
+        if self.active_location_key != old_loc
+            && self
+                .pending_interaction
+                .as_ref()
+                .is_some_and(|pi| pi.target_room != self.active_location_key)
+        {
+            self.pending_interaction = None;
+        }
+
         // 1-in-flight BFS server movement synchronization
         if self.active_location_key != self.server_location_key
             && self.pending_move_target.is_none()
@@ -2876,32 +3276,6 @@ impl PortWalkState {
             || self.active_location_key != old_loc
         {
             self.bump_scene();
-        }
-    }
-
-    /// Emit pending BFS room steps without optimistically overwriting `server_location_key`;
-    /// incoming `OutputEvent::Room` confirms the real server location (`SSH-M-02`).
-    fn flush_pending_move_steps(&mut self, cmds: &mut Vec<String>, now: Instant) {
-        if self.active_location_key == self.server_location_key {
-            return;
-        }
-        let mut cur = self.server_location_key.clone();
-        let mut last_hop: Option<String> = None;
-        for _ in 0..8 {
-            if cur == self.active_location_key {
-                break;
-            }
-            let Some((cmd, next_room)) = self.first_bfs_step(&cur, &self.active_location_key)
-            else {
-                break;
-            };
-            cmds.push(cmd);
-            last_hop = Some(next_room.clone());
-            cur = next_room;
-        }
-        if let Some(hop) = last_hop {
-            self.pending_move_target = Some((hop, now));
-            self.next_move_allowed_at = Some(now + MOVE_STEP_COOLDOWN);
         }
     }
 
@@ -3524,6 +3898,15 @@ impl PortWalkState {
     }
 
     fn max_fit_for_ask(&self, ask: &AskRow) -> i64 {
+        if !self.stowage_loaded
+            || self.stowage.max_cargo_kg <= 0
+            || self.stowage.max_cargo_m3 <= 0.0
+        {
+            return 0;
+        }
+        let (unit_mass_kg, unit_vol_dm3) = self
+            .lookup_goods_meta_opt(&ask.good_id)
+            .map_or((ask.unit_mass_kg, ask.unit_vol_dm3), |(_, m, v)| (m, v));
         let by_avail = ask.quantity.max(0);
         let by_cash = if ask.unit_price_minor > 0 {
             (self.credits_minor.max(0)) / ask.unit_price_minor
@@ -3531,15 +3914,15 @@ impl PortWalkState {
             by_avail
         };
         let free_kg = (self.stowage.max_cargo_kg - self.stowage.cargo_kg).max(0);
-        let by_mass = if ask.unit_mass_kg > 0 {
-            free_kg / ask.unit_mass_kg
+        let by_mass = if unit_mass_kg > 0 {
+            free_kg / unit_mass_kg
         } else {
             by_avail
         };
         let free_dm3 =
             ((self.stowage.max_cargo_m3 - self.stowage.cargo_m3).max(0.0) * 1000.0).floor() as i64;
-        let by_vol = if ask.unit_vol_dm3 > 0 {
-            free_dm3 / ask.unit_vol_dm3
+        let by_vol = if unit_vol_dm3 > 0 {
+            free_dm3 / unit_vol_dm3
         } else {
             by_avail
         };
@@ -3575,6 +3958,23 @@ impl PortWalkState {
         } else {
             self.balance_text.clone()
         };
+        if !self.stowage_loaded {
+            return vec![
+                Line::from(vec![
+                    Span::styled("Wallet: ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        wallet,
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                gauge_row("Hold Mass", 0.0, 1.0, "--".to_string(), utf8),
+                gauge_row("Packed Vol", 0.0, 1.0, "--".to_string(), utf8),
+                gauge_row("Reaction", 0.0, 1.0, "--".to_string(), utf8),
+                gauge_row("Stores", 0.0, 1.0, "--".to_string(), utf8),
+            ];
+        }
         vec![
             Line::from(vec![
                 Span::styled("Wallet: ", Style::default().fg(Color::Gray)),
@@ -3750,7 +4150,11 @@ impl PortWalkState {
                         for idx in visible_window(self.asks.len(), self.cursor_row, list_rows) {
                             if let Some(ask) = self.asks.get(idx) {
                                 let sel = idx == self.cursor_row;
-                                let fit = self.max_fit_for_ask(ask);
+                                let fit_text = if self.stowage_loaded {
+                                    self.max_fit_for_ask(ask).to_string()
+                                } else {
+                                    "--".to_string()
+                                };
                                 let mark = if sel { "> " } else { "  " };
                                 let st = if sel {
                                     Style::default()
@@ -3760,7 +4164,7 @@ impl PortWalkState {
                                     Style::default().fg(Color::Gray)
                                 };
                                 let row = format!(
-                                    "{mark}#{:<4} {:<16} {:>5} {:>10} fit:{fit}",
+                                    "{mark}#{:<4} {:<16} {:>5} {:>10} fit:{fit_text}",
                                     ask.listing_id,
                                     truncate_str(&ask.good_name, 16),
                                     ask.quantity,
@@ -3782,12 +4186,16 @@ impl PortWalkState {
                     for idx in visible_window(self.bids.len(), self.cursor_row, list_rows) {
                         if let Some(bid) = self.bids.get(idx) {
                             let sel = idx == self.cursor_row;
-                            let held: i64 = self
-                                .cargo_lots
-                                .iter()
-                                .filter(|c| c.good_id == bid.good_id)
-                                .map(|c| c.quantity)
-                                .sum();
+                            let hold_text = if self.stowage_loaded {
+                                self.cargo_lots
+                                    .iter()
+                                    .filter(|c| c.good_id == bid.good_id)
+                                    .map(|c| c.quantity)
+                                    .sum::<i64>()
+                                    .to_string()
+                            } else {
+                                "--".to_string()
+                            };
                             let mark = if sel { "> " } else { "  " };
                             let st = if sel {
                                 Style::default()
@@ -3797,7 +4205,7 @@ impl PortWalkState {
                                 Style::default().fg(Color::Gray)
                             };
                             let row = format!(
-                                "{mark}#{:<4} {:<16} {:>5} {:>10} hold:{held}",
+                                "{mark}#{:<4} {:<16} {:>5} {:>10} hold:{hold_text}",
                                 bid.listing_id,
                                 truncate_str(&bid.good_name, 16),
                                 bid.quantity_wanted,
@@ -6236,5 +6644,537 @@ mod tests {
         }));
         assert_eq!(st.server_location_key, "room.p04_concourse");
         assert_eq!(st.active_location_key, "room.p04_concourse");
+    }
+
+    #[test]
+    fn pending_quote_requires_fresh_exact_listing_quantity_and_authorized_total() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let mut initial = live_port_trade_fixture();
+        // Seed a pre-existing quote on the exact same listing & qty BEFORE `+market/quote` is sent.
+        initial["open_quotes"] = json!([
+            {
+                "quote_id": 70,
+                "listing_id": 42,
+                "good": "volatiles",
+                "market": "ceres",
+                "quantity": 5,
+                "unit_price_minor": 10_000,
+                "total_minor": 50_000
+            }
+        ]);
+        let _ = st.observe_port_trade(&initial, now);
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        let buy = st.handle_key(Key::Char('b'), false, false, &[], now);
+        assert_eq!(buy.commands, vec!["+market/quote 42=5"]);
+        assert!(st.pending_quote.is_some());
+
+        // Pre-existing quote (#70), missing listing_id (#71), and wrong quantity (#72) must ALL be ignored.
+        let _ = st.observe_port_trade(
+            &json!({
+                "open_quotes": [
+                    {
+                        "quote_id": 70,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    },
+                    {
+                        "quote_id": 71,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    },
+                    {
+                        "quote_id": 72,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 2,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 20_000
+                    }
+                ]
+            }),
+            now + Duration::from_millis(100),
+        );
+        assert!(
+            st.take_orders().is_empty(),
+            "stale, wildcard-listing, and mismatched-qty quotes must never be accepted"
+        );
+        assert!(st.pending_quote.is_some());
+
+        // A fresh quote matching exact listing_id, exact quantity, and total <= authorized IS accepted.
+        let _ = st.observe_port_trade(
+            &json!({
+                "open_quotes": [
+                    {
+                        "quote_id": 70,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    },
+                    {
+                        "quote_id": 74,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    }
+                ]
+            }),
+            now + Duration::from_millis(200),
+        );
+        assert_eq!(st.take_orders(), vec!["+market/accept 74"]);
+        assert!(st.pending_quote.is_none());
+
+        // A fresh exact-listing/qty quote whose total_minor exceeds authorized_total MUST halt without accepting.
+        let buy2 = st.handle_key(
+            Key::Char('b'),
+            false,
+            false,
+            &[],
+            now + Duration::from_millis(300),
+        );
+        assert_eq!(buy2.commands, vec!["+market/quote 42=5"]);
+        let _ = st.observe_port_trade(
+            &json!({
+                "open_quotes": [
+                    {
+                        "quote_id": 75,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 55_000
+                    }
+                ]
+            }),
+            now + Duration::from_millis(400),
+        );
+        assert!(st.take_orders().is_empty());
+        assert!(
+            st.pending_quote.is_none(),
+            "total exceeding authorized_total must clear pending_quote instead of accepting"
+        );
+    }
+
+    #[test]
+    fn installing_neighborhood_pack_rebuilds_desks_and_occupants_on_real_floor() {
+        let mut st = PortWalkState::new();
+        let mut amb = std::collections::BTreeMap::new();
+        amb.insert(
+            "atlas".into(),
+            json!({ "pack": "neighborhood.stickney_yards", "entry": "room.p03_customs" }),
+        );
+        amb.insert(
+            "occupants".into(),
+            json!({ "npcs": ["#91"], "dormant": [], "players": [], "things": [] }),
+        );
+        st.observe_room(
+            &RoomView {
+                id: "#500".into(),
+                name: "Republic Customs Hall".into(),
+                zone: None,
+                desc: "Stickney customs.".into(),
+                contents: vec![ObjRef {
+                    id: "#91".into(),
+                    name: "Inspector Vance".into(),
+                }],
+                exits: Vec::new(),
+                ambient: amb,
+            },
+            Some("Pilot"),
+        );
+
+        // Before real pack lands, placeholder geometry puts everything on floor 0 near (0, 0).
+        assert_eq!(st.you_floor, 0);
+        assert!(!st.interactables.is_empty());
+        assert!(st.interactables.iter().all(|it| it.floor == 0));
+        assert_eq!(st.actors.len(), 1);
+        assert_eq!(st.actors[0].floor, 0);
+
+        // Installing the real neighborhood pack (floor 1, rect [100..130, 140..165]) must
+        // IMMEDIATELY rebuild desks AND occupants onto floor 1 inside the real bounds.
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "neighborhood.stickney_yards",
+            "category": "neighborhood",
+            "json": serde_json::to_string(&json!({
+                "entries": {
+                    "room.p03_customs": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Republic Customs Hall",
+                            "footprint": { "rect": [[100, 140], [130, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    }
+                }
+            })).unwrap()
+        }));
+
+        assert_eq!(st.you_floor, 1);
+        assert!((100.0..=130.0).contains(&st.you_x));
+        assert!((140.0..=165.0).contains(&st.you_y));
+        assert!(
+            st.interactables.len() >= 2,
+            "expected customs Jobs desk + Inspector Vance NPC interactable"
+        );
+        for it in &st.interactables {
+            assert_eq!(it.floor, 1, "stale placeholder floor on {:?}", it.label);
+            assert!(
+                (100.0..=130.0).contains(&it.x_m) && (140.0..=165.0).contains(&it.y_m),
+                "stale placeholder coords ({}, {}) on {:?}",
+                it.x_m,
+                it.y_m,
+                it.label
+            );
+        }
+        assert_eq!(st.actors.len(), 1);
+        assert_eq!(st.actors[0].name, "Inspector Vance");
+        assert_eq!(st.actors[0].floor, 1);
+        assert!((100.0..=130.0).contains(&st.actors[0].x_m));
+        assert!((140.0..=165.0).contains(&st.actors[0].y_m));
+    }
+
+    #[test]
+    fn interacting_during_unacknowledged_move_keeps_single_flight_and_resumes_on_room_ack() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_room(
+            &sample_room("Port Watch Arrivals", "room.c03_arrivals", None),
+            Some("Pilot"),
+        );
+
+        // Walk North across doorway into `room.c05_registry` -> sends `"n"` once.
+        let mut emitted = Vec::new();
+        for i in 0..16 {
+            let out = st.handle_key(
+                Key::Char('w'),
+                false,
+                false,
+                &[],
+                now + Duration::from_millis(250 * i),
+            );
+            emitted.extend(out.commands);
+        }
+        assert_eq!(emitted, vec!["n"]);
+        assert_eq!(st.active_location_key, "room.c05_registry");
+        assert_eq!(st.server_location_key, "room.c03_arrivals");
+        assert!(st.pending_move_target.is_some());
+
+        // Pressing `e` while `room.c05_registry` ack is still pending MUST NOT resend `"n"`.
+        let panels = vec![PORT_TRADE_FEED.to_string()];
+        let press_e = st.handle_key(
+            Key::Char('e'),
+            false,
+            false,
+            &panels,
+            now + Duration::from_secs(5),
+        );
+        assert!(
+            press_e.commands.is_empty(),
+            "must never duplicate an in-flight exit command: {:?}",
+            press_e.commands
+        );
+        assert!(
+            st.drawer.is_none(),
+            "interaction must wait for authoritative Room acknowledgement"
+        );
+        assert!(st.pending_interaction.is_some());
+
+        // Once authoritative Room ack for `room.c05_registry` arrives, queued interaction resumes.
+        st.observe_room(
+            &sample_room("Charter Registry", "room.c05_registry", None),
+            Some("Pilot"),
+        );
+        assert!(st.pending_move_target.is_none());
+        assert!(st.pending_interaction.is_none());
+        assert!(st.drawer.is_some());
+        st.close_drawer();
+
+        // Multi-hop single-flight test: server at `c03_arrivals`, predicted 2 hops away at `c07_exchange`.
+        st.observe_room(
+            &sample_room("Port Watch Arrivals", "room.c03_arrivals", None),
+            Some("Pilot"),
+        );
+        st.active_location_key = "room.c07_exchange".to_string();
+        assert!(st.pending_move_target.is_none());
+
+        let first_hop = st.handle_key(
+            Key::Char('e'),
+            false,
+            false,
+            &panels,
+            now + Duration::from_secs(6),
+        );
+        assert_eq!(
+            first_hop.commands.len(),
+            1,
+            "multi-hop interact must send at most ONE movement command in flight"
+        );
+        let (hop1_cmd, hop1_room) = st
+            .first_bfs_step("room.c03_arrivals", "room.c07_exchange")
+            .unwrap();
+        assert_eq!(first_hop.commands, vec![hop1_cmd]);
+        assert!(st.drawer.is_none());
+
+        // Intermediate hop ack dispatches the second hop (still 1 in flight, drawer not yet open).
+        st.observe_room(
+            &sample_room("Intermediate Concourse", &hop1_room, None),
+            Some("Pilot"),
+        );
+        let (hop2_cmd, hop2_room) = st.first_bfs_step(&hop1_room, "room.c07_exchange").unwrap();
+        assert_eq!(hop2_room, "room.c07_exchange");
+        assert_eq!(st.take_orders(), vec![hop2_cmd]);
+        assert!(st.drawer.is_none());
+
+        // Final Room ack completes the walk and resumes the queued interaction.
+        st.observe_room(
+            &sample_room("Port Commodity Exchange", "room.c07_exchange", None),
+            Some("Pilot"),
+        );
+        assert!(st.pending_move_target.is_none());
+        assert!(st.pending_interaction.is_none());
+        assert!(st.drawer.is_some());
+    }
+
+    #[test]
+    fn missing_pack_found_false_does_not_permanently_mark_loaded_and_retries_on_new_manifest() {
+        let mut st = PortWalkState::new();
+        let manifest_v1 = json!({
+            "op": "manifest",
+            "packs": [
+                { "id": "goods", "category": "market", "sha256": "aaa111" },
+                { "id": "neighborhood.stickney_yards", "category": "neighborhood", "sha256": "bbb111" }
+            ]
+        });
+        let q1 = st.observe_tacsim_content(&manifest_v1);
+        assert_eq!(
+            q1,
+            vec![(
+                TACSIM_CONTENT_FEED.to_string(),
+                json!({ "op": "pack", "id": "goods" })
+            )]
+        );
+
+        // Server answers `found: false` (e.g. pack temporarily absent or raced).
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": false,
+            "id": "goods"
+        }));
+        assert!(
+            !st.loaded_packs.contains_key("goods"),
+            "found:false must NEVER permanently mark a pack as loaded"
+        );
+        assert!(!st.in_flight_packs.contains("goods"));
+
+        // Repeating the exact same manifest must NOT storm duplicate retries.
+        let q_dup = st.observe_tacsim_content(&manifest_v1);
+        assert!(q_dup.is_empty(), "same manifest must not storm: {q_dup:?}");
+
+        // A new manifest revision (updated sha256) MUST retry `goods` and load it cleanly!
+        let manifest_v2 = json!({
+            "op": "manifest",
+            "packs": [
+                { "id": "goods", "category": "market", "sha256": "aaa222" },
+                { "id": "neighborhood.stickney_yards", "category": "neighborhood", "sha256": "bbb111" }
+            ]
+        });
+        let q2 = st.observe_tacsim_content(&manifest_v2);
+        assert_eq!(
+            q2,
+            vec![(
+                TACSIM_CONTENT_FEED.to_string(),
+                json!({ "op": "pack", "id": "goods" })
+            )]
+        );
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "goods",
+            "sha256": "aaa222",
+            "category": "market",
+            "json": serde_json::to_string(&json!({
+                "goods": [{
+                    "id": "volatiles",
+                    "label": "Water Ice",
+                    "measures": { "si.mass_kg": 1000, "si.volume_l": 1000 }
+                }]
+            })).unwrap()
+        }));
+        assert_eq!(
+            st.loaded_packs.get("goods").map(String::as_str),
+            Some("aaa222")
+        );
+    }
+
+    #[test]
+    fn ship_change_or_null_stowage_resets_hold_and_blocks_trade_until_fresh_snapshot() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+
+        // Fresh state starts unloaded (no fake 100,000 kg defaults).
+        assert!(!st.stowage_loaded);
+
+        // Load Ship A (#401, Salt Moth) with 4t metals & 100t hold.
+        let _ = st.observe_port_trade(&live_port_trade_fixture(), now);
+        assert!(st.stowage_loaded);
+        assert_eq!(st.stowage.max_cargo_kg, 100_000);
+        assert_eq!(st.cargo_lots.len(), 1);
+        assert!(st.max_fit_for_ask(&st.asks[0]) > 0);
+
+        // Switch to Ship B (#402, Copperfinch) with `stowage: null` -> MUST wipe Ship A's hold!
+        let _ = st.observe_port_trade(
+            &json!({
+                "ship": {
+                    "hull_id": "#402",
+                    "hull_name": "Copperfinch",
+                    "unit": "tacsim.unit.corvette",
+                    "docked": true,
+                    "stowage": null
+                }
+            }),
+            now + Duration::from_secs(1),
+        );
+        assert!(!st.stowage_loaded);
+        assert_eq!(st.stowage.cargo_kg, 0);
+        assert_eq!(st.stowage.max_cargo_kg, 0);
+        assert!(st.cargo_lots.is_empty());
+        assert_eq!(st.max_fit_for_ask(&st.asks[0]), 0);
+
+        // Max Fit buy and Sell MUST both refuse while stowage is unloaded.
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        st.qty_preset_idx = 4; // Max Fit
+        let blocked_buy = st.handle_key(
+            Key::Char('b'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(2),
+        );
+        assert!(blocked_buy.commands.is_empty());
+
+        let _ = st.handle_key(Key::Right, false, false, &[], now + Duration::from_secs(2));
+        let blocked_sell = st.handle_key(
+            Key::Char('s'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(2),
+        );
+        assert!(blocked_sell.commands.is_empty());
+
+        // Fresh stowage for Ship B (10t hold, 2t metals) re-enables Max Fit and Sell accurately.
+        let _ = st.observe_port_trade(
+            &json!({
+                "ship": {
+                    "hull_id": "#402",
+                    "hull_name": "Copperfinch",
+                    "stowage": {
+                        "cargo_kg": 2_000,
+                        "cargo_limit_kg": 10_000,
+                        "cargo_l": 2_000,
+                        "cargo_limit_l": 10_000,
+                        "items": [{ "good": "metals", "qty": 2 }]
+                    }
+                }
+            }),
+            now + Duration::from_secs(3),
+        );
+        assert!(st.stowage_loaded);
+        let sell_b = st.handle_key(
+            Key::Char('s'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(3),
+        );
+        assert_eq!(sell_b.commands, vec!["+market/sell 43=2"]);
+
+        // `ship: null` clears active hull and resets stowage.
+        let _ = st.observe_port_trade(&json!({ "ship": null }), now + Duration::from_secs(4));
+        assert!(!st.stowage_loaded);
+        assert!(st.cargo_lots.is_empty());
+    }
+
+    #[test]
+    fn max_fit_uses_live_goods_catalogue_weights_after_goods_pack_arrives() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+
+        // Trade frame arrives BEFORE `goods` pack: heavy 30t hauler power plant initially falls back to 1,000 kg.
+        let _ = st.observe_port_trade(
+            &json!({
+                "enabled": true,
+                "venue": "ceres",
+                "balance_minor": 100_000_000,
+                "listings": [
+                    {
+                        "id": 99,
+                        "side": "ask",
+                        "good": "tacsim.part.plant.hauler_mk1",
+                        "good_label": "hauler power plant",
+                        "vendor_name": "Freeport Yard",
+                        "unit_price_minor": 100_000,
+                        "available_qty": 100
+                    }
+                ],
+                "ship": {
+                    "hull_id": "#401",
+                    "hull_name": "Salt Moth",
+                    "stowage": {
+                        "cargo_kg": 4_000,
+                        "cargo_limit_kg": 100_000,
+                        "cargo_l": 4_000,
+                        "cargo_limit_l": 120_000,
+                        "items": []
+                    }
+                }
+            }),
+            now,
+        );
+        assert_eq!(st.asks.len(), 1);
+        assert_eq!(st.max_fit_for_ask(&st.asks[0]), 96);
+
+        // Real `goods` pack lands with 30,000 kg / 30,000 L for `tacsim.part.plant.hauler_mk1`.
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "goods",
+            "category": "market",
+            "json": serde_json::to_string(&json!({
+                "goods": [{
+                    "id": "tacsim.part.plant.hauler_mk1",
+                    "label": "hauler power plant",
+                    "measures": { "si.mass_kg": 30_000, "si.volume_l": 30_000 }
+                }]
+            })).unwrap()
+        }));
+
+        // Free hold is 96,000 kg / 116,000 L -> 96,000 / 30,000 = 3 units (NOT 96!).
+        assert_eq!(st.asks[0].unit_mass_kg, 30_000);
+        assert_eq!(st.asks[0].unit_vol_dm3, 30_000);
+        assert_eq!(st.max_fit_for_ask(&st.asks[0]), 3);
+
+        // Executing Max Fit buy immediately quotes 3 units, not 96.
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        st.qty_preset_idx = 4; // Max Fit
+        let buy = st.handle_key(
+            Key::Char('b'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(buy.commands, vec!["+market/quote 99=3"]);
     }
 }
