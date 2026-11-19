@@ -351,13 +351,13 @@ fn story(venue: &str, entry: &str, side: u16) {
 }
 
 /// **RS.4's gate on Urvara Reach (512)**: story (b), extended.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn rs4_story_b_the_vacated_hull_goes_home_on_urvara_reach() {
     story("urvara", "urvara_port", 512);
 }
 
 /// **RS.4's gate on Ahuna Flank (256)**: story (b), extended.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn rs4_story_b_the_vacated_hull_goes_home_on_ahuna_flank() {
     story("ahuna", "ahuna_port", 256);
 }

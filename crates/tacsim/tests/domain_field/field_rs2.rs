@@ -327,13 +327,13 @@ async fn bay_on(ground: &Ground) {
 }
 
 /// **RS.2 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn rs2_ahuna_the_bay_mends_on_the_site_waits_under_a_field_and_finishes_under_way() {
     bay_on(&AHUNA_FLANK).await;
 }
 
 /// **RS.2 at 512**: Urvara Reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn rs2_urvara_the_bay_mends_on_the_site_waits_under_a_field_and_finishes_under_way() {
     bay_on(&URVARA_REACH).await;
 }

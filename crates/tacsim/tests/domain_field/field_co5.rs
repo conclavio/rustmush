@@ -69,7 +69,7 @@ fn console(w: &World, unit: ObjId) -> (Vec<String>, Option<ObjId>) {
 }
 
 /// **Story 1** (this module's head).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn co5_a_combat_hire_is_seated_in_the_escort_tank_and_fires_under_its_contract() {
     let mut field = opened(
         &Plan {

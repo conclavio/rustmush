@@ -223,7 +223,7 @@ fn gc5_a_casualty_left_behind_is_found_by_a_scan_and_brought_home() {
 }
 
 /// **GC.5's gate at 256** on Ahuna Flank (`custody_rig::non_friend_load_captures_the_crew`; its 512 run is `crew_custody`'s).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc5_a_non_friend_load_takes_custody_and_captures_the_crew() {
     crate::custody_rig::non_friend_load_captures_the_crew(&AHUNA_FLANK).await;
 }
@@ -339,7 +339,7 @@ fn gc5_a_lease_rig_out_28_days_is_written_off_and_handed_back_when_loaded() {
 }
 
 /// **The twin at 256** on Ahuna Flank (`custody_rig::captors_field_close_keeps_the_captive`; its 512 run is `crew_custody`'s).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc5_review_the_captors_field_close_keeps_the_captive() {
     crate::custody_rig::captors_field_close_keeps_the_captive(&AHUNA_FLANK).await;
 }

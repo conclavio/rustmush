@@ -192,7 +192,7 @@ fn gc10_two_rosters_in_one_organization_are_friends() {
 /// **GC.10's second gate** (Q-36-11): A fires on B, a fellow member of the Skulks' organization.
 /// At demotion A's standing with it falls by the bounded amount, the change names A as its voider,
 /// B may not void it, and A's `+field/void` cancels it and is recorded beside it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc10_a_leader_voids_friendly_fire_standing() {
     let mut rig = stocked_tuned(|cfg| {

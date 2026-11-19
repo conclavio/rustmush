@@ -191,7 +191,7 @@ fn pump(rig: &mut Rig, rx: &mut Receiver<ArenaOut>, lines: &mut Vec<LedgerEvent>
     }
 }
 
-/// Pump and tick until `done` holds or `secs` of wall time pass (`field_host_rig::until`, with
+/// Pump and tick until `done` holds or `secs` of tokio time pass (`field_host_rig::until`, with
 /// the listeners' ears); answers whether it held. Every tick's submission is landed, and none may
 /// be a refused tow act.
 async fn until(
@@ -200,13 +200,10 @@ async fn until(
     secs: u64,
     mut done: impl FnMut(&mut Rig, &[LedgerEvent], &Ears) -> bool,
 ) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-    let mut beat = 0_u32;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let mut pace = crate::field_host_rig::Pace::new(secs);
+    while let Some(owed) = pace.beat().await {
         pump(rig, rx, lines, ears);
-        beat += 1;
-        if beat.is_multiple_of(8) {
+        for _ in 0..owed {
             let landed = match ears.hold {
                 Some(op) => second_holding(rig, op),
                 None => second(rig),
@@ -568,13 +565,13 @@ async fn released_on(ground: &Ground) {
 }
 
 /// **FR.5 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_ahuna_the_casualty_is_struck_in_tow_and_released_in_the_field() {
     released_on(&AHUNA_FLANK).await;
 }
 
 /// **FR.5 at 512**: Urvara Reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_urvara_the_casualty_is_struck_in_tow_and_released_in_the_field() {
     released_on(&URVARA_REACH).await;
 }
@@ -639,13 +636,13 @@ async fn fallen_on(ground: &Ground) {
 }
 
 /// **FR.5 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_ahuna_a_tug_that_falls_drops_its_casualty_where_it_stands() {
     fallen_on(&AHUNA_FLANK).await;
 }
 
 /// **FR.5 at 512**: Urvara Reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_urvara_a_tug_that_falls_drops_its_casualty_where_it_stands() {
     fallen_on(&URVARA_REACH).await;
 }
@@ -778,13 +775,13 @@ async fn withdrawn_on(ground: &Ground) {
 }
 
 /// **FR.5 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_ahuna_a_coupled_pair_is_withdrawn_at_the_ramp_and_loaded() {
     withdrawn_on(&AHUNA_FLANK).await;
 }
 
 /// **FR.5 at 512**: Urvara Reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_urvara_a_coupled_pair_is_withdrawn_at_the_ramp_and_loaded() {
     withdrawn_on(&URVARA_REACH).await;
 }
@@ -929,7 +926,7 @@ async fn lost_in_the_load_window_on(ground: &Ground) {
 }
 
 /// **Story 4 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_ahuna_a_carrier_lost_before_the_load_keeps_the_pair_in_the_field() {
     lost_in_the_load_window_on(&AHUNA_FLANK).await;
 }
@@ -982,7 +979,7 @@ async fn lost_in_the_recover_window_on(ground: &Ground) {
 }
 
 /// **Story 5 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_ahuna_a_carrier_lost_before_the_recover_keeps_the_rig_in_the_field() {
     lost_in_the_recover_window_on(&AHUNA_FLANK).await;
 }
@@ -1022,7 +1019,7 @@ async fn lost_before_the_release_on(ground: &Ground) {
 }
 
 /// **Story 6 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_ahuna_a_rig_whose_carrier_is_lost_is_kept_in_the_field() {
     lost_before_the_release_on(&AHUNA_FLANK).await;
 }
@@ -1090,7 +1087,7 @@ async fn lost_after_the_exit_lands_on(ground: &Ground) {
 }
 
 /// **Story 7 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr5_ahuna_a_carrier_lost_after_the_exit_lands_strikes_the_exit() {
     lost_after_the_exit_lands_on(&AHUNA_FLANK).await;
 }

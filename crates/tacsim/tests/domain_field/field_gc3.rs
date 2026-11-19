@@ -94,7 +94,7 @@ fn wrecked(rig: &crate::driving_rig::Rig, unit: ObjId) -> bool {
 /// its epoch destroyed. The launch and every tick's landing go through the composed path (doc
 /// 36a lane 4: `launched_composed`, `until_composed`), production's, so the black box holds the
 /// epoch's open line and the close line is asserted, not skipped.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc3_an_irrecoverable_hull_leaves_remains_and_closes_destroyed() {
     let mut rig = stocked_tuned(|cfg| {
@@ -261,7 +261,7 @@ fn gc3_a_carrier_with_its_drive_destroyed_cannot_lift() {
 /// **The hull's loss, fought** (Q-36-8): B's gun takes the last point of the Dray-P's hull in a
 /// field. At demotion the carrier is a wreck on the index, its pilot aboard is stranded, the rig
 /// in its bay is a wreck, and a lift meets the wreck's refusal.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc3_a_carrier_whose_hull_falls_strands_its_crew_and_wrecks_its_bay() {
     let mut rig = stocked_tuned(tune);
@@ -371,7 +371,7 @@ async fn gc3_a_carrier_whose_hull_falls_strands_its_crew_and_wrecks_its_bay() {
 /// destroyed (GC.3's fixture), `+ship/plan ceres` and the dry run of a queued `+ship/order depart
 /// ceres` both read the drive's refusal, as `+ship/lift ceres` does; before the fix both read a
 /// plan where the filing refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn lane3_the_dry_run_reads_the_lift_refusal_the_filing_makes() {
     let mut rig = stocked_tuned(tune);
     let (a, row, _) = on_pad(&mut rig, 1);

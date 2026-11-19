@@ -111,7 +111,7 @@ pub(crate) fn towing(rig: &mut crate::driving_rig::Rig, tug: ObjId) -> Option<Ob
 /// field's demotion the tug is remains and off the ground, the tow has ended with it, and the
 /// casualty keeps its row on the index at the cell it stands on; before the fix the close read the
 /// casualty's pose off its gone tug and dropped the row.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn lane3_a_casualty_keeps_its_row_when_its_tug_falls_irrecoverable() {
     let mut rig = stocked_tuned(lane3_tune);
@@ -187,7 +187,7 @@ async fn lane3_a_casualty_keeps_its_row_when_its_tug_falls_irrecoverable() {
 }
 
 /// **GC.4's gate: story (a)'s main path.**
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_lift() {
     let mut rig = stocked_tuned(|cfg| {
@@ -456,7 +456,7 @@ async fn gc4_the_wingman_drags_the_casualty_to_the_ramp_and_loads_it_before_the_
 /// the instant the first left it — where before the fix every demotion restarted the 28-day
 /// write-off clock (doc 36 cut GC.5), so a rig abandoned on day 0 and fought over on day 27
 /// waited until day 55.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn lane3_a_later_field_never_restarts_the_write_off_clock() {
     let mut rig = stocked_tuned(lane3_tune);
     let (a, _, tvs) = on_pad(&mut rig, 2);
@@ -613,7 +613,7 @@ async fn field_settles(
 /// carrier's bay through `+tv/1 tow go` and `+tv/1 load go`, weighs its dry mass in the
 /// passage's basis — `+ship/plan` reads a plan and `+ship/lift ceres` files — where before the
 /// fix every departure of that carrier answered `PLAN_DARK` for good.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn lane3_a_loaded_combat_casualty_never_darkens_the_lift() {
     let mut rig = stocked_tuned(lane3_tune);
     let (a, row, tvs) = on_pad(&mut rig, 1);
@@ -692,7 +692,7 @@ async fn lane3_a_loaded_combat_casualty_never_darkens_the_lift() {
 /// the nearest carrier when that carrier is a stranger's. The stranger's Dray-P sits on Urvara
 /// Reach's pad; its rig stands beside Ahuna Flank's ramp (a staff placement standing in for the
 /// drive over), tows the captain's casualty, and `+tv/1 load` is refused naming the Salt Moth.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn lane3_a_load_into_a_strangers_carrier_is_refused() {
     let mut rig = stocked_tuned(lane3_tune);
     let (a, _, a_tvs) = on_pad(&mut rig, 1);

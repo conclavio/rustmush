@@ -102,7 +102,7 @@ async fn answered_wilco(field: &mut Field, slot: usize) -> bool {
 }
 
 /// **Story 1** (this module's head).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_back() {
     let mut field = opened(
@@ -352,7 +352,7 @@ async fn ap4a_a_leader_orders_a_members_rig_to_guard_and_its_owner_can_set_it_ba
 }
 
 /// **Story 2** (this module's head): a hired crew's slot takes no posture order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap4a_a_hired_crews_slot_takes_no_posture_order() {
     let mut field = opened(
         &Plan {
@@ -396,7 +396,7 @@ async fn ap4a_a_hired_crews_slot_takes_no_posture_order() {
 
 /// **Story 3** (this module's head; doc 47 unit CO.3, R-47-4): a leader's order after the
 /// grace goes to the member's mind, which flies it under the absent-player limits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn co3_a_leaders_order_after_the_grace_goes_to_the_members_mind() {
     let mut field = opened(
         &Plan {

@@ -904,3 +904,189 @@ median at the 60 s threshold, against 1.23-1.87× under the hash. The threshold 
 Weights go stale as tests change; `scripts/tacsim-cells.py weights <junit dirs>` regenerates them, and
 `ci_tacsim_shards` fails on a weight for a test that no longer exists.
 
+## TS.10 (2026-11-18) — the clock seam
+
+Doc 43 §7's TS.10 row, designed in [43c-the-clock-seam.md](43c-the-clock-seam.md), which this cut brings to
+Draft 0.2: every anchor and count re-read at main `1e9b4117`, the corrections made in place and listed in its §8.
+The owner asked for it to be built on 2026-11-18.
+
+**The owner's questions, at the lead's defaults** (43c §7; not ruled, flagged here for the owner):
+- **Q-43c-1, where `TimeSource` lives:** `mush-config`, beside `unix_now_s`. That takes no new dependency:
+  `mush-config` already depends on `tokio`.
+- **Q-43c-2, TS.10c's scope:** in-process memory-store rigs only. Never Redis, a child process, the gateway
+  generations, the bot's SSH stories or `web_e2e`.
+- **Q-43c-3:** moot. The domain binaries landed on 2026-11-05.
+
+**The gate** (the owner's, agreed 2026-11-18: "keep the gate, agreed"): TS.10b, TS.10c and TS.10e are built only
+if TS.10a's converted field tests lose at least half their wall time. They lost 63% (below), so the train goes
+on. TS.10d (`[tacsim.time].play_rate`) is not built. It waits on the owner's rulings on `PLAY_RATE`
+(docs/testing-rate.md §5).
+
+### TS.10a — the field family on the paused clock
+
+No engine change. Every edit is under `crates/tacsim/tests/`.
+
+**What was built.**
+- **`field_host_rig::Pace`, the wait loop's beat.** The deadline is a `tokio::time::Instant`. The beat is a
+  25-ms tokio sleep, as before.
+  - **On a paused clock** the world is stepped one second for each second of virtual time the arena has seen,
+    so the world and the arena it hosts keep one clock. Doc 43c §1's 5:1 ratio goes.
+  - **On a running clock** it keeps the old rule exactly, one world second every eighth beat. The dispatch
+    stories run on a running clock and still need that rule.
+  - The ratio lived in the beat count, not the deadline, so a paused runtime alone would have kept it (43c §1,
+    Draft 0.2). Which clock is running is read by `clock_is_paused`: a paused clock does not move while the
+    thread spins, and a running one does.
+- **The loops that use it.** `until_with`, `field_raiders_rig::until`, and the five copies of the loop in
+  modules: `crew_exit`, `field_ap1`, `field_carrier`, `field_crash` and `field_fr5`. `field_ap8`, `field_mw7`,
+  `field_mw14a` and `field_mw14c` keep their own loops, with the deadline moved to `tokio::time::Instant`.
+- **181 of `domain_field`'s 189 two-worker tests** now run on `#[tokio::test(flavor = "current_thread",
+  start_paused = true)]`, in 47 modules. The pilot was the two the row named: gc4's wingman journey and
+  `field_host`'s one test. The rest followed in one step, since the pilot held.
+- **What did not move, eight tests:**
+  - m8_world's four dispatch stories and c4_filed_mind_field's two. Their genuine Registry ratings and the
+    author service run in real time (43c §3.3). One of c4's is in the default sweep, and its loops wait on that
+    same service.
+  - Two that lean on the old ratio, below.
+
+**No rig blocks its runtime thread** (43c §3.1). Nothing hung, and nothing needed `spawn_blocking`.
+
+**What leaned on the old clock** (rule 2.3 #7: each investigated, none retuned):
+- **`field_mw7`'s two hand-over stories and `field_ap5`'s link-loss story.** Each failed on "at five minutes the
+  mind has the unit": the record said handed, and the pilot's seat was still bound.
+  - **The cause.** `field_mw7::pass` steps up to about 280 world seconds without awaiting. The arena's inbox is
+    bounded. On one thread the arena never ran during the loop, the inbox filled, and the hand-over's
+    `offer(Absent)` was refused, so `field::absent`'s `tell_arena` released no seat. On two workers the arena
+    drained the inbox alongside.
+  - **The fix.** `pass` now yields after each world second, with no tokio time passing.
+  - **The wrong guess first.** I first took it for the arena's answer arriving late and added an egress-only
+    wait. It failed 6 of 6; the yield passed 4 of 4 stress iterations of all 14 tests, 8 at a time.
+- **`ex6_escort` (one story; stays on two workers).**
+  - **What happens.** The field closes before the miner's `recover go`, because the raider's side is out of it,
+    so the journey ends with the field.
+  - **Why it fails.** The escort watch steps on the port tick (`services::escort::watch`). Its last tick reads
+    the escort out of a field that is gone and counts that whole interval far.
+  - **The numbers.** At 5:1 that interval is a small share of the journey: 140 of 145 IC seconds near, kept. At
+    1:1, which is the production rate, it is 5 of 35, and the escort fails at 85% against the 90% bar. A probe
+    on both clocks showed the same closing interval counted far.
+  - **The question.** So a field escort can be failed by one port interval at the end, and a field journey
+    under about 50 s can never be kept. Whether the closing interval should count is a game question for the
+    owner.
+- **`field_mw14c`'s CONCENTRATE story (one; stays on two workers).**
+  - **How the answer is made.** The host answers WILCO or NEGATIVE by reading the hull's frame at its visits
+    (`field::orders::concentrate`). The intruder is fragile, so the first round kills it.
+  - **Why it fails.** At 1:1 the kill can fall between two visits, and a hull that concentrated and fired is
+    answered NEGATIVE ("Taken, and the kernel found no row"). At 5:1 the visits caught it standing first.
+  - **The question.** Also a game question for the owner. Both tests say so in their doc comments.
+
+**Measured** on conclav.dev, the ci profile, `cargo nextest run -P ci -p tacsim --test domain_field`, 12 test
+threads, the box shared with other sessions (load 6-15), base `1e9b4117` against the branch, from JUnit:
+
+| | before | after | ratio |
+|---|---:|---:|---:|
+| gc4's wingman journey (the pilot) | 206.5 s | 35.8 s | 0.17 |
+| `field_host::cf2_…` (the pilot's short test) | 72.7 s | 24.5 s | 0.34 |
+| the 181 converted tests, summed | 10,800.5 s | 4,023.4 s | **0.37** |
+| `domain_field`'s other 143 tests, summed | 1,901.8 s | 1,875.1 s | 0.99 |
+| the whole binary, 324 tests, summed | 12,702.4 s | 5,898.5 s | 0.46 |
+| the whole binary, wall at 12 threads | 1,180 s | 508 s | 0.43 |
+
+The slowest converted test is now `field_story::s2_the_field_story_at_512` at 72.5 s (388.3 s before).
+`gc0_the_raiders_barge_lifts…` was 352.6 s and is now 48.0 s, and surrender's `su3`/`su5` were 298-299 s and
+are now about 42 s.
+
+Per module, the converted tests only (seconds summed):
+
+| module | tests | before | after | ratio |
+|---|---:|---:|---:|---:|
+| `surrender` | 17 | 2401.1 | 469.2 | 0.20 |
+| `field_story` | 3 | 760.0 | 139.6 | 0.18 |
+| `field_fr5` | 10 | 645.9 | 239.5 | 0.37 |
+| `field_ap6` | 5 | 487.6 | 118.7 | 0.24 |
+| `field_mw14c` | 9 | 463.5 | 231.1 | 0.50 |
+| `crew_custody` | 12 | 413.8 | 255.4 | 0.62 |
+| `field_gc4` | 5 | 413.8 | 123.1 | 0.30 |
+| `field_mw14a` | 4 | 377.0 | 127.5 | 0.34 |
+| `field_ap7` | 4 | 374.4 | 94.7 | 0.25 |
+| `field_mw7` | 7 | 368.6 | 183.6 | 0.50 |
+| `field_ap4a` | 3 | 302.3 | 89.2 | 0.30 |
+| `field_ap8` | 5 | 245.1 | 136.3 | 0.56 |
+| `field_director` | 4 | 238.2 | 87.3 | 0.37 |
+| `escort_lease` | 4 | 218.4 | 82.5 | 0.38 |
+| `field_raiders` | 3 | 212.7 | 65.5 | 0.31 |
+| `field_ap5` | 6 | 198.7 | 131.6 | 0.66 |
+| `field_carrier` | 5 | 183.9 | 98.0 | 0.53 |
+| `field_mw15` | 2 | 161.3 | 52.4 | 0.33 |
+| `field_fr2` | 5 | 160.9 | 105.2 | 0.65 |
+| `field_ap11` | 1 | 135.6 | 30.1 | 0.22 |
+| `field_rs1` | 2 | 135.0 | 48.5 | 0.36 |
+| `field_fr1` | 2 | 121.5 | 44.1 | 0.36 |
+| `field_gc3` | 3 | 116.2 | 58.0 | 0.50 |
+| `field_boarding` | 3 | 116.0 | 60.1 | 0.52 |
+| `field_ap2` | 4 | 113.0 | 79.5 | 0.70 |
+| `field_ap1` | 2 | 111.1 | 43.7 | 0.39 |
+| `crew_treatment` | 3 | 107.8 | 67.8 | 0.63 |
+| `field_gc5` | 2 | 105.7 | 47.0 | 0.44 |
+| `field_crash` | 3 | 103.1 | 63.5 | 0.62 |
+| `bay_36a` | 14 | 99.0 | 98.0 | 0.99 |
+| `field_fr4` | 2 | 92.6 | 42.9 | 0.46 |
+| `one_picture` | 2 | 85.9 | 42.0 | 0.49 |
+| `field_ap3` | 1 | 84.2 | 23.5 | 0.28 |
+| `testimony` | 2 | 79.7 | 49.6 | 0.62 |
+| `field_host` | 1 | 72.8 | 24.8 | 0.34 |
+| `field_rs2` | 2 | 70.2 | 41.4 | 0.59 |
+| `field_gc2` | 2 | 63.1 | 38.4 | 0.61 |
+| `crew_exit` | 1 | 62.2 | 28.9 | 0.46 |
+| `salvage_close` | 2 | 59.2 | 56.0 | 0.95 |
+| `vacated_return_rs4` | 2 | 51.8 | 49.5 | 0.95 |
+| `field_co5` | 1 | 38.4 | 21.1 | 0.55 |
+| `bay_gc8` | 4 | 32.7 | 31.0 | 0.95 |
+| `field_gc6` | 1 | 27.3 | 26.7 | 0.98 |
+| `cc7b_berth_rearm` | 3 | 26.9 | 26.3 | 0.98 |
+| `field_gc10` | 1 | 24.9 | 19.1 | 0.77 |
+| `field_ap4` | 1 | 24.0 | 18.9 | 0.79 |
+| `ex0_matter_sinks` | 1 | 13.1 | 12.7 | 0.97 |
+
+What is left in a converted test is CPU: boot, the world's fires and the arena's pulses. The modules near 1.0
+(`bay_36a`, `bay_gc8`, `salvage_close`, `cc7b_berth_rearm`, `vacated_return_rs4`, `ex0_matter_sinks`) never
+waited on the arena; their cost is the boot and the fires (TS.3b's figure).
+
+**Rule #14, hosted.** Dispatch run 44453889978 at `ec7b9be6`, ten cells, from JUnit, against main's three
+green runs 44381619838, 44413835411 and 44436872677:
+
+| | branch | main (three runs) | change |
+|---|---:|---|---:|
+| `domain_field`, summed | 266.4 min | 248.9, 312.7, 331.4 | −11% on the mean |
+| the 181 converted tests, summed | 185.2 min | 203.1, 245.4, 257.9 | −21% on the mean |
+| the converted tests over the other binaries' minutes | 0.393 | 0.707, 0.591, 0.573 | −37% on the mean |
+
+- **The third row is the fair one.** The hosted runners were loaded during the branch run: the binaries this
+  cut does not touch summed 471 min, against 287-450 on main. That row divides each run's converted tests by
+  its own untouched binaries.
+- **Why hosted gains less than conclav.dev's 63%.**
+  - A converted test no longer sleeps. It runs the world and the arena flat out, so on a hosted cell's two
+    vCPUs the tests contend for the CPU their sleeps used to leave idle, and each test's own time stretches.
+  - conclav.dev ran 12 threads on 32 cores.
+  - The saving is real on both, but on a hosted cell it is bounded by CPU, not by the clock.
+- **The cells** came to 37.6 / 79.4 / 91.2 test-minutes (min / median / max), against main's maxima of
+  71.4-96.9. They were still placed by the old weights.
+- **The weights were refreshed** by PR #670's recipe: the field tests from this run alone, every other test
+  from it and main's three runs (stripped of `domain_field`). That gives 191 `weight:` lines, 127 of them
+  field tests, and `default-weight: 10.5`. A converted test that waited is now CPU-bound, so more field
+  tests than before pass the 60-s threshold on a hosted cell.
+
+**The hosted dispatch run's other jobs** are green except two, both main's own:
+- **M7 author and buyer lifecycle.** The CT.0b capture `ct0b/purchase_house.snap` still says "licence" where
+  the US-spelling commit `2c13e5db` made the refusal say "license". The same holds at `origin/main`
+  `a018dfd4`.
+- **M8 MW.21.** Already red on the 2026-11-18 nightly at main `1d08abd5`.
+
+Neither touches anything this cut changed.
+
+### What is left of TS.10
+
+- **TS.10b** `TimeSource` in `mush-config`, carried in `ServerDeps` and the arena's spawn terms;
+  **TS.10c** mush-server's memory-store `world_task` tests and mushd's in-process journeys on the paused
+  clock, with the boot guard; **TS.10e** the contract lint. Each is a stacked PR after this one.
+- **TS.10d** waits on the owner (above).
+- **Two owner questions from this cut:** the escort watch's closing interval, and the CONCENTRATE answer
+  between visits. `ex6_escort` and `field_mw14c`'s story 3 go to the paused clock once they are ruled.

@@ -214,7 +214,7 @@ fn raided_before(rig: &mut Rig, worn: bool) -> (ObjId, Vec<ObjId>) {
 }
 
 /// **The GC.11 gate** (doc 36 §7; Q-36-41, Q-36-55).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one raid, in order
 async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
     let mut rig = stocked_tuned(tune);
@@ -431,7 +431,7 @@ async fn gc11_a_scheduled_raid_arrives_declares_and_leaves_with_its_losses() {
 /// raider's party, with the carrier's ramp laid as that party's home; once it has spent its time
 /// in the field it turns for home, every hull still standing goes home up that ramp, and its
 /// carrier lifts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one raid, in order
 async fn gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home() {
     let mut rig = stocked_tuned(|cfg| {
@@ -546,7 +546,7 @@ async fn gc11_a_raid_due_while_a_field_runs_arrives_by_the_join_and_goes_home() 
 /// WITHDRAW (`raiders::order_home`) was refused for every hull and none was ever ordered home:
 /// it went home only if the doctrine happened to bring it beside the ramp. That is true of every
 /// joined raid, whatever the world's object ids; GC.11 above is the behaviour it costs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one raid, in order
 async fn co10_a_raid_that_joins_a_running_field_mirrors_its_crews_helm() {
     use tacsim::arena::state::Channel;
@@ -613,7 +613,7 @@ async fn co10_a_raid_that_joins_a_running_field_mirrors_its_crews_helm() {
 /// until it settles, a casualty on the index. The director reads it stuck: the raid is over, the
 /// raider spent, and no visit afterwards takes the barge off the ground or its row off the record
 /// (before the fix `recall` lifted it anyway and left the row behind).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one raid, in order
 async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
     // The raid turns for home on its time in the field (the band's floor), whatever the guard's
