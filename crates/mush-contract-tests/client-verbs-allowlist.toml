@@ -50,3 +50,7 @@ reason = "a studio label (\"LLM ...\"), not a command"
 [[allow]]
 head = "JSON"
 reason = "a content studio label, not a command"
+
+[[allow]]
+head = "HOLOTANK"
+reason = "a 3D bridge holotank status banner label (\"HOLOTANK STANDBY/CLEAR/LIVE — ...\"), not a command"
