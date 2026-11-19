@@ -10940,35 +10940,34 @@ mod tests {
             feed: PORT_TRADE_FEED.into(),
             kind: PanelFrameKind::Keyframe,
             data: serde_json::json!({
-                "credits_minor": 150_000,
-                "stowage": {
-                    "cargo_kg": 2_000, "max_cargo_kg": 50_000,
-                    "cargo_m3": 6.0, "max_cargo_m3": 180.0,
-                    "reaction_kg": 10_000, "max_reaction_kg": 12_000,
-                    "stores_person_days": 20.0, "crew_count": 1
-                },
-                "asks": [
-                    { "listing_id": 91, "good": "water_ice", "quantity": 40, "unit_price_minor": 950 }
+                "balance_minor": 150_000,
+                "ship": { "stowage": {
+                    "cargo_kg": 2_000, "cargo_limit_kg": 50_000,
+                    "cargo_l": 6_000, "cargo_limit_l": 180_000,
+                    "tank_kg": 10_000, "tank_limit_kg": 12_000,
+                    "stores_days": 20, "stores_limit_days": 120, "items": []
+                } },
+                "listings": [
+                    { "id": 91, "side": "ask", "good": "volatiles", "good_label": "water ice",
+                      "available_qty": 40, "unit_price_minor": 950 }
                 ],
-                "bids": []
+                "open_quotes": []
             }),
         });
         let _ = app.feed_input(b"m");
         let r_buy = app.feed_input(b"\r");
-        assert_eq!(r_buy.submit, ["+market/quote 91 5"]);
+        assert_eq!(r_buy.submit, ["+market/quote 91=5"]);
 
         let _ = app.apply_event(&OutputEvent::Panel {
             feed: PORT_TRADE_FEED.into(),
             kind: PanelFrameKind::Keyframe,
             data: serde_json::json!({
-                "own": {
-                    "quotes": [
-                        { "quote_id": "Q91", "listing_id": 91, "unit_price_minor": 950, "expired": false }
-                    ]
-                }
+                "open_quotes": [
+                    { "quote_id": 191, "listing_id": 91, "quantity": 5, "unit_price_minor": 950 }
+                ]
             }),
         });
-        assert_eq!(app.pixel_take_orders(), ["+market/accept Q91"]);
+        assert_eq!(app.pixel_take_orders(), ["+market/accept 191"]);
         let _ = app.feed_input(b"\x1b"); // close Trade drawer
 
         // Board ship & step onto Bridge -> `[E]` takes Bridge Helm and hands off to `SpaceCockpit`!

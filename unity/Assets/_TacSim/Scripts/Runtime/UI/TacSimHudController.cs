@@ -83,6 +83,7 @@ namespace TacSim.UI
             (_chatInput != null && _chatInput.isFocused) ||
             (_npcSayInput != null && _npcSayInput.isFocused) ||
             (EconomyPanels != null && EconomyPanels.IsAnyInputFocused) ||
+            TacSimMindTerminal.IsAnyInputFocused ||
             (_loginPanel != null && _loginPanel.activeSelf);
 
         private Font _uiFont;
@@ -142,6 +143,28 @@ namespace TacSim.UI
         private Transform _listingsContentRoot;
         private readonly List<Image> _qtyPresetImages = new List<Image>();
         private readonly List<Image> _destPortImages = new List<Image>();
+
+        /// <summary>
+        /// The Ceres-Phobos lane's 12 venue words (crates/tacsim/content/lane/ceres_phobos.json),
+        /// labelled with the port name and its body. These are the only words `+ship/plan`,
+        /// `+ship/order depart`, `+ship/undock` and `+helm/dock` accept as a destination.
+        /// </summary>
+        public static readonly (string code, string label)[] CorridorDestinations =
+        {
+            ("ceres", "Ceres Freeport (Ceres)"),
+            ("stickney", "Stickney Yards (Phobos)"),
+            ("luna", "Aitken Highport (Luna)"),
+            ("deimos", "Voltaire Anchorage (Deimos)"),
+            ("titan", "Ligeia Terminal (Titan)"),
+            ("commons", "Freeport Commons (Ceres)"),
+            ("kerwan", "Kerwan Floor (Ceres)"),
+            ("ahuna", "Ahuna Flank (Ceres)"),
+            ("juling", "Juling Shadow (Ceres)"),
+            ("occator", "Occator Rim (Ceres)"),
+            ("rheasilvia", "Rheasilvia Commons (Vesta)"),
+            ("urvara", "Urvara Reach (Ceres)")
+        };
+
         private Text _sailingPlanOutputText;
         private readonly List<string> _sailingEchoLines = new List<string>();
 
@@ -450,20 +473,26 @@ namespace TacSim.UI
             var pLbl = CreateText(portStrip.transform, "CORRIDOR PORT:", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.75f, 0.88f, 0.96f));
             SetRect(pLbl.rectTransform, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(12f, 0f), new Vector2(142f, 0f));
 
-            (string code, string label)[] ports =
-            {
-                ("stickney", "Stickney Yards (Phobos)"),
-                ("aitken", "Aitken Highport (Luna)"),
-                ("occator", "Occator Rim"),
-                ("rheasilvia", "Rheasilvia (Vesta)")
-            };
+            // 12 venues share the strip right of the label: each button takes 1/12 of it, and its
+            // text shrinks to fit (best fit) instead of overflowing.
+            var portButtons = CreatePanel(portStrip.transform, "CorridorPortButtons", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(148f, 4f), new Vector2(-4f, -4f), Color.clear);
+            var ports = CorridorDestinations;
             for (int i = 0; i < ports.Length; i++)
             {
                 int idx = i;
                 string pCode = ports[i].code;
-                float x0 = 148f + i * 190f;
-                var pb = CreateButton(portStrip.transform, ports[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
-                SetRect(pb.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(x0, 4f), new Vector2(x0 + 184f, -4f));
+                float a0 = (float)i / ports.Length;
+                float a1 = (float)(i + 1) / ports.Length;
+                var pb = CreateButton(portButtons.transform, ports[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
+                SetRect(pb.GetComponent<RectTransform>(), new Vector2(a0, 0f), new Vector2(a1, 1f), new Vector2(2f, 0f), new Vector2(-2f, 0f));
+                var pbText = pb.GetComponentInChildren<Text>();
+                if (pbText != null)
+                {
+                    pbText.horizontalOverflow = HorizontalWrapMode.Wrap;
+                    pbText.resizeTextForBestFit = true;
+                    pbText.resizeTextMinSize = 8;
+                    pbText.resizeTextMaxSize = 13;
+                }
                 _destPortImages.Add(pb.GetComponent<Image>());
             }
 
@@ -525,7 +554,10 @@ namespace TacSim.UI
                 () => _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.SelectedDestinationPort)
                     ? _boundTradeState.SelectedDestinationPort
                     : "stickney",
-                () => "ship");
+                // `+bay` resolves `ship` to the helm hull itself.
+                () => "ship",
+                // `+escort/post` takes only `#<dbref>`; empty when no helm hull is known.
+                () => _boundTradeState != null ? _boundTradeState.ShipHullId : string.Empty);
             EconomyPanels.BuildSubPanels(_tradePanel.transform);
 
             _sailingTabBody.SetActive(false);
@@ -1088,7 +1120,7 @@ namespace TacSim.UI
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged += RefreshTradeTerminal;
             SelectTradeQuantityPreset(1, 10);
-            SelectDestinationPort(0, "stickney");
+            SelectDestinationPort(CorridorDestinationIndex("stickney"), "stickney");
         }
 
         public void OpenTradeAndSailingModal(string header, bool openSailingTab)
@@ -1163,6 +1195,17 @@ namespace TacSim.UI
             }
             if (_tradePanel != null && _tradePanel.activeSelf)
                 RebuildListingCards();
+        }
+
+        /// <summary>Index of a venue word in <see cref="CorridorDestinations"/>, or -1.</summary>
+        public static int CorridorDestinationIndex(string portCode)
+        {
+            for (int i = 0; i < CorridorDestinations.Length; i++)
+            {
+                if (string.Equals(CorridorDestinations[i].code, portCode, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+            return -1;
         }
 
         private void SelectDestinationPort(int index, string portCode)
@@ -1393,7 +1436,10 @@ namespace TacSim.UI
                     foreach (string sub in richLine.Split('\n'))
                     {
                         if (string.IsNullOrWhiteSpace(sub)) continue;
-                        _sailingEchoLines.Add(sub.TrimEnd('\r'));
+                        string clean = sub.TrimEnd('\r');
+                        _sailingEchoLines.Add(clean);
+                        // A history reply runs past the shared 24-line log; it keeps its own copy.
+                        EconomyPanels?.HistoryReply.Ingest(clean);
                     }
                     while (_sailingEchoLines.Count > 24)
                         _sailingEchoLines.RemoveAt(0);

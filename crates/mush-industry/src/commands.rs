@@ -1808,6 +1808,7 @@ pub fn register(
         CommandSpec {
             name: "@deposit".into(),
             switches: vec!["open".into(), "access".into(), "list".into(), "show".into()],
+            help: "@deposit/list|show <place or body>   read ore bodies; staff open one (/open) or set its access (/access).".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },
@@ -1828,6 +1829,7 @@ pub fn register(
                 "suspend".into(),
                 "seize".into(),
             ],
+            help: "@claim/file|show|transfer|pledge|release|contest|suspend|seize   file, read, trade and enforce claims on ore bodies.".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },
@@ -1838,6 +1840,7 @@ pub fn register(
         CommandSpec {
             name: "@extract".into(),
             switches: vec!["start".into(), "cycle".into(), "stop".into()],
+            help: "@extract/start <body>=<endpoint> | /cycle <body> | /stop <body>   run extraction from an ore body.".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },
@@ -1863,6 +1866,7 @@ pub fn register(
                 "show".into(),
                 "list".into(),
             ],
+            help: "@wo/draft|set|submit|cancel|deliver|restamp|quote|show|list   draft, quote, run and read work orders at a facility.".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },
@@ -1887,6 +1891,7 @@ pub fn register(
                 "list".into(),
                 "show".into(),
             ],
+            help: "@facility/open|owner|terms|list|show   open a production facility (staff), set its owner and terms, read it.".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },
@@ -1897,6 +1902,7 @@ pub fn register(
         CommandSpec {
             name: "@survey".into(),
             switches: Vec::new(),
+            help: "@survey <body>   survey the ore body you stand on: its grade band and reserve band.".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },
@@ -1911,6 +1917,7 @@ pub fn register(
             // The British spelling stays an alias so nothing that types it breaks.
             aliases: vec!["@licence".into()],
             switches: vec!["show".into()],
+            help: "@license[/show] [obj:<n>|org:<n>|sys:<name>]   your extraction license's standing; staff may name anyone's.".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },

@@ -33,8 +33,8 @@ them, and you are paid once the deal settles. You do not need to be there.
 lists a hull whose title you hold, at one price for the whole of her. Her hold
 must be empty (her fuel and stores go with her), she must be out of the bay,
 with nothing in flight and no leased rig aboard. A hull with a governed core
-fitted cannot be listed yet: the core sells only through its own sale, which
-is not open.
+fitted is not listed here: she sells only with her core, by private offer to
+one player, `+core/offer #<hull>=<player> price=<n>` (see `help hardware`).
 
 While she is listed, and while a purchase of her is settling, the bay will not
 strip her, scrap her or fit anything to her. A buyer is quoted on her as she
@@ -132,7 +132,7 @@ sale at that port. A house's own hulls at their home port owe nothing.
 
 ## The job board
 
-  +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]
+  +market/jobs [retrieval|passage|survey|crew|haul|escort] [market=<venue>]
 
 Lists the jobs posted at the port you stand in, or at the market you name.
 Each job says what it pays, any bond you would escrow, when it is due, and the

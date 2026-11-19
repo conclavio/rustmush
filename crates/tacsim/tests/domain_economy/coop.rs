@@ -2936,3 +2936,117 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
         Some("Ceres Freeport")
     );
 }
+
+/// A JSON value's shape: every object key and every value's type, with an array
+/// reduced to its first element's shape. Two frames of the same shape decode the
+/// same way, whatever their numbers and names.
+fn frame_shape(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, child)| (k.clone(), frame_shape(child)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.first().map(frame_shape).into_iter().collect()),
+        Value::Null => Value::from("null"),
+        Value::Bool(_) => Value::from("bool"),
+        Value::Number(_) => Value::from("number"),
+        Value::String(_) => Value::from("string"),
+    }
+}
+
+/// **48e L8 (clients:G2, G3, G12): the clients' `port.trade` fixture is a real frame.**
+/// The web (`web/src/lib/tacsim/tacsim.test.ts`) and the SSH TUI (`port_walk.rs`)
+/// decode `web/src/lib/fixtures/port/port_trade.json`. This test holds that file
+/// to the shape the server sends today: a docked First Captain at the gallery with
+/// one open quote, so `listings`, `open_quotes`, `ship.stowage.items`, `berth`
+/// and the balance are all present. A key the server renames or drops fails here
+/// before a client reads a key that is no longer sent. Run with
+/// `TACSIM_BLESS_PORT_TRADE=1` to rewrite the fixture from the live frame.
+#[test]
+fn port_trade_frame_matches_the_clients_shared_fixture() {
+    let (mut rig, who) = enrolled();
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let query_trade = |tw: &mut mush_testkit::TestWorld, actor: ObjId| -> serde_json::Value {
+        let (mut out, mut fx) = (mush_core::Outbox::new(), mush_core::Effects::new());
+        tw.engine_mut().step(
+            mush_core::Inbound::Query {
+                conn: 1,
+                actor,
+                id: 1,
+                name: smol_str::SmolStr::new_static(tacsim::client_sync::PORT_TRADE_FEED),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        out.events()
+            .iter()
+            .find_map(|(_, event)| match event {
+                mush_proto::OutputEvent::Reply { event, .. } => match event.as_ref() {
+                    mush_proto::OutputEvent::Panel { data, .. } => Some(data.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("port.trade reply panel")
+    };
+    let first = query_trade(&mut rig.tw, who);
+    let ask_id = first["listings"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row["side"].as_str() == Some("ask")
+                    && row["available_qty"].as_u64().unwrap_or(0) >= 10
+            })
+        })
+        .and_then(|row| row["id"].as_u64())
+        .expect("a live ask at Ceres with at least 10 units");
+    let quoted = run(&mut rig.tw, who, &format!("+market/quote #{ask_id}=2"));
+    assert!(quoted.contains("Quote #"), "the quote stands: {quoted}");
+    let mut frame = query_trade(&mut rig.tw, who);
+    assert!(
+        frame["open_quotes"]
+            .as_array()
+            .is_some_and(|q| !q.is_empty()),
+        "the fixture frame carries an open quote: {frame}"
+    );
+    assert!(
+        frame["listings"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["side"] == "bid")),
+        "the fixture frame carries a bid: {frame}"
+    );
+    // The fixture's cargo line: the hold holds nothing at enrolment, so one
+    // `items` row is planted the way the server writes it (`good`, `qty`).
+    if frame["ship"]["stowage"]["items"]
+        .as_array()
+        .is_some_and(Vec::is_empty)
+    {
+        frame["ship"]["stowage"]["items"] = serde_json::json!([{ "good": "metals", "qty": 3 }]);
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../web/src/lib/fixtures/port/port_trade.json");
+    if std::env::var_os("TACSIM_BLESS_PORT_TRADE").is_some() {
+        let text = serde_json::to_string_pretty(&frame).expect("frame serialises");
+        std::fs::write(
+            &path,
+            format!(
+                "{text}
+"
+            ),
+        )
+        .expect("fixture written");
+    }
+    let fixture: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).expect("the shared port.trade fixture exists"),
+    )
+    .expect("the fixture parses");
+    assert_eq!(
+        frame_shape(&fixture),
+        frame_shape(&frame),
+        "web/src/lib/fixtures/port/port_trade.json no longer has the live port.trade shape;          rerun with TACSIM_BLESS_PORT_TRADE=1 and fix the web and TUI decoders"
+    );
+}
