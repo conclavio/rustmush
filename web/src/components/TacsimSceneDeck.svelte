@@ -157,11 +157,11 @@
 
     {#if app.tacsim.isAboardShip && app.tacsim.ambient.hullName}
       <span class="hull-pill">
-        {app.tacsim.ambient.hullName} · {app.tacsim.ambient.docked ? "DOCKED" : "UNDER WAY"}
+        {app.tacsim.ambient.hullName} · {app.tacsim.ambient.docked ? "Docked" : "Under Way"}
       </span>
     {:else if app.tacsim.ambient.ownHullName}
       <span class="hull-pill">
-        {app.tacsim.ambient.ownHullName} · {app.tacsim.ambient.ownHullDockedHere ? "CRADLED HERE" : "AWAY"}
+        {app.tacsim.ambient.ownHullName} · {app.tacsim.ambient.ownHullDockedHere ? "Cradled Here" : "Away"}
       </span>
     {/if}
 

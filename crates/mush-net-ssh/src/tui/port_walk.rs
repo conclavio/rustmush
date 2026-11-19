@@ -273,10 +273,10 @@ const NPC_TOPICS: [(&str, &str); 5] = [
 ];
 
 const SIM_LOADOUTS: [(&str, &str); 4] = [
-    ("Red Team - Line Tank", "+sim/join red line_tank"),
-    ("Blue Team - Line Tank", "+sim/join blue line_tank"),
-    ("Free Range Proving Ground", "+sim/range line_tank"),
-    ("Check Simulator Roster", "+sim/status"),
+    ("Join Red Team", "SIM TEAM red"),
+    ("Join Blue Team", "SIM TEAM blue"),
+    ("Free Range Proving Ground", "SIM RANGE 1"),
+    ("Start Match", "SIM START"),
 ];
 
 /// Per-connection spatial walk + port services state.
@@ -1375,13 +1375,13 @@ impl PortWalkState {
     #[must_use]
     pub fn hud_lines(&self, encoder_name: &str) -> (String, String) {
         let cam_name = match self.camera {
-            WalkCamera::Cutaway25D => "2.5D CUTAWAY",
-            WalkCamera::FirstPersonRaycast => "1P CORRIDOR",
+            WalkCamera::Cutaway25D => "2.5D Cutaway",
+            WalkCamera::FirstPersonRaycast => "1P Corridor",
         };
         let mode_word = if self.aboard_ship {
-            "SHIP INTERIOR"
+            "Ship Interior"
         } else {
-            "SPACEPORT"
+            "Spaceport"
         };
         let top = format!(
             "{mode_word} ({cam_name})  |  {}  |  {}  |  drawing {encoder_name}",
@@ -1429,7 +1429,7 @@ impl PortWalkState {
         .areas(area);
 
         let stow_lines = self.stowage_gauge_lines(utf8);
-        draw_titled_col(frame, stow_area, "STOWAGE & WALLET", stow_lines);
+        draw_titled_col(frame, stow_area, "Stowage & Wallet", stow_lines);
 
         let mut near_lines = Vec::new();
         if self.interactables.is_empty() {
@@ -1457,7 +1457,7 @@ impl PortWalkState {
         draw_titled_col(
             frame,
             near_area,
-            "NEARBY INTERACTABLES (Tab / e)",
+            "Nearby Interactables (Tab / e)",
             near_lines,
         );
         draw_comms_col(frame, talk_area, comms);
@@ -1633,8 +1633,10 @@ impl PortWalkState {
                     self.round_trip = !self.round_trip;
                 }
                 Key::Char('u') => {
-                    out.commands.push("+helm/undock".to_string());
-                    self.push_drawer_log("> +helm/undock".to_string());
+                    if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
+                        out.commands.push(format!("+ship/undock {dest_id}"));
+                        self.push_drawer_log(format!("> +ship/undock {dest_id}"));
+                    }
                 }
                 Key::Char('d') => {
                     if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
@@ -1645,12 +1647,12 @@ impl PortWalkState {
                 Key::Enter => {
                     if let Some((dest_id, label, _)) = CORRIDORS.get(self.corridor_idx) {
                         let cmd = if self.round_trip {
-                            format!("+ship/course {dest_id}/return")
+                            format!("+ship/order depart {dest_id}")
                         } else {
-                            format!("+ship/course {dest_id}")
+                            format!("+ship/plan {dest_id}")
                         };
                         out.commands.push(cmd.clone());
-                        self.push_drawer_log(format!("[SAILING] Filed course for {label} ({cmd})"));
+                        self.push_drawer_log(format!("[Sailing] {label}: {cmd}"));
                     }
                 }
                 _ => {}
@@ -2412,7 +2414,7 @@ impl PortWalkState {
                 }
                 let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
                 let qty_word = if preset == 0 {
-                    "MAX FIT".to_string()
+                    "Max Fit".to_string()
                 } else {
                     format!("{preset}")
                 };
@@ -2432,9 +2434,9 @@ impl PortWalkState {
                 };
                 lines.push(Line::from(vec![
                     Span::styled(" < ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("BUY ASKS", buy_style),
+                    Span::styled("Buy Asks", buy_style),
                     Span::raw(" | "),
-                    Span::styled("SELL BIDS", sell_style),
+                    Span::styled("Sell Bids", sell_style),
                     Span::styled(" >   ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         format!("Lot Qty ([/]): {qty_word}   r: refresh"),
@@ -2510,11 +2512,11 @@ impl PortWalkState {
             PortDrawerKind::Sailing => {
                 lines.push(Line::from(Span::styled(
                     format!(
-                        "Mode: {} (r toggles)   Enter: file +ship/course   u: undock   d: 60 Hz dock",
+                        "Action: {} (r toggles)   Enter: run   u: +ship/undock   d: +helm/dock",
                         if self.round_trip {
-                            "Out & Return"
+                            "Queue Depart (+ship/order)"
                         } else {
-                            "One-Way"
+                            "Dry-Run Passage (+ship/plan)"
                         }
                     ),
                     Style::default().fg(Color::Cyan),

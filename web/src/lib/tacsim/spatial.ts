@@ -1593,7 +1593,7 @@ export function contextualQuickActions(
     return [
       { label: "Simulator Console", action: "ui:open_sim", accent: true },
       { label: "Board Pod", action: "board" },
-      { label: "Match Status", action: "+sim" },
+      { label: "Match Status", action: "SIM" },
     ];
   }
   return [

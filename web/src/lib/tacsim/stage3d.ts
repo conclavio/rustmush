@@ -1232,7 +1232,7 @@ export class TacsimStage3D {
       this.stationRoot.add(hull);
       this.cradleHullGroups.push(hull);
 
-      const sign = this.createFloatingBannerSprite(`CRADLE 0${c + 1} — STANDBY`);
+      const sign = this.createFloatingBannerSprite(`Cradle 0${c + 1} — Standby`);
       sign.sprite.position.set(cx, elev + 3.6, cz + 7.5);
       this.stationRoot.add(sign.sprite);
       this.cradleSignSprites.push(sign);
@@ -1258,18 +1258,18 @@ export class TacsimStage3D {
 
     const labels: string[] = [];
     if (ambient.ownHullDockedHere && ambient.ownHullName) {
-      labels.push(`CRADLE 01 — ${ambient.ownHullName.toUpperCase()} [YOUR HULL]`);
+      labels.push(`Cradle 01 — ${ambient.ownHullName} [Your Hull]`);
     }
     for (const dh of ambient.dockedHulls) {
       if (!dh.name) continue;
       const upper = dh.name.toUpperCase();
-      if (labels.some((l) => l.includes(upper))) continue;
+      if (labels.some((l) => l.toUpperCase().includes(upper))) continue;
       const suffix = dh.mark ? ` (${dh.mark})` : "";
-      labels.push(`CRADLE 0${labels.length + 1} — ${upper}${suffix}`);
+      labels.push(`Cradle 0${labels.length + 1} — ${dh.name}${suffix}`);
     }
 
     this.cradleSignSprites.forEach((entry, idx) => {
-      const lbl = labels[idx] ?? `CRADLE 0${idx + 1} — CLEAR BERTH`;
+      const lbl = labels[idx] ?? `Cradle 0${idx + 1} — Clear Berth`;
       this.drawBannerCanvas(entry.canvas, entry.tex, lbl);
       const hull = this.cradleHullGroups[idx];
       if (hull) hull.visible = idx < Math.max(1, labels.length);
@@ -1878,7 +1878,7 @@ export class TacsimStage3D {
     ctx.fillStyle = "#9ad8ff";
     ctx.font = "bold 24px ui-monospace, monospace";
     ctx.textAlign = "center";
-    ctx.fillText(text.slice(0, 42), canvas.width * 0.5, 58);
+    ctx.fillText(text.toUpperCase().slice(0, 42), canvas.width * 0.5, 58);
     tex.needsUpdate = true;
   }
 

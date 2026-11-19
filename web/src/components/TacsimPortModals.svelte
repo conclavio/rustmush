@@ -146,7 +146,7 @@
                 class:on={app.tacsim.selectedQtyPreset === q}
                 onclick={() => (app.tacsim.selectedQtyPreset = q)}
               >
-                {q === "max" ? "MAX FIT" : `${q}`}
+                {q === "max" ? "Max Fit" : `${q}`}
               </button>
             {/each}
           </div>
@@ -346,20 +346,21 @@
           </div>
         {/if}
         <div class="act-row">
-          <button type="button" class="sellbtn" onclick={() => onCmd("+sim/join red")}>Join Red Team</button>
-          <button type="button" class="buybtn" onclick={() => onCmd("+sim/join blue")}>Join Blue Team</button>
-          <button type="button" class="ghost" onclick={() => onCmd("+sim/ready")}>Ready (+sim/ready)</button>
+          <button type="button" class="sellbtn" onclick={() => onCmd("SIM TEAM red")}>Join Red Team</button>
+          <button type="button" class="buybtn" onclick={() => onCmd("SIM TEAM blue")}>Join Blue Team</button>
+          <button type="button" class="ghost" onclick={() => onCmd("SIM START")}>Start Match (SIM START)</button>
           <button type="button" class="ghost" onclick={() => onCmd("board")}>Board Pod (board)</button>
         </div>
         <div class="act-row">
           <span class="muted">Unit Chassis:</span>
           {#each ["line_tank", "scout", "missile_carrier", "heavy_mech"] as u (u)}
-            <button type="button" class="qchip" onclick={() => onCmd(`+sim/unit ${u}`)}>{u}</button>
+            <button type="button" class="qchip" onclick={() => onCmd(`SIM UNIT ${u}`)}>{u}</button>
           {/each}
-          <span class="muted">AI Fill:</span>
-          {#each [0, 2, 4, 6] as ai (ai)}
-            <button type="button" class="qchip" onclick={() => onCmd(`+sim/ai ${ai}`)}>{ai}</button>
+          <span class="muted">Match Mode:</span>
+          {#each ["skirmish", "hold"] as mode (mode)}
+            <button type="button" class="qchip" onclick={() => onCmd(`SIM MODE ${mode}`)}>{mode}</button>
           {/each}
+          <button type="button" class="qchip" onclick={() => onCmd("SIM RANGE 1")}>Range 1</button>
         </div>
 
       {:else if modal === "rig"}
