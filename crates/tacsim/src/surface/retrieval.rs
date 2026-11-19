@@ -1259,9 +1259,29 @@ pub const DEBT_NAMESPACES: &[&str] = &[DEBT_NAMESPACE];
 /// (`crate::field::crew::release_key`), levied by a port authority's clerk.
 pub const DEBT_SANCTION_PREFIXES: &[&str] = &["release:"];
 
-/// The live one-term debts `who` owes that `+debts` reads: this layer's, and the release fees.
+/// **The ruleset namespace prefixes `+debts` reads beside [`DEBT_NAMESPACES`]** (doc 48e, 48d
+/// H-13 (d)): a port's berth arrears and a locker's, each keyed by its port and hull or player,
+/// which a hull that has left the port can otherwise pay only by being sold there.
+pub const DEBT_NAMESPACE_PREFIXES: &[&str] = &[
+    crate::port::berth::BERTH_NS_PREFIX,
+    crate::port::berth::LOCKER_NS_PREFIX,
+];
+
+/// The live one-term debts `who` owes that `+debts` reads: this layer's, the berth and locker
+/// arrears, and the release fees.
 fn owed(w: &World, who: &PrincipalId) -> Vec<mush_economy::Obligation> {
-    mush_economy::debts_of_with(w, who, DEBT_NAMESPACES, DEBT_SANCTION_PREFIXES)
+    mush_economy::debts_of_with(w, who, &[], DEBT_SANCTION_PREFIXES)
+        .into_iter()
+        .filter(|o| match &o.cause {
+            mush_economy::ObligationCause::Ruleset { namespace } => {
+                DEBT_NAMESPACES.contains(&namespace.as_str())
+                    || DEBT_NAMESPACE_PREFIXES
+                        .iter()
+                        .any(|prefix| namespace.starts_with(prefix))
+            }
+            _ => true,
+        })
+        .collect()
 }
 
 /// **The cause `o` is paid or reinstated under**: its ruleset namespace, or the sanction prefix

@@ -1575,18 +1575,30 @@ fn asset_admitted(ctx: &Ctx<'_>, listing: &Listing) -> bool {
         .is_some_and(|admitted| admitted.is_ok_and(|entry| entry == listing.catalog))
 }
 
-/// **Whether `c` sells `object`'s title** (doc 48 cut EX.2, Q-48-52): live (past its draft,
-/// not terminal) and passing `object`'s title. Keyed on the contract's shape, never its
-/// name. The bay refuses strip, scrap and fit while one stands (`tacsim::port::bay_work`).
+/// **Whether `c` sells `object`'s title by its holder `owner`** (doc 48 cut EX.2, Q-48-52):
+/// live (past its draft, not terminal), passing `object`'s title from `owner`, with `owner` a
+/// party that has accepted it as it stands. Keyed on the contract's shape, never its name. The
+/// bay refuses strip, scrap and fit while one stands (`tacsim::port::bay_work`), and
+/// `+market/post` refuses to list it again.
+///
+/// Doc 48e (48d C-06): the holder's own acceptance is what makes it a sale. A contract anyone
+/// drafts and offers naming someone else's hull is no sale: it would never settle (settlement
+/// checks the giver holds the title), and before this rule it locked the holder out of the
+/// exchange and the bay with nothing they could cancel. The house's `is_sale_of` has the shape.
 #[must_use]
-pub fn sells_title_of(c: &mush_economy::EconomicContract, object: ObjId) -> bool {
+pub fn sells_title_of(
+    c: &mush_economy::EconomicContract,
+    object: ObjId,
+    owner: &PrincipalId,
+) -> bool {
     !matches!(c.state, ContractState::Draft)
         && !c.state.is_terminal()
-        && c.consent
-            .terms
-            .deliverables
-            .iter()
-            .any(|d| matches!(d, Deliverable::TitleTransfer { object: o, .. } if *o == object))
+        && c.consent.parties.contains(owner)
+        && c.accepted_by(owner)
+        && c.consent.terms.deliverables.iter().any(|d| {
+            matches!(d, Deliverable::TitleTransfer { object: o, from, .. }
+                if *o == object && from == owner)
+        })
 }
 
 /// **The digest of a listing's titled object's state** (doc 48 cut EX.2), from the
@@ -1618,14 +1630,16 @@ pub fn asset_on_sale(w: &mush_core::World, object: ObjId) -> bool {
         || live_title_sale(w, object).is_some()
 }
 
-/// **The live sale of `object`'s title, if any** ([`sells_title_of`]): a walk over the
-/// economy's contracts, which its own per-issuer and per-party caps already bound.
+/// **The live sale of `object`'s title by its holder, if any** ([`sells_title_of`]): a walk over
+/// the economy's contracts, which its own per-issuer and per-party caps already bound. An object
+/// with no live title has no sale.
 #[must_use]
 pub fn live_title_sale(w: &mush_core::World, object: ObjId) -> Option<ContractId> {
-    w.module_state::<EconomyStore>()?
-        .snapshot()
+    let snapshot = w.module_state::<EconomyStore>()?.snapshot();
+    let owner = snapshot.asset(object)?.title_owner.clone();
+    snapshot
         .contracts()
-        .find(|c| sells_title_of(c, object))
+        .find(|c| sells_title_of(c, object, &owner))
         .map(|c| c.id)
 }
 

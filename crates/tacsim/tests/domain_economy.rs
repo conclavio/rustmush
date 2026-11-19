@@ -103,6 +103,8 @@ mod in6_part_lot;
 mod in7_part_recipes;
 #[path = "domain_economy/in8_mass_scrap.rs"]
 mod in8_mass_scrap;
+#[path = "domain_economy/l2_title.rs"]
+mod l2_title;
 #[path = "domain_economy/landing.rs"]
 mod landing;
 #[path = "domain_economy/lane.rs"]
