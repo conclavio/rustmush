@@ -39,6 +39,15 @@ namespace TacSim.Net
         public const int CloseCodeTokenCooloff = 4429;
         private static readonly float[] BackoffSeconds = { 0.5f, 1.0f, 2.0f, 5.0f, 15.0f };
 
+        public static MushWsClient LatestInstance { get; private set; }
+        public static event Action<MushWsClient> OnInstanceCreated;
+
+        public MushWsClient()
+        {
+            LatestInstance = this;
+            OnInstanceCreated?.Invoke(this);
+        }
+
         private ClientWebSocket _ws;
         private CancellationTokenSource _cts;
         private readonly ConcurrentQueue<(long epoch, MushEnvelope env)> _inbound = new ConcurrentQueue<(long, MushEnvelope)>();
@@ -79,6 +88,7 @@ namespace TacSim.Net
         public event Action<string, string> OnSystemLineWithMarkupReceived; // (plainText, richMarkup)
         public event Action<string> OnSystemLineReceived;
         public event Action<string, JsonNode> OnPanelUpdated;
+        public event Action<ulong, string, JsonNode> OnInvokeResultReceived; // (requestId, service, resultPayload)
         public event Action<MushServerRequest> OnServerRequestReceived;
         public event Action<string> OnConnectionStatusChanged;
         public event Action OnHelloReceived;
@@ -217,6 +227,30 @@ namespace TacSim.Net
             return id;
         }
 
+        public ulong SendMindMarketListings(string afterCode = null)
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildMindMarketQueryCommand(id, "listings", afterListingCode: afterCode));
+            return id;
+        }
+
+        public ulong SendMindMarketHoldings(string section = "paid", long? afterNumber = null)
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildMindMarketQueryCommand(id, "holdings", section: section, afterHoldingNumber: afterNumber));
+            return id;
+        }
+
+        public ulong SendMindInvoke(JsonNode mindRequest)
+        {
+            ulong id = _nextQueryId++;
+            string encoded = MushProtocol.BuildMindInvokeCommand(id, mindRequest);
+            if (Encoding.UTF8.GetByteCount(encoded) > 272 * 1024)
+                return 0;
+            EnqueueRaw(encoded);
+            return id;
+        }
+
         public void SendChoiceResponse(MushServerRequest req, string choiceKey)
         {
             if (req == null) return;
@@ -237,6 +271,11 @@ namespace TacSim.Net
                 _intentionalDisconnect = false;
                 _inbound.Enqueue((Interlocked.Read(ref _sessionEpoch), env));
             }
+        }
+
+        public bool TryDequeueOutbound(out string rawJson)
+        {
+            return _outbound.TryDequeue(out rawJson);
         }
 
         public void PumpMainThread()
@@ -455,6 +494,16 @@ namespace TacSim.Net
                     var inner = d["event"];
                     if (inner.IsObject)
                         DispatchEvent(inner.Str("t", string.Empty), inner["d"]);
+                    break;
+
+                case "invoke_result":
+                    if (d != null && d.IsObject && d["result"].IsObject)
+                    {
+                        ulong invId = (ulong)Math.Max(0L, d.Long("id", 0));
+                        string svc = d["result"].Str("service", string.Empty);
+                        var resNode = d["result"]["result"];
+                        OnInvokeResultReceived?.Invoke(invId, svc, resNode != null ? resNode.Clone() : JsonNode.Null);
+                    }
                     break;
 
                 case "request":
