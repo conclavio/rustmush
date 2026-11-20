@@ -162,6 +162,7 @@ pub mod match_;
 /// through its [`arena::mind::MindRunner`] seam.
 pub mod minds;
 pub mod pack;
+pub mod polity;
 pub mod port;
 pub mod port_tick;
 // Doc 45 unit AP.3: the posture every unit carries, and its record on the unit's object.

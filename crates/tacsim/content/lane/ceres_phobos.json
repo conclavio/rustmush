@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 44,
+    "version": 45,
     "kind": "campaign_seed",
-    "digest": "c8e6fd26b4759a8c02fff8cf8fbb62691dcc73d408ca9d518d4f35b8865ca3fd",
+    "digest": "ecb08a2c9c609d82649291ad597b4cde33793545f542b6e659ee6d984efb04e2",
     "requires": []
   },
   "entries": {
@@ -3277,6 +3277,36 @@
         "routes": { "ceres": [ "urvara_ceres" ] },
         "site": { "name": "Urvara Reach", "issuer": "freeport_registry", "zone": "core",
                   "tenure": { "default": "open" } }
+      }
+    },
+    "regions": {
+      "kind": "regions",
+      "def": {
+        "rows": [
+          { "id": "kirkwood_approach", "name": "Kirkwood approach", "places": [ "kirkwood_depot" ],
+            "holds": [
+              { "kind": "de_jure", "holder": { "polity": "freeport" } },
+              { "kind": "de_facto", "holder": { "org": "coop" },
+                "contested_by": [ { "polity": "republic" } ] },
+              { "kind": "economic", "holder": { "org": "tycho_mutual" } }
+            ] },
+          { "id": "ceres", "name": "Ceres station", "places": [ "ceres_freeport", "ceres_port" ],
+            "holds": [
+              { "kind": "de_jure", "holder": { "polity": "freeport" } },
+              { "kind": "de_facto", "holder": { "polity": "freeport" } },
+              { "kind": "economic", "holder": { "org": "occator" } },
+              { "kind": "economic", "holder": { "org": "ceres_clearing" } }
+            ] },
+          { "id": "stickney", "name": "Phobos and Stickney Yards",
+            "places": [ "stickney_yards", "stickney_port" ],
+            "holds": [
+              { "kind": "de_jure", "holder": { "polity": "republic" } },
+              { "kind": "de_facto", "holder": { "polity": "republic" } },
+              { "kind": "covert", "holder": { "polity": "republic" } },
+              { "kind": "economic", "holder": { "polity": "republic" } },
+              { "kind": "economic", "holder": { "org": "ceres_clearing" } }
+            ] }
+        ]
       }
     }
   }

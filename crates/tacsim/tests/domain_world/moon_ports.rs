@@ -392,8 +392,8 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
             .expect("the lane parses")
             .entries()
             .len(),
-        64,
-        "the sixty-four entries (thirty-six at cut A.8; doc 20 cut SM.2's twenty-four; doc 32 cut S.1's four)"
+        65,
+        "the sixty-five entries (thirty-six at cut A.8; doc 20 cut SM.2's twenty-four; doc 32 cut S.1's four; doc 50 cut KC.0's regions)"
     );
     // The Titan bunkers (L8): reaction mass for sixty-odd fills, provisions at the
     // Company's price.

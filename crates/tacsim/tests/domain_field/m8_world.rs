@@ -245,8 +245,8 @@ fn deployment(rig: &mut Rig, hardware: HardwareCoordinates) -> (LaunchDeployment
         .world_mut()
         .create(mush_core::ObjKind::Room, "Named launch counter", GOD, None)
         .expect("the counter");
+    // Doc 50 cut KC.0 (Q-50-2): the lane has made the Republic; the deployment reads it.
     for line in [
-        "@faction/create Republic",
         "@account/system launch.registry=tacsim.credit",
         "@account/system launch.venue=tacsim.credit",
     ] {

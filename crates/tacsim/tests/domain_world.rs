@@ -51,6 +51,8 @@ mod minds_at_size;
 mod moon_ports;
 #[path = "domain_world/passage.rs"]
 mod passage;
+#[path = "domain_world/polities.rs"]
+mod polities;
 #[path = "domain_world/s9_corridor.rs"]
 mod s9_corridor;
 #[path = "domain_world/sky.rs"]
