@@ -372,6 +372,14 @@ pub fn post_ask(ctx: &mut Ctx<'_>, spec: PersonalAsk) -> Result<ListingId, Marke
             .may_list(ctx.w, &spec.seller, endpoint)
             .map_err(|r| MarketError::bad(r.line))?;
     }
+    // Doc 50 unit LW.1 (Q-50-33): a public ask of a restricted good is refused when posted.
+    crate::module::law_of_trade(
+        ctx.w,
+        &spec.seller,
+        &spec.market,
+        &commodity,
+        spec.private_to.is_some(),
+    )?;
     check_caps(ctx.w, &spec.seller)?;
     // Doc 48e (exchange G18; 48d H-11): the hold is staged as the actor's submission, so one
     // already in flight this step, or a full engine queue, refuses before the fee is charged.
@@ -748,6 +756,14 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
     let Some(total) = total_of(spec.price, spec.quantity) else {
         return Err(MarketError::bad("That is not a quantity this market buys."));
     };
+    // Doc 50 unit LW.1 (Q-50-65): a public bid for a restricted good is refused when posted.
+    crate::module::law_of_trade(
+        ctx.w,
+        &spec.bidder,
+        &spec.market,
+        &commodity,
+        spec.private_to.is_some(),
+    )?;
     let gate = crate::module::venue_gate(ctx.w);
     if let Some(gate) = &gate {
         if gate.governed(ctx.w, spec.into) && !crate::module::sells_as_lots(ctx.w, &commodity) {

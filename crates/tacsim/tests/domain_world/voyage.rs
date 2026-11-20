@@ -13801,6 +13801,9 @@ fn lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port() {
         GOD,
         &format!("@econ/mint {treasury}={account} 10000000"),
     );
+    // Doc 50 unit LW.1 (Q-50-65): the Ceres board sells strategic ore only to a holder of the
+    // papers, seized ore included.
+    support::licence::hold_the_papers(&mut rig.tw, buyer);
     let exchange = c07(&rig.tw);
     teleport(&mut rig.tw, buyer, exchange);
     let quoted = run(

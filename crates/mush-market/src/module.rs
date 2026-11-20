@@ -447,6 +447,46 @@ pub trait ProceedsPolicy: Send + Sync + std::fmt::Debug {
     ) -> Result<(), ProceedsRefusal> {
         Ok(())
     }
+    /// **May `trader` trade `commodity` at `market` on the public board?** (doc 50 unit LW.1;
+    /// Q-50-33, Q-50-34, Q-50-65): the law asked for a venue and a good at the moment of a
+    /// trade, of either side: a seller into a public bid, a buyer at a public listing's quote,
+    /// and the poster of a public ask or bid. A private offer between two parties is never
+    /// asked. Reads `w` only. Default: yes.
+    ///
+    /// # Errors
+    /// The policy's own refusal line; nothing is traded or listed.
+    fn may_trade(
+        &self,
+        _w: &mush_core::World,
+        _trader: &PrincipalId,
+        _market: &crate::MarketId,
+        _commodity: &mush_core::CanonicalId,
+    ) -> Result<(), ProceedsRefusal> {
+        Ok(())
+    }
+}
+
+/// **The law of a public trade** (doc 50 unit LW.1): [`ProceedsPolicy::may_trade`] asked of
+/// `trader`, unless the trade is a private offer (`private`). No policy is no law.
+///
+/// # Errors
+/// The policy's refusal, as a [`crate::MarketError`].
+pub(crate) fn law_of_trade(
+    w: &mush_core::World,
+    trader: &PrincipalId,
+    market: &crate::MarketId,
+    commodity: &mush_core::CanonicalId,
+    private: bool,
+) -> Result<(), crate::MarketError> {
+    if private {
+        return Ok(());
+    }
+    match proceeds_policy(w) {
+        Some(policy) => policy
+            .may_trade(w, trader, market, commodity)
+            .map_err(|r| crate::MarketError::bad(r.line)),
+        None => Ok(()),
+    }
 }
 
 /// The market [`GameModule`].

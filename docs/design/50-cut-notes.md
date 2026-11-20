@@ -674,7 +674,80 @@ relay v39**, from KC.2's v47.
 
 ## LW.1
 
-Not built.
+**Survey** (at `f7342fe34`, #720's head with the Freeport's Ceres row):
+- **The schedule.** KC.2's `TermsRow` carries `restricted: Vec<RestrictedGood { good, paper }>`,
+  and nothing read it. Lane v47's `ceres` row restricts `strategic_ore` under paper
+  `freeport_prospecting`, the Freeport's terms. KC.2 added the row for this unit.
+- **The market's seam.** `ProceedsPolicy::proceeds` is asked at a sale into a bid and when a
+  personal lot ask is bought, with the world only. `may_list` is asked at a personal ask's posting
+  without the good. Nothing is asked of a buyer of a house ask, or of a public bid's poster.
+- **The papers.** The picket's test is `licence_gate` (the Registry's license, in force or in
+  grace) plus a live claim on a strategic rock in an orbital cluster, held by the actor, by their
+  gateway account, or by an organization they are an active member of
+  (`space/mining.rs` `actor_holds_cluster_block_claim`).
+  - The license reads from the world.
+  - The claim is a `tacsim.claims` action-state record, read only through tacsim's own lens. A
+    market command's context is the market's, so it cannot read it.
+
+**Built:**
+1. **`ProceedsPolicy::may_trade(w, trader, market, commodity)`** (mush-market, default yes).
+   - The market asks it, through `module::law_of_trade`, of either side of a public trade:
+     - the seller at `sell_into_bid`;
+     - the buyer at `quote`;
+     - the poster of a public `post_ask` (Q-50-33: a listing is refused when posted);
+     - the poster of a public `post_bid`.
+   - A private offer (`private_to`) is never asked (Q-50-34).
+2. **`crate::port::law`:**
+   - `restriction_at(w, venue, good)` is the venue's de facto holder's `restricted` row
+     (`polity::terms_at` at the venue's port entry).
+   - `papers_clear(w, actor, now)` is the picket's test, Q-50-65's one test.
+   - `may_trade` refuses a restricted good to anyone without its paper, with
+     `RESTRICTED_REFUSED`. An organization is refused, because it holds no prospecting license.
+     A paper this crate does not know lifts nothing.
+3. **The claims mirror (`PapersMirror`).**
+   - The port tick copies every claim on a strategic rock into the store (`law::refresh`).
+   - The board reads the copy.
+   - Both the board and the picket ask one predicate, `space::mining::claim_covers`, factored
+     out of the picket's live read.
+4. **`CoopProceeds::may_trade`** wires it.
+
+**Tests:**
+- `domain_economy` `lw1_restricted_goods::lw1_the_ceres_board_trades_strategic_ore_only_with_the_picket_papers`:
+  - A licensed prospector with no claim is refused selling strategic ore into the Exchange's bid.
+    With a claim as well, the sale goes through.
+  - Their public ask is refused to a trader with no license, and still refused to the trader
+    holding a claim.
+  - A private offer to the same trader is quoted.
+  - After Ceres station is handed to the Republic, whose terms restrict nothing there, the
+    trader may quote the public ask.
+  - Mutation-checked, each failing the story: the law never restricting; the papers asking the
+    license alone; the papers asking the claim alone; the market asking a private offer too.
+- **Stories that trade strategic ore on the Ceres board now hold the papers**
+  (`support::licence::hold_the_papers`): `in11_matter`'s purchase and `plumbing::sm5`'s sale.
+  `coop`'s two port-trade frame stories pick a live ask other than strategic ore.
+- Re-run beside it:
+  - `mush-market` lib;
+  - `domain_economy` `ex1b_venue::`, `held_lots_48e::`, `ex4_charges::` and `lw2_offense_record::`;
+  - `domain_world` `voyage::sfr26c`, `sfr6`, `sfr5` and `cr_*` (the picket on the factored claim
+    test);
+  - the tacsim lib's proceeds, mining, picket and law tests.
+
+**Divergences:**
+- **A new policy method, not a wider `may_list`.** Q-50-33's correction has `may_list` gain the
+  commodity. `may_trade` is asked at every public posting and also of buyers and sellers. Its
+  rule is per venue and good, not per source.
+- **The board reads a mirror of the claims, at most one port fire old.** The market's policy
+  sees the world alone, and the claims are a lens-guarded family. A claim staked or lapsed this
+  fire is seen on the next. The picket keeps its live read; both share `claim_covers`.
+- **Houses are not asked.** A house's own posting or restock never passes through the personal
+  paths. A player who buys from a house ask or sells into a house bid is asked.
+- **The buyer is asked at the quote, not again at the accept.** Papers that lapse between the
+  two do not stop the purchase.
+
+**Not built:**
+- **Possession as an offense, found by a port audit** (Q-50-65's third place): LW.3.
+- **Import duty and Isidis's restricted goods:** OP.5.
+- **No lane bump.** The Ceres row is KC.2's v47.
 
 ## LW.2
 

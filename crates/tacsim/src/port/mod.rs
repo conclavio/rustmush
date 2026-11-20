@@ -174,6 +174,8 @@ pub mod hull;
 pub mod hull_sale;
 pub mod interface;
 pub mod jobs;
+// Doc 50 unit LW.1: the law asked for a venue and a good, and the papers that lift it.
+pub mod law;
 pub mod licence;
 pub mod locker;
 pub mod map;

@@ -2181,6 +2181,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::works::tick(ctx);
     // Doc 48 cut EX.6: the hauls' legs and the escorts' watch.
     crate::services::tick(ctx);
+    // Doc 50 unit LW.1: the strategic rocks' claims, copied for the board's papers test.
+    crate::port::law::refresh(ctx);
     // Doc 41 cut RS.5 (Q-41-11): the retrieval clerk (Tycho at a window's end, a lapse).
     crate::surface::retrieval::tick(ctx);
     // Doc 39 cut IN.10: the pools — a house's next order step, or a new order under its floor.

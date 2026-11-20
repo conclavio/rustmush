@@ -115,6 +115,8 @@ mod l2_title;
 mod landing;
 #[path = "domain_economy/lane.rs"]
 mod lane;
+#[path = "domain_economy/lw1_restricted_goods.rs"]
+mod lw1_restricted_goods;
 #[path = "domain_economy/lw2_offense_record.rs"]
 mod lw2_offense_record;
 #[path = "domain_economy/mill.rs"]
