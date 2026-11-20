@@ -208,20 +208,21 @@ async fn carrier_pad(field: &mut Field, who: ObjId, rigs: &[ObjId]) -> (u16, u16
     carrier_cell(&field.rig, who, rigs).expect("held")
 }
 
-/// **The intruder's player keeps a lock on the contact within `within` cells of `cell` and
-/// fires**, one pass of the two lines a player types (`escort_lease`'s exchange).
+/// **The intruder's player keeps a lock on the nearest contact within `within` cells of `cell`
+/// and fires**, one pass of the two lines a player types (`escort_lease`'s exchange).
 fn fire_on(field: &mut Field, cell: (u16, u16), within: u16) {
     let (stranger, gun) = (field.stranger, weapon_of(&field.rig, field.intruder));
     let near = frame(&field.rig, stranger).and_then(|frame| {
         frame
             .contacts
             .iter()
-            .find(|contact| {
-                contact.cell.is_some_and(|(x, y)| {
-                    x.abs_diff(cell.0) <= within && y.abs_diff(cell.1) <= within
-                })
+            .filter_map(|contact| {
+                let (x, y) = contact.cell?;
+                let dist = x.abs_diff(cell.0).max(y.abs_diff(cell.1));
+                (dist <= within).then_some((dist, contact))
             })
-            .map(|contact| (contact.id, contact.designator.to_string(), frame.lock))
+            .min_by_key(|(dist, _)| *dist)
+            .map(|(_, contact)| (contact.id, contact.designator.to_string(), frame.lock))
     });
     if let Some((id, designator, lock)) = near
         && lock != Some(id)
