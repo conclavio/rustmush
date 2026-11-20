@@ -92,6 +92,9 @@ pub fn spent() -> (u64, u64) {
 /// fault, when `ops + fee > limit`; otherwise `None` and the think runs on.
 #[must_use]
 pub fn check(_reported: u64) -> Option<Dynamic> {
+    if crate::guards::limit_tripped() {
+        return Some(Dynamic::from("limit"));
+    }
     BUDGET.with(|budget| {
         let mut now = budget.get();
         now.ops = now.ops.saturating_add(1);

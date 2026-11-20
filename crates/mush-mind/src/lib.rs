@@ -61,6 +61,7 @@
 pub mod budget;
 mod cache;
 mod engine;
+mod guards;
 pub mod memory;
 mod run;
 pub mod trace;
@@ -70,6 +71,7 @@ pub use engine::{
     EngineLimits, MAX_ARRAY_SIZE, MAX_MAP_SIZE, MAX_MEMORY_ANY_CLASS, MAX_OPS_ANY_CLASS,
     MAX_STRING_BYTES, MindRefusal, RHAI_ABI, Sandbox, system_error,
 };
+pub use guards::MAX_CONTAINER_DEPTH;
 pub use run::{Fault, Outcome, Think};
 
 /// **The rhai this crate is built on**, re-exported so the game registers its

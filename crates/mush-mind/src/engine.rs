@@ -19,11 +19,11 @@ use rhai::packages::{
     ArithmeticPackage, BasicArrayPackage, BasicIteratorPackage, BasicMapPackage,
     BasicStringPackage, LanguageCorePackage, LogicPackage, Package,
 };
-use rhai::{Engine, EvalAltResult, FLOAT, INT};
+use rhai::{Dynamic, Engine, EvalAltResult, FLOAT, INT};
 
 use crate::cache::Cache;
 use crate::memory::Limits;
-use crate::{budget, trace};
+use crate::{budget, guards, trace};
 
 /// **The rhai this sandbox was built and pinned against** (doc 17 §13,
 /// D-UM-24): the first part of the game's `MIND_ABI` (`rhai=1.26.0;api=N;
@@ -153,9 +153,13 @@ impl Sandbox {
     ///   raising [`system_error`], shadow the package's: a mind never reads a
     ///   clock and never waits on one (doc 17 §7).
     /// * **`exit()` is a return**, as the package ships it: see
-    ///   [`Sandbox::think`]. `parse_json` and the reflection functions stay as
-    ///   the package ships them (a FLOAT or a map they yield faults at the
-    ///   memory boundary).
+    ///   [`Sandbox::think`]. `parse_json` is shadowed with [`system_error`]
+    ///   (matching `sleep`), so `rhai`'s unmetered `parse_global_expr` /
+    ///   `eval_ast` JSON parser is unreachable; container padding, nesting
+    ///   depth (capped at [`crate::MAX_CONTAINER_DEPTH`]), equality,
+    ///   formatting, and comparator `sort`/`dedup` are shadowed by the crate's
+    ///   container guards. The reflection function stays as the
+    ///   package ships it.
     /// * The limits of D-UM-25 as amended: call levels 12, expression depths
     ///   48 at the top level and 24 in a function body, 64 variables, 32
     ///   functions, no module, strict variables (a typo is a seal-time
@@ -184,14 +188,33 @@ impl Sandbox {
             engine.disable_symbol(symbol);
         }
 
-        // The `sleep` shadows: on the engine's own namespace, searched before
-        // the packages (see the doc above).
+        // The `sleep` and `parse_json` shadows: on the engine's own namespace,
+        // searched before the packages (see the doc above).
         engine.register_fn("sleep", |_: INT| -> Result<(), Box<EvalAltResult>> {
             Err(system_error(SLEEP_REFUSED))
         });
         engine.register_fn("sleep", |_: FLOAT| -> Result<(), Box<EvalAltResult>> {
             Err(system_error(SLEEP_REFUSED))
         });
+        engine.register_fn(
+            "parse_json",
+            |_: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+                Err(system_error(PARSE_JSON_REFUSED))
+            },
+        );
+
+        // Container padding, nesting depth, formatting/equality, and fallible
+        // comparator sort/dedup shadows (CRIT-6, CRIT-7, HIGH-16).
+        //
+        // Note: `fast_operators` stays at Rhai's default (`true`) so per-think
+        // operation counts remain bit-for-bit identical under `RHAI_ABI` (as
+        // pinned by `tacsim`'s C4 trial hashes and D-UM-28 corpus). The only
+        // container fast-operator path in `rhai 1.26.0` is `Array += ...`,
+        // which cannot build unbounded nesting because `guards::validate_source`
+        // caps static literals at `MAX_CONTAINER_DEPTH` and blocks `this`
+        // self-nesting `+=`, while `on_var` and `guards` reject any read/op
+        // past depth 8.
+        guards::register(&mut engine);
 
         // D-UM-25 as amended 2026-10-04.
         engine.set_max_call_levels(12);
@@ -244,6 +267,9 @@ fn packaged() -> Engine {
 
 /// The sentence a `sleep` call ends its think with.
 const SLEEP_REFUSED: &str = "sleep is not a thing a mind does";
+
+/// The sentence a `parse_json` call ends its think with.
+const PARSE_JSON_REFUSED: &str = "parse_json is not a thing a mind does";
 
 /// **`clamp(v, lo, hi)`**: `v` held inside `lo..=hi`. A `lo` above `hi` is
 /// refused ([`system_error`], a `type` fault) rather than read as some

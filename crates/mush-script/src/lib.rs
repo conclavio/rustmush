@@ -48,6 +48,7 @@
     clippy::panic_in_result_fn
 )]
 
+mod guards;
 mod runtime;
 
 use std::collections::VecDeque;
@@ -104,6 +105,11 @@ impl GameModule for ScriptModule {
         // Object `$`-commands and `use` remain the explicitly declared script
         // compatibility lane; scripts cannot register authoritative providers.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // Claim the `script:` attribute namespace so unprivileged `Role::Player`
+        // cannot author executable scripts via `@set` (CRIT-5). Combined with
+        // `Registry::may_write_attr` allowing `Role::Builder`+ for `script:`,
+        // builders and wizards retain `@set <obj>/script:*=...`.
+        reg.attr_namespace("script")?;
         reg.state(ScriptState::new(self.cfg));
 
         reg.subscribe(WorldEventKind::AttrSet, Arc::new(on_attr_set));

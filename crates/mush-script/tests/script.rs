@@ -58,6 +58,15 @@ impl Fixture {
             .unwrap()
     }
 
+    fn builder(&mut self, name: &str) -> ObjId {
+        let id = self.player(name);
+        self.engine
+            .world
+            .set_flag(id, Flags::BUILDER, true)
+            .unwrap();
+        id
+    }
+
     fn thing(&mut self, name: &str, owner: ObjId, loc: ObjId) -> ObjId {
         self.engine
             .world
@@ -230,7 +239,7 @@ fn count(events: &[(Audience, OutputEvent)], needle: &str) -> usize {
 #[test]
 fn command_greet_pemits_caller_and_recompiles_on_change() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bell = f.thing("bell", nick, LIMBO);
     f.seed_script(
         bell,
@@ -270,6 +279,7 @@ fn boot_compiles_existing_scripts() {
     let nick = world
         .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
         .unwrap();
+    world.set_flag(nick, Flags::BUILDER, true).unwrap();
     let bell = world
         .create(ObjKind::Thing, "bell", nick, Some(LIMBO))
         .unwrap();
@@ -376,7 +386,7 @@ fn on_use_runs_use_script_else_refuses() {
 #[test]
 fn on_timer_fires_via_schedule_and_manual_clock() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let clock = f.thing("clock", nick, LIMBO);
     f.seed_script(clock, "script:command:arm", r#"mush::schedule(5, "boom")"#);
     f.seed_script(
@@ -406,7 +416,7 @@ fn on_timer_fires_via_schedule_and_manual_clock() {
 #[test]
 fn mortal_script_cannot_set_attr_on_uncontrolled_object() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bob = f.player("Bob");
     let vault = f.thing("vault", bob, LIMBO); // owned by Bob
     f.engine
@@ -433,7 +443,7 @@ fn mortal_script_cannot_set_attr_on_uncontrolled_object() {
 #[test]
 fn mortal_script_cannot_move_a_wizards_object() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let idol = f.thing("idol", GOD, LIMBO); // wizard-owned
     let tool = f.thing("tool", nick, LIMBO);
     f.seed_script(
@@ -454,7 +464,7 @@ fn mortal_script_cannot_move_a_wizards_object() {
 #[test]
 fn owner_script_can_set_attr_on_its_own_object() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let diary = f.thing("diary", nick, LIMBO);
     f.seed_script(
         diary,
@@ -472,7 +482,7 @@ fn owner_script_can_set_attr_on_its_own_object() {
 #[test]
 fn infinite_loop_is_aborted_by_operation_cap() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bomb = f.thing("bomb", nick, LIMBO);
     f.seed_script(
         bomb,
@@ -486,7 +496,7 @@ fn infinite_loop_is_aborted_by_operation_cap() {
 #[test]
 fn huge_string_is_aborted_by_memory_cap() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bomb = f.thing("bomb", nick, LIMBO);
     f.seed_script(
         bomb,
@@ -500,7 +510,7 @@ fn huge_string_is_aborted_by_memory_cap() {
 #[test]
 fn deep_recursion_is_aborted_by_call_level_cap() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bomb = f.thing("bomb", nick, LIMBO);
     f.seed_script(bomb, "script:command:dive", "fn dive() { dive(); } dive();");
     let out = f.run(nick, "dive");
@@ -515,7 +525,7 @@ fn wall_clock_backstop_aborts_a_slow_script() {
         ..ScriptConfig::default()
     };
     let mut f = Fixture::with_config(cfg);
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bomb = f.thing("bomb", nick, LIMBO);
     f.seed_script(
         bomb,
@@ -529,7 +539,7 @@ fn wall_clock_backstop_aborts_a_slow_script() {
 #[test]
 fn compile_error_disables_only_that_script_and_notifies_owner() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let obj = f.thing("obj", nick, LIMBO);
     // A good script and a broken one on the same object.
     f.seed_script(
@@ -557,7 +567,7 @@ fn compile_error_disables_only_that_script_and_notifies_owner() {
 #[test]
 fn three_budget_overruns_halt_the_object() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bomb = f.thing("bomb", nick, LIMBO);
     f.seed_script(bomb, "script:command:spin", "while true {}");
 
@@ -620,7 +630,7 @@ fn cascade_cap_stops_an_emit_hear_ping_pong() {
 #[test]
 fn there_is_no_mush_cmd() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let obj = f.thing("obj", nick, LIMBO);
     f.seed_script(obj, "script:command:sneaky", r#"mush::cmd("look")"#);
     let out = f.run(nick, "sneaky");
@@ -635,7 +645,7 @@ fn there_is_no_mush_cmd() {
 #[test]
 fn objid_round_trips_through_rhai() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let mirror = f.thing("mirror", nick, LIMBO);
     f.seed_script(
         mirror,
@@ -658,7 +668,7 @@ fn objid_round_trips_through_rhai() {
 #[test]
 fn dice_rolls_within_bounds() {
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let die = f.thing("die", nick, LIMBO);
     f.seed_script(
         die,
@@ -681,7 +691,7 @@ fn dice_rolls_within_bounds() {
 fn command_scripts_are_a_fallback_not_a_shadow() {
     // A script:command:say must NOT capture the built-in `say`.
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let obj = f.thing("obj", nick, LIMBO);
     f.seed_script(
         obj,
@@ -706,7 +716,7 @@ fn command_script_never_shadows_an_exit() {
         .unwrap();
     let exit = f.engine.world.exits_of(foyer)[0];
     f.engine.world.link_exit(exit, Some(hall)).unwrap();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     f.engine.world.move_to(nick, foyer).unwrap();
     // A scripted object in the room offers a rival `north` $-command.
     let gadget = f.thing("gadget", nick, foyer);
@@ -740,7 +750,7 @@ fn dice_non_ascii_or_overflow_fails_without_panicking() {
     // overflow-panic in a debug build. Both must now be plain, catchable
     // script errors — and reaching the assertions at all proves no panic.
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let die = f.thing("die", nick, LIMBO);
     f.seed_script(
         die,
@@ -801,7 +811,7 @@ fn script_authored_script_compiles_inline() {
     // A script writing a `script:*` attr recompiles inline, so a script
     // authored by a script is live immediately (not only after a reboot).
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let obj = f.thing("obj", nick, LIMBO);
     f.seed_script(
         obj,
@@ -825,7 +835,7 @@ fn get_attr_withholds_hidden_attrs_from_uncontrolled_reader() {
     // SEV-2: HIDDEN (and other restricted) attrs must not be readable by a
     // script whose owner cannot examine the object; plain attrs stay readable.
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bob = f.player("Bob");
     let vault = f.thing("vault", bob, LIMBO); // Bob's — Nick can't examine
     f.engine
@@ -870,7 +880,7 @@ fn contents_omits_dark_members_a_script_cannot_see() {
     // SEV-3: contents honors DARK visibility — a DARK member the owner does
     // not control is omitted, exactly as the look layer would hide it.
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let bin = f.thing("bin", nick, LIMBO); // Nick controls the container
     let plain = f.thing("plain", GOD, LIMBO);
     let dark = f.thing("dark", GOD, LIMBO);
@@ -897,7 +907,7 @@ fn script_set_attr_respects_wizard_only_and_preserves_flags() {
     // SEV-4: mush::set_attr must not overwrite a WIZARD_ONLY attr as a
     // non-Wizard, and must carry existing attr flags forward on rewrite.
     let mut f = Fixture::new();
-    let nick = f.player("Nick");
+    let nick = f.builder("Nick");
     let obj = f.thing("obj", nick, LIMBO); // Nick owns it
     // Staff stored a WIZARD_ONLY attr; Nick set a HIDDEN note of his own.
     f.engine
@@ -955,4 +965,619 @@ fn script_set_attr_respects_wizard_only_and_preserves_flags() {
         note.flags.contains(AttrFlags::HIDDEN),
         "existing attr flags must be carried forward, not stripped"
     );
+}
+
+// ----------------------------------------------------------------------
+// Tier 0 security hardening regressions (CRIT-5, CRIT-6, CRIT-7, CRIT-8, HIGH-16)
+// ----------------------------------------------------------------------
+
+#[test]
+fn crit5_plain_player_cannot_author_compile_or_execute_scripts() {
+    // 1. Plain Role::Player cannot write `script:*` attributes via `@set`.
+    let mut f = Fixture::new();
+    let eve = f.player("Eve");
+    let out = f.run(eve, r#"@set me/script:use=mush::pemit(user, "PWNED")"#);
+    assert!(
+        actor_saw(&out, eve, "Permission denied"),
+        "plain player @set on script:* must be refused: {:?}",
+        all_text(&out)
+    );
+    assert!(
+        f.engine.world.attr(eve, "script:use").is_none(),
+        "script:use must not be written by a plain player"
+    );
+
+    // 2. Pre-seeded `script:*` attrs on objects owned by a plain Role::Player
+    //    must neither compile at boot nor execute on any hook (command, use,
+    //    hear, enter, timer).
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let eve = world
+        .create(ObjKind::Player, "Eve", GOD, Some(LIMBO))
+        .unwrap();
+    let foyer = world.create(ObjKind::Room, "Foyer", GOD, None).unwrap();
+    let hall = world.create(ObjKind::Room, "Hall", eve, None).unwrap();
+    let exit = world
+        .create(ObjKind::Exit, "north;n", GOD, Some(foyer))
+        .unwrap();
+    world.link_exit(exit, Some(hall)).unwrap();
+    let gadget = world
+        .create(ObjKind::Thing, "gadget", eve, Some(foyer))
+        .unwrap();
+    world.move_to(eve, foyer).unwrap();
+
+    for (obj, key, code) in [
+        (
+            gadget,
+            "script:command:evil",
+            r#"mush::pemit(mush::caller(), "EVIL-CMD")"#,
+        ),
+        (gadget, "script:use", r#"mush::pemit(user, "EVIL-USE")"#),
+        (
+            gadget,
+            "script:hear:hi",
+            r#"mush::emit(mush::here(), "EVIL-HEAR")"#,
+        ),
+        (
+            gadget,
+            "script:timer:boom",
+            r#"mush::emit(mush::here(), "EVIL-TIMER")"#,
+        ),
+        (
+            hall,
+            "script:enter",
+            r#"mush::emit(mush::me(), "EVIL-ENTER")"#,
+        ),
+    ] {
+        world.set_attr(obj, key, Attr::text(code, eve)).unwrap();
+    }
+
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    register_engine_commands(&mut registry).unwrap();
+    let mut engine =
+        Engine::with_modules(world, registry, vec![Box::new(ScriptModule::new())]).unwrap();
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .unwrap();
+
+    let mut step = |actor: ObjId, line: &str| {
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor,
+                line: line.into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        out.take()
+    };
+
+    assert!(saw(&step(eve, "evil"), "Huh?"));
+    assert!(actor_saw(
+        &step(eve, "use gadget"),
+        eve,
+        "You can't use that."
+    ));
+    assert!(!saw(&step(eve, "say hi"), "EVIL-HEAR"));
+    assert!(!saw(&step(gadget, "@script/timer boom"), "EVIL-TIMER"));
+    assert!(!saw(&step(eve, "north"), "EVIL-ENTER"));
+
+    // 3. Defense-in-depth on role demotion: removing BUILDER from an owner
+    //    immediately prevents already-compiled scripts from running.
+    let mut f2 = Fixture::new();
+    let nick = f2.builder("Nick");
+    let bell = f2.thing("bell", nick, LIMBO);
+    f2.seed_script(
+        bell,
+        "script:command:ping",
+        r#"mush::pemit(mush::caller(), "pong")"#,
+    );
+    assert!(actor_saw(&f2.run(nick, "ping"), nick, "pong"));
+
+    f2.engine
+        .world
+        .set_flag(nick, Flags::BUILDER, false)
+        .unwrap();
+    let out = f2.run(nick, "ping");
+    assert!(
+        saw(&out, "Huh?") && !saw(&out, "pong"),
+        "demoted player's compiled script must no longer run: {:?}",
+        all_text(&out)
+    );
+}
+
+#[test]
+fn crit5_hardened_engine_disables_dangerous_symbols_packages_sleep_and_print() {
+    let mut f = Fixture::new();
+    let nick = f.builder("Nick");
+    let obj = f.thing("obj", nick, LIMBO);
+
+    // Disabled symbols must fail at compile time.
+    for (idx, src) in [
+        r#"eval("1")"#,
+        r#"import "x" as x;"#,
+        r#"export const X = 1;"#,
+        r#"Fn("f")"#,
+        r#"let f = 1; f.call()"#,
+        r#"let f = 1; f.curry(1)"#,
+        r#"fn f() { this } [].f()"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let out = f.run_classified(GOD, &format!("@set {obj}/script:command:c{idx}={src}"));
+        assert!(
+            classified_actor_saw(&out, DeliveryClass::OnCommit, nick, "failed to compile"),
+            "expected compile failure for `{src}`: {out:?}"
+        );
+    }
+
+    // Excluded package functions must fail at runtime.
+    for (idx, src) in [
+        r#"let s = "a".replace("a", "b");"#,
+        r#"let s = "a".pad(10, "");"#,
+        r#"let t = timestamp();"#,
+        r#"let b = blob(10);"#,
+        r#"let f = || 1; let n = f.name();"#,
+        r#"let x = sin(1.0);"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let word = format!("pkg{idx}");
+        f.seed_script(obj, &format!("script:command:{word}"), src);
+        let out = f.run(nick, &word);
+        assert!(
+            actor_saw(&out, nick, "failed"),
+            "excluded package call `{src}` must fail: {:?}",
+            all_text(&out)
+        );
+    }
+
+    // `sleep` (INT & FLOAT) must fail immediately and fatally, even when caught
+    // through a callback or masked by a subsequent throw.
+    for (idx, src) in [
+        "sleep(10);",
+        "sleep(10.0);",
+        "try { sleep(10); } catch {}",
+        "try { [1].map(|x| sleep(10)); } catch {}",
+        r#"try { [1].map(|x| sleep(10.0)); } catch {} throw "mask";"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let word = format!("slp{idx}");
+        f.seed_script(obj, &format!("script:command:{word}"), src);
+        let started = std::time::Instant::now();
+        let out = f.run(nick, &word);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "sleep must not actually sleep: {src}"
+        );
+        assert!(
+            actor_saw(&out, nick, "sleep is disabled in mush-script"),
+            "sleep must report fatal refusal for `{src}`: {:?}",
+            all_text(&out)
+        );
+    }
+
+    // `print` and `debug` are silent no-ops (succeed without panicking).
+    f.seed_script(
+        obj,
+        "script:command:quiet",
+        r#"print("hello"); debug("world"); mush::pemit(mush::caller(), "clean")"#,
+    );
+    let out = f.run(nick, "quiet");
+    assert!(actor_saw(&out, nick, "clean"), "{:?}", all_text(&out));
+}
+
+#[test]
+fn crit8_monotonic_budget_and_callback_overruns_accrue_strikes_and_halt() {
+    // 1. Sibling callbacks cannot reset the op counter; 3 consecutive runs HALT.
+    {
+        let cfg = ScriptConfig {
+            max_operations: 500,
+            ..ScriptConfig::default()
+        };
+        let mut f = Fixture::with_config(cfg);
+        let nick = f.builder("Nick");
+        let bomb = f.thing("bomb", nick, LIMBO);
+        f.seed_script(
+            bomb,
+            "script:command:fan",
+            "fn burn(x) { let i = 0; while i < 50 { i += 1; } x } \
+             let v = []; v.pad(2000, 0); v.map(burn); \
+             mush::pemit(mush::caller(), \"ESCAPED\");",
+        );
+        for attempt in 0..3 {
+            let started = std::time::Instant::now();
+            let out = f.run(nick, "fan");
+            assert!(started.elapsed() < std::time::Duration::from_millis(500));
+            assert!(!saw(&out, "ESCAPED"));
+            assert!(
+                actor_saw(&out, nick, "failed"),
+                "attempt {attempt}: {:?}",
+                all_text(&out)
+            );
+        }
+        assert!(
+            f.flag(bomb, Flags::HALTED),
+            "3 callback op overruns must HALT"
+        );
+    }
+
+    // 2. Callback overrun caught in `try`/`catch` still fails, still accrues
+    //    strikes, and HALTs after 3 runs.
+    {
+        let cfg = ScriptConfig {
+            max_operations: 500,
+            ..ScriptConfig::default()
+        };
+        let mut f = Fixture::with_config(cfg);
+        let nick = f.builder("Nick");
+        let bomb = f.thing("bomb", nick, LIMBO);
+        f.seed_script(
+            bomb,
+            "script:command:sneak",
+            "fn spin(x) { let n = 0; loop { n += 1; } } \
+             try { [1].map(spin); } catch {} \
+             mush::pemit(mush::caller(), \"ESCAPED\");",
+        );
+        for _ in 0..3 {
+            let out = f.run(nick, "sneak");
+            assert!(actor_saw(&out, nick, "failed"), "{:?}", all_text(&out));
+        }
+        assert!(
+            f.flag(bomb, Flags::HALTED),
+            "caught callback overrun must still accrue strikes and HALT"
+        );
+    }
+
+    // 3. Uncaught callback overrun (`ErrorInFunctionCall` wrapper) unwraps in
+    //    `is_budget_overrun`, accrues strikes, and HALTs after 3 runs.
+    {
+        let cfg = ScriptConfig {
+            max_operations: 500,
+            ..ScriptConfig::default()
+        };
+        let mut f = Fixture::with_config(cfg);
+        let nick = f.builder("Nick");
+        let bomb = f.thing("bomb", nick, LIMBO);
+        f.seed_script(
+            bomb,
+            "script:command:wrap",
+            "fn spin(x) { let n = 0; loop { n += 1; } } [1].map(spin);",
+        );
+        for _ in 0..3 {
+            let out = f.run(nick, "wrap");
+            assert!(actor_saw(&out, nick, "failed"), "{:?}", all_text(&out));
+        }
+        assert!(
+            f.flag(bomb, Flags::HALTED),
+            "uncaught wrapped callback overrun must accrue strikes and HALT"
+        );
+    }
+
+    // 4. Wall-clock backstop triggers inside callbacks too and accrues strikes.
+    {
+        let cfg = ScriptConfig {
+            wall_clock_ms: 10,
+            max_operations: 5_000_000_000,
+            ..ScriptConfig::default()
+        };
+        let mut f = Fixture::with_config(cfg);
+        let nick = f.builder("Nick");
+        let bomb = f.thing("bomb", nick, LIMBO);
+        f.seed_script(
+            bomb,
+            "script:command:slowcb",
+            "fn burn(x) { let i = 0; while i < 50000 { i += 1; } x } \
+             let v = []; v.pad(2000, 0); v.map(burn);",
+        );
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            let out = f.run(nick, "slowcb");
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            assert!(actor_saw(&out, nick, "failed"), "{:?}", all_text(&out));
+        }
+        assert!(
+            f.flag(bomb, Flags::HALTED),
+            "wall-clock overruns in callbacks must accrue strikes and HALT"
+        );
+    }
+}
+
+#[test]
+fn crit6_array_pad_hardening_in_mush_script() {
+    let mut f = Fixture::new();
+    let nick = f.builder("Nick");
+    let obj = f.thing("obj", nick, LIMBO);
+
+    // Non-positive lengths are no-ops; valid pad works.
+    f.seed_script(
+        obj,
+        "script:command:okpad",
+        "let v = [1]; v.pad(0, 9); v.pad(-5, 9); v.pad(4, 7); \
+         mush::pemit(mush::caller(), v.to_string());",
+    );
+    let out = f.run(nick, "okpad");
+    assert!(
+        actor_saw(&out, nick, "[1, 7, 7, 7]"),
+        "{:?}",
+        all_text(&out)
+    );
+
+    // Oversized pad, exact release-mode u64 wraparound payload
+    // ((4095 + 1) * (1 << 52) == 2^64 == 0 mod 2^64), and nested size overflow
+    // all fail cleanly without OOM/abort and accrue strikes.
+    let bad_cases = [
+        "let v = []; v.pad(4097, 0);",
+        "let item = []; item.pad(4095, 0); let v = []; v.pad(4503599627370496, item);",
+        "let item = []; item.pad(50, 0); let v = []; v.pad(100, item);",
+    ];
+    for (idx, src) in bad_cases.into_iter().enumerate() {
+        let bomb = f.thing(&format!("padbomb{idx}"), nick, LIMBO);
+        let word = format!("badpad{idx}");
+        f.seed_script(bomb, &format!("script:command:{word}"), src);
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            let out = f.run(nick, &word);
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            assert!(
+                actor_saw(&out, nick, "failed"),
+                "bad pad `{src}` must fail cleanly: {:?}",
+                all_text(&out)
+            );
+        }
+        assert!(
+            f.flag(bomb, Flags::HALTED),
+            "bad pad `{src}` must accrue strikes"
+        );
+    }
+}
+
+#[test]
+fn crit7_container_depth_cap_in_mush_script_on_small_stack() {
+    std::thread::Builder::new()
+        .name("script-crit7-depth".to_owned())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let mut f = Fixture::new();
+            let nick = f.builder("Nick");
+            let ok_obj = f.thing("ok", nick, LIMBO);
+
+            // Depth-8 containers work cleanly for equality, formatting, and to_json.
+            f.seed_script(
+                ok_obj,
+                "script:command:okdepth",
+                "let a = [1]; for i in 0..7 { a = [a]; } \
+                 let b = [1]; for i in 0..7 { b = [b]; } \
+                 let m = #{a: 1}; for i in 0..7 { m = #{a: m}; } \
+                 let s = a.to_string() + m.to_debug() + m.to_json(); \
+                 print(a); debug(m); \
+                 if a == b && s.len() > 0 { mush::pemit(mush::caller(), \"DEPTH8-OK\"); }",
+            );
+            let out = f.run(nick, "okdepth");
+            assert!(actor_saw(&out, nick, "DEPTH8-OK"), "{:?}", all_text(&out));
+
+            // Depth > 8 on every mutating, building, formatting, and equality path
+            // fails cleanly without overflowing a 2 MiB stack.
+            let deep_cases = [
+                "let x = [1]; for i in 0..20 { x = [x]; }",
+                "let m = #{k: 1}; for i in 0..20 { m = #{k: m}; }",
+                "let x = [1]; for i in 0..20 { let y = []; y.push(x); x = y; }",
+                "let x = [1]; for i in 0..20 { let y = []; y.insert(0, x); x = y; }",
+                "let x = [1]; for i in 0..20 { let y = [0]; y.set(0, x); x = y; }",
+                "let x = [1]; for i in 0..7 { x = [x]; } let y = []; y.pad(1, x);",
+                "let x = [1]; for i in 0..20 { let y = []; y += [x]; x = y; }",
+                "let x = [1]; for i in 0..20 { let y = []; y += #{k: x}; x = y; }",
+                "let x = [1]; for i in 0..7 { x = [x]; } let y = []; y += [x];",
+                "let x = [1]; for i in 0..7 { x = [x]; } let y = []; y.append([x]);",
+                "let x = [1]; for i in 0..7 { x = [x]; } let y = [] + [x];",
+                "let x = [1]; for i in 0..7 { x = [x]; } let y = [0]; y.splice(0, 1, [x]);",
+                "let x = [1]; for i in 0..20 { let y = [0]; y[0] = x; x = y; }",
+                "let m = #{k: 1}; for i in 0..20 { let n = #{}; n.k = m; m = n; }",
+                "let m = #{k: 1}; for i in 0..20 { let n = #{}; n.set(\"k\", m); m = n; }",
+                "let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let n = #{}; n.mixin(#{k: m});",
+                "let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let n = #{} + #{k: m};",
+                "let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let n = #{}; n.fill_with(#{k: m});",
+                "let x = [1]; for i in 0..7 { x = [x]; } let eq = [x] == [x];",
+                "let x = [1]; for i in 0..7 { x = [x]; } let ne = [x] != [x];",
+                "let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let eq = #{k: m} == #{};",
+                "let x = [1]; for i in 0..7 { x = [x]; } print([x]);",
+                "let x = [1]; for i in 0..7 { x = [x]; } debug([x]);",
+                "let x = [1]; for i in 0..7 { x = [x]; } let s = [x].to_string();",
+                "let x = [1]; for i in 0..7 { x = [x]; } let s = [x].to_debug();",
+                "let x = [1]; for i in 0..7 { x = [x]; } let s = `${[x]}`;",
+                "let x = [1]; for i in 0..7 { x = [x]; } try { let s = `${[x]}`; } catch {} mush::pemit(mush::caller(), \"ESCAPED\");",
+                "let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let j = (#{k: m}).to_json();",
+                "fn wrap(x) { [x] } let v = [1]; for i in 0..20 { v = v.map(wrap); }",
+                "fn acc(r, x) { [r] } let v = []; v.pad(50, 0); v.reduce(acc, 1);",
+            ];
+            for (idx, src) in deep_cases.into_iter().enumerate() {
+                let obj = f.thing(&format!("deep{idx}"), nick, LIMBO);
+                let word = format!("d{idx}");
+                f.seed_script(obj, &format!("script:command:{word}"), src);
+                let out = f.run(nick, &word);
+                assert!(!saw(&out, "ESCAPED"), "escaped on `{src}`");
+                assert!(
+                    actor_saw(&out, nick, "failed"),
+                    "expected depth failure for `{src}`: {:?}",
+                    all_text(&out)
+                );
+            }
+
+            // Static container-literal nesting > 8 (including the recursive
+            // 50-bracket `f(30)` payload that would otherwise build 1,500+
+            // nested arrays bypassing `on_var`) is rejected at compile time.
+            let compile_obj = f.thing("staticdeep", nick, LIMBO);
+            let deep50 = format!(
+                "fn f(n) {{ if n == 0 {{ 1 }} else {{ {}f(n - 1){} }} }} f(30);",
+                "[".repeat(50),
+                "]".repeat(50)
+            );
+            for (idx, src) in [
+                deep50.as_str(),
+                "let x = [[[[[[[[[1]]]]]]]]];",
+                "let m = #{a:#{a:#{a:#{a:#{a:#{a:#{a:#{a:#{a:1}}}}}}}}};",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let out = f.run_classified(
+                    GOD,
+                    &format!("@set {compile_obj}/script:command:sd{idx}={src}"),
+                );
+                assert!(
+                    classified_actor_saw(&out, DeliveryClass::OnCommit, nick, "failed to compile"),
+                    "expected compile failure for deep static literal `{src}`: {out:?}"
+                );
+            }
+
+            // At-cap 8-bracket recursive `f(30)` compiles, runs safely on a
+            // 2 MiB stack, and trips depth enforcement on variable read.
+            let rec_obj = f.thing("rec8", nick, LIMBO);
+            f.seed_script(
+                rec_obj,
+                "script:command:rec8",
+                "fn f(n) { if n == 0 { 1 } else { [[[[[[[[f(n - 1)]]]]]]]] } } \
+                 let a = f(30); let s = a.to_string();",
+            );
+            let out = f.run(nick, "rec8");
+            assert!(
+                actor_saw(&out, nick, "failed"),
+                "recursive depth-8 build must fail safely on read: {:?}",
+                all_text(&out)
+            );
+
+            // 3 consecutive depth-cap violations HALT the object.
+            let bomb = f.thing("depthbomb", nick, LIMBO);
+            f.seed_script(
+                bomb,
+                "script:command:nestbomb",
+                "let x = [1]; for i in 0..20 { x = [x]; }",
+            );
+            for _ in 0..3 {
+                let out = f.run(nick, "nestbomb");
+                assert!(actor_saw(&out, nick, "failed"));
+            }
+            assert!(f.flag(bomb, Flags::HALTED));
+        })
+        .expect("spawn")
+        .join()
+        .expect("script crit7 thread must not overflow stack or panic");
+}
+
+#[test]
+fn high16_parse_json_and_fallible_sort_dedup_in_mush_script() {
+    // 1. `parse_json` is fatally refused and cannot be caught.
+    {
+        let mut f = Fixture::new();
+        let nick = f.builder("Nick");
+        let obj = f.thing("obj", nick, LIMBO);
+        for (idx, src) in [
+            r#"parse_json("{}")"#,
+            r#"parse_json("1 + 2")"#,
+            r#"try { parse_json("{}"); } catch {}"#,
+            r#"try { [1].map(|x| parse_json("{}")); } catch {}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let word = format!("pj{idx}");
+            f.seed_script(obj, &format!("script:command:{word}"), src);
+            let out = f.run(nick, &word);
+            assert!(
+                actor_saw(&out, nick, "parse_json is disabled in mush-script"),
+                "`{src}` must fatally fail: {:?}",
+                all_text(&out)
+            );
+        }
+
+        // 2. Valid sort / order / dedup correctness + non-transitive safety + error propagation.
+        f.seed_script(
+            obj,
+            "script:command:sortok",
+            r#"fn desc(a, b) { b - a }
+               fn same_mod(a, b) { (a % 2) == (b % 2) }
+               fn crazy(a, b) { -1 }
+               let v1 = [3, 1, 4, 1, 5]; v1.sort(desc);
+               let v2 = [3, 1, 4]; v2.sort_by(desc);
+               let v3 = [2, 9, 5]; v3.sort("desc");
+               let orig = [2, 7, 4];
+               let o1 = orig.order(desc);
+               let o2 = orig.order_by(desc);
+               let d0 = [1, 1, 2, 2, 3]; d0.dedup();
+               let d1 = [2, 4, 3, 5, 6]; d1.dedup(same_mod);
+               let d2 = [2, 4, 3, 5, 6]; d2.dedup("same_mod");
+               let nt = [1, 2, 3, 4, 5, 6]; nt.sort(crazy);
+               mush::pemit(
+                   mush::caller(),
+                   v1.to_string() + "|" + v2.to_string() + "|" + v3.to_string() + "|"
+                   + orig.to_string() + "|" + o1.to_string() + "|" + o2.to_string() + "|"
+                   + d0.to_string() + "|" + d1.to_string() + "|" + d2.to_string() + "|"
+                   + nt.len().to_string()
+               );"#,
+        );
+        let out = f.run(nick, "sortok");
+        assert!(
+            actor_saw(
+                &out,
+                nick,
+                "[5, 4, 3, 1, 1]|[4, 3, 1]|[9, 5, 2]|[2, 7, 4]|[7, 4, 2]|[7, 4, 2]|[1, 2, 3]|[2, 3, 6]|[2, 3, 6]|6"
+            ),
+            "{:?}",
+            all_text(&out)
+        );
+
+        f.seed_script(
+            obj,
+            "script:command:sorterr",
+            r#"fn bad(a, b) { throw "boom"; } let v = [2, 1]; v.sort(bad);"#,
+        );
+        assert!(actor_saw(&f.run(nick, "sorterr"), nick, "boom"));
+    }
+
+    // 3. Budget overrun inside sort/order/dedup aborts immediately and accrues strikes.
+    let cfg = ScriptConfig {
+        max_operations: 500,
+        ..ScriptConfig::default()
+    };
+    let mut f = Fixture::with_config(cfg);
+    let nick = f.builder("Nick");
+    let cases = [
+        r#"fn cmp(a, b) { a - b } let v = []; v.pad(2000, 1); v.sort(cmp);"#,
+        r#"fn cmp(a, b) { a - b } let v = []; v.pad(2000, 1); v.sort_by(cmp);"#,
+        r#"fn cmp(a, b) { a - b } let v = []; v.pad(2000, 1); v.sort("cmp");"#,
+        r#"fn cmp(a, b) { a - b } let v = []; v.pad(2000, 1); let r = v.order(cmp);"#,
+        r#"fn cmp(a, b) { a - b } let v = []; v.pad(2000, 1); let r = v.order_by(cmp);"#,
+        r#"fn eq(a, b) { a == b } let v = []; v.pad(2000, 1); v.dedup(eq);"#,
+        r#"fn eq(a, b) { a == b } let v = []; v.pad(2000, 1); v.dedup("eq");"#,
+    ];
+    for (idx, src) in cases.into_iter().enumerate() {
+        let bomb = f.thing(&format!("sortbomb{idx}"), nick, LIMBO);
+        let word = format!("sb{idx}");
+        f.seed_script(bomb, &format!("script:command:{word}"), src);
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            let out = f.run(nick, &word);
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "`{src}` did not abort promptly"
+            );
+            assert!(
+                actor_saw(&out, nick, "failed"),
+                "`{src}` must fail on budget overrun: {:?}",
+                all_text(&out)
+            );
+        }
+        assert!(
+            f.flag(bomb, Flags::HALTED),
+            "`{src}` must accrue strikes and HALT after 3 overruns"
+        );
+    }
 }
