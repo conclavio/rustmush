@@ -372,7 +372,11 @@ async fn stand_up() -> Story {
     // silence beside a stranger's quarrel would show nothing about its posture.
     for faction in ["Concord", "Basin"] {
         let out = run(&mut rig.tw, GOD, &format!("@faction/create {faction}"));
-        assert!(out.contains(faction), "{out}");
+        // Doc 50 cut KC.0: the lane makes the polities, the Concord among them.
+        assert!(
+            out.contains(faction) || out.contains("already exists"),
+            "{out}"
+        );
     }
     officer(&mut rig, "Concord", owner);
     officer(&mut rig, "Basin", intruder);

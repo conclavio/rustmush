@@ -85,7 +85,9 @@ use mush_core::module::{
 use mush_core::{Ctx, Flags, ObjId};
 use smol_str::SmolStr;
 
-pub use control::{ControlChange, ControlWrite, write_control};
+pub use control::{
+    ControlChange, ControlWrite, contest_control, ensure_faction, ensure_region, write_control,
+};
 pub use data::{
     ControlKind, ControlRecord, EdgeKind, Faction, FactionEdge, FactionId, FactionMembership,
     FactionState, MAX_NAME_LEN, META_KEY, NS, Principal, Region, RegionId, ResourceChange, Stance,

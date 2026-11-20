@@ -779,7 +779,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 62 unchanged",
+            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 63 unchanged",
             LANE_VERSION + 1
         )),
         "{plan}"
@@ -793,7 +793,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 62 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 63 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -951,7 +951,7 @@ fn pl6_a_lane_update_grows_a_yard_and_refuses_a_shrink() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired, 63 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired, 64 unchanged.",
             LANE_VERSION + 1
         )),
         "{plan}
@@ -1027,7 +1027,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 62 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 63 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1155,7 +1155,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 62 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 63 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1694,7 +1694,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
                 // Doc 20 cut SM.2 (lane v9): the six sites' twenty-four entries are created,
                 // and the eight bodies and the Freeport's place updated, beside v8's thirteen
                 // (doc 35b cut SF.R14: and Kirkwood Depot's clusters/picket).
-                "Plan for {LANE_PACK}@{LANE_VERSION}: 39 create, 12 update, 0 retire, 13 unchanged"
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 40 create, 12 update, 0 retire, 13 unchanged"
             )),
             "{plan}"
         );
@@ -1722,7 +1722,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@{LANE_VERSION}: 39 created, 12 updated, 0 retired, 13 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 40 created, 12 updated, 0 retired, 13 unchanged."
             )),
             "{apply}"
         );

@@ -206,7 +206,118 @@ edit, never by `git checkout`. Also run: every mush-faction test binary, and `mu
 
 ## KC.0
 
-Not built.
+The six polities as factions from content, the table from lane organization to polity, the
+lane's `regions` block, and the control read (Q-50-1 to Q-50-4, Q-50-52; doc 50a A-10a, C-3,
+D-6). Stacked on KC.0a. Lane v45 and relay v36: **this unit's lane bump has landed on its
+branch**; the next lane bump (KC.2, KC.4 or OP.1) starts from v45.
+
+**Survey.**
+- Doc 50a's corrections held. There are six tags on 24 lane organizations, in five ports.
+- `launch-bringup.py` made one faction, the Republic, by `@faction/create`. The launch
+  deployment then carried its id.
+- `Faction.org` is one to one, so it cannot be the polity table.
+- The lane had no regions and no control. Its one `region` entry is the atlas's (`sol`), so the
+  new kind needed another word.
+- Doc 11 §5 names organizations as holders, not only polities: the Co-op runs Kirkwood de facto,
+  and Tycho, Occator and Ceres Clearing hold economically. Q-50-11 has the Co-op lose its hold.
+  The Tether and OTS are no lane organizations.
+- No public call made a region. `register_content_faction` needs an NPC principal.
+
+**Built.**
+- `mush-faction` (`src/control.rs`):
+  - `ensure_region(ctx, name) -> Result<(RegionId, bool), String>` answers whether it made the
+    region.
+  - `ensure_faction(ctx, name) -> Result<FactionId, String>` makes a faction with no organization
+    and no principal.
+  - `contest_control(ctx, region, holder, kind, challenger) -> Result<bool, String>` adds a
+    contest and never toggles it off.
+- TacSim `src/polity.rs`:
+  - The `regions` kind: `RegionsDef { rows }`, `RegionRow { id, name, places, holds }`,
+    `HoldDef { kind: HoldKind, holder: Holder, contested_by }`, and
+    `Holder::{Polity(tag), Org(lane org id)}`.
+  - Pack-wide checks run in `RulesPack::from_content` (`check_regions`):
+    - rows, names and places are unique and bounded;
+    - a place is a `location` or `port` entry;
+    - a polity is a tag some lane organization carries, and an organization is a lane
+      organization;
+    - a row has at most one de facto holder, and one hold per (holder, kind).
+  - The kind is seed-side, the twenty-second of `OWNED_KINDS`.
+  - `RegionsApplier` runs at phase 12, after the ports, and does three things:
+    - it makes every tag's polity, `polity_name(tag)`: `republic` becomes "Republic";
+    - it makes each row's region;
+    - it seeds the region's holds through `write_control` (strength 3), with their contests,
+      **only when it made the region**.
+  - An organization holder's faction is its own (`ensure_organization_faction`).
+- The reads:
+  - `polity(w, tag)` and `polity_of_org(w, OrgId)` (the table, read from the tag on the latched
+    lane);
+  - `control_at(w, place) -> Option<PlaceControl { region, de_jure, de_facto, covert, economic,
+    de_facto_since_ic }>`;
+  - `papers_authority(w, place, enforcer) -> Option<FactionId>`: Q-50-52, the enforcer's own
+    polity where it claims, else the claimant on record.
+- Lane v45 seeds three rows from doc 11 §5:
+  - the Kirkwood approach: de jure the Freeport; de facto the Co-op, contested by the Republic;
+    economic Tycho;
+  - Ceres station (the location and its port): de jure and de facto the Freeport; economic
+    Occator and Ceres Clearing;
+  - Phobos and Stickney Yards: the Republic in all four kinds; economic also Ceres Clearing.
+- The bring-up no longer makes the Republic. It stops if the lane has not made it.
+
+**Tests.**
+- `tests/domain_world/polities.rs` is the fresh-world story on the production roster. It checks:
+  - the six polities, with no organization;
+  - every lane organization's polity;
+  - the three rows' holders, contest and dates;
+  - no reading for a place outside the block;
+  - the papers rule with one claimant and with two;
+  - `+territory` as a player;
+  - that a flip stands through a re-apply of the block.
+- Lane pins:
+  - `kc0_strip_regions_rebuilds_the_published_v44`;
+  - `lane_chain::strip_regions` as the strip chain's new head;
+  - the v45 and relay v36 digests and versions in `lane.rs`, `cost_lane.rs`, `sites.rs`,
+    `drones.rs`, `mill.rs`, `stations.rs`, `boot_parity.rs` and `relay_registry.rs`.
+  - the lane-plan counts that the new entry moves by one, in `commerce.rs`, `ports.rs`,
+    `sites.rs`, `vehicles.rs` and `moon_ports.rs`.
+- Rigs that made a faction named "Concord" or "Republic" by `@faction/create` now meet the
+  lane's polity:
+  - `field_ap6`, `field_ap7`, `field_ap11` and `field_fr1` accept "already exists";
+  - `m8_world`'s deployment no longer makes the Republic.
+- Mutation-checked on conclav.dev. Each of these failed the story:
+  - seeding a region that already stands (a flip undone by a re-apply);
+  - the enforcer never reading its own papers;
+  - dropping the seeded contest;
+  - the polities not made.
+  Each edit was undone by a reverse edit.
+- Also run on conclav.dev, all green:
+  - mush-faction, and tacsim's `domain_economy` (697), `domain_field` (330) and `domain_world`
+    (279);
+  - tacsim's other binaries, and mush-server `split_boundary` (227);
+  - clippy `-D warnings` on tacsim and mush-faction.
+- Run locally: the contract guards (`ci_policy`, `engine_contracts`).
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- A polity's faction name is its tag with a capital letter ("Freeport", "Company",
+  "Townships"). "Republic" is the name the launch deployment already reads.
+- A holder may be a lane organization as well as a polity, because doc 11 §5 and Q-50-11 need
+  the Co-op to hold de facto.
+- The Tether and OTS hold covertly in doc 11 but are no lane organizations, so Kirkwood and
+  Ceres carry no covert row.
+- Region names follow the `@region/create` rule (no `&`): "Kirkwood approach", "Ceres station",
+  "Phobos and Stickney Yards".
+- The block seeds a region only when its apply makes the region, so a lane bump never undoes a
+  clock's flip. A region renamed in content would be a new region.
+- The polity table is computed on read from the latched lane, not stored.
+- Where several claim de jure and the enforcer is none of them, it reads the first claimant on
+  record.
+- The block's retire leaves the regions, the control and the polities standing.
+
+**Not built.**
+- Isidis (OP.1), the moons, Titan, Deimos and Occator claims rows.
+- No public call yet opens a front whose clock flips control on a faction's board by
+  `FactionId`; it did not fall out of this unit (KC.1).
+- No polity has a backing organization or a treasury (KC.2, Q-50-14).
+- No compiled caller reads `control_at` yet (KC.2 on).
 
 ## KC.1
 

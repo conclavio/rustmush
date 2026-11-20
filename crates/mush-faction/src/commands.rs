@@ -55,7 +55,7 @@ fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME_LEN
         && name

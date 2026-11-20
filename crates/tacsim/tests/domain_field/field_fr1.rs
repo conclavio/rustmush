@@ -196,7 +196,11 @@ async fn stances_story(at: &Stand) {
     // of Basin, the member the two share.
     for name in ["Concord", "Basin", "Halo"] {
         let out = run(&mut rig.tw, GOD, &format!("@faction/create {name}"));
-        assert!(out.contains(name), "{out}");
+        // Doc 50 cut KC.0: the lane makes the polities, the Concord among them.
+        assert!(
+            out.contains(name) || out.contains("already exists"),
+            "{out}"
+        );
     }
     join(&mut rig, "Concord", a, 2);
     join(&mut rig, "Basin", a, 1);
