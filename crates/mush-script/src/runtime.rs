@@ -31,7 +31,7 @@
 //!    queue, which the driver drains iteratively. So [`drive`] is never
 //!    re-entrant and the session is `Some` only for one flat cascade.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -49,6 +49,9 @@ use std::cell::{Cell, RefCell};
 
 use crate::guards;
 
+use mush_core::commands::is_ignoring;
+use mush_core::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
+use mush_core::matchit::{MatchErr, is_nearby, match_object_visible};
 use mush_core::module::{HookPoint, HookReg, perceives_via};
 use mush_core::{
     Attr, AttrFlags, AttrValue, Deferred, Flags, ObjId, ObjKind, Outbox, Powers, Registry, Role,
@@ -61,6 +64,13 @@ use smol_str::SmolStr;
 // ----------------------------------------------------------------------
 // Config
 // ----------------------------------------------------------------------
+
+/// Minimum delay (seconds) accepted by `mush::schedule` (HIGH-18: prevents
+/// 0-second self-rearming timer spin loops).
+pub const MIN_TIMER_DELAY_SECS: i64 = 1;
+
+/// Maximum delay (seconds) accepted by `mush::schedule` (matches `@wait`).
+const MAX_TIMER_DELAY_SECS: i64 = 365 * 24 * 60 * 60;
 
 /// Sandbox budgets (all configurable; defaults are the assignment's).
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +101,17 @@ pub struct ScriptConfig {
     pub max_depth: u32,
     /// Consecutive budget overruns before an object is auto-`HALTED`.
     pub strikes_to_halt: u32,
+    /// Maximum `script:*` attributes allowed on a single object (HIGH-18).
+    pub max_scripts_per_object: usize,
+    /// Maximum `emit`/`pemit` events one cascade may append to `sess.out` (HIGH-18).
+    pub max_outbox_events: usize,
+    /// Maximum combined UTF-8 bytes of `emit`/`pemit` text one cascade may
+    /// append to `sess.out` (HIGH-18).
+    pub max_outbox_bytes: usize,
+    /// Maximum pending follow-up triggers held in `sess.queue` at once (HIGH-18).
+    pub max_queue_len: usize,
+    /// Maximum `mush::schedule` timers one cascade may enqueue (HIGH-18).
+    pub max_schedules_per_cascade: usize,
 }
 
 impl Default for ScriptConfig {
@@ -107,6 +128,11 @@ impl Default for ScriptConfig {
             max_total_invocations: 64,
             max_depth: 8,
             strikes_to_halt: 3,
+            max_scripts_per_object: 64,
+            max_outbox_events: 64,
+            max_outbox_bytes: 64 * 1024,
+            max_queue_len: 64,
+            max_schedules_per_cascade: 16,
         }
     }
 }
@@ -147,6 +173,8 @@ pub struct ScriptState {
     pub(crate) perceive_hooks: Vec<HookReg>,
     /// Dice PRNG state (xorshift64; deterministic across a boot).
     rng: u64,
+    /// Total `engine.compile` invocations performed (telemetry & coalescing tests).
+    compile_count: u64,
 }
 
 impl ScriptState {
@@ -161,7 +189,14 @@ impl ScriptState {
             move_hooks: Vec::new(),
             perceive_hooks: Vec::new(),
             rng: 0x9E37_79B9_7F4A_7C15,
+            compile_count: 0,
         }
+    }
+
+    /// Total number of Rhai script compilations performed since boot.
+    #[must_use]
+    pub fn compile_count(&self) -> u64 {
+        self.compile_count
     }
 }
 
@@ -240,6 +275,15 @@ struct ScriptSession {
     queue: VecDeque<Trigger>,
     total: u32,
     current: Option<Frame>,
+    /// Number of `emit`/`pemit` events pushed by scripts during this cascade.
+    out_events: usize,
+    /// Combined UTF-8 bytes of `emit`/`pemit` text pushed during this cascade.
+    out_bytes: usize,
+    /// Number of `mush::schedule` timers deferred during this cascade.
+    scheduled: usize,
+    /// Coalesced `script:*` attribute edits pending compilation at the end of
+    /// the current invocation (HIGH-18: avoids O(K²) recompilation).
+    dirty_scripts: BTreeMap<ObjId, BTreeSet<SmolStr>>,
 }
 
 thread_local! {
@@ -307,6 +351,13 @@ pub(crate) fn drive(world: &mut World, out: &mut Outbox, initial: VecDeque<Trigg
     );
     let real_world = std::mem::take(world);
     let real_out = std::mem::take(out);
+    let max_queue = real_world
+        .module_state::<ScriptState>()
+        .map_or(ScriptConfig::default().max_queue_len, |st| {
+            st.cfg.max_queue_len
+        });
+    let mut initial = initial;
+    initial.truncate(max_queue.max(1));
     SESSION.with(|s| {
         *s.borrow_mut() = Some(ScriptSession {
             world: real_world,
@@ -314,6 +365,10 @@ pub(crate) fn drive(world: &mut World, out: &mut Outbox, initial: VecDeque<Trigg
             queue: initial,
             total: 0,
             current: None,
+            out_events: 0,
+            out_bytes: 0,
+            scheduled: 0,
+            dirty_scripts: BTreeMap::new(),
         });
     });
     // From here the real world lives in the thread-local; `world`/`out` are
@@ -440,6 +495,7 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
     SESSION.with(|s| {
         if let Some(sess) = s.borrow_mut().as_mut() {
             sess.current = None;
+            flush_dirty_scripts(sess);
         }
     });
 
@@ -633,6 +689,22 @@ pub(crate) fn budget_tripped() -> Option<&'static str> {
         }
         None
     })
+}
+
+/// Latch a resource/budget overrun so `try`/`catch` cannot swallow it and
+/// `handle_error` accrues a strike (HIGH-18).
+fn latch_budget_overrun(reason: &'static str) -> Box<EvalAltResult> {
+    BUDGET.with(|b| {
+        let mut bud = b.get();
+        if bud.overrun.is_none() {
+            bud.overrun = Some(reason);
+            b.set(bud);
+        }
+    });
+    Box::new(EvalAltResult::ErrorDataTooLarge(
+        reason.to_string(),
+        Position::NONE,
+    ))
 }
 
 /// Uncatchable sandbox refusal payload inside `EvalAltResult::ErrorSystem`.
@@ -911,11 +983,11 @@ mod mush_api {
         super::loc_visible(obj)
     }
 
-    /// An object's display name (`"nothing"` if it is gone).
+    /// An object's display name (`"nothing"` if it is gone, concealed, or out
+    /// of reach).
     #[rhai_fn(name = "name")]
     pub fn name(obj: ObjId) -> String {
-        super::with_session(|sess| mush_core::output::display_name(&sess.world, obj))
-            .unwrap_or_default()
+        super::name_impl(obj)
     }
 
     /// Read a text attribute (`""` if unset, not text, or unreadable).
@@ -945,32 +1017,17 @@ mod mush_api {
     /// the room's listeners (`script:hear:*`) react (bounded by the cascade
     /// cap). The line travels as a spoof attributed to the script's owner,
     /// so a NOSPOOF observer or staff still sees who is behind it.
-    #[rhai_fn(name = "emit")]
-    pub fn emit(target: ObjId, text: &str) {
-        let _ = super::emit_impl(target, text);
+    #[rhai_fn(name = "emit", return_raw)]
+    pub fn emit(target: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
+        super::emit_impl(target, text)
     }
 
     /// Send a private line to one player/NPC, attributed to the script's
-    /// owner the same way `emit` is.
-    #[rhai_fn(name = "pemit")]
-    pub fn pemit(player: ObjId, text: &str) {
-        super::with_session_mut(|sess| {
-            let owner = sess
-                .current
-                .map(|f| f.owner)
-                .ok_or_else(|| err("no frame"))?;
-            let actor = Some(obj_ref(&sess.world, owner));
-            sess.out.to_actor(
-                player,
-                OutputEvent::Narrative {
-                    kind: NarrativeKind::Spoof,
-                    actor,
-                    text: RichText::plain(text),
-                },
-            );
-            Ok(())
-        })
-        .ok();
+    /// owner the same way `emit` is. Honors locality, `HAVEN`, `@lock/page`,
+    /// and `@ignore` (silently dropped when muted).
+    #[rhai_fn(name = "pemit", return_raw)]
+    pub fn pemit(player: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
+        super::pemit_impl(player, text)
     }
 
     /// Move `obj` to `dest` under the owner's authority (teleport rules +
@@ -980,13 +1037,35 @@ mod mush_api {
         super::move_impl(obj, dest)
     }
 
-    /// Resolve a name to an object from the scripted object's viewpoint.
+    /// Resolve a name to an object from the scripted object's viewpoint,
+    /// enforcing owner visibility and locality (HIGH-17: prevents global
+    /// `#id`/`*name` and local `DARK` oracles).
     /// (Named `matchit`, not `match`: `match` is a Rhai reserved word.)
     #[rhai_fn(name = "matchit", return_raw)]
     pub fn match_obj(query: &str) -> Result<ObjId, Box<EvalAltResult>> {
-        let me = super::frame(|f| f.self_obj)?;
+        let fr = super::frame(|f| *f)?;
+        let q = query.trim();
+        if q.is_empty() {
+            return Err(super::err(MatchErr::NoMatch.to_string()));
+        }
         super::with_session(|sess| {
-            match_object(&sess.world, me, query).map_err(|e| super::err(e.to_string()))
+            let w = &sess.world;
+            if q.eq_ignore_ascii_case("me") || q.eq_ignore_ascii_case("here") {
+                return match_object(w, fr.self_obj, q)
+                    .ok()
+                    .filter(|&id| w.get(id).is_some_and(|o| !o.flags.contains(Flags::GOING)))
+                    .ok_or_else(|| super::err(MatchErr::NoMatch.to_string()));
+            }
+            if q.starts_with('#') || q.starts_with('*') {
+                return match_object(w, fr.self_obj, q)
+                    .ok()
+                    .filter(|&id| super::script_can_observe(w, &fr, id))
+                    .ok_or_else(|| super::err(MatchErr::NoMatch.to_string()));
+            }
+            match_object_visible(w, fr.self_obj, q, |id| {
+                super::local_match_visible(w, &fr, id)
+            })
+            .map_err(|e| super::err(e.to_string()))
         })
         .ok_or_else(|| super::err("no active script session"))?
     }
@@ -1070,14 +1149,107 @@ fn owner_can_see(w: &World, owner: ObjId, obj: ObjId) -> bool {
     true
 }
 
-/// `loc(obj)` with visibility gating: a hidden object reports "no location",
-/// the same error as a genuinely location-less object, so existence is not
-/// leaked. (`here` reads the scripted object's own location and stays ungated
-/// — an owner always sees its own object.)
+/// Whether `obj` is physically within reach of the running script's object:
+/// nearby `self_obj` (self, contents, location, siblings, exits), an exit of
+/// `self_obj` itself when it is a room, or a visible member of a nearby
+/// open container (matching `contents_impl`).
+fn script_is_local(w: &World, fr: &Frame, obj: ObjId) -> bool {
+    if is_nearby(w, fr.self_obj, obj) || w.exits_of(fr.self_obj).contains(&obj) {
+        return true;
+    }
+    if let Some(container) = w.get(obj).and_then(|o| o.location)
+        && is_nearby(w, fr.self_obj, container)
+        && let Some(c) = w.get(container)
+    {
+        let privileged = perm::has_power(w, fr.owner, Powers::SEE_HIDDEN)
+            || perm::controls(w, fr.owner, container);
+        let visible_container = privileged
+            || (c.kind == ObjKind::Thing
+                && !c.flags.contains(Flags::DARK)
+                && !c.flags.contains(Flags::OPAQUE));
+        if visible_container {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the running script may observe `obj`: the owner must be able to
+/// perceive it ([`owner_can_see`]) AND `obj` must either be local to
+/// `self_obj` (not concealed inside an uncontrolled `DARK` room) or examinable
+/// by `owner` (HIGH-17).
+fn script_can_observe(w: &World, fr: &Frame, obj: ObjId) -> bool {
+    if !owner_can_see(w, fr.owner, obj) {
+        return false;
+    }
+    if perm::can_examine(w, fr.owner, obj) {
+        return true;
+    }
+    if !script_is_local(w, fr, obj) {
+        return false;
+    }
+    // An uncarried non-room occupant inside a DARK room the owner neither
+    // controls nor sees through is concealed, matching `room_view`.
+    let carried = obj == fr.self_obj || w.contents_of(fr.self_obj).contains(&obj);
+    if !carried
+        && w.get(obj).is_some_and(|o| o.kind != ObjKind::Room)
+        && !perm::has_power(w, fr.owner, Powers::SEE_HIDDEN)
+        && let Some(loc) = w.get(fr.self_obj).and_then(|o| o.location)
+        && w.get(loc).is_some_and(|r| r.flags.contains(Flags::DARK))
+        && !perm::controls(w, fr.owner, loc)
+    {
+        return false;
+    }
+    true
+}
+
+/// Visibility predicate for local `mush::matchit` candidate pools (HIGH-17):
+/// hides `DARK`/concealed objects and occupants of an uncontrolled `DARK` room
+/// before exact/prefix/ordinal matching runs.
+fn local_match_visible(w: &World, fr: &Frame, id: ObjId) -> bool {
+    if !owner_can_see(w, fr.owner, id) {
+        return false;
+    }
+    let carried = id == fr.self_obj || w.contents_of(fr.self_obj).contains(&id);
+    if !carried
+        && !perm::has_power(w, fr.owner, Powers::SEE_HIDDEN)
+        && !perm::controls(w, fr.owner, id)
+        && let Some(loc) = w.get(fr.self_obj).and_then(|o| o.location)
+        && w.get(loc).is_some_and(|r| r.flags.contains(Flags::DARK))
+        && !perm::controls(w, fr.owner, loc)
+    {
+        return false;
+    }
+    true
+}
+
+/// `name(obj)` with owner visibility and locality gating (HIGH-17).
+/// Returns `"nothing"` for gone, concealed, or distant uncontrolled objects.
+fn name_impl(obj: ObjId) -> String {
+    with_session(|sess| {
+        let Some(fr) = sess.current else {
+            return "nothing".to_string();
+        };
+        let w = &sess.world;
+        let allowed = script_can_observe(w, &fr, obj)
+            || (obj == fr.caller && owner_can_see(w, fr.owner, obj));
+        if !allowed {
+            return "nothing".to_string();
+        }
+        mush_core::output::display_name(w, obj)
+    })
+    .unwrap_or_default()
+}
+
+/// `loc(obj)` with visibility and locality gating: a hidden or distant
+/// uncontrolled object reports "no location", the same error as a genuinely
+/// location-less object, so existence is not leaked.
 fn loc_visible(obj: ObjId) -> Result<ObjId, Box<EvalAltResult>> {
     let visible = with_session(|sess| {
-        let owner = sess.current.map_or(obj, |f| f.owner);
-        owner_can_see(&sess.world, owner, obj)
+        let Some(fr) = sess.current else {
+            return false;
+        };
+        obj == fr.self_obj || script_can_observe(&sess.world, &fr, obj)
     });
     match visible {
         Some(true) => loc_of(obj),
@@ -1085,21 +1257,30 @@ fn loc_visible(obj: ObjId) -> Result<ObjId, Box<EvalAltResult>> {
     }
 }
 
-/// `contents(obj)` with the look layer's DARK/OPAQUE gating.
+/// `contents(obj)` with the look layer's DARK/OPAQUE and locality gating.
 fn contents_impl(container: ObjId) -> Array {
     with_session(|sess| {
         let w = &sess.world;
-        let (owner, viewpoint) = sess
-            .current
-            .map_or((container, container), |f| (f.owner, f.self_obj));
+        let Some(fr) = sess.current else {
+            return Array::new();
+        };
+        let (owner, viewpoint) = (fr.owner, fr.self_obj);
         let Some(c) = w.get(container) else {
             return Array::new();
         };
+        if c.flags.contains(Flags::GOING) {
+            return Array::new();
+        }
         let privileged =
             perm::has_power(w, owner, Powers::SEE_HIDDEN) || perm::controls(w, owner, container);
         // OPAQUE hides contents only from a viewpoint *outside* the container;
         // the scripted object's own location is the physical viewpoint.
         let inside = w.get(viewpoint).and_then(|o| o.location) == Some(container);
+        let reachable =
+            inside || script_is_local(w, &fr, container) || perm::can_examine(w, owner, container);
+        if !reachable {
+            return Array::new();
+        }
         let hide_all = !privileged
             && (c.flags.contains(Flags::DARK) || (c.flags.contains(Flags::OPAQUE) && !inside));
         if hide_all {
@@ -1115,11 +1296,13 @@ fn contents_impl(container: ObjId) -> Array {
     .unwrap_or_default()
 }
 
-/// `has_flag(obj, flag)` with visibility gating (see [`owner_can_see`]).
+/// `has_flag(obj, flag)` with visibility and locality gating (HIGH-17).
 fn has_flag_impl(obj: ObjId, flag: &str) -> bool {
     with_session(|sess| {
-        let owner = sess.current.map_or(obj, |f| f.owner);
-        if !owner_can_see(&sess.world, owner, obj) {
+        let Some(fr) = sess.current else {
+            return false;
+        };
+        if !script_can_observe(&sess.world, &fr, obj) {
             return false;
         }
         let Some(o) = sess.world.get(obj) else {
@@ -1136,18 +1319,45 @@ fn has_flag_impl(obj: ObjId, flag: &str) -> bool {
 
 fn get_attr_impl(obj: ObjId, attr: &str) -> String {
     with_session(|sess| {
-        let owner = sess.current.map_or(obj, |f| f.owner);
-        let Some(a) = sess.world.attr(obj, attr) else {
+        let Some(fr) = sess.current else {
             return String::new();
         };
-        // Restricted attrs — staff-only (`WIZARD_ONLY`), self-only, or
-        // deliberately `HIDDEN` — require the owner to be able to examine
-        // `obj`; `HIDDEN` matches canonical `examine`, which withholds hidden
-        // attrs even from a controller without `/all`.
-        let restricted = a
-            .flags
-            .intersects(AttrFlags::WIZARD_ONLY | AttrFlags::SELF_ONLY | AttrFlags::HIDDEN);
-        if restricted && !perm::can_examine(&sess.world, owner, obj) {
+        let w = &sess.world;
+        let owner = fr.owner;
+        if !script_can_observe(w, &fr, obj) {
+            return String::new();
+        }
+        let attr_trimmed = attr.trim();
+        if attr_trimmed.is_empty() {
+            return String::new();
+        }
+        // Module-owned namespaces (e.g. `script:*`, `wod:*`) are never readable
+        // on objects the script owner cannot examine.
+        if let Some((ns, _)) = attr_trimmed.split_once(':') {
+            let owned = w.module_state::<ScriptState>().is_some_and(|st| {
+                st.owned_namespaces
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(ns))
+            });
+            if owned && !perm::can_examine(w, owner, obj) {
+                return String::new();
+            }
+        }
+        let Some(a) = w.attr(obj, attr_trimmed) else {
+            return String::new();
+        };
+        // Match `examine_cmd` per-flag confidentiality rules (HIGH-17):
+        // - WIZARD_ONLY: Wizard+ only (even on objects the builder owns).
+        // - SELF_ONLY: the object itself (`owner == obj`) or Wizard+ only.
+        // - HIDDEN: requires `can_examine`.
+        let owner_is_wizard = perm::has_role(w, owner, Role::Wizard);
+        if a.flags.contains(AttrFlags::WIZARD_ONLY) && !owner_is_wizard {
+            return String::new();
+        }
+        if a.flags.contains(AttrFlags::SELF_ONLY) && owner != obj && !owner_is_wizard {
+            return String::new();
+        }
+        if a.flags.contains(AttrFlags::HIDDEN) && !perm::can_examine(w, owner, obj) {
             return String::new();
         }
         a.as_text().unwrap_or_default().to_string()
@@ -1168,6 +1378,7 @@ fn set_attr_impl(obj: ObjId, attr: &str, val: &str) -> Result<(), Box<EvalAltRes
         if !perm::can_modify(&sess.world, owner, obj) {
             return Err(err("Permission denied."));
         }
+        let is_wizard = perm::has_role(&sess.world, owner, Role::Wizard);
         if let Some((ns, _)) = attr.split_once(':') {
             let owned = sess.world.module_state::<ScriptState>().is_some_and(|st| {
                 st.owned_namespaces
@@ -1197,18 +1408,46 @@ fn set_attr_impl(obj: ObjId, attr: &str, val: &str) -> Result<(), Box<EvalAltRes
             .and_then(|o| o.attrs.get(attr))
             .map(|a| (a.flags, a.owner));
         let existing_flags = existing.map(|(f, _)| f);
-        if existing_flags.is_some_and(|f| f.contains(AttrFlags::WIZARD_ONLY))
-            && !perm::has_role(&sess.world, owner, Role::Wizard)
-        {
+        if existing_flags.is_some_and(|f| f.contains(AttrFlags::WIZARD_ONLY)) && !is_wizard {
             return Err(err("Permission denied."));
         }
         if existing.is_some_and(|(f, setter)| {
-            f.contains(AttrFlags::LOCKED)
-                && setter != owner
-                && !perm::has_role(&sess.world, owner, Role::Wizard)
+            f.contains(AttrFlags::LOCKED) && setter != owner && !is_wizard
         }) {
             return Err(err("That attribute is locked."));
         }
+        // CORE-M1 + HIGH-18: enforce per-object attribute count & byte quotas
+        // for non-Wizards so scripts cannot bypass `@set` limits.
+        if !is_wizard
+            && let Some(o) = sess.world.get(obj)
+            && let Err(e) = o.attrs.check_default_limits(attr, val.len())
+        {
+            return Err(err(e.to_string()));
+        }
+        // HIGH-18: cap per-object `script:*` attribute count so one object
+        // cannot accumulate unbounded ASTs or compilation work.
+        let folded_script_key = if attr.len() >= 7
+            && attr
+                .get(..7)
+                .is_some_and(|p| p.eq_ignore_ascii_case("script:"))
+        {
+            let max_scripts = sess
+                .world
+                .module_state::<ScriptState>()
+                .map_or(ScriptConfig::default().max_scripts_per_object, |st| {
+                    st.cfg.max_scripts_per_object
+                });
+            let existing_count = sess
+                .world
+                .get(obj)
+                .map_or(0, |o| o.attrs.iter_namespace("script").count());
+            if existing.is_none() && existing_count >= max_scripts {
+                return Err(err("Too many script attributes on that object."));
+            }
+            Some(SmolStr::from(attr.to_lowercase()))
+        } else {
+            None
+        };
         // Carry the existing attr flags forward on rewrite (HIDDEN / LOCKED /
         // WIZARD_ONLY / NO_INHERIT) rather than silently resetting them to
         // empty — exactly as `@set` does.
@@ -1223,27 +1462,74 @@ fn set_attr_impl(obj: ObjId, attr: &str, val: &str) -> Result<(), Box<EvalAltRes
                 },
             )
             .map_err(|e| err(e.to_string()))?;
-        // Host functions never emit core `AttrSet` events (the re-entrancy
-        // invariant), so `on_attr_set` does not recompile when a script authors
-        // another script. Recompile inline here — safe and non-reentrant, we
-        // hold `&mut world` directly — so a script written by a script is live
-        // immediately, not only after the next `@set` or a reboot.
-        if attr.to_ascii_lowercase().starts_with("script:") {
-            recompile_object(&mut sess.world, &mut sess.out, obj);
+        // HIGH-18: coalesce `script:*` recompilation until this invocation
+        // completes, avoiding O(K²) recompilation on batch edits while still
+        // making authored scripts live before the next trigger or command.
+        if let Some(key) = folded_script_key {
+            sess.dirty_scripts.entry(obj).or_default().insert(key);
         }
         Ok(())
     })
 }
 
+/// Charge one `emit`/`pemit` event and its text bytes against the cascade
+/// outbox budget (HIGH-18).
+fn charge_output(sess: &mut ScriptSession, text_bytes: usize) -> Result<(), Box<EvalAltResult>> {
+    let cfg = sess
+        .world
+        .module_state::<ScriptState>()
+        .map_or_else(ScriptConfig::default, |st| st.cfg);
+    let next_events = sess.out_events.saturating_add(1);
+    let next_bytes = sess.out_bytes.saturating_add(text_bytes);
+    if next_events > cfg.max_outbox_events || next_bytes > cfg.max_outbox_bytes {
+        return Err(latch_budget_overrun("script output budget exceeded"));
+    }
+    sess.out_events = next_events;
+    sess.out_bytes = next_bytes;
+    Ok(())
+}
+
+/// Remaining slots available in `sess.queue`, bounded by both `max_queue_len`
+/// and the cascade's remaining invocation budget (HIGH-18).
+fn remaining_queue_space(sess: &ScriptSession) -> usize {
+    let cfg = sess
+        .world
+        .module_state::<ScriptState>()
+        .map_or_else(ScriptConfig::default, |st| st.cfg);
+    let remaining_invocations = cfg.max_total_invocations.saturating_sub(sess.total) as usize;
+    let cap = cfg.max_queue_len.min(remaining_invocations);
+    cap.saturating_sub(sess.queue.len())
+}
+
 fn emit_impl(target: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
     with_session_mut(|sess| {
-        let (self_obj, owner, depth) = sess
-            .current
-            .map(|f| (f.self_obj, f.owner, f.depth))
-            .ok_or_else(|| err("no frame"))?;
+        let fr = sess.current.ok_or_else(|| err("no frame"))?;
+        let (self_obj, owner, depth) = (fr.self_obj, fr.owner, fr.depth);
+        let is_self_or_here =
+            target == self_obj || sess.world.get(self_obj).and_then(|o| o.location) == Some(target);
+        if !is_self_or_here && !owner_can_see(&sess.world, owner, target) {
+            return Err(err("Cannot emit there."));
+        }
         let Some(room) = room_of(&sess.world, target) else {
-            return Ok(());
+            return Err(err("Cannot emit there."));
         };
+        // HIGH-17: scripts may emit to their own room or a room their owner
+        // controls (which includes Wizard+ anywhere).
+        let self_room = room_of(&sess.world, self_obj);
+        if Some(room) != self_room && !perm::controls(&sess.world, owner, room) {
+            return Err(err("Permission denied."));
+        }
+        // Honor the room's `@lock/speech` for non-Wizards.
+        if !perm::has_role(&sess.world, owner, Role::Wizard)
+            && let Some(lock) = sess
+                .world
+                .get(room)
+                .and_then(|r| r.locks.get(&LockType::Speech))
+            && !eval_lock(&sess.world, lock, owner, MAX_LOCK_DEPTH)
+        {
+            return Err(err("You can't speak here."));
+        }
+        charge_output(sess, text.len())?;
         // Attributed to the owner, as a spoof: the room fan-out shows the
         // source to NOSPOOF listeners and staff, and bare text to others.
         let actor = Some(obj_ref(&sess.world, owner));
@@ -1256,8 +1542,61 @@ fn emit_impl(target: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
                 text: RichText::plain(text),
             },
         );
-        let hears = collect_hear_triggers(&sess.world, room, self_obj, text, depth + 1);
-        sess.queue.extend(hears);
+        let max_depth = sess
+            .world
+            .module_state::<ScriptState>()
+            .map_or(ScriptConfig::default().max_depth, |st| st.cfg.max_depth);
+        let next_depth = depth.saturating_add(1);
+        let space = remaining_queue_space(sess);
+        if next_depth <= max_depth && space > 0 {
+            let hears = collect_hear_triggers(&sess.world, room, self_obj, text, next_depth);
+            sess.queue.extend(hears.into_iter().take(space));
+        }
+        Ok(())
+    })
+}
+
+fn pemit_impl(player: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
+    with_session_mut(|sess| {
+        let fr = sess.current.ok_or_else(|| err("no frame"))?;
+        let owner = fr.owner;
+        let target_is_actor = sess.world.get(player).is_some_and(|o| o.kind.is_actor());
+        let target_visible = target_is_actor && owner_can_see(&sess.world, owner, player);
+        let target_reachable = (script_is_local(&sess.world, &fr, player)
+            && script_can_observe(&sess.world, &fr, player))
+            || player == fr.caller
+            || perm::controls(&sess.world, owner, player);
+        if !target_visible || !target_reachable {
+            return Err(err("Cannot pemit that target."));
+        }
+        // HIGH-17: enforce HAVEN and `@lock/page` when owner does not control
+        // the recipient (self and Wizard+ bypass via `controls`).
+        if !perm::controls(&sess.world, owner, player)
+            && let Some(t) = sess.world.get(player)
+        {
+            let refused = t.flags.contains(Flags::HAVEN)
+                || t.locks
+                    .get(&LockType::Page)
+                    .is_some_and(|l| !eval_lock(&sess.world, l, owner, MAX_LOCK_DEPTH));
+            if refused {
+                return Err(err("That player does not wish to be disturbed."));
+            }
+        }
+        charge_output(sess, text.len())?;
+        // HIGH-17: `Audience::Actor` does not filter `@ignore` in the world
+        // task, so check `is_ignoring` explicitly and drop silently (no oracle).
+        if is_ignoring(&sess.world, player, owner) {
+            return Ok(());
+        }
+        let actor = Some(obj_ref(&sess.world, owner));
+        sess.out.to_actor(
+            player,
+            OutputEvent::Narrative {
+                kind: NarrativeKind::Spoof,
+                actor,
+                text: RichText::plain(text),
+            },
+        );
         Ok(())
     })
 }
@@ -1286,31 +1625,59 @@ fn move_impl(obj: ObjId, dest: ObjId) -> Result<(), Box<EvalAltResult>> {
         sess.world
             .move_to(obj, dest)
             .map_err(|e| err(e.to_string()))?;
-        if let Some(from) = from {
-            let mut leave = Vec::new();
-            collect_move_triggers(&mut leave, &sess.world, from, obj, false, depth + 1);
-            sess.queue.extend(leave);
+        let max_depth = sess
+            .world
+            .module_state::<ScriptState>()
+            .map_or(ScriptConfig::default().max_depth, |st| st.cfg.max_depth);
+        let next_depth = depth.saturating_add(1);
+        if next_depth <= max_depth {
+            if let Some(from) = from {
+                let space = remaining_queue_space(sess);
+                if space > 0 {
+                    let mut leave = Vec::new();
+                    collect_move_triggers(&mut leave, &sess.world, from, obj, false, next_depth);
+                    sess.queue.extend(leave.into_iter().take(space));
+                }
+            }
+            let space = remaining_queue_space(sess);
+            if space > 0 {
+                let mut enter = Vec::new();
+                collect_move_triggers(&mut enter, &sess.world, dest, obj, true, next_depth);
+                sess.queue.extend(enter.into_iter().take(space));
+            }
         }
-        let mut enter = Vec::new();
-        collect_move_triggers(&mut enter, &sess.world, dest, obj, true, depth + 1);
-        sess.queue.extend(enter);
         Ok(())
     })
 }
 
 fn schedule_impl(secs: i64, timer: &str) -> Result<(), Box<EvalAltResult>> {
     with_session_mut(|sess| {
-        if secs < 0 {
-            return Err(err("delay must be non-negative"));
+        if secs < MIN_TIMER_DELAY_SECS {
+            return Err(err(format!(
+                "timer delay must be at least {MIN_TIMER_DELAY_SECS} second"
+            )));
+        }
+        if secs > MAX_TIMER_DELAY_SECS {
+            return Err(err("timer delay is too long"));
         }
         let name = timer.trim();
         if name.is_empty() || name.chars().any(char::is_whitespace) {
             return Err(err("timer name must be one non-empty word"));
         }
+        let max_schedules = sess
+            .world
+            .module_state::<ScriptState>()
+            .map_or(ScriptConfig::default().max_schedules_per_cascade, |st| {
+                st.cfg.max_schedules_per_cascade
+            });
+        if sess.scheduled >= max_schedules {
+            return Err(latch_budget_overrun("script schedule budget exceeded"));
+        }
         let self_obj = sess
             .current
             .map(|f| f.self_obj)
             .ok_or_else(|| err("no frame"))?;
+        sess.scheduled = sess.scheduled.saturating_add(1);
         sess.out.defer(Deferred::ScheduleIn {
             delay_ms: secs.saturating_mul(1000),
             kind: ScheduledKind::WaitCmd {
@@ -1553,14 +1920,133 @@ fn runnable_keys(w: &World, obj: ObjId, pred: impl Fn(&str) -> bool) -> Vec<Smol
         .unwrap_or_default()
 }
 
+/// Flush all coalesced `script:*` attribute edits recorded during the just-ended
+/// invocation, compiling each modified key at most once (HIGH-18).
+fn flush_dirty_scripts(sess: &mut ScriptSession) {
+    if sess.dirty_scripts.is_empty() {
+        return;
+    }
+    let dirty = std::mem::take(&mut sess.dirty_scripts);
+    for (obj, keys) in dirty {
+        recompile_script_attrs(&mut sess.world, &mut sess.out, obj, keys, false);
+    }
+}
+
+/// Incrementally recompile a single changed `script:*` attribute on `obj`
+/// (from external `@set`), avoiding O(K²) full-object recompilation (HIGH-18).
+pub(crate) fn recompile_script_attr(w: &mut World, out: &mut Outbox, obj: ObjId, attr: &str) {
+    let mut keys = BTreeSet::new();
+    keys.insert(SmolStr::from(attr.trim().to_lowercase()));
+    recompile_script_attrs(w, out, obj, keys, true);
+}
+
+/// Incrementally compile a batch of folded `script:*` keys on `obj`.
+fn recompile_script_attrs(
+    w: &mut World,
+    out: &mut Outbox,
+    obj: ObjId,
+    keys: BTreeSet<SmolStr>,
+    clear_strikes: bool,
+) {
+    let Some((engine, max_scripts)) = w
+        .module_state::<ScriptState>()
+        .map(|st| (Arc::clone(&st.engine), st.cfg.max_scripts_per_object))
+    else {
+        return;
+    };
+    let Some(o) = w.get(obj) else {
+        return;
+    };
+    let owner = o.owner;
+    if !owner_may_script(w, owner) {
+        if let Some(st) = w.module_state_mut::<ScriptState>() {
+            st.cache.remove(&obj);
+            st.strikes.remove(&obj);
+        }
+        return;
+    }
+    enum Update {
+        Remove,
+        Compiled(Arc<AST>),
+        Error(String),
+    }
+    let mut updates: Vec<(SmolStr, Update)> = Vec::with_capacity(keys.len());
+    let mut compiled_n = 0u64;
+    for key in keys {
+        match o.attrs.get(&key) {
+            None => updates.push((key, Update::Remove)),
+            Some(a) => match a.as_text() {
+                None => updates.push((key, Update::Error("script attribute must be text".into()))),
+                Some(src) => {
+                    compiled_n = compiled_n.saturating_add(1);
+                    match engine.compile(src) {
+                        Ok(ast) => match guards::validate_source(src) {
+                            Ok(()) => updates.push((key, Update::Compiled(Arc::new(ast)))),
+                            Err(msg) => updates.push((key, Update::Error(msg))),
+                        },
+                        Err(e) => updates.push((key, Update::Error(e.to_string()))),
+                    }
+                }
+            },
+        }
+    }
+
+    let mut errors: Vec<(SmolStr, String)> = Vec::new();
+    if let Some(st) = w.module_state_mut::<ScriptState>() {
+        st.compile_count = st.compile_count.saturating_add(compiled_n);
+        for (key, upd) in updates {
+            match upd {
+                Update::Remove => {
+                    if let Some(os) = st.cache.get_mut(&obj) {
+                        os.scripts.remove(&key);
+                        if os.scripts.is_empty() {
+                            st.cache.remove(&obj);
+                        }
+                    }
+                }
+                Update::Compiled(ast) => {
+                    let os = st.cache.entry(obj).or_default();
+                    if !os.scripts.contains_key(&key) && os.scripts.len() >= max_scripts {
+                        errors.push((
+                            key,
+                            format!("object exceeded maximum of {max_scripts} scripts"),
+                        ));
+                    } else {
+                        os.scripts.insert(key, ast);
+                    }
+                }
+                Update::Error(msg) => {
+                    if let Some(os) = st.cache.get_mut(&obj) {
+                        os.scripts.remove(&key);
+                        if os.scripts.is_empty() {
+                            st.cache.remove(&obj);
+                        }
+                    }
+                    errors.push((key, msg));
+                }
+            }
+        }
+        if clear_strikes {
+            st.strikes.remove(&obj);
+        }
+    }
+    for (key, msg) in errors {
+        out.error_on_commit(
+            owner,
+            format!("Script {key} on {obj} failed to compile: {msg}"),
+        );
+    }
+}
+
 /// (Re)compile every `script:*` attribute on `obj`, cache the results, clear
 /// its strikes, and notify the owner of any compile errors. Removes the
 /// cache entry when the object has no scripts or its owner is below
-/// `Role::Builder` (CRIT-5 defense-in-depth).
+/// `Role::Builder` (CRIT-5 defense-in-depth). Enforces `max_scripts_per_object`
+/// (HIGH-18).
 pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
-    let Some(engine) = w
+    let Some((engine, max_scripts)) = w
         .module_state::<ScriptState>()
-        .map(|st| Arc::clone(&st.engine))
+        .map(|st| (Arc::clone(&st.engine), st.cfg.max_scripts_per_object))
     else {
         return;
     };
@@ -1591,23 +2077,39 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
 
     let mut compiled: HashMap<SmolStr, Arc<AST>> = HashMap::new();
     let mut errors: Vec<(SmolStr, String)> = Vec::new();
+    let mut compiled_n = 0u64;
     for (key, text) in sources {
+        if compiled.len() >= max_scripts {
+            errors.push((
+                key,
+                format!("object exceeded maximum of {max_scripts} scripts"),
+            ));
+            continue;
+        }
         match text {
             None => errors.push((key, "script attribute must be text".to_string())),
-            Some(src) => match engine.compile(&src) {
-                Ok(ast) => match guards::validate_source(&src) {
-                    Ok(()) => {
-                        compiled.insert(key, Arc::new(ast));
-                    }
-                    Err(msg) => errors.push((key, msg)),
-                },
-                Err(e) => errors.push((key, e.to_string())),
-            },
+            Some(src) => {
+                compiled_n = compiled_n.saturating_add(1);
+                match engine.compile(&src) {
+                    Ok(ast) => match guards::validate_source(&src) {
+                        Ok(()) => {
+                            compiled.insert(key, Arc::new(ast));
+                        }
+                        Err(msg) => errors.push((key, msg)),
+                    },
+                    Err(e) => errors.push((key, e.to_string())),
+                }
+            }
         }
     }
 
     if let Some(st) = w.module_state_mut::<ScriptState>() {
-        st.cache.insert(obj, ObjScripts { scripts: compiled });
+        st.compile_count = st.compile_count.saturating_add(compiled_n);
+        if compiled.is_empty() {
+            st.cache.remove(&obj);
+        } else {
+            st.cache.insert(obj, ObjScripts { scripts: compiled });
+        }
         st.strikes.remove(&obj);
     }
     for (key, msg) in errors {

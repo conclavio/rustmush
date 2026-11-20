@@ -1581,3 +1581,436 @@ fn high16_parse_json_and_fallible_sort_dedup_in_mush_script() {
         );
     }
 }
+
+// ----------------------------------------------------------------------
+// Tier 1C security regressions: HIGH-17 & HIGH-18
+// ----------------------------------------------------------------------
+
+#[test]
+fn high17_get_attr_enforces_visibility_locality_and_per_flag_rules() {
+    let mut f = Fixture::new();
+    let nick = f.builder("Nick");
+    let bob = f.player("Bob");
+    let vault_room = f.room("Vault");
+    let distant = f.thing("distant", bob, vault_room);
+    let dark_local = f.thing("darkthing", bob, LIMBO);
+    f.engine
+        .world
+        .set_flag(dark_local, Flags::DARK, true)
+        .unwrap();
+    let own_box = f.thing("ownbox", nick, LIMBO);
+    let bob_box = f.thing("bobbox", bob, LIMBO);
+
+    // Distant plain attr & local DARK plain attr.
+    f.engine
+        .world
+        .set_attr(distant, "note", Attr::text("far-secret", bob))
+        .unwrap();
+    f.engine
+        .world
+        .set_attr(dark_local, "note", Attr::text("dark-secret", bob))
+        .unwrap();
+
+    // WIZARD_ONLY and SELF_ONLY on Nick's OWN object (Nick is Builder, not Wizard).
+    f.engine
+        .world
+        .set_attr(
+            own_box,
+            "staffnote",
+            Attr {
+                value: AttrValue::Text("wiz-secret".into()),
+                owner: GOD,
+                flags: AttrFlags::WIZARD_ONLY,
+            },
+        )
+        .unwrap();
+    f.engine
+        .world
+        .set_attr(
+            own_box,
+            "selfnote",
+            Attr {
+                value: AttrValue::Text("self-secret".into()),
+                owner: GOD,
+                flags: AttrFlags::SELF_ONLY,
+            },
+        )
+        .unwrap();
+    // SELF_ONLY on Nick's own player object (owner == obj): readable.
+    f.engine
+        .world
+        .set_attr(
+            nick,
+            "myshelf",
+            Attr {
+                value: AttrValue::Text("my-own".into()),
+                owner: GOD,
+                flags: AttrFlags::SELF_ONLY,
+            },
+        )
+        .unwrap();
+    // Module-owned namespace (`script:*`) on uncontrolled local object.
+    f.engine
+        .world
+        .set_attr(bob_box, "script:use", Attr::text("source-code", GOD))
+        .unwrap();
+
+    let tool = f.thing("tool", nick, LIMBO);
+    // Test WIZARD_ONLY + SELF_ONLY + module namespace + local/distant visibility.
+    f.seed_script(
+        tool,
+        "script:command:probe",
+        r#"let own = mush::matchit("ownbox");
+           let bbx = mush::matchit("bobbox");
+           mush::pemit(
+               mush::caller(),
+               "w=[" + mush::get_attr(own, "staffnote") + "] "
+               + "so=[" + mush::get_attr(own, "selfnote") + "] "
+               + "sm=[" + mush::get_attr(mush::owner(), "myshelf") + "] "
+               + "sc=[" + mush::get_attr(bbx, "script:use") + "]"
+           );"#,
+    );
+    let out = f.run(nick, "probe");
+    assert!(
+        actor_saw(&out, nick, "w=[] so=[] sm=[my-own] sc=[]"),
+        "WIZARD_ONLY, SELF_ONLY on non-self, and uncontrolled script:* must be withheld: {:?}",
+        all_text(&out)
+    );
+
+    // Distant and DARK objects cannot even be resolved via matchit, and even if
+    // handed their ObjId via a room/caller probe (e.g. a DARK player triggering
+    // hear), get_attr withholds their attributes.
+    f.engine
+        .world
+        .set_attr(bob, "note", Attr::text("bob-secret", bob))
+        .unwrap();
+    f.engine.world.set_flag(bob, Flags::DARK, true).unwrap();
+    f.seed_script(
+        tool,
+        "script:hear:spy",
+        r#"mush::pemit(mush::owner(), "spied=[" + mush::get_attr(speaker, "note") + "] name=[" + mush::name(speaker) + "]");"#,
+    );
+    let out = f.run(bob, "say hello");
+    assert!(
+        actor_saw(&out, nick, "spied=[] name=[nothing]"),
+        "DARK speaker's attr and name must not leak: {:?}",
+        all_text(&out)
+    );
+
+    // Wizard script CAN read WIZARD_ONLY and distant attrs.
+    let wiz_tool = f.thing("wiztool", GOD, LIMBO);
+    f.seed_script(
+        wiz_tool,
+        "script:command:wprobe",
+        &format!(
+            r##"let d = mush::matchit("#{0}");
+               let o = mush::matchit("#{1}");
+               mush::pemit(mush::caller(), mush::get_attr(d, "note") + "|" + mush::get_attr(o, "staffnote"));"##,
+            distant.0, own_box.0
+        ),
+    );
+    let out = f.run(GOD, "wprobe");
+    assert!(
+        actor_saw(&out, GOD, "far-secret|wiz-secret"),
+        "Wizard scripts keep full access: {:?}",
+        all_text(&out)
+    );
+}
+
+#[test]
+fn high17_matchit_and_name_prevent_global_and_local_dark_oracles() {
+    let mut f = Fixture::new();
+    let nick = f.builder("Nick");
+    let bob = f.player("Bob");
+    let far_room = f.room("Far");
+    let far_item = f.thing("faritem", GOD, far_room);
+    f.engine.world.move_to(bob, far_room).unwrap();
+
+    // Local DARK object sharing prefix with a visible object: must NOT leak via Ambiguous.
+    let ghost = f.thing("ghost", GOD, LIMBO);
+    let ghoul = f.thing("ghoul", GOD, LIMBO);
+    f.engine.world.set_flag(ghost, Flags::DARK, true).unwrap();
+
+    let tool = f.thing("tool", nick, LIMBO);
+    f.seed_script(
+        tool,
+        "script:command:mtest",
+        &format!(
+            r##"let out = "";
+               for q in ["#{0}", "#{1}", "*Bob", "ghost", "#{2}"] {{
+                   try {{
+                       let hit = mush::matchit(q);
+                       out += q + "=HIT;";
+                   }} catch {{
+                       out += q + "=NONE;";
+                   }}
+               }}
+               let g = mush::matchit("gh");
+               out += "gh=" + mush::name(g);
+               mush::pemit(mush::caller(), out);"##,
+            far_room.0, far_item.0, ghost.0
+        ),
+    );
+    let out = f.run(nick, "mtest");
+    let expected = format!(
+        "#{0}=NONE;#{1}=NONE;*Bob=NONE;ghost=NONE;#{2}=NONE;gh=ghoul",
+        far_room.0, far_item.0, ghost.0
+    );
+    assert!(
+        actor_saw(&out, nick, &expected),
+        "expected `{expected}`, got {:?}",
+        all_text(&out)
+    );
+    let _ = ghoul;
+}
+
+#[test]
+fn high17_emit_and_pemit_enforce_locality_locks_haven_and_ignore() {
+    let mut f = Fixture::new();
+    let nick = f.builder("Nick");
+    let bob = f.player("Bob");
+    let far_room = f.room("Far");
+    let own_room = f
+        .engine
+        .world
+        .create(ObjKind::Room, "NickRoom", nick, None)
+        .unwrap();
+    let tool = f.thing("tool", nick, LIMBO);
+
+    // 1. `mush::emit` to a distant uncontrolled room is refused; controlled room succeeds.
+    f.seed_script(
+        tool,
+        "script:command:efar",
+        &format!(
+            r##"mush::emit(mush::matchit("#{}"), "sneak");"##,
+            far_room.0
+        ),
+    );
+    let out = f.run(nick, "efar");
+    assert!(
+        !saw(&out, "sneak"),
+        "must not emit into uncontrolled far room"
+    );
+
+    f.seed_script(
+        tool,
+        "script:command:eown",
+        &format!(
+            r##"mush::emit(mush::matchit("#{}"), "own-room-ok");"##,
+            own_room.0
+        ),
+    );
+    let out = f.run(nick, "eown");
+    assert!(
+        saw(&out, "own-room-ok"),
+        "builder may emit into a room they control: {:?}",
+        all_text(&out)
+    );
+
+    // 2. `mush::emit` honors room `@lock/speech` for non-Wizards.
+    f.run(GOD, "@lock/speech here=#1");
+    f.seed_script(
+        tool,
+        "script:command:ehere",
+        r#"mush::emit(mush::here(), "blocked-speech");"#,
+    );
+    let out = f.run(nick, "ehere");
+    assert!(
+        !saw(&out, "blocked-speech") && actor_saw(&out, nick, "can't speak here"),
+        "room @lock/speech must block non-Wizard emit: {:?}",
+        all_text(&out)
+    );
+    f.run(GOD, "@unlock/speech here");
+
+    // 3. `mush::pemit` honors `@ignore` silently (zero output to Bob, no error to Nick).
+    f.seed_script(
+        tool,
+        "script:command:poke",
+        r#"mush::pemit(mush::matchit("Bob"), "ping-bob");"#,
+    );
+    // Before ignore: Bob hears it.
+    let out = f.run(nick, "poke");
+    assert!(actor_saw(&out, bob, "ping-bob"), "{:?}", all_text(&out));
+
+    // Bob ignores Nick: Bob receives NOTHING, and Nick sees NO script error (silent gag).
+    f.run(bob, "@ignore Nick");
+    let out = f.run(nick, "poke");
+    assert!(
+        !actor_saw(&out, bob, "ping-bob"),
+        "ignored player must not receive script pemit: {:?}",
+        all_text(&out)
+    );
+    assert!(
+        !actor_saw(&out, nick, "failed"),
+        "@ignore must be a silent drop with no error oracle: {:?}",
+        all_text(&out)
+    );
+    f.run(bob, "@ignore/clear Nick");
+
+    // 4. `mush::pemit` honors `HAVEN` and `@lock/page`.
+    f.engine.world.set_flag(bob, Flags::HAVEN, true).unwrap();
+    let out = f.run(nick, "poke");
+    assert!(
+        !actor_saw(&out, bob, "ping-bob") && actor_saw(&out, nick, "failed"),
+        "HAVEN must refuse non-Wizard pemit: {:?}",
+        all_text(&out)
+    );
+    f.engine.world.set_flag(bob, Flags::HAVEN, false).unwrap();
+
+    f.run(bob, "@lock/page me=#1");
+    let out = f.run(nick, "poke");
+    assert!(
+        !actor_saw(&out, bob, "ping-bob") && actor_saw(&out, nick, "failed"),
+        "@lock/page must refuse non-Wizard pemit: {:?}",
+        all_text(&out)
+    );
+    f.run(bob, "@unlock/page me");
+
+    // 5. `mush::pemit` refuses distant uncontrolled non-caller players.
+    f.engine.world.move_to(bob, far_room).unwrap();
+    let out = f.run(nick, "poke");
+    assert!(
+        !actor_saw(&out, bob, "ping-bob") && actor_saw(&out, nick, "failed"),
+        "distant non-caller must not be pemitted: {:?}",
+        all_text(&out)
+    );
+}
+
+#[test]
+fn high18_caps_script_attrs_coalesces_compiles_bounds_outbox_queue_and_min_timer() {
+    // 1. Coalesced compilation + per-object `script:*` count cap.
+    {
+        let cfg = ScriptConfig {
+            max_scripts_per_object: 12,
+            ..ScriptConfig::default()
+        };
+        let mut f = Fixture::with_config(cfg);
+        let nick = f.builder("Nick");
+        let obj = f.thing("obj", nick, LIMBO);
+        f.seed_script(
+            obj,
+            "script:command:batch",
+            r#"for i in 0..10 {
+                   mush::set_attr(mush::me(), "script:command:c" + i.to_string(), "let x = " + i.to_string() + ";");
+               }
+               for j in 0..20 {
+                   mush::set_attr(mush::me(), "script:command:hot", "mush::pemit(mush::caller(), \"v" + j.to_string() + "\");");
+               }"#,
+        );
+        let before = f
+            .engine
+            .world
+            .module_state::<mush_script::ScriptState>()
+            .unwrap()
+            .compile_count();
+        f.run(nick, "batch");
+        let after = f
+            .engine
+            .world
+            .module_state::<mush_script::ScriptState>()
+            .unwrap()
+            .compile_count();
+        // 10 distinct `c0..c9` + 1 coalesced `hot` = 11 compiles (NOT O(K²) = 30+ or 200+).
+        assert_eq!(
+            after - before,
+            11,
+            "batch set_attr edits must coalesce into one compile per modified key"
+        );
+        // The last version of `hot` is live immediately.
+        assert!(actor_saw(&f.run(nick, "hot"), nick, "v19"));
+
+        // Object now has 12 script:* attrs (batch + c0..c9 + hot); a 13th must fail.
+        f.seed_script(
+            obj,
+            "script:command:hot",
+            r#"mush::set_attr(mush::me(), "script:command:overflow", "1");"#,
+        );
+        let out = f.run(nick, "hot");
+        assert!(
+            actor_saw(&out, nick, "Too many script attributes"),
+            "per-object script:* cap must be enforced: {:?}",
+            all_text(&out)
+        );
+    }
+
+    // 2. Output cap (`sess.out`) aborts runaway emitters and accrues strikes -> HALTED.
+    {
+        let cfg = ScriptConfig {
+            max_outbox_events: 8,
+            ..ScriptConfig::default()
+        };
+        let mut f = Fixture::with_config(cfg);
+        let nick = f.builder("Nick");
+        let spammer = f.thing("spammer", nick, LIMBO);
+        f.seed_script(
+            spammer,
+            "script:command:flood",
+            r#"for i in 0..50 { mush::pemit(mush::caller(), "spam"); }"#,
+        );
+        for _ in 0..3 {
+            let out = f.run(nick, "flood");
+            let emitted = count(&out, "spam");
+            assert_eq!(emitted, 8, "output must stop at max_outbox_events");
+            assert!(actor_saw(&out, nick, "script output budget exceeded"));
+        }
+        assert!(
+            f.flag(spammer, Flags::HALTED),
+            "3 output budget overruns must HALT the object"
+        );
+    }
+
+    // 3. `sess.queue` cap prevents unbounded trigger fan-out before run_loop pops.
+    {
+        let cfg = ScriptConfig {
+            max_total_invocations: 10,
+            max_queue_len: 10,
+            ..ScriptConfig::default()
+        };
+        let mut f = Fixture::with_config(cfg);
+        let nick = f.builder("Nick");
+        for i in 0..20 {
+            let ear = f.thing(&format!("ear{i}"), nick, LIMBO);
+            f.seed_script(ear, "script:hear:x", "let y = 1;");
+        }
+        let horn = f.thing("horn", nick, LIMBO);
+        f.seed_script(
+            horn,
+            "script:command:blast",
+            r#"for i in 0..5 { mush::emit(mush::here(), "honk"); }"#,
+        );
+        let out = f.run(nick, "blast");
+        assert_eq!(count(&out, "honk"), 5);
+    }
+
+    // 4. Minimum timer delay >= 1s (0s self-rearming refused) & per-cascade schedule cap.
+    {
+        let mut f = Fixture::new();
+        let nick = f.builder("Nick");
+        let clk = f.thing("clk", nick, LIMBO);
+        f.seed_script(clk, "script:command:zero", r#"mush::schedule(0, "spin");"#);
+        let out = f.run(nick, "zero");
+        assert!(
+            actor_saw(&out, nick, "at least 1 second"),
+            "0s script timer must be refused: {:?}",
+            all_text(&out)
+        );
+        assert!(
+            f.engine.sched.next_due().is_none(),
+            "refused 0s timer must not enter the scheduler"
+        );
+
+        f.seed_script(
+            clk,
+            "script:command:schedflood",
+            r#"for i in 0..50 { mush::schedule(5, "t"); }"#,
+        );
+        for _ in 0..3 {
+            let out = f.run(nick, "schedflood");
+            assert!(actor_saw(&out, nick, "script schedule budget exceeded"));
+        }
+        assert!(
+            f.flag(clk, Flags::HALTED),
+            "3 schedule overruns must HALT the object"
+        );
+    }
+}
