@@ -94,7 +94,12 @@ pub fn hold_clock(w: &World) -> Option<mush_faction::Clock> {
     front_clock(w, polity(w, "freeport")?, HOLD_THE_CONCESSION_TITLE)
 }
 
-fn draft(ctx: &Ctx<'_>, kind: &str, summary: String, source: String) -> mush_canon::CanonDraft {
+pub(crate) fn draft(
+    ctx: &Ctx<'_>,
+    kind: &str,
+    summary: String,
+    source: String,
+) -> mush_canon::CanonDraft {
     mush_canon::CanonDraft {
         kind: kind.into(),
         summary,

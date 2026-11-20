@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v48 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v49 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,40 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50 cut OP.4 (lane v49): the tank farm's drain and refresh taken out**: the Isidis tank
+/// farm's `consume` rows and its bids' `refresh`, so a strip chain rebuilds a lane before v49
+/// (idempotent). The chain's head.
+pub fn strip_tank_farm(doc: &mut Value) {
+    let Some(vendors) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("isidis_port"))
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("vendors"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for vendor in vendors
+        .iter_mut()
+        .filter(|v| v.get("org").and_then(Value::as_str) == Some("isidis_tank_farm"))
+    {
+        let Some(vendor) = vendor.as_object_mut() else {
+            continue;
+        };
+        vendor.remove("consume");
+        if let Some(bids) = vendor.get_mut("bids").and_then(Value::as_array_mut) {
+            for bid in bids.iter_mut().filter_map(Value::as_object_mut) {
+                bid.remove("refresh");
+            }
+        }
+    }
+}
+
 /// **Doc 50 cut KC.4 (lane v48): the Co-op share taken out**: each terms row's
-/// `coop_share_permille`, so a strip chain rebuilds a lane before v48 (idempotent). The chain's
-/// head.
+/// `coop_share_permille`, so a strip chain rebuilds a lane before v48 (idempotent); lane v49's
+/// [`strip_tank_farm`] first.
 pub fn strip_coop_share(doc: &mut Value) {
+    strip_tank_farm(doc);
     let Some(rows) = doc
         .get_mut("entries")
         .and_then(|e| e.get_mut("regions"))

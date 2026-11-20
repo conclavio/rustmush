@@ -125,6 +125,8 @@ mod mining;
 mod move_policy_48e;
 #[path = "domain_economy/op3_hauls.rs"]
 mod op3_hauls;
+#[path = "domain_economy/op4_stockpile.rs"]
+mod op4_stockpile;
 #[path = "domain_economy/orders.rs"]
 mod orders;
 #[path = "domain_economy/pl2_producers.rs"]

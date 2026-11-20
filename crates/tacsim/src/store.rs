@@ -414,6 +414,10 @@ pub struct TacsimStore {
     /// ([`crate::port::hauler::HaulerHouse`]). Persisted through [`put_hauler`]; an unreadable one
     /// is skipped loudly.
     pub(crate) haulers: BTreeMap<CanonicalId, crate::port::hauler::HaulerHouse>,
+    /// **Doc 50 cut OP.4** — `tacsim:freeport_arm`: the Freeport arm's record
+    /// ([`crate::stockpile::FreeportArm`]). Persisted through [`put_freeport_arm`]; an unreadable
+    /// one is skipped loudly, and the arm starts afresh (a new agent; its old posts run on).
+    pub(crate) freeport_arm: Option<crate::stockpile::FreeportArm>,
     /// **Doc 39 cut IN.3** — `tacsim:works:{id}`: each order contract
     /// ([`crate::port::works::WorksContract`]), keyed by its escrow vault. Persisted through
     /// [`put_works`]; an unreadable one is held (the arm skips it) until staff repair it.
@@ -695,6 +699,12 @@ impl TacsimStore {
     #[must_use]
     pub fn hauler(&self, entry: &CanonicalId) -> Option<&crate::port::hauler::HaulerHouse> {
         self.haulers.get(entry)
+    }
+
+    /// **Doc 50 cut OP.4**: the Freeport arm's record, once it has acted.
+    #[must_use]
+    pub fn freeport_arm(&self) -> Option<&crate::stockpile::FreeportArm> {
+        self.freeport_arm.as_ref()
     }
 
     /// **Doc 48 unit EX.10**: every port's hauling house, in entry order.
@@ -2486,6 +2496,26 @@ pub(crate) fn put_hauler(ctx: &mut Ctx<'_>, house: &crate::port::hauler::HaulerH
     }
 }
 
+/// **Write the Freeport arm's record** (doc 50 cut OP.4): RAM, then one `JsonSet`.
+pub(crate) fn put_freeport_arm(ctx: &mut Ctx<'_>, doc: &crate::stockpile::FreeportArm) {
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.freeport_arm = Some(doc.clone());
+    }
+    match serde_json::to_value(doc) {
+        Ok(value) => push_op(
+            ctx.out,
+            ModuleWrite::JsonSet {
+                key: SmolStr::new_static(crate::stockpile::ARM_KEY),
+                value,
+            },
+        ),
+        Err(error) => tracing::error!(
+            %error,
+            "tacsim: the Freeport arm's record did not serialize and was not written"
+        ),
+    }
+}
+
 /// **Write a port's running-cost record** (doc 48 unit EX.9): RAM, then one `JsonSet`.
 pub(crate) fn put_port_upkeep(ctx: &mut Ctx<'_>, doc: &crate::port::upkeep::PortUpkeep) {
     let key = crate::port::upkeep::upkeep_key(&doc.entry);
@@ -3047,6 +3077,14 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // Doc 50 unit LW.2. The claim is the KEY's (the R8 rule): an offense record that
             // will not read proves and fines nothing on its key until staff repair it.
             load_offense(&mut store, key, value);
+        } else if key == crate::stockpile::ARM_KEY {
+            // Doc 50 cut OP.4: the Freeport arm's record.
+            match serde_json::from_value::<crate::stockpile::FreeportArm>(value.clone()) {
+                Ok(doc) => store.freeport_arm = Some(doc),
+                Err(_) => {
+                    tracing::error!(%key, "tacsim: the Freeport arm's record is unreadable; skipped")
+                }
+            }
         } else if let Some(rest) = key.strip_prefix(crate::port::hauler::HAULER_PREFIX) {
             // Doc 48 unit EX.10: a port's hauling house, its entry the key's.
             match (

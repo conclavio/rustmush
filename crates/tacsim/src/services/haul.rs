@@ -606,6 +606,41 @@ fn cap_of(w: &World, good: &CanonicalId, quantity: u64) -> Option<i64> {
 }
 
 #[allow(clippy::too_many_lines)] // one ordered refusal list, then the post
+/// **Post a haul as `ctx.actor`** (doc 50 cut OP.4: the Freeport arm's agent), `rest` as
+/// `+haul/post` reads it: the new haul's contract.
+///
+/// # Errors
+///
+/// The line the verb would answer.
+pub(crate) fn post_as(ctx: &mut Ctx<'_>, rest: &str) -> Result<u64, String> {
+    post_cmd(ctx, rest, true)?;
+    hauls(ctx.w)
+        .into_iter()
+        .filter(|j| j.shipper == ctx.actor)
+        .map(|j| j.contract)
+        .max()
+        .ok_or_else(|| "the haul was not recorded".to_owned())
+}
+
+/// **Take a haul as `ctx.actor`** (doc 50 cut OP.4: a hauling house's helm, Q-50-24), `rest` as
+/// `+haul/accept` reads it.
+///
+/// # Errors
+///
+/// The line the verb would answer.
+pub(crate) fn accept_as(ctx: &mut Ctx<'_>, rest: &str) -> Result<String, String> {
+    accept_cmd(ctx, rest, true)
+}
+
+/// **Deliver a haul as `ctx.actor`** (doc 50 cut OP.4: a hauling house's helm, Q-50-24).
+///
+/// # Errors
+///
+/// The line the verb would answer.
+pub(crate) fn deliver_as(ctx: &mut Ctx<'_>, job: u64) -> Result<String, String> {
+    deliver_cmd(ctx, &format!("#{job}"), true)
+}
+
 fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let (words, opts) = super::options(rest);
     let [qty, good] = words.as_slice() else {

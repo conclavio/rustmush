@@ -205,6 +205,7 @@ pub mod sheet;
 /// (doc 18 §4.8, D-18-43, D-18-48).
 pub mod sky;
 pub mod space;
+pub mod stockpile;
 pub mod store;
 /// **Doc 20 cut SM.1** — surface mining's ground: the keyed geology function, the reading
 /// rule, the geology key's boot and pin, the site ground cache and `@geology`.
