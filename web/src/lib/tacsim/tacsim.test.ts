@@ -492,7 +492,8 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
     expect(warnRes.acceptCommand).toBeNull();
     expect(warnRes.priceWarning).toContain("Quote #902 moved");
 
-    // H-40 & 48e L8 (clients:G7): all 12 canonical corridor venue IDs and dynamic dock target
+    // H-40 & 48e L8 (clients:G7): all 13 canonical corridor venue IDs (doc 50 cut OP.1 adds
+    // isidis) and dynamic dock target
     expect(CORRIDOR_DESTINATIONS.map((d) => d.id)).toEqual([
       "ceres",
       "stickney",
@@ -506,6 +507,7 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
       "occator",
       "rheasilvia",
       "urvara",
+      "isidis",
     ]);
     expect(resolveDynamicDockTarget({ cockpitSiteId: "stickney_yards" })).toBe("stickney");
     expect(resolveDynamicDockTarget({ stationPackId: "neighborhood.aitken_highport" })).toBe("luna");
