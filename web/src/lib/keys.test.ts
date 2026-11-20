@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { exitKeys, isTextField, navIntent, type KeyInput } from "./keys";
+import { exitCommand, exitKeys, isTextField, navIntent, type KeyInput } from "./keys";
 import type { RoomView } from "./proto";
 
 function k(key: string, over: Partial<KeyInput> = {}): KeyInput {
@@ -112,6 +112,35 @@ describe("exitKeys", () => {
       ["o", "Out"],
     ]);
     expect(exitKeys(null).size).toBe(0);
+  });
+
+  it("skips exits whose names carry control characters or are blank", () => {
+    const hostile: RoomView = {
+      ...view,
+      exits: [
+        { name: "North\n@destroy me", aliases: ["n"] },
+        { name: "   ", aliases: ["e"] },
+        { name: "@destroy me", aliases: ["s"] },
+      ],
+    };
+    const keys = exitKeys(hostile);
+    expect([...keys.entries()]).toEqual([["s", "@destroy me"]]);
+  });
+});
+
+describe("exitCommand", () => {
+  it("always prefixes goto and rejects blank or control-character names", () => {
+    expect(exitCommand("North")).toBe("goto North");
+    expect(exitCommand("  Airlock Bay 2  ")).toBe("goto Airlock Bay 2");
+    expect(exitCommand("@destroy me")).toBe("goto @destroy me");
+    expect(exitCommand("QUIT")).toBe("goto QUIT");
+    expect(exitCommand('"hello')).toBe('goto "hello');
+    expect(exitCommand("")).toBeNull();
+    expect(exitCommand("   ")).toBeNull();
+    expect(exitCommand("North\nQUIT")).toBeNull();
+    expect(exitCommand("North\r\n@boot all")).toBeNull();
+    expect(exitCommand("North\x00evil")).toBeNull();
+    expect(exitCommand("North\u009b2J")).toBeNull();
   });
 });
 

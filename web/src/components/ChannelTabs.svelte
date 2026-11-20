@@ -4,6 +4,7 @@
   // out-of-character ones apart, each with its color chip, unread badge and
   // gag marker. A phone folds it into a horizontal strip.
   import type { GameApp } from "$lib/game.svelte";
+  import { safeColorHex } from "$lib/render";
   import type { ChannelMeta } from "$lib/stores/channels.svelte";
 
   let { app }: { app: GameApp } = $props();
@@ -40,6 +41,7 @@
       {/if}
       {#each chans as chan (chan.name)}
         {@const unread = app.channels.unreadOf(chan.name)}
+        {@const chipColor = safeColorHex(chan.colorHex)}
         <button
           type="button"
           class="tab"
@@ -49,7 +51,7 @@
           title={chan.gagged ? `${chan.name} (gagged)` : chan.name}
           onclick={() => app.openChannelTab(chan.name)}
         >
-          <span class="chip" style={chan.colorHex ? `background:${chan.colorHex}` : ""}></span>
+          <span class="chip" style={chipColor ? `background:${chipColor}` : ""}></span>
           {chan.name}
           {#if unread > 0 && !isActive(chan)}
             <span class="badge">{unread > 99 ? "99+" : unread}</span>

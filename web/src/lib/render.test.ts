@@ -17,6 +17,7 @@ import {
   renderRich,
   renderSpan,
   roomLines,
+  safeColorHex,
   styleToClasses,
   styleToCss,
   tagClass,
@@ -198,8 +199,14 @@ describe("channelLine", () => {
     const line = channelLine({ ...msg, title: "the Grey" }, "#8cc265");
     expect(line.map((s) => s.text).join("")).toBe("[Public] the Grey Wizard: hi");
     expect(line[0]!.css).toBe("color: #8cc265");
-    // Garbage hex is refused (style injection guard).
+    // Garbage hex (including non-3/6-digit hex and CSS injections) is refused.
     expect(channelLine(msg, "red; background:url(x)")[0]!.css).toBe("");
+    expect(channelLine(msg, "#12345")[0]!.css).toBe("");
+    expect(channelLine(msg, "#12345678")[0]!.css).toBe("");
+    expect(safeColorHex("#abc")).toBe("#abc");
+    expect(safeColorHex("#A1b2C3")).toBe("#A1b2C3");
+    expect(safeColorHex("#abc; background:url(x)")).toBeNull();
+    expect(safeColorHex("#1234")).toBeNull();
   });
 
   it("formats pose and emit variants", () => {
@@ -238,8 +245,18 @@ describe("roomLines", () => {
     expect(lines[1]!.map((s) => s.text).join("")).toBe("A big hall.");
     expect(lines[2]!.map((s) => s.text).join("")).toBe("Contents: Wizard, lamp");
     const exits = lines[3]!.filter((s) => s.cmd !== null);
-    expect(exits.map((s) => s.cmd)).toEqual(["north", "out"]);
+    expect(exits.map((s) => s.cmd)).toEqual(["goto north", "goto out"]);
     expect(exits[0]!.cls).toContain("tag-exit");
+
+    const hostile = roomLines({
+      ...view,
+      exits: [
+        { name: "@destroy me", aliases: [] },
+        { name: "bad\nQUIT", aliases: [] },
+      ],
+    });
+    const hostileExits = hostile[3]!.filter((s) => s.cls.includes("tag-exit"));
+    expect(hostileExits.map((s) => s.cmd)).toEqual(["goto @destroy me", null]);
   });
 
   it("omits empty sections", () => {

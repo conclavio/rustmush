@@ -825,7 +825,10 @@ impl Metrics {
         features: Vec<LlmFeatureStat>,
         today: LlmTodaySpend,
     ) {
-        let mut g = self.llm.lock().expect("metrics llm lock");
+        let mut g = self
+            .llm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         g.enabled = enabled;
         g.globally_disabled = globally_disabled;
         g.features = features;
@@ -861,7 +864,10 @@ impl Metrics {
     /// A full point-in-time copy of every metric, for rendering.
     #[must_use]
     pub fn snapshot(&self) -> MetricsSnapshot {
-        let g = self.llm.lock().expect("metrics llm lock");
+        let g = self
+            .llm
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         MetricsSnapshot {
             ssh_open_total: self.ssh_open_total.load(Ordering::Relaxed),
             ssh_current: self.ssh_current.load(Ordering::Relaxed),
@@ -2669,5 +2675,44 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
         }
+    }
+
+    #[test]
+    fn llm_mutex_poison_does_not_brick_metrics_snapshot_or_publish() {
+        let m = std::sync::Arc::new(Metrics::new());
+        m.publish_llm(
+            true,
+            false,
+            vec![LlmFeatureStat {
+                feature: "npc".into(),
+                provider: "test".into(),
+                calls: 3,
+                ..LlmFeatureStat::default()
+            }],
+            LlmTodaySpend {
+                input_tokens: 10,
+                output_tokens: 20,
+                cost_usd: 0.01,
+            },
+        );
+        let m_poison = std::sync::Arc::clone(&m);
+        let handle = std::thread::spawn(move || {
+            let _guard = m_poison.llm.lock().unwrap();
+            panic!("simulated panic while holding metrics llm lock");
+        });
+        assert!(handle.join().is_err());
+
+        // Both `/metrics` rendering (`snapshot`) and subsequent `publish_llm`
+        // recover from the poisoned mutex without panicking.
+        let snap = m.snapshot();
+        assert!(snap.llm_enabled);
+        assert_eq!(snap.llm_features.len(), 1);
+        assert!(snap.to_prometheus(5).contains("mush_llm_calls_total"));
+
+        m.publish_llm(false, true, Vec::new(), LlmTodaySpend::default());
+        let after = m.snapshot();
+        assert!(!after.llm_enabled);
+        assert!(after.llm_globally_disabled);
+        assert!(after.llm_features.is_empty());
     }
 }
