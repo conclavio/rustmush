@@ -131,6 +131,13 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
             && line.contains("Republic"),
         "the line names the duty and why: {line}"
     );
+    assert!(
+        line.contains(&format!(
+            "you receive {:.2}cr",
+            f64::from(i32::try_from(free_net - duty).expect("fits")) / 100.0
+        )),
+        "what she receives is the sale less the share and the duty: {line}"
+    );
     assert_eq!(
         balance(rig.tw.world(), customs(&rig)) - before.1,
         duty,

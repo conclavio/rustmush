@@ -394,6 +394,16 @@ impl ProceedsPolicy for CoopProceeds {
             duty.amount = Amount::from_minor(duty.amount.minor().min(left));
             proceeds.cuts.push(duty.cut());
             if let Some(line) = proceeds.line.as_mut() {
+                // What she receives is the sale less every cut, the duty among them.
+                let before = money(w, Amount::from_minor(left));
+                let after = money(
+                    w,
+                    Amount::from_minor(left.saturating_sub(duty.amount.minor())),
+                );
+                *line = line.replace(
+                    &format!("you receive {before}"),
+                    &format!("you receive {after}"),
+                );
                 line.push_str(&duty.clause);
             }
         }
