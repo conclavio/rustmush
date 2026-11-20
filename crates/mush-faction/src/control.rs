@@ -137,6 +137,110 @@ pub fn write_control(ctx: &mut Ctx<'_>, w: ControlWrite) -> Result<ControlChange
     Ok(change)
 }
 
+/// **Make a region from content, or find it** (doc 50 cut KC.0, Q-50-3): the region named
+/// `name`, made when missing. Answers its id and whether this call made it, so a seed writes
+/// a region's world-start holders once and never over a later flip. Persists the region and
+/// the id allocator when it makes one.
+///
+/// # Errors
+///
+/// The faction module is not loaded, or the name is not a usable region name (the
+/// `@region/create` rule: 1 to [`MAX_NAME_LEN`](crate::MAX_NAME_LEN) letters, digits, space
+/// and `- _ ' .`).
+pub fn ensure_region(ctx: &mut Ctx<'_>, name: &str) -> Result<(RegionId, bool), String> {
+    let name = name.trim();
+    if !crate::commands::valid_name(name) {
+        return Err(format!("{name:?} is not a usable region name."));
+    }
+    let st = ctx
+        .w
+        .module_state_mut::<FactionState>()
+        .ok_or("Factions unavailable.")?;
+    if let Some(r) = st.region_by_name(name) {
+        return Ok((r.id, false));
+    }
+    let id = st.alloc_region_id();
+    let r = crate::data::Region {
+        id,
+        name: smol_str::SmolStr::new(name),
+        note: String::new(),
+        zones: Vec::new(),
+        atlas: None,
+    };
+    st.regions.insert(id, r.clone());
+    let (next_f, next_r) = (st.next_faction_id, st.next_region_id);
+    crate::data::persist_region(ctx.out, &r);
+    crate::data::persist_meta(ctx.out, next_f, next_r);
+    Ok((id, true))
+}
+
+/// **Make a faction from content, or find it** (doc 50 cut KC.0, Q-50-2): the faction named
+/// `name`, made when missing with no backing organization and no principal. A polity is one.
+///
+/// # Errors
+///
+/// The faction module is not loaded, the name is not a usable faction name (the
+/// `@faction/create` rule), or the registry is full.
+pub fn ensure_faction(ctx: &mut Ctx<'_>, name: &str) -> Result<FactionId, String> {
+    let name = name.trim();
+    if !crate::commands::valid_name(name) {
+        return Err(format!("{name:?} is not a usable faction name."));
+    }
+    let st = ctx
+        .w
+        .module_state_mut::<FactionState>()
+        .ok_or("Factions unavailable.")?;
+    if let Some(f) = st.faction_by_name(name) {
+        return Ok(f.id);
+    }
+    if st.factions.len() >= 4096 {
+        return Err("Faction registry is full.".into());
+    }
+    let id = st.alloc_faction_id();
+    let f = crate::data::Faction::new(id, name);
+    st.factions.insert(id, f.clone());
+    let (next_f, next_r) = (st.next_faction_id, st.next_region_id);
+    crate::data::persist_faction(ctx.out, &f);
+    crate::data::persist_meta(ctx.out, next_f, next_r);
+    Ok(id)
+}
+
+/// **Mark a hold contested** (doc 50 cut KC.0; doc 11 §5's "Republic pickets contest"):
+/// `challenger` contests `holder`'s `kind` hold on `region`, as `@faction/contest` does but
+/// never toggling it off. Answers whether this call added the contest.
+///
+/// # Errors
+///
+/// The faction module is not loaded, the hold does not exist, the challenger is no faction,
+/// or a faction would contest its own hold.
+pub fn contest_control(
+    ctx: &mut Ctx<'_>,
+    region: RegionId,
+    holder: FactionId,
+    kind: ControlKind,
+    challenger: FactionId,
+) -> Result<bool, String> {
+    let st = ctx
+        .w
+        .module_state_mut::<FactionState>()
+        .ok_or("Factions unavailable.")?;
+    if challenger == holder || !st.factions.contains_key(&challenger) {
+        return Err("A contest names another faction.".into());
+    }
+    let recs = st.control.get_mut(&region).ok_or("No such hold.")?;
+    let rec = recs
+        .iter_mut()
+        .find(|r| r.faction == holder && r.kind == kind)
+        .ok_or("No such hold.")?;
+    if rec.contested_by.contains(&challenger) {
+        return Ok(false);
+    }
+    rec.contested_by.push(challenger);
+    let after = recs.clone();
+    persist_control(ctx.out, region, &after);
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

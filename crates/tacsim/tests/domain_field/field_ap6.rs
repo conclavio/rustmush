@@ -815,7 +815,11 @@ async fn ap6_a_party_declared_hostile_by_stance_is_not_fired_on_first_under_any_
     // field is open (doc 40 cut FR.1): nobody in this field marks anybody.
     for name in ["Concord", "Basin"] {
         let out = run(&mut rig.tw, GOD, &format!("@faction/create {name}"));
-        assert!(out.contains(name), "{out}");
+        // Doc 50 cut KC.0: the lane makes the polities, the Concord among them.
+        assert!(
+            out.contains(name) || out.contains("already exists"),
+            "{out}"
+        );
     }
     officer(&mut rig, "Concord", pilot);
     officer(&mut rig, "Basin", stranger);

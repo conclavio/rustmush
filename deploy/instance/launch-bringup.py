@@ -911,9 +911,11 @@ def identities(box, staff):
     """Everything the document names, by the runbook's own commands, and the
     document itself in mode `initialize`."""
     say("the launch's identities, as #1 (deploy/README.md, steps 2 to 7)")
+    # Doc 50 cut KC.0 (Q-50-2): the lane makes the six polities from its organizations'
+    # tags when it applies; the bring-up no longer makes the Republic by hand.
     faction = re.search(r"^\s+(\d+)\s\sRepublic(?:\s\[HIDDEN\])?\s\s\(", staff.s.ask("@faction"), re.M)
     if not faction:
-        faction = staff.s.do("@faction/create Republic", r"Created faction Republic \(id (\d+)\)\.")
+        raise Stop("no Republic faction: the lane pack makes it when it applies (doc 50 KC.0)")
     republic = int(faction.group(1))
     registry_account = staff.system_account("launch.registry")
     venue_account = staff.system_account("launch.venue")

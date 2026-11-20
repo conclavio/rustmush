@@ -1687,6 +1687,8 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 def.unit,
                 def.mounts.len()
             ),
+            // Doc 50 cut KC.0: the regions block is its rows.
+            PackEntry::Regions(def) => format!("{} regions", def.rows.len()),
         };
         rows.push(format!("  {entry_id} ({}) {detail}", entry.label()));
     }

@@ -206,11 +206,197 @@ edit, never by `git checkout`. Also run: every mush-faction test binary, and `mu
 
 ## KC.0
 
-Not built.
+The six polities as factions from content, the table from lane organization to polity, the
+lane's `regions` block, and the control read (Q-50-1 to Q-50-4, Q-50-52; doc 50a A-10a, C-3,
+D-6). Stacked on KC.0a. Lane v45 and relay v36: **this unit's lane bump has landed on its
+branch**; the next lane bump (KC.2, KC.4 or OP.1) starts from v45.
+
+**Survey.**
+- Doc 50a's corrections held. There are six tags on 24 lane organizations, in five ports.
+- `launch-bringup.py` made one faction, the Republic, by `@faction/create`. The launch
+  deployment then carried its id.
+- `Faction.org` is one to one, so it cannot be the polity table.
+- The lane had no regions and no control. Its one `region` entry is the atlas's (`sol`), so the
+  new kind needed another word.
+- Doc 11 §5 names organizations as holders, not only polities: the Co-op runs Kirkwood de facto,
+  and Tycho, Occator and Ceres Clearing hold economically. Q-50-11 has the Co-op lose its hold.
+  The Tether and OTS are no lane organizations.
+- No public call made a region. `register_content_faction` needs an NPC principal.
+
+**Built.**
+- `mush-faction` (`src/control.rs`):
+  - `ensure_region(ctx, name) -> Result<(RegionId, bool), String>` answers whether it made the
+    region.
+  - `ensure_faction(ctx, name) -> Result<FactionId, String>` makes a faction with no organization
+    and no principal.
+  - `contest_control(ctx, region, holder, kind, challenger) -> Result<bool, String>` adds a
+    contest and never toggles it off.
+- TacSim `src/polity.rs`:
+  - The `regions` kind: `RegionsDef { rows }`, `RegionRow { id, name, places, holds }`,
+    `HoldDef { kind: HoldKind, holder: Holder, contested_by }`, and
+    `Holder::{Polity(tag), Org(lane org id)}`.
+  - Pack-wide checks run in `RulesPack::from_content` (`check_regions`):
+    - rows, names and places are unique and bounded;
+    - a place is a `location` or `port` entry;
+    - a polity is a tag some lane organization carries, and an organization is a lane
+      organization;
+    - a row has at most one de facto holder, and one hold per (holder, kind).
+  - The kind is seed-side, the twenty-second of `OWNED_KINDS`.
+  - `RegionsApplier` runs at phase 12, after the ports, and does three things:
+    - it makes every tag's polity, `polity_name(tag)`: `republic` becomes "Republic";
+    - it makes each row's region;
+    - it seeds the region's holds through `write_control` (strength 3), with their contests,
+      **only when it made the region**.
+  - An organization holder's faction is its own (`ensure_organization_faction`).
+- The reads:
+  - `polity(w, tag)` and `polity_of_org(w, OrgId)` (the table, read from the tag on the latched
+    lane);
+  - `control_at(w, place) -> Option<PlaceControl { region, de_jure, de_facto, covert, economic,
+    de_facto_since_ic }>`;
+  - `papers_authority(w, place, enforcer) -> Option<FactionId>`: Q-50-52, the enforcer's own
+    polity where it claims, else the claimant on record.
+- Lane v45 seeds three rows from doc 11 §5:
+  - the Kirkwood approach: de jure the Freeport; de facto the Co-op, contested by the Republic;
+    economic Tycho;
+  - Ceres station (the location and its port): de jure and de facto the Freeport; economic
+    Occator and Ceres Clearing;
+  - Phobos and Stickney Yards: the Republic in all four kinds; economic also Ceres Clearing.
+- The bring-up no longer makes the Republic. It stops if the lane has not made it.
+
+**Tests.**
+- `tests/domain_world/polities.rs` is the fresh-world story on the production roster. It checks:
+  - the six polities, with no organization;
+  - every lane organization's polity;
+  - the three rows' holders, contest and dates;
+  - no reading for a place outside the block;
+  - the papers rule with one claimant and with two;
+  - `+territory` as a player;
+  - that a flip stands through a re-apply of the block.
+- Lane pins:
+  - `kc0_strip_regions_rebuilds_the_published_v44`;
+  - `lane_chain::strip_regions` as the strip chain's new head;
+  - the v45 and relay v36 digests and versions in `lane.rs`, `cost_lane.rs`, `sites.rs`,
+    `drones.rs`, `mill.rs`, `stations.rs`, `boot_parity.rs` and `relay_registry.rs`.
+  - the lane-plan counts that the new entry moves by one, in `commerce.rs`, `ports.rs`,
+    `sites.rs`, `vehicles.rs` and `moon_ports.rs`.
+- Rigs that made a faction named "Concord" or "Republic" by `@faction/create` now meet the
+  lane's polity:
+  - `field_ap6`, `field_ap7`, `field_ap11` and `field_fr1` accept "already exists";
+  - `m8_world`'s deployment no longer makes the Republic.
+- Mutation-checked on conclav.dev. Each of these failed the story:
+  - seeding a region that already stands (a flip undone by a re-apply);
+  - the enforcer never reading its own papers;
+  - dropping the seeded contest;
+  - the polities not made.
+  Each edit was undone by a reverse edit.
+- Also run on conclav.dev, all green:
+  - mush-faction, and tacsim's `domain_economy` (697), `domain_field` (330) and `domain_world`
+    (279);
+  - tacsim's other binaries, and mush-server `split_boundary` (227);
+  - clippy `-D warnings` on tacsim and mush-faction.
+- Run locally: the contract guards (`ci_policy`, `engine_contracts`).
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- A polity's faction name is its tag with a capital letter ("Freeport", "Company",
+  "Townships"). "Republic" is the name the launch deployment already reads.
+- A holder may be a lane organization as well as a polity, because doc 11 §5 and Q-50-11 need
+  the Co-op to hold de facto.
+- The Tether and OTS hold covertly in doc 11 but are no lane organizations, so Kirkwood and
+  Ceres carry no covert row.
+- Region names follow the `@region/create` rule (no `&`): "Kirkwood approach", "Ceres station",
+  "Phobos and Stickney Yards".
+- The block seeds a region only when its apply makes the region, so a lane bump never undoes a
+  clock's flip. A region renamed in content would be a new region.
+- The polity table is computed on read from the latched lane, not stored.
+- Where several claim de jure and the enforcer is none of them, it reads the first claimant on
+  record.
+- The block's retire leaves the regions, the control and the polities standing.
+
+**Not built.**
+- Isidis (OP.1), the moons, Titan, Deimos and Occator claims rows.
+- No public call yet opens a front whose clock flips control on a faction's board by
+  `FactionId`; it did not fall out of this unit (KC.1).
+- No polity has a backing organization or a treasury (KC.2, Q-50-14).
+- No compiled caller reads `control_at` yet (KC.2 on).
 
 ## KC.1
 
-Not built.
+Customs Assertion on the Republic's board, seeded at world start, completing through the
+engine's one path with a control flip (Q-50-12, Q-50-13; with Q-50-11, Q-50-14, Q-50-16, Q-50-51;
+doc 50a A-1; doc 11 §6). Stacked on KC.0. No lane bump.
+
+**Survey.** As §3.2 says:
+- `record_customs_assertion` made the front lazily, on the first incident, on the Freeport
+  Registry's faction (the license issuer's org).
+- It advanced the clock by hand, appended the consequence sentence to the incident's own line,
+  resolved the front and flipped nothing.
+- Its three callers in `space/picket.rs` (the fine, the seizure and the run) pass a canon draft
+  whose `source` already names the incident: `space.picket.fine/<hull>/<contract>`, and
+  `.../seize/` or `.../run/` with `<hull>/<ic>`.
+- A Cleared ruling never calls it.
+- `voyage.rs`'s picket stories read the front by title, not by board.
+
+**Built.**
+- `mush-faction`, the opener KC.0a and KC.0 left undone:
+  `open_faction_front(ctx, board: FactionId, spec: &FrontSpec, draft: CanonDraft) -> Result<FrontId, String>`.
+  - `FrontSpec { title, clock_title, segments, initial, consequence, control: Option<(RegionId, ControlKind)>, visibility }`.
+  - The clock watches no canon kind (Q-50-51), so only `advance_clock_by_cause` moves it.
+  - It is idempotent by title on the board and makes one canon append.
+  - The private `open_front_clock` now carries the clock's control and visibility.
+- `seed_customs_assertion_front(ctx, republic, approach, draft)`:
+  - six segments opening at one (`CUSTOMS_ASSERTION_SEGMENTS`, `CUSTOMS_ASSERTION_OPENS_AT`);
+  - the flip is the approach, de facto;
+  - the consequence is `CUSTOMS_ASSERTION_CONSEQUENCE`.
+- `record_customs_assertion(ctx, board: FactionId, draft)` now takes the board, not an org:
+  - It finds the seeded front and moves it one through `advance_clock_by_cause`, with the
+    incident's `source` as cause id. The fill fires `fire_consequence`: the Republic takes the
+    approach de facto, displacing the Co-op, the hold is dated in IC time, and the front resolves.
+  - After the fill, an incident still commits its line and moves nothing.
+  - A front not seeded on that board is an error. The picket swallows it, as it did before.
+- TacSim:
+  - The regions applier seeds the front after its rows, on `polity(republic)`. Its flip is the
+    row holding the `location` with `kirkwood_picket`.
+  - `polity::customs_board(w)` is the Republic. The picket's three calls pass it; the fine is
+    still paid to the Registry (Q-50-14).
+- Nothing reads the new holder yet (the transit duty is KC.2). `+territory` and `+chronicle`
+  show the flip.
+
+**Tests.**
+- `tests/domain_world/polities.rs`,
+  `kc1_picket_incidents_fill_customs_assertion_and_the_republic_takes_kirkwood`, on a fresh
+  production world. It checks:
+  - the front on the Republic's board at 1 of 6, with its flip, and on `+clocks` from the first
+    day;
+  - four incidents fill it to 5, and a retried cause moves nothing;
+  - the sixth flips Kirkwood de facto to the Republic, dated at the flip's IC time, and moves the
+    Co-op out;
+  - the front resolves, and a later incident records its line and moves nothing;
+  - `+territory` and `+chronicle` show the flip.
+- Mutation-checked on conclav.dev; each failed the story, and each was undone by a reverse edit:
+  - the seed with no flip;
+  - incidents bypassing the cause call;
+  - the front not seeded;
+  - the clock opening at zero.
+- The picket's own stories in `voyage.rs` and the rest of tacsim, mush-faction and mush-server
+  `commerce_composition` ran on conclav.dev; clippy `-D warnings` too.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- The consequence line is new: "Republic Customs holds the Kirkwood approach: the picket now
+  answers to the Republic." The old sentence said the picket "seizes unlicensed strategic ore
+  shipments", which Q-50-15 rules does not change.
+- The consequence is now its own `front.progress` canon line. It is no longer appended to the
+  sixth incident's line.
+- The front is seeded by the lane's regions applier, the apply that makes the Republic and the
+  approach, not by a boot pass.
+- A world whose lane has no picket row, or no Republic, has no front, and its incidents advance
+  nothing (they did, lazily, before).
+- A seizure's and a run's cause id is `<hull>/<IC second>`, as the picket already wrote it. Two
+  such incidents on one hull in one IC second would count once.
+
+**Not built.**
+- The transit duty, the payee and any reader of the new holder (KC.2).
+- No push-back clock (Q-50-16).
+- `record_relay_discovery` and `advance_relay_terms_front` still advance by hand.
 
 ## KC.2
 
@@ -230,7 +416,99 @@ Not built.
 
 ## LW.2
 
-Not built.
+**Survey** (at `f668f082a`, #713's head):
+- **Port security's record** was `tacsim:security:{actor}` (`surface/security.rs`), one per
+  character, rows copied from a site's evidence log at the proof (a vacated `recovery` contest,
+  `claim.rs:3258`, or `+salvage/report … registry`). Nothing else wrote or read it, beside the
+  rs7 story.
+- **`SECURITY_VENUES = ["ceres", "stickney"]`** gated only the fine at docking (`on_docked`,
+  called from `composition/sim_routes.rs` for a port, never a site). The fine went to the Freeport
+  Registry's account at both ports.
+- **The quarantine** (`quarantine_line`, `port/voyage.rs` `prepare_departure`) had no venue test.
+  A past-due fine held every hull its debtor helms or holds title to, at every berth, a site's pad
+  included (A-10c).
+- **Who answered** was the helm holder plus a character title holder. For an organization's hull
+  docked with nothing filed, `helm_holder` is `None` and the title holder is an organization, so
+  nobody answered (A-10b).
+- **KC.0's read:** `polity::control_at(w, place)` takes a lane port entry id (`ceres_port`,
+  `stickney_port`). Sites are in no region. `polity_of_org` maps the Freeport Registry to the
+  Freeport.
+- **Each port's `authority`:** Ceres is `freeport_registry`, Stickney is `stickney_yards`.
+
+**Built:**
+1. **The record (`crate::offense`).**
+   - The key is actor by polity: `OffenseKey { offender: Offender, polity: FactionId }`, stored as
+     `tacsim:offense:{c<obj>|o<org>|a<account hash>}:{polity}`.
+   - The actor is `Offender::Character(ObjId)`, `Organization(OrgId)` or
+     `Account(mush_core::AccountId)` (Q-50-68).
+   - The kinds are a closed list, `OffenseKind`: `SalvagePickup`, `SalvageScrap` and
+     `SalvageRecovery` today.
+   - Evidence stays where it is, and each row names it: `Evidence::Site { site, act }` copies the
+     ring row. `Proof` moved here.
+   - A row is `ProvenOffense { kind, evidence, proof, proven_ic, debt }`. The record is
+     `OffenseRecord { schema, key, rows ≤ 64 }`, loaded at boot. An unreadable record claims its
+     key and proves or fines nothing.
+2. **The API LW.3, LW.4 and LW.5 build on:**
+   - Writing: `record_offense(ctx, key, offense, settled)` is the one function every prover
+     calls. It dedupes, and a full record drops its oldest settled row.
+   - Reading: `record_of(w, &key)` and `records_against(w, offender)`.
+   - Where an offense binds: `jurisdiction_at(w, place)`, the place's de facto holder, and
+     `binds_at(w, polity, place)`.
+   - Who answers: `answerer_for_hull(w, hull)` is the organization for an organization's hull,
+     else the helm holder.
+   - Receipts: `put_receipts` (crate-only) rewrites a record whose fine receipts changed.
+   - The polity that proves a salvage offense: `surface::security::proving_polity(w)`.
+3. **Port security on the record.**
+   - `prove` writes `Offender::Character(act.actor)` under `proving_polity`. That is the
+     Freeport Registry's polity, the Freeport.
+   - `on_docked(ctx, hull, entry, port)` fines the record of (the hull's answerer, the port's de
+     facto holder). The fine goes to the port's governing authority's account.
+   - `quarantine_line(ctx, hull, entry, (name, port))` and `holds_at(w, hull, entry)` hold the
+     hull that docked, only at a port its polity holds.
+   - `SECURITY_VENUES`, `answers_at` and the old `SecurityRecord` are gone. Pre-launch, so there
+     is no migration of `tacsim:security:` documents.
+4. **An organization's hull answers through its organization.** Its fine is drawn on the
+   organization's account (`port::berth::org_account`, now `pub(crate)`).
+5. **The fine's lines** name the authority (`The {authority} fines you …`). The owed line says
+   the fine holds her "at this polity's ports".
+
+**Tests:**
+- `tacsim` lib `offense::tests`: the key is actor by polity, and a document key parses back. The
+  record's kinds and its one-actor rule are checked.
+- `domain_economy` `lw2_offense_record::lw2_an_offense_binds_only_where_its_polity_holds_and_the_house_answers_for_its_hull`:
+  - A House's Dray carries a Freeport offense against the House, seeded as a stored record the
+    boot reads.
+  - Docked at Stickney, the Republic's port, nothing is fined.
+  - Docked at Ceres, the House is fined 5,000 cr to the Freeport Registry, and the receipt is on
+    the House's record.
+  - The grace runs out while she is at Stickney, and she lifts from there.
+  - Home at Ceres, she is held. Staff hand Ceres station to the Republic de facto, and she may
+    lift.
+  - Mutation-checked: an offense binding wherever its polity proved it; an organization's hull
+    answered by its pilot; the quarantine ignoring the port. Each fails the story.
+- `port_security_rs7::` (both sites) is moved onto the record: O's Freeport record, its kinds and
+  its receipts, `holds_at` at Ceres.
+
+**Divergences:**
+- **The proving polity is the Freeport Registry's polity**, not the de facto holder of the place
+  of the act. Sites are in no region, and the Registry is the one adjudicating. If Ceres changes
+  hands, a Freeport proof binds nowhere until the Freeport holds a port again.
+- **An organization's fine is levied with staff authority.** At a docking, no character acts for
+  the organization, and the economy lets only an authorized actor open a debt on an organization's
+  account. A character's fine is still opened and paid as that character.
+- **A member's own offense is not fined when they dock an organization's hull.** The hull answers
+  through the organization only, as Q-50-68 words it. The member answers when they dock a hull
+  they command.
+- **A fine with no authority account at the port waits** (logged). Every lane port with a
+  jurisdiction authors one today.
+
+**Not built:**
+- **No path writes an organization's or an account's offense yet.** No salvage verb takes
+  `as=<org>`, so the story seeds one. The license bar on the account is LW.4.
+- **An offender with no hull is not fined when proven** (Q-50-68's last line). Port security
+  still fines at a docking only; immediate fines belong with LW.4's penalties.
+- **No lane bump.**
+- Fine sizes, the standing loss, the trading restriction, `+record` and `+debts`: LW.4.
 
 ## LW.3
 

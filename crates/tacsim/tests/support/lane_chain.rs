@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v44 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v45 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,11 +45,21 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50 cut KC.0 (lane v45): the regions block taken out** — the `regions` entry, so a strip
+/// chain rebuilds a lane before v45 (idempotent). The chain's head.
+pub fn strip_regions(doc: &mut Value) {
+    if let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) {
+        entries.remove("regions");
+    }
+}
+
 /// **Doc 48e lane L4 (lane v44): the consumers' refresh and Titan's ice taken out** — the
 /// `refresh` rows of the Habitat Board's, the Strategic Reserve's, Syrtis Bonded's and the Selk
 /// Townships Board's bids (exchange G19), and the Titan Concession's ice bid and ice mill
-/// (production G21), so a strip chain rebuilds a lane before v44 (idempotent). The chain's head.
+/// (production G21), so a strip chain rebuilds a lane before v44 (idempotent); lane v45's
+/// [`strip_regions`] first.
 pub fn strip_refresh_and_ice(doc: &mut Value) {
+    strip_regions(doc);
     let Some(entries) = doc.get_mut("entries") else {
         return;
     };

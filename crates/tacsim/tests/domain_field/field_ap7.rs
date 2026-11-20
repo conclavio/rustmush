@@ -182,7 +182,11 @@ async fn site(posture: Posture, tune_field: fn(&mut tacsim::TacsimConfig)) -> Si
     // FR.1): his rigs hold the intruder Hostile from the field's opening, and he marks nobody.
     for name in ["Concord", "Basin"] {
         let out = run(&mut rig.tw, GOD, &format!("@faction/create {name}"));
-        assert!(out.contains(name), "{out}");
+        // Doc 50 cut KC.0: the lane makes the polities, the Concord among them.
+        assert!(
+            out.contains(name) || out.contains("already exists"),
+            "{out}"
+        );
     }
     officer(&mut rig, "Concord", owner);
     officer(&mut rig, "Basin", intruder);

@@ -430,10 +430,11 @@ pub struct TacsimStore {
     /// ([`crate::surface::retrieval::RetrievalOrder`]): its contract and its two windows.
     /// Persisted through [`put_retrieval`]; an unreadable one holds its hull's job.
     pub(crate) retrievals: BTreeMap<ObjId, crate::surface::retrieval::RetrievalSlot>,
-    /// **Doc 41 cut RS.7** — `tacsim:security:{actor}`: the proven acts against each actor
-    /// ([`crate::surface::security::SecurityRecord`]) and their fines. Persisted through
-    /// [`put_security`]; an unreadable one proves and fines nothing against its actor.
-    pub(crate) security: BTreeMap<ObjId, crate::surface::security::SecuritySlot>,
+    /// **Doc 50 unit LW.2** (doc 41 cut RS.7's record, keyed by polity) —
+    /// `tacsim:offense:{offender}:{polity}`: the offenses each polity proved against each
+    /// offender ([`crate::offense::OffenseRecord`]) and their fines. Persisted through
+    /// [`put_offense`]; an unreadable one proves and fines nothing on its key.
+    pub(crate) offenses: BTreeMap<crate::offense::OffenseKey, crate::offense::OffenseSlot>,
     /// **Doc 39 cut IN.10** — `tacsim:house_pool:{org}`: each house's pool record
     /// ([`crate::port::pools::HousePool`]), loaded by [`crate::port::pools::load`].
     pub(crate) pools: crate::port::pools::PoolBook,
@@ -2380,25 +2381,25 @@ pub(crate) fn put_retrieval(ctx: &mut Ctx<'_>, order: &crate::surface::retrieval
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
-/// **Install a security record and queue its document** (doc 41 cut RS.7): the RAM row, then
+/// **Install an offense record and queue its document** (doc 50 unit LW.2): the RAM row, then
 /// one whole-document `JsonSet` ([`put_retrieval`]'s shape).
-pub(crate) fn put_security(ctx: &mut Ctx<'_>, record: &crate::surface::security::SecurityRecord) {
-    let key = crate::surface::security::security_key(record.actor);
+pub(crate) fn put_offense(ctx: &mut Ctx<'_>, record: &crate::offense::OffenseRecord) {
+    let key = record.key.doc_key();
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-        store.security.insert(
-            record.actor,
-            crate::surface::security::SecuritySlot::Present(Box::new(record.clone())),
+        store.offenses.insert(
+            record.key,
+            crate::offense::OffenseSlot::Present(Box::new(record.clone())),
         );
     }
     let value = match serde_json::to_value(record) {
         Ok(value) => value,
         Err(error) => {
             tracing::error!(
-                actor = record.actor.0, %error,
-                "tacsim: a security record did not serialize; a minimal document is written so \
+                key = %key, %error,
+                "tacsim: an offense record did not serialize; a minimal document is written so \
                  the key stays claimed. Repair the document by hand."
             );
-            serde_json::json!({ "schema": record.schema, "actor": record.actor.0 })
+            serde_json::json!({ "schema": record.schema })
         }
     };
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
@@ -3042,14 +3043,10 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_retrieval(&mut store, key, hull, value);
-        } else if key.starts_with(crate::surface::security::SECURITY_PREFIX) {
-            // Doc 41 cut RS.7. The claim is the KEY's (the R8 rule): a security record that will
-            // not read proves and fines nothing against its actor until staff repair it.
-            let Some(actor) = crate::surface::security::security_key_owner(key) else {
-                tracing::warn!(%key, "tacsim: a security record has an unreadable key; skipped");
-                continue;
-            };
-            load_security(&mut store, key, actor, value);
+        } else if key.starts_with(crate::offense::OFFENSE_PREFIX) {
+            // Doc 50 unit LW.2. The claim is the KEY's (the R8 rule): an offense record that
+            // will not read proves and fines nothing on its key until staff repair it.
+            load_offense(&mut store, key, value);
         } else if let Some(rest) = key.strip_prefix(crate::port::hauler::HAULER_PREFIX) {
             // Doc 48 unit EX.10: a port's hauling house, its entry the key's.
             match (
@@ -3444,13 +3441,13 @@ fn load_works(store: &mut TacsimStore, key: &str, id: u64, value: &serde_json::V
     }
 }
 
-fn load_security(store: &mut TacsimStore, key: &str, actor: ObjId, value: &serde_json::Value) {
-    use crate::surface::security::{SecurityRecord, SecuritySlot};
-    let record = serde_json::from_value::<SecurityRecord>(value.clone())
+fn load_offense(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
+    use crate::offense::{OffenseRecord, OffenseSlot, key_of_doc};
+    let record = serde_json::from_value::<OffenseRecord>(value.clone())
         .map_err(|error| error.to_string())
         .and_then(|record| record.check().map(|()| record))
         .and_then(|record| {
-            if record.actor == actor {
+            if record.key.doc_key().as_str() == key {
                 Ok(record)
             } else {
                 Err("the record disagrees with its own key".to_owned())
@@ -3459,16 +3456,22 @@ fn load_security(store: &mut TacsimStore, key: &str, actor: ObjId, value: &serde
     match record {
         Ok(record) => {
             store
-                .security
-                .insert(actor, SecuritySlot::Present(Box::new(record)));
+                .offenses
+                .insert(record.key, OffenseSlot::Present(Box::new(record)));
         }
         Err(error) => {
+            // A character's or an organization's key carries back to the slot it claims; an
+            // account's does not, so an unreadable account record holds nothing.
+            let Some(slot) = key_of_doc(key) else {
+                tracing::error!(%key, %error, "tacsim: an offense record is unreadable and its key does not parse; skipped");
+                return;
+            };
             tracing::error!(
                 %key, %error,
-                "tacsim: a security record is unreadable; nothing is proven or fined against its \
-                 actor until staff repair the document"
+                "tacsim: an offense record is unreadable; nothing is proven or fined on it until \
+                 staff repair the document"
             );
-            store.security.insert(actor, SecuritySlot::Unreadable);
+            store.offenses.insert(slot, OffenseSlot::Unreadable);
         }
     }
 }

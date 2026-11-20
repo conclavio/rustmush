@@ -254,6 +254,10 @@ pub enum PackEntry {
     /// **Doc 49 unit CC.6** — one hull's fit: the unit it fits and its mounts, each with its
     /// id, its row, its magazine and a laser's allowed modes (Q-49-24). Checked, never minted.
     SpaceFit(crate::definitions::space_mount::SpaceFitDef),
+    /// **Doc 50 cut KC.0** — the lane's regions block (Q-50-3): one row per doc 11 §5 row the
+    /// game uses, its places and its holders in the four kinds at world start. Applied by
+    /// `crate::polity::RegionsApplier`; seed-only, because it seeds the faction engine.
+    Regions(crate::polity::RegionsDef),
 }
 
 impl PackEntry {
@@ -282,6 +286,7 @@ impl PackEntry {
             PackEntry::Port(_) => "port",
             PackEntry::SpaceMount(_) => "space_mount",
             PackEntry::SpaceFit(_) => "space_fit",
+            PackEntry::Regions(_) => "regions",
         }
     }
 
@@ -327,6 +332,8 @@ impl PackEntry {
             // are the catalogue build's.
             PackEntry::SpaceMount(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::SpaceFit(def) => def.check(&def.label).map_err(definition_error)?,
+            // Doc 50 cut KC.0: checked pack-wide in `from_content`, where the ports are in scope.
+            PackEntry::Regions(_) => {}
             PackEntry::Commodity(def) => {
                 if too_long(&def.label) {
                     return Err(PackError::LabelTooLong {
@@ -1437,8 +1444,9 @@ fn place_clusters_fault(
 /// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight; 17b cut M3.1
 /// the fifteenth, `core` (doc 17 §9); doc 18 cut IC3 the sixteenth, `port`
 /// (doc 18 §4.7); doc 39 cut IN.1 the nineteenth, `plant` (Q-39-35); doc 49 unit CC.6 the
-/// twentieth and twenty-first, `space_mount` and `space_fit` (Q-49-11).
-pub const OWNED_KINDS: [&str; 21] = [
+/// twentieth and twenty-first, `space_mount` and `space_fit` (Q-49-11); doc 50 cut KC.0 the
+/// twenty-second, `regions` (Q-50-3).
+pub const OWNED_KINDS: [&str; 22] = [
     "commodity",
     "recipe",
     "hardware_recipe",
@@ -1460,6 +1468,7 @@ pub const OWNED_KINDS: [&str; 21] = [
     "port",
     "space_mount",
     "space_fit",
+    "regions",
 ];
 
 /// One definition refusal as a pack refusal (16b cut C.2).
@@ -1704,6 +1713,7 @@ impl RulesPack {
                         | PackEntry::Facility(_)
                         | PackEntry::Arena(_)
                         | PackEntry::Port(_)
+                        | PackEntry::Regions(_)
                 ) | (
                     PackKind::CampaignSeed,
                     PackEntry::Commodity(_)
@@ -1830,6 +1840,16 @@ impl RulesPack {
             port: port.to_string(),
             detail,
         })?;
+        // Doc 50 cut KC.0 (Q-50-3): the regions block's places and holders are this pack's.
+        for (id, entry) in &entries {
+            if let PackEntry::Regions(def) = entry {
+                crate::polity::check_regions(&entries, def).map_err(|detail| {
+                    PackError::DefinitionRefused {
+                        detail: format!("{id}: {detail}"),
+                    }
+                })?;
+            }
+        }
         Ok(RulesPack { pack, entries })
     }
 
