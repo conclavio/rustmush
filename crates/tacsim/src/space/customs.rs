@@ -10,8 +10,9 @@
 //!    a [`PendingCustomsRuling`] on the space book: what customs found, and what it will do
 //!    about it. It grants nothing.
 //! 2. The action's prepare writes the ruling into the hull's row of
-//!    [`CUSTOMS_RULING_FAMILY`], and for a seizure debits the ore from the hold **in the same
-//!    transaction**, so a recorded seizure and an emptied hold are one fact. A sequence the
+//!    [`CUSTOMS_RULING_FAMILY`], and for a seizure moves the ore from the hold to the enforcing
+//!    authority's vault **in the same transaction** (doc 50 unit LW.5), so a recorded seizure
+//!    and an emptied hold are one fact. A sequence the
 //!    row already holds is refused, so a ruling lands once.
 //! 3. The space tick (`reconcile_customs_rulings`) reads the committed row and acts on it:
 //!    it levies the fine, advances the front, and only then sets the picket's verdict and the
@@ -244,6 +245,12 @@ pub struct PendingCustomsRuling {
     /// the seized hold, read at the filing. The ruling takes them whole, before the pool.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lots: Vec<LotId>,
+    /// **Where a seizure's goods go** (doc 50 unit LW.5; Q-50-44 as corrected): the enforcing
+    /// authority's vault (`VaultId.0`, [`crate::port::seized::ensure_vault`]), made at the
+    /// filing. `None` only when no authority could be found, and then the goods leave the
+    /// world as they did before the unit (logged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub into: Option<u64>,
 }
 
 /// The most hauls and lots one seizure's filing names.
@@ -398,6 +405,10 @@ impl CustomsProvider {
         };
         let ore = CanonicalId::new("strategic_ore").map_err(|_| invalid())?;
         let endpoint = EndpointRef(mush_economy::VaultId(vault));
+        let into = pending
+            .into
+            .map(|to| EndpointRef(mush_economy::VaultId(to)))
+            .filter(|to| *to != endpoint);
         // 1. The lots, whole and unheld, while they fit what is to be taken.
         let mut lots = Vec::new();
         let mut from_lots = 0_u64;
@@ -427,9 +438,17 @@ impl CustomsProvider {
             lots.push(lot);
         }
         if !lots.is_empty() {
-            inventory
-                .consume_products(txn, &lots)
-                .map_err(|_| refused("the hold's lots could not be taken"))?;
+            let ids: Vec<LotId> = lots.iter().map(mush_inventory::record::Lot::id).collect();
+            match into {
+                // Doc 50 unit LW.5: the lots move to the authority's vault, each the same lot.
+                Some(to) => inventory
+                    .relocate_lots(txn, &ids, endpoint, to)
+                    .map(|_| ())
+                    .map_err(|_| refused("the hold's lots could not be taken"))?,
+                None => inventory
+                    .consume_products(txn, &lots)
+                    .map_err(|_| refused("the hold's lots could not be taken"))?,
+            }
         }
         // 2. The pool, releasing a haul's hold where the free ore falls short.
         let holds: Vec<(mush_core::ReservationId, u64)> = pending
@@ -443,8 +462,9 @@ impl CustomsProvider {
             })
             .collect();
         let ids: Vec<mush_core::ReservationId> = holds.iter().map(|(id, _)| *id).collect();
+        let rest = want.saturating_sub(from_lots);
         let seized = inventory
-            .seize(txn, endpoint, &ore, want.saturating_sub(from_lots), &ids)
+            .seize(txn, endpoint, &ore, rest, &ids, into)
             .map_err(|_| refused("the hold could not be drawn down"))?;
         let taken = from_lots.saturating_add(seized.taken);
         if taken == 0 {
@@ -753,6 +773,12 @@ fn file_ruling_as(
         CustomsFinding::Seized { vault, .. } => seizable(ctx, *vault),
         _ => (Vec::new(), Vec::new()),
     };
+    // Doc 50 unit LW.5 (Q-50-44): a seizure's goods go to the enforcing authority's vault,
+    // made here on first use, outside the ruling's transaction.
+    let into = match &finding {
+        CustomsFinding::Seized { .. } => seized_into(ctx),
+        _ => None,
+    };
     let pending = {
         let book = ctx
             .w
@@ -778,12 +804,29 @@ fn file_ruling_as(
             idle_ticks: 0,
             hauls,
             lots,
+            into,
         };
         book.pending_customs_rulings.push(pending.clone());
         pending
     };
     submit_ruling(ctx, &pending, 0);
     Ok(pending.seq)
+}
+
+/// **The enforcing authority's vault for a seizure** (doc 50 unit LW.5), made on first use;
+/// `None`, logged, when there is no authority or its vault will not form.
+fn seized_into(ctx: &mut Ctx<'_>) -> Option<u64> {
+    let Some(authority) = crate::port::seized::seizing_authority(ctx.w) else {
+        tracing::error!("tacsim: a seizure has no enforcing authority; its goods leave the world");
+        return None;
+    };
+    match crate::port::seized::ensure_vault(ctx, &authority) {
+        Ok(vault) => Some(vault.0),
+        Err(error) => {
+            tracing::error!(%error, "tacsim: the enforcing authority's vault will not form; a seizure's goods leave the world");
+            None
+        }
+    }
 }
 
 /// **What a seizure may take besides the free pool** (doc 50 unit CR): the live hauls whose
@@ -1051,6 +1094,20 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
                     .map(|f| f.0);
             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
                 book.mined_strategic_blocks.remove(&hull);
+            }
+            // Doc 50 unit LW.5 (Q-50-44): the authority offers what it took at its port.
+            if let (Some(vault), Some(authority), Ok(ore)) = (
+                pending.into,
+                crate::port::seized::seizing_authority(ctx.w),
+                CanonicalId::new("strategic_ore"),
+            ) {
+                crate::port::seized::offer(
+                    ctx,
+                    &authority,
+                    mush_economy::VaultId(vault),
+                    &ore,
+                    u64::from(seize_t),
+                );
             }
             set_verdict(
                 ctx,
