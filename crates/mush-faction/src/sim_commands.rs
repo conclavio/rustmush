@@ -60,6 +60,8 @@ fn cmd_front(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         front_create(ctx)
     } else if ctx.switches.has("resolve") {
         front_resolve(ctx)
+    } else if ctx.switches.has("reopen") {
+        front_reopen(ctx)
     } else {
         front_list(ctx)
     }
@@ -113,6 +115,21 @@ fn front_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     persist_front(ctx.out, &updated);
     info(ctx, format!("Front #{} marked resolved.", id));
+    Ok(())
+}
+
+/// `@front/reopen <id>` (doc 50 cut KC.0a, Q-50-51): a resolved front opens again.
+fn front_reopen(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let id = parse_id(ctx.args.lhs())
+        .map(FrontId)
+        .ok_or_else(|| CmdError::msg("Usage: @front/reopen <id>"))?;
+    crate::lifecycle::reopen_front(ctx, id).map_err(CmdError::msg)?;
+    info(
+        ctx,
+        format!(
+            "Front #{id} is open; its clocks advance again (set one back with @clock/set <id>=filled:<n>)."
+        ),
+    );
     Ok(())
 }
 
@@ -212,6 +229,7 @@ fn clock_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             consequence: String::new(),
             on_complete_control: None,
             completed: false,
+            causes: Vec::new(),
         };
         st.clocks.insert(id, clock.clone());
         (clock, st.next_front_id, st.next_clock_id)
@@ -242,10 +260,20 @@ fn clock_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
         .ok_or_else(|| {
             CmdError::msg(
-                "Usage: @clock/set <id>=<field>:<value>  (fields: on, vis, says, control, unset)",
+                "Usage: @clock/set <id>=<field>:<value>  (fields: on, vis, says, control, unset, filled)",
             )
         })?;
     let (field, value) = rhs;
+    // Doc 50 cut KC.0a (Q-50-51): a clock's count is set through the owner call, which
+    // un-completes it so it can fill and fire again.
+    if field == "filled" {
+        let n: u8 = value
+            .parse()
+            .map_err(|_| CmdError::msg("filled: a number below the clock's segments."))?;
+        let c = crate::lifecycle::set_clock(ctx, id, n).map_err(CmdError::msg)?;
+        info(ctx, format!("Clock #{} set to {}.", c.id, c.progress()));
+        return Ok(());
+    }
     // Resolve a control region up front (needs FactionState, before the sim borrow).
     let control = if field == "control" {
         Some(parse_control(ctx, &value)?)
@@ -280,7 +308,7 @@ fn clock_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "unset" if value.eq_ignore_ascii_case("control") => clock.on_complete_control = None,
             _ => {
                 return Err(CmdError::msg(
-                    "Unknown field. Fields: on (canon kind), vis, says, control (<region>/<kind>).",
+                    "Unknown field. Fields: on (canon kind), vis, says, control (<region>/<kind>), filled.",
                 ));
             }
         }
@@ -444,10 +472,12 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@front".into(),
             shape: ArgShape::EqPair,
-            switches: vec!["create".into(), "resolve".into()],
+            switches: vec!["create".into(), "resolve".into(), "reopen".into()],
             help: "@front  --  (staff) Faction fronts: active threats/opportunities a faction \
                    pursues. No switch: list.\n\
-                   @front/create <faction>=<title> ; @front/resolve <id>"
+                   @front/create <faction>=<title> ; @front/resolve <id> ; @front/reopen <id>  \
+                   (a resolved front opens again; a front resolves itself when its last clock \
+                   fills)"
                 .into(),
             ..CommandSpec::default()
         },
@@ -467,7 +497,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @clock/create <front-id>=<title>/<segments>\n\
                    @clock/set <id>=<field>:<value>  (on:<canon kind> auto-advances it when such \
                    canon is recorded involving the faction's members; vis:<v>; says:<consequence \
-                   line>; control:<region>/<kind> flips territory on completion)\n\
+                   line>; control:<region>/<kind> flips territory on completion, and a de facto \
+                   flip moves the prior holder out; filled:<n> sets the count below full, so a \
+                   completed clock can fill and fire again)\n\
                    @clock/advance <id>[=<n>]  --  advance (a completed clock fires its \
                    consequence: a canon event + any territory flip)\n\
                    @clock/del <id>"
