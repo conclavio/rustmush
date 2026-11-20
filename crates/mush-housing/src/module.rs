@@ -843,15 +843,45 @@ pub fn is_character(w: &World, id: ObjId) -> bool {
     })
 }
 
-/// The room an object is *in* — itself when it **is** a room, otherwise its
-/// location. What the access hook asks of a carry's source and destination.
+/// Maximum containment hops walked by [`enclosing_room`] before failing closed.
+pub const MAX_ENCLOSING_DEPTH: usize = 128;
+
+/// Cycle-safe transitive walk up `Obj.location` from `id` to its enclosing
+/// [`ObjKind::Room`].
+///
+/// Returns `Some(id)` when `id` is itself a room, `Some(room)` when `id` is
+/// nested inside any chain of containers/characters inside `room`, or `None`
+/// if `id` does not exist, has no enclosing room, or hits a cycle / depth cap.
 #[must_use]
-pub fn room_of(w: &World, id: ObjId) -> Option<ObjId> {
-    let o = w.get(id)?;
-    match o.kind {
-        ObjKind::Room => Some(id),
-        _ => o.location,
+pub fn enclosing_room(w: &World, id: ObjId) -> Option<ObjId> {
+    let mut cur = id;
+    let mut visited = BTreeSet::new();
+    for _ in 0..MAX_ENCLOSING_DEPTH {
+        if !visited.insert(cur) {
+            return None;
+        }
+        let o = w.get(cur)?;
+        if o.kind == ObjKind::Room {
+            return Some(cur);
+        }
+        cur = o.location?;
     }
+    None
+}
+
+/// Whether `target` is directly `anchor` or in `rooms`, or is transitively
+/// enclosed inside any of them.
+#[must_use]
+pub fn is_inside_property(
+    w: &World,
+    target: ObjId,
+    anchor: ObjId,
+    rooms: &BTreeSet<ObjId>,
+) -> bool {
+    if target == anchor || rooms.contains(&target) {
+        return true;
+    }
+    enclosing_room(w, target).is_some_and(|room| room == anchor || rooms.contains(&room))
 }
 
 /// "Now" on a tenancy's own cadence clock — the `now` every E5a predicate and every

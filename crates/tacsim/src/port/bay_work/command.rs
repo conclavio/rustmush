@@ -68,6 +68,9 @@ pub const BAY_HELP: &str = "+bay <hull> quotes the work on a hull where it stand
 ///
 /// No facility or hold serves the hull, or the hold carries no free lot of that part.
 fn part_lot_named(ctx: &Ctx<'_>, hull: ObjId, good: &str) -> Result<mush_inventory::LotId, String> {
+    if super::right_of(ctx, hull).is_none() {
+        return Err(super::NO_RIGHT.to_owned());
+    }
     let good = mush_core::CanonicalId::new(good).map_err(|_| "That is not a lot.".to_owned())?;
     let facility = super::facility_of(ctx.w, hull)?;
     let vault = super::source_hold(ctx.w, hull, &facility)?;
@@ -227,8 +230,28 @@ fn taken_line(ctx: &Ctx<'_>, order: &super::BayOrder) -> String {
     )
 }
 
+/// **Whether `ctx.actor` may inspect `hull` with `+bay` / `+bay/quote`** (security hardening
+/// HIGH-52): staff, anyone with a bay right on the hull, or someone physically co-located with it
+/// (in its room or aboard it). Prevents remote tactical doll and magazine-round intelligence
+/// disclosure via `+bay #<id>`.
+fn may_inspect(ctx: &Ctx<'_>, hull: ObjId) -> bool {
+    if crate::commands::is_staff(ctx.w, ctx.actor) || super::right_of(ctx, hull).is_some() {
+        return true;
+    }
+    if crate::space::commands::hull_aboard_for_actor(ctx.w, ctx.actor) == Some(hull) {
+        return true;
+    }
+    let Some(here) = ctx.w.get(ctx.actor).and_then(|o| o.location) else {
+        return false;
+    };
+    ctx.w.get(hull).and_then(|o| o.location) == Some(here)
+}
+
 /// The quote and the record, as lines.
 fn show(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), String> {
+    if !may_inspect(ctx, hull) {
+        return Err(super::NO_RIGHT.to_owned());
+    }
     let name = crate::port::coop::name_of(ctx.w, hull);
     let mut lines = Vec::new();
     // Doc 41 cut RS.4 (Q-41-19): a vacated hull says whom she is held for.

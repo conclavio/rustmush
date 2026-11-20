@@ -189,6 +189,7 @@ pub(crate) fn evaluate(
             .next()
             .ok_or(OwnerReadError::Refused),
         UnitGrantMutation::Issue(draft) => {
+            let working = registry.pruned(world.now());
             let parent = match &draft.parent {
                 Some(parent) => parent.clone(),
                 None => {
@@ -215,12 +216,12 @@ pub(crate) fn evaluate(
             };
             let inherited_until = match &parent {
                 UnitGrantParent::UnitGrant { id } => {
-                    registry.grants.get(id).and_then(|g| g.valid_until)
+                    working.grants.get(id).and_then(|g| g.valid_until)
                 }
                 _ => None,
             };
             let grant = UnitGrant {
-                id: UnitGrantId(registry.next_id),
+                id: UnitGrantId(working.next_id),
                 revision: 1,
                 grantor: actor,
                 grantee: draft.grantee.clone(),
@@ -240,14 +241,14 @@ pub(crate) fn evaluate(
             };
             validate(
                 store.state(),
-                &registry.grants,
+                &working.grants,
                 facts.as_ref(),
                 &predicates,
                 &grant,
                 world.now(),
             )
             .map_err(|_| OwnerReadError::Refused)?;
-            registry
+            working
                 .with_grant(grant.clone())
                 .map_err(|_| OwnerReadError::Limit)?;
             Ok(grant)
@@ -288,7 +289,7 @@ pub(crate) fn evaluate_all(
     {
         return Err(OwnerReadError::Refused);
     }
-    let mut working = registry.clone();
+    let mut working = registry.pruned(world.now());
     let mut grants = Vec::with_capacity(drafts.len());
     for draft in drafts {
         let next = PendingIntent {

@@ -42,6 +42,108 @@ pub const MAX_PARENT_DEPTH: usize = 10;
 /// room (design 06 §4.3, "bounded location chain").
 pub const MAX_CONTAINMENT_DEPTH: usize = 8;
 
+/// Maximum `;`-separated aliases permitted on one object (CORE-M3).
+pub const MAX_ALIASES_PER_OBJECT: usize = 10;
+
+/// Maximum length (Unicode scalar values) of a player name or player alias (CORE-M3).
+pub const MAX_PLAYER_NAME_CHARS: usize = 32;
+
+/// Maximum length (Unicode scalar values) of a non-player object name or alias
+/// set via `@name` (CORE-M3).
+pub const MAX_OBJECT_NAME_CHARS: usize = 64;
+
+/// Names and aliases reserved against player `@name` impersonation (CORE-M3).
+pub const RESERVED_PLAYER_NAMES: &[&str] = &[
+    "god",
+    "play",
+    "guest",
+    "new",
+    "root",
+    "admin",
+    "administrator",
+    "staff",
+    "wizard",
+    "wiz",
+    "royalty",
+    "system",
+    "sys",
+    "server",
+    "mod",
+    "moderator",
+    "me",
+    "here",
+    "home",
+    "all",
+    "nobody",
+    "nothing",
+];
+
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Validate a non-player object name or alias segment for `@name` (CORE-M3):
+/// rejects empty strings, `=`, `;`, control/BiDi characters, and excessive length.
+pub fn validate_object_name_part(raw: &str) -> Result<(), &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Name cannot be empty.");
+    }
+    if trimmed.chars().count() > MAX_OBJECT_NAME_CHARS {
+        return Err("That name is too long.");
+    }
+    if trimmed
+        .chars()
+        .any(|c| c == '=' || c == ';' || c.is_control() || is_bidi_control(c))
+    {
+        return Err("That name contains invalid characters.");
+    }
+    Ok(())
+}
+
+/// Validate a player name or alias segment (CORE-M3): rejects empty/short/long
+/// names, reserved staff/routing/keyword names (except `#1` keeping `"God"`),
+/// `=`, `;`, leading command/ref prefixes, and control/BiDi characters.
+pub fn validate_player_name_part(
+    raw: &str,
+    is_god: bool,
+    min_chars: usize,
+) -> Result<(), &'static str> {
+    let trimmed = raw.trim();
+    let len = trimmed.chars().count();
+    if len < min_chars {
+        return Err("That name is too short.");
+    }
+    if len > MAX_PLAYER_NAME_CHARS {
+        return Err("That name is too long.");
+    }
+    if trimmed
+        .chars()
+        .any(|c| c == '=' || c == ';' || c.is_control() || is_bidi_control(c))
+    {
+        return Err("That name contains invalid characters.");
+    }
+    if trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '#' | '*' | '@' | '+' | '"' | ':' | '\\'))
+    {
+        return Err("That name starts with a reserved character.");
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if RESERVED_PLAYER_NAMES.contains(&lowered.as_str()) && !(is_god && lowered == "god") {
+        return Err("That name is reserved.");
+    }
+    Ok(())
+}
+
 /// One projected actor/station control grant (design C8) — how a pilot in a
 /// cockpit gets the vehicle as a command subject, or a rigger a remote drone.
 ///
@@ -94,6 +196,12 @@ pub enum WorldError {
     /// An actor name or alias is already taken by another actor.
     #[error("name {0:?} is already in use")]
     NameInUse(String),
+    /// A player name or alias failed validation (reserved, bad chars, length).
+    #[error("{0}")]
+    InvalidName(String),
+    /// Adding an alias would exceed [`MAX_ALIASES_PER_OBJECT`].
+    #[error("too many aliases (maximum {MAX_ALIASES_PER_OBJECT})")]
+    TooManyAliases,
     /// `link_exit` on a non-exit.
     #[error("{0} is not an exit")]
     NotAnExit(ObjId),
@@ -1402,13 +1510,15 @@ impl World {
     }
 
     /// Rename an object. For actors this re-keys the player index and
-    /// rejects names already claimed by a different actor.
+    /// rejects names already claimed by a different actor. For players it also
+    /// validates the name (CORE-M3).
     pub fn set_name(&mut self, id: ObjId, name: &str) -> Result<(), WorldError> {
-        let is_actor = self
-            .get(id)
-            .ok_or(WorldError::NoSuchObj(id))?
-            .kind
-            .is_actor();
+        let kind = self.get(id).ok_or(WorldError::NoSuchObj(id))?.kind;
+        let is_actor = kind.is_actor();
+        if kind == ObjKind::Player {
+            validate_player_name_part(name, id == GOD, 2)
+                .map_err(|msg| WorldError::InvalidName(msg.to_string()))?;
+        }
         if is_actor
             && let Some(&other) = self.player_index.get(&UncasedName::from(name))
             && other != id
@@ -1428,13 +1538,22 @@ impl World {
 
     /// Add an alias. For actors the alias joins the player index and must
     /// not collide with another actor's name or alias. Adding an alias the
-    /// object already has (case-insensitively) is a no-op.
+    /// object already has (case-insensitively) is a no-op. Enforces
+    /// [`MAX_ALIASES_PER_OBJECT`] and player alias validation (CORE-M3).
     pub fn add_alias(&mut self, id: ObjId, alias: &str) -> Result<(), WorldError> {
         let o = self.get(id).ok_or(WorldError::NoSuchObj(id))?;
-        let is_actor = o.kind.is_actor();
+        let kind = o.kind;
+        let is_actor = kind.is_actor();
+        if kind == ObjKind::Player {
+            validate_player_name_part(alias, id == GOD, 1)
+                .map_err(|msg| WorldError::InvalidName(msg.to_string()))?;
+        }
         let key = UncasedName::from(alias);
         if o.aliases.iter().any(|a| UncasedName::from(a) == key) {
             return Ok(());
+        }
+        if o.aliases.len() >= MAX_ALIASES_PER_OBJECT {
+            return Err(WorldError::TooManyAliases);
         }
         if is_actor
             && let Some(&other) = self.player_index.get(&key)

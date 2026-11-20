@@ -492,7 +492,11 @@ fn watchable(ctx: &Ctx<'_>, here: ObjId) -> Result<Vec<(RecordKey, String, Strin
     let mut out: Vec<(RecordKey, String, String)> = Vec::new();
     let conns: Vec<&crate::record::ConnectionRec> =
         if let Some(c) = vehicle_connection(st, ctx.w, here) {
-            vec![c]
+            if travel::aboard_moving_vehicle(st, ctx.w, here) {
+                Vec::new()
+            } else {
+                vec![c]
+            }
         } else if let Some(nb) = st.records.neighborhood_of_room(here) {
             st.records
                 .connections_in(&nb.region)
@@ -549,12 +553,13 @@ fn cmd_stakeout(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         say(ctx, vec!["You give up the watch.".to_string()]);
         return Ok(());
     }
-    if state(ctx)?.travel.journey_of(actor).is_some() {
+    let here = here_of(ctx, actor)?;
+    let st = state(ctx)?;
+    if st.travel.journey_of(actor).is_some() || travel::aboard_moving_vehicle(st, ctx.w, here) {
         return Err(CmdError::msg(
             "You are under way; you cannot watch a road from the road.",
         ));
     }
-    let here = here_of(ctx, actor)?;
     let raw = ctx.args.raw().trim().to_string();
     let choices = watchable(ctx, here)?;
     if raw.is_empty() {
@@ -660,15 +665,28 @@ fn cmd_intercept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 && vehicle_stop(st, ctx.w, traveler) == Some(here)
         };
         if standing_here {
+            let now_real = ctx.w.now();
+            let staff = is_staff(ctx.w, actor);
             if let Some(st) = ctx.state_mut::<AtlasState>()
                 && let Some(service) = st.travel.services.get_mut(&conn)
             {
+                if service.held_by == Some(actor) {
+                    return Err(CmdError::msg(format!(
+                        "You are already holding the {name}."
+                    )));
+                }
                 if service.held_by.is_some_and(|b| b != actor) {
                     return Err(CmdError::msg(format!(
                         "Someone is already holding the {name}."
                     )));
                 }
+                if !staff && now_real < service.grace_until {
+                    return Err(CmdError::msg(format!(
+                        "The {name} is pulling away before you can block it — try again in a moment."
+                    )));
+                }
                 service.held_by = Some(actor);
+                service.held_since_real = Some(now_real);
             }
             let text = RichText::new().span(name_span(ctx.w, actor)).text(format!(
                 " blocks the doors of the {name}; it is going nowhere."
@@ -748,34 +766,40 @@ fn cmd_intercept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-fn intercept_release(ctx: &mut Ctx<'_>, traveler: ObjId, here: ObjId) -> Result<(), CmdError> {
+fn intercept_release(ctx: &mut Ctx<'_>, traveler: ObjId, _here: ObjId) -> Result<(), CmdError> {
     let actor = ctx.actor;
+    let staff = is_staff(ctx.w, actor);
     let name = display_name(ctx.w, traveler);
-    // A vehicle I am holding at the stop.
-    let held_conn = state(ctx)?
-        .travel
-        .services
-        .iter()
-        .find(|(k, s)| {
-            s.held_by == Some(actor)
-                && state(ctx)
-                    .ok()
-                    .and_then(|st| st.records.connections.get(*k))
-                    .and_then(|c| service_vehicle(ctx.w, c))
-                    == Some(traveler)
+    // A standing service vehicle held at its stop (by me, or overridden by staff).
+    let held_service = {
+        let st = state(ctx)?;
+        st.travel.services.iter().find_map(|(k, s)| {
+            let holder = s.held_by?;
+            let vehicle = st
+                .records
+                .connections
+                .get(k)
+                .and_then(|c| service_vehicle(ctx.w, c))?;
+            (vehicle == traveler).then(|| (k.clone(), holder))
         })
-        .map(|(k, _)| k.clone());
-    if let Some(conn) = held_conn {
-        if let Some(st) = ctx.state_mut::<AtlasState>()
-            && let Some(service) = st.travel.services.get_mut(&conn)
-        {
-            service.held_by = None;
+    };
+    if let Some((conn, holder)) = held_service {
+        if holder != actor && !staff {
+            return Err(CmdError::msg(format!(
+                "You are not the one holding the {name}."
+            )));
         }
-        let text = RichText::new()
-            .span(name_span(ctx.w, actor))
-            .text(format!(" steps back from the doors of the {name}."));
-        emit_room(ctx, here, actor, text);
-        say(ctx, vec![format!("You let the {name} go.")]);
+        let reason = if holder == actor {
+            "released"
+        } else {
+            "staff released it"
+        };
+        travel::release_service_hold(ctx, &conn, Some(actor), reason).map_err(CmdError::msg)?;
+        if holder == actor {
+            say(ctx, vec![format!("You let the {name} go.")]);
+        } else {
+            say(ctx, vec![format!("You release the hold on the {name}.")]);
+        }
         return Ok(());
     }
     let id = {
@@ -785,19 +809,19 @@ fn intercept_release(ctx: &mut Ctx<'_>, traveler: ObjId, here: ObjId) -> Result<
             .journey_of(traveler)
             .ok_or_else(|| CmdError::msg("It is not going anywhere."))?;
         match &j.state {
-            JourneyState::Held { by, .. } if by.by() == actor => j.id,
+            JourneyState::Held { by, .. } if by.by() == actor || staff => j.id,
             JourneyState::Held { .. } => {
                 return Err(CmdError::msg(format!(
                     "You are not the one holding the {name}."
                 )));
             }
             _ => {
-                // A pending intercept of mine is simply withdrawn.
+                // A pending intercept of mine (or any, for staff) is simply withdrawn.
                 if st
                     .travel
                     .intercepts
                     .get(&traveler)
-                    .is_some_and(|i| i.by == actor)
+                    .is_some_and(|i| i.by == actor || staff)
                 {
                     JourneyId(u64::MAX)
                 } else {
@@ -847,6 +871,41 @@ fn find_journey(ctx: &Ctx<'_>, raw: &str) -> Result<JourneyId, CmdError> {
         .journey_of(obj)
         .map(|j| j.id)
         .ok_or_else(|| CmdError::msg(format!("{} is not under way.", display_name(ctx.w, obj))))
+}
+
+fn find_held_service(ctx: &Ctx<'_>, raw: &str) -> Option<(RecordKey, String)> {
+    let st = state(ctx).ok()?;
+    let target_id = raw
+        .trim()
+        .strip_prefix('#')
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(ObjId);
+    for (conn_key, service) in &st.travel.services {
+        if service.held_by.is_none() {
+            continue;
+        }
+        let Some(conn) = st.records.connections.get(conn_key) else {
+            continue;
+        };
+        let vehicle = service_vehicle(ctx.w, conn);
+        let key_str = format!("{}:{}", conn_key.pack, conn_key.entry);
+        let name_hit = matches_name(&conn.name, raw)
+            || conn_key.entry.as_str().eq_ignore_ascii_case(raw)
+            || key_str.eq_ignore_ascii_case(raw)
+            || vehicle.is_some_and(|v| {
+                target_id == Some(v)
+                    || ctx.w.get(v).is_some_and(|o| {
+                        matches_name(mush_core::output::primary_name(&o.name), raw)
+                    })
+            });
+        if name_hit {
+            let label = vehicle
+                .map(|v| display_name(ctx.w, v))
+                .unwrap_or_else(|| conn.name.clone());
+            return Some((conn_key.clone(), label));
+        }
+    }
+    None
 }
 
 pub(crate) fn journey_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -971,12 +1030,22 @@ pub(crate) fn journey_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             say(ctx, vec![format!("{id} held.")]);
             Ok(())
         }
-        "release" => {
-            let id = find_journey(ctx, rest)?;
-            travel::release(ctx, id, Some(actor)).map_err(CmdError::msg)?;
-            say(ctx, vec![format!("{id} released.")]);
-            Ok(())
-        }
+        "release" => match find_journey(ctx, rest) {
+            Ok(id) => {
+                travel::release(ctx, id, Some(actor)).map_err(CmdError::msg)?;
+                say(ctx, vec![format!("{id} released.")]);
+                Ok(())
+            }
+            Err(journey_err) => {
+                let Some((conn, label)) = find_held_service(ctx, rest) else {
+                    return Err(journey_err);
+                };
+                travel::release_service_hold(ctx, &conn, Some(actor), "staff released it")
+                    .map_err(CmdError::msg)?;
+                say(ctx, vec![format!("{label} released.")]);
+                Ok(())
+            }
+        },
         "send" => {
             // `send <object>=<place>[/<mode>]`: put a plain object on the road from the
             // room it stands in (the courier, the parcel, the black car's cargo).

@@ -4404,3 +4404,128 @@ fn sm10_a_block_with_no_deposits_is_claimed_like_any_other() {
         "byte-identical to the all-rich world"
     );
 }
+
+/// **HIGH-49**: amending and re-offering a claim fee contract (even without changing visibility —
+/// e.g. bumping `amendments` or extending the deadline) causes `fee_terms_hold` to reject it so
+/// the site clerk never accepts an amended fee contract and lapses the claim unpaid.
+#[test]
+fn high49_amended_reoffered_claim_fee_with_shifted_deadline_is_never_accepted() {
+    let mut rig = world_on(None);
+    let (a, _, ta) = on_ahuna(&mut rig, "Ada", "AdaAcct", "Salt Moth");
+    launched(&mut rig, a, ta);
+    let letter = ore_block(&mut rig.tw, AHUNA);
+    let block = letter.to_string();
+    let _ = scanned_in(&mut rig, AHUNA, a, ta, letter);
+    let registry = registry_balance(&rig.tw);
+    let _ = claim_go(&mut rig, a, "+claim/stake go");
+    let fee = block_record(&mut rig.tw, AHUNA, letter)
+        .and_then(|record| record.claim)
+        .and_then(|claim| claim.fee)
+        .expect("the fee");
+    let forfeit_acct = match rig
+        .tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().contract(ContractId(fee)))
+        .expect("fee contract")
+        .consent
+        .terms
+        .on_expiry
+    {
+        mush_economy::Expiry::Forfeit { to } => to.0,
+        other => panic!("expected Forfeit expiry: {other:?}"),
+    };
+    // Shift ONLY `consent.deadline` (keeping visibility Public and on_expiry Forfeit to Registry):
+    // HIGH-49 pins exact `Before` + `consent.deadline`, so the Registry refuses it and lapses the claim.
+    for line in [
+        format!("@contract/amend #{fee}"),
+        format!("@contract/deadline #{fee}=86400 forfeit={forfeit_acct}"),
+        format!("@contract/offer #{fee}"),
+    ] {
+        let _ = run(&mut rig.tw, a, &line);
+    }
+    assert_eq!(contract_state(&rig.tw, fee), ContractState::Offered);
+    let heard = settle(&mut rig, &[a]);
+    assert!(
+        heard.contains(
+            &cl::UNPAID_LAPSED
+                .replace("{block}", &block)
+                .replace("{site}", "Ahuna Flank")
+        ),
+        "{heard}"
+    );
+    assert_eq!(
+        contract_state(&rig.tw, fee),
+        ContractState::Offered,
+        "amended fee contract was never accepted by the Registry"
+    );
+    assert_eq!(registry_balance(&rig.tw), registry);
+}
+
+/// **HIGH-50**: `RegistryFeeDisputeGuard` refuses non-admin `@contract/dispute` on an active
+/// Registry claim fee contract, and even if an admin disputes an accepted claim fee contract,
+/// `plan_contest` does NOT let the `Disputed` state block `+claim/contest`.
+#[test]
+fn high50_claim_fee_dispute_guard_blocks_player_and_disputed_fee_never_blocks_contest() {
+    let mut rig = world_on(Some(ALL_RICH));
+    let (a, _, ta) = on_ahuna(&mut rig, "Ada", "AdaAcct", "Salt Moth");
+    let (b, _, tb) = on_ahuna(&mut rig, "Bryn", "BrynAcct", "Grey Heron");
+    for (who, tv) in [(a, ta), (b, tb)] {
+        launched(&mut rig, who, tv);
+    }
+    let stands = stands_in(&mut rig.tw, AHUNA, 'C');
+    to_cell_on(&mut rig, AHUNA, tb, stands[0].0);
+    let _ = sounded(&mut rig, b, tb, false);
+    let _ = scanned_in(&mut rig, AHUNA, a, ta, 'C');
+    let _ = claim_go(&mut rig, a, "+claim/stake go");
+    let a_fee = block_record(&mut rig.tw, AHUNA, 'C')
+        .and_then(|record| record.claim)
+        .and_then(|claim| claim.fee)
+        .expect("Ada's fee");
+    for _ in 0..30 {
+        if contract_state(&rig.tw, a_fee) != ContractState::Offered {
+            break;
+        }
+        let _ = step(&mut rig, 1, &[a]);
+    }
+    assert!(
+        matches!(
+            contract_state(&rig.tw, a_fee),
+            ContractState::Active | ContractState::ReadyToSettle
+        ),
+        "accepted, not yet settled"
+    );
+    // 1. Player `@contract/dispute` is refused by `RegistryFeeDisputeGuard`.
+    let refused = run(&mut rig.tw, a, &format!("@contract/dispute #{a_fee}"));
+    assert!(
+        refused.contains(cl::REGISTRY_FEE_DISPUTE_REFUSED),
+        "expected RegistryFeeDisputeGuard refusal, got: {refused}"
+    );
+    assert_ne!(contract_state(&rig.tw, a_fee), ContractState::Disputed);
+
+    // 2. Even if staff/admin disputes the accepted claim fee contract, a challenger's
+    // `+claim/contest` is NOT blocked by `CLAIM_PENDING`.
+    let disputed = run(&mut rig.tw, GOD, &format!("@contract/dispute #{a_fee}"));
+    assert_eq!(
+        contract_state(&rig.tw, a_fee),
+        ContractState::Disputed,
+        "{disputed}"
+    );
+    let preview = run(&mut rig.tw, b, "+claim/contest C");
+    assert!(
+        !preview.contains(
+            &cl::CLAIM_PENDING
+                .replace("{block}", "C")
+                .replace("{site}", "Ahuna Flank")
+        ),
+        "a Disputed fee contract must not block +claim/contest: {preview}"
+    );
+    let _ = claim_go(&mut rig, b, "+claim/contest C go");
+    assert_eq!(
+        block_record(&mut rig.tw, AHUNA, 'C')
+            .and_then(|record| record.claim)
+            .map(|claim| claim.holder),
+        Some(mush_org::PrincipalId::Object(b)),
+        "contest succeeded despite Disputed predecessor fee"
+    );
+}

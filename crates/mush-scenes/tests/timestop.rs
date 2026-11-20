@@ -1212,3 +1212,223 @@ fn behavior_turn_commands_are_gated_like_globals_and_exits_stay_free() {
         "exit read as Free: {t}"
     );
 }
+
+// ----------------------------------------------------------------------
+// Security hardening regressions (HIGH-24 & HIGH-25)
+// ----------------------------------------------------------------------
+
+/// HIGH-24: per-player rolling rate limit stops rapid `+timestop`/`+timestop/end`
+/// scene creation spam and re-allows creation once the window expires.
+#[test]
+fn high24_per_player_scene_creation_rate_limit_blocks_spam() {
+    let mut r = rig();
+    for _ in 0..mush_scenes::MAX_SCENES_PER_PLAYER_WINDOW {
+        let out = run(&mut r.engine, r.nick, "+timestop");
+        assert!(texts(&out).contains("a timestop begins"), "{}", texts(&out));
+        let out = run(&mut r.engine, r.nick, "+timestop/end");
+        assert!(texts(&out).contains("ends"), "{}", texts(&out));
+    }
+    // Next creation inside the window is refused.
+    let out = run(&mut r.engine, r.nick, "+timestop");
+    assert!(
+        texts(&out).contains("too many scenes recently"),
+        "expected rate-limit refusal: {}",
+        texts(&out)
+    );
+    assert!(scenes(&r.engine).active_scene_at(r.bar).is_none());
+
+    // After the rolling window passes, Nick can start a scene again.
+    let after = 1_000 + mush_scenes::SCENE_CREATE_WINDOW_SECS + 1;
+    r.engine.world.set_now(after);
+    let out = run(&mut r.engine, r.nick, "+timestop");
+    assert!(
+        texts(&out).contains("a timestop begins"),
+        "window expired: {}",
+        texts(&out)
+    );
+}
+
+/// HIGH-25: a non-facilitator player trapped by another player's `+timestop`
+/// can self-release via `+timestop/leave` or `+timestop/release` (no arg / self)
+/// and walk out, without being able to release other participants.
+#[test]
+fn high25_trapped_victim_can_self_release_and_walk_out() {
+    let mut r = rig();
+    let alley = r
+        .engine
+        .world
+        .create(ObjKind::Room, "Alley", GOD, None)
+        .unwrap();
+    let exit = r
+        .engine
+        .world
+        .create(ObjKind::Exit, "out", GOD, Some(r.bar))
+        .unwrap();
+    r.engine.world.link_exit(exit, Some(alley)).unwrap();
+    let carol = r
+        .engine
+        .world
+        .create(ObjKind::Player, "Carol", GOD, Some(r.bar))
+        .unwrap();
+    r.engine.world.set_connected(carol, true);
+    r.engine.world.set_live_conns(carol, 1);
+
+    run(&mut r.engine, r.nick, "+timestop");
+    assert!(r.engine.world.in_exclusive_scene(r.ann));
+    assert!(r.engine.world.in_exclusive_scene(carol));
+
+    // Walking out while frozen is vetoed and tells the victim how to self-release.
+    let out = run(&mut r.engine, r.ann, "out");
+    assert!(
+        texts(&out).contains("cannot leave") && texts(&out).contains("+timestop/leave"),
+        "{}",
+        texts(&out)
+    );
+
+    // Ann cannot release someone else (Carol).
+    let out = run(&mut r.engine, r.ann, "+timestop/release Carol");
+    assert!(texts(&out).contains("facilitator"), "{}", texts(&out));
+    assert!(r.engine.world.in_exclusive_scene(carol));
+
+    // Ann self-releases via `+timestop/leave` and walks out immediately.
+    let out = run(&mut r.engine, r.ann, "+timestop/leave");
+    assert!(
+        texts(&out).contains("leaves the timestop"),
+        "{}",
+        texts(&out)
+    );
+    assert!(!r.engine.world.in_exclusive_scene(r.ann));
+    let out = run(&mut r.engine, r.ann, "out");
+    assert!(!texts(&out).contains("cannot leave"), "{}", texts(&out));
+    assert_eq!(
+        r.engine.world.get(r.ann).and_then(|o| o.location),
+        Some(alley)
+    );
+
+    // Carol self-releases via `+timestop/release` (no arg) and walks out too.
+    let out = run(&mut r.engine, carol, "+timestop/release");
+    assert!(
+        texts(&out).contains("leaves the timestop"),
+        "{}",
+        texts(&out)
+    );
+    assert!(!r.engine.world.in_exclusive_scene(carol));
+    run(&mut r.engine, carol, "out");
+    assert_eq!(
+        r.engine.world.get(carol).and_then(|o| o.location),
+        Some(alley)
+    );
+
+    // Facilitator's scene stays active and facilitator still uses `/end`, not `/leave`.
+    let out = run(&mut r.engine, r.nick, "+timestop/leave");
+    assert!(texts(&out).contains("+timestop/end"), "{}", texts(&out));
+    assert!(scenes(&r.engine).active_scene_at(r.bar).is_some());
+}
+
+/// HIGH-25: an exclusive timestop abandoned past `SCENE_IDLE_TIMEOUT_SECS`
+/// (even if paused) auto-releases everyone on the periodic tick.
+#[test]
+fn high25_idle_exclusive_scene_auto_releases_on_tick() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/pause");
+    assert!(r.engine.world.in_exclusive_scene(r.nick));
+    assert!(r.engine.world.in_exclusive_scene(r.ann));
+
+    let future = 1_000 + mush_scenes::SCENE_IDLE_TIMEOUT_SECS + 60;
+    r.engine.set_now(future);
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    r.engine.fire_due(future * 1000, &mut out, &mut fx);
+
+    assert!(
+        texts(&out).contains("ended automatically after being idle"),
+        "{}",
+        texts(&out)
+    );
+    assert!(!r.engine.world.in_exclusive_scene(r.nick));
+    assert!(!r.engine.world.in_exclusive_scene(r.ann));
+    assert!(scenes(&r.engine).active_scene_at(r.bar).is_none());
+}
+
+/// HIGH-25: `Flags::DARK` players and NPCs are excluded from `+timestop` capture
+/// and room-wide announcements (and a DARK facilitator's name is masked).
+#[test]
+fn high25_dark_players_and_npcs_filtered_from_timestop_announcements() {
+    let mut r = rig();
+    let shadow_wiz = r
+        .engine
+        .world
+        .create(ObjKind::Player, "ShadowWiz", GOD, Some(r.bar))
+        .unwrap();
+    r.engine.world.set_connected(shadow_wiz, true);
+    r.engine
+        .world
+        .set_flag(shadow_wiz, mush_core::Flags::DARK, true)
+        .unwrap();
+    let lurking_npc = r
+        .engine
+        .world
+        .create(ObjKind::Npc, "Lurker", GOD, Some(r.bar))
+        .unwrap();
+    r.engine
+        .world
+        .set_flag(lurking_npc, mush_core::Flags::DARK, true)
+        .unwrap();
+
+    let out = run(&mut r.engine, r.nick, "+timestop");
+    let t = texts(&out);
+    assert!(!t.contains("ShadowWiz"), "DARK player leaked: {t}");
+    assert!(!t.contains("Lurker"), "DARK NPC leaked: {t}");
+    let s = scenes(&r.engine).active_scene_at(r.bar).unwrap();
+    assert!(!s.participants.contains(&shadow_wiz));
+    assert!(!s.participants.contains(&lurking_npc));
+    assert!(!r.engine.world.in_exclusive_scene(shadow_wiz));
+    assert!(!r.engine.world.in_exclusive_scene(lurking_npc));
+    run(&mut r.engine, r.nick, "+timestop/end");
+
+    // A DARK facilitator starting a timestop is masked in the room broadcast.
+    r.engine
+        .world
+        .set_flag(r.nick, mush_core::Flags::DARK, true)
+        .unwrap();
+    let out = run(&mut r.engine, r.nick, "+timestop");
+    let t = texts(&out);
+    assert!(!t.contains("Nick"), "DARK facilitator name leaked: {t}");
+    assert!(
+        t.contains("Someone's turn"),
+        "expected masked turn line: {t}"
+    );
+}
+
+/// HIGH-25: a scene created while the world clock is uninitialized (`0`)
+/// re-anchors its idle clock on the first real-epoch tick instead of closing
+/// immediately, and still auto-releases once `SCENE_IDLE_TIMEOUT_SECS` elapses.
+#[test]
+fn high25_scene_created_at_epoch_zero_reanchors_on_real_clock_sync() {
+    let mut r = rig();
+    r.engine.set_now(0);
+    run(&mut r.engine, r.nick, "+timestop");
+    assert!(scenes(&r.engine).active_scene_at(r.bar).is_some());
+
+    // First tick after wall clock jumps from 0 to real Unix epoch keeps the scene active.
+    let real_now = 1_795_000_000;
+    r.engine.set_now(real_now);
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    r.engine.fire_due(real_now * 1000, &mut out, &mut fx);
+    assert!(
+        scenes(&r.engine).active_scene_at(r.bar).is_some(),
+        "real-clock sync must re-anchor rather than immediately auto-closing"
+    );
+
+    // After SCENE_IDLE_TIMEOUT_SECS of real idle time, it auto-releases as expected.
+    let later = real_now + mush_scenes::SCENE_IDLE_TIMEOUT_SECS + 60;
+    r.engine.set_now(later);
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    r.engine.fire_due(later * 1000, &mut out, &mut fx);
+    assert!(
+        texts(&out).contains("ended automatically after being idle"),
+        "{}",
+        texts(&out)
+    );
+    assert!(scenes(&r.engine).active_scene_at(r.bar).is_none());
+}

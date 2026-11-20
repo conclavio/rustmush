@@ -198,6 +198,65 @@ pub struct Attr {
     pub flags: AttrFlags,
 }
 
+/// Maximum attributes a non-Wizard may store on one object (CORE-M1).
+pub const MAX_ATTRS_PER_OBJECT: usize = 256;
+
+/// Maximum combined attribute name + value bytes a non-Wizard may store on
+/// one object (CORE-M1).
+pub const MAX_ATTR_BYTES_PER_OBJECT: usize = 256 * 1024;
+
+/// Maximum UTF-8 byte length of an attribute name written by a non-Wizard.
+pub const MAX_ATTR_NAME_BYTES: usize = 128;
+
+/// Why a non-Wizard attribute write was refused by the per-object quota.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum AttrLimitError {
+    /// The attribute name is longer than [`MAX_ATTR_NAME_BYTES`].
+    #[error("Attribute name is too long (maximum {MAX_ATTR_NAME_BYTES} bytes).")]
+    NameTooLong,
+    /// Adding a new attribute would exceed the per-object attribute count cap.
+    #[error("Too many attributes on that object.")]
+    TooManyAttrs,
+    /// Writing the attribute would exceed the per-object byte budget.
+    #[error("Attribute storage limit exceeded for that object.")]
+    StorageFull,
+}
+
+/// Iterative byte-footprint estimate for a JSON attribute value (no recursion,
+/// no allocation).
+fn json_value_bytes(root: &serde_json::Value) -> usize {
+    let mut total = 0usize;
+    let mut stack = vec![root];
+    while let Some(v) = stack.pop() {
+        match v {
+            serde_json::Value::Null => total = total.saturating_add(4),
+            serde_json::Value::Bool(b) => total = total.saturating_add(if *b { 4 } else { 5 }),
+            serde_json::Value::Number(n) => {
+                // Bounded decimal estimate (f64/i64/u64 fits in <= 24 chars).
+                let _ = n;
+                total = total.saturating_add(16);
+            }
+            serde_json::Value::String(s) => {
+                total = total.saturating_add(s.len().saturating_add(2));
+            }
+            serde_json::Value::Array(items) => {
+                total = total.saturating_add(2);
+                for item in items {
+                    stack.push(item);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                total = total.saturating_add(2);
+                for (k, val) in map {
+                    total = total.saturating_add(k.len().saturating_add(3));
+                    stack.push(val);
+                }
+            }
+        }
+    }
+    total
+}
+
 impl Attr {
     /// A plain text attribute with empty flags.
     #[must_use]
@@ -234,6 +293,16 @@ impl Attr {
         match &self.value {
             AttrValue::Text(_) => None,
             AttrValue::Json(v) => Some(v),
+        }
+    }
+
+    /// Stored byte footprint of this attribute's value (exact for text,
+    /// iterative estimate for JSON).
+    #[must_use]
+    pub fn value_bytes(&self) -> usize {
+        match &self.value {
+            AttrValue::Text(s) => s.len(),
+            AttrValue::Json(v) => json_value_bytes(v),
         }
     }
 }
@@ -316,6 +385,64 @@ impl AttrMap {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Total stored name + value bytes across all attributes on this object.
+    #[must_use]
+    pub fn total_bytes(&self) -> usize {
+        self.0.iter().fold(0usize, |acc, (k, a)| {
+            acc.saturating_add(k.as_str().len())
+                .saturating_add(a.value_bytes())
+        })
+    }
+
+    /// Validate that inserting or replacing `name` with `value_bytes` stays
+    /// within the given attribute count and total-byte caps (CORE-M1).
+    ///
+    /// Replacing an existing attribute at the count cap is permitted as long
+    /// as the projected total byte size stays within `max_bytes`.
+    pub fn check_set_limits(
+        &self,
+        name: &str,
+        value_bytes: usize,
+        max_attrs: usize,
+        max_bytes: usize,
+    ) -> Result<(), AttrLimitError> {
+        if name.len() > MAX_ATTR_NAME_BYTES {
+            return Err(AttrLimitError::NameTooLong);
+        }
+        let key = UncasedName::new(name);
+        let existing = self.0.get_key_value(&key);
+        if existing.is_none() && self.0.len() >= max_attrs {
+            return Err(AttrLimitError::TooManyAttrs);
+        }
+        let existing_bytes = existing.map_or(0usize, |(k, a)| {
+            k.as_str().len().saturating_add(a.value_bytes())
+        });
+        let added_bytes = name.len().saturating_add(value_bytes);
+        let projected = self
+            .total_bytes()
+            .saturating_sub(existing_bytes)
+            .saturating_add(added_bytes);
+        if projected > max_bytes {
+            return Err(AttrLimitError::StorageFull);
+        }
+        Ok(())
+    }
+
+    /// Validate against the default non-Wizard per-object caps
+    /// ([`MAX_ATTRS_PER_OBJECT`] / [`MAX_ATTR_BYTES_PER_OBJECT`]).
+    pub fn check_default_limits(
+        &self,
+        name: &str,
+        value_bytes: usize,
+    ) -> Result<(), AttrLimitError> {
+        self.check_set_limits(
+            name,
+            value_bytes,
+            MAX_ATTRS_PER_OBJECT,
+            MAX_ATTR_BYTES_PER_OBJECT,
+        )
     }
 }
 
@@ -471,5 +598,33 @@ mod tests {
                 "{authored:?} folds to {folded:?}"
             );
         }
+    }
+
+    #[test]
+    fn attrmap_check_set_limits_enforces_count_bytes_and_name_len() {
+        let mut m = AttrMap::new();
+        // Name length cap.
+        let huge_name = "a".repeat(MAX_ATTR_NAME_BYTES + 1);
+        assert_eq!(
+            m.check_set_limits(&huge_name, 1, 10, 1024),
+            Err(AttrLimitError::NameTooLong)
+        );
+        // Count cap: insert 2, third new attr is rejected, replacing existing succeeds.
+        m.set("k1", Attr::text("abc", GOD));
+        m.set("k2", Attr::text("def", GOD));
+        assert_eq!(
+            m.check_set_limits("k3", 1, 2, 1024),
+            Err(AttrLimitError::TooManyAttrs)
+        );
+        assert_eq!(m.check_set_limits("K1", 10, 2, 1024), Ok(()));
+        // Byte cap: replacing k1 with oversized text fails; smaller replacement fits.
+        assert_eq!(
+            m.check_set_limits("k1", 100, 10, 50),
+            Err(AttrLimitError::StorageFull)
+        );
+        assert_eq!(m.check_set_limits("k1", 20, 10, 50), Ok(()));
+        // Clearing frees both count and byte quota.
+        m.remove("k2");
+        assert_eq!(m.check_set_limits("k3", 5, 2, 50), Ok(()));
     }
 }

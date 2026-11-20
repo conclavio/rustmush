@@ -396,20 +396,28 @@ fn reconcile_lot_holds(ctx: &mut Ctx<'_>, budget: usize) {
             let Ok(found) = ctx.action_state(&families.lot_holds, &lot) else {
                 continue;
             };
-            if found.is_some_and(|h| h.holder() == holder) {
+            if found.is_some_and(|h| h.holder() == holder && h.endpoint() == endpoint) {
                 continue;
             }
-        }
-        let Ok(reservation) = crate::lot::listing_reservation(id, endpoint, &commodity) else {
-            continue;
-        };
-        // The reservation index is written in the same bundle as the hold, so a live
-        // hold is a point lookup rather than a walk (cut 2's fold B10).
-        let Ok(found) = ctx.action_state(&families.reservations, &reservation) else {
-            continue;
-        };
-        if found.is_some() {
-            continue;
+        } else {
+            let Ok(reservation) = crate::lot::listing_reservation(id, endpoint, &commodity) else {
+                continue;
+            };
+            let Ok(key) = mush_inventory::pool_key(endpoint, &commodity) else {
+                continue;
+            };
+            // Check the book's live `ReservationState::Held` rather than `reservations.is_some()`,
+            // because the index retains terminal (`Released`/`Consumed`/`Expired`) records.
+            let Ok(book) = ctx.action_state(&families.books, &key) else {
+                continue;
+            };
+            if book.is_some_and(|book| {
+                book.records().iter().any(|r| {
+                    r.id() == reservation && matches!(r.state(), mush_core::ReservationState::Held)
+                })
+            }) {
+                continue;
+            }
         }
         tracing::error!(
             listing = id.0,
@@ -562,6 +570,9 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
         }
         store.hold_checked.retain(|id, _| held_now.contains(id));
         store.release_staged.retain(|id, _| held_now.contains(id));
+        store
+            .withdrawn_holds
+            .retain(|_, h| sweep_no.saturating_sub(h.at_sweep) < HOLD_RECHECK_SWEEPS);
     }
     let quotes: Vec<QuoteId> = {
         let Some(store) = ctx.w.module_state::<MarketStore>() else {

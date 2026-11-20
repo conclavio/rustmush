@@ -885,3 +885,159 @@ fn ic12_the_unreachable_hint_names_the_dock_marker() {
         );
     }
 }
+
+/// HIGH-39: `player_build` rejects Limbo links, `port.dock` markers,
+/// `Access::Restricted`, `item.interior: true`, staff-only room/item flags,
+/// and cross-region `Site`-pack links/requires/`npc.room_pack`.
+#[test]
+fn high39_player_build_rejects_privileged_features_and_cross_region_site_links() {
+    let tw = town();
+
+    let base_site_doc = || {
+        json!({
+            "manifest": {
+                "id": "site.player_shop",
+                "version": 1,
+                "kind": "site",
+                "digest": "",
+                "requires": [
+                    { "id": "region.town", "version": 1 },
+                    { "id": "neighborhood.block", "version": 1 }
+                ]
+            },
+            "entries": {
+                "site.shop": { "kind": "site", "def": {
+                    "name": "Corner Shop", "site_kind": "site.shop",
+                    "footprint": [[100, 100], [120, 100], [120, 120], [100, 120]]
+                } },
+                "room.shop": { "kind": "room", "def": {
+                    "name": "Corner Shop", "surface": "ground", "site": "site.shop",
+                    "footprint": { "rect": [[100, 100], [120, 120]] },
+                    "desc": "Shelves of tidy goods.",
+                    "flags": ["sheltered"]
+                } },
+                "item.counter": { "kind": "item", "def": {
+                    "name": "Wooden Counter", "room": "room.shop",
+                    "desc": "A simple pine counter.",
+                    "flags": ["opaque"]
+                } },
+                "exit.green_shop": { "kind": "exit", "def": {
+                    "from": "neighborhood.block.room.green", "to": "room.shop",
+                    "names": ["Shop <S>;s", "Green <G>;g"],
+                    "portal": { "distance_m": 40 }
+                } }
+            }
+        })
+    };
+
+    let validate_player = |doc: Value| -> Vec<String> {
+        let pack = signed(doc);
+        let mut cx = context(&tw, &pack);
+        cx.player_build = true;
+        errors(&validate(&pack, &cx))
+    };
+
+    // Baseline player-build site pack with player-safe flags validates clean.
+    assert!(
+        validate_player(base_site_doc()).is_empty(),
+        "baseline player_build site pack must validate clean"
+    );
+
+    // 1. Limbo link is rejected under player_build.
+    {
+        let mut doc = base_site_doc();
+        doc["entries"]["exit.limbo_shop"] = json!({ "kind": "exit", "def": {
+            "from": "limbo", "to": "room.shop",
+            "names": ["Shop <S>;s", "Limbo <L>;l"]
+        } });
+        let errs = validate_player(doc);
+        assert!(errs.iter().any(|c| c == "policy.limbo"), "{errs:?}");
+    }
+
+    // 2. `port.dock` room marker is rejected under player_build (and does not seed topology).
+    {
+        let mut doc = base_site_doc();
+        doc["entries"]["room.shop"]["def"]["markers"] = json!(["port.dock"]);
+        let errs = validate_player(doc);
+        assert!(errs.iter().any(|c| c == "policy.marker"), "{errs:?}");
+    }
+
+    // 3. `Access::Restricted` on pack room is rejected under player_build.
+    {
+        let mut doc = base_site_doc();
+        doc["entries"]["room.shop"]["def"]["access"] = json!("restricted");
+        let errs = validate_player(doc);
+        assert!(errs.iter().any(|c| c == "policy.access"), "{errs:?}");
+    }
+
+    // 4. `item.interior: true` is rejected under player_build.
+    {
+        let mut doc = base_site_doc();
+        doc["entries"]["item.counter"]["def"]["interior"] = json!(true);
+        let errs = validate_player(doc);
+        assert!(errs.iter().any(|c| c == "policy.interior"), "{errs:?}");
+    }
+
+    // 5. Staff-only room flags (`dark`, `safe`, `jump_ok`) and item flags (`enter_ok`, `sticky`, `safe`)
+    //    are rejected under player_build, while unknown flags fail `schema.flag`.
+    for flag in ["dark", "safe", "jump_ok"] {
+        let mut doc = base_site_doc();
+        doc["entries"]["room.shop"]["def"]["flags"] = json!([flag]);
+        let errs = validate_player(doc);
+        assert!(
+            errs.iter().any(|c| c == "policy.flag"),
+            "room flag {flag} must fail policy.flag: {errs:?}"
+        );
+    }
+    for flag in ["enter_ok", "sticky", "safe"] {
+        let mut doc = base_site_doc();
+        doc["entries"]["item.counter"]["def"]["flags"] = json!([flag]);
+        let errs = validate_player(doc);
+        assert!(
+            errs.iter().any(|c| c == "policy.flag"),
+            "item flag {flag} must fail policy.flag: {errs:?}"
+        );
+    }
+    {
+        let mut doc = base_site_doc();
+        doc["entries"]["room.shop"]["def"]["flags"] = json!(["wizard"]);
+        let errs = validate_player(doc);
+        assert!(errs.iter().any(|c| c == "schema.flag"), "{errs:?}");
+    }
+
+    // 6. Cross-region Site-pack requires/exit links and external `npc.room_pack` are rejected.
+    {
+        let mut doc = base_site_doc();
+        doc["manifest"]["requires"] = json!([
+            { "id": "region.town", "version": 1 },
+            { "id": "neighborhood.block", "version": 1 },
+            { "id": "region.far", "version": 1 }
+        ]);
+        let pack = signed(doc);
+        let mut cx = context(&tw, &pack);
+        cx.player_build = true;
+        cx.regions.push(mush_atlas::validate::RegionSummary {
+            key: mush_atlas::RecordKey::new(
+                mush_core::CanonicalId::new("region.far").expect("id"),
+                mush_core::CanonicalId::new("region").expect("id"),
+            ),
+            name: "Far Region".to_string(),
+            extent: mush_atlas::Rect2(
+                mush_atlas::Point2(0.0, 0.0),
+                mush_atlas::Point2(1000.0, 1000.0),
+            ),
+        });
+        let errs = errors(&validate(&pack, &cx));
+        assert!(errs.iter().any(|c| c == "policy.cross_region"), "{errs:?}");
+    }
+    {
+        let mut doc = base_site_doc();
+        doc["entries"]["npc.clerk"] = json!({ "kind": "npc", "def": {
+            "name": "Clerk",
+            "room": "room.green",
+            "room_pack": "neighborhood.block"
+        } });
+        let errs = validate_player(doc);
+        assert!(errs.iter().any(|c| c == "policy.cross_region"), "{errs:?}");
+    }
+}

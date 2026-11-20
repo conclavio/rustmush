@@ -103,6 +103,12 @@ pub struct TermsRow {
     /// What an offense costs, if this row sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fine: Option<FineScale>,
+    /// **Doc 50 cut KC.4 (Q-50-7)**: the Co-op's share, permille of trading margin, that a new
+    /// enrollment signs at while this holder holds the region (300 for the Republic at Kirkwood,
+    /// provisional). `None` keeps the programme's own share. Standing enrollments keep the share
+    /// frozen at their signing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coop_share_permille: Option<u16>,
 }
 
 /// A restricted good and the paper that lifts it.
@@ -307,6 +313,7 @@ pub fn check_regions(
                 terms.transit_duty_permille,
                 terms.import_duty_permille,
                 terms.audit_permille,
+                terms.coop_share_permille.unwrap_or(0),
             ];
             let majors = [
                 terms.transit_floor_major,
@@ -398,6 +405,8 @@ impl RegionsApplier {
             }
         }
         seed_customs_front(ctx, &rules, &def)?;
+        // Doc 50 cut OP.2: the Concession Review and Hold the Concession, on the `isidis` row.
+        crate::concession::seed_isidis_fronts(ctx, &def)?;
         ctx.out.pin_deferred();
         Ok(())
     }

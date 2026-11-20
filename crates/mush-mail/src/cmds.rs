@@ -7,13 +7,14 @@
 //! when messages are filed elsewhere; ids in headers are stable).
 
 use mush_core::output::display_name;
-use mush_core::{CmdError, ContextOutcome, Ctx, InputContext, ObjId, World};
+use mush_core::{CmdError, ContextOutcome, Ctx, InputContext, ObjId, Role, World, perm};
 use mush_proto::{InputMode, PromptSpec, RichText};
 use smol_str::SmolStr;
 
 use crate::data::{
-    self, ARCHIVE, INBOX, MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES, MAX_MAIL_RECIPIENTS,
-    MAX_USER_FOLDERS, MailState, MailStatus, SENT, TRASH, is_builtin_folder, valid_folder_name,
+    self, ARCHIVE, INBOX, MAIL_LIST_PAGE_SIZE, MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES,
+    MAX_MAIL_RECIPIENTS, MAX_TRASH_ENTRIES, MAX_USER_FOLDERS, MailState, MailStatus, SENT, TRASH,
+    is_builtin_folder, valid_folder_name,
 };
 use crate::date::{format_date, format_datetime};
 
@@ -31,6 +32,9 @@ fn state_mut<'a>(ctx: &'a mut Ctx<'_>) -> &'a mut MailState {
 
 /// The `@mail` handler: routes on switches, defaults to list/read.
 pub(crate) fn mail_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("list") {
+        return list_cmd(ctx);
+    }
     if ctx.switches.has("send") {
         return send_cmd(ctx);
     }
@@ -463,53 +467,90 @@ fn read_cmd(ctx: &mut Ctx<'_>, arg: &str) -> Result<(), CmdError> {
 
 fn list_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let me = ctx.actor;
-    let (folder, rows) = {
+    let raw_page = ctx.args.raw().trim();
+    let page = if raw_page.is_empty() {
+        1usize
+    } else {
+        raw_page
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| CmdError::msg("MAIL: Page number must be a positive integer."))?
+    };
+    let (folder, total, unread, start, rows) = {
         let st = state(ctx);
         let folder = st.current_folder(me).to_string();
-        let rows: Vec<(usize, char, ObjId, String, String)> = st
-            .folder_ids(me, &folder)
+        let ids = st.folder_ids(me, &folder);
+        let total = ids.len();
+        let unread = ids
+            .iter()
+            .filter(|&&id| st.entry(me, id).is_some_and(|e| e.status.is_unread()))
+            .count();
+        let start = page.saturating_sub(1).saturating_mul(MAIL_LIST_PAGE_SIZE);
+        let rows: Vec<(usize, char, ObjId, String, String)> = ids
             .iter()
             .enumerate()
-            .map(|(i, &id)| {
-                let e = st.entry(me, id).expect("listed entry exists");
-                let m = st.message(id).expect("entry references stored message");
+            .skip(start)
+            .take(MAIL_LIST_PAGE_SIZE)
+            .filter_map(|(i, &id)| {
+                let e = st.entry(me, id)?;
+                let m = st.message(id)?;
                 let flag = match e.status {
                     MailStatus::Urgent => '!',
                     MailStatus::Unread => 'U',
                     MailStatus::Read => '-',
                 };
-                (
+                Some((
                     i + 1,
                     flag,
                     m.from,
-                    state(ctx)
-                        .delivery_text(me, id)
+                    st.delivery_text(me, id)
                         .map_or_else(|| m.subject.clone(), |d| format!("{} [{d}]", m.subject)),
                     format_date(m.sent_at),
-                )
+                ))
             })
             .collect();
-        (folder, rows)
+        (folder, total, unread, start, rows)
     };
-    if rows.is_empty() {
+    if total == 0 {
         ctx.out.info(me, format!("MAIL: Folder {folder} is empty."));
         return Ok(());
     }
-    let count = rows.len();
-    let unread = rows.iter().filter(|r| r.1 != '-').count();
+    let total_pages = total.div_ceil(MAIL_LIST_PAGE_SIZE);
+    if page > total_pages {
+        ctx.out.info(
+            me,
+            format!(
+                "MAIL: No messages on page {page} of {folder} (pages 1-{total_pages}, {total} total)."
+            ),
+        );
+        return Ok(());
+    }
+    let shown = rows.len();
     ctx.out.info(me, format!("--- MAIL: {folder} ---"));
     for (n, flag, from, subject, date) in rows {
         let from = display_name(ctx.w, from);
         ctx.out
             .info(me, format!("{n:>3} {flag} {from:<14.14} {subject} {date}"));
     }
-    ctx.out.info(
-        me,
-        format!(
-            "--- {count} message{}, {unread} unread ---",
-            if count == 1 { "" } else { "s" }
-        ),
-    );
+    if total <= MAIL_LIST_PAGE_SIZE && page == 1 {
+        ctx.out.info(
+            me,
+            format!(
+                "--- {total} message{}, {unread} unread ---",
+                if total == 1 { "" } else { "s" }
+            ),
+        );
+    } else {
+        let end = start.saturating_add(shown);
+        ctx.out.info(
+            me,
+            format!(
+                "--- {}-{end} of {total} messages, {unread} unread (page {page}/{total_pages}; @mail/list <page>) ---",
+                start + 1
+            ),
+        );
+    }
     Ok(())
 }
 
@@ -717,16 +758,63 @@ fn unread_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Re-file one entry and queue its write-through op.
+/// Re-file one entry and queue its write-through op(s).
+///
+/// Moving an entry out of `TRASH` into an active folder enforces the owner's
+/// active-folder mailbox quota (preventing trash-then-unfile quota bypasses).
+/// Moving an entry into `TRASH` always succeeds even when active folders are
+/// full, and auto-prunes the oldest trash entries past the trash cap so
+/// soft-deleted mail cannot grow storage without bound.
 fn move_entry(ctx: &mut Ctx<'_>, owner: ObjId, msg: u64, folder: &str) -> Result<(), CmdError> {
-    let op = {
+    let is_staff = perm::has_role(ctx.w, owner, Role::Wizard);
+    let mut ops = Vec::new();
+    {
         let st = state_mut(ctx);
+        let was_in_trash = st
+            .entry(owner, msg)
+            .ok_or_else(|| CmdError::msg("MAIL: That message no longer exists."))?
+            .folder
+            == TRASH;
+        if was_in_trash && folder != TRASH && !is_staff && st.entry_count(owner) >= st.quota() {
+            return Err(CmdError::msg(
+                "MAIL: Your mailbox is full; free space before moving messages out of trash.",
+            ));
+        }
         let e = st
             .entry_mut(owner, msg)
             .ok_or_else(|| CmdError::msg("MAIL: That message no longer exists."))?;
         e.folder = SmolStr::new(folder);
-        data::entry_op(e)
-    };
-    ctx.persist(op);
+        ops.push(data::entry_op(e));
+
+        if folder == TRASH {
+            let cap = if is_staff {
+                MAX_TRASH_ENTRIES
+            } else {
+                st.trash_cap()
+            };
+            let trash_ids = st.folder_ids(owner, TRASH);
+            let excess = trash_ids.len().saturating_sub(cap);
+            if excess > 0 {
+                let mut pruned = 0usize;
+                for old_id in trash_ids {
+                    if pruned >= excess {
+                        break;
+                    }
+                    if old_id == msg {
+                        continue;
+                    }
+                    st.remove_entry(owner, old_id);
+                    ops.push(data::del_op(data::box_key(owner, old_id)));
+                    if !st.msg_referenced(old_id) && st.remove_msg(old_id).is_some() {
+                        ops.push(data::del_op(data::msg_key(old_id)));
+                    }
+                    pruned += 1;
+                }
+            }
+        }
+    }
+    for op in ops {
+        ctx.persist(op);
+    }
     Ok(())
 }

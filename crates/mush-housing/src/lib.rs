@@ -91,7 +91,7 @@ pub use assess::{
     Assessment, PLAN_MAX_AGE_PERIODS, UNKNOWN_GRACE, assess, assess_at, best_level, harden,
 };
 pub use error::HousingError;
-pub use home::{homed_inside, homed_on_activate, to_unhome_on_end};
+pub use home::{effective_home_room, homed_inside, homed_on_activate, to_unhome_on_end};
 pub use ids::{PropertyId, SceneRef, TenancyId};
 pub use record::{
     AccessTerms, Feature, Funding, InspectionTerm, InspectionWhen, MAX_FEATURE_KEY_BYTES,
@@ -117,9 +117,9 @@ pub use flow::{create_tenancy, submit_support_plan};
 pub use hooks::{NO_DESTROY, REFUSED, REFUSED_CARRY, may_reach};
 pub use module::{
     AssessState, CAPABILITIES, HousingModule, HousingStore, LiveEntry, MAX_ASSESSMENTS_PER_FIRE,
-    MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, META_KEY,
-    NO_PROPERTY_MARKER, NS, PendingNotice, RoomEntry, STORY_QUEUE, TICK_PERIOD_SECS, TICK_TAG,
-    TickStats, assess_key, cadence_now, is_staff, notice_key, property_key, render_principal,
-    tenancy_key,
+    MAX_ENCLOSING_DEPTH, MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, MAX_VISITED_PER_FIRE,
+    MAX_WORKED_PER_FIRE, META_KEY, NO_PROPERTY_MARKER, NS, PendingNotice, RoomEntry, STORY_QUEUE,
+    TICK_PERIOD_SECS, TICK_TAG, TickStats, assess_key, cadence_now, enclosing_room,
+    is_inside_property, is_staff, notice_key, property_key, render_principal, tenancy_key,
 };
 pub use quarantine::{Conflict, MAX_QUARANTINE_PAGES, QuarantineKey};

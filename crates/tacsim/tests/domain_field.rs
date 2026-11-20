@@ -169,6 +169,8 @@ mod pl7_cores;
 mod review_36a;
 #[path = "domain_field/salvage_close.rs"]
 mod salvage_close;
+#[path = "domain_field/security_t1b_field.rs"]
+mod security_t1b_field;
 #[path = "domain_field/site_record.rs"]
 mod site_record;
 #[path = "domain_field/space_ap9.rs"]

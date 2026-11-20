@@ -1461,3 +1461,161 @@ fn note_rejects_oversized_or_unsafe_categories_without_queuing_persist_ops() {
     assert_eq!(env.engine.take_module_ops().len(), 1);
     assert!(get_note(&env.engine.world, env.nick, &at_limit).is_some());
 }
+
+// ----------------------------------------------------------------------
+// Security hardening regressions (HIGH-26)
+// ----------------------------------------------------------------------
+
+/// HIGH-26: mortal players are capped at `MAX_OPEN_REQUESTS_PER_PLAYER`
+/// simultaneously open `+request` jobs, and closing one frees a slot.
+#[test]
+fn high26_open_request_cap_per_player() {
+    let mut env = setup();
+    for i in 1..=mush_jobs::MAX_OPEN_REQUESTS_PER_PLAYER {
+        let out = run(
+            env.nick,
+            &mut env,
+            &format!("+request Ticket {i}=Please help with #{i}."),
+        );
+        assert!(has_text(&out, "Request filed"), "{:?}", sys_texts(&out));
+    }
+    let _ = env.engine.take_module_ops();
+
+    // One past the cap is refused without persisting anything.
+    let out = run(env.nick, &mut env, "+request Overflow=Too many open.");
+    assert!(
+        has_text(&out, "open requests"),
+        "expected cap refusal: {:?}",
+        sys_texts(&out)
+    );
+    assert!(env.engine.take_module_ops().is_empty());
+
+    // Resolving one frees a slot for Nick.
+    run(env.rita, &mut env, "+job/approve 1=Handled.");
+    let out = run(env.nick, &mut env, "+request Fresh=Now fits.");
+    assert!(has_text(&out, "Request filed"), "{:?}", sys_texts(&out));
+}
+
+/// HIGH-26: `Note.text` is bounded to `MAX_NOTE_TEXT_BYTES` (on write and boot)
+/// and each object is capped at `MAX_NOTES_PER_OBJECT` distinct notes.
+#[test]
+fn high26_note_text_length_and_per_object_count_caps() {
+    let mut env = setup();
+    let _ = env.engine.take_module_ops();
+
+    // Oversized Note.text is refused without persisting.
+    let too_big = "x".repeat(mush_jobs::MAX_NOTE_TEXT_BYTES + 1);
+    let out = run(env.nick, &mut env, &format!("+note me/huge={too_big}"));
+    assert!(
+        has_text(&out, "at most"),
+        "expected byte-length refusal: {:?}",
+        sys_texts(&out)
+    );
+    assert!(env.engine.take_module_ops().is_empty());
+
+    // Exact bound succeeds.
+    let exact = "y".repeat(mush_jobs::MAX_NOTE_TEXT_BYTES);
+    let out = run(env.nick, &mut env, &format!("+note me/n0={exact}"));
+    assert!(has_text(&out, "set on Nick."), "{:?}", sys_texts(&out));
+
+    // Fill up to MAX_NOTES_PER_OBJECT notes on Nick.
+    for i in 1..mush_jobs::MAX_NOTES_PER_OBJECT {
+        let out = run(env.nick, &mut env, &format!("+note me/n{i}=body {i}"));
+        assert!(has_text(&out, "set on Nick."), "{:?}", sys_texts(&out));
+    }
+    let _ = env.engine.take_module_ops();
+
+    // A new category past the cap is refused.
+    let out = run(env.nick, &mut env, "+note me/overflow=nope");
+    assert!(
+        has_text(&out, "maximum of"),
+        "expected per-object note cap refusal: {:?}",
+        sys_texts(&out)
+    );
+    assert!(env.engine.take_module_ops().is_empty());
+
+    // Updating an existing category at cap still works, and deleting frees a slot.
+    let out = run(env.nick, &mut env, "+note me/n0=updated");
+    assert!(has_text(&out, "set on Nick."), "{:?}", sys_texts(&out));
+    run(env.nick, &mut env, "+note me/n0=");
+    let out = run(env.nick, &mut env, "+note me/overflow=now fits");
+    assert!(has_text(&out, "set on Nick."), "{:?}", sys_texts(&out));
+}
+
+/// HIGH-26: `add_comment` (and `+job/comment`) are rejected on terminal/closed jobs.
+#[test]
+fn high26_add_comment_rejected_on_terminal_jobs() {
+    let mut env = setup();
+    run(env.nick, &mut env, "+request One=first");
+    run(env.nick, &mut env, "+request Two=second");
+    run(env.rita, &mut env, "+job/approve 1=Done.");
+    run(env.rita, &mut env, "+job/deny 2=No.");
+
+    for id in [1u64, 2] {
+        let before = get_job(&env.engine.world, id).unwrap().comments.len();
+        let _ = env.engine.take_module_ops();
+        let out = run(env.nick, &mut env, &format!("+job/comment {id}=late note"));
+        assert!(
+            has_text(&out, "already closed"),
+            "job {id}: {:?}",
+            sys_texts(&out)
+        );
+        assert!(env.engine.take_module_ops().is_empty());
+        assert_eq!(
+            get_job(&env.engine.world, id).unwrap().comments.len(),
+            before
+        );
+    }
+}
+
+/// HIGH-26: `+jobs` paginates large listings instead of dumping unbounded output.
+#[test]
+fn high26_jobs_listing_is_paginated() {
+    let mut env = setup();
+    let total = mush_jobs::JOBS_LIST_PAGE_SIZE + 12;
+    for i in 1..=total {
+        run(env.wanda, &mut env, &format!("+request StaffJob{i}=body"));
+    }
+
+    // Default page 1 shows the first JOBS_LIST_PAGE_SIZE rows + pagination footer.
+    let out = run(env.wanda, &mut env, "+jobs");
+    let lines = sys_texts(&out);
+    assert!(lines.iter().any(|l| l.contains("StaffJob1 ")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("StaffJob{} ", mush_jobs::JOBS_LIST_PAGE_SIZE))),
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains(&format!("StaffJob{} ", mush_jobs::JOBS_LIST_PAGE_SIZE + 1))),
+        "page 1 must not include page 2 jobs"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("page 1/2")),
+        "missing page 1/2 footer: {lines:?}"
+    );
+
+    // Page 2 shows the remaining 12 rows.
+    let out = run(env.wanda, &mut env, "+jobs REQ 2");
+    let lines = sys_texts(&out);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("StaffJob{} ", mush_jobs::JOBS_LIST_PAGE_SIZE + 1))),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("StaffJob{total} "))),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("page 2/2")), "{lines:?}");
+
+    // Page past the end reports cleanly.
+    let out = run(env.wanda, &mut env, "+jobs 5");
+    assert!(has_text(&out, "No jobs on page 5"), "{:?}", sys_texts(&out));
+}

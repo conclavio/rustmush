@@ -52,7 +52,10 @@ pub(crate) fn read(ctx: &mut Ctx<'_>, kv: &[(smol_str::SmolStr, serde_json::Valu
     for (key, value) in kv {
         if let Some(site) = closing_site_of_key(key.as_str()) {
             match serde_json::from_value::<FieldClosing>(value.clone()) {
-                Ok(closing) if closing.site == site && closing.format == FIELD_CLOSING_FORMAT => {
+                Ok(mut closing)
+                    if closing.site == site && closing.format == FIELD_CLOSING_FORMAT =>
+                {
+                    super::admit::sanitize_close(&mut closing.close);
                     super::admit::restore_closing(ctx.w, closing);
                 }
                 Ok(_) | Err(_) => {
@@ -78,7 +81,8 @@ pub(crate) fn read(ctx: &mut Ctx<'_>, kv: &[(smol_str::SmolStr, serde_json::Valu
     for (key, value) in kv {
         if let Some(site) = live_site_of_key(key.as_str()) {
             match FieldLive::from_document(value) {
-                Ok(live) if live.field.site == site => {
+                Ok(mut live) if live.field.site == site => {
+                    super::admit::sanitize_carried(&mut live.carried, &site);
                     book.boot_docs.entry(site).or_default().live = Some(live);
                 }
                 Ok(_) | Err(_) => {

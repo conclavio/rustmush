@@ -408,3 +408,218 @@ fn the_text_units_are_the_frames() {
         "{output}"
     );
 }
+
+/// Sign a test content pack JSON with its real digest.
+fn signed_pack(mut doc: serde_json::Value) -> mush_content::Pack {
+    doc["manifest"]["digest"] = serde_json::Value::String("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = mush_content::parse_pack(&unsigned)
+        .expect("parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    doc["manifest"]["digest"] = serde_json::Value::String(digest);
+    let text = serde_json::to_string(&doc).expect("json");
+    mush_content::parse_pack(&text).expect("signed pack parses")
+}
+
+/// Authored test region + neighborhood with real `room == 0` courtyard gaps
+/// between `Lobby`, `Vault`, `WetRoom`, and `RestrictedRoom` (`access: restricted`),
+/// loaded through `ContentModule` with zero `module_state_mut` fiat writes.
+fn gap_world(extra: Option<Box<dyn GameModule>>) -> TestWorld {
+    let region = signed_pack(serde_json::json!({
+        "manifest": { "id": "region.crit16", "version": 1, "kind": "region", "digest": "", "requires": [] },
+        "entries": {
+            "region.crit16": { "kind": "region", "def": {
+                "name": "Crit16 Yard", "kind": "surface", "body": "earth",
+                "extent": [[0, 0], [100, 100]], "datum_m": 0.0,
+                "background": { "surface": "grass", "mix": [], "relief_cm": 0,
+                                "relief_period_cm": 800, "seed": 1 },
+                "ground_resolution_cm": 100 } },
+            "locality.crit16": { "kind": "locality", "def": {
+                "region": "region.crit16", "name": "Crit16 Quarter", "kind": "district",
+                "footprint": [[0, 0], [60, 0], [60, 60], [0, 60]] } }
+        }
+    }));
+    let hood = signed_pack(serde_json::json!({
+        "manifest": { "id": "neighborhood.crit16", "version": 1, "kind": "neighborhood", "digest": "",
+                      "requires": [{ "id": "region.crit16", "version": 1 }] },
+        "entries": {
+            "neighborhood": { "kind": "neighborhood", "def": {
+                "region": "region.crit16", "locality": "locality.crit16", "name": "Courtyard",
+                "setting": "rural", "footprint": [[0, 0], [60, 0], [60, 60], [0, 60]],
+                "room_budget": { "target": 4, "maximum": 8 } } },
+            "room.lobby": { "kind": "room", "def": {
+                "name": "Lobby", "surface": "ground",
+                "footprint": { "rect": [[10, 10], [20, 20]] },
+                "access": "public" } },
+            "room.vault": { "kind": "room", "def": {
+                "name": "Vault", "surface": "ground",
+                "footprint": { "rect": [[22, 10], [32, 20]] },
+                "access": "public" } },
+            "exit.vault": { "kind": "exit", "def": {
+                "from": "room.lobby", "to": "room.vault",
+                "names": ["Vault <V>;vault;east", "Lobby <L>;lobby;west"],
+                "portal": { "distance_m": 2 } } },
+            "room.wet": { "kind": "room", "def": {
+                "name": "WetRoom", "surface": "ground",
+                "footprint": { "rect": [[10, 24], [20, 34]] },
+                "access": "public" } },
+            "room.restricted": { "kind": "room", "def": {
+                "name": "RestrictedRoom", "surface": "ground",
+                "footprint": { "rect": [[22, 24], [32, 34]] },
+                "access": "restricted" } }
+        }
+    }));
+    let mut appliers = Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
+    let content = ContentModule::new()
+        .with_appliers(appliers)
+        .with_boot_packs(vec![region, hood]);
+    let mut mods: Vec<Box<dyn GameModule>> = Vec::new();
+    if let Some(m) = extra {
+        mods.push(m);
+    }
+    mods.push(Box::new(Probe));
+    mods.push(Box::new(mush_npc::NpcModule::new()));
+    mods.push(Box::new(SimulationModule::new()));
+    mods.push(Box::new(AtlasModule::new()));
+    mods.push(Box::new(content));
+    TestWorld::with_modules(mods)
+}
+
+/// CRIT-16: crossing a `room == 0` gap between two rooms must retain `last_room` so
+/// exit `Basic` locks on the crossing between the prior room and the destination room
+/// cannot be skipped.
+#[test]
+fn crit16_locked_exit_cannot_be_skipped_across_room_zero_gap() {
+    let mut tw = gap_world(None);
+    let lobby = room_named(&tw, "Lobby");
+    let vault = room_named(&tw, "Vault");
+    let viewer = tw.spawn_player("Tester");
+    tw.world_mut().move_to(GOD, lobby).expect("move god");
+    let (domain, _) = open_over(&mut tw, GOD, "here");
+    tw.run(GOD, &format!("@teleport #{}=#{}", viewer.0, lobby.0));
+    let (_, base_pose) = mush_sim::pose_of(tw.world(), viewer).expect("viewer pose");
+
+    // Place viewer near Lobby's east edge (x = 19.5 m, y = 15.5 m) inside Lobby.
+    let start_pose = mush_sim::Pose {
+        x_cm: 1_950,
+        y_cm: 1_550,
+        z_cm: 0,
+        heading_mdeg: 90_000,
+        ..base_pose
+    };
+    with_ctx(&mut tw, viewer, move |ctx| {
+        mush_sim::place(ctx, viewer, domain, start_pose).expect("place viewer");
+    });
+
+    // Lock the exit from Lobby -> Vault with `Basic = false`.
+    let exit = exit_between(&tw, lobby, vault);
+    tw.world_mut().get_mut(exit).unwrap().locks.insert(
+        mush_core::LockType::Basic,
+        mush_core::LockExpr::Const(false),
+    );
+    tw.world_mut()
+        .set_attr(
+            exit,
+            "fail",
+            mush_core::Attr::text("The vault door is bolted tight.", GOD),
+        )
+        .unwrap();
+
+    // Attempt to cross Lobby (x=10..20) -> authored room==0 gap (x=20..22) -> Vault (x=22..32).
+    let events = tw.run(viewer, "+move east 6");
+    let output = text(&tw, &events, viewer);
+    assert_eq!(
+        tw.world().get(viewer).unwrap().location,
+        Some(lobby),
+        "must NOT enter Vault across room == 0 gap: {output}"
+    );
+    assert!(
+        output.contains("bolted tight"),
+        "exit Basic lock must still fire across room == 0 gap: {output}"
+    );
+}
+
+/// CRIT-16: `resolve_room` excludes `Access::Restricted` and locked rooms from the
+/// nearest-room fallback on `room == 0` cells, and `step()` authorizes the resolved
+/// room (blocking hook-denied fallback rooms) BEFORE calling `mush_sim::place`.
+#[test]
+fn crit16_resolve_room_excludes_restricted_and_locked_and_step_blocks_hook_denied_fallback() {
+    let wet = WetFloor::default();
+    let mut tw = gap_world(Some(Box::new(Veto(wet.clone()))));
+    let lobby = room_named(&tw, "Lobby");
+    let vault = room_named(&tw, "Vault");
+    let wet_room = room_named(&tw, "WetRoom");
+    let restricted = room_named(&tw, "RestrictedRoom");
+    let viewer = tw.spawn_player("Tester");
+    tw.world_mut().move_to(GOD, lobby).expect("move god");
+    let (domain, _) = open_over(&mut tw, GOD, "here");
+    tw.run(GOD, &format!("@teleport #{}=#{}", viewer.0, lobby.0));
+    let (_, base_pose) = mush_sim::pose_of(tw.world(), viewer).expect("viewer pose");
+
+    // (1) On `room == 0` cell (27.5 m, 23.5 m), nearest room is `RestrictedRoom` (y=24..34,
+    // 0.5 m away vs Vault at y=20, 3.5 m away). `Access::Restricted` MUST be excluded.
+    let near_restricted = mush_sim::Pose {
+        x_cm: 2_750,
+        y_cm: 2_350,
+        z_cm: 0,
+        heading_mdeg: 0,
+        ..base_pose.clone()
+    };
+    assert_ne!(
+        mush_atlas::resolve_room(tw.world(), domain, &near_restricted),
+        Some(restricted),
+        "Restricted room must be excluded from resolve_room fallback"
+    );
+
+    // (2) Lock Lobby -> Vault; on `room == 0` cell (21.5 m, 15.5 m), nearest room is
+    // `Vault` (x=22, 0.5 m away vs Lobby at x=20, 1.5 m away). Locked-entry `Vault`
+    // MUST be excluded from nearest-room fallback.
+    let exit = exit_between(&tw, lobby, vault);
+    tw.world_mut().get_mut(exit).unwrap().locks.insert(
+        mush_core::LockType::Basic,
+        mush_core::LockExpr::Const(false),
+    );
+    let near_locked_vault = mush_sim::Pose {
+        x_cm: 2_150,
+        y_cm: 1_550,
+        z_cm: 0,
+        heading_mdeg: 0,
+        ..base_pose.clone()
+    };
+    assert_ne!(
+        mush_atlas::resolve_room(tw.world(), domain, &near_locked_vault),
+        Some(vault),
+        "locked-entry room must be excluded from resolve_room fallback"
+    );
+
+    // (3) Hook-denied room: place viewer near Lobby's north edge (15.5 m, 19.5 m) and
+    // veto `WetRoom` via `MoveAttempt`. Stepping north 3.5 m lands on `room == 0` cell
+    // (15.5 m, 23.0 m) whose fallback resolves to `WetRoom` (y=24, 1 m away vs Lobby at
+    // y=20, 3 m away); `step()` MUST refuse before `mush_sim::place` moves the viewer!
+    let north_edge = mush_sim::Pose {
+        x_cm: 1_550,
+        y_cm: 1_950,
+        z_cm: 0,
+        heading_mdeg: 0,
+        ..base_pose
+    };
+    with_ctx(&mut tw, viewer, move |ctx| {
+        mush_sim::place(ctx, viewer, domain, north_edge).expect("place viewer");
+    });
+    *wet.0.lock().expect("lock") = Some(wet_room);
+    let events = tw.run(viewer, "+move north 4");
+    let output = text(&tw, &events, viewer);
+    assert_eq!(
+        tw.world().get(viewer).unwrap().location,
+        Some(lobby),
+        "step() must NOT project viewer into hook-denied fallback room: {output}"
+    );
+    assert!(
+        output.contains("The floor is wet"),
+        "MoveAttempt hook refusal must surface when fallback resolves to denied room: {output}"
+    );
+}

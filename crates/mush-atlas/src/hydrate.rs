@@ -61,6 +61,21 @@ pub const DEFAULT_HYDRATION_CAP: u32 = 2;
 pub const DEFAULT_STRIKES_TO_ZERO: u32 = 3;
 /// The most requests the world keeps.
 pub const MAX_REQUESTS: usize = 4096;
+/// The most terminal (`Withdrawn` / `Struck`) requests retained before the
+/// oldest terminal entries are pruned from RAM and disk (STRAG-M9).
+pub const MAX_RETAINED_TERMINAL_REQUESTS: usize = 64;
+/// Maximum new non-staff hydration requests one character may place within
+/// [`REQUEST_WINDOW_SECS`] (STRAG-M9).
+pub const MAX_REQUESTS_PER_PLAYER_WINDOW: usize = 8;
+/// Maximum non-staff withdrawals one character may perform within
+/// [`REQUEST_WINDOW_SECS`] (STRAG-M9).
+pub const MAX_WITHDRAWS_PER_PLAYER_WINDOW: usize = 4;
+/// Sliding rate-limit window, in real seconds, for player hydration requests
+/// and withdrawals (STRAG-M9).
+pub const REQUEST_WINDOW_SECS: i64 = 3_600;
+/// Cooldown, in real seconds, enforced after repeated player withdrawals before
+/// starting a new request (STRAG-M9).
+pub const WITHDRAW_COOLDOWN_SECS: i64 = 60;
 /// The most bytes of prose a request carries.
 pub const MAX_PROSE_BYTES: usize = 4096;
 /// The side, metres, of the square a request without a footprint asks for.
@@ -110,6 +125,12 @@ pub struct StandingRec {
     pub strikes: u32,
     /// Revision.
     pub revision: u64,
+    /// Unix seconds of recent non-staff hydration requests within [`REQUEST_WINDOW_SECS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub request_history: Vec<i64>,
+    /// Unix seconds of recent non-staff request withdrawals within [`REQUEST_WINDOW_SECS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withdraw_history: Vec<i64>,
 }
 
 /// Where a request is.
@@ -297,14 +318,46 @@ impl HydrationState {
             .values()
             .find(|r| r.status.site() == Some(site))
     }
+
+    /// Prune excess terminal (`Withdrawn` / `Struck`) requests down to at most
+    /// `max_retained`, evicting `Withdrawn` before `Struck` and oldest `updated`
+    /// first. Returns the pruned request ids so the caller can delete them on disk.
+    pub fn prune_terminal_requests(&mut self, max_retained: usize) -> Vec<String> {
+        let mut prunable: Vec<(u8, i64, String)> = self
+            .requests
+            .values()
+            .filter_map(|r| {
+                let priority = match r.status {
+                    RequestStatus::Withdrawn { .. } => 0,
+                    RequestStatus::Struck { .. } => 1,
+                    _ => return None,
+                };
+                Some((priority, r.updated, r.id.clone()))
+            })
+            .collect();
+        if prunable.len() <= max_retained {
+            return Vec::new();
+        }
+        prunable.sort_unstable();
+        let excess = prunable.len().saturating_sub(max_retained);
+        let mut evicted = Vec::with_capacity(excess);
+        for (_, _, id) in prunable.into_iter().take(excess) {
+            if self.requests.remove(&id).is_some() {
+                evicted.push(id);
+            }
+        }
+        evicted
+    }
 }
 
 /// Rebuild the state from the persisted documents, dropping loudly what will not
-/// load.
+/// load and pruning excess terminal requests so withdrawn/struck entries cannot
+/// permanently exhaust [`MAX_REQUESTS`] across restarts (STRAG-M9).
 #[must_use]
 pub fn hydrate(kv: &[(SmolStr, serde_json::Value)]) -> (HydrationState, Vec<SmolStr>) {
     let mut state = HydrationState::default();
     let mut dropped = Vec::new();
+    let mut decoded_requests: Vec<(SmolStr, RequestRec)> = Vec::new();
     for (key, value) in kv {
         if let Some(rest) = key.strip_prefix("standing:") {
             match serde_json::from_value::<StandingRec>(value.clone()) {
@@ -325,17 +378,46 @@ pub fn hydrate(kv: &[(SmolStr, serde_json::Value)]) -> (HydrationState, Vec<Smol
                 .map_err(|e| e.to_string())
                 .and_then(|rec| rec.validate().map(|()| rec))
             {
-                Ok(rec) if rec.id == rest && state.requests.len() < MAX_REQUESTS => {
-                    state.requests.insert(rec.id.clone(), rec);
+                Ok(rec) if rec.id == rest => {
+                    decoded_requests.push((key.clone(), rec));
                 }
                 Ok(_) => {
-                    tracing::warn!(%key, "atlas: a request document's key disagrees with its id, or the book is full; dropped");
+                    tracing::warn!(%key, "atlas: a request document's key disagrees with its id; dropped");
                     dropped.push(key.clone());
                 }
                 Err(error) => {
                     tracing::warn!(%key, %error, "atlas: a request document was dropped at boot");
                     dropped.push(key.clone());
                 }
+            }
+        }
+    }
+    for (_, rec) in decoded_requests {
+        state.requests.insert(rec.id.clone(), rec);
+    }
+    for id in state.prune_terminal_requests(MAX_RETAINED_TERMINAL_REQUESTS) {
+        dropped.push(request_key(&id));
+    }
+    if state.requests.len() > MAX_REQUESTS {
+        for id in state.prune_terminal_requests(0) {
+            dropped.push(request_key(&id));
+        }
+    }
+    if state.requests.len() > MAX_REQUESTS {
+        let mut overflow: Vec<(u8, i64, String)> = state
+            .requests
+            .values()
+            .map(|r| {
+                let rank = if r.status.outstanding() { 1 } else { 0 };
+                (rank, r.updated, r.id.clone())
+            })
+            .collect();
+        overflow.sort_unstable();
+        let excess = state.requests.len().saturating_sub(MAX_REQUESTS);
+        for (_, _, id) in overflow.into_iter().take(excess) {
+            if state.requests.remove(&id).is_some() {
+                tracing::warn!(%id, "atlas: request book exceeded MAX_REQUESTS at boot; oldest non-outstanding dropped");
+                dropped.push(request_key(&id));
             }
         }
     }
@@ -448,9 +530,13 @@ pub fn set_cap(ctx: &mut Ctx<'_>, who: ObjId, cap: u32) -> Result<StandingRec, S
                 cap: None,
                 strikes: 0,
                 revision: 0,
+                request_history: Vec::new(),
+                withdraw_history: Vec::new(),
             });
         entry.cap = Some(cap);
         entry.strikes = 0;
+        entry.request_history.clear();
+        entry.withdraw_history.clear();
         entry.revision = entry.revision.saturating_add(1);
         entry.clone()
     };
@@ -470,6 +556,8 @@ fn add_strike(ctx: &mut Ctx<'_>, who: ObjId) -> Result<StandingRec, String> {
                 cap: None,
                 strikes: 0,
                 revision: 0,
+                request_history: Vec::new(),
+                withdraw_history: Vec::new(),
             });
         entry.strikes = entry.strikes.saturating_add(1);
         entry.revision = entry.revision.saturating_add(1);
@@ -477,6 +565,88 @@ fn add_strike(ctx: &mut Ctx<'_>, who: ObjId) -> Result<StandingRec, String> {
     };
     put_doc(ctx, standing_key(who), &rec);
     Ok(rec)
+}
+
+fn recent_timestamps(history: &[i64], now: i64, window: i64) -> Vec<i64> {
+    let cutoff = now.saturating_sub(window);
+    history
+        .iter()
+        .copied()
+        .filter(|&t| t > cutoff && t <= now)
+        .collect()
+}
+
+fn record_request_timestamp(ctx: &mut Ctx<'_>, who: ObjId, now: i64) {
+    let rec = {
+        let Ok(st) = state_mut(ctx) else {
+            return;
+        };
+        let entry = st
+            .hydration
+            .standing
+            .entry(who)
+            .or_insert_with(|| StandingRec {
+                character: who,
+                cap: None,
+                strikes: 0,
+                revision: 0,
+                request_history: Vec::new(),
+                withdraw_history: Vec::new(),
+            });
+        let mut recent = recent_timestamps(&entry.request_history, now, REQUEST_WINDOW_SECS);
+        recent.push(now);
+        if recent.len() > MAX_REQUESTS_PER_PLAYER_WINDOW.saturating_mul(2) {
+            let drop_n = recent
+                .len()
+                .saturating_sub(MAX_REQUESTS_PER_PLAYER_WINDOW.saturating_mul(2));
+            recent.drain(0..drop_n);
+        }
+        entry.request_history = recent;
+        entry.revision = entry.revision.saturating_add(1);
+        entry.clone()
+    };
+    put_doc(ctx, standing_key(who), &rec);
+}
+
+fn record_withdraw_timestamp(ctx: &mut Ctx<'_>, who: ObjId, now: i64) {
+    let rec = {
+        let Ok(st) = state_mut(ctx) else {
+            return;
+        };
+        let entry = st
+            .hydration
+            .standing
+            .entry(who)
+            .or_insert_with(|| StandingRec {
+                character: who,
+                cap: None,
+                strikes: 0,
+                revision: 0,
+                request_history: Vec::new(),
+                withdraw_history: Vec::new(),
+            });
+        let mut recent = recent_timestamps(&entry.withdraw_history, now, REQUEST_WINDOW_SECS);
+        recent.push(now);
+        if recent.len() > MAX_WITHDRAWS_PER_PLAYER_WINDOW.saturating_mul(2) {
+            let drop_n = recent
+                .len()
+                .saturating_sub(MAX_WITHDRAWS_PER_PLAYER_WINDOW.saturating_mul(2));
+            recent.drain(0..drop_n);
+        }
+        entry.withdraw_history = recent;
+        entry.revision = entry.revision.saturating_add(1);
+        entry.clone()
+    };
+    put_doc(ctx, standing_key(who), &rec);
+}
+
+fn prune_requests(ctx: &mut Ctx<'_>, max_retained: usize) {
+    let evicted = state_mut(ctx)
+        .map(|st| st.hydration.prune_terminal_requests(max_retained))
+        .unwrap_or_default();
+    for id in evicted {
+        del_doc(ctx, request_key(&id));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +770,30 @@ pub fn request(
         {
             return Ok(Requested::Converged(existing.clone()));
         }
+        // STRAG-M9: per-player non-staff rate limits and withdrawal cooldown.
+        if !crate::module::is_staff(ctx.w, who)
+            && let Some(standing) = st.hydration.standing.get(&who)
+        {
+            let recent_req = recent_timestamps(&standing.request_history, now, REQUEST_WINDOW_SECS);
+            if recent_req.len() >= MAX_REQUESTS_PER_PLAYER_WINDOW {
+                return Err(format!(
+                    "You have placed {} build requests in the last hour (limit {MAX_REQUESTS_PER_PLAYER_WINDOW}). Wait before asking again.",
+                    recent_req.len()
+                ));
+            }
+            let recent_wd = recent_timestamps(&standing.withdraw_history, now, REQUEST_WINDOW_SECS);
+            if recent_wd.len() >= 2
+                && let Some(&last_wd) = recent_wd.iter().max()
+            {
+                let elapsed = now.saturating_sub(last_wd);
+                if elapsed < WITHDRAW_COOLDOWN_SECS {
+                    let wait = WITHDRAW_COOLDOWN_SECS.saturating_sub(elapsed);
+                    return Err(format!(
+                        "Please wait {wait}s after withdrawing before starting another build request."
+                    ));
+                }
+            }
+        }
         // The character's slot.
         let cap = cap_of(st, who);
         let outstanding: Vec<String> = st
@@ -677,9 +871,6 @@ pub fn request(
                 }
             ));
         }
-        if st.hydration.requests.len() >= MAX_REQUESTS {
-            return Err("The request book is full; ask staff.".to_string());
-        }
         RequestRec {
             id,
             character: who,
@@ -694,9 +885,24 @@ pub fn request(
             revision: 1,
         }
     };
+    // STRAG-M9: prune terminal requests before enforcing the global MAX_REQUESTS
+    // cap so withdrawn/struck entries cannot permanently brick new requests.
+    let need_prune = state(ctx).is_ok_and(|st| st.hydration.requests.len() >= MAX_REQUESTS);
+    if need_prune {
+        prune_requests(ctx, MAX_RETAINED_TERMINAL_REQUESTS);
+        if state(ctx).is_ok_and(|st| st.hydration.requests.len() >= MAX_REQUESTS) {
+            prune_requests(ctx, 0);
+        }
+        if state(ctx).is_ok_and(|st| st.hydration.requests.len() >= MAX_REQUESTS) {
+            return Err("The request book is full; ask staff.".to_string());
+        }
+    }
     put_doc(ctx, request_key(&rec.id), &rec);
     if let Ok(st) = state_mut(ctx) {
         st.hydration.requests.insert(rec.id.clone(), rec.clone());
+    }
+    if !crate::module::is_staff(ctx.w, who) {
+        record_request_timestamp(ctx, who, now);
     }
     Ok(Requested::New(rec))
 }
@@ -816,7 +1022,8 @@ pub fn withdraw(
             .ok_or_else(|| format!("No request {id}."))?;
         (rec.character, rec.status.clone())
     };
-    if owner != who && !crate::module::is_staff(ctx.w, who) {
+    let staff = crate::module::is_staff(ctx.w, who);
+    if owner != who && !staff {
         return Err(format!("Request {id} is not yours."));
     }
     if !matches!(
@@ -828,11 +1035,30 @@ pub fn withdraw(
             current.label()
         ));
     }
-    update_request(ctx, id, |r| {
+    let now = ctx.w.now();
+    if !staff
+        && owner == who
+        && let Ok(st) = state(ctx)
+        && let Some(standing) = st.hydration.standing.get(&who)
+    {
+        let recent_wd = recent_timestamps(&standing.withdraw_history, now, REQUEST_WINDOW_SECS);
+        if recent_wd.len() >= MAX_WITHDRAWS_PER_PLAYER_WINDOW {
+            return Err(format!(
+                "You have withdrawn {} build requests in the last hour (limit {MAX_WITHDRAWS_PER_PLAYER_WINDOW}). Wait before withdrawing another, or ask staff.",
+                recent_wd.len()
+            ));
+        }
+    }
+    let rec = update_request(ctx, id, |r| {
         r.status = RequestStatus::Withdrawn {
             reason: reason.trim().to_string(),
         };
-    })
+    })?;
+    if !staff && owner == who {
+        record_withdraw_timestamp(ctx, who, now);
+    }
+    prune_requests(ctx, MAX_RETAINED_TERMINAL_REQUESTS);
+    Ok(rec)
 }
 
 // ---------------------------------------------------------------------------
@@ -850,6 +1076,176 @@ pub struct Activation {
     pub job: Option<u64>,
     /// How many entries the pack made.
     pub created: usize,
+}
+
+/// HIGH-39: re-validate `rec.footprint` against current neighborhood policy and
+/// occupancy, run full `player_build` validation on `pack`, and verify every
+/// site, structure, and room in `pack` stays inside `rec.footprint`.
+fn validate_activation_pack(ctx: &Ctx<'_>, rec: &RequestRec, pack: &Pack) -> Result<(), String> {
+    let st = state(ctx)?;
+    let nb = st
+        .records
+        .neighborhoods
+        .get(&rec.neighborhood)
+        .ok_or_else(|| "The neighborhood is gone from the atlas.".to_string())?;
+    if !nb.hydration.enabled {
+        return Err(format!("{} no longer accepts player-built sites.", nb.name));
+    }
+    let req_poly = rec
+        .footprint
+        .to_cm()
+        .map_err(|e| format!("The reserved footprint is no longer valid: {e}"))?;
+    let req_shape = Shape::Polygon(req_poly.clone());
+    let nb_poly = nb.footprint.to_cm().map_err(|e| e.to_string())?;
+    if !crate::validate::inside(&nb_poly, &req_shape) {
+        return Err(format!("The reserved footprint now leaves {}.", nb.name));
+    }
+    let pack_id = pack.manifest().id();
+    for other in st.hydration.outstanding_in(&rec.neighborhood) {
+        if other.id == rec.id {
+            continue;
+        }
+        if let Ok(poly) = other.footprint.to_cm()
+            && overlap(&req_shape, &Shape::Polygon(poly), nb.resolution_cm)
+        {
+            return Err(format!(
+                "The reserved footprint now overlaps request {}.",
+                other.id
+            ));
+        }
+    }
+    for site in st.records.sites_in(&rec.neighborhood) {
+        if &site.key.pack == pack_id {
+            continue;
+        }
+        if let Ok(poly) = site.footprint.to_cm()
+            && overlap(&req_shape, &Shape::Polygon(poly), nb.resolution_cm)
+        {
+            return Err(format!(
+                "The reserved footprint now overlaps standing site {} ({}).",
+                site.name, site.key
+            ));
+        }
+    }
+    for room in st.records.rooms_in(&rec.neighborhood) {
+        if &room.key.pack == pack_id {
+            continue;
+        }
+        if let Ok(other) = room.footprint.shape()
+            && overlap(&req_shape, &other, nb.resolution_cm)
+        {
+            return Err(format!(
+                "The reserved footprint now overlaps standing room {}.",
+                mush_core::output::display_name(ctx.w, room.room)
+            ));
+        }
+    }
+    let standing_sites = st
+        .records
+        .sites_in(&rec.neighborhood)
+        .filter(|s| matches!(s.origin, SiteOrigin::Hydrated { .. }) && &s.key.pack != pack_id)
+        .count();
+    let allowed = usize::try_from(nb.hydration.max_player_sites).unwrap_or(usize::MAX);
+    if standing_sites >= allowed {
+        return Err(format!(
+            "{} already holds its allowance of {} player-built site{}.",
+            nb.name,
+            nb.hydration.max_player_sites,
+            if nb.hydration.max_player_sites == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+    let content = ctx
+        .w
+        .module_state::<mush_content::ContentState>()
+        .ok_or_else(|| "The content module is not composed on this server.".to_string())?;
+    let scope = crate::validate::ValidateScope::Neighborhood {
+        key: rec.neighborhood.clone(),
+    };
+    let mut cx = crate::validate::ValidateContext::capture(ctx.w, st, content, &scope);
+    cx.player_build = true;
+    let report = crate::validate::validate(pack, &cx);
+    let errors: Vec<String> = report
+        .iter()
+        .filter(|f| f.severity == crate::validate::Severity::Error)
+        .take(3)
+        .map(|f| format!("{}: {}", f.code, f.message))
+        .collect();
+    if !errors.is_empty() {
+        return Err(format!(
+            "The pack failed player-build validation: {}",
+            errors.join("; ")
+        ));
+    }
+    // Every site, structure, and room in the pack must stay within `rec.footprint`.
+    let mut site_count = 0usize;
+    for (entry_id, entry) in pack.entries() {
+        match entry.kind().as_str() {
+            "site" => {
+                site_count = site_count.saturating_add(1);
+                let def = entry
+                    .decode::<crate::def::SiteDef>()
+                    .map_err(|e| format!("{entry_id}: {e}"))?;
+                let poly = def
+                    .footprint
+                    .to_cm()
+                    .map_err(|e| format!("{entry_id}: {e}"))?;
+                if !crate::validate::inside(&req_poly, &Shape::Polygon(poly)) {
+                    return Err(format!(
+                        "{entry_id}: site footprint leaves the reserved request footprint"
+                    ));
+                }
+            }
+            "structure" => {
+                let def = entry
+                    .decode::<crate::def::StructureDef>()
+                    .map_err(|e| format!("{entry_id}: {e}"))?;
+                let poly = def
+                    .footprint
+                    .to_cm()
+                    .map_err(|e| format!("{entry_id}: {e}"))?;
+                if !crate::validate::inside(&req_poly, &Shape::Polygon(poly)) {
+                    return Err(format!(
+                        "{entry_id}: structure footprint leaves the reserved request footprint"
+                    ));
+                }
+            }
+            "room" => {
+                let def = entry
+                    .decode::<crate::def::RoomDef>()
+                    .map_err(|e| format!("{entry_id}: {e}"))?;
+                let within = match &def.footprint {
+                    crate::def::FootprintDef::Anchor { point, .. } => {
+                        let p = point.to_cm().map_err(|e| format!("{entry_id}: {e}"))?;
+                        crate::validate::point_in_or_on(&req_poly, p)
+                    }
+                    _ => {
+                        let shape = def
+                            .footprint
+                            .to_footprint()
+                            .shape()
+                            .map_err(|e| format!("{entry_id}: {e}"))?;
+                        crate::validate::inside(&req_poly, &shape)
+                    }
+                };
+                if !within {
+                    return Err(format!(
+                        "{entry_id}: room footprint leaves the reserved request footprint"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    if site_count != 1 {
+        return Err(format!(
+            "A hydration pack must define exactly one site entry (found {site_count})."
+        ));
+    }
+    Ok(())
 }
 
 /// Apply the planner's `site` pack for `id`: the sites are marked hydrated and
@@ -898,6 +1294,11 @@ pub fn activate(ctx: &mut Ctx<'_>, id: &str, pack: &Pack) -> Result<Activation, 
             rec.neighborhood.pack
         ));
     }
+    // HIGH-39: re-validate `rec.footprint` against current neighborhood policy
+    // and occupancy, run full `player_build` validation on `pack`, and verify
+    // every site/structure/room footprint in `pack` stays inside `rec.footprint`
+    // before touching the world via `apply_pack`.
+    validate_activation_pack(ctx, &rec, pack)?;
     let (applied, report) =
         mush_content::module::apply_pack(ctx, pack).map_err(|e| e.to_string())?;
     if let Some(anomaly) = &report.anomaly {
@@ -1195,6 +1596,7 @@ pub fn strike(ctx: &mut Ctx<'_>, site: &RecordKey, reason: &str) -> Result<Strik
             reason: reason.to_string(),
         };
     })?;
+    prune_requests(ctx, MAX_RETAINED_TERMINAL_REQUESTS);
     let standing = add_strike(ctx, rec.character)?;
     let cap = cap_of(state(ctx)?, rec.character);
     let who = mush_core::output::display_name(ctx.w, ctx.actor);
@@ -1251,6 +1653,7 @@ pub fn note_pack_retired(ctx: &mut Ctx<'_>, pack: &CanonicalId, reason: &str) {
                 .collect()
         })
         .unwrap_or_default();
+    let had_affected = !affected.is_empty();
     for rec in affected {
         let site = rec.status.site().cloned();
         let _ = update_request(ctx, &rec.id, |r| {
@@ -1269,6 +1672,9 @@ pub fn note_pack_retired(ctx: &mut Ctx<'_>, pack: &CanonicalId, reason: &str) {
             &rec.id,
             serde_json::json!({ "site": site.map(|s| s.to_string()), "pack": pack.as_str() }),
         );
+    }
+    if had_affected {
+        prune_requests(ctx, MAX_RETAINED_TERMINAL_REQUESTS);
     }
 }
 

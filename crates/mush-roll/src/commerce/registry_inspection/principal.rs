@@ -155,6 +155,67 @@ pub(crate) fn refuse_parties(
     Ok(())
 }
 
+/// Read-only move bar over `CommerceRead` (used by background settlement services).
+pub(crate) fn any_party_barred_read(
+    ctx: &impl super::super::read::CommerceRead,
+    families: &super::super::families::CommerceFamilies,
+    parties: &[ObjId],
+) -> Result<bool, PublicationError> {
+    for party in parties {
+        if barred_read(ctx, families, mush_economy::Holder::Character(*party))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Read-only move bar inside an `AuthorityGuardValidator`.
+pub(crate) fn any_party_barred_guard(
+    ctx: &mush_core::action::AuthorityGuardContext<'_>,
+    families: &super::super::families::CommerceFamilies,
+    parties: &[ObjId],
+) -> Result<bool, PublicationError> {
+    let now = ctx.world().world_ic_now().at;
+    for party in parties {
+        let holder = mush_economy::Holder::Character(*party);
+        let Some(key) = principal_key(&holder.principal()) else {
+            continue;
+        };
+        let barred = ctx
+            .action_state(&families.revoked_principals, &key)
+            .map_err(|_| PublicationError::Unavailable)?
+            .is_some_and(|record| record.principal == holder.principal() && record.bars(now));
+        if barred {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Read-only move bar during offer projection against `Engine`.
+pub(crate) fn any_party_barred_engine(
+    engine: &mush_core::Engine,
+    families: &super::super::families::CommerceFamilies,
+    parties: &[ObjId],
+) -> Result<bool, PublicationError> {
+    let now = engine.world.world_ic_now().at;
+    for party in parties {
+        let holder = mush_economy::Holder::Character(*party);
+        let Some(key) = principal_key(&holder.principal()) else {
+            continue;
+        };
+        let barred = engine
+            .action_state()
+            .get(&families.revoked_principals, &key)
+            .map_err(|_| PublicationError::Unavailable)?
+            .is_some_and(|record| record.principal == holder.principal() && record.bars(now));
+        if barred {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Whether `holder`'s principal — the character, or the organisation whoever acts for it — is
 /// barred at World IC second `now`.
 ///

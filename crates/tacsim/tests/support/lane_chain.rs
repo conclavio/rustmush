@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v47 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v48 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,35 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
-/// **Doc 50 cut KC.2 (lane v47): the terms taken out**: the regions rows' `terms` and Stickney's
-/// Republic customs office, so a strip chain rebuilds a lane before v47 (idempotent). The chain's
+/// **Doc 50 cut KC.4 (lane v48): the Co-op share taken out**: each terms row's
+/// `coop_share_permille`, so a strip chain rebuilds a lane before v48 (idempotent). The chain's
 /// head.
+pub fn strip_coop_share(doc: &mut Value) {
+    let Some(rows) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("regions"))
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("rows"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for row in rows.iter_mut() {
+        if let Some(terms) = row.get_mut("terms").and_then(Value::as_object_mut) {
+            for (_, polity) in terms.iter_mut() {
+                if let Some(polity) = polity.as_object_mut() {
+                    polity.remove("coop_share_permille");
+                }
+            }
+        }
+    }
+}
+
+/// **Doc 50 cut KC.2 (lane v47): the terms taken out**: the regions rows' `terms` and Stickney's
+/// Republic customs office, so a strip chain rebuilds a lane before v47 (idempotent); lane v48's
+/// [`strip_coop_share`] first.
 pub fn strip_terms(doc: &mut Value) {
+    strip_coop_share(doc);
     let Some(entries) = doc.get_mut("entries") else {
         return;
     };

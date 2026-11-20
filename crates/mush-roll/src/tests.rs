@@ -595,17 +595,26 @@ fn pruning_keeps_named_last_fifty_and_each_explicit_owner_reference_after_reboot
     let prune = world.store.prepare_prune(MAX_GC_BATCH).unwrap();
     assert!(
         prune.removed.is_empty(),
-        "removing the label preserves the last fifty roots"
+        "prepare_remove already reclaimed unreferenced unnamed revisions"
     );
     world.commit(prune.change);
     world.reboot();
     assert!(world.store.names(AUTHOR).is_empty());
+    // Named version (r1) and externally-referenced revisions (r2..r6) remain retained.
     for revision in revisions.iter().take(6) {
         assert!(world.store.revision(AUTHOR, revision.key).is_ok());
     }
+    // Unreferenced unnamed revisions (r8..r57) are reclaimed on remove without UnnamedHistory bloat.
     for revision in revisions.iter().skip(7) {
-        assert!(world.store.revision(AUTHOR, revision.key).is_ok());
+        assert!(world.store.revision(AUTHOR, revision.key).is_err());
     }
+    assert!(
+        world
+            .store
+            .reference_keys(NS, ReferenceKind::UnnamedHistory)
+            .is_empty(),
+        "original remove must not create permanent UnnamedHistory roots"
+    );
     world.create(AUTHOR, "scout", "new identity");
     assert_ne!(
         world.store.mind(AUTHOR, "scout").unwrap().id(),
@@ -1140,6 +1149,22 @@ fn renamed_labels_do_not_change_revisions_and_deleted_names_cannot_reuse_ids() {
             .prepare_forget_version(AUTHOR, "renamed", base, "stable")
             .unwrap(),
     );
+    // Retain `revision` under an external root so mind 1 remains present on disk
+    // after `prepare_remove` (which now reclaims unreferenced unnamed revisions).
+    world.commit(
+        world
+            .store
+            .prepare_reference(
+                "game",
+                ReferenceKey {
+                    owner: "game".into(),
+                    kind: ReferenceKind::MatchRecord,
+                    record: "kept-mind-1".into(),
+                },
+                vec![revision],
+            )
+            .unwrap(),
+    );
     let base = world.store.mind(AUTHOR, "renamed").unwrap().base();
     world.commit(world.store.prepare_remove(AUTHOR, "renamed", base).unwrap());
     world
@@ -1432,5 +1457,124 @@ fn boot_does_not_accept_forged_or_unregistered_internal_root_families() -> Resul
             check!(store.reference_keys(owner, known).is_empty());
         }
     }
+    Ok(())
+}
+
+#[test]
+fn high19_remove_reclaims_unnamed_revisions_and_enforces_character_quota() -> Result<(), RollError>
+{
+    let mut world = World::default();
+    // Vector 1a: looping create -> save -> remove must reclaim unreferenced
+    // revisions without creating permanent UnnamedHistory roots.
+    for round in 0..80 {
+        let name = format!("loop_{round}");
+        world.create(AUTHOR, &name, "v1");
+        for rev in 1..=5 {
+            world.edit(AUTHOR, &name, &format!("round {round} rev {rev}"));
+            let _ = world.save(AUTHOR, &name, "", None);
+        }
+        let base = world.store.mind(AUTHOR, &name)?.base();
+        let change = world.store.prepare_remove(AUTHOR, &name, base)?;
+        world.commit(change);
+    }
+    check!(
+        world
+            .store
+            .reference_keys(NS, ReferenceKind::UnnamedHistory)
+            .is_empty(),
+        "repeated remove must never accumulate UnnamedHistory roots"
+    );
+    let usage = world
+        .store
+        .current_usage()
+        .ok_or_else(|| invalid("usage", "missing usage"))?;
+    check_eq!(
+        usage.records,
+        1,
+        "only the character library record should remain after reclaiming removed minds"
+    );
+
+    // Vector 1b: per-character record quota caps one actor at MAX_RECORDS_PER_CHARACTER
+    // without blocking another actor or blocking remove/prune cleanup.
+    world.create(AUTHOR, "quota_mind", "seed");
+    let mut saved = 0usize;
+    loop {
+        world.edit(AUTHOR, "quota_mind", &format!("body {saved}"));
+        let base = world.store.mind(AUTHOR, "quota_mind")?.base();
+        match world.store.prepare_save(
+            AUTHOR,
+            "quota_mind",
+            base,
+            "",
+            None,
+            &Validator,
+            &world.sources,
+        ) {
+            Ok(prep) => {
+                let (change, source, _) = prep.into_parts();
+                world.store.publish_with(change, |operations| {
+                    world.sources.apply(source.token);
+                    apply_batch(
+                        &mut world.disk,
+                        source
+                            .operations
+                            .into_iter()
+                            .chain(operations.iter().cloned()),
+                    );
+                })?;
+                saved += 1;
+            }
+            Err(RollError::Invalid { ref message, .. })
+                if message == "character record quota reached" =>
+            {
+                break;
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    // 1 library + 1 mind + saved revisions == MAX_RECORDS_PER_CHARACTER.
+    check_eq!(saved + 2, MAX_RECORDS_PER_CHARACTER);
+    // Creating another mind or naming a version is also blocked at quota.
+    check!(
+        world
+            .store
+            .prepare_create(AUTHOR, "over_quota", draft("x"))
+            .is_err()
+    );
+    let base = world.store.mind(AUTHOR, "quota_mind")?.base();
+    check!(
+        world
+            .store
+            .prepare_name_version(AUTHOR, "quota_mind", base, 1, "v1")
+            .is_err()
+    );
+    // Another character is completely unaffected by AUTHOR hitting quota.
+    world.create(OTHER, "healthy", "other character still works");
+    let _ = world.save(OTHER, "healthy", "", None);
+    // AUTHOR can still prune owned unreferenced revisions and resume saving.
+    let prune = world.store.prepare_prune_owned(AUTHOR, MAX_GC_BATCH)?;
+    check!(!prune.removed.is_empty());
+    world.commit(prune.change);
+    let base = world.store.mind(AUTHOR, "quota_mind")?.base();
+    let prep = world.store.prepare_save(
+        AUTHOR,
+        "quota_mind",
+        base,
+        "",
+        None,
+        &Validator,
+        &world.sources,
+    )?;
+    let (change, source, _) = prep.into_parts();
+    world.store.publish_with(change, |operations| {
+        world.sources.apply(source.token);
+        apply_batch(
+            &mut world.disk,
+            source
+                .operations
+                .into_iter()
+                .chain(operations.iter().cloned()),
+        );
+    })?;
     Ok(())
 }

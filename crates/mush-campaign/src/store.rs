@@ -37,6 +37,11 @@ pub const NS: &str = "campaign";
 pub const META_KEY: &str = "campaign_meta";
 /// The largest number of operations one world may carry.
 pub const MAX_OPERATIONS: usize = 512;
+/// The largest number of **terminal** (`Resolved` / `Aborted`) operations
+/// retained in the store ring before the oldest terminal entries are pruned
+/// (HIGH-30: prevents terminal records from permanently exhausting
+/// [`MAX_OPERATIONS`] or starving the tick rotation).
+pub const MAX_RETAINED_TERMINAL_OPERATIONS: usize = 64;
 /// The largest number of **live** operations one issuer may carry at once (E7 cut 9
 /// independent verify fold, B8; decision E5(a)).
 ///
@@ -48,6 +53,34 @@ pub const MAX_OPERATIONS: usize = 512;
 /// `terms.attacker` for states that are not terminal, so resolving or abandoning one
 /// frees the slot; staff are not counted.
 pub const MAX_OPERATIONS_PER_ISSUER: usize = 32;
+/// Maximum non-staff `@op/declare` calls per issuer inside [`DECLARATION_WINDOW_SECS`]
+/// (HIGH-30: caps declare/activate/resolve churn).
+pub const MAX_DECLARATIONS_PER_ISSUER_WINDOW: usize = 64;
+/// Sliding window, in real seconds, for [`MAX_DECLARATIONS_PER_ISSUER_WINDOW`].
+pub const DECLARATION_WINDOW_SECS: i64 = 3_600;
+/// Maximum defender-notice deliveries one non-staff object issuer may trigger
+/// inside [`NOTICE_WINDOW_SECS`] (HIGH-30: stops anonymous GOD-sender mail/trip spam).
+pub const MAX_NOTICES_PER_ISSUER_WINDOW: usize = 32;
+/// Sliding window, in real seconds, for [`MAX_NOTICES_PER_ISSUER_WINDOW`].
+pub const NOTICE_WINDOW_SECS: i64 = 3_600;
+/// Minimum real seconds between defender notices from the same non-staff object
+/// issuer to the same recipient (HIGH-30).
+pub const NOTICE_RECIPIENT_COOLDOWN_SECS: i64 = 300;
+/// Upper bound on distinct issuers tracked in persisted rate-limit logs.
+const MAX_TRACKED_ISSUERS: usize = 512;
+/// Upper bound on `(issuer, recipient)` cooldown rows persisted in `campaign_meta`.
+const MAX_TRACKED_NOTICE_PAIRS: usize = 1_024;
+
+/// Stable string key for a [`mush_org::PrincipalId`] in persisted rate-limit
+/// logs and structured audit tracing.
+pub(crate) fn principal_tag(p: &mush_org::PrincipalId) -> SmolStr {
+    let (kind, id, name) = mush_economy::principal_key(p);
+    if name.is_empty() {
+        SmolStr::from(format!("{kind}:{id}"))
+    } else {
+        SmolStr::from(format!("{kind}:{id}:{name}"))
+    }
+}
 /// The largest number of formation nodes one world may carry.
 pub const MAX_FORMATION_NODES: usize = 1_024;
 /// The largest number of refused documents kept for `@op/held`-style inspection
@@ -104,6 +137,10 @@ pub struct CampaignStore {
     recovery_queue: crate::recovery::RecoveryQueue,
     recovery_apps: BTreeMap<u32, crate::recovery::RecoveryApplication>,
     recovery_grants: BTreeMap<u32, crate::recovery::RecoveryGrant>,
+    /// Wreck object IDs that have already waived a recovery cooldown (bounded by
+    /// [`crate::recovery::MAX_COMPENSATED_WRECKS`]), persisted in `campaign_meta`
+    /// and hydrated from both `campaign_meta` and loaded grants.
+    compensated_wrecks: BTreeSet<u32>,
     /// The recovery arm's own rotation cursor — the raw applicant id it resumes
     /// **past**, so a queue longer than one fire's budget is worked round-robin and
     /// nobody at the back is starved by the front.
@@ -124,6 +161,15 @@ pub struct CampaignStore {
     /// Subjects already paged, so a repeated failure pages once rather than once a
     /// fire (08c §4.6's dedupe-by-subject rule).
     pub(crate) paged: BTreeSet<SmolStr>,
+    /// Per-issuer declaration timestamps inside [`DECLARATION_WINDOW_SECS`] (HIGH-30),
+    /// persisted in `campaign_meta` so restarts do not reset creation churn limits.
+    declaration_log: BTreeMap<SmolStr, Vec<i64>>,
+    /// Per-issuer defender-notice timestamps inside [`NOTICE_WINDOW_SECS`] (HIGH-30),
+    /// persisted in `campaign_meta` so restarts do not reset anti-spam caps.
+    notice_log: BTreeMap<SmolStr, Vec<i64>>,
+    /// Last real second a non-staff issuer pushed a defender notice to a given
+    /// recipient object (HIGH-30), persisted in `campaign_meta`.
+    notice_pair_log: BTreeMap<(SmolStr, u32), i64>,
 }
 
 impl std::fmt::Debug for CampaignStore {
@@ -155,6 +201,18 @@ struct Meta {
     /// **E7r1 R3** — the recovery arm's rotation cursor.
     #[serde(default)]
     recovery_cursor: u32,
+    /// Wreck object IDs already compensated by a recovery grant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    compensated_wrecks: Vec<u32>,
+    /// Per-issuer declaration timestamps (HIGH-30).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    declaration_log: BTreeMap<SmolStr, Vec<i64>>,
+    /// Per-issuer defender-notice timestamps (HIGH-30).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    notice_log: BTreeMap<SmolStr, Vec<i64>>,
+    /// Per-(issuer, recipient) last notice timestamps (HIGH-30).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notice_pair_log: Vec<(SmolStr, u32, i64)>,
 }
 
 impl CampaignStore {
@@ -378,21 +436,56 @@ impl CampaignStore {
         doomed.into_iter().map(mush_core::ObjId).collect()
     }
 
-    /// **The recovery grant ring** (B7), the same shape over **ended** grants: a live
-    /// loaner is a live claim on a hull and is never evicted.
-    pub(crate) fn prune_recovery_grants(&mut self) -> Vec<mush_core::ObjId> {
-        let doomed: Vec<u32> = self
+    /// **The recovery grant ring** (B7), over **ended** grants whose cooldown is
+    /// no longer active at `now`: live loaners AND ended grants with an active
+    /// cooldown are never evicted. Only expired or waived ended grants past
+    /// [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] are evicted, oldest
+    /// `ended_at` first.
+    pub(crate) fn prune_recovery_grants(
+        &mut self,
+        now: i64,
+        cooldown_secs: i64,
+        mut is_voided: impl FnMut(mush_core::ObjId) -> bool,
+    ) -> Vec<mush_core::ObjId> {
+        let mut evictable: Vec<(i64, u32)> = self
             .recovery_grants
             .iter()
-            .filter(|(_, grant)| !grant.is_live())
-            .map(|(id, _)| *id)
-            .rev()
+            .filter_map(|(id, grant)| {
+                let ended = grant.ended_at()?;
+                if grant.cooldown_active(now, cooldown_secs, is_voided(mush_core::ObjId(*id))) {
+                    return None;
+                }
+                Some((ended, *id))
+            })
+            .collect();
+        evictable.sort_by(|a, b| b.cmp(a));
+        let doomed: Vec<u32> = evictable
+            .into_iter()
             .skip(crate::recovery::MAX_RETAINED_RECOVERY_RECORDS)
+            .map(|(_, id)| id)
             .collect();
         for id in &doomed {
             self.recovery_grants.remove(id);
         }
         doomed.into_iter().map(mush_core::ObjId).collect()
+    }
+
+    /// Whether `wreck` has already been compensated by a prior recovery grant.
+    #[must_use]
+    pub fn is_wreck_compensated(&self, wreck: mush_core::ObjId) -> bool {
+        self.compensated_wrecks.contains(&wreck.0)
+    }
+
+    /// Record a wreck as compensated, capping retention at
+    /// [`crate::recovery::MAX_COMPENSATED_WRECKS`].
+    pub(crate) fn record_compensated_wreck(&mut self, wreck: mush_core::ObjId) {
+        if wreck.0 == 0 {
+            return;
+        }
+        self.compensated_wrecks.insert(wreck.0);
+        while self.compensated_wrecks.len() > crate::recovery::MAX_COMPENSATED_WRECKS {
+            let _ = self.compensated_wrecks.pop_first();
+        }
     }
 
     pub(crate) fn install_muster(&mut self, report: MusterReport) {
@@ -408,8 +501,192 @@ impl CampaignStore {
             cursor: self.cursor,
             muster_cycle: self.muster_cycle,
             recovery_cursor: self.recovery_cursor,
+            compensated_wrecks: self.compensated_wrecks.iter().copied().collect(),
+            declaration_log: self.declaration_log.clone(),
+            notice_log: self.notice_log.clone(),
+            notice_pair_log: self
+                .notice_pair_log
+                .iter()
+                .map(|((issuer, recipient), at)| (issuer.clone(), *recipient, *at))
+                .collect(),
         })
         .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// Whether `operation` still carries any non-terminal seat grant.
+    fn has_live_seat_grant(&self, operation: OperationId) -> bool {
+        self.seat_grants
+            .range((operation.0, 0)..=(operation.0, u64::MAX))
+            .any(|(_, grant)| !grant.state.is_terminal())
+    }
+
+    /// Prune the oldest evictable terminal operations (`Resolved` or `Aborted`
+    /// with no remaining live seat grants) past `max_retained`, returning the
+    /// persisted keys to delete (including associated seat offers, seat grants,
+    /// and muster reports). Never lowers `next_operation`, so evicted ids are
+    /// never reused (HIGH-30).
+    pub(crate) fn prune_terminal_operations(&mut self, max_retained: usize) -> Vec<SmolStr> {
+        let evictable: Vec<u64> = self
+            .ops
+            .iter()
+            .filter(|(id, doc)| {
+                doc.runtime.state.is_terminal() && !self.has_live_seat_grant(OperationId(**id))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        let excess = evictable.len().saturating_sub(max_retained);
+        if excess == 0 {
+            return Vec::new();
+        }
+        let mut deleted = Vec::new();
+        for id in evictable.into_iter().take(excess) {
+            let op = OperationId(id);
+            self.ops.remove(&id);
+            self.next_seat_offer.remove(&id);
+            deleted.push(operation_key(op));
+
+            let offer_ids: Vec<u64> = self
+                .seat_offers
+                .range((id, 0)..=(id, u64::MAX))
+                .map(|((_, oid), _)| *oid)
+                .collect();
+            for oid in offer_ids {
+                self.seat_offers.remove(&(id, oid));
+                deleted.push(seat_offer_key(op, SeatOfferId(oid)));
+            }
+
+            let grant_ids: Vec<u64> = self
+                .seat_grants
+                .range((id, 0)..=(id, u64::MAX))
+                .map(|((_, oid), _)| *oid)
+                .collect();
+            for oid in grant_ids {
+                self.seat_grants.remove(&(id, oid));
+                deleted.push(seat_grant_key(op, SeatOfferId(oid)));
+            }
+
+            let muster_cycles: Vec<u64> = self
+                .musters
+                .range((id, 0)..=(id, u64::MAX))
+                .map(|((_, cycle), _)| *cycle)
+                .collect();
+            for cycle in muster_cycles {
+                self.musters.remove(&(id, cycle));
+                deleted.push(muster_key(op, cycle));
+            }
+        }
+        deleted
+    }
+
+    /// Mint the next operation id, pruning the oldest evictable terminal
+    /// operations first if the map has reached [`MAX_OPERATIONS`], so terminal
+    /// operations can never permanently brick the global allocator (HIGH-30).
+    pub(crate) fn mint_operation_with_pruning(&mut self) -> (Option<OperationId>, Vec<SmolStr>) {
+        let evicted = if self.ops.len() >= MAX_OPERATIONS {
+            let non_terminal = self
+                .ops
+                .values()
+                .filter(|doc| !doc.runtime.state.is_terminal())
+                .count();
+            let target_terminal = MAX_OPERATIONS
+                .saturating_sub(1)
+                .saturating_sub(non_terminal);
+            self.prune_terminal_operations(target_terminal)
+        } else {
+            Vec::new()
+        };
+        (self.mint_operation(), evicted)
+    }
+
+    /// Check whether a non-staff issuer is still within
+    /// [`MAX_DECLARATIONS_PER_ISSUER_WINDOW`] inside [`DECLARATION_WINDOW_SECS`].
+    pub(crate) fn check_declaration_rate(&mut self, issuer: &str, now: i64) -> Result<(), usize> {
+        let cutoff = now.saturating_sub(DECLARATION_WINDOW_SECS);
+        self.declaration_log.retain(|_, times| {
+            times.retain(|t| *t > cutoff);
+            !times.is_empty()
+        });
+        let recent = self.declaration_log.get(issuer).map_or(0, Vec::len);
+        if recent >= MAX_DECLARATIONS_PER_ISSUER_WINDOW {
+            Err(recent)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Record one non-staff declaration timestamp for `issuer` (HIGH-30).
+    pub(crate) fn record_declaration(&mut self, issuer: SmolStr, now: i64) {
+        let cutoff = now.saturating_sub(DECLARATION_WINDOW_SECS);
+        let entry = self.declaration_log.entry(issuer).or_default();
+        entry.retain(|t| *t > cutoff);
+        entry.push(now);
+        if entry.len() > MAX_DECLARATIONS_PER_ISSUER_WINDOW {
+            let excess = entry.len() - MAX_DECLARATIONS_PER_ISSUER_WINDOW;
+            entry.drain(..excess);
+        }
+        while self.declaration_log.len() > MAX_TRACKED_ISSUERS {
+            let oldest = self
+                .declaration_log
+                .iter()
+                .min_by_key(|(_, times)| times.last().copied().unwrap_or(i64::MIN))
+                .map(|(k, _)| k.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.declaration_log.remove(&oldest);
+        }
+    }
+
+    /// Check and record whether a non-staff object issuer may push a defender
+    /// notice to `recipient` at real second `now` (HIGH-30).
+    pub(crate) fn admit_notice_recipient(
+        &mut self,
+        issuer: &str,
+        recipient: mush_core::ObjId,
+        now: i64,
+    ) -> bool {
+        let window_cutoff = now.saturating_sub(NOTICE_WINDOW_SECS);
+        self.notice_log.retain(|_, times| {
+            times.retain(|t| *t > window_cutoff);
+            !times.is_empty()
+        });
+        let pair_cutoff = now.saturating_sub(NOTICE_RECIPIENT_COOLDOWN_SECS);
+        self.notice_pair_log.retain(|_, at| *at > pair_cutoff);
+
+        let recent = self.notice_log.get(issuer).map_or(0, Vec::len);
+        if recent >= MAX_NOTICES_PER_ISSUER_WINDOW {
+            return false;
+        }
+        let pair_key = (SmolStr::new(issuer), recipient.0);
+        if self.notice_pair_log.contains_key(&pair_key) {
+            return false;
+        }
+        let entry = self.notice_log.entry(SmolStr::new(issuer)).or_default();
+        entry.push(now);
+        while self.notice_log.len() > MAX_TRACKED_ISSUERS {
+            let oldest = self
+                .notice_log
+                .iter()
+                .min_by_key(|(_, times)| times.last().copied().unwrap_or(i64::MIN))
+                .map(|(k, _)| k.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.notice_log.remove(&oldest);
+        }
+        self.notice_pair_log.insert(pair_key, now);
+        while self.notice_pair_log.len() > MAX_TRACKED_NOTICE_PAIRS {
+            let oldest = self
+                .notice_pair_log
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(k, _)| k.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.notice_pair_log.remove(&oldest);
+        }
+        true
     }
 
     /// Mint the next operation id, or `None` past [`MAX_OPERATIONS`].
@@ -552,15 +829,34 @@ pub(crate) fn put_recovery_application(
     }
 }
 
-/// Install one grant and queue its document, **evicting the oldest ENDED grants past
-/// [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] in the same bundle** (B7).
+/// Install one grant and queue its document, **evicting the oldest expired ENDED
+/// grants past [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] in the same
+/// bundle** (B7). Active cooldowns and live grants are never evicted.
 pub(crate) fn put_recovery_grant(ctx: &mut Ctx<'_>, grant: crate::recovery::RecoveryGrant) {
     let key = crate::recovery::recovery_grant_key(grant.applicant());
     let value = serde_json::to_value(&grant).unwrap_or(serde_json::Value::Null);
+    let now = ctx.w.world_ic_now().at;
+    let cooldown_secs = crate::recovery::policy(ctx).cooldown_secs;
+    let voided: BTreeSet<u32> = ctx
+        .w
+        .module_state::<CampaignStore>()
+        .map(|store| {
+            store
+                .recovery_grants
+                .keys()
+                .copied()
+                .chain(std::iter::once(grant.applicant().0))
+                .filter(|id| mush_sim::relay::cover_voided(ctx.w, mush_core::ObjId(*id)))
+                .collect()
+        })
+        .unwrap_or_default();
     let evicted = match ctx.w.module_state_mut::<CampaignStore>() {
         Some(store) => {
+            if let Some(wreck) = grant.compensated_wreck() {
+                store.record_compensated_wreck(wreck);
+            }
             store.recovery_grants.insert(grant.applicant().0, grant);
-            store.prune_recovery_grants()
+            store.prune_recovery_grants(now, cooldown_secs, |id| voided.contains(&id.0))
         }
         None => Vec::new(),
     };
@@ -624,12 +920,31 @@ pub(crate) fn put_operation(ctx: &mut Ctx<'_>, doc: OperationDoc) -> bool {
         return false;
     }
     let key = operation_key(doc.id());
+    let terminal = doc.runtime.state.is_terminal();
     let value = serde_json::to_value(&doc).unwrap_or(serde_json::Value::Null);
-    if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
-        store.install_operation(doc);
-    }
+    let evicted = match ctx.w.module_state_mut::<CampaignStore>() {
+        Some(store) => {
+            store.install_operation(doc);
+            if terminal {
+                store.prune_terminal_operations(MAX_RETAINED_TERMINAL_OPERATIONS)
+            } else {
+                Vec::new()
+            }
+        }
+        None => Vec::new(),
+    };
     push(ctx.out, ModuleWrite::JsonSet { key, value });
+    for doomed in evicted {
+        push(ctx.out, ModuleWrite::Del { key: doomed });
+    }
     true
+}
+
+/// Queue `ModuleWrite::Del` for a batch of evicted document keys.
+pub(crate) fn del_keys(ctx: &mut Ctx<'_>, keys: Vec<SmolStr>) {
+    for key in keys {
+        push(ctx.out, ModuleWrite::Del { key });
+    }
 }
 
 fn page_refused_write(ctx: &mut Ctx<'_>, id: crate::ids::OperationId, error: &str) {
@@ -774,6 +1089,26 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                     store.cursor = meta.cursor;
                     store.muster_cycle = meta.muster_cycle;
                     store.recovery_cursor = meta.recovery_cursor;
+                    for wreck in meta.compensated_wrecks {
+                        store.record_compensated_wreck(mush_core::ObjId(wreck));
+                    }
+                    store.declaration_log = meta
+                        .declaration_log
+                        .into_iter()
+                        .take(MAX_TRACKED_ISSUERS)
+                        .collect();
+                    store.notice_log = meta
+                        .notice_log
+                        .into_iter()
+                        .take(MAX_TRACKED_ISSUERS)
+                        .collect();
+                    for (issuer, recipient, at) in meta
+                        .notice_pair_log
+                        .into_iter()
+                        .take(MAX_TRACKED_NOTICE_PAIRS)
+                    {
+                        store.notice_pair_log.insert((issuer, recipient), at);
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(%key, %error, "campaign: the meta document was ignored");
@@ -862,6 +1197,9 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
         } else if key.starts_with("recovery_grant:") {
             match serde_json::from_value::<crate::recovery::RecoveryGrant>(value) {
                 Ok(grant) if crate::recovery::recovery_grant_key(grant.applicant()) == key => {
+                    if let Some(wreck) = grant.compensated_wreck() {
+                        store.record_compensated_wreck(wreck);
+                    }
                     store.recovery_grants.insert(grant.applicant().0, grant);
                 }
                 Ok(_) => store.hold(
@@ -904,14 +1242,23 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
     // only closed applications and ended grants past the ring are left on disk, and
     // the count is **paged into the log** rather than dropped silently.
     let dropped_apps = store.prune_recovery_apps().len();
-    let dropped_grants = store.prune_recovery_grants().len();
-    if dropped_apps > 0 || dropped_grants > 0 {
+    if dropped_apps > 0 {
         tracing::warn!(
             dropped_apps,
-            dropped_grants,
             retained = crate::recovery::MAX_RETAINED_RECOVERY_RECORDS,
-            "campaign: the recovery books were over their retention ring; the oldest CLOSED \
-             applications and ENDED grants were left on disk and not hydrated"
+            "campaign: the recovery application book was over its retention ring; the oldest \
+             CLOSED applications were left on disk and not hydrated"
+        );
+    }
+    let dropped_terminal_ops = store
+        .prune_terminal_operations(MAX_RETAINED_TERMINAL_OPERATIONS)
+        .len();
+    if dropped_terminal_ops > 0 {
+        tracing::warn!(
+            dropped_terminal_ops,
+            retained = MAX_RETAINED_TERMINAL_OPERATIONS,
+            "campaign: terminal operations exceeded the retention ring; the oldest settled \
+             records were left unhydrated"
         );
     }
     store

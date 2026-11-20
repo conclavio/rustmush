@@ -39,6 +39,9 @@ pub const OBJECT_HEIGHT_CM: i32 = 150;
 /// **The eye at demotion's look**, centimetres: a hull's sensor mast, since a return carries no
 /// sensor height of its own.
 pub const CLOSE_EYE_CM: u32 = 300;
+/// **The most eye cells one [`Learned`] row carries** (security hardening CRIT-18): keeps
+/// `FieldProvider::project_offer`'s close payload bounded even for very large parties.
+pub const MAX_LEARNED_EYES: usize = 64;
 
 /// Whether the eye at `from` (`eye_cm` up) sees a thing `height_cm` tall at `to`.
 fn clear(terrain: &ArenaTerrain, (from, eye_cm): ((i64, i64), u32), to: (i64, i64)) -> bool {
@@ -178,6 +181,15 @@ impl Learned {
         self.eyes
             .iter()
             .any(|eye| cells_apart(*eye, cell) <= SIGHT_CELLS)
+    }
+
+    /// Enforce canonical bounds on `items` and `eyes` (deduped, sorted, capped).
+    pub fn clamp(&mut self) {
+        self.items
+            .truncate(crate::surface::site_record::MAX_KNOWN_ITEMS);
+        self.eyes.sort_unstable();
+        self.eyes.dedup();
+        self.eyes.truncate(MAX_LEARNED_EYES);
     }
 }
 
@@ -357,10 +369,7 @@ pub(crate) fn learned_at_close(
     }
     out.into_values()
         .map(|mut row| {
-            row.items
-                .truncate(crate::surface::site_record::MAX_KNOWN_ITEMS);
-            row.eyes.sort_unstable();
-            row.eyes.dedup();
+            row.clamp();
             row
         })
         .collect()

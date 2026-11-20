@@ -138,7 +138,8 @@ fn page_between_rooms() {
 }
 
 /// Examining your own object shows the full technical view; examining
-/// someone else's shows only the owner line.
+/// someone else's visible object shows only the owner line, while items
+/// concealed in another player's inventory cannot be probed by dbref.
 #[test]
 fn examine_own_vs_others_object() {
     let mut tw = TestWorld::new();
@@ -157,15 +158,30 @@ fn examine_own_vs_others_object() {
     assert_actor_saw(&events, alice, "Type: Thing");
     assert_actor_saw(&events, alice, "engraved initials");
 
-    // Someone else (by dbref; the locket is in Alice's pocket): public view.
+    // While the locket is in Alice's private pocket, Bob cannot probe it by
+    // dbref (CORE-M4: actor carry is private, matching `look`).
     let events = tw.run(bob, &format!("examine {locket}"));
-    assert_actor_saw(&events, bob, "is owned by Alice");
+    assert_actor_saw(&events, bob, "I don't see that here.");
     assert!(
         !tw.seen_by(&events, bob)
             .iter()
-            .any(|l| l.contains("engraved initials")),
-        "attribute values are hidden from non-controllers"
+            .any(|l| l.contains("is owned by") || l.contains("engraved initials")),
+        "carried items must not leak existence or owner to bystanders"
     );
+
+    // Once Alice drops the locket in the shared room, Bob sees the public
+    // owner line (by name or dbref) without leaking attribute values.
+    tw.exec_ok(alice, "drop locket");
+    for cmd in ["examine locket".to_string(), format!("examine {locket}")] {
+        let events = tw.run(bob, &cmd);
+        assert_actor_saw(&events, bob, "is owned by Alice");
+        assert!(
+            !tw.seen_by(&events, bob)
+                .iter()
+                .any(|l| l.contains("engraved initials")),
+            "attribute values are hidden from non-controllers"
+        );
+    }
 }
 
 /// `help @dig` returns its usage text, aliases, and switches — to a

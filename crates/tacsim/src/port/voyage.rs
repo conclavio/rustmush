@@ -2478,6 +2478,13 @@ fn plan_block(
         ),
         _ => format!("Passage {icdays} IC days; the clock is stopped."),
     });
+    // Doc 50 cut KC.3 (Q-50-8, Q-50-9): the duty the picket will assess on what is aboard now,
+    // under the terms live now, with who holds the approach and since when.
+    if let Some(line) = crate::space::duty::live_terms(w).and_then(|terms| {
+        crate::space::duty::estimate_line(ctx, view.hull(), &plan.route, &terms, false)
+    }) {
+        lines.push(line);
+    }
     // Doc 19 cut A.3 (§5): the window — the best departure in the next thirty IC
     // days against today's, when the sky moves.
     if let Some(window) = crate::port::chart::plan_window_line(w, basis, &dest.routes, &plan) {
@@ -3831,6 +3838,12 @@ pub(crate) fn undock_as(ctx: &mut Ctx<'_>, raw: &str, lift: bool) -> Result<(), 
         None => base.replace(", about {hhmm} UTC {day}", ""),
     };
     ctx.out.sys_to_actor(actor, "tacsim", reply);
+    // Doc 50 cut KC.3 (Q-50-8, Q-50-10): the duty under the terms this filing pinned.
+    if let Some(line) = pending.terms.as_ref().and_then(|terms| {
+        crate::space::duty::estimate_line(ctx, charter.hull, &plan.route, terms, true)
+    }) {
+        ctx.out.sys_to_actor(actor, "tacsim", line);
+    }
     // Doc 32 cut CF.5 (doc 27 Q-H10): the decision is on the filed voyage; the pilot and every
     // left unit's operator hear it.
     if !pending.left_behind.is_empty() {

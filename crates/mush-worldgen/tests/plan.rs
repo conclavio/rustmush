@@ -340,9 +340,11 @@ fn reserved_rect(tw: &TestWorld) -> [[f64; 2]; 2] {
         .expect("a request was reserved");
     let bbox = rec.footprint.to_cm().expect("cm").bbox();
     let m = mush_atlas::geom::metres;
+    // `PolygonCm::bbox()` is max-exclusive (+1 cm); subtract 1 cm so the rect
+    // matches `rec.footprint`'s actual upper corner.
     [
         [m(bbox.min.x), m(bbox.min.y)],
-        [m(bbox.max.x), m(bbox.max.y)],
+        [m(bbox.max.x - 1), m(bbox.max.y - 1)],
     ]
 }
 
@@ -1078,4 +1080,159 @@ fn the_front_office_files_and_shows_only_the_askers_own_tickets() {
     let job = mush_jobs::get_job(tw.world(), id).expect("the job");
     assert_eq!(job.opener, alice);
     assert!(job.tags.iter().any(|t| t == "interface"));
+}
+
+/// STRAG-M9 (worldgen): withdrawing a proposal cancels queued/in-flight LLM
+/// `ModuleAsync` jobs (0 LLM calls when withdrawn before start), prunes
+/// withdrawn proposals past `MAX_RETAINED_TERMINAL_PROPOSALS` with disk
+/// deletion and monotonic IDs across reboot, and enforces per-player rate limits.
+#[tokio::test]
+async fn strag_m9_withdraw_cancels_inflight_llm_prunes_proposals_and_enforces_rate_limits() {
+    let (mut tw, mock, llm) = rig();
+    let rae = green_player(&mut tw, "Rae");
+    let green = tw.world().get(rae).and_then(|o| o.location).expect("green");
+
+    // 1. Place a build request -> deferred ModuleAsync is queued; withdraw BEFORE
+    //    the LLM job runs -> `run_plan` sees the cancellation token and makes 0 LLM calls!
+    let (_events, effects) = step(&mut tw, rae, "+build/place park=A bench under an oak tree.");
+    let async_effects: Vec<Effect> = effects
+        .into_iter()
+        .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+        .collect();
+    assert_eq!(async_effects.len(), 1);
+    let rev_before = proposal(&tw, 1).revision;
+
+    let (wd_events, _) = step(&mut tw, rae, "+build/withdraw 1");
+    assert!(sys_to(&wd_events, rae).contains("withdrawn"));
+    assert!(
+        proposal(&tw, 1).revision > rev_before,
+        "withdraw must bump proposal revision to invalidate stale outcomes"
+    );
+
+    // Now drive the deferred ModuleAsync payload: it must exit immediately with 0 LLM calls.
+    mock.push_response(read("neighborhood"));
+    let _ = finish(&mut tw, &llm, rae, &async_effects).await;
+    assert_eq!(
+        mock.call_count(),
+        0,
+        "cancelled off-loop planning job must make zero LLM calls"
+    );
+    assert_eq!(proposal(&tw, 1).status, ProposalStatus::Withdrawn);
+
+    // 2. Staff churn past MAX_RETAINED_TERMINAL_PROPOSALS prunes old withdrawn proposals
+    //    on RAM and disk while keeping monotonic IDs.
+    tw.world_mut().move_to(GOD, green).expect("god to green");
+    let total = mush_worldgen::MAX_RETAINED_TERMINAL_PROPOSALS + 20;
+    let mut last_id = 1u64;
+    for i in 0..total {
+        let (_, _) = step(
+            &mut tw,
+            GOD,
+            &format!("+build/place park_{i}=Brief number {i}."),
+        );
+        let newest = tw
+            .world()
+            .module_state::<mush_worldgen::WorldgenState>()
+            .expect("wg")
+            .proposals
+            .keys()
+            .next_back()
+            .copied()
+            .expect("proposal");
+        last_id = newest;
+        let _ = step(&mut tw, GOD, &format!("+build/withdraw {newest}"));
+    }
+    let retained = tw
+        .world()
+        .module_state::<mush_worldgen::WorldgenState>()
+        .expect("wg")
+        .proposals
+        .len();
+    assert!(
+        retained <= mush_worldgen::MAX_RETAINED_TERMINAL_PROPOSALS,
+        "expected <= {}, got {retained}",
+        mush_worldgen::MAX_RETAINED_TERMINAL_PROPOSALS
+    );
+    let ops = tw.take_module_ops();
+    let del_count = ops
+        .iter()
+        .filter(|op| {
+            op.ns.as_str() == "worldgen"
+                && matches!(&op.op, ModuleWrite::Del { key } if key.starts_with("proposal:"))
+        })
+        .count();
+    assert!(
+        del_count >= 20,
+        "pruned proposals must emit ModuleWrite::Del"
+    );
+
+    // 3. Boot hydration with > MAX_PROPOSALS withdrawn docs + 1 open doc preserves the open
+    //    doc, prunes excess withdrawn docs, and keeps next_proposal strictly monotonic.
+    let sample = tw
+        .world()
+        .module_state::<mush_worldgen::WorldgenState>()
+        .expect("wg")
+        .proposals
+        .values()
+        .next()
+        .expect("sample")
+        .clone();
+    let mut synthetic_kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    for i in 1..=(u64::try_from(mush_worldgen::MAX_PROPOSALS + 10).unwrap_or(1034)) {
+        let mut p = sample.clone();
+        p.id = i;
+        p.updated = i64::try_from(i).unwrap_or(0);
+        p.status = ProposalStatus::Withdrawn;
+        synthetic_kv.push((
+            mush_worldgen::proposal_key(i),
+            serde_json::to_value(&p).expect("json"),
+        ));
+    }
+    let open_id = u64::try_from(mush_worldgen::MAX_PROPOSALS + 11).unwrap_or(1035);
+    let mut open_p = sample.clone();
+    open_p.id = open_id;
+    open_p.status = ProposalStatus::Ready;
+    synthetic_kv.push((
+        mush_worldgen::proposal_key(open_id),
+        serde_json::to_value(&open_p).expect("json"),
+    ));
+    let (hydrated, next_id, dropped) = mush_worldgen::proposal::hydrate_boot(&synthetic_kv);
+    assert!(
+        hydrated.contains_key(&open_id),
+        "open proposal must survive boot pruning"
+    );
+    assert_eq!(
+        hydrated.len(),
+        mush_worldgen::MAX_RETAINED_TERMINAL_PROPOSALS + 1
+    );
+    assert!(
+        next_id > open_id,
+        "next_proposal must stay monotonic: {next_id}"
+    );
+    assert_eq!(
+        dropped.len(),
+        mush_worldgen::MAX_PROPOSALS + 10 - mush_worldgen::MAX_RETAINED_TERMINAL_PROPOSALS
+    );
+    let _ = last_id;
+
+    // 4. Non-staff player withdrawal cooldown & hourly withdrawal cap block churn.
+    //    Rae already withdrew 1 proposal above; a 2nd withdraw triggers cooldown on the 3rd place.
+    let _ = step(&mut tw, rae, "+build/place bench=Second bench.");
+    let p2 = tw
+        .world()
+        .module_state::<mush_worldgen::WorldgenState>()
+        .expect("wg")
+        .proposals
+        .values()
+        .filter(|p| p.author == rae && p.status.open())
+        .map(|p| p.id)
+        .max()
+        .expect("p2");
+    let _ = step(&mut tw, rae, &format!("+build/withdraw {p2}"));
+    let (cooled_ev, _) = step(&mut tw, rae, "+build/place bench3=Third bench immediately.");
+    assert!(
+        sys_to(&cooled_ev, rae).contains("after withdrawing"),
+        "expected withdrawal cooldown refusal: {}",
+        sys_to(&cooled_ev, rae)
+    );
 }

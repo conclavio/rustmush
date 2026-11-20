@@ -788,8 +788,10 @@ fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>
 }
 
 impl BayActProvider {
-    /// **Lay a mint's lots into the hold**: the hold's room checked by the plan the offer
-    /// carried (doc 36a P2-4), then every lot minted under one `bay_<why>` origin.
+    /// **Lay a mint's lots (and any stripped weapon rounds) into the hold**: the hold's room
+    /// checked by the plan the offer carried (doc 36a P2-4; HIGH-48 & HIGH-53: counts crystallized
+    /// divisible lots, accumulates multi-good batch overlay, and includes stripped weapon rounds),
+    /// then every lot minted under one `bay_<why>` origin.
     #[allow(clippy::too_many_arguments)]
     fn lay(
         &self,
@@ -800,25 +802,32 @@ impl BayActProvider {
         act: u32,
         why: &str,
         lots: &[LotMint],
+        rounds: &[GoodUnits],
     ) -> Result<(), mush_core::ActionError> {
         let refused =
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
-        // Doc 36a P2-4: what the lots lay in the hold must fit it, by the plan the offer
-        // carried for this hull; a hold the offer carried no plan for is ungoverned. The pools
-        // are read here, in the bundle that writes them.
+        // Doc 36a P2-4: what the lots and rounds lay in the hold must fit it, by the plan the
+        // offer carried for this hull; a hold the offer carried no plan for is ungoverned. The
+        // pools and lot tallies are read here, in the bundle that writes them.
         if let Some(plan) = parameters
             .get("plans")
             .and_then(Value::as_object)
             .and_then(|plans| plans.get(&hull.0.to_string()))
         {
             let plan = CapacityPlan(plan.clone());
-            // Doc 39 cut IN.1: a part weighs its catalogue mass, and the parts already aboard
-            // are read from the lot tally (a part never pools).
+            // Doc 39 cut IN.1 + HIGH-48/HIGH-53: every good's lots take room (divisible lots too),
+            // stripped weapon rounds count alongside the part, and each accepted commodity is
+            // accumulated in a batch overlay before checking the next.
             let mut bulk: BTreeMap<CanonicalId, u64> = BTreeMap::new();
             for row in lots {
                 let slot = bulk.entry(row.commodity.clone()).or_insert(0);
                 *slot = slot.saturating_add(row.quantity);
             }
+            for row in rounds.iter().filter(|r| r.units > 0) {
+                let slot = bulk.entry(row.good.clone()).or_insert(0);
+                *slot = slot.saturating_add(row.units);
+            }
+            let mut staged: BTreeMap<CanonicalId, u64> = BTreeMap::new();
             for (commodity, quantity) in &bulk {
                 let mut read = |good: &CanonicalId| {
                     let pooled = self
@@ -826,13 +835,12 @@ impl BayActProvider {
                         .pool(txn, endpoint, good)
                         .map(|pool| pool.map_or(0, |pool| pool.quantity))
                         .map_err(|_| CapacityReadError)?;
-                    if !crate::port_tick::is_part(good) {
-                        return Ok(pooled);
-                    }
-                    self.inventory
+                    let held = self
+                        .inventory
                         .lot_quantity(txn, endpoint, good)
-                        .map(|held| pooled.saturating_add(held))
-                        .map_err(|_| CapacityReadError)
+                        .map(|lots_held| pooled.saturating_add(lots_held))
+                        .map_err(|_| CapacityReadError)?;
+                    Ok(held.saturating_add(staged.get(good).copied().unwrap_or(0)))
                 };
                 PortCapacity
                     .check(&plan, commodity, *quantity, &mut read)
@@ -842,6 +850,8 @@ impl BayActProvider {
                         }
                         CapacityRefusal::Unreadable => refused("the hold's room cannot be read"),
                     })?;
+                let slot = staged.entry(commodity.clone()).or_insert(0);
+                *slot = slot.saturating_add(*quantity);
             }
         }
         let mut rows = Vec::with_capacity(lots.len());
@@ -850,19 +860,21 @@ impl BayActProvider {
             rows.push((row.commodity.clone(), row.quantity, grade, row.lot));
         }
         // One census write for every lot: one bundle writes a record once.
-        self.inventory
-            .mint_origins(
-                txn,
-                endpoint,
-                &rows,
-                &mush_economy::ExternalRef {
-                    provider: "tacsim".into(),
-                    kind: format!("bay_{why}").into(),
-                    id: format!("{}/{act}", hull.0).into(),
-                    revision: Some(u64::from(act)),
-                },
-            )
-            .map_err(|_| refused("the lots could not be laid in the hold"))?;
+        if !rows.is_empty() {
+            self.inventory
+                .mint_origins(
+                    txn,
+                    endpoint,
+                    &rows,
+                    &mush_economy::ExternalRef {
+                        provider: "tacsim".into(),
+                        kind: format!("bay_{why}").into(),
+                        id: format!("{}/{act}", hull.0).into(),
+                        revision: Some(u64::from(act)),
+                    },
+                )
+                .map_err(|_| refused("the lots could not be laid in the hold"))?;
+        }
         Ok(())
     }
 }
@@ -1086,7 +1098,7 @@ impl ActionProvider for BayActProvider {
                 why, lots, rounds, ..
             } => {
                 let endpoint = endpoint.ok_or_else(invalid)?;
-                self.lay(txn, parameters, endpoint, hull, act, why, lots)?;
+                self.lay(txn, parameters, endpoint, hull, act, why, lots, rounds)?;
                 // 48e review rounds:G12: the stripped mount's rounds, into the same vault.
                 for row in rounds.iter().filter(|r| r.units > 0) {
                     self.inventory

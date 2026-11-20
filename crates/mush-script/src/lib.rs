@@ -63,10 +63,10 @@ use mush_core::{
 use mush_proto::NarrativeKind;
 use smol_str::SmolStr;
 
-pub use runtime::{ScriptConfig, ScriptState};
+pub use runtime::{MIN_TIMER_DELAY_SECS, ScriptConfig, ScriptState};
 use runtime::{
     Trigger, collect_command_triggers, collect_hear_triggers, collect_move_triggers, drive,
-    has_runnable, recompile_object, snapshot_registry,
+    has_runnable, recompile_object, recompile_script_attr, snapshot_registry,
 };
 
 /// The mush-script game module. Hand one to `Engine::with_modules`.
@@ -179,7 +179,8 @@ impl GameModule for ScriptModule {
 // Observers
 // ----------------------------------------------------------------------
 
-/// Recompile an object's scripts when one of its `script:*` attrs changes.
+/// Recompile just the changed `script:*` attribute on `obj` (HIGH-18: avoids
+/// O(K²) full-object recompiles on repeated `@set` edits).
 fn on_attr_set(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::AttrSet { obj, name, .. } = ev else {
         return;
@@ -187,7 +188,7 @@ fn on_attr_set(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     if !name.to_ascii_lowercase().starts_with("script:") {
         return;
     }
-    recompile_object(ctx.w, ctx.out, *obj);
+    recompile_script_attr(ctx.w, ctx.out, *obj, name);
 }
 
 /// Compile a freshly-created object that already carries scripts (e.g. an
