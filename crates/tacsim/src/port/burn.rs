@@ -310,6 +310,15 @@ impl SpaceBurnReceipts {
     }
 }
 
+/// Server-authenticated departure-site surface ascent law (M7): surface gravity (mg) and minimum
+/// ascent Δv (m/s) that the first leg of a passage lifting from a surface extraction pad must satisfy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DepartureSite {
+    surface_mg: u32,
+    ascent_mps: u32,
+}
+
 /// The fixed `voyage` parameter: the hull and its pending voyage, exactly as the
 /// server filed it.
 #[derive(Clone, Debug, Deserialize)]
@@ -317,6 +326,8 @@ impl SpaceBurnReceipts {
 struct FixedVoyage {
     hull: ObjId,
     pending: PendingVoyage,
+    #[serde(default)]
+    departure_site: Option<DepartureSite>,
 }
 
 /// **Doc 35 cut SF.R4 (`D-35-6`)** — a server-authenticated in-flight reaction-mass debit
@@ -479,6 +490,34 @@ fn debit_consumables(
     Ok(())
 }
 
+/// Resolve the server-authenticated departure-site ascent law for a docked hull (M7).
+fn departure_site_of(
+    w: &mush_core::World,
+    hull: ObjId,
+    route_version: u32,
+) -> Result<Option<DepartureSite>, mush_core::ActionError> {
+    let Berth::Docked { def, .. } = berth_of(w, hull) else {
+        return Ok(None);
+    };
+    let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+    let Ok(pack) = crate::port::voyage::lane_pack(w, route_version) else {
+        if def.site.is_some() {
+            return Err(integrity("the site's lane pack is unavailable"));
+        }
+        return Ok(None);
+    };
+    let Some((_, surface_mg, radius_km)) = crate::port::passage::site_end(pack, &def.location)
+    else {
+        return Ok(None);
+    };
+    let ascent_mps = crate::port::passage::ascent_mps(surface_mg, radius_km)
+        .ok_or_else(|| integrity("the site's surface ascent overflows"))?;
+    Ok(Some(DepartureSite {
+        surface_mg,
+        ascent_mps,
+    }))
+}
+
 impl ActionProvider for BurnProvider {
     fn validate_invocation(
         &self,
@@ -505,13 +544,18 @@ impl ActionProvider for BurnProvider {
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let (choices, fixed_parameters) =
             if let Some((hull, pending)) = burnable(&engine.world, query.actor()) {
+                let departure_site = departure_site_of(&engine.world, hull, pending.route_version)?;
                 let filed = serde_json::to_value(&pending)
                     .map_err(|_| integrity("the filed passage does not encode"))?;
                 (
                     vec![pending.seq.to_string()],
                     json!({
                         "now": engine.world.world_ic_now().at,
-                        "voyage": { "hull": hull.0, "pending": filed },
+                        "voyage": {
+                            "hull": hull.0,
+                            "pending": filed,
+                            "departure_site": departure_site,
+                        },
                     }),
                 )
             } else if let Some(burns) = space_burnable(&engine.world, query.actor()) {
@@ -714,7 +758,11 @@ impl ActionProvider for BurnProvider {
             .get("now")
             .and_then(Value::as_i64)
             .ok_or_else(invalid)?;
-        let FixedVoyage { hull, pending } = fixed;
+        let FixedVoyage {
+            hull,
+            pending,
+            departure_site,
+        } = fixed;
         if pending.seq != seq {
             return Err(port_error(
                 ActionErrorCode::InvalidRequest,
@@ -794,15 +842,35 @@ impl ActionProvider for BurnProvider {
         // 4. The burn and the crew-days, recomputed from the filed seconds and the
         // drive table this provider holds (D-18-11); since doc 20 cut SM.2 the burn
         // includes each site end's frozen ascent (`LegPlan::ascent_mps`).
-        let adds_up = plan.check().is_ok()
-            && plan.law.as_str() == spec.drive.law.word()
-            && passage_burn(
-                &spec.drive.clone().at_throttle(plan.throttle_permille),
+        let drive_at_throttle = spec.drive.clone().at_throttle(plan.throttle_permille);
+        if let Some(site) = departure_site {
+            let twr = crate::port::passage::landing_twr_permille(
+                &drive_at_throttle,
                 spec.dry_kg,
                 payload,
-                &plan.legs,
+                site.surface_mg,
             )
-            .ok()
+            .unwrap_or(0);
+            if twr < crate::port::passage::LANDING_TWR_PERMILLE {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    "the hull cannot lift from this site under the landing law",
+                ));
+            }
+            if plan
+                .legs
+                .first()
+                .is_none_or(|leg| leg.ascent_mps < site.ascent_mps)
+            {
+                return Err(port_error(
+                    ActionErrorCode::Integrity,
+                    "the filed passage omits the departure site's ascent",
+                ));
+            }
+        }
+        let adds_up = plan.check().is_ok()
+            && plan.law.as_str() == spec.drive.law.word()
+            && passage_burn(&drive_at_throttle, spec.dry_kg, payload, &plan.legs).ok()
                 == Some(plan.burn_t)
             // Doc 20 cut SM.2 (Q-20-7): the stay on a site, charged at this lift, is
             // frozen in the plan and added to the legs' own crew-days.
@@ -1001,5 +1069,225 @@ mod tests {
             }
         }
         assert!(burn_table(&catalog, Some(Arc::new(goods))).is_none());
+    }
+
+    /// **M7**: `BurnProvider::prepare_authoritative` enforces the server-authenticated
+    /// `DepartureSite` 1.20 TWR floor and minimum surface ascent Δv.
+    #[test]
+    fn m7_burn_provider_enforces_departure_site_twr_and_ascent() {
+        let (mut modules, inventory_handles) = crate::composition::domain_modules_with_tacsim();
+        modules.push(crate::composition::tacsim_module_wired(
+            Default::default(),
+            false,
+            inventory_handles,
+        ));
+        let mut tw = mush_testkit::TestWorld::with_modules(modules);
+        let catalog = fielded();
+        let goods = Arc::new(crate::definitions::goods::goods_table().expect("goods"));
+        let table = burn_table(&catalog, Some(goods)).expect("table");
+        let dray = CanonicalId::new(crate::definitions::content::DRAY).expect("id");
+        let digest = catalog.references.get(&dray).expect("ref").digest();
+        let spec = table.hulls.get(&digest).expect("dray spec");
+        let port_handles = tw
+            .world()
+            .module_state::<crate::port::families::PortHandles>()
+            .expect("port handles")
+            .clone();
+        let outcome = mush_core::DefinitionRef::new(
+            mush_core::DefinitionKey::new(
+                mush_core::OwnerId::new(crate::NS).expect("owner"),
+                mush_core::DefinitionKind::new("outcome").expect("kind"),
+                mush_core::DefinitionId::new(BURN_OUTCOME).expect("id"),
+            ),
+            1,
+            digest,
+        )
+        .expect("outcome ref");
+        let provider = BurnProvider {
+            action: port_handles.burn.clone().expect("burn action"),
+            outcome,
+            tickets: port_handles.families.tickets.clone(),
+            space_receipts: port_handles.families.space_burn_receipts.clone(),
+            inventory: port_handles.inventory.clone().expect("inventory"),
+            table: table.clone(),
+        };
+        let pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON).expect("pack");
+        let (_, surface_mg, radius_km) =
+            crate::port::passage::site_end(&pack, &CanonicalId::new("occator_rim").expect("id"))
+                .expect("occator_rim is a site");
+        let site_ascent = crate::port::passage::ascent_mps(surface_mg, radius_km).expect("ascent");
+        let vault = VaultId(88);
+        let propellant = CanonicalId::new("propellant").expect("id");
+        let provisions = CanonicalId::new("provisions").expect("id");
+        // Credit plenty of propellant and provisions so only the departure-site checks decide.
+        for (good, qty) in [(&propellant, 60_u64), (&provisions, 30_u64)] {
+            let engine = tw.engine_mut();
+            let prepared = {
+                let mut txn = engine
+                    .action_transaction(&provider.inventory.pools)
+                    .expect("txn");
+                provider
+                    .inventory
+                    .credit(&mut txn, EndpointRef(vault), good, qty)
+                    .expect("credit");
+                txn.prepare().expect("prepares")
+            };
+            let (_, install) = prepared.into_parts();
+            engine.install_prepared_action(install).expect("installs");
+        }
+        let payload_kg = crate::port::passage::payload_kg(
+            &table.goods,
+            &spec.accepted,
+            |g| {
+                Ok(if *g == propellant {
+                    60
+                } else if *g == provisions {
+                    30
+                } else {
+                    0
+                })
+            },
+            1,
+            spec.allowance_kg,
+        )
+        .expect("payload");
+        let min_throttle = crate::port::passage::least_landing_throttle(
+            &spec.drive,
+            spec.dry_kg,
+            payload_kg,
+            surface_mg,
+        )
+        .expect("min landing throttle");
+        let low_throttle = min_throttle.saturating_sub(1).max(1);
+        assert!(
+            crate::port::passage::landing_twr_permille(
+                &spec.drive.clone().at_throttle(low_throttle),
+                spec.dry_kg,
+                payload_kg,
+                surface_mg,
+            )
+            .unwrap_or(0)
+                < crate::port::passage::LANDING_TWR_PERMILLE
+        );
+        let make_invocation = |throttle: u32, ascent_mps: u32, req_n: u128| {
+            let leg = crate::port::passage::LegPlan {
+                to: CanonicalId::new("ceres").expect("id"),
+                body: CanonicalId::new("ceres").expect("id"),
+                dist_km: 0,
+                secs: 60,
+                t0: 1_000,
+                t1: 1_060,
+                ascent_mps,
+            };
+            let legs = vec![leg];
+            let drive = spec.drive.clone().at_throttle(throttle);
+            let burn_t = passage_burn(&drive, spec.dry_kg, payload_kg, &legs).expect("burn");
+            let crew = crew_days(1, &legs).expect("crew");
+            let plan = crate::port::passage::PassagePlan {
+                route: CanonicalId::new("occator_ceres").expect("id"),
+                law: CanonicalId::new(spec.drive.law.word()).expect("law"),
+                depart_ic: 1_000,
+                sky_rev: digest,
+                legs,
+                total_s: 60,
+                burn_t,
+                crew_days: crew,
+                throttle_permille: throttle,
+                landed_crew_days: 0,
+            };
+            let pending = PendingVoyage {
+                seq: 1,
+                pilot: ObjId(5),
+                to_venue: CanonicalId::new("ceres").expect("venue"),
+                vault: vault.0,
+                route_pack: CanonicalId::new(crate::definitions::content::LANE_PACK).expect("id"),
+                route_version: 1,
+                unit_definition: digest,
+                occupants: 1,
+                payload_kg,
+                carried: Vec::new(),
+                plan,
+                order: None,
+                attempt: 1,
+                filed_ic: 1_000,
+                filed_at: 1_000,
+                arrival: None,
+                left_behind: Vec::new(),
+                terms: None,
+            };
+            let params = json!({
+                "seq": "1",
+                "now": 1_000_i64,
+                "voyage": {
+                    "hull": 50_u32,
+                    "pending": pending,
+                    "departure_site": DepartureSite {
+                        surface_mg,
+                        ascent_mps: site_ascent,
+                    },
+                },
+            });
+            let req_id = mush_core::RequestUid::from_bytes(req_n.to_be_bytes());
+            let principal = mush_core::PrincipalId::Object { id: ObjId(5) };
+            ActionInvocation::new(mush_core::ActionInvocationDraft {
+                request: req_id,
+                principal: principal.clone(),
+                actor: ObjId(5),
+                offered_action: mush_core::ActionOfferId(mush_core::CanonicalHash::from_bytes(
+                    [9; 32],
+                )),
+                subject: PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: params,
+                idempotency: mush_core::ScopedIdempotencyKey::new(
+                    mush_core::IdempotencyScope {
+                        principal,
+                        owner: mush_core::OwnerId::new(crate::NS).expect("owner"),
+                        namespace: CanonicalId::new("tacsim.port.burn").expect("ns"),
+                    },
+                    1,
+                    mush_core::IdempotencyKey::Request(req_id),
+                ),
+            })
+            .expect("invocation")
+        };
+
+        // 1. Throttle too low for 1.20 TWR at Occator -> ProviderRejected.
+        let low_twr = make_invocation(low_throttle, site_ascent, 1);
+        {
+            let mut txn = tw
+                .engine_mut()
+                .action_transaction(&provider.tickets)
+                .expect("txn");
+            let err = provider
+                .prepare_authoritative(&low_twr, &mut txn)
+                .expect_err("low TWR burn off surface site must fail");
+            assert_eq!(err.code(), ActionErrorCode::ProviderRejected);
+        }
+
+        // 2. Full throttle but forged ascent_mps = 1 (< site_ascent) -> Integrity.
+        let missing_ascent = make_invocation(1_000, 1, 2);
+        {
+            let mut txn = tw
+                .engine_mut()
+                .action_transaction(&provider.tickets)
+                .expect("txn");
+            let err = provider
+                .prepare_authoritative(&missing_ascent, &mut txn)
+                .expect_err("omitted surface ascent must fail");
+            assert_eq!(err.code(), ActionErrorCode::Integrity);
+        }
+
+        // 3. Full throttle with full site ascent -> succeeds!
+        let valid = make_invocation(1_000, site_ascent, 3);
+        {
+            let mut txn = tw
+                .engine_mut()
+                .action_transaction(&provider.tickets)
+                .expect("txn");
+            provider
+                .prepare_authoritative(&valid, &mut txn)
+                .expect("valid surface-site burn succeeds");
+        }
     }
 }

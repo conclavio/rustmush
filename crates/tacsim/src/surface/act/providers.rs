@@ -329,7 +329,10 @@ impl ActionProvider for SurfaceActProvider {
         if fixed_rigs.is_empty() {
             return Ok(None);
         }
-        let world: Vec<u32> = world_rigs(w).iter().map(|tv| tv.0).collect();
+        let world: Vec<u32> = active_world_rigs(w, engine.action_state(), &self.excursions)
+            .iter()
+            .map(|tv| tv.0)
+            .collect();
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
         let fixed = json!({
             "now": w.world_ic_now().at,
@@ -3131,25 +3134,21 @@ impl ActionProvider for SurfaceDoneProvider {
         // Physical NPC operators finish their own admitted work, with the real
         // lease retained as its financial contract. Completion needs no proxy
         // account and cannot become another operator's work after succession.
-        let units = world_rigs(w);
-        if units.len() > crate::surface::excursion::MAX_EXCURSIONS_WORLD as usize {
-            return Err(invalid("surface work exceeds the record visit budget"));
-        }
-        for unit in units {
+        // M17: visit only live rig leases rather than all lifetime rigs so cumulative
+        // commissioned/yard rigs past `MAX_EXCURSIONS_WORLD` never lock out completions.
+        for lease in store.tv_leases_live() {
             let Some(found) = engine
                 .action_state()
-                .get(&self.excursions, &RigKey(unit))
+                .get(&self.excursions, &RigKey(lease.tv))
                 .ok()
                 .flatten()
             else {
                 continue;
             };
-            let Some(crew) = found.field_crew.as_deref().filter(|c| c.operator == actor) else {
-                continue;
-            };
-            if let Some(lease) = store
-                .tv_lease_on(unit)
-                .filter(|lease| lease.pilot == crew.principal)
+            if found
+                .field_crew
+                .as_deref()
+                .is_some_and(|c| c.operator == actor && lease.pilot == c.principal)
             {
                 records.push(lease.clone());
             }

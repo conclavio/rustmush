@@ -893,3 +893,202 @@ fn f23_4_a_cleared_opening_claim_takes_its_base_off_the_staff_receipt() {
         "another's"
     );
 }
+
+/// **M17**: once cumulative lifetime rigs exceed `MAX_EXCURSIONS_WORLD` (1,024),
+/// `active_world_rigs` returns only rigs with active excursions/work and
+/// `SurfaceDoneProvider::project_offer` continues projecting offers without locking out.
+#[test]
+fn m17_active_world_rigs_prunes_idle_rigs_past_1024_and_done_provider_never_locks_out() {
+    use crate::surface::excursion::{Excursion, ExcursionId, MAX_EXCURSIONS_WORLD, RigKey};
+    use mush_core::{ActionProvider, LegalActionQuery, PerceivedRef, SubjectKey};
+
+    let (mut modules, inventory_handles) = crate::composition::domain_modules_with_tacsim();
+    modules.push(crate::composition::tacsim_module_wired(
+        Default::default(),
+        false,
+        inventory_handles,
+    ));
+    let mut tw = mush_testkit::TestWorld::with_modules(modules);
+    let pilot = tw.spawn_player("Pilot");
+    let npc = tw.spawn_player("Operator");
+    let active_owned = ObjId(50_000);
+    let leased_tv = ObjId(50_001);
+    let total_idle = usize::try_from(MAX_EXCURSIONS_WORLD).expect("small") + 50;
+
+    {
+        let store = tw
+            .world_mut()
+            .module_state_mut::<crate::store::TacsimStore>()
+            .expect("store");
+        let port = CanonicalId::new("ceres_port").expect("port");
+        let design = CanonicalId::new("tacsim.unit.tv_prospector").expect("design");
+        for i in 0..total_idle {
+            let n = u32::try_from(i).expect("small");
+            let tv = ObjId(60_000 + n);
+            let mark = format!("IDLE-{i}");
+            store.yard.owned.insert(
+                tv,
+                crate::port::owned::Held::Present(Box::new(crate::port::owned::OwnedHull {
+                    hull: tv,
+                    mark: mark.clone(),
+                    home: port.clone(),
+                    design: design.clone(),
+                    provenance: 1,
+                    body: crate::port::owned::OwnedBody::Rig(crate::port::RigRow {
+                        n,
+                        tv: tv.0,
+                        mark,
+                        rooms: BTreeMap::new(),
+                        vault: None,
+                    }),
+                })),
+            );
+        }
+        store.yard.owned.insert(
+            active_owned,
+            crate::port::owned::Held::Present(Box::new(crate::port::owned::OwnedHull {
+                hull: active_owned,
+                mark: "ACT-01".to_owned(),
+                home: port,
+                design,
+                provenance: 2,
+                body: crate::port::owned::OwnedBody::Rig(crate::port::RigRow {
+                    n: 9_999,
+                    tv: active_owned.0,
+                    mark: "ACT-01".to_owned(),
+                    rooms: BTreeMap::new(),
+                    vault: None,
+                }),
+            })),
+        );
+        store.tv_leases.insert(
+            1,
+            crate::port::tv::TvLeaseState::Present(crate::port::tv::TvLease {
+                schema: crate::port::tv::TV_LEASE_SCHEMA,
+                lease: 1,
+                tv: leased_tv,
+                mark: "OWP-TV-99".to_owned(),
+                pilot,
+                hull: ObjId(900),
+                slot: 1,
+                hold: 1,
+                deposit_minor: 1_000,
+                fee_minor: 100,
+                term_secs: 604_800,
+                leased_at_ic: 1,
+                term_ends_ic: 100_000,
+                terms_paid: 1,
+                status: crate::port::tv::TvLeaseStatus::Active,
+                ended_at_ic: None,
+                repossessed: false,
+                written_off: false,
+                wreck_aboard_ic: None,
+            }),
+        );
+    }
+
+    assert!(
+        world_rigs(tw.world()).len() > usize::try_from(MAX_EXCURSIONS_WORLD).expect("small"),
+        "world_rigs exceeds MAX_EXCURSIONS_WORLD"
+    );
+
+    let port_handles = tw
+        .world()
+        .module_state::<crate::port::families::PortHandles>()
+        .expect("handles")
+        .clone();
+    let excursions = port_handles.families.excursions.clone();
+    // Insert an active Excursion record for `active_owned` and an active `field_crew` record for `leased_tv`.
+    {
+        let engine = tw.engine_mut();
+        let prepared = {
+            let mut txn = engine.action_transaction(&excursions).expect("txn");
+            let mut active = RigRecord::fresh_unread(active_owned);
+            active.excursion = Some(Excursion {
+                id: ExcursionId {
+                    tv: active_owned,
+                    launch_ic: 10,
+                },
+                site: CanonicalId::new("urvara_port").expect("site"),
+                operator: pilot,
+                hull: ObjId(900),
+                slot: 1,
+            });
+            txn.insert(&excursions, &RigKey(active_owned), active)
+                .expect("insert active");
+            let mut crewed = RigRecord::fresh_unread(leased_tv);
+            crewed.field_crew = Some(Box::new(crate::detachment::sortie::SurfaceCrew {
+                operation: crate::detachment::sortie::OperationId {
+                    organizer: pilot,
+                    draft: mush_tactics::detachment::planning::PlanId(1),
+                    activation: 1,
+                },
+                principal: pilot,
+                operator: npc,
+                flight: crate::detachment::sortie::FlightKey {
+                    unit: leased_tv,
+                    ordinal: 1,
+                },
+            }));
+            txn.insert(&excursions, &RigKey(leased_tv), crewed)
+                .expect("insert crewed");
+            txn.prepare().expect("prepares")
+        };
+        let (_, install) = prepared.into_parts();
+        engine.install_prepared_action(install).expect("installs");
+    }
+
+    let active = active_world_rigs(tw.world(), tw.engine().action_state(), &excursions);
+    assert_eq!(active, vec![active_owned], "only active world rigs kept");
+
+    // `SurfaceDoneProvider::project_offer` must NOT fail with the record visit budget error even
+    // when >1,024 lifetime rigs exist, and must still include `npc`'s `field_crew` rig!
+    let done_action = port_handles
+        .surface_done
+        .clone()
+        .expect("surface_done action");
+    let done_outcome = mush_core::DefinitionRef::new(
+        mush_core::DefinitionKey::new(
+            mush_core::OwnerId::new(crate::NS).expect("owner"),
+            mush_core::DefinitionKind::new("outcome").expect("kind"),
+            mush_core::DefinitionId::new(SURFACE_DONE_OUTCOME).expect("id"),
+        ),
+        1,
+        done_action.digest(),
+    )
+    .expect("outcome ref");
+    let provider = SurfaceDoneProvider {
+        action: done_action.clone(),
+        outcome: done_outcome,
+        excursions,
+        charts: port_handles.families.charts.clone(),
+        surveys: port_handles.families.surveys.clone(),
+        quest_survey_evidence: port_handles.families.quest_survey_evidence.clone(),
+        pockets: port_handles.families.pockets.clone(),
+        sites: port_handles.families.sites.clone(),
+        inventory: port_handles.inventory.clone().expect("inventory"),
+        tools: port_handles.surface_tools.clone().expect("tools"),
+        black_box: None,
+    };
+    let query = LegalActionQuery::new(
+        mush_core::PrincipalId::Object { id: npc },
+        npc,
+        SubjectKey::Object { id: npc },
+        PerceivedRef::SelfActor,
+        1,
+        None,
+    )
+    .expect("query");
+    let offer = provider
+        .project_offer(&done_action, &query, tw.engine())
+        .expect("SurfaceDoneProvider must never lock out past 1,024 lifetime rigs");
+    let offer = offer.expect("NPC field_crew operator still receives a completion offer");
+    assert!(
+        offer
+            .fixed_parameters
+            .get("rigs")
+            .and_then(|r| r.get(leased_tv.0.to_string()))
+            .is_some(),
+        "NPC operator's active leased rig is present in offer"
+    );
+}

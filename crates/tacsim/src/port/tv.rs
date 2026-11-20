@@ -4746,13 +4746,12 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
         now,
         funds.map_or(0, |(_, available)| available),
     );
-    // 12. Doc 36 cut GC.9 (Q-36-34): an Active deposit pays the rig's restoration, assessed
-    // and priced here, capped at the deposit at step b. A write-off already keeps the whole
-    // deposit, and a deposit forfeit (now or by this settle) has nothing left to pay from.
-    let charge = if write_off
-        || record.status != TvLeaseStatus::Active
-        || settle_forfeits(&settle, &record)
-    {
+    // 12. Doc 36 cut GC.9 (Q-36-34) & M14: assess the rig's restoration on every non-write-off
+    // return. An Active deposit covers it up to the deposit with any excess opened as debt; a
+    // Forfeit or past-term forfeited return has no deposit left to apply, so the full restoration
+    // cost opens as debt consistent with `repossess()`. A write-off already keeps the whole
+    // deposit and is not quoted.
+    let charge = if write_off {
         None
     } else {
         let charge = restoration_charge(w, &port, record.tv).map_err(|error| {
@@ -5170,10 +5169,26 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
             ),
             None => RETURN_PREVIEW.to_owned(),
         };
-        let line = template
+        let mut line = template
             .replace("{mark}", &plan.record.mark)
             .replace("{deposit}", &money(ctx, plan.record.deposit_minor))
             .replace("{n}", &slot);
+        if !plan.write_off
+            && forfeit_now
+            && let Some(charge) = &plan.charge
+        {
+            let owed = charge.debt_minor(0, 0);
+            if owed > 0 {
+                line.push(' ');
+                line.push_str(&charge_text(
+                    ctx,
+                    "Its restoration: {lines}, {total} in all.",
+                    charge,
+                    0,
+                ));
+                line.push_str(&CHARGE_DEBT.replace("{debt}", &money(ctx, owed)));
+            }
+        }
         say(ctx, line);
         return Ok(());
     }
@@ -5258,20 +5273,23 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
             return Err(refuse_after_writes(ctx, LEASE_FAILED));
         }
     };
-    let charged = captured && charge.is_some();
+    let deposit_forfeit = !matches!(record.status, TvLeaseStatus::Active);
+    let charged = !deposit_forfeit && captured && charge.is_some();
     let forfeit = captured && !charged;
-    // Doc 41 cut RS.5 (Q-41-13): what the restoration costs beyond the deposit is a one-term
-    // debt, opened by the lessee's own return (their own debit authority).
-    if charged
-        && let Some((charge, account, _)) = charge
+    // Doc 41 cut RS.5 (Q-41-13) & M14: what the restoration costs beyond the deposit applied is a
+    // one-term debt, opened by the lessee's own return (their own debit authority). On a Forfeit
+    // lease the deposit was already forfeited for the unpaid term, so the full restoration cost
+    // becomes debt consistent with `repossess()`.
+    let owed = match (charge, deposit_forfeit) {
+        (Some((charge, _, _)), true) => charge.debt_minor(0, 0),
+        (Some((charge, _, _)), false) if charged => charge.debt_minor(record.deposit_minor, 0),
+        _ => 0,
+    };
+    if owed > 0
+        && let Some((_, account, _)) = charge
         && let Some(pilot_account) = plan.pilot_account
     {
-        open_debt(
-            ctx,
-            &record,
-            (pilot_account, account),
-            charge.debt_minor(record.deposit_minor, 0),
-        );
+        open_debt(ctx, &record, (pilot_account, account), owed);
     }
     // c. The placement: back in the shed (a written-off wreck stays where it fell).
     match plan.lessor.shed {
@@ -5295,7 +5313,7 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
     };
     put_tv_lease(ctx, &returned);
     // e. The reply.
-    let line = match charge {
+    let mut line = match charge {
         _ if plan.write_off => WRITTEN_OFF.replace("{mark}", &record.mark),
         _ if forfeit => RETURNED_FORFEIT.replace("{mark}", &record.mark),
         Some((charge, _, _)) if charged && charge.past_repair => RETURNED_PAST_REPAIR
@@ -5309,6 +5327,20 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
             .replace("{mark}", &record.mark)
             .replace("{deposit}", &money(ctx, record.deposit_minor)),
     };
+    if !plan.write_off
+        && forfeit
+        && owed > 0
+        && let Some((charge, _, _)) = charge
+    {
+        line.push(' ');
+        line.push_str(&charge_text(
+            ctx,
+            "Its restoration: {lines}, {total} in all.",
+            charge,
+            0,
+        ));
+        line.push_str(&CHARGE_DEBT.replace("{debt}", &money(ctx, owed)));
+    }
     say(ctx, line);
     Ok(())
 }
@@ -6910,5 +6942,42 @@ mod tests {
         let w = World::new_minimal();
         assert!(rig_lease_live(&w, &view));
         assert!(!rig_lease_live(&w, &sample()));
+    }
+
+    /// **M14**: restoration debt calculation for a `Forfeit` / past-term forfeited return matches
+    /// `repossess()` — with zero deposit applied toward restoration (`deposit_minor = 0`), the
+    /// full restoration total opens as debt, whereas an active lease deducts its deposit first.
+    #[test]
+    fn m14_forfeit_return_restoration_debt_matches_repossess() {
+        let charge = RestorationCharge {
+            lines: vec![("chassis".to_owned(), 45_000)],
+            total_minor: 45_000,
+            allowance_minor: 0,
+            past_repair: false,
+        };
+        let deposit = 30_000_i64;
+        // Active lease: deposit absorbs 30,000, leaving 15,000 debt.
+        assert_eq!(charge.charged_minor(deposit), 30_000);
+        assert_eq!(charge.debt_minor(deposit, 0), 15_000);
+        // Forfeit / past-term forfeited lease: deposit was already forfeited for unpaid rent, so
+        // full restoration (45,000) opens as debt, matching `repossess()`.
+        assert_eq!(charge.debt_minor(0, 0), 45_000);
+        // Even damage smaller than the original deposit opens as full debt on a Forfeit return.
+        let minor_damage = RestorationCharge {
+            lines: vec![("drill".to_owned(), 12_000)],
+            total_minor: 12_000,
+            allowance_minor: 0,
+            past_repair: false,
+        };
+        assert_eq!(minor_damage.debt_minor(deposit, 0), 0);
+        assert_eq!(minor_damage.debt_minor(0, 0), 12_000);
+        // Past-repair hull: wreck rule takes deposit whole; no extra restoration debt.
+        let past_repair = RestorationCharge {
+            lines: Vec::new(),
+            total_minor: 0,
+            allowance_minor: 0,
+            past_repair: true,
+        };
+        assert_eq!(past_repair.debt_minor(0, 0), 0);
     }
 }

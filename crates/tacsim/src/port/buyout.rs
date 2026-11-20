@@ -215,27 +215,25 @@ fn refuse_after_writes(ctx: &mut Ctx<'_>, line: String) -> CmdError {
     CmdError::msg(line)
 }
 
-/// **Whether the pilot has an open sale** (lead 2h): a quote they sell into that is
+/// **Whether the seller has an open sale** (lead 2h; M6): a quote they sell into that is
 /// activated, unsettled, and whose contract stands non-terminal.
-fn seller_quote_open(w: &World, pilot: ObjId) -> bool {
+fn seller_quote_open(w: &World, seller: &PrincipalId) -> bool {
     let (Some(market), Some(economy)) = (
         w.module_state::<MarketStore>(),
         w.module_state::<EconomyStore>(),
     ) else {
         return false;
     };
-    market
-        .quotes_of_seller(&PrincipalId::Object(pilot))
-        .any(|quote| {
-            quote.activated
-                && quote.settled.is_none()
-                && quote.contract.is_some_and(|contract| {
-                    economy
-                        .snapshot()
-                        .contract(contract)
-                        .is_some_and(|c| !c.state.is_terminal())
-                })
-        })
+    market.quotes_of_seller(seller).any(|quote| {
+        quote.activated
+            && quote.settled.is_none()
+            && quote.contract.is_some_and(|contract| {
+                economy
+                    .snapshot()
+                    .contract(contract)
+                    .is_some_and(|c| !c.state.is_terminal())
+            })
+    })
 }
 
 /// What is in flight on a hull (cut IC13).
@@ -267,6 +265,17 @@ pub(crate) fn in_flight_on(
     hold: mush_economy::VaultId,
     name: &str,
 ) -> Option<(Busy, String)> {
+    in_flight_for(w, hull, &PrincipalId::Object(pilot), hold, name)
+}
+
+/// The same flight and settlement guards for any selling principal (character or organization, M6).
+pub(crate) fn in_flight_for(
+    w: &World,
+    hull: ObjId,
+    seller: &PrincipalId,
+    hold: mush_economy::VaultId,
+    name: &str,
+) -> Option<(Busy, String)> {
     let store = w.module_state::<TacsimStore>()?;
     let line = |text: &str| text.replace("{name}", name);
     if matches!(store.voyage_state(hull), VoyageState::Unreadable) || pending_of(w, hull).is_some()
@@ -280,7 +289,7 @@ pub(crate) fn in_flight_on(
         }
         OrdersState::Present(_) | OrdersState::Absent => {}
     }
-    if goods_pending_aboard(w, EndpointRef(hold)).is_some() || seller_quote_open(w, pilot) {
+    if goods_pending_aboard(w, EndpointRef(hold)).is_some() || seller_quote_open(w, seller) {
         return Some((Busy::Goods, line(GOODS_WAIT)));
     }
     None

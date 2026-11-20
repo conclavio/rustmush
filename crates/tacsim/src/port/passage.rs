@@ -1011,6 +1011,46 @@ pub fn plan_passage_from(
     occupants: u32,
     depart_ic: i64,
 ) -> Result<PassagePlan, PlanError> {
+    plan_passage_from_place(
+        sky,
+        pack,
+        None,
+        pos_km,
+        vel_mps,
+        target_place,
+        drive,
+        dry_kg,
+        payload_kg,
+        occupants,
+        depart_ic,
+    )
+}
+
+/// Plan a direct free-flight passage from an optional departure place `from_place` (e.g. a
+/// surface extraction pad's `def.location`) at `(pos_km, vel_mps)` to `target_place` (M7).
+///
+/// Enforces [`site_end_ascent`] (1.20 TWR floor + surface ascent Δv) on both `from_place` (when
+/// it is a surface site) and `target_place` (when it is a surface site).
+///
+/// # Errors
+///
+/// Returns [`PlanError`] if `target_place` has no sky body, `payload_kg` exceeds the drive's
+/// ceiling, the throttle is out of bounds, a surface site end fails the 1.20 TWR law, or
+/// arithmetic overflows.
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+pub(crate) fn plan_passage_from_place(
+    sky: &Sky,
+    pack: &RulesPack,
+    from_place: Option<&CanonicalId>,
+    pos_km: PosKm,
+    vel_mps: [i32; 3],
+    target_place: &CanonicalId,
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    occupants: u32,
+    depart_ic: i64,
+) -> Result<PassagePlan, PlanError> {
     if payload_kg > drive.payload_ceiling_kg {
         return Err(PlanError::Overloaded {
             payload_kg,
@@ -1026,10 +1066,18 @@ pub fn plan_passage_from(
         });
     }
     let to_body = body_or_place_of(sky, pack, target_place)?;
-    let site_ascent = match site_end(pack, target_place) {
+    let from_ascent =
+        match from_place.and_then(|place| site_end(pack, place).map(|end| (place, end))) {
+            Some((place, end)) => site_end_ascent(drive, dry_kg, payload_kg, place, end)?,
+            None => 0,
+        };
+    let target_ascent = match site_end(pack, target_place) {
         Some(end) => site_end_ascent(drive, dry_kg, payload_kg, target_place, end)?,
         None => 0,
     };
+    let site_ascent = from_ascent
+        .checked_add(target_ascent)
+        .ok_or(PlanError::Overflow)?;
 
     let mut t1 = depart_ic;
     let mut dist_km: u64 = 0;
@@ -1936,5 +1984,91 @@ mod tests {
             panic!("remaining_dv_mps");
         };
         assert!(rem_dv > 500_000);
+    }
+
+    /// **M7**: `plan_passage_from_place` enforces departure-site 1.20 TWR and surface ascent Δv
+    /// when lifting from a surface extraction site (e.g. `occator_rim`), while allowing orbital
+    /// ports resolved via `def.location` (e.g. `stickney_yards` -> `phobos`) with zero site ascent.
+    #[test]
+    fn m7_plan_passage_from_place_enforces_departure_site_twr_and_ascent() {
+        let pack =
+            crate::pack::load_pack(crate::definitions::content::LANE_JSON).expect("shipped lane");
+        let sky = Sky::from_pack(&pack, &crate::config::EphemerisConfig::default());
+        let epoch = 1_700_000_000_i64;
+        let drive = flip();
+        let occator = cid("occator_rim");
+        let ceres = cid("ceres");
+        let ceres_pos = sky.position_km(&ceres, epoch).expect("ceres pos");
+        let ceres_vel = sky.velocity_mps(&ceres, epoch).unwrap_or([0, 0, 0]);
+
+        // 1. Low throttle (200 permille) at Occator fails the 1.20 TWR landing law.
+        let low_drive = drive.clone().at_throttle(200);
+        let low = plan_passage_from_place(
+            &sky,
+            &pack,
+            Some(&occator),
+            ceres_pos,
+            ceres_vel,
+            &ceres,
+            &low_drive,
+            240_000,
+            100_000,
+            1,
+            epoch,
+        );
+        assert!(
+            matches!(low, Err(PlanError::Landing { ref place, .. }) if place == "occator_rim"),
+            "low throttle lift off Occator must fail TWR: {low:?}"
+        );
+
+        // 2. Full throttle lift off Occator to Ceres halo succeeds and includes full surface ascent Δv.
+        let ok = plan_passage_from_place(
+            &sky,
+            &pack,
+            Some(&occator),
+            ceres_pos,
+            ceres_vel,
+            &ceres,
+            &drive,
+            240_000,
+            100_000,
+            1,
+            epoch,
+        )
+        .expect("full throttle lift off Occator succeeds");
+        let (_, surface_mg, radius_km) = site_end(&pack, &occator).expect("occator is a site");
+        let expected_ascent = ascent_mps(surface_mg, radius_km).expect("ascent");
+        assert!(
+            expected_ascent >= 300,
+            "Ceres surface ascent is substantial: {expected_ascent}"
+        );
+        assert!(
+            ok.legs[0].ascent_mps >= expected_ascent,
+            "departure ascent must be charged: {:?}",
+            ok.legs[0]
+        );
+
+        // 3. Stickney Yards (`def.location` = `stickney_yards`, not `def.venue` = `stickney`)
+        // resolves to Phobos and plans a free-flight undock cleanly.
+        let stickney = cid("stickney_yards");
+        let phobos = body_or_place_of(&sky, &pack, &stickney).expect("stickney_yards resolves");
+        assert_eq!(phobos.as_str(), "phobos");
+        let phobos_pos = sky.position_km(&phobos, epoch).expect("phobos pos");
+        let phobos_vel = sky.velocity_mps(&phobos, epoch).unwrap_or([0, 0, 0]);
+        let stickney_plan = plan_passage_from_place(
+            &sky,
+            &pack,
+            Some(&stickney),
+            phobos_pos,
+            phobos_vel,
+            &ceres,
+            &drive,
+            240_000,
+            80_000,
+            1,
+            epoch,
+        )
+        .expect("Stickney space undock plans cleanly");
+        assert!(stickney_plan.burn_t > 0);
     }
 }

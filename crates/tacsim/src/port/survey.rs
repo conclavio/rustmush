@@ -493,19 +493,36 @@ fn site_available(w: &World, offer: &SurveyOffer) -> bool {
 /// fact's id (`<offer>/<contract>…`): one still live means it is taken, and one settled on the
 /// logged fact means it was done and paid, which never reopens. A cancelled or expired one, or
 /// one settled on the cancellation, leaves it open again.
-fn open_on_board(w: &World, offer: &SurveyOffer) -> bool {
+fn open_on_board(w: &World, offer: &SurveyOffer, sponsor: &PrincipalId) -> bool {
     let Some(store) = w.module_state::<EconomyStore>() else {
         return false;
     };
+    open_on_board_in_snapshot(store.snapshot(), offer, sponsor)
+}
+
+fn open_on_board_in_snapshot(
+    snapshot: &mush_economy::EconomySnapshot,
+    offer: &SurveyOffer,
+    sponsor: &PrincipalId,
+) -> bool {
     let prefix = format!("{}/", offer.id);
-    !store.snapshot().contracts().any(|c| {
-        let names_offer = matches!(
-            c.consent.conditions.first(),
-            Some(TypedCondition::Fact { fact })
-                if fact.provider == FACT_PROVIDER
-                    && fact.kind == FACT_KIND
-                    && fact.id.starts_with(&prefix)
-        );
+    !snapshot.contracts().any(|c| {
+        // M15: only a commission issued by or accepted by `sponsor` (Occator) can close/hide an
+        // offer on the board; a player's self-accepted 1-party contract naming the fact prefix
+        // must never hide Occator's board listings.
+        let sponsored = c.issuer == *sponsor
+            || (c.consent.parties.contains(sponsor)
+                && c.acceptances
+                    .iter()
+                    .any(|a| a.party == *sponsor && a.consent_hash == c.consent_hash));
+        let names_offer = sponsored
+            && matches!(
+                c.consent.conditions.first(),
+                Some(TypedCondition::Fact { fact })
+                    if fact.provider == FACT_PROVIDER
+                        && fact.kind == FACT_KIND
+                        && fact.id.starts_with(&prefix)
+            );
         names_offer
             && (c.state.is_live()
                 || (matches!(c.state, ContractState::Settled { .. })
@@ -531,7 +548,7 @@ pub fn services(w: &World, venue: &mush_market::MarketId) -> Vec<mush_market::Se
     let poster_name = crate::surface::retrieval::principal_name(w, &occator);
     offers()
         .iter()
-        .filter(|offer| site_available(w, offer) && open_on_board(w, offer))
+        .filter(|offer| site_available(w, offer) && open_on_board(w, offer, &occator))
         .map(|offer| mush_market::Service {
             kind: mush_market::ServiceKind::Survey,
             side: mush_market::ServiceSide::Wanted,
@@ -1032,6 +1049,123 @@ mod payment_tests {
                 true
             )
             .is_none()
+        );
+    }
+
+    /// **M15**: a player's self-accepted 1-party `@contract` referencing `tacsim.survey` /
+    /// `survey.logged` must not hide Occator's survey commissions from the board; only a contract
+    /// issued by or accepted by Occator (`sponsor`) closes the offer on the board.
+    #[test]
+    fn m15_player_one_party_contract_cannot_hide_occator_survey_offer() {
+        use smol_str::SmolStr;
+        let offer = &offers()[0];
+        let occator = PrincipalId::Organization(mush_org::OrgId(10));
+        let attacker = PrincipalId::Object(ObjId(77));
+        let make_contract = |id: u64,
+                             issuer: PrincipalId,
+                             parties: Vec<PrincipalId>,
+                             acceptors: Vec<PrincipalId>,
+                             state: ContractState| {
+            let consent = ConsentSurface {
+                fact_consent: None,
+                managed: None,
+                parties,
+                terms: ContractTerms {
+                    consideration: Vec::new(),
+                    deliverables: Vec::new(),
+                    split: Vec::new(),
+                    remainder_to: AccountId(1),
+                    on_expiry: Expiry::Refund,
+                    outcomes: Vec::new(),
+                },
+                conditions: vec![TypedCondition::Fact {
+                    fact: mush_economy::ExternalRef {
+                        provider: SmolStr::new_static(FACT_PROVIDER),
+                        kind: SmolStr::new_static(FACT_KIND),
+                        id: SmolStr::new(format!("{}/{id}", offer.id)),
+                        revision: None,
+                    },
+                }],
+                deadline: None,
+                visibility: EconomicVisibility::Public,
+                scope: None,
+                adjudicator: None,
+                evidence: Vec::new(),
+            };
+            let hash = mush_economy::consent_hash(&issuer, &consent);
+            let acceptances = acceptors
+                .into_iter()
+                .map(|party| mush_economy::Acceptance {
+                    party,
+                    consent_hash: hash,
+                    at: 100,
+                })
+                .collect();
+            mush_economy::EconomicContract {
+                id: ContractId(id),
+                issuer,
+                name: SmolStr::new_static("spoof"),
+                consent_hash: hash,
+                consent,
+                acceptances,
+                satisfied: vec![None],
+                escrow: Vec::new(),
+                state,
+                settle_attempts: 0,
+                created_at: 100,
+                amendments: 0,
+                generation_started_at: 100,
+                disputed_at: None,
+                canon_published: None,
+                roster_locked: true,
+                deposits: Vec::new(),
+                agreements: Vec::new(),
+                pending: None,
+                roles: ContractRoles::default(),
+                real_deadline_extension_secs: 0,
+                paused_real_remaining_secs: None,
+                revision: 1,
+            }
+        };
+
+        let mut snap = EconomySnapshot::new();
+        // 1. Self-accepted 1-party Active contract by attacker: offer stays OPEN.
+        snap.put_contract(make_contract(
+            1,
+            attacker.clone(),
+            vec![attacker.clone()],
+            vec![attacker.clone()],
+            ContractState::Active,
+        ));
+        assert!(
+            open_on_board_in_snapshot(&snap, offer, &occator),
+            "1-party player contract must not hide Occator's survey offer"
+        );
+
+        // 2. 2-party contract naming Occator without Occator's acceptance: offer stays OPEN.
+        snap.put_contract(make_contract(
+            2,
+            attacker.clone(),
+            vec![attacker.clone(), occator.clone()],
+            vec![attacker.clone()],
+            ContractState::Active,
+        ));
+        assert!(
+            open_on_board_in_snapshot(&snap, offer, &occator),
+            "contract without Occator's acceptance must not hide Occator's survey offer"
+        );
+
+        // 3. Genuine 2-party Active contract accepted by Occator: offer is now taken (not open).
+        snap.put_contract(make_contract(
+            3,
+            attacker.clone(),
+            vec![attacker.clone(), occator.clone()],
+            vec![attacker, occator.clone()],
+            ContractState::Active,
+        ));
+        assert!(
+            !open_on_board_in_snapshot(&snap, offer, &occator),
+            "genuine Occator-accepted commission must mark offer taken on board"
         );
     }
 }

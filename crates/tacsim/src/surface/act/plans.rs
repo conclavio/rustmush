@@ -956,9 +956,41 @@ pub(crate) fn world_rigs(w: &World) -> Vec<ObjId> {
                     .filter_map(crate::port::owned::Held::present)
                     .filter_map(|row| row.rig().map(|rig| ObjId(rig.tv))),
             );
+            rigs.sort_unstable();
+            rigs.dedup();
             rigs
         })
         .unwrap_or_default()
+}
+
+/// **Active rigs in the world** (M17): rigs from [`world_rigs`] whose durable `tacsim.excursion`
+/// record currently holds live surface work (`excursion`, `act`, `run`, `field_crew`, or a live
+/// mind claim cursor). Idle/finished lifetime rigs are pruned so cumulative fleet growth past
+/// [`crate::surface::excursion::MAX_EXCURSIONS_WORLD`] never bloats offers or stalls surface work.
+#[must_use]
+pub(crate) fn active_world_rigs(
+    w: &World,
+    state: &mush_core::ActionStateStore,
+    excursions: &StateFamilyHandle<RigKey, RigRecord>,
+) -> Vec<ObjId> {
+    let mut rigs = world_rigs(w);
+    rigs.retain(|tv| {
+        state
+            .get(excursions, &RigKey(*tv))
+            .ok()
+            .flatten()
+            .is_some_and(|record| {
+                record.excursion.is_some()
+                    || record.act.is_some()
+                    || record.run.is_some()
+                    || record.field_crew.is_some()
+                    || record
+                        .claim
+                        .as_deref()
+                        .is_some_and(crate::surface::excursion::ClaimCursor::is_live)
+            })
+    });
+    rigs
 }
 
 /// Whole percent of a battery: `⌊cu × 100 / capacity⌋`.

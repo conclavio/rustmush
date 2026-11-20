@@ -65,6 +65,9 @@ pub const HULL_IN_BAY: &str = "The {name} is in a workshop's bay; stow her befor
 /// A leased rig in her bay: `{n}`, `{name}`.
 pub const HULL_RIG_ABOARD: &str =
     "Rig {n} is still in the {name}'s bay; return it to Occator before she is listed.";
+/// Occupants still aboard (M6): `{name}`.
+pub const HULL_OCCUPIED: &str =
+    "The {name} still has someone aboard; clear her before she is listed.";
 
 /// **The catalogue entry for `design`'s hulls** (doc 48 cut EX.2).
 #[must_use]
@@ -156,16 +159,17 @@ impl mush_market::AssetSale for HullSale {
         if !docked_where_asked(ctx, object) {
             return Some(Err(line(HULL_ELSEWHERE)));
         }
+        if crate::port::ship_mind::holds(ctx, object) {
+            return Some(Err(line(crate::port::ship_mind::MIND_HOLDS_HER)));
+        }
+        if !crate::field::carrier::souls_aboard(w, object).is_empty() {
+            return Some(Err(line(HULL_OCCUPIED)));
+        }
         let Some(hold) = crate::port::ship::hold_vault(w, &view) else {
             return Some(Err(line(HULL_HOLD_DARK)));
         };
-        // `in_flight_on` asks after the pilot's own open sales; a seller that is no person has
-        // none, and the hull itself never sells, so it stands in.
-        let pilot = match seller {
-            PrincipalId::Object(o) => *o,
-            _ => object,
-        };
-        if let Some((_, refusal)) = crate::port::buyout::in_flight_on(w, object, pilot, hold, &name)
+        if let Some((_, refusal)) =
+            crate::port::buyout::in_flight_for(w, object, seller, hold, &name)
         {
             return Some(Err(refusal));
         }
@@ -254,6 +258,18 @@ pub(crate) fn core_leg(w: &World, hull: ObjId, seller: ObjId) -> Option<Result<C
     let line = |text: &str| text.replace("{name}", &name);
     if crate::port::bay_work::held(w, hull) {
         return Some(Err(line(HULL_IN_BAY)));
+    }
+    if !matches!(
+        crate::port::ship::berth_of(w, hull),
+        crate::port::ship::Berth::Docked { .. }
+    ) {
+        return Some(Err(line(HULL_ELSEWHERE)));
+    }
+    if mush_sim::ic_exclusion::held_at_berth(w, hull).is_some() {
+        return Some(Err(line(crate::port::ship_mind::MIND_HOLDS_HER)));
+    }
+    if !crate::field::carrier::souls_aboard(w, hull).is_empty() {
+        return Some(Err(line(HULL_OCCUPIED)));
     }
     let Some(vault) = crate::port::ship::hold_vault(w, &view) else {
         return Some(Err(line(HULL_HOLD_DARK)));
@@ -493,11 +509,33 @@ mod tests {
             HULL_CORED,
             HULL_HOLD_LADEN,
             HULL_HOLD_DARK,
+            HULL_ELSEWHERE,
             HULL_IN_BAY,
             HULL_RIG_ABOARD,
+            HULL_OCCUPIED,
         ] {
             assert!(line.chars().count() < 120, "{line}");
         }
+    }
+
+    /// **M6**: `HULL_OCCUPIED` and `MIND_HOLDS_HER` are properly bounded and formatted, and
+    /// `in_flight_for` accepts an organization seller principal directly without collapsing it to
+    /// `PrincipalId::Object(hull)`.
+    #[test]
+    fn m6_in_flight_for_accepts_org_seller_principal() {
+        let tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(mush_market::MarketModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let org = PrincipalId::Organization(mush_org::OrgId(44));
+        let hull = ObjId(99);
+        let hold = mush_economy::VaultId(77);
+        assert!(
+            crate::port::buyout::in_flight_for(tw.world(), hull, &org, hold, "Salt Moth").is_none()
+        );
+        let occupied = HULL_OCCUPIED.replace("{name}", "Salt Moth");
+        assert!(occupied.contains("Salt Moth") && occupied.contains("someone aboard"));
     }
 
     #[test]
