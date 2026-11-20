@@ -726,7 +726,81 @@ Not built.
 
 ## LW.5
 
-Not built.
+**Survey** (at `563a24b6a`, #716's head with main merged; CR #711 in main):
+- **The seizure** (CR) took the hold's unheld strategic-ore lots whole (`consume_products`) and
+  the pool past a haul's hold (`InventoryFamilies::seize`), and credited nobody.
+- **The census** (`port/census.rs`) scans every pool and lot of a chain good. A seizure that
+  destroys ore therefore lowers `pools` or `lots`, and `balance` moves. Its `seized` term is fed
+  only by an in-flight burn's receipt (`seized_t`), which nothing sets today.
+- **The payee.** The picket's fine is paid to the Freeport Registry, the licence issuer
+  (`resolve_registry_principal_and_account`). The Registry is an organization at Ceres with an
+  account but no vendor row, so it has no storefront or vault. Stickney's authority,
+  `stickney_yards`, is a vendor.
+- **The market** lists only for a registered vendor (`list_goods`). `register_vendor` works at
+  runtime, one vendor per organization. A `Supply::Stock` ask draws from the vendor's vault, and
+  `restock_ask` raises a standing one. The stock clerk lists only content's `asks`, so an
+  authority missing from content needs its own listing call.
+
+**Built:**
+1. **`InventoryFamilies::seize(…, into)`.** With a destination, the taken units are credited to
+   that endpoint's pool (made when absent), and their lineage is carried as `transfer` carries it.
+   It is still one write of each pair.
+2. **`crate::port::seized`:**
+   - `seizing_authority(w)` is the one payee lookup: the Freeport Registry at the licence port,
+     today. KC.2 re-points it at the Republic customs office after the flip (Q-50-14).
+   - `ensure_vault(ctx, &authority)` uses the authority's vendor vault when it has one. Otherwise
+     it makes an organization-owned vault (a container in LIMBO) and registers the authority as
+     the port's market vendor. It runs at runtime, so there is no lane change.
+   - `offer(ctx, &authority, vault, good, units)` raises a standing ask from the vault, or lists
+     one ask of the whole pool. It posts as the port's stock clerk, at `SEIZED_PRICE_PERMILLE`
+     (750, provisional) of the good's reference (`price_minor`).
+   - The new vendor's vault gives the port's clerk its `vault.withdraw` grant, as the content
+     applier gives every vendor.
+   - `sells_at(w, venue, org)`: the venue gate's `port_seller` admits the authority at its port,
+     so a hull's hold may take delivery of seized goods as it does from the port's counters.
+3. **Customs:**
+   - The filing makes the authority's vault and carries it on the ruling as
+     `PendingCustomsRuling.into`.
+   - The prepare relocates the hold's lots there and seizes the pool into it, in the ruling's
+     transaction. The haul's hold release and its ledger failure from CR are unchanged.
+   - When the ruling lands, the space tick offers the ore.
+   - With no authority, the old destroy path is kept as a logged fallback.
+
+**Tests:**
+- `mush-inventory` `pool::seizure::tests::…` adds a seizure into a vault: the taken units land
+  there, free.
+- `domain_world` `voyage::lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port`:
+  - An indigent pilot's 51 t is seized at the picket.
+  - The census `balance` is the same before and after, and `seized` is 0.
+  - Her hold reads 0 and the Registry's vault 51.
+  - A Ceres ask of 51 t stands at three quarters of the live reference (600 cr a tonne today).
+  - A trader at Ceres buys a tonne. It moves from the vault to their hold, and the census still
+    balances.
+  - Mutation-checked: the seizure without its destination (the census loses 51,000 kg), and the
+    offer of no units (no ask). Each fails the story.
+- `voyage::cr_the_picket_reads_ore_held_as_a_lot…` now finds the lot in the authority's vault.
+- Re-run: `voyage::cr_*`, `sfr26c`, `sfr12`, `sfr6`; `domain_economy` `mill::sm12a_only_the_clerk…`
+  (its doc notes the transfer), `ex6_haul::` and `lw2_offense_record::`.
+
+**Divergences:**
+- **The authority's vault is made at runtime**, with the authority registered as its port's
+  market vendor on first use. This avoids a lane bump. Its container is a Thing in LIMBO, not a
+  storefront in a port room.
+- **The offer is posted when the ruling lands**, not by the stock clerk's daily walk, which reads
+  only content's asks. A refused offer is logged, and the ore waits for the next seizure's offer.
+- **The price is provisional:** three quarters of the good's live reference
+  (`good_reference_minor`, as a haul's declared value reads it), 600 cr a tonne of strategic ore
+  today.
+- **A sale pays the authority's own account**, the Registry's, through the market's vendor seam.
+  No share goes to a polity treasury; no polity has one yet (KC.2).
+
+**Not built:**
+- **The Republic customs office as payee after the flip.** KC.2 adds the office and re-points
+  `seizing_authority`.
+- **An authority that is already a vendor** (Stickney Yards, if a seizure is ever enforced there)
+  takes seized goods into its storefront. No story covers that path: today's only seizure is the
+  picket's, enforced by the Registry at Ceres.
+- **No lane bump.**
 
 ## OP.0
 

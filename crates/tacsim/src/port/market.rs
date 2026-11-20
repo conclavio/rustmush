@@ -424,6 +424,8 @@ impl VenueGate for PortVenueGate {
         port_of_venue(w, venue)
             .and_then(|(_, map)| map)
             .is_some_and(|map| vendor_orgs(map).contains(org))
+            // Doc 50 unit LW.5: the enforcing authority sells its seized goods at its port.
+            || crate::port::seized::sells_at(w, venue, *org)
     }
 
     /// Doc 39 cut IN.11: a part sells as its lots (the inventory's `PartGoods`, read here too).
