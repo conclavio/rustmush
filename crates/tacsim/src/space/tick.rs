@@ -6449,7 +6449,7 @@ mod interdictor_tests {
             friends
                 .bubble
                 .party_relation(admitted_party(3), CARRIER_PARTY),
-            Relation::Friendly,
+            Relation::Friend,
             "outside the operation every carrier is friendly to every other"
         );
     }
