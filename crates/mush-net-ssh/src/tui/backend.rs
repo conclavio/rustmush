@@ -31,6 +31,11 @@ pub const ENTER_ALT_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l";
 pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m";
 
 /// Upper bound on reported terminal columns; shared with [`crate::caps::MAX_WIDTH`].
+/// ratatui allocates a `width * height` cell buffer (twice — front and back),
+/// so a client that reports a window size in the tens of thousands (a
+/// pty/window-change request carries up to `u16::MAX` each) would OOM-abort
+/// the shared server process on `@tui` or the next resize paint. Clamp well
+/// beyond any real terminal so the allocation stays bounded (invariant T4).
 const MAX_WIDTH: u16 = crate::caps::MAX_WIDTH;
 /// Upper bound on reported terminal rows; shared with [`crate::caps::MAX_HEIGHT`].
 const MAX_HEIGHT: u16 = crate::caps::MAX_HEIGHT;

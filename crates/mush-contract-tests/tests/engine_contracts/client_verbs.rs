@@ -6,8 +6,9 @@
 //! registry the server composes. This file is that tie, in two contracts:
 //!
 //! 1. **Every command a client emits is a registered verb.** The TUI
-//!    (`crates/mush-net-ssh/src/tui/`) and the web client (`web/src/`) are
-//!    scanned for string literals shaped like a command line — a `+verb` or
+//!    (`crates/mush-net-ssh/src/tui/`), the web client (`web/src/`) and, since
+//!    48e L8 (clients:G12), the Unity client's runtime scripts
+//!    (`unity/Assets/_TacSim/Scripts/Runtime/`) are scanned for string literals shaped like a command line — a `+verb` or
 //!    `@verb` (with its `/switches`), a cockpit-style upper-case head
 //!    (`FIRE HOLD`, `HEADING {} QUIET`), or the argument of a key table's
 //!    `Run`/`Prefill` or a `cmd:`/`line:` entry — and each head must resolve in
@@ -35,7 +36,11 @@ use mush_contract_tests::scan;
 use crate::production_registry::production_composition;
 
 /// Where the clients emit command lines.
-const CLIENT_DIRS: [&str; 2] = ["crates/mush-net-ssh/src/tui", "web/src"];
+const CLIENT_DIRS: [&str; 3] = [
+    "crates/mush-net-ssh/src/tui",
+    "web/src",
+    "unity/Assets/_TacSim/Scripts/Runtime",
+];
 
 /// The crates whose `pub struct *Session*` types are a client's sessions.
 const SESSION_CRATES: [&str; 6] = [
@@ -280,7 +285,7 @@ fn literals(source: &str, is_rust: bool) -> Vec<ExtractedLiteral> {
 /// What a table entry's argument looks like in each client: the key tables'
 /// `Run("…")`/`Prefill("…")`/`PrefillRow("…")` (TUI) and `cmd: "…"` /
 /// `line: "…"` (web), and the send helpers.
-const TABLE_CALLS: [&str; 10] = [
+const TABLE_CALLS: [&str; 12] = [
     "Run(",
     "Prefill(",
     "PrefillRow(",
@@ -291,6 +296,9 @@ const TABLE_CALLS: [&str; 10] = [
     "helm(",
     "orders.push(",
     "commands.push(",
+    // Unity's send helpers.
+    "SendLine(",
+    "ExecutePlayerCommand(",
 ];
 
 /// Whether a JS/TS/Svelte literal at `start_offset` is a module path in an `import`/`export`
@@ -346,6 +354,8 @@ fn is_in_table_call(source: &str, start_offset: usize) -> bool {
         if let Some(rest) = tail.strip_suffix("format!(") {
             tail = rest.trim_end();
         } else if let Some(rest) = tail.strip_suffix("String::from(") {
+            tail = rest.trim_end();
+        } else if let Some(rest) = tail.strip_suffix('$') {
             tail = rest.trim_end();
         } else {
             break;
@@ -416,10 +426,12 @@ fn client_files(root: &Path) -> Vec<std::path::PathBuf> {
             !name.ends_with(".test.ts") && !name.contains("fixtures")
         }),
     );
+    // Unity's runtime C# (its EditMode tests live under `Scripts/Tests`).
+    files.extend(scan::files(&root.join(CLIENT_DIRS[2]), &["cs"], &[]));
     files
 }
 
-/// Every command-shaped literal the two clients emit.
+/// Every command-shaped literal the three clients emit.
 fn emitted(root: &Path) -> Vec<Emitted> {
     let mut out = Vec::new();
     for file in client_files(root) {
@@ -428,6 +440,7 @@ fn emitted(root: &Path) -> Vec<Emitted> {
         };
         let relative = scan::relative(root, &file);
         let is_rust = relative.ends_with(".rs");
+        let is_cs = relative.ends_with(".cs");
         if is_rust {
             if relative.ends_with("/tests.rs") || relative.contains("/tests/") {
                 continue;
@@ -440,10 +453,15 @@ fn emitted(root: &Path) -> Vec<Emitted> {
         for lit in literals(&source, is_rust) {
             let text = lines.get(lit.line - 1).copied().unwrap_or_default();
             // A JS/TS module path (`import … from "@codemirror/state"`) is no command.
-            if !is_rust && is_js_module_specifier(&source, lit.offset, text) {
+            if !is_rust && !is_cs && is_js_module_specifier(&source, lit.offset, text) {
                 continue;
             }
             let in_table = is_in_table_call(&source, lit.offset);
+            // Unity's labels are upper case (`CRADLE`, `ROCK`): there a line is a `+`/`@`
+            // command or one passed to a send helper, never a bare upper-case label.
+            if is_cs && !in_table && !lit.text.starts_with(['+', '@']) {
+                continue;
+            }
             if let Some((head, switches)) = command_of(&lit.text, in_table) {
                 out.push(Emitted {
                     head,

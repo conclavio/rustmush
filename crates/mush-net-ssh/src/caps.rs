@@ -24,10 +24,22 @@ pub const DEFAULT_WIDTH: u16 = 80;
 pub const DEFAULT_HEIGHT: u16 = 24;
 /// Upper bound on accepted SSH terminal columns (`pty-req` / `window-change`).
 /// Bounded well above any real terminal while preventing `u16::MAX × u16::MAX`
-/// pixel or ratatui allocations from OOM-killing the server (`SSH-C-01`).
+/// pixel or ratatui allocations from OOM-killing the server (`SSH-C-01` / CRIT-2 / TUI invariant T4).
 pub const MAX_WIDTH: u16 = 400;
 /// Upper bound on accepted SSH terminal rows; see [`MAX_WIDTH`].
 pub const MAX_HEIGHT: u16 = 200;
+
+/// Clamp an SSH PTY dimension (`col_width` or `row_height`) to `1..=max`,
+/// preserving `0` ("unspecified", which [`detect_caps`] maps to
+/// [`DEFAULT_WIDTH`]/[`DEFAULT_HEIGHT`]).
+#[must_use]
+pub(crate) fn clamp_pty_dim(raw: u32, max: u16) -> u16 {
+    if raw == 0 {
+        0
+    } else {
+        u16::try_from(raw).unwrap_or(max).clamp(1, max)
+    }
+}
 
 /// Color support implied by `TERM` and `COLORTERM`.
 pub fn detect_color_depth(term: Option<&str>, colorterm: Option<&str>) -> ColorDepth {
@@ -78,12 +90,12 @@ pub fn detect_caps(
         width: if width == 0 {
             DEFAULT_WIDTH
         } else {
-            width.min(MAX_WIDTH)
+            width.clamp(1, MAX_WIDTH)
         },
         height: if height == 0 {
             DEFAULT_HEIGHT
         } else {
-            height.min(MAX_HEIGHT)
+            height.clamp(1, MAX_HEIGHT)
         },
         utf8: detect_utf8(lang, lc_all),
         structured: false,
@@ -163,6 +175,21 @@ mod tests {
         assert!(!caps.structured);
         let caps = detect_caps(Some("xterm"), None, None, None, 120, 40);
         assert_eq!((caps.width, caps.height), (120, 40));
+        let clamped = detect_caps(Some("xterm"), None, None, None, u16::MAX, u16::MAX);
+        assert_eq!((clamped.width, clamped.height), (MAX_WIDTH, MAX_HEIGHT));
+    }
+
+    #[test]
+    fn caps_and_pty_dim_clamp_oversized_while_preserving_zero() {
+        assert_eq!(clamp_pty_dim(0, MAX_WIDTH), 0);
+        assert_eq!(clamp_pty_dim(0, MAX_HEIGHT), 0);
+        assert_eq!(clamp_pty_dim(120, MAX_WIDTH), 120);
+        assert_eq!(clamp_pty_dim(40, MAX_HEIGHT), 40);
+        assert_eq!(clamp_pty_dim(u32::MAX, MAX_WIDTH), MAX_WIDTH);
+        assert_eq!(clamp_pty_dim(u32::MAX, MAX_HEIGHT), MAX_HEIGHT);
+        assert_eq!(clamp_pty_dim(10_000, MAX_WIDTH), MAX_WIDTH);
+        assert_eq!(clamp_pty_dim(10_000, MAX_HEIGHT), MAX_HEIGHT);
+
         let clamped = detect_caps(Some("xterm"), None, None, None, u16::MAX, u16::MAX);
         assert_eq!((clamped.width, clamped.height), (MAX_WIDTH, MAX_HEIGHT));
     }

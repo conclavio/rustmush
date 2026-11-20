@@ -341,6 +341,19 @@ namespace TacSim.Tests
         }
 
         [Test]
+        public void HoldingRowButtons_FollowServerActions()
+        {
+            var row = new MindHoldingRowView { Kind = "paid", Number = 7 };
+            row.Actions.Add("renew_pay");
+            row.Actions.Add("renew_decline");
+            System.Action act = () => { };
+
+            Assert.IsNull(TacSimMindTerminal.IfRowOffers(row, "renew", act), "renew is not offered once a renewal is pending");
+            Assert.AreSame(act, TacSimMindTerminal.IfRowOffers(row, "renew_pay", act));
+            Assert.IsNull(TacSimMindTerminal.IfRowOffers(null, "renew_pay", act));
+        }
+
+        [Test]
         public void MindTerminal_OwnerSealing_UsesOwnerLicenceNeverFiledId_AndRespectsServerActions()
         {
             using var ws = new MushWsClient();

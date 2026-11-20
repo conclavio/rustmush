@@ -917,15 +917,13 @@ fn engagements_commanded(lines: &[LedgerEvent], unit: ObjId) -> usize {
 
 /// **Story 3** (this module's head): a player leader's `CONCENTRATE`, jammed, taken and ended.
 ///
-/// **On two workers, not the paused clock** (doc 43 TS.10a). The host answers the order by
-/// reading the hull's frame at its visits (`field::orders::concentrate`): WILCO once the hull
-/// stands on the held row, NEGATIVE once that row reads destroyed and it was never seen on it.
-/// The intruder is fragile, so the first round kills it. With world and arena on one clock, at
-/// the production rate, the kill can fall between two visits, and the hull that concentrated and
-/// fired is answered NEGATIVE. At five world seconds to the arena's one the visits caught it
-/// standing first. Which answer is right is a game question, owed to the owner; until it is
-/// ruled the story keeps the clock it was written on.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// **On the paused clock, world and arena at the production rate** (doc 43 TS.10a). The host
+/// answers the order by reading the hull's frame at its visits (`field::orders::concentrate`).
+/// The intruder is fragile, so the first round kills it, and the kill can fall between two
+/// visits: the first visit that sees the order stand finds its row already destroyed. That is
+/// WILCO, the order done (the owner's ruling, 2026-11-19); NEGATIVE is for a hull that holds no
+/// row for it. This story is that rule's acceptance at the production rate.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn mw14c_a_leaders_concentrate_puts_a_hull_that_holds_the_contact_on_it() {
     let mut setup = close_in(escorted());

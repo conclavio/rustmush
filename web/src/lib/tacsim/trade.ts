@@ -67,6 +67,7 @@ export interface PortTradeSnapshot {
   nextAfterId: number | null;
   quotes: OpenBuyerQuote[];
   stowage: StowageSnapshot;
+  /** The helm hull's dbref as the server writes it (`#123`); `null` with no hull. */
   hullId: string | null;
   hullName: string | null;
   hullDocked: boolean;
@@ -90,12 +91,25 @@ export interface PendingQuoteLatch {
   requestedAtMs: number;
 }
 
+/**
+ * The lane's venue words (48e L8, clients:G7): every `port` entry's `venue` in
+ * `crates/tacsim/content/lane/ceres_phobos.json`, with its location's label.
+ * `+ship/undock`, `+haul/post to=` and `+escort/post to=` take exactly these;
+ * `kirkwood`, `vesta` and `aitken` name no venue and were refused.
+ */
 export const CORRIDOR_DESTINATIONS: ReadonlyArray<{ id: string; label: string; body: string }> = [
-  { id: "ceres", label: "Ceres Freeport", body: "1 Ceres (Main Belt Hub)" },
-  { id: "stickney", label: "Stickney Yards", body: "Phobos / Mars Orbit" },
-  { id: "luna", label: "Aitken Highport", body: "Lunar South Pole" },
-  { id: "deimos", label: "Voltaire Anchorage", body: "Deimos / Mars Orbit" },
-  { id: "titan", label: "Ligeia Terminal", body: "Titan / Saturn Orbit" },
+  { id: "ceres", label: "Ceres Freeport", body: "Ceres · port" },
+  { id: "stickney", label: "Stickney Yards", body: "Phobos · port" },
+  { id: "luna", label: "Aitken Highport", body: "Luna · port" },
+  { id: "deimos", label: "Voltaire Anchorage", body: "Deimos · port" },
+  { id: "titan", label: "Ligeia Terminal", body: "Titan · port" },
+  { id: "commons", label: "Freeport Commons", body: "Ceres · extraction" },
+  { id: "kerwan", label: "Kerwan Floor", body: "Ceres · extraction" },
+  { id: "ahuna", label: "Ahuna Flank", body: "Ceres · extraction" },
+  { id: "juling", label: "Juling Shadow", body: "Ceres · extraction" },
+  { id: "occator", label: "Occator Rim", body: "Ceres · extraction" },
+  { id: "rheasilvia", label: "Rheasilvia Commons", body: "Vesta · extraction" },
+  { id: "urvara", label: "Urvara Reach", body: "Ceres · extraction" },
 ];
 
 function asObj(v: unknown): Record<string, unknown> | null {
@@ -209,9 +223,9 @@ export function formatMinorCredits(minor: number): string {
 
 function parseListingRow(
   rowVal: unknown,
-  defaultSide: "ask" | "bid",
   goodsById: ReadonlyMap<string, GoodItemDef>,
   fallbackVenue: string,
+  defaultSide: "ask" | "bid" = "ask",
 ): PortListingRow | null {
   const r = asObj(rowVal);
   if (!r) return null;
@@ -261,6 +275,15 @@ function parseListingRow(
   };
 }
 
+/**
+ * Decodes a `port.trade` keyframe as the server builds it
+ * (`tacsim::client_sync::build_port_trade_frame`; the shared fixture
+ * `fixtures/port/port_trade.json` is a real frame, held to the live shape by
+ * tacsim's `port_trade_frame_matches_the_clients_shared_fixture`). 48e L8
+ * (clients:G2): reads the server's exact keys — `balance_minor`, `port_name`,
+ * `listings[].available_qty`, `next_after`, `open_quotes`, `ship.hull_name`,
+ * `ship.hull_id`, `ship.stowage`, `berth.docked_hulls` — cleanly.
+ */
 export function decodePortTradeFeed(
   data: unknown,
   goodsById: ReadonlyMap<string, GoodItemDef>,
@@ -278,17 +301,18 @@ export function decodePortTradeFeed(
       : "venue" in root && root["venue"] === null
         ? ""
         : previous.venueId;
+  const hasPortField =
+    "port_name" in root || "aboard_docked_port" in root || "port" in root;
   const portName =
     asStr(root["port_name"]) ||
     asStr(root["aboard_docked_port"]) ||
     asStr(root["port"]) ||
     (venueObj ? asStr(venueObj["port"]) : "") ||
-    previous.portName;
+    (hasPortField ? "" : previous.portName);
   const venueLabel =
     (venueObj ? asStr(venueObj["label"], asStr(venueObj["name"])) : "") ||
     asStr(root["venue_label"]) ||
-    asStr(root["port_name"]) ||
-    asStr(root["aboard_docked_port"]) ||
+    portName ||
     venueId ||
     previous.venueLabel;
 
@@ -313,34 +337,25 @@ export function decodePortTradeFeed(
   const bids: PortListingRow[] = appendPage || !hasListingsField ? [...previous.bids] : [];
   const seenIds = new Set<number>([...asks.map((a) => a.listingId), ...bids.map((b) => b.listingId)]);
 
-  const listingsArr = asArr(root["listings"]);
-  if (listingsArr) {
-    for (const item of listingsArr) {
-      const parsed = parseListingRow(item, "ask", goodsById, venueLabel);
-      if (!parsed || seenIds.has(parsed.listingId)) continue;
+  for (const item of asArr(root["listings"]) ?? []) {
+    const parsed = parseListingRow(item, goodsById, venueLabel, "ask");
+    if (!parsed || seenIds.has(parsed.listingId)) continue;
+    seenIds.add(parsed.listingId);
+    if (parsed.side === "bid") bids.push(parsed);
+    else asks.push(parsed);
+  }
+  for (const item of asArr(root["asks"]) ?? []) {
+    const parsed = parseListingRow(item, goodsById, venueLabel, "ask");
+    if (parsed && !seenIds.has(parsed.listingId)) {
       seenIds.add(parsed.listingId);
-      if (parsed.side === "bid") bids.push(parsed);
-      else asks.push(parsed);
+      asks.push(parsed);
     }
   }
-  const asksArr = asArr(root["asks"]);
-  if (asksArr) {
-    for (const item of asksArr) {
-      const parsed = parseListingRow(item, "ask", goodsById, venueLabel);
-      if (parsed && !seenIds.has(parsed.listingId)) {
-        seenIds.add(parsed.listingId);
-        asks.push(parsed);
-      }
-    }
-  }
-  const bidsArr = asArr(root["bids"]);
-  if (bidsArr) {
-    for (const item of bidsArr) {
-      const parsed = parseListingRow(item, "bid", goodsById, venueLabel);
-      if (parsed && !seenIds.has(parsed.listingId)) {
-        seenIds.add(parsed.listingId);
-        bids.push(parsed);
-      }
+  for (const item of asArr(root["bids"]) ?? []) {
+    const parsed = parseListingRow(item, goodsById, venueLabel, "bid");
+    if (parsed && !seenIds.has(parsed.listingId)) {
+      seenIds.add(parsed.listingId);
+      bids.push(parsed);
     }
   }
 
@@ -431,9 +446,6 @@ export function decodePortTradeFeed(
     simulator = null;
   }
 
-  const allLoaded = [...asks, ...bids];
-  const maxId = allLoaded.reduce((acc, r) => (r.listingId > acc ? r.listingId : acc), 0);
-
   let hasMore: boolean;
   let nextAfterId: number | null;
   if ("next_after" in root) {
@@ -446,6 +458,8 @@ export function decodePortTradeFeed(
       nextAfterId = null;
     }
   } else {
+    const allLoaded = [...asks, ...bids];
+    const maxId = allLoaded.reduce((acc, r) => (r.listingId > acc ? r.listingId : acc), 0);
     hasMore = asBool(root["has_more"], false);
     nextAfterId = hasMore && maxId > 0 ? maxId : null;
   }

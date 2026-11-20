@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
-import * as THREE from "three";
+import type * as THREE from "three";
 
 import {
   computeProceduralWaveformSamples,
@@ -15,6 +15,7 @@ import {
   AMBER_RIG_RAMP,
   BLUE_TEAM_RAMP,
   buildArticulatedFallbackUnitGroup,
+  disposeObjectTree,
   buildThreeMeshFromHullData,
   carveMupkVisualHull,
   decodeMupkModel,
@@ -73,6 +74,23 @@ describe("Track 8: .mupk v5 3D visual-hull carver & procedural WebAudio", () => 
     const fallbackRover = buildArticulatedFallbackUnitGroup("prospector_rover", AMBER_RIG_RAMP);
     expect(fallbackMech.children.length).toBeGreaterThanOrEqual(8);
     expect(fallbackRover.children.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("disposes every geometry and material of a swapped-out fallback chassis (48e L8, clients:G17)", () => {
+    const fallback = buildArticulatedFallbackUnitGroup("sim_mech", RED_TEAM_RAMP);
+    const released = new Set<unknown>();
+    const owned = new Set<unknown>();
+    fallback.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      for (const res of [mesh.geometry, ...(Array.isArray(mesh.material) ? mesh.material : [mesh.material])]) {
+        owned.add(res);
+        res.addEventListener("dispose", () => released.add(res));
+      }
+    });
+    expect(owned.size).toBeGreaterThan(2);
+    disposeObjectTree(fallback);
+    expect(released).toEqual(owned);
   });
 
   it("rejects invalid .mupk headers and unsupported format versions", () => {

@@ -1403,3 +1403,444 @@ fn m6_cache_is_bounded_lru_and_eviction_keeps_a_held_ast_executable() {
     );
     assert_eq!(answer.unwrap().memory, br#"{"answer":42}"#);
 }
+
+// ---------------------------------------------------------------------------
+// Tier 0 security hardening regressions (CRIT-6, CRIT-7, HIGH-16)
+// ---------------------------------------------------------------------------
+
+/// CRIT-6: `Array::pad` treats `len <= 0` as a no-op, rejects `len > MAX_ARRAY_SIZE`
+/// cleanly, and uses checked arithmetic so release-mode `u64` wraparound cannot
+/// trigger `SIGABRT` / OOM.
+#[test]
+fn crit6_array_pad_rejects_oversized_and_checked_overflow_and_ignores_non_positive() {
+    let sandbox = sandbox();
+
+    // Non-positive lengths and lengths <= current len are clean no-ops.
+    let (res, _) = think(
+        &sandbox,
+        "fn think(a, b) { \
+           let v = [1, 2]; \
+           v.pad(0, 9); \
+           v.pad(-5, 9); \
+           v.pad(-9223372036854775807, 9); \
+           v.pad(1, 9); \
+           v.pad(2, 9); \
+           this.v = v; \
+         }",
+    );
+    assert_eq!(wrote(&res), r#"{"v":[1,2]}"#);
+
+    // Valid pad works normally.
+    let (res, _) = think(
+        &sandbox,
+        "fn think(a, b) { let v = [1, 2]; v.pad(5, 7); this.v = v; }",
+    );
+    assert_eq!(wrote(&res), r#"{"v":[1,2,7,7,7]}"#);
+
+    // Exceeding MAX_ARRAY_SIZE directly fails cleanly with Fault::Limit.
+    let (res, _) = think(&sandbox, "fn think(a, b) { let v = []; v.pad(8193, 0); }");
+    assert_eq!(res, Err(Fault::Limit));
+
+    // Exact release-mode u64 wraparound payload: (8191 + 1) * (1 << 51) == 2^64 == 0 (mod 2^64).
+    let started = Instant::now();
+    let (res, _) = think(
+        &sandbox,
+        "fn think(a, b) { \
+           let item = []; \
+           item.pad(8191, 0); \
+           let v = []; \
+           v.pad(2251799813685248, item); \
+         }",
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(res, Err(Fault::Limit));
+
+    // Target length <= MAX_ARRAY_SIZE whose nested element total exceeds MAX_ARRAY_SIZE.
+    let (res, _) = think(
+        &sandbox,
+        "fn think(a, b) { \
+           let item = []; \
+           item.pad(50, 0); \
+           let v = []; \
+           v.pad(200, item); \
+         }",
+    );
+    assert_eq!(res, Err(Fault::Limit));
+
+    // Nested string bytes exceeding MAX_STRING_BYTES.
+    let (res, _) = think(
+        &sandbox,
+        "fn think(a, b) { \
+           let s = \"x\"; \
+           for i in 0..8 { s += s; } \
+           let v = []; \
+           v.pad(40, s); \
+         }",
+    );
+    assert_eq!(res, Err(Fault::Limit));
+}
+
+/// CRIT-7: container nesting depth is capped at `MAX_CONTAINER_DEPTH` (8) across
+/// mutators, builders, variable reads, equality, formatting, and interpolation,
+/// without overflowing a 2 MiB thread stack.
+#[test]
+fn crit7_container_nesting_depth_is_capped_at_eight_on_small_stack() {
+    std::thread::Builder::new()
+        .name("mind-crit7-depth".to_owned())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let sandbox = sandbox();
+            assert_eq!(mush_mind::MAX_CONTAINER_DEPTH, 8);
+
+            // Depth-8 containers work cleanly for equality, formatting, and to_json.
+            let (ok, _) = think(
+                &sandbox,
+                "fn think(a, b) { \
+                   let a = [1]; for i in 0..7 { a = [a]; } \
+                   let b = [1]; for i in 0..7 { b = [b]; } \
+                   let c = [2]; for i in 0..7 { c = [c]; } \
+                   let m = #{a: 1}; for i in 0..7 { m = #{a: m}; } \
+                   let s1 = a.to_string(); \
+                   let s2 = m.to_debug(); \
+                   let j = m.to_json(); \
+                   print(a); \
+                   debug(m); \
+                   this.eq = a == b; \
+                   this.ne = a != c; \
+                   this.ok = s1 != \"\" && s2 != \"\" && j != \"\"; \
+                 }",
+            );
+            assert_eq!(wrote(&ok), r#"{"eq":true,"ne":true,"ok":true}"#);
+
+            // Every container-building, mutating, formatting, and equality path
+            // past depth 8 must fault with Fault::Limit.
+            let deep_cases = [
+                // Literal reassignment loops (array & map)
+                "fn think(a, b) { let x = [1]; for i in 0..20 { x = [x]; } }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..20 { m = #{k: m}; } }",
+                // Mutators: push, insert, set, pad, +=, append, +, splice
+                "fn think(a, b) { let x = [1]; for i in 0..20 { let y = []; y.push(x); x = y; } }",
+                "fn think(a, b) { let x = [1]; for i in 0..20 { let y = []; y.insert(0, x); x = y; } }",
+                "fn think(a, b) { let x = [1]; for i in 0..20 { let y = [0]; y.set(0, x); x = y; } }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = []; y.pad(1, x); }",
+                "fn think(a, b) { let x = [1]; for i in 0..20 { let y = []; y += [x]; x = y; } }",
+                "fn think(a, b) { let x = [1]; for i in 0..20 { let y = []; y += #{k: x}; x = y; } }",
+                // With `fast_operators` left at Rhai's default to preserve deterministic
+                // `RHAI_ABI` op counts, a single `y += [x]` / `this.y += [x]` cannot
+                // pass any subsequent read, op, format, equality, or loop growth.
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = []; y += [x]; let z = y; }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = []; y += [x]; y += [1]; }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } this.y = []; this.y += [x]; let eq = this.y == this.y; }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } this.y = []; this.y += [x]; let s = this.y.to_string(); }",
+                "fn think(a, b) { this.y = [1]; loop { let t = [this.y]; this.y += t; } }",
+                "fn think(a, b) { this.k = 1; loop { let t = [this.k]; this.k = t; } }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = []; y.append([x]); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = [] + [x]; }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = [0]; y.splice(0, 1, [x]); }",
+                // Index and property assignment loops
+                "fn think(a, b) { let x = [1]; for i in 0..20 { let y = [0]; y[0] = x; x = y; } }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..20 { let n = #{}; n.k = m; m = n; } }",
+                // Map mutators: set, mixin, +, fill_with
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..20 { let n = #{}; n.set(\"k\", m); m = n; } }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let n = #{}; n.mixin(#{k: m}); }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let n = #{} + #{k: m}; }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let n = #{}; n.fill_with(#{k: m}); }",
+                // Direct depth-9 expression into ==, !=, print, debug, to_string, to_debug, interpolation, to_json
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let eq = [x] == [x]; }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let ne = [x] != [x]; }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let eq = #{k: m} == #{}; }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } print([x]); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } debug([x]); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let s = [x].to_string(); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let s = [x].to_debug(); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let s = `${[x]}`; }",
+                // Even inside try/catch, latched interpolation limit still faults Limit
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } try { let s = `${[x]}`; } catch {} this.k = 1; }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let j = (#{k: m}).to_json(); }",
+                // Callback wrapping via map & reduce
+                "fn wrap(x) { [x] } fn think(a, b) { let v = [1]; for i in 0..20 { v = v.map(wrap); } }",
+                "fn acc(r, x) { [r] } fn think(a, b) { let v = []; v.pad(50, 0); v.reduce(acc, 1); }",
+            ];
+            for src in deep_cases {
+                let (res, _) = think(&sandbox, src);
+                assert_eq!(res, Err(Fault::Limit), "expected Fault::Limit for: {src}");
+            }
+
+            // A single `this.y += [x]` leaving a depth-9 value in `this` is
+            // rejected by memory shape validation and torn down iteratively.
+            assert_eq!(
+                think(
+                    &sandbox,
+                    "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } this.y = []; this.y += [x]; }"
+                )
+                .0,
+                Err(Fault::Memory(MemError::Value("y".to_string())))
+            );
+
+            // Compile-time rejections: static container-literal nesting > 8 and
+            // `this` self-nesting bypasses (including 18-bracket loops that
+            // would otherwise reach ~3,500-4,000 depth inside 4,500 ops).
+            let stock = Sandbox::new(&EngineLimits::default(), |_| {});
+            let compile_rejected = [
+                // 18-bracket `this` & `this.k` loops (CRIT-7 verifier payloads)
+                "fn think(a, b) { loop { this = [[[[[[[[[[[[[[[[[[this]]]]]]]]]]]]]]]]]]; } }",
+                "fn think(a, b) { this.k = 1; loop { this.k = [[[[[[[[[[[[[[[[[[this.k]]]]]]]]]]]]]]]]]]; } }",
+                // 1-bracket `this` / `this.k` / `this["k"]` / `+=` / ping-pong / direct bare `this`
+                "fn think(a, b) { loop { this = [this]; } }",
+                "fn think(a, b) { this.k = 1; loop { this.k = [this.k]; } }",
+                "fn think(a, b) { this.y = [1]; loop { this.y += [this.y]; } }",
+                "fn think(a, b) { this.y = []; loop { this.y += this; } }",
+                "fn think(a, b) { this[\"k\"] = 1; loop { this[\"k\"] = [this[\"k\"]]; } }",
+                "fn think(a, b) { this.k = 1; loop { this.k = this; } }",
+                "fn think(a, b) { this = [0]; loop { this[0] = this; } }",
+                "fn think(a, b) { this.a = 1; this.b = 1; loop { this.a = [this.b]; this.b = [this.a]; } }",
+                "fn think(a, b) { this.k = 1; loop { this = #{k: [this.k]}; } }",
+                // Helper-function indirection without local variables
+                "fn make() { [this.k] } fn think(a, b) { this.k = 1; loop { this.k = this.make(); } }",
+                "fn make() { ([this.k]) } fn think(a, b) { this.k = 1; loop { this.k = this.make(); } }",
+                "fn make() { extract([this.k], 0, 1) } fn think(a, b) { this.k = 1; loop { this.k = this.make(); } }",
+                "fn wrap() { this } fn think(a, b) { this = [0]; loop { this[0] = this.wrap(); } }",
+                // Static container literal nesting > 8 (top-level passes Rhai's 48 expr depth)
+                "let x = [[[[[[[[[1]]]]]]]]]; fn think(a, b) {}",
+                "let m = #{a:#{a:#{a:#{a:#{a:#{a:#{a:#{a:#{a:1}}}}}}}}}; fn think(a, b) {}",
+            ];
+            for src in compile_rejected {
+                assert!(
+                    matches!(compile(&stock, src), Err(CompileError::Parse(_))),
+                    "expected compile-time Parse refusal for: {src}"
+                );
+            }
+
+            // Legitimate mind patterns (field_pilot.rhai, starter.rs, minds_rhai.rs)
+            // still compile and execute cleanly.
+            let (legit, _) = think(
+                &sandbox,
+                "fn pass_mem(m) { m } \
+                 fn think(a, b) { \
+                   if !(\"last\" in this) { this.last = [10, 20]; } \
+                   let at = [this.last[0], this.last[1]]; \
+                   this.before = this.last; \
+                   this.has = \"last\" in this; \
+                   this = pass_mem(this); \
+                   this.sum = at[0] + at[1]; \
+                 }",
+            );
+            assert_eq!(
+                wrote(&legit),
+                r#"{"before":[10,20],"has":true,"last":[10,20],"sum":30}"#
+            );
+        })
+        .expect("spawn")
+        .join()
+        .expect("crit7 depth thread must not overflow stack or panic");
+}
+
+/// CRIT-7: `memory::from_map` (`holds_float`) must handle arbitrarily deep
+/// `Dynamic` containers on a 2 MiB stack without overflowing.
+#[test]
+fn crit7_holds_float_does_not_overflow_stack_on_deep_dynamic() {
+    std::thread::Builder::new()
+        .name("mind-crit7-holds-float".to_owned())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            // Build a 2,000-level deep Array holding a float at the leaf.
+            let mut deep = Dynamic::from_float(1.5);
+            for _ in 0..2_000 {
+                deep = Dynamic::from_array(vec![deep]);
+            }
+            let mut map = Map::new();
+            map.insert("deep".into(), deep);
+            assert_eq!(
+                memory::from_map(&map, &CLASS_I),
+                Err(MemFault::Shape(MemError::Value("deep".to_string())))
+            );
+            // Disassemble iteratively so Rust's recursive Drop does not overflow
+            // the 2 MiB test stack when cleaning up the fixture.
+            let mut cursor = map.remove("deep");
+            while let Some(val) = cursor {
+                cursor = val
+                    .try_cast::<mush_mind::rhai::Array>()
+                    .and_then(|mut a| a.pop());
+            }
+
+            // Floats nested within MAX_CONTAINER_DEPTH are still reported as MemFault::Float.
+            let mut shallow = Dynamic::from_float(2.25);
+            for _ in 0..4 {
+                shallow = Dynamic::from_array(vec![shallow]);
+            }
+            let mut shallow_map = Map::new();
+            shallow_map.insert("f".into(), shallow);
+            assert_eq!(
+                memory::from_map(&shallow_map, &CLASS_I),
+                Err(MemFault::Float("f".to_string()))
+            );
+        })
+        .expect("spawn")
+        .join()
+        .expect("holds_float thread must not overflow stack");
+}
+
+/// HIGH-16: `parse_json` is shadowed by a latched fatal refusal that cannot be
+/// caught directly or through a callback.
+#[test]
+fn high16_parse_json_is_refused_and_uncatchable() {
+    let sandbox = sandbox();
+    for src in [
+        "fn think(a, b) { parse_json(\"{}\") }",
+        "fn think(a, b) { parse_json(\"1 + 2\") }",
+        "fn think(a, b) { try { parse_json(\"{}\"); } catch { this.caught = true; } }",
+        "fn f(x) { parse_json(\"{}\"); x } \
+         fn think(a, b) { try { [1].map(f); } catch { this.caught = true; } }",
+    ] {
+        let (res, _) = think(&sandbox, src);
+        match res {
+            Err(Fault::Type(text)) => {
+                assert!(
+                    text.contains("parse_json is not a thing a mind does"),
+                    "{src}: {text}"
+                );
+            }
+            other => panic!("{src}: expected Fault::Type refusal, got {other:?}"),
+        }
+    }
+}
+
+/// HIGH-16: comparator `sort`/`sort_by`/`order`/`order_by`/`dedup` remain
+/// functional and stable on valid inputs, propagate comparator errors, and
+/// abort immediately on budget overrun instead of running post-budget comparisons.
+#[test]
+fn high16_sort_order_and_dedup_abort_immediately_on_budget_overrun_and_stay_correct() {
+    let sandbox = sandbox();
+
+    // Correctness for sort, sort_by, deprecated sort(&str), order, order_by, dedup.
+    let (res, _) = think(
+        &sandbox,
+        "fn desc(a, b) { b - a } \
+         fn same_mod(a, b) { (a % 2) == (b % 2) } \
+         fn think(a, b) { \
+           let v1 = [3, 1, 4, 1, 5]; \
+           v1.sort(desc); \
+           let v2 = [3, 1, 4]; \
+           v2.sort_by(desc); \
+           let v3 = [2, 9, 5]; \
+           v3.sort(\"desc\"); \
+           let orig = [2, 7, 4]; \
+           let o1 = orig.order(desc); \
+           let o2 = orig.order_by(desc); \
+           let d0 = [1, 1, 2, 2, 2, 3]; \
+           d0.dedup(); \
+           let d1 = [2, 4, 3, 5, 6]; \
+           d1.dedup(same_mod); \
+           let d2 = [2, 4, 3, 5, 6]; \
+           d2.dedup(\"same_mod\"); \
+           this.v1 = v1; \
+           this.v2 = v2; \
+           this.v3 = v3; \
+           this.orig = orig; \
+           this.o1 = o1; \
+           this.o2 = o2; \
+           this.d0 = d0; \
+           this.d1 = d1; \
+           this.d2 = d2; \
+         }",
+    );
+    assert_eq!(
+        wrote(&res),
+        r#"{"d0":[1,2,3],"d1":[2,3,6],"d2":[2,3,6],"o1":[7,4,2],"o2":[7,4,2],"orig":[2,7,4],"v1":[5,4,3,1,1],"v2":[4,3,1],"v3":[9,5,2]}"#
+    );
+
+    // Non-transitive comparator must never panic.
+    let (res, _) = think(
+        &sandbox,
+        "fn crazy(a, b) { -1 } \
+         fn think(a, b) { let v = [1, 2, 3, 4, 5, 6, 7, 8]; v.sort(crazy); this.n = v.len(); }",
+    );
+    assert_eq!(wrote(&res), r#"{"n":8}"#);
+
+    // A comparator error propagates cleanly instead of being swallowed by `.ok()`.
+    for src in [
+        "fn bad(a, b) { throw \"boom\"; } fn think(a, b) { let v = [2, 1]; v.sort(bad); }",
+        "fn bad(a, b) { throw \"boom\"; } fn think(a, b) { let v = [2, 1]; v.dedup(bad); }",
+    ] {
+        assert!(
+            matches!(think(&sandbox, src).0, Err(Fault::Type(ref t)) if t.contains("boom")),
+            "{src}"
+        );
+    }
+
+    // Tight op budget on a large array: sort/order/dedup must abort immediately
+    // on the first op past the limit instead of executing thousands of
+    // post-budget comparisons.
+    let budget_cases: &[(&str, u64)] = &[
+        (
+            "fn cmp(a, b) { a - b } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); v.sort(cmp); }",
+            501,
+        ),
+        (
+            "fn cmp(a, b) { a - b } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); v.sort_by(cmp); }",
+            501,
+        ),
+        (
+            "fn cmp(a, b) { a - b } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); v.sort(\"cmp\"); }",
+            501,
+        ),
+        (
+            "fn cmp(a, b) { a - b } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); let r = v.order(cmp); }",
+            501,
+        ),
+        (
+            "fn cmp(a, b) { a - b } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); let r = v.order_by(cmp); }",
+            501,
+        ),
+        (
+            "fn eq(a, b) { a == b } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); v.dedup(eq); }",
+            501,
+        ),
+        (
+            "fn eq(a, b) { a == b } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); v.dedup(\"eq\"); }",
+            501,
+        ),
+        // Comparator tries to swallow a callback-wrapped budget trip via try/catch
+        // (1 extra op after catch before `on_progress` / `budget::tripped()` halts).
+        (
+            "fn spin(x) { let n = 0; loop { n += 1; } } \
+             fn cmp(a, b) { try { [1].map(spin); } catch {} 0 } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); v.sort(cmp); }",
+            502,
+        ),
+        (
+            "fn spin(x) { let n = 0; loop { n += 1; } } \
+             fn eq(a, b) { try { [1].map(spin); } catch {} false } \
+             fn think(a, b) { let v = []; v.pad(2000, 1); v.dedup(eq); }",
+            502,
+        ),
+    ];
+    for &(src, max_spent) in budget_cases {
+        let compiled = compile(&sandbox, src).unwrap();
+        let started = Instant::now();
+        let (res, _) = think_with(
+            &sandbox,
+            &compiled,
+            vec![Dynamic::UNIT, Dynamic::UNIT],
+            b"",
+            &CLASS_I,
+            500,
+            20,
+        );
+        let took = started.elapsed();
+        assert_eq!(res, Err(Fault::Ops), "{src}");
+        assert!(took < Duration::from_millis(500), "{src} took {took:?}");
+        let (ops, fee) = budget::spent();
+        assert!(
+            ops + fee <= max_spent,
+            "{src}: comparator continued running after budget trip (ops={ops}, fee={fee})"
+        );
+    }
+}

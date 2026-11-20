@@ -284,8 +284,8 @@ pub use ledger::{
     typed_entries,
 };
 pub use lock::{
-    LockExpr, LockParseError, LockType, MAX_LOCK_EXPR_DEPTH, MAX_LOCK_PARSE_FRAMES, eval_lock,
-    glob_match, parse_lock,
+    LockExpr, LockParseError, LockType, MAX_LOCK_EXPR_DEPTH, MAX_LOCK_INDIRECTS, MAX_LOCK_NODES,
+    MAX_LOCK_PARSE_FRAMES, MAX_LOCK_STEPS, eval_lock, glob_match, parse_lock,
 };
 pub use matchit::{MatchErr, is_nearby, match_object};
 pub use mechanics::{

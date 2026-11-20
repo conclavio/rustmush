@@ -108,6 +108,7 @@ namespace TacSim.UI
     /// </summary>
     public sealed class TacSimMindTerminal : MonoBehaviour
     {
+        /// <summary>Rows pooled up front: one full server page (`LISTINGS_PER_PAGE` = 20). A longer page grows the pool.</summary>
         private const int InitialPooledRows = 20;
         private const int MaxSourceBytes = 32 * 1024;
         private const int MaxNotesBytes = 2048;
@@ -116,6 +117,23 @@ namespace TacSim.UI
         private const int SortingOrderActiveOnline = 22;
 
         public static TacSimMindTerminal ActiveInstance { get; private set; }
+
+        /// <summary>Every live terminal, so the HUD can ask whether any of them holds keyboard focus.</summary>
+        private static readonly List<TacSimMindTerminal> LiveTerminals = new List<TacSimMindTerminal>();
+
+        /// <summary>True when an input field of any live mind terminal is focused (gates the avatar's walk keys).</summary>
+        public static bool IsAnyInputFocused
+        {
+            get
+            {
+                for (int i = 0; i < LiveTerminals.Count; i++)
+                {
+                    var t = LiveTerminals[i];
+                    if (t != null && t.HasFocusedInput) return true;
+                }
+                return false;
+            }
+        }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void EnsureRuntimeInstance()
@@ -131,14 +149,16 @@ namespace TacSim.UI
         }
 
         public bool IsTerminalOpen => _windowRoot != null && _windowRoot.activeSelf;
-        public MindTerminalTab ActiveTab { get; private set; } = MindTerminalTab.Market;
 
-        public bool IsAnyInputFocused =>
+        /// <summary>True when one of this terminal's own input fields is focused.</summary>
+        public bool HasFocusedInput =>
             (_sealLicenseInput != null && _sealLicenseInput.isFocused) ||
             (_newMindNameInput != null && _newMindNameInput.isFocused) ||
             (_rhaiSourceInput != null && _rhaiSourceInput.isFocused) ||
             (_saveNotesInput != null && _saveNotesInput.isFocused) ||
             (_traceUnitInput != null && _traceUnitInput.isFocused);
+
+        public MindTerminalTab ActiveTab { get; private set; } = MindTerminalTab.Market;
 
         public bool CanOpenViaHotkey =>
             _ws != null &&
@@ -282,12 +302,15 @@ namespace TacSim.UI
         {
             ActiveInstance = this;
             MushWsClient.OnInstanceCreated += HandleClientInstanceCreated;
+            if (!LiveTerminals.Contains(this))
+                LiveTerminals.Add(this);
         }
 
         private void OnDestroy()
         {
             if (ActiveInstance == this)
                 ActiveInstance = null;
+            LiveTerminals.Remove(this);
             MushWsClient.OnInstanceCreated -= HandleClientInstanceCreated;
             UnbindClient();
         }
@@ -1534,6 +1557,8 @@ namespace TacSim.UI
             _tabBtnImages.Clear();
             _marketRows.Clear();
             _holdingRows.Clear();
+            _marketRowsContainer = null;
+            _holdingRowsContainer = null;
             _libraryButtons.Clear();
 
             var canvasGo = new GameObject("MindTerminalCanvas");
@@ -2462,6 +2487,13 @@ namespace TacSim.UI
 
             root.SetActive(false);
             return row;
+        }
+
+        /// <summary>The callback when the row's server `actions` list carries `word`, else null (the button hides).</summary>
+        public static Action IfRowOffers(MindHoldingRowView row, string word, Action callback)
+        {
+            if (row == null || callback == null) return null;
+            return row.Actions.Contains(word) ? callback : null;
         }
 
         private static void BindRowButton(Button btn, Text lbl, string text, Action callback, out Action slotAction, bool showDisabled = false)

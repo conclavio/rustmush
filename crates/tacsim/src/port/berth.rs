@@ -104,6 +104,7 @@ struct Want {
 /// wants, reprice a locker whose tonnes moved, and end what it no longer wants. Never panics; a
 /// refusal is logged and retried next fire.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
+    collect_sold_liens(ctx);
     let mut wanted = berths_wanted(ctx.w);
     wanted.extend(lockers_wanted(ctx));
     let live = live_obligations(ctx.w);
@@ -211,11 +212,13 @@ fn berths_wanted(w: &World) -> BTreeMap<String, Want> {
             continue;
         };
         // A House's hull at its home port owes nothing (Q-48-55): one titled to one of the port's
-        // own organizations, or a registered hull whose home is this port.
+        // own organizations, or a House's registered hull whose home is this port. Doc 48e (48c#13,
+        // 48d H-14): the home waiver is a House's only, never any organization's own-yard hull.
         let title = crate::port::house_sweep::title_of(w, hull);
         if let Some(PrincipalId::Organization(org)) = &title
             && (map.orgs.values().any(|row| row.org == org.0)
-                || crate::port::owned::owned(w, hull).is_some_and(|o| o.home == map.entry))
+                || (is_house(w, *org)
+                    && crate::port::owned::owned(w, hull).is_some_and(|o| o.home == map.entry)))
         {
             continue;
         }
@@ -258,14 +261,44 @@ fn berths_wanted(w: &World) -> BTreeMap<String, Want> {
     out
 }
 
-/// An organization's credit account, from the first port map that names it.
+/// An organization's credit account: a lane institution's from the first port map that names it,
+/// else its root-scope treasury (doc 48e, 48c#13 and 48d H-14: a launch House or a player's
+/// organization berths too, as upkeep already charges them).
 fn org_account(w: &World, org: OrgId) -> Option<AccountId> {
-    w.module_state::<crate::store::TacsimStore>()?
-        .port_maps()
-        .flat_map(|map| map.orgs.values())
-        .find(|row| row.org == org.0)
-        .and_then(|row| row.account)
+    w.module_state::<crate::store::TacsimStore>()
+        .and_then(|store| {
+            store
+                .port_maps()
+                .flat_map(|map| map.orgs.values())
+                .find(|row| row.org == org.0)
+                .and_then(|row| row.account)
+        })
         .map(AccountId)
+        .or_else(|| crate::port::pools::treasury_of(w, org))
+        .or_else(|| {
+            w.module_state::<EconomyStore>()?
+                .snapshot()
+                .accounts_of(&PrincipalId::Organization(org))
+                .filter(|a| {
+                    a.instrument.as_str() == crate::economy::CREDIT
+                        && a.status == mush_economy::AccountStatus::Active
+                })
+                .map(|a| a.id)
+                .min()
+        })
+}
+
+/// **Whether `org` is a House** (Q-48-55's waiver): a lane institution some port map names, or an
+/// organization with a House record of its own (doc 48 unit PL.5's officers' pool).
+fn is_house(w: &World, org: OrgId) -> bool {
+    w.module_state::<crate::store::TacsimStore>()
+        .is_some_and(|store| {
+            store
+                .port_maps()
+                .flat_map(|map| map.orgs.values())
+                .any(|row| row.org == org.0)
+        })
+        || crate::port::pools::pool(w, &crate::port::pools::house_key(org.0)).is_some()
 }
 
 /// **The lockers the world wants charged**: each locker holding goods, at its started tonnes.
@@ -319,10 +352,52 @@ pub(crate) fn collect_lien(ctx: &mut Ctx<'_>, hull: ObjId, seller: &PrincipalId)
         return;
     };
     let ns = berth_namespace(map.entry.as_str(), hull);
+    // Doc 48e (48d H-13 (a)): the lien is the port's, collected under system authority whatever
+    // ctx settled the sale (the sweep, or a player's command that promoted it).
+    let saved = ctx.actor;
+    ctx.actor = mush_core::GOD;
     for debt in mush_economy::debts_of(ctx.w, seller, &[ns.as_str()]) {
         if let Err(error) = mush_economy::pay_debt(ctx, debt.id, &ns) {
             tracing::warn!(debt = debt.id.0, hull = hull.0, %error, "tacsim: a berth lien was not collected at her sale");
         }
+    }
+    ctx.actor = saved;
+}
+
+/// **The liens of hulls sold another way** (doc 48e, 48c#11 and 48d H-07): a cored hull sells
+/// through EX.2b's private resale, a union with no economy contract, so the sale observer never
+/// sees it. Each fire, every berth arrears debt whose hull lies at that port titled to someone
+/// other than the debtor is collected from the debtor, as a sale at that port collects it
+/// (Q-48-54: "a lien on the hull's next sale at that port").
+fn collect_sold_liens(ctx: &mut Ctx<'_>) {
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return;
+    };
+    let sold: Vec<(ObjId, PrincipalId)> = store
+        .snapshot()
+        .obligations()
+        .filter(|o| {
+            o.schedule.cadence.is_none()
+                && matches!(
+                    o.status,
+                    ObligationStatus::Active | ObligationStatus::Delinquent
+                )
+        })
+        .filter_map(|o| {
+            let mush_economy::ObligationCause::Ruleset { namespace } = &o.cause else {
+                return None;
+            };
+            let (entry, hull) = namespace.strip_prefix(BERTH_NS_PREFIX)?.rsplit_once('.')?;
+            let hull = ObjId(hull.parse::<u32>().ok()?);
+            let docked_there = matches!(crate::port::ship::berth_of(ctx.w, hull),
+                crate::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == entry);
+            let passed =
+                crate::port::house_sweep::title_of(ctx.w, hull).as_ref() != Some(&o.debtor);
+            (docked_there && passed).then(|| (hull, o.debtor.clone()))
+        })
+        .collect();
+    for (hull, seller) in sold {
+        collect_lien(ctx, hull, &seller);
     }
 }
 

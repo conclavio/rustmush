@@ -894,6 +894,10 @@ An open listing of one is a notice, which the seller answers with a private offe
   day and 840 cr a real week. No customs duty, as proposed.
   **Correction (second review, doc 48b W-48-8):** the fee is per hull of any mass. The "under 100 t" band in the
   text below was wrong, since every ship is 240 t or more. Who pays at a home berth is Q-48-55.
+  **Reversed in part (owner ruling, 2026-11-19, doc 50 Q-50-6):** "No customs duty" no longer
+  holds where the holder of a region levies one. Doc 50 rules a transit duty at the Kirkwood picket
+  under the Republic's hold (Q-50-6) and an import duty at Isidis under it (Q-50-29). Neither is
+  built. Everywhere else there is still no duty.
 - **Proposed default (as written):** a berth fee per IC day at a port, paid to the port authority org
   (provisional: 50 cr a day for a hull under 100 t). No customs duty yet; customs stays a fine.
 - **Alternative:** no berth fees.

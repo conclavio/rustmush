@@ -221,7 +221,8 @@ namespace TacSim.Core
             else if (low.StartsWith("+market/accept", StringComparison.Ordinal) ||
                      low.StartsWith("+market/quote", StringComparison.Ordinal) ||
                      low.StartsWith("+market/sell", StringComparison.Ordinal) ||
-                     low.StartsWith("+market/buy", StringComparison.Ordinal))
+                     low.StartsWith("+market/post", StringComparison.Ordinal) ||
+                     low.StartsWith("+market/bid", StringComparison.Ordinal))
                 PlayMarketChime();
             else if (low.StartsWith("fire ", StringComparison.Ordinal) || low == "fire")
                 PlayRailgunCrack();

@@ -215,9 +215,10 @@ pub struct StowageState {
     pub max_cargo_m3: f64,
     pub reaction_kg: i64,
     pub max_reaction_kg: i64,
-    pub stores_person_days: f64,
-    pub max_stores_days: f64,
-    pub crew_count: i64,
+    /// Crew-days of provisions aboard (`stores_days`).
+    pub stores_days: i64,
+    /// The provisions compartment's limit in crew-days (`stores_limit_days`).
+    pub max_stores_days: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -278,33 +279,24 @@ struct PendingInteraction {
     created_at: Instant,
 }
 
-/// Canonical corridor port venue IDs from `crates/tacsim/content/lane/ceres_phobos.json` (`H-40`).
-const CORRIDORS: [(&str, &str, &str); 5] = [
-    (
-        "ceres",
-        "Ceres Freeport",
-        "Primary Co-op hub & volatiles/metals depot",
-    ),
-    (
-        "stickney",
-        "Stickney Yards",
-        "Phobos shipyard, alloys & yard fittings",
-    ),
-    (
-        "luna",
-        "Aitken Highport",
-        "Lunar clearing & crated instrument boards",
-    ),
-    (
-        "deimos",
-        "Voltaire Anchorage",
-        "Deimos bonded transshipment anchorage",
-    ),
-    (
-        "titan",
-        "Ligeia Terminal",
-        "Outer-system carbon feedstock & ice",
-    ),
+/// The lane's venue words (48e L8, clients:G7 / `H-40`): every `port` entry's
+/// `venue` in `crates/tacsim/content/lane/ceres_phobos.json`, with its
+/// location's label. `+ship/undock`, `+ship/plan` and `+ship/order depart` take
+/// exactly these; `vesta`, `pallas`, `hygiea` and `juno` name no venue and were
+/// refused.
+const CORRIDORS: [(&str, &str, &str); 12] = [
+    ("ceres", "Ceres Freeport", "Ceres port"),
+    ("stickney", "Stickney Yards", "Phobos port"),
+    ("luna", "Aitken Highport", "Luna port"),
+    ("deimos", "Voltaire Anchorage", "Deimos port"),
+    ("titan", "Ligeia Terminal", "Titan port"),
+    ("commons", "Freeport Commons", "Ceres extraction site"),
+    ("kerwan", "Kerwan Floor", "Ceres extraction site"),
+    ("ahuna", "Ahuna Flank", "Ceres extraction site"),
+    ("juling", "Juling Shadow", "Ceres extraction site"),
+    ("occator", "Occator Rim", "Ceres extraction site"),
+    ("rheasilvia", "Rheasilvia Commons", "Vesta extraction site"),
+    ("urvara", "Urvara Reach", "Ceres extraction site"),
 ];
 
 const HULL_SUGGESTIONS: [&str; 6] = [
@@ -1405,7 +1397,7 @@ impl PortWalkState {
             }
         }
 
-        // Live `port.trade.listings[]` (`client_sync.rs:1280-1292`)
+        // Live `port.trade.listings[]` (`client_sync.rs:1280-1292`; 48e L8, clients:G3)
         if let Some(listings_arr) = obj.get("listings").and_then(Value::as_array) {
             let append = std::mem::take(&mut self.awaiting_trade_page);
             if !append {
@@ -1420,7 +1412,6 @@ impl PortWalkState {
                     .unwrap_or(0);
                 let gid = item
                     .get("good")
-                    .or_else(|| item.get("good_id"))
                     .and_then(Value::as_str)
                     .map(sanitize)
                     .unwrap_or_default();
@@ -1598,12 +1589,12 @@ impl PortWalkState {
                     .unwrap_or(0);
                 let uprice = q
                     .get("unit_price_minor")
-                    .or_else(|| q.get("price_minor"))
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
                 let total_minor = q.get("total_minor").and_then(Value::as_i64);
                 let expired = q.get("expired").and_then(Value::as_bool).unwrap_or(false);
                 if !qid.is_empty() {
+                    // The server sends only live quotes (`build_open_quotes_json`).
                     self.own_quotes.push(OwnQuoteRow {
                         quote_id: qid,
                         listing_id: lid,
@@ -1672,7 +1663,6 @@ impl PortWalkState {
         let Some(obj) = data.as_object() else {
             return followups;
         };
-
         let op = obj.get("op").and_then(Value::as_str);
         if op == Some("manifest") || (op != Some("pack") && obj.get("packs").is_some()) {
             if let Some(packs) = obj.get("packs").and_then(Value::as_array) {
@@ -3845,26 +3835,19 @@ impl PortWalkState {
         {
             self.stowage.max_reaction_kg = v;
         }
-        if let Some(v) = st
-            .get("stores_days")
-            .or_else(|| st.get("stores_person_days"))
-            .and_then(Value::as_f64)
-        {
-            self.stowage.stores_person_days = v;
+        if let Some(v) = st.get("stores_days").and_then(Value::as_i64).or_else(|| {
+            st.get("stores_person_days")
+                .and_then(Value::as_f64)
+                .map(|f| f.round() as i64)
+        }) {
+            self.stowage.stores_days = v;
         }
         if let Some(v) = st
             .get("stores_limit_days")
-            .and_then(Value::as_f64)
-            .filter(|&n| n > 0.0)
-        {
-            self.stowage.max_stores_days = v;
-        }
-        if let Some(v) = st
-            .get("crew_count")
             .and_then(Value::as_i64)
             .filter(|&n| n > 0)
         {
-            self.stowage.crew_count = v;
+            self.stowage.max_stores_days = v;
         }
         if let Some(items) = st.get("items").and_then(Value::as_array) {
             self.decode_cargo_items_arr(items);
@@ -3943,16 +3926,6 @@ impl PortWalkState {
 
     fn stowage_gauge_lines(&self, utf8: bool) -> Vec<Line<'static>> {
         let st = &self.stowage;
-        let days = if st.crew_count > 0 {
-            st.stores_person_days / (st.crew_count as f64)
-        } else {
-            st.stores_person_days
-        };
-        let stores_cap = if st.max_stores_days > 0.0 {
-            st.max_stores_days
-        } else {
-            120.0
-        };
         let wallet = if self.balance_text.is_empty() {
             format_credits(self.credits_minor)
         } else {
@@ -4012,9 +3985,9 @@ impl PortWalkState {
             ),
             gauge_row(
                 "Stores",
-                days,
-                stores_cap,
-                format!("{days:.1}/{stores_cap:.0} d"),
+                st.stores_days as f64,
+                st.max_stores_days.max(1) as f64,
+                format!("{}/{} crew-days", st.stores_days, st.max_stores_days),
                 utf8,
             ),
         ]
@@ -6083,6 +6056,75 @@ mod tests {
         assert_eq!(emitted, vec!["n".to_string()]);
     }
 
+    /// A real `port.trade` frame (48e L8, clients:G3): tacsim's
+    /// `port_trade_frame_matches_the_clients_shared_fixture` holds it to the
+    /// live shape; the web decodes the same file.
+    const PORT_TRADE_FIXTURE: &str =
+        include_str!("../../../../web/src/lib/fixtures/port/port_trade.json");
+    /// The real `goods` pack (48e L8, clients:G1).
+    const GOODS_PACK: &str = include_str!("../../../tacsim/content/market/goods.json");
+
+    fn trade_fixture() -> Value {
+        serde_json::from_str(PORT_TRADE_FIXTURE).expect("the port.trade fixture parses")
+    }
+
+    fn first_listing<'a>(frame: &'a Value, side: &str) -> &'a Value {
+        frame["listings"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["side"] == side))
+            .expect("the fixture carries a listing on that side")
+    }
+
+    #[test]
+    fn port_trade_fixture_fills_the_board_wallet_hold_and_quotes() {
+        let frame = trade_fixture();
+        let mut st = PortWalkState::new();
+        let _ = st.observe_port_trade(&frame, Instant::now());
+        let listings = frame["listings"].as_array().expect("listings");
+        let asks = listings.iter().filter(|r| r["side"] == "ask").count();
+        let bids = listings.iter().filter(|r| r["side"] == "bid").count();
+        assert!(asks > 0 && bids > 0, "the fixture has both sides");
+        assert_eq!(st.asks.len(), asks);
+        assert_eq!(st.bids.len(), bids);
+        let ask = first_listing(&frame, "ask");
+        assert_eq!(Some(st.asks[0].listing_id), ask["id"].as_i64());
+        assert_eq!(Some(st.asks[0].quantity), ask["available_qty"].as_i64());
+        assert_eq!(
+            st.asks[0].good_name,
+            ask["good_label"].as_str().expect("good_label")
+        );
+        assert_eq!(Some(st.credits_minor()), frame["balance_minor"].as_i64());
+        let stow = &frame["ship"]["stowage"];
+        assert_eq!(
+            Some(st.stowage().max_cargo_kg),
+            stow["cargo_limit_kg"].as_i64()
+        );
+        assert_eq!(
+            Some(st.stowage().max_reaction_kg),
+            stow["tank_limit_kg"].as_i64()
+        );
+        assert_eq!(
+            Some(st.stowage().max_stores_days),
+            stow["stores_limit_days"].as_i64()
+        );
+        assert_eq!(
+            st.cargo_lots.len(),
+            stow["items"].as_array().map_or(0, Vec::len)
+        );
+        assert!(
+            !st.cargo_lots.is_empty(),
+            "the fixture's hold carries a line"
+        );
+        assert_eq!(
+            st.own_quotes.len(),
+            frame["open_quotes"].as_array().map_or(0, Vec::len)
+        );
+        assert!(
+            !st.own_quotes.is_empty(),
+            "the fixture carries an open quote"
+        );
+    }
+
     #[test]
     fn one_click_quote_and_sell_use_live_client_sync_schema_and_equals_syntax() {
         let mut st = PortWalkState::new();
@@ -6264,6 +6306,97 @@ mod tests {
     }
 
     #[test]
+    fn one_click_quote_verifies_price_and_emits_accept() {
+        let mut frame = trade_fixture();
+        frame["open_quotes"] = json!([]);
+        let ask = first_listing(&frame, "ask").clone();
+        let ask_id = ask["id"].as_i64().expect("ask id");
+        let price = ask["unit_price_minor"].as_i64().expect("ask price");
+        let want = 5.min(ask["available_qty"].as_i64().expect("qty").max(1));
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let _ = st.observe_port_trade(&frame, now);
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        let buy_out = st.handle_key(Key::Enter, false, false, &[], now);
+        // The quantity rides right of `=`: `+market/quote 42 5` quotes one unit.
+        assert_eq!(
+            buy_out.commands,
+            vec![format!("+market/quote {ask_id}={want}")]
+        );
+
+        // The live quote arrives in `open_quotes` at the shown price: accept it.
+        frame["open_quotes"] = json!([{
+            "quote_id": 77, "listing_id": ask_id, "good": ask["good"], "market": "m",
+            "quantity": want, "unit_price_minor": price, "total_minor": price * want,
+            "price_text": "", "total_text": "", "expires_at": 0
+        }]);
+        let _ = st.observe_port_trade(&frame, now + Duration::from_millis(200));
+        assert_eq!(st.take_orders(), vec!["+market/accept 77"]);
+    }
+
+    #[test]
+    fn selling_into_a_bid_puts_the_quantity_right_of_equals() {
+        let mut frame = trade_fixture();
+        let bid = first_listing(&frame, "bid").clone();
+        let bid_id = bid["id"].as_i64().expect("bid id");
+        let bid_good = bid["good"].as_str().expect("bid good").to_string();
+        // Stock the ship's hold with the bid's good so the local zero-held guard (`SSH-M-05`) permits selling.
+        frame["ship"]["stowage"]["items"] = json!([{ "good": bid_good, "qty": 5 }]);
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let _ = st.observe_port_trade(&frame, now);
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        let _ = st.handle_key(Key::Right, false, false, &[], now);
+        let out = st.handle_key(Key::Enter, false, false, &[], now);
+        assert_eq!(out.commands.len(), 1);
+        let line = &out.commands[0];
+        let qty = line
+            .strip_prefix(&format!("+market/sell {bid_id}="))
+            .unwrap_or_else(|| panic!("`+market/sell <id>=<qty>`, got {line}"));
+        assert!(qty.parse::<u64>().is_ok(), "a bare quantity: {line}");
+    }
+
+    #[test]
+    fn content_manifest_asks_each_pack_once_with_op_pack_and_reads_goods() {
+        let mut st = PortWalkState::new();
+        // The goods pack sits well past the first sixteen manifest rows.
+        let mut packs: Vec<Value> = (0..40)
+            .map(|i| json!({ "id": format!("cast.c{i}"), "category": "cast", "sha256": "x" }))
+            .collect();
+        packs.push(json!({ "id": "goods", "category": "market", "sha256": "x" }));
+        packs.push(json!({ "id": "neighborhood.ceres_freeport", "category": "neighborhood", "sha256": "x" }));
+        let manifest = json!({ "op": "manifest", "packs": packs });
+        let asked = st.observe_tacsim_content(&manifest);
+        assert_eq!(
+            asked,
+            vec![
+                (
+                    TACSIM_CONTENT_FEED.to_string(),
+                    json!({ "op": "pack", "id": "goods" })
+                ),
+                (
+                    TACSIM_CONTENT_FEED.to_string(),
+                    json!({ "op": "pack", "id": "neighborhood.ceres_freeport" })
+                ),
+            ]
+        );
+        assert!(
+            st.observe_tacsim_content(&manifest).is_empty(),
+            "a second manifest asks for nothing already asked for"
+        );
+        assert!(
+            st.observe_tacsim_content(&json!({ "op": "pack", "found": false, "id": "goods" }))
+                .is_empty()
+        );
+        let reply = json!({ "op": "pack", "found": true, "id": "goods", "json": GOODS_PACK });
+        assert!(st.observe_tacsim_content(&reply).is_empty());
+        assert_eq!(
+            st.goods_meta.get("metals"),
+            Some(&("metal concentrate".to_string(), 1000, 400))
+        );
+    }
+
+    #[test]
     fn ship_stairs_do_not_ping_pong_between_floors() {
         let mut st = PortWalkState::new();
         let now = Instant::now();
@@ -6398,9 +6531,33 @@ mod tests {
             "all 25 lines of +market/history kept"
         );
 
-        // Canonical ports (`H-40`)
+        // Canonical ports (`H-40`) plus lane extraction venues (`clients:G7`) — no invalid legacy slugs.
         let ids: Vec<&str> = CORRIDORS.iter().map(|(id, _, _)| *id).collect();
-        assert_eq!(ids, vec!["ceres", "stickney", "luna", "deimos", "titan"]);
+        for major in ["ceres", "stickney", "luna", "deimos", "titan"] {
+            assert!(ids.contains(&major), "missing canonical port {major}");
+        }
+        for invalid in ["vesta", "pallas", "hygiea", "juno"] {
+            assert!(!ids.contains(&invalid), "unexpected legacy slug {invalid}");
+        }
+    }
+
+    #[test]
+    fn corridor_destinations_are_exactly_the_lanes_venue_words() {
+        let lane: Value = serde_json::from_str(include_str!(
+            "../../../tacsim/content/lane/ceres_phobos.json"
+        ))
+        .expect("the lane pack parses");
+        let mut venues: Vec<&str> = lane["entries"]
+            .as_object()
+            .expect("entries")
+            .values()
+            .filter(|e| e["kind"] == "port")
+            .filter_map(|e| e["def"]["venue"].as_str())
+            .collect();
+        venues.sort_unstable();
+        let mut ours: Vec<&str> = CORRIDORS.iter().map(|(id, _, _)| *id).collect();
+        ours.sort_unstable();
+        assert_eq!(ours, venues);
     }
 
     #[test]

@@ -3,6 +3,8 @@
 // Unit & component integration tests for Track 6 (Doc 48 Economy, 24-Week Price
 // History Sparklines, Open Jobs & Crew Board, Works, Shipyard, Bay & Lockers).
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { describe, expect, it } from "vitest";
@@ -14,13 +16,17 @@ import type { WebSocketLike } from "../ws";
 import {
   formatEscortPostCommand,
   formatHaulPostCommand,
+  formatJobCommand,
   formatMarketDepthCommand,
   formatMarketHistoryCommand,
   formatSurveyAcceptCommand,
+  HISTORY_GOODS,
   isValidHullDbref,
   parseMarketHistoryLines,
+  SIM_UNIT_CHASSIS,
   SIMULATOR_CHASSIS_IDS,
   SURVEY_OFFERS,
+  WORKS_RECIPES,
 } from "./economy";
 import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./trade";
 
@@ -77,14 +83,18 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
     expect(formatHaulPostCommand(12, "metals", "stickney", 340, true)).toBe(
       "+haul/post 12 metals to=stickney fee=340 go",
     );
-    // C-21: +escort/post requires a real `#<u32>` hull dbref, rejecting hull names / `"ship"`
+    // C-21 & 48e L8 (clients:G4): +escort/post requires a real `#<u32>` hull dbref, rejecting hull names / `"ship"` / null
     expect(isValidHullDbref("#99")).toBe(true);
     expect(isValidHullDbref("Salt Moth")).toBe(false);
     expect(isValidHullDbref("ship")).toBe(false);
     expect(formatEscortPostCommand("Salt Moth", "stickney", 500, true)).toBeNull();
     expect(formatEscortPostCommand("ship", "stickney", 500, true)).toBeNull();
+    expect(formatEscortPostCommand(null, "stickney", 500, true)).toBeNull();
     expect(formatEscortPostCommand("#99", "stickney", 500, true)).toBe(
       "+escort/post #99 to=stickney fee=500 go",
+    );
+    expect(formatEscortPostCommand("#812", "stickney", 500, true)).toBe(
+      "+escort/post #812 to=stickney fee=500 go",
     );
     // H-42: Survey acceptance emits real survey offer ID + `go`
     expect(SURVEY_OFFERS.map((s) => s.id)).toEqual(["ahuna-a", "kerwan-f", "juling-k", "occator-p"]);
@@ -99,6 +109,37 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
       "biped_mk2",
       "scout_mk1",
     ]);
+  });
+
+  it("builds job lines only on a typed id, with a separate survey confirm (48e L8, clients:G6)", () => {
+    expect(formatJobCommand("+survey/accept", "", false)).toBeNull();
+    expect(formatJobCommand("+survey/accept", "  ", true)).toBeNull();
+    expect(formatJobCommand("+survey/accept", "12", false)).toBe("+survey/accept 12");
+    expect(formatJobCommand("+survey/accept", " 12 ", true)).toBe("+survey/accept 12 go");
+    expect(formatJobCommand("+haul/accept", "7", true)).toBe("+haul/accept 7 go");
+  });
+
+  it("offers every works recipe and only real goods (48e L8, clients:G11)", () => {
+    const content = resolve(__dirname, "../../../../crates/tacsim/content");
+    const recipes = JSON.parse(readFileSync(resolve(content, "industry/recipes-v2.json"), "utf-8")) as {
+      entries: Record<string, { kind: string; def: { label: string } }>;
+    };
+    const ids = Object.keys(recipes.entries).filter((k) => recipes.entries[k]!.kind === "recipe");
+    expect(WORKS_RECIPES.map((r) => r.id).sort()).toEqual(ids.sort());
+    for (const r of WORKS_RECIPES) expect(r.label).toBe(recipes.entries[r.id]!.def.label);
+
+    const goods = JSON.parse(readFileSync(resolve(content, "market/goods.json"), "utf-8")) as {
+      goods: Array<{ id: string }>;
+    };
+    const goodIds = new Set(goods.goods.map((g) => g.id));
+    for (const g of HISTORY_GOODS) expect(goodIds.has(g.code), g.code).toBe(true);
+  });
+
+  it("offers only simulator chassis that exist as unit files (48e L8, clients:G8)", () => {
+    const unitsDir = resolve(__dirname, "../../../../crates/tacsim/content/units");
+    for (const u of SIM_UNIT_CHASSIS) {
+      expect(existsSync(resolve(unitsDir, `${u.id}.json`)), u.id).toBe(true);
+    }
   });
 
   it("renders 24-Week History (H-39), Jobs & Crew (C-21/H-42), Works & Yard, Simulator (H-41), and unfocused Esc (W3D-M7)", async () => {
@@ -168,20 +209,26 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
     }
     await tick();
 
-    // Header + all 24 IC weeks survive inside modalLog without truncation!
-    const parsedHistory = parseMarketHistoryLines(app.tacsim.modalLog);
+    // Header + all 24 IC weeks survive inside both marketHistoryLines (clients:G5) and modalLog!
+    const parsedHistory = parseMarketHistoryLines(app.tacsim.marketHistoryLines);
     expect(parsedHistory.goodLabel).toBe("Volatiles");
     expect(parsedHistory.rowsNewestFirst).toHaveLength(24);
+    expect(parseMarketHistoryLines(app.tacsim.modalLog).rowsNewestFirst).toHaveLength(24);
     expect(screen.getByText(/101\.00 – 124\.00/)).toBeTruthy();
 
-    // 2. C-21 & H-42: Switch to Jobs & Crew tab & verify Crew Terms, Escort `#99`, and Survey `go`
+    // 2. C-21, H-42 & G6: Switch to Jobs & Crew tab & verify Crew Terms, disabled empty haul, Survey preview+confirm, and Escort `#99`
     await fireEvent.click(screen.getByRole("button", { name: "Jobs & Crew" }));
     await tick();
     expect(socket.sent.some((raw) => raw.includes("+market/jobs"))).toBe(true);
 
+    expect((screen.getByRole("button", { name: "Accept Haul" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
     await fireEvent.click(screen.getByRole("button", { name: "Crew Terms (+sortie/crew)" }));
     expect(socket.sent.some((raw) => raw.includes("+sortie/crew"))).toBe(true);
 
+    await fireEvent.click(screen.getByRole("button", { name: "Preview Survey" }));
+    expect(socket.sent.some((raw) => raw.includes("+survey/accept ahuna-a\""))).toBe(true);
     await fireEvent.click(screen.getByRole("button", { name: "Accept Survey" }));
     expect(socket.sent.some((raw) => raw.includes("+survey/accept ahuna-a go"))).toBe(true);
 

@@ -1711,6 +1711,62 @@ pub(crate) fn drip_target(cap: u64, per_ic_day: u64, unfilled: u64, fundable: u6
         .min(mush_market::MAX_QUANTITY)
 }
 
+/// **Whether a refresh row has nothing to do this fire, read without its price** (the drip's
+/// cost on a quiet fire). The same cases as [`drip_step`]'s, conservatively: `true` only where
+/// the drip would pass the row over at whatever price it read.
+/// - Standing, no renewal due, no IC-day boundary since its last post: case 3 does nothing.
+/// - Standing, no renewal due, a boundary passed, and the drip would hold the unfilled intake
+///   (`cap` and one day's drip reach no higher, and the house funds the unfilled intake at the
+///   price's ceiling, [`crate::port::price::bid_price_ceiling_major`], so at the price too):
+///   case 3's target equals the unfilled intake.
+/// - Gone before its recorded deadline: case 5 waits.
+///
+/// Every other row (unrecorded, a renewal due, lapsed, or one a short purse would shrink) is
+/// priced and read by the cases themselves.
+#[allow(clippy::too_many_arguments)]
+fn drip_quiet(
+    w: &World,
+    def: &PortDef,
+    bid: &crate::port::def::BidDef,
+    refresh: crate::port::def::RefreshDef,
+    recorded: Option<&crate::port::map::BidRow>,
+    standing: Option<(ListingId, u64)>,
+    vendor: mush_market::VendorId,
+    now: i64,
+    now_ic: i64,
+) -> bool {
+    match (recorded, standing) {
+        (None, _) => false,
+        (Some(r), None) => now < r.expires,
+        (Some(r), Some((_, unfilled))) => {
+            if r.expires.saturating_sub(now) <= DRIP_RENEW_SECS {
+                return false;
+            }
+            let boundary = r
+                .posted_ic
+                .is_none_or(|p| p.div_euclid(IC_DAY) < now_ic.div_euclid(IC_DAY));
+            if !boundary {
+                return true;
+            }
+            let reach = refresh
+                .cap
+                .min(unfilled.saturating_add(refresh.per_ic_day))
+                .min(mush_market::MAX_QUANTITY);
+            if reach != unfilled {
+                return false;
+            }
+            let Some(ceiling) =
+                ask_price(w, crate::port::price::bid_price_ceiling_major(w, def, bid))
+            else {
+                return false;
+            };
+            w.module_state::<MarketStore>().is_some_and(|market| {
+                crate::port::board::vendor_fundable_units(w, market, vendor, ceiling) >= unfilled
+            })
+        }
+    }
+}
+
 /// **What a lapsed refresh row comes back at** (doc 20 §7.3; owner-critical default,
 /// decision 20): **one drip**, within the house's funds — `drip_target(cap, per_ic_day,
 /// 0, fundable)`. The one rule the drip's case 4 and the port applier's part (e).8 (a
@@ -1894,22 +1950,32 @@ fn drip_step(
             {
                 continue;
             }
+            let recorded = row.bids.get(&bid.good);
+            let standing = {
+                let market = ctx.w.module_state::<MarketStore>()?;
+                recorded.and_then(|r| {
+                    market
+                        .listing(ListingId(r.listing))
+                        .map(|listing| (listing.id, listing.quantity))
+                })
+            };
+            // A row with nothing to do is passed over before it is priced: a port's premium
+            // reads the reach (`price::reach_for`, a route plot per supplier), and a fire's
+            // drip walks every refresh row of every port. The cases below act on the same rows.
+            if drip_quiet(
+                ctx.w, def, bid, refresh, recorded, standing, vendor_id, now, now_ic,
+            ) {
+                continue;
+            }
+            fire.drip_priced();
             let Some(price) =
                 ask_price(ctx.w, crate::port::price::bid_price_major(ctx.w, def, bid))
             else {
                 continue;
             };
-            let recorded = row.bids.get(&bid.good);
-            let (standing, fundable) = {
+            let fundable = {
                 let market = ctx.w.module_state::<MarketStore>()?;
-                let standing = recorded.and_then(|r| {
-                    market
-                        .listing(ListingId(r.listing))
-                        .map(|listing| (listing.id, listing.quantity))
-                });
-                let fundable =
-                    crate::port::board::vendor_fundable_units(ctx.w, market, vendor_id, price);
-                (standing, fundable)
+                crate::port::board::vendor_fundable_units(ctx.w, market, vendor_id, price)
             };
             // (target, withdraw), or the next row.
             let chosen: Option<(u64, Option<ListingId>)> = match (recorded, standing) {

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::{
-    Attr, GOD, LIMBO, ObjId, ObjKind, Outbox, Registry, World, register_core_commands,
+    Attr, Flags, GOD, LIMBO, ObjId, ObjKind, Outbox, Registry, World, register_core_commands,
     register_engine_commands,
 };
 use mush_script::{ScriptConfig, ScriptModule};
@@ -94,6 +94,7 @@ fn boot(scripts: &[(String, String)]) -> (Engine, Vec<String>, ObjId) {
     let nick = world
         .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
         .unwrap();
+    world.set_flag(nick, Flags::BUILDER, true).unwrap();
     for (word, code) in scripts {
         let obj = world
             .create(ObjKind::Thing, word, nick, Some(LIMBO))

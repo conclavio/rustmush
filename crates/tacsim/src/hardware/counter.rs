@@ -77,8 +77,11 @@ pub const CORE_HELP: &str = "+core  --  The fitting shop's counter: governed cor
   counter, the fitting's hours run, and the core goes in; a core it displaces comes back to you.\n\
   A Co-op charter is the Co-op's hull: +coop/buyout makes her yours first.";
 /// The grammar.
-pub const CORE_USAGE: &str =
-    "Usage: +core  |  +core/buy <I|II|III> [go]  |  +core/fit <core>=<hull> [go]";
+pub const CORE_USAGE: &str = concat!(
+    "Usage: +core  |  +core/buy <I|II|III> [go]  |  +core/fit <core>=<hull> [go]\n",
+    "  +core/sell <core>[=go]  |  +core/offers  |  +core/accept #<core or ship>[=go]\n",
+    "  +core/offer #<core or ship>=<player> price=<n>  |  +core/offer #<core or ship>=withdraw"
+);
 /// No Active launch, or no hardware composed.
 pub const CORE_NOT_OPEN: &str = "There is no fitting shop on this world.";
 /// The shop, for the status read: `{shop}`, `{place}`.

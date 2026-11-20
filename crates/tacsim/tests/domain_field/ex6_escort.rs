@@ -81,15 +81,13 @@ fn state(rig: &Rig, contract: u64) -> ContractState {
         .expect("the contract")
 }
 
-/// **On two workers, not the paused clock** (doc 43 TS.10a). The field closes before the miner's
-/// `recover go` (the raider's side is out of it), so the journey ends with the field, and the
-/// watch's last port tick (`services::escort::watch`) reads the escort out of a field that is
-/// gone and counts that whole interval far. At five world seconds to the arena's one that
-/// interval is under a tenth of the journey and the escort is kept (140 of 145 IC seconds near);
-/// with world and arena on one clock, the production rate, it is five of 35 and the escort
-/// fails. Whether the closing interval should count is a game question, owed to the owner;
-/// until it is ruled the story keeps the clock it was written on.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// **On the paused clock, world and arena at the production rate** (doc 43 TS.10a). The field
+/// closes before the miner's `recover go` (the raider's side is out of it), so the journey ends
+/// with the field, and the watch's last port tick reads the escort out of a field that is gone.
+/// That closing interval counts to neither the journey nor the near time (the owner's ruling,
+/// 2026-11-19; `services::escort::watch`): the escort is kept on the time before it. This story
+/// is that rule's acceptance at the production rate.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ex6_the_field_host_keeps_one_escort_and_fails_the_one_whose_rig_is_wrecked() {
     let mut rig = stocked_tuned(tune);

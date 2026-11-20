@@ -318,6 +318,19 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
   });
 });
 
+describe("Corridor destinations (48e L8, clients:G7)", () => {
+  it("offers exactly the lane's venue words", () => {
+    const lane = JSON.parse(readRepoContent("lane/ceres_phobos.json")) as {
+      entries: Record<string, { kind: string; def: Record<string, any> }>;
+    };
+    const venues = Object.values(lane.entries)
+      .filter((e) => e.kind === "port")
+      .map((e) => e.def["venue"] as string)
+      .sort();
+    expect(CORRIDOR_DESTINATIONS.map((d) => d.id).sort()).toEqual(venues);
+  });
+});
+
 describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
   it("C-19 & W3D-H4 & H-40: decodes LIVE client_sync.rs port.trade schema (berth, open_quotes, stowage.items, next_after)", () => {
     const goods = parseGoodsJson(readRepoContent("market/goods.json"));
@@ -479,19 +492,98 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
     expect(warnRes.acceptCommand).toBeNull();
     expect(warnRes.priceWarning).toContain("Quote #902 moved");
 
-    // H-40: canonical corridor venue IDs and dynamic dock target
+    // H-40 & 48e L8 (clients:G7): all 12 canonical corridor venue IDs and dynamic dock target
     expect(CORRIDOR_DESTINATIONS.map((d) => d.id)).toEqual([
       "ceres",
       "stickney",
       "luna",
       "deimos",
       "titan",
+      "commons",
+      "kerwan",
+      "ahuna",
+      "juling",
+      "occator",
+      "rheasilvia",
+      "urvara",
     ]);
     expect(resolveDynamicDockTarget({ cockpitSiteId: "stickney_yards" })).toBe("stickney");
     expect(resolveDynamicDockTarget({ stationPackId: "neighborhood.aitken_highport" })).toBe("luna");
+    expect(resolveDynamicDockTarget({ stationPackId: "neighborhood.freeport_commons" })).toBe("commons");
+    expect(resolveDynamicDockTarget({ stationPackId: "neighborhood.rheasilvia_commons" })).toBe("rheasilvia");
     expect(resolveDynamicDockTarget({ selectedDestination: "titan" })).toBe("titan");
     const helmActions = contextualQuickActions("bridge", true, true, "stickney");
     expect(helmActions.some((a) => a.action === "+helm/dock stickney")).toBe(true);
+  });
+
+  it("decodes a real port.trade frame, computes MAX FIT, and guards 1-click Quote-to-Accept", () => {
+    const goods = parseGoodsJson(readRepoContent("market/goods.json"));
+    expect(goods.size).toBeGreaterThanOrEqual(6);
+
+    // 48e L8 (clients:G2): a frame the server built, held to the live shape by
+    // tacsim's `port_trade_frame_matches_the_clients_shared_fixture`.
+    const frame = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, "web/src/lib/fixtures/port/port_trade.json"), "utf-8"),
+    ) as Record<string, any>;
+    const listings = frame.listings as Array<Record<string, any>>;
+    const askRow = listings.find((r) => r.side === "ask")!;
+    const bidRow = listings.find((r) => r.side === "bid")!;
+    const stow = frame.ship.stowage as Record<string, any>;
+
+    const feed1 = decodePortTradeFeed(frame, goods, emptyPortTradeSnapshot());
+    expect(feed1.creditsMinor).toBe(frame.balance_minor);
+    expect(feed1.creditsText).toBe(frame.balance_text);
+    expect(feed1.portName).toBe(frame.port_name);
+    expect(feed1.asks.length + feed1.bids.length).toBe(listings.length);
+    expect(feed1.bids.length).toBeGreaterThan(0);
+    const ask = feed1.asks.find((a) => a.listingId === askRow.id)!;
+    expect(ask.quantity).toBe(askRow.available_qty);
+    expect(ask.itemName).toBe(askRow.good_label);
+    expect(ask.vendorName).toBe(askRow.vendor_name);
+    expect(feed1.bids.find((b) => b.listingId === bidRow.id)?.quantity).toBe(bidRow.available_qty);
+    expect(feed1.quotes.map((q) => q.quoteId)).toEqual(
+      (frame.open_quotes as Array<Record<string, any>>).map((q) => q.quote_id),
+    );
+    expect(feed1.hullName).toBe(frame.ship.hull_name);
+    expect(feed1.hullId).toBe(frame.ship.hull_id);
+    expect(feed1.stowage.cargoMaxKg).toBe(Math.max(1, stow.cargo_limit_kg));
+    expect(feed1.stowage.cargoMaxL).toBe(Math.max(1, stow.cargo_limit_l));
+    expect(feed1.stowage.propellantMaxKg).toBe(Math.max(1, stow.tank_limit_kg));
+    expect(feed1.stowage.provisionsMaxCrewDays).toBe(stow.stores_limit_days);
+    expect(feed1.stowage.cargoLines.map((l) => [l.good, l.qty])).toEqual(
+      (stow.items as Array<Record<string, any>>).map((i) => [i.good, i.qty]),
+    );
+    expect(feed1.hasMore).toBe(frame.next_after !== null);
+    expect(feed1.nextAfterId).toBe(frame.next_after);
+
+    // MAX FIT: the wallet bounds it at floor(balance / price), the listing at its stock.
+    const expectFit = Math.max(
+      1,
+      Math.min(ask.quantity, Math.floor(feed1.creditsMinor / ask.unitPriceMinor)),
+    );
+    expect(computeMaxFitQuantity(ask, goods, feed1.stowage, feed1.creditsMinor)).toBeLessThanOrEqual(
+      expectFit,
+    );
+
+    const started = beginOneClickBuy(ask, 4, 1_000, feed1.quotes)!;
+    expect(started.quoteCommand).toBe(`+market/quote ${ask.listingId}=4`);
+
+    // Matching quote at <= maxUnitPriceMinor auto-accepts
+    const quoteRow = (price: number, id: number) => ({
+      open_quotes: [
+        { quote_id: id, listing_id: ask.listingId, quantity: 4, unit_price_minor: price, total_minor: price * 4 },
+      ],
+    });
+    const withGoodQuote = decodePortTradeFeed(quoteRow(ask.unitPriceMinor, 901), goods, feed1);
+    const okRes = resolvePendingQuoteFromFeed(withGoodQuote, started.latch, 1_500);
+    expect(okRes.acceptCommand).toBe("+market/accept 901");
+    expect(okRes.priceWarning).toBeNull();
+
+    // Quote whose price moved above maxUnitPriceMinor refuses auto-accept and warns
+    const withMovedQuote = decodePortTradeFeed(quoteRow(ask.unitPriceMinor + 3_500, 902), goods, feed1);
+    const warnRes = resolvePendingQuoteFromFeed(withMovedQuote, started.latch, 1_500);
+    expect(warnRes.acceptCommand).toBeNull();
+    expect(warnRes.priceWarning).toContain("Quote #902 moved");
   });
 
   it("mounts TacsimSceneDeck & Port Exchange modal inside Game without breaking the single command box", async () => {

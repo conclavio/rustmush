@@ -19,6 +19,54 @@ namespace TacSim.UI
         Sailing = 4
     }
 
+    /// <summary>
+    /// One `+market/history` reply, kept apart from the shared 24-line echo log: a heading plus up to
+    /// 24 week rows is 25 lines, so the shared log drops the heading. A heading starts (and resets) the
+    /// capture, the week rows after it are appended, and any other line ends it.
+    /// </summary>
+    public sealed class MarketHistoryReply
+    {
+        /// <summary>A guard far above the server's 24-week window.</summary>
+        public const int MaxLines = 64;
+
+        private readonly List<string> _lines = new List<string>();
+        private bool _capturing;
+
+        /// <summary>The last reply: its heading, then its rows, newest first; empty before any reply.</summary>
+        public IReadOnlyList<string> Lines => _lines;
+
+        public bool IsCapturing => _capturing;
+
+        /// <summary>Feeds one server line; true when the line belongs to a history reply.</summary>
+        public bool Ingest(string rawLine)
+        {
+            if (string.IsNullOrWhiteSpace(rawLine)) return false;
+            string plain = TacSimEconomyPanels.StripRichTags(rawLine);
+            if (TacSimEconomyPanels.RxHistoryHeader.IsMatch(plain))
+            {
+                _lines.Clear();
+                _lines.Add(rawLine);
+                _capturing = true;
+                return true;
+            }
+            if (!_capturing) return false;
+            if (TacSimEconomyPanels.RxHistoryRow.IsMatch(plain))
+            {
+                if (_lines.Count < MaxLines)
+                    _lines.Add(rawLine);
+                return true;
+            }
+            _capturing = false;
+            return false;
+        }
+
+        public void Clear()
+        {
+            _lines.Clear();
+            _capturing = false;
+        }
+    }
+
     public sealed class ParsedPriceHistoryRow
     {
         public string When = string.Empty;
@@ -70,11 +118,11 @@ namespace TacSim.UI
             ("provisions", "Stores")
         };
 
-        private static readonly Regex RxHistoryHeader = new Regex(
+        internal static readonly Regex RxHistoryHeader = new Regex(
             @"House prices of (.+?) here, by IC week, newest first \(\d+\):",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        private static readonly Regex RxHistoryRow = new Regex(
+        internal static readonly Regex RxHistoryRow = new Regex(
             @"^\s*(this IC week|last IC week|\d+\s+IC weeks ago):\s*ask\s+([^,]+),\s*bid\s+(.+)$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -86,6 +134,7 @@ namespace TacSim.UI
         private readonly Action<string> _emitCommand;
         private readonly Func<string> _resolveSelectedPort;
         private readonly Func<string> _resolveActiveHullRef;
+        private readonly Func<string> _resolveEscortHullRef;
 
         public GameObject HistoryTabBody { get; private set; }
         public GameObject JobsTabBody { get; private set; }
@@ -98,6 +147,9 @@ namespace TacSim.UI
 
         private int _selectedHaulGoodIndex;
         private int _selectedSurveyIndex;
+
+        /// <summary>The last `+market/history` reply; the HUD feeds it every server line.</summary>
+        public MarketHistoryReply HistoryReply { get; } = new MarketHistoryReply();
 
         private Text _historySparkText;
         private Text _historyOutputText;
@@ -179,6 +231,7 @@ namespace TacSim.UI
 
         public void ClearHistorySeries(string statusPrompt = null)
         {
+            HistoryReply.Clear();
             LatestHistory = new ParsedPriceHistorySummary();
             if (_historySparkText != null)
             {
@@ -198,7 +251,7 @@ namespace TacSim.UI
             if (_historyOutputText != null) _historyOutputText.text = "Ready.";
             if (_jobsOutputText != null) _jobsOutputText.text = "Ready.";
             if (_industryOutputText != null) _industryOutputText.text = "Ready.";
-            if (_jobIdInput != null) _jobIdInput.text = "1";
+            if (_jobIdInput != null) _jobIdInput.text = string.Empty;
             if (_haulQtyInput != null) _haulQtyInput.text = "10";
             if (_haulFeeInput != null) _haulFeeInput.text = "250";
             if (_workOrderIdInput != null) _workOrderIdInput.text = "1";
@@ -211,12 +264,14 @@ namespace TacSim.UI
             Font font,
             Action<string> emitCommand,
             Func<string> resolveSelectedPort,
-            Func<string> resolveActiveHullRef)
+            Func<string> resolveActiveHullRef,
+            Func<string> resolveEscortHullRef = null)
         {
             _font = font;
             _emitCommand = emitCommand;
             _resolveSelectedPort = resolveSelectedPort;
             _resolveActiveHullRef = resolveActiveHullRef;
+            _resolveEscortHullRef = resolveEscortHullRef;
         }
 
         public void BuildSubPanels(Transform tradePanelTransform)
@@ -382,22 +437,28 @@ namespace TacSim.UI
                     }
                 }
 
-                var parsed = ParseMarketHistoryLines(echoLines);
-                if (parsed.RowsNewestFirst.Count > 0)
-                {
-                    LatestHistory = parsed;
-                    if (_historySparkText != null)
-                    {
-                        string lbl = string.IsNullOrEmpty(LatestHistory.GoodLabel) ? SelectedHistoryGood : LatestHistory.GoodLabel;
-                        _historySparkText.text =
-                            $"<color=#66DDFF><b>{MushProtocol.EscapeUnityRichText(lbl)} — 24-WEEK HOUSE SERIES</b></color>\n" +
-                            $"ASK TREND: <color=#66EEFF><b>{LatestHistory.AskSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestAsk)}</b>  (Band {LatestHistory.AskRange})\n" +
-                            $"BID TREND: <color=#FFCC66><b>{LatestHistory.BidSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestBid)}</b>  (Band {LatestHistory.BidRange})";
-                    }
-                }
-                else if (noHistoryReported)
+                if (noHistoryReported)
                 {
                     ClearHistorySeries($"No price history is kept here for <b>{MushProtocol.EscapeUnityRichText(SelectedHistoryGood)}</b>.");
+                }
+                else
+                {
+                    // Prefer the dedicated HistoryReply accumulator (holds heading + all 24 weeks
+                    // without eviction), falling back to echoLines for direct callers/tests.
+                    IReadOnlyList<string> sourceLines = HistoryReply.Lines.Count > 0 ? HistoryReply.Lines : echoLines;
+                    var parsed = ParseMarketHistoryLines(sourceLines);
+                    if (parsed.RowsNewestFirst.Count > 0)
+                    {
+                        LatestHistory = parsed;
+                        if (_historySparkText != null)
+                        {
+                            string lbl = string.IsNullOrEmpty(LatestHistory.GoodLabel) ? SelectedHistoryGood : LatestHistory.GoodLabel;
+                            _historySparkText.text =
+                                $"<color=#66DDFF><b>{MushProtocol.EscapeUnityRichText(lbl)} — 24-WEEK HOUSE SERIES</b></color>\n" +
+                                $"ASK TREND: <color=#66EEFF><b>{LatestHistory.AskSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestAsk)}</b>  (Band {LatestHistory.AskRange})\n" +
+                                $"BID TREND: <color=#FFCC66><b>{LatestHistory.BidSparkline}</b></color>   Latest: <b>{MushProtocol.EscapeUnityRichText(LatestHistory.LatestBid)}</b>  (Band {LatestHistory.BidRange})";
+                        }
+                    }
                 }
 
                 if (_historyOutputText != null) _historyOutputText.text = joined;
@@ -433,6 +494,9 @@ namespace TacSim.UI
 
         private string ResolveEscortHullDbref()
         {
+            string escortCandidate = _resolveEscortHullRef != null ? _resolveEscortHullRef() : null;
+            if (IsValidHullDbref(escortCandidate))
+                return escortCandidate.Trim();
             string candidate = _resolveActiveHullRef != null ? _resolveActiveHullRef() : null;
             return IsValidHullDbref(candidate) ? candidate.Trim() : null;
         }
@@ -572,7 +636,8 @@ namespace TacSim.UI
             CreateButton(filterRow, "Crew (+sortie/crew)", new Color(0.16f, 0.48f, 0.40f), () => _emitCommand?.Invoke("+sortie/crew"));
 
             var paramsRow = CreateRow(JobsTabBody.transform, "JobsParamsRow", -82f, -44f);
-            _jobIdInput = CreateMiniInput(paramsRow, "Job #", "1");
+            // The job box starts empty: a placeholder id such as "1" matches no real job.
+            _jobIdInput = CreateMiniInput(paramsRow, "Job #", string.Empty);
             _surveyIdInput = CreateMiniInput(paramsRow, "Survey ID", CanonicalSurveyIds[0]);
             CreateButton(paramsRow, "Next Survey", new Color(0.16f, 0.34f, 0.44f), () =>
             {
@@ -595,48 +660,24 @@ namespace TacSim.UI
                 "Accept Haul",
                 "CONFIRM HAUL",
                 new Color(0.16f, 0.48f, 0.36f),
-                onFirstClickPreview: () =>
-                {
-                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
-                    _emitCommand?.Invoke($"+haul/accept {j}");
-                },
-                onConfirmed: () =>
-                {
-                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
-                    _emitCommand?.Invoke($"+haul/accept {j} go");
-                });
+                onFirstClickPreview: () => EmitJobCommand("+haul/accept", go: false),
+                onConfirmed: () => EmitJobCommand("+haul/accept", go: true));
             CreateConfirmButton(
                 actRow,
                 "deliver_haul",
                 "Deliver Haul",
                 "CONFIRM DELIV",
                 new Color(0.48f, 0.34f, 0.14f),
-                onFirstClickPreview: () =>
-                {
-                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
-                    _emitCommand?.Invoke($"+haul/deliver {j}");
-                },
-                onConfirmed: () =>
-                {
-                    string j = _jobIdInput != null && !string.IsNullOrWhiteSpace(_jobIdInput.text) ? _jobIdInput.text.Trim() : "1";
-                    _emitCommand?.Invoke($"+haul/deliver {j} go");
-                });
+                onFirstClickPreview: () => EmitJobCommand("+haul/deliver", go: false),
+                onConfirmed: () => EmitJobCommand("+haul/deliver", go: true));
             CreateConfirmButton(
                 actRow,
                 "accept_survey",
                 "Accept Survey",
                 "CONFIRM SURV",
                 new Color(0.18f, 0.38f, 0.50f),
-                onFirstClickPreview: () =>
-                {
-                    string sid = ResolveSurveyId();
-                    _emitCommand?.Invoke($"+survey/accept {sid}");
-                },
-                onConfirmed: () =>
-                {
-                    string sid = ResolveSurveyId();
-                    _emitCommand?.Invoke($"+survey/accept {sid} go");
-                });
+                onFirstClickPreview: () => EmitSurveyAccept(confirm: false),
+                onConfirmed: () => EmitSurveyAccept(confirm: true));
             CreateConfirmButton(
                 actRow,
                 "post_haul",
@@ -849,6 +890,52 @@ namespace TacSim.UI
             sr.vertical = true;
             sr.movementType = ScrollRect.MovementType.Clamped;
             return txt;
+        }
+
+        /// <summary>
+        /// Builds `+survey/accept &lt;id&gt;` (the preview) or `+survey/accept &lt;id&gt; go` (the
+        /// confirm). Returns null when the id is empty, so the caller sends nothing.
+        /// </summary>
+        public static string BuildSurveyAcceptCommand(string rawId, bool confirm)
+        {
+            return BuildJobCommand("+survey/accept", rawId, confirm);
+        }
+
+        /// <summary>
+        /// Builds `verb &lt;id&gt;` or `verb &lt;id&gt; go` on the typed job id; null when the id is empty,
+        /// so a button never sends a placeholder id the server does not know.
+        /// </summary>
+        public static string BuildJobCommand(string verb, string rawId, bool go)
+        {
+            if (string.IsNullOrWhiteSpace(rawId)) return null;
+            string id = rawId.Trim();
+            return go ? $"{verb} {id} go" : $"{verb} {id}";
+        }
+
+        private void EmitJobCommand(string verb, bool go)
+        {
+            string cmd = BuildJobCommand(verb, _jobIdInput != null ? _jobIdInput.text : null, go);
+            if (cmd == null)
+            {
+                DisarmConfirm();
+                if (_jobsOutputText != null)
+                    _jobsOutputText.text = "Type a job number in the Job # box first (list them with the job filters).";
+                return;
+            }
+            _emitCommand?.Invoke(cmd);
+        }
+
+        private void EmitSurveyAccept(bool confirm)
+        {
+            string cmd = BuildSurveyAcceptCommand(ResolveSurveyId(), confirm);
+            if (cmd == null)
+            {
+                DisarmConfirm();
+                if (_jobsOutputText != null)
+                    _jobsOutputText.text = "Type a survey ID in the Survey ID box first (list them with the Survey filter).";
+                return;
+            }
+            _emitCommand?.Invoke(cmd);
         }
 
         private InputField CreateMiniInput(Transform parent, string placeholder, string defaultVal)

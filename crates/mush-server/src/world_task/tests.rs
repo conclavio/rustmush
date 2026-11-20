@@ -11912,13 +11912,25 @@ async fn discord_unlink_and_ban_revoke_every_character_on_the_account() {
             .unwrap();
         store.link_character("Nick", ObjId(8), "Alt").await.unwrap();
         store.discord_user_reserve(42, "Nick").await.unwrap();
+        let (world_tx, mut world_rx) = mpsc::channel::<WorldMsg>(8);
+        let weak = world_tx.downgrade();
+        let responder = tokio::spawn(async move {
+            while let Some(msg) = world_rx.recv().await {
+                if let WorldMsg::RecheckStaffRole { reply, .. } = msg {
+                    let _ = reply.send(Ok(true));
+                }
+            }
+        });
         let recorder = Arc::new(RecordingGateway::default());
         let gateway: Gateway = recorder.clone();
         let result = if operation == "ban" {
-            run_discord_ban(&gateway, &store, GOD, ObjId(7), "test").await
+            run_discord_ban(&gateway, &store, &weak, GOD, ObjId(7), "test").await
         } else {
-            run_discord_unlink(&gateway, &store, ObjId(7), operation == "staff-unlink").await
+            let staff = (operation == "staff-unlink").then_some((&weak, GOD));
+            run_discord_unlink(&gateway, &store, staff, ObjId(7)).await
         };
+        drop(world_tx);
+        responder.await.unwrap();
         assert!(!result.contains("failed"), "{result}");
         assert_eq!(
             *recorder.discord.lock().unwrap(),
@@ -12847,4 +12859,506 @@ async fn ts10b_a_paused_world_fires_an_hours_wait_on_tokio_time() {
     handles.world_join.await.unwrap();
     handles.writer_join.await.unwrap();
     handles.outbox_join.await.unwrap();
+}
+
+#[tokio::test]
+async fn run_staff_ops_never_blocks_on_full_queue_and_enforces_per_actor_cap() {
+    let mut world = World::new_minimal();
+    let alice = world
+        .create(ObjKind::Player, "Alice", GOD, Some(LIMBO))
+        .unwrap();
+    let bob = world
+        .create(ObjKind::Player, "Bob", GOD, Some(LIMBO))
+        .unwrap();
+    let carol = world
+        .create(ObjKind::Player, "Carol", GOD, Some(LIMBO))
+        .unwrap();
+
+    let deps = ServerDeps::in_memory();
+    let recorder = Arc::new(RecordingGateway::default());
+    let gateway: Gateway = recorder.clone();
+    let (writer, _writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+    let in_flight = StaffInFlight::default();
+
+    // Queue with capacity 3: Alice can only enqueue MAX_STAFF_OPS_PER_PLAYER (2)
+    // before hitting her per-actor cap; her 3rd op is refused immediately.
+    let (staff_tx, mut staff_rx) = mpsc::channel(3);
+    let ops = (0..3)
+        .map(|_| StaffOp {
+            actor: alice,
+            kind: StaffOpKind::DiscordStatus { actor: alice },
+        })
+        .collect();
+    assert!(!run_staff_ops(
+        &deps, &world, &gateway, &writer, &staff_tx, &in_flight, ops
+    ));
+    assert_eq!(in_flight.count(alice), MAX_STAFF_OPS_PER_PLAYER);
+    {
+        let sends = recorder.sends.lock().unwrap();
+        assert!(
+            sends
+                .iter()
+                .any(|(_, e)| format!("{e:?}").contains("Too many pending requests")),
+            "3rd concurrent player op must hit per-actor cap: {sends:?}"
+        );
+    }
+
+    // Bob takes the 3rd and final slot in the bounded queue.
+    assert!(!run_staff_ops(
+        &deps,
+        &world,
+        &gateway,
+        &writer,
+        &staff_tx,
+        &in_flight,
+        vec![StaffOp {
+            actor: bob,
+            kind: StaffOpKind::DiscordStatus { actor: bob },
+        }],
+    ));
+    assert_eq!(in_flight.count(bob), 1);
+
+    // Carol tries while the queue is completely full: must NOT block, must emit
+    // "Server busy; please try again shortly.", and must NOT leak her permit.
+    assert!(!run_staff_ops(
+        &deps,
+        &world,
+        &gateway,
+        &writer,
+        &staff_tx,
+        &in_flight,
+        vec![StaffOp {
+            actor: carol,
+            kind: StaffOpKind::DiscordStatus { actor: carol },
+        }],
+    ));
+    assert_eq!(
+        in_flight.count(carol),
+        0,
+        "full-queue refusal must release the acquired permit"
+    );
+    {
+        let sends = recorder.sends.lock().unwrap();
+        assert!(
+            sends
+                .iter()
+                .any(|(_, e)| format!("{e:?}").contains("Server busy; please try again shortly.")),
+            "full queue must emit clean busy notice: {sends:?}"
+        );
+    }
+
+    // Draining and dropping the queued items releases all permits via RAII Drop.
+    while staff_rx.try_recv().is_ok() {}
+    assert_eq!(in_flight.count(alice), 0);
+    assert_eq!(in_flight.count(bob), 0);
+}
+
+#[tokio::test]
+async fn staff_ops_burst_with_newchar_does_not_deadlock_world_task() {
+    let mut world = World::new_minimal();
+    let flooder = world
+        .create(ObjKind::Player, "Flooder", GOD, Some(LIMBO))
+        .unwrap();
+    let mut reg = base_registry();
+    let staff = Arc::new(StaffQueue::new());
+    crate::staff::register_server_commands(&mut reg, &staff).unwrap();
+    let engine = Engine::new(world, reg);
+
+    let deps = ServerDeps {
+        staff,
+        ..ServerDeps::in_memory()
+    };
+    deps.store
+        .create_account(AccountRec {
+            id: None,
+            name: "flooder".into(),
+            argon2_hash: "fixture".into(),
+            created: 1,
+            characters: vec![],
+            ssh_keys: vec![],
+            discord: None,
+        })
+        .await
+        .unwrap();
+    deps.store
+        .link_character("flooder", flooder, "Flooder")
+        .await
+        .unwrap();
+
+    let recorder = Arc::new(RecordingGateway::default());
+    let sink = Arc::clone(&recorder);
+    let handles = spawn_persist_with_gateway(engine, deps, move |_| -> Gateway { sink });
+
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::ConnUp {
+                conn: 1,
+                actor: flooder,
+                caps_structured: false,
+                from_linkdead: false,
+            })
+            .await
+    );
+    // Fire the exact AB-BA trigger pattern: @newchar (calls back into world_task)
+    // followed by 70+ staff-executor ops in one burst.
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Cmd {
+                conn: 1,
+                actor: flooder,
+                line: "@newchar FloodAlt".into(),
+            })
+            .await
+    );
+    for _ in 0..70 {
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::Cmd {
+                    conn: 1,
+                    actor: flooder,
+                    line: "@discord".into(),
+                })
+                .await
+        );
+    }
+
+    // World task must remain responsive and never deadlock.
+    let barrier_ok = tokio::time::timeout(Duration::from_secs(5), handles.handle.barrier())
+        .await
+        .expect("world_task deadlocked on staff_ops burst!");
+    assert!(barrier_ok);
+
+    assert!(
+        handles
+            .handle
+            .inbound(Inbound::Control(ControlMsg::Shutdown))
+            .await
+    );
+    handles.world_join.await.unwrap();
+    handles.writer_join.await.unwrap();
+    handles.outbox_join.await.unwrap();
+}
+
+#[tokio::test]
+async fn wizard_cannot_hijack_god_account_via_mortal_alt_at_execution() {
+    let mut world = World::new_minimal();
+    let wiz = world
+        .create(ObjKind::Player, "Wanda", GOD, Some(LIMBO))
+        .unwrap();
+    world.set_flag(wiz, Flags::WIZARD, true).unwrap();
+    let god_alt = world
+        .create(ObjKind::Player, "GodMortalAlt", GOD, Some(LIMBO))
+        .unwrap();
+    let mortal = world
+        .create(ObjKind::Player, "PureMortal", GOD, Some(LIMBO))
+        .unwrap();
+
+    let store = InMemoryStore::new();
+    // God's account holds BOTH GOD (#1) and a mortal alt (`god_alt`).
+    store
+        .create_account(AccountRec {
+            id: None,
+            name: "godacct".into(),
+            argon2_hash: "original-god-hash".into(),
+            created: 1,
+            characters: vec![],
+            ssh_keys: vec![],
+            discord: Some(mush_store::DiscordLinkRec {
+                user_id: 999_001,
+                linked_at: 1,
+                relay_character: None,
+                auto_follow: false,
+                dm_channel: None,
+                quiet: false,
+            }),
+        })
+        .await
+        .unwrap();
+    store.link_character("godacct", GOD, "God").await.unwrap();
+    store
+        .link_character("godacct", god_alt, "GodMortalAlt")
+        .await
+        .unwrap();
+    store
+        .discord_user_reserve(999_001, "godacct")
+        .await
+        .unwrap();
+
+    // Pure mortal account for control comparison.
+    store
+        .create_account(AccountRec {
+            id: None,
+            name: "mortalacct".into(),
+            argon2_hash: "original-mortal-hash".into(),
+            created: 1,
+            characters: vec![],
+            ssh_keys: vec![],
+            discord: Some(mush_store::DiscordLinkRec {
+                user_id: 999_002,
+                linked_at: 1,
+                relay_character: None,
+                auto_follow: false,
+                dm_channel: None,
+                quiet: false,
+            }),
+        })
+        .await
+        .unwrap();
+    store
+        .link_character("mortalacct", mortal, "PureMortal")
+        .await
+        .unwrap();
+    store
+        .discord_user_reserve(999_002, "mortalacct")
+        .await
+        .unwrap();
+
+    let (world_tx, mut world_rx) = mpsc::channel::<WorldMsg>(16);
+    let weak = world_tx.downgrade();
+    let responder = tokio::spawn(async move {
+        while let Some(msg) = world_rx.recv().await {
+            if let WorldMsg::RecheckStaffRole {
+                actor,
+                min_role,
+                targets,
+                reply,
+            } = msg
+            {
+                let allowed = crate::staff::check_staff_role(&world, actor, min_role, &targets);
+                let _ = reply.send(Ok(allowed));
+            }
+        }
+    });
+
+    let recorder = Arc::new(RecordingGateway::default());
+    let gateway: Gateway = recorder.clone();
+
+    // Wizard targeting God's mortal alt must be REFUSED for all three ops.
+    let res = run_newpassword(
+        &store,
+        &gateway,
+        &weak,
+        wiz,
+        god_alt,
+        "GodMortalAlt",
+        "Wanda",
+        "hijack-pass-99",
+    )
+    .await;
+    assert!(res.contains("Permission denied"), "{res}");
+    assert_eq!(
+        store
+            .get_account("godacct")
+            .await
+            .unwrap()
+            .unwrap()
+            .argon2_hash,
+        "original-god-hash",
+        "God's password hash must be untouched"
+    );
+
+    let res = run_discord_unlink(&gateway, &store, Some((&weak, wiz)), god_alt).await;
+    assert!(res.contains("Permission denied"), "{res}");
+    assert!(
+        store
+            .get_account("godacct")
+            .await
+            .unwrap()
+            .unwrap()
+            .discord
+            .is_some(),
+        "God's Discord link must be untouched"
+    );
+
+    let res = run_discord_ban(&gateway, &store, &weak, wiz, god_alt, "usurping").await;
+    assert!(res.contains("Permission denied"), "{res}");
+    assert!(
+        store.discord_ban_get(999_001).await.unwrap().is_none(),
+        "God's Discord user must not be banned"
+    );
+
+    // Control: Wizard CAN unlink/ban a purely mortal account.
+    let res = run_discord_ban(&gateway, &store, &weak, wiz, mortal, "spam").await;
+    assert!(res.contains("is banned"), "{res}");
+    assert!(store.discord_ban_get(999_002).await.unwrap().is_some());
+
+    // Control: GOD CAN act on GOD's own account via the mortal alt.
+    let res = run_discord_unlink(&gateway, &store, Some((&weak, GOD)), god_alt).await;
+    assert!(res.contains("no longer linked"), "{res}");
+    assert!(
+        store
+            .get_account("godacct")
+            .await
+            .unwrap()
+            .unwrap()
+            .discord
+            .is_none()
+    );
+
+    drop(world_tx);
+    responder.await.unwrap();
+}
+
+#[tokio::test]
+async fn demoted_wizard_queued_privileged_staff_ops_are_refused_at_execution() {
+    let store = Arc::new(InMemoryStore::new());
+    let guard = Arc::new(IpGuard::new());
+    let ip: std::net::IpAddr = "10.9.9.9".parse().unwrap();
+    store
+        .set_ban("10.8.8.8", None, "preexisting")
+        .await
+        .unwrap();
+    store
+        .create_account(AccountRec {
+            id: None,
+            name: "victim".into(),
+            argon2_hash: "keep-hash".into(),
+            created: 1,
+            characters: vec![],
+            ssh_keys: vec![],
+            discord: Some(mush_store::DiscordLinkRec {
+                user_id: 777_001,
+                linked_at: 1,
+                relay_character: None,
+                auto_follow: false,
+                dm_channel: None,
+                quiet: false,
+            }),
+        })
+        .await
+        .unwrap();
+    store
+        .link_character("victim", ObjId(5), "Victim")
+        .await
+        .unwrap();
+    store
+        .discord_ban_put(DiscordBanRec {
+            user_id: 777_002,
+            by_account: "god".into(),
+            reason: "keep-ban".into(),
+            at: 1,
+        })
+        .await
+        .unwrap();
+
+    // World responder answers `Ok(false)` to simulate the caller having been
+    // demoted between command dispatch and `staff_ops_loop` execution.
+    let (world_tx, mut world_rx) = mpsc::channel::<WorldMsg>(32);
+    let weak = world_tx.downgrade();
+    let responder = tokio::spawn(async move {
+        let mut checks = 0usize;
+        while let Some(msg) = world_rx.recv().await {
+            if let WorldMsg::RecheckStaffRole { reply, .. } = msg {
+                checks += 1;
+                let _ = reply.send(Ok(false));
+            }
+        }
+        checks
+    });
+
+    let (staff_tx, staff_rx) = mpsc::channel(32);
+    let recorder = Arc::new(RecordingGateway::default());
+    let gateway: Gateway = recorder.clone();
+    let loop_join = tokio::spawn(staff_ops_loop(
+        store.clone(),
+        guard.clone(),
+        weak,
+        staff_rx,
+        gateway,
+    ));
+
+    let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+    let in_flight = StaffInFlight::default();
+    let demoted = ObjId(42);
+    let make_permit = || in_flight.try_acquire(demoted, 32).unwrap();
+
+    let privileged_ops = vec![
+        StaffOpKind::SetBan {
+            ip,
+            until_unix: None,
+            reason: "bad".into(),
+        },
+        StaffOpKind::ClearBan {
+            ip: "10.8.8.8".parse().unwrap(),
+        },
+        StaffOpKind::LiftTempban {
+            ip,
+            issued_unix_ms: 1_000,
+        },
+        StaffOpKind::ListBans,
+        StaffOpKind::NewPassword {
+            target: ObjId(5),
+            name: "Victim".into(),
+            by: "Demoted".into(),
+            password: crate::staff::Secret("pwned-pass-99".into()),
+        },
+        StaffOpKind::DiscordUnlink {
+            actor: demoted,
+            target: ObjId(5),
+        },
+        StaffOpKind::DiscordBan {
+            actor: demoted,
+            target: ObjId(5),
+            reason: "abuse".into(),
+        },
+        StaffOpKind::DiscordUnban {
+            actor: demoted,
+            target: crate::staff::DiscordBanTarget::User(777_002),
+        },
+    ];
+    for kind in privileged_ops {
+        staff_tx
+            .send(StaffWork::Op {
+                op: StaffOp {
+                    actor: demoted,
+                    kind,
+                },
+                permit: make_permit(),
+            })
+            .await
+            .unwrap();
+    }
+    staff_tx
+        .send(StaffWork::Dump {
+            actor: demoted,
+            writer,
+            permit: make_permit(),
+        })
+        .await
+        .unwrap();
+
+    drop(staff_tx);
+    loop_join.await.unwrap();
+    drop(world_tx);
+    let checks = responder.await.unwrap();
+    assert_eq!(checks, 9, "all 9 privileged staff op variants must recheck");
+
+    // Every reply was Permission denied, and zero mutations landed in store/writer.
+    {
+        let sends = recorder.sends.lock().unwrap();
+        assert_eq!(sends.len(), 9, "{sends:?}");
+        for (_, ev) in sends.iter() {
+            assert!(
+                format!("{ev:?}").contains("Permission denied"),
+                "expected Permission denied, got {ev:?}"
+            );
+        }
+    }
+    assert!(
+        writer_rx.try_recv().is_err(),
+        "demoted @dump must not send StoreJob::Bgsave"
+    );
+    let bans = store.get_bans().await.unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(bans[0].ip, "10.8.8.8");
+    assert!(store.get_tempban_lifts().await.unwrap().is_empty());
+    let acct = store.get_account("victim").await.unwrap().unwrap();
+    assert_eq!(acct.argon2_hash, "keep-hash");
+    assert!(acct.discord.is_some());
+    assert!(store.discord_ban_get(777_001).await.unwrap().is_none());
+    assert!(store.discord_ban_get(777_002).await.unwrap().is_some());
+    assert_eq!(in_flight.count(demoted), 0, "all permits released");
 }

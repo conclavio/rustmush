@@ -222,7 +222,7 @@
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 500")}>50%</button>
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 1000")}>100%</button>
             <button type="button" class="qbtn" onclick={() => handleAction("ui:open_sailing")}>Undock / Route</button>
-            <button type="button" class="qbtn" onclick={() => onCmd(`+helm/dock ${app.tacsim.dockTarget}`)}>
+            <button type="button" class="qbtn" onclick={() => handleAction("ui:dock_destination")}>
               60 Hz Dock ({app.tacsim.dockTarget})
             </button>
             <button type="button" class="qbtn accent" onclick={() => app.tacsim.standFromBridgeHelm()}>

@@ -965,11 +965,11 @@ namespace TacSim.Core
                         string chosenName = Hud.GetModalInputValue();
                         if (string.IsNullOrWhiteSpace(chosenName))
                             chosenName = suggested;
-                        ExecutePlayerCommand($"+coop/enrol {chosenName}");
+                        ExecutePlayerCommand($"+coop/enroll {chosenName}");
                     }),
                     ("Account Statement", () => ExecutePlayerCommand("+coop/statement"))
                 },
-                commandPrefix: "+coop/enrol",
+                commandPrefix: "+coop/enroll",
                 defaultInputValue: suggested);
         }
 
@@ -1179,6 +1179,13 @@ namespace TacSim.Core
             if (low.Contains("aitken") || low.Contains("luna")) return "luna";
             if (low.Contains("voltaire") || low.Contains("deimos")) return "deimos";
             if (low.Contains("ligeia") || low.Contains("titan")) return "titan";
+            if (low.Contains("rheasilvia") || low.Contains("vesta")) return "rheasilvia";
+            if (low.Contains("kerwan")) return "kerwan";
+            if (low.Contains("ahuna")) return "ahuna";
+            if (low.Contains("juling")) return "juling";
+            if (low.Contains("occator")) return "occator";
+            if (low.Contains("urvara")) return "urvara";
+            if (low.Contains("commons")) return "commons";
             if (low.Contains("ceres") || low.Contains("freeport")) return "ceres";
             return null;
         }
@@ -1398,11 +1405,14 @@ namespace TacSim.Core
             }
             if (cmd == "action:start_docking")
             {
+                // When underway in space, prefer the active space site or the player's selected
+                // corridor destination over a stale departure station pack/venue.
+                bool inSpace = _isAboardShip && !_hullIsDocked;
                 string dockTarget = ResolveDockingTargetPort(
                     SpaceStage != null ? SpaceStage.ActiveSiteId : null,
-                    TradeState != null ? TradeState.AboardDockedPortHint : null,
-                    TradeState != null ? TradeState.ActiveVenue : null,
-                    StationWorld != null ? StationWorld.LoadedPackId : null,
+                    inSpace ? null : (TradeState != null ? TradeState.AboardDockedPortHint : null),
+                    inSpace ? null : (TradeState != null ? TradeState.ActiveVenue : null),
+                    inSpace ? null : (StationWorld != null ? StationWorld.LoadedPackId : null),
                     TradeState != null ? TradeState.SelectedDestinationPort : null);
                 ExecutePlayerCommand($"+helm/dock {dockTarget}");
                 return;

@@ -67,15 +67,6 @@ namespace TacSim.UI
 
         public static TacSimHudController ActiveInstance { get; private set; }
 
-        private static readonly (string code, string label)[] CanonicalCorridorPorts =
-        {
-            ("ceres", "Ceres"),
-            ("stickney", "Stickney"),
-            ("luna", "Luna (Aitken)"),
-            ("deimos", "Deimos"),
-            ("titan", "Titan")
-        };
-
         /// <summary>
         /// Non-serialized flag: always false when entering Play Mode from a saved scene so BuildHud()
         /// wires fresh runtime Button.onClick closures and InputField references.
@@ -119,7 +110,8 @@ namespace TacSim.UI
                 return (_chatInput != null && _chatInput.isFocused) ||
                        (_npcSayInput != null && _npcSayInput.isFocused) ||
                        (EconomyPanels != null && EconomyPanels.IsAnyInputFocused) ||
-                       (term != null && term.IsAnyInputFocused) ||
+                       (term != null && term.HasFocusedInput) ||
+                       (Application.isPlaying && TacSimMindTerminal.IsAnyInputFocused) ||
                        (_loginPanel != null && _loginPanel.activeSelf);
             }
         }
@@ -184,6 +176,28 @@ namespace TacSim.UI
         private Transform _listingsContentRoot;
         private readonly List<Image> _qtyPresetImages = new List<Image>();
         private readonly List<Image> _destPortImages = new List<Image>();
+
+        /// <summary>
+        /// The Ceres-Phobos lane's 12 venue words (crates/tacsim/content/lane/ceres_phobos.json),
+        /// labelled with the port name and its body. These are the only words `+ship/plan`,
+        /// `+ship/order depart`, `+ship/undock` and `+helm/dock` accept as a destination.
+        /// </summary>
+        public static readonly (string code, string label)[] CorridorDestinations =
+        {
+            ("ceres", "Ceres Freeport (Ceres)"),
+            ("stickney", "Stickney Yards (Phobos)"),
+            ("luna", "Aitken Highport (Luna)"),
+            ("deimos", "Voltaire Anchorage (Deimos)"),
+            ("titan", "Ligeia Terminal (Titan)"),
+            ("commons", "Freeport Commons (Ceres)"),
+            ("kerwan", "Kerwan Floor (Ceres)"),
+            ("ahuna", "Ahuna Flank (Ceres)"),
+            ("juling", "Juling Shadow (Ceres)"),
+            ("occator", "Occator Rim (Ceres)"),
+            ("rheasilvia", "Rheasilvia Commons (Vesta)"),
+            ("urvara", "Urvara Reach (Ceres)")
+        };
+
         private Text _sailingPlanOutputText;
         private const int MaxTabEchoLines = 64;
         private readonly Dictionary<TradeTerminalTab, List<string>> _tabEchoLines = new Dictionary<TradeTerminalTab, List<string>>
@@ -301,11 +315,14 @@ namespace TacSim.UI
             if (shipObj.IsObject)
             {
                 string hid = shipObj.Str("hull_id", string.Empty);
-                if (TacSimEconomyPanels.IsValidHullDbref(hid))
-                    _activeHullRef = hid.Trim();
+                _activeHullRef = TacSimEconomyPanels.IsValidHullDbref(hid) ? hid.Trim() : null;
                 string shipPort = CanonicalizeCorridorPort(shipObj.Str("port", string.Empty));
                 if (!string.IsNullOrEmpty(shipPort))
                     _activePortHint = shipPort;
+            }
+            else if (data.ContainsKey("ship") && shipObj.IsNull)
+            {
+                _activeHullRef = null;
             }
 
             string venuePort = CanonicalizeCorridorPort(data.Str("venue", string.Empty));
@@ -354,11 +371,18 @@ namespace TacSim.UI
         {
             if (string.IsNullOrWhiteSpace(raw)) return null;
             string s = raw.Trim().ToLowerInvariant();
-            if (s == "ceres" || s.Contains("ceres")) return "ceres";
             if (s == "stickney" || s.Contains("stickney") || s.Contains("phobos")) return "stickney";
             if (s == "luna" || s.Contains("luna") || s.Contains("aitken")) return "luna";
-            if (s == "deimos" || s.Contains("deimos")) return "deimos";
-            if (s == "titan" || s.Contains("titan")) return "titan";
+            if (s == "deimos" || s.Contains("deimos") || s.Contains("voltaire")) return "deimos";
+            if (s == "titan" || s.Contains("titan") || s.Contains("ligeia")) return "titan";
+            if (s == "rheasilvia" || s.Contains("rheasilvia") || s.Contains("vesta")) return "rheasilvia";
+            if (s == "kerwan" || s.Contains("kerwan")) return "kerwan";
+            if (s == "ahuna" || s.Contains("ahuna")) return "ahuna";
+            if (s == "juling" || s.Contains("juling")) return "juling";
+            if (s == "occator" || s.Contains("occator")) return "occator";
+            if (s == "urvara" || s.Contains("urvara")) return "urvara";
+            if (s == "commons" || s.Contains("commons")) return "commons";
+            if (s == "ceres" || s.Contains("ceres") || s.Contains("freeport")) return "ceres";
             return null;
         }
 
@@ -705,17 +729,26 @@ namespace TacSim.UI
             var pLbl = CreateText(portStrip.transform, "CORRIDOR PORT:", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.75f, 0.88f, 0.96f));
             SetRect(pLbl.rectTransform, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(12f, 0f), new Vector2(142f, 0f));
 
-            var portsRow = CreatePanel(portStrip.transform, "CorridorPortButtons", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(146f, 4f), new Vector2(-8f, -4f), Color.clear);
-            var portHlg = portsRow.AddComponent<HorizontalLayoutGroup>();
-            portHlg.spacing = 6f;
-            portHlg.childControlWidth = true;
-            portHlg.childControlHeight = true;
-            portHlg.childForceExpandWidth = true;
-            for (int i = 0; i < CanonicalCorridorPorts.Length; i++)
+            // 12 venues share the strip right of the label: each button takes 1/12 of it, and its
+            // text shrinks to fit (best fit) instead of overflowing.
+            var portButtons = CreatePanel(portStrip.transform, "CorridorPortButtons", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(148f, 4f), new Vector2(-4f, -4f), Color.clear);
+            var ports = CorridorDestinations;
+            for (int i = 0; i < ports.Length; i++)
             {
                 int idx = i;
-                string pCode = CanonicalCorridorPorts[i].code;
-                var pb = CreateButton(portsRow.transform, CanonicalCorridorPorts[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
+                string pCode = ports[i].code;
+                float a0 = (float)i / ports.Length;
+                float a1 = (float)(i + 1) / ports.Length;
+                var pb = CreateButton(portButtons.transform, ports[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
+                SetRect(pb.GetComponent<RectTransform>(), new Vector2(a0, 0f), new Vector2(a1, 1f), new Vector2(2f, 0f), new Vector2(-2f, 0f));
+                var pbText = pb.GetComponentInChildren<Text>();
+                if (pbText != null)
+                {
+                    pbText.horizontalOverflow = HorizontalWrapMode.Wrap;
+                    pbText.resizeTextForBestFit = true;
+                    pbText.resizeTextMinSize = 8;
+                    pbText.resizeTextMaxSize = 13;
+                }
                 _destPortImages.Add(pb.GetComponent<Image>());
             }
 
@@ -777,7 +810,11 @@ namespace TacSim.UI
                 () => _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.SelectedDestinationPort)
                     ? _boundTradeState.SelectedDestinationPort
                     : "stickney",
-                () => _activeHullRef);
+                () => _activeHullRef,
+                // `+escort/post` takes only `#<dbref>`; prefer structured `port.trade` ship.hull_id, falling back to HUD active hull ref.
+                () => _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.ShipHullId)
+                    ? _boundTradeState.ShipHullId
+                    : _activeHullRef);
             EconomyPanels.BuildSubPanels(_tradePanel.transform);
 
             _sailingTabBody.SetActive(false);
@@ -1393,7 +1430,7 @@ namespace TacSim.UI
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged += RefreshTradeTerminal;
             SelectTradeQuantityPreset(1, 10);
-            SelectDestinationPort(1, "stickney");
+            SelectDestinationPort(CorridorDestinationIndex("stickney"), "stickney");
         }
 
         public void OpenTradeAndSailingModal(string header, bool openSailingTab)
@@ -1475,6 +1512,17 @@ namespace TacSim.UI
             }
             if (_tradePanel != null && _tradePanel.activeSelf)
                 RebuildListingCards();
+        }
+
+        /// <summary>Index of a venue word in <see cref="CorridorDestinations"/>, or -1.</summary>
+        public static int CorridorDestinationIndex(string portCode)
+        {
+            for (int i = 0; i < CorridorDestinations.Length; i++)
+            {
+                if (string.Equals(CorridorDestinations[i].code, portCode, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+            return -1;
         }
 
         private void SelectDestinationPort(int index, string portCode)
@@ -1866,13 +1914,21 @@ namespace TacSim.UI
                 if (!IsRoomSpeechLine(richLine))
                 {
                     var tabLines = _tabEchoLines[ActiveTradeTab];
-                    if (resetPreviousResponses) tabLines.Clear();
+                    if (resetPreviousResponses)
+                    {
+                        tabLines.Clear();
+                        if (ActiveTradeTab == TradeTerminalTab.History)
+                            EconomyPanels?.HistoryReply.Clear();
+                    }
                     if (!string.IsNullOrWhiteSpace(richLine))
                     {
                         foreach (string sub in richLine.Split('\n'))
                         {
                             if (string.IsNullOrWhiteSpace(sub)) continue;
-                            tabLines.Add(sub.TrimEnd('\r'));
+                            string clean = sub.TrimEnd('\r');
+                            tabLines.Add(clean);
+                            // A history reply runs past a small shared log; it keeps its own copy.
+                            EconomyPanels?.HistoryReply.Ingest(clean);
                         }
                         while (tabLines.Count > MaxTabEchoLines)
                             tabLines.RemoveAt(0);

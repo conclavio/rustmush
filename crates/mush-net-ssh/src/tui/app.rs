@@ -4127,8 +4127,11 @@ impl TuiApp {
         };
         match spec.content {
             PaneContent::Scrollback => {
-                let off = self.scroll_off as isize - delta;
-                self.scroll_off = off.max(0) as usize;
+                self.scroll_off = if delta < 0 {
+                    self.scroll_off.saturating_add(delta.unsigned_abs())
+                } else {
+                    self.scroll_off.saturating_sub(delta as usize)
+                };
                 // Already at the top of the local buffer and still going up:
                 // that is the ask for the page above it (§3.12).
                 if delta < 0 && self.scroll_off >= self.last_max_scroll {
@@ -4148,14 +4151,22 @@ impl TuiApp {
                     return;
                 }
                 let current = self.anchored(spec.id, &rows);
-                let pos = selectable.iter().position(|&i| i == current).unwrap_or(0) as isize;
-                let next = (pos + delta).clamp(0, selectable.len() as isize - 1) as usize;
+                let pos = selectable.iter().position(|&i| i == current).unwrap_or(0);
+                let max_idx = selectable.len().saturating_sub(1);
+                let next = if delta < 0 {
+                    pos.saturating_sub(delta.unsigned_abs())
+                } else {
+                    pos.saturating_add(delta as usize).min(max_idx)
+                };
                 self.remember_selection(spec.id, selectable[next], &rows);
             }
             _ => {
                 let ui = self.pane_ui_mut(spec.id);
-                let off = ui.scroll as isize + delta;
-                ui.scroll = off.max(0) as usize;
+                ui.scroll = if delta < 0 {
+                    ui.scroll.saturating_sub(delta.unsigned_abs())
+                } else {
+                    ui.scroll.saturating_add(delta as usize)
+                };
             }
         }
     }
@@ -5087,8 +5098,8 @@ impl TuiApp {
     /// no encoder, no frame held, or unchanged since the last send). The
     /// picture reads its feeds from the panel store, as every pane does.
     pub fn pixel_paint(&mut self) -> Vec<u8> {
-        let w = self.caps.width.min(crate::caps::MAX_WIDTH);
-        let h = self.caps.height.min(crate::caps::MAX_HEIGHT);
+        let w = self.caps.width.clamp(1, crate::caps::MAX_WIDTH);
+        let h = self.caps.height.clamp(1, crate::caps::MAX_HEIGHT);
         let TuiApp {
             pixel,
             panels,
@@ -7014,6 +7025,43 @@ mod tests {
         assert_eq!(app.scroll_off(), 1);
         app.feed_input(b"G");
         assert_eq!(app.scroll_off(), 0);
+    }
+
+    #[test]
+    fn scrolling_past_jump_sentinels_saturates_without_overflow() {
+        let mut app = app();
+        // 1. Scrollback `g` sets `scroll_off = usize::MAX / 2` (= isize::MAX);
+        //    scrolling up immediately must saturate instead of overflowing.
+        app.feed_input(b"g");
+        assert_eq!(app.scroll_off(), usize::MAX / 2);
+        app.feed_input(b"\x1b[A"); // Up
+        assert_eq!(app.scroll_off(), usize::MAX / 2 + 1);
+        app.feed_input(b"\x1b[5~"); // PgUp
+        assert_eq!(app.scroll_off(), usize::MAX / 2 + 1 + PAGE);
+        // Input-mode PgUp after `g` also stays monotonic and never wraps negative.
+        app.feed_input(b"\r\x1b[5~\x1b\x1b[A");
+        assert_eq!(app.scroll_off(), usize::MAX / 2 + 2 + 2 * PAGE);
+        app.feed_input(b"\x1b[B"); // Down steps back by 1
+        assert_eq!(app.scroll_off(), usize::MAX / 2 + 1 + 2 * PAGE);
+        // `/history` also arms the top sentinel (Esc returns to Nav mode).
+        app.feed_input(b"/history\r\x1b\x1b[A\x1b[5~");
+        assert_eq!(app.scroll_off(), usize::MAX / 2 + 1 + PAGE);
+        // `G` resets to 0; further Down/PgDn saturates at 0.
+        app.feed_input(b"G\x1b[B\x1b[6~");
+        assert_eq!(app.scroll_off(), 0);
+
+        // 2. Non-selectable text pane (`who` after Tab): `G` sets
+        //    `ui.scroll = usize::MAX / 2`; scrolling Down/PgDn must saturate.
+        app.feed_input(b"\t");
+        assert_eq!(app.focused_pane(), Some(PaneId("who")));
+        app.feed_input(b"G");
+        assert_eq!(app.pane_ui(PaneId("who")).scroll, usize::MAX / 2);
+        app.feed_input(b"\x1b[B\x1b[6~");
+        assert_eq!(app.pane_ui(PaneId("who")).scroll, usize::MAX / 2 + 1 + PAGE);
+        app.feed_input(b"\x1b[A");
+        assert_eq!(app.pane_ui(PaneId("who")).scroll, usize::MAX / 2 + PAGE);
+        app.feed_input(b"g\x1b[A\x1b[5~");
+        assert_eq!(app.pane_ui(PaneId("who")).scroll, 0);
     }
 
     #[test]
@@ -11045,20 +11093,21 @@ mod tests {
                     "stowage": {
                         "cargo_kg": 2_000,
                         "cargo_limit_kg": 50_000,
-                        "cargo_m3": 6.0,
-                        "max_cargo_m3": 180.0,
-                        "reaction_kg": 10_000,
-                        "max_reaction_kg": 12_000,
-                        "stores_person_days": 20.0,
-                        "crew_count": 1,
+                        "cargo_l": 6_000,
+                        "cargo_limit_l": 180_000,
+                        "tank_kg": 10_000,
+                        "tank_limit_kg": 12_000,
+                        "stores_days": 20,
+                        "stores_limit_days": 120,
                         "items": []
                     }
                 },
                 "listings": [
                     {
-                        "listing_id": 91,
-                        "good": "water_ice",
-                        "good_label": "Water Ice",
+                        "id": 91,
+                        "side": "ask",
+                        "good": "volatiles",
+                        "good_label": "water ice",
                         "vendor_name": "Ceres Ice Authority",
                         "available_qty": 40,
                         "unit_price_minor": 950
@@ -11076,7 +11125,7 @@ mod tests {
             kind: PanelFrameKind::Keyframe,
             data: serde_json::json!({
                 "open_quotes": [
-                    { "quote_id": 701, "listing_id": 91, "quantity": 5, "unit_price_minor": 950, "total_minor": 4_750, "expired": false }
+                    { "quote_id": 701, "listing_id": 91, "quantity": 5, "unit_price_minor": 950, "total_minor": 4_750 }
                 ]
             }),
         });

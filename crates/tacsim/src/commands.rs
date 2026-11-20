@@ -460,7 +460,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
-            help: crate::port::works::WORKS_HELP.into(),
+            help: crate::port::works::YARD_HELP.into(),
             ..CommandSpec::default()
         },
         Arc::new(crate::port::works::yard_cmd),

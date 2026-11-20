@@ -6,7 +6,7 @@ import type { NarrativeKind, ObjRef, RichText, RoomView } from "../proto";
 import { plainText } from "../render";
 import { storageGet, storageSet } from "../storage";
 import { tacsimAudio } from "../tacsim/audio";
-import { isValidHullDbref } from "../tacsim/economy";
+import { foldMarketHistoryLine, isValidHullDbref } from "../tacsim/economy";
 import {
   areRoomsConnectedWithinHops,
   buildFallbackDray,
@@ -103,6 +103,8 @@ export class TacsimPortStore {
   focusedNpc = $state<{ id: string; name: string; bio: string; isNpc: boolean } | null>(null);
   detailModal = $state<{ title: string; body: string } | null>(null);
   modalLog = $state<string[]>([]);
+  /** The latest whole `+market/history` reply (heading plus every week row). */
+  marketHistoryLines = $state<string[]>([]);
   coopSuggestedHull = $state<string>(suggestUniqueHullName());
   selectedDestination = $state<string>(CORRIDOR_DESTINATIONS[1]?.id ?? "stickney");
   selectedQtyPreset = $state<number | "max">(5);
@@ -277,6 +279,7 @@ export class TacsimPortStore {
     this.focusedNpc = null;
     this.detailModal = null;
     this.modalLog = [];
+    this.marketHistoryLines = [];
     this.roomView = null;
     this.roomRevision = 0;
     this.ambient = decodeTacsimRoomAmbient(null);
@@ -405,6 +408,8 @@ export class TacsimPortStore {
   }
 
   observeSys(line: string): void {
+    const history = foldMarketHistoryLine(this.marketHistoryLines, line);
+    if (history !== null) this.marketHistoryLines = history;
     if (this.activeModal !== null && line.trim().length > 0) {
       this.#pushModalLine(line.trim());
     }
@@ -511,7 +516,9 @@ export class TacsimPortStore {
       return;
     }
 
-    // Individual pack frame (`op: "pack"`, `found`, `id`, `requested_id`, `sha256`, `json`)
+    // Individual pack frame (`op: "pack"`, `found`, `id`, `requested_id`, `sha256`, `json`);
+    // a pack the server no longer has (`found: false`) is recorded in `#packsFailed`
+    // and is not re-asked unless the manifest digest changes.
     const id = typeof obj["id"] === "string" ? obj["id"] : "";
     const reqId = typeof obj["requested_id"] === "string" ? obj["requested_id"] : "";
     const packSha =
@@ -711,6 +718,10 @@ export class TacsimPortStore {
     }
     if (action === "ui:stand_helm") {
       this.standFromBridgeHelm();
+      return;
+    }
+    if (action === "ui:dock_destination") {
+      this.#hooks.sendCommand(`+helm/dock ${this.dockTarget}`);
       return;
     }
     this.#hooks.sendCommand(action);

@@ -8,13 +8,14 @@
   import {
     formatEscortPostCommand,
     formatHaulPostCommand,
+    formatJobCommand,
     formatMarketDepthCommand,
     formatMarketHistoryCommand,
     formatSurveyAcceptCommand,
     HISTORY_GOODS,
     JOB_BOARD_FILTERS,
     parseMarketHistoryLines,
-    SIMULATOR_CHASSIS_IDS,
+    SIM_UNIT_CHASSIS,
     SURVEY_OFFERS,
     WORKS_RECIPES,
     YARD_RECIPES,
@@ -36,7 +37,7 @@
   let tradeSubView = $state<TradeSubView>("book");
   let historyGood = $state<string>("volatiles");
   let activeJobFilter = $state<string>("all");
-  let jobIdDraft = $state<string>("1");
+  let jobIdDraft = $state<string>("");
   let surveyIdDraft = $state<string>(SURVEY_OFFERS[0]!.id);
   let haulQtyDraft = $state<number>(10);
   let haulFeeDraft = $state<number>(250);
@@ -64,12 +65,20 @@
     }
   }
 
-  const parsedHistory = $derived(parseMarketHistoryLines(app.tacsim.modalLog));
+  const parsedHistory = $derived(parseMarketHistoryLines(app.tacsim.marketHistoryLines));
+  const escortHullRef = $derived(app.tacsim.activeHullRef);
+  const escortPostLine = $derived(
+    formatEscortPostCommand(
+      escortHullRef,
+      app.tacsim.selectedDestination,
+      haulFeeDraft,
+      true,
+    ),
+  );
 
   const modal = $derived(app.tacsim.activeModal);
   const trade = $derived(app.tacsim.trade);
   const st = $derived(trade.stowage);
-  const escortHullRef = $derived(app.tacsim.activeHullRef);
   const bayHullTarget = $derived(
     app.tacsim.activeHullRef ||
       app.tacsim.ambient.ownHullName ||
@@ -448,20 +457,23 @@
                     bind:value={jobIdDraft}
                     placeholder="Job #"
                   />
-                  <button
-                    type="button"
-                    class="buybtn"
-                    onclick={() => onCmd(`+haul/accept ${jobIdDraft.trim() || "1"} go`)}
-                  >
-                    Accept Haul
-                  </button>
-                  <button
-                    type="button"
-                    class="sellbtn"
-                    onclick={() => onCmd(`+haul/deliver ${jobIdDraft.trim() || "1"} go`)}
-                  >
-                    Deliver Haul
-                  </button>
+                  {#each [
+                    { label: "Accept Haul", cls: "buybtn", verb: "+haul/accept", go: true },
+                    { label: "Deliver Haul", cls: "sellbtn", verb: "+haul/deliver", go: true },
+                  ] as job (job.label)}
+                    {@const line = formatJobCommand(job.verb, jobIdDraft, job.go)}
+                    <button
+                      type="button"
+                      class={job.cls}
+                      disabled={line === null}
+                      title={line ?? "Type a job id from the board first."}
+                      onclick={() => {
+                        if (line !== null) onCmd(line);
+                      }}
+                    >
+                      {job.label}
+                    </button>
+                  {/each}
                 </div>
                 <div class="act-row">
                   <select
@@ -476,6 +488,7 @@
                   <button
                     type="button"
                     class="ghost sm"
+                    title={formatSurveyAcceptCommand(surveyIdDraft, false)}
                     onclick={() => onCmd(formatSurveyAcceptCommand(surveyIdDraft, false))}
                   >
                     Preview Survey
@@ -483,6 +496,7 @@
                   <button
                     type="button"
                     class="buybtn"
+                    title={formatSurveyAcceptCommand(surveyIdDraft, true)}
                     onclick={() => onCmd(formatSurveyAcceptCommand(surveyIdDraft, true))}
                   >
                     Accept Survey
@@ -533,20 +547,12 @@
                   <button
                     type="button"
                     class="sellbtn"
-                    disabled={!escortHullRef}
-                    title={escortHullRef
-                      ? `Post convoy escort for ${escortHullRef} to ${app.tacsim.selectedDestination}`
-                      : "Charter or board a hull first (requires #<dbref>)"}
+                    disabled={escortPostLine === null}
+                    title={escortPostLine === null
+                      ? "No hull at your helm to escort (requires #<dbref>)."
+                      : escortPostLine}
                     onclick={() => {
-                      const cmd = escortHullRef
-                        ? formatEscortPostCommand(
-                            escortHullRef,
-                            app.tacsim.selectedDestination,
-                            haulFeeDraft,
-                            true,
-                          )
-                        : null;
-                      if (cmd) onCmd(cmd);
+                      if (escortPostLine !== null) onCmd(escortPostLine);
                     }}
                   >
                     Post Escort ({escortHullRef ?? "no hull"} → {app.tacsim.selectedDestination})
@@ -795,7 +801,7 @@
         </div>
         <div class="act-row">
           <span class="muted">Unit Chassis:</span>
-          {#each SIMULATOR_CHASSIS_IDS as u (u.id)}
+          {#each SIM_UNIT_CHASSIS as u (u.id)}
             <button type="button" class="qchip" onclick={() => onCmd(`SIM UNIT ${u.id}`)}>{u.label}</button>
           {/each}
           <span class="muted">Match Mode:</span>

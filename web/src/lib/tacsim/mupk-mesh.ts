@@ -745,6 +745,16 @@ function fetchAndDecodeMupk(modelIdPrefix: string): Promise<DecodedMupkModel | n
 }
 
 /**
+ * Release every geometry and material under `obj` (48e L8, clients:G17). A
+ * detached Three.js object keeps its GPU buffers until they are disposed, so a
+ * swapped-out fallback chassis is disposed, not only removed. The fallback's
+ * materials are made per unit, so nothing shared is released.
+ */
+export function disposeObjectTree(obj: THREE.Object3D): void {
+  disposeObject3DResources(obj);
+}
+
+/**
  * Mount a unit container (`THREE.Group`) holding an immediate articulated 3D chassis that
  * upgrades seamlessly in-place to the carved `.mupk` 3D visual-hull mesh once fetched.
  */

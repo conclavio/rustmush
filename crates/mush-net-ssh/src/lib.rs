@@ -60,8 +60,13 @@ pub mod trusted;
 pub mod tui;
 mod welcome;
 
-pub use caps::{DEFAULT_HEIGHT, DEFAULT_WIDTH, detect_caps, detect_color_depth, detect_utf8};
-pub use editor::{EchoMode, EditorAction, HISTORY_CAP, LineEditor, MAX_LINE_CHARS};
+pub use caps::{
+    DEFAULT_HEIGHT, DEFAULT_WIDTH, MAX_HEIGHT, MAX_WIDTH, detect_caps, detect_color_depth,
+    detect_utf8,
+};
+pub use editor::{
+    EchoMode, EditorAction, HISTORY_CAP, LineEditor, MAX_FEED_OUT_BYTES, MAX_LINE_CHARS,
+};
 pub use hooks::{
     Admission, AuthResult, BlockReason, CharSummary, CreateErr, LocalReply, NewConn, PixelEvent,
     SshHooks,

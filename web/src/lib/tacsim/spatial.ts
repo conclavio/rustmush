@@ -1271,6 +1271,13 @@ export interface StowageGoodMeta {
   massKgPerUnit: number;
 }
 
+/**
+ * Decodes `ship.stowage` as `tacsim::port::ship::hull_stowage_json` writes it:
+ * `cargo_kg` / `cargo_limit_kg`, `cargo_l` / `cargo_limit_l`, `tank_kg` /
+ * `tank_limit_kg`, `stores_days` / `stores_limit_days` and `items[]` of
+ * `{ good, qty }` (48e L8, clients:G2). A limit the server reports as 0 (no such
+ * compartment) reads as 1 so the gauges never divide by zero.
+ */
 export function parseStowageNode(
   nodeVal: unknown,
   goodsLookup?: ReadonlyMap<string, StowageGoodMeta>,
@@ -1284,6 +1291,7 @@ export function parseStowageNode(
       const ln = asObj(lnVal);
       if (!ln) continue;
       const good = asStr(ln["good"], asStr(ln["id"]));
+      if (!good) continue;
       const shortGood = good.replace(/^tacsim:/i, "");
       const meta = goodsLookup?.get(good) ?? goodsLookup?.get(shortGood);
       const qty = asNum(ln["qty"], asNum(ln["quantity"], 0));
@@ -1302,17 +1310,17 @@ export function parseStowageNode(
       1,
       asNum(
         node["cargo_limit_kg"],
-        asNum(node["mass_limit_kg"], asNum(node["cargo_max_kg"], 100_000)),
+        asNum(node["mass_limit_kg"], asNum(node["cargo_max_kg"], 0)),
       ),
     ),
     cargoL: asNum(node["cargo_l"], 0),
-    cargoMaxL: Math.max(1, asNum(node["cargo_limit_l"], asNum(node["cargo_max_l"], 120_000))),
+    cargoMaxL: Math.max(1, asNum(node["cargo_limit_l"], asNum(node["cargo_max_l"], 0))),
     propellantKg: asNum(node["tank_kg"], asNum(node["propellant_kg"], 0)),
     propellantMaxKg: Math.max(
       1,
       asNum(
         node["tank_limit_kg"],
-        asNum(node["propellant_max_kg"], asNum(node["tank_max_kg"], 80_000)),
+        asNum(node["propellant_max_kg"], asNum(node["tank_max_kg"], 0)),
       ),
     ),
     provisionsCrewDays: asNum(node["stores_days"], asNum(node["provisions_crew_days"], 0)),
@@ -1320,7 +1328,7 @@ export function parseStowageNode(
       1,
       asNum(
         node["stores_limit_days"],
-        asNum(node["provisions_max_crew_days"], asNum(node["stores_max_days"], 120)),
+        asNum(node["provisions_max_crew_days"], asNum(node["stores_max_days"], 0)),
       ),
     ),
     cargoLines,
@@ -1864,12 +1872,21 @@ export type QuickActionItem = {
 
 /**
  * Normalize a location slug, pack id, port entry, or venue word into a canonical
- * `+helm/dock` target (`ceres`, `stickney`, `luna`, `deimos`, `titan`, etc.).
+ * `+helm/dock` target across all 12 corridor venues (`ceres`, `stickney`, `luna`,
+ * `deimos`, `titan`, `commons`, `kerwan`, `ahuna`, `juling`, `occator`,
+ * `rheasilvia`, `urvara`).
  */
 export function normalizePortVenueTarget(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const low = raw.trim().toLowerCase();
   if (!low) return null;
+  if (low.includes("rheasilvia")) return "rheasilvia";
+  if (low.includes("commons")) return "commons";
+  if (low.includes("kerwan")) return "kerwan";
+  if (low.includes("ahuna")) return "ahuna";
+  if (low.includes("juling")) return "juling";
+  if (low.includes("occator")) return "occator";
+  if (low.includes("urvara")) return "urvara";
   if (low.includes("stickney") || low.includes("phobos")) return "stickney";
   if (low.includes("aitken") || low.includes("luna")) return "luna";
   if (low.includes("voltaire") || low.includes("deimos")) return "deimos";
@@ -1919,6 +1936,7 @@ export function contextualQuickActions(
     return [
       { label: "Stand From Helm", action: "ui:stand_helm", accent: true },
       { label: "Undock", action: "ui:open_sailing" },
+      // Docks at the resolved orbital site / sailing destination (48e L8, clients:G7), not always Ceres.
       { label: `Dock ${safeDock}`, action: `+helm/dock ${safeDock}` },
       { label: "Mine Ping", action: "+mine/ping" },
       { label: "Ship Status", action: "+ship" },

@@ -4981,7 +4981,18 @@ impl Engine {
                         .saturating_add(delay_ms);
                     self.sched.insert(due, kind);
                 }
-                Deferred::Persist(op) => self.module_ops.push(op),
+                Deferred::Persist(op) => {
+                    if let Err(reason) = op.validate_key_envelope() {
+                        tracing::error!(
+                            ns = %op.ns,
+                            key_len = op.key().len(),
+                            reason,
+                            "dropped invalid module persistence op before WriteBatch"
+                        );
+                    } else {
+                        self.module_ops.push(op);
+                    }
+                }
                 Deferred::SceneTickStart {
                     module,
                     tag,

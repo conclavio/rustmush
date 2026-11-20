@@ -401,15 +401,15 @@ fn e7r2_p0a_the_owner_operator_arm_is_kept_as_a_zero_net_self_transfer() {
     );
 }
 
-/// **Who may re-assign: staff, or a principal `acts_for` the CURRENT owner — and a
-/// stranger reads `NO_SUCH_FACILITY`, byte-identically to a facility that does not
-/// exist.**
+/// **Who may re-assign: staff alone (doc 48e, production G3) — and anyone else, the
+/// owner included, reads `NO_SUCH_FACILITY`, byte-identically to a facility that does
+/// not exist.**
 ///
-/// Every arm of the guard, named: the stranger, the ex-owner (whose authority went
-/// with the facility), the new owner (who has it), and the object that is no
-/// facility at all. The two refusals a viewer may not distinguish are byte-identical.
+/// Every arm of the guard, named: the stranger, the owner (who may not push the
+/// facility, and its running costs, onto anybody), staff (who may), and the object that
+/// is no facility at all. The refusals a viewer may not distinguish are byte-identical.
 #[test]
-fn e7r2_p0a_only_staff_or_the_current_owner_may_re_assign_and_a_stranger_is_existence_hidden() {
+fn e7r2_p0a_only_staff_may_re_assign_and_a_stranger_is_existence_hidden() {
     let (mut tw, _families, _budget) = scene(0);
     let pat = tw.spawn_player("Pat");
     let sam = tw.spawn_player("Sam");
@@ -428,17 +428,18 @@ fn e7r2_p0a_only_staff_or_the_current_owner_may_re_assign_and_a_stranger_is_exis
         "and the refusal wrote nothing"
     );
 
-    // Staff may. The owner then changes, and with it the authority.
+    // Staff may.
     ok(&mut tw, GOD, &format!("@facility/owner 7=#{}", pat.0));
-    // The NEW owner may hand it on — the record's own predicate, not a second one.
-    ok(&mut tw, pat, &format!("@facility/owner 7=#{}", sam.0));
-    assert_eq!(facility(&tw, ObjId(7)).owner(), &PrincipalId::Object(sam));
-    // …and the previous owner is now a stranger, reading the stranger's line.
-    let after = err(&mut tw, pat, &format!("@facility/owner 7=#{}", pat.0));
+    assert_eq!(facility(&tw, ObjId(7)).owner(), &PrincipalId::Object(pat));
+    // The owner may not hand it on: Sam never agreed to pay its running costs.
+    let owner = err(&mut tw, pat, &format!("@facility/owner 7=#{}", sam.0));
     assert_eq!(
-        after, stranger,
-        "authority went with the facility, and the refusal is the same one"
+        owner, stranger,
+        "the owner reads the stranger's line, and the refusal is the same one"
     );
+    assert_eq!(facility(&tw, ObjId(7)).owner(), &PrincipalId::Object(pat));
+    // Staff may move it on again.
+    ok(&mut tw, GOD, &format!("@facility/owner 7=#{}", sam.0));
     assert_eq!(facility(&tw, ObjId(7)).owner(), &PrincipalId::Object(sam));
 }
 

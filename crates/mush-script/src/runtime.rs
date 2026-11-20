@@ -32,12 +32,22 @@
 //!    re-entrant and the session is `Some` only for one flat cascade.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::{self, Write as _};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rhai::packages::{
+    ArithmeticPackage, BasicArrayPackage, BasicIteratorPackage, BasicMapPackage,
+    BasicStringPackage, LanguageCorePackage, LogicPackage, Package,
+};
 use rhai::plugin::*;
-use rhai::{AST, Array, Dynamic, Engine as RhaiEngine, EvalAltResult, Position, Scope};
+use rhai::{
+    AST, Array, Dynamic, Engine as RhaiEngine, EvalAltResult, FLOAT, FuncRegistration, INT,
+    ImmutableString, Position, Scope,
+};
 use std::cell::{Cell, RefCell};
+
+use crate::guards;
 
 use mush_core::module::{HookPoint, HookReg, perceives_via};
 use mush_core::{
@@ -236,21 +246,33 @@ thread_local! {
     /// The active cascade's owned handle (see the module docs). `Some` only
     /// while [`drive`] runs; host functions borrow it transiently.
     static SESSION: RefCell<Option<ScriptSession>> = const { RefCell::new(None) };
-    /// The currently-executing invocation's budget, read by `on_progress`.
+    /// The currently-executing invocation's monotonic budget, read by `on_progress`.
     static BUDGET: Cell<Budget> = const { Cell::new(Budget::NONE) };
+    /// First fatal sandbox refusal (`sleep`, `parse_json`) raised during the
+    /// current invocation, latched so a callback's `ErrorInFunctionCall`
+    /// wrapper + `try`/`catch` cannot swallow it.
+    static FATAL_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// Per-invocation budget snapshot for `on_progress`.
+/// Per-invocation monotonic budget state for `on_progress` (CRIT-8).
+///
+/// Tracks operations independently of Rhai's `GlobalRuntimeState::num_operations`
+/// (which resets when a package method runs a callback on a cloned state) and
+/// latches any overrun so `try`/`catch` around a callback cannot clear it.
 #[derive(Clone, Copy)]
 struct Budget {
     op_limit: u64,
+    ops: u64,
     deadline: Option<Instant>,
+    overrun: Option<&'static str>,
 }
 
 impl Budget {
     const NONE: Budget = Budget {
         op_limit: u64::MAX,
+        ops: 0,
         deadline: None,
+        overrun: None,
     };
 }
 
@@ -267,6 +289,8 @@ impl Drop for SessionGuard<'_> {
             *self.out = sess.out;
         }
         BUDGET.with(|b| b.set(Budget::NONE));
+        FATAL_ERROR.with(|f| *f.borrow_mut() = None);
+        guards::limit_begin();
     }
 }
 
@@ -351,14 +375,24 @@ fn run_loop() {
     }
 }
 
+/// Whether `owner` holds the minimum role (`Role::Builder`) required to own,
+/// compile, and run `script:*` hooks (CRIT-5 defense-in-depth).
+fn owner_may_script(w: &World, owner: ObjId) -> bool {
+    perm::has_role(w, owner, Role::Builder)
+}
+
 /// Run one trigger's script, then handle any error (strikes / HALTED).
 fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
-    // Fetch engine + AST + owner and set the frame; skip HALTED/errored/gone.
+    // Fetch engine + AST + owner and set the frame; skip HALTED/errored/gone
+    // or any object whose owner is below Role::Builder.
     let prepared = SESSION.with(|s| {
         let mut b = s.borrow_mut();
         let sess = b.as_mut()?;
         let obj = sess.world.get(trigger.self_obj)?;
-        if obj.flags.contains(Flags::HALTED) || obj.flags.contains(Flags::GOING) {
+        if obj.flags.contains(Flags::HALTED)
+            || obj.flags.contains(Flags::GOING)
+            || !owner_may_script(&sess.world, obj.owner)
+        {
             return None;
         }
         let owner = obj.owner;
@@ -385,6 +419,8 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
     let mut scope = Scope::new();
     inject_scope(&mut scope, &trigger.payload);
     set_budget(&cfg);
+    fatal_begin();
+    guards::limit_begin();
     // No SESSION borrow is held across this call — host functions reborrow.
     // Defense in depth: budget overruns already surface as a catchable `Err`,
     // but a panic in any host function or in the interpreter would otherwise
@@ -393,10 +429,13 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
     // restores it as the cascade unwinds) and no RefCell borrow is held across
     // this call, so catching keeps the loop alive and downgrades a panic to a
     // single failed script.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         engine.run_ast_with_scope(&mut scope, &ast)
     }))
     .unwrap_or_else(|_| Err(err("script aborted (internal panic)")));
+    let limit_hit = guards::limit_take();
+    let overrun_reason = budget_tripped();
+    let fatal_msg = fatal_take();
     clear_budget();
     SESSION.with(|s| {
         if let Some(sess) = s.borrow_mut().as_mut() {
@@ -404,8 +443,25 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
         }
     });
 
+    // Reconcile latched sandbox faults even if a script caught a callback's
+    // wrapped `ErrorInFunctionCall` in `try`/`catch` and returned cleanly (or
+    // threw a different catchable error afterward).
+    if limit_hit {
+        result = Err(guards::depth_exceeded_err());
+    } else if let Some(reason) = overrun_reason
+        && result.is_ok()
+    {
+        result = Err(Box::new(EvalAltResult::ErrorTerminated(
+            Dynamic::from(reason),
+            Position::NONE,
+        )));
+    } else if let Some(msg) = fatal_msg {
+        result = Err(fatal_error_unlatched(&msg));
+    }
+    let tripped = limit_hit || overrun_reason.is_some();
+
     match result {
-        Err(e) => handle_error(trigger, &e, cfg),
+        Err(e) => handle_error(trigger, &e, tripped, cfg),
         // A clean run clears the object's accumulated overrun strikes, so
         // `strikes_to_halt` counts *consecutive* overruns — a successful run
         // in between resets the tally, matching the documented behavior and
@@ -445,20 +501,56 @@ fn inject_scope(scope: &mut Scope<'_>, payload: &Payload) {
 }
 
 /// A budget/resource overrun (accrues a strike), vs. a plain script error.
-fn is_budget_overrun(err: &EvalAltResult) -> bool {
-    matches!(
-        err,
-        EvalAltResult::ErrorTerminated(..)          // op / wall-clock abort
-            | EvalAltResult::ErrorTooManyOperations(..)  // global op ceiling
-            | EvalAltResult::ErrorStackOverflow(..)      // call-level cap
-            | EvalAltResult::ErrorDataTooLarge(..) // string/array/map cap
-    )
+///
+/// Inspects both the innermost error (unwrapping callback `ErrorInFunctionCall`
+/// wrappers) and the thread-local latched overrun flag so callback-wrapped
+/// overruns always accrue strikes and halt runaway scripts (CRIT-8).
+fn is_budget_overrun(err: &EvalAltResult, tripped: bool) -> bool {
+    tripped
+        || matches!(
+            err.unwrap_inner(),
+            EvalAltResult::ErrorTerminated(..)          // op / wall-clock abort
+                | EvalAltResult::ErrorTooManyOperations(..) // global op ceiling
+                | EvalAltResult::ErrorTooManyVariables(..)  // variable cap
+                | EvalAltResult::ErrorTooManyModules(..)    // module cap
+                | EvalAltResult::ErrorStackOverflow(..)     // call-level cap
+                | EvalAltResult::ErrorDataTooLarge(..) // string/array/map/depth cap
+        )
+}
+
+/// Format an error message up to a bounded character budget so thrown large or
+/// nested values cannot flood the outbox or deeply recurse during `Display`.
+fn bounded_error_text(err: &EvalAltResult) -> String {
+    const MAX_ERR_CHARS: usize = 512;
+    struct Bounded {
+        text: String,
+        chars: usize,
+    }
+    impl fmt::Write for Bounded {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            for c in s.chars() {
+                if self.chars == MAX_ERR_CHARS {
+                    return Err(fmt::Error);
+                }
+                self.text.push(if c.is_control() { ' ' } else { c });
+                self.chars += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut out = Bounded {
+        text: String::new(),
+        chars: 0,
+    };
+    let _cut = write!(out, "{err}");
+    out.text
 }
 
 /// Notify the owner of a failed script; on a budget overrun, accrue a strike
 /// and auto-`HALTED` the object after `strikes_to_halt`.
-fn handle_error(trigger: &Trigger, err: &EvalAltResult, cfg: ScriptConfig) {
-    let overrun = is_budget_overrun(err);
+fn handle_error(trigger: &Trigger, err: &EvalAltResult, tripped: bool, cfg: ScriptConfig) {
+    let overrun = is_budget_overrun(err, tripped);
+    let err_text = bounded_error_text(err);
     SESSION.with(|s| {
         let mut b = s.borrow_mut();
         let Some(sess) = b.as_mut() else { return };
@@ -466,7 +558,10 @@ fn handle_error(trigger: &Trigger, err: &EvalAltResult, cfg: ScriptConfig) {
         let owner = sess.world.get(obj).map_or(obj, |o| o.owner);
         sess.out.error_on_commit(
             owner,
-            format!("Script {} on {} failed: {}", trigger.script_key, obj, err),
+            format!(
+                "Script {} on {} failed: {}",
+                trigger.script_key, obj, err_text
+            ),
         );
         if !overrun {
             return;
@@ -494,7 +589,7 @@ fn handle_error(trigger: &Trigger, err: &EvalAltResult, cfg: ScriptConfig) {
 }
 
 // ----------------------------------------------------------------------
-// Budget helpers
+// Budget & fatal-refusal helpers
 // ----------------------------------------------------------------------
 
 fn set_budget(cfg: &ScriptConfig) {
@@ -502,13 +597,79 @@ fn set_budget(cfg: &ScriptConfig) {
     BUDGET.with(|b| {
         b.set(Budget {
             op_limit: cfg.max_operations,
+            ops: 0,
             deadline: Some(deadline),
+            overrun: None,
         });
     });
 }
 
 fn clear_budget() {
     BUDGET.with(|b| b.set(Budget::NONE));
+}
+
+/// Whether the active invocation's op or wall-clock budget has tripped (latches
+/// newly detected overruns so later checks see the same cause).
+pub(crate) fn budget_tripped() -> Option<&'static str> {
+    if guards::limit_tripped() {
+        return Some("container limit exceeded");
+    }
+    BUDGET.with(|b| {
+        let mut bud = b.get();
+        if let Some(reason) = bud.overrun {
+            return Some(reason);
+        }
+        if bud.ops > bud.op_limit {
+            bud.overrun = Some("operation budget exceeded");
+            b.set(bud);
+            return bud.overrun;
+        }
+        if let Some(deadline) = bud.deadline
+            && Instant::now() >= deadline
+        {
+            bud.overrun = Some("time budget exceeded");
+            b.set(bud);
+            return bud.overrun;
+        }
+        None
+    })
+}
+
+/// Uncatchable sandbox refusal payload inside `EvalAltResult::ErrorSystem`.
+#[derive(Clone, Copy, Debug)]
+struct SandboxRefusal;
+
+impl fmt::Display for SandboxRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("refused")
+    }
+}
+
+impl std::error::Error for SandboxRefusal {}
+
+fn fatal_begin() {
+    FATAL_ERROR.with(|f| *f.borrow_mut() = None);
+}
+
+fn fatal_take() -> Option<String> {
+    FATAL_ERROR.with(|f| f.borrow_mut().take())
+}
+
+fn fatal_error_unlatched(msg: &str) -> Box<EvalAltResult> {
+    Box::new(EvalAltResult::ErrorSystem(
+        msg.to_owned(),
+        Box::new(SandboxRefusal),
+    ))
+}
+
+fn fatal_error(msg: &str) -> Box<EvalAltResult> {
+    FATAL_ERROR.with(|f| {
+        let mut slot = f.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(msg.to_owned());
+        }
+    });
+    fatal_error_unlatched(msg)
 }
 
 // ----------------------------------------------------------------------
@@ -562,11 +723,31 @@ fn with_state<R>(f: impl FnOnce(&ScriptState) -> R) -> Option<R> {
 // Engine construction + the `mush` host API
 // ----------------------------------------------------------------------
 
-/// Build the shared, sandboxed engine: budget knobs, no `eval`, no external
-/// modules, and only the `mush` API registered.
+/// Build the shared, sandboxed engine from `Engine::new_raw()` with an
+/// explicit minimal safe package allowlist (CRIT-5), disabled dynamic/module
+/// symbols, fatal `sleep`/`parse_json` shadows, monotonic progress budget
+/// (CRIT-8), container/comparator guards (CRIT-6, CRIT-7, HIGH-16), silent
+/// `on_print`/`on_debug`, and only the `mush` capability API.
 fn build_engine(cfg: &ScriptConfig) -> RhaiEngine {
-    let mut engine = RhaiEngine::new();
-    // A high global ceiling; the per-invocation `on_progress` cap trips first.
+    let mut engine = RhaiEngine::new_raw();
+    // Explicit minimal safe package allowlist (mirrors `mush-mind`): excludes
+    // `MoreStringPackage` (OOM `replace`, infinite-loop `pad_with_string`),
+    // `BasicTimePackage`, `BasicBlobPackage`, `BasicFnPackage`, and
+    // `BasicMathPackage`.
+    engine.register_global_module(LanguageCorePackage::new().as_shared_module());
+    engine.register_global_module(ArithmeticPackage::new().as_shared_module());
+    engine.register_global_module(LogicPackage::new().as_shared_module());
+    engine.register_global_module(BasicIteratorPackage::new().as_shared_module());
+    engine.register_global_module(BasicArrayPackage::new().as_shared_module());
+    engine.register_global_module(BasicMapPackage::new().as_shared_module());
+    engine.register_global_module(BasicStringPackage::new().as_shared_module());
+
+    // Safe, non-growing string helpers builders rely on (e.g. `text.contains`
+    // in `script:hear:*`) without exposing `MoreStringPackage`'s `replace` or
+    // `pad_with_string`.
+    register_safe_string_helpers(&mut engine);
+
+    // A high global ceiling; the monotonic thread-local `on_progress` cap trips first.
     engine.set_max_operations(
         cfg.max_operations
             .saturating_mul(50)
@@ -577,23 +758,70 @@ fn build_engine(cfg: &ScriptConfig) -> RhaiEngine {
     engine.set_max_array_size(cfg.max_array_size);
     engine.set_max_map_size(cfg.max_map_size);
     engine.set_max_expr_depths(cfg.max_expr_depth, cfg.max_expr_depth);
-    // No filesystem/network module loading, and no `eval`.
-    engine.set_module_resolver(rhai::module_resolvers::DummyModuleResolver::new());
-    engine.disable_symbol("eval");
+    engine.set_max_modules(0);
+    // Route `+=` through our depth-guarded shadows instead of built-in fast
+    // operators that bypass registered `Array +=` overrides.
+    engine.set_fast_operators(false);
 
-    engine.on_progress(|ops| {
-        let bud = BUDGET.with(Cell::get);
-        if ops > bud.op_limit {
-            return Some(Dynamic::from("operation budget exceeded"));
+    // No filesystem/network module loading, no dynamic eval, no Fn/call/curry,
+    // and no `this` (scripts use `mush::me()`; disabling `this` also closes
+    // `loop { this = [this]; }` container nesting that bypasses `on_var`).
+    engine.set_module_resolver(rhai::module_resolvers::DummyModuleResolver::new());
+    for symbol in ["eval", "import", "export", "Fn", "call", "curry", "this"] {
+        engine.disable_symbol(symbol);
+    }
+
+    // Never allow scripts to inject lines into server stdout.
+    engine.on_print(|_| {});
+    engine.on_debug(|_, _, _| {});
+
+    // Shadow `sleep` and `parse_json` with fatal, latched refusals.
+    engine.register_fn("sleep", |_: INT| -> Result<(), Box<EvalAltResult>> {
+        Err(fatal_error("sleep is disabled in mush-script"))
+    });
+    engine.register_fn("sleep", |_: FLOAT| -> Result<(), Box<EvalAltResult>> {
+        Err(fatal_error("sleep is disabled in mush-script"))
+    });
+    engine.register_fn(
+        "parse_json",
+        |_: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+            Err(fatal_error("parse_json is disabled in mush-script"))
+        },
+    );
+
+    // Container padding, nesting depth, formatting/equality, and fallible
+    // comparator sort/dedup shadows (CRIT-6, CRIT-7, HIGH-16).
+    guards::register(&mut engine);
+
+    // Monotonic op counter + wall-clock deadline + latched overrun (CRIT-8):
+    // ignores Rhai's `_reported` counter, which resets inside package callbacks.
+    engine.on_progress(|_reported| {
+        if guards::limit_tripped() {
+            return Some(Dynamic::from("container limit exceeded"));
         }
-        // Sample the wall clock cheaply (every 1024 ops).
-        if ops & 0x3FF == 0
-            && let Some(deadline) = bud.deadline
-            && Instant::now() >= deadline
-        {
-            return Some(Dynamic::from("time budget exceeded"));
-        }
-        None
+        BUDGET.with(|b| {
+            let mut bud = b.get();
+            if let Some(reason) = bud.overrun {
+                return Some(Dynamic::from(reason));
+            }
+            bud.ops = bud.ops.saturating_add(1);
+            if bud.ops > bud.op_limit {
+                bud.overrun = Some("operation budget exceeded");
+                b.set(bud);
+                return Some(Dynamic::from("operation budget exceeded"));
+            }
+            // Sample the wall clock cheaply (every 1024 monotonic ops).
+            if (bud.ops & 0x3FF) == 0
+                && let Some(deadline) = bud.deadline
+                && Instant::now() >= deadline
+            {
+                bud.overrun = Some("time budget exceeded");
+                b.set(bud);
+                return Some(Dynamic::from("time budget exceeded"));
+            }
+            b.set(bud);
+            None
+        })
     });
 
     // ObjId as a Rhai custom type.
@@ -606,6 +834,42 @@ fn build_engine(cfg: &ScriptConfig) -> RhaiEngine {
 
     engine.register_static_module("mush", exported_module!(mush_api).into());
     engine
+}
+
+/// Safe, non-growing string helpers registered explicitly in place of
+/// `MoreStringPackage`.
+fn register_safe_string_helpers(engine: &mut RhaiEngine) {
+    FuncRegistration::new("contains")
+        .in_global_namespace()
+        .with_purity(true)
+        .register_into_engine(engine, |s: &str, needle: &str| s.contains(needle));
+    FuncRegistration::new("starts_with")
+        .in_global_namespace()
+        .with_purity(true)
+        .register_into_engine(engine, |s: &str, prefix: &str| s.starts_with(prefix));
+    FuncRegistration::new("ends_with")
+        .in_global_namespace()
+        .with_purity(true)
+        .register_into_engine(engine, |s: &str, suffix: &str| s.ends_with(suffix));
+    FuncRegistration::new("len")
+        .in_global_namespace()
+        .with_purity(true)
+        .register_into_engine(engine, |s: &str| {
+            INT::try_from(s.chars().count()).unwrap_or(INT::MAX)
+        });
+    FuncRegistration::new("is_empty")
+        .in_global_namespace()
+        .with_purity(true)
+        .register_into_engine(engine, str::is_empty);
+    FuncRegistration::new("trim")
+        .in_global_namespace()
+        .with_purity(false)
+        .register_into_engine(engine, |s: &mut ImmutableString| {
+            let trimmed = s.trim();
+            if trimmed.len() != s.len() {
+                *s = trimmed.into();
+            }
+        });
 }
 
 /// The `mush` module — the only capability surface scripts get. Every call
@@ -910,10 +1174,17 @@ fn set_attr_impl(obj: ObjId, attr: &str, val: &str) -> Result<(), Box<EvalAltRes
                     .iter()
                     .any(|n| n.eq_ignore_ascii_case(ns))
             });
-            if owned && !perm::has_role(&sess.world, owner, Role::Wizard) {
-                return Err(err(format!(
-                    "The {ns}: attribute namespace is module-owned."
-                )));
+            if owned {
+                let min_role = if ns.eq_ignore_ascii_case("script") {
+                    Role::Builder
+                } else {
+                    Role::Wizard
+                };
+                if !perm::has_role(&sess.world, owner, min_role) {
+                    return Err(err(format!(
+                        "The {ns}: attribute namespace is module-owned."
+                    )));
+                }
             }
         }
         // Replicate the two overwrite guards `@set` enforces (building.rs), so
@@ -1137,11 +1408,15 @@ fn roll(expr: &str, seed: &mut u64) -> Option<i64> {
 // Trigger collection + compilation (used by the module's observers)
 // ----------------------------------------------------------------------
 
-/// Whether `obj` has a runnable (compiled, non-errored, not HALTED/GONE)
-/// script under the folded `key`.
+/// Whether `obj` has a runnable (compiled, non-errored, not HALTED/GONE,
+/// builder-owned) script under the folded `key`.
 pub(crate) fn has_runnable(w: &World, obj: ObjId, key: &str) -> bool {
-    if w.get(obj)
-        .is_none_or(|o| o.flags.contains(Flags::HALTED) || o.flags.contains(Flags::GOING))
+    let Some(o) = w.get(obj) else {
+        return false;
+    };
+    if o.flags.contains(Flags::HALTED)
+        || o.flags.contains(Flags::GOING)
+        || !owner_may_script(w, o.owner)
     {
         return false;
     }
@@ -1263,8 +1538,12 @@ pub(crate) fn collect_command_triggers(
 
 /// The runnable script keys on `obj` matching `pred`.
 fn runnable_keys(w: &World, obj: ObjId, pred: impl Fn(&str) -> bool) -> Vec<SmolStr> {
-    if w.get(obj)
-        .is_none_or(|o| o.flags.contains(Flags::HALTED) || o.flags.contains(Flags::GOING))
+    let Some(o) = w.get(obj) else {
+        return Vec::new();
+    };
+    if o.flags.contains(Flags::HALTED)
+        || o.flags.contains(Flags::GOING)
+        || !owner_may_script(w, o.owner)
     {
         return Vec::new();
     }
@@ -1276,7 +1555,8 @@ fn runnable_keys(w: &World, obj: ObjId, pred: impl Fn(&str) -> bool) -> Vec<Smol
 
 /// (Re)compile every `script:*` attribute on `obj`, cache the results, clear
 /// its strikes, and notify the owner of any compile errors. Removes the
-/// cache entry when the object has no scripts.
+/// cache entry when the object has no scripts or its owner is below
+/// `Role::Builder` (CRIT-5 defense-in-depth).
 pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
     let Some(engine) = w
         .module_state::<ScriptState>()
@@ -1288,6 +1568,13 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
         return;
     };
     let owner = o.owner;
+    if !owner_may_script(w, owner) {
+        if let Some(st) = w.module_state_mut::<ScriptState>() {
+            st.cache.remove(&obj);
+            st.strikes.remove(&obj);
+        }
+        return;
+    }
     let sources: Vec<(SmolStr, Option<String>)> = o
         .attrs
         .iter_namespace("script")
@@ -1308,9 +1595,12 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
         match text {
             None => errors.push((key, "script attribute must be text".to_string())),
             Some(src) => match engine.compile(&src) {
-                Ok(ast) => {
-                    compiled.insert(key, Arc::new(ast));
-                }
+                Ok(ast) => match guards::validate_source(&src) {
+                    Ok(()) => {
+                        compiled.insert(key, Arc::new(ast));
+                    }
+                    Err(msg) => errors.push((key, msg)),
+                },
                 Err(e) => errors.push((key, e.to_string())),
             },
         }
