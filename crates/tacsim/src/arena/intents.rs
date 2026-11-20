@@ -1225,9 +1225,13 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
     let Some(own) = arena.unit(unit) else {
         return IntentOutcome::Refused(Refusal::Unknown);
     };
+    if own.limits.wreck {
+        return IntentOutcome::Refused(Refusal::Wreck);
+    }
     if own.seal.digest == crate::arena::mind::SealRef::none().digest {
         return IntentOutcome::Refused(Refusal::Profile);
     }
+    let live_mind = own.controller == Controller::Mind && !own.limits.wreck;
     let Some(runtime) = arena.profiles.get(&unit) else {
         return IntentOutcome::Refused(Refusal::Profile);
     };
@@ -1269,10 +1273,14 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
     let Some(runtime) = arena.profiles.get_mut(&unit) else {
         return IntentOutcome::Refused(Refusal::Profile);
     };
-    if runtime.commit(&mut arena.conditions, prepared).is_err() {
+    if live_mind {
+        if runtime.commit(&mut arena.conditions, prepared).is_err() {
+            return IntentOutcome::Refused(Refusal::Profile);
+        }
+        arena.constrain_profile_hardware(unit);
+    } else if runtime.commit_dormant(prepared).is_err() {
         return IntentOutcome::Refused(Refusal::Profile);
     }
-    arena.constrain_profile_hardware(unit);
     arena.cancel_profile_think(unit);
     if let Some(own) = arena.unit_mut(unit) {
         own.card_profile = crate::arena::card::ActiveProfile {
@@ -1444,6 +1452,8 @@ fn land_goal(arena: &mut Arena, unit: ObjId, goal: MotorGoal, source: IntentSour
             }) {
                 return;
             }
+            let now_ms = arena.now_ms;
+            let repath_ms = i64::from(arena.arena_cfg.reflex.repath_ms);
             let cell = arena.fan_goal(unit, (x, y));
             let motor = arena.motors.ensure(unit);
             motor.goal = Some(cell);
@@ -1452,8 +1462,14 @@ fn land_goal(arena: &mut Arena, unit: ObjId, goal: MotorGoal, source: IntentSour
             motor.outcome = None;
             motor.route.clear();
             motor.refused = None;
-            if source == IntentSource::Seat {
+            if source == IntentSource::Seat
+                && motor.searched_ms.is_some()
+                && motor
+                    .seat_reset_ms
+                    .is_none_or(|at| now_ms.saturating_sub(at) >= repath_ms)
+            {
                 motor.searched_ms = None;
+                motor.seat_reset_ms = Some(now_ms);
             }
             arena.engage_motor(unit);
         }
@@ -1511,16 +1527,12 @@ pub fn resolve_startup(arena: &mut Arena, unit: ObjId, at_ms: i64) -> Result<(),
     if state.limits.wreck {
         return Err(Refusal::Wreck);
     }
-    // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-4): a plant whose part reads jammed or
-    // destroyed does not start — refused by name, so a pilot's STARTUP cannot bring
-    // back a plant the field jammed.
-    if crate::arena::part_effects::plant_condition(&state.unit).is_some_and(|condition| {
-        matches!(
-            condition,
-            mush_tactics::field_ops::ComponentCondition::Jammed
-                | mush_tactics::field_ops::ComponentCondition::Destroyed
-        )
-    }) {
+    // **Doc 40 cut FR.5** (§4.1 item 4, Q-40-4): a plant whose part is not
+    // operational (jammed, destroyed, or missing) does not start — refused by
+    // name, so a pilot's STARTUP cannot bring back a disabled plant.
+    if crate::arena::part_effects::plant_condition(&state.unit)
+        .is_some_and(|condition| !condition.is_operational())
+    {
         return Err(Refusal::Plant);
     }
     if state.power != Power::Off {

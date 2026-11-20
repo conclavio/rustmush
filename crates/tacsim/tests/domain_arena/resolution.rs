@@ -1002,6 +1002,55 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
         .map(|(_, frame)| frame.clone())
         .unwrap_or_else(|| panic!("the red pilot's frame"));
     assert_eq!(frame.lock, Some(contact));
+    // HIGH-62: while the contact is still unclassified (`X1`), `LOCK` must
+    // withhold `p_permille` so target silhouette and eye height never leak.
+    assert_eq!(
+        frame
+            .weapons
+            .iter()
+            .find(|weapon| weapon.id == "cannon")
+            .and_then(|weapon| weapon.p_permille),
+        None
+    );
+    let unclassified_line = tacsim::match_::cockpit::lock_line(&frame)
+        .unwrap_or_else(|| panic!("a held lock has a line"));
+    assert!(
+        !unclassified_line.contains("% to hit"),
+        "{unclassified_line}"
+    );
+    let unclassified_payload =
+        tacsim::match_::cockpit::status_frame(tacsim::arena_task::MatchId(1), &frame);
+    assert_eq!(
+        unclassified_payload
+            .get("lock_p_permille")
+            .and_then(serde_json::Value::as_u64),
+        None
+    );
+    // Once the sensor pass classifies BLUE (`classify_after_ms = 3_000`),
+    // locking the classified contact exposes the hit chance and lock notice.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut now_wall = warm(&mut arena, &mut bytes);
+    while !matches!(
+        arena.contacts.get(RED, contact).map(|held| held.class),
+        Some(Classification::Classified { .. })
+    ) {
+        now_wall += 500;
+        pulse(&mut arena, now_wall, &[], &mut bytes);
+    }
+    let out = pulse(
+        &mut arena,
+        now_wall + 500,
+        &[intent(RED, IntentKind::Lock { contact }, 3)],
+        &mut bytes,
+    );
+    let frame = out
+        .frames
+        .iter()
+        .find(|(pilot, _)| *pilot == RED_PILOT)
+        .map(|(_, frame)| frame.clone())
+        .unwrap_or_else(|| panic!("the red pilot's classified lock frame"));
+    assert_eq!(frame.lock, Some(contact));
     // 4,000 cm against the rear's 350 cm is 87,500 µrad against a 4,000 µrad cone,
     // which is past the curve's last knee: the ceiling answers (p_max 950).
     // **16b cut F.2**: the number lives on the weapon's own row now.
@@ -3635,9 +3684,9 @@ fn an_order_the_arena_never_queued_and_a_shot_the_controller_took_are_both_silen
 #[test]
 fn the_percentage_is_printed_when_the_lock_resolves() {
     // Doc 16 §3.5 step 5: *the cockpit shows `p_permille` ... on `LOCK` before any
-    // shot*. It resolves in the arena a pulse after the verb, so the line is a
-    // notice at the lock's own arena timestamp — which is what the first `LOCK`
-    // never printed.
+    // shot*. HIGH-62 gates that percentage on `Classification::Classified`: an
+    // unclassified contact prints `"Locked on X1."` without odds, while a
+    // classified contact prints `"Locked on <designator>, 95% to hit."`.
     let mut arena = duel();
     let mut bytes: Vec<u8> = Vec::new();
     let wall = warm(&mut arena, &mut bytes);
@@ -3650,11 +3699,46 @@ fn the_percentage_is_printed_when_the_lock_resolves() {
     );
     let lines = told(&out, RED_PILOT);
     assert!(
+        lines.contains(&format!("Locked on {}.", named(&arena, RED, BLUE))),
+        "unclassified lock withholds the chance: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("% to hit")),
+        "unclassified lock must not print odds: {lines:?}"
+    );
+
+    // On a classified contact, the first `LOCK` notice prints the chance.
+    let mut classified_arena = duel();
+    let mut classified_bytes: Vec<u8> = Vec::new();
+    let mut classified_wall = warm(&mut classified_arena, &mut classified_bytes);
+    while !matches!(
+        classified_arena
+            .contacts
+            .get(RED, contact)
+            .map(|held| held.class),
+        Some(Classification::Classified { .. })
+    ) {
+        classified_wall += 500;
+        pulse(
+            &mut classified_arena,
+            classified_wall,
+            &[],
+            &mut classified_bytes,
+        );
+    }
+    let out = pulse(
+        &mut classified_arena,
+        classified_wall + 500,
+        &[intent(RED, IntentKind::Lock { contact }, 3)],
+        &mut classified_bytes,
+    );
+    let lines = told(&out, RED_PILOT);
+    assert!(
         lines.contains(&format!(
             "Locked on {}, 95% to hit.",
-            named(&arena, RED, BLUE)
+            named(&classified_arena, RED, BLUE)
         )),
-        "the first lock prints the chance: {lines:?}"
+        "the first classified lock prints the chance: {lines:?}"
     );
 }
 

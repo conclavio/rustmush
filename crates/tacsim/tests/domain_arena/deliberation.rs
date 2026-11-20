@@ -1373,6 +1373,11 @@ fn an_advance_order_moves_the_patrol_target() {
 fn a_hold_order_parks_the_squad_and_a_movement_order_does_not_pursue() {
     let cfg = arena_cfg(30_000);
     let mut arena = field(&cfg);
+    // Keep BLUE from knocking RED_A below withdraw_permille if ContactId
+    // tiebreaking picks RED_A over RED_B; RED_A cannot observe BLUE's ammo.
+    if let Some(blue) = arena.unit_mut(BLUE) {
+        blue.ammo.clear();
+    }
     let mut bytes = Vec::new();
     run(&mut arena, 2_000, &mut bytes);
     // A classified hostile the squad would ordinarily close on.

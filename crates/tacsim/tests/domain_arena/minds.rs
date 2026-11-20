@@ -3500,6 +3500,10 @@ fn m1a5_the_production_hash_does_not_move() {
     // unchanged), folded in every seal: all three moved (were `0x18aa_60d9_5785_a83f`,
     // `0x9e8b_b51a_5d8b_a7bf` and `0xdeb8_4918_e033_5f67`), and the field's 50 lines and the
     // duel's 34 differ from CC.2's only in `hash`.
+    // Tier 1D HIGH-60: `DrawLabel::Contact` moved to a domain-separated SHA-256 PRF so exposed
+    // `ContactId`s cannot invert to the combat RNG seed/state; all three moved (were
+    // `0x53d2_1504_a61a_ee67`, `0x93f9_3932_663c_b6b2`, and `0x11ac_bd3f_fa27_1bfc`), while
+    // every event, shot, pose, and combat draw is identical.
     let actual = [
         first_hash,
         last_hash,
@@ -3508,9 +3512,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x53d2_1504_a61a_ee67),
-            Some(0x93f9_3932_663c_b6b2),
-            Some(0x11ac_bd3f_fa27_1bfc)
+            Some(0x1cbb_7635_0929_d93d),
+            Some(0x662e_8bd3_856a_c31a),
+            Some(0xf001_f76a_ea53_d5d7)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6938,59 +6942,59 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     ),
     (
         4,
-        "{\"kind\":\"detected\",\"viewer\":6,\"contact\":7330038967278110817,\"target\":4}",
+        "{\"kind\":\"detected\",\"viewer\":6,\"contact\":8204615927055967777,\"target\":4}",
     ),
     (
         4,
-        "{\"kind\":\"detected\",\"viewer\":6,\"contact\":10007312734772483259,\"target\":9}",
+        "{\"kind\":\"detected\",\"viewer\":6,\"contact\":3549678812771060111,\"target\":9}",
     ),
     (
         189,
-        "{\"kind\":\"detected\",\"viewer\":9,\"contact\":15474813515948476951,\"target\":4}",
+        "{\"kind\":\"detected\",\"viewer\":9,\"contact\":6998466453356873636,\"target\":4}",
     ),
     (
         189,
-        "{\"kind\":\"detected\",\"viewer\":9,\"contact\":14127509583146488135,\"target\":6}",
+        "{\"kind\":\"detected\",\"viewer\":9,\"contact\":12390848833207293132,\"target\":6}",
     ),
     (254, "{\"kind\":\"startup\",\"unit\":6}"),
     (
         482,
-        "{\"kind\":\"detected\",\"viewer\":4,\"contact\":527481421542167805,\"target\":6}",
+        "{\"kind\":\"detected\",\"viewer\":4,\"contact\":12170543857261040268,\"target\":6}",
     ),
     (
         482,
-        "{\"kind\":\"detected\",\"viewer\":4,\"contact\":5852833454602713067,\"target\":9}",
+        "{\"kind\":\"detected\",\"viewer\":4,\"contact\":10326624078539967089,\"target\":9}",
     ),
     (732, "{\"kind\":\"startup\",\"unit\":4}"),
     (754, "{\"kind\":\"power_online\",\"unit\":6}"),
     (1232, "{\"kind\":\"power_online\",\"unit\":4}"),
     (
         3004,
-        "{\"kind\":\"classified\",\"viewer\":6,\"contact\":7330038967278110817,\"target\":4,\"team\":\"red\"}",
+        "{\"kind\":\"classified\",\"viewer\":6,\"contact\":8204615927055967777,\"target\":4,\"team\":\"red\"}",
     ),
     (
         3004,
-        "{\"kind\":\"classified\",\"viewer\":6,\"contact\":10007312734772483259,\"target\":9,\"team\":\"blue\"}",
+        "{\"kind\":\"classified\",\"viewer\":6,\"contact\":3549678812771060111,\"target\":9,\"team\":\"blue\"}",
     ),
     (
         3189,
-        "{\"kind\":\"classified\",\"viewer\":9,\"contact\":15474813515948476951,\"target\":4,\"team\":\"red\"}",
+        "{\"kind\":\"classified\",\"viewer\":9,\"contact\":6998466453356873636,\"target\":4,\"team\":\"red\"}",
     ),
     (
         3189,
-        "{\"kind\":\"classified\",\"viewer\":9,\"contact\":14127509583146488135,\"target\":6,\"team\":\"red\"}",
+        "{\"kind\":\"classified\",\"viewer\":9,\"contact\":12390848833207293132,\"target\":6,\"team\":\"red\"}",
     ),
     (
         3482,
-        "{\"kind\":\"classified\",\"viewer\":4,\"contact\":527481421542167805,\"target\":6,\"team\":\"red\"}",
+        "{\"kind\":\"classified\",\"viewer\":4,\"contact\":12170543857261040268,\"target\":6,\"team\":\"red\"}",
     ),
     (
         3482,
-        "{\"kind\":\"classified\",\"viewer\":4,\"contact\":5852833454602713067,\"target\":9,\"team\":\"blue\"}",
+        "{\"kind\":\"classified\",\"viewer\":4,\"contact\":10326624078539967089,\"target\":9,\"team\":\"blue\"}",
     ),
     (
         3732,
-        "{\"kind\":\"locked\",\"unit\":4,\"contact\":5852833454602713067,\"target\":9}",
+        "{\"kind\":\"locked\",\"unit\":4,\"contact\":10326624078539967089,\"target\":9}",
     ),
     (
         3732,
@@ -7127,7 +7131,7 @@ const M1B5_TWO_T1_INTENTS: &[(u32, i64, &str)] = &[
     (
         4,
         3482,
-        "[{\"condition\":{\"arm\":{\"weapon\":\"cannon\",\"target\":{\"target\":\"best_hostile\"},\"min_permille\":350,\"aspects\":15,\"min_rounds_left\":10,\"min_range_m\":0,\"max_range_m\":100}}},{\"goal\":\"hold\"},{\"lock\":{\"contact\":5852833454602713067}},{\"fire\":{\"weapon\":\"cannon\",\"slot\":1}}]",
+        "[{\"condition\":{\"arm\":{\"weapon\":\"cannon\",\"target\":{\"target\":\"best_hostile\"},\"min_permille\":350,\"aspects\":15,\"min_rounds_left\":10,\"min_range_m\":0,\"max_range_m\":100}}},{\"goal\":\"hold\"},{\"lock\":{\"contact\":10326624078539967089}},{\"fire\":{\"weapon\":\"cannon\",\"slot\":1}}]",
     ),
     (6, 4004, "[]"),
     (
@@ -7316,62 +7320,62 @@ const M2_TWO_T1_MEMORY_DIGESTS: &[(u32, i64, u64)] = &[
     (6, 2004, 9982644946626122887),
     (4, 2482, 5519612912102104609),
     (6, 3004, 4267685524575424567),
-    (4, 3482, 14727923680749643942),
+    (4, 3482, 2776514214130926398),
     (6, 4004, 4267685524575424567),
-    (4, 4482, 16951036639100933384),
+    (4, 4482, 9890419232091972718),
     (6, 5004, 4267685524575424567),
-    (4, 5482, 17332774373539806302),
+    (4, 5482, 8514762072448029686),
     (6, 6004, 4267685524575424567),
-    (4, 6482, 6632271311621113940),
+    (4, 6482, 3750369202588391246),
     (6, 7004, 4267685524575424567),
-    (4, 7482, 13718269286102459830),
+    (4, 7482, 358327294389811238),
     (6, 8004, 4267685524575424567),
-    (4, 8482, 12618536069372510200),
+    (4, 8482, 14553888849480334054),
     (6, 9004, 4267685524575424567),
-    (4, 9482, 10325748119616840334),
+    (4, 9482, 11606733199575367294),
     (6, 10004, 1057625593564455519),
-    (4, 10482, 549518417525068336),
+    (4, 10482, 12129048363243545944),
     (6, 11004, 1057625593564455519),
-    (4, 11482, 2924154669566716156),
+    (4, 11482, 9213667221129292022),
     (6, 12004, 1057625593564455519),
-    (4, 12482, 14209113274094202884),
+    (4, 12482, 6212370030257087284),
     (6, 13004, 1057625593564455519),
-    (4, 13482, 3409402830633305464),
+    (4, 13482, 1922768779586681710),
     (6, 14004, 1057625593564455519),
-    (4, 14482, 11730236216475113288),
+    (4, 14482, 6008061953108235704),
     (6, 15004, 1057625593564455519),
-    (4, 15482, 10104064967216821004),
+    (4, 15482, 3583103809726072838),
     (6, 16004, 1057625593564455519),
-    (4, 16482, 9869136410499005524),
+    (4, 16482, 5890970807902383388),
     (6, 17004, 1057625593564455519),
-    (4, 17482, 1832347342605900320),
+    (4, 17482, 16257173264874005998),
     (6, 18004, 1057625593564455519),
-    (4, 18482, 16983423770728313920),
+    (4, 18482, 14857142307077820568),
     (6, 19004, 1057625593564455519),
-    (4, 19482, 5979536445247340812),
+    (4, 19482, 8683541778366398566),
     (6, 20004, 1057625593564455519),
-    (4, 20482, 12372907226072322348),
+    (4, 20482, 168374452559006554),
     (6, 21004, 1057625593564455519),
-    (4, 21482, 15902047395897125040),
+    (4, 21482, 7514396861799492152),
     (6, 22004, 1057625593564455519),
-    (4, 22482, 11636299758901054172),
+    (4, 22482, 15052950595070868830),
     (6, 23004, 9408727930253721049),
-    (4, 23482, 1147831420516726480),
+    (4, 23482, 2800012411351002976),
     (6, 24004, 9408727930253721049),
-    (4, 24482, 5132644807008374204),
+    (4, 24482, 771048086664473010),
     (6, 25004, 9408727930253721049),
-    (4, 25482, 4246149452316905384),
+    (4, 25482, 16378189885410842008),
     (6, 26004, 9408727930253721049),
-    (4, 26482, 612716631066148972),
+    (4, 26482, 14345473704294583774),
     (6, 27004, 9408727930253721049),
-    (4, 27482, 17440599378261693272),
+    (4, 27482, 8162614106485793056),
     (6, 28004, 9408727930253721049),
-    (4, 28482, 965198466461433196),
+    (4, 28482, 16770875202855835306),
     (6, 29004, 9408727930253721049),
-    (4, 29482, 11224957993845209904),
+    (4, 29482, 6656999169092704872),
 ];
 const M2_TWO_T1_FIRST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":null,\"no_line\":false,\"ordered\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":0,\"target\":null,\"unheld_since_ms\":null,\"waypoint\":null}";
-const M2_TWO_T1_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":[9,8,29482],\"no_line\":false,\"ordered\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":3,\"target\":5852833454602713067,\"unheld_since_ms\":29482,\"waypoint\":0}";
+const M2_TWO_T1_LAST_MEMORY: &[u8] = b"{\"from_waypoint\":null,\"goal\":null,\"hold_retry_ms\":null,\"hunt\":null,\"ignore_until_ms\":null,\"last_plot\":[9,8,29482],\"no_line\":false,\"ordered\":false,\"quiet_since_ms\":null,\"rallied\":false,\"stand_until_ms\":null,\"state\":3,\"target\":-8120119995169584527,\"unheld_since_ms\":29482,\"waypoint\":0}";
 const M2_UNARMED_MEMORY_DIGESTS: &[(u32, i64, u64)] = &[
     (4, 482, 6098099545541555949),
     (4, 1482, 5519612912102104609),

@@ -201,24 +201,70 @@ impl Arena {
     /// it alone (this module's head). A boot resuming a field from a snapshot taken before a
     /// unit's exit uses it too, since that unit has already been checked in.
     pub fn remove_unit(&mut self, unit: ObjId) {
+        use crate::arena::state::DueKind;
+
+        let removed_pilots: Vec<ObjId> = self
+            .pilots
+            .iter()
+            .filter(|pilot| pilot.unit == unit)
+            .map(|pilot| pilot.pilot)
+            .collect();
         self.units.retain(|state| state.id != unit);
         self.pilots.retain(|pilot| pilot.unit != unit);
-        let _ = self.motors.take(unit);
+        self.epochs.remove_unit(unit);
+        self.contacts.clear_viewer(unit);
+        self.lost_designators
+            .retain(|(viewer, _), _| *viewer != unit);
+        self.held_losses.retain(|(viewer, _), _| *viewer != unit);
+        self.spent_said
+            .retain(|(told, target, _), _| *told != unit && *target != unit);
+        self.motors.release(unit);
         self.minds.remove(&unit);
         self.runners.remove(&unit);
         self.profiles.remove(&unit);
+        self.conditions.clear(unit);
+        self.held_said.retain(|(on, _, _), _| *on != unit);
+        self.detachment_commands.remove(&unit);
+        self.purge_order_watches_for_unit(unit);
         self.pending.remove(&unit);
         self.pending_cards.remove(&unit);
         self.awaiting.remove(&unit);
-        self.jam_fold.remove(&unit);
+        self.collected.retain(|think| think.unit != unit);
+        self.unsettled.retain(|think| think.unit != unit);
+        self.traces.remove_unit(unit);
+        self.pending_notices.remove(&unit);
+        self.at_release.remove(&unit);
+        for pilot in removed_pilots {
+            self.pending_catchup.remove(&pilot);
+            self.last_frames.remove(&pilot);
+        }
+        self.due.retain(|kind| match kind {
+            DueKind::RuleLeaseExpired { unit: on, .. }
+            | DueKind::StartupComplete { unit: on }
+            | DueKind::WeaponReady { unit: on, .. }
+            | DueKind::SensorPass { unit: on, .. }
+            | DueKind::Share { unit: on }
+            | DueKind::MotorTick { unit: on }
+            | DueKind::MindThink { unit: on, .. }
+            | DueKind::MindLand { unit: on, .. }
+            | DueKind::LossSettles { viewer: on, .. } => *on != unit,
+            DueKind::Impact { .. }
+            | DueKind::PositionSummary
+            | DueKind::MatchDeadline
+            | DueKind::HoldSettles { .. } => true,
+        });
         // Doc 40 cut FR.5 (§4.1 item 5): a tug gone uncouples its trailer, which stands where it
         // is.
         self.drop_tow(unit);
+        self.jam_fold.clear();
         // Doc 36 cut GC.1b: the chassis words are kept in the unit table's row order, so a row
         // gone shifts every later one; laid down again, as a join lays them.
         self.chassis = crate::arena::state::ChassisWords::table(&self.units);
         let terrain = std::sync::Arc::clone(&self.definition);
         self.index.rebuild(&terrain.terrain, &self.units);
+        self.alert_range_cm =
+            crate::arena::state::alert_range_cm(&self.arena_cfg, &terrain.terrain, &self.units);
+        self.jam_radius_cm = crate::arena::state::jam_radius_cm(&self.units);
     }
 }
 
@@ -336,5 +382,110 @@ mod tests {
             Some(WithdrawRefusal::NotHere)
         );
         assert!(arena.unit(NEAR).is_some(), "the unit it leaves stays");
+    }
+
+    #[test]
+    fn high61_remove_unit_purges_all_unit_state_and_snapshot_round_trips() {
+        use crate::arena::conditions::{ASPECTS_ANY, Arming, FireCondition, SlotTarget};
+        use crate::arena::detachment::{DetachmentAuthority, DetachmentControl};
+        use crate::arena::snapshot::{Snapshot, SnapshotError};
+        use crate::arena::state::{
+            Channel, Classification, ContactId, DueKind, SeenPose, ShadowContact,
+        };
+
+        let mut arena = field();
+        // Populate unit-scoped state across detachment_commands, conditions,
+        // held_said, contacts, epochs, due events, and spent_said for NEAR.
+        assert!(arena.apply_detachment_control(DetachmentControl {
+            unit: NEAR,
+            epoch: 1,
+            authority: Some(DetachmentAuthority {
+                detachment: 70,
+                revision: 1,
+                term: 1,
+            }),
+        }));
+        let fire = FireCondition {
+            weapon: smol_str::SmolStr::new_static("cannon"),
+            target: SlotTarget::Lock,
+            min_permille: 200,
+            aspects: ASPECTS_ANY,
+            min_rounds_left: 0,
+            min_range_m: 0,
+            max_range_m: 0,
+        };
+        assert!(
+            arena
+                .resolve_manual_arming(NEAR, &Arming::Arm(fire.clone()), 0)
+                .is_ok()
+        );
+        arena.held_said.insert((NEAR, 1, ContactId(7)), 100);
+        arena.epochs.raise(NEAR, Channel::Helm, 3);
+        let plot = SeenPose::of(arena.unit(FAR).expect("far"));
+        arena.contacts.insert(
+            NEAR,
+            ContactId(7),
+            ShadowContact::sighted(
+                FAR,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                plot,
+            ),
+        );
+        arena.due.schedule(
+            5_000,
+            DueKind::RuleLeaseExpired {
+                unit: NEAR,
+                generation: 1,
+                lands_ms: 1_000,
+            },
+        );
+        arena.due.schedule(
+            2_000,
+            DueKind::SensorPass {
+                unit: NEAR,
+                pass_seq: 9,
+            },
+        );
+
+        arena.remove_unit(NEAR);
+
+        assert!(arena.unit(NEAR).is_none());
+        assert!(!arena.detachment_commands.contains_key(&NEAR));
+        assert!(arena.conditions.is_empty_for(NEAR));
+        assert!(arena.held_said.keys().all(|(on, _, _)| *on != NEAR));
+        assert_eq!(arena.epochs.current(NEAR, Channel::Helm), 0);
+        assert!(arena.contacts.of(NEAR).next().is_none());
+        assert!(arena.due.iter().all(|event| match &event.kind {
+            DueKind::RuleLeaseExpired { unit, .. }
+            | DueKind::StartupComplete { unit }
+            | DueKind::WeaponReady { unit, .. }
+            | DueKind::SensorPass { unit, .. }
+            | DueKind::Share { unit }
+            | DueKind::MotorTick { unit }
+            | DueKind::MindThink { unit, .. }
+            | DueKind::MindLand { unit, .. }
+            | DueKind::LossSettles { viewer: unit, .. } => *unit != NEAR,
+            _ => true,
+        }));
+
+        // Snapshot encode AND decode succeed cleanly after unit removal.
+        let snapshot = Snapshot::encode(&arena).expect("snapshot encodes after remove_unit");
+        let decoded = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
+            .expect("snapshot decodes after remove_unit");
+        assert!(decoded.unit(NEAR).is_none());
+        assert!(decoded.unit(FAR).is_some());
+
+        // Snapshot::encode refuses dangling conditions for non-existent units directly.
+        let mut corrupt = decoded;
+        let _ = corrupt
+            .conditions
+            .arm(ObjId(999), fire, crate::arena::core::MAX_CONDITION_SLOTS);
+        assert!(matches!(
+            Snapshot::encode(&corrupt),
+            Err(SnapshotError::Malformed(_))
+        ));
     }
 }

@@ -478,11 +478,18 @@ const CLOSES: &str = "fn think(v,c) { stock::rules(); for k in v.contacts { if !
 /// 241,500 ms; each row's state hash, ledger digest and result digest moved with the source the
 /// seals fold. The rows were CC.2's, with the states `3bd6b8ede853a30e`, `99394283e652f56a`,
 /// `e1c626cb05ff9c2d` and `97bdac8c9332faf6`.
+///
+/// **Re-blessed by Tier 1D HIGH-60** (`DrawLabel::Contact` derived via a domain-separated SHA-256
+/// PRF so exposed `ContactId`s cannot invert to the combat RNG seed/state): every case still ends
+/// in the exact same `Elimination { winner: Some(PartyId(66)) }/Loss` at `241,500 ms`; only each
+/// row's state hash, ledger digest, and result digest moved with the non-invertible contact IDs.
+/// The rows were CC.1b's, with the states `1695073aa3c6e8e4`, `a98b1a5da034498c`,
+/// `adac2a6b9dd1c969` and `6665923b5b65f076`.
 const C4_TRIAL_PINS: [&str; 4] = [
-    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=1695073aa3c6e8e4 ledger=466b863c96f4d01c1e9f9728108c38816f55d65ee5e4b38c9f5dc8d4e1e21523 result=a47bc22cba185afa446668ebc76e8cc46a1fbaf1732d7fcbaa761dda5d9bc2cf",
-    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=a98b1a5da034498c ledger=7caf678ccb21d283e75b9867a2a9372c239633f62a62df803748abd1c15d3483 result=ce49a19819b56b7546539636d1a000f064205d158447e2a246eb204c1b8f5315",
-    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=adac2a6b9dd1c969 ledger=1bef81a583fd300fffa13754c4f64b196942773d0f59c861f7ea803461c47a62 result=edd6cc38b1dbb0cc35e629534a852cb7aa7b34cab50bef9a89ed837e057551b8",
-    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=6665923b5b65f076 ledger=306d157e4dc49e706dead86bf4851105689ca6e95f8ec3615dd981d7d0930c22 result=6cd0c5bd88ac8dd1ef2f971d8e0df39c3aa4f8bb03f341505504024025b8dacd",
+    "stands/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=645a6bef64f82773 ledger=33a5177951f397a1b27940ae23e512c29b91a52bbe5758377325e1de90feb747 result=313e77faccd72859c206dff4c7510b29b72fb690d65f14ee25e1652c0597b0c1",
+    "stands/I/cycle end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=f92f40354bfac165 ledger=830120d0c91f7552fe36b675a18afc77ca3a0e5e7f38727be34b44768dc1e4d7 result=9d16d08f368e4040cb4d7b62fedbc3da60b4c34ed7e514e753ce43052422fca1",
+    "closes/I/fixed end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=505a5bab31eb49ce ledger=f976790864e24fb1a8a4a0610945f5fbce372d9d80ee161bc0ea8b095846ae0c result=242f17475e2654117cef02789538552848f6342c2cf7d080383344f2db328513",
+    "stock/II end=Elimination { winner: Some(PartyId(66)) }/Loss at_ms=241500 state=c3d3cb8051e247a7 ledger=5a8816196c8bd5222e0d1d887995016d7f9073a184c23a2c9232a6ad80e94489 result=2c2cef5e8795e79c39b3f371022bd74a0e2ece0768449dd4bfdbeb3a1f8c8445",
 ];
 
 /// Lower-case base-16 of `bytes`.
