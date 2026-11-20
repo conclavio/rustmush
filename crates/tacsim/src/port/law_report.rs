@@ -760,6 +760,12 @@ fn apply(ctx: &mut Ctx<'_>, row: &ReportLanded, r: &SaleReceipt) {
     if let Some(entry) = entry {
         crate::surface::security::fine_now(ctx, &key, &entry, Some(offender));
     }
+    // Doc 50 unit LW.4 (Q-50-69): a sale proven by a party's report costs standing.
+    crate::port::record::lose_standing(
+        ctx,
+        &key,
+        |row| matches!(&row.evidence, Evidence::Receipt { quote, .. } if *quote == r.quote),
+    );
     ctx.out
         .sys_to_actor(row.by, "tacsim.law", REPORT_TAKEN.to_owned());
 }

@@ -192,6 +192,12 @@ pub(crate) fn audit(
             }
         };
         crate::surface::security::fine_now(ctx, &key, entry, told);
+        // Doc 50 unit LW.4 (Q-50-69): nothing when paid at once, else a loss.
+        crate::port::record::lose_standing(
+            ctx,
+            &key,
+            |row| matches!(&row.evidence, Evidence::Audit { hull: h, at_ic, .. } if *h == hull && *at_ic == docking),
+        );
     }
     out
 }

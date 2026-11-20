@@ -141,6 +141,17 @@ pub fn may_trade(
     let Some(paper) = restriction_at(w, venue, commodity) else {
         return Ok(());
     };
+    // Doc 50 unit LW.4 (Q-50-39): an actor under the venue holder's restriction is refused a
+    // restricted good, papers or none.
+    if let PrincipalId::Object(actor) = trader
+        && let Some(polity) =
+            port_entry_of(w, venue).and_then(|entry| crate::offense::jurisdiction_at(w, &entry))
+        && crate::port::record::restricted(w, *actor, polity)
+    {
+        return Err(ProceedsRefusal {
+            line: crate::port::record::board_refusal(w, polity),
+        });
+    }
     let now = w.world_ic_now().at;
     let clear = match trader {
         PrincipalId::Object(actor) => {

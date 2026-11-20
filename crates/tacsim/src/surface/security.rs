@@ -321,7 +321,7 @@ pub(crate) fn fine_now(
         || entry.to_string(),
         |(def, _)| crate::port::coop::port_name(def),
     );
-    fine_offender(ctx, key, to, entry, ("your ship", &port));
+    fine_offender(ctx, key, to, entry, ("ship", &port));
 }
 
 /// The fines and the reinstatements on one record (`on_docked`, [`fine_now`]).

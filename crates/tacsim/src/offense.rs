@@ -448,10 +448,24 @@ pub fn record_offense(
             return false;
         }
     }
+    // Doc 50 unit LW.4 (Q-50-40): an official notice at once when a matter opens.
+    if let Offender::Character(who) = key.offender {
+        let line = OFFENSE_NOTICE
+            .replace(
+                "{polity}",
+                &crate::port::record::polity_name(ctx.w, key.polity),
+            )
+            .replace("{what}", offense.kind.what());
+        ctx.out.sys_to_actor(who, "tacsim.law", line);
+    }
     record.rows.push(offense);
     crate::store::put_offense(ctx, &record);
     true
 }
+
+/// **The official notice of a newly proven offense** (doc 50 unit LW.4, Q-50-40): `{polity}`,
+/// `{what}`. It never names who reported.
+pub const OFFENSE_NOTICE: &str = "Official notice: {polity} has recorded an offense against you: {what}. +record shows it, its      fine and what it costs you.";
 
 /// **Rewrite a record whose rows' receipts changed** (a fine opened on a row): the prover's
 /// own follow-up, never a new offense.

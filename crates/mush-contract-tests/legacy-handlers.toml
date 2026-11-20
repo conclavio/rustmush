@@ -318,6 +318,11 @@ category = "read-only"
 note = "Scene narrative recap (+recap and +recap/archive): renders the witnessed scene timeline from the RAM tail or requests a sealed archive page through the H1 store-read seam; no durable mutation."
 
 [[handler]]
+name = "+record"
+category = "read-only"
+note = "Doc 50 unit LW.4 (Q-50-39, Q-50-40, Q-50-70): the actor's own record -- proven offenses under each polity (tacsim:offense:*), their fines' obligations, the restrictions in force (standing and unpaid fines), the actor's tacsim:sale_receipts book and live Registry impounds on hulls they hold. A pure read; no durable mutation of any kind."
+
+[[handler]]
 name = "+registry"
 category = "read-only"
 note = "doc 20 cut SM.10 (section 9; reviewer F5): a pure read of the site's sixteen tacsim.claims records (and the block cursors for the worked tonnes) -- each claimed block's holder, term, epoch, declared family, first reading, worked tonnes against the floor and contest state, and the paper over it. Registered in +credit's ReadOnly bracket: no document, no post, no submission; it reads no industry claim and no deposit."
