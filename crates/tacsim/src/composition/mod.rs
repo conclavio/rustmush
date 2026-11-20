@@ -221,7 +221,6 @@ fn compose_domain_modules<E>(
         ),
         Box::new(mush_faction::FactionModule::new()),
         Box::new(simulation),
-        atlas_module(atlas),
         Box::new(tactics),
         Box::new(
             mush_propagation::PropagationModule::new()
@@ -301,6 +300,10 @@ fn compose_domain_modules<E>(
             }
         }),
         Box::new(mush_jobs::JobsModule::new()),
+        // CRIT-17: register Atlas AFTER deny-only `MoveAttempt` hooks (`Simulation`,
+        // `Tactics`, `Industry`) so `TravelHook`'s intercepting timed-portal departure
+        // cannot short-circuit and bypass deny-only movement vetoes.
+        atlas_module(atlas),
         Box::new({
             let module = mush_roll::RollModule::with_writers(tacsim_delegate.then_some(crate::NS));
             match commerce {

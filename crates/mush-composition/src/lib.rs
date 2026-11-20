@@ -382,7 +382,9 @@ fn compose_server_modules<E>(
             .with_canon_evidence(Arc::new(self::econ_canon::CanonEvidenceReader))
             .with_party_caps(Vec::new())
             .with_party_cap_source_if(tacsim_delegate)
-            .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard))
+            .with_dispute_guard(Arc::new(ServerDisputeGuard {
+                tacsim: tacsim_delegate,
+            }))
             // Doc 48 cut EX.1a (Q-48-50): a personal listing or bid is its poster's standing
             // acceptance; the market's one implementor checks it against each contract.
             .with_standing_acceptance(Arc::new(mush_market::ListingAcceptance));
@@ -550,6 +552,32 @@ impl IndustrySurfaceExt for mush_industry::IndustryModule {
         } else {
             self
         }
+    }
+}
+
+/// Composite dispute guard combining `mush_market::SaleDisputeGuard` and (when
+/// TacSim is active) `tacsim::port::claims::RegistryFeeDisputeGuard` (HIGH-50).
+#[derive(Clone, Copy, Debug)]
+struct ServerDisputeGuard {
+    tacsim: bool,
+}
+
+impl mush_economy::DisputeGuard for ServerDisputeGuard {
+    fn refusal(
+        &self,
+        w: &mush_core::World,
+        contract: &mush_economy::EconomicContract,
+        party: &mush_org::PrincipalId,
+    ) -> Option<&'static str> {
+        mush_market::SaleDisputeGuard
+            .refusal(w, contract, party)
+            .or_else(|| {
+                self.tacsim
+                    .then(|| {
+                        tacsim::port::claims::RegistryFeeDisputeGuard.refusal(w, contract, party)
+                    })
+                    .flatten()
+            })
     }
 }
 
