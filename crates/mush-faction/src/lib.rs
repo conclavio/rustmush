@@ -766,6 +766,7 @@ fn publish_board_clock(
                 advance_on,
                 consequence,
                 draft,
+                ClockExtra::default(),
             );
         }
     };
@@ -803,6 +804,100 @@ fn publish_board_clock(
         advance_on,
         consequence,
         draft,
+        ClockExtra::default(),
+    )
+}
+
+/// What a compiled owner's front sets on its clock beyond the shared defaults (doc 50 cut KC.1).
+#[derive(Clone, Copy, Default)]
+struct ClockExtra {
+    control: Option<(RegionId, ControlKind)>,
+    visibility: Visibility,
+}
+
+/// **A front and its one clock, as a compiled owner authors it** (doc 50 cut KC.1; Q-50-51,
+/// Q-50-13). The clock watches no canon kind: it moves only by [`advance_clock_by_cause`], and it
+/// completes through the engine's one path, which flips `control` when it names one and resolves
+/// the front.
+#[derive(Clone, Copy, Debug)]
+pub struct FrontSpec<'a> {
+    /// The front's title: its identity on the board.
+    pub title: &'a str,
+    /// The clock's title.
+    pub clock_title: &'a str,
+    /// The clock's segments, 1 or more.
+    pub segments: u8,
+    /// The count it opens at, below `segments`.
+    pub initial: u8,
+    /// The canon line recorded when the clock fills.
+    pub consequence: &'a str,
+    /// The control the board's faction takes when it fills, if any.
+    pub control: Option<(RegionId, ControlKind)>,
+    /// Who may see the clock (and the hold it flips).
+    pub visibility: Visibility,
+}
+
+/// **Open a front whose clock may flip control, on a faction's board** (doc 50 cut KC.1): the
+/// public opener KC.1 seeds Customs Assertion with and OP.2 the Concession Review and Hold the
+/// Concession. Idempotent by title on the board: a second call answers the front the first
+/// made, unchanged. One canon append (`draft`, the opening line), then the post-images.
+///
+/// # Errors
+///
+/// The modules are not loaded; the faction or the control region does not exist; the title or
+/// counts are out of bounds; the ledger is full; or the canon append fails.
+pub fn open_faction_front(
+    ctx: &mut Ctx<'_>,
+    board: FactionId,
+    spec: &FrontSpec<'_>,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    if spec.title.is_empty()
+        || spec.title.len() > 128
+        || spec.clock_title.len() > 128
+        || spec.consequence.len() > 512
+        || spec.segments == 0
+        || spec.initial >= spec.segments
+    {
+        return Err("Invalid front title/clock.".into());
+    }
+    let factions = ctx
+        .w
+        .module_state::<FactionState>()
+        .cloned()
+        .ok_or("Factions unavailable.")?;
+    let simulation = ctx
+        .w
+        .module_state::<SimState>()
+        .cloned()
+        .ok_or("Fronts unavailable.")?;
+    let faction = factions
+        .factions
+        .get(&board)
+        .cloned()
+        .ok_or("Faction unavailable.")?;
+    if spec
+        .control
+        .is_some_and(|(region, _)| !factions.regions.contains_key(&region))
+    {
+        return Err("Control region unavailable.".into());
+    }
+    open_front_clock(
+        ctx,
+        factions,
+        simulation,
+        faction,
+        spec.title,
+        spec.clock_title,
+        spec.segments,
+        spec.initial,
+        None,
+        spec.consequence,
+        draft,
+        ClockExtra {
+            control: spec.control,
+            visibility: spec.visibility,
+        },
     )
 }
 
@@ -821,6 +916,7 @@ fn open_front_clock(
     advance_on: Option<&str>,
     consequence: &str,
     draft: mush_canon::CanonDraft,
+    extra: ClockExtra,
 ) -> Result<FrontId, String> {
     if let Some(f) = simulation
         .fronts
@@ -855,10 +951,10 @@ fn open_front_clock(
         title: clock_title.into(),
         segments,
         filled: initial,
-        visibility: Visibility::Public,
+        visibility: extra.visibility,
         advance_on: advance_on.map(Into::into),
         consequence: consequence.into(),
-        on_complete_control: None,
+        on_complete_control: extra.control,
         completed: false,
         causes: Vec::new(),
     };
@@ -1028,71 +1124,86 @@ pub fn record_relay_discovery(
 /// seizures, and picket-running incidents (`D-35-11`, `SF.R6`).
 pub const CUSTOMS_ASSERTION_TITLE: &str = "Customs Assertion";
 
-/// Open or advance the [`CUSTOMS_ASSERTION_TITLE`] campaign front on `operator`'s
-/// faction board when the Kirkwood Customs Picket assesses a contraband fine or
-/// records a vessel running the picket (`D-35-11`, `SF.R6`).
+/// The Customs Assertion clock's length and opening count (Q-50-12, provisional).
+pub const CUSTOMS_ASSERTION_SEGMENTS: u8 = 6;
+/// The count Customs Assertion opens at (Q-50-12).
+pub const CUSTOMS_ASSERTION_OPENS_AT: u8 = 1;
+/// The canon line Customs Assertion records when it fills (doc 50 cut KC.1).
+pub const CUSTOMS_ASSERTION_CONSEQUENCE: &str =
+    "Republic Customs holds the Kirkwood approach: the picket now answers to the Republic.";
+
+/// **Seed Customs Assertion on the Republic's board** (doc 50 cut KC.1; Q-50-12, Q-50-13): six
+/// segments opening at one, moved only by [`record_customs_assertion`]'s typed causes, and on
+/// its fill the Republic takes `approach` de facto through the engine's one completion path.
+/// Made at world start, so `+clocks` shows it from the first day. Idempotent by title.
 ///
 /// # Errors
 ///
-/// Returns an error string if the faction/front state or canon publication is unavailable.
+/// As [`open_faction_front`].
+pub fn seed_customs_assertion_front(
+    ctx: &mut Ctx<'_>,
+    republic: FactionId,
+    approach: RegionId,
+    draft: mush_canon::CanonDraft,
+) -> Result<FrontId, String> {
+    open_faction_front(
+        ctx,
+        republic,
+        &FrontSpec {
+            title: CUSTOMS_ASSERTION_TITLE,
+            clock_title: "Unlicensed strategic ore & picket incidents",
+            segments: CUSTOMS_ASSERTION_SEGMENTS,
+            initial: CUSTOMS_ASSERTION_OPENS_AT,
+            consequence: CUSTOMS_ASSERTION_CONSEQUENCE,
+            control: Some((approach, ControlKind::DeFacto)),
+            visibility: Visibility::Public,
+        },
+        draft,
+    )
+}
+
+/// **Record a Kirkwood picket incident against Customs Assertion** (`D-35-11`, `SF.R6`; doc 50
+/// cut KC.1, Q-50-12): a fine, a seizure or a run, on `board`'s front (the Republic's). The
+/// draft is the incident's canon line, and its `source` is the cause id: the clock moves one
+/// segment through [`advance_clock_by_cause`], so a retried incident moves it no further, and
+/// the fill flips the approach and resolves the front on the engine's one path. Once the front
+/// has resolved, an incident still commits its line and moves nothing.
+///
+/// # Errors
+///
+/// The front is not seeded on `board`, or the canon append or the clock refuses.
 pub fn record_customs_assertion(
     ctx: &mut Ctx<'_>,
-    operator: mush_org::OrgId,
-    mut draft: mush_canon::CanonDraft,
+    board: FactionId,
+    draft: mush_canon::CanonDraft,
 ) -> Result<FrontId, String> {
-    let faction = ctx
-        .w
-        .module_state::<FactionState>()
-        .and_then(|s| s.factions.values().find(|f| f.org == Some(operator)))
-        .map(|f| f.id);
-    let front = ctx
-        .w
-        .module_state::<SimState>()
-        .and_then(|s| {
-            s.fronts
-                .values()
-                .find(|f| Some(f.faction) == faction && f.title == CUSTOMS_ASSERTION_TITLE)
-        })
-        .cloned();
-    let Some(front) = front else {
-        return publish_front_clock(
-            ctx,
-            operator,
-            CUSTOMS_ASSERTION_TITLE,
-            "Unlicensed strategic ore & picket incidents",
-            6,
-            1,
-            None,
-            "Republic Customs tightens Kirkwood picket inspections and seizes unlicensed strategic ore shipments.",
-            draft,
-        );
+    let (front, clock) = {
+        let sim = ctx
+            .w
+            .module_state::<SimState>()
+            .ok_or("Fronts unavailable")?;
+        let front = sim
+            .fronts
+            .values()
+            .find(|f| f.faction == board && f.title == CUSTOMS_ASSERTION_TITLE)
+            .cloned()
+            .ok_or("Customs Assertion is not seeded on that board")?;
+        let clock = sim
+            .clocks
+            .values()
+            .find(|c| c.front == front.id)
+            .cloned()
+            .ok_or("Customs Assertion clock missing")?;
+        (front, clock)
     };
-    let mut clock = ctx
-        .w
-        .module_state::<SimState>()
-        .and_then(|s| s.clocks.values().find(|c| c.front == front.id))
-        .cloned()
-        .ok_or("Customs Assertion clock missing")?;
-    let completed = clock.advance(1);
-    if completed {
-        draft.summary.push_str(&format!(" {}", clock.consequence));
-    }
-    if mush_canon::commit(ctx, draft).is_none() {
-        return Err("Customs Assertion canon unavailable".into());
-    }
-    if let Some(s) = ctx.w.module_state_mut::<SimState>() {
-        s.clocks.insert(clock.id, clock.clone());
-    }
-    sim::persist_clock(ctx.out, &clock);
-    if completed {
-        let mut resolved = front.clone();
-        resolved.resolved = true;
-        if let Some(s) = ctx.w.module_state_mut::<SimState>() {
-            s.fronts.insert(resolved.id, resolved.clone());
+    if front.resolved || clock.completed {
+        if mush_canon::commit(ctx, draft).is_none() {
+            return Err("Customs Assertion canon unavailable".into());
         }
-        sim::persist_front(ctx.out, &resolved);
+        ctx.out.pin_deferred();
+        return Ok(front.id);
     }
-    ctx.out.pin_deferred();
+    advance_clock_by_cause(ctx, clock.id, 1, draft)?;
     Ok(front.id)
 }
 
