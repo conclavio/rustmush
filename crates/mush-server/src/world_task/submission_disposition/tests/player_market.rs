@@ -947,9 +947,16 @@ pub(super) async fn launch_world(
     ] {
         containers.push(made(server, name).await?);
     }
-    let faction =
-        acknowledged(server, "@faction/create Republic".into(), "Created faction").await?;
-    let republic = mush_faction::FactionId(created(&faction, "(id ")?);
+    // Doc 50 cut KC.0 (Q-50-2): the lane makes the Republic when it applies; the deployment
+    // reads the one it made, from the staff list (`  <id>  Republic  (<n> members)`).
+    let listed = acknowledged(server, "@faction".into(), "  Republic  (").await?;
+    let republic = listed
+        .iter()
+        .find(|line| line.contains("  Republic  ("))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|id| id.parse::<u64>().ok())
+        .map(mush_faction::FactionId)
+        .ok_or("the lane made no Republic")?;
     let registry = open_wallet(
         server,
         store,
