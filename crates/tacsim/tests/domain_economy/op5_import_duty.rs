@@ -93,6 +93,13 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
     let market = station_room(&rig.tw, "isidis_port", "room.i03_market");
     teleport(&mut rig.tw, pilot, market);
 
+    // The stock rig lays the Freeport arm up; the farm is read all the same, so the operation's
+    // close probe has its answer.
+    assert!(
+        tacsim::stockpile::arm(rig.tw.world()).is_some_and(|a| a.laid_up && a.level.is_some()),
+        "the tank farm is read though the arm is laid up"
+    );
+
     // Under the Freeport: nothing levied.
     let before = (
         balance(rig.tw.world(), own_account(&rig, pilot)),
