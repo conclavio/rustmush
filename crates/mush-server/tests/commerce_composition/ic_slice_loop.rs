@@ -1000,10 +1000,21 @@ fn closed_sum(tw: &TestWorld, pilots: &[ObjId]) -> i64 {
         .map(|p| posted(tw, credit_account(tw, &PrincipalId::Object(*p))))
         .sum();
     for entry in ["ceres_port", "stickney_port"] {
-        for row in port_map(tw, entry).orgs.values() {
+        let map = port_map(tw, entry);
+        for row in map.orgs.values() {
             if let Some(account) = row.account {
                 sum += posted(tw, mush_economy::AccountId(account));
             }
+        }
+        // Doc 48 cut EX.3: the port clerk's works buyer purse, which the operator funds and the
+        // board's escrow pays out of at settlement. A purchase accepted before a window opens
+        // and settled inside it moves the purse's credit into the counted orgs, so the purse is
+        // counted too (as `sm_story`'s set does). Which side of the window the settlement lands
+        // on follows the boot's wall-clock second.
+        if let Some(clerk) = map.clerk.as_ref()
+            && let Some(purse) = tacsim::port::credit::own_account(tw.world(), ObjId(clerk.thing))
+        {
+            sum += purse.posted_balance.minor();
         }
     }
     // Doc 48 unit EX.9: the running costs the Ceres and Stickney operators paid went to the
